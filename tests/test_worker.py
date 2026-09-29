@@ -2663,8 +2663,8 @@ def locked_run_from_payload(payload):
         (None, "missing_hash", False),
         (None, "revision", False),
         (None, "hash", False),
-        (None, "session_revision", False),
-        (None, "session_hash", False),
+        (None, "session_revision", True),
+        (None, "session_hash", True),
     ],
 )
 def test_locked_agent_profile_identity_requires_exact_physical_pin(
@@ -2758,7 +2758,7 @@ def test_locked_generic_agent_requires_explicit_null_physical_pins(pin_change, e
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "pin_change",
-    [None, "missing_revision", "agent", "revision", "hash", "session_revision", "session_hash"],
+    [None, "missing_revision", "agent", "revision", "hash", "session_revision", "session_hash", "optional_tool_restored", "optional_tool_revoked"],
 )
 async def test_worker_binds_pinned_harness_profile_before_adapter(monkeypatch, pin_change):
     calls = []
@@ -2785,6 +2785,8 @@ async def test_worker_binds_pinned_harness_profile_before_adapter(monkeypatch, p
         schema_version="ai-platform.run-payload.v2",
         agent_profile=profile,
     )
+    if pin_change == "optional_tool_revoked":
+        raw["input"]["mcp_tool_ids"] = ["server::tool"]
     locked_run = locked_run_from_payload(raw)
     if pin_change == "missing_revision":
         locked_run["admitted_agent_profile_revision"] = None
@@ -2829,7 +2831,7 @@ async def test_worker_binds_pinned_harness_profile_before_adapter(monkeypatch, p
         return types.SimpleNamespace(
             private_execution_input=authorized_profile,
             skill={"skill_id": "general-chat"},
-            mcp_tool_ids=(),
+            mcp_tool_ids=("server::tool",) if pin_change == "optional_tool_restored" else (),
         )
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
@@ -2851,13 +2853,14 @@ async def test_worker_binds_pinned_harness_profile_before_adapter(monkeypatch, p
         AdapterRegistry({"claude-agent-worker": CaptureAdapter()}),
     )
 
-    if pin_change is None:
+    if pin_change in {None, "session_revision", "session_hash", "optional_tool_restored", "optional_tool_revoked"}:
         assert outcome.status == "succeeded", (outcome, calls)
         assert outcome.error_code is None
         adapter_payload = next(call[1] for call in calls if call[0] == "adapter")
         execution_owner = next(call[2] for call in calls if call[0] == "adapter")
         assert execution_owner.artifact_storage_scope == adapter_payload.attempt_id
         assert callable(execution_owner.reserve_artifact_storage)
+        assert adapter_payload.input.get("mcp_tool_ids", []) == []
         assert adapter_payload.model_id == raw["model_id"]
         assert adapter_payload.model_value == raw["model_value"]
         assert adapter_payload.agent_profile == {
@@ -8402,56 +8405,6 @@ async def test_worker_persists_terminal_assistant_message(monkeypatch):
     assert ("message", "assistant", "最终回答", "run-a") in calls
 
 
-@pytest.mark.asyncio
-async def test_worker_blocks_disabled_mcp_tool_before_dispatch(monkeypatch):
-    calls = []
-
-    class HarnessAdapterMustNotRun:
-        async def submit_run(self, payload, event_sink=None):
-            calls.append(("adapter", payload.run_id))
-            raise AssertionError("disabled MCP tool must not reach adapter dispatch")
-
-    class Registry:
-        def get(self, executor_type):
-            return HarnessAdapterMustNotRun()
-
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        calls.append(("running", tenant_id, run_id))
-        return True
-
-    async def ensure_mcp_tool_active(conn, *, tenant_id, tool_id):
-        calls.append(("policy", tenant_id, tool_id))
-        raise RepositoryConflictError("mcp_tool_disabled")
-
-    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None, terminal_reason=None):
-        calls.append(("fail", error_code, error_message))
-        return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
-
-    async def append_event(conn, *, tenant_id, run_id, event_type, stage, message, payload=None):
-        calls.append(("event", event_type, stage, payload or {}))
-
-    monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr('app.mcp.infrastructure.tool_policies_postgres.ensure_mcp_tool_active', ensure_mcp_tool_active, raising=False)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
-    monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
-
-    outcome = await process_run_payload(
-        base_payload(skill_id="ragflow-knowledge-search", executor_type="claude-agent-worker"),
-        registry=Registry(),
-        worker_id="worker-harness",
-    )
-
-    assert outcome.status == "failed"
-    assert outcome.error_code == "capability_not_authorized"
-    assert ("policy", "tenant-a", "ragflow-knowledge-search") in calls
-    assert not any(item[0] == "adapter" for item in calls)
-    assert any(item[0] == "fail" and item[1] == "capability_not_authorized" for item in calls)
-    denied_event = next(item for item in calls if item[0] == "event" and item[1] == "capability_not_authorized")
-    assert denied_event[2] == "authorization"
-    assert denied_event[3]["capability_id"] == "ragflow-knowledge-search"
-    assert denied_event[3]["reason"] == "lifecycle_denied"
-    assert denied_event[3]["visible_to_user"] is True
 
 
 def _task6_distribution(
@@ -9142,49 +9095,6 @@ async def test_worker_rejects_external_mcp_before_non_claude_executor_dispatch(m
     assert denied_event["payload"]["reason"] == "mcp_sandbox_executor_required"
 
 
-@pytest.mark.asyncio
-async def test_worker_rejects_retired_bare_mcp_before_adapter_dispatch(monkeypatch):
-    raw, registry, state, calls = _install_task6_worker_fakes(
-        monkeypatch,
-        locked_input={"mode": "file"},
-        queue_input={
-            "mode": "queue",
-            "_runtime_tool_policy_subjects": [{"capability_id": "caller-forged-search"}],
-        },
-    )
-    backing_tool_id = "ragflow-knowledge-search"
-    state["skill"].update(
-        executor_type="ragflow",
-        backing_mcp_tool_id=backing_tool_id,
-    )
-    state["locked_run"]["input_json"]["executor_type"] = "ragflow"
-    raw["executor_type"] = "ragflow"
-    state["tools"][backing_tool_id] = _task6_tool(
-        backing_tool_id,
-        "ragflow",
-    )
-    state["distributions"][("mcp_server", "ragflow")] = _task6_distribution(
-        "mcp_server",
-        "ragflow",
-    )
-
-    outcome = await process_run_payload(raw, registry=registry)
-
-    assert outcome.status == "failed"
-    assert outcome.error_code == "capability_not_authorized"
-    assert ("tool_lookup", "tenant-a", backing_tool_id) in calls
-    _task6_assert_no_executor_calls(calls)
-    failed = next(call[1] for call in calls if call[0] == "fail")
-    assert failed["error_code"] == "capability_not_authorized"
-    denied_event = next(
-        call[1]
-        for call in calls
-        if call[0] == "event" and call[1]["event_type"] == "capability_not_authorized"
-    )
-    assert denied_event["payload"]["capability_kind"] == "mcp_tool"
-    assert denied_event["payload"]["capability_id"] == backing_tool_id
-    assert denied_event["payload"]["reason"] == "mcp_runtime_metadata_invalid"
-    assert "caller-forged-search" not in json.dumps(calls)
 
 
 @pytest.mark.asyncio
@@ -9220,37 +9130,6 @@ async def test_worker_rejects_pinned_external_mcp_before_non_claude_dispatch(mon
     assert denied_event["payload"]["reason"] == "mcp_sandbox_executor_required"
 
 
-@pytest.mark.asyncio
-async def test_worker_reauthorizes_historical_ragflow_mcp_after_current_skill_changes_executor(monkeypatch):
-    historical_reference = "historical-server::historical-search"
-    raw, registry, state, calls = _install_task6_worker_fakes(monkeypatch, locked_input={"mode": "file"})
-    historical_manifest = primary_manifest("qa-file-reviewer", "hash-qa-file-reviewer")
-    historical_manifest["mcp_tool_ids"] = [historical_reference]
-    state["locked_run"]["input_json"]["executor_type"] = "ragflow"
-    state["locked_run"]["input_json"]["skill_manifests"] = [historical_manifest]
-    state["skill"].update(executor_type="capture", backing_mcp_tool_id=None)
-    state["tools"][historical_reference] = _task6_tool(
-        historical_reference,
-        "historical-server",
-    )
-    state["distributions"][("mcp_server", "historical-server")] = _task6_distribution(
-        "mcp_server",
-        "historical-server",
-        status="disabled",
-    )
-
-    outcome = await process_run_payload(raw, registry=registry)
-
-    assert outcome.status == "failed"
-    assert outcome.error_code == "capability_not_authorized"
-    assert ("tool_lookup", "tenant-a", historical_reference) in calls
-    _task6_assert_no_executor_calls(calls)
-    denied_event = next(
-        call[1]
-        for call in calls
-        if call[0] == "event" and call[1]["event_type"] == "capability_not_authorized"
-    )
-    assert denied_event["payload"]["reason"] == "distribution_disabled"
 
 
 @pytest.mark.parametrize(
@@ -9307,17 +9186,10 @@ async def test_worker_capability_distribution_rechecks_mcp_parent_changes_after_
 
     outcome = await process_run_payload(raw, registry=registry)
 
-    assert outcome.status == "failed"
-    assert outcome.error_code == "capability_not_authorized"
-    _task6_assert_no_executor_calls(calls)
-    denied_event = next(
-        call[1]
-        for call in calls
-        if call[0] == "event" and call[1]["event_type"] == "capability_not_authorized"
-    )
-    assert denied_event["payload"]["capability_kind"] == "mcp_tool"
-    assert denied_event["payload"]["capability_id"] == tool_reference
-    assert denied_event["payload"]["reason"] == expected_reason
+    assert outcome.status == "succeeded"
+    adapter_input = next(call[1] for call in calls if call[0] == "adapter")
+    assert tool_reference not in adapter_input.get("mcp_tool_ids", [])
+    assert not any(subject.get("mcp_server") == "server-a" for subject in adapter_input.get("_runtime_tool_policy_subjects", []))
 
 
 @pytest.mark.asyncio

@@ -161,26 +161,15 @@ sources enabled, so the file supplies the default Simplified Chinese response
 instruction. An explicit user language request takes precedence. The platform
 rewrites this file when it prepares an attempt, excludes it from artifact
 collection, and denies SDK Write/Edit access to it. The release workspace
-initializer preserves safe read-only retained files and Skill directories, including
-this `CLAUDE.md`. It requires the workspace root to be owner-writable and verifies
-write/read/delete after switching to the runtime identity. Ownership, no-follow
-inode checks, single-link regular files, filesystem boundaries, searchable
-directories, and rejection of special modes or group/other write access still
-apply to the complete retained tree. Shared namespace directories from `tenants/`
-through `attempts/{attempt_id}` must also be owner-readable so scoped preparation
-can open them before restoring their writable modes. The networkless, read-only
-root-filesystem initializer drops all capabilities and restores only `CHOWN`,
-`DAC_READ_SEARCH`, `FOWNER`, `SETUID`, and `SETGID`; `FOWNER` is required solely
-for the descriptor-bound mode/ACL migration of runtime-owned nodes. The
-initializer changes ownership where required and otherwise preserves permission
-modes. One bounded compatibility migration applies only below the exact Attempt
-workspace `.pins/` and `.claude/` roots: after the same descriptor-bound device,
-owner, type, link, and special-mode checks, it removes POSIX default/access ACLs
-and group/other write bits without reading or rewriting file content. Unsafe
-metadata anywhere else remains fail closed. New pinned and staged Skill trees use
-`0755` directories, `0644` data files, and `0755` files that were already executable,
-so the compatibility migration does not remain their steady-state creator.
-Preparing an attempt owns the writable modes of its scoped directories.
+initializer prepares only the runtime root and platform namespace directories
+through `attempts/{attempt_id}`. It does not traverse ordinary Attempt contents,
+change their permissions, or run a compatibility ACL migration. No-follow
+identity/device checks protect platform namespace directories; after switching
+to the runtime identity, a root write/read/delete probe verifies availability.
+The networkless, read-only initializer retains `CHOWN`, `DAC_READ_SEARCH`,
+`FOWNER`, `SETUID`, and `SETGID` only for namespace preparation and privilege drop.
+New Skill materialization owns its directory and file modes. Skills have one
+native discovery location, `.claude/skills`.
 
 Skill writes are allowed anywhere else in the assigned workspace. The protected
 roots remain `inputs/`, `.claude/`, `.ai-platform/`, the runtime configuration
@@ -196,8 +185,9 @@ outside the sandbox-mounted workspace before artifact storage reads it. OpenSand
 does not download response files; its remaining Files API use is limited to the
 bounded lease-sentinel control readback. A selected file may be in an ordinary
 workspace directory such as `output/`, `tasks/`, `artifacts/`, or `review/`; inputs,
-platform/runtime state, debug/audit trees, native-tool scratch space, and platform
-instruction files remain excluded. An authorized Skill may select a file below its
+platform/runtime roots, root debug/audit trees, native-tool scratch space, and
+platform instruction files remain excluded. Ordinary nested directories named
+`logs` or `runtime` are readable and deliverable. An authorized Skill may select a file below its
 exact staged `output/` directory, while the rest of the installed Skill stays
 private. Missing, unknown, symlink, and non-file entries fail closed. The former
 output-directory write allowlist and `outputs/**/delivery/`-only collection rule

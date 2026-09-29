@@ -32,7 +32,6 @@ const EMPTY_WORKSPACE_SESSION_SOURCE: SessionSidebarSessionSource = {
 
 interface LoadedAgentWorkspace {
   agentId: string;
-  revision: string;
   profile: AgentProfilePublicProjection;
   startProfile: AgentProfilePublicProjection | null;
   readOnly: boolean;
@@ -43,7 +42,6 @@ function historicalProfile(
 ): AgentProfilePublicProjection {
   return {
     agent_id: identity.agent_id,
-    expected_revision: identity.revision,
     name: identity.name,
     description: identity.description,
     starter_prompts: identity.starter_prompts,
@@ -55,19 +53,13 @@ function historicalProfile(
   };
 }
 
-/** Recover one current or historical Agent revision before exposing canonical Chat. */
+/** Recover the current Agent and verify its session before exposing canonical Chat. */
 export function AgentWorkspaceRoute() {
   const navigate = useNavigate();
-  const { agentId, revision, sessionId: routeSessionId } = useParams<{
+  const { agentId, sessionId: routeSessionId } = useParams<{
     agentId?: string;
-    revision?: string;
     sessionId?: string;
   }>();
-  const parsedRevision = Number(revision);
-  const validRevision =
-    Number.isSafeInteger(parsedRevision) && parsedRevision > 0
-      ? parsedRevision
-      : undefined;
   const [phase, setPhase] = useState<WorkspacePhase>("loading");
   const [profileRetry, setProfileRetry] = useState(0);
   const [loadedWorkspace, setLoadedWorkspace] =
@@ -82,11 +74,9 @@ export function AgentWorkspaceRoute() {
   const historyScopeAuthorized =
     phase === "ready" &&
     loadedWorkspace !== null &&
-    loadedWorkspace.agentId === agentId &&
-    loadedWorkspace.revision === revision;
+    loadedWorkspace.agentId === agentId;
   const conversationList = useAgentConversationList(
     historyScopeAuthorized ? agentId : undefined,
-    historyScopeAuthorized ? validRevision : undefined,
   );
 
   useEffect(() => {
@@ -95,8 +85,7 @@ export function AgentWorkspaceRoute() {
     const retainsMountedWorkspace =
       currentView.phase === "ready" &&
       currentView.loadedWorkspace !== null &&
-      currentView.loadedWorkspace.agentId === agentId &&
-      currentView.loadedWorkspace.revision === revision;
+      currentView.loadedWorkspace.agentId === agentId;
     // A session-only route change keeps canonical Chat mounted while both the
     // route and Chat layers independently verify the pinned conversation.
     if (!retainsMountedWorkspace) {
@@ -104,7 +93,7 @@ export function AgentWorkspaceRoute() {
       setLoadedWorkspace(null);
     }
 
-    if (!agentId || !revision || validRevision === undefined) {
+    if (!agentId) {
       setPhase("unavailable");
       return () => {
         active = false;
@@ -112,7 +101,14 @@ export function AgentWorkspaceRoute() {
     }
 
     const currentProfileRequest = routeSessionId
-      ? agentProfileApi.getPublished(agentId).catch(() => null)
+      ? agentProfileApi.getPublished(agentId).catch((error: unknown) => {
+          const status =
+            error !== null && typeof error === "object"
+              ? (error as { status?: number }).status
+              : undefined;
+          if (status === 403 || status === 404) return null;
+          throw error;
+        })
       : agentProfileApi.getPublished(agentId);
     const sessionRequest = routeSessionId
       ? sessionApi.getAuthoritative(routeSessionId)
@@ -131,38 +127,32 @@ export function AgentWorkspaceRoute() {
             session.session_id !== routeSessionId ||
             session.agent_id !== agentId ||
             !identity ||
-            identity.agent_id !== agentId ||
-            identity.revision !== validRevision
+            identity.agent_id !== agentId
           ) {
             setPhase("unavailable");
             return;
           }
           setLoadedWorkspace({
             agentId,
-            revision,
             profile: historicalProfile(identity),
             startProfile: currentProfile,
-            readOnly:
-              currentProfile === null ||
-              currentProfile.expected_revision !== validRevision,
+            readOnly: currentProfile === null,
           });
           setPhase("ready");
           return;
         }
 
-        const exactProfile = selectPublishedMarketProfile(
+        const currentProfileForAgent = selectPublishedMarketProfile(
           currentProfile ? [currentProfile] : [],
           agentId,
-          revision,
         );
-        if (!exactProfile) {
+        if (!currentProfileForAgent) {
           setPhase("unavailable");
           return;
         }
         setLoadedWorkspace({
           agentId,
-          revision,
-          profile: exactProfile,
+          profile: currentProfileForAgent,
           startProfile: currentProfile,
           readOnly: false,
         });
@@ -180,7 +170,7 @@ export function AgentWorkspaceRoute() {
     return () => {
       active = false;
     };
-  }, [agentId, profileRetry, revision, routeSessionId, validRevision]);
+  }, [agentId, profileRetry, routeSessionId]);
 
   useEffect(() => {
     if (phase === "unavailable") {
@@ -199,8 +189,7 @@ export function AgentWorkspaceRoute() {
   const resolvedWorkspace =
     phase === "ready" &&
     loadedWorkspace !== null &&
-    loadedWorkspace.agentId === agentId &&
-    loadedWorkspace.revision === revision
+    loadedWorkspace.agentId === agentId
       ? loadedWorkspace
       : null;
 

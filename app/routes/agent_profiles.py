@@ -100,6 +100,11 @@ async def _submit_dedicated_agent_run(
     if str(session.get("agent_id") or "") != agent_id:
         raise HTTPException(status_code=409, detail="agent_profile_session_mismatch")
 
+    agent_options: dict[str, Any] = {"enable_thinking": request.thinking_effort}
+    if request.model_id is not None:
+        agent_options["model_id"] = request.model_id
+    if request.model is not None:
+        agent_options["model"] = request.model
     canonical_request = ChatStreamRequest(
         workspace_id=str(session["workspace_id"]),
         session_id=session_id,
@@ -107,7 +112,7 @@ async def _submit_dedicated_agent_run(
         file_ids=request.file_ids,
         submission_id=request.submission_id,
         user_timezone=request.user_timezone,
-        agent_options={"enable_thinking": request.thinking_effort},
+        agent_options=agent_options,
     )
     # Local import avoids making the Chat route depend on this adapter while
     # preserving one admission, Run, Queue, SSE, and artifact authority.
@@ -373,11 +378,10 @@ async def run_agent_profile_test(
     test_session_id = f"ses_test_{request.submission_id.hex}"
     selection = SelectedAgentProfileRequest(
         agent_id=safe_agent_id,
-        expected_revision=request.expected_revision,
     )
     try:
         async with transaction() as conn:
-            await _authority.create_conversation(
+            test_conversation = await _authority.create_conversation(
                 conn,
                 principal=principal,
                 workspace_id=request.workspace_id,
@@ -386,6 +390,11 @@ async def run_agent_profile_test(
                 session_id=test_session_id,
                 purpose="builder_test",
             )
+            if (
+                test_conversation.agent_conversation is None
+                or test_conversation.agent_conversation.revision != request.expected_revision
+            ):
+                raise HTTPException(status_code=409, detail="agent_profile_revision_stale")
     except platform_errors.RepositoryConflictError as exc:
         raise HTTPException(status_code=409, detail="agent_profile_test_submission_conflict") from exc
     outcome = await _submit_dedicated_agent_run(

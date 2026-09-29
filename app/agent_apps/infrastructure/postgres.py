@@ -373,15 +373,11 @@ async def get_current_published_agent_profile(
     *,
     tenant_id: str,
     agent_id: str,
-    expected_revision: int | None = None,
     for_update: bool = False,
 ) -> dict[str, Any] | None:
     """Read the one aggregate-selected publication, never a superseded historical row."""
 
-    expected_filter = "and agent_profiles.published_revision = %s" if expected_revision is not None else ""
     params: list[Any] = [tenant_id, agent_id]
-    if expected_revision is not None:
-        params.append(expected_revision)
     cursor = await conn.execute(
         f"""
         select {_PROFILE_REVISION_COLUMNS},
@@ -406,7 +402,6 @@ async def get_current_published_agent_profile(
           and agent_profiles.lifecycle_status = 'published'
           and agents.agent_type = 'profile'
           and agents.status = 'active'
-          {expected_filter}
         {"for update of agent_profiles" if for_update else ""}
         """,
         tuple(params),

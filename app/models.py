@@ -201,12 +201,11 @@ class SelectedSkillRequest(BaseModel):
 
 
 class SelectedAgentProfileRequest(BaseModel):
-    """Client optimistic lock for one immutable published Agent Profile revision."""
+    """Select one Agent Profile identity whose current publication is admitted."""
 
     model_config = ConfigDict(extra="forbid")
 
     agent_id: str
-    expected_revision: int = Field(ge=1)
 
     @field_validator("agent_id")
     @classmethod
@@ -350,6 +349,8 @@ class AgentAppRunRequest(BaseModel):
     file_ids: list[str] = Field(default_factory=list, max_length=32)
     user_timezone: str | None = Field(default=None, max_length=128)
     thinking_effort: Annotated[ThinkingEffort, BeforeValidator(normalize_thinking_effort)] = "auto"
+    model_id: str | None = Field(default=None, min_length=1, max_length=128)
+    model: str | None = Field(default=None, min_length=1, max_length=512)
 
     @field_validator("file_ids")
     @classmethod

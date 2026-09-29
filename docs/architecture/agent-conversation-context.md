@@ -41,7 +41,9 @@ is the platform's duplicate full scan of business-message bodies.
 
 ## Current Capability Boundary
 
-Each Run reauthorizes the current Agent Profile, Skills, MCP/native tools,
+Each new Run resolves the current published Agent Profile and Skill dependency
+closure, independently of the Session creation revision. Each execution reauthorizes
+the accepted Agent Profile, Skills, MCP/native tools,
 model, credentials, files, artifacts, memory references and Run/Attempt/lease.
 Skill dispatch, retry and resume preserve the versions admitted to the Run.
 Current aggregate access and distributions are checked independently of current

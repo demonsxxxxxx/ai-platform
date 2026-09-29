@@ -431,7 +431,7 @@ def test_compose_workspace_migration_and_init_are_narrow_and_ordered():
     assert init["network_mode"] == "none"
     assert init["read_only"] is True
     assert init["restart"] == "no"
-    assert init["ulimits"] == {"nofile": {"soft": 131072, "hard": 131072}}
+    assert "ulimits" not in init
     assert init["cap_drop"] == ["ALL"]
     assert set(init["cap_add"]) == {"CHOWN", "DAC_READ_SEARCH", "FOWNER", "SETUID", "SETGID"}
     assert init["entrypoint"] == ["python", "-m", "app.runtime.sandbox.workspace_permissions"]

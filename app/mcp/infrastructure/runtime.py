@@ -182,6 +182,7 @@ async def attach_mcp_server_configs(
     raw_subjects = run_payload.input.get("_runtime_tool_policy_subjects")
     if not isinstance(raw_subjects, list):
         return run_payload
+    builtin_servers = {"ai-platform-context", "ai-platform-response"}
     server_ids = sorted(
         {
             str(subject.get("mcp_server") or "")
@@ -189,13 +190,12 @@ async def attach_mcp_server_configs(
             if isinstance(subject, dict)
             and str(subject.get("identity") or "").startswith("mcp__")
             and str(subject.get("mcp_server") or "")
-            and str(subject.get("mcp_server") or "") != "ai-platform-context"
+            and str(subject.get("mcp_server") or "") not in builtin_servers
         }
     )
     if not server_ids:
         return run_payload
     configs: dict[str, dict[str, Any]] = {}
-    targets: dict[str, dict[str, Any]] = {}
     for server_id in server_ids:
         row = await mcp_postgres.get_mcp_server_runtime_target(
             conn,
@@ -203,31 +203,47 @@ async def attach_mcp_server_configs(
             server_name=server_id,
         )
         if row is None:
-            raise McpRuntimeContextError("mcp_server_not_available", status_code=503)
+            continue
         transport = str(row.get("transport") or "").casefold()
         if transport not in {"sse", "streamable_http"}:
-            raise McpRuntimeContextError(
-                "mcp_server_unsupported_transport", status_code=503
+            continue
+        try:
+            endpoint, static_headers = open_mcp_server_credentials(
+                tenant_id=principal.tenant_id,
+                server_id=server_id,
+                envelope=str(row.get("credential_envelope") or ""),
             )
-        targets[server_id] = row
-    jwt = await get_mcp_principal_jwt_store().get(principal)
-    for server_id, row in targets.items():
-        transport = str(row.get("transport") or "").casefold()
-        endpoint, static_headers = open_mcp_server_credentials(
-            tenant_id=principal.tenant_id,
-            server_id=server_id,
-            envelope=str(row.get("credential_envelope") or ""),
-        )
+        except McpRuntimeContextError as exc:
+            if exc.code == "mcp_server_not_available":
+                continue
+            raise
         if not endpoint:
-            raise McpRuntimeContextError("mcp_server_not_available", status_code=503)
+            continue
         configs[server_id] = {
             "type": "sse" if transport == "sse" else "http",
             "url": endpoint,
-            "headers": {
-                **static_headers,
-                MCP_JWT_AUTHORIZATION_HEADER: f"Bearer {jwt}",
-            },
+            "headers": static_headers,
         }
+
+    jwt: str | None = None
+    if configs:
+        try:
+            jwt = await get_mcp_principal_jwt_store().get(principal)
+        except McpRuntimeContextError as exc:
+            # External MCP credentials are optional run capabilities. Missing,
+            # expired, or temporarily unavailable principal credentials remove
+            # those tools; corrupt records and configuration errors still fail.
+            if exc.code not in {
+                "mcp_principal_jwt_missing",
+                "mcp_principal_jwt_expired",
+                "mcp_principal_jwt_unavailable",
+            }:
+                raise
+            configs.clear()
+    if jwt:
+        for config in configs.values():
+            config["headers"][MCP_JWT_AUTHORIZATION_HEADER] = f"Bearer {jwt}"
+
     subjects: list[object] = []
     for raw_subject in raw_subjects:
         if not isinstance(raw_subject, dict):
@@ -235,7 +251,13 @@ async def attach_mcp_server_configs(
             continue
         subject = dict(raw_subject)
         server_id = str(subject.get("mcp_server") or "")
-        if server_id in configs:
+        is_external_mcp = (
+            str(subject.get("identity") or "").startswith("mcp__")
+            and server_id not in builtin_servers
+        )
+        if is_external_mcp and server_id not in configs:
+            continue
+        if is_external_mcp:
             subject["mcp_server_config"] = configs[server_id]
         subjects.append(subject)
     rebuilt_input = dict(run_payload.input)

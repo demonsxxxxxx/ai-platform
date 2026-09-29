@@ -45,7 +45,6 @@ from app.skills.packages import (
 )
 from app.skills.pinning import (
     SkillVersionMaterializationError,
-    build_skill_version_dependency_manifest_pins,
     build_skill_version_manifest_pin,
     validate_skill_version_dependency_policy,
 )
@@ -125,10 +124,9 @@ def _require_materializable_skill_version(skill_id: str, version: dict[str, obje
         raise HTTPException(status_code=409, detail="skill_version_not_materializable")
     try:
         build_skill_version_manifest_pin(version)
-        dependency_pins = build_skill_version_dependency_manifest_pins(version)
         validate_skill_version_dependency_policy(
             version,
-            available_skill_ids={pin["skill_id"] for pin in dependency_pins},
+            available_skill_ids=set(version.get("dependency_ids") or []),
         )
     except SkillVersionMaterializationError as exc:
         raise HTTPException(status_code=409, detail="skill_version_not_materializable") from exc
@@ -155,10 +153,9 @@ def _require_reusable_uploaded_skill_version(skill_id: str, version: dict[str, o
             skill_id=skill_id,
             content_hash=str(version.get("content_hash") or ""),
         )
-        dependency_pins = build_skill_version_dependency_manifest_pins(version)
         validate_skill_version_dependency_policy(
             version,
-            available_skill_ids={pin["skill_id"] for pin in dependency_pins},
+            available_skill_ids=set(version.get("dependency_ids") or []),
         )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail="skill_version_not_materializable") from exc

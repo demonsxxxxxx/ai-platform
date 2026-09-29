@@ -10,7 +10,6 @@ from app.skills.pinning import (
     validate_skill_manifest_refs,
     build_skill_snapshot_governance,
     SkillVersionMaterializationError,
-    build_skill_version_dependency_manifest_pins,
     build_skill_version_manifest_pin,
     build_skill_version_policy_manifest_pins,
     build_uploaded_skill_manifest_pin,
@@ -420,68 +419,6 @@ def test_build_skill_version_policy_manifest_pins_accepts_zero_dependency_upload
 
     assert [pin["skill_id"] for pin in pins] == ["example-skill"]
     assert pins[0]["dependency_ids"] == []
-
-
-def test_build_skill_version_dependency_manifest_pins_uses_versioned_dependency_snapshot():
-    dependency_files = [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}]
-
-    pins = build_skill_version_dependency_manifest_pins(
-        {
-            "skill_id": "example-skill",
-            "version": "hash-primary",
-            "content_hash": "hash-primary",
-            "source": {
-                "kind": "uploaded",
-                "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
-                "dependency_manifests": [
-                    {
-                        "skill_id": "minimax-docx",
-                        "description": "Pinned DOCX helper",
-                        "version": "hash-pinned-dependency",
-                        "content_hash": "hash-pinned-dependency",
-                        "source": {
-                            "kind": "builtin",
-                            "asset_dir": "minimax-docx",
-                            "version": "hash-pinned-dependency",
-                        },
-                        "files": dependency_files,
-                        "dependency_ids": [],
-                        "allowed": True,
-                        "staged": False,
-                        "used": False,
-                    }
-                ],
-            },
-            "dependency_ids": ["minimax-docx"],
-            "status": "active",
-        }
-    )
-
-    assert pins[0]["skill_id"] == "minimax-docx"
-    assert pins[0]["content_hash"] == "hash-pinned-dependency"
-    assert pins[0]["source"] == {
-        "kind": "builtin",
-        "asset_dir": "minimax-docx",
-        "version": "hash-pinned-dependency",
-    }
-    assert pins[0]["files"] == dependency_files
-
-
-def test_build_skill_version_dependency_manifest_pins_rejects_missing_dependency_snapshot():
-    with pytest.raises(SkillVersionMaterializationError, match="skill_version_not_materializable"):
-        build_skill_version_dependency_manifest_pins(
-            {
-                "skill_id": "example-skill",
-                "version": "hash-primary",
-                "content_hash": "hash-primary",
-                "source": {
-                    "kind": "uploaded",
-                    "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
-                },
-                "dependency_ids": ["minimax-docx"],
-                "status": "active",
-            }
-        )
 
 
 def test_build_uploaded_skill_manifest_pin_rejects_missing_files():

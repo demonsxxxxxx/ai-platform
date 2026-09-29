@@ -47,10 +47,9 @@ export interface AgentConversationListController {
   updateSession: (session: BackendSession) => void;
 }
 
-/** Own cursor pagination for one immutable Agent/revision history. */
+/** Own cursor pagination for all authorized conversations for one Agent. */
 export function useAgentConversationList(
   agentId: string | undefined,
-  revision: number | undefined,
 ): AgentConversationListController {
   const [sessions, setSessions] = useState<BackendSession[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -64,7 +63,7 @@ export function useAgentConversationList(
 
   const loadPage = useCallback(
     async (reset: boolean): Promise<void> => {
-      if (!agentId || revision === undefined || revision < 1) return;
+      if (!agentId) return;
       if (activeRequestRef.current !== null) return;
       const requestId = ++requestSequenceRef.current;
       const generation = generationRef.current;
@@ -74,7 +73,7 @@ export function useAgentConversationList(
       setError(null);
       try {
         const page = await agentProfileApi.listConversations(
-          { agent_id: agentId, expected_revision: revision },
+          { agent_id: agentId },
           {
             cursor: reset ? undefined : nextCursorRef.current ?? undefined,
             limit: AGENT_CONVERSATION_PAGE_SIZE,
@@ -105,7 +104,7 @@ export function useAgentConversationList(
         }
       }
     },
-    [agentId, revision],
+    [agentId],
   );
 
   const refresh = useCallback(async () => {
@@ -127,14 +126,14 @@ export function useAgentConversationList(
     setSessions([]);
     setHasMore(false);
     setError(null);
-    if (agentId && revision !== undefined && revision > 0) {
+    if (agentId) {
       void loadPage(true);
     }
     return () => {
       generationRef.current += 1;
       activeRequestRef.current = null;
     };
-  }, [agentId, loadPage, revision]);
+  }, [agentId, loadPage]);
 
   const prependSession = useCallback((session: BackendSession) => {
     setSessions((current) => deduplicate([session, ...current]));

@@ -493,14 +493,13 @@ async def list_authorized_agent_conversations(
     tenant_id: str,
     user_id: str,
     agent_id: str,
-    revision: int,
     cursor: tuple[datetime, datetime, str] | None,
     limit: int,
 ) -> list[dict[str, Any]]:
-    """List one principal-owned immutable Agent/revision history page."""
+    """List principal-owned history across revisions of one Agent identity."""
 
     boundary_sql = ""
-    params: list[Any] = [tenant_id, user_id, agent_id, revision]
+    params: list[Any] = [tenant_id, user_id, agent_id]
     if cursor is not None:
         updated_at, created_at, session_id = cursor
         boundary_sql = """
@@ -537,20 +536,10 @@ async def list_authorized_agent_conversations(
          and profile.agent_id = sessions.agent_id
          and profile.revision = sessions.admitted_agent_profile_revision
          and profile.content_hash = sessions.admitted_agent_profile_hash
-        join agent_profiles current_profile
-          on current_profile.tenant_id = sessions.tenant_id
-         and current_profile.agent_id = sessions.agent_id
-         and current_profile.lifecycle_status = 'published'
-        join agents current_agent
-          on current_agent.tenant_id = sessions.tenant_id
-         and current_agent.id = sessions.agent_id
-         and current_agent.agent_type = 'profile'
-         and current_agent.status = 'active'
         {_LEGACY_AGENT_SESSION_TITLE_JOIN_SQL}
         where sessions.tenant_id = %s
           and sessions.user_id = %s
           and sessions.agent_id = %s
-          and sessions.admitted_agent_profile_revision = %s
           and sessions.status = 'active'
           and sessions.purpose = 'conversation'
           {boundary_sql}

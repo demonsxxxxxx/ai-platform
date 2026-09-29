@@ -38,6 +38,7 @@ from app.skills.catalog import (
     AuthorizedSkillCatalogBinding,
     AuthorizedSkillCatalogError,
     load_runtime_authorized_skill_catalog,
+    parse_authorized_skill_catalog_snapshot,
     resolve_authorized_skill_catalog,
 )
 from app.skills.pinning import build_skill_manifest_ref, build_skill_version_manifest_pin
@@ -48,6 +49,53 @@ from app.worker import (
     _reauthorize_worker_capabilities,
     process_run_payload,
 )
+
+
+def test_catalog_parser_uses_shared_run_manifest_closure_limit(monkeypatch):
+    binding = AuthorizedSkillCatalogBinding(
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-a",
+        agent_id="agent-a",
+        selected_skill_id="root",
+    )
+    entry = catalog.AuthorizedSkillCatalogEntry(
+        skill_id="root",
+        name="Root",
+        description="",
+        version="root-v1",
+        status="released",
+        availability=catalog.AVAILABLE,
+        invocation_handle="Skill(root)",
+    )
+    materialized_ids = ("root", "dependency")
+    catalog_sha256 = catalog._snapshot_digest(
+        binding=binding,
+        entries=(entry,),
+        truncated=False,
+        omitted_count=0,
+        materialized_skill_ids=materialized_ids,
+        materialization_sha256="a" * 64,
+    )
+    payload = {
+        "schema_version": catalog.AUTHORIZED_SKILL_CATALOG_SCHEMA_VERSION,
+        "binding": binding.to_payload(),
+        "skills": [entry.to_payload()],
+        "truncated": False,
+        "omitted_count": 0,
+        "materialized_skill_ids": list(materialized_ids),
+        "materialization_sha256": "a" * 64,
+        "catalog_sha256": catalog_sha256,
+    }
+    monkeypatch.setattr(catalog, "MAX_SKILL_RUN_MANIFESTS", 1)
+
+    with pytest.raises(
+        AuthorizedSkillCatalogError,
+        match="authorized_skill_catalog_materialization_invalid",
+    ):
+        parse_authorized_skill_catalog_snapshot(payload, expected_binding=binding)
 
 
 class _DispatchV4PendingAdmissions:
@@ -1131,7 +1179,6 @@ async def test_adapter_catalog_question_stages_no_full_skill_but_prompt_contains
     settings = types.SimpleNamespace(
         platform_skills_root=str(tmp_path / "platform-skills"),
         claude_agent_workspace_root=str(tmp_path / "workspaces"),
-        skill_staging_subdir=".claude/skills",
     )
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: settings)
     primary_manifest = _manifest_from_row(_skill_row("general-chat"))
@@ -1226,7 +1273,6 @@ async def test_adapter_stages_only_routed_skill_and_dependency_closure(
     settings = types.SimpleNamespace(
         platform_skills_root=str(tmp_path / "platform-skills"),
         claude_agent_workspace_root=str(tmp_path / "workspaces"),
-        skill_staging_subdir=".claude/skills",
     )
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: settings)
     selected_manifest = _manifest_from_row(rows[1])
@@ -1318,7 +1364,6 @@ async def test_general_chat_with_empty_authorized_catalog_stages_no_skill(monkey
     settings = types.SimpleNamespace(
         platform_skills_root=str(tmp_path / "platform-skills"),
         claude_agent_workspace_root=str(tmp_path / "workspaces"),
-        skill_staging_subdir=".claude/skills",
     )
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: settings)
     primary_manifest = _manifest_from_row(_skill_row("general-chat"))

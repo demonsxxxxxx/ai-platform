@@ -554,19 +554,15 @@ test("keeps the fixed capability path unchanged without a selected Skill", () =>
   assert.equal("skill_id" in body, false);
 });
 
-test("submits only the exact published Agent profile lock", () => {
+test("submits only the Agent id for current-publication selection", () => {
   const body = buildSubmitChatBody({
     message: "review this request",
     selectedAgentProfile: {
       agent_id: "agt_support",
-      expected_revision: 4,
     },
   });
 
-  assert.deepEqual(body.selected_agent_profile, {
-    agent_id: "agt_support",
-    expected_revision: 4,
-  });
+  assert.deepEqual(body.selected_agent_profile, { agent_id: "agt_support" });
   assert.equal("instructions" in body, false);
   assert.equal("mcp_tool_ids" in body, false);
 });
@@ -592,12 +588,22 @@ test("builds the selector-free Agent App run URL and deduplicated file body", ()
       attachments: [attachment, attachment],
       submissionId: "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
       userTimezone: "Asia/Shanghai",
+      agentOptions: {
+        model_id: "public-model-id",
+        model: "provider/public-model",
+        enable_thinking: "high",
+        selected_skill: "must-not-pass",
+        mcp_tool_ids: "must-not-pass",
+      },
+      thinkingEffort: "high",
     }),
     {
       message: "Review this",
       submission_id: "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
       file_ids: ["file-a"],
-      thinking_effort: "auto",
+      thinking_effort: "high",
+      model_id: "public-model-id",
+      model: "provider/public-model",
       user_timezone: "Asia/Shanghai",
     },
   );
@@ -649,7 +655,11 @@ test("pinned Agent conversations submit only through the dedicated selector-free
     await sessionApi.submitChat(
       "Review this",
       "session-agent",
-      { model_id: "client-override" },
+      {
+        model_id: "client-override",
+        model: "provider/client-model",
+        enable_thinking: "high",
+      },
       [],
       ["client-disabled-skill"],
       ["client-disabled-mcp"],
@@ -657,7 +667,7 @@ test("pinned Agent conversations submit only through the dedicated selector-free
       "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
       "general-agent",
       ["client-mcp"],
-      { agent_id: "agt_support", expected_revision: 7 },
+      { agent_id: "agt_support" },
       "high",
     );
 
@@ -669,6 +679,8 @@ test("pinned Agent conversations submit only through the dedicated selector-free
     assert.equal(calls[0]?.body.submission_id, "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4");
     assert.deepEqual(calls[0]?.body.file_ids, []);
     assert.equal(calls[0]?.body.thinking_effort, "high");
+    assert.equal(calls[0]?.body.model_id, "client-override");
+    assert.equal(calls[0]?.body.model, "provider/client-model");
     for (const forbidden of [
       "agent_options",
       "selected_agent_profile",

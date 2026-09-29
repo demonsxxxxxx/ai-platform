@@ -1065,7 +1065,6 @@ def _executor_environment(
             "Write,Edit,NotebookEdit",
         ),
         "CLAUDE_AGENT_WORKSPACE_ROOT": workspace_container_path,
-        "SKILL_STAGING_SUBDIR": _env_value(settings, "skill_staging_subdir", ".claude/skills"),
         "PUBLIC_SKILL_FILE_OVERLAY_MAX_BYTES": _env_value(
             settings,
             "public_skill_file_overlay_max_bytes",

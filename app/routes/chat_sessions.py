@@ -82,16 +82,13 @@ def _decode_session_cursor(value: str) -> tuple[datetime, datetime, str]:
 )
 async def list_sessions(
     agent_id: Annotated[str | None, Query(min_length=1, max_length=200)] = None,
-    revision: Annotated[int | None, Query(ge=1)] = None,
     cursor: Annotated[str | None, Query(min_length=1, max_length=1000)] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
     principal: AuthPrincipal = Depends(require_principal),  # noqa: B008
 ) -> ChatSessionsResponse:
-    """List generic Sessions or one authorized Agent/revision history page."""
+    """List generic Sessions or owned history for one Agent identity."""
 
-    agent_scope_requested = (
-        agent_id is not None or revision is not None or cursor is not None
-    )
+    agent_scope_requested = agent_id is not None or cursor is not None
     if not agent_scope_requested:
         async with transaction() as conn:
             rows = await conversations_postgres.list_authorized_sessions(
@@ -101,7 +98,7 @@ async def list_sessions(
             )
         return ChatSessionsResponse(sessions=[session_response(row) for row in rows])
 
-    if agent_id is None or revision is None:
+    if agent_id is None:
         raise HTTPException(
             status_code=400, detail="agent_conversation_scope_incomplete"
         )
@@ -118,7 +115,6 @@ async def list_sessions(
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
             agent_id=safe_agent_id,
-            revision=revision,
             cursor=boundary,
             limit=limit + 1,
         )

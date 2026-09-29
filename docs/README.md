@@ -27,6 +27,7 @@ current SHAs, exceptions, and evidence results belong in the issue/PR.
 | Concern | Single detailed owner |
 | --- | --- |
 | Product vocabulary and Expert Agent UX | [Workbench](architecture/expert-agent-service-workbench.md); root [CONTEXT](../CONTEXT.md) |
+| Task autonomy and effects-based execution boundaries | [ADR 0015](adr/0015-agent-autonomy-and-effect-boundaries.md) |
 | Profile revisions, visibility, and publication | [Profile boundary](architecture/agent-profile-persistence-boundary.md) |
 | Conversation authority receipts and engine adaptation | [Conversation context](architecture/agent-conversation-context.md) |
 | Claude native-only transcript and epoch lifecycle | [Provider continuity](architecture/claude-provider-session-continuity.md) |

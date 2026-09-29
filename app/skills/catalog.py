@@ -30,13 +30,14 @@ from app.skills.pinning import (
     build_skill_version_manifest_pin,
     validate_skill_version_dependency_policy,
 )
+from app.skills.application.run_admission import MAX_SKILL_RUN_MANIFESTS
 from app.validation import SAFE_ID_PATTERN
 
 
 AUTHORIZED_SKILL_CATALOG_SCHEMA_VERSION = "ai-platform.authorized-skill-catalog.v1"
 RUNTIME_AUTHORIZED_SKILL_CATALOG_KEY = "_runtime_authorized_skill_catalog"
 RUNTIME_AUTHORIZED_SKILL_MANIFESTS_KEY = "_runtime_authorized_skill_manifests"
-MAX_AUTHORIZED_SKILL_CATALOG_ENTRIES = 64
+MAX_AUTHORIZED_SKILL_CATALOG_ENTRIES = MAX_SKILL_RUN_MANIFESTS
 MAX_AUTHORIZED_SKILL_CATALOG_PROMPT_BYTES = 32 * 1024
 MAX_AUTHORIZED_SKILL_NAME_BYTES = 256
 MAX_AUTHORIZED_SKILL_DESCRIPTION_BYTES = 1024
@@ -343,7 +344,7 @@ def parse_authorized_skill_catalog_snapshot(
     materialization_sha256 = str(value.get("materialization_sha256") or "")
     if (
         not isinstance(raw_materialized_skill_ids, list)
-        or len(raw_materialized_skill_ids) > MAX_AUTHORIZED_SKILL_CATALOG_ENTRIES
+        or len(raw_materialized_skill_ids) > MAX_SKILL_RUN_MANIFESTS
         or any(
             not isinstance(skill_id, str)
             or SAFE_ID_PATTERN.fullmatch(skill_id) is None
@@ -851,6 +852,10 @@ def _selected_materialization_candidates(
         candidate = candidates.get(skill_id)
         if candidate is None:
             return False
+        if len(materialized_ids) >= MAX_SKILL_RUN_MANIFESTS:
+            raise AuthorizedSkillCatalogError(
+                "authorized_skill_catalog_materialization_invalid"
+            )
         manifest, availability = _manifest_for_row(
             candidate.row,
             pinned_by_id=pinned_by_id,

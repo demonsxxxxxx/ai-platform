@@ -282,45 +282,6 @@ def build_skill_version_manifest_pin(skill_version: dict[str, Any]) -> dict[str,
     return _build_skill_version_manifest_pin(skill_version, allowed_kinds={"builtin", "uploaded"})
 
 
-def build_skill_version_dependency_manifest_pins(skill_version: dict[str, Any]) -> list[dict[str, Any]]:
-    dependency_ids = _string_list(skill_version.get("dependency_ids"))
-    if not dependency_ids:
-        return []
-    source = skill_version.get("source")
-    if not isinstance(source, dict):
-        raise _materialization_error()
-    raw_manifests = source.get("dependency_manifests")
-    if not isinstance(raw_manifests, list):
-        raise _materialization_error()
-
-    by_id: dict[str, dict[str, Any]] = {}
-    for raw_manifest in raw_manifests:
-        if not isinstance(raw_manifest, dict):
-            raise _materialization_error()
-        dependency_id = str(raw_manifest.get("skill_id") or "")
-        if not dependency_id or dependency_id in by_id:
-            raise _materialization_error()
-        manifest_source = raw_manifest.get("source")
-        files = raw_manifest.get("files")
-        if not isinstance(manifest_source, dict) or not isinstance(files, list) or not files:
-            raise _materialization_error()
-        by_id[dependency_id] = build_skill_version_manifest_pin(
-            {
-                "skill_id": dependency_id,
-                "version": str(raw_manifest.get("version") or ""),
-                "content_hash": str(raw_manifest.get("content_hash") or ""),
-                "description": str(raw_manifest.get("description") or ""),
-                "source": {**manifest_source, "files": files},
-                "dependency_ids": _string_list(raw_manifest.get("dependency_ids")),
-                "status": "active",
-            }
-        )
-
-    if set(by_id) != set(dependency_ids):
-        raise _materialization_error()
-    return [by_id[dependency_id] for dependency_id in dependency_ids]
-
-
 def validate_skill_version_dependency_policy(
     skill_version: dict[str, Any],
     *,
@@ -341,12 +302,17 @@ def build_skill_version_policy_manifest_pins(
     *,
     available_skill_ids: set[str],
 ) -> list[dict[str, Any]]:
+    """Pin one selected version after validating its declared dependency IDs.
+
+    Current dependency versions are resolved by run admission. Saved package
+    dependency snapshots are not an execution input.
+    """
+
     validate_skill_version_dependency_policy(
         skill_version,
         available_skill_ids=available_skill_ids,
     )
-    primary_pin = build_skill_version_manifest_pin(skill_version)
-    return [primary_pin] + build_skill_version_dependency_manifest_pins(skill_version)
+    return [build_skill_version_manifest_pin(skill_version)]
 
 
 def locked_skill_version(

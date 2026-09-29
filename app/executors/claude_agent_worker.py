@@ -28,6 +28,7 @@ from app.execution_boundary import (
     ExecutionBoundaryDecision,
     decide_execution_boundary,
 )
+from app.executors.claude.capability_policy import _canonical_tool_policy_subjects
 from app.executors.base import (
     ArtifactManifest,
     ExecutorDispatchAccepted,
@@ -119,7 +120,11 @@ async def _emit_public_progress_event(
 
 
 def _capability_completion_decision(
-    plan: CapabilityExecutionPlan, *, binding: dict[str, object], evidence: object
+    plan: CapabilityExecutionPlan,
+    *,
+    binding: dict[str, object],
+    evidence: object,
+    allow_terminal_failure_capabilities: set[tuple[str, str]] | frozenset[tuple[str, str]] = frozenset(),
 ) -> RequiredCapabilityDecision:
     """Validate every observed invocation against the authorized capability set."""
 
@@ -149,6 +154,7 @@ def _capability_completion_decision(
             declarations=[declaration],
             binding=binding,
             evidence=invocation,
+            allow_terminal_failure_capabilities=allow_terminal_failure_capabilities,
         )
         if not decision.allowed:
             return decision
@@ -168,6 +174,20 @@ def _capability_execution_error(
         payload.input.get("_runtime_tool_policy_subjects"),
         available_skill_identities=available_skill_identities,
     )
+    authorized_subjects = _canonical_tool_policy_subjects(
+        payload.input.get("_runtime_tool_policy_subjects")
+    )
+    allowed_terminal_failures = {
+        ("skill", identity)
+        for kind, identity in plan.available
+        if kind == "skill"
+    }
+    allowed_terminal_failures.update(
+        ("mcp", identity)
+        for identity, subject in authorized_subjects.items()
+        if ("mcp", identity) in plan.available
+        and subject.get("write_capable") is False
+    )
     decision = _capability_completion_decision(
         plan,
         binding={
@@ -179,6 +199,7 @@ def _capability_execution_error(
             "attempt_id": payload.attempt_id,
         },
         evidence=evidence,
+        allow_terminal_failure_capabilities=allowed_terminal_failures,
     )
     return None if decision.allowed else decision.reason
 
@@ -809,7 +830,7 @@ class ClaudeAgentWorkerAdapter:
         staged_skill_names = (
             []
             if payload.execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT
-            else SkillStager(settings.skill_staging_subdir).stage_skills(
+            else SkillStager().stage_skills(
                 workspace=resolved_workspace,
                 skills=selected_skills,
             )

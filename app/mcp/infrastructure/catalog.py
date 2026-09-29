@@ -19,6 +19,7 @@ from app.mcp.domain.tool_references import MCP_PUBLIC_TOOL_NAME_PATTERN
 
 
 MCP_DISCOVERY_PAGE_LIMIT = 100
+MCP_TOOL_DESCRIPTION_MAX_LENGTH = 2048
 MCP_PROTOCOL_VERSION = "2025-03-26"
 MCP_TOOL_ANNOTATION_READ_ONLY = "read_only"
 MCP_TOOL_ANNOTATION_WRITE_CAPABLE = "write_capable"
@@ -257,7 +258,7 @@ def _canonical_live_definition(raw: Any) -> dict[str, Any]:
     description = raw.get("description")
     if description is None:
         description = ""
-    if not isinstance(description, str) or len(description) > 2048:
+    if not isinstance(description, str):
         raise McpToolDiscoveryError("protocol_error")
     input_schema = raw.get("inputSchema")
     if input_schema is not None and not isinstance(input_schema, dict):
@@ -267,7 +268,7 @@ def _canonical_live_definition(raw: Any) -> dict[str, Any]:
         raise McpToolDiscoveryError("protocol_error")
     return {
         "name": remote_name,
-        "description": description,
+        "description": description[:MCP_TOOL_DESCRIPTION_MAX_LENGTH],
         "inputSchema": dict(input_schema or {}),
         "annotations": dict(annotations or {}),
     }

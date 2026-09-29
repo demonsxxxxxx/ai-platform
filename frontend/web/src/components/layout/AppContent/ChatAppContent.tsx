@@ -89,8 +89,8 @@ function conversationState(
 const AGENT_CONVERSATION_OPERATION_STORAGE_PREFIX = "agent-conversation-operation:";
 const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-function agentConversationOperationStorageKey(agentId: string, revision: number): string {
-  return `${AGENT_CONVERSATION_OPERATION_STORAGE_PREFIX}${agentId}:${revision}`;
+function agentConversationOperationStorageKey(agentId: string): string {
+  return `${AGENT_CONVERSATION_OPERATION_STORAGE_PREFIX}${agentId}`;
 }
 
 function browserSessionStorage(): Storage | null {
@@ -105,16 +105,14 @@ function browserSessionStorage(): Storage | null {
 /** Keep a caller operation stable across response-loss retries and reloads. */
 export function getOrCreateAgentConversationOperationId({
   agentId,
-  revision,
   storage,
   createId,
 }: {
   agentId: string;
-  revision: number;
   storage: Pick<Storage, "getItem" | "setItem"> | null;
   createId: () => string;
 }): string | null {
-  const key = agentConversationOperationStorageKey(agentId, revision);
+  const key = agentConversationOperationStorageKey(agentId);
   if (!storage) return null;
   try {
     const existing = storage.getItem(key);
@@ -130,16 +128,14 @@ export function getOrCreateAgentConversationOperationId({
 
 export function clearAgentConversationOperationId({
   agentId,
-  revision,
   storage,
 }: {
   agentId: string;
-  revision: number;
   storage: Pick<Storage, "removeItem"> | null;
 }): void {
   if (!storage) return;
   try {
-    storage.removeItem(agentConversationOperationStorageKey(agentId, revision));
+    storage.removeItem(agentConversationOperationStorageKey(agentId));
   } catch {
     // Session reset remains best-effort when browser storage is unavailable.
   }
@@ -166,7 +162,7 @@ export async function ensureAgentConversationForFirstSend({
   bindConversation,
 }: {
   coordinator: AgentFirstSendCoordinator;
-  profile: Pick<AgentProfilePublicProjection, "agent_id" | "expected_revision">;
+  profile: Pick<AgentProfilePublicProjection, "agent_id">;
   createConversation: () => ReturnType<typeof agentProfileApi.createConversation>;
   isCurrent?: () => boolean;
   onConversationCreated?: (sessionId: string) => void;
@@ -180,8 +176,7 @@ export async function ensureAgentConversationForFirstSend({
         !created.session_id ||
         created.agent_id !== profile.agent_id ||
         !identity ||
-        identity.agent_id !== profile.agent_id ||
-        identity.revision !== profile.expected_revision
+        identity.agent_id !== profile.agent_id
       ) {
         throw new Error("agent_workspace_identity_mismatch");
       }
@@ -275,15 +270,12 @@ export function exposeGenericChatControl<T>(
 }
 
 interface AgentWorkspaceBindingInput {
-  agentWorkspace?: Pick<
-    AgentProfilePublicProjection,
-    "agent_id" | "expected_revision"
-  >;
+  agentWorkspace?: Pick<AgentProfilePublicProjection, "agent_id">;
   state: AgentConversationRecoveryState;
   sessionId: string | null | undefined;
 }
 
-/** Accept Agent transcript data only after its Session and immutable revision agree. */
+/** Accept Agent transcript data only after its Session and Agent identity agree. */
 export function isExactAgentWorkspaceBinding({
   agentWorkspace,
   state,
@@ -297,8 +289,7 @@ export function isExactAgentWorkspaceBinding({
     sessionId &&
       state.phase === "bound" &&
       state.targetSessionId === sessionId &&
-      state.identity?.agent_id === agentWorkspace.agent_id &&
-      state.identity.revision === agentWorkspace.expected_revision,
+      state.identity?.agent_id === agentWorkspace.agent_id,
   );
 }
 
@@ -316,7 +307,7 @@ export function getChatToolAccess({
   phase,
   sessionId,
 }: {
-  agentWorkspace?: Pick<AgentProfilePublicProjection, "agent_id" | "expected_revision">;
+  agentWorkspace?: Pick<AgentProfilePublicProjection, "agent_id">;
   phase: AgentConversationRecoveryPhase;
   sessionId: string | null;
 }): { enabled: boolean; sessionId: string | null } {
@@ -516,7 +507,7 @@ export function ChatAppContent({
     ? routeSessionId ?? null
     : routeSessionId ?? sessionId;
   const conversationIdentityKey = agentWorkspace
-    ? `${agentWorkspace.agent_id}:${agentWorkspace.expected_revision}:${routeSessionId ?? ""}`
+    ? `${agentWorkspace.agent_id}:${routeSessionId ?? ""}`
     : `generic:${routeSessionId ?? ""}`;
   const agentWorkspaceSelectionRequestIdRef = useRef(0);
 
@@ -562,10 +553,9 @@ export function ChatAppContent({
         if (
           agentWorkspace &&
           (!identity ||
-            identity.agent_id !== agentWorkspace.agent_id ||
-            identity.revision !== agentWorkspace.expected_revision)
+            identity.agent_id !== agentWorkspace.agent_id)
         ) {
-          throw new Error("agent_workspace_revision_mismatch");
+          throw new Error("agent_workspace_identity_mismatch");
         }
         setAgentConversationState(
           conversationState(
@@ -579,7 +569,6 @@ export function ChatAppContent({
             buildAgentMarketWorkspacePath(
               {
                 agent_id: identity.agent_id,
-                expected_revision: identity.revision,
               },
               agentConversationTargetSessionId,
             ),
@@ -1014,7 +1003,6 @@ export function ChatAppContent({
     if (agentWorkspace) {
       clearAgentConversationOperationId({
         agentId: agentWorkspace.agent_id,
-        revision: agentWorkspace.expected_revision,
         storage: browserSessionStorage(),
       });
       invalidateAgentWorkspaceFirstSend();
@@ -1072,12 +1060,11 @@ export function ChatAppContent({
       }
       const startProfile = agentWorkspaceStartProfile;
       if (agentWorkspaceReadOnly || !startProfile) {
-        setAgentWorkspaceError("该专家已下架，历史会话仅供查看。");
+        setAgentWorkspaceError("该专家已撤回或当前账号无权使用，历史会话仅供查看。");
         return { status: "failed" };
       }
       if (
-        startProfile.agent_id !== agentWorkspace.agent_id ||
-        startProfile.expected_revision !== agentWorkspace.expected_revision
+        startProfile.agent_id !== agentWorkspace.agent_id
       ) {
         navigate(
           buildAgentMarketWorkspacePath(startProfile),
@@ -1104,7 +1091,6 @@ export function ChatAppContent({
               createConversation: () => {
                 const operationId = getOrCreateAgentConversationOperationId({
                   agentId: startProfile.agent_id,
-                  revision: startProfile.expected_revision,
                   storage: browserSessionStorage(),
                   createId: uuid,
                 });
@@ -1116,7 +1102,6 @@ export function ChatAppContent({
                 return agentProfileApi.createConversation(
                   {
                     agent_id: startProfile.agent_id,
-                    expected_revision: startProfile.expected_revision,
                   },
                   operationId,
                 );
@@ -1124,7 +1109,7 @@ export function ChatAppContent({
               isCurrent: isCurrentFirstSend,
               onConversationCreated: (createdSessionId) => {
                 agentWorkspaceDraftHandoffIdentityRef.current =
-                  `${startProfile.agent_id}:${startProfile.expected_revision}:${createdSessionId}`;
+                  `${startProfile.agent_id}:${createdSessionId}`;
                 setAgentWorkspaceDraftHandoffKey(createdSessionId);
               },
               bindConversation: async (createdSessionId) =>
@@ -1142,7 +1127,6 @@ export function ChatAppContent({
         if (outcome.status === "accepted") {
           clearAgentConversationOperationId({
             agentId: startProfile.agent_id,
-            revision: startProfile.expected_revision,
             storage: browserSessionStorage(),
           });
         }
@@ -1162,8 +1146,8 @@ export function ChatAppContent({
             ? "浏览器无法安全保存本次创建标识，请启用会话存储后重试。"
             : status === 403
               ? "当前账号无权使用该专家。"
-              : status === 404 || status === 409
-                ? "该专家已不可用或发布版本已更新，请返回市场重新选择。"
+            : status === 404 || status === 409
+                ? "该专家已撤回或当前版本不可用，请返回市场重新选择。"
                 : "暂时无法创建专家对话，请稍后重试。",
         );
         return { status: "failed" };
@@ -1204,10 +1188,9 @@ export function ChatAppContent({
           }
           if (
             !identity ||
-            identity.agent_id !== agentWorkspace.agent_id ||
-            identity.revision !== agentWorkspace.expected_revision
+            identity.agent_id !== agentWorkspace.agent_id
           ) {
-            throw new Error("agent_workspace_revision_mismatch");
+            throw new Error("agent_workspace_identity_mismatch");
           }
           setAgentConversationState(conversationState("bound", id, identity));
           await handleSelectSession(id);
@@ -1219,7 +1202,7 @@ export function ChatAppContent({
           }
           setAgentConversationState(conversationState("blocked", id));
           navigate(agentWorkspaceDetailPath, { replace: true });
-          toast.error("该历史对话不属于当前发布版本，请从左侧选择其他对话。");
+          toast.error("该历史对话不属于当前专家，请从左侧选择其他对话。");
           return;
         }
       }
@@ -1352,6 +1335,16 @@ export function ChatAppContent({
             data-agent-conversation-loading
           >
             正在校验会话身份…
+          </div>
+        ) : null}
+        {agentWorkspace && agentWorkspaceReadOnly ? (
+          <div
+            aria-live="polite"
+            className="border-b border-[var(--theme-warning-ring)] bg-[var(--theme-warning-soft)] px-4 py-3 text-center text-sm text-[var(--theme-warning)]"
+            data-agent-workspace-readonly
+            role="status"
+          >
+            该专家已撤回或当前账号无权使用，此历史会话只读。
           </div>
         ) : null}
         {failureGuidance ? (

@@ -1,3 +1,4 @@
+from tests.support.skill_admission import admitted_skill
 import app.runs.infrastructure.replay_postgres as _repo_app_runs_infrastructure_replay_postgres
 import app.agent_apps.infrastructure.catalog_postgres as _owner_agent_apps_infrastructure_catalog_postgres
 import app.context.infrastructure.snapshot_postgres as _owner_context_infrastructure_snapshot_postgres
@@ -14,7 +15,6 @@ import app.runs.infrastructure.replay_postgres as _owner_runs_infrastructure_rep
 import app.skills.infrastructure.run_snapshots_postgres as _owner_skills_infrastructure_run_snapshots_postgres
 from app.skills.application.run_admission import SkillRunAdmissionService as _owner_skills_application_run_admission
 from app.bootstrap.skills import configure_skill_services
-from app.skills.api import admit_skill_run
 import app.streaming.infrastructure.run_events_postgres as _owner_streaming_infrastructure_run_events_postgres
 from contextlib import asynccontextmanager
 import asyncio
@@ -81,7 +81,7 @@ from app.routes.runs import (
 )
 from app.routes.sandbox_leases import create_sandbox_lease
 from app.skills.registry import BuiltinSkill
-_ORIGINAL_SKILL_RUN_MATERIALIZER = _owner_skills_application_run_admission._materialize_manifest_pins
+_ORIGINAL_SKILL_RUN_ADMISSION = _owner_skills_application_run_admission.admit
 
 
 RUN_SCHEMA_FIELDS = {
@@ -475,10 +475,6 @@ def uploaded_skill_version_row(
     dependency_ids=None,
     dependency_manifests=None,
 ):
-    if skill_id == "qa-file-reviewer" and dependency_ids is None:
-        dependency_ids = ["minimax-docx"]
-    if skill_id == "qa-file-reviewer" and dependency_manifests is None:
-        dependency_manifests = [snapshot_manifest("minimax-docx", description="Pinned DOCX helper")]
     source = {
         "kind": "uploaded",
         "storage_key": f"tenants/tenant-a/skills/{skill_id}/versions/{version}/package.zip",
@@ -553,19 +549,20 @@ class PolicyBuiltinRegistry:
 @pytest.fixture(autouse=True)
 def default_route_skill_materialization(monkeypatch):
     configure_skill_services()
-    async def materialize_skill_manifests(_service,
-        _conn,
-        *,
-        skill_id,
-        input_payload,
-        release_policy_version,
-    ):
-        del input_payload, release_policy_version
-        return [snapshot_manifest(skill_id)]
+    async def current_dependency_catalog(*_args, **kwargs):
+        return [{"skill_id": skill_id, "version": snapshot_manifest(skill_id)["version"],
+                 "expected_version": snapshot_manifest(skill_id)["version"], "dependency_ids": [],
+                 "status": "active", "lifecycle_status": "active", "version_status": "active",
+                 "visible_to_user": True, "department_ids": [], "allowed_roles": []}
+                for skill_id in kwargs["skill_ids"]]
+    monkeypatch.setattr("app.skills.infrastructure.catalog_postgres.list_public_skill_catalog", current_dependency_catalog)
+
+    async def materialize_skill_manifests(_service, _conn, *, skill, skill_id, tenant_id, rollout_key, **_kwargs):
+        return admitted_skill(skill, tenant_id, rollout_key, [snapshot_manifest(skill_id)])
 
     monkeypatch.setattr(
         _owner_skills_application_run_admission,
-        "_materialize_manifest_pins",
+        "admit",
         materialize_skill_manifests,
     )
 
@@ -588,38 +585,6 @@ def default_route_skill_materialization(monkeypatch):
     )
 
 
-@pytest.mark.asyncio
-async def test_skill_run_admission_uses_stored_dependency_snapshots_for_release_policy(monkeypatch):
-    pinned_dependency = snapshot_manifest("minimax-docx", description="Pinned DOCX helper")
-
-    async def fake_get_effective_skill_version_for_policy(conn, *, skill_id, version):
-        assert skill_id == "qa-file-reviewer"
-        assert version == "hash-current"
-        return builtin_snapshot_skill_version_row(
-            skill_id=skill_id,
-            version=version,
-            dependency_ids=["minimax-docx"],
-            dependency_manifests=[pinned_dependency],
-        )
-
-    monkeypatch.setattr(
-        'app.skills.infrastructure.versions_postgres.get_effective_skill_version_for_policy',
-        fake_get_effective_skill_version_for_policy,
-    )
-    monkeypatch.setattr(_owner_skills_application_run_admission, "_materialize_manifest_pins", _ORIGINAL_SKILL_RUN_MATERIALIZER)
-
-    admission = await admit_skill_run(
-        object(),
-        skill={"skill_version": "hash-current", "release_policy_version": "hash-current"},
-        skill_id="qa-file-reviewer",
-        input_payload={},
-        tenant_id="tenant-a",
-        rollout_key="user-a",
-    )
-    pins = admission.skill_manifests
-
-    assert [item["skill_id"] for item in pins] == ["qa-file-reviewer", "minimax-docx"]
-    assert pins[1]["content_hash"] == pinned_dependency["content_hash"]
 
 
 def test_progress_for_status_is_stable_for_frontend_polling():
@@ -4908,7 +4873,7 @@ async def test_create_run_queues_skillless_harness_without_skill_authority(monke
     monkeypatch.setattr(_owner_runs_infrastructure_capability_admission_postgres, 'authorize_run_capabilities', fail_skill_path)
     monkeypatch.setattr(_owner_runs_infrastructure_capability_admission_postgres, 'authorize_selected_run_capabilities', fail_skill_path)
     monkeypatch.setattr(_owner_skills_infrastructure_run_snapshots_postgres, 'insert_run_skill_snapshots_at_creation', fail_skill_path)
-    monkeypatch.setattr(_owner_skills_application_run_admission, "_materialize_manifest_pins", fail_skill_path)
+    monkeypatch.setattr(_owner_skills_application_run_admission, "admit", fail_skill_path)
     monkeypatch.setattr(_owner_identity_infrastructure_postgres, 'ensure_user', noop)
     monkeypatch.setattr(_owner_conversations_infrastructure_postgres, 'create_session', fake_create_session)
     monkeypatch.setattr(_owner_runs_infrastructure_creation_postgres, 'create_run', fake_create_run)
@@ -5187,7 +5152,7 @@ async def test_prepare_copied_direct_ragflow_without_explicit_selector_uses_unif
         raise AssertionError("direct ragflow denial must precede queue preparation")
 
     monkeypatch.setattr(_owner_runs_infrastructure_capability_admission_postgres, 'authorize_replay_run_capabilities', deny)
-    monkeypatch.setattr(_owner_skills_application_run_admission, "_materialize_manifest_pins", fail_manifest)
+    monkeypatch.setattr(_owner_skills_application_run_admission, "admit", fail_manifest)
 
     with pytest.raises(_owner_platform_postgres_errors.RepositoryAuthorizationError, match="capability_not_authorized"):
         await runs_module.prepare_copied_run_for_queue(
@@ -5880,11 +5845,9 @@ async def test_create_run_uses_primary_pin_hash_as_locked_skill_version(monkeypa
         calls["queue"] = payload
         return 1
 
-    async def fake_materialize_skill_manifests(_service,
-        _conn, *, skill_id, input_payload, release_policy_version
-    ):
+    async def fake_materialize_skill_manifests(_service, _conn, *, skill, skill_id, tenant_id, rollout_key, **_kwargs):
         assert skill_id == "qa-file-reviewer"
-        return [
+        return admitted_skill(skill, tenant_id, rollout_key, [
             {
                 "skill_id": "qa-file-reviewer",
                 "version": "hash-pin",
@@ -5898,9 +5861,9 @@ async def test_create_run_uses_primary_pin_hash_as_locked_skill_version(monkeypa
                 "staged": False,
                 "used": False,
             }
-        ]
+        ])
 
-    monkeypatch.setattr(_owner_skills_application_run_admission, "_materialize_manifest_pins", fake_materialize_skill_manifests)
+    monkeypatch.setattr(_owner_skills_application_run_admission, "admit", fake_materialize_skill_manifests)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
     monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', noop)
@@ -5981,7 +5944,7 @@ async def test_create_run_uses_rollout_selected_previous_version(monkeypatch):
         'app.skills.infrastructure.versions_postgres.get_effective_skill_version_for_policy',
         fake_get_effective_skill_version_for_policy,
     )
-    monkeypatch.setattr(_owner_skills_application_run_admission, "_materialize_manifest_pins", _ORIGINAL_SKILL_RUN_MATERIALIZER)
+    monkeypatch.setattr(_owner_skills_application_run_admission, "admit", _ORIGINAL_SKILL_RUN_ADMISSION)
     monkeypatch.setattr("app.routes.runs.enqueue_run", fake_enqueue_run)
 
     response = await create_run(
@@ -6046,7 +6009,7 @@ async def test_create_run_rejects_reviewed_rollout_previous_version(monkeypatch)
         'app.skills.infrastructure.versions_postgres.get_effective_skill_version_for_policy',
         fake_get_effective_skill_version_for_policy,
     )
-    monkeypatch.setattr(_owner_skills_application_run_admission, "_materialize_manifest_pins", _ORIGINAL_SKILL_RUN_MATERIALIZER)
+    monkeypatch.setattr(_owner_skills_application_run_admission, "admit", _ORIGINAL_SKILL_RUN_ADMISSION)
     monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', noop)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', noop)
     monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fail_create_run)
@@ -6088,7 +6051,7 @@ async def test_create_run_rejects_release_policy_version_that_differs_from_prima
         'app.skills.infrastructure.versions_postgres.get_effective_skill_version_for_policy',
         fake_get_effective_skill_version_for_policy,
     )
-    monkeypatch.setattr(_owner_skills_application_run_admission, "_materialize_manifest_pins", _ORIGINAL_SKILL_RUN_MATERIALIZER)
+    monkeypatch.setattr(_owner_skills_application_run_admission, "admit", _ORIGINAL_SKILL_RUN_ADMISSION)
 
     with pytest.raises(Exception) as exc_info:
         await create_run(
@@ -6139,6 +6102,8 @@ async def test_create_run_producer_contract_persists_uploaded_release_policy_man
         )
 
     async def fake_get_effective_skill_version_for_policy(conn, *, skill_id, version):
+        if skill_id == "minimax-docx":
+            return uploaded_skill_version_row(skill_id, snapshot_manifest(skill_id)["version"], dependency_ids=[])
         assert skill_id == "qa-file-reviewer"
         assert version == "hash-uploaded"
         return uploaded_skill_version_row(
@@ -6171,7 +6136,7 @@ async def test_create_run_producer_contract_persists_uploaded_release_policy_man
         'app.skills.infrastructure.versions_postgres.get_effective_skill_version_for_policy',
         fake_get_effective_skill_version_for_policy,
     )
-    monkeypatch.setattr(_owner_skills_application_run_admission, "_materialize_manifest_pins", _ORIGINAL_SKILL_RUN_MATERIALIZER)
+    monkeypatch.setattr(_owner_skills_application_run_admission, "admit", _ORIGINAL_SKILL_RUN_ADMISSION)
     monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', noop)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', fake_create_session)
     monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fake_create_run)
@@ -6198,7 +6163,8 @@ async def test_create_run_producer_contract_persists_uploaded_release_policy_man
         "ai-platform.skill-materialization-ref.v1"
     )
     assert "files" not in calls["queue"]["skill_manifests"][0]
-    assert calls["queue"]["skill_manifests"][1]["content_hash"] == pinned_dependency_manifest["content_hash"]
+    assert calls["queue"]["skill_manifests"][1]["content_hash"] == snapshot_manifest("minimax-docx")["content_hash"]
+    assert calls["queue"]["skill_manifests"][1]["content_hash"] != pinned_dependency_manifest["content_hash"]
     assert "files" not in calls["queue"]["skill_manifests"][1]
     assert any(event["payload"]["skill_version"] == "hash-uploaded" for event in calls["events"])
     persisted_non_identity_snapshot = {
@@ -6240,6 +6206,8 @@ async def test_create_run_uses_builtin_snapshot_release_policy_manifest(monkeypa
 
 
     async def fake_get_effective_skill_version_for_policy(conn, *, skill_id, version):
+        if skill_id == "minimax-docx":
+            return uploaded_skill_version_row(skill_id, snapshot_manifest(skill_id)["version"], dependency_ids=[])
         assert version == "hash-old-builtin"
         return builtin_snapshot_skill_version_row(
             skill_id=skill_id,
@@ -6271,7 +6239,7 @@ async def test_create_run_uses_builtin_snapshot_release_policy_manifest(monkeypa
         'app.skills.infrastructure.versions_postgres.get_effective_skill_version_for_policy',
         fake_get_effective_skill_version_for_policy,
     )
-    monkeypatch.setattr(_owner_skills_application_run_admission, "_materialize_manifest_pins", _ORIGINAL_SKILL_RUN_MATERIALIZER)
+    monkeypatch.setattr(_owner_skills_application_run_admission, "admit", _ORIGINAL_SKILL_RUN_ADMISSION)
     monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', noop)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', fake_create_session)
     monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fake_create_run)
@@ -6305,8 +6273,8 @@ async def test_create_run_prevalidates_queue_payload_before_persisting(monkeypat
     async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
         return skill(executor_type="claude-agent-worker", skill_version="hash-primary")
 
-    async def fake_materialize_governed_skill_manifests(_service, conn, *, skill_id, input_payload, release_policy_version):
-        return [
+    async def fake_materialize_governed_skill_manifests(_service, _conn, *, skill, skill_id, tenant_id, rollout_key, **_kwargs):
+        return admitted_skill(skill, tenant_id, rollout_key, [
             {
                 "skill_id": skill_id,
                 "version": "hash-primary",
@@ -6317,7 +6285,7 @@ async def test_create_run_prevalidates_queue_payload_before_persisting(monkeypat
                 ],
                 "dependency_ids": [],
             }
-        ]
+        ])
 
     async def noop(*args, **kwargs):
         return None
@@ -6345,7 +6313,7 @@ async def test_create_run_prevalidates_queue_payload_before_persisting(monkeypat
 
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
-    monkeypatch.setattr("app.skills.application.run_admission.SkillRunAdmissionService._materialize_manifest_pins", fake_materialize_governed_skill_manifests)
+    monkeypatch.setattr("app.skills.application.run_admission.SkillRunAdmissionService.admit", fake_materialize_governed_skill_manifests)
     monkeypatch.setattr('app.identity.infrastructure.postgres.ensure_user', noop)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.create_session', fake_create_session)
     monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fail_create_run)
@@ -6427,7 +6395,7 @@ async def test_create_run_rejects_uploaded_release_policy_without_snapshot_files
         'app.skills.infrastructure.versions_postgres.get_effective_skill_version_for_policy',
         fake_get_effective_skill_version_for_policy,
     )
-    monkeypatch.setattr(_owner_skills_application_run_admission, "_materialize_manifest_pins", _ORIGINAL_SKILL_RUN_MATERIALIZER)
+    monkeypatch.setattr(_owner_skills_application_run_admission, "admit", _ORIGINAL_SKILL_RUN_ADMISSION)
     monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fail_create_run)
 
     with pytest.raises(Exception) as exc_info:
@@ -6463,7 +6431,7 @@ async def test_create_run_maps_skill_snapshot_materialization_error_to_conflict(
         'app.skills.infrastructure.versions_postgres.get_effective_skill_version_for_policy',
         fake_get_effective_skill_version_for_policy,
     )
-    monkeypatch.setattr(_owner_skills_application_run_admission, "_materialize_manifest_pins", _ORIGINAL_SKILL_RUN_MATERIALIZER)
+    monkeypatch.setattr(_owner_skills_application_run_admission, "admit", _ORIGINAL_SKILL_RUN_ADMISSION)
 
     with pytest.raises(Exception) as exc_info:
         await create_run(
@@ -6488,10 +6456,8 @@ async def test_create_run_rejects_invalid_snapshot_governance_manifest_as_materi
     async def fail_create_run(*args, **kwargs):
         raise AssertionError("run must not be created when snapshot governance cannot be materialized")
 
-    async def fake_materialize_skill_manifests(_service,
-        _conn, *, skill_id, input_payload, release_policy_version
-    ):
-        return [
+    async def fake_materialize_skill_manifests(_service, _conn, *, skill, skill_id, tenant_id, rollout_key, **_kwargs):
+        return admitted_skill(skill, tenant_id, rollout_key, [
             {
                 "skill_id": skill_id,
                 "version": "hash-pin",
@@ -6503,9 +6469,9 @@ async def test_create_run_rejects_invalid_snapshot_governance_manifest_as_materi
                 "staged": False,
                 "used": False,
             }
-        ]
+        ])
 
-    monkeypatch.setattr(_owner_skills_application_run_admission, "_materialize_manifest_pins", fake_materialize_skill_manifests)
+    monkeypatch.setattr(_owner_skills_application_run_admission, "admit", fake_materialize_skill_manifests)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
     monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fail_create_run)
@@ -6755,12 +6721,10 @@ async def test_copy_run_ignores_unsafe_source_run_id_for_followup_context(monkey
     async def fake_queue_insight_for_status(status, tenant_id, **_kwargs):
         return {"status": status, "tenant_id": tenant_id}
 
-    async def fake_materialize_skill_manifests(_service,
-        _conn, *, skill_id, input_payload, release_policy_version
-    ):
-        return [{"skill_id": skill_id, "content_hash": "hash-pin"}]
+    async def fake_materialize_skill_manifests(_service, _conn, *, skill, skill_id, tenant_id, rollout_key, **_kwargs):
+        return admitted_skill(skill, tenant_id, rollout_key, [{"skill_id": skill_id, "content_hash": "hash-pin"}])
 
-    monkeypatch.setattr(_owner_skills_application_run_admission, "_materialize_manifest_pins", fake_materialize_skill_manifests)
+    monkeypatch.setattr(_owner_skills_application_run_admission, "admit", fake_materialize_skill_manifests)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr('app.runs.infrastructure.replay_postgres.copy_run_as_new_task', fake_copy_run_as_new_task)
     monkeypatch.setattr(
@@ -6831,12 +6795,10 @@ async def test_copy_run_uses_authorized_route_source_when_copied_input_lacks_sou
     async def fake_queue_insight_for_status(status, tenant_id, **_kwargs):
         return {"status": status, "tenant_id": tenant_id}
 
-    async def fake_materialize_skill_manifests(_service,
-        _conn, *, skill_id, input_payload, release_policy_version
-    ):
-        return [{"skill_id": skill_id, "content_hash": "hash-pin"}]
+    async def fake_materialize_skill_manifests(_service, _conn, *, skill, skill_id, tenant_id, rollout_key, **_kwargs):
+        return admitted_skill(skill, tenant_id, rollout_key, [{"skill_id": skill_id, "content_hash": "hash-pin"}])
 
-    monkeypatch.setattr(_owner_skills_application_run_admission, "_materialize_manifest_pins", fake_materialize_skill_manifests)
+    monkeypatch.setattr(_owner_skills_application_run_admission, "admit", fake_materialize_skill_manifests)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr('app.runs.infrastructure.replay_postgres.copy_run_as_new_task', fake_copy_run_as_new_task)
     monkeypatch.setattr(
@@ -6906,12 +6868,10 @@ async def test_copy_run_prefers_authorized_route_source_over_payload_source_id(m
     async def fake_queue_insight_for_status(status, tenant_id, **_kwargs):
         return {"status": status, "tenant_id": tenant_id}
 
-    async def fake_materialize_skill_manifests(_service,
-        _conn, *, skill_id, input_payload, release_policy_version
-    ):
-        return [{"skill_id": skill_id, "content_hash": "hash-pin"}]
+    async def fake_materialize_skill_manifests(_service, _conn, *, skill, skill_id, tenant_id, rollout_key, **_kwargs):
+        return admitted_skill(skill, tenant_id, rollout_key, [{"skill_id": skill_id, "content_hash": "hash-pin"}])
 
-    monkeypatch.setattr(_owner_skills_application_run_admission, "_materialize_manifest_pins", fake_materialize_skill_manifests)
+    monkeypatch.setattr(_owner_skills_application_run_admission, "admit", fake_materialize_skill_manifests)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr('app.runs.infrastructure.replay_postgres.copy_run_as_new_task', fake_copy_run_as_new_task)
     monkeypatch.setattr(
@@ -6962,12 +6922,10 @@ async def test_copy_run_validates_queue_payload_before_snapshot_update(monkeypat
     async def fake_append_event(conn, **kwargs):
         calls.setdefault("events", []).append(kwargs)
 
-    async def fake_materialize_skill_manifests(_service,
-        _conn, *, skill_id, input_payload, release_policy_version
-    ):
-        return [{"skill_id": skill_id, "content_hash": "hash-pin"}]
+    async def fake_materialize_skill_manifests(_service, _conn, *, skill, skill_id, tenant_id, rollout_key, **_kwargs):
+        return admitted_skill(skill, tenant_id, rollout_key, [{"skill_id": skill_id, "content_hash": "hash-pin"}])
 
-    monkeypatch.setattr(_owner_skills_application_run_admission, "_materialize_manifest_pins", fake_materialize_skill_manifests)
+    monkeypatch.setattr(_owner_skills_application_run_admission, "admit", fake_materialize_skill_manifests)
     class RejectingQueueRunPayload:
         @classmethod
         def model_validate(cls, payload):
@@ -7089,7 +7047,7 @@ async def test_copy_run_uses_uploaded_release_policy_manifest(monkeypatch):
         'app.skills.infrastructure.versions_postgres.get_effective_skill_version_for_policy',
         fake_get_effective_skill_version_for_policy,
     )
-    monkeypatch.setattr(_owner_skills_application_run_admission, "_materialize_manifest_pins", _ORIGINAL_SKILL_RUN_MATERIALIZER)
+    monkeypatch.setattr(_owner_skills_application_run_admission, "admit", _ORIGINAL_SKILL_RUN_ADMISSION)
     monkeypatch.setattr(
         'app.runs.infrastructure.replay_postgres.update_run_input_execution_snapshot',
         fake_update_run_input_execution_snapshot,

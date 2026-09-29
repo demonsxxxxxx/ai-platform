@@ -3083,9 +3083,7 @@ async def test_sdk_available_external_mcp_streams_without_forced_prompt_or_hooks
         captured
     )
     assert set(captured["mcp_servers"]) == {"tenant__server", "other-server"}
-    assert {subject["identity"] for subject in subjects}.issubset(
-        captured["allowed_tools"]
-    )
+    assert {"mcp__tenant_server__search", "mcp__other-server__fetch"}.issubset(captured["allowed_tools"])
 
 
 @pytest.mark.asyncio
@@ -3207,6 +3205,7 @@ async def test_sdk_completed_mcp_keeps_receipt_error_on_late_publication_failure
 ):
     captured = {}
     subject = _subject()
+    subject["write_capable"] = True
 
     async def acknowledge_candidates(candidates):
         event_types = {event.event_type for event in candidates}
@@ -3394,7 +3393,7 @@ async def test_sdk_registers_only_exact_authorized_external_mcp_subjects(
 
     assert result.error is None
     assert set(captured["mcp_servers"]) == {"tenant__server"}
-    assert valid["identity"] in captured["allowed_tools"]
+    assert "mcp__tenant_server__search" in captured["allowed_tools"]
     assert denied["identity"] not in captured["allowed_tools"]
     assert malformed["identity"] not in captured["allowed_tools"]
 
@@ -3454,8 +3453,9 @@ def _actual_mcp_steps(outcome, subjects, text, probe):
         "multiple_failed",
     ],
 )
+@pytest.mark.parametrize("write_capable", [False, True])
 async def test_sdk_actual_mcp_streams_public_text_without_waiting_for_receipt(
-    monkeypatch, tmp_path, outcome
+    monkeypatch, tmp_path, outcome, write_capable
 ):
     captured, acknowledged, deltas, sealed_probe = {}, [], [], []
     first = _subject()
@@ -3467,6 +3467,8 @@ async def test_sdk_actual_mcp_streams_public_text_without_waiting_for_receipt(
             endpoint="https://other.private.example/mcp",
         ),
     ]
+    for subject in subjects:
+        subject["write_capable"] = write_capable
     private_text = f"Safe answer via {first['identity']} with mcp-call-1 at {first['mcp_server_config']['url']}."
     text = (
         "x " * 131_072
@@ -3510,7 +3512,7 @@ async def test_sdk_actual_mcp_streams_public_text_without_waiting_for_receipt(
     else:
         assert sealed_probe
         assert deltas[: len(sealed_probe)] == sealed_probe
-    if outcome in {"success", "multiple_completed"}:
+    if outcome in {"success", "multiple_completed"} or (not write_capable and outcome in {"failed", "multiple_failed"}):
         assert result.error is None
         assert result.message
         assert "".join(deltas) == result.message
@@ -3544,6 +3546,8 @@ async def test_sdk_actual_mcp_streams_public_text_without_waiting_for_receipt(
             "duplicate": "mcp_execution_succeeded_receipt_incomplete",
             "multiple_failed": "mcp_execution_outcome_unknown",
         }.get(outcome, "required_tool_completion_evidence_mismatch")
+        if not write_capable and outcome in {"false", "exception", "incomplete", "duplicate"}:
+            expected = "required_tool_completion_evidence_mismatch"
         if outcome == "overflow":
             assert result.error is None
             assert result.message == text
@@ -4200,7 +4204,7 @@ async def test_sdk_preserves_public_optional_skill_text_before_failed_receipt(
     )
 
     public_text = "".join(deltas)
-    assert result.error == "required_tool_completion_evidence_mismatch"
+    assert result.error is None
     assert result.used_skills == []
     assert [item["lifecycle_phase"] for item in result.capability_evidence] == [
         "invocation_requested",
@@ -4801,7 +4805,8 @@ async def test_sdk_complete_assistant_body_publishes_before_terminal_suffix(
 
 
 @pytest.mark.asyncio
-async def test_sdk_attach_file_selects_ordered_final_deliverables(monkeypatch, tmp_path):
+@pytest.mark.parametrize("answer", ["Final user answer", ""])
+async def test_sdk_attach_file_selects_ordered_final_deliverables(monkeypatch, tmp_path, answer):
     captured, attach_results, deltas = {}, [], []
     (tmp_path / "outputs").mkdir()
     (tmp_path / "outputs" / "final.txt").write_text("final", encoding="utf-8")
@@ -4818,7 +4823,7 @@ async def test_sdk_attach_file_selects_ordered_final_deliverables(monkeypatch, t
         stop_reason = None
 
         def __init__(self):
-            self.content = [TextBlock("Final user answer")]
+            self.content = [TextBlock(answer)]
 
     class TextBlock:
         def __init__(self, text):
@@ -4829,7 +4834,7 @@ async def test_sdk_attach_file_selects_ordered_final_deliverables(monkeypatch, t
         session_id = "sdk-session"
         usage = None
         model_usage = None
-        result = "Final user answer"
+        result = answer
         structured_output = {"legacy": "ignored"}
         is_error = False
         errors = None
@@ -4928,9 +4933,9 @@ async def test_sdk_attach_file_selects_ordered_final_deliverables(monkeypatch, t
         on_text=deltas.append,
     )
 
-    assert "".join(deltas) == "Final user answer"
+    assert "".join(deltas) == answer
     assert result.error is None
-    assert result.message == "Final user answer"
+    assert result.message == answer
     assert result.response_files == [
         "outputs/final.txt",
         ".claude/skills/reporting/output/report.docx",
@@ -7425,3 +7430,36 @@ async def test_sdk_cli_stripped_result_completes_wrapped_stream_with_answer_rece
         "text_length": len(body),
         "last_delta_event_id": delta_events[-1].event_id,
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal", ["PostToolUse", "PostToolUseFailure"])
+async def test_protocol_close_includes_late_skill_outcome_without_sticky_failure(monkeypatch, tmp_path, terminal):
+    captured = {}
+    skill_name = "qa-review"
+    hook_input = {"tool_name": "Skill", "tool_use_id": "late-skill", "tool_input": {"skill": skill_name}}
+    sdk = _scripted_sdk(captured, [("hook", ("PreToolUse", hook_input, "late-skill"))])
+    original_disconnect = sdk.ClaudeSDKClient.disconnect
+
+    async def disconnect(client):
+        matcher = next(item for item in captured["hooks"][terminal] if item.matcher == "Skill")
+        await matcher.hooks[0](hook_input, "late-skill", {})
+        await original_disconnect(client)
+
+    sdk.ClaudeSDKClient.disconnect = disconnect
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+    result = await run_claude_agent_sdk(
+        prompt="review", cwd=tmp_path, skill_id=skill_name, skills=[skill_name],
+        execution_policy="sandbox_brokered", tool_policy_subjects=[_skill_subject(skill_name)],
+        on_capability_evidence=_acknowledge_capability_evidence,
+        public_skill_metadata={skill_name: {"name": "QA", "version": "v1", "availability": "available"}},
+    )
+    assert result.error is None
+    expected_skills = [skill_name] if terminal == "PostToolUse" else []
+    assert result.used_skills == expected_skills
+    assert result.used_skills_source == ("executor_hook" if expected_skills else "")
+    assert result.turn_diagnostics["used_skills"] == (
+        [{"name": "QA", "version": "v1", "availability": "available"}] if expected_skills else []
+    )
+    assert result.capability_evidence[-1]["lifecycle_phase"] == ("completed" if expected_skills else "failed")

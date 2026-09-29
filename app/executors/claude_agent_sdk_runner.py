@@ -92,7 +92,6 @@ from app.sandbox.api import (
     workspace_delivery_file_allowed,
     workspace_mutation_allowed,
     workspace_read_allowed,
-    workspace_read_name_private,
 )
 from app.settings import get_settings
 from app.skills.execution_profiles import (
@@ -182,7 +181,6 @@ _SDK_BROKERED_BUILTIN_TOOLS = (
     "WebFetch",
     "WebSearch",
 )
-_SDK_SELECTED_SKILL_HOOK_FAILED = "claude_agent_sdk_selected_skill_hook_failed"
 _SDK_SELECTED_SKILL_NOT_AUTHORIZED = "claude_agent_sdk_selected_skill_not_authorized"
 _SDK_TURN_LIMIT_EXCEEDED = "claude_agent_sdk_turn_limit_exceeded"
 _SDK_CANCELLED = "claude_agent_sdk_cancelled"
@@ -350,7 +348,6 @@ def _diagnostic_terminal_class(
             False,
         )
     if error_code in {
-        _SDK_SELECTED_SKILL_HOOK_FAILED,
         _SDK_SELECTED_SKILL_NOT_AUTHORIZED,
         _SDK_TOOL_ADMISSION_FAILED,
         "required_tool_completion_evidence_missing",
@@ -513,7 +510,6 @@ def _canonical_sdk_error(
     result_subtype: object = "",
     stop_reason: object = "",
     terminal_reason: object = "",
-    selected_skill_error: str | None = None,
     tool_admission_denials: int = 0,
 ) -> str:
     error_text = str(raw_error or "").strip()
@@ -538,12 +534,9 @@ def _canonical_sdk_error(
         or _CONTEXT_LIMIT_ERROR_PATTERN.search(error_text)
     ):
         return _SDK_UPSTREAM_ERROR
-    if selected_skill_error:
-        return selected_skill_error
     if tool_admission_denials > 0:
         return _SDK_TOOL_ADMISSION_FAILED
     if error_text in {
-        _SDK_SELECTED_SKILL_HOOK_FAILED,
         _SDK_SELECTED_SKILL_NOT_AUTHORIZED,
         "attachment_context_invalid",
         "context_retrieval_registration_failed",
@@ -1156,54 +1149,21 @@ def _workspace_path_parameters_authorized(
         return all(authorize(relative) for relative in relatives)
 
     def glob_pattern_authorized(raw: object, *, search_path: object) -> bool:
-        if (
-            not isinstance(raw, str)
-            or not raw
-            or "\x00" in raw
-            or any(char in raw for char in "{}()![]?")
-            or not isinstance(search_path, str)
-            or not search_path
-        ):
+        if not isinstance(raw, str) or not raw or "\x00" in raw:
             return False
-        normalized_pattern = raw.replace("\\", "/")
+        if not isinstance(search_path, str) or not search_path:
+            return False
+        # Globs are data for the SDK search tool. Scope the literal prefix and
+        # every returned path; braces, character classes and ? are valid syntax.
         if (
             "\\" in raw
-            or any(char in normalized_pattern for char in "{}()![]?")
-            or normalized_pattern.startswith("/")
-            or re.match(r"^[A-Za-z]:/", normalized_pattern)
-            or _GLOB_PARENT_COMPONENT.search(normalized_pattern)
+            or re.search(r"(?:^|[,{(|])(?:/|[A-Za-z]:)", raw)
+            or ".." in re.split(r"[/{}\[\],()|]", raw.replace("[.]", "."))
         ):
             return False
-        if any(
-            workspace_read_name_private(token)
-            for token in re.findall(r"[A-Za-z0-9._-]+", normalized_pattern)
-        ):
-            return False
-        try:
-            root = workspace_root.resolve(strict=True)
-            candidate = Path(search_path)
-            if not candidate.is_absolute():
-                candidate = root / candidate
-            search_relative = candidate.resolve(strict=False).relative_to(root)
-        except (OSError, RuntimeError, ValueError):
-            return False
-        pattern_parts = tuple(
-            part for part in normalized_pattern.split("/") if part not in {"", "."}
-        )
-        if not pattern_parts:
-            return False
-        lowered_pattern_parts = tuple(part.casefold() for part in pattern_parts)
-        hidden_pattern_parts = tuple(
-            index
-            for index, part in enumerate(lowered_pattern_parts)
-            if part.startswith(".")
-        )
-        if hidden_pattern_parts and (
-            lowered_pattern_parts[:2] != (".claude", "skills")
-            or any(index >= 2 for index in hidden_pattern_parts)
-        ):
-            return False
-        return bool(search_relative.parts or pattern_parts)
+        prefix = re.split(r"[*?{}\[\]()!]", raw, maxsplit=1)[0]
+        prefix_parent = prefix.rsplit("/", 1)[0] if "/" in prefix else "."
+        return path_authorized(str(Path(search_path) / prefix_parent))
 
     if not isinstance(tool_input, dict):
         return False
@@ -1255,11 +1215,6 @@ def _workspace_search_result_path_authorized(
     workspace_root: Path,
 ) -> bool:
     if not isinstance(raw_path, str) or not raw_path.strip() or "\x00" in raw_path:
-        return False
-    if any(
-        workspace_read_name_private(token)
-        for token in re.findall(r"[A-Za-z0-9._-]+", raw_path)
-    ):
         return False
     try:
         root = workspace_root.resolve(strict=True)
@@ -1933,7 +1888,6 @@ async def run_claude_agent_sdk(
     sandbox_partial_streaming = (
         on_text is not None and execution_policy == "sandbox_brokered"
     )
-    failed_skill_names: list[str] = []
     sandbox_brokered = execution_policy == "sandbox_brokered"
     authorized_subjects = _canonical_tool_policy_subjects(tool_policy_subjects)
     if (
@@ -2589,11 +2543,6 @@ async def run_claude_agent_sdk(
             return False
         return True
 
-    def skill_hook_error() -> str | None:
-        if selected_sdk_skill is not None and selected_sdk_skill in failed_skill_names:
-            return _SDK_SELECTED_SKILL_HOOK_FAILED
-        return None
-
     declared_tool_identities = (
         set(authorized_subjects) | set(internal_platform_subjects)
         if sandbox_brokered
@@ -2659,7 +2608,7 @@ async def run_claude_agent_sdk(
                 or mcp_registration.server_aliases.get(
                     str(subject.get("mcp_server") or ""),
                     str(subject.get("mcp_server") or ""),
-                ) in mcp_servers
+                ) in options.mcp_servers
             )
             return evaluate_tool_policy(
                 tool={
@@ -2952,8 +2901,6 @@ async def run_claude_agent_sdk(
             )
             evidence_acknowledged = bool(skill_names)
             for skill_name in skill_names:
-                if lifecycle_phase == "failed" and skill_name not in failed_skill_names:
-                    failed_skill_names.append(skill_name)
                 evidence_acknowledged = await record_capability_evidence(
                     capability_kind="skill",
                     canonical_identity=skill_name,
@@ -3296,9 +3243,13 @@ async def run_claude_agent_sdk(
     def mcp_execution_receipt_error() -> str | None:
         if mcp_execution_conflict_observed():
             return MCP_EXECUTION_OUTCOME_UNKNOWN
-        if not mcp_execution_states:
+        write_states = [
+            state for (identity, _call_id), state in mcp_execution_states.items()
+            if authorized_subjects.get(identity, {}).get("write_capable") is not False
+        ]
+        if not write_states:
             return None
-        if all(state == "completed" for state in mcp_execution_states.values()):
+        if all(state == "completed" for state in write_states):
             return MCP_EXECUTION_SUCCEEDED_RECEIPT_INCOMPLETE
         return MCP_EXECUTION_OUTCOME_UNKNOWN
 
@@ -3359,12 +3310,22 @@ async def run_claude_agent_sdk(
             declaration_sha256 = RequiredCapabilityDeclaration.from_authorized_subject(
                 capability_kind=kind, canonical_identity=identity
             ).declaration_sha256
+            recoverable_failure = kind == "skill" or (
+                kind == "mcp" and authorized_subjects.get(identity, {}).get("write_capable") is False
+            )
+            phases = [item.get("lifecycle_phase") for item in matching]
+            statuses = [item.get("lifecycle_status") for item in matching]
+            terminal_valid = (
+                phases == ["invocation_requested", "completed"]
+                and statuses == ["invoking", "succeeded"]
+            ) or (
+                recoverable_failure
+                and phases == ["invocation_requested", "failed"]
+                and statuses == ["invoking", "failed"]
+            )
             if (
                 len(matching) != 2
-                or [item.get("lifecycle_phase") for item in matching]
-                != ["invocation_requested", "completed"]
-                or [item.get("lifecycle_status") for item in matching]
-                != ["invoking", "succeeded"]
+                or not terminal_valid
                 or matching[0].get("tool_call_id") != matching[1].get("tool_call_id")
                 or any(
                     item.get("declaration_sha256") != declaration_sha256
@@ -3827,7 +3788,6 @@ async def run_claude_agent_sdk(
                         result_subtype=getattr(message, "subtype", ""),
                         stop_reason=getattr(message, "stop_reason", ""),
                         terminal_reason=resolved_terminal_reason,
-                        selected_skill_error=skill_hook_error(),
                         tool_admission_denials=diagnostic_counters[
                             "tool_admission_denials"
                         ],
@@ -3992,7 +3952,10 @@ async def run_claude_agent_sdk(
         )
         if terminal_error is None and stream_projection_failed:
             terminal_error = _SDK_UPSTREAM_ERROR
-        if terminal_error is None and terminal_answer_empty and not answer_timeline.text.strip():
+        if (
+            terminal_error is None and terminal_answer_empty
+            and not answer_timeline.text.strip() and not response_files
+        ):
             terminal_error = _SDK_MISSING_STRUCTURED_TERMINAL
         finished_answer = answer_stream_gate.finish(
             final_text=answer_timeline.text,
@@ -4118,7 +4081,7 @@ async def run_claude_agent_sdk(
         if error is None and mcp_execution_conflict_observed():
             error = MCP_EXECUTION_OUTCOME_UNKNOWN
         if error is None:
-            error = skill_hook_error() or capability_completion_error()
+            error = capability_completion_error()
         error = error or pending_result.error
         if error is not None:
             error = mcp_execution_receipt_error() or error
@@ -4138,6 +4101,9 @@ async def run_claude_agent_sdk(
             result = replace(
                 pending_result,
                 capability_evidence=list(capability_evidence),
+                used_skills=list(used_skill_names),
+                used_skills_source="executor_hook" if used_skill_names else "",
+                turn_diagnostics=turn_diagnostics(None),
                 provider_final_sequence=(
                     provider_session_store.final_sequence if provider_session_store is not None else None
                 ),
@@ -4244,7 +4210,6 @@ async def run_claude_agent_sdk(
         seal_agent_candidates("exception")
         error_code = mcp_execution_receipt_error() or _canonical_sdk_error(
             exc,
-            selected_skill_error=skill_hook_error(),
             tool_admission_denials=diagnostic_counters["tool_admission_denials"],
         )
         return assemble_run_result(

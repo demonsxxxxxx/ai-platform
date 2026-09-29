@@ -38,7 +38,6 @@ const safeIdentity: AgentConversationIdentity = {
 
 const safeWorkspace = {
   agent_id: safeIdentity.agent_id,
-  expected_revision: safeIdentity.revision,
 } as const;
 
 test("Agent workspace history selection loads before changing its session route", () => {
@@ -82,7 +81,7 @@ test("explicit Agent new-task reset clears the pinned operation id", () => {
   assert.notEqual(handlerStart, -1);
   assert.notEqual(handlerEnd, -1);
   const handler = source.slice(handlerStart, handlerEnd);
-  assert.match(handler, /clearAgentConversationOperationId\([\s\S]*agentWorkspace\.agent_id[\s\S]*agentWorkspace\.expected_revision/);
+  assert.match(handler, /clearAgentConversationOperationId\([\s\S]*agentWorkspace\.agent_id/);
   assert.match(handler, /clearAgentConversationOperationId[\s\S]*invalidateAgentWorkspaceFirstSend/);
 });
 
@@ -109,10 +108,15 @@ test("recovers an exact current Agent Conversation and keeps ordinary sessions g
   agentProfileApi.getPublished = async () => {
     detailCalls += 1;
     return {
-      ...safeIdentity,
-      expected_revision: safeIdentity.revision,
+      agent_id: safeIdentity.agent_id,
+      name: safeIdentity.name,
+      description: safeIdentity.description,
+      starter_prompts: safeIdentity.starter_prompts,
+      avatar_ref: safeIdentity.avatar_ref,
+      avatar_seed: safeIdentity.avatar_seed,
       market_tags: ["支持"],
       is_favorite: false,
+      published_at: safeIdentity.published_at,
     };
   };
 
@@ -150,10 +154,15 @@ test("keeps immutable revision history while current access remains authorized",
     };
   };
   agentProfileApi.getPublished = async () => ({
-    ...safeIdentity,
-    expected_revision: safeIdentity.revision + 1,
+    agent_id: safeIdentity.agent_id,
+    name: safeIdentity.name,
+    description: safeIdentity.description,
+    starter_prompts: safeIdentity.starter_prompts,
+    avatar_ref: safeIdentity.avatar_ref,
+    avatar_seed: safeIdentity.avatar_seed,
     market_tags: ["支持"],
     is_favorite: false,
+    published_at: safeIdentity.published_at,
   });
 
   try {
@@ -264,7 +273,7 @@ test("an Agent workspace becomes send-ready only after its exact bound Session i
       sessionId: null,
     }),
     false,
-    "a bare revision-bound workspace must keep the composer disabled",
+    "a bare Agent-bound workspace must keep the composer disabled",
   );
   assert.equal(
     isExactAgentWorkspaceBinding({
@@ -296,13 +305,11 @@ test("persists one Agent Conversation operation identity across a response-loss 
 
   const first = getOrCreateAgentConversationOperationId({
     agentId: safeIdentity.agent_id,
-    revision: safeIdentity.revision,
     storage,
     createId,
   });
   const replay = getOrCreateAgentConversationOperationId({
     agentId: safeIdentity.agent_id,
-    revision: safeIdentity.revision,
     storage,
     createId: () => "6ed64d27-bbdb-486b-9b2c-1ece2cad1ee1",
   });
@@ -339,7 +346,6 @@ test("explicit new Agent task clears an old operation after bind failure", async
   assert.equal(
     getOrCreateAgentConversationOperationId({
       agentId: safeWorkspace.agent_id,
-      revision: safeWorkspace.expected_revision,
       storage,
       createId: () => firstOperationId,
     }),
@@ -348,13 +354,11 @@ test("explicit new Agent task clears an old operation after bind failure", async
 
   clearAgentConversationOperationId({
     agentId: safeWorkspace.agent_id,
-    revision: safeWorkspace.expected_revision,
     storage,
   });
   assert.equal(
     getOrCreateAgentConversationOperationId({
       agentId: safeWorkspace.agent_id,
-      revision: safeWorkspace.expected_revision,
       storage,
       createId: () => secondOperationId,
     }),
@@ -780,7 +784,6 @@ test("a different composer payload is not accepted by an in-flight recommendatio
 test("fails closed when stable Agent Conversation operation storage is unavailable", () => {
   const operationId = getOrCreateAgentConversationOperationId({
     agentId: safeIdentity.agent_id,
-    revision: safeIdentity.revision,
     storage: null,
     createId: () => "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
   });
@@ -814,7 +817,6 @@ test("fails closed when Agent Conversation operation storage cannot be read or v
     try {
       result = getOrCreateAgentConversationOperationId({
         agentId: safeIdentity.agent_id,
-        revision: safeIdentity.revision,
         storage,
         createId,
       });

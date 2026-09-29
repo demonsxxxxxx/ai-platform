@@ -71,7 +71,8 @@ async def attach_mcp_server_configs(
         isinstance(subject, dict)
         and str(subject.get("identity") or "").startswith("mcp__")
         and str(subject.get("mcp_server") or "")
-        and str(subject.get("mcp_server") or "") != "ai-platform-context"
+        and str(subject.get("mcp_server") or "")
+        not in {"ai-platform-context", "ai-platform-response"}
         for subject in raw_subjects
     )
     if not requires_external_mcp:
@@ -89,6 +90,10 @@ async def _repository_call(operation: str, conn: Any, **kwargs: Any) -> Any:
 
 async def authorize_selected_chat_mcp_tools(conn: Any, **kwargs: Any) -> list[dict[str, Any]]:
     return await _repository_call("authorize_selected_chat_mcp_tools", conn, **kwargs)
+
+
+async def authorize_available_chat_mcp_tools(conn: Any, **kwargs: Any) -> list[dict[str, Any]]:
+    return await _repository_call("authorize_available_chat_mcp_tools", conn, **kwargs)
 
 
 async def get_mcp_server_registry_entry(conn: Any, **kwargs: Any) -> dict[str, Any] | None:
@@ -146,6 +151,7 @@ __all__ = [
     "McpRuntimeContextError",
     "assert_mcp_tool_reference",
     "attach_mcp_server_configs",
+    "authorize_available_chat_mcp_tools",
     "authorize_selected_chat_mcp_tools",
     "build_mcp_tool_reference",
     "configure_mcp_runtime_services",

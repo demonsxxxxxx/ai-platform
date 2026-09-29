@@ -172,7 +172,6 @@ class Settings(BaseSettings):
     claude_agent_workspace_root: str = Field(
         default="/tmp/ai-platform-agent-workspaces"
     )
-    skill_staging_subdir: str = Field(default=".claude/skills")
     public_skill_file_overlay_max_bytes: int = Field(default=262144)
 
     @field_validator(

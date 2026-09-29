@@ -559,7 +559,6 @@ test("market search commits Chinese IME text only after composition ends", async
   const profiles: AgentProfilePublicProjection[] = Array.from({ length: 10 }, (_, index) => ({
     ...enterpriseProfileFields,
     agent_id: `agt_support_${index + 1}`,
-    expected_revision: 1,
     name: `支持助手 ${index + 1}`,
     description: "处理支持请求。",
     market_tags: [`标签 ${index + 1}`],
@@ -667,7 +666,6 @@ test("rendered Marketplace opens a productized bare workspace without creating a
     {
       ...enterpriseProfileFields,
       agent_id: "agt_support",
-      expected_revision: 4,
       name: "支持助手",
       description: "已发布的支持服务。",
       avatar_ref: "builtin:assistant",
@@ -677,7 +675,6 @@ test("rendered Marketplace opens a productized bare workspace without creating a
     {
       ...enterpriseProfileFields,
       agent_id: "agt_finance",
-      expected_revision: 2,
       name: "财务助手",
       description: "核对报销材料。",
       avatar_ref: "builtin:document",
@@ -765,11 +762,11 @@ test("rendered Marketplace opens a productized bare workspace without creating a
                   element: React.createElement(AgentMarketRoute),
                 }),
                 React.createElement(Route, {
-                  path: "/agent-market/:agentId/:revision",
+                  path: "/agent-market/:agentId",
                   element: React.createElement(AgentMarketRoute),
                 }),
                 React.createElement(Route, {
-                  path: "/agent-market/:agentId/:revision/chat/:sessionId?",
+                  path: "/agent-market/:agentId/chat/:sessionId?",
                   element: React.createElement(WorkspaceProbe),
                 }),
               ),
@@ -903,7 +900,7 @@ test("rendered Marketplace opens a productized bare workspace without creating a
       await Promise.resolve();
     });
 
-    assert.equal(currentPath, "/agent-market/agt_finance/2/chat");
+    assert.equal(currentPath, "/agent-market/agt_finance/chat");
     assert.ok(container.querySelector("[data-agent-workspace]"));
     assert.deepEqual(conversationSelections, []);
     assert.equal(detailCalls, 0, "opening a card must not detour through the detail authorization request");
@@ -928,7 +925,7 @@ test("rendered Marketplace opens a productized bare workspace without creating a
 
     assert.equal(
       currentPath,
-      "/agent-market/agt_finance/2?q=%E8%B4%A2%E5%8A%A1&tag=%E8%B4%A2%E5%8A%A1",
+      "/agent-market/agt_finance?q=%E8%B4%A2%E5%8A%A1&tag=%E8%B4%A2%E5%8A%A1",
     );
     assert.ok(container.querySelector("[data-agent-market-detail]"));
     assert.match(container.textContent, /核对报销材料/);
@@ -950,7 +947,7 @@ test("rendered Marketplace opens a productized bare workspace without creating a
       await Promise.resolve();
     });
     assert.deepEqual(conversationSelections, []);
-    assert.equal(currentPath, "/agent-market/agt_finance/2/chat");
+    assert.equal(currentPath, "/agent-market/agt_finance/chat");
     assert.ok(container.querySelector("[data-agent-workspace]"));
     assert.equal(catalogCalls, 2);
     assert.equal(detailCalls, 1, "detail navigation must re-authorize the current publication");
@@ -975,7 +972,6 @@ test("Agent starter prompts draft before explicit first-message submission", asy
   const profile = {
     ...enterpriseProfileFields,
     agent_id: "agt_support",
-    expected_revision: 4,
     name: "支持助手",
     description: "处理企业内部支持请求。",
     avatar_ref: "builtin:assistant",
@@ -1009,7 +1005,7 @@ test("Agent starter prompts draft before explicit first-message submission", asy
       agent_conversation: {
         ...enterpriseProfileFields,
         agent_id: profile.agent_id,
-        revision: profile.expected_revision,
+        revision: 4,
         name: profile.name,
         description: profile.description,
         avatar_ref: profile.avatar_ref,
@@ -1034,7 +1030,7 @@ test("Agent starter prompts draft before explicit first-message submission", asy
     agent_conversation: {
       ...enterpriseProfileFields,
       agent_id: profile.agent_id,
-      revision: profile.expected_revision,
+      revision: 4,
       name: profile.name,
       description: profile.description,
       avatar_ref: profile.avatar_ref,
@@ -1118,7 +1114,6 @@ test("Agent starter prompts draft before explicit first-message submission", asy
     assert.equal(submissions[expectedCount - 1]?.[1], expectedSessionId);
     assert.deepEqual(submissions[expectedCount - 1]?.[10], {
       agent_id: profile.agent_id,
-      expected_revision: profile.expected_revision,
     });
   }
 
@@ -1141,7 +1136,7 @@ test("Agent starter prompts draft before explicit first-message submission", asy
                   element: React.createElement(AgentMarketRoute),
                 }),
                 React.createElement(Route, {
-                  path: "/agent-market/:agentId/:revision/chat/:sessionId?",
+                  path: "/agent-market/:agentId/chat/:sessionId?",
                   element: React.createElement(AgentWorkspaceRoute),
                 }),
               ),
@@ -1162,16 +1157,16 @@ test("Agent starter prompts draft before explicit first-message submission", asy
     });
     await waitUntil(() => container.querySelector("[data-agent-chat-opening]") !== null);
 
-    assert.equal(currentPath, "/agent-market/agt_support/4/chat");
+    assert.equal(currentPath, "/agent-market/agt_support/chat");
     assert.deepEqual(selections, []);
     assert.match(container.textContent, /处理企业内部支持请求/);
     assert.ok(container.querySelector("[data-agent-starter-prompts]"));
     assert.ok(container.querySelector("textarea"));
 
     await draftStarterPrompt(0);
-    assert.equal(currentPath, "/agent-market/agt_support/4/chat");
+    assert.equal(currentPath, "/agent-market/agt_support/chat");
     await submitDraft(1, "session-support-1");
-    assert.equal(currentPath, "/agent-market/agt_support/4/chat");
+    assert.equal(currentPath, "/agent-market/agt_support/chat");
 
     const startNewTask = container
       .querySelectorAll("button")
@@ -1182,23 +1177,23 @@ test("Agent starter prompts draft before explicit first-message submission", asy
     });
     await waitUntil(
       () =>
-        currentPath === "/agent-market/agt_support/4/chat" &&
+        currentPath === "/agent-market/agt_support/chat" &&
         container.querySelector("[data-agent-starter-prompts]") !== null,
     );
 
-    assert.equal(currentPath, "/agent-market/agt_support/4/chat");
+    assert.equal(currentPath, "/agent-market/agt_support/chat");
     assert.equal(selections.length, 1, "Start New Task must remain creation-free");
     assert.equal(submissions.length, 1);
 
     await draftStarterPrompt(1);
-    assert.equal(currentPath, "/agent-market/agt_support/4/chat");
+    assert.equal(currentPath, "/agent-market/agt_support/chat");
     await submitDraft(2, "session-support-2");
-    assert.equal(currentPath, "/agent-market/agt_support/4/chat");
+    assert.equal(currentPath, "/agent-market/agt_support/chat");
     assert.deepEqual(
       selections.map(({ selection }) => selection),
       [
-        { agent_id: profile.agent_id, expected_revision: profile.expected_revision },
-        { agent_id: profile.agent_id, expected_revision: profile.expected_revision },
+        { agent_id: profile.agent_id },
+        { agent_id: profile.agent_id },
       ],
     );
     const operationIds = selections.map(({ operationId }) => operationId);
@@ -1219,7 +1214,7 @@ test("Agent starter prompts draft before explicit first-message submission", asy
   }
 });
 
-test("an owned revision N conversation remains on N after the Agent publishes N+1", async () => {
+test("a prior-publication conversation stays writable while the current Agent is published", async () => {
   const dom = installDom();
   const ReactDOM = await import("react-dom/client");
   const { MemoryRouter, Route, Routes, useLocation } = await import("react-router-dom");
@@ -1230,7 +1225,6 @@ test("an owned revision N conversation remains on N after the Agent publishes N+
   const currentProfile = {
     ...enterpriseProfileFields,
     agent_id: "agt_support",
-    expected_revision: 5,
     name: "支持助手 V5",
     description: "当前发布版本。",
     avatar_ref: "builtin:assistant",
@@ -1248,7 +1242,9 @@ test("an owned revision N conversation remains on N after the Agent publishes N+
   const originalGetPublished = agentProfileApi.getPublished;
   const originalListConversations = agentProfileApi.listConversations;
   const originalCreateConversation = agentProfileApi.createConversation;
+  const originalGet = sessionApi.get;
   const originalGetAuthoritative = sessionApi.getAuthoritative;
+  const originalGetEvents = sessionApi.getEvents;
   const historySelections: unknown[] = [];
   const conversationSelections: unknown[] = [];
   agentProfileApi.getPublished = async () => currentProfile;
@@ -1282,6 +1278,15 @@ test("an owned revision N conversation remains on N after the Agent publishes N+
     purpose: "conversation",
     agent_conversation: historicalIdentity,
   });
+  sessionApi.get = async () => ({
+    id: "session-v4",
+    agent_id: "agt_support",
+    created_at: "2026-08-03T01:00:00Z",
+    updated_at: "2026-08-04T01:00:00Z",
+    is_active: true,
+    metadata: {},
+  });
+  sessionApi.getEvents = async () => ({ events: [] });
   let currentPath = "";
   function LocationProbe() {
     currentPath = useLocation().pathname;
@@ -1295,7 +1300,7 @@ test("an owned revision N conversation remains on N after the Agent publishes N+
       root.render(
         React.createElement(
           MemoryRouter,
-          { initialEntries: ["/agent-market/agt_support/4/chat/session-v4"] },
+          { initialEntries: ["/agent-market/agt_support/chat/session-v4"] },
           shellHarness.wrap(
             React.createElement(
               React.Fragment,
@@ -1305,7 +1310,7 @@ test("an owned revision N conversation remains on N after the Agent publishes N+
                 Routes,
                 null,
                 React.createElement(Route, {
-                  path: "/agent-market/:agentId/:revision/chat/:sessionId?",
+                  path: "/agent-market/:agentId/chat/:sessionId?",
                   element: React.createElement(AgentWorkspaceRoute),
                 }),
               ),
@@ -1316,22 +1321,22 @@ test("an owned revision N conversation remains on N after the Agent publishes N+
       for (let index = 0; index < 12; index += 1) await Promise.resolve();
     });
 
-    assert.equal(currentPath, "/agent-market/agt_support/4/chat/session-v4");
-    assert.deepEqual(historySelections, [
-      { agent_id: "agt_support", expected_revision: 4 },
-    ]);
+    assert.equal(currentPath, "/agent-market/agt_support/chat/session-v4");
+    assert.deepEqual(historySelections, [{ agent_id: "agt_support" }]);
     assert.deepEqual(conversationSelections, []);
     assert.match(container.textContent, /支持助手 V4/);
     assert.doesNotMatch(container.textContent, /支持助手 V5/);
     const composer = container.querySelector("textarea");
-    assert.ok(composer, "the superseded revision keeps its transcript composer frame");
-    assert.equal(composer.hasAttribute("disabled"), true);
-    assert.equal(composer.getAttribute("placeholder"), "该历史会话为只读状态");
+    assert.ok(composer, "the prior publication keeps its transcript composer frame");
+    assert.equal(container.querySelector("[data-agent-workspace-readonly]"), null);
+    assert.notEqual(composer.getAttribute("placeholder"), "该历史会话为只读状态");
   } finally {
     agentProfileApi.getPublished = originalGetPublished;
     agentProfileApi.listConversations = originalListConversations;
     agentProfileApi.createConversation = originalCreateConversation;
+    sessionApi.get = originalGet;
     sessionApi.getAuthoritative = originalGetAuthoritative;
+    sessionApi.getEvents = originalGetEvents;
     shellHarness.restore();
     await React.act(async () => root.unmount());
   }
@@ -1395,7 +1400,7 @@ test("a withdrawn or retired Agent direct link stays read-only without navigatio
       root.render(
         React.createElement(
           MemoryRouter,
-          { initialEntries: ["/agent-market/agt_support/4/chat/session-v4"] },
+          { initialEntries: ["/agent-market/agt_support/chat/session-v4"] },
           shellHarness.wrap(
             React.createElement(
               React.Fragment,
@@ -1405,7 +1410,7 @@ test("a withdrawn or retired Agent direct link stays read-only without navigatio
                 Routes,
                 null,
                 React.createElement(Route, {
-                  path: "/agent-market/:agentId/:revision/chat/:sessionId?",
+                  path: "/agent-market/:agentId/chat/:sessionId?",
                   element: React.createElement(AgentWorkspaceRoute),
                 }),
               ),
@@ -1416,10 +1421,8 @@ test("a withdrawn or retired Agent direct link stays read-only without navigatio
       for (let index = 0; index < 12; index += 1) await Promise.resolve();
     });
 
-    assert.equal(currentPath, "/agent-market/agt_support/4/chat/session-v4");
-    assert.deepEqual(historySelections, [
-      { agent_id: "agt_support", expected_revision: 4 },
-    ]);
+    assert.equal(currentPath, "/agent-market/agt_support/chat/session-v4");
+    assert.deepEqual(historySelections, [{ agent_id: "agt_support" }]);
     assert.deepEqual(conversationSelections, []);
     assert.match(container.textContent, /已下架支持助手 V4/);
     assert.doesNotMatch(container.textContent, /V4 历史会话/);
@@ -1437,7 +1440,7 @@ test("a withdrawn or retired Agent direct link stays read-only without navigatio
   }
 });
 
-test("a shared detail URL restores the exact current published revision", async () => {
+test("an Agent-id detail URL resolves the current published profile", async () => {
   const dom = installDom();
   const ReactDOM = await import("react-dom/client");
   const { MemoryRouter, Route, Routes, useLocation } = await import("react-router-dom");
@@ -1448,7 +1451,6 @@ test("a shared detail URL restores the exact current published revision", async 
   agentProfileApi.getPublished = async () => ({
     ...enterpriseProfileFields,
     agent_id: "agt_support",
-    expected_revision: 4,
     name: "支持助手",
     description: "当前发布版本。",
     avatar_ref: "builtin:assistant",
@@ -1466,7 +1468,7 @@ test("a shared detail URL restores the exact current published revision", async 
       root.render(
         React.createElement(
           MemoryRouter,
-          { initialEntries: ["/agent-market/agt_support/4"] },
+          { initialEntries: ["/agent-market/agt_support"] },
           shellHarness.wrap(
             React.createElement(React.Fragment, null,
               React.createElement(LocationProbe),
@@ -1478,7 +1480,7 @@ test("a shared detail URL restores the exact current published revision", async 
                   element: React.createElement(AgentMarketRoute),
                 }),
                 React.createElement(Route, {
-                  path: "/agent-market/:agentId/:revision",
+                  path: "/agent-market/:agentId",
                   element: React.createElement(AgentMarketRoute),
                 }),
               ),
@@ -1490,80 +1492,12 @@ test("a shared detail URL restores the exact current published revision", async 
       await Promise.resolve();
     });
 
-    assert.equal(currentPath, "/agent-market/agt_support/4");
+    assert.equal(currentPath, "/agent-market/agt_support");
     assert.ok(container.querySelector("[data-agent-market-detail]"));
     assert.match(container.textContent, /支持助手/);
     assert.match(container.textContent, /当前发布版本/);
     assert.equal(container.querySelector("[data-workbench-header]"), null);
     assert.ok(container.querySelector("[data-librechat-desktop-sidebar]"));
-  } finally {
-    agentProfileApi.getPublished = originalGetPublished;
-    shellHarness.restore();
-    await React.act(async () => root.unmount());
-  }
-});
-
-test("a stale detail revision fails closed back to the safe Marketplace", async () => {
-  const dom = installDom();
-  const ReactDOM = await import("react-dom/client");
-  const { MemoryRouter, Route, Routes, useLocation } = await import("react-router-dom");
-  const { AgentMarketRoute } = await import("../AgentMarketRoute.tsx");
-  const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
-  const shellHarness = await prepareShellHarness();
-  const originalGetPublished = agentProfileApi.getPublished;
-  agentProfileApi.getPublished = async () => ({
-    ...enterpriseProfileFields,
-    agent_id: "agt_support",
-    expected_revision: 5,
-    name: "支持助手",
-    description: "更新后的发布版本。",
-    avatar_ref: "builtin:assistant",
-    category: "support",
-  });
-  let currentPath = "";
-  function LocationProbe() {
-    const location = useLocation();
-    currentPath = `${location.pathname}${location.search}`;
-    return null;
-  }
-  const container = dom.document.createElement("div");
-  const root = ReactDOM.createRoot(container as never);
-  try {
-    await React.act(async () => {
-      root.render(
-        React.createElement(
-          MemoryRouter,
-          { initialEntries: ["/agent-market/agt_support/4?q=合同&category=support"] },
-          shellHarness.wrap(
-            React.createElement(
-              React.Fragment,
-              null,
-              React.createElement(LocationProbe),
-              React.createElement(
-                Routes,
-                null,
-                React.createElement(Route, {
-                  path: "/agent-market",
-                  element: React.createElement(AgentMarketRoute),
-                }),
-                React.createElement(Route, {
-                  path: "/agent-market/:agentId/:revision",
-                  element: React.createElement(AgentMarketRoute),
-                }),
-              ),
-            ),
-          ),
-        ),
-      );
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    assert.equal(decodeURI(currentPath), "/agent-market?q=合同&category=support");
-    assert.ok(container.querySelector("[data-agent-market]"));
-    assert.equal(container.querySelector("[data-agent-market-detail]"), null);
-    assert.equal(container.querySelector("[data-canonical-chat]"), null);
   } finally {
     agentProfileApi.getPublished = originalGetPublished;
     shellHarness.restore();
@@ -1583,7 +1517,6 @@ test("a route-param change never wires Agent A into Agent B while B is loading o
   const agentA = {
     ...enterpriseProfileFields,
     agent_id: "agt_a",
-    expected_revision: 1,
     name: "Agent A",
     description: "Agent A published revision.",
     avatar_ref: "builtin:assistant",
@@ -1592,7 +1525,6 @@ test("a route-param change never wires Agent A into Agent B while B is loading o
   const agentB = {
     ...enterpriseProfileFields,
     agent_id: "agt_b",
-    expected_revision: 2,
     name: "Agent B",
     description: "Agent B published revision.",
     avatar_ref: "builtin:assistant",
@@ -1638,7 +1570,7 @@ test("a route-param change never wires Agent A into Agent B while B is loading o
           agent_conversation: {
             ...enterpriseProfileFields,
             agent_id: agent.agent_id,
-            revision: agent.expected_revision,
+            revision: agent.agent_id === "agt_a" ? 1 : 2,
             name: agent.name,
             description: agent.description,
             avatar_ref: agent.avatar_ref,
@@ -1696,7 +1628,7 @@ test("a route-param change never wires Agent A into Agent B while B is loading o
       agent_conversation: {
         ...enterpriseProfileFields,
         agent_id: agent.agent_id,
-        revision: agent.expected_revision,
+        revision: agent.agent_id === "agt_a" ? 1 : 2,
         name: agent.name,
         description: agent.description,
         avatar_ref: agent.avatar_ref,
@@ -1757,7 +1689,7 @@ test("a route-param change never wires Agent A into Agent B while B is loading o
   const container = dom.document.createElement("div");
   const root = ReactDOM.createRoot(container as never);
   let routeLocation = {
-    pathname: "/agent-market/agt_a/1/chat/session-a",
+    pathname: "/agent-market/agt_a/chat/session-a",
     search: "",
     hash: "",
     state: null,
@@ -1784,7 +1716,7 @@ test("a route-param change never wires Agent A into Agent B while B is loading o
           Routes,
           null,
           React.createElement(Route, {
-            path: "/agent-market/:agentId/:revision/chat/:sessionId?",
+            path: "/agent-market/:agentId/chat/:sessionId?",
             element: React.createElement(AgentWorkspaceRoute),
           }),
         ),
@@ -1803,7 +1735,7 @@ test("a route-param change never wires Agent A into Agent B while B is loading o
     assert.match(container.textContent, /Agent A sidebar session/);
     assert.equal(hasTranscriptForSession("session-a"), true);
 
-    setRoute("/agent-market/agt_b/2/chat/session-b");
+    setRoute("/agent-market/agt_b/chat/session-b");
     assertNoAgentAArtifacts("Agent B loading");
 
     rejectFirstBProfile(new Error("Agent B rejected"));
@@ -1812,14 +1744,14 @@ test("a route-param change never wires Agent A into Agent B while B is loading o
     });
     assertNoAgentAArtifacts("Agent B rejection");
 
-    setRoute("/agent-market/agt_a/1/chat/session-a");
+    setRoute("/agent-market/agt_a/chat/session-a");
     await React.act(async () => {
       await settle();
     });
     assert.equal(hasTranscriptForSession("session-a"), true);
 
     bRequest = "bind";
-    setRoute("/agent-market/agt_b/2/chat/session-b");
+    setRoute("/agent-market/agt_b/chat/session-b");
     assertNoAgentAArtifacts("Agent B revalidation");
 
     resolveSecondBProfile(agentB);
@@ -1841,7 +1773,7 @@ test("a route-param change never wires Agent A into Agent B while B is loading o
       agent_conversation: {
         ...enterpriseProfileFields,
         agent_id: agentB.agent_id,
-        revision: agentB.expected_revision,
+        revision: 2,
         name: agentB.name,
         description: agentB.description,
         avatar_ref: agentB.avatar_ref,

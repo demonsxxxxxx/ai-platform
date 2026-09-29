@@ -132,7 +132,6 @@ export function buildAgentConversationListUrl(
 ): string {
   const searchParams = new URLSearchParams({
     agent_id: selection.agent_id,
-    revision: String(selection.expected_revision),
     limit: String(options.limit ?? 20),
   });
   if (options.cursor) searchParams.set("cursor", options.cursor);
@@ -158,7 +157,7 @@ export const agentProfileApi = {
     return projectAgentProfilePublicProjection(response);
   },
 
-  /** List one server-authorized Agent/revision history page. */
+  /** List one server-authorized Agent conversation history page. */
   async listConversations(
     selection: SelectedAgentProfileRequest,
     options: AgentConversationListOptions = {},
@@ -174,13 +173,12 @@ export const agentProfileApi = {
     selection: SelectedAgentProfileRequest,
     operationId: string,
   ): Promise<AgentConversationSessionProjection> {
-    const selected_agent_profile = {
-      agent_id: selection.agent_id,
-      expected_revision: selection.expected_revision,
-    };
     const response = await authFetch<unknown>(`${API_BASE}/api/ai/agent-conversations`, {
       method: "POST",
-      body: JSON.stringify({ selected_agent_profile, operation_id: operationId }),
+      body: JSON.stringify({
+        selected_agent_profile: selection,
+        operation_id: operationId,
+      }),
     });
     return projectAgentConversationSession(response);
   },

@@ -355,19 +355,31 @@ export function buildAgentAppRunUrl(agentId: string, sessionId: string): string 
   return `${API_BASE}/api/ai/agent-apps/${encodeURIComponent(agentId)}/conversations/${encodeURIComponent(sessionId)}/runs`;
 }
 
+export interface AgentAppRunRequest {
+  message: string;
+  submission_id: string;
+  file_ids: string[];
+  thinking_effort: AgentThinkingEffort;
+  model_id?: string;
+  model?: string;
+  user_timezone?: string;
+}
+
 export function buildAgentAppRunBody({
   message,
   attachments,
   submissionId,
   userTimezone,
+  agentOptions,
   thinkingEffort = "auto",
 }: {
   message: string;
   attachments?: MessageAttachment[];
   submissionId: string;
   userTimezone?: string;
+  agentOptions?: Record<string, boolean | string | number>;
   thinkingEffort?: AgentThinkingEffort;
-}): Record<string, unknown> {
+}): AgentAppRunRequest {
   const fileIds = [
     ...new Set(
       (attachments ?? [])
@@ -375,11 +387,21 @@ export function buildAgentAppRunBody({
         .filter((key) => key.length > 0),
     ),
   ];
+  const modelId =
+    typeof agentOptions?.model_id === "string" && agentOptions.model_id.trim()
+      ? agentOptions.model_id
+      : undefined;
+  const model =
+    typeof agentOptions?.model === "string" && agentOptions.model.trim()
+      ? agentOptions.model
+      : undefined;
   return {
     message,
     submission_id: submissionId,
     file_ids: fileIds,
     thinking_effort: thinkingEffort,
+    ...(modelId ? { model_id: modelId } : {}),
+    ...(model ? { model } : {}),
     ...(userTimezone ? { user_timezone: userTimezone } : {}),
   };
 }
@@ -722,6 +744,7 @@ export const sessionApi = {
               attachments,
               submissionId,
               userTimezone: getBrowserTimezone(),
+              agentOptions,
               thinkingEffort,
             }),
           ),

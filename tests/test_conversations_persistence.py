@@ -496,7 +496,6 @@ async def test_agent_conversation_history_query_is_principal_scoped_and_keyset_p
         tenant_id="tenant-a",
         user_id="user-a",
         agent_id="agt_support",
-        revision=7,
         cursor=(updated_at, created_at, "ses_boundary"),
         limit=21,
     )
@@ -506,7 +505,7 @@ async def test_agent_conversation_history_query_is_principal_scoped_and_keyset_p
     assert "sessions.tenant_id = %s" in sql
     assert "sessions.user_id = %s" in sql
     assert "sessions.agent_id = %s" in sql
-    assert "sessions.admitted_agent_profile_revision = %s" in sql
+    assert "profile.revision = sessions.admitted_agent_profile_revision" in sql
     assert "sessions.status = 'active'" in sql
     assert "join agent_profile_revisions profile" in sql
     assert "profile.content_hash = sessions.admitted_agent_profile_hash" in sql
@@ -536,7 +535,6 @@ async def test_agent_conversation_history_query_is_principal_scoped_and_keyset_p
         "tenant-a",
         "user-a",
         "agt_support",
-        7,
         updated_at,
         updated_at,
         created_at,
