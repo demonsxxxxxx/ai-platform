@@ -151,15 +151,15 @@ test("updates a published Agent workspace URL without falling back to generic ch
   assert.deepEqual(
     getSessionRouteSyncAction({
       activeTab: "chat",
-      pathname: "/agent-market/agt_support/4/chat",
-      sessionRouteBasePath: "/agent-market/agt_support/4/chat",
+      pathname: "/agent-market/agt_support/chat",
+      sessionRouteBasePath: "/agent-market/agt_support/chat",
       sessionId: "session-123",
       urlSessionId: undefined,
       externalNavigate: false,
     }),
     {
       type: "replace-url",
-      path: "/agent-market/agt_support/4/chat/session-123",
+      path: "/agent-market/agt_support/chat/session-123",
     },
   );
 });
