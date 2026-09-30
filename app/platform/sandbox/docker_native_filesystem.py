@@ -6,8 +6,8 @@ import os
 from pathlib import Path
 import stat
 from typing import Any
+from collections.abc import Iterable, Mapping
 
-from app.sandbox.api import WORKSPACE_RUNTIME_PRIVATE_ROOTS
 
 NATIVE_SOCKET_DIRECTORY = "/run/ai-platform-native"
 NATIVE_SOCKET_PATH = NATIVE_SOCKET_DIRECTORY + "/native-tool.sock"
@@ -16,7 +16,12 @@ NATIVE_FILESYSTEM_VERSION = "2"
 
 
 def native_container_filesystem(
-    workspace_host: str, workspace_container: str, socket_parent: Path, skill_mount: Any
+    workspace_host: str,
+    workspace_container: str,
+    socket_parent: Path,
+    *,
+    read_only_paths: Mapping[str, str],
+    private_roots: Iterable[str],
 ) -> dict[str, Any]:
     root = Path(workspace_host)
     target = workspace_container.rstrip("/")
@@ -24,18 +29,13 @@ def native_container_filesystem(
         str(root): {"bind": target, "mode": "rw"},
         str(socket_parent): {"bind": NATIVE_SOCKET_DIRECTORY, "mode": "rw"},
     }
-    masks = set(WORKSPACE_RUNTIME_PRIVATE_ROOTS)
-    # WorkspaceManager owns materialization of these platform paths. The
-    # provider translates that layout into immutable mounts for Bash.
-    for name in ("inputs", "CLAUDE.md"):
-        volumes[str(root / name)] = {"bind": target + "/" + name, "mode": "ro"}
-    if skill_mount is not None:
-        volumes[str(skill_mount.host_path)] = {
-            "bind": skill_mount.container_path,
-            "mode": "ro",
+    masks = set(private_roots)
+    volumes.update(
+        {
+            source: {"bind": destination, "mode": "ro"}
+            for source, destination in read_only_paths.items()
         }
-    else:
-        masks.add(".claude")
+    )
     return {
         "volumes": volumes,
         "user": "0:0",

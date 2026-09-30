@@ -8,7 +8,7 @@ import httpx
 from app.runtime.sandbox.native_tool_app import NATIVE_TOOL_AUTH_HEADER
 
 
-from app.runtime.sandbox.providers.docker.native_filesystem import NATIVE_SOCKET_PATH as NATIVE_TOOL_CONTAINER_SOCKET
+from app.platform.sandbox.docker_native_filesystem import NATIVE_SOCKET_PATH as NATIVE_TOOL_CONTAINER_SOCKET
 
 
 def _authenticated_health_probe() -> bool:

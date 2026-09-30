@@ -13,7 +13,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
-from app.runtime.sandbox.providers.docker.native_filesystem import NATIVE_SOCKET_PATH
+from app.platform.sandbox.docker_native_filesystem import NATIVE_SOCKET_PATH
 
 NATIVE_TOOL_AUTH_HEADER = "X-AI-Platform-Native-Tool-Token"
 NATIVE_TOOL_MAX_COMMAND_BYTES = 64 * 1024

@@ -98,9 +98,10 @@ def main() -> None:
                 "python",
                 image,
                 "-c",
-                "import json,sys; from types import SimpleNamespace; from pathlib import Path; "
-                "from app.runtime.sandbox.providers.docker.native_filesystem import native_container_filesystem,NATIVE_SOCKET_DIRECTORY,NATIVE_SOCKET_PATH; "
-                "print(json.dumps({'directory':NATIVE_SOCKET_DIRECTORY,'socket':NATIVE_SOCKET_PATH,'config':native_container_filesystem(sys.argv[1],'/workspace',Path(sys.argv[2]),SimpleNamespace(host_path=Path(sys.argv[1])/'.claude',container_path='/workspace/.claude'))}))",
+                "import json,sys; from pathlib import Path; "
+                "from app.platform.sandbox.docker_native_filesystem import native_container_filesystem,NATIVE_SOCKET_DIRECTORY,NATIVE_SOCKET_PATH; "
+                "from app.sandbox.api import WORKSPACE_RUNTIME_PRIVATE_ROOTS; "
+                "print(json.dumps({'directory':NATIVE_SOCKET_DIRECTORY,'socket':NATIVE_SOCKET_PATH,'config':native_container_filesystem(sys.argv[1],'/workspace',Path(sys.argv[2]),read_only_paths={str(Path(sys.argv[1])/name):'/workspace/'+name for name in ['inputs','CLAUDE.md','.claude']},private_roots=WORKSPACE_RUNTIME_PRIVATE_ROOTS)}))",
                 str(workspace),
                 str(control),
             )
@@ -283,7 +284,7 @@ print('boundaries passed')
             "python",
             image,
             "-m",
-            "app.runtime.sandbox.providers.docker.native_filesystem",
+            "app.platform.sandbox.docker_native_filesystem",
         )
         control.rmdir()
         print("native filesystem, IPC continuity, privilege drop and cleanup passed")

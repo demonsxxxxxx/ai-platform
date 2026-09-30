@@ -30,7 +30,8 @@ try:
 except ImportError:  # pragma: no cover - exercised through docker = None path
     docker = None
 
-from app.runtime.sandbox.providers.docker.native_filesystem import (
+from app.sandbox.api import WORKSPACE_RUNTIME_PRIVATE_ROOTS
+from app.platform.sandbox.docker_native_filesystem import (
     NATIVE_FILESYSTEM_LABEL, NATIVE_FILESYSTEM_VERSION, NATIVE_SOCKET_DIRECTORY,
     NATIVE_SOCKET_PATH, native_container_filesystem, remove_root_owned_socket,
 )
@@ -2455,7 +2456,11 @@ class DockerContainerProvider:
                 detach=True,
                 labels=_native_tool_labels(request, workspace, trusted_skill_mount),
                 **native_container_filesystem(workspace.workspace_host_path,
-                    workspace.workspace_container_path, socket_path.parent, trusted_skill_mount),
+                    workspace.workspace_container_path, socket_path.parent,
+                    read_only_paths={str(Path(workspace.workspace_host_path) / name): f"{workspace.workspace_container_path}/{name}"
+                                     for name in ("inputs", "CLAUDE.md")}
+                        | ({str(trusted_skill_mount.host_path): trusted_skill_mount.container_path} if trusted_skill_mount else {}),
+                    private_roots=WORKSPACE_RUNTIME_PRIVATE_ROOTS | ({".claude"} if trusted_skill_mount is None else set())),
                 environment=_native_tool_environment(token),
                 # The launcher establishes the UDS parent before Uvicorn binds
                 # it. Lifespan hooks run too late to repair a missing parent.
