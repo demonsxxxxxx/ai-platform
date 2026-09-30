@@ -4,7 +4,7 @@ import asyncio
 import hmac
 import os
 import signal
-import stat
+import socket
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import AsyncIterator
@@ -13,6 +13,8 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
+from app.runtime.sandbox.providers.docker.native_filesystem import NATIVE_SOCKET_PATH
+
 NATIVE_TOOL_AUTH_HEADER = "X-AI-Platform-Native-Tool-Token"
 NATIVE_TOOL_MAX_COMMAND_BYTES = 64 * 1024
 NATIVE_TOOL_MAX_OUTPUT_BYTES = 1024 * 1024
@@ -20,7 +22,6 @@ NATIVE_TOOL_DEFAULT_TIMEOUT_MS = 120_000
 NATIVE_TOOL_MAX_TIMEOUT_MS = 600_000
 NATIVE_TOOL_TERMINATION_GRACE_SECONDS = 5.0
 NATIVE_TOOL_TERMINATION_POLL_SECONDS = 0.05
-NATIVE_TOOL_SOCKET_PUBLISH_TIMEOUT_SECONDS = 10.0
 NATIVE_TOOL_FORCE_KILL_SIGNAL = getattr(signal, "SIGKILL", 9)
 NATIVE_TOOL_RUNTIME_UID = 10001
 NATIVE_TOOL_RUNTIME_GID = 10001
@@ -342,104 +343,62 @@ async def _execute_with_disconnect_cancellation(
                 await run_task
 
 
-async def _publish_socket(socket_path: Path) -> None:
-    deadline = asyncio.get_running_loop().time() + NATIVE_TOOL_SOCKET_PUBLISH_TIMEOUT_SECONDS
-    while asyncio.get_running_loop().time() <= deadline:
-        try:
-            node = socket_path.lstat()
-            if not stat.S_ISSOCK(node.st_mode):
-                raise RuntimeError("native_tool_socket_invalid")
-            os.chmod(socket_path, 0o666)
-            return
-        except FileNotFoundError:
-            await asyncio.sleep(0.05)
-    raise RuntimeError("native_tool_socket_publish_timeout")
-
-
-def _prepare_socket_parent(*, workspace: Path, socket_path: Path, uid: int, gid: int) -> Path:
-    """Create the fixed UDS parent before Uvicorn binds the native-tool socket."""
-
-    _require_native_tool_identity(uid, gid)
-    no_follow = getattr(os, "O_NOFOLLOW", 0)
-    directory_flag = getattr(os, "O_DIRECTORY", 0)
-    if os.name != "posix" or not no_follow or not directory_flag:
-        raise RuntimeError("native_tool_secure_filesystem_unavailable")
-    try:
-        resolved_workspace = workspace.resolve(strict=True)
-    except OSError as exc:
-        raise RuntimeError("native_tool_workspace_invalid") from exc
-    expected_socket = resolved_workspace / ".ai-platform" / "native-tool.sock"
-    if socket_path != expected_socket:
+def _bind_native_tool_socket(socket_path: Path) -> socket.socket:
+    """Bind before privilege drop; the command identity cannot replace the listener."""
+    if str(socket_path) != NATIVE_SOCKET_PATH or os.geteuid() != 0:
         raise RuntimeError("native_tool_socket_invalid")
-    open_flags = os.O_RDONLY | directory_flag | no_follow | getattr(os, "O_CLOEXEC", 0)
-    workspace_fd: int | None = None
-    socket_parent_fd: int | None = None
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    parent_fd = os.open(socket_path.parent, flags)
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
-        workspace_fd = os.open(resolved_workspace, open_flags)
-        workspace_node = os.fstat(workspace_fd)
-        if not stat.S_ISDIR(workspace_node.st_mode):
-            raise RuntimeError("native_tool_workspace_invalid")
-        try:
-            socket_parent_fd = os.open(".ai-platform", open_flags, dir_fd=workspace_fd)
-        except FileNotFoundError:
-            os.mkdir(".ai-platform", mode=0o700, dir_fd=workspace_fd)
-            socket_parent_fd = os.open(".ai-platform", open_flags, dir_fd=workspace_fd)
-        parent_before = os.fstat(socket_parent_fd)
-        if not stat.S_ISDIR(parent_before.st_mode):
-            raise RuntimeError("native_tool_socket_invalid")
-        parent_identity = (parent_before.st_dev, parent_before.st_ino)
-        if (parent_before.st_uid, parent_before.st_gid) != (uid, gid):
+        node = os.fstat(parent_fd)
+        if (node.st_uid, node.st_gid) not in {(0, NATIVE_TOOL_RUNTIME_GID), (NATIVE_TOOL_RUNTIME_UID, NATIVE_TOOL_RUNTIME_GID)}:
             raise RuntimeError("native_tool_socket_parent_owner_invalid")
-        os.fchmod(socket_parent_fd, 0o700)
-        parent_after = os.fstat(socket_parent_fd)
-        path_after = os.stat(".ai-platform", dir_fd=workspace_fd, follow_symlinks=False)
-        if (
-            not stat.S_ISDIR(parent_after.st_mode)
-            or not stat.S_ISDIR(path_after.st_mode)
-            or (parent_after.st_dev, parent_after.st_ino) != parent_identity
-            or (path_after.st_dev, path_after.st_ino) != parent_identity
-            or (parent_after.st_uid, parent_after.st_gid) != (uid, gid)
-            or stat.S_IMODE(parent_after.st_mode) != 0o700
-        ):
-            raise RuntimeError("native_tool_socket_parent_changed")
-    except OSError as exc:
-        raise RuntimeError("native_tool_socket_invalid") from exc
+        os.fchown(parent_fd, 0, NATIVE_TOOL_RUNTIME_GID)
+        os.fchmod(parent_fd, 0o750)
+        listener.set_inheritable(False)
+        listener.bind(str(socket_path))
+        os.chown(socket_path, 0, NATIVE_TOOL_RUNTIME_GID, follow_symlinks=False)
+        os.chmod(socket_path, 0o660)
+        listener.listen(128)
+        return listener
+    except BaseException:
+        listener.close()
+        raise
     finally:
-        if socket_parent_fd is not None:
-            os.close(socket_parent_fd)
-        if workspace_fd is not None:
-            os.close(workspace_fd)
-    return expected_socket
+        os.close(parent_fd)
+
+
+def _drop_native_tool_privileges(uid: int, gid: int) -> None:
+    if (uid, gid) != (NATIVE_TOOL_RUNTIME_UID, NATIVE_TOOL_RUNTIME_GID):
+        raise RuntimeError("native_tool_identity_invalid")
+    os.setgroups([])
+    os.setresgid(gid, gid, gid)
+    os.setresuid(uid, uid, uid)
+    _require_native_tool_identity(uid, gid)
+    capabilities = {
+        key: value.strip() for line in Path("/proc/self/status").read_text().splitlines()
+        if ":" in line for key, value in [line.split(":", 1)]
+    }
+    if any(int(capabilities[key], 16) for key in ("CapInh", "CapPrm", "CapEff", "CapAmb")):
+        raise RuntimeError("native_tool_capabilities_not_dropped")
+    _set_process_non_dumpable()
 
 
 def main() -> int:
-    """Launch the native-tool app only after its UDS bind location is safe."""
-
-    workspace = Path(os.getenv("AI_PLATFORM_NATIVE_TOOL_WORKSPACE") or "/workspace")
-    socket_path = Path(
-        os.getenv("AI_PLATFORM_NATIVE_TOOL_SOCKET")
-        or workspace / ".ai-platform" / "native-tool.sock"
-    )
+    """Bind private IPC, permanently drop startup privileges, then accept commands."""
+    socket_path = Path(os.getenv("AI_PLATFORM_NATIVE_TOOL_SOCKET") or NATIVE_SOCKET_PATH)
     uid = int(os.getenv("AI_PLATFORM_NATIVE_TOOL_UID") or "10001")
     gid = int(os.getenv("AI_PLATFORM_NATIVE_TOOL_GID") or "10001")
-    _require_native_tool_identity(uid, gid)
-    _set_process_non_dumpable()
-    prepared_socket = _prepare_socket_parent(
-        workspace=workspace,
-        socket_path=socket_path,
-        uid=uid,
-        gid=gid,
-    )
-    import uvicorn
+    with _bind_native_tool_socket(socket_path) as listener:
+        _drop_native_tool_privileges(uid, gid)
+        import uvicorn
 
-    uvicorn.run(
-        "app.runtime.sandbox.native_tool_app:create_native_tool_app",
-        factory=True,
-        uds=str(prepared_socket),
-        loop="asyncio",
-        access_log=False,
-        log_level="warning",
-    )
+        uvicorn.run(
+            "app.runtime.sandbox.native_tool_app:create_native_tool_app",
+            factory=True, fd=listener.fileno(), loop="asyncio",
+            access_log=False, log_level="warning",
+        )
     return 0
 
 
@@ -448,10 +407,6 @@ def create_native_tool_app() -> FastAPI:
 
     token = str(os.getenv("AI_PLATFORM_NATIVE_TOOL_TOKEN") or "")
     workspace = Path(os.getenv("AI_PLATFORM_NATIVE_TOOL_WORKSPACE") or "/workspace")
-    socket_path = Path(
-        os.getenv("AI_PLATFORM_NATIVE_TOOL_SOCKET")
-        or workspace / ".ai-platform" / "native-tool.sock"
-    )
     uid = int(os.getenv("AI_PLATFORM_NATIVE_TOOL_UID") or "10001")
     gid = int(os.getenv("AI_PLATFORM_NATIVE_TOOL_GID") or "10001")
     lock = asyncio.Lock()
@@ -464,19 +419,7 @@ def create_native_tool_app() -> FastAPI:
         resolved_workspace = workspace.resolve(strict=True)
         if not resolved_workspace.is_dir():
             raise RuntimeError("native_tool_workspace_invalid")
-        expected_socket = resolved_workspace / ".ai-platform" / "native-tool.sock"
-        if socket_path != expected_socket or socket_path.parent.is_symlink():
-            raise RuntimeError("native_tool_socket_invalid")
-        publisher = asyncio.create_task(_publish_socket(socket_path))
-        try:
-            yield
-        finally:
-            if not publisher.done():
-                publisher.cancel()
-            try:
-                await publisher
-            except asyncio.CancelledError:
-                pass
+        yield
 
     app = FastAPI(title="ai-platform native Skill tool", version="1", lifespan=lifespan)
 

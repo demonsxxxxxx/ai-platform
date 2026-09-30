@@ -22,7 +22,10 @@ all display-history bodies.
 1. Admission claims the Session's provider lineage, serializing with the previous
    Run's terminal commit, and reads committed coverage from the current epoch.
 2. A new head without an epoch uses a scoped metadata-only existence check to
-   reject prior messages. An empty conversation receives the initial scope digest.
+   reject uncovered prior history. Failed/cancelled Runs with no execution start
+   and no started or open Attempt can leave user messages without provider
+   history; these do not prevent the initial empty start. Missing or uncertain
+   execution facts still reject. An empty source receives the initial scope digest.
 3. Worker loads the exact Run-bound snapshot, validates scope and current-message
    membership, and sends an empty historical `messages` array to the adapter.
    Neither admission nor Worker reads prior message content or rebuilds history.

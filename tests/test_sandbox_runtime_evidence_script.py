@@ -4711,7 +4711,7 @@ def test_live_skill_mount_inspector_proves_mount_only_and_native_pairing_without
         "writes": {"outputs": True, "delivery": True},
     }
 
-    expected_socket = "/workspace/.ai-platform/native-tool.sock"
+    expected_socket = "/run/ai-platform-native/native-tool.sock"
     host_socket_bytes = "42"
     container_socket_bytes = str(len(expected_socket.encode("utf-8")))
 

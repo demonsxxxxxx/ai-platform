@@ -187,7 +187,9 @@ bounded lease-sentinel control readback. A selected file may be in an ordinary
 workspace directory such as `output/`, `tasks/`, `artifacts/`, or `review/`; inputs,
 platform/runtime roots, root debug/audit trees, native-tool scratch space, and
 platform instruction files remain excluded. Ordinary nested directories named
-`logs` or `runtime` are readable and deliverable. An authorized Skill may select a file below its
+`runtime` are readable and deliverable. Task-owned `logs/` is also readable and
+deliverable: platform logs live beside the Attempt workspace, not inside it.
+An authorized Skill may select a file below its
 exact staged `output/` directory, while the rest of the installed Skill stays
 private. Missing, unknown, symlink, and non-file entries fail closed. The former
 output-directory write allowlist and `outputs/**/delivery/`-only collection rule
@@ -201,13 +203,29 @@ manifest and file-upload helpers have been removed from both modules.
 
 ## Native local tool admission
 
+Docker native commands share the ordinary Attempt workspace through a writable
+mount. Inputs, platform instructions and staged Skills have nested read-only
+mounts; SDK runtime-private roots are hidden by empty read-only mounts. IPC lives
+outside the workspace at `/run/ai-platform-native`, with a root-owned directory
+and socket. The native launcher binds the listener using startup privileges,
+then permanently drops groups, UID/GID and capabilities before serving commands.
+The executor connects through a read-only IPC mount. After stopping the native
+container, a scoped cleanup helper removes its root-owned socket; cleanup failure
+keeps the existing lease retry obligation. Older native filesystem layouts are
+rejected at reuse and retired with their runtime pair.
+
+`tools/native_tool_filesystem_smoke.py` exercises the built image's actual mounts,
+private-path mutation attempts, consecutive commands, privilege drop and socket
+cleanup in the backend image CI check. Unit configuration checks alone do not
+establish these kernel boundaries.
+
 The platform does not duplicate the Claude SDK's parameter schema for these local
 sandbox tools. When a real sandbox grants `sandbox_full_local`, tool identity and
 workspace boundary remain platform-authorized, while ordinary tool parameter
 names and shapes are validated by the SDK/tool implementation. Glob/Grep
-workspace patterns remain platform-checked; brace, extglob, character-class,
-and question-mark forms fail closed because their expansions can cross private
-roots or escape the authorized workspace. Skill identity and
+workspace search scopes remain platform-checked; brace, extglob, character-class,
+and question-mark patterns use native tool semantics within that scope. Every
+returned path still passes the workspace and private-root boundary. Skill identity and
 object constraints, platform context tools, external MCP schemas, and the
 Docker-native command proxy's command/timeout limits remain platform-owned.
 This contract does not claim support for background Bash jobs; a local Bash

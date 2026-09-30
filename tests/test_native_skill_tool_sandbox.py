@@ -14,55 +14,40 @@ from app.executors import claude_agent_sdk_runner
 from app.runtime.sandbox import native_tool_app, native_tool_health_probe
 
 
-def test_native_tool_launcher_prepares_socket_parent_before_uvicorn_binds(monkeypatch, tmp_path):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    socket_path = workspace / ".ai-platform" / "native-tool.sock"
-    calls = {}
-    order = []
-
-    def prepare_socket_parent(**kwargs):
-        order.append("prepare")
-        calls["prepare"] = kwargs
-        return socket_path
-
-    monkeypatch.setattr(
-        native_tool_app,
-        "_require_native_tool_identity",
-        lambda uid, gid: order.append(("identity", uid, gid)),
-    )
-    monkeypatch.setattr(native_tool_app, "_set_process_non_dumpable", lambda: order.append("non_dumpable"))
-    monkeypatch.setattr(native_tool_app, "_prepare_socket_parent", prepare_socket_parent)
-    monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_WORKSPACE", str(workspace))
-    monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_SOCKET", str(socket_path))
-    monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_UID", "10001")
-    monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_GID", "10001")
-
-    class FakeUvicorn:
-        @staticmethod
-        def run(*args, **kwargs):
-            calls["run"] = (args, kwargs)
-
-    monkeypatch.setitem(sys.modules, "uvicorn", FakeUvicorn)
-
+def test_native_tool_launcher_binds_then_drops_privileges_before_serving(monkeypatch):
+    order, captured = [], {}
+    class Listener:
+        def __enter__(self): return self
+        def __exit__(self, *args): order.append("closed")
+        def fileno(self): return 17
+    def bind(path):
+        assert str(path) == native_tool_app.NATIVE_SOCKET_PATH
+        order.append("bind")
+        return Listener()
+    def drop(uid, gid):
+        assert (uid, gid) == (10001, 10001)
+        order.append("drop")
+    def serve(*args, **kwargs):
+        order.append("serve")
+        captured.update(kwargs)
+    monkeypatch.delenv("AI_PLATFORM_NATIVE_TOOL_SOCKET", raising=False)
+    monkeypatch.setattr(native_tool_app, "_bind_native_tool_socket", bind)
+    monkeypatch.setattr(native_tool_app, "_drop_native_tool_privileges", drop)
+    monkeypatch.setitem(sys.modules, "uvicorn", type("Server", (), {"run": staticmethod(serve)}))
     assert native_tool_app.main() == 0
-    assert order == [("identity", 10001, 10001), "non_dumpable", "prepare"]
-    assert calls["prepare"] == {
-        "workspace": workspace,
-        "socket_path": socket_path,
-        "uid": 10001,
-        "gid": 10001,
-    }
-    assert calls["run"] == (
-        ("app.runtime.sandbox.native_tool_app:create_native_tool_app",),
-        {
-            "factory": True,
-            "uds": str(socket_path),
-            "loop": "asyncio",
-            "access_log": False,
-            "log_level": "warning",
-        },
-    )
+    assert order == ["bind", "drop", "serve", "closed"]
+    assert captured["fd"] == 17
+    assert "uds" not in captured
+
+
+def test_native_tool_launcher_never_serves_after_failed_privilege_drop(monkeypatch):
+    from contextlib import nullcontext
+    monkeypatch.setattr(native_tool_app, "_bind_native_tool_socket", lambda path: nullcontext())
+    def reject(uid, gid):
+        raise RuntimeError("native_tool_capabilities_not_dropped")
+    monkeypatch.setattr(native_tool_app, "_drop_native_tool_privileges", reject)
+    with pytest.raises(RuntimeError, match="native_tool_capabilities_not_dropped"):
+        native_tool_app.main()
 
 
 @pytest.mark.parametrize(
@@ -145,9 +130,6 @@ async def test_native_tool_lifespan_revalidates_identity(monkeypatch, tmp_path):
     socket_path = socket_parent / "native-tool.sock"
     identities = []
 
-    async def publish_socket(_socket_path):
-        return None
-
     monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_TOKEN", "x" * 32)
     monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_WORKSPACE", str(workspace))
     monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_SOCKET", str(socket_path))
@@ -158,7 +140,6 @@ async def test_native_tool_lifespan_revalidates_identity(monkeypatch, tmp_path):
         "_require_native_tool_identity",
         lambda uid, gid: identities.append((uid, gid)),
     )
-    monkeypatch.setattr(native_tool_app, "_publish_socket", publish_socket)
     app = native_tool_app.create_native_tool_app()
 
     async with app.router.lifespan_context(app):
@@ -174,14 +155,10 @@ def test_native_tool_health_requires_the_internal_token(monkeypatch, tmp_path):
     socket_path = socket_parent / "native-tool.sock"
     token = "x" * 32
 
-    async def publish_socket(_socket_path):
-        return None
-
     monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_TOKEN", token)
     monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_WORKSPACE", str(workspace))
     monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_SOCKET", str(socket_path))
     monkeypatch.setattr(native_tool_app, "_require_native_tool_identity", lambda _uid, _gid: None)
-    monkeypatch.setattr(native_tool_app, "_publish_socket", publish_socket)
 
     with TestClient(native_tool_app.create_native_tool_app()) as client:
         assert client.get("/health").status_code == 403
@@ -260,160 +237,45 @@ def test_native_tool_health_probe_failure_never_emits_secret_or_path(monkeypatch
     assert private_path not in captured.out + captured.err
 
 
-def test_native_tool_socket_parent_fails_closed_without_posix_directory_flags(monkeypatch, tmp_path):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    socket_path = workspace / ".ai-platform" / "native-tool.sock"
+def test_native_tool_listener_is_prebound_and_not_inherited_by_commands(monkeypatch, tmp_path):
+    import stat
+    import tempfile
+    import os
+    temporary = tempfile.TemporaryDirectory(prefix="native-", dir="/tmp")
+    tmp_path = Path(temporary.name)
+    path = tmp_path / "native-tool.sock"
+    monkeypatch.setattr(native_tool_app, "NATIVE_SOCKET_PATH", str(path))
+    monkeypatch.setattr(native_tool_app.os, "geteuid", lambda: 0)
+    original_fstat = os.fstat
+    def runtime_owner(fd):
+        node = original_fstat(fd)
+        return os.stat_result((*node[:4], 10001, 10001, *node[6:]))
+    monkeypatch.setattr(native_tool_app.os, "fstat", runtime_owner)
+    ownership = []
+    monkeypatch.setattr(native_tool_app.os, "fchown", lambda fd, uid, gid: ownership.append((uid, gid)))
+    monkeypatch.setattr(native_tool_app.os, "chown", lambda *args, **kwargs: None)
+    with native_tool_app._bind_native_tool_socket(path) as listener:
+        assert not listener.get_inheritable()
+        assert stat.S_ISSOCK(path.stat().st_mode)
+        assert stat.S_IMODE(path.stat().st_mode) == 0o660
+        assert stat.S_IMODE(tmp_path.stat().st_mode) == 0o750
+    assert ownership == [(0, 10001)]
+    temporary.cleanup()
 
-    monkeypatch.setattr(native_tool_app, "_require_native_tool_identity", lambda _uid, _gid: None)
-    monkeypatch.setattr(native_tool_app.os, "name", "nt")
-    monkeypatch.setattr(
-        native_tool_app.os,
-        "open",
-        lambda *_args, **_kwargs: pytest.fail("unsupported platform must fail before opening paths"),
-    )
 
-    with pytest.raises(RuntimeError, match="native_tool_secure_filesystem_unavailable"):
-        native_tool_app._prepare_socket_parent(
-            workspace=workspace,
-            socket_path=socket_path,
-            uid=10001,
-            gid=10001,
-        )
-
-
-def test_native_tool_socket_parent_is_created_and_revalidated_through_directory_fds(monkeypatch, tmp_path):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    socket_path = workspace / ".ai-platform" / "native-tool.sock"
+def test_native_tool_drop_clears_groups_ids_and_checks_capabilities(monkeypatch):
     calls = []
-    parent_open_count = 0
-
-    def node(*, device, inode, uid=10001, gid=10001):
-        return type(
-            "Node",
-            (),
-            {"st_mode": 0o40700, "st_dev": device, "st_ino": inode, "st_uid": uid, "st_gid": gid},
-        )()
-
-    def open_node(path, flags, *, dir_fd=None):
-        nonlocal parent_open_count
-        calls.append(("open", path, flags, dir_fd))
-        if path == workspace:
-            return 10
-        assert path == ".ai-platform" and dir_fd == 10
-        parent_open_count += 1
-        if parent_open_count == 1:
-            raise FileNotFoundError
-        return 11
-
-    monkeypatch.setattr(Path, "resolve", lambda path, strict=False: path)
-    monkeypatch.setattr(native_tool_app, "_require_native_tool_identity", lambda _uid, _gid: None)
-    monkeypatch.setattr(native_tool_app.os, "name", "posix")
-    monkeypatch.setattr(native_tool_app.os, "O_NOFOLLOW", 0x100, raising=False)
-    monkeypatch.setattr(native_tool_app.os, "O_DIRECTORY", 0x200, raising=False)
-    monkeypatch.setattr(native_tool_app.os, "open", open_node)
-    monkeypatch.setattr(
-        native_tool_app.os,
-        "fstat",
-        lambda fd: node(device=1, inode=1) if fd == 10 else node(device=2, inode=2),
-    )
-    monkeypatch.setattr(
-        native_tool_app.os,
-        "mkdir",
-        lambda path, mode, *, dir_fd: calls.append(("mkdir", path, mode, dir_fd)),
-    )
-    monkeypatch.setattr(
-        native_tool_app.os,
-        "fchown",
-        lambda *_args: pytest.fail("unprivileged sidecar must not change directory ownership"),
-        raising=False,
-    )
-    monkeypatch.setattr(
-        native_tool_app.os,
-        "fchmod",
-        lambda fd, mode: calls.append(("fchmod", fd, mode)),
-        raising=False,
-    )
-    monkeypatch.setattr(
-        native_tool_app.os,
-        "stat",
-        lambda path, *, dir_fd, follow_symlinks: node(device=2, inode=2),
-    )
-    monkeypatch.setattr(native_tool_app.os, "close", lambda fd: calls.append(("close", fd)))
-
-    assert native_tool_app._prepare_socket_parent(
-        workspace=workspace,
-        socket_path=socket_path,
-        uid=10001,
-        gid=10001,
-    ) == socket_path
-    assert ("mkdir", ".ai-platform", 0o700, 10) in calls
-    assert ("fchmod", 11, 0o700) in calls
-    assert calls[-2:] == [("close", 11), ("close", 10)]
-
-
-@pytest.mark.parametrize(
-    ("foreign_owner", "path_inode", "expected_error"),
-    [
-        (True, 2, "native_tool_socket_parent_owner_invalid"),
-        (False, 3, "native_tool_socket_parent_changed"),
-    ],
-)
-def test_native_tool_socket_parent_rejects_foreign_owner_or_path_swap(
-    monkeypatch,
-    tmp_path,
-    foreign_owner,
-    path_inode,
-    expected_error,
-):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    socket_path = workspace / ".ai-platform" / "native-tool.sock"
-    closed = []
-
-    def node(*, device, inode, uid=10001, gid=10001):
-        return type(
-            "Node",
-            (),
-            {"st_mode": 0o40700, "st_dev": device, "st_ino": inode, "st_uid": uid, "st_gid": gid},
-        )()
-
-    monkeypatch.setattr(Path, "resolve", lambda path, strict=False: path)
-    monkeypatch.setattr(native_tool_app, "_require_native_tool_identity", lambda _uid, _gid: None)
-    monkeypatch.setattr(native_tool_app.os, "name", "posix")
-    monkeypatch.setattr(native_tool_app.os, "O_NOFOLLOW", 0x100, raising=False)
-    monkeypatch.setattr(native_tool_app.os, "O_DIRECTORY", 0x200, raising=False)
-    monkeypatch.setattr(
-        native_tool_app.os,
-        "open",
-        lambda path, flags, *, dir_fd=None: 10 if path == workspace else 11,
-    )
-    monkeypatch.setattr(
-        native_tool_app.os,
-        "fstat",
-        lambda fd: (
-            node(device=1, inode=1)
-            if fd == 10
-            else node(device=2, inode=2, uid=99999 if foreign_owner else 10001, gid=99999 if foreign_owner else 10001)
-        ),
-    )
-    monkeypatch.setattr(native_tool_app.os, "fchmod", lambda *_args: None, raising=False)
-    monkeypatch.setattr(
-        native_tool_app.os,
-        "stat",
-        lambda path, *, dir_fd, follow_symlinks: node(device=2, inode=path_inode),
-    )
-    monkeypatch.setattr(native_tool_app.os, "close", lambda fd: closed.append(fd))
-
-    with pytest.raises(RuntimeError, match=expected_error):
-        native_tool_app._prepare_socket_parent(
-            workspace=workspace,
-            socket_path=socket_path,
-            uid=10001,
-            gid=10001,
-        )
-    assert closed == [11, 10]
+    monkeypatch.setattr(native_tool_app.os, "setgroups", lambda groups: calls.append(("groups", groups)))
+    monkeypatch.setattr(native_tool_app.os, "setresgid", lambda *ids: calls.append(("gid", ids)), raising=False)
+    monkeypatch.setattr(native_tool_app.os, "setresuid", lambda *ids: calls.append(("uid", ids)), raising=False)
+    monkeypatch.setattr(native_tool_app, "_require_native_tool_identity", lambda *ids: None)
+    monkeypatch.setattr(Path, "read_text", lambda self: "CapInh: 0\nCapPrm: 0\nCapEff: 0\nCapAmb: 0")
+    monkeypatch.setattr(native_tool_app, "_set_process_non_dumpable", lambda: calls.append("non_dumpable"))
+    native_tool_app._drop_native_tool_privileges(10001, 10001)
+    assert calls == [("groups", []), ("gid", (10001, 10001, 10001)), ("uid", (10001, 10001, 10001)), "non_dumpable"]
+    monkeypatch.setattr(Path, "read_text", lambda self: "CapInh: 0\nCapPrm: 1\nCapEff: 0\nCapAmb: 0")
+    with pytest.raises(RuntimeError, match="native_tool_capabilities_not_dropped"):
+        native_tool_app._drop_native_tool_privileges(10001, 10001)
 
 
 @pytest.mark.asyncio
@@ -800,7 +662,7 @@ def test_native_skill_workspace_paths_are_confined_and_proxy_carries_command_as_
         workspace_root=workspace,
     )
 
-    monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_SOCKET", "/workspace/.ai-platform/native-tool.sock")
+    monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_SOCKET", "/run/ai-platform-native/native-tool.sock")
     monkeypatch.setenv("AI_PLATFORM_NATIVE_TOOL_TOKEN", "x" * 32)
     command = "python scripts/run.py 'quoted; value'"
     proxied = claude_agent_sdk_runner._native_tool_proxy_input(

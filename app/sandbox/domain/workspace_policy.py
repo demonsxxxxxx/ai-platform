@@ -6,15 +6,14 @@ from collections.abc import Iterable
 from pathlib import PurePosixPath
 
 PLATFORM_CLAUDE_INSTRUCTIONS_FILENAME = "CLAUDE.md"
+WORKSPACE_RUNTIME_PRIVATE_ROOTS = frozenset({
+    ".ai-platform", ".claude-config", ".home", ".pins", ".tmp",
+})
 
 _MUTATION_PROTECTED_ROOTS = frozenset(
     {
-        ".ai-platform",
+        *WORKSPACE_RUNTIME_PRIVATE_ROOTS,
         ".claude",
-        ".claude-config",
-        ".home",
-        ".pins",
-        ".tmp",
         "inputs",
     }
 )
@@ -30,7 +29,6 @@ _COLLECTION_PRIVATE_DIRECTORIES = frozenset(
     {
         *_MUTATION_PROTECTED_ROOTS,
         ".native-skill-tmp",
-        "logs",
         "runtime",
         "_audit",
         "_debug",

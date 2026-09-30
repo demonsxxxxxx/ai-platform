@@ -7463,3 +7463,88 @@ async def test_protocol_close_includes_late_skill_outcome_without_sticky_failure
         [{"name": "QA", "version": "v1", "availability": "available"}] if expected_skills else []
     )
     assert result.capability_evidence[-1]["lifecycle_phase"] == ("completed" if expected_skills else "failed")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('first_outcome', ['completed', 'failed', 'pending', 'unacknowledged'])
+async def test_external_write_admission_waits_for_confirmed_prior_outcome(monkeypatch, tmp_path, first_outcome):
+    captured = {}
+    write = {**_subject(tool_name='write'), 'write_capable': True}
+    read = _subject(tool_name='read')
+    first = _mcp_hook_steps(write, call_id='write-a', terminal=first_outcome)
+    if first_outcome == 'pending':
+        first = first[:1]
+    elif first_outcome == 'unacknowledged':
+        first = _mcp_hook_steps(write, call_id='write-a')
+    second = _mcp_hook_steps(write, call_id='write-b')
+    steps = first + second[:1]
+    if first_outcome == 'completed':
+        steps += second[1:]
+    if first_outcome == 'failed':
+        steps += _mcp_hook_steps(read, call_id='read-reconcile')
+
+    async def acknowledge(evidence):
+        return not (first_outcome == 'unacknowledged' and evidence['lifecycle_phase'] == 'completed')
+
+    monkeypatch.setitem(sys.modules, 'claude_agent_sdk', _scripted_sdk(captured, steps))
+    monkeypatch.setattr('app.executors.claude_agent_sdk_runner.get_settings', _sandbox_brokered_settings)
+    result = await run_claude_agent_sdk(
+        prompt='perform task', cwd=tmp_path, skill_id='general-chat',
+        execution_policy='sandbox_brokered', tool_policy_subjects=[write, read],
+        on_capability_evidence=acknowledge,
+    )
+    admissions = [value['hookSpecificOutput']['permissionDecision']
+                  for kind, value in captured['hook_results'] if kind == 'PreToolUse']
+    assert admissions[:2] == ['allow', 'allow' if first_outcome in {'completed', 'pending'} else 'deny']
+    if first_outcome == 'failed':
+        assert admissions[2] == 'allow'
+    if first_outcome in {'failed', 'pending'}:
+        assert result.error == 'mcp_execution_outcome_unknown'
+        assert result.turn_diagnostics['retryable'] is False
+    elif first_outcome == 'unacknowledged':
+        assert result.error == 'mcp_execution_succeeded_receipt_incomplete'
+    else:
+        assert result.error is None
+
+
+@pytest.mark.asyncio
+async def test_concurrent_external_writes_remain_allowed_before_any_failure(monkeypatch, tmp_path):
+    captured = {}
+    subject = {**_subject(), 'write_capable': True}
+    async def acknowledge(_evidence):
+        await asyncio.sleep(0)
+        return True
+    hooks = [_mcp_hook_steps(subject, call_id=call_id)[0][1] for call_id in ('write-a', 'write-b')]
+    monkeypatch.setitem(sys.modules, 'claude_agent_sdk', _scripted_sdk(captured, [('concurrent_hooks', hooks)]))
+    monkeypatch.setattr('app.executors.claude_agent_sdk_runner.get_settings', _sandbox_brokered_settings)
+    await run_claude_agent_sdk(
+        prompt='perform task', cwd=tmp_path, skill_id='general-chat',
+        execution_policy='sandbox_brokered', tool_policy_subjects=[subject],
+        on_capability_evidence=acknowledge,
+    )
+    admissions = [value['hookSpecificOutput']['permissionDecision']
+                  for kind, value in captured['hook_results'] if kind == 'PreToolUse']
+    assert admissions == ['allow', 'allow']
+
+
+@pytest.mark.asyncio
+async def test_external_write_rechecks_uncertainty_after_awaiting_admission_receipt(monkeypatch, tmp_path):
+    captured = {}
+    write = {**_subject(), 'write_capable': True}
+    first = _mcp_hook_steps(write, call_id='write-a', terminal='failed')
+    second = _mcp_hook_steps(write, call_id='write-b')
+    async def acknowledge(_evidence):
+        await asyncio.sleep(0)
+        return True
+    steps = [first[0], ('concurrent_hooks', [second[0][1], first[1][1]])]
+    monkeypatch.setitem(sys.modules, 'claude_agent_sdk', _scripted_sdk(captured, steps))
+    monkeypatch.setattr('app.executors.claude_agent_sdk_runner.get_settings', _sandbox_brokered_settings)
+    result = await run_claude_agent_sdk(
+        prompt='perform task', cwd=tmp_path, skill_id='general-chat',
+        execution_policy='sandbox_brokered', tool_policy_subjects=[write],
+        on_capability_evidence=acknowledge,
+    )
+    admissions = [value['hookSpecificOutput']['permissionDecision']
+                  for kind, value in captured['hook_results'] if kind == 'PreToolUse']
+    assert admissions == ['allow', 'deny']
+    assert result.error == 'mcp_execution_outcome_unknown'

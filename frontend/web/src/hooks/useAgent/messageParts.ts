@@ -610,8 +610,15 @@ export function clearAllLoadingStates(parts: MessagePart[]): MessagePart[] {
     switch (part.type) {
       case "tool": {
         const toolPart = part as ToolPart;
-        if (!toolPart.isPending) return part;
-        return { ...toolPart, isPending: false, cancelled: true };
+        const isUnresolvedStartedTool =
+          toolPart.status === "started" ||
+          (toolPart.status === undefined && toolPart.isPending === true);
+        if (!toolPart.isPending && !isUnresolvedStartedTool) return part;
+        return {
+          ...toolPart,
+          isPending: false,
+          ...(isUnresolvedStartedTool ? { cancelled: true } : {}),
+        };
       }
       case "thinking": {
         const thinkingPart = part as ThinkingPart;

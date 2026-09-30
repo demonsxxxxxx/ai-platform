@@ -8,7 +8,7 @@ import httpx
 from app.runtime.sandbox.native_tool_app import NATIVE_TOOL_AUTH_HEADER
 
 
-NATIVE_TOOL_CONTAINER_SOCKET = "/workspace/.ai-platform/native-tool.sock"
+from app.runtime.sandbox.providers.docker.native_filesystem import NATIVE_SOCKET_PATH as NATIVE_TOOL_CONTAINER_SOCKET
 
 
 def _authenticated_health_probe() -> bool:

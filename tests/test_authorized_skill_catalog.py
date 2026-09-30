@@ -438,6 +438,111 @@ async def test_catalog_truncation_is_deterministic_bounded_and_explicit(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_configured_roots_share_description_budget_without_losing_identity(monkeypatch):
+    monkeypatch.setattr(catalog, "MAX_AUTHORIZED_SKILL_CATALOG_ENTRIES", 32)
+    skill_ids = [f"configured-root-{index:02d}" for index in range(32)]
+    rows = []
+    for index, skill_id in enumerate(skill_ids):
+        description = "中" * 340 if index % 2 == 0 else "ascii description " * 56
+        row = _skill_row(skill_id, description=description)
+        row["name"] = "长技能名称" * 16 if index % 2 == 0 else (
+            f"Long configured skill name {index:02d} " + "x" * 140
+        )
+        rows.append(row)
+    rows_by_id = {str(row["skill_id"]): row for row in rows}
+    skill_set = [
+        {"skill_id": skill_id, "expected_version": rows_by_id[skill_id]["version"]}
+        for skill_id in skill_ids
+    ]
+    pinned_manifests = [_manifest_from_row(row) for row in rows]
+    descriptions = {
+        skill_id: catalog._safe_public_text(
+            rows_by_id[skill_id]["description"],
+            max_bytes=catalog.MAX_AUTHORIZED_SKILL_DESCRIPTION_BYTES,
+        )
+        for skill_id in skill_ids
+    }
+    assert sum(len(catalog._canonical_json(value)) - 2 for value in descriptions.values()) > (
+        catalog.MAX_AUTHORIZED_SKILL_CATALOG_PROMPT_BYTES
+    )
+
+    first, _ = await _resolve(
+        monkeypatch,
+        rows=rows,
+        distributions=[_distribution(skill_id) for skill_id in skill_ids],
+        binding=_binding(selected_skill_id=skill_ids[0]),
+        pinned_manifests=pinned_manifests,
+        skill_set=skill_set,
+    )
+    second, _ = await _resolve(
+        monkeypatch,
+        rows=list(reversed(rows)),
+        distributions=[_distribution(skill_id) for skill_id in reversed(skill_ids)],
+        binding=_binding(selected_skill_id=skill_ids[0]),
+        pinned_manifests=list(reversed(pinned_manifests)),
+        skill_set=skill_set,
+    )
+
+    assert first.snapshot.to_runtime_payload() == second.snapshot.to_runtime_payload()
+    assert first.snapshot.truncated is False
+    assert first.snapshot.omitted_count == 0
+    assert first.snapshot.available_skill_ids == tuple(skill_ids)
+    assert all(
+        first.snapshot.entry(skill_id).invocation_handle == f"Skill({skill_id})"
+        for skill_id in skill_ids
+    )
+    assert any(
+        first.snapshot.entry(skill_id).description != descriptions[skill_id]
+        for skill_id in skill_ids
+    )
+    assert {
+        entry.skill_id: entry.version for entry in first.snapshot.entries
+    } == {skill_id: rows_by_id[skill_id]["version"] for skill_id in skill_ids}
+    assert len(catalog._canonical_json(first.snapshot.prompt_payload()).encode("utf-8")) <= (
+        catalog.MAX_AUTHORIZED_SKILL_CATALOG_PROMPT_BYTES
+    )
+
+
+def test_required_catalog_identity_over_budget_keeps_clear_error(monkeypatch):
+    entry = catalog.AuthorizedSkillCatalogEntry(
+        skill_id="configured-root",
+        name="长名称" * 42,
+        description="",
+        version="a" * 64,
+        status="released",
+        availability=catalog.AVAILABLE,
+        invocation_handle="Skill(configured-root)",
+    )
+    candidate = catalog._Candidate(
+        entry=entry,
+        dependency_ids=(),
+        row={},
+    )
+    identity_payload = {
+        "schema_version": catalog.AUTHORIZED_SKILL_CATALOG_SCHEMA_VERSION,
+        "skills": [entry.to_payload()],
+        "truncated": False,
+        "omitted_count": 0,
+    }
+    identity_size = len(catalog._canonical_json(identity_payload).encode("utf-8"))
+    monkeypatch.setattr(
+        catalog,
+        "MAX_AUTHORIZED_SKILL_CATALOG_PROMPT_BYTES",
+        identity_size - 1,
+    )
+
+    with pytest.raises(
+        AuthorizedSkillCatalogError,
+        match="authorized_skill_catalog_required_set_too_large",
+    ):
+        catalog._bounded_candidates(
+            {entry.skill_id: candidate},
+            selected_skill_id=entry.skill_id,
+            required_skill_ids=(entry.skill_id,),
+        )
+
+
+@pytest.mark.asyncio
 async def test_agent_skill_set_catalog_excludes_other_discoverable_skills(monkeypatch):
     monkeypatch.setattr(catalog, "MAX_AUTHORIZED_SKILL_CATALOG_ENTRIES", 2)
     rows = [_skill_row(skill_id) for skill_id in ("skill-a", "skill-y", "skill-z")]

@@ -370,3 +370,17 @@ def test_validate_skill_package_contract_rejects_mismatched_or_unsafe_metadata(m
             skill_id="qa-file-reviewer",
             content_hash=parsed.content_hash,
         )
+
+
+@pytest.mark.parametrize('name', ['report:writer', '/writer', '.writer', 'x' * 129])
+def test_package_rejects_names_that_cannot_be_invoked_by_native_skill_tool(name):
+    with pytest.raises(ValueError, match='skill_package_name_invalid'):
+        parse_skill_package_zip(package_zip({'SKILL.md': skill_md(name=name)}))
+
+
+@pytest.mark.parametrize('name', ['report-writer', 'report_writer.v2', '9writer', 'x' * 128])
+def test_package_accepts_executable_skill_names(name):
+    from app.skills.api import is_valid_executable_skill_name
+    parsed = parse_skill_package_zip(package_zip({'SKILL.md': skill_md(name=name)}))
+    assert parsed.skill_id == name
+    assert is_valid_executable_skill_name(parsed.skill_id)

@@ -1069,7 +1069,7 @@ async def _inspect_live_skill_mount(
         run_id=lease.run_id,
         owner="sandbox-native-tool",
     )
-    expected_socket = "/workspace/.ai-platform/native-tool.sock"
+    expected_socket = "/run/ai-platform-native/native-tool.sock"
     primary_socket_exit = _docker_exec_exit_code(
         await asyncio.to_thread(primary.exec_run, ["test", "-S", expected_socket])
     )

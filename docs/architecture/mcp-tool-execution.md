@@ -61,6 +61,11 @@ by replacing characters outside `[a-zA-Z0-9_-]` with `_`.
    deadline preserve that uncertainty after an observed MCP invocation.
    Retry and resume reject either error code at the locked Runs control
    boundary and in the public readiness/manifest projections.
+   A failed external write, identity conflict or unacknowledged receipt also
+   denies subsequent external writes in the current SDK turn. Admission rechecks
+   after awaited receipts to cover concurrent failures. Ordinary concurrent
+   writes remain available before an uncertain outcome is observed; authorized
+   read-only tools remain available for reconciliation when their receipts work.
 4. Support Streamable HTTP and legacy SSE explicitly in discovery and execution.
    Preserve endpoint validation, DNS pinning, same-origin SSE message endpoints,
    redirect rejection, reserved-header protection, and bounded responses.
@@ -119,7 +124,7 @@ JUnit and evidence output. Frontend uses its installed tsx test runner.
 | Selection | Real bundled CLI against synthetic localhost MCP/model endpoints sees selected input schemas only; remote receives original tool name/arguments; unknown calls never reach remote |
 | Results | Text, structured content and remote isError preserved; SDK failure and callback failure cannot produce a successful tool receipt |
 | Transport | Real local HTTP and SSE handshake/list/call; JWT/static headers on requests; same-origin message endpoint; no redirect, DNS rebinding or forbidden endpoint dispatch |
-| Lifecycle | Discovery failure/missing tool fails before model request; normal completion, exception and cancellation close owned sessions and tasks |
+| Lifecycle | Discovery failure/missing tool removes the unavailable optional capability; normal completion, exception and cancellation close owned sessions and tasks |
 | Configuration | strict MCP config set; HTTP/SSE accepted; sandbox/command writes rejected and existing records preserved |
 | References/catalog | Long valid MCP references accepted at Sandbox boundary; malformed references rejected; same-page and cross-page duplicate names/cursor loops rejected |
 | UI | HTTP-200 discovery failure renders unavailable, not empty; stale response generation protection remains |
