@@ -141,7 +141,7 @@ def test_packaged_image_jobs_have_no_publish_deploy_or_secret_authority():
     frontend_build_condition = "if: steps.image-scope.outputs.build == 'true'"
     frontend_report_condition = "if: steps.image-scope.outputs.build != 'true'"
     for image_job, build_condition, report_condition, build_step_count in (
-        (backend_image, backend_build_condition, backend_report_condition, 5),
+        (backend_image, backend_build_condition, backend_report_condition, 6),
         (frontend_image, frontend_build_condition, frontend_report_condition, 8),
     ):
         conditions = [
