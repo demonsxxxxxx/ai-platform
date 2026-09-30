@@ -102,6 +102,7 @@ export function MessagePartRenderer({
     return (
       <ToolCallItem
         status={part.status}
+        cancelled={part.cancelled}
         publicCategory={part.public_category}
         publicDisplayName={publicDisplayName}
         publicOperationId={part.public_operation_id}

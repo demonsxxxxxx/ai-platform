@@ -5,6 +5,8 @@ import pytest
 from app.executors.claude_agent_sdk_runner import _workspace_path_parameters_authorized
 from app.sandbox.domain.workspace_policy import (
     workspace_collection_file_allowed,
+    workspace_delivery_file_allowed,
+    workspace_mutation_allowed,
     workspace_read_allowed,
 )
 from app.required_tool_contract import builtin_capability_subjects
@@ -14,13 +16,15 @@ from app.skills.execution_profiles import (
 )
 
 
-@pytest.mark.parametrize("path", ["outputs/logs/job.txt", "scripts/runtime/helper.py", "outputs/_audit/report.txt"])
+@pytest.mark.parametrize("path", ["logs/report.txt", "outputs/logs/job.txt", "scripts/runtime/helper.py", "outputs/_audit/report.txt"])
 def test_task_owned_nested_directories_remain_readable_and_deliverable(path):
+    assert workspace_mutation_allowed(path)
     assert workspace_read_allowed(path)
     assert workspace_collection_file_allowed(path)
+    assert workspace_delivery_file_allowed(path)
 
 
-@pytest.mark.parametrize("path", [".ai-platform/token", ".claude-config/settings.json", "logs/runtime.log", "../other-tenant/data.txt"])
+@pytest.mark.parametrize("path", [".ai-platform/token", ".claude-config/settings.json", "runtime/state.json", "../other-tenant/data.txt"])
 def test_platform_roots_and_parent_workspace_remain_private(path):
     assert not workspace_read_allowed(path)
     assert not workspace_collection_file_allowed(path)

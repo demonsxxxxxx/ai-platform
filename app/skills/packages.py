@@ -21,7 +21,7 @@ from app.skills.release_readiness import (
     _VULNERABILITY_EVIDENCE_NAMES,
 )
 from app.skills.registry import parse_skill_markdown_front_matter
-from app.validation import assert_safe_id
+from app.skills.api import is_valid_executable_skill_name
 
 MAX_SKILL_PACKAGE_FILE_BYTES = MAX_SKILL_SNAPSHOT_FILE_BYTES
 MAX_SKILL_PACKAGE_TOTAL_BYTES = MAX_SKILL_SNAPSHOT_TOTAL_BYTES
@@ -286,7 +286,8 @@ def build_uploaded_skill_admin_trust_review(skill_version: dict[str, Any]) -> di
     summary: dict[str, int] = {"file_count": 0, "size_bytes": 0}
     contract: dict[str, Any] = {}
     try:
-        assert_safe_id(skill_id, "skill_id")
+        if not is_valid_executable_skill_name(skill_id):
+            raise ValueError("skill_package_name_invalid")
         if not version or version != content_hash or source.get("kind") != "uploaded":
             raise ValueError("skill_package_version_identity_invalid")
         raw_contract = source.get("package_contract")
@@ -405,10 +406,8 @@ def parse_skill_package_zip(content: bytes, *, expected_skill_id: str | None = N
         raise ValueError("skill_package_invalid_utf8") from exc
     metadata = parse_skill_markdown_front_matter(skill_md_text)
     skill_id = metadata.get("name") or ""
-    try:
-        assert_safe_id(skill_id, "skill_id")
-    except ValueError as exc:
-        raise ValueError(str(exc)) from exc
+    if not is_valid_executable_skill_name(skill_id):
+        raise ValueError("skill_package_name_invalid")
     if expected_skill_id is not None and skill_id != expected_skill_id:
         raise ValueError("skill_package_name_mismatch")
     description = metadata.get("description") or ""

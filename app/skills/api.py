@@ -12,6 +12,9 @@ from app.skills.application.run_admission import (
 from app.skills.domain.snapshot_paths import (
     skill_snapshot_components_fit as skill_snapshot_components_fit,
 )
+from app.skills.domain.executable_names import (
+    is_valid_executable_skill_name as is_valid_executable_skill_name,
+)
 from app.skills.domain.version_labels import (
     next_uploaded_skill_display_version,
     resolve_uploaded_skill_display_versions,
@@ -226,6 +229,7 @@ __all__ = [
     "configure_skill_display_version_persistence",
     "list_uploaded_skill_display_version_rows",
     "lock_skill_for_version_upload",
+    "is_valid_executable_skill_name",
     "next_uploaded_skill_display_version",
     "pin_skill_run_mcp_tools",
     "resolve_uploaded_skill_display_versions",

@@ -146,7 +146,8 @@ export function getVisibleMessageParts(parts: MessagePart[]): MessagePart[] {
         name: publicDisplayName,
         args: {},
         status: part.status,
-        isPending: part.status === "started",
+        isPending: part.status === "started" && !part.cancelled,
+        ...(part.status === "started" && part.cancelled ? { cancelled: true } : {}),
         depth: part.depth,
         public_operation_id: part.public_operation_id,
         ...(part.public_category === "skill"

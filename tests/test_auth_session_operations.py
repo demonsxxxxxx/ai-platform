@@ -900,11 +900,17 @@ def test_browser_principal_snapshot_strictly_preserves_authority_metadata():
         "authz_policy_version",
         "authority_source",
         "authority_checked_at",
-        "company_jwt_expires_at",
     ):
         incomplete = dict(snapshot)
         incomplete.pop(field)
         assert auth_sessions._valid_snapshot(incomplete) is None
+
+    password_login_snapshot = dict(snapshot)
+    password_login_snapshot.pop("company_jwt_expires_at")
+    assert auth_sessions._valid_snapshot(password_login_snapshot) == password_login_snapshot
+    for invalid_expiry in (True, "invalid", 0, -1):
+        invalid = {**snapshot, "company_jwt_expires_at": invalid_expiry}
+        assert auth_sessions._valid_snapshot(invalid) is None
 
 
 def bootstrap_request(nonce: str = "A" * 43) -> dict[str, object]:

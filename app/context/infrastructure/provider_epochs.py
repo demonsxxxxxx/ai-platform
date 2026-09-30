@@ -109,6 +109,26 @@ async def read_provider_coverage(
                    and prior_session.workspace_id = head.workspace_id
                    and prior_session.user_id = head.user_id
                    and prior_session.agent_id = head.agent_id
+                   and not (
+                     prior_message.role = 'user' and exists (
+                       select 1 from runs prior_run
+                       where prior_run.tenant_id = head.tenant_id
+                         and prior_run.id = prior_message.run_id
+                         and prior_run.workspace_id = head.workspace_id
+                         and prior_run.user_id = head.user_id
+                         and prior_run.session_id = head.session_id
+                         and prior_run.agent_id = head.agent_id
+                         and prior_run.status in ('failed', 'cancelled')
+                         and prior_run.started_at is null
+                         and not exists (
+                           select 1 from run_attempts prior_attempt
+                           where prior_attempt.tenant_id = prior_run.tenant_id
+                             and prior_attempt.run_id = prior_run.id
+                             and (prior_attempt.started_at is not null
+                               or prior_attempt.status not in ('failed', 'cancelled'))
+                         )
+                     )
+                   )
                ) as has_prior_messages
         from provider_session_heads head
         join runs current_run on current_run.tenant_id = head.tenant_id

@@ -3,7 +3,9 @@ import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { MessagePart } from "../../../../types";
+import { clearAllLoadingStates } from "../../../../hooks/useAgent/messageParts.ts";
 import { PUBLIC_TERMINAL_PRESENTATION_DEFINITIONS } from "../../../../hooks/useAgent/publicTerminalPresentation.ts";
+import { getVisibleMessageParts } from "../messagePartVisibility.ts";
 import {
   createMessagePartRenderKeys,
   MessagePartRenderer,
@@ -111,6 +113,73 @@ test("renders public tool metadata without raw arguments or results", () => {
       "",
     );
   }
+});
+
+test("stops unresolved public tool presentation after terminal cleanup without changing protocol outcomes", () => {
+  const cleanedParts = clearAllLoadingStates([
+    {
+      type: "tool",
+      name: "Read private path",
+      args: { path: "/workspace/private" },
+      status: "started",
+      public_operation_id: "operation-stopped",
+      public_category: "read",
+    },
+    {
+      type: "tool",
+      name: "Read",
+      args: {},
+      status: "completed",
+      success: true,
+      isPending: true,
+      public_operation_id: "operation-completed",
+      public_category: "read",
+    },
+    {
+      type: "tool",
+      name: "Write",
+      args: {},
+      status: "failed",
+      success: false,
+      isPending: true,
+      public_operation_id: "operation-failed",
+      public_category: "write",
+    },
+  ]);
+
+  assert.deepEqual(
+    cleanedParts.map((part) =>
+      part.type === "tool"
+        ? {
+            status: part.status,
+            isPending: part.isPending,
+            cancelled: part.cancelled,
+            success: part.success,
+          }
+        : null,
+    ),
+    [
+      { status: "started", isPending: false, cancelled: true, success: undefined },
+      { status: "completed", isPending: false, cancelled: undefined, success: true },
+      { status: "failed", isPending: false, cancelled: undefined, success: false },
+    ],
+  );
+
+  const projected = getVisibleMessageParts(cleanedParts);
+  assert.equal(projected[0]?.type, "tool");
+  assert.equal(projected[0]?.type === "tool" ? projected[0].status : null, "started");
+  assert.equal(projected[0]?.type === "tool" ? projected[0].isPending : null, false);
+  assert.equal(projected[0]?.type === "tool" ? projected[0].cancelled : null, true);
+
+  const markup = renderToStaticMarkup(
+    createElement(MessagePartRenderer, {
+      isLast: true,
+      part: projected[0]!,
+    }),
+  );
+  assert.match(markup, /操作已停止，结果尚未确认/);
+  assert.doesNotMatch(markup, /操作已开始|animate-spin/);
+  assert.doesNotMatch(markup, /workspace|private/);
 });
 
 test("renders public execution kind and status from the Chinese catalog instead of backend copy", async () => {

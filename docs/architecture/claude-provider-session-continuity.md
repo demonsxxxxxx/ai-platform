@@ -90,8 +90,11 @@ callback protocol, database migration, or deployment change is in scope.
 
 Admission claims the scoped lineage and reads the committed current epoch's
 coverage digest/count. For a head with no current epoch, a scoped metadata-only
-existence query rejects prior messages; only a new conversation receives the
-empty scope digest. No historical content query or hash scan runs here.
+existence query rejects uncovered prior history. User messages from terminal
+failed/cancelled Runs that never started and have no started or open Attempt
+do not represent provider history. They may precede the first `empty_start`;
+missing Run facts, assistant messages and started/uncertain Attempts still
+require a new conversation. No historical content query or hash scan runs here.
 
 Before ExecutionSpec/Attempt binding, the Worker:
 

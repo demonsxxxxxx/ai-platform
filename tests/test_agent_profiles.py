@@ -1054,9 +1054,8 @@ def test_profile_copy_snapshot_preserves_private_prompt_model_and_exact_pins():
 
 
 @pytest.mark.asyncio
-async def test_replay_authority_revalidates_exact_profile_snapshot_and_leaves_generic_runs_unchanged(monkeypatch):
-    from app.agent_apps import AgentProfileAdmission, AgentProfileAuthority
-    from app.models import AgentConversationIdentity
+async def test_replay_authority_rejects_unshaped_profile_snapshot_and_leaves_generic_runs_unchanged(monkeypatch):
+    from app.agent_apps import AgentProfileAuthority
 
     principal = AuthPrincipal(
         user_id="user-a",
@@ -1096,55 +1095,25 @@ async def test_replay_authority_revalidates_exact_profile_snapshot_and_leaves_ge
             "input_json": {"input": {"message": "generic"}},
         }
     )
-    bound_calls: list[dict[str, object]] = []
-
     async def get_run(*_args, **kwargs):
         return rows.get(kwargs["run_id"])
 
     async def resolve_bound(*_args, **kwargs):
-        bound_calls.append(kwargs)
-        return AgentProfileAdmission(
-            agent_id="agt_support",
-            revision=4,
-            content_hash="a" * 64,
-            skill={
-                "skill_id": "profile-skill",
-                "skill_version": "version-a",
-                "executor_type": "claude-agent-worker",
-            },
-            mcp_tool_ids=("profile-tool",),
-            private_execution_input={
-                "agent_id": "agt_support",
-                "revision": 4,
-                "content_hash": "a" * 64,
-                "instructions": "private profile instruction",
-            },
-            public_identity=AgentConversationIdentity(
-                agent_id="agt_support",
-                revision=4,
-                name="Support assistant",
-            ),
-        )
+        pytest.fail("malformed snapshots must reject before profile resolution")
 
     monkeypatch.setattr('app.runs.infrastructure.creation_postgres.get_authorized_run', get_run)
     authority = AgentProfileAuthority()
     monkeypatch.setattr(authority, "resolve_pinned_profile_for_replay", resolve_bound)
 
-    await authority.reauthorize_pinned_run_for_replay(
-        object(),
-        principal=principal,
-        run_id="run-profile",
-    )
+    with pytest.raises(RepositoryConflictError, match="agent_profile_snapshot_invalid"):
+        await authority.reauthorize_pinned_run_for_replay(
+            object(), principal=principal, run_id="run-profile",
+        )
     await authority.reauthorize_pinned_run_for_replay(
         object(),
         principal=principal,
         run_id="run-generic",
     )
-
-    assert [(call["agent_id"], call["revision"], call["content_hash"]) for call in bound_calls] == [
-        ("agt_support", 4, "a" * 64)
-    ]
-
 
 @pytest.mark.asyncio
 async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_drift(monkeypatch):
@@ -1366,7 +1335,7 @@ async def test_replay_authority_accepts_governed_manifest_lock_but_rejects_lock_
 
 
 @pytest.mark.asyncio
-async def test_replay_authority_accepts_legacy_required_skill_snapshot_without_canonical_skill_set(
+async def test_replay_authority_rejects_legacy_required_skill_snapshot_without_canonical_skill_set(
     monkeypatch,
 ):
     from app.agent_apps import AgentProfileAdmission, AgentProfileAuthority
@@ -1458,11 +1427,12 @@ async def test_replay_authority_accepts_legacy_required_skill_snapshot_without_c
     authority = AgentProfileAuthority()
     monkeypatch.setattr(authority, "resolve_pinned_profile_for_replay", resolve_bound)
 
-    await authority.reauthorize_pinned_run_for_replay(
-        object(),
-        principal=principal,
-        run_id="run-profile",
-    )
+    with pytest.raises(RepositoryConflictError, match="agent_profile_snapshot_invalid"):
+        await authority.reauthorize_pinned_run_for_replay(
+            object(),
+            principal=principal,
+            run_id="run-profile",
+        )
 
 
 def test_agent_profile_instructions_are_not_placed_in_the_user_prompt():

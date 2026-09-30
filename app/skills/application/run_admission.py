@@ -6,6 +6,8 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from app.skills.domain.executable_names import is_valid_executable_skill_name
+
 
 MAX_SKILL_RUN_MANIFESTS = 64
 
@@ -107,7 +109,10 @@ class SkillRunAdmissionService:
         root_versions: dict[str, dict[str, Any]] = {}
         root_decisions: dict[str, Any] = {}
         for skill_id, skill, expected_version in root_inputs:
-            if not skill_id or skill_id in root_versions:
+            if (
+                not is_valid_executable_skill_name(skill_id)
+                or skill_id in root_versions
+            ):
                 raise self._ports.materialization_error("skill_version_not_materializable")
             decision = self._ports.resolve_release_decision(
                 skill,
@@ -237,7 +242,7 @@ class SkillRunAdmissionService:
         skill_id: str,
         version: str,
     ) -> dict[str, Any]:
-        if not skill_id or not version:
+        if not is_valid_executable_skill_name(skill_id) or not version:
             raise self._ports.materialization_error("skill_version_not_materializable")
         skill_version = await self._ports.versions.get_effective_skill_version_for_policy(
             conn,
@@ -258,7 +263,9 @@ class SkillRunAdmissionService:
         dependencies = version.get("dependency_ids")
         if (
             not isinstance(dependencies, list)
-            or any(not isinstance(item, str) or not item for item in dependencies)
+            or any(
+                not is_valid_executable_skill_name(item) for item in dependencies
+            )
             or len(dependencies) != len(set(dependencies))
         ):
             raise self._ports.materialization_error("skill_version_not_materializable")

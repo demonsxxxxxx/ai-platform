@@ -115,12 +115,21 @@ Every new Run resolves the current published profile by `agent_id`. A Session
 retains expert identity and native history; its creation revision is provenance.
 Accepted Runs resolve their exact `(agent_id, revision, content_hash)` and package
 pins for dispatch, retry and resume. Current access still applies.
+Replay accepts only the current `skill_set` snapshot shape. The retired
+`required_skill_id`/`required_skill_version` conversion is removed; old-shaped
+snapshots are rejected without rewriting their stored data.
 
 Admission resolves each authorized root once, then `app.skills.api.admit_skill_set`
 resolves one shared current dependency graph and saves an immutable closure of at
 most 64 manifests. Missing or cyclic dependencies reject before Run persistence.
 Embedded package dependency snapshots are not an admission source. Model and
 thinking choices pass through the dedicated expert transport.
+Skill package names and dependency identities follow one executable-name
+contract at import, admission and SDK dispatch: an initial ASCII letter or digit,
+followed by ASCII letters, digits, dot, underscore or hyphen, at most 128
+characters. The model-facing catalog preserves all configured roots and trims
+descriptions to its 32 KiB serialized budget; package versions and material
+hashes are unaffected by description trimming.
 
 Optional MCP availability filters executable capabilities. Dispatch intersects
 the accepted set with current availability; a restored tool is not added to an

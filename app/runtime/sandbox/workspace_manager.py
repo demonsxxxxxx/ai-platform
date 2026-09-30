@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 from app.runtime.sandbox.contracts import SandboxRuntimeRequest, WorkspaceLease
-from app.sandbox.api import PLATFORM_CLAUDE_INSTRUCTIONS_FILENAME
+from app.sandbox.api import PLATFORM_CLAUDE_INSTRUCTIONS_FILENAME, WORKSPACE_RUNTIME_PRIVATE_ROOTS
 from app.settings import get_settings
 
 
@@ -208,7 +208,8 @@ class SandboxWorkspaceManager:
                 path_components + ("workspace", "inputs"),
                 path_components + ("workspace", "outputs"),
                 path_components + ("workspace", "outputs", "delivery"),
-                path_components + ("workspace", ".ai-platform"),
+                path_components + ("workspace", ".claude"),
+                *(path_components + ("workspace", name) for name in sorted(WORKSPACE_RUNTIME_PRIVATE_ROOTS)),
                 path_components + ("logs",),
                 path_components + ("runtime",),
             ):

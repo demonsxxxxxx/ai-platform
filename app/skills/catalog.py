@@ -4,7 +4,7 @@ import base64
 import binascii
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import PurePosixPath
 from typing import Any, Iterable, Sequence
 
@@ -797,6 +797,47 @@ def _candidate_order(
     return ordered
 
 
+def _candidate_prompt_payload(
+    candidates: Sequence[_Candidate], *, omitted_count: int
+) -> dict[str, Any]:
+    return {
+        "schema_version": AUTHORIZED_SKILL_CATALOG_SCHEMA_VERSION,
+        "skills": [candidate.entry.to_payload() for candidate in candidates],
+        "truncated": omitted_count > 0,
+        "omitted_count": omitted_count,
+    }
+
+
+def _fit_candidate_descriptions(
+    candidates: Sequence[_Candidate], *, omitted_count: int
+) -> list[_Candidate] | None:
+    """Fit summaries to the wire budget while preserving callable identities."""
+    def fit(character_limit: int) -> list[_Candidate]:
+        return [
+            replace(candidate, entry=replace(
+                candidate.entry, description=candidate.entry.description[:character_limit],
+            ))
+            for candidate in candidates
+        ]
+
+    def fits(items: Sequence[_Candidate]) -> bool:
+        payload = _candidate_prompt_payload(items, omitted_count=omitted_count)
+        return len(_canonical_json(payload).encode("utf-8")) <= MAX_AUTHORIZED_SKILL_CATALOG_PROMPT_BYTES
+
+    if fits(candidates):
+        return list(candidates)
+    if not fits(fit(0)):
+        return None
+    low, high = 0, max((len(item.entry.description) for item in candidates), default=0)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if fits(fit(middle)):
+            low = middle
+        else:
+            high = middle - 1
+    return fit(low)
+
+
 def _bounded_candidates(
     candidates: dict[str, _Candidate],
     *,
@@ -805,6 +846,9 @@ def _bounded_candidates(
 ) -> tuple[list[_Candidate], int]:
     order = _candidate_order(candidates, selected_skill_id, required_skill_ids)
     required = set(required_skill_ids)
+    if selected_skill_id in candidates:
+        required.add(selected_skill_id)
+    selected_source: list[_Candidate] = []
     selected: list[_Candidate] = []
     for skill_id in order:
         if len(selected) >= MAX_AUTHORIZED_SKILL_CATALOG_ENTRIES:
@@ -812,18 +856,17 @@ def _bounded_candidates(
                 raise AuthorizedSkillCatalogError("authorized_skill_catalog_required_set_too_large")
             break
         candidate = candidates[skill_id]
-        proposed = selected + [candidate]
-        omitted = len(order) - len(proposed)
-        prompt_payload = {
-            "schema_version": AUTHORIZED_SKILL_CATALOG_SCHEMA_VERSION,
-            "skills": [item.entry.to_payload() for item in proposed],
-            "truncated": omitted > 0,
-            "omitted_count": omitted,
-        }
-        if len(_canonical_json(prompt_payload).encode("utf-8")) > MAX_AUTHORIZED_SKILL_CATALOG_PROMPT_BYTES:
+        proposed_source = selected_source + [candidate]
+        omitted = len(order) - len(proposed_source)
+        proposed = _fit_candidate_descriptions(
+            proposed_source,
+            omitted_count=omitted,
+        )
+        if proposed is None:
             if skill_id in required:
                 raise AuthorizedSkillCatalogError("authorized_skill_catalog_required_set_too_large")
             break
+        selected_source = proposed_source
         selected = proposed
     return selected, len(order) - len(selected)
 

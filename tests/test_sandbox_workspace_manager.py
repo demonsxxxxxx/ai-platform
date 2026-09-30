@@ -307,3 +307,15 @@ def test_manager_uses_settings_root_when_root_not_provided(monkeypatch, tmp_path
     manager = SandboxWorkspaceManager()
 
     assert manager.root == tmp_path / "configured-root"
+
+
+def test_workspace_prepares_sdk_mount_points_before_native_sidecar_start(tmp_path):
+    from app.sandbox.api import WORKSPACE_RUNTIME_PRIVATE_ROOTS
+    lease = SandboxWorkspaceManager(root=tmp_path).prepare(request())
+    workspace = Path(lease.workspace_host_path)
+    for name in (*WORKSPACE_RUNTIME_PRIVATE_ROOTS, '.claude'):
+        directory = workspace / name
+        assert directory.is_dir()
+        if os.name == 'posix':
+            assert directory.stat().st_uid == os.getuid()
+        (directory / 'primary-probe').write_text('SDK can write before and after native mount')

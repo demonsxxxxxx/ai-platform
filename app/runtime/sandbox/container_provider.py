@@ -30,6 +30,11 @@ try:
 except ImportError:  # pragma: no cover - exercised through docker = None path
     docker = None
 
+from app.sandbox.api import WORKSPACE_RUNTIME_PRIVATE_ROOTS
+from app.platform.sandbox.docker_native_filesystem import (
+    NATIVE_FILESYSTEM_LABEL, NATIVE_FILESYSTEM_VERSION, NATIVE_SOCKET_DIRECTORY,
+    NATIVE_SOCKET_PATH, native_container_filesystem, remove_root_owned_socket,
+)
 from app.runtime.sandbox.callback_tokens import (
     CallbackTokenBinding,
     callback_token_id_matches_binding,
@@ -563,7 +568,7 @@ def _docker_security_kwargs() -> dict[str, Any]:
 
 
 _NATIVE_TOOL_OWNER = "sandbox-native-tool"
-_NATIVE_TOOL_SOCKET = "/workspace/.ai-platform/native-tool.sock"
+_NATIVE_TOOL_SOCKET = NATIVE_SOCKET_PATH
 _NATIVE_TOOL_HOST_SOCKET_ROOT = ".uds"
 # Docker bind-mounts the scoped host directory onto the parent of this path.
 # Therefore this basename is also the actual host socket leaf created by the
@@ -805,6 +810,7 @@ def _native_tool_labels(
     return {
         "ai-platform.owner": _NATIVE_TOOL_OWNER,
         "ai-platform.role": "native-skill-command",
+        NATIVE_FILESYSTEM_LABEL: NATIVE_FILESYSTEM_VERSION,
         "ai-platform.tenant_id": request.tenant_id,
         "ai-platform.workspace_id": request.workspace_id,
         "ai-platform.user_id": request.user_id,
@@ -815,21 +821,6 @@ def _native_tool_labels(
         "ai-platform.browser_enabled": "true" if request.browser_enabled else "false",
         **_native_tool_admission_evidence(workspace, attempt_id=request.attempt_id),
         **_skill_mount_labels(skill_mount),
-    }
-
-
-def _native_tool_security_kwargs() -> dict[str, Any]:
-    return {
-        "privileged": False,
-        "security_opt": ["no-new-privileges:true"],
-        "cap_drop": ["ALL"],
-        "read_only": True,
-        "tmpfs": {
-            "/tmp": f"rw,noexec,nosuid,nodev,uid={RUNTIME_UID},gid={RUNTIME_GID},mode=0700,size=64m",
-            "/home/ai-platform": (
-                f"rw,noexec,nosuid,nodev,uid={RUNTIME_UID},gid={RUNTIME_GID},mode=0700,size=32m"
-            ),
-        },
     }
 
 
@@ -861,6 +852,7 @@ def _default_native_tool_probe(container: Any) -> bool:
             list(_NATIVE_TOOL_HEALTH_PROBE_COMMAND),
             stdout=False,
             stderr=False,
+            user=f"{RUNTIME_UID}:{RUNTIME_GID}",
         )
         if not isinstance(created, dict):
             return False
@@ -898,7 +890,7 @@ def _secure_native_tool_socket_directory(socket_dir: Path) -> None:
     if os.name != "posix":
         return
     os.chown(socket_dir, RUNTIME_UID, RUNTIME_GID)
-    os.chmod(socket_dir, 0o700)
+    os.chmod(socket_dir, 0o755)
 
 
 def _docker_workspace_user_kwargs(workspace_host_path: str) -> dict[str, str]:
@@ -2197,9 +2189,16 @@ class DockerContainerProvider:
             if socket_dir_created:
                 _secure_native_tool_socket_directory(socket_dir)
             directory_stat = _workspace_owner_stat(str(socket_dir))
+            if (directory_stat.st_uid, directory_stat.st_gid) == (0, RUNTIME_GID):
+                remove_root_owned_socket(self._get_client(), image=get_settings().sandbox_executor_image,
+                                         socket_parent=socket_dir)
+                socket_dir.rmdir()
+                socket_dir.mkdir(mode=0o755)
+                _secure_native_tool_socket_directory(socket_dir)
+                directory_stat = _workspace_owner_stat(str(socket_dir))
             if (
                 (directory_stat.st_uid, directory_stat.st_gid) != (RUNTIME_UID, RUNTIME_GID)
-                or stat.S_IMODE(directory_stat.st_mode) != 0o700
+                or stat.S_IMODE(directory_stat.st_mode) != 0o755
             ):
                 raise ContainerStartFailedError("native tool socket directory ownership is invalid")
         except OSError as exc:
@@ -2228,9 +2227,14 @@ class DockerContainerProvider:
             if socket_path.parent.exists() or socket_path.parent.is_symlink():
                 if socket_path.parent.is_symlink() or not socket_path.parent.is_dir():
                     return False
-                shutil.rmtree(socket_path.parent)
+                if socket_path.parent.stat().st_uid == 0:
+                    remove_root_owned_socket(self._get_client(), image=get_settings().sandbox_executor_image,
+                                             socket_parent=socket_path.parent)
+                    socket_path.parent.rmdir()
+                else:
+                    shutil.rmtree(socket_path.parent)
             return True
-        except (OSError, ContainerStartFailedError):
+        except Exception:
             return False
 
     async def _probe_native_tool_before_deadline(self, container: Any, deadline: float) -> bool:
@@ -2359,6 +2363,8 @@ class DockerContainerProvider:
         if tool is None or getattr(tool, "status", "running") not in {"created", "running"}:
             return False
         tool_labels = _container_labels(tool)
+        if tool_labels.get(NATIVE_FILESYSTEM_LABEL) != NATIVE_FILESYSTEM_VERSION or _container_config_user(tool) != "0:0":
+            return False
         if any(
             tool_labels.get(key) != value
             for key, value in lease.labels.items()
@@ -2449,34 +2455,18 @@ class DockerContainerProvider:
                 name=_native_tool_container_name(request.run_id, request.attempt_id),
                 detach=True,
                 labels=_native_tool_labels(request, workspace, trusted_skill_mount),
-                volumes={
-                    workspace.workspace_host_path: {
-                        "bind": workspace.workspace_container_path,
-                        "mode": "rw",
-                    },
-                    **(
-                        {
-                            str(trusted_skill_mount.host_path): {
-                                "bind": trusted_skill_mount.container_path,
-                                "mode": "ro",
-                            }
-                        }
-                        if trusted_skill_mount is not None
-                        else {}
-                    ),
-                    str(socket_path.parent): {
-                        "bind": f"{workspace.workspace_container_path.rstrip('/')}/.ai-platform",
-                        "mode": "rw",
-                    },
-                },
+                **native_container_filesystem(workspace.workspace_host_path,
+                    workspace.workspace_container_path, socket_path.parent,
+                    read_only_paths={str(Path(workspace.workspace_host_path) / name): f"{workspace.workspace_container_path}/{name}"
+                                     for name in ("inputs", "CLAUDE.md")}
+                        | ({str(trusted_skill_mount.host_path): trusted_skill_mount.container_path} if trusted_skill_mount else {}),
+                    private_roots=WORKSPACE_RUNTIME_PRIVATE_ROOTS | ({".claude"} if trusted_skill_mount is None else set())),
                 environment=_native_tool_environment(token),
                 # The launcher establishes the UDS parent before Uvicorn binds
                 # it. Lifespan hooks run too late to repair a missing parent.
                 entrypoint=["python", "-m", "app.runtime.sandbox.native_tool_app"],
                 command=[],
                 network_mode="none",
-                user=f"{RUNTIME_UID}:{RUNTIME_GID}",
-                **_native_tool_security_kwargs(),
                 **_docker_resource_kwargs(request.resource_limits),
             )
             container.start()
@@ -3072,8 +3062,8 @@ class DockerContainerProvider:
                                     attempt_id=request.attempt_id,
                                 ).parent
                             ): {
-                                "bind": f"{workspace.workspace_container_path.rstrip('/')}/.ai-platform",
-                                "mode": "rw",
+                                "bind": NATIVE_SOCKET_DIRECTORY,
+                                "mode": "ro",
                             }
                         }
                         if native_tool_required

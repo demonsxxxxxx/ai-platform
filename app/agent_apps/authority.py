@@ -1386,15 +1386,15 @@ class AgentProfileAuthority:
         pinned_skill_set = (
             profile_snapshot.get("skill_set") if isinstance(profile_snapshot, dict) else None
         )
-        skill_manifests = None
-        if isinstance(pinned_skill_set, list):
-            try:
-                skill_manifests = await skills_run_snapshots_postgres.materialize_run_skill_manifests(
-                    conn, tenant_id=principal.tenant_id, run_id=run_id,
-                    skill_manifest_refs=snapshot.get("skill_manifests", []),
-                )
-            except platform_errors.RepositoryConflictError as exc:
-                raise platform_errors.RepositoryConflictError("agent_profile_snapshot_invalid") from exc
+        if not isinstance(pinned_skill_set, list):
+            raise platform_errors.RepositoryConflictError("agent_profile_snapshot_invalid")
+        try:
+            skill_manifests = await skills_run_snapshots_postgres.materialize_run_skill_manifests(
+                conn, tenant_id=principal.tenant_id, run_id=run_id,
+                skill_manifest_refs=snapshot.get("skill_manifests", []),
+            )
+        except platform_errors.RepositoryConflictError as exc:
+            raise platform_errors.RepositoryConflictError("agent_profile_snapshot_invalid") from exc
         execution_kind = str(snapshot.get("execution_kind") or run.get("execution_kind") or (
             "skill" if skill_manifests else "harness_chat"
         ))
@@ -1417,41 +1417,9 @@ class AgentProfileAuthority:
         expected_profile_snapshot = dict(admission.private_execution_input)
         snapshot_skill_version = str(snapshot.get("skill_version") or "")
         authority_skill_id = str(admission.skill.get("skill_id") or "")
-        governed_profile_snapshot = isinstance(profile_snapshot, dict) and (
-            isinstance(profile_snapshot.get("skill_set"), list)
-            or "required_skill_id" in profile_snapshot
-            or "required_skill_version" in profile_snapshot
-        )
         skill_identity_matches = str(run.get("skill_id") or "") == authority_skill_id
         governed_mcp_tool_ids: tuple[str, ...] | None = None
-        if governed_profile_snapshot and execution_kind != "harness_chat":
-            if skill_manifests is None:
-                try:
-                    skill_manifests = await skills_run_snapshots_postgres.materialize_run_skill_manifests(
-                        conn,
-                        tenant_id=principal.tenant_id,
-                        run_id=run_id,
-                        skill_manifest_refs=(
-                            snapshot["skill_manifests"]
-                            if "skill_manifests" in snapshot
-                            else []
-                        ),
-                    )
-                except platform_errors.RepositoryConflictError as exc:
-                    raise platform_errors.RepositoryConflictError(
-                        "agent_profile_snapshot_invalid"
-                    ) from exc
-            if isinstance(profile_snapshot, dict) and (
-                "required_skill_id" in profile_snapshot
-                or "required_skill_version" in profile_snapshot
-            ):
-                expected_profile_snapshot.pop("skill_set", None)
-                expected_profile_snapshot.update(
-                    {
-                        "required_skill_id": authority_skill_id,
-                        "required_skill_version": snapshot_skill_version,
-                    }
-                )
+        if execution_kind != "harness_chat":
             primary_manifest = next(
                 (
                     manifest
@@ -1479,15 +1447,10 @@ class AgentProfileAuthority:
                 for manifest in skill_manifests
                 if isinstance(manifest, dict)
             }
-            authority_skill_versions = (
-                {
-                    str(skill.get("skill_id") or ""): str(skill.get("skill_version") or "")
-                    for skill in admission.skills
-                }
-                if isinstance(profile_snapshot, dict)
-                and isinstance(profile_snapshot.get("skill_set"), list)
-                else {}
-            )
+            authority_skill_versions = {
+                str(skill.get("skill_id") or ""): str(skill.get("skill_version") or "")
+                for skill in admission.skills
+            }
             try:
                 runs_capability_admission_postgres.require_replay_source_identity(
                     pinned_version=snapshot_skill_version,
@@ -1502,12 +1465,7 @@ class AgentProfileAuthority:
                         pinned_version=snapshot_skill_version,
                         pinned_executor_type=str(snapshot.get("executor_type") or ""),
                         skill_manifests=skill_manifests,
-                        skill_set=(
-                            profile_snapshot.get("skill_set")
-                            if isinstance(profile_snapshot, dict)
-                            and isinstance(profile_snapshot.get("skill_set"), list)
-                            else None
-                        ),
+                        skill_set=pinned_skill_set,
                     )
                 )
             except (
@@ -1524,16 +1482,12 @@ class AgentProfileAuthority:
                 )
                 and governed_mcp_tool_ids == execution_mcp_tool_ids
             )
-        elif execution_kind == "harness_chat":
+        else:
             skill_identity_matches = run.get("skill_id") is None
             skill_version_matches = (
                 snapshot.get("skill_version") is None
                 and not snapshot.get("skill_manifests")
                 and not snapshot.get("release_decision")
-            )
-        else:
-            skill_version_matches = snapshot_skill_version == str(
-                admission.skill.get("skill_version") or ""
             )
         if (
             profile_snapshot != expected_profile_snapshot

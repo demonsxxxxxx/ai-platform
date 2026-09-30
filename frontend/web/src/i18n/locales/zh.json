@@ -463,6 +463,7 @@
         "terminalResultUnavailable": "任务结果暂时不可用",
         "toolCallCompleted": "操作已完成",
         "toolCallStarted": "操作已开始",
+        "toolCallStopped": "操作已停止，结果尚未确认",
         "toolExecutionOutcomeUnconfirmed": "工具执行结果尚未确认",
         "toolInvocationEvidenceMismatch": "工具调用证据未完整确认",
         "toolPermissionDenied": "操作未获授权"

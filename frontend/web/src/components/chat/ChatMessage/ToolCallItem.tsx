@@ -53,12 +53,14 @@ function publicCategoryIcon(category: string) {
 // Collapsible Tool Call Item (compact design)
 export function ToolCallItem({
   status: lifecycleStatus,
+  cancelled,
   publicCategory,
   publicDisplayName,
   publicOperationId,
   durationMs,
 }: {
   status?: "started" | "completed" | "failed" | "denied";
+  cancelled?: boolean;
   publicCategory?: string;
   publicDisplayName?: string;
   publicOperationId?: string;
@@ -83,8 +85,11 @@ export function ToolCallItem({
     return null;
   }
 
+  const isStopped = lifecycleStatus === "started" && cancelled === true;
   let status: CollapsibleStatus = "idle";
-  if (lifecycleStatus === "started") {
+  if (isStopped) {
+    status = "cancelled";
+  } else if (lifecycleStatus === "started") {
     status = "loading";
   } else if (lifecycleStatus === "denied") {
     status = "cancelled";
@@ -93,8 +98,10 @@ export function ToolCallItem({
   } else if (lifecycleStatus === "failed") {
     status = "error";
   }
-  const statusLabel = lifecycleStatus === "started"
-    ? t("chat.runStatus.event.toolCallStarted", { defaultValue: "操作已开始" })
+  const statusLabel = isStopped
+    ? t("chat.runStatus.event.toolCallStopped", { defaultValue: "操作已停止，结果尚未确认" })
+    : lifecycleStatus === "started"
+      ? t("chat.runStatus.event.toolCallStarted", { defaultValue: "操作已开始" })
     : lifecycleStatus === "completed"
       ? t("chat.runStatus.event.toolCallCompleted", { defaultValue: "操作已完成" })
       : lifecycleStatus === "denied"

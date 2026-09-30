@@ -38,6 +38,9 @@ from app.sandbox.domain.runtime_diagnostics import (
     runtime_diagnostic_value as runtime_diagnostic_value,
 )
 from app.sandbox.domain.workspace_policy import (
+    WORKSPACE_RUNTIME_PRIVATE_ROOTS as WORKSPACE_RUNTIME_PRIVATE_ROOTS,
+)
+from app.sandbox.domain.workspace_policy import (
     PLATFORM_CLAUDE_INSTRUCTIONS_FILENAME as PLATFORM_CLAUDE_INSTRUCTIONS_FILENAME,
 )
 from app.sandbox.domain.workspace_policy import (

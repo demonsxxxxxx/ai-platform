@@ -94,6 +94,7 @@ from app.sandbox.api import (
     workspace_read_allowed,
 )
 from app.settings import get_settings
+from app.skills.api import is_valid_executable_skill_name
 from app.skills.execution_profiles import (
     NATIVE_COMMAND_ISOLATION,
     SKILL_WORKSPACE_CONTRACT_VERSION,
@@ -222,7 +223,6 @@ _CONTEXT_LIMIT_ERROR_PATTERN = re.compile(
     r"prompt\s+is\s+too\s+long|request\s+too\s+large|max\s+32mb",
     re.IGNORECASE,
 )
-_SDK_SKILL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _SDK_PROJECT_SETTING_FILES = (".claude/settings.json", ".claude/settings.local.json")
 _SDK_FULL_ACCESS_MIN_TIMEOUT_SECONDS = 1800.0
 _DELIVERY_MANIFEST_MAX_FILES = 128
@@ -1865,7 +1865,7 @@ async def run_claude_agent_sdk(
     PermissionResultDeny = _sdk_permission_type(sdk, "PermissionResultDeny")
     configured_skills = skills if skills is not None else ([skill_id] if skill_id else [])
     if any(
-        not isinstance(name, str) or _SDK_SKILL_NAME_PATTERN.fullmatch(name) is None
+        not is_valid_executable_skill_name(name)
         for name in configured_skills
     ):
         error_code = _SDK_TOOL_ADMISSION_FAILED
@@ -2722,6 +2722,17 @@ async def run_claude_agent_sdk(
             return PermissionResultDeny(message=decision.reason)
         return PermissionResultAllow()
 
+    def external_write_outcome_unconfirmed() -> bool:
+        return (
+            mcp_execution_conflict_observed()
+            or capability_evidence_rejected
+            or agent_event_callback_failed
+            or any(
+                state == "failed" and authorized_subjects.get(identity, {}).get("write_capable") is not False
+                for (identity, _call_id), state in mcp_execution_states.items()
+            )
+        )
+
     async def enforce_side_effect_tool_policy(
         hook_input, tool_use_id=None, _context=None
     ) -> dict[str, object]:
@@ -2748,6 +2759,15 @@ async def run_claude_agent_sdk(
             "permissionDecision": decision.outcome,
             "permissionDecisionReason": decision.reason,
         }
+        identity = adapter_identity(tool_name)
+        external_write = (
+            identity.startswith("mcp__")
+            and identity in authorized_subjects
+            and authorized_subjects[identity].get("write_capable") is not False
+        )
+        if decision.allowed and external_write and external_write_outcome_unconfirmed():
+            output["permissionDecision"] = "deny"
+            output["permissionDecisionReason"] = MCP_EXECUTION_OUTCOME_UNKNOWN
         if decision.allowed:
             tool_name = str(hook_input.get("tool_name") or "")
             identity = adapter_identity(tool_name)
@@ -2880,6 +2900,12 @@ async def run_claude_agent_sdk(
                 ):
                     mcp_execution_conflicted = True
                 mcp_execution_states[execution_key] = "admitted"
+        # A concurrent write may fail while this admission awaits its receipts.
+        # Recheck immediately before returning authority to dispatch the call.
+        if output["permissionDecision"] == "allow" and external_write and external_write_outcome_unconfirmed():
+            mcp_execution_states.pop((identity, resolved_tool_call_id), None)
+            output["permissionDecision"] = "deny"
+            output["permissionDecisionReason"] = MCP_EXECUTION_OUTCOME_UNKNOWN
         return {"hookSpecificOutput": output}
 
     def skill_tool_hook(lifecycle_phase: str):
@@ -2976,7 +3002,7 @@ async def run_claude_agent_sdk(
                 )
                 if not candidates and not agent_event_callback_failed:
                     mcp_execution_conflicted = True
-                await publish_agent_candidates(candidates)
+                evidence_acknowledged = await publish_agent_candidates(candidates)
             return {}
 
         return handler

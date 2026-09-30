@@ -1769,8 +1769,12 @@ def test_queue_agent_profile_preserves_and_cross_checks_required_skill_pin():
         "revision": 7,
         "content_hash": "a" * 64,
         "instructions": "Use the fixed enterprise expert policy.",
-        "required_skill_id": "qa-file-reviewer",
-        "required_skill_version": "hash-qa-file-reviewer",
+        "skill_set": [
+            {
+                "skill_id": "qa-file-reviewer",
+                "expected_version": "hash-qa-file-reviewer",
+            }
+        ],
     }
     payload = parse_queue_payload(
         base_payload(_leased=False, agent_id="agt_support", agent_profile=profile)
@@ -1801,7 +1805,12 @@ def test_queue_agent_profile_preserves_and_cross_checks_required_skill_pin():
             base_payload(
                 _leased=False,
                 agent_id="agt_support",
-                agent_profile={**profile, "required_skill_id": "hostile-skill"},
+                agent_profile={
+                    **profile,
+                    "skill_set": [
+                        {"skill_id": "hostile-skill", "expected_version": "hash-qa-file-reviewer"}
+                    ],
+                },
             )
         )
     with pytest.raises(ValueError, match="agent_profile_required_skill_version_invalid"):
@@ -1809,18 +1818,47 @@ def test_queue_agent_profile_preserves_and_cross_checks_required_skill_pin():
             base_payload(
                 _leased=False,
                 agent_id="agt_support",
-                agent_profile={**profile, "required_skill_version": "hostile-version"},
+                agent_profile={
+                    **profile,
+                    "skill_set": [
+                        {"skill_id": "qa-file-reviewer", "expected_version": "hostile-version"}
+                    ],
+                },
             )
         )
     for non_string_version in (123, True, [], {}):
-        with pytest.raises(ValueError, match="agent_profile_required_skill_version_invalid"):
+        with pytest.raises(ValueError, match="agent_profile_skill_set_invalid"):
             parse_queue_payload(
                 base_payload(
                     _leased=False,
                     agent_id="agt_support",
-                    agent_profile={**profile, "required_skill_version": non_string_version},
+                    agent_profile={
+                        **profile,
+                        "skill_set": [
+                            {
+                                "skill_id": "qa-file-reviewer",
+                                "expected_version": non_string_version,
+                            }
+                        ],
+                    },
                 )
             )
+
+    with pytest.raises(ValueError, match="agent_profile_skill_set_invalid"):
+        parse_queue_payload(
+            base_payload(
+                _leased=False,
+                agent_id="agt_support",
+                agent_profile={
+                    "agent_id": "agt_support",
+                    "revision": 7,
+                    "content_hash": "a" * 64,
+                    "instructions": "Use the fixed enterprise expert policy.",
+                    "required_skill_id": "qa-file-reviewer",
+                    "required_skill_version": "hash-qa-file-reviewer",
+                },
+            )
+        )
 
 
 def test_queue_harness_agent_profile_requires_exact_legacy_identity_pin():
@@ -1829,8 +1867,7 @@ def test_queue_harness_agent_profile_requires_exact_legacy_identity_pin():
         "revision": 7,
         "content_hash": "a" * 64,
         "instructions": "Use the fixed enterprise expert policy.",
-        "required_skill_id": "general-chat",
-        "required_skill_version": "version-a",
+        "skill_set": [{"skill_id": "general-chat", "expected_version": "version-a"}],
     }
     harness_payload = base_payload(
         _leased=False,
@@ -1868,12 +1905,18 @@ def test_queue_harness_agent_profile_requires_exact_legacy_identity_pin():
     for hostile_profile, expected_error in (
         ({**profile, "agent_id": "other-agent"}, "agent_profile_harness_identity_invalid"),
         (
-            {**profile, "required_skill_id": "other-skill"},
+            {
+                **profile,
+                "skill_set": [{"skill_id": "other-skill", "expected_version": "version-a"}],
+            },
             "agent_profile_harness_identity_invalid",
         ),
         (
-            {**profile, "required_skill_version": ""},
-            "agent_profile_required_skill_version_invalid",
+            {
+                **profile,
+                "skill_set": [{"skill_id": "general-chat", "expected_version": ""}],
+            },
+            "agent_profile_skill_set_invalid",
         ),
         ({**profile, "content_hash": "A" * 64}, "agent_profile_hash_invalid"),
         ({**profile, "content_hash": "g" * 64}, "agent_profile_hash_invalid"),
@@ -1882,13 +1925,15 @@ def test_queue_harness_agent_profile_requires_exact_legacy_identity_pin():
         with pytest.raises(ValueError, match=expected_error):
             parse_queue_payload({**harness_payload, "agent_profile": hostile_profile})
     for non_string_version in (123, True, [], {}):
-        with pytest.raises(ValueError, match="agent_profile_required_skill_version_invalid"):
+        with pytest.raises(ValueError, match="agent_profile_skill_set_invalid"):
             parse_queue_payload(
                 {
                     **harness_payload,
                     "agent_profile": {
                         **profile,
-                        "required_skill_version": non_string_version,
+                        "skill_set": [
+                            {"skill_id": "general-chat", "expected_version": non_string_version}
+                        ],
                     },
                 }
             )
@@ -2336,8 +2381,7 @@ def test_run_payload_accepts_only_complete_pinned_harness_profile():
         "revision": 7,
         "content_hash": "a" * 64,
         "instructions": "Use the fixed enterprise expert policy.",
-        "required_skill_id": "general-chat",
-        "required_skill_version": "version-a",
+        "skill_set": [{"skill_id": "general-chat", "expected_version": "version-a"}],
     }
     harness = {
         "tenant_id": "tenant-a",
@@ -2367,18 +2411,23 @@ def test_run_payload_accepts_only_complete_pinned_harness_profile():
         {**profile, "revision": 0},
         {**profile, "content_hash": "A" * 64},
         {**profile, "content_hash": "g" * 64},
-        {**profile, "required_skill_id": "other-skill"},
-        {**profile, "required_skill_version": ""},
+        {
+            **profile,
+            "skill_set": [{"skill_id": "other-skill", "expected_version": "version-a"}],
+        },
+        {**profile, "skill_set": [{"skill_id": "general-chat", "expected_version": ""}]},
     ):
         with pytest.raises(ValueError, match="agent_profile_"):
             RunPayload(**harness, agent_profile=hostile_profile)
     for non_string_version in (123, True, [], {}):
-        with pytest.raises(ValueError, match="agent_profile_required_skill_version_invalid"):
+        with pytest.raises(ValueError, match="agent_profile_skill_set_invalid"):
             RunPayload(
                 **harness,
                 agent_profile={
                     **profile,
-                    "required_skill_version": non_string_version,
+                    "skill_set": [
+                        {"skill_id": "general-chat", "expected_version": non_string_version}
+                    ],
                 },
             )
 
@@ -2389,14 +2438,18 @@ def test_agent_profile_snapshot_rejects_authority_skill_version_mismatch():
         "revision": 7,
         "content_hash": "a" * 64,
         "instructions": "Use the fixed enterprise expert policy.",
-        "required_skill_id": "qa-file-reviewer",
-        "required_skill_version": "hash-qa-file-reviewer",
+        "skill_set": [
+            {"skill_id": "qa-file-reviewer", "expected_version": "hash-qa-file-reviewer"}
+        ],
     }
     payload = parse_queue_payload(
         base_payload(_leased=False, agent_id="agt_support", agent_profile=profile)
     )
     admission = types.SimpleNamespace(
-        private_execution_input=profile,
+        private_execution_input={
+            **profile,
+            "skill_set": [{"skill_id": "qa-file-reviewer", "expected_version": "different-version"}],
+        },
         skill={
             "skill_id": "qa-file-reviewer",
             "skill_version": "different-version",
@@ -2677,8 +2730,7 @@ def test_locked_agent_profile_identity_requires_exact_physical_pin(
         "revision": 7,
         "content_hash": "a" * 64,
         "instructions": "Private profile instruction.",
-        "required_skill_id": "general-chat",
-        "required_skill_version": "version-a",
+        "skill_set": [{"skill_id": "general-chat", "expected_version": "version-a"}],
     }
     locked_run = {
         "agent_id": "agt_support",
@@ -2767,8 +2819,7 @@ async def test_worker_binds_pinned_harness_profile_before_adapter(monkeypatch, p
         "revision": 7,
         "content_hash": "a" * 64,
         "instructions": "Private profile instruction.",
-        "required_skill_id": "general-chat",
-        "required_skill_version": "version-a",
+        "skill_set": [{"skill_id": "general-chat", "expected_version": "version-a"}],
     }
     raw = base_payload(
         agent_id="agt_support",
@@ -2885,7 +2936,6 @@ async def test_worker_binds_pinned_harness_profile_before_adapter(monkeypatch, p
         ("revoked", "profile_not_authorized", "agent_profile", "agent_profile_authority"),
         ("instructions", "profile_snapshot_invalid", "agent_profile", "agent_profile_authority"),
         ("required_skill", "profile_snapshot_invalid", "agent_profile", "agent_profile_authority"),
-        ("mcp", "profile_snapshot_invalid", "agent_profile", "agent_profile_authority"),
         (
             "principal",
             CURRENT_PRINCIPAL_DENIAL_REASON,
@@ -2907,8 +2957,7 @@ async def test_worker_reauthorizes_pinned_profile_before_adapter(
         "revision": 7,
         "content_hash": "a" * 64,
         "instructions": "Private profile instruction.",
-        "required_skill_id": "general-chat",
-        "required_skill_version": "version-a",
+        "skill_set": [{"skill_id": "general-chat", "expected_version": "version-a"}],
     }
     raw = base_payload(
         agent_id="agt_support",
@@ -2956,9 +3005,9 @@ async def test_worker_reauthorizes_pinned_profile_before_adapter(
         if authority_change == "instructions":
             authorized["instructions"] = "Current immutable instruction."
         elif authority_change == "required_skill":
-            authorized["required_skill_version"] = "version-b"
-        elif authority_change == "mcp":
-            mcp_tool_ids = ("tool-b",)
+            authorized["skill_set"] = [
+                {"skill_id": "general-chat", "expected_version": "version-b"}
+            ]
         return types.SimpleNamespace(
             private_execution_input=authorized,
             skill={"skill_id": "general-chat"},

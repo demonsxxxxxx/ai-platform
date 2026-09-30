@@ -49,7 +49,7 @@ def fixed_runtime_identity_test_seams(monkeypatch, request, tmp_path):
     stat_result = type(
         "RuntimeWorkspaceStat",
         (),
-        {"st_uid": 10001, "st_gid": 10001, "st_mode": 0o40700},
+        {"st_uid": 10001, "st_gid": 10001, "st_mode": 0o40755},
     )()
     monkeypatch.setattr(container_provider, "_workspace_owner_stat", lambda _path: stat_result, raising=False)
     monkeypatch.setattr(
@@ -151,6 +151,8 @@ def workspace(**overrides) -> WorkspaceLease:
         values["inputs_host_path"] = str(workspace_path / "inputs")
         values["logs_host_path"] = str(workspace_path.parent / "logs")
     workspace_path = _PLATFORM_PATH(values["workspace_host_path"])
+    if workspace_path.is_dir():
+        (workspace_path / "CLAUDE.md").write_text("Platform instructions", encoding="utf-8")
     if _NATIVE_POSIX:
         try:
             workspace_path.relative_to(_TEST_RUNTIME_ROOT)
@@ -158,6 +160,7 @@ def workspace(**overrides) -> WorkspaceLease:
             pass
         else:
             workspace_path.mkdir(parents=True, exist_ok=True)
+            (workspace_path / "CLAUDE.md").write_text("Platform instructions", encoding="utf-8")
             _PLATFORM_PATH(values["inputs_host_path"]).mkdir(parents=True, exist_ok=True)
             _PLATFORM_PATH(values["logs_host_path"]).mkdir(parents=True, exist_ok=True)
     if prepare_staged_skills and workspace_path.is_dir():
@@ -759,7 +762,7 @@ def test_default_native_tool_probe_uses_detached_no_output_low_level_api(capsys,
         (
             container.id,
             list(_NATIVE_TOOL_HEALTH_PROBE_COMMAND),
-            {"stdout": False, "stderr": False},
+            {"stdout": False, "stderr": False, "user": "10001:10001"},
         )
     ]
     assert api.start_calls == [("fixed-health-probe", {"detach": True})]
@@ -821,7 +824,7 @@ def test_default_native_tool_probe_fails_closed_for_invalid_low_level_states_and
             (
                 "sidecar-container-id",
                 list(_NATIVE_TOOL_HEALTH_PROBE_COMMAND),
-                {"stdout": False, "stderr": False},
+                {"stdout": False, "stderr": False, "user": "10001:10001"},
             )
         ]
 
@@ -2496,11 +2499,11 @@ async def test_docker_provider_maps_failed_native_reuse_health_to_admission_fail
     assert "network_disabled" not in sidecar
     assert sidecar["entrypoint"] == ["python", "-m", "app.runtime.sandbox.native_tool_app"]
     assert sidecar["command"] == []
-    assert sidecar["user"] == "10001:10001"
+    assert sidecar["user"] == "0:0"
     assert sidecar["privileged"] is False
     assert sidecar["security_opt"] == ["no-new-privileges:true"]
     assert sidecar["cap_drop"] == ["ALL"]
-    assert "cap_add" not in sidecar
+    assert sidecar["cap_add"] == ["CHOWN", "SETUID", "SETGID"]
     assert sidecar["read_only"] is True
     expected_skill_mount = {
         "bind": "/workspace/.claude",
@@ -2523,14 +2526,14 @@ async def test_docker_provider_maps_failed_native_reuse_health_to_admission_fail
     }
     assert set(kernel_attack_specs) == {"direct", "chmod", "rm", "rename", "symlink"}
     assert all("/workspace/.claude" in command for command in kernel_attack_specs.values())
-    assert sidecar["tmpfs"] == {
+    assert {path: value for path, value in sidecar["tmpfs"].items() if not path.startswith("/workspace/")} == {
         "/tmp": "rw,noexec,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=64m",
         "/home/ai-platform": "rw,noexec,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=32m",
     }
     assert sidecar["environment"] == {
         "AI_PLATFORM_NATIVE_TOOL_TOKEN": executor["environment"]["AI_PLATFORM_NATIVE_TOOL_TOKEN"],
         "AI_PLATFORM_NATIVE_TOOL_WORKSPACE": "/workspace",
-        "AI_PLATFORM_NATIVE_TOOL_SOCKET": "/workspace/.ai-platform/native-tool.sock",
+        "AI_PLATFORM_NATIVE_TOOL_SOCKET": "/run/ai-platform-native/native-tool.sock",
         "AI_PLATFORM_NATIVE_TOOL_UID": "10001",
         "AI_PLATFORM_NATIVE_TOOL_GID": "10001",
         "HOME": "/home/ai-platform",
@@ -2546,7 +2549,7 @@ async def test_docker_provider_maps_failed_native_reuse_health_to_admission_fail
         (
             native.id,
             ["python", "-m", "app.runtime.sandbox.native_tool_health_probe"],
-            {"stdout": False, "stderr": False},
+            {"stdout": False, "stderr": False, "user": "10001:10001"},
         )
     ]
     assert fake.api.exec_start_calls == [("exec-1", {"detach": True})]
@@ -2948,7 +2951,7 @@ async def test_docker_provider_uses_short_host_socket_and_probes_health_inside_c
         (
             native.id,
             ["python", "-m", "app.runtime.sandbox.native_tool_health_probe"],
-            {"stdout": False, "stderr": False},
+            {"stdout": False, "stderr": False, "user": "10001:10001"},
         )
     ]
     assert fake.api.exec_start_calls == [("exec-1", {"detach": True})]
@@ -2964,13 +2967,13 @@ async def test_docker_provider_uses_short_host_socket_and_probes_health_inside_c
     assert lease.labels["ai-platform.native_tool_container_socket_path_bytes"] == "40"
     assert native.labels["ai-platform.native_tool_host_socket_path_bytes"] == str(host_socket_path_bytes)
     expected_socket_mount = {
-        "bind": "/workspace/.ai-platform",
+        "bind": "/run/ai-platform-native",
         "mode": "rw",
     }
     assert native.volumes[str(host_socket_path.parent)] == expected_socket_mount
-    assert executor.volumes[str(host_socket_path.parent)] == expected_socket_mount
-    assert native.environment["AI_PLATFORM_NATIVE_TOOL_SOCKET"] == "/workspace/.ai-platform/native-tool.sock"
-    assert executor.environment["AI_PLATFORM_NATIVE_TOOL_SOCKET"] == "/workspace/.ai-platform/native-tool.sock"
+    assert executor.volumes[str(host_socket_path.parent)] == {**expected_socket_mount, "mode": "ro"}
+    assert native.environment["AI_PLATFORM_NATIVE_TOOL_SOCKET"] == "/run/ai-platform-native/native-tool.sock"
+    assert executor.environment["AI_PLATFORM_NATIVE_TOOL_SOCKET"] == "/run/ai-platform-native/native-tool.sock"
     assert host_socket_path == (
         Path(next(
             host_path
@@ -2983,7 +2986,7 @@ async def test_docker_provider_uses_short_host_socket_and_probes_health_inside_c
         Path(next(
             host_path
             for host_path, mount in executor.volumes.items()
-            if mount == expected_socket_mount
+            if mount == {**expected_socket_mount, "mode": "ro"}
         ))
         / Path(executor.environment["AI_PLATFORM_NATIVE_TOOL_SOCKET"]).name
     )
@@ -3092,7 +3095,7 @@ async def test_docker_provider_stop_removes_only_the_owned_short_socket_director
     socket_dir = Path(next(
         host_path
         for host_path, mount in native.volumes.items()
-        if mount["bind"] == "/workspace/.ai-platform"
+        if mount["bind"] == "/run/ai-platform-native"
     ))
     actual_socket_path = socket_dir / Path(
         native.environment["AI_PLATFORM_NATIVE_TOOL_SOCKET"]
