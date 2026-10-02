@@ -1439,6 +1439,10 @@ async def test_sandbox_grep_denies_outside_workspace_path(monkeypatch, tmp_path)
         "tool_lifecycle_denials": 0,
         "skill_invocations": 0,
         "public_projection_omissions": 0,
+        "attachment_tool_registered": 0,
+        "attachment_tool_calls": 0,
+        "attachment_tool_failures": 0,
+        "attachment_selected_files": 0,
     }
 
 
@@ -1830,7 +1834,7 @@ async def test_failed_answer_projection_does_not_hide_verified_tool_terminal(
         for event in public_events
         if event.event_type in {"tool.started", "tool.completed", "tool.failed"}
     ] == ["tool.started", terminal_event]
-    assert result.error == "claude_agent_sdk_upstream_error"
+    assert result.error == "claude_agent_sdk_output_validation_failed"
     assert result.turn_diagnostics["counters"]["tool_lifecycle_denials"] == 0
 
 
@@ -4348,7 +4352,7 @@ async def test_sdk_selected_skill_resumes_stream_after_incomplete_tool_block_bou
         thinking_effort="high",
     )
 
-    assert result.error == "claude_agent_sdk_upstream_error"
+    assert result.error == "claude_agent_sdk_output_validation_failed"
     assert observed_before_result == []
     assert deltas == []
     assert result.message == ""
@@ -4947,14 +4951,101 @@ async def test_sdk_attach_file_selects_ordered_final_deliverables(monkeypatch, t
         "description": "Final report",
     }
     assert "tasks/facts.json" not in result.response_files
+    counters = result.turn_diagnostics["counters"]
+    assert {name: counters[name] for name in (
+        "attachment_tool_registered", "attachment_tool_calls",
+        "attachment_tool_failures", "attachment_selected_files",
+    )} == {
+        "attachment_tool_registered": 1,
+        "attachment_tool_calls": 4,
+        "attachment_tool_failures": 1,
+        "attachment_selected_files": 2,
+    }
     assert attach_results[0]["is_error"] is True
     assert [json.loads(item["content"][0]["text"]) for item in attach_results[1:]] == [
-        {"attached": True, "position": 0},
-        {"attached": True, "position": 1},
-        {"attached": True, "position": 0},
+        {"selected": True, "position": 0},
+        {"selected": True, "position": 1},
+        {"selected": True, "position": 0},
     ]
     assert "output_format" not in captured
     assert "ai-platform-response" in captured["mcp_servers"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("select_file", [False, True])
+async def test_response_delivery_observes_real_sdk_mcp_dispatch(
+    monkeypatch, tmp_path, select_file
+):
+    import claude_agent_sdk as installed_sdk
+    from mcp import types as mcp_types
+
+    captured, lifecycle = {}, []
+    (tmp_path / "final.txt").write_text("synthetic deliverable", encoding="utf-8")
+    sdk = _scripted_sdk(captured, [], result_text="任务已完成")
+    sdk.tool = installed_sdk.tool
+    sdk.create_sdk_mcp_server = installed_sdk.create_sdk_mcp_server
+    sdk.ToolPermissionContext = installed_sdk.ToolPermissionContext
+    sdk.PermissionResultAllow = installed_sdk.PermissionResultAllow
+    sdk.PermissionResultDeny = installed_sdk.PermissionResultDeny
+    scripted_query = sdk.query
+
+    async def query(*, prompt, options):
+        server = captured["mcp_servers"]["ai-platform-response"]["instance"]
+        listed = await server.request_handlers[mcp_types.ListToolsRequest](
+            mcp_types.ListToolsRequest()
+        )
+        assert [tool.name for tool in listed.root.tools] == ["attach_file"]
+        identity = "mcp__ai-platform-response__attach_file"
+        assert identity in captured["allowed_tools"]
+        if select_file:
+            args = {"path": "final.txt"}
+            allowed = await captured["can_use_tool"](
+                identity, args, installed_sdk.ToolPermissionContext(tool_use_id="file-call")
+            )
+            assert allowed.behavior == "allow"
+            hook_input = {
+                "tool_name": identity, "tool_input": args, "tool_use_id": "file-call"
+            }
+            before = captured["hooks"]["PreToolUse"][0]
+            admitted = await before.hooks[0](hook_input, "file-call", {})
+            assert admitted["hookSpecificOutput"]["permissionDecision"] == "allow"
+            called = await server.request_handlers[mcp_types.CallToolRequest](
+                mcp_types.CallToolRequest(
+                    params=mcp_types.CallToolRequestParams(name="attach_file", arguments=args)
+                )
+            )
+            assert called.root.isError is False
+            assert json.loads(called.root.content[0].text) == {"selected": True, "position": 0}
+            after = next(
+                item for item in captured["hooks"]["PostToolUse"] if item.matcher == "mcp__*"
+            )
+            await after.hooks[0](hook_input, "file-call", {})
+        async for message in scripted_query(prompt=prompt, options=options):
+            yield message
+
+    async def acknowledge(fact):
+        lifecycle.append(fact)
+        return True
+
+    sdk.query = query
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+    result = await run_claude_agent_sdk(
+        prompt="请提供文件", cwd=tmp_path, skill_id=None,
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[], on_tool_lifecycle=acknowledge,
+    )
+
+    assert result.error is None
+    assert result.response_files == (["final.txt"] if select_file else [])
+    counters = result.turn_diagnostics["counters"]
+    assert counters["attachment_tool_registered"] == 1
+    assert counters["attachment_tool_calls"] == int(select_file)
+    assert counters["attachment_tool_failures"] == 0
+    assert counters["attachment_selected_files"] == int(select_file)
+    assert [fact["lifecycle"] for fact in lifecycle] == (
+        ["started", "completed"] if select_file else []
+    )
 
 
 @pytest.mark.asyncio
@@ -5182,7 +5273,7 @@ async def test_sdk_sandbox_tool_only_assistant_rejects_result_without_raw_answer
         on_text=deltas.append,
     )
 
-    assert result.error == "claude_agent_sdk_upstream_error"
+    assert result.error == "claude_agent_sdk_output_validation_failed"
     assert result.message == ""
     assert deltas == []
 
@@ -5228,7 +5319,7 @@ async def test_sdk_sandbox_tool_only_turn_retires_previous_answer_binding(
         on_text=deltas.append,
     )
 
-    assert result.error == "claude_agent_sdk_upstream_error"
+    assert result.error == "claude_agent_sdk_output_validation_failed"
     assert result.message == ""
     assert deltas == ["visible "]
     assert result.answer_receipt is None
@@ -5273,7 +5364,7 @@ async def test_sdk_sandbox_server_tool_only_turn_retires_previous_answer_binding
         on_text=deltas.append,
     )
 
-    assert result.error == "claude_agent_sdk_upstream_error"
+    assert result.error == "claude_agent_sdk_output_validation_failed"
     assert result.message == ""
     assert "foreign terminal body" not in "".join(deltas)
     assert result.answer_receipt is None
@@ -5312,7 +5403,7 @@ async def test_sdk_sandbox_empty_typed_turn_retires_previous_answer_binding(
         on_text=deltas.append,
     )
 
-    assert result.error == "claude_agent_sdk_upstream_error"
+    assert result.error == "claude_agent_sdk_output_validation_failed"
     assert result.message == ""
     assert "foreign terminal body" not in "".join(deltas)
     assert result.answer_receipt is None
@@ -5418,7 +5509,7 @@ async def test_sdk_sandbox_typed_end_turn_conflicts_with_raw_tool_use_stop(
         on_text=deltas.append,
     )
 
-    assert result.error == "claude_agent_sdk_upstream_error"
+    assert result.error == "claude_agent_sdk_output_validation_failed"
     assert result.message == ""
     assert body.startswith("".join(deltas))
 
@@ -5545,7 +5636,7 @@ async def test_sdk_unknown_result_stop_reason_fails_closed(
         on_text=deltas.append,
     )
 
-    assert result.error == "claude_agent_sdk_upstream_error"
+    assert result.error == "claude_agent_sdk_output_validation_failed"
     assert result.received_structured_terminal is True
     assert deltas == []
     assert result.message == ""
@@ -6206,9 +6297,130 @@ async def test_sdk_conflicting_result_keeps_terminal_body(
         on_text=deltas.append,
     )
 
-    assert result.error == "claude_agent_sdk_upstream_error"
+    assert result.error == "claude_agent_sdk_output_validation_failed"
     assert "".join(deltas) == "Complete Assistant "
     assert result.message == ""
+    assert result.runtime_diagnostics["projection_failure"] == {
+        "reason": "terminal_result_body_conflict",
+        "stage": "message",
+        "location": "result_body",
+    }
+    assert "projection_failure" not in result.turn_diagnostics
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("is_error", "expected_error"),
+    [
+        (False, "claude_agent_sdk_output_validation_failed"),
+        (True, "claude_agent_sdk_upstream_error"),
+    ],
+)
+async def test_sdk_raw_observation_identity_failure_is_validation_unless_upstream_fails(
+    monkeypatch, tmp_path, is_error, expected_error
+):
+    captured, deltas = {}, []
+    sdk = _streaming_sdk(
+        captured,
+        [
+            {
+                "type": "message_start",
+                "__uuid": {"invalid": "identity"},
+                "message": {
+                    "id": "stream-message",
+                    "role": "assistant",
+                    "stop_reason": None,
+                },
+            }
+        ],
+        result_text="must not be published",
+    )
+    if is_error:
+        sdk.ResultMessage.is_error = True
+        sdk.ResultMessage.errors = ["synthetic upstream failure"]
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="answer",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        on_text=deltas.append,
+    )
+
+    assert result.error == expected_error
+    assert result.runtime_diagnostics["projection_failure"] == {
+        "reason": "raw_observation_identity_invalid",
+        "stage": "message",
+        "location": "stream_observation_identity",
+    }
+    assert "projection_failure" not in result.turn_diagnostics
+
+
+@pytest.mark.asyncio
+async def test_sdk_first_projection_failure_survives_later_skill_hook(
+    monkeypatch, tmp_path
+):
+    captured = {}
+    skill_name = "qa-review"
+    hook_input = {
+        "tool_name": "Skill",
+        "tool_use_id": "late-skill",
+        "tool_input": {"skill": skill_name},
+    }
+    steps = []
+    sdk = _scripted_sdk(captured, steps)
+    steps.extend(
+        [
+            (
+                "assistant_typed",
+                {
+                    "text": "",
+                    "message_id": "typed-message",
+                    "uuid": "typed-observation",
+                    "content": [sdk.TextBlock(None)],
+                },
+            ),
+            ("hook", ("PreToolUse", hook_input, "late-skill")),
+        ]
+    )
+    original_disconnect = sdk.ClaudeSDKClient.disconnect
+
+    async def disconnect(client):
+        matcher = next(
+            item
+            for item in captured["hooks"]["PostToolUse"]
+            if item.matcher == "Skill"
+        )
+        await matcher.hooks[0](hook_input, "late-skill", {})
+        await original_disconnect(client)
+
+    sdk.ClaudeSDKClient.disconnect = disconnect
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="review",
+        cwd=tmp_path,
+        skill_id=skill_name,
+        skills=[skill_name],
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[_skill_subject(skill_name)],
+        on_capability_evidence=_acknowledge_capability_evidence,
+        public_skill_metadata={
+            skill_name: {"name": "QA", "version": "v1", "availability": "available"}
+        },
+    )
+
+    assert result.error == "claude_agent_sdk_output_validation_failed"
+    assert result.turn_diagnostics["last_public_stage"] == "skills"
+    assert result.runtime_diagnostics["failure_stage"] == "message"
+    assert result.runtime_diagnostics["projection_failure"] == {
+        "reason": "typed_text_block_invalid",
+        "stage": "message",
+        "location": "typed_text_block",
+    }
 
 
 @pytest.mark.asyncio
@@ -6777,7 +6989,7 @@ async def test_sandbox_stream_duplicate_stop_preserves_visible_prefix(
     )
 
     assert captured["include_partial_messages"] is True
-    assert result.error == "claude_agent_sdk_upstream_error"
+    assert result.error == "claude_agent_sdk_output_validation_failed"
     assert result.message == ""
     assert "".join(deltas) == "short "
 
@@ -6873,7 +7085,7 @@ async def test_sandbox_stream_failure_discards_pending_private_token_prefix(
         on_text=deltas.append,
     )
 
-    assert result.error == "claude_agent_sdk_upstream_error"
+    assert result.error == "claude_agent_sdk_output_validation_failed"
     assert result.message == ""
     assert deltas == []
     assert all(private_token not in chunk for chunk in deltas)
@@ -6907,7 +7119,7 @@ async def test_sdk_keeps_visible_prefix_and_terminal_body_after_stream_failure(
     )
 
     assert captured["include_partial_messages"] is True
-    assert result.error == "claude_agent_sdk_upstream_error"
+    assert result.error == "claude_agent_sdk_output_validation_failed"
     assert result.message == ""
     assert deltas == []
 
@@ -6974,7 +7186,7 @@ async def test_stream_failure_before_publication_recovers_terminal_body(
 
     assert captured["include_partial_messages"] is True
     assert "".join(deltas) == expected
-    assert result.error == "claude_agent_sdk_upstream_error"
+    assert result.error == "claude_agent_sdk_output_validation_failed"
     assert result.message == expected
 
 

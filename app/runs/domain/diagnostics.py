@@ -10,7 +10,6 @@ import math
 import re
 from typing import Any
 
-
 RUN_DIAGNOSTICS_SCHEMA_VERSION = "ai-platform.run-diagnostics.v1"
 RUN_DIAGNOSTICS_BUDGET_POLICY_VERSION = "run-diagnostics-budget.v1"
 RUN_DIAGNOSTICS_REDACTION_POLICY_VERSION = "run-diagnostics-redaction.v1"
@@ -236,6 +235,9 @@ def sanitize_runtime_diagnostics(value: object) -> dict[str, Any]:
         if projected := _sanitize_tool_observation(raw, kind="denial"):
             tool_policy_denials.append(projected)
     executor_protocol = _sanitize_executor_protocol(value.get("executor_protocol"))
+    projection_failure = _sanitize_projection_failure(
+        value.get("projection_failure")
+    )
     projected = {
         "schema_version": _identity(value.get("schema_version")),
         "error_code": _identity(value.get("error_code")),
@@ -248,8 +250,23 @@ def sanitize_runtime_diagnostics(value: object) -> dict[str, Any]:
         "tool_policy_denials": tool_policy_denials[:8],
         "normalization_losses": losses,
     }
+    if projection_failure is not None:
+        projected["projection_failure"] = projection_failure
     if isinstance(executor_protocol, dict) and executor_protocol:
         projected["executor_protocol"] = executor_protocol
+    return projected
+
+
+def _sanitize_projection_failure(value: object) -> dict[str, str] | None:
+    """Retain bounded diagnostic labels already classified by the executor owner."""
+    if not isinstance(value, dict):
+        return None
+    projected = {}
+    for key in ("reason", "stage", "location"):
+        label = value.get(key)
+        if not isinstance(label, str) or not re.fullmatch(r"[a-z][a-z_]{0,63}", label):
+            return None
+        projected[key] = label
     return projected
 
 
@@ -860,6 +877,10 @@ def _minimize_observation(
             {"field": "runtime_diagnostics", "reason": "truncated"}
         ],
     }
+    if projection_failure := _sanitize_projection_failure(
+        evidence.get("projection_failure")
+    ):
+        minimized["projection_failure"] = projection_failure
     if not severe and isinstance(evidence.get("executor_protocol"), dict):
         minimized["executor_protocol"] = evidence["executor_protocol"]
     observation["runtime_diagnostics"] = minimized

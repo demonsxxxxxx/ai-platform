@@ -192,6 +192,7 @@ _MAX_PUBLIC_DELTA_CHARS = 8_192
 _SDK_TOOL_ADMISSION_FAILED = "claude_agent_sdk_tool_admission_failed"
 _SDK_EXECUTION_RECEIPT_INCOMPLETE = "claude_agent_sdk_execution_receipt_incomplete"
 _SDK_UPSTREAM_ERROR = "claude_agent_sdk_upstream_error"
+_SDK_OUTPUT_VALIDATION_FAILED = "claude_agent_sdk_output_validation_failed"
 _SDK_PROVIDER_SESSION_FAILED = "claude_agent_sdk_provider_session_failed"
 _SDK_AUTOCOMPACT_MIN_TOKENS = 100_000
 _SDK_AUTOCOMPACT_MAX_TOKENS = 1_000_000
@@ -213,6 +214,10 @@ _PUBLIC_DIAGNOSTIC_COUNTERS = (
     "tool_lifecycle_denials",
     "skill_invocations",
     "public_projection_omissions",
+    "attachment_tool_registered",
+    "attachment_tool_calls",
+    "attachment_tool_failures",
+    "attachment_selected_files",
 )
 _TURN_LIMIT_ERROR_PATTERN = re.compile(
     r"(?:reached\s+)?maximum\s+(?:number\s+of\s+)?turns|"
@@ -275,6 +280,22 @@ class ClaudeAgentSdkRunResult:
     response_files: list[str] = field(default_factory=list)
     response_file_descriptors: list[dict[str, str]] = field(default_factory=list)
     provider_final_sequence: int | None = None
+
+
+@dataclass(frozen=True)
+class _ProjectionFailure:
+    """Immutable, value-free snapshot of the first SDK output rejection."""
+
+    reason: str
+    stage: str
+    location: str
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "reason": self.reason,
+            "stage": self.stage,
+            "location": self.location,
+        }
 
 
 class _SessionStoreAppendTracker:
@@ -361,6 +382,13 @@ def _diagnostic_terminal_class(
             "tool_policy_or_admission_failure",
             _SDK_TOOL_ADMISSION_FAILED,
             "review_skill_or_tool_admission",
+            False,
+        )
+    if error_code == _SDK_OUTPUT_VALIDATION_FAILED:
+        return (
+            "output_validation_failure",
+            _SDK_OUTPUT_VALIDATION_FAILED,
+            "refresh_or_contact_admin",
             False,
         )
     return "upstream_error", _SDK_UPSTREAM_ERROR, "retry_later", True
@@ -993,6 +1021,7 @@ def _build_response_mcp_server(
     workspace: Path,
     allowed_skill_names: set[str] | frozenset[str],
     attached_files: list[dict[str, str]],
+    diagnostic_counters: dict[str, Any],
 ):
     sdk_tool = getattr(sdk, "tool", None)
     create_server = getattr(sdk, "create_sdk_mcp_server", None)
@@ -1002,7 +1031,8 @@ def _build_response_mcp_server(
     @sdk_tool(
         "attach_file",
         (
-            "Attach one existing workspace file to the final assistant response. "
+            "Select one existing workspace file for delivery with the final assistant response. "
+            "Success confirms selection; the platform publishes the downloadable attachment. "
             "Use only for a final user deliverable; do not attach working files."
         ),
         {
@@ -1032,6 +1062,7 @@ def _build_response_mcp_server(
         },
     )
     async def attach_file(args):
+        diagnostic_counters["attachment_tool_calls"] += 1
         try:
             descriptor = _response_file_descriptor(
                 args,
@@ -1039,6 +1070,7 @@ def _build_response_mcp_server(
                 allowed_skill_names=allowed_skill_names,
             )
         except ValueError:
+            diagnostic_counters["attachment_tool_failures"] += 1
             return _context_retrieval_tool_error(
                 "response_file_invalid",
                 action="response.attach_file",
@@ -1053,6 +1085,7 @@ def _build_response_mcp_server(
         )
         if existing_index is None:
             if len(attached_files) >= _DELIVERY_MANIFEST_MAX_FILES:
+                diagnostic_counters["attachment_tool_failures"] += 1
                 return _context_retrieval_tool_error(
                     "response_file_limit_exceeded",
                     action="response.attach_file",
@@ -1062,9 +1095,10 @@ def _build_response_mcp_server(
         else:
             attached_files[existing_index] = descriptor
             position = existing_index
+        diagnostic_counters["attachment_selected_files"] = len(attached_files)
         return _context_retrieval_tool_response(
             {
-                "attached": True,
+                "selected": True,
                 "position": position,
             }
         )
@@ -1603,8 +1637,13 @@ async def run_claude_agent_sdk(
         "tool_lifecycle_denials": 0,
         "skill_invocations": 0,
         "public_projection_omissions": 0,
+        "attachment_tool_registered": 0,
+        "attachment_tool_calls": 0,
+        "attachment_tool_failures": 0,
+        "attachment_selected_files": 0,
     }
     last_public_stage = "runtime"
+    first_projection_failure: _ProjectionFailure | None = None
     used_skill_names: list[str] = []
     capability_evidence: list[dict[str, str]] = []
     capability_evidence_rejected = False
@@ -1737,7 +1776,16 @@ async def run_claude_agent_sdk(
                 "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
                 "error_code": error_code,
                 "failure_source": failure_source,
-                "failure_stage": last_public_stage,
+                "failure_stage": (
+                    first_projection_failure.stage
+                    if first_projection_failure is not None
+                    else last_public_stage
+                ),
+                "projection_failure": (
+                    first_projection_failure.as_dict()
+                    if first_projection_failure is not None
+                    else None
+                ),
                 "sdk": sdk,
                 "normalization_losses": normalization_losses,
                 "tool_policy_denials": list(
@@ -2057,9 +2105,11 @@ async def run_claude_agent_sdk(
             workspace=cwd,
             allowed_skill_names=allowed_skill_names,
             attached_files=response_file_descriptors,
+            diagnostic_counters=diagnostic_counters,
         )
     except Exception:  # noqa: BLE001 - optional response attachments stay unavailable.
         response_server = None
+    diagnostic_counters["attachment_tool_registered"] = int(response_server is not None)
     internal_response_subjects = (
         {
             str(subject["identity"]): subject
@@ -3475,11 +3525,22 @@ async def run_claude_agent_sdk(
         stream_projection_failed = False
         assistant_observation_scope = 0
 
-        def fail_stream_projection() -> None:
-            nonlocal stream_projection_failed
+        def fail_stream_projection(
+            *,
+            reason: str,
+            stage: str,
+            location: str,
+        ) -> None:
+            nonlocal stream_projection_failed, first_projection_failure
+            if first_projection_failure is None:
+                first_projection_failure = _ProjectionFailure(
+                    reason=reason,
+                    stage=stage,
+                    location=location,
+                )
             stream_projection_failed = True
             answer_stream_gate.fail_closed()
-            answer_timeline.fail_closed()
+            answer_timeline.fail_closed(first_projection_failure.reason)
 
         async for message in messages:
             mcp_registration.check_message(message)
@@ -3531,14 +3592,25 @@ async def run_claude_agent_sdk(
                         not isinstance(raw_observation_identity, str)
                         or not raw_observation_identity
                     ):
-                        fail_stream_projection()
+                        fail_stream_projection(
+                            reason="raw_observation_identity_invalid",
+                            stage="message",
+                            location="stream_observation_identity",
+                        )
                         continue
                     fragments = stream_projector.accept(
                         raw_stream_event,
                         parent_tool_use_id=getattr(message, "parent_tool_use_id", None),
                     )
                     if stream_projector.disabled:
-                        fail_stream_projection()
+                        fail_stream_projection(
+                            reason=(
+                                stream_projector.failure_reason
+                                or "raw_frame_invalid"
+                            ),
+                            stage="message",
+                            location="raw_stream_frame",
+                        )
                     else:
                         if (
                             isinstance(raw_stream_event, dict)
@@ -3554,34 +3626,59 @@ async def run_claude_agent_sdk(
                                 ),
                                 parent_tool_use_id=stream_projector.parent_tool_use_id,
                             ):
-                                fail_stream_projection()
+                                fail_stream_projection(
+                                    reason=(
+                                        answer_timeline.failure_reason
+                                        or "raw_text_source_invalid"
+                                    ),
+                                    stage="message",
+                                    location="raw_text_source",
+                                )
                                 continue
                         for fragment in fragments:
                             last_public_stage = "message"
-                            for public_text in answer_stream_gate.accept(
-                                answer_timeline.accept_delta(
-                                    fragment,
-                                    source_identity=stream_projector.text_source_identity,
-                                    message_identity=(
-                                        stream_projector.message_id,
-                                        stream_projector.parent_tool_use_id,
-                                    )
-                                    if stream_projector.message_id is not None
-                                    else None,
-                                    parent_tool_use_id=stream_projector.parent_tool_use_id,
-                                    observed_identity=raw_observation_identity,
+                            delta_text = answer_timeline.accept_delta(
+                                fragment,
+                                source_identity=stream_projector.text_source_identity,
+                                message_identity=(
+                                    stream_projector.message_id,
+                                    stream_projector.parent_tool_use_id,
                                 )
-                            ):
+                                if stream_projector.message_id is not None
+                                else None,
+                                parent_tool_use_id=stream_projector.parent_tool_use_id,
+                                observed_identity=raw_observation_identity,
+                            )
+                            if answer_timeline.disabled:
+                                fail_stream_projection(
+                                    reason=(
+                                        answer_timeline.failure_reason
+                                        or "raw_delta_conflict"
+                                    ),
+                                    stage="message",
+                                    location="answer_delta",
+                                )
+                                break
+                            for public_text in answer_stream_gate.accept(delta_text):
                                 await publish_terminal_text(
                                     public_text,
                                     source_identity=stream_projector.text_source_identity,
                                 )
+                        if stream_projection_failed:
+                            continue
                         completed_source = stream_projector.take_completed_text_source_identity()
                         if completed_source is not None:
                             await flush_answer_candidates()
                             answer_timeline.close_raw_source(completed_source)
                             if answer_timeline.disabled:
-                                fail_stream_projection()
+                                fail_stream_projection(
+                                    reason=(
+                                        answer_timeline.failure_reason
+                                        or "raw_source_close_conflict"
+                                    ),
+                                    stage="message",
+                                    location="raw_source_close",
+                                )
                 continue
             if isinstance(message, AssistantMessage):
                 await flush_answer_candidates()
@@ -3623,7 +3720,11 @@ async def run_claude_agent_sdk(
                         )
                     )
                 ):
-                    fail_stream_projection()
+                    fail_stream_projection(
+                        reason="assistant_observation_invalid",
+                        stage="message",
+                        location="assistant_observation",
+                    )
                     continue
                 if any(
                     type(block).__name__ == "ToolUseBlock"
@@ -3636,7 +3737,14 @@ async def run_claude_agent_sdk(
                     parent_tool_use_id=parent_tool_use_id,
                     stop_reason=typed_stop_reason,
                 ):
-                    fail_stream_projection()
+                    fail_stream_projection(
+                        reason=(
+                            stream_projector.failure_reason
+                            or "assistant_observation_invalid"
+                        ),
+                        stage="message",
+                        location="assistant_observation",
+                    )
                     continue
                 if stream_projector is not None:
                     assistant_message_identity = assistant_message_id
@@ -3664,7 +3772,11 @@ async def run_claude_agent_sdk(
                 for text_source_ordinal, block in typed_text_blocks:
                     text = getattr(block, "text", None)
                     if not isinstance(text, str):
-                        fail_stream_projection()
+                        fail_stream_projection(
+                            reason="typed_text_block_invalid",
+                            stage="message",
+                            location="typed_text_block",
+                        )
                         continue
                     text_values[text_source_ordinal] = text
                 if (
@@ -3674,7 +3786,14 @@ async def run_claude_agent_sdk(
                         len(typed_text_blocks)
                     )
                 ):
-                    fail_stream_projection()
+                    fail_stream_projection(
+                        reason=(
+                            stream_projector.failure_reason
+                            or "typed_text_source_count_mismatch"
+                        ),
+                        stage="message",
+                        location="typed_text_source_count",
+                    )
                 if stream_projection_failed:
                     continue
                 if not text_blocks:
@@ -3692,7 +3811,14 @@ async def run_claude_agent_sdk(
                             text_source_count=len(typed_text_blocks),
                         )
                         if source_identity is None:
-                            fail_stream_projection()
+                            fail_stream_projection(
+                                reason=(
+                                    stream_projector.failure_reason
+                                    or "typed_text_source_missing"
+                                ),
+                                stage="message",
+                                location="typed_text_source",
+                            )
                             break
                         typed_source_identities[text_source_ordinal] = source_identity
                     if not stream_projection_failed:
@@ -3707,7 +3833,14 @@ async def run_claude_agent_sdk(
                                 for text_source_ordinal, _block in typed_text_blocks
                             ]
                         ):
-                            fail_stream_projection()
+                            fail_stream_projection(
+                                reason=(
+                                    answer_timeline.failure_reason
+                                    or "assistant_text_coverage_conflict"
+                                ),
+                                stage="message",
+                                location="typed_answer_coverage",
+                            )
                 if stream_projection_failed:
                     continue
                 for block in content:
@@ -3749,14 +3882,28 @@ async def run_claude_agent_sdk(
                             source_identity=source_identity,
                         )
                 if answer_timeline.disabled:
-                    fail_stream_projection()
+                    fail_stream_projection(
+                        reason=(
+                            answer_timeline.failure_reason
+                            or "assistant_text_conflict"
+                        ),
+                        stage="message",
+                        location="typed_answer",
+                    )
                 await flush_answer_candidates()
             elif isinstance(message, ResultMessage):
                 terminal_result_message = message
                 if stream_projector is not None:
                     stream_projector.close_unfinished()
                     if stream_projector.disabled:
-                        fail_stream_projection()
+                        fail_stream_projection(
+                            reason=(
+                                stream_projector.failure_reason
+                                or "unfinished_raw_stream"
+                            ),
+                            stage="message",
+                            location="result_unfinished_stream",
+                        )
                 diagnostic_counters["result_messages"] += 1
                 diagnostic_counters["turns_observed"] = _bounded_diagnostic_counter(
                     getattr(message, "num_turns", 0)
@@ -3800,7 +3947,14 @@ async def run_claude_agent_sdk(
                     result_identity,
                     stop_reason,
                 ):
-                    fail_stream_projection()
+                    fail_stream_projection(
+                        reason=(
+                            answer_timeline.failure_reason
+                            or "terminal_result_identity_invalid"
+                        ),
+                        stage="message",
+                        location="result_identity",
+                    )
                 if message.is_error:
                     close_failed_terminal("result_error")
                     raw_error = (
@@ -3949,7 +4103,14 @@ async def run_claude_agent_sdk(
                             terminal_reason=stop_reason,
                         )
                     if answer_timeline.disabled:
-                        fail_stream_projection()
+                        fail_stream_projection(
+                            reason=(
+                                answer_timeline.failure_reason
+                                or "terminal_result_body_conflict"
+                            ),
+                            stage="message",
+                            location="result_body",
+                        )
                     else:
                         result_source_identity = (
                             result_binding[0]
@@ -3970,14 +4131,21 @@ async def run_claude_agent_sdk(
         if stream_projector is not None:
             stream_projector.close_unfinished()
             if stream_projector.disabled:
-                fail_stream_projection()
+                fail_stream_projection(
+                    reason=(
+                        stream_projector.failure_reason
+                        or "unfinished_raw_stream"
+                    ),
+                    stage="message",
+                    location="stream_finalization",
+                )
         terminal_error = (
             _SDK_MISSING_STRUCTURED_TERMINAL
             if not received_structured_terminal
             else None
         )
         if terminal_error is None and stream_projection_failed:
-            terminal_error = _SDK_UPSTREAM_ERROR
+            terminal_error = _SDK_OUTPUT_VALIDATION_FAILED
         if (
             terminal_error is None and terminal_answer_empty
             and not answer_timeline.text.strip() and not response_files

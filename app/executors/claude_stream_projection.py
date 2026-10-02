@@ -163,6 +163,7 @@ class AssistantAnswerTimeline:
         self._recent_assistant_observations: OrderedDict[tuple[object, object], tuple[object, ...]] = OrderedDict()
         self._answer_binding_retired = False
         self._disabled = False
+        self._failure_reason: str | None = None
 
     @property
     def disabled(self) -> bool:
@@ -171,15 +172,21 @@ class AssistantAnswerTimeline:
         return self._disabled
 
     @property
+    def failure_reason(self) -> str | None:
+        """First fixed reconciliation failure observed by this timeline."""
+
+        return self._failure_reason
+
+    @property
     def text(self) -> str:
         if self._rendered_text_cache is None:
             self._rendered_text_cache = "".join(self._rendered_chunks)
         return self._rendered_text_cache + self._result_suffix
 
-    def fail_closed(self) -> None:
+    def fail_closed(self, reason: str = "answer_reconciliation_conflict") -> None:
         """Preserve already observed text and reject every later observation."""
 
-        self._disabled = True
+        self._fail(reason)
 
     @property
     def latest_binding(self) -> tuple[object, object, str | None] | None:
@@ -464,7 +471,7 @@ class AssistantAnswerTimeline:
             allow_create=True,
         )
         if source is None or source.raw_closed:
-            self._fail()
+            self._fail("raw_text_source_invalid")
             return False
         source.raw_open = True
         if not source_was_known:
@@ -491,12 +498,12 @@ class AssistantAnswerTimeline:
             or not _is_hashable(source_identity)
             or not _is_hashable(message_identity)
         ):
-            self._fail()
+            self._fail("raw_delta_conflict")
             return ""
         if observed_identity is not None and (
             not isinstance(observed_identity, str) or not observed_identity
         ):
-            self._fail()
+            self._fail("raw_delta_conflict")
             return ""
         replay_status = self._raw_observation_replay_status(
             observed_identity,
@@ -509,14 +516,14 @@ class AssistantAnswerTimeline:
             self._current = self._sources_by_key.get(source_identity)
             return ""
         if replay_status is False:
-            self._fail()
+            self._fail("raw_delta_conflict")
             return ""
         try:
             existing_source = self._sources_by_key.get(source_identity)
         except TypeError:
             existing_source = None
         if existing_source is None and not self._can_create_source(message_identity):
-            self._fail()
+            self._fail("raw_delta_conflict")
             return ""
         source = self._bind_source(
             source_identity=source_identity,
@@ -525,7 +532,7 @@ class AssistantAnswerTimeline:
             allow_create=True,
         )
         if source is None or source.raw_closed:
-            self._fail()
+            self._fail("raw_delta_conflict")
             return ""
         source.raw_open = True
         if existing_source is None:
@@ -536,7 +543,7 @@ class AssistantAnswerTimeline:
         )
         if replay_handled:
             if replay_suffix is None:
-                self._fail()
+                self._fail("raw_delta_conflict")
                 return ""
             self._append_raw_coverage(source, text)
             self._remember_raw_observation(
@@ -554,7 +561,7 @@ class AssistantAnswerTimeline:
             return self._publish(source, replay_suffix)
         suffix = self._reconcile(source, text)
         if suffix is None:
-            self._fail()
+            self._fail("raw_delta_conflict")
             return ""
         self._append_raw_coverage(source, text)
         self._remember_raw_observation(
@@ -578,12 +585,12 @@ class AssistantAnswerTimeline:
         except TypeError:
             source = None
         if source is None:
-            self._fail()
+            self._fail("raw_source_close_conflict")
             return
         if source.raw_closed:
             return
         if source.typed_body_replay_pending and source.raw_delta_count:
-            self._fail()
+            self._fail("raw_source_close_conflict")
             return
         source.raw_open = False
         source.raw_closed = True
@@ -613,7 +620,7 @@ class AssistantAnswerTimeline:
             or not _is_hashable(source_identity)
             or not _is_hashable(message_identity)
         ):
-            self._fail()
+            self._fail("assistant_text_conflict")
             return ""
         observation_key = (observed_identity, source_identity)
         observation = (
@@ -624,21 +631,21 @@ class AssistantAnswerTimeline:
             previous = self._recent_assistant_observations.get(observation_key)
             if previous is not None:
                 if previous[1:] != observation[1:]:
-                    self._fail()
+                    self._fail("assistant_text_conflict")
                 return ""
             if any(
                 key[0] == observed_identity
                 and (observation_scope is None or value[0] != observation_scope)
                 for key, value in self._recent_assistant_observations.items()
             ):
-                self._fail()
+                self._fail("assistant_text_conflict")
                 return ""
         try:
             existing_source = self._sources_by_key.get(source_identity)
         except TypeError:
             existing_source = None
         if existing_source is None and not self._can_create_source(message_identity):
-            self._fail()
+            self._fail("assistant_text_conflict")
             return ""
         source = self._bind_source(
             source_identity=source_identity,
@@ -647,13 +654,13 @@ class AssistantAnswerTimeline:
             allow_create=True,
         )
         if source is None:
-            self._fail()
+            self._fail("assistant_text_conflict")
             return ""
         if existing_source is None:
             self._answer_binding_retired = False
         suffix = self._reconcile_assistant(source, text)
         if suffix is None or (suffix and self._has_later_published(source)):
-            self._fail()
+            self._fail("assistant_text_conflict")
             return ""
         if self._current is None or source.sequence >= self._current.sequence:
             self._current = source
@@ -686,7 +693,7 @@ class AssistantAnswerTimeline:
                 or not _is_hashable(source_identity)
                 or not _is_hashable(message_identity)
             ):
-                self._fail()
+                self._fail("assistant_text_coverage_conflict")
                 return False
             try:
                 source = self._sources_by_key.get(source_identity)
@@ -697,11 +704,11 @@ class AssistantAnswerTimeline:
                 or source.message_key != message_identity
                 or source.parent_tool_use_id != parent_tool_use_id
             ):
-                self._fail()
+                self._fail("assistant_text_coverage_conflict")
                 return False
             source_sequence = source.sequence
             if source_sequence < previous_source_sequence:
-                self._fail()
+                self._fail("assistant_text_coverage_conflict")
                 return False
             previous_source_sequence = source_sequence
             if source.coverage_truncated:
@@ -717,7 +724,7 @@ class AssistantAnswerTimeline:
                     != source.coverage_digest
                     or self._has_later_published(source)
                 ):
-                    self._fail()
+                    self._fail("assistant_text_coverage_conflict")
                     return False
                 projected[source.sequence] = text
                 continue
@@ -727,7 +734,7 @@ class AssistantAnswerTimeline:
                 if source.coverage:
                     coverage = source.coverage
                     if not text.startswith(coverage):
-                        self._fail()
+                        self._fail("assistant_text_coverage_conflict")
                         return False
                 else:
                     if (
@@ -737,7 +744,7 @@ class AssistantAnswerTimeline:
                         ).hexdigest()
                         != source.coverage_digest
                     ):
-                        self._fail()
+                        self._fail("assistant_text_coverage_conflict")
                         return False
                     coverage = text[: source.coverage_length]
                 projected[source.sequence] = text
@@ -746,14 +753,14 @@ class AssistantAnswerTimeline:
                     coverage = text
                     projected[source.sequence] = text
                 elif text:
-                    self._fail()
+                    self._fail("assistant_text_coverage_conflict")
                     return False
                 else:
                     coverage = ""
                     projected[source.sequence] = text
             suffix = text[len(coverage) :]
             if suffix and self._has_later_published(source):
-                self._fail()
+                self._fail("assistant_text_coverage_conflict")
                 return False
             projected[source.sequence] = text
         return True
@@ -776,13 +783,13 @@ class AssistantAnswerTimeline:
                 )
             )
         ):
-            self._fail()
+            self._fail("terminal_result_identity_invalid")
             return False
         if (
             self._terminal_identity is not None
             and result_identity != self._terminal_identity
         ):
-            self._fail()
+            self._fail("terminal_result_identity_invalid")
             return False
         self._terminal_identity = result_identity
         return True
@@ -795,10 +802,10 @@ class AssistantAnswerTimeline:
         terminal_reason: str | None,
     ) -> str:
         if self.has_answer_source or self._current is not None:
-            self._fail()
+            self._fail("terminal_result_body_conflict")
             return ""
         if not isinstance(text, str):
-            self._fail()
+            self._fail("terminal_result_body_conflict")
             return ""
         if not self.validate_result_identity(result_identity, terminal_reason):
             return ""
@@ -811,7 +818,7 @@ class AssistantAnswerTimeline:
             allow_create=True,
         )
         if source is None:
-            self._fail()
+            self._fail("terminal_result_body_conflict")
             return ""
         return self.accept_result(
             text,
@@ -834,10 +841,10 @@ class AssistantAnswerTimeline:
         if self._disabled:
             return ""
         if self._answer_binding_retired:
-            self._fail()
+            self._fail("terminal_result_body_conflict")
             return ""
         if not isinstance(text, str):
-            self._fail()
+            self._fail("terminal_result_body_conflict")
             return ""
         if not self.validate_result_identity(result_identity, terminal_reason):
             return ""
@@ -851,7 +858,7 @@ class AssistantAnswerTimeline:
             or not _is_hashable(message_identity)
             or not _is_hashable(result_identity)
         ):
-            self._fail()
+            self._fail("terminal_result_body_conflict")
             return ""
         source = self._bind_source(
             source_identity=source_identity,
@@ -860,7 +867,7 @@ class AssistantAnswerTimeline:
             allow_create=False,
         )
         if source is None:
-            self._fail()
+            self._fail("terminal_result_body_conflict")
             return ""
         result_length = len(text)
         result_digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -870,7 +877,7 @@ class AssistantAnswerTimeline:
                 or result_length != self._result_length
                 or result_digest != self._result_digest
             ):
-                self._fail()
+                self._fail("terminal_result_body_conflict")
             return ""
         self._result_seen = True
         self._result_identity = result_identity
@@ -896,7 +903,7 @@ class AssistantAnswerTimeline:
                 ).hexdigest()
                 != source.coverage_digest
             ):
-                self._fail()
+                self._fail("terminal_result_body_conflict")
                 return ""
             suffix = text[source.coverage_length :]
             if suffix:
@@ -906,7 +913,7 @@ class AssistantAnswerTimeline:
         elif source.coverage_known and not self._has_later_published(source):
             if source.coverage:
                 if not text.startswith(source.coverage):
-                    self._fail()
+                    self._fail("terminal_result_body_conflict")
                     return ""
                 suffix = text[len(source.coverage) :]
             elif (
@@ -916,7 +923,7 @@ class AssistantAnswerTimeline:
                 ).hexdigest()
                 != source.coverage_digest
             ):
-                self._fail()
+                self._fail("terminal_result_body_conflict")
                 return ""
             else:
                 suffix = text[source.coverage_length :]
@@ -928,7 +935,7 @@ class AssistantAnswerTimeline:
             ):
                 suffix = "\n\n" + suffix
         else:
-            self._fail()
+            self._fail("terminal_result_body_conflict")
             return ""
         self._result_suffix = suffix
         self._current = source
@@ -1004,7 +1011,7 @@ class AssistantAnswerTimeline:
                 ).hexdigest()
                 != source.coverage_digest
             ):
-                self._fail()
+                self._fail("assistant_text_conflict")
                 return None
             suffix = candidate[source.coverage_length :]
             self._remember_text_coverage(source, candidate)
@@ -1018,7 +1025,7 @@ class AssistantAnswerTimeline:
                 self._remember_text_coverage(source, candidate)
                 if source.coverage_truncated and suffix:
                     if not source.raw_coverage_known:
-                        self._fail()
+                        self._fail("assistant_text_conflict")
                         return None
                 return suffix
             if source.coverage.startswith(candidate):
@@ -1035,7 +1042,7 @@ class AssistantAnswerTimeline:
         suffix = candidate[source.coverage_length :]
         self._remember_text_coverage(source, candidate)
         if source.coverage_truncated and suffix and not source.raw_coverage_known:
-            self._fail()
+            self._fail("assistant_text_conflict")
             return None
         return suffix
 
@@ -1148,7 +1155,9 @@ class AssistantAnswerTimeline:
         self._last_published_sequence = source.sequence
         return published
 
-    def _fail(self) -> None:
+    def _fail(self, reason: str = "answer_reconciliation_conflict") -> None:
+        if self._failure_reason is None:
+            self._failure_reason = reason
         self._disabled = True
 
 
@@ -1190,12 +1199,19 @@ class ClaudeStreamProjector:
         self._typed_text_source_window_sources: tuple[_RawBlockSource, ...] = ()
         self._disabled = False
         self._partial_emitted = False
+        self._failure_reason: str | None = None
 
     @property
     def disabled(self) -> bool:
         """Whether an unsafe or conflicting event permanently disabled output."""
 
         return self._disabled
+
+    @property
+    def failure_reason(self) -> str | None:
+        """First fixed framing failure observed by this projector."""
+
+        return self._failure_reason
 
     @property
     def partial_emitted(self) -> bool:
@@ -1262,19 +1278,19 @@ class ClaudeStreamProjector:
             or not isinstance(uuid, str)
             or not uuid
         ):
-            self._disable()
+            self._disable("assistant_observation_invalid")
             return False
         if parent_tool_use_id is not None and (
             not isinstance(parent_tool_use_id, str) or not parent_tool_use_id
         ):
-            self._disable()
+            self._disable("assistant_observation_invalid")
             return False
         if stop_reason is not None and not is_known_stop_reason(stop_reason):
-            self._disable()
+            self._disable("assistant_observation_invalid")
             return False
         if stop_reason is not None:
             if self._message_stop_reason not in (None, stop_reason):
-                self._disable()
+                self._disable("assistant_observation_invalid")
                 return False
             self._message_stop_reason = stop_reason
         if self._saw_explicit_message:
@@ -1283,7 +1299,7 @@ class ClaudeStreamProjector:
                 or typed_id != self._message_id
                 or parent_tool_use_id != self._parent_tool_use_id
             ):
-                self._disable()
+                self._disable("assistant_observation_invalid")
                 return False
         self._typed_lifecycle_observed = True
         return True
@@ -1298,20 +1314,20 @@ class ClaudeStreamProjector:
             or text_source_count <= 0
             or not self._raw_text_sources
         ):
-            self._disable()
+            self._disable("typed_text_source_count_mismatch")
             return None
         if (
             self._typed_text_source_window_count is not None
             and self._typed_text_source_window_count != text_source_count
         ):
-            self._disable()
+            self._disable("typed_text_source_count_mismatch")
             return None
         if self._typed_text_source_window_count is None:
             available_sources = tuple(
                 self._raw_text_sources[self._typed_text_source_cursor :]
             )
             if text_source_count > len(available_sources):
-                self._disable()
+                self._disable("typed_text_source_count_mismatch")
                 return None
             self._typed_text_source_window_sources = available_sources[:text_source_count]
             self._typed_text_source_window_count = text_source_count
@@ -1336,7 +1352,7 @@ class ClaudeStreamProjector:
             or text_source_ordinal < 0
             or text_source_ordinal >= len(sources)
         ):
-            self._disable()
+            self._disable("typed_text_source_missing")
             return None
         source_identity = sources[text_source_ordinal].identity
         if text_source_ordinal == len(sources) - 1:
@@ -1402,7 +1418,7 @@ class ClaudeStreamProjector:
             or self._ignored_block_index is not None
             or self._explicit_message_open
         ):
-            self._disable()
+            self._disable("unfinished_raw_stream")
 
     def _accept_message_start(self, event: dict[str, Any]) -> tuple[str, ...]:
         message = event.get("message")
@@ -1569,7 +1585,9 @@ class ClaudeStreamProjector:
         self._partial_emitted = True
         return (text,)
 
-    def _disable(self) -> None:
+    def _disable(self, reason: str = "raw_frame_invalid") -> None:
+        if self._failure_reason is None:
+            self._failure_reason = reason
         self._disabled = True
         self._active_text_index = None
         self._ignored_block_index = None

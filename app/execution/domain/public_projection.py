@@ -29,6 +29,7 @@ _CLAUDE_SDK_ACTIONABLE_FAILURE_CODES = frozenset(
         *_SELECTED_SKILL_INVOCATION_ERRORS,
         "claude_agent_sdk_cancelled",
         "claude_agent_sdk_missing_structured_terminal",
+        "claude_agent_sdk_output_validation_failed",
         "claude_agent_sdk_turn_limit_exceeded",
         "claude_agent_sdk_timeout",
         "claude_agent_sdk_tool_admission_failed",
@@ -82,6 +83,10 @@ def claude_sdk_failure_message(sdk_result: object) -> str:
         "claude_agent_sdk_timeout": "This run timed out. Retry or split the request.",
         "claude_agent_sdk_missing_structured_terminal": (
             "The executor ended without an authoritative terminal result. Please retry."
+        ),
+        "claude_agent_sdk_output_validation_failed": (
+            "This run's output could not be validated, so the result could not be "
+            "synchronized. Please refresh the session or contact an administrator."
         ),
         "claude_agent_sdk_tool_admission_failed": (
             "The selected capability or tool was not admitted by platform policy."

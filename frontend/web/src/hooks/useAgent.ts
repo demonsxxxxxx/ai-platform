@@ -52,10 +52,13 @@ import {
 } from "./useAgent/types";
 import {
   ensureTerminalAssistantSegment,
+  hasDisplayableRunAnswer,
   reconstructMessagesFromEvents,
   getLastEventTimestamp,
   mergeHydratedRunSegment,
   prepareMessagesForRunningRun,
+  recoverOlderSuccessfulRunHistory,
+  withUnavailableTerminalResult,
 } from "./useAgent/historyLoader";
 import { normalizeMessageTextLogicalIds } from "./useAgent/eventProcessor";
 import { recoverRunHistory } from "./useAgent/runHistoryRecovery";
@@ -1460,49 +1463,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         terminalHydrationOwnersRef.current.get(ownerKey) === owner &&
         !owner.controller.signal.aborted;
       const markTerminalResultUnavailable = () => {
-        const card: MessagePart = {
-          type: "run_status",
-          event_id: `terminal-result-unavailable:${targetRunId}`,
-          event_type: "terminal_result_unavailable",
-          stage: "agent",
-          message: i18n.t("chat.runTerminal.terminalResultUnavailable", {
-            defaultValue: "任务终态已确认，但结果暂时无法加载。请刷新当前会话。",
-          }),
-          severity: "warning",
-        };
-        setMessageSnapshot({ messagesRef, setMessages }, (previous) => {
-          let matched = false;
-          const updated = previous.map((message) => {
-            if (
-              message.id !== fallbackMessageId &&
-              !(message.role === "assistant" && message.runId === targetRunId)
-            ) return message;
-            matched = true;
-            const parts = clearAllLoadingStates(message.parts || []);
-            return {
-              ...message,
-              isStreaming: false,
-              isSynchronizing: false,
-              parts: parts.some((part) => part.type === "run_status" && part.event_id === card.event_id)
-                ? parts
-                : [...parts, card],
-            };
-          });
-          return matched
-            ? updated
-            : [
-                ...updated,
-                {
-                  id: fallbackMessageId || targetRunId,
-                  runId: targetRunId,
-                  role: "assistant",
-                  content: "",
-                  timestamp: new Date(),
-                  isStreaming: false,
-                  parts: [card],
-                },
-              ];
-        });
+        setMessageSnapshot({ messagesRef, setMessages }, (previous) =>
+          withUnavailableTerminalResult(previous, targetRunId, fallbackMessageId),
+        );
       };
       const promise = Promise.resolve().then(async () => {
         try {
@@ -1523,7 +1486,11 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
               (message) =>
                 message.role === "assistant" && message.runId === targetRunId,
             );
-          if (!hydratedAssistant && status !== "cancelled") {
+          if (
+            (status === "succeeded" &&
+              !hasDisplayableRunAnswer(hydratedMessages, targetRunId)) ||
+            (!hydratedAssistant && status !== "cancelled")
+          ) {
             markTerminalResultUnavailable();
             return;
           }
@@ -2096,6 +2063,32 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           messagesRef.current = reconstructedMessages;
           setMessages(reconstructedMessages);
 
+          const markOlderRunResultUnavailable = (runId: string) => {
+            if (!isCurrentHistoryLoadRequest()) return;
+            setMessageSnapshot({ messagesRef, setMessages }, (previous) =>
+              withUnavailableTerminalResult(previous, runId, runId),
+            );
+          };
+          void recoverOlderSuccessfulRunHistory({
+            messages: reconstructedMessages,
+            currentRunId: historyCurrentRunId,
+            terminalRunStatuses: eventsData.terminal_run_statuses,
+            isCurrent: isCurrentHistoryLoadRequest,
+            loadExactRunHistory: (runId) =>
+              sessionApi.getEvents(targetSessionId, { run_id: runId }),
+            onUnavailable: markOlderRunResultUnavailable,
+            onRecovered: (runId, recoveredMessages) => {
+              setMessageSnapshot(
+                { messagesRef, setMessages },
+                mergeHydratedRunSegment(
+                  messagesRef.current,
+                  recoveredMessages,
+                  runId,
+                ),
+              );
+            },
+          });
+
           // A restored active or terminal run becomes the authoritative parent
           // for the persistent playback lifecycle. The lifecycle itself owns
           // its snapshot; this only binds the parent identity before any panel
@@ -2113,15 +2106,24 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
                     message.role === "assistant",
                 )?.id || historyCurrentRunId)
             : null;
-          const hasCompleteTerminalHistory = Boolean(
+          const hasAssistantTerminalHistory = Boolean(
             historyCurrentRunId &&
-            terminalStatus &&
-            eventsData.terminal_run_statuses?.[historyCurrentRunId] === terminalStatus &&
             reconstructedMessages.some(
               (message) =>
                 message.role === "assistant" &&
                 message.runId === historyCurrentRunId,
             ),
+          );
+          const hasCompleteTerminalHistory = Boolean(
+            historyCurrentRunId &&
+            terminalStatus &&
+            eventsData.terminal_run_statuses?.[historyCurrentRunId] === terminalStatus &&
+            (terminalStatus === "succeeded"
+              ? hasDisplayableRunAnswer(
+                  reconstructedMessages,
+                  historyCurrentRunId,
+                )
+              : hasAssistantTerminalHistory),
           );
 
           if (statusUnauthorized && historyCurrentRunId) {

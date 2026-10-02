@@ -4,6 +4,7 @@ import test from "node:test";
 import { getVisibleMessageParts } from "../../../components/chat/ChatMessage/messagePartVisibility.ts";
 import type { MessagePart } from "../../../types";
 import {
+  hasDisplayableRunAnswer,
   mergeHydratedRunSegment,
   reconstructMessagesFromEvents,
 } from "../historyLoader.ts";
@@ -62,6 +63,101 @@ test("reconstructs zero model completion duration without inventing a run time",
   assert.equal(messages.length, 1);
   assert.equal(messages[0]?.duration, 0);
   assert.equal(messages[0]?.content, "");
+});
+
+test("successful history completeness requires answer text or a deliverable artifact", () => {
+  const lifecycleOnly = reconstructMessagesFromEvents(
+    [
+      {
+        id: "history-thinking-only",
+        event_type: "thinking",
+        run_id: "run-history-answer",
+        timestamp: "2026-05-08T00:00:00.000Z",
+        data: { content: "working" },
+      } satisfies HistoryEvent,
+    ],
+    new Set<string>(),
+    { activeSubagentStack: [] },
+  );
+  assert.equal(
+    hasDisplayableRunAnswer(lifecycleOnly, "run-history-answer"),
+    false,
+  );
+
+  const textHistory = reconstructMessagesFromEvents(
+    [
+      {
+        id: "history-answer-text",
+        sequence: 1,
+        event_type: "message:chunk",
+        run_id: "run-history-answer",
+        timestamp: "2026-05-08T00:00:01.000Z",
+        data: {
+          projection_version: "ai-platform.chat-public-projection.v1",
+          projection_kind: "assistant_delta",
+          event_id: "history-answer-text",
+          sequence: 1,
+          run_id: "run-history-answer",
+          content: "visible answer",
+        },
+      } satisfies HistoryEvent,
+    ],
+    new Set<string>(),
+    { activeSubagentStack: [] },
+  );
+  assert.equal(
+    hasDisplayableRunAnswer(textHistory, "run-history-answer"),
+    true,
+  );
+
+  const artifactOnlyHistory = reconstructMessagesFromEvents(
+    [
+      {
+        id: "history-ready-artifact",
+        event_type: "artifact_card",
+        run_id: "run-history-artifact",
+        timestamp: "2026-05-08T00:00:02.000Z",
+        data: {
+          artifact_id: "artifact-history-ready",
+          artifact_type: "document",
+          label: "report.txt",
+          status: "ready",
+        },
+      } satisfies HistoryEvent,
+    ],
+    new Set<string>(),
+    { activeSubagentStack: [] },
+  );
+  assert.equal(
+    hasDisplayableRunAnswer(artifactOnlyHistory, "run-history-artifact"),
+    true,
+  );
+
+  const failedArtifactHistory = reconstructMessagesFromEvents(
+    [
+      {
+        id: "history-failed-artifact",
+        event_type: "artifact_card",
+        run_id: "run-history-artifact-failed",
+        timestamp: "2026-05-08T00:00:03.000Z",
+        data: {
+          artifact_id: "artifact-history-failed",
+          artifact_type: "document",
+          label: "report.txt",
+          status: "failed",
+        },
+      } satisfies HistoryEvent,
+    ],
+    new Set<string>(),
+    { activeSubagentStack: [] },
+  );
+  assert.equal(
+    hasDisplayableRunAnswer(
+      failedArtifactHistory,
+      "run-history-artifact-failed",
+    ),
+    false,
+  );
 });
 
 test("history reconstruction preserves sandbox readiness duration", () => {

@@ -480,6 +480,10 @@ async def test_sdk_turn_limit_variants_share_one_actionable_public_diagnostic(
             "tool_lifecycle_denials": 0,
             "skill_invocations": 0,
             "public_projection_omissions": 0,
+            "attachment_tool_registered": 0,
+            "attachment_tool_calls": 0,
+            "attachment_tool_failures": 0,
+            "attachment_selected_files": 0,
         },
         "last_public_stage": "runtime",
         "selected_skill": None,
@@ -827,6 +831,10 @@ async def test_success_diagnostics_include_only_public_skill_metadata_and_bounde
         "tool_lifecycle_denials": 0,
         "skill_invocations": 1,
         "public_projection_omissions": 0,
+        "attachment_tool_registered": 0,
+        "attachment_tool_calls": 0,
+        "attachment_tool_failures": 0,
+        "attachment_selected_files": 0,
     }
     assert "internal-review-id" not in str(diagnostics)
     assert "tool-secret-id" not in str(diagnostics)

@@ -21,6 +21,7 @@ from app.auth import AuthPrincipal
 from app.bootstrap.skills import configure_skill_services
 from app.skills.application.run_admission import SkillRunAdmissionService
 from app.models import ChatStreamRequest
+from app.queue import QueueAdmissionMetadata
 from app.routes.chat import chat_stream as _route_chat_stream
 
 
@@ -250,7 +251,7 @@ async def test_chat_stream_explicit_selected_skill_survives_scoped_negative_prom
 
     async def enqueue(payload):
         calls["queue_payload"] = payload
-        return 1
+        return QueueAdmissionMetadata(1, 1, "chat-test-message")
 
     async def noop(*_args, **_kwargs):
         return None
@@ -274,7 +275,7 @@ async def test_chat_stream_explicit_selected_skill_survives_scoped_negative_prom
     monkeypatch.setattr(_owner_conversations_infrastructure_postgres, 'append_message', append_message)
     monkeypatch.setattr(_owner_files_infrastructure_run_bindings_postgres, 'bind_files_to_run', noop)
     monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', append_event)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", enqueue)
+    monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", enqueue)
 
     response = await chat_stream(
         ChatStreamRequest(
@@ -344,7 +345,7 @@ async def test_chat_stream_explicit_selected_skill_denial_precedes_side_effects(
     )
     monkeypatch.setattr(_owner_conversations_infrastructure_postgres, 'append_message', forbidden_side_effect)
     monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', forbidden_side_effect)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", forbidden_side_effect)
+    monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", forbidden_side_effect)
 
     with pytest.raises(HTTPException) as exc_info:
         await chat_stream(

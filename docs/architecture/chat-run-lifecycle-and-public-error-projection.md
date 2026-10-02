@@ -64,6 +64,14 @@ removed from answer text. Unclassified artifacts from failed historical Runs
 remain visible for recovery; any explicit non-response `delivery_scope` is
 always excluded.
 
+The Agent chooses whether to deliver files. Creating a workspace file does not
+deliver it: `attach_file` acknowledges selection, and only a persisted artifact
+confirms delivery. The Agent must explain unsuccessful or omitted delivery
+honestly. SDK turn diagnostics record attachment-tool registration, calls,
+selection failures and selected-file count; compare these with the persisted
+artifact count when investigating delivery. These observations impose no
+minimum file count and do not retry the task or publish unselected files.
+
 `Bash`/execute and Read therefore remain visible as coarse lifecycle activities,
 but their command, arguments, paths, read query, file body, stdout, stderr, and
 result do not render. The same raw-data prohibition applies to Write, Edit,
@@ -195,7 +203,13 @@ fallback. Frontend display ignores arbitrary backend message text for these
 status cards. Distinguish execution-service unavailability from explicit model
 upstream failure according to the owning code mapping.
 
-Public-answer projection remains fail-closed for secrets, concrete Skill implementation/source details, structured executor or storage fields, and model Thinking content. Ordinary paths in intentional answer text are allowed as user-visible project context; pre-release thinking events may retain status compatibility but their body is not rendered. A rejected public projection is not a model or Run execution failure: the executor preserves its authoritative terminal status and omits the unsafe answer from ordinary-user projections. Historical records with the retired projection-failure code are presented as the generic fixed `run_failed` terminal state.
+Public-answer projection remains fail-closed for secrets, concrete Skill implementation/source details, structured executor or storage fields, and model Thinking content. Ordinary paths in intentional answer text are allowed as user-visible project context; pre-release thinking events may retain status compatibility but their body is not rendered. A recoverable disclosure omission preserves the authoritative execution status and omits the unsafe answer. Invalid SDK framing, source identity or terminal-answer reconciliation instead fails with `claude_agent_sdk_output_validation_failed`, publicly mapped to `terminal_reconciliation_failed`; it is not evidence of model-service unavailability. Private diagnostics preserve the first fixed reason, stage and location through later tool events and result normalization. Historical records with the retired projection-failure code are presented as the generic fixed `run_failed` terminal state.
+
+Successful history is complete only when the assistant has answer text or a
+usable artifact. A lifecycle-only shell triggers exact Run history recovery;
+empty recovery preserves already displayed content and shows a result-unavailable
+notice. Older successful Runs use bounded recovery owned by the current history
+request, so a stale request cannot update a different session.
 
 ## Public outcome summary and pre-Run admission
 

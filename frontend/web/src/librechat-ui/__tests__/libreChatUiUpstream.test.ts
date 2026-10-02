@@ -21,7 +21,6 @@ function walkFiles(dir: string): string[] {
 test("librechat-ui is a pinned pure UI upstream module", () => {
   for (const path of [
     "src/librechat-ui/source.ts",
-    "src/librechat-ui/adapter.ts",
     "src/librechat-ui/surface.ts",
     "src/librechat-ui/Shell.tsx",
     "src/librechat-ui/Rail.tsx",
@@ -83,33 +82,6 @@ test("Agent Builder provenance identifies exact reference-derived source files",
     releaseEvidence,
     /not a claim that complete upstream\s+directories are vendored/,
   );
-});
-
-test("librechat-ui exposes an ai-platform-owned adapter seam", () => {
-  const adapter = read("src/librechat-ui/adapter.ts");
-
-  assert.match(adapter, /export interface ChatWorkbenchAdapter/);
-  assert.match(adapter, /sessions:\s*SessionSummary\[\]/);
-  assert.match(adapter, /messages:\s*ChatMessage\[\]/);
-  assert.match(adapter, /selectedSkillChips:\s*ComposerChip\[\]/);
-  assert.match(adapter, /selectedMcpChips:\s*ComposerChip\[\]/);
-  assert.match(adapter, /sendMessage\(input:\s*ComposerInput\):\s*Promise<void>/);
-  assert.match(adapter, /subscribeRunEvents\(runId:\s*string\):\s*RunEventSubscription/);
-  assert.match(adapter, /openArtifact\(artifactId:\s*string\):\s*void/);
-
-  for (const forbidden of [
-    "librechat-data-provider",
-    "useRecoilState",
-    "~/Providers",
-    "~/store",
-    "useChatHelpers",
-    "useGetStartupConfig",
-    "Mongo",
-    "endpoint",
-    "providerKey",
-  ]) {
-    assert.doesNotMatch(adapter, new RegExp(forbidden));
-  }
 });
 
 test("active workbench consumes librechat-ui instead of legacy shell files", () => {
