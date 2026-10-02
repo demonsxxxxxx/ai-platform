@@ -34,7 +34,7 @@ RUN --mount=type=secret,id=VITE_RAGFLOW_SOP_SHARE_URL \
 FROM nginx:1.30.4-alpine@sha256:dc5069ad14f19660b141b21236140b91656bf89bbc3e2417c70ae650cd66104c AS runtime
 
 RUN apk update \
-    && apk upgrade --no-cache libcrypto3 libexpat libssl3 libuuid \
+    && apk upgrade --no-cache libcrypto3 libexpat libssl3 libuuid pcre2 \
     && installed="$(apk list --installed libexpat)" \
     && installed="${installed%% *}" \
     && installed="${installed#libexpat-}" \

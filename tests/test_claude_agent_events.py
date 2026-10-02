@@ -1130,7 +1130,10 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
         execution_policy="sandbox_brokered",
     )
 
-    assert result.error == "claude_agent_sdk_upstream_error"
+    assert result.error == "claude_agent_sdk_output_validation_failed"
+    assert result.runtime_diagnostics["projection_failure"]["reason"] == (
+        "terminal_result_body_conflict"
+    )
     assert result.message == ""
     candidate_types = [
         candidate.event_type
