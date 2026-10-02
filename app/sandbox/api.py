@@ -29,6 +29,9 @@ from app.sandbox.domain.runtime_diagnostics import (
     normalize_sdk_runtime_diagnostics as normalize_sdk_runtime_diagnostics,
 )
 from app.sandbox.domain.runtime_diagnostics import (
+    normalize_sdk_projection_failure as normalize_sdk_projection_failure,
+)
+from app.sandbox.domain.runtime_diagnostics import (
     runtime_diagnostics_rejection as runtime_diagnostics_rejection,
 )
 from app.sandbox.domain.runtime_diagnostics import (

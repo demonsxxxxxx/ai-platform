@@ -54,6 +54,47 @@ _SDK_VALUE_FIELDS = frozenset(
         "permission_denials",
     }
 )
+_SDK_PROJECTION_FAILURE_REASONS = frozenset(
+    {
+        "raw_observation_identity_invalid",
+        "raw_frame_invalid",
+        "unfinished_raw_stream",
+        "raw_text_source_invalid",
+        "raw_delta_conflict",
+        "raw_source_close_conflict",
+        "assistant_observation_invalid",
+        "typed_text_block_invalid",
+        "typed_text_source_count_mismatch",
+        "typed_text_source_missing",
+        "assistant_text_coverage_conflict",
+        "assistant_text_conflict",
+        "terminal_result_identity_invalid",
+        "terminal_result_body_conflict",
+        "answer_reconciliation_conflict",
+    }
+)
+_SDK_PROJECTION_FAILURE_STAGES = frozenset(
+    {"planning", "runtime", "message", "skills"}
+)
+_SDK_PROJECTION_FAILURE_LOCATIONS = frozenset(
+    {
+        "stream_observation_identity",
+        "raw_stream_frame",
+        "raw_text_source",
+        "answer_delta",
+        "raw_source_close",
+        "assistant_observation",
+        "typed_text_block",
+        "typed_text_source_count",
+        "typed_text_source",
+        "typed_answer_coverage",
+        "typed_answer",
+        "result_unfinished_stream",
+        "result_identity",
+        "result_body",
+        "stream_finalization",
+    }
+)
 
 
 def exception_chain_from_error(
@@ -278,6 +319,26 @@ def runtime_diagnostics_rejection(
 def _structured_value(value: object) -> str:
     text = value if isinstance(value, str) else ""
     return text if _STRUCTURED_VALUE_PATTERN.fullmatch(text) else ""
+
+
+def normalize_sdk_projection_failure(value: object) -> dict[str, str] | None:
+    """Return only the fixed, value-free SDK output validation taxonomy."""
+
+    if not isinstance(value, dict):
+        return None
+    reason = value.get("reason")
+    stage = value.get("stage")
+    location = value.get("location")
+    if (
+        not isinstance(reason, str)
+        or reason not in _SDK_PROJECTION_FAILURE_REASONS
+        or not isinstance(stage, str)
+        or stage not in _SDK_PROJECTION_FAILURE_STAGES
+        or not isinstance(location, str)
+        or location not in _SDK_PROJECTION_FAILURE_LOCATIONS
+    ):
+        return None
+    return {"reason": reason, "stage": stage, "location": location}
 
 
 def _text_field(
@@ -668,6 +729,8 @@ def _fit_runtime_diagnostics(payload: dict[str, Any]) -> dict[str, Any]:
             -SDK_RUNTIME_DIAGNOSTIC_LOSS_LIMIT:
         ],
     }
+    if isinstance(payload.get("projection_failure"), dict):
+        minimal["projection_failure"] = payload["projection_failure"]
     _append_loss(
         minimal["normalization_losses"],
         field="runtime_diagnostics",
@@ -823,6 +886,30 @@ def normalize_sdk_runtime_diagnostics(value: object) -> dict[str, Any]:
         "sdk": sdk,
         "failure_observations": observations,
     }
+    raw_projection_failure = value.get("projection_failure")
+    if raw_projection_failure is not None:
+        projection_failure = normalize_sdk_projection_failure(
+            raw_projection_failure
+        )
+        if projection_failure is None:
+            _append_loss(
+                losses,
+                field="projection_failure",
+                reason="invalid_field",
+            )
+        else:
+            normalized["projection_failure"] = projection_failure
+            if isinstance(raw_projection_failure, dict):
+                extra_count = len(
+                    set(raw_projection_failure) - {"reason", "stage", "location"}
+                )
+                if extra_count:
+                    _append_loss(
+                        losses,
+                        field="projection_failure",
+                        reason="unknown_fields_dropped",
+                        count=extra_count,
+                    )
     previous_truncated = value.get("truncated")
     previous_truncated = (
         previous_truncated if isinstance(previous_truncated, dict) else {}
@@ -853,6 +940,7 @@ def normalize_sdk_runtime_diagnostics(value: object) -> dict[str, Any]:
         "failure_stage",
         "sdk",
         "failure_observations",
+        "projection_failure",
         "tool_lifecycles",
         "tool_calls",
         "tool_policy_denials",

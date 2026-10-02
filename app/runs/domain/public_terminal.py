@@ -47,6 +47,7 @@ PUBLIC_TERMINAL_ERROR_CODE_ALIASES = {
     "capability_callback_not_acknowledged": "required_capability_unavailable",
     "capability_lifecycle_sequence_invalid": "required_capability_unavailable",
     "claude_agent_sdk_missing_structured_terminal": "execution_service_unavailable",
+    "claude_agent_sdk_output_validation_failed": "terminal_reconciliation_failed",
     "claude_agent_sdk_tool_admission_failed": "required_capability_unavailable",
     "claude_agent_sdk_upstream_error": "model_service_unavailable",
     "model_proxy_forbidden": "model_proxy_authorization_failed",

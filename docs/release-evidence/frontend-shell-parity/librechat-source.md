@@ -59,14 +59,19 @@ The local module must not import or reimplement LibreChat backend authority:
 - RAG/file-store permission logic.
 
 All data, permissions, events, persistence, and backend projections remain
-ai-platform-owned and must cross the `ChatWorkbenchAdapter` seam instead.
+ai-platform-owned. `ChatAppContent` passes send, stop, reconnect, and history
+callbacks to `ChatView`; `ChatView` composes the thread, composer, and context
+panel and passes composer values and callbacks to `ChatInput` through its
+declared `ChatInputProps`.
 
 ## Local Mapping
 
 | ai-platform module | Role |
 | --- | --- |
 | `frontend/web/src/librechat-ui/source.ts` | Upstream commit, license, allowed scope, forbidden scope |
-| `frontend/web/src/librechat-ui/adapter.ts` | ai-platform-owned adapter interface consumed by UI |
+| `frontend/web/src/components/layout/AppContent/ChatAppContent.tsx` | Supplies chat/session values and operation callbacks to `ChatView` |
+| `frontend/web/src/components/layout/AppContent/ChatView.tsx` | Composes thread, composer, and context-panel regions and supplies `ChatInput` props |
+| `frontend/web/src/components/chat/chatInputTypes.ts` | Declares active composer values and callback props |
 | `frontend/web/src/librechat-ui/surface.ts` | shell geometry and surface tokens |
 | `frontend/web/src/librechat-ui/Shell.tsx` | chat shell layout and right-context toggle |
 | `frontend/web/src/librechat-ui/Rail.tsx` | sidebar rail primitive |

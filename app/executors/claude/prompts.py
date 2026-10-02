@@ -38,7 +38,12 @@ _PUBLIC_LANGUAGE_INSTRUCTION = (
 _RESPONSE_FILES_INSTRUCTION = (
     "Return the final response as ordinary assistant text. If a generated file is a final "
     "user deliverable, call the available `attach_file` tool once for that workspace-relative "
-    "path before the final response. You may attach zero or more files. Do not attach temporary, "
+    "path before the final response. A successful tool result selects the file for delivery; "
+    "the platform publishes the downloadable attachment when this response completes. "
+    "Creating or reading a file alone does not deliver it. If you have not successfully "
+    "selected it, clearly say it has not been delivered and explain any failure; do not "
+    "claim an attachment or invent a download link. You may attach zero or more files. "
+    "Do not attach temporary, "
     "intermediate, cache, log, diagnostic, or machine-readable working files unless the user "
     "explicitly requested them. Files not attached stay private.\n"
 )

@@ -99,7 +99,6 @@ from app.projection_redaction import (
 from app.queue import (
     QueueAdmissionMetadata,
     QueueAdmissionRejected,
-    enqueue_run,
     enqueue_run_with_metadata,
     get_queue_insight,
     read_queue_admission,
@@ -139,7 +138,6 @@ _agent_profile_authority = AgentProfileAuthority()
 
 logger = logging.getLogger(__name__)
 _MISSING = object()
-_ORIGINAL_ENQUEUE_RUN = enqueue_run
 _CHAT_SUBMISSION_RESOLUTION_CACHE_CONTROL = "private, no-store"
 _PRELEDGER_RECOVERY_REJECTION_CODE = "chat_submission_retired_before_ledger"
 _REQUIRED_CAPABILITY_UNAVAILABLE_CODE = "required_capability_unavailable"
@@ -899,17 +897,6 @@ def _validate_queue_payload_for_enqueue(payload: dict[str, Any]) -> dict[str, An
         raise HTTPException(status_code=500, detail=queue_payload_invalid_detail(exc)) from exc
 
 
-async def _enqueue_chat_run(queue_payload: dict[str, Any]):
-    if enqueue_run is not _ORIGINAL_ENQUEUE_RUN:
-        queue_position = await enqueue_run(queue_payload)
-        return QueueAdmissionMetadata(
-            queue_position=int(queue_position),
-            queue_admission_ordinal=int(queue_position),
-            message_id="",
-        )
-    return await enqueue_run_with_metadata(queue_payload)
-
-
 async def _attempt_chat_queue_admission(
     queue_payload: dict[str, Any],
     *,
@@ -918,7 +905,7 @@ async def _attempt_chat_queue_admission(
     return await attempt_chat_queue_admission(
         queue_payload,
         check_existing=check_existing,
-        enqueue=_enqueue_chat_run,
+        enqueue=enqueue_run_with_metadata,
         read=read_queue_admission,
         rejection_type=QueueAdmissionRejected,
     )

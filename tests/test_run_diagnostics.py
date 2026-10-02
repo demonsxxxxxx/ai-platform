@@ -206,6 +206,34 @@ def test_run_sanitizer_preserves_bounded_source_and_stage_labels():
     assert observation["stage"] == "enqueue rejection"
 
 
+def test_projection_failure_survives_sandbox_and_runs_diagnostic_boundaries():
+    expected = {
+        "reason": "raw_delta_conflict",
+        "stage": "message",
+        "location": "answer_delta",
+    }
+    sandbox_projection = normalize_sdk_runtime_diagnostics(
+        runtime_diagnostics(projection_failure=expected)
+    )
+    runs_projection = sanitize_runtime_diagnostics(sandbox_projection)
+    observation = build_failure_observation(
+        attempt_id="attempt-a",
+        source="worker_executor",
+        stage="terminalization",
+        error_code="claude_agent_sdk_output_validation_failed",
+        runtime_diagnostics=runs_projection,
+        received_at=NOW,
+    )
+
+    repeated_sandbox_projection = normalize_sdk_runtime_diagnostics(
+        observation["runtime_diagnostics"]
+    )
+
+    assert sandbox_projection["projection_failure"] == expected
+    assert observation["runtime_diagnostics"]["projection_failure"] == expected
+    assert repeated_sandbox_projection["projection_failure"] == expected
+
+
 @pytest.mark.asyncio
 async def test_capture_diagnostic_failure_does_not_veto_public_terminal_result():
     class FailingPersistence:

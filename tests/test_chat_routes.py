@@ -778,7 +778,7 @@ async def test_chat_stream_current_turn_controls_selected_mcp_before_authorizati
 
     async def enqueue(payload):
         calls["queue_input"] = payload["input"]
-        return 1
+        return QueueAdmissionMetadata(1, 1, "chat-test-message")
 
     async def manifests(_service, _conn, *, skill, skill_id, tenant_id, rollout_key, **_kwargs):
         return admitted_skill(skill, tenant_id, rollout_key, [snapshot_manifest("general-chat")])
@@ -808,7 +808,7 @@ async def test_chat_stream_current_turn_controls_selected_mcp_before_authorizati
     monkeypatch.setattr(_owner_files_infrastructure_run_bindings_postgres, 'bind_files_to_run', noop)
     monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', noop)
     monkeypatch.setattr("app.skills.application.run_admission.SkillRunAdmissionService.admit", manifests)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", enqueue)
+    monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", enqueue)
 
     response = await chat_stream(
         ChatStreamRequest(message=message, selected_mcp_tool_ids=selected_tools),
@@ -866,11 +866,13 @@ async def test_chat_stream_never_turns_bash_text_into_required_capability(
             "input_modes": ["chat"],
         }
     )
-    manifests, enqueue = AsyncMock(return_value=[manifest]), AsyncMock(return_value=1)
+    manifests, enqueue = AsyncMock(return_value=[manifest]), AsyncMock(
+        return_value=QueueAdmissionMetadata(1, 1, "bash-capability-message")
+    )
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr(_owner_runs_infrastructure_capability_admission_postgres, 'authorize_run_capabilities', authorize)
     monkeypatch.setattr("app.skills.application.run_admission.SkillRunAdmissionService.admit", manifests)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", enqueue)
+    monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", enqueue)
     request = ChatStreamRequest(message=message)
 
     assert (await chat_stream(request, principal=principal())).status == "queued"
@@ -1531,7 +1533,7 @@ async def test_profile_retry_admission_uses_fresh_authority_transaction_for_comm
     monkeypatch.setattr("app.routes.chat._validate_queue_payload_for_enqueue", lambda payload: payload)
     monkeypatch.setattr("app.routes.chat._agent_profile_authority.reauthorize_pinned_run_for_replay", reauthorize)
     monkeypatch.setattr("app.routes.chat.read_queue_admission", no_existing)
-    monkeypatch.setattr("app.routes.chat._enqueue_chat_run", enqueue)
+    monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", enqueue)
     monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', append_event)
     monkeypatch.setattr(_owner_persistence_chat_submissions, 'finalize_chat_submission', finalize)
 
@@ -1633,7 +1635,7 @@ async def test_profile_postcommit_lost_ack_is_recoverable_and_duplicate_retry_do
     monkeypatch.setattr("app.routes.chat._validate_queue_payload_for_enqueue", lambda payload: payload)
     monkeypatch.setattr("app.routes.chat._agent_profile_authority.reauthorize_pinned_run_for_replay", reauthorize)
     monkeypatch.setattr("app.routes.chat.read_queue_admission", read_admission)
-    monkeypatch.setattr("app.routes.chat._enqueue_chat_run", enqueue)
+    monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", enqueue)
     monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', append_event)
     monkeypatch.setattr(_owner_persistence_chat_submissions, 'finalize_chat_submission', finalize)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_enqueue_failed", forbidden_failure_transition)
@@ -1697,7 +1699,7 @@ async def test_retry_admission_marks_committed_submission_enqueue_failed_only_fo
     monkeypatch.setattr(_owner_persistence_chat_submissions, 'get_chat_submission', get_submission, raising=False)
     monkeypatch.setattr(_owner_runs_infrastructure_creation_postgres, 'get_authorized_run', get_run, raising=False)
     monkeypatch.setattr("app.routes.chat._validate_queue_payload_for_enqueue", lambda payload: payload)
-    monkeypatch.setattr("app.routes.chat._enqueue_chat_run", fail_enqueue)
+    monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", fail_enqueue)
     monkeypatch.setattr("app.routes.chat.read_queue_admission", no_existing_admission)
     monkeypatch.setattr(_owner_persistence_chat_submissions, 'finalize_chat_submission', finalize, raising=False)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_enqueue_failed", mark_enqueue_failed)
@@ -1755,7 +1757,7 @@ async def test_retry_admission_keeps_unknown_enqueue_outcome_recoverable_without
     monkeypatch.setattr(_owner_persistence_chat_submissions, 'get_chat_submission', get_submission, raising=False)
     monkeypatch.setattr(_owner_runs_infrastructure_creation_postgres, 'get_authorized_run', get_run, raising=False)
     monkeypatch.setattr("app.routes.chat._validate_queue_payload_for_enqueue", lambda payload: payload)
-    monkeypatch.setattr("app.routes.chat._enqueue_chat_run", enqueue)
+    monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", enqueue)
     monkeypatch.setattr("app.routes.chat.read_queue_admission", no_exact_admission)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_enqueue_failed", forbidden_failure_transition)
     monkeypatch.setattr(_owner_persistence_chat_submissions, 'finalize_chat_submission', forbidden_failure_transition, raising=False)
@@ -1800,7 +1802,7 @@ async def test_retry_admission_reconciles_concurrent_redis_success_without_termi
     monkeypatch.setattr(_owner_persistence_chat_submissions, 'get_chat_submission', get_submission, raising=False)
     monkeypatch.setattr(_owner_runs_infrastructure_creation_postgres, 'get_authorized_run', get_run, raising=False)
     monkeypatch.setattr("app.routes.chat._validate_queue_payload_for_enqueue", lambda payload: payload)
-    monkeypatch.setattr("app.routes.chat._enqueue_chat_run", enqueue)
+    monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", enqueue)
     monkeypatch.setattr("app.routes.chat.read_queue_admission", read_admission)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_enqueue_failed", forbidden_failure_transition)
     monkeypatch.setattr(_owner_persistence_chat_submissions, 'finalize_chat_submission', forbidden_failure_transition, raising=False)
@@ -1888,7 +1890,7 @@ async def test_retry_admission_commits_enqueue_compensation_before_503_escapes(m
     monkeypatch.setattr(_owner_persistence_chat_submissions, 'get_chat_submission', get_submission, raising=False)
     monkeypatch.setattr(_owner_runs_infrastructure_creation_postgres, 'get_authorized_run', get_run, raising=False)
     monkeypatch.setattr("app.routes.chat._validate_queue_payload_for_enqueue", lambda payload: payload)
-    monkeypatch.setattr("app.routes.chat._enqueue_chat_run", fail_enqueue)
+    monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", fail_enqueue)
     monkeypatch.setattr("app.routes.chat.read_queue_admission", no_existing_admission)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_enqueue_failed", mark_enqueue_failed)
     monkeypatch.setattr(_owner_persistence_chat_submissions, 'finalize_chat_submission', finalize, raising=False)
@@ -1941,7 +1943,7 @@ async def test_retry_admission_does_not_requeue_a_processing_run(monkeypatch):
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr(_owner_persistence_chat_submissions, 'get_chat_submission', get_submission, raising=False)
     monkeypatch.setattr(_owner_runs_infrastructure_creation_postgres, 'get_authorized_run', get_run, raising=False)
-    monkeypatch.setattr("app.routes.chat._enqueue_chat_run", forbidden_enqueue)
+    monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", forbidden_enqueue)
     monkeypatch.setattr(_owner_persistence_chat_submissions, 'finalize_chat_submission', finalize, raising=False)
 
     response = await _admit_chat_submission(
@@ -1998,7 +2000,7 @@ async def test_retry_admission_reuses_queue_identity_after_a_ledger_update_loss(
     monkeypatch.setattr(_owner_persistence_chat_submissions, 'get_chat_submission', get_submission, raising=False)
     monkeypatch.setattr(_owner_runs_infrastructure_creation_postgres, 'get_authorized_run', get_run, raising=False)
     monkeypatch.setattr("app.routes.chat._validate_queue_payload_for_enqueue", lambda payload: payload)
-    monkeypatch.setattr("app.routes.chat._enqueue_chat_run", enqueue)
+    monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", enqueue)
     monkeypatch.setattr("app.routes.chat.read_queue_admission", read_admission)
     monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event', append_event, raising=False)
     monkeypatch.setattr(_owner_persistence_chat_submissions, 'finalize_chat_submission', finalize, raising=False)
@@ -2643,13 +2645,13 @@ async def test_chat_stream_capability_distribution_creates_run_with_auth_snapsho
         )
         if enqueue_mode != "normal":
             raise TimeoutError("synthetic Redis reply lost after enqueue")
-        return 3
+        return QueueAdmissionMetadata(3, 30, "committed-message")
 
     async def fake_read_queue_admission(payload):
         assert enqueue_mode != "normal"
         assert payload["run_id"] == "run_3"
         return (
-            QueueAdmissionMetadata(3, 3, "committed-message")
+            QueueAdmissionMetadata(3, 30, "committed-message")
             if enqueue_mode == "reply_lost_readback"
             else None
         )
@@ -2697,7 +2699,7 @@ async def test_chat_stream_capability_distribution_creates_run_with_auth_snapsho
     monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', fake_bind_files_to_run)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', fake_append_event)
     monkeypatch.setattr("app.routes.chat.record_initial_context_snapshot", fake_record_context)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
+    monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", fake_enqueue_run)
     monkeypatch.setattr("app.routes.chat.read_queue_admission", fake_read_queue_admission)
     monkeypatch.setattr("app.routes.chat.get_queue_insight", fake_get_queue_insight)
 
@@ -2770,7 +2772,7 @@ async def test_chat_stream_capability_distribution_creates_run_with_auth_snapsho
             "visible_to_user": False,
             "source": "admin_runtime_queue",
             "queue_position": 3,
-            "queue_admission_ordinal": 3,
+            "queue_admission_ordinal": 30,
             "queue_probe_source": "redis_metadata",
         },
     ) in calls
@@ -3081,7 +3083,7 @@ async def test_chat_stream_prevalidates_queue_payload_before_persisting(monkeypa
     monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', fail_persist)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', fail_persist)
     monkeypatch.setattr("app.routes.chat.record_initial_context_snapshot", fail_persist)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", fail_enqueue_run)
+    monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", fail_enqueue_run)
 
     with pytest.raises(HTTPException) as exc_info:
         await chat_stream(
@@ -3111,7 +3113,7 @@ async def test_chat_stream_rejects_unavailable_model_id_before_side_effects(monk
     monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fail_side_effect)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fail_side_effect)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', fail_side_effect)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", fail_side_effect)
+    monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", fail_side_effect)
 
     with pytest.raises(HTTPException) as exc_info:
         await chat_stream(
@@ -3154,7 +3156,7 @@ async def test_chat_stream_rejects_non_string_model_id_without_coercion(
     monkeypatch.setattr('app.runs.infrastructure.creation_postgres.create_run', fail_side_effect)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fail_side_effect)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', fail_side_effect)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", fail_side_effect)
+    monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", fail_side_effect)
 
     with pytest.raises(HTTPException) as exc_info:
         await chat_stream(
@@ -3223,7 +3225,7 @@ async def test_chat_stream_maps_governed_model_to_runtime_value_and_revision(mon
 
     async def fake_enqueue_run(payload):
         calls.append(("queue_payload", payload))
-        return 1
+        return QueueAdmissionMetadata(1, 1, "chat-test-message")
 
     async def fake_materialize_governed_skill_manifests(_service, _conn, *, skill, skill_id, tenant_id, rollout_key, **_kwargs):
         return admitted_skill(skill, tenant_id, rollout_key, [snapshot_manifest(skill_id)])
@@ -3250,7 +3252,7 @@ async def test_chat_stream_maps_governed_model_to_runtime_value_and_revision(mon
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
     monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', fake_bind_files_to_run)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', fake_append_event)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
+    monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", fake_enqueue_run)
 
     response = await chat_stream(
         ChatStreamRequest(
@@ -3322,7 +3324,7 @@ async def test_chat_stream_developer_fixture_uses_skillless_harness_chat(monkeyp
 
     async def fake_enqueue_run(payload):
         calls["queue"] = payload
-        return 1
+        return QueueAdmissionMetadata(1, 1, "chat-test-message")
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
@@ -3333,7 +3335,7 @@ async def test_chat_stream_developer_fixture_uses_skillless_harness_chat(monkeyp
     monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', noop)
     monkeypatch.setattr("app.routes.chat.record_initial_context_snapshot", fake_record_context)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', fake_append_event)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
+    monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", fake_enqueue_run)
 
     response = await chat_stream(
         ChatStreamRequest(
@@ -3532,7 +3534,7 @@ async def test_chat_stream_producer_contract_persists_uploaded_release_policy_ma
 
     async def fake_enqueue_run(payload):
         calls["queue"] = payload
-        return 4
+        return QueueAdmissionMetadata(4, 4, "chat-test-message")
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
@@ -3548,7 +3550,7 @@ async def test_chat_stream_producer_contract_persists_uploaded_release_policy_ma
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
     monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', noop)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', fake_append_event)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
+    monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", fake_enqueue_run)
 
     response = await chat_stream(
         ChatStreamRequest(
@@ -3633,7 +3635,7 @@ async def test_chat_stream_uses_rollout_selected_previous_version(monkeypatch):
 
     async def fake_enqueue_run(payload):
         calls["queue"] = payload
-        return 4
+        return QueueAdmissionMetadata(4, 4, "chat-test-message")
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
@@ -3649,7 +3651,7 @@ async def test_chat_stream_uses_rollout_selected_previous_version(monkeypatch):
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
     monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', noop)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', fake_append_event)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
+    monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", fake_enqueue_run)
 
     response = await chat_stream(
         ChatStreamRequest(
@@ -3720,7 +3722,7 @@ async def test_chat_stream_rejects_reviewed_rollout_previous_version(monkeypatch
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', noop)
     monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', noop)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', noop)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", fail_enqueue_run)
+    monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", fail_enqueue_run)
 
     with pytest.raises(HTTPException) as exc_info:
         await chat_stream(
@@ -3775,7 +3777,7 @@ async def test_chat_stream_appends_canonical_product_events(monkeypatch):
         return f"evt_{len(events)}"
 
     async def fake_enqueue_run(payload):
-        return 1
+        return QueueAdmissionMetadata(1, 1, "chat-test-message")
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
@@ -3789,7 +3791,7 @@ async def test_chat_stream_appends_canonical_product_events(monkeypatch):
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', noop)
     monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', noop)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', fake_append_event)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
+    monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", fake_enqueue_run)
 
     await chat_stream(
         ChatStreamRequest(
@@ -3864,7 +3866,7 @@ async def test_lambchat_chat_stream_uses_skillless_harness_for_chat_agents(
                 payload["skill_id"],
             )
         )
-        return 1
+        return QueueAdmissionMetadata(1, 1, "chat-test-message")
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
@@ -3874,7 +3876,7 @@ async def test_lambchat_chat_stream_uses_skillless_harness_for_chat_agents(
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', noop)
     monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', noop)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', noop)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
+    monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", fake_enqueue_run)
 
     response = await chat_stream(
         ChatStreamRequest(message="hello"),
@@ -3931,7 +3933,7 @@ async def test_chat_stream_redacts_raw_skill_id_from_ordinary_user_response(monk
         return "ses_review"
 
     async def fake_enqueue_run(payload):
-        return 1
+        return QueueAdmissionMetadata(1, 1, "chat-test-message")
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
@@ -3945,7 +3947,7 @@ async def test_chat_stream_redacts_raw_skill_id_from_ordinary_user_response(monk
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', noop)
     monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', noop)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', noop)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
+    monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", fake_enqueue_run)
 
     response = await chat_stream(
         ChatStreamRequest(
@@ -3982,7 +3984,7 @@ async def test_chat_stream_rejects_raw_skill_id_for_ordinary_user(monkeypatch):
 
     async def fake_enqueue_run(payload):
         calls.append(("queue", payload["agent_id"], payload["skill_id"]))
-        return 1
+        return QueueAdmissionMetadata(1, 1, "chat-test-message")
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
@@ -3992,7 +3994,7 @@ async def test_chat_stream_rejects_raw_skill_id_for_ordinary_user(monkeypatch):
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', noop)
     monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', noop)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', noop)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
+    monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", fake_enqueue_run)
 
     with pytest.raises(HTTPException) as exc_info:
         await chat_stream(
@@ -4030,7 +4032,7 @@ async def test_general_chat_queues_claude_agent_worker_executor(monkeypatch):
 
     async def fake_enqueue_run(payload):
         calls.append(("queue", payload["executor_type"], payload["user_id"], payload["input"]["message"]))
-        return 1
+        return QueueAdmissionMetadata(1, 1, "chat-test-message")
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
@@ -4040,7 +4042,7 @@ async def test_general_chat_queues_claude_agent_worker_executor(monkeypatch):
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', noop)
     monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', noop)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', noop)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
+    monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", fake_enqueue_run)
 
     response = await chat_stream(ChatStreamRequest(message="hello"), principal=principal())
 
@@ -4074,7 +4076,7 @@ async def test_lambchat_docx_attachment_stays_with_general_agent(monkeypatch):
 
     async def fake_enqueue_run(payload):
         calls.append(("queue", payload["agent_id"], payload["skill_id"], payload["file_ids"]))
-        return 1
+        return QueueAdmissionMetadata(1, 1, "chat-test-message")
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
@@ -4084,7 +4086,7 @@ async def test_lambchat_docx_attachment_stays_with_general_agent(monkeypatch):
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', noop)
     monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', fake_bind_files_to_run)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', noop)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
+    monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", fake_enqueue_run)
 
     response = await chat_stream(
         ChatStreamRequest(
@@ -4146,7 +4148,7 @@ async def test_chat_stream_docx_file_id_stays_with_general_agent(monkeypatch):
 
     async def fake_enqueue_run(payload):
         calls.append(("queue", payload["agent_id"], payload["skill_id"], payload["file_ids"]))
-        return 1
+        return QueueAdmissionMetadata(1, 1, "chat-test-message")
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.get_file', fake_get_file)
@@ -4157,7 +4159,7 @@ async def test_chat_stream_docx_file_id_stays_with_general_agent(monkeypatch):
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', noop)
     monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', fake_bind_files_to_run)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', noop)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
+    monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", fake_enqueue_run)
 
     response = await chat_stream(
         ChatStreamRequest(message="审核一下这个文档", file_ids=["file_review"]),
@@ -4216,7 +4218,7 @@ async def test_chat_stream_ignores_file_id_metadata_outside_request_scope(monkey
 
     async def fake_enqueue_run(payload):
         calls.append(("queue", payload["agent_id"], payload["skill_id"], payload["file_ids"]))
-        return 1
+        return QueueAdmissionMetadata(1, 1, "chat-test-message")
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.get_file', fake_get_file)
@@ -4227,7 +4229,7 @@ async def test_chat_stream_ignores_file_id_metadata_outside_request_scope(monkey
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', noop)
     monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', noop)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', noop)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
+    monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", fake_enqueue_run)
 
     response = await chat_stream(
         ChatStreamRequest(message="审核一下这个文档", file_ids=["file_review"]),
@@ -4359,7 +4361,7 @@ async def test_chat_stream_reuses_authorized_prior_turn_file_for_routed_skill(mo
                 payload["file_ids"],
             )
         )
-        return 1
+        return QueueAdmissionMetadata(1, 1, "chat-test-message")
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
@@ -4380,7 +4382,7 @@ async def test_chat_stream_reuses_authorized_prior_turn_file_for_routed_skill(mo
     )
     monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', fake_bind_files)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', noop)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
+    monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", fake_enqueue_run)
     monkeypatch.setattr(
         'app.platform.postgres.values.new_id',
         lambda kind: "ses_routed" if kind == "ses" else f"{kind}_unexpected",
@@ -4824,10 +4826,10 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         if len(enqueue_payloads) == 1 and enqueue_failure_mode == "before_publish":
             raise RuntimeError("queue publication failed")
         published_payloads.append(dict(payload))
-        queue_admission = QueueAdmissionMetadata(1, 7, "profile-message")
+        queue_admission = QueueAdmissionMetadata(2, 7, "profile-message")
         if len(enqueue_payloads) == 1 and enqueue_failure_mode == "after_publish_unknown":
             raise RuntimeError("queue acknowledgement unavailable")
-        return 1
+        return QueueAdmissionMetadata(2, 7, "profile-message")
 
     async def existing_queue_admission(payload):
         assert not enqueue_payloads or dict(payload) == enqueue_payloads[0]
@@ -4906,7 +4908,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', noop)
     monkeypatch.setattr("app.routes.chat._agent_profile_authority.reauthorize_pinned_run_for_replay", reauthorize)
     monkeypatch.setattr("app.routes.chat.read_queue_admission", existing_queue_admission)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", enqueue)
+    monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", enqueue)
     monkeypatch.setattr(
         'app.platform.postgres.values.new_id',
         lambda kind: "ses-profile-lock-order" if kind == "ses" else "run-profile-lock-order",
@@ -5053,6 +5055,11 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
     } == {"profile-specialist", "profile-reference-search"}
     if enqueue_failure_mode is None:
         assert response.status == "queued"
+        assert response.queue_position == 2
+        assert committed_submission is not None
+        assert committed_submission["queue_position"] == 2
+        assert committed_submission["queue_admission_ordinal"] == 7
+        assert committed_submission["queue_message_id"] == "profile-message"
         assert len(enqueue_payloads) == 1
         assert published_payloads == enqueue_payloads
         return
@@ -5457,7 +5464,7 @@ async def test_lambchat_txt_attachment_stays_on_general_chat(monkeypatch):
 
     async def fake_enqueue_run(payload):
         calls.append(("queue", payload["agent_id"], payload["skill_id"], payload["file_ids"]))
-        return 1
+        return QueueAdmissionMetadata(1, 1, "chat-test-message")
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
@@ -5467,7 +5474,7 @@ async def test_lambchat_txt_attachment_stays_on_general_chat(monkeypatch):
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', noop)
     monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', fake_bind_files_to_run)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', noop)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
+    monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", fake_enqueue_run)
 
     response = await chat_stream(
         ChatStreamRequest(
@@ -5516,7 +5523,7 @@ async def test_chat_stream_records_intent_decision_and_confirmed_event(monkeypat
         return f"evt_{len(events)}"
 
     async def fake_enqueue_run(payload):
-        return 1
+        return QueueAdmissionMetadata(1, 1, "chat-test-message")
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', fake_resolve_agent_skill)
@@ -5526,7 +5533,7 @@ async def test_chat_stream_records_intent_decision_and_confirmed_event(monkeypat
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', noop)
     monkeypatch.setattr('app.files.infrastructure.run_bindings_postgres.bind_files_to_run', noop)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', fake_append_event)
-    monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
+    monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", fake_enqueue_run)
 
     response = await chat_stream(
         ChatStreamRequest(

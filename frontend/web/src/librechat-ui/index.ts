@@ -1,4 +1,3 @@
-export * from "./adapter";
 export * from "./source";
 export * from "./surface";
 export * from "./Shell";

@@ -16,9 +16,14 @@ import type {
   HistoryEvent,
   HistoryEventData,
 } from "./types";
-import { convertAttachments, processMessageEvent } from "./eventProcessor";
+import {
+  convertAttachments,
+  normalizeMessageTextLogicalIds,
+  processMessageEvent,
+} from "./eventProcessor";
 import { clearAllLoadingStates } from "./messageParts";
 import { parseDate } from "../../utils/datetime";
+import { getPublicTerminalPresentationDefinition } from "./publicTerminalPresentation";
 
 function resolveUserMessageId(
   event: HistoryEvent,
@@ -442,6 +447,148 @@ export function reconstructMessagesFromEvents(
   return reconstructedMessages;
 }
 
+/** True when a Run has public answer text or a usable artifact. */
+export function hasDisplayableRunAnswer(
+  messages: readonly Message[],
+  runId: string,
+): boolean {
+  return messages.some((message) => {
+    if (message.role !== "assistant" || message.runId !== runId) return false;
+    const parts = message.parts || [];
+    const hasTextPart = parts.some(
+      (part) => part.type === "text" && !part.depth && Boolean(part.content.trim()),
+    );
+    const hasDeliverableArtifact = parts.some(
+      (part) =>
+        part.type === "artifact" &&
+        Boolean(part.artifact_id.trim()) &&
+        part.status !== "failed" &&
+        (part.status === "ready" ||
+          Boolean(part.download_url?.trim()) ||
+          Boolean(part.preview_url?.trim())),
+    );
+    const hasTerminalDetail = parts.some(
+      (part) => part.type === "run_status" &&
+        Boolean(getPublicTerminalPresentationDefinition(part.event_type)),
+    );
+    return (
+      hasTextPart ||
+      hasDeliverableArtifact ||
+      (!hasTerminalDetail && Boolean(message.content.trim()))
+    );
+  });
+}
+
+/** Preserve the public body while showing that persisted result recovery failed. */
+export function withUnavailableTerminalResult(
+  messages: Message[],
+  runId: string,
+  messageId: string,
+): Message[] {
+  const card: MessagePart = {
+    type: "run_status",
+    event_id: `terminal-result-unavailable:${runId}`,
+    event_type: "terminal_result_unavailable",
+    stage: "agent",
+    message: i18n.t("chat.runTerminal.terminalResultUnavailable", {
+      defaultValue: "任务终态已确认，但结果暂时无法加载。请刷新当前会话。",
+    }),
+    severity: "warning",
+  };
+  return ensureTerminalAssistantSegment(messages, runId, messageId).map((message) => {
+    if (message.role !== "assistant" || message.runId !== runId) return message;
+    const parts = clearAllLoadingStates(message.parts || []);
+    return {
+      ...message,
+      isStreaming: false,
+      isSynchronizing: false,
+      parts: parts.some((part) => part.type === "run_status" && part.event_id === card.event_id)
+        ? parts
+        : [...parts, card],
+    };
+  });
+}
+
+const MAX_OLDER_SUCCESSFUL_RUN_RECOVERIES = 8;
+
+interface OlderSuccessfulRunHistory {
+  events?: HistoryEvent[];
+  terminal_run_statuses?: Record<string, string>;
+}
+
+/** Backfill missing answers for a bounded set of older successful Runs. */
+export async function recoverOlderSuccessfulRunHistory({
+  messages,
+  currentRunId,
+  terminalRunStatuses,
+  isCurrent,
+  loadExactRunHistory,
+  onUnavailable,
+  onRecovered,
+}: {
+  messages: readonly Message[];
+  currentRunId: string | null;
+  terminalRunStatuses?: Record<string, string>;
+  isCurrent: () => boolean;
+  loadExactRunHistory: (runId: string) => Promise<OlderSuccessfulRunHistory>;
+  onUnavailable: (runId: string) => void;
+  onRecovered: (runId: string, messages: Message[]) => void;
+}): Promise<void> {
+  const incompleteOlderSucceededRuns = Object.entries(
+    terminalRunStatuses || {},
+  )
+    .filter(
+      ([runId, status]) =>
+        runId !== currentRunId &&
+        status === "succeeded" &&
+        !hasDisplayableRunAnswer(messages, runId),
+    )
+    .map(([runId]) => runId);
+  const olderRunsToRecover = incompleteOlderSucceededRuns.slice(
+    -MAX_OLDER_SUCCESSFUL_RUN_RECOVERIES,
+  );
+  if (
+    incompleteOlderSucceededRuns.length > olderRunsToRecover.length &&
+    isCurrent()
+  ) {
+    incompleteOlderSucceededRuns
+      .slice(0, -MAX_OLDER_SUCCESSFUL_RUN_RECOVERIES)
+      .forEach(onUnavailable);
+  }
+
+  await Promise.all(
+    olderRunsToRecover.map(async (runId) => {
+      if (!isCurrent()) return;
+      let exactMessages: Message[];
+      let exactRunHistory: OlderSuccessfulRunHistory;
+      try {
+        exactRunHistory = await loadExactRunHistory(runId);
+        if (!isCurrent()) return;
+        exactMessages = reconstructMessagesFromEvents(
+          exactRunHistory.events || [],
+          new Set<string>(),
+          { activeSubagentStack: [] },
+        );
+      } catch {
+        if (isCurrent()) onUnavailable(runId);
+        return;
+      }
+      if (!isCurrent()) return;
+      if (
+        exactRunHistory.terminal_run_statuses?.[runId] !== "succeeded" ||
+        !hasDisplayableRunAnswer(exactMessages, runId)
+      ) {
+        onUnavailable(runId);
+        return;
+      }
+      onRecovered(
+        runId,
+        exactMessages.map((message) => normalizeMessageTextLogicalIds(message)),
+      );
+    }),
+  );
+}
+
 function hydratedMessageIdentity(message: Message, runId: string): string | null {
   if (message.runId !== runId) return null;
   if (message.role === "assistant") return `assistant:${runId}`;
@@ -466,6 +613,29 @@ export function mergeHydratedRunSegment(
     .map((identity) => authoritativeByIdentity.get(identity))
     .filter((message): message is Message => Boolean(message));
   if (authoritativeSegment.length === 0) return messages;
+
+  // Failed/cancelled history may contain only the fixed terminal detail.
+  // Keep the answer already observed while accepting the terminal presentation.
+  if (
+    hasDisplayableRunAnswer(messages, runId) &&
+    !hasDisplayableRunAnswer(authoritativeSegment, runId)
+  ) {
+    const previous = messages.find(
+      (message) => message.role === "assistant" && message.runId === runId,
+    );
+    const recoveredIndex = authoritativeSegment.findIndex((message) => message.role === "assistant");
+    const recovered = authoritativeSegment[recoveredIndex];
+    if (previous && recovered) {
+      authoritativeSegment[recoveredIndex] = {
+        ...recovered,
+        content: previous.content,
+        parts: [
+          ...(previous.parts || []).filter((part) => part.type === "text" || part.type === "artifact"),
+          ...(recovered.parts || []).filter((part) => part.type !== "text" && part.type !== "artifact"),
+        ],
+      };
+    }
+  }
 
   const firstIndex = messages.findIndex(
     (message) => message.runId === runId,

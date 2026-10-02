@@ -392,6 +392,66 @@ function sseEventResponse(event: string, data: Record<string, unknown>) {
   });
 }
 
+function historyUserMessage(runId: string, messageId: string, content: string) {
+  const data = { message_id: messageId, run_id: runId, content };
+  return {
+    id: messageId,
+    type: "user:message",
+    event_type: "user:message",
+    timestamp: "2026-07-15T00:00:00Z",
+    run_id: runId,
+    data,
+  };
+}
+
+function historyAnswerDelta(
+  runId: string,
+  eventId: string,
+  sequence: number,
+  content: string,
+) {
+  const data = {
+    projection_version: "ai-platform.chat-public-projection.v1",
+    projection_kind: "assistant_delta",
+    event_id: eventId,
+    sequence,
+    run_id: runId,
+    content,
+  };
+  return {
+    id: eventId,
+    type: "message:chunk",
+    event_type: "message:chunk",
+    stage: "answer",
+    severity: "info",
+    visible_to_user: true,
+    payload: data,
+    sequence,
+    data,
+    timestamp: `2026-07-15T00:00:0${sequence}Z`,
+    run_id: runId,
+  };
+}
+
+function historyTerminalEvent(runId: string, status: string) {
+  const eventId = `${runId}:terminal:${status}`;
+  const data = { run_id: runId, status };
+  return {
+    id: eventId,
+    type: "done",
+    event_type: "done",
+    data,
+    timestamp: "2026-07-15T00:00:03Z",
+    run_id: runId,
+  };
+}
+
+function historyJsonResponse(value: unknown): Response {
+  return new Response(JSON.stringify(value), {
+    headers: { "content-type": "application/json" },
+  });
+}
+
 function protocolInvalidSseResponse(
   kind: "json" | "event-id" | "envelope",
   runId: string,
@@ -6432,6 +6492,352 @@ test("useAgent loads an exact old run as one complete deduplicated segment from 
     await harness.cleanup();
   }
 });
+
+test("useAgent paginates backend-shaped history and merges an older successful Run after primary history completes", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalMarkRead = sessionApi.markRead;
+  const originalFetch = globalThis.fetch;
+  const requests: URL[] = [];
+  let resolveOlderExactPage!: (response: Response) => void;
+  let notifyOlderExactPageStarted!: () => void;
+  const olderExactPageStarted = new Promise<void>((resolve) => {
+    notifyOlderExactPageStarted = resolve;
+  });
+  const olderExactPage = new Promise<Response>((resolve) => {
+    resolveOlderExactPage = resolve;
+  });
+  sessionApi.markRead = async () => {};
+  sessionApi.get = async (sessionId) => ({
+    id: sessionId,
+    agent_id: "general-agent",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-07-15T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  });
+  sessionApi.getStatus = (async (sessionId, runId) => ({
+    session_id: sessionId,
+    run_id: runId,
+    status: "succeeded",
+  })) as typeof sessionApi.getStatus;
+  globalThis.fetch = (async (input) => {
+    const url = new URL(String(input), "http://test.local");
+    requests.push(url);
+    const runId = url.searchParams.get("run_id");
+    const cursor = url.searchParams.get("cursor");
+    if (runId === "run-older-history") {
+      if (cursor === "older-answer-page-2") {
+        notifyOlderExactPageStarted();
+        return olderExactPage;
+      }
+      return historyJsonResponse({
+        run_id: runId,
+        current_run_id: "run-current-history",
+        events: [],
+        next_cursor: "older-answer-page-2",
+        terminal_run_statuses: {},
+      });
+    }
+    if (cursor === "session-history-page-2") {
+      return historyJsonResponse({
+        current_run_id: "run-current-history",
+        events: [
+          historyAnswerDelta(
+            "run-current-history",
+            "current-history-answer",
+            1,
+            "当前运行的完整答案",
+          ),
+          historyTerminalEvent("run-current-history", "succeeded"),
+        ],
+        next_cursor: null,
+        terminal_run_statuses: {
+          "run-older-history": "succeeded",
+          "run-current-history": "succeeded",
+        },
+      });
+    }
+    return historyJsonResponse({
+      current_run_id: "run-current-history",
+      events: [
+        historyUserMessage("run-older-history", "older-history-user", "旧问题"),
+        historyUserMessage("run-current-history", "current-history-user", "当前问题"),
+      ],
+      next_cursor: "session-history-page-2",
+      terminal_run_statuses: {},
+    });
+  }) as typeof fetch;
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-real-history-pagination");
+      await olderExactPageStarted;
+    });
+
+    assert.equal(
+      harness.hook.messages.find(
+        (message) => message.role === "assistant" && message.runId === "run-current-history",
+      )?.content,
+      "当前运行的完整答案",
+      "the primary history pages must preserve the current Run answer while an older Run is pending",
+    );
+    assert.equal(
+      harness.hook.messages.some((message) => message.runId === "run-older-history" && message.role === "assistant"),
+      false,
+    );
+
+    resolveOlderExactPage(
+      historyJsonResponse({
+        run_id: "run-older-history",
+        current_run_id: "run-current-history",
+        events: [
+          historyAnswerDelta(
+            "run-older-history",
+            "older-history-answer",
+            1,
+            "旧运行的完整答案",
+          ),
+          historyTerminalEvent("run-older-history", "succeeded"),
+        ],
+        next_cursor: null,
+        terminal_run_statuses: { "run-older-history": "succeeded" },
+      }),
+    );
+    await settle(harness.act);
+
+    assert.equal(
+      harness.hook.messages.find(
+        (message) => message.role === "assistant" && message.runId === "run-older-history",
+      )?.content,
+      "旧运行的完整答案",
+    );
+    assert.equal(
+      harness.hook.messages.find(
+        (message) => message.role === "assistant" && message.runId === "run-current-history",
+      )?.content,
+      "当前运行的完整答案",
+      "merging the delayed older Run must retain the already-loaded current Run",
+    );
+    assert.equal(requests.length, 4);
+    assert.equal(requests[0]?.searchParams.has("run_id"), false);
+    assert.equal(requests[1]?.searchParams.get("cursor"), "session-history-page-2");
+    assert.equal(requests[2]?.searchParams.get("run_id"), "run-older-history");
+    assert.equal(requests[3]?.searchParams.get("cursor"), "older-answer-page-2");
+  } finally {
+    sessionApi.get = originalGet;
+    sessionApi.getStatus = originalGetStatus;
+    sessionApi.markRead = originalMarkRead;
+    globalThis.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+
+test("useAgent discards stale older Run hydration after a new history load owns the hook", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalMarkRead = sessionApi.markRead;
+  const originalFetch = globalThis.fetch;
+  let resolveOlderExact!: (response: Response) => void;
+  let notifyOlderExactStarted!: () => void;
+  const olderExactStarted = new Promise<void>((resolve) => {
+    notifyOlderExactStarted = resolve;
+  });
+  const olderExact = new Promise<Response>((resolve) => {
+    resolveOlderExact = resolve;
+  });
+  sessionApi.markRead = async () => {};
+  sessionApi.get = async (sessionId) => ({
+    id: sessionId,
+    agent_id: "general-agent",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-07-15T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  });
+  sessionApi.getStatus = (async (sessionId, runId) => ({
+    session_id: sessionId,
+    run_id: runId,
+    status: "succeeded",
+  })) as typeof sessionApi.getStatus;
+  globalThis.fetch = (async (input) => {
+    const url = new URL(String(input), "http://test.local");
+    const sessionId = url.pathname.split("/").at(-2);
+    const runId = url.searchParams.get("run_id");
+    if (sessionId === "session-a-stale-older" && runId === "run-a-older") {
+      notifyOlderExactStarted();
+      return olderExact;
+    }
+    if (sessionId === "session-b-stale-older") {
+      return historyJsonResponse({
+        current_run_id: null,
+        events: [historyUserMessage("run-b", "session-b-user", "B 的历史")],
+        next_cursor: null,
+        terminal_run_statuses: {},
+      });
+    }
+    return historyJsonResponse({
+      current_run_id: "run-a-current",
+      events: [
+        historyUserMessage("run-a-older", "session-a-old-user", "A 的旧问题"),
+        historyUserMessage("run-a-current", "session-a-current-user", "A 的当前问题"),
+        historyAnswerDelta(
+          "run-a-current",
+          "session-a-current-answer",
+          1,
+          "A 的当前答案",
+        ),
+        historyTerminalEvent("run-a-current", "succeeded"),
+      ],
+      next_cursor: null,
+      terminal_run_statuses: {
+        "run-a-older": "succeeded",
+        "run-a-current": "succeeded",
+      },
+    });
+  }) as typeof fetch;
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-a-stale-older");
+      await olderExactStarted;
+    });
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-b-stale-older");
+    });
+    resolveOlderExact(
+      historyJsonResponse({
+        events: [
+          historyAnswerDelta("run-a-older", "session-a-old-answer", 1, "A 的旧答案"),
+          historyTerminalEvent("run-a-older", "succeeded"),
+        ],
+        terminal_run_statuses: { "run-a-older": "succeeded" },
+      }),
+    );
+    await settle(harness.act);
+
+    assert.equal(harness.hook.sessionId, "session-b-stale-older");
+    assert.match(JSON.stringify(harness.hook.messages), /B 的历史/);
+    assert.doesNotMatch(JSON.stringify(harness.hook.messages), /A 的旧答案|A 的当前答案/);
+  } finally {
+    sessionApi.get = originalGet;
+    sessionApi.getStatus = originalGetStatus;
+    sessionApi.markRead = originalMarkRead;
+    globalThis.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+
+for (const terminalStatus of ["succeeded", "failed", "cancelled"]) {
+for (const initialAnswer of ["", "已经显示的正文"]) {
+test(`useAgent preserves the visible answer when ${terminalStatus} exact history is an empty shell [${initialAnswer || "empty"}]`, async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalMarkRead = sessionApi.markRead;
+  const originalFetch = globalThis.fetch;
+  const requests: URL[] = [];
+  const shell = {
+    id: "empty-run-started", sequence: 1,
+    type: "run_started", event_type: "run_started",
+    run_id: "run-empty-successful-shell",
+    timestamp: "2026-07-15T00:00:00Z",
+    data: { run_id: "run-empty-successful-shell" },
+  };
+  sessionApi.markRead = async () => {};
+  sessionApi.get = async () => ({
+    id: "session-empty-successful-history",
+    agent_id: "general-agent",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-07-15T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  });
+  sessionApi.getStatus = (async (sessionId, runId) => ({
+    session_id: sessionId,
+    run_id: runId,
+    status: terminalStatus,
+  })) as typeof sessionApi.getStatus;
+  globalThis.fetch = (async (input) => {
+    const url = new URL(String(input), "http://test.local");
+    requests.push(url);
+    if (url.searchParams.get("run_id") === "run-empty-successful-shell") {
+      return historyJsonResponse({
+        run_id: "run-empty-successful-shell",
+        current_run_id: "run-empty-successful-shell",
+        events: [shell, ...(terminalStatus === "succeeded" ? [] : [{
+          id: "terminal-detail", event_type: "final_detail", run_id: "run-empty-successful-shell",
+          data: { projection_version: "ai-platform.chat-public-projection.v1", run_id: "run-empty-successful-shell",
+            detail_kind: terminalStatus, detail_code: terminalStatus === "failed" ? "run_failed" : "run_cancelled" },
+        }])],
+        next_cursor: null,
+        terminal_run_statuses: {
+          "run-empty-successful-shell": terminalStatus,
+        },
+      });
+    }
+    return historyJsonResponse({
+      current_run_id: "run-empty-successful-shell",
+      events: [
+        shell,
+        ...(initialAnswer ? [historyAnswerDelta("run-empty-successful-shell", "preserved-answer", 2, initialAnswer)] : []),
+        historyUserMessage(
+          "run-empty-successful-shell",
+          "empty-successful-user",
+          "这次成功运行没有正文",
+        ),
+      ],
+      next_cursor: null,
+      terminal_run_statuses: initialAnswer || terminalStatus !== "succeeded" ? {} : {
+        "run-empty-successful-shell": terminalStatus,
+      },
+    });
+  }) as typeof fetch;
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-empty-successful-history");
+    });
+    await settle(harness.act);
+
+    assert.equal(requests.length, 2);
+    assert.equal(requests[0]?.searchParams.has("run_id"), false);
+    assert.equal(
+      requests[1]?.searchParams.get("run_id"),
+      "run-empty-successful-shell",
+      "an incomplete successful result must issue one exact Run history read",
+    );
+    assert.equal(harness.hook.currentRunId, null);
+    assert.equal(harness.hook.isLoading, false);
+    if (initialAnswer || terminalStatus === "succeeded") {
+      assert.equal(harness.hook.messages.find((message) => message.role === "assistant")?.content, initialAnswer);
+    }
+    assert.equal(
+      harness.hook.messages
+        .flatMap((message) => message.parts || [])
+        .filter(
+          (part) =>
+            part.type === "run_status" &&
+            part.event_id ===
+              "terminal-result-unavailable:run-empty-successful-shell",
+        ).length,
+      terminalStatus === "succeeded" ? 1 : 0,
+    );
+  } finally {
+    sessionApi.get = originalGet;
+    sessionApi.getStatus = originalGetStatus;
+    sessionApi.markRead = originalMarkRead;
+    globalThis.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+}
+}
 
 test("useAgent renders a payload-free exact cancelled run as a complete user and assistant segment", async () => {
   const harness = await loadReactHarness();
