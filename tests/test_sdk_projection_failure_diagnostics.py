@@ -31,10 +31,6 @@ def _runtime_diagnostics(**overrides):
     return value
 
 
-def test_projection_failure_normalizer_is_exported_through_sandbox_api():
-    assert sandbox_api.normalize_sdk_projection_failure(_EXPECTED) == _EXPECTED
-
-
 @pytest.mark.parametrize(
     "projection_failure",
     [

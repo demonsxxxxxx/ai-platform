@@ -321,7 +321,7 @@ def _structured_value(value: object) -> str:
     return text if _STRUCTURED_VALUE_PATTERN.fullmatch(text) else ""
 
 
-def normalize_sdk_projection_failure(value: object) -> dict[str, str] | None:
+def _normalize_sdk_projection_failure(value: object) -> dict[str, str] | None:
     """Return only the fixed, value-free SDK output validation taxonomy."""
 
     if not isinstance(value, dict):
@@ -888,7 +888,7 @@ def normalize_sdk_runtime_diagnostics(value: object) -> dict[str, Any]:
     }
     raw_projection_failure = value.get("projection_failure")
     if raw_projection_failure is not None:
-        projection_failure = normalize_sdk_projection_failure(
+        projection_failure = _normalize_sdk_projection_failure(
             raw_projection_failure
         )
         if projection_failure is None:
