@@ -1,5 +1,9 @@
-import re
+import json
+import os
 from pathlib import Path
+import re
+import subprocess
+import sys
 
 import pytest
 import yaml
@@ -45,11 +49,17 @@ def test_publish_is_reachable_only_from_trusted_main_events():
 
     assert set(triggers) == {"push", "workflow_dispatch"}
     assert triggers["push"] == {"branches": ["main"]}
-    assert set(triggers["workflow_dispatch"]["inputs"]) == {"confirm_release"}
+    assert set(triggers["workflow_dispatch"]["inputs"]) == {
+        "confirm_release", "release_version"
+    }
     confirm = triggers["workflow_dispatch"]["inputs"]["confirm_release"]
     assert confirm["required"] == "true"
     assert confirm["type"] == "choice"
     assert confirm["options"] == ["PUBLISH_MAIN"]
+    version = triggers["workflow_dispatch"]["inputs"]["release_version"]
+    assert version["required"] == "false"
+    assert version["type"] == "string"
+    assert "default" not in version
 
     text = _workflow_text()
     assert "pull_request:" not in text
@@ -115,6 +125,132 @@ def test_publish_build_uses_role_scoped_non_authoritative_gha_cache():
     assert build["with"]["cache-to"] == (
         "type=gha,mode=max,scope=packaging-${{ matrix.role }},ignore-error=true"
     )
+    assert build["with"]["no-cache-filters"] == "runtime"
+    for dockerfile in (ROOT / "Dockerfile", ROOT / "frontend/web/Dockerfile"):
+        text = dockerfile.read_text(encoding="utf-8")
+        runtime = text.split(" AS runtime\n", 1)[1]
+        assert "apt-get upgrade" in runtime or "apk upgrade" in runtime
+
+
+@pytest.mark.parametrize(
+    "version,valid",
+    [
+        ("", True), ("v0.1.0", True), ("v12.30.456", True),
+        ("0.1.0", False), ("v01.1.0", False), ("v1.01.0", False),
+        ("v1.0.01", False), ("v1.0.0-rc.1", False), ("v1.0.0+build", False),
+        ("v1.0.0\n", False), (" v1.0.0", False), ("v1.0.0; exit 0", False),
+        ("$(exit 0)", False),
+    ],
+)
+def test_requested_release_version_is_strict_literal_input(version, valid):
+    steps = _workflow()["jobs"]["publish"]["steps"]
+    validate = next(
+        step for step in steps if step.get("name") == "Validate requested release version"
+    )
+    names = [step.get("name") for step in steps]
+    assert names.index(validate["name"]) < names.index("Build and push immutable image")
+    assert validate["env"] == {"REQUESTED_RELEASE_VERSION": "${{ inputs.release_version }}"}
+    assert "${{" not in validate["run"]
+    result = subprocess.run(
+        ["bash", "-c", validate["run"]],
+        env={**os.environ, "REQUESTED_RELEASE_VERSION": version},
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert (result.returncode == 0) is valid
+
+
+@pytest.mark.parametrize(
+    "version,failure,expected_calls,success",
+    [
+        ("v0.1.0", "", ["main", "tag", "create", "view"], True),
+        ("", "", ["main", "create", "view"], True),
+        ("v0.1.0", "main_moved", ["main"], False),
+        ("v0.1.0", "main_unavailable", ["main"], False),
+        ("v01.0.0", "", ["main"], False),
+        ("v0.1.0", "tag_exists", ["main", "tag"], False),
+        ("v0.1.0", "create", ["main", "tag", "create"], False),
+        ("v0.1.0", "mutable", ["main", "tag", "create", "view"], False),
+        ("v0.1.0", "view_unavailable", ["main", "tag", "create", "view"], False),
+    ],
+)
+def test_release_publication_fails_closed_without_reusing_version(
+    tmp_path, version, failure, expected_calls, success
+):
+    steps = _workflow()["jobs"]["release-manifest"]["steps"]
+    publish = next(
+        step for step in steps if step.get("name") == "Publish immutable deployment Release"
+    )
+    gh = tmp_path / "gh"
+    log = tmp_path / "calls.jsonl"
+    gh.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys\n"
+        "args = sys.argv[1:]\n"
+        "if args[:2] == ['api', '--method']:\n"
+        "    kind = 'tag'\n"
+        "elif args[0] == 'api':\n"
+        "    kind = 'main'\n"
+        "else:\n"
+        "    kind = args[1]\n"
+        "with open(os.environ['GH_TEST_LOG'], 'a') as log:\n"
+        "    log.write(json.dumps({'kind': kind, 'args': args}) + '\\n')\n"
+        "failure = os.environ['GH_TEST_FAILURE']\n"
+        "if kind == 'main':\n"
+        "    if failure == 'main_unavailable': sys.exit(1)\n"
+        "    print('b' * 40 if failure == 'main_moved' else os.environ['GITHUB_SHA'])\n"
+        "elif kind == 'tag':\n"
+        "    if failure == 'tag_exists': sys.exit(1)\n"
+        "elif kind == 'create':\n"
+        "    if failure == 'create': sys.exit(1)\n"
+        "elif kind == 'view':\n"
+        "    if failure == 'view_unavailable': sys.exit(1)\n"
+        "    print('false' if failure == 'mutable' else 'true')\n"
+        "else:\n"
+        "    sys.exit(2)\n",
+        encoding="utf-8",
+    )
+    gh.chmod(0o755)
+    source = "a" * 40
+    automatic_tag = f"deployment-{source}-123-1"
+    result = subprocess.run(
+        ["bash", "-c", publish["run"]],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "GH_CLI_BIN": str(gh), "GH_TEST_LOG": str(log),
+            "GH_TEST_FAILURE": failure, "GITHUB_REPOSITORY": "example/repository",
+            "GITHUB_SHA": source, "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1",
+            "RELEASE_TAG": automatic_tag, "REQUESTED_RELEASE_VERSION": version,
+            "ASSET_PATH": "release-image-manifest.json", "ASSET_LABEL": "manifest",
+        },
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    assert (result.returncode == 0) is success, result.stderr
+    assert [call["kind"] for call in calls] == expected_calls
+    for call in calls:
+        args = call["args"]
+        if call["kind"] == "tag":
+            assert args == [
+                "api", "--method", "POST", "repos/example/repository/git/refs",
+                "-f", f"ref=refs/tags/{version}", "-f", f"sha={source}", "--silent",
+            ]
+        elif call["kind"] == "create":
+            assert args[:3] == ["release", "create", version or automatic_tag]
+            assert args[3:6] == [
+                "release-image-manifest.json#manifest", "ai-platform-internal-test.tar.gz",
+                "ai-platform-production.tar.gz",
+            ]
+            assert args[args.index("--title") + 1] == (version or f"Deployment {source[:12]}")
+            if version:
+                assert "--verify-tag" in args
+                assert "--target" not in args
+            else:
+                assert args[args.index("--target") + 1] == source
 
 
 def test_publish_permissions_are_job_scoped_and_environment_protected():
@@ -579,9 +715,13 @@ def test_release_manifest_reverifies_exact_downloaded_bundles_with_pinned_gh():
         for step in steps
         if step.get("name") == "Publish immutable deployment Release"
     )
-    assert public["if"] == "github.event_name == 'push'"
+    assert public["if"] == (
+        "github.event_name == 'push' || "
+        "(github.event_name == 'workflow_dispatch' && inputs.release_version != '')"
+    )
     assert public["env"]["GH_TOKEN"] == "${{ github.token }}"
     assert public["env"]["GH_CLI_BIN"] == "${{ env.GH_CLI_BIN }}"
+    assert public["env"]["REQUESTED_RELEASE_VERSION"] == "${{ inputs.release_version }}"
     assert public["env"]["RELEASE_TAG"] == (
         "deployment-${{ github.sha }}-${{ github.run_id }}-"
         "${{ github.run_attempt }}"
@@ -845,7 +985,10 @@ def test_deployment_release_is_immutable_minimal_and_fresh_main_bound():
         step.get("name") == "Create public ready evidence archive"
         for step in steps
     )
-    assert release["if"] == "github.event_name == 'push'"
+    assert release["if"] == (
+        "github.event_name == 'push' || "
+        "(github.event_name == 'workflow_dispatch' && inputs.release_version != '')"
+    )
     assert release["env"]["ASSET_PATH"] == "release-image-manifest.json"
     assert release["env"]["RELEASE_TAG"].startswith("deployment-${{ github.sha }}-")
     assert "release-image-evidence.zip" not in release["run"]

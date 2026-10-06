@@ -74,9 +74,10 @@ Repository and checkout identity are rechecked before the build. Pull request,
 `pull_request_target`, fork, tag, branch, and user-supplied ref inputs have no
 publish path. Ordinary verification jobs retain only `contents: read`; the
 publish job alone receives `packages: write`, `id-token: write`, and the
-attestation permission. The post-publish assembly job has `contents: read` plus
-`packages: read` solely so a default/private GHCR subject can be resolved during
-local-bundle verification; it has neither OIDC nor attestation API permission.
+attestation permission. The post-publish assembly job has `contents: write` for
+immutable Release publication and `packages: read` so a default/private GHCR
+subject can be resolved during local-bundle verification; it has neither OIDC
+nor attestation API permission.
 Action dependencies are fixed to reviewed 40-hex commits, and all jobs use
 unprivileged GitHub-hosted runners. Release-hosted Syft, Cosign, and GitHub CLI
 assets use fixed versions, fixed asset URLs, reviewed SHA-256 digests, and
@@ -106,18 +107,43 @@ release-image evidence.
   `tests/test_packaging_publish_workflow.py`.
 - Reached invariants: only the existing protected `main` publisher may write the
   role-scoped GitHub Actions cache; cache export failure cannot block publication;
+  `no-cache-filters: runtime` refreshes APT/APK updates on every publication
+  attempt while other build stages can reuse cache;
   cache identities never enter image tags, digests, attestations, scans, or the
   ready manifest.
 - Acceptance and regression proof: the owning workflow test requires distinct
-  backend/frontend `mode=max` cache scopes with non-blocking export while all
-  existing source identity, scan, signature, and ready-manifest checks remain.
+  backend/frontend `mode=max` cache scopes with non-blocking export, and a named
+  runtime stage containing each image's OS upgrade that cannot use cached layers.
+  Existing source identity, scan, signature, and ready-manifest checks remain.
 - Evidence ceiling: static local checks prove workflow structure only; an exact
   `main` packaging run is required to observe cache import/export or timing.
-- Rollback: remove the two cache inputs and their owning assertions; already
-  published immutable subjects and evidence remain unchanged.
+- Rollback: remove cache import/export inputs and their owning assertions if
+  needed, but retain runtime cache invalidation or use a completely uncached
+  build; already published immutable subjects and evidence remain unchanged.
 - Stop conditions: any PR/fork cache write, new permission, cache-derived release
-  evidence, or change to image contents, tags, scans, signatures, or publication
-  admission requires a revised contract before implementation.
+  evidence, restored runtime cache reuse, or weakened scans, signatures, or
+  publication admission requires a revised contract before implementation.
+
+### Change Contract: named immutable versions
+
+- Owner: Docker Packaging Authority; bounded paths are this document, the release
+  runbook, the Packaging workflow, and its owning workflow regression tests.
+- Optional `release_version` accepts a literal `vMAJOR.MINOR.PATCH` only. It adds
+  a named Release to an explicitly confirmed protected-main manual run; a blank
+  version remains audit-only and main pushes keep their deployment tag format.
+- All existing digest, scan, SBOM, signature, provenance, and manifest gates
+  precede publication. Assembly rechecks the current main commit, atomically
+  creates a new version tag, and publishes the matching three assets with
+  `--verify-tag`. Existing tags cannot be reused or moved. Immutable status is
+  checked after publication; this grants no host deployment authority.
+- Regression proof executes the workflow shell with a fake CLI to cover version
+  validation, the two publication modes, main drift/read failure, existing tags,
+  failed publication, and mutable-release rejection. Real packaging and immutable
+  release evidence require a protected main run.
+- Stop on a tag collision or any failed gate. A failure after tag creation can
+  leave a reserved tag or draft Release; never automatically retry by deleting
+  or overwriting it. Rollback removes only the optional version path; published
+  immutable Releases and existing automatic publication remain unchanged.
 
 Each subject is pushed under only its full 40-hex source commit tag. Downstream
 steps immediately switch to `subject@sha256:<registry-manifest-digest>` and

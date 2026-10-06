@@ -12,6 +12,10 @@ on:
         type: choice
         options:
           - PUBLISH_MAIN
+      release_version:
+        description: Optional new vMAJOR.MINOR.PATCH Release; blank produces audit evidence only
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -69,6 +73,18 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
+      - name: Validate requested release version
+        env:
+          REQUESTED_RELEASE_VERSION: ${{ inputs.release_version }}
+        run: |
+          set -euo pipefail
+          if test -n "$REQUESTED_RELEASE_VERSION"; then
+            if ! [[ "$REQUESTED_RELEASE_VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+              printf 'release_version=invalid_format\n' >&2
+              exit 1
+            fi
+          fi
+
       - name: Set up Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
         with:
@@ -97,6 +113,8 @@ jobs:
           tags: ${{ matrix.subject }}:${{ github.sha }}
           cache-from: type=gha,scope=packaging-${{ matrix.role }}
           cache-to: type=gha,mode=max,scope=packaging-${{ matrix.role }},ignore-error=true
+          # Security updates must be refreshed even when the pinned base is unchanged.
+          no-cache-filters: runtime
           build-args: |
             AI_PLATFORM_BUILD_COMMIT=${{ github.sha }}
             AI_PLATFORM_BUILD_DIRTY=false
@@ -599,13 +617,14 @@ jobs:
             provenance-*.json
 
       - name: Publish immutable deployment Release
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.release_version != '')
         env:
           ASSET_LABEL: release-image-manifest-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           ASSET_PATH: release-image-manifest.json
           GH_CLI_BIN: ${{ env.GH_CLI_BIN }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: deployment-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          REQUESTED_RELEASE_VERSION: ${{ inputs.release_version }}
         run: |
           set -euo pipefail
           test -x "$GH_CLI_BIN"
@@ -614,13 +633,27 @@ jobs:
               --jq '.object.sha'
           )"
           test "$current_main" = "$GITHUB_SHA"
+          release_title="Deployment ${GITHUB_SHA::12}"
+          tag_args=(--target "$GITHUB_SHA")
+          if test -n "$REQUESTED_RELEASE_VERSION"; then
+            if ! [[ "$REQUESTED_RELEASE_VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+              printf 'release_version=invalid_format\n' >&2
+              exit 1
+            fi
+            RELEASE_TAG="$REQUESTED_RELEASE_VERSION"
+            release_title="$RELEASE_TAG"
+            # Atomic creation fails if the version already exists; never reuse or move it.
+            "$GH_CLI_BIN" api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f "ref=refs/tags/$RELEASE_TAG" -f "sha=$GITHUB_SHA" --silent
+            tag_args=(--verify-tag)
+          fi
           "$GH_CLI_BIN" release create "$RELEASE_TAG" \
             "$ASSET_PATH#$ASSET_LABEL" \
             "ai-platform-internal-test.tar.gz" \
             "ai-platform-production.tar.gz" \
             --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" \
-            --title "Deployment ${GITHUB_SHA::12}" \
+            "${tag_args[@]}" \
+            --title "$release_title" \
             --notes "Qualified by Packaging run $GITHUB_RUN_ID attempt $GITHUB_RUN_ATTEMPT." \
             --latest=false
           immutable="$(

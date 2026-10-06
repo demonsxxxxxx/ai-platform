@@ -27,6 +27,22 @@ creates a unique versioned Release only after all qualification steps pass and
 then verifies that GitHub reports it immutable. A mutable or incomplete Release
 is not a deployment input.
 
+For a named version such as `v0.1.0`, run the Packaging workflow on `main` with
+`confirm_release=PUBLISH_MAIN` and `release_version=v0.1.0`. The optional version
+accepts only `vMAJOR.MINOR.PATCH` with no leading zeroes. A blank version keeps
+manual runs audit-only; automatic main pushes retain their unique
+`deployment-<commit>-<run>-<attempt>` Releases. Both image builds refresh their
+runtime stages on every attempt so cached APT/APK layers cannot retain fixed
+vulnerabilities. The normal main-source, environment, scan, signature, and
+attestation gates still apply.
+
+A named version is reserved only after qualification and a fresh main-commit
+check. An existing tag is a hard failure, never moved or reused. If publication
+fails after reserving a tag, stop and inspect that tag and any draft Release;
+do not automatically delete, reuse, or overwrite it. A completed Release still
+requires immutable status and all three matching assets. Publishing a package
+does not install or upgrade any host.
+
 ## One-time host preparation
 
 Use a Linux host with Python 3, Docker, Compose v2 with `--wait` and `!reset`,
