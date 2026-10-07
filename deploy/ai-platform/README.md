@@ -1,7 +1,10 @@
 # Deploy a released version
 
-Download `ai-platform-internal-test.tar.gz` or `ai-platform-production.tar.gz`
+Download `ai-platform-production.tar.gz`, the single operator asset,
 from the **chosen immutable Deployment Release** on the official repository.
+The manifest, verified release evidence and `BACKUP-RESTORE.md` are inside it.
+The internal-test package is a CI-only artifact. GitHub may also display its
+automatically generated source archives; those are not deployment packages.
 Do not mix files from different versions or use an untrusted archive: the package
 contains executable deployment code. Image digests and the application commit
 are already fixed in the package. Git, Actions access, a source checkout and
@@ -85,9 +88,24 @@ The configuration must be owned by the invoking user. If that user requires
 sudo for Docker, use `--docker-cmd 'sudo -n docker'`; do not run the entire
 entry as another user against a differently owned configuration.
 
+Production requires independent generated `TRUSTED_PRINCIPAL_SECRET` and
+`AI_SESSION_SECRET` values of at least 32 characters; blank values and known
+placeholder prefixes are rejected before application services stop. Preserve
+these secrets across upgrades. Keep `AI_SESSION_COOKIE_SECURE=true` and
+`AUTH_CONTEXT_COOKIE_SECURE=true`, with the browser-visible HTTPS origin in
+`CORS_ALLOW_ORIGINS`.
+
+An intentionally HTTP-only, trusted isolated intranet needs both secure-cookie
+flags set to `false`, its actual HTTP browser origin, and the explicit
+`--allow-insecure-http` flag on each deployment or preflight command. This prints
+a warning and does not configure TLS or a firewall. HTTP exposes session and
+gateway traffic: restrict network access, firewall direct API access, and prefer
+TLS. Do not weaken secrets or use the internal-test package as a workaround.
+
 ## Install or upgrade
 
-Back up the database before upgrading. Choose a maintenance window with no
+Back up the database, object storage, Redis, and workspace files as a coordinated
+recovery set before upgrading (see the backup checklist below). Choose a maintenance window with no
 active tasks or sandbox leases. From the extracted directory:
 
 ```sh
@@ -96,17 +114,29 @@ python3 deploy.py --env-file /absolute/path/to/.env
 
 This checks configuration, downloads images, verifies locally available digest
 identities, checks activity, stops application admission, checks activity again,
-copies the retired workspace source into `SANDBOX_WORKSPACE_ROOT` through a
-read-only migration mount, verifies path/type/mode/owner/size and SHA-256 inventory,
 runs schema migration and workspace initialization, starts the selected
 application, and verifies API readiness, container identity, OpenSandbox
-reachability and an advancing Worker heartbeat. Internal-test migrates the
-historical named volume; production migrates the explicit
-`SANDBOX_WORKSPACE_MIGRATION_SOURCE`. The source is retained and no data volume is
-deleted.
+reachability and an advancing Worker heartbeat. Data volumes are never deleted.
+
+A fresh production installation uses `SANDBOX_WORKSPACE_ROOT` directly. An
+absent legacy source skips `workspace-migrate`; do not create a dummy
+legacy directory. Any existing legacy source directory, even empty, requires
+explicit migration. To copy legacy production data from
+`SANDBOX_WORKSPACE_MIGRATION_SOURCE` (the supported path is
+`/data/ai-platform-prod/runtime-workspaces`), back it up and add
+`--migrate-legacy-workspaces`. The migration mounts the source read-only, verifies
+path/type/mode/owner/size and SHA-256 inventory, and retains the source. Existing
+current-layout bind mounts with no legacy source need no migration. A retained
+legacy source still requires the explicit flag on later invocations. Older production named-volume
+layouts are not automatically supported and require operator-classified
+migration; never point an upgrade at an empty root to bypass that check.
+Internal-test retains its historical named-volume migration path.
 
 To check configuration, activity and already-cached images without downloading
-or changing services, add `--check`. This is preflight only, not deployment
+or changing application/data services, add `--check`. It may run a temporary,
+network-disabled, read-only verifier container from the digest-verified backend
+to check a root-owned workspace for an incomplete migration marker; it makes no
+application/data changes. This is preflight only, not deployment
 acceptance. Expired quarantined records are not automatically deleted: only
 terminal, unclaimed failed-reconciliation records tied to a terminal Run may
 be excluded, and any surviving recorded sandbox container still blocks.
@@ -114,6 +144,36 @@ be excluded, and any surviving recorded sandbox container still blocks.
 Success ends with `deployment: healthy (<commit>)`. A returned nonzero status is
 not a successful deployment. Do not start another invocation while one is still
 running; the project-wide lock prevents concurrent package deployments.
+
+## Legacy SSE upgrades
+
+An installation using the retired SSE transport requires explicit legacy-state
+retirement before schema migration. This is an authorized one-time data change,
+not an automatic API/Worker startup action. After a verified recovery set,
+finish/cancel old Runs and block admission. Set `CUTOVER_BEFORE` to the approved,
+timezone-qualified UTC cutover timestamp. With the new package's images already
+verified, use its exact Compose project, env file and Docker command:
+
+```bash
+SSE_COMPOSE=(docker compose --project-name ai-platform-internal \
+  --env-file /absolute/path/to/.env -f compose.yaml -f compose.override.yaml)
+"${SSE_COMPOSE[@]}" stop frontend api worker
+"${SSE_COMPOSE[@]}" run --rm --no-deps --pull never --entrypoint python migrate \
+  /app/tools/retire_legacy_sse_streams.py --before "$CUTOVER_BEFORE"
+# Review the private inventory, then apply the explicitly approved retirement.
+"${SSE_COMPOSE[@]}" run --rm --no-deps --pull never --entrypoint python migrate \
+  /app/tools/retire_legacy_sse_streams.py --before "$CUTOVER_BEFORE" --apply
+```
+
+Use `sudo -n docker` in the array when required. Keep producers stopped until the
+normal package migration completes. Apply refuses selected nonterminal Runs.
+`applied: true` confirms commit; `applied: null` / `legacy_sse_commit_uncertain`
+requires a fresh inventory before deciding whether to repeat. Retirement keeps
+Run/Attempt facts, final results, receipts and audit history; Redis keys expire
+without deletion. The schema guard rejects unretired or partially present legacy
+state. After schema `2026.09.12.1`, older backend images are incompatible. Recovery
+requires a compatible corrected package or an explicitly authorized coordinated
+restore; there is no speculative binary/database rollback.
 
 ## Already downloaded or offline images
 
@@ -128,22 +188,103 @@ This skips downloads, not local image verification. Missing images or RepoDigest
 stop before admission changes. Never manually tag an image to pretend that it
 has the required digest. No temporary script edits or Git bundles are needed.
 
+## Backup checklist
+
+Use the packaged [backup and restore procedure](BACKUP-RESTORE.md) for concrete
+PostgreSQL custom dumps, cold Redis/MinIO volume backups, host workspace backups,
+protected keys and an isolated restore rehearsal.
+
+Before an upgrade, record the current immutable package/commit, persistent
+container and volume identities, workspace paths, and schema version. Protect
+the operator environment file and encryption/signing keys in an encrypted,
+access-controlled backup, separate from public deployment evidence. A database
+dump alone does not cover MinIO objects or workspace files.
+
+Block new admission, let active work finish, and verify no active Runs, Attempts,
+leases, or sandbox containers before stopping API, Worker and frontend for the
+backup window. Keep admission stopped while taking the coordinated set:
+
+- A PostgreSQL custom-format dump, checked with `pg_restore --list` and an
+  isolated restore rehearsal
+- MinIO objects and metadata, Redis persistent data, and the current workspace
+  root, preserving permissions and ownership; use an approved snapshot/export
+  method (raw filesystem copies require the corresponding service stopped)
+- Any retained legacy workspace source, release package/manifest, and protected
+  configuration needed to interpret and decrypt the restored data
+
+Record checksums, completion times and restore-test results. Verify all backup
+parts before proceeding. Stopping persistent services for a cold backup is a
+separate maintenance action; restart and verify the same containers before the
+package upgrade, which otherwise preserves their identity and restart counts.
+
 ## Failure and recovery
 
-- Configuration, download or image-verification failure: existing services stay
-  untouched. Fix the reported prerequisite and retry.
+Classify the state before retrying. Do not run `down -v`, prune volumes, delete
+workspace migration markers, fabricate an install journal, or switch Compose
+project names to make a failed installation appear fresh.
+
+- Configuration, download or image-verification failure before first mutation:
+  existing services stay untouched; fix the prerequisite and retry normally.
+- Interrupted first installation with an intact journal and **no application
+  containers, including stopped ones**: the narrow resume path below may apply.
+- Any application containers after a failed first install, a missing/changed
+  journal, changed configuration/package, orphaned data volumes, foreign
+  container ownership, or partially-created activity tables: stop and use
+  operator recovery. These are not automatically resumable or fresh installs.
 - Activity appears after the first check: no migration begins; stopped original
   application containers are restarted.
-- Workspace storage migration failure: the target remains marked incomplete and
-  can be resumed only when every existing target entry still matches the source;
-  application admission remains stopped so the source cannot diverge during repair.
-- Schema migration or later startup failure: application admission is stopped and data is
-  retained. Inspect the failing service through your privileged operations
-  channel. Do not publish raw logs or resolved Compose configuration; these may
-  contain secrets.
-- There is **no automatic image or database rollback**. A prior binary may not
-  understand a schema that has already advanced. Use a compatible corrected
-  release or an authorized database restore; do not edit migration checksums.
+- Workspace migration failure: admission remains stopped. Preserve the original
+  source and incomplete marker. A supported migration can continue only when
+  every existing target entry matches the source; a missing source must not be
+  treated as an empty fresh install.
+- Schema migration or later startup failure: data is retained and application
+  admission is stopped. Inspect the failing service through privileged operations;
+  raw logs and resolved Compose configuration may expose secrets.
+
+### Narrow first-install resume
+
+Before the first service mutation, the controller writes the owner-held mode
+`0600` `.ai-platform-install-state.json` beside the operator env file. It retains
+that journal after failure and removes it after successful installation. The
+journal binds the source commit, complete rendered configuration (as a hash),
+and selected workspace migration mode. Even correcting a configuration value
+invalidates automatic resume. Keep the original package, configuration and
+migration selection unchanged.
+
+For a same-input transient failure with only data containers (or none), run:
+
+```sh
+python3 deploy.py --env-file /absolute/path/to/.env --resume-install
+```
+
+Include the same applicable `--migrate-legacy-workspaces`,
+`--allow-insecure-http`, Docker command and offline options. Existing data image
+IDs and full persistent volume identities must match the package. Resume does
+not reset or recreate persistent data. It checks database activity and sandbox
+inventory; a partial activity schema requires operator recovery. A resume
+preflight using `--resume-install --check` requires the existing PostgreSQL
+container already running and all images already cached; it never starts it.
+
+### Operator recovery and restore
+
+Keep admission blocked. Capture a redacted inventory and identify the last
+completed migration, failed one-shot/startup step, package/configuration, data
+identities and available recovery set. Fix a same-schema infrastructure problem
+or select a proven schema-compatible corrected release. A changed configuration
+or first-install journal is not a license to delete that journal and retry:
+classify and approve the exact recovery operation first.
+
+There is **no automatic image or database rollback**. A prior binary may not
+understand a schema that has advanced. For an authorized restore, first preserve
+the failed state, rehearse restoration in an isolated environment, and select
+the package compatible with the backup's schema. Restore the matching database,
+object storage, Redis and workspaces from the same recovery point with all
+writers stopped; retain required encryption keys and original permissions.
+Never overwrite live data or reconnect a restored database to mismatched newer
+objects/workspaces. Do not edit migration checksums. Validate restored state,
+image identity, API readiness, advancing Worker heartbeat, OpenSandbox isolation
+and quiescence before reopening admission. Record any explicitly accepted data
+loss since the recovery point.
 
 The package does not fetch `main`, change the Docker daemon proxy, provision the
 OpenSandbox host, remove historical release directories, or clean data volumes.

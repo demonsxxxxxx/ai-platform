@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import io
 import json
 from pathlib import Path
@@ -21,6 +22,18 @@ PROFILES = {
     "production": "docker-compose.opensandbox.yml",
 }
 
+EVIDENCE_FILES = (
+    "subject-{role}.json",
+    "sbom-{role}.spdx.json",
+    "trivy-{role}.json",
+    "trivy-inventory-{role}.json",
+    "cosign-signature-{role}.json",
+    "cosign-sbom-{role}.json",
+    "provenance-{role}.bundle.json",
+    "provenance-{role}.verified.json",
+    "provenance-{role}.assembly-verified.json",
+)
+
 # Fixed by the selected Compose profile, or used only by source/legacy tools.
 PACKAGE_OMITTED_ENV_KEYS = {
     "SANDBOX_CONTAINER_PROVIDER",
@@ -38,6 +51,49 @@ DATA_IMAGES = {
 DATA_IMAGE_PULL_ATTEMPTS = 3
 # Keep retries within the former single-pull timeout for each image.
 DATA_IMAGE_PULL_BUDGET_SECONDS = 600
+
+
+def _validate_inventory_report(payload: bytes, subject: dict) -> None:
+    """Bind the informational HIGH/CRITICAL inventory without clearing its findings."""
+    report = json.loads(payload)
+    immutable_ref = subject["image"]["immutable_ref"]
+    if not isinstance(report, dict) or report.get("ArtifactName") != immutable_ref:
+        raise ValueError("inventory subject does not match manifest")
+    if report.get("SchemaVersion") != 2 or report.get("ArtifactType") != "container_image":
+        raise ValueError("invalid inventory report metadata")
+    metadata = report.get("Metadata")
+    if not isinstance(metadata, dict):
+        raise ValueError("invalid inventory image metadata")
+    if "RepoDigests" in metadata:
+        digests = metadata["RepoDigests"]
+        if (
+            not isinstance(digests, list)
+            or not all(isinstance(digest, str) for digest in digests)
+            or immutable_ref not in digests
+        ):
+            raise ValueError("inventory repository digest does not match manifest")
+    if "ImageConfig" in metadata:
+        config = metadata["ImageConfig"]
+        if not isinstance(config, dict):
+            raise ValueError("invalid inventory image configuration")
+        expected_os, expected_architecture = subject["platform"].split("/")
+        for key, expected in (("os", expected_os), ("architecture", expected_architecture)):
+            if key in config and config[key] != expected:
+                raise ValueError("inventory platform does not match manifest")
+    results = report.get("Results")
+    if not isinstance(results, list):
+        raise ValueError("invalid inventory results")
+    for result in results:
+        if not isinstance(result, dict):
+            raise ValueError("invalid inventory result")
+        vulnerabilities = result.get("Vulnerabilities", [])
+        if not isinstance(vulnerabilities, list):
+            raise ValueError("invalid inventory vulnerabilities")
+        for vulnerability in vulnerabilities:
+            if not isinstance(vulnerability, dict) or vulnerability.get("Severity") not in {"HIGH", "CRITICAL"}:
+                raise ValueError("invalid inventory vulnerability severity")
+    # Findings, including unfixed vulnerabilities, are retained verbatim. Only
+    # the separately validated trivy-{role}.json determines the fixable gate.
 
 
 def pin_data_images() -> dict[str, str]:
@@ -66,7 +122,10 @@ def pin_data_images() -> dict[str, str]:
     return result
 
 
-def build_package(source: Path, manifest: dict, profile: str, output: Path, data_images: dict[str, str]) -> None:
+def build_package(
+    source: Path, manifest: dict, profile: str, output: Path,
+    data_images: dict[str, str], *, evidence_root: Path,
+) -> None:
     if set(data_images) != set(DATA_IMAGES):
         raise ValueError("three data-service digests are required")
     for service, ref in data_images.items():
@@ -74,6 +133,31 @@ def build_package(source: Path, manifest: dict, profile: str, output: Path, data
         if not re.fullmatch(r"[^\s@]+@sha256:[0-9a-f]{64}", ref) or repository != DATA_IMAGES[service].rsplit(":", 1)[0]:
             raise ValueError("data-service image must bind the approved repository and a digest")
     manifest = validate_manifest(manifest, expected_roles=("backend", "frontend"))
+    evidence_payloads = {}
+    # Only explicit qualification outputs belong in a distributable package.
+    # Never recursively include the working directory or operator configuration.
+    for subject in manifest["subjects"]:
+        role = subject["role"]
+        for template in EVIDENCE_FILES:
+            name = template.format(role=role)
+            path = evidence_root / name
+            if path.is_symlink() or not path.is_file():
+                raise ValueError(f"release evidence is not a regular file: {name}")
+            payload = path.read_bytes()
+            if not payload.strip():
+                raise ValueError(f"release evidence is empty: {name}")
+            evidence_payloads[f"release-evidence/{name}"] = payload
+        # Assembly adds only the fresh provenance reverification to this record.
+        published_subject = copy.deepcopy(subject)
+        provenance = published_subject["evidence"]["provenance"]
+        provenance.pop("reverification_ref")
+        provenance.pop("reverification_sha256")
+        if json.loads(evidence_payloads[f"release-evidence/subject-{role}.json"]) != published_subject:
+            raise ValueError(f"release evidence subject does not match manifest: {role}")
+        _validate_inventory_report(
+            evidence_payloads[f"release-evidence/trivy-inventory-{role}.json"], subject,
+        )
+    validate_manifest(manifest, expected_roles=("backend", "frontend"), evidence_root=evidence_root)
     overlay = PROFILES[profile]
     images = {subject["role"]: subject["image"] for subject in manifest["subjects"]}
     bindings = {
@@ -90,6 +174,7 @@ def build_package(source: Path, manifest: dict, profile: str, output: Path, data
         ".env.example": ".env.example",
         "deploy.py": "deploy.py",
         "README.md": "README.md",
+        "BACKUP-RESTORE.md": "BACKUP-RESTORE.md",
         "opensandbox-egress-nginx.conf.template": "opensandbox-egress-nginx.conf.template",
     }
     payloads = {}
@@ -99,6 +184,13 @@ def build_package(source: Path, manifest: dict, profile: str, output: Path, data
             raise ValueError(f"package source is not a regular file: {original}")
         text = path.read_text(encoding="utf-8")
         if name == ".env.example":
+            text, count = re.subn(
+                r"(?m)^SANDBOX_WORKSPACE_ROOT=.*$",
+                f"SANDBOX_WORKSPACE_ROOT=/data/opensandbox/workspaces/ai-platform-{profile}",
+                text,
+            )
+            if count != 1:
+                raise ValueError("package environment must contain one workspace root")
             omitted = PACKAGE_OMITTED_ENV_KEYS | bindings.keys()
             if profile == "production":
                 omitted = omitted | {
@@ -133,6 +225,7 @@ def build_package(source: Path, manifest: dict, profile: str, output: Path, data
     payloads["release-image-manifest.json"] = (
         json.dumps(manifest, sort_keys=True, indent=2) + "\n"
     ).encode("utf-8")
+    payloads.update(evidence_payloads)
     # Assemble completely before creating the output; never overwrite an artifact.
     with output.open("xb") as stream, tarfile.open(fileobj=stream, mode="w:gz") as archive:
         for name, payload in payloads.items():
@@ -149,9 +242,10 @@ def main() -> None:
     parser.add_argument("--profile", choices=PROFILES, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--data-images", type=Path, required=True)
+    parser.add_argument("--evidence-root", type=Path, required=True)
     args = parser.parse_args()
     build_package(args.source, json.loads(args.manifest.read_text(encoding="utf-8")), args.profile, args.output,
-                  json.loads(args.data_images.read_text(encoding="utf-8")))
+                  json.loads(args.data_images.read_text(encoding="utf-8")), evidence_root=args.evidence_root)
 
 
 if __name__ == "__main__":

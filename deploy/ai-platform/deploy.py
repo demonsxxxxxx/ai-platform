@@ -348,7 +348,7 @@ def verify_workspace_migration_complete(config: dict, docker: list[str]) -> None
         "p=Path('/workspaces/.ai-platform-workspace-migration-v1.incomplete'); "
         "print('incomplete' if p.exists() or p.is_symlink() else 'clear')"
     )
-    result = run([*docker, "run", "--rm", "--network", "none", "--read-only",
+    result = run([*docker, "run", "--rm", "--pull", "never", "--network", "none", "--read-only",
                   "--user", "0:0", "--cap-drop", "ALL", "--cap-add", "DAC_READ_SEARCH",
                   "--security-opt", "no-new-privileges:true", "--mount",
                   f"type=bind,source={root},target=/workspaces,readonly",

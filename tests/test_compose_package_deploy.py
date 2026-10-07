@@ -626,6 +626,7 @@ def test_private_workspace_marker_is_checked_by_readonly_docker_not_host_travers
         assert "--read-only" in command and "--network" in command and "none" in command
         assert f"type=bind,source={root},target=/workspaces,readonly" in command
         assert "DAC_READ_SEARCH" in command
+        assert command[command.index("--pull") + 1] == "never"
         return "clear"
     original_lstat = Path.lstat
     def restricted_lstat(path, *args, **kwargs):

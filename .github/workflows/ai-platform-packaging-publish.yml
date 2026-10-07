@@ -457,6 +457,7 @@ jobs:
             subject-${{ matrix.role }}.json
             sbom-${{ matrix.role }}.spdx.json
             trivy-${{ matrix.role }}.json
+            trivy-inventory-${{ matrix.role }}.json
             cosign-signature-${{ matrix.role }}.json
             cosign-sbom-${{ matrix.role }}.json
             provenance-${{ matrix.role }}.bundle.json
@@ -598,9 +599,18 @@ jobs:
             python tools/release_compose_package.py \
               --manifest release-image-manifest.json \
               --data-images data-images.json \
+              --evidence-root . \
               --profile "$profile" \
               --output "ai-platform-$profile.tar.gz"
           done
+
+      - name: Upload internal-test deployment package for CI
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ai-platform-internal-test-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 30
+          path: ai-platform-internal-test.tar.gz
 
       - name: Upload ready release image evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -619,8 +629,6 @@ jobs:
       - name: Publish immutable deployment Release
         if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.release_version != '')
         env:
-          ASSET_LABEL: release-image-manifest-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          ASSET_PATH: release-image-manifest.json
           GH_CLI_BIN: ${{ env.GH_CLI_BIN }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: deployment-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -648,8 +656,6 @@ jobs:
             tag_args=(--verify-tag)
           fi
           "$GH_CLI_BIN" release create "$RELEASE_TAG" \
-            "$ASSET_PATH#$ASSET_LABEL" \
-            "ai-platform-internal-test.tar.gz" \
             "ai-platform-production.tar.gz" \
             --repo "$GITHUB_REPOSITORY" \
             "${tag_args[@]}" \

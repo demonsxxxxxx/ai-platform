@@ -223,7 +223,6 @@ def test_release_publication_fails_closed_without_reusing_version(
             "GH_TEST_FAILURE": failure, "GITHUB_REPOSITORY": "example/repository",
             "GITHUB_SHA": source, "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1",
             "RELEASE_TAG": automatic_tag, "REQUESTED_RELEASE_VERSION": version,
-            "ASSET_PATH": "release-image-manifest.json", "ASSET_LABEL": "manifest",
         },
         capture_output=True,
         text=True,
@@ -241,10 +240,7 @@ def test_release_publication_fails_closed_without_reusing_version(
             ]
         elif call["kind"] == "create":
             assert args[:3] == ["release", "create", version or automatic_tag]
-            assert args[3:6] == [
-                "release-image-manifest.json#manifest", "ai-platform-internal-test.tar.gz",
-                "ai-platform-production.tar.gz",
-            ]
+            assert args[3:5] == ["ai-platform-production.tar.gz", "--repo"]
             assert args[args.index("--title") + 1] == (version or f"Deployment {source[:12]}")
             if version:
                 assert "--verify-tag" in args
@@ -647,6 +643,11 @@ def test_trivy_inventory_and_fixable_failure_reports_are_run_bound_and_untrusted
     }
     assert "github.token" not in str(inventory) + str(inventory_upload) + str(capture) + str(upload)
     assert "GH_TOKEN" not in str(inventory) + str(inventory_upload) + str(capture) + str(upload)
+    subject_upload = next(step for step in steps if step.get("name") == "Upload subject evidence")
+    # A qualified package retains the full inventory even after diagnostics expire.
+    assert "trivy-inventory-${{ matrix.role }}.json" in subject_upload["with"]["path"].splitlines()
+    assert "trivy-${{ matrix.role }}.json" in subject_upload["with"]["path"].splitlines()
+    assert "if" not in subject_upload
     manifest = workflow["jobs"]["release-manifest"]
     assert "release-image-trivy-inventory" not in str(manifest)
     assert "trivy-inventory" not in str(manifest)
@@ -726,13 +727,12 @@ def test_release_manifest_reverifies_exact_downloaded_bundles_with_pinned_gh():
         "deployment-${{ github.sha }}-${{ github.run_id }}-"
         "${{ github.run_attempt }}"
     )
-    assert public["env"]["ASSET_PATH"] == "release-image-manifest.json"
-    assert public["env"]["ASSET_LABEL"] == (
-        "release-image-manifest-${{ github.sha }}-${{ github.run_id }}-"
-        "${{ github.run_attempt }}"
-    )
+    assert "ASSET_PATH" not in public["env"]
+    assert "ASSET_LABEL" not in public["env"]
     assert 'release create "$RELEASE_TAG"' in public["run"]
-    assert '"$ASSET_PATH#$ASSET_LABEL"' in public["run"]
+    assert '"ai-platform-production.tar.gz"' in public["run"]
+    assert "release-image-manifest.json" not in public["run"]
+    assert "ai-platform-internal-test.tar.gz" not in public["run"]
     assert "release upload" not in public["run"]
     assert "release edit" not in public["run"]
     assert "--draft" not in public["run"]
@@ -989,7 +989,7 @@ def test_deployment_release_is_immutable_minimal_and_fresh_main_bound():
         "github.event_name == 'push' || "
         "(github.event_name == 'workflow_dispatch' && inputs.release_version != '')"
     )
-    assert release["env"]["ASSET_PATH"] == "release-image-manifest.json"
+    assert "ASSET_PATH" not in release["env"]
     assert release["env"]["RELEASE_TAG"].startswith("deployment-${{ github.sha }}-")
     assert "release-image-evidence.zip" not in release["run"]
     assert "zipfile" not in release["run"]
@@ -1000,14 +1000,18 @@ def test_deployment_release_is_immutable_minimal_and_fresh_main_bound():
     assert 'api "repos/$GITHUB_REPOSITORY/git/ref/heads/main"' in release["run"]
     assert 'test "$current_main" = "$GITHUB_SHA"' in release["run"]
     assert 'release create "$RELEASE_TAG"' in release["run"]
-    assert '"$ASSET_PATH#$ASSET_LABEL"' in release["run"]
+    assert '"ai-platform-production.tar.gz"' in release["run"]
     package = next(step for step in steps if "tools/release_compose_package.py" in step.get("run", ""))
     verification = next(step for step in steps if "tools/release_image_manifest.py verify" in step.get("run", ""))
     assert steps.index(verification) < steps.index(package) < steps.index(release)
     assert "for profile in internal-test production" in package["run"]
     assert "--manifest release-image-manifest.json" in package["run"]
-    for profile in ("internal-test", "production"):
-        assert f'"ai-platform-{profile}.tar.gz"' in release["run"]
+    assert "--evidence-root ." in package["run"]
+    assert "ai-platform-internal-test.tar.gz" not in release["run"]
+    assert "release-image-manifest.json" not in release["run"]
+    internal_upload = next(step for step in steps if step.get("name") == "Upload internal-test deployment package for CI")
+    assert internal_upload["with"]["path"] == "ai-platform-internal-test.tar.gz"
+    assert internal_upload["with"]["if-no-files-found"] == "error"
     assert "release upload" not in release["run"]
     assert "release edit" not in release["run"]
     assert "--latest=false" in release["run"]
@@ -1027,7 +1031,7 @@ def test_ready_manifest_requires_both_subject_records_and_is_uploaded_as_run_evi
     assert "python tools/release_image_manifest.py verify" in text
     assert "--expected-role backend" in text
     assert "--expected-role frontend" in text
-    assert text.count("--evidence-root .") == 2
+    assert text.count("--evidence-root .") == 3
     assert "--provenance-bundle \"provenance-${{ matrix.role }}.bundle.json\"" in text
     assert "--provenance-verification \"provenance-${{ matrix.role }}.verified.json\"" in text
     assert "release-image-manifest.json" in text
