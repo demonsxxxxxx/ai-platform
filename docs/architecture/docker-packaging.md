@@ -124,26 +124,42 @@ release-image evidence.
   evidence, restored runtime cache reuse, or weakened scans, signatures, or
   publication admission requires a revised contract before implementation.
 
-### Change Contract: named immutable versions
+### Change Contract: explicit immutable versions
 
 - Owner: Docker Packaging Authority; bounded paths are this document, the release
   runbook, the Packaging workflow, and its owning workflow regression tests.
-- Optional `release_version` accepts a literal `vMAJOR.MINOR.PATCH` only. It adds
-  a named Release to an explicitly confirmed protected-main manual run; a blank
-  version remains audit-only and main pushes keep their deployment tag format.
+- Main pushes still build both images, scan, attest, sign, and assemble the
+  runtime-only production package. They never create a Git tag or GitHub Release.
+  The previous automatic `deployment-<commit>-<run>-<attempt>` publication path is
+  retired; existing Releases and tags are not modified or deleted.
+- Optional `release_version` accepts a literal `vMAJOR.MINOR.PATCH` only. A formal
+  Release requires an explicitly confirmed protected-main manual run with a
+  non-empty version. A blank manual version remains audit-only: it creates no
+  tag or Release. Push and blank-version manual runs upload the one production
+  package as `ai-platform-production-<commit>-<run>-<attempt>` in Actions for
+  seven days. This temporary test artifact is not an immutable Release or a
+  production deployment authority; separate qualification evidence remains for
+  30 days. Explicit version runs attach the package only to their Release.
 - All existing digest, scan, SBOM, signature, provenance, and manifest gates
-  precede publication. Assembly rechecks the current main commit, atomically
-  creates a new version tag, and publishes the matching three assets with
-  `--verify-tag`. Existing tags cannot be reused or moved. Immutable status is
-  checked after publication; this grants no host deployment authority.
-- Regression proof executes the workflow shell with a fake CLI to cover version
-  validation, the two publication modes, main drift/read failure, existing tags,
-  failed publication, and mutable-release rejection. Real packaging and immutable
-  release evidence require a protected main run.
+  precede publication. The publication shell rechecks the manual event, main ref,
+  confirmation, and strict version before calling GitHub. It then rechecks the
+  current main commit, atomically creates a new version tag, and publishes the
+  single `ai-platform-production.tar.gz` asset with `--verify-tag`.
+  Existing tags cannot be reused or moved. Immutable status is checked after
+  publication; this grants no host deployment authority. `--latest=false` retains
+  the existing policy of not changing GitHub's Latest selection.
+- Regression proof executes the publication shell with a fake CLI to cover
+  blank/invalid versions, non-manual or non-main attempts, confirmation, main
+  drift/read failure, existing tags, failed publication, and mutable-release
+  rejection. Workflow contracts preserve main image publication and require the
+  run-bound temporary package with seven-day retention after qualification.
+  Real packaging, artifact upload, and immutable release evidence require a
+  protected main run; local tests do not perform those writes.
 - Stop on a tag collision or any failed gate. A failure after tag creation can
   leave a reserved tag or draft Release; never automatically retry by deleting
-  or overwriting it. Rollback removes only the optional version path; published
-  immutable Releases and existing automatic publication remain unchanged.
+  or overwriting it. Roll back with an explicitly reviewed workflow revert;
+  restoring the retired automatic-publication behavior requires owner approval.
+  Published immutable Releases, tags, images, and host deployments stay unchanged.
 
 Each subject is pushed under only its full 40-hex source commit tag. Downstream
 steps immediately switch to `subject@sha256:<registry-manifest-digest>` and
