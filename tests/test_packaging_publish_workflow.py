@@ -165,10 +165,10 @@ def test_requested_release_version_is_strict_literal_input(version, valid):
     "version,failure,expected_calls,success",
     [
         ("v0.1.0", "", ["main", "tag", "create", "view"], True),
-        ("", "", ["main", "create", "view"], True),
+        ("", "", [], False),
         ("v0.1.0", "main_moved", ["main"], False),
         ("v0.1.0", "main_unavailable", ["main"], False),
-        ("v01.0.0", "", ["main"], False),
+        ("v01.0.0", "", [], False),
         ("v0.1.0", "tag_exists", ["main", "tag"], False),
         ("v0.1.0", "create", ["main", "tag", "create"], False),
         ("v0.1.0", "mutable", ["main", "tag", "create", "view"], False),
@@ -180,7 +180,7 @@ def test_release_publication_fails_closed_without_reusing_version(
 ):
     steps = _workflow()["jobs"]["release-manifest"]["steps"]
     publish = next(
-        step for step in steps if step.get("name") == "Publish immutable deployment Release"
+        step for step in steps if step.get("name") == "Publish explicit versioned Release"
     )
     gh = tmp_path / "gh"
     log = tmp_path / "calls.jsonl"
@@ -213,7 +213,6 @@ def test_release_publication_fails_closed_without_reusing_version(
     )
     gh.chmod(0o755)
     source = "a" * 40
-    automatic_tag = f"deployment-{source}-123-1"
     result = subprocess.run(
         ["bash", "-c", publish["run"]],
         cwd=tmp_path,
@@ -222,13 +221,15 @@ def test_release_publication_fails_closed_without_reusing_version(
             "GH_CLI_BIN": str(gh), "GH_TEST_LOG": str(log),
             "GH_TEST_FAILURE": failure, "GITHUB_REPOSITORY": "example/repository",
             "GITHUB_SHA": source, "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1",
-            "RELEASE_TAG": automatic_tag, "REQUESTED_RELEASE_VERSION": version,
+            "REQUESTED_RELEASE_VERSION": version,
+            "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF": "refs/heads/main",
+            "CONFIRM_RELEASE": "PUBLISH_MAIN",
         },
         capture_output=True,
         text=True,
         timeout=10,
     )
-    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
     assert (result.returncode == 0) is success, result.stderr
     assert [call["kind"] for call in calls] == expected_calls
     for call in calls:
@@ -239,14 +240,94 @@ def test_release_publication_fails_closed_without_reusing_version(
                 "-f", f"ref=refs/tags/{version}", "-f", f"sha={source}", "--silent",
             ]
         elif call["kind"] == "create":
-            assert args[:3] == ["release", "create", version or automatic_tag]
+            assert args[:3] == ["release", "create", version]
             assert args[3:5] == ["ai-platform-production.tar.gz", "--repo"]
-            assert args[args.index("--title") + 1] == (version or f"Deployment {source[:12]}")
-            if version:
-                assert "--verify-tag" in args
-                assert "--target" not in args
-            else:
-                assert args[args.index("--target") + 1] == source
+            assert args[args.index("--title") + 1] == version
+            assert "--verify-tag" in args
+            assert "--target" not in args
+
+
+@pytest.mark.parametrize(
+    "event_name,ref,confirmation",
+    [
+        ("push", "refs/heads/main", "PUBLISH_MAIN"),
+        ("pull_request", "refs/heads/main", "PUBLISH_MAIN"),
+        ("workflow_dispatch", "refs/heads/feature", "PUBLISH_MAIN"),
+        ("workflow_dispatch", "refs/tags/v0.1.0", "PUBLISH_MAIN"),
+        ("workflow_dispatch", "refs/heads/main", ""),
+        ("workflow_dispatch", "refs/heads/main", "publish_main"),
+    ],
+)
+def test_release_shell_rejects_unconfirmed_or_non_manual_main_before_github(
+    tmp_path, event_name, ref, confirmation
+):
+    steps = _workflow()["jobs"]["release-manifest"]["steps"]
+    publish = next(
+        step for step in steps if step.get("name") == "Publish explicit versioned Release"
+    )
+    gh = tmp_path / "gh"
+    log = tmp_path / "unexpected-github-call"
+    gh.write_text(
+        f"#!{sys.executable}\n"
+        "import os\n"
+        "from pathlib import Path\n"
+        "Path(os.environ['GH_TEST_LOG']).touch()\n",
+        encoding="utf-8",
+    )
+    gh.chmod(0o755)
+    result = subprocess.run(
+        ["bash", "-c", publish["run"]],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "GH_CLI_BIN": str(gh), "GH_TEST_LOG": str(log),
+            "GITHUB_REPOSITORY": "example/repository", "GITHUB_SHA": "a" * 40,
+            "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1",
+            "REQUESTED_RELEASE_VERSION": "v0.1.0",
+            "GITHUB_EVENT_NAME": event_name, "GITHUB_REF": ref,
+            "CONFIRM_RELEASE": confirmation,
+        },
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode != 0
+    assert not log.exists(), "rejected publication must not call GitHub"
+
+
+def test_temporary_production_package_is_run_bound_and_short_lived():
+    steps = _workflow()["jobs"]["release-manifest"]["steps"]
+    upload = next(
+        step for step in steps if step.get("name") == "Upload temporary production package"
+    )
+    evidence = next(
+        step for step in steps if step.get("name") == "Upload ready release image evidence"
+    )
+    package = next(
+        step for step in steps if "tools/release_compose_package.py" in step.get("run", "")
+    )
+    verify = next(
+        step for step in steps if "tools/release_image_manifest.py verify" in step.get("run", "")
+    )
+    release = next(
+        step for step in steps if step.get("name") == "Publish explicit versioned Release"
+    )
+    assert upload["if"] == (
+        "github.event_name == 'push' || "
+        "(github.event_name == 'workflow_dispatch' && inputs.release_version == '')"
+    )
+    assert upload["uses"] == evidence["uses"]
+    assert upload["with"] == {
+        "name": "ai-platform-production-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}",
+        "if-no-files-found": "error",
+        "retention-days": "7",
+        "path": "ai-platform-production.tar.gz",
+    }
+    assert "continue-on-error" not in upload
+    assert evidence["with"]["retention-days"] == "30"
+    assert steps.index(verify) < steps.index(package) < steps.index(upload) < steps.index(release)
+    assert "deployment-" not in str(release)
+    assert _workflow_text().count('release create "$RELEASE_TAG"') == 1
 
 
 def test_publish_permissions_are_job_scoped_and_environment_protected():
@@ -714,19 +795,17 @@ def test_release_manifest_reverifies_exact_downloaded_bundles_with_pinned_gh():
     public = next(
         step
         for step in steps
-        if step.get("name") == "Publish immutable deployment Release"
+        if step.get("name") == "Publish explicit versioned Release"
     )
     assert public["if"] == (
-        "github.event_name == 'push' || "
-        "(github.event_name == 'workflow_dispatch' && inputs.release_version != '')"
+        "github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && "
+        "inputs.confirm_release == 'PUBLISH_MAIN' && inputs.release_version != ''"
     )
     assert public["env"]["GH_TOKEN"] == "${{ github.token }}"
     assert public["env"]["GH_CLI_BIN"] == "${{ env.GH_CLI_BIN }}"
     assert public["env"]["REQUESTED_RELEASE_VERSION"] == "${{ inputs.release_version }}"
-    assert public["env"]["RELEASE_TAG"] == (
-        "deployment-${{ github.sha }}-${{ github.run_id }}-"
-        "${{ github.run_attempt }}"
-    )
+    assert public["env"]["CONFIRM_RELEASE"] == "${{ inputs.confirm_release }}"
+    assert "RELEASE_TAG" not in public["env"]
     assert "ASSET_PATH" not in public["env"]
     assert "ASSET_LABEL" not in public["env"]
     assert 'release create "$RELEASE_TAG"' in public["run"]
@@ -804,7 +883,7 @@ def test_release_manifest_authenticates_private_ghcr_before_local_bundle_verific
     public = next(
         step
         for step in steps
-        if step.get("name") == "Publish immutable deployment Release"
+        if step.get("name") == "Publish explicit versioned Release"
     )
     for step in steps:
         if step is verify or step is public:
@@ -978,7 +1057,7 @@ def test_deployment_release_is_immutable_minimal_and_fresh_main_bound():
     release = next(
         step
         for step in steps
-        if step.get("name") == "Publish immutable deployment Release"
+        if step.get("name") == "Publish explicit versioned Release"
     )
 
     assert not any(
@@ -986,16 +1065,18 @@ def test_deployment_release_is_immutable_minimal_and_fresh_main_bound():
         for step in steps
     )
     assert release["if"] == (
-        "github.event_name == 'push' || "
-        "(github.event_name == 'workflow_dispatch' && inputs.release_version != '')"
+        "github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && "
+        "inputs.confirm_release == 'PUBLISH_MAIN' && inputs.release_version != ''"
     )
     assert "ASSET_PATH" not in release["env"]
-    assert release["env"]["RELEASE_TAG"].startswith("deployment-${{ github.sha }}-")
+    assert "RELEASE_TAG" not in release["env"]
+    assert 'RELEASE_TAG="$REQUESTED_RELEASE_VERSION"' in release["run"]
     assert "release-image-evidence.zip" not in release["run"]
     assert "zipfile" not in release["run"]
     assert "--prerelease" not in release["run"]
     assert "--clobber" not in release["run"]
-    assert '--target "$GITHUB_SHA"' in release["run"]
+    assert "--target" not in release["run"]
+    assert "--verify-tag" in release["run"]
     assert "/immutable-releases" not in release["run"]
     assert 'api "repos/$GITHUB_REPOSITORY/git/ref/heads/main"' in release["run"]
     assert 'test "$current_main" = "$GITHUB_SHA"' in release["run"]

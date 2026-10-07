@@ -1,19 +1,22 @@
 # Release Operations
 
-This is the executable application release procedure. CI publishes an immutable
-Deployment Release with one operator asset, `ai-platform-production.tar.gz`,
+This is the executable application release procedure. An explicitly requested
+version publishes an immutable Deployment Release with one operator asset,
+`ai-platform-production.tar.gz`,
 containing the runtime-only package and matching `release-image-manifest.json`. A host consumes that package directly. Git,
 GitHub Actions, source checkouts, and host image builds are not part of a normal
 application install or upgrade.
 
 ## What CI publishes
 
-The protected Packaging workflow runs after the required Backend and Frontend
-checks. It verifies the two application image subjects, binds their complete
+The protected Packaging workflow runs on main pushes and confirmed manual main
+runs, independently of the Backend and Frontend checks. Before requesting a
+formal version, verify those required checks passed for the selected main commit.
+Packaging verifies the two application image subjects, binds their complete
 `linux/amd64` registry digests, and creates one package from the manifest.
-`ai-platform-production.tar.gz` is attached to the public Deployment Release.
-GitHub's automatically
-generated source archives may still appear; they are not operator packages.
+Only an explicit version attaches `ai-platform-production.tar.gz` to a public
+Deployment Release. GitHub's automatically generated source archives may still
+appear; they are not operator packages.
 
 The package contains the exact Compose file, the unified OpenSandbox overlay,
 `.env.example`, `deploy.py`, the release manifest, package guide,
@@ -32,14 +35,25 @@ creates a unique versioned Release only after all qualification steps pass and
 then verifies that GitHub reports it immutable. A mutable or incomplete Release
 is not a deployment input.
 
-For a named version such as `v0.1.0`, run the Packaging workflow on `main` with
-`confirm_release=PUBLISH_MAIN` and `release_version=v0.1.0`. The optional version
-accepts only `vMAJOR.MINOR.PATCH` with no leading zeroes. A blank version keeps
-manual runs audit-only; automatic main pushes retain their unique
-`deployment-<commit>-<run>-<attempt>` Releases. Both image builds refresh their
-runtime stages on every attempt so cached APT/APK layers cannot retain fixed
-vulnerabilities. The normal main-source, environment, scan, signature, and
-attestation gates still apply.
+For a new named version such as `v0.1.1`, run the Packaging workflow on `main`
+with `confirm_release=PUBLISH_MAIN` and `release_version=v0.1.1`. The optional
+version accepts only `vMAJOR.MINOR.PATCH` with no leading zeroes. Choose a version
+that does not already exist; publishing never replaces an existing version.
+A blank version keeps manual runs audit-only, with no Git tag or Release.
+Automatic main pushes also create no Git tag or Release. Both image builds
+still refresh their runtime stages on every attempt so cached APT/APK layers
+cannot retain fixed vulnerabilities. The normal main-source, environment,
+scan, signature, and attestation gates still apply.
+
+For a daily test package, open the successful main Packaging run's Actions
+artifacts and download `ai-platform-production-<commit>-<run>-<attempt>`.
+That artifact contains only `ai-platform-production.tar.gz` and is retained for
+seven days. It is produced on main pushes and blank-version manual runs after
+package qualification; it is a temporary test package, not a formal Release or
+production deployment approval. Separate audit evidence remains for 30 days.
+Formal version runs publish the single package in their immutable Release
+instead. Existing Releases and tags are not cleaned up by this workflow, and
+publication retains `--latest=false`; it does not select a new GitHub Latest.
 
 A named version is reserved only after qualification and a fresh main-commit
 check. An existing tag is a hard failure, never moved or reused. If publication

@@ -13,7 +13,7 @@ on:
         options:
           - PUBLISH_MAIN
       release_version:
-        description: Optional new vMAJOR.MINOR.PATCH Release; blank produces audit evidence only
+        description: Optional new vMAJOR.MINOR.PATCH Release; blank produces temporary test package and audit evidence
         required: false
         type: string
 
@@ -615,40 +615,48 @@ jobs:
             cosign-*.json
             provenance-*.json
 
-      - name: Publish immutable deployment Release
-        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.release_version != '')
+      - name: Upload temporary production package
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.release_version == '')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ai-platform-production-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 7
+          path: ai-platform-production.tar.gz
+
+      - name: Publish explicit versioned Release
+        if: >-
+          github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' &&
+          inputs.confirm_release == 'PUBLISH_MAIN' && inputs.release_version != ''
         env:
           GH_CLI_BIN: ${{ env.GH_CLI_BIN }}
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: deployment-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          CONFIRM_RELEASE: ${{ inputs.confirm_release }}
           REQUESTED_RELEASE_VERSION: ${{ inputs.release_version }}
         run: |
           set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = "workflow_dispatch"
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$CONFIRM_RELEASE" = "PUBLISH_MAIN"
+          if ! [[ "$REQUESTED_RELEASE_VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            printf 'release_version=invalid_format\n' >&2
+            exit 1
+          fi
+          RELEASE_TAG="$REQUESTED_RELEASE_VERSION"
           test -x "$GH_CLI_BIN"
           current_main="$(
             "$GH_CLI_BIN" api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" \
               --jq '.object.sha'
           )"
           test "$current_main" = "$GITHUB_SHA"
-          release_title="Deployment ${GITHUB_SHA::12}"
-          tag_args=(--target "$GITHUB_SHA")
-          if test -n "$REQUESTED_RELEASE_VERSION"; then
-            if ! [[ "$REQUESTED_RELEASE_VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-              printf 'release_version=invalid_format\n' >&2
-              exit 1
-            fi
-            RELEASE_TAG="$REQUESTED_RELEASE_VERSION"
-            release_title="$RELEASE_TAG"
-            # Atomic creation fails if the version already exists; never reuse or move it.
-            "$GH_CLI_BIN" api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
-              -f "ref=refs/tags/$RELEASE_TAG" -f "sha=$GITHUB_SHA" --silent
-            tag_args=(--verify-tag)
-          fi
+          # Atomic creation fails if the version already exists; never reuse or move it.
+          "$GH_CLI_BIN" api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f "ref=refs/tags/$RELEASE_TAG" -f "sha=$GITHUB_SHA" --silent
           "$GH_CLI_BIN" release create "$RELEASE_TAG" \
             "ai-platform-production.tar.gz" \
             --repo "$GITHUB_REPOSITORY" \
-            "${tag_args[@]}" \
-            --title "$release_title" \
+            --verify-tag \
+            --title "$RELEASE_TAG" \
             --notes "Qualified by Packaging run $GITHUB_RUN_ID attempt $GITHUB_RUN_ATTEMPT." \
             --latest=false
           immutable="$(
