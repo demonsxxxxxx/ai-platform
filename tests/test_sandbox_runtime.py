@@ -1513,6 +1513,11 @@ async def test_runtime_default_db_acceptance_targets_created_lease_id(tmp_path, 
 @pytest.mark.asyncio
 async def test_runtime_default_db_record_persists_trusted_opensandbox_runtime_handle(tmp_path, monkeypatch):
     calls = []
+    from app.settings import (
+        DIRECT_OPENSANDBOX_NETWORK_NAME,
+        DIRECT_OPENSANDBOX_POLICY_SUBJECT,
+        DIRECT_OPENSANDBOX_PROFILE_ID,
+    )
     from app.execution_boundary import (
         build_governed_egress_proof,
         governed_egress_authorized_native_tool_scope,
@@ -1527,12 +1532,13 @@ async def test_runtime_default_db_record_persists_trusted_opensandbox_runtime_ha
         signing_key=signing_key,
         provider="opensandbox",
         runtime_subject="runtime-subject-a",
-        policy_subject="gateway-policy-subject-a",
+        policy_subject=DIRECT_OPENSANDBOX_POLICY_SUBJECT,
         callback_subject="callback-boundary-subject-a",
         denial_subject="gateway-deny-subject-a",
-        network_id="profile-a",
-        network_name="ai-platform-opensandbox-egress-internal-v1",
-        network_internal=True,
+        network_id=DIRECT_OPENSANDBOX_PROFILE_ID,
+        network_name=DIRECT_OPENSANDBOX_NETWORK_NAME,
+        network_internal=False,
+        default_deny_outbound=False,
         tenant_id="tenant-a",
         workspace_id="workspace-a",
         user_id="user-a",
@@ -1993,6 +1999,11 @@ async def test_runtime_records_opensandbox_provider_as_platform_db_lease(tmp_pat
 @pytest.mark.asyncio
 async def test_runtime_passes_private_executor_headers_to_dispatch_without_db_leak(tmp_path, monkeypatch):
     calls = []
+    from app.settings import (
+        DIRECT_OPENSANDBOX_NETWORK_NAME,
+        DIRECT_OPENSANDBOX_POLICY_SUBJECT,
+        DIRECT_OPENSANDBOX_PROFILE_ID,
+    )
 
     class StubSettings:
         sandbox_callback_base_url = "http://platform.test"
@@ -2016,12 +2027,13 @@ async def test_runtime_passes_private_executor_headers_to_dispatch_without_db_le
                 signing_key=StubSettings.sandbox_egress_proof_signing_key,
                 provider="opensandbox",
                 runtime_subject="runsc",
-                policy_subject="gateway-a",
+                policy_subject=DIRECT_OPENSANDBOX_POLICY_SUBJECT,
                 callback_subject="callback-a",
                 denial_subject="deny-a",
-                network_id="profile-a",
-                network_name="ai-platform-opensandbox-egress-internal-v1",
-                network_internal=True,
+                network_id=DIRECT_OPENSANDBOX_PROFILE_ID,
+                network_name=DIRECT_OPENSANDBOX_NETWORK_NAME,
+                network_internal=False,
+                default_deny_outbound=False,
                 tenant_id=request.tenant_id,
                 workspace_id=request.workspace_id,
                 user_id=request.user_id,

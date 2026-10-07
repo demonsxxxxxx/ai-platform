@@ -872,7 +872,7 @@ def test_host_prerequisite_rejects_drifted_server_container_topology(monkeypatch
         transition._require_opensandbox_server_container(["docker"])
 
 
-def test_opensandbox_server_profile_requires_root_owned_runsc_on_the_isolated_network(
+def test_opensandbox_server_profile_requires_root_owned_runsc_on_the_egress_network(
     monkeypatch,
     tmp_path,
 ):
@@ -880,7 +880,7 @@ def test_opensandbox_server_profile_requires_root_owned_runsc_on_the_isolated_ne
     config.write_text(
         "[server]\nhost = \"10.56.1.75\"\nport = 8080\n"
         "[runtime]\ntype = \"docker\"\n"
-        "[docker]\nnetwork_mode = \"ai-platform-opensandbox-egress-internal-v1\"\n"
+        "[docker]\nnetwork_mode = \"ai-platform-opensandbox-egress-v2\"\n"
         "host_ip = \"10.56.1.75\"\n"
         "no_new_privileges = true\n"
         "[secure_runtime]\ntype = \"gvisor\"\ndocker_runtime = \"runsc\"\n",
@@ -904,7 +904,7 @@ def test_opensandbox_server_profile_requires_root_owned_runsc_on_the_isolated_ne
 
     config.write_text(
         config.read_text(encoding="utf-8").replace(
-            "ai-platform-opensandbox-egress-internal-v1", "bridge"
+            "ai-platform-opensandbox-egress-v2", "bridge"
         ),
         encoding="utf-8",
     )
@@ -912,7 +912,7 @@ def test_opensandbox_server_profile_requires_root_owned_runsc_on_the_isolated_ne
         transition._require_opensandbox_server_profile(config)
 
 
-def test_network_guard_requires_the_exact_root_owned_unit_and_first_input_jump(
+def test_network_guard_requires_complete_ipv4_and_ipv6_host_rules(
     monkeypatch,
     tmp_path,
 ):
@@ -930,19 +930,75 @@ def test_network_guard_requires_the_exact_root_owned_unit_and_first_input_jump(
         return real_lstat(path)
 
     monkeypatch.setattr(Path, "lstat", root_owned_lstat)
-    valid = (
-        "-A INPUT -i br-osb-egress -j AI_PLATFORM_OPENSANDBOX\n"
-        "-A AI_PLATFORM_OPENSANDBOX -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT\n"
-        "-A AI_PLATFORM_OPENSANDBOX -j DROP\n"
-        "-A DOCKER-USER -i br-osb-egress -o br-osb-egress -j AI_PLATFORM_OSB_FORWARD\n"
-        "-A AI_PLATFORM_OSB_FORWARD -d 172.31.75.2/32 -p tcp -m tcp --dport 8080 -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT\n"
-        "-A AI_PLATFORM_OSB_FORWARD -s 172.31.75.2/32 -p tcp -m tcp --sport 8080 -m conntrack --ctstate ESTABLISHED -j ACCEPT\n"
-        "-A AI_PLATFORM_OSB_FORWARD -j DROP\n"
+    bridge = release_authority.DIRECT_OPENSANDBOX_BRIDGE_NAME
+    subnet = release_authority.DIRECT_OPENSANDBOX_SUBNET
+    proxy = f"{release_authority.DIRECT_OPENSANDBOX_PROXY_IPV4}/32"
+    port = release_authority.DIRECT_OPENSANDBOX_PROXY_PORT
+    v4_forward = [
+        f"-A AI_PLATFORM_OSB_FORWARD -i {bridge} ! -s {subnet} -j DROP",
+        f"-A AI_PLATFORM_OSB_FORWARD -i {bridge} -o {bridge} -s {proxy} -p tcp -m tcp --sport {port} -m conntrack --ctstate ESTABLISHED -j ACCEPT",
+        f"-A AI_PLATFORM_OSB_FORWARD -i {bridge} -o {bridge} -d {proxy} -p tcp -m tcp --dport {port} -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT",
+        f"-A AI_PLATFORM_OSB_FORWARD -i {bridge} -o {bridge} -j DROP",
+    ]
+    v4_forward.extend(
+        f"-A AI_PLATFORM_OSB_FORWARD -i {bridge} -d {destination} -j DROP"
+        for destination in (
+            "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
+            "169.254.0.0/16", "172.16.0.0/12", "192.0.0.0/24", "192.0.2.0/24",
+            "192.88.99.0/24", "192.168.0.0/16", "198.18.0.0/15", "198.51.100.0/24",
+            "203.0.113.0/24", "224.0.0.0/4", "240.0.0.0/4",
+        )
     )
+    v4_forward.extend(
+        (
+            f"-A AI_PLATFORM_OSB_FORWARD -o {bridge} -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
+            f"-A AI_PLATFORM_OSB_FORWARD -o {bridge} -j DROP",
+            f"-A AI_PLATFORM_OSB_FORWARD -i {bridge} -j RETURN",
+        )
+    )
+    valid_v4 = "\n".join(
+        [
+            f"-A INPUT -i {bridge} -j AI_PLATFORM_OPENSANDBOX",
+            "-A AI_PLATFORM_OPENSANDBOX -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
+            "-A AI_PLATFORM_OPENSANDBOX -j DROP",
+            f"-A DOCKER-USER -i {bridge} -j AI_PLATFORM_OSB_FORWARD",
+            f"-A DOCKER-USER -o {bridge} -j AI_PLATFORM_OSB_FORWARD",
+            *v4_forward,
+        ]
+    ) + "\n"
+    valid_v6 = "\n".join(
+        [
+            f"-A INPUT -i {bridge} -j AI_PLATFORM_OSB_IPV6",
+            f"-A OUTPUT -o {bridge} -j AI_PLATFORM_OSB_IPV6",
+            f"-A FORWARD -i {bridge} -j AI_PLATFORM_OSB_IPV6",
+            f"-A FORWARD -o {bridge} -j AI_PLATFORM_OSB_IPV6",
+            f"-A DOCKER-USER -i {bridge} -j AI_PLATFORM_OSB_IPV6",
+            f"-A DOCKER-USER -o {bridge} -j AI_PLATFORM_OSB_IPV6",
+            "-A AI_PLATFORM_OSB_IPV6 -j DROP",
+        ]
+    ) + "\n"
+
+    def save(command):
+        return _completed(command, stdout=valid_v4 if command[0] == "iptables-save" else valid_v6)
+
     monkeypatch.setattr(
         transition,
         "_run",
-        lambda command: _completed(command, stdout=valid),
+        save,
+    )
+    transition._require_network_guard(repo_root, installed)
+
+    # Kernel serialization moves source/destination matches before interfaces.
+    canonical_v4 = valid_v4.replace(
+        f"-i {bridge} -o {bridge} -s {proxy}",
+        f"-s {proxy} -i {bridge} -o {bridge}",
+    ).replace(
+        f"-i {bridge} -o {bridge} -d {proxy}",
+        f"-d {proxy} -i {bridge} -o {bridge}",
+    ).replace(f"-i {bridge} ! -s {subnet}", f"! -s {subnet} -i {bridge}")
+    monkeypatch.setattr(
+        transition, "_run",
+        lambda command: _completed(command, stdout=canonical_v4 if command[0] == "iptables-save" else valid_v6),
     )
     transition._require_network_guard(repo_root, installed)
 
@@ -956,7 +1012,37 @@ def test_network_guard_requires_the_exact_root_owned_unit_and_first_input_jump(
         "_run",
         lambda command: _completed(
             command,
-            stdout="-A INPUT -j ACCEPT\n" + valid,
+            stdout=(
+                "-A INPUT -j ACCEPT\n" + valid_v4
+                if command[0] == "iptables-save"
+                else valid_v6
+            ),
+        ),
+    )
+    with pytest.raises(transition.TransitionError, match="network guard"):
+        transition._require_network_guard(repo_root, installed)
+
+    # A failed refresh must not be mistaken for a usable public-egress guard.
+    monkeypatch.setattr(
+        transition, "_run",
+        lambda command: _completed(command, stdout=(valid_v4 + f"-A DOCKER-USER -i {bridge} -j DROP\n") if command[0] == "iptables-save" else valid_v6),
+    )
+    with pytest.raises(transition.TransitionError, match="network guard"):
+        transition._require_network_guard(repo_root, installed)
+
+    monkeypatch.setattr(
+        transition,
+        "_run",
+        lambda command: _completed(
+            command,
+            stdout=(
+                valid_v4.replace(
+                    f"-A AI_PLATFORM_OSB_FORWARD -i {bridge} -d 169.254.0.0/16 -j DROP\n",
+                    "",
+                )
+                if command[0] == "iptables-save"
+                else valid_v6
+            ),
         ),
     )
     with pytest.raises(transition.TransitionError, match="network guard"):
@@ -967,10 +1053,8 @@ def test_network_guard_requires_the_exact_root_owned_unit_and_first_input_jump(
         "_run",
         lambda command: _completed(
             command,
-            stdout=valid.replace(
-                "-A DOCKER-USER -i br-osb-egress -o br-osb-egress "
-                "-j AI_PLATFORM_OSB_FORWARD\n",
-                "",
+            stdout=valid_v4 if command[0] == "iptables-save" else valid_v6.replace(
+                f"-A FORWARD -o {bridge} -j AI_PLATFORM_OSB_IPV6\n", ""
             ),
         ),
     )
@@ -982,12 +1066,12 @@ def test_target_network_requires_only_the_egress_proxy(monkeypatch):
     network = {
         "Name": release_authority.DIRECT_OPENSANDBOX_NETWORK_NAME,
         "Driver": "bridge",
-        "Internal": True,
+        "Internal": False,
         "EnableIPv4": True,
         "EnableIPv6": False,
         "Options": {
             "com.docker.network.bridge.name": release_authority.DIRECT_OPENSANDBOX_BRIDGE_NAME,
-            "com.docker.network.bridge.enable_ip_masquerade": "false",
+            "com.docker.network.bridge.enable_ip_masquerade": "true",
             "com.docker.network.bridge.enable_icc": "false",
         },
         "IPAM": {"Config": [{"Subnet": release_authority.DIRECT_OPENSANDBOX_SUBNET}]},

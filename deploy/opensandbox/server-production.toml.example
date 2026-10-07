@@ -30,7 +30,7 @@ type = "sqlite"
 path = "/var/lib/ai-platform-opensandbox/opensandbox.db"
 
 [docker]
-network_mode = "ai-platform-opensandbox-egress-internal-v1"
+network_mode = "ai-platform-opensandbox-egress-v2"
 host_ip = "REQUIRED_PRIVATE_LIFECYCLE_IPV4_ADDRESS"
 drop_capabilities = ["AUDIT_WRITE", "MKNOD", "NET_ADMIN", "NET_RAW", "SYS_ADMIN", "SYS_MODULE", "SYS_PTRACE", "SYS_TIME", "SYS_TTY_CONFIG"]
 no_new_privileges = true

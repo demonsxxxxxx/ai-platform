@@ -38,7 +38,7 @@ services:
       OPENSANDBOX_USE_SERVER_PROXY: "true"
       OPENSANDBOX_EXECUTOR_IMAGE: ${OPENSANDBOX_EXECUTOR_IMAGE:?set OPENSANDBOX_EXECUTOR_IMAGE}
       OPENSANDBOX_EXECUTOR_IMAGE_DIGEST: ${OPENSANDBOX_EXECUTOR_IMAGE_DIGEST:?set OPENSANDBOX_EXECUTOR_IMAGE_DIGEST}
-      OPENSANDBOX_EXPECTED_NETWORK_MODE: ai-platform-opensandbox-egress-internal-v1
+      OPENSANDBOX_EXPECTED_NETWORK_MODE: ai-platform-opensandbox-egress-v2
       OPENSANDBOX_EGRESS_PROXY_URL: http://egress.opensandbox.internal:8080
     networks:
       - default
@@ -70,7 +70,7 @@ services:
       OPENSANDBOX_USE_SERVER_PROXY: "true"
       OPENSANDBOX_EXECUTOR_IMAGE: ${OPENSANDBOX_EXECUTOR_IMAGE:?set OPENSANDBOX_EXECUTOR_IMAGE}
       OPENSANDBOX_EXECUTOR_IMAGE_DIGEST: ${OPENSANDBOX_EXECUTOR_IMAGE_DIGEST:?set OPENSANDBOX_EXECUTOR_IMAGE_DIGEST}
-      OPENSANDBOX_EXPECTED_NETWORK_MODE: ai-platform-opensandbox-egress-internal-v1
+      OPENSANDBOX_EXPECTED_NETWORK_MODE: ai-platform-opensandbox-egress-v2
       OPENSANDBOX_EGRESS_PROXY_URL: http://egress.opensandbox.internal:8080
     networks:
       - default
@@ -99,10 +99,10 @@ services:
       MODEL_PROXY_INTERNAL_TOKEN: ${MODEL_PROXY_INTERNAL_TOKEN:?set MODEL_PROXY_INTERNAL_TOKEN}
     networks:
       default:
-      opensandbox_egress_internal_v1:
+      opensandbox_egress_v2:
         aliases:
           - egress.opensandbox.internal
-        ipv4_address: 172.31.75.2
+        ipv4_address: 172.31.76.2
     volumes:
       - ./opensandbox-egress-nginx.conf.template:/etc/nginx/templates-opensandbox/default.conf.template:ro
     tmpfs:
@@ -119,14 +119,15 @@ services:
         condition: service_started
 
 networks:
-  opensandbox_egress_internal_v1:
-    name: ai-platform-opensandbox-egress-internal-v1
+  opensandbox_egress_v2:
+    name: ai-platform-opensandbox-egress-v2
     driver: bridge
-    internal: true
+    internal: false
+    enable_ipv6: false
     driver_opts:
-      com.docker.network.bridge.name: br-osb-egress
-      com.docker.network.bridge.enable_ip_masquerade: "false"
+      com.docker.network.bridge.name: br-osb-egress2
+      com.docker.network.bridge.enable_ip_masquerade: "true"
       com.docker.network.bridge.enable_icc: "false"
     ipam:
       config:
-        - subnet: 172.31.75.0/24
+        - subnet: 172.31.76.0/24

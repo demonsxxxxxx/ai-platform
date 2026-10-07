@@ -1041,7 +1041,7 @@ def test_readme_runbook_and_examples_expose_the_production_package() -> None:
     assert 'docker_runtime = "runsc"' in config
     assert 'host = "REQUIRED_PRIVATE_LIFECYCLE_IPV4_ADDRESS"' in config
     assert (
-        'network_mode = "ai-platform-opensandbox-egress-internal-v1"' in config
+        'network_mode = "ai-platform-opensandbox-egress-v2"' in config
     )
     assert 'mode = "dns+nft"' in config
     assert 'allowed_host_paths = ["/data/opensandbox/workspaces"]' in config

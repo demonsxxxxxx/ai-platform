@@ -45,7 +45,10 @@ Status: accepted source contract. Runtime publication is a separate release gate
 
 All OpenSandbox executors receive only a Run/Attempt-bound model proxy
 capability, never long-lived OpenAI or Anthropic credentials. Production reaches
-the proxy on its isolated internal network. The explicit
+the proxy on its dedicated task bridge. That bridge permits public Internet
+egress through host NAT; host firewall rules deny private, link-local, metadata,
+host and peer access, with the model/callback proxy as the explicit private
+exception. The explicit
 `test`/`internal-test`/`bridge` profile reaches the same proxy through a port
 bound only to the host's Docker bridge address; it remains a test topology and
 does not claim production network isolation. API and Worker use the official

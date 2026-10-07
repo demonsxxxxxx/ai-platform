@@ -22,7 +22,7 @@ Do not put real values in Git, issue text, package archives, or command output.
 
 The host policy must use the private lifecycle address, the reviewed digest-bound
 OpenSandbox server, the dedicated non-root identity, the Docker socket group,
-the `ai-platform-opensandbox-egress-internal-v1` network, `runsc`, digest-bound
+the `ai-platform-opensandbox-egress-v2` network, `runsc`, digest-bound
 execd and egress images, `dns+nft`, disabled IPv6 egress, the single
 `/data/opensandbox/workspaces` Host-volume allowlist, and no global sandbox binds
 or environment injection. The application derives one exact Attempt workspace
@@ -47,7 +47,8 @@ operations.
 ## Kernel and network isolation
 
 The production topology combines gVisor (`runsc`) with network enforcement
-outside the sandbox: the internal Docker bridge, host INPUT/DOCKER-USER guard
+outside the sandbox: a dedicated Docker bridge with host NAT, the host
+INPUT/DOCKER-USER guard
 and the stateless model/callback proxy. The SDK create request sends
 `network_policy=None` in both supported profiles. The server's retained
 `[egress] mode = "dns+nft"` setting is a host configuration check, not evidence
@@ -58,9 +59,44 @@ documents the incompatibility between gVisor and its built-in egress sidecar.
 That sidecar needs NAT redirect support inside the sandbox network stack.
 The platform's host firewall uses the host kernel instead. Validate the actual
 production contour with a sandbox created by the selected package: `runsc`
-identity, denied direct external/host/peer access, allowed model/callback proxy
-access, artifact collection and cleanup. A healthy lifecycle listener alone
+identity, successful public DNS/HTTPS and dependency download, denied private,
+metadata, host and peer access, allowed model/callback proxy access, artifact
+collection and cleanup. Verify both new and established proxy traffic and host
+control-plane access to sandbox services. A healthy lifecycle listener alone
 does not establish those properties.
+
+The task network uses `internal=false`, IPv4 masquerading, `enable_icc=false`,
+`enable_ipv6=false`, bridge `br-osb-egress2`, subnet `172.31.76.0/24` and proxy
+`172.31.76.2:8080`. The host guard filters actual destination addresses before
+public traffic reaches Docker's forwarding rules. IPv6 has separate scoped
+INPUT/FORWARD guards. The proxy continues to expose only the existing model and
+callback paths; it is not a general Internet proxy. Tasks access public services
+directly, without domain approval prompts.
+
+### Switch from the previous internal network
+
+Docker network isolation and driver options cannot be changed in place. Use a
+drained maintenance window and the matching immutable application package:
+
+1. Stop new admission and dispatch, settle or cancel active Runs, then stop
+   Workers and confirm that all previous sandbox endpoints have stopped.
+   Keep PostgreSQL, Redis and MinIO
+   volumes and business history. Old signed leases may be read and cleaned up,
+   but cannot authorize new execution or renewal.
+2. Stop the old proxy/application contour. Confirm that the old network has no
+   endpoints before removing `ai-platform-opensandbox-egress-internal-v1`.
+3. Install the reviewed guard unit, run `systemctl daemon-reload`, enable and
+   restart the guard, and update the protected
+   server TOML to the new network. The guard closes the new bridge while rules
+   are refreshed and opens it only after both IP families are installed. A failed
+   refresh leaves restrictive rules; retry after fixing the failure. A successful
+   refresh removes all temporary holds, including those left by earlier attempts.
+4. Start the matching package, which creates the new network and proxy. Verify
+   the host unit, exact IPv4/IPv6 rules and network options before admission.
+   Complete the runtime checks above before resuming Workers and new Runs.
+
+Rollback also requires a drained window: restore the previous package, server
+TOML and guard together, then verify the previous topology before admission.
 
 The internal-test package selects ordinary `bridge`, disables governed egress
 and exposes the same capability-authenticated model proxy only on the configured

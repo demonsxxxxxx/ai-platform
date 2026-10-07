@@ -196,6 +196,11 @@ def container_lease_from_persisted_row(row: dict[str, Any]) -> ContainerLease | 
                 labels[GOVERNED_EGRESS_PROOF_LABEL] = governed_egress_proof_label(proof)
             except ValueError:
                 return None
+            persisted_labels = lease_payload.get("labels")
+            if isinstance(persisted_labels, dict):
+                runtime_subject = persisted_labels.get("ai-platform.runtime_subject")
+                if isinstance(runtime_subject, str) and runtime_subject:
+                    labels["ai-platform.runtime_subject"] = runtime_subject
             settings = get_settings()
             if not is_governed_egress_proof(
                 proof,
@@ -212,6 +217,7 @@ def container_lease_from_persisted_row(row: dict[str, Any]) -> ContainerLease | 
                 allow_previous_keys=True,
                 expected_binding={"attempt_id": attempt_id},
                 require_fresh=False,
+                allow_legacy_opensandbox=True,
             ):
                 return None
     return ContainerLease(

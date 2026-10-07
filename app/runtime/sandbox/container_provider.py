@@ -1265,7 +1265,8 @@ def _direct_opensandbox_egress_proof(
     return build_governed_egress_proof(
         signing_key=getattr(settings, "sandbox_egress_proof_signing_key", ""),
         provider="opensandbox",
-        network_internal=True,
+        network_internal=False,
+        default_deny_outbound=False,
         key_id=_governed_egress_proof_key_id(settings),
         issued_at=issued_at,
         expires_at=issued_at + timedelta(seconds=GOVERNED_EGRESS_PROOF_MAX_TTL_SECONDS),
@@ -4542,6 +4543,7 @@ class OpenSandboxContainerProvider:
                     lease,
                     settings,
                     now=datetime.now(timezone.utc),
+                    allow_legacy_internal_identity=True,
                 )
             ):
                 self._leases.setdefault(cache_key, lease)

@@ -209,7 +209,7 @@ def test_compose_package_contains_only_runtime_files_with_fixed_images(tmp_path,
             assert env["SANDBOX_SECURITY_PROFILE"] == expected_profile
             assert env["SANDBOX_EGRESS_POLICY_ENABLED"] == ("true" if profile == "production" else "false")
             assert env["OPENSANDBOX_USE_SERVER_PROXY"] == "true"
-            assert env["OPENSANDBOX_EXPECTED_NETWORK_MODE"] == ("ai-platform-opensandbox-egress-internal-v1" if profile == "production" else "bridge")
+            assert env["OPENSANDBOX_EXPECTED_NETWORK_MODE"] == ("ai-platform-opensandbox-egress-v2" if profile == "production" else "bridge")
         assert ("OPENSANDBOX_EGRESS_PROXY_URL" in env_keys) == (profile == "internal-test")
         assert ("OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS" in env_keys) == (profile == "internal-test")
         assert f"SANDBOX_WORKSPACE_ROOT=/data/opensandbox/workspaces/ai-platform-{profile}" in env_example.splitlines()

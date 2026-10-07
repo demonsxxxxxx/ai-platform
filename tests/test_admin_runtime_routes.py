@@ -55,11 +55,19 @@ def signed_runtime_lease(
     tenant_id: str = "default",
     issued_at: datetime | None = None,
     expires_at: datetime | None = None,
+    legacy_opensandbox: bool = False,
 ) -> dict:
     from app.execution_boundary import (
         build_governed_egress_proof,
         governed_egress_authorized_native_tool_scope,
         governed_egress_authorized_skill_scope,
+    )
+    from app.settings import (
+        DIRECT_OPENSANDBOX_NETWORK_NAME,
+        DIRECT_OPENSANDBOX_POLICY_SUBJECT,
+        DIRECT_OPENSANDBOX_PROFILE_ID,
+        LEGACY_DIRECT_OPENSANDBOX_NETWORK_NAME,
+        LEGACY_DIRECT_OPENSANDBOX_POLICY_SUBJECT,
     )
 
     workspace_id = "workspace-a"
@@ -73,14 +81,25 @@ def signed_runtime_lease(
         signing_key=ADMIN_PROOF_KEY,
         provider=provider,
         runtime_subject="docker-internal-bridge" if provider == "docker" else "runsc",
-        policy_subject="network-a:internal" if provider == "docker" else "gateway-policy-a",
+        policy_subject=(
+            "network-a:internal"
+            if provider == "docker"
+            else LEGACY_DIRECT_OPENSANDBOX_POLICY_SUBJECT
+            if legacy_opensandbox
+            else DIRECT_OPENSANDBOX_POLICY_SUBJECT
+        ),
         callback_subject="http://api.sandbox.internal:8020",
         denial_subject="network-a:default-deny" if provider == "docker" else "deny-a",
-        network_id="network-a" if provider == "docker" else "profile-a",
-        network_name="ai-platform-sandbox-egress-internal-v1"
-        if provider == "docker"
-        else "ai-platform-opensandbox-egress-internal-v1",
-        network_internal=True,
+        network_id="network-a" if provider == "docker" else DIRECT_OPENSANDBOX_PROFILE_ID,
+        network_name=(
+            "ai-platform-sandbox-egress-internal-v1"
+            if provider == "docker"
+            else LEGACY_DIRECT_OPENSANDBOX_NETWORK_NAME
+            if legacy_opensandbox
+            else DIRECT_OPENSANDBOX_NETWORK_NAME
+        ),
+        network_internal=provider == "docker" or legacy_opensandbox,
+        default_deny_outbound=provider == "docker" or legacy_opensandbox,
         tenant_id=tenant_id,
         workspace_id=workspace_id,
         user_id=user_id,
@@ -763,10 +782,25 @@ def test_admin_runtime_hides_stale_active_proof_but_keeps_signed_terminal_histor
         "active",
         signed_runtime_lease(run_id="active-stale", issued_at=issued_at, expires_at=expires_at),
     )
+    active_legacy_opensandbox = runtime_row(
+        "lease-active-legacy-opensandbox",
+        "active",
+        signed_runtime_lease(
+            run_id="active-legacy-opensandbox",
+            provider="opensandbox",
+            legacy_opensandbox=True,
+        ),
+    )
     released_historical = runtime_row(
         "lease-released-historical",
         "released",
-        signed_runtime_lease(run_id="released-historical", issued_at=issued_at, expires_at=expires_at),
+        signed_runtime_lease(
+            run_id="released-historical",
+            provider="opensandbox",
+            legacy_opensandbox=True,
+            issued_at=issued_at,
+            expires_at=expires_at,
+        ),
     )
     forged_historical = runtime_row(
         "lease-forged-historical",
@@ -782,7 +816,11 @@ def test_admin_runtime_hides_stale_active_proof_but_keeps_signed_terminal_histor
 
     async def fake_list_sandbox_leases(conn, *, tenant_id, status=None, limit=100):
         assert tenant_id == "default"
-        return [active_stale] if status == "active" else [active_stale, released_historical, forged_historical]
+        return (
+            [active_stale, active_legacy_opensandbox]
+            if status == "active"
+            else [active_stale, active_legacy_opensandbox, released_historical, forged_historical]
+        )
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())

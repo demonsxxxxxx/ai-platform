@@ -121,6 +121,9 @@ def test_opensandbox_compose_overlay_uses_direct_sdk_and_egress_proxy():
         assert environment["SANDBOX_SECURITY_PROFILE"] == "governed"
         assert environment["SANDBOX_EGRESS_POLICY_ENABLED"] == "true"
         assert environment["OPENSANDBOX_USE_SERVER_PROXY"] == "true"
+        assert environment["SANDBOX_RUNTIME_SUBJECT"] == (
+            "${SANDBOX_RUNTIME_SUBJECT:-direct-opensandbox}"
+        )
         assert environment["OPENSANDBOX_EXPECTED_NETWORK_MODE"] == (
             release_authority.DIRECT_OPENSANDBOX_NETWORK_NAME
         )
@@ -479,6 +482,7 @@ def _opensandbox_environment(auth_base: str, user_info_base: str) -> dict[str, s
         "SANDBOX_CONTAINER_PROVIDER": "opensandbox",
         "SANDBOX_SECURITY_PROFILE": "governed",
         "SANDBOX_EGRESS_POLICY_ENABLED": "true",
+        "SANDBOX_RUNTIME_SUBJECT": "direct-opensandbox",
         "OPENSANDBOX_BASE_URL": "http://172.19.0.1:8080",
         "OPENSANDBOX_API_KEY": "operator-provided-key",
         "OPENSANDBOX_USE_SERVER_PROXY": "true",
@@ -510,10 +514,11 @@ def _direct_opensandbox_rendered_config(auth_base: str, user_info_base: str) -> 
             release_authority.DIRECT_OPENSANDBOX_NETWORK_KEY: {
                 "name": release_authority.DIRECT_OPENSANDBOX_NETWORK_NAME,
                 "driver": "bridge",
-                "internal": True,
+                "internal": False,
+                "enable_ipv6": False,
                 "driver_opts": {
                     "com.docker.network.bridge.name": release_authority.DIRECT_OPENSANDBOX_BRIDGE_NAME,
-                    "com.docker.network.bridge.enable_ip_masquerade": "false",
+                    "com.docker.network.bridge.enable_ip_masquerade": "true",
                     "com.docker.network.bridge.enable_icc": "false",
                 },
                 "ipam": {
@@ -549,40 +554,43 @@ def _write_required_provider_compose_files(repo_root: Path) -> tuple[Path, Path]
         "      SANDBOX_CONTAINER_PROVIDER: opensandbox\n"
         "      SANDBOX_SECURITY_PROFILE: governed\n"
         "      SANDBOX_EGRESS_POLICY_ENABLED: \"true\"\n"
+        "      SANDBOX_RUNTIME_SUBJECT: direct-opensandbox\n"
         "      OPENSANDBOX_BASE_URL: ${OPENSANDBOX_BASE_URL:?set OPENSANDBOX_BASE_URL}\n"
         "      OPENSANDBOX_API_KEY: ${OPENSANDBOX_API_KEY:?set OPENSANDBOX_API_KEY}\n"
         "      OPENSANDBOX_USE_SERVER_PROXY: \"true\"\n"
-        "      OPENSANDBOX_EXPECTED_NETWORK_MODE: ai-platform-opensandbox-egress-internal-v1\n"
+        "      OPENSANDBOX_EXPECTED_NETWORK_MODE: ai-platform-opensandbox-egress-v2\n"
         "      OPENSANDBOX_EGRESS_PROXY_URL: http://egress.opensandbox.internal:8080\n"
         "  worker:\n    environment:\n"
         "      SANDBOX_CONTAINER_PROVIDER: opensandbox\n"
         "      SANDBOX_SECURITY_PROFILE: governed\n"
         "      SANDBOX_EGRESS_POLICY_ENABLED: \"true\"\n"
+        "      SANDBOX_RUNTIME_SUBJECT: direct-opensandbox\n"
         "      OPENSANDBOX_BASE_URL: ${OPENSANDBOX_BASE_URL:?set OPENSANDBOX_BASE_URL}\n"
         "      OPENSANDBOX_API_KEY: ${OPENSANDBOX_API_KEY:?set OPENSANDBOX_API_KEY}\n"
         "      OPENSANDBOX_USE_SERVER_PROXY: \"true\"\n"
-        "      OPENSANDBOX_EXPECTED_NETWORK_MODE: ai-platform-opensandbox-egress-internal-v1\n"
+        "      OPENSANDBOX_EXPECTED_NETWORK_MODE: ai-platform-opensandbox-egress-v2\n"
         "      OPENSANDBOX_EGRESS_PROXY_URL: http://egress.opensandbox.internal:8080\n"
         "  opensandbox-egress-proxy:\n"
         "    labels:\n"
         "      ai-platform.release-role: opensandbox-egress-proxy\n"
         "    networks:\n"
         "      default: null\n"
-        "      opensandbox_egress_internal_v1:\n"
+        "      opensandbox_egress_v2:\n"
         "        aliases: [egress.opensandbox.internal]\n"
-        "        ipv4_address: 172.31.75.2\n"
+        "        ipv4_address: 172.31.76.2\n"
         "networks:\n"
-        "  opensandbox_egress_internal_v1:\n"
-        "    name: ai-platform-opensandbox-egress-internal-v1\n"
+        "  opensandbox_egress_v2:\n"
+        "    name: ai-platform-opensandbox-egress-v2\n"
         "    driver: bridge\n"
-        "    internal: true\n"
+        "    internal: false\n"
+        "    enable_ipv6: false\n"
         "    driver_opts:\n"
-        "      com.docker.network.bridge.name: br-osb-egress\n"
-        "      com.docker.network.bridge.enable_ip_masquerade: \"false\"\n"
+        "      com.docker.network.bridge.name: br-osb-egress2\n"
+        "      com.docker.network.bridge.enable_ip_masquerade: \"true\"\n"
         "      com.docker.network.bridge.enable_icc: \"false\"\n"
         "    ipam:\n"
         "      config:\n"
-        "        - subnet: 172.31.75.0/24\n",
+        "        - subnet: 172.31.76.0/24\n",
         encoding="utf-8",
     )
     return main, direct
@@ -765,8 +773,9 @@ def test_direct_opensandbox_semantic_preflight_rejects_unsafe_runtime(
 @pytest.mark.parametrize(
     "case",
     (
-        "network-not-internal",
-        "masquerade-enabled",
+        "network-internal",
+        "ipv6-enabled",
+        "masquerade-disabled",
         "icc-enabled",
         "wrong-bridge-name",
         "wrong-network-name",
@@ -785,10 +794,12 @@ def test_direct_opensandbox_semantic_preflight_rejects_network_isolation_drift(c
     proxy_network = config["services"]["opensandbox-egress-proxy"]["networks"][
         release_authority.DIRECT_OPENSANDBOX_NETWORK_KEY
     ]
-    if case == "network-not-internal":
-        network["internal"] = False
-    elif case == "masquerade-enabled":
-        network["driver_opts"]["com.docker.network.bridge.enable_ip_masquerade"] = "true"
+    if case == "network-internal":
+        network["internal"] = True
+    elif case == "ipv6-enabled":
+        network["enable_ipv6"] = True
+    elif case == "masquerade-disabled":
+        network["driver_opts"]["com.docker.network.bridge.enable_ip_masquerade"] = "false"
     elif case == "icc-enabled":
         network["driver_opts"]["com.docker.network.bridge.enable_icc"] = "true"
     elif case == "wrong-bridge-name":
@@ -796,9 +807,9 @@ def test_direct_opensandbox_semantic_preflight_rejects_network_isolation_drift(c
     elif case == "wrong-network-name":
         network["name"] = "wrong"
     elif case == "wrong-subnet":
-        network["ipam"]["config"][0]["subnet"] = "172.31.76.0/24"
+        network["ipam"]["config"][0]["subnet"] = "172.31.77.0/24"
     elif case == "wrong-proxy-ip":
-        proxy_network["ipv4_address"] = "172.31.75.3"
+        proxy_network["ipv4_address"] = "172.31.76.3"
     elif case == "extra-driver-option":
         network["driver_opts"]["com.docker.network.bridge.gateway_mode_ipv4"] = "isolated"
     elif case == "missing-proxy-alias":

@@ -181,7 +181,7 @@ def test_internal_test_opensandbox_profile_requires_explicit_test_bridge_selecti
     assert settings.sandbox_security_profile == "internal-test"
 
 
-def test_production_opensandbox_requires_the_isolated_network():
+def test_production_opensandbox_requires_the_current_egress_network():
     values = {
         "deployment_environment": "production",
         "trusted_principal_secret": _TEST_TRUSTED_PRINCIPAL_SECRET,
@@ -190,7 +190,7 @@ def test_production_opensandbox_requires_the_isolated_network():
         "existing_user_info_base_url": "https://directory.internal.example",
         "sandbox_container_provider": "opensandbox",
         "sandbox_security_profile": "governed",
-        "opensandbox_expected_network_mode": "ai-platform-opensandbox-egress-internal-v1",
+        "opensandbox_expected_network_mode": "ai-platform-opensandbox-egress-v2",
         "opensandbox_use_server_proxy": True,
         "sandbox_egress_policy_enabled": True,
         "opensandbox_api_key": "opensandbox-secret",
@@ -199,8 +199,12 @@ def test_production_opensandbox_requires_the_isolated_network():
     }
 
     assert Settings(_env_file=None, **values).opensandbox_expected_network_mode == (
-        "ai-platform-opensandbox-egress-internal-v1"
+        "ai-platform-opensandbox-egress-v2"
     )
+
+    values["opensandbox_expected_network_mode"] = "ai-platform-opensandbox-egress-internal-v1"
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, **values)
 
     values["opensandbox_expected_network_mode"] = "bridge"
     with pytest.raises(ValidationError, match="production_opensandbox_network_mode_invalid"):

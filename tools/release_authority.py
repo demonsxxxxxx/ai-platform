@@ -94,11 +94,11 @@ MANAGED_RELEASE_DIRECTORY_NAME = "releases"
 DIRECT_OPENSANDBOX_COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.opensandbox.yml"
 SANDBOX_COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.sandbox.yml"
 PACKAGED_BACKEND_IMAGE_SUBJECT = "ghcr.io/demonsxxxxxx/ai-platform-backend"
-DIRECT_OPENSANDBOX_NETWORK_KEY = "opensandbox_egress_internal_v1"
-DIRECT_OPENSANDBOX_NETWORK_NAME = "ai-platform-opensandbox-egress-internal-v1"
-DIRECT_OPENSANDBOX_BRIDGE_NAME = "br-osb-egress"
-DIRECT_OPENSANDBOX_SUBNET = "172.31.75.0/24"
-DIRECT_OPENSANDBOX_PROXY_IPV4 = "172.31.75.2"
+DIRECT_OPENSANDBOX_NETWORK_KEY = "opensandbox_egress_v2"
+DIRECT_OPENSANDBOX_NETWORK_NAME = "ai-platform-opensandbox-egress-v2"
+DIRECT_OPENSANDBOX_BRIDGE_NAME = "br-osb-egress2"
+DIRECT_OPENSANDBOX_SUBNET = "172.31.76.0/24"
+DIRECT_OPENSANDBOX_PROXY_IPV4 = "172.31.76.2"
 DIRECT_OPENSANDBOX_PROXY_PORT = 8080
 DIRECT_OPENSANDBOX_PROXY_ALIAS = "egress.opensandbox.internal"
 DIRECT_OPENSANDBOX_PROXY_URL = (
@@ -1901,7 +1901,7 @@ def _validate_direct_opensandbox_config(rendered: str | bytes) -> None:
         driver_options = network.get("driver_opts") or {}
         expected_driver_options = {
             "com.docker.network.bridge.name": DIRECT_OPENSANDBOX_BRIDGE_NAME,
-            "com.docker.network.bridge.enable_ip_masquerade": "false",
+            "com.docker.network.bridge.enable_ip_masquerade": "true",
             "com.docker.network.bridge.enable_icc": "false",
         }
         ipam = network.get("ipam")
@@ -1909,7 +1909,8 @@ def _validate_direct_opensandbox_config(rendered: str | bytes) -> None:
         invalid_network = (
             network.get("name") != DIRECT_OPENSANDBOX_NETWORK_NAME
             or network.get("driver") != "bridge"
-            or network.get("internal") is not True
+            or network.get("internal") is not False
+            or network.get("enable_ipv6") is not False
             or driver_options != expected_driver_options
             or ipam_config != [{"subnet": DIRECT_OPENSANDBOX_SUBNET}]
         )

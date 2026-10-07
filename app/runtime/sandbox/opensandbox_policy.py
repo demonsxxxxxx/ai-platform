@@ -18,6 +18,13 @@ from app.execution_boundary import (
     is_governed_egress_proof,
 )
 from app.platform.sandbox.docker_governed_network import governed_egress_proof_key_id
+from app.settings import (
+    DIRECT_OPENSANDBOX_NETWORK_NAME,
+    DIRECT_OPENSANDBOX_POLICY_SUBJECT,
+    DIRECT_OPENSANDBOX_PROFILE_ID,
+    LEGACY_DIRECT_OPENSANDBOX_NETWORK_NAME,
+    LEGACY_DIRECT_OPENSANDBOX_POLICY_SUBJECT,
+)
 from app.runtime.sandbox.contracts import (
     ContainerLease,
     ContainerStatus,
@@ -29,9 +36,6 @@ from app.runtime.sandbox.workspace_permissions import RUNTIME_GID, RUNTIME_UID
 SANDBOX_SECURITY_PROFILE_GOVERNED = "governed"
 SANDBOX_SECURITY_PROFILE_INTERNAL_TEST = "internal-test"
 SANDBOX_SECURITY_PROFILE_LABEL = "ai-platform.security_profile"
-DIRECT_OPENSANDBOX_PROFILE_ID = "direct-opensandbox"
-DIRECT_OPENSANDBOX_NETWORK_NAME = "ai-platform-opensandbox-egress-internal-v1"
-DIRECT_OPENSANDBOX_POLICY_SUBJECT = "stateless-nginx-egress"
 DIRECT_OPENSANDBOX_CALLBACK_SUBJECT = "api-callback-token-validation"
 DIRECT_OPENSANDBOX_DENIAL_SUBJECT = "ai-platform-sandbox-runtime"
 INTERNAL_TEST_OPENSANDBOX_PROFILE = "official-opensandbox-direct-v1"
@@ -420,7 +424,8 @@ def _governed_cleanup_expected_binding(
 ) -> dict[str, object] | None:
     labels = status.detail.get("labels")
     attempt_id = _required_remote_string(lease.labels, "ai-platform.attempt_id")
-    if not isinstance(labels, dict) or attempt_id is None:
+    runtime_subject = _required_remote_string(lease.labels, "ai-platform.runtime_subject")
+    if not isinstance(labels, dict) or attempt_id is None or runtime_subject is None:
         return None
 
     expected_remote = {
@@ -433,6 +438,7 @@ def _governed_cleanup_expected_binding(
         "ai-platform.run_id": lease.run_id,
         "ai-platform.attempt_id": attempt_id,
         "ai-platform.sandbox_mode": lease.sandbox_mode,
+        "ai-platform.runtime_subject": runtime_subject,
     }
     if not opensandbox_metadata.opensandbox_metadata_matches(labels, expected_remote):
         return None
@@ -458,19 +464,61 @@ def _governed_cleanup_expected_binding(
     )
     if any(_required_remote_string(labels, key) is None for key in required_remote_keys):
         return None
+    network_id = _required_remote_string(labels, "ai-platform.external_egress.profile_id")
+    network_name = _required_remote_string(labels, "ai-platform.external_egress.network_mode")
+    policy_subject = _required_remote_string(
+        labels, "ai-platform.external_egress.gateway_policy_subject"
+    )
+    if (network_id, network_name, policy_subject) not in {
+        (
+            DIRECT_OPENSANDBOX_PROFILE_ID,
+            DIRECT_OPENSANDBOX_NETWORK_NAME,
+            DIRECT_OPENSANDBOX_POLICY_SUBJECT,
+        ),
+        (
+            DIRECT_OPENSANDBOX_PROFILE_ID,
+            LEGACY_DIRECT_OPENSANDBOX_NETWORK_NAME,
+            LEGACY_DIRECT_OPENSANDBOX_POLICY_SUBJECT,
+        ),
+    }:
+        return None
     if (
         _required_remote_string(labels, SANDBOX_SECURITY_PROFILE_LABEL)
         != SANDBOX_SECURITY_PROFILE_GOVERNED
         or _required_remote_string(labels, "ai-platform.external_egress.runtime_identity")
         != _OPENSANDBOX_EXTERNAL_EGRESS_RUNTIME_IDENTITY
-        or _required_remote_string(labels, "ai-platform.external_egress.network_mode")
-        != DIRECT_OPENSANDBOX_NETWORK_NAME
         or _required_remote_string(labels, "ai-platform.external_egress.profile_version") != "v1"
         or _required_remote_string(labels, "ai-platform.external_egress.upstream_bridge_version") != "v1"
     ):
         return None
 
     return {
+        "runtime_subject": json.dumps(
+            {
+                "runtime_identity": _OPENSANDBOX_EXTERNAL_EGRESS_RUNTIME_IDENTITY,
+                "runtime_subject": runtime_subject,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        "policy_subject": policy_subject,
+        "callback_subject": _required_remote_string(
+            labels, "ai-platform.external_egress.callback_boundary_subject"
+        ),
+        "denial_subject": json.dumps(
+            {
+                "deny_audit_subject": _required_remote_string(
+                    labels, "ai-platform.external_egress.deny_audit_subject"
+                ),
+                "deny_counter_subject": _required_remote_string(
+                    labels, "ai-platform.external_egress.deny_counter_subject"
+                ),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        "network_id": network_id,
+        "network_name": network_name,
         "tenant_id": lease.tenant_id,
         "workspace_id": lease.workspace_id,
         "user_id": lease.user_id,
@@ -498,6 +546,7 @@ def opensandbox_cleanup_identity_is_authorized(
     settings: Any,
     *,
     now: datetime,
+    allow_legacy_internal_identity: bool = False,
 ) -> bool:
     """Authorize cleanup only from exact provider-owned remote identity."""
 
@@ -561,6 +610,7 @@ def opensandbox_cleanup_identity_is_authorized(
         expected_binding=expected_binding,
         now=now,
         require_fresh=False,
+        allow_legacy_opensandbox=allow_legacy_internal_identity,
     )
 
 

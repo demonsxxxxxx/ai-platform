@@ -16,6 +16,21 @@ OpenSandbox SDK directly; OpenSandbox Server owns sandbox lifecycle and runsc
 execution. The stateless model/callback proxy is an egress boundary only and
 is not a second application lifecycle.
 
+Production OpenSandbox tasks use the `ai-platform-opensandbox-egress-v2` Docker
+bridge with host NAT and public Internet access. The host guard denies private,
+link-local, metadata, host and peer destinations and new inbound connections;
+the existing model/callback proxy is the sole private task-network exception.
+The trusted OpenSandbox host control plane retains access to sandbox services.
+IPv6 is disabled on the task network and denied by bridge-scoped host rules.
+The create request keeps `network_policy=None`: OpenSandbox's egress sidecar
+depends on sandbox NAT support unavailable in gVisor. Signed proof fields record
+`network_internal=false`, `default_deny_outbound=false` and the
+`host-public-egress-v1` policy subject. This is an admission binding, not a
+substitute for observing host firewall enforcement. Previous internal-network
+leases remain readable as historical facts and eligible for exact-identity
+cleanup; they cannot be acquired, dispatched or renewed under the new policy.
+Provider-specific network and SDK details remain behind the existing port.
+
 The platform owns these durable facts:
 
 - tenant, workspace, user, session, run, and attempt binding;
@@ -273,7 +288,8 @@ The next correctness slices are:
    object-store orphan compensation.
 4. Schedule provider reconciliation and expose orphan, cleanup, capacity, and
    callback-delivery metrics.
-5. Add credential-vault provenance and keep default-deny egress. This must be
+5. Add credential-vault provenance and retain host, private-network and peer
+   isolation while permitting task Internet access. This must be
    designed with the selected provider topology rather than inferred from an SDK
    feature name.
 

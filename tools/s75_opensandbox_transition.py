@@ -87,6 +87,7 @@ OPENSANDBOX_SERVER_CONFIG_PATH = Path("/etc/ai-platform/opensandbox/server.toml"
 OPENSANDBOX_NETWORK_GUARD_SERVICE = "ai-platform-opensandbox-network-guard.service"
 OPENSANDBOX_NETWORK_GUARD_CHAIN = "AI_PLATFORM_OPENSANDBOX"
 OPENSANDBOX_FORWARD_GUARD_CHAIN = "AI_PLATFORM_OSB_FORWARD"
+OPENSANDBOX_IPV6_GUARD_CHAIN = "AI_PLATFORM_OSB_IPV6"
 OPENSANDBOX_NETWORK_GUARD_SOURCE = Path(
     "deploy/opensandbox/ai-platform-opensandbox-network-guard.service"
 )
@@ -442,6 +443,32 @@ def _require_opensandbox_server_profile(
         raise TransitionError("OpenSandbox Server isolation profile is invalid")
 
 
+def _network_guard_rules_match(actual: list[str], expected: list[str]) -> bool:
+    """Compare ordered rules despite iptables-save canonical option ordering."""
+
+    def signature(rule: str) -> tuple[tuple[str, str, bool], ...]:
+        tokens = shlex.split(rule)
+        options = []
+        index = 0
+        while index < len(tokens):
+            inverted = tokens[index] == "!"
+            if inverted:
+                index += 1
+            if index + 1 >= len(tokens):
+                raise ValueError("invalid network guard rule")
+            option, value = tokens[index : index + 2]
+            if option == "--ctstate":
+                value = ",".join(sorted(value.split(",")))
+            options.append((option, value, inverted))
+            index += 2
+        return tuple(sorted(options))
+
+    try:
+        return [signature(rule) for rule in actual] == [signature(rule) for rule in expected]
+    except ValueError:
+        return False
+
+
 def _require_network_guard(
     repo_root: Path,
     unit_path: Path = OPENSANDBOX_NETWORK_GUARD_UNIT_PATH,
@@ -460,56 +487,164 @@ def _require_network_guard(
         or not unit_matches
     ):
         raise TransitionError("OpenSandbox host-input guard unit is invalid")
-    lines = [
-        line.strip()
-        for line in _run(["iptables-save", "-t", "filter"]).stdout.splitlines()
+    try:
+        ipv4_lines = [
+            line.strip()
+            for line in _run(["iptables-save", "-t", "filter"]).stdout.splitlines()
+        ]
+        ipv6_lines = [
+            line.strip()
+            for line in _run(["ip6tables-save", "-t", "filter"]).stdout.splitlines()
+        ]
+    except TransitionError as exc:
+        raise TransitionError("OpenSandbox network guard is invalid") from exc
+
+    bridge = authority.DIRECT_OPENSANDBOX_BRIDGE_NAME
+    subnet = authority.DIRECT_OPENSANDBOX_SUBNET
+    proxy = f"{authority.DIRECT_OPENSANDBOX_PROXY_IPV4}/32"
+    proxy_port = authority.DIRECT_OPENSANDBOX_PROXY_PORT
+    ipv4_input = [line for line in ipv4_lines if line.startswith("-A INPUT ")]
+    ipv4_docker_user = [
+        line for line in ipv4_lines if line.startswith("-A DOCKER-USER ")
     ]
-    input_rules = [line for line in lines if line.startswith("-A INPUT ")]
-    chain_rules = [
+    ipv4_input_guard = [
         line
-        for line in lines
+        for line in ipv4_lines
         if line.startswith(f"-A {OPENSANDBOX_NETWORK_GUARD_CHAIN} ")
     ]
-    docker_user_rules = [
-        line for line in lines if line.startswith("-A DOCKER-USER ")
-    ]
-    forward_chain_rules = [
+    ipv4_forward_guard = [
         line
-        for line in lines
+        for line in ipv4_lines
         if line.startswith(f"-A {OPENSANDBOX_FORWARD_GUARD_CHAIN} ")
     ]
-    expected_jump = (
-        f"-A INPUT -i {authority.DIRECT_OPENSANDBOX_BRIDGE_NAME} "
-        f"-j {OPENSANDBOX_NETWORK_GUARD_CHAIN}"
-    )
-    expected_forward_jump = (
-        f"-A DOCKER-USER -i {authority.DIRECT_OPENSANDBOX_BRIDGE_NAME} "
-        f"-o {authority.DIRECT_OPENSANDBOX_BRIDGE_NAME} "
-        f"-j {OPENSANDBOX_FORWARD_GUARD_CHAIN}"
-    )
+    expected_input_jump = f"-A INPUT -i {bridge} -j {OPENSANDBOX_NETWORK_GUARD_CHAIN}"
+    expected_docker_user_jumps = [
+        f"-A DOCKER-USER -i {bridge} -j {OPENSANDBOX_FORWARD_GUARD_CHAIN}",
+        f"-A DOCKER-USER -o {bridge} -j {OPENSANDBOX_FORWARD_GUARD_CHAIN}",
+    ]
+    expected_input_rules = [
+        f"-A {OPENSANDBOX_NETWORK_GUARD_CHAIN} -m conntrack "
+        "--ctstate RELATED,ESTABLISHED -j ACCEPT",
+        f"-A {OPENSANDBOX_NETWORK_GUARD_CHAIN} -j DROP",
+    ]
     expected_forward_rules = [
-        f"-A {OPENSANDBOX_FORWARD_GUARD_CHAIN} "
-        f"-d {authority.DIRECT_OPENSANDBOX_PROXY_IPV4}/32 -p tcp -m tcp "
-        f"--dport {authority.DIRECT_OPENSANDBOX_PROXY_PORT} -m conntrack "
+        f"-A {OPENSANDBOX_FORWARD_GUARD_CHAIN} -i {bridge} ! -s {subnet} -j DROP",
+        f"-A {OPENSANDBOX_FORWARD_GUARD_CHAIN} -i {bridge} -o {bridge} "
+        f"-s {proxy} -p tcp -m tcp --sport {proxy_port} "
+        "-m conntrack --ctstate ESTABLISHED -j ACCEPT",
+        f"-A {OPENSANDBOX_FORWARD_GUARD_CHAIN} -i {bridge} -o {bridge} "
+        f"-d {proxy} -p tcp -m tcp --dport {proxy_port} -m conntrack "
         "--ctstate NEW,ESTABLISHED -j ACCEPT",
-        f"-A {OPENSANDBOX_FORWARD_GUARD_CHAIN} "
-        f"-s {authority.DIRECT_OPENSANDBOX_PROXY_IPV4}/32 -p tcp -m tcp "
-        f"--sport {authority.DIRECT_OPENSANDBOX_PROXY_PORT} -m conntrack "
-        "--ctstate ESTABLISHED -j ACCEPT",
-        f"-A {OPENSANDBOX_FORWARD_GUARD_CHAIN} -j DROP",
+        f"-A {OPENSANDBOX_FORWARD_GUARD_CHAIN} -i {bridge} -o {bridge} -j DROP",
+    ]
+    expected_forward_rules.extend(
+        f"-A {OPENSANDBOX_FORWARD_GUARD_CHAIN} -i {bridge} -d {destination} -j DROP"
+        for destination in (
+            "0.0.0.0/8",
+            "10.0.0.0/8",
+            "100.64.0.0/10",
+            "127.0.0.0/8",
+            "169.254.0.0/16",
+            "172.16.0.0/12",
+            "192.0.0.0/24",
+            "192.0.2.0/24",
+            "192.88.99.0/24",
+            "192.168.0.0/16",
+            "198.18.0.0/15",
+            "198.51.100.0/24",
+            "203.0.113.0/24",
+            "224.0.0.0/4",
+            "240.0.0.0/4",
+        )
+    )
+    expected_forward_rules.extend(
+        (
+            f"-A {OPENSANDBOX_FORWARD_GUARD_CHAIN} -o {bridge} -m conntrack "
+            "--ctstate RELATED,ESTABLISHED -j ACCEPT",
+            f"-A {OPENSANDBOX_FORWARD_GUARD_CHAIN} -o {bridge} -j DROP",
+            f"-A {OPENSANDBOX_FORWARD_GUARD_CHAIN} -i {bridge} -j RETURN",
+        )
+    )
+
+    ipv6_input = [line for line in ipv6_lines if line.startswith("-A INPUT ")]
+    ipv6_output = [line for line in ipv6_lines if line.startswith("-A OUTPUT ")]
+    ipv6_forward = [line for line in ipv6_lines if line.startswith("-A FORWARD ")]
+    ipv6_docker_user = [
+        line for line in ipv6_lines if line.startswith("-A DOCKER-USER ")
+    ]
+    ipv6_guard = [
+        line
+        for line in ipv6_lines
+        if line.startswith(f"-A {OPENSANDBOX_IPV6_GUARD_CHAIN} ")
+    ]
+    ipv6_input_jump = f"-A INPUT -i {bridge} -j {OPENSANDBOX_IPV6_GUARD_CHAIN}"
+    ipv6_output_jump = f"-A OUTPUT -o {bridge} -j {OPENSANDBOX_IPV6_GUARD_CHAIN}"
+    ipv6_forward_jumps = [
+        f"-A FORWARD -i {bridge} -j {OPENSANDBOX_IPV6_GUARD_CHAIN}",
+        f"-A FORWARD -o {bridge} -j {OPENSANDBOX_IPV6_GUARD_CHAIN}",
+    ]
+    ipv6_docker_user_jumps = [
+        f"-A DOCKER-USER -i {bridge} -j {OPENSANDBOX_IPV6_GUARD_CHAIN}",
+        f"-A DOCKER-USER -o {bridge} -j {OPENSANDBOX_IPV6_GUARD_CHAIN}",
+    ]
+    owned_v4_jumps = (
+        expected_input_jump,
+        *expected_docker_user_jumps,
+    )
+    owned_v6_jumps = (
+        ipv6_input_jump,
+        ipv6_output_jump,
+        *ipv6_forward_jumps,
+        *ipv6_docker_user_jumps,
+    )
+    ipv4_owned_jump_lines = [
+        line
+        for line in ipv4_lines
+        if line.endswith(
+            (
+                f"-j {OPENSANDBOX_NETWORK_GUARD_CHAIN}",
+                f"-j {OPENSANDBOX_FORWARD_GUARD_CHAIN}",
+            )
+        )
+    ]
+    ipv6_owned_jump_lines = [
+        line
+        for line in ipv6_lines
+        if line.endswith(f"-j {OPENSANDBOX_IPV6_GUARD_CHAIN}")
     ]
     if (
-        not input_rules
-        or input_rules[0] != expected_jump
-        or chain_rules
-        != [
-            f"-A {OPENSANDBOX_NETWORK_GUARD_CHAIN} -m conntrack "
-            "--ctstate RELATED,ESTABLISHED -j ACCEPT",
-            f"-A {OPENSANDBOX_NETWORK_GUARD_CHAIN} -j DROP",
-        ]
-        or not docker_user_rules
-        or docker_user_rules[0] != expected_forward_jump
-        or forward_chain_rules != expected_forward_rules
+        not ipv4_input
+        or ipv4_input[0] != expected_input_jump
+        or not _network_guard_rules_match(ipv4_input_guard, expected_input_rules)
+        or ipv4_docker_user[:2] != expected_docker_user_jumps
+        or not _network_guard_rules_match(ipv4_forward_guard, expected_forward_rules)
+        or set(ipv4_owned_jump_lines) != set(owned_v4_jumps)
+        or len(ipv4_owned_jump_lines) != len(owned_v4_jumps)
+        or not ipv6_input
+        or ipv6_input[0] != ipv6_input_jump
+        or not ipv6_output
+        or ipv6_output[0] != ipv6_output_jump
+        or any(rule not in ipv6_forward for rule in ipv6_forward_jumps)
+        or ipv6_docker_user[:2] != ipv6_docker_user_jumps
+        or ipv6_guard != [f"-A {OPENSANDBOX_IPV6_GUARD_CHAIN} -j DROP"]
+        or set(ipv6_owned_jump_lines) != set(owned_v6_jumps)
+        or len(ipv6_owned_jump_lines) != len(owned_v6_jumps)
+        or any(
+            line in ipv4_lines
+            for line in (
+                f"-A INPUT -i {bridge} -j DROP",
+                f"-A DOCKER-USER -i {bridge} -j DROP",
+                f"-A DOCKER-USER -o {bridge} -j DROP",
+            )
+        )
+        or any(
+            line in ipv6_lines
+            for line in (
+                f"-A INPUT -i {bridge} -j DROP",
+                f"-A FORWARD -i {bridge} -j DROP",
+                f"-A FORWARD -o {bridge} -j DROP",
+            )
+        )
     ):
         raise TransitionError("OpenSandbox network guard is invalid")
 
@@ -732,13 +867,13 @@ def _require_target_network(docker: Sequence[str]) -> None:
     ipam_config = ipam.get("Config") if isinstance(ipam, dict) else None
     expected_options = {
         "com.docker.network.bridge.name": authority.DIRECT_OPENSANDBOX_BRIDGE_NAME,
-        "com.docker.network.bridge.enable_ip_masquerade": "false",
+        "com.docker.network.bridge.enable_ip_masquerade": "true",
         "com.docker.network.bridge.enable_icc": "false",
     }
     if (
         network.get("Name") != authority.DIRECT_OPENSANDBOX_NETWORK_NAME
         or network.get("Driver") != "bridge"
-        or network.get("Internal") is not True
+        or network.get("Internal") is not False
         or network.get("EnableIPv4") is not True
         or network.get("EnableIPv6") is not False
         or options != expected_options

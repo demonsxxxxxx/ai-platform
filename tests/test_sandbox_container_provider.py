@@ -1057,7 +1057,7 @@ class OpenSandboxSettings:
     sandbox_runtime_subject = "runtime-subject-a"
     opensandbox_base_url = "http://172.19.0.1:8080"
     opensandbox_egress_proxy_url = "http://egress.opensandbox.internal:8080"
-    opensandbox_expected_network_mode = "ai-platform-opensandbox-egress-internal-v1"
+    opensandbox_expected_network_mode = "ai-platform-opensandbox-egress-v2"
     opensandbox_executor_image_digest = "sha256:" + "a" * 64
 
 
@@ -1213,7 +1213,10 @@ def persisted_opensandbox_row(lease):
 
 
 @pytest.mark.asyncio
-async def test_opensandbox_renew_reconnects_persisted_identity_and_uses_maximum_timeout(monkeypatch):
+@pytest.mark.parametrize("runtime_subject", ("runtime-subject-a", "production:opensandbox", "r" * 80))
+async def test_opensandbox_renew_reconnects_persisted_identity_and_uses_maximum_timeout(
+    monkeypatch, runtime_subject,
+):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     lifecycle = importlib.import_module("app.runtime.sandbox.providers.opensandbox.startup")
     FakeOpenSandbox.reset()
@@ -1224,12 +1227,14 @@ async def test_opensandbox_renew_reconnects_persisted_identity_and_uses_maximum_
 
     cleanup = importlib.import_module("app.routes.sandbox_runtime_cleanup")
     settings = RenewalSettings()
+    settings.sandbox_runtime_subject = runtime_subject
     monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
     monkeypatch.setattr(cleanup, "get_settings", lambda: settings)
     provider = opensandbox_provider()
     lease = await provider.create_or_reuse(request(), workspace())
     persisted_lease = cleanup.container_lease_from_persisted_row(persisted_opensandbox_row(lease))
     assert persisted_lease is not None
+    assert persisted_lease.labels["ai-platform.runtime_subject"] == runtime_subject
     assert "ai-platform.executor.user" not in persisted_lease.labels
     assert FakeOpenSandbox.created[-1]["timeout"] == timedelta(seconds=2402)
 
@@ -3769,7 +3774,13 @@ async def test_opensandbox_provider_maps_lease_and_platform_controls(monkeypatch
     assert lease.workspace_container_path == "/workspace"
     assert lease.labels["ai-platform.provider_backend"] == "opensandbox"
     assert lease.labels["ai-platform.external_egress.runtime_identity"] == "runsc"
-    assert lease.labels["ai-platform.external_egress.gateway_policy_subject"] == "stateless-nginx-egress"
+    assert lease.labels["ai-platform.external_egress.network_mode"] == "ai-platform-opensandbox-egress-v2"
+    assert lease.labels["ai-platform.external_egress.gateway_policy_subject"] == "host-public-egress-v1"
+    proof = json.loads(lease.labels["ai-platform.governed_egress.proof"])
+    assert proof["network_internal"] is False
+    assert proof["default_deny_outbound"] is False
+    assert proof["policy_bound_enforcement"] is True
+    assert proof["governed_callback_exception"] is True
     assert lease.labels["ai-platform.external_egress.executor_image"] == "registry.example/ai-platform@sha256:" + "a" * 64
     assert lease.labels["ai-platform.external_egress.executor_image_digest"] == "sha256:" + "a" * 64
     assert "ai-platform.external_egress.profile_expires_at" not in lease.labels

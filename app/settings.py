@@ -6,7 +6,11 @@ from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-DIRECT_OPENSANDBOX_NETWORK_NAME = "ai-platform-opensandbox-egress-internal-v1"
+DIRECT_OPENSANDBOX_PROFILE_ID = "direct-opensandbox"
+DIRECT_OPENSANDBOX_NETWORK_NAME = "ai-platform-opensandbox-egress-v2"
+DIRECT_OPENSANDBOX_POLICY_SUBJECT = "host-public-egress-v1"
+LEGACY_DIRECT_OPENSANDBOX_NETWORK_NAME = "ai-platform-opensandbox-egress-internal-v1"
+LEGACY_DIRECT_OPENSANDBOX_POLICY_SUBJECT = "stateless-nginx-egress"
 
 
 class Settings(BaseSettings):
@@ -68,7 +72,7 @@ class Settings(BaseSettings):
     sandbox_runtime_subject: str = Field(default="")
     opensandbox_executor_image_digest: str = Field(default="")
     opensandbox_expected_network_mode: Literal[
-        "none", "bridge", "ai-platform-opensandbox-egress-internal-v1"
+        "none", "bridge", "ai-platform-opensandbox-egress-v2"
     ] = Field(default="bridge")
     max_active_runs_per_user: int = Field(default=3)
     max_active_worker_runs: int = Field(default=10)
