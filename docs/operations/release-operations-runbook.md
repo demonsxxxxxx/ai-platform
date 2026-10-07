@@ -10,12 +10,12 @@ application install or upgrade.
 
 The protected Packaging workflow runs after the required Backend and Frontend
 checks. It verifies the two application image subjects, binds their complete
-`linux/amd64` registry digests, and creates two packages from the same manifest.
-Only `ai-platform-production.tar.gz` is attached to the public Deployment Release.
-`ai-platform-internal-test.tar.gz` remains a CI artifact. GitHub's automatically
+`linux/amd64` registry digests, and creates one package from the manifest.
+`ai-platform-production.tar.gz` is attached to the public Deployment Release.
+GitHub's automatically
 generated source archives may still appear; they are not operator packages.
 
-Each package contains the exact Compose file, the selected OpenSandbox overlay,
+The package contains the exact Compose file, the unified OpenSandbox overlay,
 `.env.example`, `deploy.py`, the release manifest, package guide,
 `BACKUP-RESTORE.md`, and verified image qualification evidence in
 `release-evidence/`.

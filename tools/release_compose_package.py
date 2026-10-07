@@ -17,11 +17,6 @@ else:
     from release_image_manifest import validate_manifest
 
 
-PROFILES = {
-    "internal-test": "docker-compose.opensandbox-internal-test.yml",
-    "production": "docker-compose.opensandbox.yml",
-}
-
 EVIDENCE_FILES = (
     "subject-{role}.json",
     "sbom-{role}.spdx.json",
@@ -34,7 +29,7 @@ EVIDENCE_FILES = (
     "provenance-{role}.assembly-verified.json",
 )
 
-# Fixed by the selected Compose profile, or used only by source/legacy tools.
+# Fixed by the packaged OpenSandbox Compose configuration, or used only by source tools.
 PACKAGE_OMITTED_ENV_KEYS = {
     "SANDBOX_CONTAINER_PROVIDER",
     "SANDBOX_EGRESS_POLICY_ENABLED", "OPENSANDBOX_USE_SERVER_PROXY",
@@ -97,7 +92,7 @@ def _validate_inventory_report(payload: bytes, subject: dict) -> None:
 
 
 def pin_data_images() -> dict[str, str]:
-    """CI resolves the approved base tags once, before either archive is made."""
+    """CI resolves the approved base tags once before the deployment archive is made."""
     result = {}
     for service, tag in DATA_IMAGES.items():
         pull = ["docker", "pull", "--platform", "linux/amd64", tag]
@@ -123,7 +118,7 @@ def pin_data_images() -> dict[str, str]:
 
 
 def build_package(
-    source: Path, manifest: dict, profile: str, output: Path,
+    source: Path, manifest: dict, output: Path,
     data_images: dict[str, str], *, evidence_root: Path,
 ) -> None:
     if set(data_images) != set(DATA_IMAGES):
@@ -158,7 +153,6 @@ def build_package(
             evidence_payloads[f"release-evidence/trivy-inventory-{role}.json"], subject,
         )
     validate_manifest(manifest, expected_roles=("backend", "frontend"), evidence_root=evidence_root)
-    overlay = PROFILES[profile]
     images = {subject["role"]: subject["image"] for subject in manifest["subjects"]}
     bindings = {
         "AI_PLATFORM_IMAGE": images["backend"]["immutable_ref"],
@@ -170,7 +164,7 @@ def build_package(
     deployment = source / "deploy" / "ai-platform"
     files = {
         "compose.yaml": "docker-compose.yml",
-        "compose.override.yaml": overlay,
+        "compose.override.yaml": "docker-compose.opensandbox.yml",
         ".env.example": ".env.example",
         "deploy.py": "deploy.py",
         "README.md": "README.md",
@@ -184,19 +178,7 @@ def build_package(
             raise ValueError(f"package source is not a regular file: {original}")
         text = path.read_text(encoding="utf-8")
         if name == ".env.example":
-            text, count = re.subn(
-                r"(?m)^SANDBOX_WORKSPACE_ROOT=.*$",
-                f"SANDBOX_WORKSPACE_ROOT=/data/opensandbox/workspaces/ai-platform-{profile}",
-                text,
-            )
-            if count != 1:
-                raise ValueError("package environment must contain one workspace root")
             omitted = PACKAGE_OMITTED_ENV_KEYS | bindings.keys()
-            if profile == "production":
-                omitted = omitted | {
-                    "OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS",
-                    "OPENSANDBOX_EGRESS_PROXY_URL",
-                }
             # Remove each assignment and its directly attached explanation.
             for key in sorted(omitted):
                 text = re.sub(rf"(?m)(?:^#[^\n]*\n)*^{key}=[^\n]*(?:\n|$)", "", text)
@@ -239,12 +221,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--manifest", type=Path, required=True)
-    parser.add_argument("--profile", choices=PROFILES, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--data-images", type=Path, required=True)
     parser.add_argument("--evidence-root", type=Path, required=True)
     args = parser.parse_args()
-    build_package(args.source, json.loads(args.manifest.read_text(encoding="utf-8")), args.profile, args.output,
+    build_package(args.source, json.loads(args.manifest.read_text(encoding="utf-8")), args.output,
                   json.loads(args.data_images.read_text(encoding="utf-8")), evidence_root=args.evidence_root)
 
 

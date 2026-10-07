@@ -1,10 +1,7 @@
 # Deployment package quickstart
 
-The public immutable Deployment Release contains a runtime-only package. Choose
-one package and its matching manifest from the same Release:
-
-- `ai-platform-internal-test.tar.gz` for the internal-test OpenSandbox overlay.
-- `ai-platform-production.tar.gz` for the production OpenSandbox overlay.
+The public immutable Deployment Release contains one runtime-only package,
+`ai-platform-production.tar.gz`, with its matching manifest inside.
 
 Extract the archive into a new directory and do not mix files with another
 version. The package contains the exact Compose files, immutable application and
@@ -18,6 +15,9 @@ The host needs Linux, Python 3, Docker, Compose v2 with `--wait` and `!reset`,
 and the already-provisioned `opensandbox.service`. Production OpenSandbox
 credentials, network policy, `runsc`, the lifecycle address, and workspace
 permissions are one-time host preparation; see [production host preparation](production-bootstrap.md).
+Set the workspace root and four network topology values for the selected host;
+they must match the protected OpenSandbox host configuration. The example values
+are defaults, not enforced installation paths or network identities.
 
 For a new installation, create the environment file in the extracted directory:
 

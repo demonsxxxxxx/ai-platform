@@ -14,7 +14,8 @@ files in `deploy/opensandbox/`:
 - `/etc/ai-platform/opensandbox/server.env` as `root:root` mode `0600`;
 - `/etc/ai-platform/opensandbox/server.toml` as `root:<OPENSANDBOX_SERVER_GID>`
   mode `0640`; and
-- `/data/ai-platform-prod/config/production/.env` as `root:root` mode `0600`.
+- the chosen application environment file as `root:root` mode `0600` for host
+  preparation. Normal application deployment uses the invoking owner's file.
 
 The TOML group is the dedicated server GID and is the only intentional
 non-root-readable secret configuration. Ownership contract: `root:<OPENSANDBOX_SERVER_GID> 0640`.
@@ -22,13 +23,27 @@ Do not put real values in Git, issue text, package archives, or command output.
 
 The host policy must use the private lifecycle address, the reviewed digest-bound
 OpenSandbox server, the dedicated non-root identity, the Docker socket group,
-the `ai-platform-opensandbox-egress-v2` network, `runsc`, digest-bound
+the configured dedicated task network, `runsc`, digest-bound
 execd and egress images, `dns+nft`, disabled IPv6 egress, the single
-`/data/opensandbox/workspaces` Host-volume allowlist, and no global sandbox binds
+workspace-root Host-volume allowlist, and no global sandbox binds
 or environment injection. The application derives one exact Attempt workspace
 below that root; user, Agent and Skill input never supplies a host path. The
 lifecycle API key is restricted to the reviewed plain URL-safe length. The
 network guard must be installed, enabled, and active before the server unit starts.
+
+Keep the four application topology values aligned with the protected host files:
+
+| Application environment | Host configuration |
+| --- | --- |
+| `OPENSANDBOX_EXPECTED_NETWORK_MODE` | `server.toml`: `docker.network_mode` |
+| `OPENSANDBOX_EGRESS_BRIDGE` | same key in `server.env` |
+| `OPENSANDBOX_EGRESS_SUBNET` | same key in `server.env` |
+| `OPENSANDBOX_EGRESS_PROXY_IPV4` | same key in `server.env` |
+| `SANDBOX_WORKSPACE_ROOT` | sole exact entry in `storage.allowed_host_paths` |
+
+The guard unit reads the three physical address/interface values from that same
+root-owned `server.env`. Validation still inspects the installed unit, ordered
+live IPv4/IPv6 rules and Docker network. A source example is not live acceptance.
 
 Maintainer host preparation retains `production_bootstrap.HostBootstrap` for
 secure configuration validation, unit rendering and host-service recovery, and
@@ -36,6 +51,11 @@ secure configuration validation, unit rendering and host-service recovery, and
 not application upgrade entry points. The former production release CLI and
 its automatic application deployment have been removed; direct invocation
 fails before host changes.
+Host preparation takes a clean checkout at the exact declared commit and uses
+its absolute unit-guard helper path. Keep that checkout unchanged while its unit
+is installed, including the previous helper while rollback remains available.
+The helper and every parent directory must be root-owned, nonsymlinked and have
+no group/world write permissions, because systemd executes that helper as root.
 
 The OpenSandbox server is a trusted host control-plane component. A read-only
 Docker socket mount still grants effective Docker daemon authority, so accept
@@ -50,7 +70,7 @@ The production topology combines gVisor (`runsc`) with network enforcement
 outside the sandbox: a dedicated Docker bridge with host NAT, the host
 INPUT/DOCKER-USER guard
 and the stateless model/callback proxy. The SDK create request sends
-`network_policy=None` in both supported profiles. The server's retained
+`network_policy=None` in the unified runtime path. The server's retained
 `[egress] mode = "dns+nft"` setting is a host configuration check, not evidence
 that a per-sandbox egress sidecar is active.
 
@@ -66,8 +86,9 @@ control-plane access to sandbox services. A healthy lifecycle listener alone
 does not establish those properties.
 
 The task network uses `internal=false`, IPv4 masquerading, `enable_icc=false`,
-`enable_ipv6=false`, bridge `br-osb-egress2`, subnet `172.31.76.0/24` and proxy
-`172.31.76.2:8080`. The host guard filters actual destination addresses before
+`enable_ipv6=false`. The examples use bridge `br-osb-egress2`, subnet
+`172.31.76.0/24` and proxy `172.31.76.2:8080`; these are configurable defaults.
+The host guard filters actual destination addresses before
 public traffic reaches Docker's forwarding rules. IPv6 has separate scoped
 INPUT/FORWARD guards. The proxy continues to expose only the existing model and
 callback paths; it is not a general Internet proxy. Tasks access public services
@@ -98,13 +119,11 @@ drained maintenance window and the matching immutable application package:
 Rollback also requires a drained window: restore the previous package, server
 TOML and guard together, then verify the previous topology before admission.
 
-The internal-test package selects ordinary `bridge`, disables governed egress
-and exposes the same capability-authenticated model proxy only on the configured
-private Docker bridge address. It never forwards provider credentials into the
-sandbox, but its unrestricted bridge network still prevents production
-acceptance. Editing `DEPLOYMENT_ENVIRONMENT` in its env file does not convert it
-to production; the Compose profile fixes that value. Moving to production
-requires the matching host topology, production package and runtime acceptance.
+The retired internal-test topology has no new package or runtime selection.
+Database-tracked historical leases remain eligible for stop-only cleanup when
+their complete persisted scope, image, executor identity and remote metadata
+match. They cannot be created, reused, dispatched or renewed. Missing identity
+evidence requires classified recovery.
 
 ## Verify the host
 
@@ -128,7 +147,7 @@ package directory run:
 
 ```sh
 python3 deploy.py \
-  --env-file /data/ai-platform-prod/config/production/.env \
+  --env-file /absolute/path/to/operator.env \
   --docker-cmd 'sudo -n docker'
 ```
 
@@ -148,9 +167,10 @@ source-checkout release controller or reconstruct a latest Release on the host.
 ## First-install and storage recovery
 
 A fresh production installation initializes the current workspace root without
-creating or copying a legacy source directory. Any existing supported legacy bind
-source directory, even empty, requires a backup and `--migrate-legacy-workspaces`; old production
-named-volume layouts need a separately approved migration. The source is
+creating or copying a legacy source directory. Any selected existing legacy
+source directory, even empty, requires a backup and `--migrate-legacy-workspaces`.
+Existing bind or local volume data must match the configured migration source's
+inspected host path and both running containers' storage identity. The source is
 retained read-only during the package copy.
 
 For an interrupted first install, `--resume-install` is intentionally narrow:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import ipaddress
 import json
 import stat
 import subprocess
@@ -9,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import tools.production_bootstrap as production_bootstrap
 import tools.release_authority as release_authority
 import tools.s75_opensandbox_transition as transition
 
@@ -16,6 +19,27 @@ import tools.s75_opensandbox_transition as transition
 ROOT = Path(__file__).resolve().parents[1]
 COMPOSE_DIR = ROOT / "deploy" / "ai-platform"
 COMMIT = "a" * 40
+DEFAULT_TOPOLOGY = release_authority.DIRECT_OPENSANDBOX_DEFAULT_TOPOLOGY
+CUSTOM_TOPOLOGY = release_authority.validate_direct_opensandbox_topology(
+    "ai-platform-osb-custom",
+    "br-osb-custom",
+    "172.30.240.0/27",
+    "172.30.240.2",
+)
+APPLICATION_API_KEY = "test-opensandbox-api-key"
+
+
+def _fake_host_config(
+    *,
+    topology=DEFAULT_TOPOLOGY,
+    workspace_root=Path("/srv/ai-platform/configured-workspaces"),
+):
+    return SimpleNamespace(
+        lifecycle_address="10.56.1.75",
+        topology=topology,
+        workspace_root=Path(workspace_root),
+        api_key_sha256=hashlib.sha256(APPLICATION_API_KEY.encode("utf-8")).hexdigest(),
+    )
 
 
 def _completed(command=(), returncode=0, stdout="", stderr=""):
@@ -35,7 +59,17 @@ def _selection(root: Path, names: tuple[str, ...]):
     )
 
 
-def _legacy_containers(commit=COMMIT, runtime_root: Path | None = None):
+def _legacy_containers(
+    commit=COMMIT,
+    runtime_root: Path | None = None,
+    workspace_root: Path | str = transition.LEGACY_WORKSPACE_ROOT,
+):
+    workspace_root = str(workspace_root)
+    workspace_binds = {
+        "workspace-init": ("/runtime-workspaces", workspace_root),
+        "api": (workspace_root, workspace_root),
+        "worker": (workspace_root, workspace_root),
+    }
     runtime_root = runtime_root or transition.LEGACY_RUNTIME_RELEASE_ROOT / commit
     config_files = ",".join(
         str(runtime_root / path) for path in transition.LEGACY_SELECTION
@@ -68,8 +102,8 @@ def _legacy_containers(commit=COMMIT, runtime_root: Path | None = None):
                     "Destination": "/tmp/ai-platform-sandbox-workspaces",
                 }
             )
-        if service in transition.EXPECTED_WORKSPACE_BINDS:
-            destination, source = transition.EXPECTED_WORKSPACE_BINDS[service]
+        if service in workspace_binds:
+            destination, source = workspace_binds[service]
             mounts.append(
                 {
                     "Type": "bind",
@@ -83,7 +117,7 @@ def _legacy_containers(commit=COMMIT, runtime_root: Path | None = None):
                 "Image": "ai-platform-frontend:old" if service == "frontend" else "ai-platform:old",
                 "Env": ["SANDBOX_EXECUTOR_IMAGE=ai-platform:old"]
                 + (
-                    [f"SANDBOX_WORKSPACE_ROOT={transition.S75_WORKSPACE_ROOT}"]
+                    [f"SANDBOX_WORKSPACE_ROOT={workspace_root}"]
                     if service in {"api", "worker"}
                     else []
                 ),
@@ -271,12 +305,61 @@ def test_legacy_runtime_binds_compose_provenance_and_volume_identity(monkeypatch
     with pytest.raises(transition.TransitionError, match="managed workspace root mismatch"):
         transition._legacy_runtime(["docker"], tmp_path, COMMIT)
     containers["api"]["Config"]["Env"][-1] = (
-        f"SANDBOX_WORKSPACE_ROOT={transition.S75_WORKSPACE_ROOT}"
+        f"SANDBOX_WORKSPACE_ROOT={transition.LEGACY_WORKSPACE_ROOT}"
     )
 
     containers["postgres"]["Mounts"][0]["Name"] = "wrong-volume"
     with pytest.raises(transition.TransitionError, match="volume identity mismatch"):
         transition._legacy_runtime(["docker"], tmp_path, COMMIT)
+
+
+def test_target_workspace_root_keeps_named_data_volume_identity_checks(monkeypatch):
+    workspace_root = Path("/srv/ai-platform/custom-workspaces")
+    containers = _legacy_containers(workspace_root=workspace_root)
+
+    def docker_json(docker, *args):
+        assert args[:2] == ("volume", "inspect")
+        name = args[2]
+        logical = next(
+            key
+            for key, (_, _, expected_name) in transition.EXPECTED_VOLUMES.items()
+            if expected_name == name
+        )
+        return [{
+            "Labels": {
+                "com.docker.compose.project": transition.LEGACY_PROJECT,
+                "com.docker.compose.volume": logical,
+            }
+        }]
+
+    def run(command, **kwargs):
+        volume = next(
+            (part.split("=", 1)[1] for part in command if part.startswith("volume=")),
+            None,
+        )
+        if volume is None:
+            raise AssertionError(command)
+        logical = next(
+            key
+            for key, (_, _, expected_name) in transition.EXPECTED_VOLUMES.items()
+            if expected_name == volume
+        )
+        return _completed(
+            command,
+            stdout="\n".join(sorted(transition.EXPECTED_VOLUME_CONSUMERS[logical])),
+        )
+
+    monkeypatch.setattr(transition, "_docker_json", docker_json)
+    monkeypatch.setattr(transition, "_run", run)
+    transition._require_volume_identities(
+        ["docker"], containers, workspace_root=workspace_root
+    )
+
+    containers["postgres"]["Mounts"][0]["Name"] = "wrong-volume"
+    with pytest.raises(transition.TransitionError, match="volume identity mismatch"):
+        transition._require_volume_identities(
+            ["docker"], containers, workspace_root=workspace_root
+        )
 
 
 def test_legacy_rollback_authority_requires_root_owner(monkeypatch, tmp_path):
@@ -374,18 +457,27 @@ def _stub_migration(
 ):
     runtime = _legacy_runtime(tmp_path / "legacy")
     target_selection = _selection(tmp_path / "target", transition.TARGET_SELECTION)
+    host_config = _fake_host_config()
     events = []
     quiescence_calls = 0
 
     monkeypatch.setattr(transition.os, "name", "posix")
     monkeypatch.setattr(transition.os, "geteuid", lambda: 0, raising=False)
     monkeypatch.setattr(transition, "_require_safe_env_file", lambda path: path)
-    monkeypatch.setattr(transition, "_require_workspace_root_env", lambda path: None)
+    monkeypatch.setattr(transition, "_load_opensandbox_host_config", lambda: host_config)
+    monkeypatch.setattr(
+        transition,
+        "_require_workspace_root_env",
+        lambda path, config=None: config is host_config or pytest.fail("host config was not passed"),
+    )
     monkeypatch.setattr(transition, "_legacy_runtime", lambda *args: runtime)
     monkeypatch.setattr(
         transition,
         "_require_host_prerequisites",
-        lambda repo_root, docker: events.append("host"),
+        lambda repo_root, docker, config=None: (
+            config is host_config or pytest.fail("host prerequisites missed host config"),
+            events.append("host"),
+        ),
     )
 
     def quiescent(docker):
@@ -404,6 +496,7 @@ def _stub_migration(
     monkeypatch.setattr(transition, "_stop_admission", lambda docker: events.append("stop-admission"))
     monkeypatch.setattr(transition, "_restore_admission", lambda docker: events.append("restore-admission"))
     def down(*args, **kwargs):
+        assert kwargs["workspace_root"] == transition.LEGACY_WORKSPACE_ROOT
         events.append("down-legacy")
         if down_error is not None:
             raise down_error
@@ -411,6 +504,7 @@ def _stub_migration(
     monkeypatch.setattr(transition, "_down", down)
 
     def deploy(*args, **kwargs):
+        assert transition.os.environ["SANDBOX_WORKSPACE_ROOT"] == str(host_config.workspace_root)
         events.append("deploy-target")
         assert kwargs["replace_known_manual_frontend"] is False
         if deploy_error is not None:
@@ -418,13 +512,19 @@ def _stub_migration(
 
     monkeypatch.setattr(release_authority, "deploy_clean_commit", deploy)
     def target_runtime(*args, **kwargs):
+        assert transition.os.environ["SANDBOX_WORKSPACE_ROOT"] == str(host_config.workspace_root)
+        assert kwargs["host_config"] is host_config
         events.append("target-runtime")
         if parity_error is not None:
             raise parity_error
         return COMMIT, target_selection.absolute_paths
 
     monkeypatch.setattr(transition, "_require_target_runtime", target_runtime)
-    monkeypatch.setattr(transition, "_rollback", lambda *args, **kwargs: events.append("rollback"))
+    def rollback(*args, **kwargs):
+        assert kwargs["workspace_root"] == host_config.workspace_root
+        events.append("rollback")
+
+    monkeypatch.setattr(transition, "_rollback", rollback)
     return events
 
 
@@ -455,6 +555,39 @@ def test_migration_prepares_before_downtime_and_rechecks_after_stopping_admissio
         "deploy-target",
         "target-runtime",
     ]
+
+
+def test_migration_rejects_inherited_topology_drift_before_stopping_admission(monkeypatch, tmp_path):
+    validate_environment = transition._require_workspace_root_env
+    events = _stub_migration(monkeypatch, tmp_path)
+    config = transition._load_opensandbox_host_config()
+    values = {
+        "OPENSANDBOX_BASE_URL": f"http://{config.lifecycle_address}:8080",
+        "OPENSANDBOX_API_KEY": APPLICATION_API_KEY,
+        "OPENSANDBOX_EXPECTED_NETWORK_MODE": config.topology.network_name,
+        "OPENSANDBOX_EGRESS_BRIDGE": config.topology.bridge_name,
+        "OPENSANDBOX_EGRESS_SUBNET": config.topology.subnet,
+        "OPENSANDBOX_EGRESS_PROXY_IPV4": config.topology.proxy_ipv4,
+        "SANDBOX_WORKSPACE_ROOT": str(config.workspace_root),
+    }
+    env_file = tmp_path / "managed.env"
+    env_file.write_text("".join(f"{key}={value}\n" for key, value in values.items()))
+    for key in values:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("OPENSANDBOX_EGRESS_BRIDGE", "br-osb-other")
+    monkeypatch.setattr(transition, "_require_workspace_root_env", validate_environment)
+    monkeypatch.setattr(production_bootstrap, "_read_secure_text", lambda path, **kwargs: path.read_text())
+
+    with pytest.raises(transition.TransitionError, match="environment override mismatch"):
+        transition._migrate_locked(
+            target_repo_root=tmp_path / "target", target_commit=COMMIT,
+            legacy_repo_root=tmp_path / "legacy", legacy_commit=COMMIT,
+            env_file=env_file, backend_image="backend:target", frontend_image="frontend:target",
+            docker_cmd="docker",
+        )
+    assert "stop-admission" not in events
+    assert "down-legacy" not in events
+    assert "deploy-target" not in events
 
 
 def test_migration_restores_admission_when_final_quiescence_fails(monkeypatch, tmp_path):
@@ -544,6 +677,7 @@ def test_migration_rolls_back_after_partial_legacy_down_failure(monkeypatch, tmp
 
 def test_finalize_releases_loopback_admission_only_after_acceptance(monkeypatch, tmp_path):
     events = []
+    host_config = _fake_host_config()
 
     @contextmanager
     def unlocked():
@@ -553,11 +687,17 @@ def test_finalize_releases_loopback_admission_only_after_acceptance(monkeypatch,
     monkeypatch.setattr(transition.os, "geteuid", lambda: 0, raising=False)
     monkeypatch.setattr(transition, "_transition_lock", unlocked)
     monkeypatch.setattr(transition, "_require_safe_env_file", lambda path: path)
-    monkeypatch.setattr(transition, "_require_workspace_root_env", lambda path: None)
+    monkeypatch.setattr(transition, "_load_opensandbox_host_config", lambda: host_config)
+    monkeypatch.setattr(
+        transition,
+        "_require_workspace_root_env",
+        lambda path, config=None: config is host_config or pytest.fail("host config was not passed"),
+    )
 
     def target_runtime(*args, **kwargs):
         fenced = transition.os.environ.get("AI_PLATFORM_FRONTEND_PORT") == "127.0.0.1:18001"
-        assert transition.os.environ["SANDBOX_WORKSPACE_ROOT"] == transition.S75_WORKSPACE_ROOT
+        assert transition.os.environ["SANDBOX_WORKSPACE_ROOT"] == str(host_config.workspace_root)
+        assert kwargs["host_config"] is host_config
         events.append("acceptance-runtime" if fenced else "admitted-runtime")
         return COMMIT, ()
 
@@ -584,6 +724,7 @@ def test_finalize_releases_loopback_admission_only_after_acceptance(monkeypatch,
 
 def test_finalize_restores_loopback_fence_when_admitted_parity_fails(monkeypatch, tmp_path):
     events = []
+    host_config = _fake_host_config()
 
     @contextmanager
     def unlocked():
@@ -593,7 +734,12 @@ def test_finalize_restores_loopback_fence_when_admitted_parity_fails(monkeypatch
     monkeypatch.setattr(transition.os, "geteuid", lambda: 0, raising=False)
     monkeypatch.setattr(transition, "_transition_lock", unlocked)
     monkeypatch.setattr(transition, "_require_safe_env_file", lambda path: path)
-    monkeypatch.setattr(transition, "_require_workspace_root_env", lambda path: None)
+    monkeypatch.setattr(transition, "_load_opensandbox_host_config", lambda: host_config)
+    monkeypatch.setattr(
+        transition,
+        "_require_workspace_root_env",
+        lambda path, config=None: config is host_config or pytest.fail("host config was not passed"),
+    )
     runtime_calls = 0
 
     def target_runtime(*args, **kwargs):
@@ -602,7 +748,8 @@ def test_finalize_restores_loopback_fence_when_admitted_parity_fails(monkeypatch
         if runtime_calls == 1:
             return COMMIT, ()
         fenced = transition.os.environ.get("AI_PLATFORM_FRONTEND_PORT") == "127.0.0.1:18001"
-        assert transition.os.environ["SANDBOX_WORKSPACE_ROOT"] == transition.S75_WORKSPACE_ROOT
+        assert transition.os.environ["SANDBOX_WORKSPACE_ROOT"] == str(host_config.workspace_root)
+        assert kwargs["host_config"] is host_config
         events.append("target-runtime-fenced" if fenced else "target-runtime-admitted")
         if runtime_calls == 2:
             raise transition.TransitionError("admitted target runtime failed")
@@ -640,9 +787,16 @@ def test_rollback_waits_for_legacy_startup_convergence(monkeypatch, tmp_path):
     runtime = _legacy_runtime(tmp_path / "legacy")
     target_files = _selection(tmp_path / "target", transition.TARGET_SELECTION).absolute_paths
     attempt = 0
+    host_config = _fake_host_config()
+    down_calls = []
+    up_calls = []
 
-    monkeypatch.setattr(transition, "_down", lambda *args, **kwargs: None)
-    monkeypatch.setattr(transition, "_run", lambda *args, **kwargs: _completed(args[0]))
+    monkeypatch.setattr(transition, "_down", lambda *args, **kwargs: down_calls.append(kwargs))
+    monkeypatch.setattr(
+        transition,
+        "_run",
+        lambda *args, **kwargs: up_calls.append(args[0]) or _completed(args[0]),
+    )
     monkeypatch.setattr(transition, "_legacy_runtime", lambda *args: runtime)
 
     def inspect(docker, name):
@@ -670,9 +824,18 @@ def test_rollback_waits_for_legacy_startup_convergence(monkeypatch, tmp_path):
     monkeypatch.setattr(release_authority, "converge_final_parity", converge)
 
     transition._rollback(
-        ["docker"], runtime=runtime, target_files=target_files, env_file=tmp_path / ".env"
+        ["docker"],
+        runtime=runtime,
+        target_files=target_files,
+        env_file=tmp_path / ".env",
+        workspace_root=host_config.workspace_root,
     )
     assert attempt == 2
+    assert down_calls[0]["workspace_root"] == host_config.workspace_root
+    assert any(
+        f"SANDBOX_WORKSPACE_ROOT={transition.LEGACY_WORKSPACE_ROOT}" in command
+        for command in up_calls
+    )
 
 
 @pytest.mark.parametrize(
@@ -718,6 +881,7 @@ def test_legacy_convergence_rejects_hard_failures(
 def test_explicit_rollback_requires_quiescence_and_restores_legacy_selection(monkeypatch, tmp_path):
     runtime = _legacy_runtime(tmp_path / "legacy")
     target_files = _selection(tmp_path / "target", transition.TARGET_SELECTION).absolute_paths
+    host_config = _fake_host_config()
     events = []
 
     @contextmanager
@@ -728,13 +892,29 @@ def test_explicit_rollback_requires_quiescence_and_restores_legacy_selection(mon
     monkeypatch.setattr(transition.os, "geteuid", lambda: 0, raising=False)
     monkeypatch.setattr(transition, "_transition_lock", unlocked)
     monkeypatch.setattr(transition, "_require_safe_env_file", lambda path: path)
-    monkeypatch.setattr(transition, "_require_workspace_root_env", lambda path: None)
+    monkeypatch.setattr(transition, "_load_opensandbox_host_config", lambda: host_config)
+    monkeypatch.setattr(
+        transition,
+        "_require_workspace_root_env",
+        lambda path, config=None: config is host_config or pytest.fail("host config was not passed"),
+    )
     monkeypatch.setattr(transition, "_validated_rollback_runtime", lambda *args, **kwargs: runtime)
-    monkeypatch.setattr(transition, "_require_target_runtime", lambda *args, **kwargs: (COMMIT, target_files))
+
+    def target_runtime(*args, **kwargs):
+        assert transition.os.environ["SANDBOX_WORKSPACE_ROOT"] == str(host_config.workspace_root)
+        assert kwargs["host_config"] is host_config
+        return COMMIT, target_files
+
+    monkeypatch.setattr(transition, "_require_target_runtime", target_runtime)
     monkeypatch.setattr(transition, "_require_schema_compatibility", lambda *args: events.append("schema-compatible"))
     monkeypatch.setattr(transition, "_require_quiescent", lambda docker: events.append("quiescent"))
     monkeypatch.setattr(transition, "_stop_admission", lambda docker: events.append("stop-admission"))
-    monkeypatch.setattr(transition, "_rollback", lambda *args, **kwargs: events.append("rollback"))
+
+    def rollback(*args, **kwargs):
+        assert kwargs["workspace_root"] == host_config.workspace_root
+        events.append("rollback")
+
+    monkeypatch.setattr(transition, "_rollback", rollback)
 
     result = transition.rollback(
         target_repo_root=tmp_path / "target",
@@ -755,6 +935,7 @@ def test_explicit_rollback_requires_quiescence_and_restores_legacy_selection(mon
 def test_explicit_rollback_restores_target_when_legacy_start_fails(monkeypatch, tmp_path):
     runtime = _legacy_runtime(tmp_path / "legacy")
     target_files = _selection(tmp_path / "target", transition.TARGET_SELECTION).absolute_paths
+    host_config = _fake_host_config()
     events = []
 
     @contextmanager
@@ -765,17 +946,23 @@ def test_explicit_rollback_restores_target_when_legacy_start_fails(monkeypatch, 
     monkeypatch.setattr(transition.os, "geteuid", lambda: 0, raising=False)
     monkeypatch.setattr(transition, "_transition_lock", unlocked)
     monkeypatch.setattr(transition, "_require_safe_env_file", lambda path: path)
-    monkeypatch.setattr(transition, "_require_workspace_root_env", lambda path: None)
+    monkeypatch.setattr(transition, "_load_opensandbox_host_config", lambda: host_config)
+    monkeypatch.setattr(
+        transition,
+        "_require_workspace_root_env",
+        lambda path, config=None: config is host_config or pytest.fail("host config was not passed"),
+    )
     monkeypatch.setattr(transition, "_validated_rollback_runtime", lambda *args, **kwargs: runtime)
     target_runtime_calls = 0
 
     def target_runtime(*args, **kwargs):
         nonlocal target_runtime_calls
         target_runtime_calls += 1
+        assert kwargs["host_config"] is host_config
         if target_runtime_calls > 1:
             assert transition.os.environ.get("AI_PLATFORM_API_PORT") == "127.0.0.1:8020"
             assert transition.os.environ.get("AI_PLATFORM_FRONTEND_PORT") == "127.0.0.1:18001"
-            assert transition.os.environ["SANDBOX_WORKSPACE_ROOT"] == transition.S75_WORKSPACE_ROOT
+            assert transition.os.environ["SANDBOX_WORKSPACE_ROOT"] == str(host_config.workspace_root)
             events.append("target-runtime-fenced")
         return COMMIT, target_files
 
@@ -783,11 +970,21 @@ def test_explicit_rollback_restores_target_when_legacy_start_fails(monkeypatch, 
     monkeypatch.setattr(transition, "_require_schema_compatibility", lambda *args: None)
     monkeypatch.setattr(transition, "_require_quiescent", lambda docker: None)
     monkeypatch.setattr(transition, "_stop_admission", lambda docker: None)
-    monkeypatch.setattr(transition, "_rollback", lambda *args, **kwargs: (_ for _ in ()).throw(transition.TransitionError("legacy start failed")))
-    monkeypatch.setattr(transition, "_down", lambda *args, **kwargs: events.append("down-partial-legacy"))
+    def failed_rollback(*args, **kwargs):
+        assert kwargs["workspace_root"] == host_config.workspace_root
+        raise transition.TransitionError("legacy start failed")
+
+    monkeypatch.setattr(transition, "_rollback", failed_rollback)
+
+    def down_partial_legacy(*args, **kwargs):
+        assert kwargs["workspace_root"] == transition.LEGACY_WORKSPACE_ROOT
+        events.append("down-partial-legacy")
+
+    monkeypatch.setattr(transition, "_down", down_partial_legacy)
     def restore_target(*args, **kwargs):
         assert transition.os.environ.get("AI_PLATFORM_API_PORT") == "127.0.0.1:8020"
         assert transition.os.environ.get("AI_PLATFORM_FRONTEND_PORT") == "127.0.0.1:18001"
+        assert transition.os.environ["SANDBOX_WORKSPACE_ROOT"] == str(host_config.workspace_root)
         events.append("restore-target-fenced")
 
     monkeypatch.setattr(release_authority, "deploy_clean_commit", restore_target)
@@ -810,6 +1007,7 @@ def test_explicit_rollback_restores_target_when_legacy_start_fails(monkeypatch, 
 def test_host_prerequisite_requires_server_and_network_guard(monkeypatch, tmp_path):
     commands = []
     checks = []
+    host_config = _fake_host_config(topology=CUSTOM_TOPOLOGY)
 
     def run(command, **kwargs):
         commands.append(command)
@@ -819,7 +1017,7 @@ def test_host_prerequisite_requires_server_and_network_guard(monkeypatch, tmp_pa
     monkeypatch.setattr(
         transition,
         "_require_opensandbox_server_profile",
-        lambda: checks.append("server-profile"),
+        lambda host_config=None: checks.append(("server-profile", host_config)),
     )
     monkeypatch.setattr(
         transition,
@@ -829,10 +1027,10 @@ def test_host_prerequisite_requires_server_and_network_guard(monkeypatch, tmp_pa
     monkeypatch.setattr(
         transition,
         "_require_network_guard",
-        lambda repo_root: checks.append(("guard", repo_root)),
+        lambda repo_root, topology=None: checks.append(("guard", repo_root, topology)),
     )
 
-    transition._require_host_prerequisites(tmp_path, ["docker"])
+    transition._require_host_prerequisites(tmp_path, ["docker"], host_config)
 
     assert commands == [
         ["systemctl", "is-active", "--quiet", "opensandbox.service"],
@@ -844,9 +1042,9 @@ def test_host_prerequisite_requires_server_and_network_guard(monkeypatch, tmp_pa
         ],
     ]
     assert checks == [
-        "server-profile",
+        ("server-profile", host_config),
         ("server-container", ["docker"]),
-        ("guard", tmp_path),
+        ("guard", tmp_path, CUSTOM_TOPOLOGY),
     ]
 
 
@@ -895,11 +1093,12 @@ def test_opensandbox_server_profile_requires_root_owned_runsc_on_the_egress_netw
         return real_lstat(path)
 
     monkeypatch.setattr(Path, "lstat", root_owned_lstat)
-    transition._require_opensandbox_server_profile(config)
+    host_config = _fake_host_config(topology=DEFAULT_TOPOLOGY)
+    transition._require_opensandbox_server_profile(config, host_config)
 
     mode[0] = 0o660
     with pytest.raises(transition.TransitionError, match="configuration is invalid"):
-        transition._require_opensandbox_server_profile(config)
+        transition._require_opensandbox_server_profile(config, host_config)
     mode[0] = 0o640
 
     config.write_text(
@@ -909,17 +1108,17 @@ def test_opensandbox_server_profile_requires_root_owned_runsc_on_the_egress_netw
         encoding="utf-8",
     )
     with pytest.raises(transition.TransitionError, match="isolation profile"):
-        transition._require_opensandbox_server_profile(config)
+        transition._require_opensandbox_server_profile(config, host_config)
 
 
+@pytest.mark.parametrize("topology", [DEFAULT_TOPOLOGY, CUSTOM_TOPOLOGY])
 def test_network_guard_requires_complete_ipv4_and_ipv6_host_rules(
     monkeypatch,
     tmp_path,
+    topology,
 ):
-    repo_root = tmp_path / "repo"
+    repo_root = ROOT
     source = repo_root / transition.OPENSANDBOX_NETWORK_GUARD_SOURCE
-    source.parent.mkdir(parents=True)
-    source.write_text("unit-authority\n", encoding="utf-8")
     installed = tmp_path / "installed.service"
     installed.write_bytes(source.read_bytes())
     real_lstat = Path.lstat
@@ -930,9 +1129,9 @@ def test_network_guard_requires_complete_ipv4_and_ipv6_host_rules(
         return real_lstat(path)
 
     monkeypatch.setattr(Path, "lstat", root_owned_lstat)
-    bridge = release_authority.DIRECT_OPENSANDBOX_BRIDGE_NAME
-    subnet = release_authority.DIRECT_OPENSANDBOX_SUBNET
-    proxy = f"{release_authority.DIRECT_OPENSANDBOX_PROXY_IPV4}/32"
+    bridge = topology.bridge_name
+    subnet = topology.subnet
+    proxy = f"{topology.proxy_ipv4}/32"
     port = release_authority.DIRECT_OPENSANDBOX_PROXY_PORT
     v4_forward = [
         f"-A AI_PLATFORM_OSB_FORWARD -i {bridge} ! -s {subnet} -j DROP",
@@ -986,7 +1185,7 @@ def test_network_guard_requires_complete_ipv4_and_ipv6_host_rules(
         "_run",
         save,
     )
-    transition._require_network_guard(repo_root, installed)
+    transition._require_network_guard(repo_root, installed, topology)
 
     # Kernel serialization moves source/destination matches before interfaces.
     canonical_v4 = valid_v4.replace(
@@ -1000,11 +1199,11 @@ def test_network_guard_requires_complete_ipv4_and_ipv6_host_rules(
         transition, "_run",
         lambda command: _completed(command, stdout=canonical_v4 if command[0] == "iptables-save" else valid_v6),
     )
-    transition._require_network_guard(repo_root, installed)
+    transition._require_network_guard(repo_root, installed, topology)
 
     installed.write_text("different\n", encoding="utf-8")
     with pytest.raises(transition.TransitionError, match="guard unit"):
-        transition._require_network_guard(repo_root, installed)
+        transition._require_network_guard(repo_root, installed, topology)
     installed.write_bytes(source.read_bytes())
 
     monkeypatch.setattr(
@@ -1020,7 +1219,7 @@ def test_network_guard_requires_complete_ipv4_and_ipv6_host_rules(
         ),
     )
     with pytest.raises(transition.TransitionError, match="network guard"):
-        transition._require_network_guard(repo_root, installed)
+        transition._require_network_guard(repo_root, installed, topology)
 
     # A failed refresh must not be mistaken for a usable public-egress guard.
     monkeypatch.setattr(
@@ -1028,7 +1227,7 @@ def test_network_guard_requires_complete_ipv4_and_ipv6_host_rules(
         lambda command: _completed(command, stdout=(valid_v4 + f"-A DOCKER-USER -i {bridge} -j DROP\n") if command[0] == "iptables-save" else valid_v6),
     )
     with pytest.raises(transition.TransitionError, match="network guard"):
-        transition._require_network_guard(repo_root, installed)
+        transition._require_network_guard(repo_root, installed, topology)
 
     monkeypatch.setattr(
         transition,
@@ -1046,7 +1245,7 @@ def test_network_guard_requires_complete_ipv4_and_ipv6_host_rules(
         ),
     )
     with pytest.raises(transition.TransitionError, match="network guard"):
-        transition._require_network_guard(repo_root, installed)
+        transition._require_network_guard(repo_root, installed, topology)
 
     monkeypatch.setattr(
         transition,
@@ -1059,22 +1258,26 @@ def test_network_guard_requires_complete_ipv4_and_ipv6_host_rules(
         ),
     )
     with pytest.raises(transition.TransitionError, match="network guard"):
-        transition._require_network_guard(repo_root, installed)
+        transition._require_network_guard(repo_root, installed, topology)
 
 
 def test_target_network_requires_only_the_egress_proxy(monkeypatch):
+    host_config = _fake_host_config(topology=CUSTOM_TOPOLOGY)
+    topology = host_config.topology
+    prefixlen = ipaddress.ip_network(topology.subnet).prefixlen
+    inspected = []
     network = {
-        "Name": release_authority.DIRECT_OPENSANDBOX_NETWORK_NAME,
+        "Name": topology.network_name,
         "Driver": "bridge",
         "Internal": False,
         "EnableIPv4": True,
         "EnableIPv6": False,
         "Options": {
-            "com.docker.network.bridge.name": release_authority.DIRECT_OPENSANDBOX_BRIDGE_NAME,
+            "com.docker.network.bridge.name": topology.bridge_name,
             "com.docker.network.bridge.enable_ip_masquerade": "true",
             "com.docker.network.bridge.enable_icc": "false",
         },
-        "IPAM": {"Config": [{"Subnet": release_authority.DIRECT_OPENSANDBOX_SUBNET}]},
+        "IPAM": {"Config": [{"Subnet": topology.subnet}]},
         "Labels": {
             "com.docker.compose.project": release_authority.COMPOSE_PROJECT,
             "com.docker.compose.network": release_authority.DIRECT_OPENSANDBOX_NETWORK_KEY,
@@ -1082,25 +1285,36 @@ def test_target_network_requires_only_the_egress_proxy(monkeypatch):
         "Containers": {
             "proxy": {
                 "Name": transition.TARGET_BROKER_CONTAINER,
-                "IPv4Address": release_authority.DIRECT_OPENSANDBOX_PROXY_IPV4 + "/24",
+                "IPv4Address": f"{topology.proxy_ipv4}/{prefixlen}",
             },
         },
     }
-    monkeypatch.setattr(transition, "_docker_json", lambda *args: [network])
-    transition._require_target_network(["docker"])
+    monkeypatch.setattr(
+        transition,
+        "_docker_json",
+        lambda *args: inspected.append(args) or [network],
+    )
+    transition._require_target_network(["docker"], host_config)
+    assert inspected[-1] == (["docker"], "network", "inspect", topology.network_name)
+
+    network["Containers"]["proxy"]["IPv4Address"] = f"{topology.proxy_ipv4}/24"
+    with pytest.raises(transition.TransitionError, match="network isolation"):
+        transition._require_target_network(["docker"], host_config)
+    network["Containers"]["proxy"]["IPv4Address"] = f"{topology.proxy_ipv4}/{prefixlen}"
 
     network["Containers"]["api"] = {"Name": "ai-platform-api"}
     with pytest.raises(transition.TransitionError, match="network isolation"):
-        transition._require_target_network(["docker"])
+        transition._require_target_network(["docker"], host_config)
     network["Containers"].pop("api")
     network["Options"]["com.docker.network.bridge.gateway_mode_ipv4"] = "isolated"
     with pytest.raises(transition.TransitionError, match="network isolation"):
-        transition._require_target_network(["docker"])
+        transition._require_target_network(["docker"], host_config)
 
 
 def test_target_parity_waits_for_platform_and_broker_startup(monkeypatch, tmp_path):
     platform_reports = iter((False, True, True))
     broker_statuses = iter(("starting", "healthy"))
+    host_config = _fake_host_config(topology=CUSTOM_TOPOLOGY)
     attempts = []
     checks = []
 
@@ -1134,16 +1348,31 @@ def test_target_parity_waits_for_platform_and_broker_startup(monkeypatch, tmp_pa
 
     monkeypatch.setattr(transition, "_inspect_container", inspect)
     monkeypatch.setattr(release_authority, "converge_final_parity", converge)
+
+    def require_host(repo_root, docker, config):
+        assert config is host_config
+        checks.append("host")
+
+    def require_network(docker, config):
+        assert config is host_config
+        checks.append("network")
+
     monkeypatch.setattr(
         transition,
         "_require_host_prerequisites",
-        lambda repo_root, docker: checks.append("host"),
+        require_host,
     )
-    monkeypatch.setattr(transition, "_require_target_network", lambda docker: checks.append("network"))
+    monkeypatch.setattr(transition, "_require_target_network", require_network)
     monkeypatch.setattr(transition, "_require_target_executor", lambda docker: checks.append("executor"))
     monkeypatch.setattr(transition, "_require_target_lifecycle_reachable", lambda docker: checks.append("lifecycle"))
 
-    transition._require_target_parity(["docker"], tmp_path, COMMIT, docker_cmd="docker")
+    transition._require_target_parity(
+        ["docker"],
+        tmp_path,
+        COMMIT,
+        docker_cmd="docker",
+        host_config=host_config,
+    )
 
     assert attempts == [False, False, True]
     assert checks == ["host", "network", "executor", "lifecycle"]
@@ -1404,31 +1633,78 @@ def test_managed_environment_file_metadata_fails_closed_without_reading_contents
             transition._require_safe_env_file(invalid)
 
 
-def test_managed_workspace_root_configuration_fails_closed(monkeypatch, tmp_path):
+def test_managed_host_application_contract_matches_config_and_rejects_single_field_drift(
+    monkeypatch,
+    tmp_path,
+):
+    host_config = _fake_host_config(topology=CUSTOM_TOPOLOGY)
+    values = {
+        "OPENSANDBOX_BASE_URL": f"http://{host_config.lifecycle_address}:8080",
+        "OPENSANDBOX_API_KEY": APPLICATION_API_KEY,
+        "OPENSANDBOX_EXPECTED_NETWORK_MODE": host_config.topology.network_name,
+        "OPENSANDBOX_EGRESS_BRIDGE": host_config.topology.bridge_name,
+        "OPENSANDBOX_EGRESS_SUBNET": host_config.topology.subnet,
+        "OPENSANDBOX_EGRESS_PROXY_IPV4": host_config.topology.proxy_ipv4,
+        "SANDBOX_WORKSPACE_ROOT": str(host_config.workspace_root),
+    }
     env_file = tmp_path / "managed.env"
-    env_file.write_text(
-        f"UNRELATED=private-value\nSANDBOX_WORKSPACE_ROOT={transition.S75_WORKSPACE_ROOT}\n",
-        encoding="utf-8",
+    monkeypatch.setattr(
+        production_bootstrap,
+        "_read_secure_text",
+        lambda path, **kwargs: path.read_text(encoding="utf-8"),
     )
-    transition._require_workspace_root_env(env_file)
 
-    for contents in (
-        "UNRELATED=private-value\n",
-        "SANDBOX_WORKSPACE_ROOT=/wrong-workspace\n",
-        f"SANDBOX_WORKSPACE_ROOT={transition.S75_WORKSPACE_ROOT}\n"
-        f"SANDBOX_WORKSPACE_ROOT={transition.S75_WORKSPACE_ROOT}\n",
+    def write_environment(overrides=None):
+        current = dict(values)
+        current.update(overrides or {})
+        env_file.write_text(
+            "UNRELATED=private-value\n"
+            + "".join(f"{key}={value}\n" for key, value in current.items()),
+            encoding="utf-8",
+        )
+
+    monkeypatch.delenv("SANDBOX_WORKSPACE_ROOT", raising=False)
+    write_environment()
+    transition._require_workspace_root_env(env_file, host_config)
+
+    drift_cases = (
+        {"OPENSANDBOX_EXPECTED_NETWORK_MODE": "ai-platform-osb-different"},
+        {"OPENSANDBOX_EGRESS_BRIDGE": "br-osb-different"},
+        {"OPENSANDBOX_EGRESS_SUBNET": "172.30.240.0/28"},
+        {"OPENSANDBOX_EGRESS_PROXY_IPV4": "172.30.240.3"},
+        {"SANDBOX_WORKSPACE_ROOT": "/srv/ai-platform/other-workspaces"},
+        {"OPENSANDBOX_API_KEY": "different-application-key"},
+        {"OPENSANDBOX_BASE_URL": "http://10.56.1.76:8080"},
+    )
+    for drift in drift_cases:
+        write_environment(drift)
+        with pytest.raises(
+            transition.TransitionError,
+            match="application host configuration mismatch",
+        ):
+            transition._require_workspace_root_env(env_file, host_config)
+
+    write_environment()
+    with env_file.open("a", encoding="utf-8") as stream:
+        stream.write(f"SANDBOX_WORKSPACE_ROOT={host_config.workspace_root}\n")
+    with pytest.raises(
+        transition.TransitionError,
+        match="application host configuration mismatch",
     ):
-        env_file.write_text(contents, encoding="utf-8")
-        with pytest.raises(transition.TransitionError, match="workspace root configuration"):
-            transition._require_workspace_root_env(env_file)
+        transition._require_workspace_root_env(env_file, host_config)
 
-    env_file.write_text(
-        f"SANDBOX_WORKSPACE_ROOT={transition.S75_WORKSPACE_ROOT}\n",
-        encoding="utf-8",
-    )
+    write_environment()
+    for key, value in values.items():
+        if key == "SANDBOX_WORKSPACE_ROOT":
+            continue
+        with monkeypatch.context() as overrides:
+            overrides.setenv(key, "process-override")
+            with pytest.raises(transition.TransitionError, match="environment override mismatch"):
+                transition._require_workspace_root_env(env_file, host_config)
+
     monkeypatch.setenv("SANDBOX_WORKSPACE_ROOT", "/process-override")
     with pytest.raises(transition.TransitionError, match="workspace root configuration"):
-        transition._require_workspace_root_env(env_file)
+        transition._require_workspace_root_env(env_file, host_config)
 
 
 def test_transition_lock_rejects_unsafe_metadata(monkeypatch):

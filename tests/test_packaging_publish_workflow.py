@@ -1004,14 +1004,20 @@ def test_deployment_release_is_immutable_minimal_and_fresh_main_bound():
     package = next(step for step in steps if "tools/release_compose_package.py" in step.get("run", ""))
     verification = next(step for step in steps if "tools/release_image_manifest.py verify" in step.get("run", ""))
     assert steps.index(verification) < steps.index(package) < steps.index(release)
-    assert "for profile in internal-test production" in package["run"]
+    assert "--profile" not in package["run"]
+    assert "for profile" not in package["run"]
+    assert package["run"].count("python tools/release_compose_package.py") == 1
+    assert "--output ai-platform-production.tar.gz" in package["run"]
+    assert "ai-platform-internal-test.tar.gz" not in package["run"]
     assert "--manifest release-image-manifest.json" in package["run"]
     assert "--evidence-root ." in package["run"]
     assert "ai-platform-internal-test.tar.gz" not in release["run"]
     assert "release-image-manifest.json" not in release["run"]
-    internal_upload = next(step for step in steps if step.get("name") == "Upload internal-test deployment package for CI")
-    assert internal_upload["with"]["path"] == "ai-platform-internal-test.tar.gz"
-    assert internal_upload["with"]["if-no-files-found"] == "error"
+    assert not any(
+        "internal-test" in step.get("name", "").lower()
+        or "internal-test" in str(step.get("with", {})).lower()
+        for step in steps
+    )
     assert "release upload" not in release["run"]
     assert "release edit" not in release["run"]
     assert "--latest=false" in release["run"]

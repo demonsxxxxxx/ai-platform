@@ -16,6 +16,7 @@ from app.settings import (
     LEGACY_DIRECT_OPENSANDBOX_NETWORK_NAME,
     LEGACY_DIRECT_OPENSANDBOX_POLICY_SUBJECT,
     get_settings,
+    is_valid_opensandbox_network_name,
 )
 
 CLAUDE_WORKER_EXECUTOR = "claude-agent-worker"
@@ -437,9 +438,14 @@ def is_governed_egress_proof(
     default_deny_outbound = proof.get("default_deny_outbound")
     network_internal = proof.get("network_internal")
     if provider == "opensandbox":
+        expected_network_name = (
+            expected_binding.get("network_name", DIRECT_OPENSANDBOX_NETWORK_NAME)
+            if isinstance(expected_binding, Mapping)
+            else DIRECT_OPENSANDBOX_NETWORK_NAME
+        )
         public_opensandbox_binding = {
             "network_id": DIRECT_OPENSANDBOX_PROFILE_ID,
-            "network_name": DIRECT_OPENSANDBOX_NETWORK_NAME,
+            "network_name": expected_network_name,
             "policy_subject": DIRECT_OPENSANDBOX_POLICY_SUBJECT,
         }
         legacy_opensandbox_binding = {
@@ -448,7 +454,10 @@ def is_governed_egress_proof(
             "policy_subject": LEGACY_DIRECT_OPENSANDBOX_POLICY_SUBJECT,
         }
         if default_deny_outbound is False and network_internal is False:
-            if not _proof_matches_expected_binding(proof, public_opensandbox_binding):
+            if (
+                not is_valid_opensandbox_network_name(expected_network_name)
+                or not _proof_matches_expected_binding(proof, public_opensandbox_binding)
+            ):
                 return False
         elif (
             default_deny_outbound is True
@@ -628,6 +637,8 @@ def is_accepted_runtime_lease(
     if not isinstance(payload, dict):
         payload = row.get("lease_payload")
     expected_binding = _runtime_lease_expected_binding(row, payload) if isinstance(payload, dict) else None
+    if expected_binding is None:
+        return False
     settings = get_settings()
     key = signing_key if signing_key is not None else settings.sandbox_egress_proof_signing_key
     current_key_id = (
@@ -643,12 +654,26 @@ def is_accepted_runtime_lease(
         )
     )
     proof = payload.get("governed_egress_proof") if isinstance(payload, dict) else None
+    if provider == "opensandbox" and isinstance(payload, dict):
+        if verification_mode == "active":
+            expected_binding = {
+                **expected_binding,
+                "network_name": getattr(
+                    settings,
+                    "opensandbox_expected_network_mode",
+                    DIRECT_OPENSANDBOX_NETWORK_NAME,
+                ),
+            }
+        elif "governed_egress_network_name" in payload:
+            expected_binding = {
+                **expected_binding,
+                "network_name": payload.get("governed_egress_network_name"),
+            }
     return (
         isinstance(payload, dict)
         and provider in REAL_SANDBOX_PROVIDERS
         and str(payload.get("source") or "") == REAL_SANDBOX_EVIDENCE_SOURCE
         and str(payload.get("evidence_class") or "") == REAL_SANDBOX_EVIDENCE_CLASS
-        and expected_binding is not None
         and is_governed_egress_proof(
             proof,
             provider=provider,

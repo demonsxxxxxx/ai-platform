@@ -18,8 +18,7 @@ from app.runtime.sandbox.opensandbox_policy import (
     SANDBOX_SECURITY_PROFILE_GOVERNED,
     SANDBOX_SECURITY_PROFILE_INTERNAL_TEST,
     SANDBOX_SECURITY_PROFILE_LABEL,
-    internal_test_orphan_cleanup_expected_labels,
-    requested_opensandbox_image,
+    historical_internal_test_cleanup_expected_labels,
 )
 from app.sandbox.infrastructure import leases_postgres as sandbox_leases_postgres
 from app.settings import get_settings
@@ -83,7 +82,11 @@ async def _stop_failed_reconciliation_lease(
         return None
 
 
-def container_lease_from_persisted_row(row: dict[str, Any]) -> ContainerLease | None:
+def container_lease_from_persisted_row(
+    row: dict[str, Any],
+    *,
+    allow_historical_internal_test_cleanup: bool = False,
+) -> ContainerLease | None:
     provider = str(row.get("provider") or "fake")
     if provider not in {"fake", "docker", "opensandbox"}:
         return None
@@ -101,6 +104,7 @@ def container_lease_from_persisted_row(row: dict[str, Any]) -> ContainerLease | 
     ):
         return None
     labels: dict[str, str] = {}
+    historical_internal_test = False
     if provider == "docker":
         lease_payload = row.get("lease_payload_json")
         if not isinstance(lease_payload, dict):
@@ -146,44 +150,33 @@ def container_lease_from_persisted_row(row: dict[str, Any]) -> ContainerLease | 
                 else ""
             ) or SANDBOX_SECURITY_PROFILE_GOVERNED
         if security_profile == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST:
+            if not allow_historical_internal_test_cleanup:
+                return None
             persisted = lease_payload.get("labels")
-            settings = get_settings()
-            if not (
-                isinstance(persisted, dict)
-                and getattr(settings, "sandbox_security_profile", "") == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST
-                and getattr(settings, "deployment_environment", "") == "test"
-                and getattr(settings, "sandbox_container_provider", "") == "opensandbox"
-                and getattr(settings, "opensandbox_expected_network_mode", "") == "bridge"
+            if not isinstance(persisted, dict) or any(
+                not isinstance(key, str) or not isinstance(value, str)
+                for key, value in persisted.items()
             ):
                 return None
             try:
-                expected_image, expected_digest = requested_opensandbox_image(settings)
                 attempt_id = assert_safe_id(str(lease_payload.get("attempt_id") or ""), "attempt_id")
             except ValueError:
                 return None
-            expected = internal_test_orphan_cleanup_expected_labels(
-                {
-                    "tenant_id": str(row["tenant_id"]),
-                    "workspace_id": str(row["workspace_id"]),
-                    "user_id": str(row["user_id"]),
-                    "session_id": str(row["session_id"]),
-                    "run_id": run_id,
-                    "attempt_id": attempt_id,
-                    "sandbox_mode": str(row["sandbox_mode"]),
-                    "security_profile": SANDBOX_SECURITY_PROFILE_INTERNAL_TEST,
-                },
-                settings,
-            )
-            if expected is None:
+            if row.get("attempt_id") is not None and row.get("attempt_id") != attempt_id:
                 return None
             if (
-                lease_payload.get("requested_image") != expected_image
-                or lease_payload.get("requested_image_digest") != expected_digest
+                lease_payload.get("container_id") != container_id
+                or lease_payload.get("container_name") != container_name
+                or lease_payload.get("executor_url") != executor_url
+                or lease_payload.get("workspace_container_path") != workspace_container_path
+                or lease_payload.get("requested_image")
+                != persisted.get("ai-platform.executor.requested_image")
+                or lease_payload.get("requested_image_digest")
+                != persisted.get("ai-platform.executor.requested_image_digest")
             ):
                 return None
-            if any(str(persisted.get(key) or "") != value for key, value in expected.items()):
-                return None
-            labels.update({str(key): str(value) for key, value in persisted.items()})
+            labels.update(persisted)
+            historical_internal_test = True
         elif security_profile != SANDBOX_SECURITY_PROFILE_GOVERNED:
             return None
         else:
@@ -215,12 +208,19 @@ def container_lease_from_persisted_row(row: dict[str, Any]) -> ContainerLease | 
                     getattr(settings, "sandbox_egress_proof_previous_keys_json", "")
                 ),
                 allow_previous_keys=True,
-                expected_binding={"attempt_id": attempt_id},
+                expected_binding={
+                    "attempt_id": attempt_id,
+                    **(
+                        {"network_name": lease_payload["governed_egress_network_name"]}
+                        if "governed_egress_network_name" in lease_payload
+                        else {}
+                    ),
+                },
                 require_fresh=False,
                 allow_legacy_opensandbox=True,
             ):
                 return None
-    return ContainerLease(
+    lease = ContainerLease(
         container_id=container_id,
         container_name=container_name,
         provider=provider,
@@ -236,6 +236,9 @@ def container_lease_from_persisted_row(row: dict[str, Any]) -> ContainerLease | 
         workspace_container_path=workspace_container_path,
         labels=labels,
     )
+    if historical_internal_test and historical_internal_test_cleanup_expected_labels(lease) is None:
+        return None
+    return lease
 
 
 async def stop_sandbox_leases(
@@ -254,7 +257,10 @@ async def stop_sandbox_leases(
             and row.get("executor_reconciliation_status") != "finalized"
         ):
             continue
-        lease = container_lease_from_persisted_row(row)
+        lease = container_lease_from_persisted_row(
+            row,
+            allow_historical_internal_test_cleanup=True,
+        )
         if lease is None:
             failures.append(
                 {
@@ -435,7 +441,10 @@ async def cleanup_failed_sandbox_executor_reconciliation_leases(
             )
             if not owns_claim:
                 continue
-            lease = container_lease_from_persisted_row(row)
+            lease = container_lease_from_persisted_row(
+                row,
+                allow_historical_internal_test_cleanup=True,
+            )
             if lease is None:
                 await sandbox_lease_repository.quarantine_failed_sandbox_executor_reconciliation_cleanup(
                     conn,

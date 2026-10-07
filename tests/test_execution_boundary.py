@@ -264,7 +264,12 @@ def _real_runtime_lease(module, *, signing_key=PROOF_KEY, key_id="current", **ov
     return row
 
 
-def _opensandbox_runtime_lease(module, *, legacy_internal=False):
+def _opensandbox_runtime_lease(
+    module,
+    *,
+    legacy_internal=False,
+    network_name=None,
+):
     from app.settings import (
         DIRECT_OPENSANDBOX_NETWORK_NAME,
         DIRECT_OPENSANDBOX_POLICY_SUBJECT,
@@ -288,6 +293,11 @@ def _opensandbox_runtime_lease(module, *, legacy_internal=False):
         "authorized_native_tool_scope": module.governed_egress_authorized_native_tool_scope([]),
         "lease_identity": "opensandbox:opensandbox-run-a:osb-run-a",
     }
+    network_name = network_name or (
+        LEGACY_DIRECT_OPENSANDBOX_NETWORK_NAME
+        if legacy_internal
+        else DIRECT_OPENSANDBOX_NETWORK_NAME
+    )
     proof = module.build_governed_egress_proof(
         signing_key=PROOF_KEY,
         provider="opensandbox",
@@ -300,11 +310,7 @@ def _opensandbox_runtime_lease(module, *, legacy_internal=False):
         callback_subject="callback-boundary-a",
         denial_subject="deny-a",
         network_id=DIRECT_OPENSANDBOX_PROFILE_ID,
-        network_name=(
-            LEGACY_DIRECT_OPENSANDBOX_NETWORK_NAME
-            if legacy_internal
-            else DIRECT_OPENSANDBOX_NETWORK_NAME
-        ),
+        network_name=network_name,
         network_internal=legacy_internal,
         default_deny_outbound=legacy_internal,
         **scope,
@@ -319,6 +325,7 @@ def _opensandbox_runtime_lease(module, *, legacy_internal=False):
             "container_id": "osb-run-a",
             "container_name": "opensandbox-run-a",
             "labels": {"ai-platform.attempt_id": scope["attempt_id"]},
+            "governed_egress_network_name": network_name,
             **{
                 f"governed_egress_{field}": proof[field]
                 for field in (
@@ -418,6 +425,57 @@ def test_opensandbox_public_proof_signature_tampering_is_rejected():
         proof,
         provider="opensandbox",
         signing_key=PROOF_KEY,
+    ) is False
+
+
+def test_opensandbox_named_network_proof_requires_the_expected_network(monkeypatch):
+    from types import SimpleNamespace
+
+    module = _module()
+    network_name = "customer-egress-2026"
+    current = _opensandbox_runtime_lease(module, network_name=network_name)
+    monkeypatch.setattr(
+        module,
+        "get_settings",
+        lambda: SimpleNamespace(
+            opensandbox_expected_network_mode=network_name,
+            sandbox_egress_proof_key_id="current",
+            sandbox_egress_proof_previous_keys_json="",
+        ),
+    )
+
+    assert module.is_accepted_runtime_lease(current, signing_key=PROOF_KEY) is True
+    current["status"] = "released"
+    monkeypatch.setattr(
+        module,
+        "get_settings",
+        lambda: SimpleNamespace(
+            opensandbox_expected_network_mode="another-egress-network",
+            sandbox_egress_proof_key_id="current",
+            sandbox_egress_proof_previous_keys_json="",
+        ),
+    )
+    assert module.is_accepted_runtime_lease(current, signing_key=PROOF_KEY) is False
+    assert module.is_accepted_runtime_lease(
+        current,
+        signing_key=PROOF_KEY,
+        verification_mode="historical",
+    ) is True
+
+
+@pytest.mark.parametrize("mode", ["active", "historical"])
+@pytest.mark.parametrize("missing", ["container_id", "container_name", "labels"])
+@pytest.mark.parametrize("run_id", ["run-a", "run-b"])
+def test_opensandbox_network_binding_cannot_repair_an_incomplete_scope(mode, missing, run_id):
+    module = _module()
+    row = _opensandbox_runtime_lease(module)
+    row["run_id"] = run_id
+    if mode == "historical":
+        row["status"] = "released"
+    row["lease_payload_json"].pop(missing)
+
+    assert module.is_accepted_runtime_lease(
+        row, signing_key=PROOF_KEY, verification_mode=mode,
     ) is False
 
 

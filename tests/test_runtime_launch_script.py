@@ -24,9 +24,6 @@ DEPLOY_DIR = Path("deploy/ai-platform")
 COMPOSE_FILE = DEPLOY_DIR / "docker-compose.yml"
 SANDBOX_COMPOSE_FILE = DEPLOY_DIR / "docker-compose.sandbox.yml"
 OPENSANDBOX_COMPOSE_FILE = DEPLOY_DIR / "docker-compose.opensandbox.yml"
-OPENSANDBOX_INTERNAL_TEST_COMPOSE_FILE = (
-    DEPLOY_DIR / "docker-compose.opensandbox-internal-test.yml"
-)
 OPENSANDBOX_EGRESS_TEMPLATE = DEPLOY_DIR / "opensandbox-egress-nginx.conf.template"
 OPENSANDBOX_NETWORK_GUARD_SERVICE = Path(
     "deploy/opensandbox/ai-platform-opensandbox-network-guard.service"
@@ -35,6 +32,38 @@ OPENSANDBOX_PRODUCTION_SERVICE = Path(
     "deploy/opensandbox/opensandbox-production.service"
 )
 ENV_EXAMPLE_FILE = DEPLOY_DIR / ".env.example"
+OPENSANDBOX_GUARD_TOPOLOGY = {
+    "OPENSANDBOX_EXPECTED_NETWORK_MODE": "ai-platform-opensandbox-egress-v2",
+    "OPENSANDBOX_EGRESS_BRIDGE": "br-osb-egress2",
+    "OPENSANDBOX_EGRESS_SUBNET": "172.31.76.0/24",
+    "OPENSANDBOX_EGRESS_PROXY_IPV4": "172.31.76.2",
+}
+
+
+def expand_network_guard_command(
+    raw_command: list[str], topology: dict[str, str], *, iptables_dir: Path | None = None
+) -> tuple[list[str], bool]:
+    """Model systemd's known EnvironmentFile expansion for the guard fixture."""
+    command = list(raw_command)
+    ignore_failure = command[0].startswith("-")
+    command[0] = command[0].removeprefix("-")
+    if command[0] == "/bin/sh":
+        script = command[2].replace("$$", "$")
+        for name, value in topology.items():
+            script = script.replace(f"${{{name}}}", value)
+        if iptables_dir is not None:
+            for family in ("iptables", "ip6tables"):
+                script = script.replace(
+                    f"/usr/sbin/{family}", shlex.quote(str(iptables_dir / family))
+                )
+        command[2] = script
+    for index, argument in enumerate(command):
+        for name, value in topology.items():
+            argument = argument.replace(f"${{{name}}}", value)
+        command[index] = argument
+    if iptables_dir is not None and command[0] in {"/usr/sbin/iptables", "/usr/sbin/ip6tables"}:
+        command[0] = str(iptables_dir / Path(command[0]).name)
+    return command, ignore_failure
 
 
 def compose_service_text(compose_text: str, service_name: str) -> str:
@@ -425,7 +454,7 @@ def test_compose_workspace_migration_and_init_are_narrow_and_ordered():
         "app.sandbox.infrastructure.workspace_storage_migration",
     ]
     assert migration["volumes"] == [
-        "ai_platform_sandbox_workspaces:/source-workspaces:ro",
+        "${SANDBOX_WORKSPACE_MIGRATION_SOURCE:?set SANDBOX_WORKSPACE_MIGRATION_SOURCE}:/source-workspaces:ro",
         f"{workspace_root}:/target-workspaces",
     ]
 
@@ -511,7 +540,7 @@ def test_compose_exposes_sandbox_runtime_configuration():
         "${SANDBOX_WORKSPACE_ROOT:-/tmp/ai-platform-sandbox-workspaces}"
     ) in compose_text
     assert "SANDBOX_HOST_WORKSPACE_ROOT" not in sandbox_text
-    assert "ai_platform_sandbox_workspaces" in compose_text
+    assert "${SANDBOX_WORKSPACE_MIGRATION_SOURCE:?set SANDBOX_WORKSPACE_MIGRATION_SOURCE}:/source-workspaces:ro" in compose_text
     assert "SANDBOX_CONTAINER_PROVIDER: docker" in sandbox_text
 
 
@@ -523,14 +552,19 @@ def test_opensandbox_overlay_uses_direct_sdk_and_stateless_egress_proxy():
     env_example = ENV_EXAMPLE_FILE.read_text(encoding="utf-8")
 
     for service_name in ("api", "worker"):
-        assert compose["services"][service_name]["environment"]["SANDBOX_SECURITY_PROFILE"] == "governed"
+        assert "SANDBOX_SECURITY_PROFILE" not in compose["services"][service_name]["environment"]
         environment = overlay["services"][service_name]["environment"]
         assert environment["SANDBOX_CONTAINER_PROVIDER"] == "opensandbox"
-        assert environment["SANDBOX_SECURITY_PROFILE"] == "governed"
         assert environment["OPENSANDBOX_USE_SERVER_PROXY"] == "true"
+        for topology_key in (
+            "OPENSANDBOX_EGRESS_BRIDGE",
+            "OPENSANDBOX_EGRESS_SUBNET",
+            "OPENSANDBOX_EGRESS_PROXY_IPV4",
+        ):
+            assert topology_key not in environment
         assert environment["SANDBOX_RUNTIME_SUBJECT"] == "${SANDBOX_RUNTIME_SUBJECT:-direct-opensandbox}"
         assert environment["OPENSANDBOX_EXPECTED_NETWORK_MODE"] == (
-            "ai-platform-opensandbox-egress-v2"
+            "${OPENSANDBOX_EXPECTED_NETWORK_MODE:?required}"
         )
         assert environment["OPENSANDBOX_EGRESS_PROXY_URL"] == (
             "http://egress.opensandbox.internal:8080"
@@ -558,24 +592,30 @@ def test_opensandbox_overlay_uses_direct_sdk_and_stateless_egress_proxy():
         "default": None,
         "opensandbox_egress_v2": {
             "aliases": ["egress.opensandbox.internal"],
-            "ipv4_address": "172.31.76.2",
+            "ipv4_address": "${OPENSANDBOX_EGRESS_PROXY_IPV4:?required}",
         },
     }
     assert proxy["labels"]["ai-platform.release-role"] == "opensandbox-egress-proxy"
     assert overlay["networks"] == {
         "opensandbox_egress_v2": {
-            "name": "ai-platform-opensandbox-egress-v2",
+            "name": "${OPENSANDBOX_EXPECTED_NETWORK_MODE:?required}",
             "driver": "bridge",
             "internal": False,
             "enable_ipv6": False,
             "driver_opts": {
-                "com.docker.network.bridge.name": "br-osb-egress2",
+                "com.docker.network.bridge.name": "${OPENSANDBOX_EGRESS_BRIDGE:?required}",
                 "com.docker.network.bridge.enable_ip_masquerade": "true",
                 "com.docker.network.bridge.enable_icc": "false",
             },
-            "ipam": {"config": [{"subnet": "172.31.76.0/24"}]},
+            "ipam": {"config": [{"subnet": "${OPENSANDBOX_EGRESS_SUBNET:?required}"}]},
         }
     }
+    assert (
+        overlay["services"]["opensandbox-egress-proxy"]["networks"][
+            "opensandbox_egress_v2"
+        ]["ipv4_address"]
+        == "${OPENSANDBOX_EGRESS_PROXY_IPV4:?required}"
+    )
     assert set(overlay["services"]) == {
         "workspace-migrate",
         "api",
@@ -599,12 +639,14 @@ def test_opensandbox_overlay_uses_direct_sdk_and_stateless_egress_proxy():
         assert "volumes" in overlay["services"][service_name]
     for service_name in ("postgres", "redis", "minio"):
         assert overlay["services"][service_name]["ports"] == []
-    assert "OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS=172.17.0.1" in env_example
-    assert "OPENSANDBOX_EGRESS_PROXY_URL=http://172.17.0.1:18043" in env_example
+    example_values = env_example_values(env_example)
+    for name, value in OPENSANDBOX_GUARD_TOPOLOGY.items():
+        assert example_values[name] == value
+    assert "OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS" not in example_values
+    assert "OPENSANDBOX_EGRESS_PROXY_URL" not in example_values
     for fixed_key in (
         "DEPLOYMENT_ENVIRONMENT",
         "SANDBOX_SECURITY_PROFILE",
-        "OPENSANDBOX_EXPECTED_NETWORK_MODE",
         "AI_PLATFORM_BUILD_COMMIT",
         "AI_PLATFORM_BUILD_DIRTY",
     ):
@@ -615,24 +657,27 @@ def test_opensandbox_overlay_uses_direct_sdk_and_stateless_egress_proxy():
     guard = OPENSANDBOX_NETWORK_GUARD_SERVICE.read_text(encoding="utf-8")
     assert "Before=docker.service opensandbox.service" in guard
     assert "RequiredBy=docker.service opensandbox.service" in guard
-    assert "-I INPUT 1 -i br-osb-egress2 -j AI_PLATFORM_OPENSANDBOX" in guard
+    assert "EnvironmentFile=/etc/ai-platform/opensandbox/server.env" in guard
+    assert '"$$1"' in guard
+    assert "-I INPUT 1 -i ${OPENSANDBOX_EGRESS_BRIDGE} -j AI_PLATFORM_OPENSANDBOX" in guard
     assert (
         "-A AI_PLATFORM_OPENSANDBOX -m conntrack --ctstate "
         "RELATED,ESTABLISHED -j ACCEPT"
     ) in guard
     assert "-A AI_PLATFORM_OPENSANDBOX -j DROP" in guard
     assert (
-        "-I DOCKER-USER 1 -i br-osb-egress2 -j AI_PLATFORM_OSB_FORWARD"
+        "-I DOCKER-USER 1 -i ${OPENSANDBOX_EGRESS_BRIDGE} -j AI_PLATFORM_OSB_FORWARD"
     ) in guard
-    assert "-I DOCKER-USER 1 -o br-osb-egress2 -j AI_PLATFORM_OSB_FORWARD" in guard
-    assert "-d 172.31.76.2/32" in guard
+    assert "-I DOCKER-USER 1 -o ${OPENSANDBOX_EGRESS_BRIDGE} -j AI_PLATFORM_OSB_FORWARD" in guard
+    assert "-d ${OPENSANDBOX_EGRESS_PROXY_IPV4}/32" in guard
     assert "--dport 8080" in guard
-    assert "-A AI_PLATFORM_OSB_FORWARD -i br-osb-egress2 -d 169.254.0.0/16 -j DROP" in guard
-    assert "-A AI_PLATFORM_OSB_FORWARD -i br-osb-egress2 -d 100.64.0.0/10 -j DROP" in guard
-    assert "-A AI_PLATFORM_OSB_FORWARD -o br-osb-egress2 -j DROP" in guard
-    assert "-A AI_PLATFORM_OSB_FORWARD -i br-osb-egress2 -j RETURN" in guard
-    assert "-I FORWARD 1 -i br-osb-egress2 -j AI_PLATFORM_OSB_IPV6" in guard
-    assert "-I INPUT 1 -i br-osb-egress2 -j AI_PLATFORM_OSB_IPV6" in guard
+    assert "-A AI_PLATFORM_OSB_FORWARD -i ${OPENSANDBOX_EGRESS_BRIDGE} -d 169.254.0.0/16 -j DROP" in guard
+    assert "-A AI_PLATFORM_OSB_FORWARD -i ${OPENSANDBOX_EGRESS_BRIDGE} -d 100.64.0.0/10 -j DROP" in guard
+    assert "-A AI_PLATFORM_OSB_FORWARD -o ${OPENSANDBOX_EGRESS_BRIDGE} -j DROP" in guard
+    assert "-A AI_PLATFORM_OSB_FORWARD -i ${OPENSANDBOX_EGRESS_BRIDGE} -j RETURN" in guard
+    assert "-A AI_PLATFORM_OSB_FORWARD -i ${OPENSANDBOX_EGRESS_BRIDGE} ! -s ${OPENSANDBOX_EGRESS_SUBNET} -j DROP" in guard
+    assert "-I FORWARD 1 -i ${OPENSANDBOX_EGRESS_BRIDGE} -j AI_PLATFORM_OSB_IPV6" in guard
+    assert "-I INPUT 1 -i ${OPENSANDBOX_EGRESS_BRIDGE} -j AI_PLATFORM_OSB_IPV6" in guard
     assert "-A AI_PLATFORM_OSB_IPV6 -j DROP" in guard
 
     server_unit = OPENSANDBOX_PRODUCTION_SERVICE.read_text(encoding="utf-8")
@@ -641,38 +686,46 @@ def test_opensandbox_overlay_uses_direct_sdk_and_stateless_egress_proxy():
     assert "host == expected" in server_unit
 
 
-def test_internal_test_opensandbox_uses_the_same_model_proxy_authority():
-    overlay = yaml.safe_load(
-        OPENSANDBOX_INTERNAL_TEST_COMPOSE_FILE.read_text(encoding="utf-8")
-    )
+def test_opensandbox_model_and_callback_authority_is_shared_across_services():
+    compose = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))["services"]
+    overlay = yaml.safe_load(OPENSANDBOX_COMPOSE_FILE.read_text(encoding="utf-8"))["services"]
+    api = {**compose["api"]["environment"], **overlay["api"]["environment"]}
+    worker = {**compose["worker"]["environment"], **overlay["worker"]["environment"]}
     for service_name in ("api", "worker"):
-        environment = overlay["services"][service_name]["environment"]
-        assert environment["SANDBOX_SECURITY_PROFILE"] == "internal-test"
-        assert environment["OPENSANDBOX_EXPECTED_NETWORK_MODE"] == "bridge"
-        assert environment["OPENSANDBOX_EGRESS_PROXY_URL"].startswith("${")
-        assert environment["MODEL_CONNECTION_ENCRYPTION_KEY"].startswith("${")
-        assert "MODEL_CONNECTION_ALLOWED_INTERNAL_HOSTS" in environment
-        for retired_direct_key in (
-            "OPENAI_BASE_URL", "OPENAI_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN",
-        ):
-            assert environment[retired_direct_key] == ""
-    assert overlay["services"]["api"]["environment"]["MODEL_PROXY_INTERNAL_TOKEN"].startswith("${")
-    proxy = overlay["services"]["opensandbox-egress-proxy"]
-    assert proxy["ports"] == [
-        "${OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS:?set OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS}:18043:8080"
-    ]
-    assert proxy["environment"]["MODEL_PROXY_INTERNAL_TOKEN"].startswith("${")
-    assert proxy["volumes"] == [
-        "./opensandbox-egress-nginx.conf.template:/etc/nginx/templates-opensandbox/default.conf.template:ro"
-    ]
+        environment = {**compose[service_name]["environment"], **overlay[service_name]["environment"]}
+        for name in ("MODEL_CONNECTION_ENCRYPTION_KEY", "MODEL_CONNECTION_ALLOWED_INTERNAL_HOSTS"):
+            assert environment[name] == api[name] == worker[name]
+        for name in ("SANDBOX_CALLBACK_BASE_URL", "SANDBOX_CALLBACK_TOKEN"):
+            assert environment[name] == api[name] == worker[name]
+    proxy = overlay["opensandbox-egress-proxy"]
+    assert api["MODEL_PROXY_INTERNAL_TOKEN"] == proxy["environment"]["MODEL_PROXY_INTERNAL_TOKEN"]
+    assert "MODEL_PROXY_INTERNAL_TOKEN" not in worker
+    assert "ports" not in proxy
 
 
 def test_opensandbox_guard_refresh_closes_the_bridge_until_both_families_are_ready():
-    commands = [
-        shlex.split(line.removeprefix("ExecStart="))
-        for line in OPENSANDBOX_NETWORK_GUARD_SERVICE.read_text().splitlines()
-        if line.startswith("ExecStart=")
-    ]
+    commands = []
+    for line in OPENSANDBOX_NETWORK_GUARD_SERVICE.read_text().splitlines():
+        if not line.startswith("ExecStart="):
+            continue
+        raw_command = shlex.split(line.removeprefix("ExecStart="))
+        command, _ = expand_network_guard_command(raw_command, OPENSANDBOX_GUARD_TOPOLOGY)
+        if command[0] == "/bin/sh":
+            script = command[2].replace(
+                '"$1"', OPENSANDBOX_GUARD_TOPOLOGY["OPENSANDBOX_EGRESS_BRIDGE"]
+            )
+            for statement in script.split(";"):
+                command_start = min(
+                    (position for position in (
+                        statement.find("/usr/sbin/iptables"),
+                        statement.find("/usr/sbin/ip6tables"),
+                    ) if position >= 0),
+                    default=-1,
+                )
+                if command_start >= 0:
+                    commands.append(shlex.split(statement[command_start:]))
+        else:
+            commands.append(command)
     first_flush = next(index for index, command in enumerate(commands) if "-F" in command)
     last_install = max(index for index, command in enumerate(commands) if "-A" in command or "-I" in command)
     holds = {}
@@ -681,7 +734,11 @@ def test_opensandbox_guard_refresh_closes_the_bridge_until_both_families_are_rea
             command = shlex.split(command[-1].split(";", 1)[0])
         # iptables accepts one source and destination selector per rule.
         assert command.count("-s") <= 1 and command.count("-d") <= 1
-        if command[-2:] != ["-j", "DROP"] or "-A" in command:
+        if (
+            command[-2:] != ["-j", "DROP"]
+            or "-A" in command
+            or not {"-I", "-D"}.intersection(command)
+        ):
             continue
         operation = "-I" if "-I" in command else "-D"
         offset = command.index(operation)
@@ -758,6 +815,7 @@ sys.exit(code)
         executable.chmod(0o700)
     environment = {
         **os.environ,
+        **OPENSANDBOX_GUARD_TOPOLOGY,
         "OSB_GUARD_TEST_STATE": str(state_path),
         "OSB_GUARD_TEST_FAIL": json.dumps(failed_rule),
     }
@@ -768,17 +826,10 @@ sys.exit(code)
     ]
 
     def refresh() -> bool:
-        for command in commands:
-            command = list(command)
-            ignore_failure = command[0].startswith("-")
-            command[0] = command[0].removeprefix("-")
-            if command[0] == "/bin/sh":
-                for family in ("iptables", "ip6tables"):
-                    command[-1] = command[-1].replace(
-                        f"/usr/sbin/{family}", shlex.quote(str(tmp_path / family)),
-                    )
-            else:
-                command[0] = str(tmp_path / Path(command[0]).name)
+        for raw_command in commands:
+            command, ignore_failure = expand_network_guard_command(
+                raw_command, OPENSANDBOX_GUARD_TOPOLOGY, iptables_dir=tmp_path
+            )
             result = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=10)
             if result.returncode and not ignore_failure:
                 return False
@@ -795,12 +846,12 @@ sys.exit(code)
         ("ip6tables", "FORWARD", "-o"),
     )
     for family, chain, interface in holds:
-        assert [interface, "br-osb-egress2", "-j", "DROP"] in tables[family][chain]
+        assert [interface, OPENSANDBOX_GUARD_TOPOLOGY["OPENSANDBOX_EGRESS_BRIDGE"], "-j", "DROP"] in tables[family][chain]
     assert refresh() is True
     assert refresh() is True
     tables = json.loads(state_path.read_text())["tables"]
     for family, chain, interface in holds:
-        assert [interface, "br-osb-egress2", "-j", "DROP"] not in tables[family][chain]
+        assert [interface, OPENSANDBOX_GUARD_TOPOLOGY["OPENSANDBOX_EGRESS_BRIDGE"], "-j", "DROP"] not in tables[family][chain]
 
     unit_path = tmp_path / "guard.service"
     unit_path.write_bytes(OPENSANDBOX_NETWORK_GUARD_SERVICE.read_bytes())
@@ -813,7 +864,15 @@ sys.exit(code)
         for chain, rules in tables["ip6tables" if command[0] == "ip6tables-save" else "iptables"].items()
         for rule in rules
     )))
-    transition._require_network_guard(Path.cwd(), unit_path=unit_path)
+    from tools.release_authority import validate_direct_opensandbox_topology
+
+    topology = validate_direct_opensandbox_topology(
+        OPENSANDBOX_GUARD_TOPOLOGY["OPENSANDBOX_EXPECTED_NETWORK_MODE"],
+        OPENSANDBOX_GUARD_TOPOLOGY["OPENSANDBOX_EGRESS_BRIDGE"],
+        OPENSANDBOX_GUARD_TOPOLOGY["OPENSANDBOX_EGRESS_SUBNET"],
+        OPENSANDBOX_GUARD_TOPOLOGY["OPENSANDBOX_EGRESS_PROXY_IPV4"],
+    )
+    transition._require_network_guard(Path.cwd(), unit_path=unit_path, topology=topology)
 
 
 @pytest.mark.skipif(
@@ -838,8 +897,11 @@ def test_opensandbox_network_guard_allows_public_egress_and_keeps_host_boundarie
     run(["sudo", "-n", "true"])
     run(["docker", "info"])
 
-    network = "ai-platform-opensandbox-egress-v2"
-    bridge = "br-osb-egress2"
+    topology = dict(OPENSANDBOX_GUARD_TOPOLOGY)
+    network = topology["OPENSANDBOX_EXPECTED_NETWORK_MODE"]
+    bridge = topology["OPENSANDBOX_EGRESS_BRIDGE"]
+    subnet = topology["OPENSANDBOX_EGRESS_SUBNET"]
+    proxy_ipv4 = topology["OPENSANDBOX_EGRESS_PROXY_IPV4"]
     ipv4_chains = (
         "AI_PLATFORM_OPENSANDBOX",
         "AI_PLATFORM_OSB_FORWARD",
@@ -889,9 +951,9 @@ def test_opensandbox_network_guard_allows_public_egress_and_keeps_host_boundarie
                 "--driver",
                 "bridge",
                 "--subnet",
-                "172.31.76.0/24",
+                subnet,
                 "--opt",
-                "com.docker.network.bridge.name=br-osb-egress2",
+                f"com.docker.network.bridge.name={bridge}",
                 "--opt",
                 "com.docker.network.bridge.enable_ip_masquerade=true",
                 "--opt",
@@ -902,7 +964,7 @@ def test_opensandbox_network_guard_allows_public_egress_and_keeps_host_boundarie
         network_created = True
         run(["docker", "pull", "redis:7.4-alpine"])
         for name, address, port in (
-            (proxy, "172.31.76.2", "8080"),
+            (proxy, proxy_ipv4, "8080"),
             (peer, "172.31.76.3", "9090"),
         ):
             run(
@@ -992,7 +1054,7 @@ def test_opensandbox_network_guard_allows_public_egress_and_keeps_host_boundarie
         listener_thread.start()
 
         deadline = time.monotonic() + 15
-        for address, port in (("172.31.76.2", 8080), ("172.31.76.3", 9090), ("11.255.255.2", 18081)):
+        for address, port in ((proxy_ipv4, 8080), ("172.31.76.3", 9090), ("11.255.255.2", 18081)):
             while True:
                 try:
                     with socket.create_connection((address, port), timeout=1):
@@ -1014,9 +1076,7 @@ def test_opensandbox_network_guard_allows_public_egress_and_keeps_host_boundarie
         guard_owned = True
 
         def run_guard_command(raw_command: list[str]) -> None:
-            command = list(raw_command)
-            ignore_failure = command[0].startswith("-")
-            command[0] = command[0].removeprefix("-")
+            command, ignore_failure = expand_network_guard_command(raw_command, topology)
             assert command[0] in {"/usr/sbin/iptables", "/usr/sbin/ip6tables", "/bin/sh"}
             run(["sudo", "-n", *command], check=not ignore_failure)
 
@@ -1063,7 +1123,7 @@ def test_opensandbox_network_guard_allows_public_egress_and_keeps_host_boundarie
                     "-z",
                     "-w",
                     "2",
-                    "172.31.76.2",
+                    proxy_ipv4,
                     "8080",
                 ],
                 check=False,
@@ -1125,16 +1185,16 @@ def test_opensandbox_network_guard_allows_public_egress_and_keeps_host_boundarie
             ).returncode
             != 0
         )
-        public_return_before = packet_count("-A AI_PLATFORM_OSB_FORWARD -i br-osb-egress2 -j RETURN")
+        public_return_before = packet_count(f"-A AI_PLATFORM_OSB_FORWARD -i {bridge} -j RETURN")
         public_response = run(
             ["docker", "exec", client, "nc", "-w", "3", "11.255.255.2", "18081"],
         )
         assert public_response.stdout.strip() == "osb-public-roundtrip 11.255.255.1"
-        assert packet_count("-A AI_PLATFORM_OSB_FORWARD -i br-osb-egress2 -j RETURN") > public_return_before
-        assert packet_count("-A AI_PLATFORM_OSB_FORWARD -i br-osb-egress2 -d 10.0.0.0/8 -j DROP") > 0
-        assert packet_count("-A AI_PLATFORM_OSB_FORWARD -i br-osb-egress2 -d 169.254.0.0/16 -j DROP") > 0
-        assert packet_count("-A AI_PLATFORM_OSB_FORWARD -i br-osb-egress2 -d 100.64.0.0/10 -j DROP") > 0
-        assert packet_count("-A AI_PLATFORM_OSB_FORWARD -i br-osb-egress2 -o br-osb-egress2 -j DROP") > 0
+        assert packet_count(f"-A AI_PLATFORM_OSB_FORWARD -i {bridge} -j RETURN") > public_return_before
+        assert packet_count(f"-A AI_PLATFORM_OSB_FORWARD -i {bridge} -d 10.0.0.0/8 -j DROP") > 0
+        assert packet_count(f"-A AI_PLATFORM_OSB_FORWARD -i {bridge} -d 169.254.0.0/16 -j DROP") > 0
+        assert packet_count(f"-A AI_PLATFORM_OSB_FORWARD -i {bridge} -d 100.64.0.0/10 -j DROP") > 0
+        assert packet_count(f"-A AI_PLATFORM_OSB_FORWARD -i {bridge} -o {bridge} -j DROP") > 0
         # The trusted host control plane must still reach sandbox services.
         with socket.create_connection(("172.31.76.3", 9090), timeout=2):
             pass
@@ -1142,9 +1202,9 @@ def test_opensandbox_network_guard_allows_public_egress_and_keeps_host_boundarie
         ipv6_rules = run(
             ["sudo", "-n", "/usr/sbin/ip6tables-save", "-t", "filter"]
         ).stdout
-        assert "-A INPUT -i br-osb-egress2 -j AI_PLATFORM_OSB_IPV6" in ipv6_rules
-        assert "-A FORWARD -i br-osb-egress2 -j AI_PLATFORM_OSB_IPV6" in ipv6_rules
-        assert "-A FORWARD -o br-osb-egress2 -j AI_PLATFORM_OSB_IPV6" in ipv6_rules
+        assert f"-A INPUT -i {bridge} -j AI_PLATFORM_OSB_IPV6" in ipv6_rules
+        assert f"-A FORWARD -i {bridge} -j AI_PLATFORM_OSB_IPV6" in ipv6_rules
+        assert f"-A FORWARD -o {bridge} -j AI_PLATFORM_OSB_IPV6" in ipv6_rules
     finally:
         cleanup_failures = []
 
@@ -1274,8 +1334,8 @@ def test_env_example_documents_sandbox_egress_policy_defaults():
         "SANDBOX_CONTAINER_PROVIDER=opensandbox",
         "SANDBOX_EXECUTOR_IMAGE=ai-platform:local",
         "SANDBOX_EXECUTOR_PUBLISHED_HOST=host.docker.internal",
-        "SANDBOX_WORKSPACE_MIGRATION_SOURCE=/data/ai-platform-prod/runtime-workspaces",
-        "SANDBOX_WORKSPACE_ROOT=/data/opensandbox/workspaces/ai-platform-production",
+        "SANDBOX_WORKSPACE_MIGRATION_SOURCE=/data/ai-platform/runtime-workspaces",
+        "SANDBOX_WORKSPACE_ROOT=/data/opensandbox/workspaces/ai-platform",
         "SANDBOX_CALLBACK_BASE_URL=http://api.sandbox.internal:8020",
         "SANDBOX_EGRESS_POLICY_ENABLED=false",
         "SANDBOX_EGRESS_PROOF_SIGNING_KEY=replace_me_with_a_random_32_byte_minimum_value",
@@ -1288,12 +1348,12 @@ def test_env_example_documents_sandbox_egress_policy_defaults():
     assert "SANDBOX_CONTAINER_PROVIDER=fake" not in env_example_text
     assert "SANDBOX_CALLBACK_TOKEN=change_me_sandbox_callback_token" not in env_example_text
     assert direct_text.count("SANDBOX_CONTAINER_PROVIDER: opensandbox") == 2
-    assert direct_text.count("SANDBOX_SECURITY_PROFILE: governed") == 2
     assert direct_text.count('OPENSANDBOX_USE_SERVER_PROXY: "true"') == 2
     assert direct_text.count(
-        "OPENSANDBOX_EXPECTED_NETWORK_MODE: ai-platform-opensandbox-egress-v2"
+        "OPENSANDBOX_EXPECTED_NETWORK_MODE: ${OPENSANDBOX_EXPECTED_NETWORK_MODE:?required}"
     ) == 2
     assert direct_text.count("      OPENSANDBOX_EGRESS_PROXY_URL:") == 2
+    assert "SANDBOX_SECURITY_PROFILE" not in direct_text
 
 
 def test_compose_passes_sandbox_egress_policy_env_to_api_and_worker():

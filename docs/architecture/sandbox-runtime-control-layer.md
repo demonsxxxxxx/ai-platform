@@ -16,8 +16,8 @@ OpenSandbox SDK directly; OpenSandbox Server owns sandbox lifecycle and runsc
 execution. The stateless model/callback proxy is an egress boundary only and
 is not a second application lifecycle.
 
-Production OpenSandbox tasks use the `ai-platform-opensandbox-egress-v2` Docker
-bridge with host NAT and public Internet access. The host guard denies private,
+OpenSandbox tasks use an operator-configured dedicated Docker bridge with host
+NAT and public Internet access. The host guard denies private,
 link-local, metadata, host and peer destinations and new inbound connections;
 the existing model/callback proxy is the sole private task-network exception.
 The trusted OpenSandbox host control plane retains access to sandbox services.
@@ -30,6 +30,32 @@ substitute for observing host firewall enforcement. Previous internal-network
 leases remain readable as historical facts and eligible for exact-identity
 cleanup; they cannot be acquired, dispatched or renewed under the new policy.
 Provider-specific network and SDK details remain behind the existing port.
+
+The package has one OpenSandbox overlay and one runtime path. Network name,
+bridge, IPv4 subnet, proxy address, workspace root and migration source are
+operator values. Host TOML permits only the exact configured workspace root;
+OpenSandbox still receives only one authoritative Attempt directory.
+
+### Change Contract: unified sandbox deployment
+
+Execution owns signed Attempt/lease admission and provider cleanup; Delivery
+owns package assembly, configured storage migration and host topology checks.
+The internal-test overlay, package CLI profile selector, separate CI archive,
+active security-profile setting, bridge execution/renewal/orphan-cleanup branches
+and their active-path fixtures are retired together. Functional SDK fixtures use
+the unified signed path; live acceptance uses the selected real host.
+
+The stable operator archive name, Compose project and persistent data-volume
+identities remain existing deployment interfaces. Database-tracked internal-test
+leases retain only full persisted/remote-identity stop cleanup. Previous signed
+internal-network leases retain historical reads and exact cleanup. Neither
+compatibility path grants new execution or renewal. Removing these cleanup
+consumers requires evidence that no retained or active record needs them.
+
+Acceptance covers a configured network and workspace end to end, rejects drift
+between host/application/actual rules and mounts, and preserves image digests,
+RunAttempt scope, model/callback authority, data identity and failure recovery.
+Source tests do not establish real Linux/gVisor enforcement or deployment.
 
 The platform owns these durable facts:
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 from contextlib import contextmanager
 import hashlib
-import ipaddress
 import json
 import os
 from pathlib import Path
@@ -24,9 +23,6 @@ FRONTEND = "@@FRONTEND_IMAGE@@"
 PROJECT = "ai-platform-internal"
 DATA = ("postgres", "redis", "minio")
 APPS = ("frontend", "api", "worker")
-PRODUCTION_WORKSPACE_ROOT = Path("/data/opensandbox/workspaces/ai-platform-production")
-INTERNAL_TEST_WORKSPACE_ROOT = Path("/data/opensandbox/workspaces/ai-platform-internal-test")
-PRODUCTION_WORKSPACE_MIGRATION_SOURCE = Path("/data/ai-platform-prod/runtime-workspaces")
 
 QUIESCENCE_SQL = """select
 (select count(*) from runs where status not in ('succeeded','failed','cancelled')),
@@ -168,38 +164,6 @@ def verify_runtime(docker: list[str], image_ids: dict[str, str], before: dict, w
         raise DeploymentError("Worker heartbeat did not advance with stable identity")
 
 
-def validate_model_proxy_bind(config: dict) -> str | None:
-    proxy = config.get("services", {}).get("opensandbox-egress-proxy")
-    if not isinstance(proxy, dict):
-        raise DeploymentError("OpenSandbox model proxy is missing")
-    ports = proxy.get("ports") or []
-    if not ports:
-        return None
-    if len(ports) != 1 or not isinstance(ports[0], dict):
-        raise DeploymentError("internal-test model proxy bind is invalid")
-    port = ports[0]
-    try:
-        address = ipaddress.ip_address(str(port.get("host_ip") or ""))
-        published = int(port.get("published"))
-        target = int(port.get("target"))
-    except (TypeError, ValueError):
-        raise DeploymentError("internal-test model proxy bind is invalid") from None
-    if (
-        address.version != 4
-        or not address.is_private
-        or address.is_loopback
-        or address.is_link_local
-        or address.is_multicast
-        or address.is_reserved
-        or address.is_unspecified
-        or published != 18043
-        or target != 8080
-        or str(port.get("protocol") or "tcp").lower() != "tcp"
-    ):
-        raise DeploymentError("internal-test model proxy bind is invalid")
-    return str(address)
-
-
 def validate_workspace_storage(config: dict, docker: list[str], migrate_legacy: bool = False) -> bool:
     services = config.get("services")
     if not isinstance(services, dict):
@@ -207,17 +171,13 @@ def validate_workspace_storage(config: dict, docker: list[str], migrate_legacy: 
     environment = services.get("api", {}).get("environment", {})
     raw_root = str(environment.get("SANDBOX_WORKSPACE_ROOT") or "")
     workspace_root = Path(raw_root)
-    security_profile = str(environment.get("SANDBOX_SECURITY_PROFILE") or "")
-    expected_root = (
-        INTERNAL_TEST_WORKSPACE_ROOT
-        if security_profile == "internal-test"
-        else PRODUCTION_WORKSPACE_ROOT
-        if security_profile == "governed"
-        else None
-    )
-    if expected_root is None or workspace_root != expected_root:
-        raise DeploymentError("sandbox workspace root is not approved for this profile")
-    if not workspace_root.is_absolute() or workspace_root != Path(os.path.abspath(workspace_root)):
+    if (
+        not raw_root
+        or not workspace_root.is_absolute()
+        or workspace_root == Path("/")
+        or workspace_root.as_posix() != raw_root
+        or workspace_root != Path(os.path.abspath(workspace_root))
+    ):
         raise DeploymentError("sandbox workspace root must be an absolute normalized path")
     if any(
         services.get(service, {}).get("environment", {}).get("SANDBOX_WORKSPACE_ROOT")
@@ -234,19 +194,32 @@ def validate_workspace_storage(config: dict, docker: list[str], migrate_legacy: 
     else:
         raise DeploymentError("sandbox workspace root must be outside Docker data-root")
 
-    current = workspace_root
-    while True:
+    def inspect_path(path: Path, description: str) -> os.stat_result | None:
+        node = None
         try:
-            node = current.lstat()
+            node = path.lstat()
         except FileNotFoundError:
-            node = None
+            pass
         except OSError as exc:
-            raise DeploymentError("sandbox workspace root cannot be inspected") from exc
-        if node is not None and stat.S_ISLNK(node.st_mode):
-            raise DeploymentError("sandbox workspace root must not contain symlinked parents")
-        if current.parent == current:
-            break
-        current = current.parent
+            raise DeploymentError(f"{description} cannot be inspected") from exc
+        current = path
+        while True:
+            try:
+                parent_node = current.lstat()
+            except FileNotFoundError:
+                parent_node = None
+            except OSError as exc:
+                raise DeploymentError(f"{description} cannot be inspected") from exc
+            if parent_node is not None and stat.S_ISLNK(parent_node.st_mode):
+                raise DeploymentError(f"{description} must not contain symlinked parents")
+            if current.parent == current:
+                break
+            current = current.parent
+        return node
+
+    root_node = inspect_path(workspace_root, "sandbox workspace root")
+    if root_node is not None and not stat.S_ISDIR(root_node.st_mode):
+        raise DeploymentError("sandbox workspace root must be a directory")
 
     def mount(service: str, target: str) -> dict:
         matches = [
@@ -265,68 +238,31 @@ def validate_workspace_storage(config: dict, docker: list[str], migrate_legacy: 
     init_mount = mount("workspace-init", "/runtime-workspaces")
     target_mount = mount("workspace-migrate", "/target-workspaces")
     source_mount = mount("workspace-migrate", "/source-workspaces")
-    source_type = source_mount.get("type")
-    source_path: Path | None = None
-    volumes = config.get("volumes")
-    workspace_volume = (
-        volumes.get("ai_platform_sandbox_workspaces")
-        if isinstance(volumes, dict)
-        else None
-    )
-    source_is_valid = (
-        security_profile == "internal-test"
-        and source_type == "volume"
-        and source_mount.get("source") == "ai_platform_sandbox_workspaces"
-        and isinstance(workspace_volume, dict)
-        and workspace_volume.get("name")
-        == f"{PROJECT}_ai_platform_sandbox_workspaces"
-    )
-    if source_type == "bind":
-        source_path = Path(str(source_mount.get("source") or ""))
-        try:
-            source_node = source_path.lstat()
-        except FileNotFoundError:
-            source_node = None
-        except OSError as exc:
-            raise DeploymentError("workspace migration source is unavailable") from exc
-        source_is_valid = (
-            security_profile == "governed"
-            and source_path == PRODUCTION_WORKSPACE_MIGRATION_SOURCE
-            and source_path.is_absolute()
-            and source_path == Path(os.path.abspath(source_path))
-            and source_path != workspace_root
-            and (source_node is None or stat.S_ISDIR(source_node.st_mode))
-        )
-        current = source_path
-        while source_is_valid:
-            try:
-                parent_node = current.lstat()
-            except FileNotFoundError:
-                parent_node = None
-            except OSError as exc:
-                raise DeploymentError("workspace migration source cannot be inspected") from exc
-            if parent_node is not None and stat.S_ISLNK(parent_node.st_mode):
-                source_is_valid = False
-                break
-            if current.parent == current:
-                break
-            current = current.parent
-    if source_path is not None and (
-        workspace_root.is_relative_to(source_path)
+    if source_mount.get("type") != "bind" or not source_mount.get("read_only"):
+        raise DeploymentError("workspace migration mount topology is invalid")
+    raw_source = str(source_mount.get("source") or "")
+    source_path = Path(raw_source)
+    if (
+        not raw_source
+        or not source_path.is_absolute()
+        or source_path.as_posix() != raw_source
+        or source_path != Path(os.path.abspath(source_path))
+        or workspace_root.is_relative_to(source_path)
         or source_path.is_relative_to(workspace_root)
     ):
-        source_is_valid = False
+        raise DeploymentError("workspace migration mount topology is invalid")
+    source_node = inspect_path(source_path, "workspace migration source")
+    if source_node is not None and not stat.S_ISDIR(source_node.st_mode):
+        raise DeploymentError("workspace migration source is unavailable")
     if (
         init_mount.get("type") != "bind"
         or init_mount.get("source") != raw_root
+        or init_mount.get("read_only")
         or target_mount.get("type") != "bind"
         or target_mount.get("source") != raw_root
-        or not source_is_valid
-        or not source_mount.get("read_only")
+        or target_mount.get("read_only")
     ):
         raise DeploymentError("workspace migration mount topology is invalid")
-    if security_profile == "internal-test":
-        return True
     if migrate_legacy:
         if source_node is None:
             raise DeploymentError("requested legacy workspace migration source is unavailable")
@@ -360,8 +296,6 @@ def verify_workspace_migration_complete(config: dict, docker: list[str]) -> None
 
 def validate_production_config(config: dict, allow_insecure_http: bool) -> None:
     environment = config["services"]["api"].get("environment", {})
-    if environment.get("SANDBOX_SECURITY_PROFILE") != "governed":
-        return
     for key in ("TRUSTED_PRINCIPAL_SECRET", "AI_SESSION_SECRET"):
         value = str(environment.get(key) or "").strip()
         if len(value) < 32 or value.lower().startswith(("change_me", "changeme", "example", "replace")):
@@ -421,28 +355,63 @@ def resume_quiescent(docker: list[str]) -> None:
             raise DeploymentError("sandbox containers block install resume")
 
 
-def validate_existing_workspaces(config: dict, before: dict, workspace_migration: bool) -> None:
+def validate_existing_workspaces(config: dict, before: dict, workspace_migration: bool, docker: list[str]) -> None:
+    services = config["services"]
+    source_mounts = [
+        item for item in services["workspace-migrate"].get("volumes", [])
+        if isinstance(item, dict) and item.get("target") == "/source-workspaces"
+    ]
+    if len(source_mounts) != 1:
+        raise DeploymentError("existing workspace storage identity is unavailable; operator recovery required")
+    migration_source = source_mounts[0].get("source")
+    identities = []
+    old_roots = []
+    volume_mount = None
     for service in ("api", "worker"):
         record = before[service]
         environment = dict(item.split("=", 1) for item in record["Config"].get("Env", []) if "=" in item)
         old_root = environment.get("SANDBOX_WORKSPACE_ROOT")
         mounts = [item for item in record.get("Mounts", []) if item.get("Destination") == old_root]
-        current = config["services"][service]["environment"]["SANDBOX_WORKSPACE_ROOT"]
-        profile = config["services"][service]["environment"]["SANDBOX_SECURITY_PROFILE"]
+        current = services[service]["environment"]["SANDBOX_WORKSPACE_ROOT"]
         if not old_root or len(mounts) != 1:
             raise DeploymentError("existing workspace storage identity is unavailable; operator recovery required")
         mount = mounts[0]
+        identity = (mount.get("Type"), mount.get("Source"), mount.get("Name"), mount.get("Driver"))
+        identities.append(identity)
+        old_roots.append(old_root)
         if mount.get("Type") == "bind" and mount.get("Source") == current and old_root == current:
             continue
         supported_legacy = (
-            profile == "governed" and mount.get("Type") == "bind"
-            and mount.get("Source") == str(PRODUCTION_WORKSPACE_MIGRATION_SOURCE)
-        ) or (
-            profile == "internal-test" and mount.get("Type") == "volume"
-            and mount.get("Name") == f"{PROJECT}_ai_platform_sandbox_workspaces"
+            mount.get("Type") in {"bind", "volume"}
+            and mount.get("Source") == migration_source
+            and (mount.get("Type") != "volume" or bool(mount.get("Name")))
         )
         if not workspace_migration or not supported_legacy:
             raise DeploymentError("existing workspace storage needs an explicitly supported migration; operator recovery required")
+        if mount.get("Type") == "volume":
+            volume_mount = mount
+    if old_roots[0] != old_roots[1] or identities[0] != identities[1]:
+        raise DeploymentError("existing API and Worker workspace storage identities do not match; operator recovery required")
+    if volume_mount is not None:
+        try:
+            volumes = json.loads(run(
+                [*docker, "volume", "inspect", "--", volume_mount["Name"]],
+                "workspace volume inspection", 30,
+            ))
+            valid_volume = (
+                isinstance(volumes, list)
+                and len(volumes) == 1
+                and isinstance(volumes[0], dict)
+                and volumes[0].get("Name") == volume_mount["Name"]
+                and volumes[0].get("Driver") == "local"
+                and volumes[0].get("Options") in (None, {})
+                and volumes[0].get("Mountpoint") == migration_source
+                and volume_mount.get("Driver", "local") == "local"
+            )
+        except (ValueError, TypeError):
+            valid_volume = False
+        if not valid_volume:
+            raise DeploymentError("workspace migration requires a plain local volume; operator recovery required")
 
 
 def validate_resume_data(config: dict, before: dict, image_ids: dict[str, str]) -> None:
@@ -473,23 +442,7 @@ def deploy(package: Path, env: Path, docker: list[str], offline: bool, check_onl
     run([*compose, "config", "--quiet"], "configuration")
     config = json.loads(run([*compose, "config", "--format", "json"], "configuration identity"))
     validate_production_config(config, allow_insecure_http)
-    model_proxy_bind = validate_model_proxy_bind(config)
     workspace_migration = validate_workspace_storage(config, docker, migrate_legacy)
-    if model_proxy_bind is not None:
-        bridge_gateway = run(
-            [*docker, "network", "inspect", "bridge", "--format", "{{(index .IPAM.Config 0).Gateway}}"],
-            "Docker bridge inspection",
-        )
-        if bridge_gateway != model_proxy_bind:
-            raise DeploymentError("internal-test model proxy bind is not the Docker bridge gateway")
-        expected_proxy_url = f"http://{model_proxy_bind}:18043"
-        if any(
-            config["services"][service].get("environment", {}).get(
-                "OPENSANDBOX_EGRESS_PROXY_URL"
-            ) != expected_proxy_url
-            for service in ("api", "worker")
-        ):
-            raise DeploymentError("internal-test model proxy URL does not match its bridge bind")
     for service in ("api", "worker", "migrate", "workspace-migrate", "workspace-init", "frontend"):
         expected = FRONTEND if service == "frontend" else BACKEND
         if config["services"][service]["image"] != expected:
@@ -498,7 +451,7 @@ def deploy(package: Path, env: Path, docker: list[str], offline: bool, check_onl
     state_path = state_path or env.parent / ".ai-platform-install-state.json"
     install_state(state_path, config, resume_install, workspace_migration=workspace_migration)
     if before and not resume_install:
-        validate_existing_workspaces(config, before, workspace_migration)
+        validate_existing_workspaces(config, before, workspace_migration, docker)
         quiescent(docker)
     if not before and not resume_install:
         existing_volumes = run([*docker, "volume", "ls", "--format", "{{.Name}}"], "persistent volume inventory").splitlines()

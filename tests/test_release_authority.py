@@ -118,14 +118,13 @@ def test_opensandbox_compose_overlay_uses_direct_sdk_and_egress_proxy():
     for service_name in ("api", "worker"):
         environment = services[service_name]["environment"]
         assert environment["SANDBOX_CONTAINER_PROVIDER"] == "opensandbox"
-        assert environment["SANDBOX_SECURITY_PROFILE"] == "governed"
         assert environment["SANDBOX_EGRESS_POLICY_ENABLED"] == "true"
         assert environment["OPENSANDBOX_USE_SERVER_PROXY"] == "true"
         assert environment["SANDBOX_RUNTIME_SUBJECT"] == (
             "${SANDBOX_RUNTIME_SUBJECT:-direct-opensandbox}"
         )
         assert environment["OPENSANDBOX_EXPECTED_NETWORK_MODE"] == (
-            release_authority.DIRECT_OPENSANDBOX_NETWORK_NAME
+            "${OPENSANDBOX_EXPECTED_NETWORK_MODE:?required}"
         )
         assert environment["OPENSANDBOX_EGRESS_PROXY_URL"] == (
             release_authority.DIRECT_OPENSANDBOX_PROXY_URL
@@ -146,6 +145,17 @@ def test_opensandbox_compose_overlay_uses_direct_sdk_and_egress_proxy():
         "default",
         release_authority.DIRECT_OPENSANDBOX_NETWORK_KEY,
     }
+    assert proxy["networks"][release_authority.DIRECT_OPENSANDBOX_NETWORK_KEY][
+        "ipv4_address"
+    ] == "${OPENSANDBOX_EGRESS_PROXY_IPV4:?required}"
+    network = yaml.safe_load(OPENSANDBOX_COMPOSE.read_text(encoding="utf-8"))["networks"][
+        release_authority.DIRECT_OPENSANDBOX_NETWORK_KEY
+    ]
+    assert network["name"] == "${OPENSANDBOX_EXPECTED_NETWORK_MODE:?required}"
+    assert network["driver_opts"]["com.docker.network.bridge.name"] == "${OPENSANDBOX_EGRESS_BRIDGE:?required}"
+    assert network["ipam"]["config"] == [
+        {"subnet": "${OPENSANDBOX_EGRESS_SUBNET:?required}"}
+    ]
 
 
 def test_direct_release_authority_cli_no_bytecode_flag_leaves_no_sibling_bytecode(tmp_path):
@@ -480,7 +490,6 @@ def _opensandbox_environment(auth_base: str, user_info_base: str) -> dict[str, s
         "EXISTING_AUTH_BASE_URL": auth_base,
         "EXISTING_USER_INFO_BASE_URL": user_info_base,
         "SANDBOX_CONTAINER_PROVIDER": "opensandbox",
-        "SANDBOX_SECURITY_PROFILE": "governed",
         "SANDBOX_EGRESS_POLICY_ENABLED": "true",
         "SANDBOX_RUNTIME_SUBJECT": "direct-opensandbox",
         "OPENSANDBOX_BASE_URL": "http://172.19.0.1:8080",
@@ -491,38 +500,45 @@ def _opensandbox_environment(auth_base: str, user_info_base: str) -> dict[str, s
     }
 
 
-def _direct_opensandbox_rendered_config(auth_base: str, user_info_base: str) -> dict[str, object]:
+def _direct_opensandbox_rendered_config(
+    auth_base: str,
+    user_info_base: str,
+    topology: release_authority.DirectOpenSandboxTopology | None = None,
+) -> dict[str, object]:
+    topology = topology or release_authority.DIRECT_OPENSANDBOX_DEFAULT_TOPOLOGY
+    environment = _opensandbox_environment(auth_base, user_info_base)
+    environment["OPENSANDBOX_EXPECTED_NETWORK_MODE"] = topology.network_name
     return {
         "services": {
             "postgres": {},
             "redis": {},
             "minio": {},
-            "api": {"environment": _opensandbox_environment(auth_base, user_info_base)},
-            "worker": {"environment": _opensandbox_environment(auth_base, user_info_base)},
+            "api": {"environment": dict(environment)},
+            "worker": {"environment": dict(environment)},
             "opensandbox-egress-proxy": {
                 "labels": {"ai-platform.release-role": "opensandbox-egress-proxy"},
                 "networks": {
                     "default": None,
                     release_authority.DIRECT_OPENSANDBOX_NETWORK_KEY: {
                         "aliases": [release_authority.DIRECT_OPENSANDBOX_PROXY_ALIAS],
-                        "ipv4_address": release_authority.DIRECT_OPENSANDBOX_PROXY_IPV4,
+                        "ipv4_address": topology.proxy_ipv4,
                     },
                 },
             },
         },
         "networks": {
             release_authority.DIRECT_OPENSANDBOX_NETWORK_KEY: {
-                "name": release_authority.DIRECT_OPENSANDBOX_NETWORK_NAME,
+                "name": topology.network_name,
                 "driver": "bridge",
                 "internal": False,
                 "enable_ipv6": False,
                 "driver_opts": {
-                    "com.docker.network.bridge.name": release_authority.DIRECT_OPENSANDBOX_BRIDGE_NAME,
+                    "com.docker.network.bridge.name": topology.bridge_name,
                     "com.docker.network.bridge.enable_ip_masquerade": "true",
                     "com.docker.network.bridge.enable_icc": "false",
                 },
                 "ipam": {
-                    "config": [{"subnet": release_authority.DIRECT_OPENSANDBOX_SUBNET}]
+                    "config": [{"subnet": topology.subnet}]
                 },
             }
         },
@@ -552,23 +568,21 @@ def _write_required_provider_compose_files(repo_root: Path) -> tuple[Path, Path]
         "  minio:\n    ports: !reset []\n"
         "  api:\n    environment:\n"
         "      SANDBOX_CONTAINER_PROVIDER: opensandbox\n"
-        "      SANDBOX_SECURITY_PROFILE: governed\n"
         "      SANDBOX_EGRESS_POLICY_ENABLED: \"true\"\n"
         "      SANDBOX_RUNTIME_SUBJECT: direct-opensandbox\n"
         "      OPENSANDBOX_BASE_URL: ${OPENSANDBOX_BASE_URL:?set OPENSANDBOX_BASE_URL}\n"
         "      OPENSANDBOX_API_KEY: ${OPENSANDBOX_API_KEY:?set OPENSANDBOX_API_KEY}\n"
         "      OPENSANDBOX_USE_SERVER_PROXY: \"true\"\n"
-        "      OPENSANDBOX_EXPECTED_NETWORK_MODE: ai-platform-opensandbox-egress-v2\n"
+        "      OPENSANDBOX_EXPECTED_NETWORK_MODE: ${OPENSANDBOX_EXPECTED_NETWORK_MODE:?required}\n"
         "      OPENSANDBOX_EGRESS_PROXY_URL: http://egress.opensandbox.internal:8080\n"
         "  worker:\n    environment:\n"
         "      SANDBOX_CONTAINER_PROVIDER: opensandbox\n"
-        "      SANDBOX_SECURITY_PROFILE: governed\n"
         "      SANDBOX_EGRESS_POLICY_ENABLED: \"true\"\n"
         "      SANDBOX_RUNTIME_SUBJECT: direct-opensandbox\n"
         "      OPENSANDBOX_BASE_URL: ${OPENSANDBOX_BASE_URL:?set OPENSANDBOX_BASE_URL}\n"
         "      OPENSANDBOX_API_KEY: ${OPENSANDBOX_API_KEY:?set OPENSANDBOX_API_KEY}\n"
         "      OPENSANDBOX_USE_SERVER_PROXY: \"true\"\n"
-        "      OPENSANDBOX_EXPECTED_NETWORK_MODE: ai-platform-opensandbox-egress-v2\n"
+        "      OPENSANDBOX_EXPECTED_NETWORK_MODE: ${OPENSANDBOX_EXPECTED_NETWORK_MODE:?required}\n"
         "      OPENSANDBOX_EGRESS_PROXY_URL: http://egress.opensandbox.internal:8080\n"
         "  opensandbox-egress-proxy:\n"
         "    labels:\n"
@@ -577,20 +591,20 @@ def _write_required_provider_compose_files(repo_root: Path) -> tuple[Path, Path]
         "      default: null\n"
         "      opensandbox_egress_v2:\n"
         "        aliases: [egress.opensandbox.internal]\n"
-        "        ipv4_address: 172.31.76.2\n"
+        "        ipv4_address: ${OPENSANDBOX_EGRESS_PROXY_IPV4:?required}\n"
         "networks:\n"
         "  opensandbox_egress_v2:\n"
-        "    name: ai-platform-opensandbox-egress-v2\n"
+        "    name: ${OPENSANDBOX_EXPECTED_NETWORK_MODE:?required}\n"
         "    driver: bridge\n"
         "    internal: false\n"
         "    enable_ipv6: false\n"
         "    driver_opts:\n"
-        "      com.docker.network.bridge.name: br-osb-egress2\n"
+        "      com.docker.network.bridge.name: ${OPENSANDBOX_EGRESS_BRIDGE:?required}\n"
         "      com.docker.network.bridge.enable_ip_masquerade: \"true\"\n"
         "      com.docker.network.bridge.enable_icc: \"false\"\n"
         "    ipam:\n"
         "      config:\n"
-        "        - subnet: 172.31.76.0/24\n",
+        "        - subnet: ${OPENSANDBOX_EGRESS_SUBNET:?required}\n",
         encoding="utf-8",
     )
     return main, direct
@@ -611,6 +625,10 @@ def test_env_example_inventory_covers_exact_base_and_opensandbox_required_keys()
         "MODEL_PROXY_INTERNAL_TOKEN",
         "OPENSANDBOX_API_KEY",
         "OPENSANDBOX_BASE_URL",
+        "OPENSANDBOX_EGRESS_BRIDGE",
+        "OPENSANDBOX_EGRESS_PROXY_IPV4",
+        "OPENSANDBOX_EGRESS_SUBNET",
+        "OPENSANDBOX_EXPECTED_NETWORK_MODE",
         "OPENSANDBOX_EXECUTOR_IMAGE",
         "OPENSANDBOX_EXECUTOR_IMAGE_DIGEST",
         "SANDBOX_EGRESS_PROOF_SIGNING_KEY",
@@ -653,11 +671,21 @@ def test_env_example_inventory_covers_exact_base_and_opensandbox_required_keys()
 
 def test_compose_semantic_preflight_accepts_complete_opensandbox_config_with_operator_auth(monkeypatch, tmp_path):
     commit = "a" * 40
+    topology = release_authority.validate_direct_opensandbox_topology(
+        "ai-platform-egress-custom-v4",
+        "br-osb-custom",
+        "10.72.16.0/24",
+        "10.72.16.2",
+    )
     main, opensandbox = _write_required_provider_compose_files(tmp_path)
     env_file = tmp_path / ".env"
     env_file.write_text(
         "EXISTING_AUTH_BASE_URL=http://10.56.0.25:7263\n"
-        "EXISTING_USER_INFO_BASE_URL=http://10.56.0.25:5166\n",
+        "EXISTING_USER_INFO_BASE_URL=http://10.56.0.25:5166\n"
+        f"OPENSANDBOX_EXPECTED_NETWORK_MODE={topology.network_name}\n"
+        f"OPENSANDBOX_EGRESS_BRIDGE={topology.bridge_name}\n"
+        f"OPENSANDBOX_EGRESS_SUBNET={topology.subnet}\n"
+        f"OPENSANDBOX_EGRESS_PROXY_IPV4={topology.proxy_ipv4}\n",
         encoding="utf-8",
     )
     selection = release_authority.resolve_compose_files(
@@ -666,7 +694,7 @@ def test_compose_semantic_preflight_accepts_complete_opensandbox_config_with_ope
     commands: list[list[str]] = []
     rendered = json.dumps(
         _direct_opensandbox_rendered_config(
-            "http://10.56.0.25:7263", "http://10.56.0.25:5166"
+            "http://10.56.0.25:7263", "http://10.56.0.25:5166", topology
         )
     )
     monkeypatch.setattr(release_authority, "_run", lambda command, **kwargs: commands.append(list(command)) or subprocess.CompletedProcess(command, 0, stdout=rendered, stderr=""))
@@ -676,6 +704,28 @@ def test_compose_semantic_preflight_accepts_complete_opensandbox_config_with_ope
     assert command[command.index("compose") :] == ["compose", "-p", release_authority.COMPOSE_PROJECT, "--env-file", str(env_file), "-f", str(main.resolve()), "-f", str(opensandbox.resolve()), "config", "--format", "json"]
     for role, suffix in (("AI_PLATFORM_IMAGE", "backend"), ("AI_PLATFORM_FRONTEND_IMAGE", "frontend"), ("SANDBOX_EXECUTOR_IMAGE", "sandbox-executor")):
         assert f"{role}={release_authority.COMPOSE_CONFIG_PREFLIGHT_PLACEHOLDER}/{suffix}" in command
+
+
+@pytest.mark.parametrize(
+    ("network", "bridge", "subnet", "proxy"),
+    (
+        ("custom;$(touch /tmp/owned)", "br-osb-custom", "10.72.16.0/24", "10.72.16.2"),
+        ("customer-egress-", "br-osb-custom", "10.72.16.0/24", "10.72.16.2"),
+        ("ai-platform-custom", "br;touch", "10.72.16.0/24", "10.72.16.2"),
+        ("ai-platform-custom", "br-osb-custom", "10.72.16.1/24", "10.72.16.2"),
+        ("ai-platform-custom", "br-osb-custom", "8.8.8.0/24", "8.8.8.2"),
+        ("ai-platform-custom", "br-osb-custom", "10.72.16.0/24", "10.72.17.2"),
+        ("ai-platform-custom", "br-osb-custom", "10.72.16.0/24", "10.72.16.1"),
+    ),
+    ids=("network-token", "network-hashed-label", "bridge-token", "cidr-host-bits", "public-cidr", "proxy-outside-subnet", "proxy-gateway"),
+)
+def test_direct_opensandbox_topology_rejects_malicious_or_invalid_operator_values(
+    network, bridge, subnet, proxy
+):
+    with pytest.raises(ReleaseAuthorityError, match="^OpenSandbox egress topology is invalid$"):
+        release_authority.validate_direct_opensandbox_topology(
+            network, bridge, subnet, proxy
+        )
 
 
 def test_missing_compose_keys_fail_before_all_non_preflight_docker_and_redact_raw_output(monkeypatch, tmp_path):
@@ -777,13 +827,13 @@ def test_direct_opensandbox_semantic_preflight_rejects_unsafe_runtime(
         "ipv6-enabled",
         "masquerade-disabled",
         "icc-enabled",
-        "wrong-bridge-name",
         "wrong-network-name",
-        "wrong-subnet",
+        "non-private-subnet",
         "wrong-proxy-ip",
         "extra-driver-option",
         "missing-proxy-alias",
         "api-joined-isolated-network",
+        "expected-network-mode-drift",
     ),
 )
 def test_direct_opensandbox_semantic_preflight_rejects_network_isolation_drift(case):
@@ -802,22 +852,25 @@ def test_direct_opensandbox_semantic_preflight_rejects_network_isolation_drift(c
         network["driver_opts"]["com.docker.network.bridge.enable_ip_masquerade"] = "false"
     elif case == "icc-enabled":
         network["driver_opts"]["com.docker.network.bridge.enable_icc"] = "true"
-    elif case == "wrong-bridge-name":
-        network["driver_opts"]["com.docker.network.bridge.name"] = "br-wrong"
     elif case == "wrong-network-name":
         network["name"] = "wrong"
-    elif case == "wrong-subnet":
-        network["ipam"]["config"][0]["subnet"] = "172.31.77.0/24"
+    elif case == "non-private-subnet":
+        network["ipam"]["config"][0]["subnet"] = "8.8.8.0/24"
+        proxy_network["ipv4_address"] = "8.8.8.2"
     elif case == "wrong-proxy-ip":
-        proxy_network["ipv4_address"] = "172.31.76.3"
+        proxy_network["ipv4_address"] = "172.31.77.2"
     elif case == "extra-driver-option":
         network["driver_opts"]["com.docker.network.bridge.gateway_mode_ipv4"] = "isolated"
     elif case == "missing-proxy-alias":
         proxy_network["aliases"] = []
-    else:
+    elif case == "api-joined-isolated-network":
         config["services"]["api"]["networks"] = {
             release_authority.DIRECT_OPENSANDBOX_NETWORK_KEY: None
         }
+    else:
+        config["services"]["api"]["environment"][
+            "OPENSANDBOX_EXPECTED_NETWORK_MODE"
+        ] = "ai-platform-egress-drifted"
 
     with pytest.raises(ReleaseAuthorityError) as exc_info:
         release_authority._validate_direct_opensandbox_config(json.dumps(config))
@@ -3396,6 +3449,16 @@ def test_deploy_rejects_provider_ownership_change_during_preflight_revalidation(
         _compose_config_value(prior_main, prior_opensandbox),
         _compose_config_value(prior_main, prior_sandbox),
     )
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "EXISTING_AUTH_BASE_URL=https://auth.internal.example\n"
+        "EXISTING_USER_INFO_BASE_URL=https://identity.internal.example\n"
+        f"OPENSANDBOX_EXPECTED_NETWORK_MODE={release_authority.DIRECT_OPENSANDBOX_NETWORK_NAME}\n"
+        f"OPENSANDBOX_EGRESS_BRIDGE={release_authority.DIRECT_OPENSANDBOX_BRIDGE_NAME}\n"
+        f"OPENSANDBOX_EGRESS_SUBNET={release_authority.DIRECT_OPENSANDBOX_SUBNET}\n"
+        f"OPENSANDBOX_EGRESS_PROXY_IPV4={release_authority.DIRECT_OPENSANDBOX_PROXY_IPV4}\n",
+        encoding="utf-8",
+    )
     inspect_count = 0
     commands: list[list[str]] = []
     image_records = {
@@ -3456,7 +3519,7 @@ def test_deploy_rejects_provider_ownership_change_during_preflight_revalidation(
             target,
             commit,
             docker_cmd="docker",
-            env_file=tmp_path / ".env",
+            env_file=env_file,
             replace_known_manual_frontend=False,
             compose_files=[COMPOSE_RELATIVE_PATH, OPENSANDBOX_COMPOSE_RELATIVE_PATH],
         )

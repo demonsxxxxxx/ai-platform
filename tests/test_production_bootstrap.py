@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 import socket
 import stat
 import subprocess
@@ -21,12 +22,19 @@ SERVER_IMAGE = "ghcr.io/example/opensandbox-server@sha256:" + "5" * 64
 EXECD_IMAGE = "ghcr.io/example/opensandbox-execd@sha256:" + "6" * 64
 EGRESS_IMAGE = "ghcr.io/example/opensandbox-egress@sha256:" + "8" * 64
 SERVER_IMAGE_ID = "sha256:" + "7" * 64
+WORKSPACE_ROOT = Path("/data/opensandbox/workspaces/ai-platform")
+REAL_UNIT_HELPER_VALIDATION = bootstrap._require_root_owned_unit_helper
 
 
 @pytest.fixture(autouse=True)
 def _accepted_network_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Functional unit fixtures live in the invoking user's temporary checkout.
+    # Root permission enforcement is exercised separately with synthetic metadata.
+    monkeypatch.setattr(bootstrap, "_require_root_owned_unit_helper", lambda _path: None)
     monkeypatch.setattr(
-        bootstrap.transition, "_require_network_guard", lambda _checkout: None
+        bootstrap.transition,
+        "_require_network_guard",
+        lambda _checkout, *, topology: None,
     )
 
 
@@ -45,6 +53,9 @@ def _server_environment(socket_gid: int, **changes: str) -> str:
         "OPENSANDBOX_SERVER_GID": str(max(1, bootstrap.os.getgid())),
         "OPENSANDBOX_DOCKER_SOCKET_GID": str(socket_gid),
         "OPENSANDBOX_LIFECYCLE_LISTEN_ADDRESS": "10.40.0.10",
+        "OPENSANDBOX_EGRESS_BRIDGE": bootstrap.authority.DIRECT_OPENSANDBOX_BRIDGE_NAME,
+        "OPENSANDBOX_EGRESS_SUBNET": bootstrap.authority.DIRECT_OPENSANDBOX_SUBNET,
+        "OPENSANDBOX_EGRESS_PROXY_IPV4": bootstrap.authority.DIRECT_OPENSANDBOX_PROXY_IPV4,
         **changes,
     }
     return "\n".join(f"{key}={value}" for key, value in values.items()) + "\n"
@@ -57,7 +68,7 @@ def _server_config(**changes: str) -> str:
         "egress_image": EGRESS_IMAGE,
         "host_ip": "10.40.0.10",
         "network_mode": bootstrap.authority.DIRECT_OPENSANDBOX_NETWORK_NAME,
-        "allowed_host_paths": '["/data/opensandbox/workspaces"]',
+        "allowed_host_paths": f'["{WORKSPACE_ROOT}"]',
         "sandbox_env": "{}",
         "sandbox_binds": "[]",
         "egress_mode": "dns+nft",
@@ -117,6 +128,11 @@ def _application_environment(**changes: str) -> str:
     values = {
         "OPENSANDBOX_BASE_URL": "http://10.40.0.10:8080",
         "OPENSANDBOX_API_KEY": "a" * 32,
+        "OPENSANDBOX_EXPECTED_NETWORK_MODE": bootstrap.authority.DIRECT_OPENSANDBOX_NETWORK_NAME,
+        "OPENSANDBOX_EGRESS_BRIDGE": bootstrap.authority.DIRECT_OPENSANDBOX_BRIDGE_NAME,
+        "OPENSANDBOX_EGRESS_SUBNET": bootstrap.authority.DIRECT_OPENSANDBOX_SUBNET,
+        "OPENSANDBOX_EGRESS_PROXY_IPV4": bootstrap.authority.DIRECT_OPENSANDBOX_PROXY_IPV4,
+        "SANDBOX_WORKSPACE_ROOT": str(WORKSPACE_ROOT),
         "OPENSANDBOX_EXECUTOR_IMAGE": BACKEND,
         "OPENSANDBOX_EXECUTOR_IMAGE_DIGEST": "sha256:" + "3" * 64,
         **changes,
@@ -134,6 +150,8 @@ def _host_config() -> bootstrap.OpenSandboxHostConfig:
         server_gid=max(1, bootstrap.os.getgid()),
         docker_socket_gid=max(1, bootstrap.os.getgid()),
         lifecycle_address="10.40.0.10",
+        topology=bootstrap.authority.DIRECT_OPENSANDBOX_DEFAULT_TOPOLOGY,
+        workspace_root=WORKSPACE_ROOT,
         api_key_sha256=bootstrap.hashlib.sha256(("a" * 32).encode("utf-8")).hexdigest(),
         config_sha256="9" * 64,
     )
@@ -177,7 +195,89 @@ def test_host_config_requires_secure_consistent_production_values(
     assert config.execd_image == EXECD_IMAGE
     assert config.egress_image == EGRESS_IMAGE
     assert config.lifecycle_address == "10.40.0.10"
+    assert config.topology == bootstrap.authority.DIRECT_OPENSANDBOX_DEFAULT_TOPOLOGY
+    assert config.workspace_root == WORKSPACE_ROOT
     assert bootstrap.re.fullmatch(r"[0-9a-f]{64}", config.config_sha256)
+
+
+def test_operator_topology_and_workspace_root_flow_into_host_config_and_hash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    def load_config(
+        name: str,
+        environment_changes: dict[str, str] | None = None,
+        config_changes: dict[str, str] | None = None,
+    ) -> bootstrap.OpenSandboxHostConfig:
+        directory = tmp_path / name
+        directory.mkdir()
+        socket_path = directory / "docker.sock"
+        unix_socket = socket.socket(socket.AF_UNIX)
+        try:
+            unix_socket.bind(str(socket_path.relative_to(tmp_path)))
+            env_file = _secure_file(
+                directory / "server.env",
+                _server_environment(
+                    socket_path.stat().st_gid, **(environment_changes or {})
+                ),
+            )
+            config_file = _secure_file(
+                directory / "server.toml",
+                _server_config(**(config_changes or {})),
+                mode=0o640,
+            )
+            return bootstrap.load_opensandbox_host_config(
+                env_file,
+                config_file,
+                docker_socket=socket_path,
+                expected_uid=bootstrap.os.getuid(),
+            )
+        finally:
+            unix_socket.close()
+
+    baseline = load_config("baseline")
+    custom_network_name = "ai-platform-egress-custom"
+    custom_bridge = "br-osb-custom"
+    custom_subnet = "172.31.76.0/27"
+    custom_proxy = "172.31.76.3"
+    custom_workspace_root = Path("/srv/opensandbox/workspaces/tenant-a")
+    custom = load_config(
+        "custom",
+        {
+            "OPENSANDBOX_EGRESS_BRIDGE": custom_bridge,
+            "OPENSANDBOX_EGRESS_SUBNET": custom_subnet,
+            "OPENSANDBOX_EGRESS_PROXY_IPV4": custom_proxy,
+        },
+        {
+            "network_mode": custom_network_name,
+            "allowed_host_paths": f'["{custom_workspace_root}"]',
+        },
+    )
+
+    assert custom.topology == bootstrap.authority.DirectOpenSandboxTopology(
+        network_name=custom_network_name,
+        bridge_name=custom_bridge,
+        subnet=custom_subnet,
+        proxy_ipv4=custom_proxy,
+    )
+    assert custom.workspace_root == custom_workspace_root
+    assert custom.config_sha256 != baseline.config_sha256
+
+    hash_variants = [
+        load_config("network-name", config_changes={"network_mode": custom_network_name}),
+        load_config("bridge", {"OPENSANDBOX_EGRESS_BRIDGE": custom_bridge}),
+        load_config("subnet", {"OPENSANDBOX_EGRESS_SUBNET": custom_subnet}),
+        load_config("proxy", {"OPENSANDBOX_EGRESS_PROXY_IPV4": custom_proxy}),
+        load_config(
+            "workspace-root",
+            config_changes={
+                "allowed_host_paths": f'["{custom_workspace_root}"]'
+            },
+        ),
+    ]
+    assert all(config.config_sha256 != baseline.config_sha256 for config in hash_variants)
 
 
 @pytest.mark.parametrize(
@@ -191,7 +291,7 @@ def test_host_config_requires_secure_consistent_production_values(
         (
             {},
             {"network_mode": "bridge"},
-            "violates production policy",
+            "egress topology is invalid",
         ),
         (
             {"OPENSANDBOX_LIFECYCLE_LISTEN_ADDRESS": "8.8.8.8"},
@@ -202,12 +302,30 @@ def test_host_config_requires_secure_consistent_production_values(
         ({}, {"api_key": "a" * 31 + "$"}, "violates production policy"),
         ({}, {"execd_image": "opensandbox-execd:latest"}, "not an immutable image"),
         ({}, {"egress_image": "opensandbox-egress:latest"}, "not an immutable image"),
-        ({}, {"host_ip": "10.40.0.12"}, "violates production policy"),
         (
+            {"OPENSANDBOX_EGRESS_BRIDGE": "br-osb;$(touch-bad)"},
             {},
-            {"allowed_host_paths": '["/data"]'},
-            "violates production policy",
+            "egress topology is invalid",
         ),
+        (
+            {"OPENSANDBOX_EGRESS_SUBNET": "172.31.76.0/27x"},
+            {},
+            "egress topology is invalid",
+        ),
+        (
+            {"OPENSANDBOX_EGRESS_PROXY_IPV4": "172.31.77.2"},
+            {},
+            "egress topology is invalid",
+        ),
+        (
+            {"OPENSANDBOX_EGRESS_PROXY_IPV4": "172.31.76.1"},
+            {},
+            "egress topology is invalid",
+        ),
+        ({}, {"network_mode": "bridge;malicious"}, "egress topology is invalid"),
+        ({}, {"allowed_host_paths": '["/"]'}, "workspace root is invalid"),
+        ({}, {"allowed_host_paths": '["../workspace"]'}, "workspace root is invalid"),
+        ({}, {"host_ip": "10.40.0.12"}, "violates production policy"),
         ({}, {"sandbox_binds": '["/:/host:rw"]'}, "violates production policy"),
         ({}, {"egress_mode": "dns"}, "violates production policy"),
     ],
@@ -344,6 +462,11 @@ def test_host_config_rejects_writable_parent_chain(
     [
         {"OPENSANDBOX_BASE_URL": "http://10.40.0.12:8080"},
         {"OPENSANDBOX_API_KEY": "b" * 32},
+        {"OPENSANDBOX_EXPECTED_NETWORK_MODE": "ai-platform-egress-other"},
+        {"OPENSANDBOX_EGRESS_BRIDGE": "br-osb-other"},
+        {"OPENSANDBOX_EGRESS_SUBNET": "172.31.76.0/25"},
+        {"OPENSANDBOX_EGRESS_PROXY_IPV4": "172.31.76.3"},
+        {"SANDBOX_WORKSPACE_ROOT": "/srv/opensandbox/workspaces/other"},
     ],
 )
 def test_application_environment_must_match_the_host_contract(
@@ -664,13 +787,47 @@ def _checkout_with_unit(tmp_path: Path) -> Path:
         (ROOT / "tools/opensandbox_unit_guard.py").read_text(encoding="utf-8"),
         encoding="utf-8",
     )
+    commands = [
+        ["git", "init", "--quiet", str(checkout)],
+        ["git", "-C", str(checkout), "config", "user.name", "Codex Test"],
+        [
+            "git",
+            "-C",
+            str(checkout),
+            "config",
+            "user.email",
+            "codex-test@example.invalid",
+        ],
+        [
+            "git",
+            "-C",
+            str(checkout),
+            "add",
+            bootstrap.UNIT_TEMPLATE.as_posix(),
+            "tools/opensandbox_unit_guard.py",
+        ],
+        ["git", "-C", str(checkout), "commit", "--quiet", "-m", "test checkout"],
+    ]
+    for command in commands:
+        subprocess.run(command, check=True, capture_output=True, text=True)
     return checkout
+
+
+def _checkout_commit(checkout: Path) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(checkout), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
 
 
 def test_host_bootstrap_installs_unit_and_starts_service(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     checkout = _checkout_with_unit(tmp_path)
+    commit = _checkout_commit(checkout)
     unit_path = tmp_path / "systemd" / "opensandbox.service"
     runner = HostRunner()
     events: list[str] = []
@@ -679,7 +836,7 @@ def test_host_bootstrap_installs_unit_and_starts_service(
     )
     monkeypatch.setattr(bootstrap, "_require_host_address_available", lambda *_: None)
     monkeypatch.setattr(bootstrap, "_ensure_directory", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(bootstrap, "_ensure_platform_workspace", lambda: None)
+    monkeypatch.setattr(bootstrap, "_ensure_platform_workspace", lambda _path: None)
     monkeypatch.setattr(
         bootstrap, "_validate_server_container", lambda *_: events.append("container")
     )
@@ -690,13 +847,15 @@ def test_host_bootstrap_installs_unit_and_starts_service(
         health_probe=lambda address: events.append(f"health:{address}"),
         unit_path=unit_path,
         health_timeout=0,
-    ).run(COMMIT)
+    ).run(commit)
 
     assert result == _host_config()
     assert unit_path.stat().st_mode & 0o777 == 0o644
-    assert f"ai-platform.source-commit={COMMIT}" in unit_path.read_text(
+    assert f"ai-platform.source-commit={commit}" in unit_path.read_text(
         encoding="utf-8"
     )
+    helper_path = str((checkout / "tools/opensandbox_unit_guard.py").resolve())
+    assert unit_path.read_text(encoding="utf-8").count(helper_path) == 2
     assert [command[-1] for command in runner.commands if "pull" in command] == [
         SERVER_IMAGE,
         EXECD_IMAGE,
@@ -710,6 +869,7 @@ def test_host_bootstrap_rejects_missing_network_guard_before_unit_mutation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     checkout = _checkout_with_unit(tmp_path)
+    commit = _checkout_commit(checkout)
     unit_path = tmp_path / "systemd" / "opensandbox.service"
     runner = HostRunner()
     monkeypatch.setattr(
@@ -719,7 +879,7 @@ def test_host_bootstrap_rejects_missing_network_guard_before_unit_mutation(
     monkeypatch.setattr(
         bootstrap.transition,
         "_require_network_guard",
-        lambda _checkout: (_ for _ in ()).throw(
+        lambda _checkout, *, topology: (_ for _ in ()).throw(
             bootstrap.transition.TransitionError("guard invalid")
         ),
     )
@@ -730,16 +890,86 @@ def test_host_bootstrap_rejects_missing_network_guard_before_unit_mutation(
             runner=runner,
             health_probe=lambda _address: None,
             unit_path=unit_path,
-        ).run(COMMIT)
+        ).run(commit)
 
     assert not unit_path.exists()
     assert not any("pull" in command for command in runner.commands)
+
+
+def test_host_bootstrap_rejects_source_checkout_drift_before_host_preparation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkout = _checkout_with_unit(tmp_path)
+    commit = _checkout_commit(checkout)
+    helper = checkout / "tools/opensandbox_unit_guard.py"
+    helper.write_text(helper.read_text(encoding="utf-8") + "\n# drift\n", encoding="utf-8")
+    runner = HostRunner()
+    unit_path = tmp_path / "systemd" / "opensandbox.service"
+    monkeypatch.setattr(
+        bootstrap,
+        "load_opensandbox_host_config",
+        lambda *_args: pytest.fail("host configuration was read before source verification"),
+    )
+
+    with pytest.raises(bootstrap.BootstrapError, match="source checkout does not match"):
+        bootstrap.HostBootstrap(
+            checkout,
+            runner=runner,
+            health_probe=lambda _address: None,
+            unit_path=unit_path,
+        ).run(commit)
+
+    assert runner.commands == []
+    assert not unit_path.exists()
+
+
+@pytest.mark.parametrize("unsafe", [
+    "helper-owner", "parent-owner", "helper-write", "parent-write",
+    "helper-symlink", "parent-symlink",
+])
+def test_clean_checkout_with_an_unprotected_root_helper_is_rejected_before_preparation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, unsafe: str,
+) -> None:
+    checkout = _checkout_with_unit(tmp_path)
+    commit = _checkout_commit(checkout)
+    helper = checkout / "tools/opensandbox_unit_guard.py"
+    paths = {helper, *helper.parents}
+    original_lstat = Path.lstat
+
+    def metadata(path):
+        if path not in paths:
+            return original_lstat(path)
+        is_helper = path == helper
+        mode = stat.S_IFREG | 0o644 if is_helper else stat.S_IFDIR | 0o755
+        owner = 0
+        selected = helper if unsafe.startswith("helper") else checkout
+        if path == selected:
+            if unsafe.endswith("owner"):
+                owner = 1001
+            elif unsafe.endswith("write"):
+                mode |= 0o020
+            else:
+                mode = stat.S_IFLNK | 0o777
+        return SimpleNamespace(st_mode=mode, st_uid=owner)
+
+    monkeypatch.setattr(Path, "lstat", metadata)
+    monkeypatch.setattr(bootstrap, "_require_root_owned_unit_helper", REAL_UNIT_HELPER_VALIDATION)
+    monkeypatch.setattr(bootstrap, "load_opensandbox_host_config", lambda *_args: pytest.fail("host preparation began"))
+    runner = HostRunner()
+    unit_path = tmp_path / "systemd/opensandbox.service"
+
+    with pytest.raises(bootstrap.BootstrapError, match="unit helper path is unsafe"):
+        bootstrap.HostBootstrap(checkout, runner=runner, unit_path=unit_path).run(commit)
+    assert runner.commands == []
+    assert not unit_path.exists()
 
 
 def test_equivalent_managed_unit_does_not_restart_active_service(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     checkout = _checkout_with_unit(tmp_path)
+    commit = _checkout_commit(checkout)
     unit_path = tmp_path / "systemd" / "opensandbox.service"
     unit_path.parent.mkdir(parents=True)
     unit_path.write_text(
@@ -757,7 +987,7 @@ def test_equivalent_managed_unit_does_not_restart_active_service(
     )
     monkeypatch.setattr(bootstrap, "_require_host_address_available", lambda *_: None)
     monkeypatch.setattr(bootstrap, "_ensure_directory", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(bootstrap, "_ensure_platform_workspace", lambda: None)
+    monkeypatch.setattr(bootstrap, "_ensure_platform_workspace", lambda _path: None)
     observed_commits: list[str] = []
     monkeypatch.setattr(
         bootstrap,
@@ -771,7 +1001,7 @@ def test_equivalent_managed_unit_does_not_restart_active_service(
         health_probe=lambda _address: None,
         unit_path=unit_path,
         health_timeout=0,
-    ).run(COMMIT)
+    ).run(commit)
 
     assert not any(
         command[:2] == ["systemctl", "restart"] for command in runner.commands
@@ -787,12 +1017,17 @@ def test_changed_host_unit_can_restore_the_previous_running_service(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     checkout = _checkout_with_unit(tmp_path)
+    commit = _checkout_commit(checkout)
     unit_path = tmp_path / "systemd" / "opensandbox.service"
     unit_path.parent.mkdir(parents=True)
     previous = bootstrap._render_unit(
         checkout / bootstrap.UNIT_TEMPLATE,
         OLD_COMMIT,
         _host_config().config_sha256,
+    )
+    previous = previous.replace(
+        str((checkout / "tools/opensandbox_unit_guard.py").resolve()),
+        f"/data/ai-platform-prod/releases/{OLD_COMMIT}/tools/opensandbox_unit_guard.py",
     )
     previous = previous.replace("KillMode=control-group", "KillMode=process")
     unit_path.write_text(previous, encoding="utf-8")
@@ -804,7 +1039,7 @@ def test_changed_host_unit_can_restore_the_previous_running_service(
     )
     monkeypatch.setattr(bootstrap, "_require_host_address_available", lambda *_: None)
     monkeypatch.setattr(bootstrap, "_ensure_directory", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(bootstrap, "_ensure_platform_workspace", lambda: None)
+    monkeypatch.setattr(bootstrap, "_ensure_platform_workspace", lambda _path: None)
     monkeypatch.setattr(
         bootstrap,
         "_validate_server_container",
@@ -818,11 +1053,11 @@ def test_changed_host_unit_can_restore_the_previous_running_service(
         health_timeout=0,
     )
 
-    host.run(COMMIT, require_existing_unit=True)
+    host.run(commit, require_existing_unit=True)
     host.rollback()
 
     assert unit_path.read_text(encoding="utf-8") == previous
-    assert observed_commits == [COMMIT, OLD_COMMIT]
+    assert observed_commits == [commit, OLD_COMMIT]
     assert ["systemctl", "stop", "opensandbox.service"] in runner.commands
 
 
@@ -831,6 +1066,7 @@ def test_existing_runtime_requires_a_bootstrap_managed_host_unit_before_mutation
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     checkout = _checkout_with_unit(tmp_path)
+    commit = _checkout_commit(checkout)
     unit_path = tmp_path / "systemd" / "opensandbox.service"
     runner = HostRunner()
     monkeypatch.setattr(
@@ -845,7 +1081,7 @@ def test_existing_runtime_requires_a_bootstrap_managed_host_unit_before_mutation
     monkeypatch.setattr(
         bootstrap,
         "_ensure_platform_workspace",
-        lambda: pytest.fail("platform workspace was mutated"),
+        lambda _path: pytest.fail("platform workspace was mutated"),
     )
 
     with pytest.raises(bootstrap.BootstrapError, match="lacks a bootstrap-managed"):
@@ -855,7 +1091,7 @@ def test_existing_runtime_requires_a_bootstrap_managed_host_unit_before_mutation
             health_probe=lambda _address: None,
             unit_path=unit_path,
             health_timeout=0,
-        ).run(COMMIT, require_existing_unit=True)
+        ).run(commit, require_existing_unit=True)
 
     assert not any("pull" in command for command in runner.commands)
     assert not any("network" in command for command in runner.commands)
@@ -866,6 +1102,7 @@ def test_existing_runtime_rejects_opensandbox_host_configuration_drift(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     checkout = _checkout_with_unit(tmp_path)
+    commit = _checkout_commit(checkout)
     unit_path = tmp_path / "systemd" / "opensandbox.service"
     unit_path.parent.mkdir(parents=True)
     unit_path.write_text(
@@ -895,7 +1132,7 @@ def test_existing_runtime_rejects_opensandbox_host_configuration_drift(
             health_probe=lambda _address: None,
             unit_path=unit_path,
             health_timeout=0,
-        ).run(COMMIT, require_existing_unit=True)
+        ).run(commit, require_existing_unit=True)
 
     assert not any("pull" in command for command in runner.commands)
     assert not any("network" in command for command in runner.commands)
@@ -995,15 +1232,16 @@ def test_retired_application_cli_fails_before_host_preparation() -> None:
 
 def test_production_unit_is_distinctly_managed_and_uses_host_network_guard() -> None:
     unit = (ROOT / bootstrap.UNIT_TEMPLATE).read_text(encoding="utf-8")
-    assert unit.count("@@SOURCE_COMMIT@@") == 3
+    assert unit.count("@@SOURCE_COMMIT@@") == 1
     assert unit.count("@@HOST_CONFIG_SHA256@@") == 1
+    assert unit.count("@@GUARD_PATH@@") == 2
     assert "ai-platform.release-owner=production-bootstrap" in unit
     assert "--network host" in unit
     assert "--publish" not in unit
     assert "OPENSANDBOX_EGRESS_LISTEN_ADDRESS" not in unit
     assert "Requires=docker.service ai-platform-opensandbox-network-guard.service" in unit
-    assert "python3 -I /data/ai-platform-prod/releases/" in unit
-    assert unit.count("tools/opensandbox_unit_guard.py") == 2
+    assert "ExecStartPre=/usr/bin/python3 -I @@GUARD_PATH@@" in unit
+    assert "ExecStop=/usr/bin/python3 -I @@GUARD_PATH@@" in unit
     assert "docker rm -f ai-platform-opensandbox-server" not in unit
     assert "KillMode=control-group" in unit
 
@@ -1026,7 +1264,7 @@ def test_readme_runbook_and_examples_expose_the_production_package() -> None:
     command = "python3 deploy.py"
     assert command in readme and command in runbook and command in production
     assert "ai-platform-production.tar.gz" in readme
-    assert "/data/ai-platform-prod/config/production/.env" in production
+    assert "/absolute/path/to/operator.env" in production
     assert "root:<OPENSANDBOX_SERVER_GID> 0640" in production
     assert "application package" in production
     assert "Docker daemon authority" in production
@@ -1044,6 +1282,6 @@ def test_readme_runbook_and_examples_expose_the_production_package() -> None:
         'network_mode = "ai-platform-opensandbox-egress-v2"' in config
     )
     assert 'mode = "dns+nft"' in config
-    assert 'allowed_host_paths = ["/data/opensandbox/workspaces"]' in config
+    assert 'allowed_host_paths = ["/data/opensandbox/workspaces/ai-platform"]' in config
     assert "sandbox_binds = []" in config
     assert "server/v0.1.13-or-newer" in environment
