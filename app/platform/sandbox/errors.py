@@ -38,7 +38,7 @@ class OpenSandboxCapabilityAdmissionError(SandboxRuntimeError):
 
 
 class GovernedEgressAdmissionError(SandboxRuntimeError):
-    """Raised before sandbox side effects when default-deny egress is unproven."""
+    """Raised before sandbox side effects when required egress boundaries are unproven."""
 
     def __init__(self) -> None:
         super().__init__(

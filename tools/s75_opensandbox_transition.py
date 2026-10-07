@@ -67,8 +67,10 @@ EXPECTED_VOLUME_CONSUMERS = {
     "ai_platform_sandbox_workspaces": {"ai-platform-api", "ai-platform-worker"},
 }
 S75_WORKSPACE_ROOT = "/data/ai-platform-prod/runtime-workspaces"
+# This path is accepted only when recognizing the pre-OpenSandbox runtime data.
+LEGACY_WORKSPACE_ROOT = S75_WORKSPACE_ROOT
 LEGACY_RUNTIME_RELEASE_ROOT = PurePosixPath("/data/ai-platform-prod/releases")
-EXPECTED_WORKSPACE_BINDS = {
+LEGACY_WORKSPACE_BINDS = {
     "workspace-init": ("/runtime-workspaces", S75_WORKSPACE_ROOT),
     "api": (S75_WORKSPACE_ROOT, S75_WORKSPACE_ROOT),
     "worker": (S75_WORKSPACE_ROOT, S75_WORKSPACE_ROOT),
@@ -87,6 +89,7 @@ OPENSANDBOX_SERVER_CONFIG_PATH = Path("/etc/ai-platform/opensandbox/server.toml"
 OPENSANDBOX_NETWORK_GUARD_SERVICE = "ai-platform-opensandbox-network-guard.service"
 OPENSANDBOX_NETWORK_GUARD_CHAIN = "AI_PLATFORM_OPENSANDBOX"
 OPENSANDBOX_FORWARD_GUARD_CHAIN = "AI_PLATFORM_OSB_FORWARD"
+OPENSANDBOX_IPV6_GUARD_CHAIN = "AI_PLATFORM_OSB_IPV6"
 OPENSANDBOX_NETWORK_GUARD_SOURCE = Path(
     "deploy/opensandbox/ai-platform-opensandbox-network-guard.service"
 )
@@ -252,6 +255,8 @@ def _require_exact_legacy_inventory(docker: Sequence[str]) -> None:
 def _require_volume_identities(
     docker: Sequence[str],
     containers: dict[str, dict[str, Any]],
+    *,
+    workspace_root: Path | str = LEGACY_WORKSPACE_ROOT,
 ) -> None:
     for logical, (service, destination, expected_name) in EXPECTED_VOLUMES.items():
         if _mount_source(containers[service], destination) != expected_name:
@@ -274,11 +279,21 @@ def _require_volume_identities(
     workspace_name = EXPECTED_VOLUMES["ai_platform_sandbox_workspaces"][2]
     if _mount_source(containers["api"], "/tmp/ai-platform-sandbox-workspaces") != workspace_name:
         raise TransitionError("legacy workspace volume mismatch: api")
-    for service, (destination, expected_source) in EXPECTED_WORKSPACE_BINDS.items():
+    workspace_root = str(workspace_root)
+    expected_workspace_binds = (
+        LEGACY_WORKSPACE_BINDS
+        if workspace_root == LEGACY_WORKSPACE_ROOT
+        else {
+            "workspace-init": ("/runtime-workspaces", workspace_root),
+            "api": (workspace_root, workspace_root),
+            "worker": (workspace_root, workspace_root),
+        }
+    )
+    for service, (destination, expected_source) in expected_workspace_binds.items():
         if _mount_source(containers[service], destination, mount_type="bind") != expected_source:
             raise TransitionError(f"managed workspace bind mismatch: {service}")
     for service in ("api", "worker"):
-        if _container_environment(containers[service]).get("SANDBOX_WORKSPACE_ROOT") != S75_WORKSPACE_ROOT:
+        if _container_environment(containers[service]).get("SANDBOX_WORKSPACE_ROOT") != workspace_root:
             raise TransitionError(f"managed workspace root mismatch: {service}")
 
 
@@ -338,7 +353,9 @@ def _legacy_runtime(
             raise TransitionError(f"legacy release provenance mismatch: {service}")
     if _container_image(containers["api"]) != _container_image(containers["worker"]):
         raise TransitionError("legacy backend image mismatch")
-    _require_volume_identities(docker, containers)
+    _require_volume_identities(
+        docker, containers, workspace_root=LEGACY_WORKSPACE_ROOT
+    )
     executor_image = _container_environment(containers["api"]).get("SANDBOX_EXECUTOR_IMAGE", "").strip()
     if not executor_image:
         raise TransitionError("legacy executor image missing")
@@ -367,25 +384,38 @@ def _require_safe_env_file(path: Path) -> Path:
     return path.resolve(strict=True)
 
 
-def _require_workspace_root_env(path: Path) -> None:
+def _load_opensandbox_host_config():
+    from tools.production_bootstrap import (
+        BootstrapError,
+        load_opensandbox_host_config,
+    )
+
+    try:
+        return load_opensandbox_host_config()
+    except BootstrapError as exc:
+        raise TransitionError("OpenSandbox host configuration is invalid") from exc
+
+
+def _require_workspace_root_env(path: Path, host_config: Any | None = None) -> None:
+    host_config = host_config or _load_opensandbox_host_config()
+    workspace_root = str(host_config.workspace_root)
     inherited = os.environ.get("SANDBOX_WORKSPACE_ROOT")
-    if inherited is not None and inherited != S75_WORKSPACE_ROOT:
+    if inherited is not None and inherited != workspace_root:
         raise TransitionError("managed workspace root configuration mismatch")
     try:
-        if path.stat().st_size > 1024 * 1024:
-            raise TransitionError("managed environment file too large")
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeError) as exc:
-        raise TransitionError("managed environment file unreadable") from exc
-    values = [
-        value.strip()
-        for line in lines
-        if line.strip() and not line.lstrip().startswith("#")
-        for key, separator, value in (line.partition("="),)
-        if separator and key.strip() == "SANDBOX_WORKSPACE_ROOT"
-    ]
-    if values != [S75_WORKSPACE_ROOT]:
-        raise TransitionError("managed workspace root configuration mismatch")
+        from tools.production_bootstrap import (
+            BootstrapError,
+            _require_application_host_contract,
+        )
+
+        values = _require_application_host_contract(path, host_config)
+    except BootstrapError as exc:
+        raise TransitionError("managed application host configuration mismatch") from exc
+    if any(
+        key in os.environ and os.environ[key] != value
+        for key, value in values.items()
+    ):
+        raise TransitionError("managed application host environment override mismatch")
 
 
 def _require_schema_compatibility(repo_root: Path, legacy_commit: str, target_commit: str) -> None:
@@ -398,7 +428,9 @@ def _require_schema_compatibility(repo_root: Path, legacy_commit: str, target_co
 
 def _require_opensandbox_server_profile(
     config_path: Path = OPENSANDBOX_SERVER_CONFIG_PATH,
+    host_config: Any | None = None,
 ) -> None:
+    host_config = host_config or _load_opensandbox_host_config()
     try:
         metadata = config_path.lstat()
         config = tomllib.loads(config_path.read_text(encoding="utf-8"))
@@ -434,7 +466,7 @@ def _require_opensandbox_server_profile(
         or server.get("port") != 8080
         or runtime.get("type") != "docker"
         or docker.get("host_ip") != str(address)
-        or docker.get("network_mode") != authority.DIRECT_OPENSANDBOX_NETWORK_NAME
+        or docker.get("network_mode") != host_config.topology.network_name
         or docker.get("no_new_privileges") is not True
         or secure_runtime.get("type") != "gvisor"
         or secure_runtime.get("docker_runtime") != "runsc"
@@ -442,10 +474,38 @@ def _require_opensandbox_server_profile(
         raise TransitionError("OpenSandbox Server isolation profile is invalid")
 
 
+def _network_guard_rules_match(actual: list[str], expected: list[str]) -> bool:
+    """Compare ordered rules despite iptables-save canonical option ordering."""
+
+    def signature(rule: str) -> tuple[tuple[str, str, bool], ...]:
+        tokens = shlex.split(rule)
+        options = []
+        index = 0
+        while index < len(tokens):
+            inverted = tokens[index] == "!"
+            if inverted:
+                index += 1
+            if index + 1 >= len(tokens):
+                raise ValueError("invalid network guard rule")
+            option, value = tokens[index : index + 2]
+            if option == "--ctstate":
+                value = ",".join(sorted(value.split(",")))
+            options.append((option, value, inverted))
+            index += 2
+        return tuple(sorted(options))
+
+    try:
+        return [signature(rule) for rule in actual] == [signature(rule) for rule in expected]
+    except ValueError:
+        return False
+
+
 def _require_network_guard(
     repo_root: Path,
     unit_path: Path = OPENSANDBOX_NETWORK_GUARD_UNIT_PATH,
+    topology: authority.DirectOpenSandboxTopology | None = None,
 ) -> None:
+    topology = topology or _load_opensandbox_host_config().topology
     source_path = repo_root / OPENSANDBOX_NETWORK_GUARD_SOURCE
     try:
         metadata = unit_path.lstat()
@@ -460,56 +520,164 @@ def _require_network_guard(
         or not unit_matches
     ):
         raise TransitionError("OpenSandbox host-input guard unit is invalid")
-    lines = [
-        line.strip()
-        for line in _run(["iptables-save", "-t", "filter"]).stdout.splitlines()
+    try:
+        ipv4_lines = [
+            line.strip()
+            for line in _run(["iptables-save", "-t", "filter"]).stdout.splitlines()
+        ]
+        ipv6_lines = [
+            line.strip()
+            for line in _run(["ip6tables-save", "-t", "filter"]).stdout.splitlines()
+        ]
+    except TransitionError as exc:
+        raise TransitionError("OpenSandbox network guard is invalid") from exc
+
+    bridge = topology.bridge_name
+    subnet = topology.subnet
+    proxy = f"{topology.proxy_ipv4}/32"
+    proxy_port = authority.DIRECT_OPENSANDBOX_PROXY_PORT
+    ipv4_input = [line for line in ipv4_lines if line.startswith("-A INPUT ")]
+    ipv4_docker_user = [
+        line for line in ipv4_lines if line.startswith("-A DOCKER-USER ")
     ]
-    input_rules = [line for line in lines if line.startswith("-A INPUT ")]
-    chain_rules = [
+    ipv4_input_guard = [
         line
-        for line in lines
+        for line in ipv4_lines
         if line.startswith(f"-A {OPENSANDBOX_NETWORK_GUARD_CHAIN} ")
     ]
-    docker_user_rules = [
-        line for line in lines if line.startswith("-A DOCKER-USER ")
-    ]
-    forward_chain_rules = [
+    ipv4_forward_guard = [
         line
-        for line in lines
+        for line in ipv4_lines
         if line.startswith(f"-A {OPENSANDBOX_FORWARD_GUARD_CHAIN} ")
     ]
-    expected_jump = (
-        f"-A INPUT -i {authority.DIRECT_OPENSANDBOX_BRIDGE_NAME} "
-        f"-j {OPENSANDBOX_NETWORK_GUARD_CHAIN}"
-    )
-    expected_forward_jump = (
-        f"-A DOCKER-USER -i {authority.DIRECT_OPENSANDBOX_BRIDGE_NAME} "
-        f"-o {authority.DIRECT_OPENSANDBOX_BRIDGE_NAME} "
-        f"-j {OPENSANDBOX_FORWARD_GUARD_CHAIN}"
-    )
+    expected_input_jump = f"-A INPUT -i {bridge} -j {OPENSANDBOX_NETWORK_GUARD_CHAIN}"
+    expected_docker_user_jumps = [
+        f"-A DOCKER-USER -i {bridge} -j {OPENSANDBOX_FORWARD_GUARD_CHAIN}",
+        f"-A DOCKER-USER -o {bridge} -j {OPENSANDBOX_FORWARD_GUARD_CHAIN}",
+    ]
+    expected_input_rules = [
+        f"-A {OPENSANDBOX_NETWORK_GUARD_CHAIN} -m conntrack "
+        "--ctstate RELATED,ESTABLISHED -j ACCEPT",
+        f"-A {OPENSANDBOX_NETWORK_GUARD_CHAIN} -j DROP",
+    ]
     expected_forward_rules = [
-        f"-A {OPENSANDBOX_FORWARD_GUARD_CHAIN} "
-        f"-d {authority.DIRECT_OPENSANDBOX_PROXY_IPV4}/32 -p tcp -m tcp "
-        f"--dport {authority.DIRECT_OPENSANDBOX_PROXY_PORT} -m conntrack "
+        f"-A {OPENSANDBOX_FORWARD_GUARD_CHAIN} -i {bridge} ! -s {subnet} -j DROP",
+        f"-A {OPENSANDBOX_FORWARD_GUARD_CHAIN} -i {bridge} -o {bridge} "
+        f"-s {proxy} -p tcp -m tcp --sport {proxy_port} "
+        "-m conntrack --ctstate ESTABLISHED -j ACCEPT",
+        f"-A {OPENSANDBOX_FORWARD_GUARD_CHAIN} -i {bridge} -o {bridge} "
+        f"-d {proxy} -p tcp -m tcp --dport {proxy_port} -m conntrack "
         "--ctstate NEW,ESTABLISHED -j ACCEPT",
-        f"-A {OPENSANDBOX_FORWARD_GUARD_CHAIN} "
-        f"-s {authority.DIRECT_OPENSANDBOX_PROXY_IPV4}/32 -p tcp -m tcp "
-        f"--sport {authority.DIRECT_OPENSANDBOX_PROXY_PORT} -m conntrack "
-        "--ctstate ESTABLISHED -j ACCEPT",
-        f"-A {OPENSANDBOX_FORWARD_GUARD_CHAIN} -j DROP",
+        f"-A {OPENSANDBOX_FORWARD_GUARD_CHAIN} -i {bridge} -o {bridge} -j DROP",
+    ]
+    expected_forward_rules.extend(
+        f"-A {OPENSANDBOX_FORWARD_GUARD_CHAIN} -i {bridge} -d {destination} -j DROP"
+        for destination in (
+            "0.0.0.0/8",
+            "10.0.0.0/8",
+            "100.64.0.0/10",
+            "127.0.0.0/8",
+            "169.254.0.0/16",
+            "172.16.0.0/12",
+            "192.0.0.0/24",
+            "192.0.2.0/24",
+            "192.88.99.0/24",
+            "192.168.0.0/16",
+            "198.18.0.0/15",
+            "198.51.100.0/24",
+            "203.0.113.0/24",
+            "224.0.0.0/4",
+            "240.0.0.0/4",
+        )
+    )
+    expected_forward_rules.extend(
+        (
+            f"-A {OPENSANDBOX_FORWARD_GUARD_CHAIN} -o {bridge} -m conntrack "
+            "--ctstate RELATED,ESTABLISHED -j ACCEPT",
+            f"-A {OPENSANDBOX_FORWARD_GUARD_CHAIN} -o {bridge} -j DROP",
+            f"-A {OPENSANDBOX_FORWARD_GUARD_CHAIN} -i {bridge} -j RETURN",
+        )
+    )
+
+    ipv6_input = [line for line in ipv6_lines if line.startswith("-A INPUT ")]
+    ipv6_output = [line for line in ipv6_lines if line.startswith("-A OUTPUT ")]
+    ipv6_forward = [line for line in ipv6_lines if line.startswith("-A FORWARD ")]
+    ipv6_docker_user = [
+        line for line in ipv6_lines if line.startswith("-A DOCKER-USER ")
+    ]
+    ipv6_guard = [
+        line
+        for line in ipv6_lines
+        if line.startswith(f"-A {OPENSANDBOX_IPV6_GUARD_CHAIN} ")
+    ]
+    ipv6_input_jump = f"-A INPUT -i {bridge} -j {OPENSANDBOX_IPV6_GUARD_CHAIN}"
+    ipv6_output_jump = f"-A OUTPUT -o {bridge} -j {OPENSANDBOX_IPV6_GUARD_CHAIN}"
+    ipv6_forward_jumps = [
+        f"-A FORWARD -i {bridge} -j {OPENSANDBOX_IPV6_GUARD_CHAIN}",
+        f"-A FORWARD -o {bridge} -j {OPENSANDBOX_IPV6_GUARD_CHAIN}",
+    ]
+    ipv6_docker_user_jumps = [
+        f"-A DOCKER-USER -i {bridge} -j {OPENSANDBOX_IPV6_GUARD_CHAIN}",
+        f"-A DOCKER-USER -o {bridge} -j {OPENSANDBOX_IPV6_GUARD_CHAIN}",
+    ]
+    owned_v4_jumps = (
+        expected_input_jump,
+        *expected_docker_user_jumps,
+    )
+    owned_v6_jumps = (
+        ipv6_input_jump,
+        ipv6_output_jump,
+        *ipv6_forward_jumps,
+        *ipv6_docker_user_jumps,
+    )
+    ipv4_owned_jump_lines = [
+        line
+        for line in ipv4_lines
+        if line.endswith(
+            (
+                f"-j {OPENSANDBOX_NETWORK_GUARD_CHAIN}",
+                f"-j {OPENSANDBOX_FORWARD_GUARD_CHAIN}",
+            )
+        )
+    ]
+    ipv6_owned_jump_lines = [
+        line
+        for line in ipv6_lines
+        if line.endswith(f"-j {OPENSANDBOX_IPV6_GUARD_CHAIN}")
     ]
     if (
-        not input_rules
-        or input_rules[0] != expected_jump
-        or chain_rules
-        != [
-            f"-A {OPENSANDBOX_NETWORK_GUARD_CHAIN} -m conntrack "
-            "--ctstate RELATED,ESTABLISHED -j ACCEPT",
-            f"-A {OPENSANDBOX_NETWORK_GUARD_CHAIN} -j DROP",
-        ]
-        or not docker_user_rules
-        or docker_user_rules[0] != expected_forward_jump
-        or forward_chain_rules != expected_forward_rules
+        not ipv4_input
+        or ipv4_input[0] != expected_input_jump
+        or not _network_guard_rules_match(ipv4_input_guard, expected_input_rules)
+        or ipv4_docker_user[:2] != expected_docker_user_jumps
+        or not _network_guard_rules_match(ipv4_forward_guard, expected_forward_rules)
+        or set(ipv4_owned_jump_lines) != set(owned_v4_jumps)
+        or len(ipv4_owned_jump_lines) != len(owned_v4_jumps)
+        or not ipv6_input
+        or ipv6_input[0] != ipv6_input_jump
+        or not ipv6_output
+        or ipv6_output[0] != ipv6_output_jump
+        or any(rule not in ipv6_forward for rule in ipv6_forward_jumps)
+        or ipv6_docker_user[:2] != ipv6_docker_user_jumps
+        or ipv6_guard != [f"-A {OPENSANDBOX_IPV6_GUARD_CHAIN} -j DROP"]
+        or set(ipv6_owned_jump_lines) != set(owned_v6_jumps)
+        or len(ipv6_owned_jump_lines) != len(owned_v6_jumps)
+        or any(
+            line in ipv4_lines
+            for line in (
+                f"-A INPUT -i {bridge} -j DROP",
+                f"-A DOCKER-USER -i {bridge} -j DROP",
+                f"-A DOCKER-USER -o {bridge} -j DROP",
+            )
+        )
+        or any(
+            line in ipv6_lines
+            for line in (
+                f"-A INPUT -i {bridge} -j DROP",
+                f"-A FORWARD -i {bridge} -j DROP",
+                f"-A FORWARD -o {bridge} -j DROP",
+            )
+        )
     ):
         raise TransitionError("OpenSandbox network guard is invalid")
 
@@ -524,7 +692,12 @@ def _require_opensandbox_server_container(docker: Sequence[str]) -> None:
         raise TransitionError("OpenSandbox Server container topology is invalid")
 
 
-def _require_host_prerequisites(repo_root: Path, docker: Sequence[str]) -> None:
+def _require_host_prerequisites(
+    repo_root: Path,
+    docker: Sequence[str],
+    host_config: Any | None = None,
+) -> None:
+    host_config = host_config or _load_opensandbox_host_config()
     for service in ("opensandbox.service", OPENSANDBOX_NETWORK_GUARD_SERVICE):
         if (
             _run(
@@ -535,9 +708,9 @@ def _require_host_prerequisites(repo_root: Path, docker: Sequence[str]) -> None:
             != 0
         ):
             raise TransitionError(f"host prerequisite inactive: {service}")
-    _require_opensandbox_server_profile()
+    _require_opensandbox_server_profile(host_config=host_config)
     _require_opensandbox_server_container(docker)
-    _require_network_guard(repo_root)
+    _require_network_guard(repo_root, topology=host_config.topology)
 
 
 def _quiescence_counts(docker: Sequence[str]) -> tuple[int, int, int]:
@@ -589,11 +762,12 @@ def _compose_command(
     project: str,
     env_file: Path,
     compose_files: Sequence[Path],
+    workspace_root: Path | str,
     environment: Sequence[str] = (),
 ) -> list[str]:
     root_key = "SANDBOX_WORKSPACE_ROOT="
     pinned_environment = [value for value in environment if not value.startswith(root_key)]
-    pinned_environment.append(f"{root_key}{S75_WORKSPACE_ROOT}")
+    pinned_environment.append(f"{root_key}{workspace_root}")
     docker_with_env = authority._compose_command_with_environment(docker, pinned_environment)
     file_args = [argument for path in compose_files for argument in ("-f", str(path))]
     return [
@@ -708,9 +882,14 @@ def _require_target_lifecycle_reachable(docker: Sequence[str]) -> None:
             raise TransitionError(f"target OpenSandbox lifecycle unreachable from {service}")
 
 
-def _require_target_network(docker: Sequence[str]) -> None:
+def _require_target_network(
+    docker: Sequence[str],
+    host_config: Any | None = None,
+) -> None:
+    host_config = host_config or _load_opensandbox_host_config()
+    topology = host_config.topology
     payload = _docker_json(
-        docker, "network", "inspect", authority.DIRECT_OPENSANDBOX_NETWORK_NAME
+        docker, "network", "inspect", topology.network_name
     )
     if not isinstance(payload, list) or len(payload) != 1 or not isinstance(payload[0], dict):
         raise TransitionError("target OpenSandbox network inspection is invalid")
@@ -731,28 +910,30 @@ def _require_target_network(docker: Sequence[str]) -> None:
     ipam = network.get("IPAM")
     ipam_config = ipam.get("Config") if isinstance(ipam, dict) else None
     expected_options = {
-        "com.docker.network.bridge.name": authority.DIRECT_OPENSANDBOX_BRIDGE_NAME,
-        "com.docker.network.bridge.enable_ip_masquerade": "false",
+        "com.docker.network.bridge.name": topology.bridge_name,
+        "com.docker.network.bridge.enable_ip_masquerade": "true",
         "com.docker.network.bridge.enable_icc": "false",
     }
     if (
-        network.get("Name") != authority.DIRECT_OPENSANDBOX_NETWORK_NAME
+        network.get("Name") != topology.network_name
         or network.get("Driver") != "bridge"
-        or network.get("Internal") is not True
+        or network.get("Internal") is not False
         or network.get("EnableIPv4") is not True
         or network.get("EnableIPv6") is not False
         or options != expected_options
         or not isinstance(ipam_config, list)
         or len(ipam_config) != 1
         or not isinstance(ipam_config[0], dict)
-        or ipam_config[0].get("Subnet") != authority.DIRECT_OPENSANDBOX_SUBNET
+        or ipam_config[0].get("Subnet") != topology.subnet
         or labels.get("com.docker.compose.project") != authority.COMPOSE_PROJECT
         or labels.get("com.docker.compose.network")
         != authority.DIRECT_OPENSANDBOX_NETWORK_KEY
         or len(members) != 1
         or member_names != {TARGET_BROKER_CONTAINER}
         or member_addresses
-        != {f"{authority.DIRECT_OPENSANDBOX_PROXY_IPV4}/24"}
+        != {
+            f"{topology.proxy_ipv4}/{ipaddress.ip_network(topology.subnet).prefixlen}"
+        }
     ):
         raise TransitionError("target OpenSandbox network isolation is invalid")
 
@@ -763,7 +944,9 @@ def _require_target_parity(
     commit: str,
     *,
     docker_cmd: str,
+    host_config: Any | None = None,
 ) -> None:
+    host_config = host_config or _load_opensandbox_host_config()
     def collect(_: float) -> dict[str, Any]:
         parity = authority.collect_live_parity(
             repo_root,
@@ -777,17 +960,17 @@ def _require_target_parity(
         collect,
         authority_error_type=authority.ReleaseAuthorityError,
     )
-    _require_host_prerequisites(repo_root, docker)
-    _require_target_network(docker)
+    _require_host_prerequisites(repo_root, docker, host_config)
+    _require_target_network(docker, host_config)
     _require_target_executor(docker)
     _require_target_lifecycle_reachable(docker)
 
 
 @contextmanager
-def _workspace_root_environment() -> Iterator[None]:
+def _workspace_root_environment(workspace_root: Path | str) -> Iterator[None]:
     key = "SANDBOX_WORKSPACE_ROOT"
     previous = os.environ.get(key)
-    os.environ[key] = S75_WORKSPACE_ROOT
+    os.environ[key] = str(workspace_root)
     try:
         yield
     finally:
@@ -838,6 +1021,7 @@ def _down(
     project: str,
     env_file: Path,
     compose_files: Sequence[Path],
+    workspace_root: Path | str,
     environment: Sequence[str] = (),
 ) -> None:
     _run(
@@ -847,6 +1031,7 @@ def _down(
                 project=project,
                 env_file=env_file,
                 compose_files=compose_files,
+                workspace_root=workspace_root,
                 environment=environment,
             ),
             "down",
@@ -899,12 +1084,14 @@ def _rollback(
     runtime: LegacyRuntime,
     target_files: Sequence[Path],
     env_file: Path,
+    workspace_root: Path | str,
 ) -> None:
     _down(
         docker,
         project=authority.COMPOSE_PROJECT,
         env_file=env_file,
         compose_files=target_files,
+        workspace_root=workspace_root,
     )
     _run(
         [
@@ -913,6 +1100,7 @@ def _rollback(
                 project=LEGACY_PROJECT,
                 env_file=env_file,
                 compose_files=runtime.compose_files,
+                workspace_root=LEGACY_WORKSPACE_ROOT,
                 environment=_legacy_release_environment(runtime),
             ),
             "up",
@@ -945,14 +1133,15 @@ def _migrate_locked(
         raise TransitionError("s75 transition requires root on a POSIX host")
     docker = _docker_base(docker_cmd)
     safe_env_file = _require_safe_env_file(env_file)
-    _require_workspace_root_env(safe_env_file)
+    host_config = _load_opensandbox_host_config()
+    _require_workspace_root_env(safe_env_file, host_config)
     runtime = _legacy_runtime(docker, legacy_repo_root, legacy_commit)
     normalized = authority.assert_managed_target_checkout(
         target_repo_root,
         target_commit,
         target_repo_root.parent,
     )
-    _require_host_prerequisites(target_repo_root, docker)
+    _require_host_prerequisites(target_repo_root, docker, host_config)
     _require_quiescent(docker)
     _require_schema_compatibility(target_repo_root, runtime.commit, normalized)
     target_selection = authority.resolve_compose_files(target_repo_root, TARGET_SELECTION)
@@ -962,7 +1151,7 @@ def _migrate_locked(
         frontend_image=frontend_image,
         docker_cmd=docker_cmd,
     )
-    with _acceptance_fence(), _workspace_root_environment():
+    with _acceptance_fence(), _workspace_root_environment(host_config.workspace_root):
         authority._semantic_compose_config_preflight(
             docker,
             target_selection,
@@ -986,9 +1175,10 @@ def _migrate_locked(
             project=LEGACY_PROJECT,
             env_file=safe_env_file,
             compose_files=runtime.compose_files,
+            workspace_root=LEGACY_WORKSPACE_ROOT,
             environment=_legacy_release_environment(runtime),
         )
-        with _acceptance_fence(), _workspace_root_environment():
+        with _acceptance_fence(), _workspace_root_environment(host_config.workspace_root):
             authority.deploy_clean_commit(
                 target_repo_root,
                 normalized,
@@ -1003,6 +1193,7 @@ def _migrate_locked(
                 target_repo_root=target_repo_root,
                 target_commit=normalized,
                 docker_cmd=docker_cmd,
+                host_config=host_config,
             )
     except Exception as exc:
         try:
@@ -1011,6 +1202,7 @@ def _migrate_locked(
                 runtime=runtime,
                 target_files=target_selection.absolute_paths,
                 env_file=safe_env_file,
+                workspace_root=host_config.workspace_root,
             )
         except Exception as rollback_exc:
             raise TransitionError("target deployment and legacy rollback both failed") from rollback_exc
@@ -1066,17 +1258,19 @@ def finalize(
     with _transition_lock():
         docker = _docker_base(docker_cmd)
         safe_env_file = _require_safe_env_file(env_file)
-        _require_workspace_root_env(safe_env_file)
-        with _acceptance_fence(), _workspace_root_environment():
+        host_config = _load_opensandbox_host_config()
+        _require_workspace_root_env(safe_env_file, host_config)
+        with _acceptance_fence(), _workspace_root_environment(host_config.workspace_root):
             normalized, _ = _require_target_runtime(
                 docker,
                 target_repo_root=target_repo_root,
                 target_commit=target_commit,
                 docker_cmd=docker_cmd,
+                host_config=host_config,
             )
         _require_quiescent(docker)
         try:
-            with _workspace_root_environment():
+            with _workspace_root_environment(host_config.workspace_root):
                 authority.deploy_clean_commit(
                     target_repo_root,
                     normalized,
@@ -1091,10 +1285,11 @@ def finalize(
                     target_repo_root=target_repo_root,
                     target_commit=normalized,
                     docker_cmd=docker_cmd,
+                    host_config=host_config,
                 )
         except Exception as exc:
             try:
-                with _acceptance_fence(), _workspace_root_environment():
+                with _acceptance_fence(), _workspace_root_environment(host_config.workspace_root):
                     authority.deploy_clean_commit(
                         target_repo_root,
                         normalized,
@@ -1109,6 +1304,7 @@ def finalize(
                         target_repo_root=target_repo_root,
                         target_commit=normalized,
                         docker_cmd=docker_cmd,
+                        host_config=host_config,
                     )
             except Exception as fence_exc:
                 raise TransitionError("final admission failed and the acceptance fence could not be restored") from fence_exc
@@ -1161,14 +1357,22 @@ def _require_target_runtime(
     target_repo_root: Path,
     target_commit: str,
     docker_cmd: str,
+    host_config: Any | None = None,
 ) -> tuple[str, tuple[Path, ...]]:
+    host_config = host_config or _load_opensandbox_host_config()
     normalized = authority.assert_managed_target_checkout(
         target_repo_root,
         target_commit,
         target_repo_root.parent,
     )
     selection = authority.resolve_compose_files(target_repo_root, TARGET_SELECTION)
-    _require_target_parity(docker, target_repo_root, normalized, docker_cmd=docker_cmd)
+    _require_target_parity(
+        docker,
+        target_repo_root,
+        normalized,
+        docker_cmd=docker_cmd,
+        host_config=host_config,
+    )
     containers = {
         service: _inspect_container(docker, name)
         for service, name in CONTAINERS.items()
@@ -1180,7 +1384,9 @@ def _require_target_runtime(
             or labels.get("com.docker.compose.service") != service
         ):
             raise TransitionError(f"target Compose ownership mismatch: {service}")
-    _require_volume_identities(docker, containers)
+    _require_volume_identities(
+        docker, containers, workspace_root=host_config.workspace_root
+    )
     return normalized, selection.absolute_paths
 
 
@@ -1201,7 +1407,8 @@ def rollback(
     with _transition_lock():
         docker = _docker_base(docker_cmd)
         safe_env_file = _require_safe_env_file(env_file)
-        _require_workspace_root_env(safe_env_file)
+        host_config = _load_opensandbox_host_config()
+        _require_workspace_root_env(safe_env_file, host_config)
         runtime = _validated_rollback_runtime(
             docker,
             legacy_repo_root=legacy_repo_root,
@@ -1210,12 +1417,13 @@ def rollback(
             frontend_image=legacy_frontend_image,
             executor_image=legacy_executor_image,
         )
-        with _workspace_root_environment():
+        with _workspace_root_environment(host_config.workspace_root):
             normalized, target_files = _require_target_runtime(
                 docker,
                 target_repo_root=target_repo_root,
                 target_commit=target_commit,
                 docker_cmd=docker_cmd,
+                host_config=host_config,
             )
         _require_schema_compatibility(target_repo_root, runtime.commit, normalized)
         _require_quiescent(docker)
@@ -1231,6 +1439,7 @@ def rollback(
                 runtime=runtime,
                 target_files=target_files,
                 env_file=safe_env_file,
+                workspace_root=host_config.workspace_root,
             )
         except Exception as rollback_exc:
             try:
@@ -1239,9 +1448,10 @@ def rollback(
                     project=LEGACY_PROJECT,
                     env_file=safe_env_file,
                     compose_files=runtime.compose_files,
+                    workspace_root=LEGACY_WORKSPACE_ROOT,
                     environment=_legacy_release_environment(runtime),
                 )
-                with _acceptance_fence(), _workspace_root_environment():
+                with _acceptance_fence(), _workspace_root_environment(host_config.workspace_root):
                     authority.deploy_clean_commit(
                         target_repo_root,
                         normalized,
@@ -1256,6 +1466,7 @@ def rollback(
                         target_repo_root=target_repo_root,
                         target_commit=normalized,
                         docker_cmd=docker_cmd,
+                        host_config=host_config,
                     )
             except Exception as target_restore_exc:
                 raise TransitionError("legacy rollback and target restoration both failed") from target_restore_exc

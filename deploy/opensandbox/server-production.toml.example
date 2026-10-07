@@ -19,10 +19,8 @@ disable_ipv6 = true
 readiness_timeout_seconds = 30.0
 
 [storage]
-# Allow only the dedicated platform workspace parent. The application mounts one
-# exact Attempt workspace below SANDBOX_WORKSPACE_ROOT; never allow /, /data, or
-# Docker's data-root.
-allowed_host_paths = ["/data/opensandbox/workspaces"]
+# This is the one dedicated application workspace root used by SANDBOX_WORKSPACE_ROOT.
+allowed_host_paths = ["/data/opensandbox/workspaces/ai-platform"]
 volume_default_size = "1Gi"
 
 [store]
@@ -30,7 +28,7 @@ type = "sqlite"
 path = "/var/lib/ai-platform-opensandbox/opensandbox.db"
 
 [docker]
-network_mode = "ai-platform-opensandbox-egress-internal-v1"
+network_mode = "ai-platform-opensandbox-egress-v2"
 host_ip = "REQUIRED_PRIVATE_LIFECYCLE_IPV4_ADDRESS"
 drop_capabilities = ["AUDIT_WRITE", "MKNOD", "NET_ADMIN", "NET_RAW", "SYS_ADMIN", "SYS_MODULE", "SYS_PTRACE", "SYS_TIME", "SYS_TTY_CONFIG"]
 no_new_privileges = true

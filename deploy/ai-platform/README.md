@@ -3,7 +3,7 @@
 Download `ai-platform-production.tar.gz`, the single operator asset,
 from the **chosen immutable Deployment Release** on the official repository.
 The manifest, verified release evidence and `BACKUP-RESTORE.md` are inside it.
-The internal-test package is a CI-only artifact. GitHub may also display its
+GitHub may also display its
 automatically generated source archives; those are not deployment packages.
 Do not mix files from different versions or use an untrusted archive: the package
 contains executable deployment code. Image digests and the application commit
@@ -14,17 +14,18 @@ The packaged environment example contains operator configuration. Application
 image references, source commit and executor image digest are bound by the
 Release and omitted from that example.
 
-The package also fixes the OpenSandbox provider, security profile, server proxy
-and network mode. Production selects governed egress; internal-test selects the
-bridge test profile. Choose the matching package rather than editing these values.
+The package selects OpenSandbox, gVisor and the server proxy. Workspace paths and
+physical network topology are operator configuration. New leases use the same
+signed identity and public-egress path in functional tests and deployment.
 
 OpenSandbox configuration has two owners:
 
 | Configuration | Owner |
 | --- | --- |
-| Lifecycle connection | Application env: production uses `OPENSANDBOX_BASE_URL`; internal-test requires `OPENSANDBOX_DOMAIN` and `OPENSANDBOX_PROTOCOL`. Both require `OPENSANDBOX_API_KEY`. |
-| Workspace and capabilities | Application env: `SANDBOX_WORKSPACE_ROOT`, `SANDBOX_CALLBACK_TOKEN` and `MODEL_PROXY_INTERNAL_TOKEN`; production also requires `SANDBOX_EGRESS_PROOF_SIGNING_KEY`. |
-| Model connection custody | Both released profiles require `MODEL_CONNECTION_ENCRYPTION_KEY` in API and Worker plus `MODEL_CONNECTION_ALLOWED_INTERNAL_HOSTS` when the configured origin is internal. The upstream origin, credential, directory and capacities remain Models-page owned. |
+| Lifecycle connection | Application env: `OPENSANDBOX_BASE_URL` and `OPENSANDBOX_API_KEY`. |
+| Workspace and capabilities | Application env: `SANDBOX_WORKSPACE_ROOT`, existing `SANDBOX_WORKSPACE_MIGRATION_SOURCE`, `SANDBOX_CALLBACK_TOKEN`, `MODEL_PROXY_INTERNAL_TOKEN` and `SANDBOX_EGRESS_PROOF_SIGNING_KEY`. The host TOML allowlist contains exactly the configured workspace root. |
+| Network topology | Application env: `OPENSANDBOX_EXPECTED_NETWORK_MODE`, `OPENSANDBOX_EGRESS_BRIDGE`, `OPENSANDBOX_EGRESS_SUBNET` and `OPENSANDBOX_EGRESS_PROXY_IPV4`. Match the network name in host TOML and the other three values in protected `server.env`. |
+| Model connection custody | `MODEL_CONNECTION_ENCRYPTION_KEY` in API and Worker plus `MODEL_CONNECTION_ALLOWED_INTERNAL_HOSTS` when the configured origin is internal. The upstream origin, credential, directory and capacities remain Models-page owned. |
 | Timeouts | Optional application tuning: `OPENSANDBOX_REQUEST_TIMEOUT_SECONDS`, `OPENSANDBOX_TIMEOUT_SECONDS`. |
 | Kernel isolation and host firewall | Host OpenSandbox TOML, Docker `runsc` runtime and network-guard service, prepared once by the host administrator. |
 
@@ -33,20 +34,17 @@ Worker and OpenSandbox. OpenSandbox receives only the current authoritative
 Attempt workspace as a read-write Host volume; it never receives the workspace
 root or a user-supplied host path. The file API remains limited to the exact
 lease sentinel used to prove that both sides see the same mount. Network egress
-follows the selected profile and host network policy. The deployment environment,
-security profile and expected network mode are fixed in Compose; build commit
-and dirty markers are supplied during image construction. These are not operator
-settings in the deployment environment file.
+allows public Internet access under the host network policy. The network name,
+Linux bridge, RFC1918 IPv4 subnet and proxy address can be selected for this host;
+the proxy must be a usable address in the subnet, distinct from its gateway.
+Changing an existing network requires a drained maintenance window and matching
+host rules. The deployment environment remains production; build commit and dirty
+markers are supplied during image construction.
 
 `AI_PLATFORM_API_UPSTREAM` selects the platform API reached by the frontend proxy.
-Model connection ownership depends on the selected package:
-
-| Package | Model request configuration |
-| --- | --- |
-| Production | The executor uses the platform proxy on the isolated OpenSandbox network. |
-| Internal-test | The executor uses the same database-owned platform proxy through `OPENSANDBOX_EGRESS_PROXY_URL`; bind its host port only to the private Docker bridge address named by `OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS`. This profile does not provide production network isolation. |
-
-For both packages, configure the upstream URL, write-only key, enabled models and
+The executor uses the platform proxy on the dedicated OpenSandbox network. Its
+internal alias and port are supplied by Compose. Configure the upstream URL,
+write-only key, enabled models and
 capacities in the administrator's Models page before running a model. Environment
 provider URLs and credentials are omitted from released packages and cannot
 substitute for the Run's pinned database connection revision.
@@ -66,10 +64,10 @@ enforcement as unimplemented.
 
 Use a Linux host with Python 3, Docker, Docker Compose supporting `--wait` and
 `!reset`, and a configured, active `opensandbox.service`. OpenSandbox host provisioning (credentials, network policy, the exact
-`/data/opensandbox/workspaces` Host-volume allowlist and workspace permissions) is
+configured workspace-root Host-volume allowlist and workspace permissions) is
 a separate first-install prerequisite, not repeated during application upgrades.
-The production package requires the production OpenSandbox security profile;
-the internal-test package must not be used to relax a production installation.
+The host guard reads its bridge, subnet and proxy address from protected
+`server.env`; host/application validation checks that these values agree.
 
 Extract the chosen archive into a new directory. Keep this directory unchanged.
 For an existing installation, use its existing environment file and the same
@@ -100,7 +98,7 @@ flags set to `false`, its actual HTTP browser origin, and the explicit
 `--allow-insecure-http` flag on each deployment or preflight command. This prints
 a warning and does not configure TLS or a firewall. HTTP exposes session and
 gateway traffic: restrict network access, firewall direct API access, and prefer
-TLS. Do not weaken secrets or use the internal-test package as a workaround.
+TLS. Preserve the same generated secrets.
 
 ## Install or upgrade
 
@@ -118,19 +116,24 @@ runs schema migration and workspace initialization, starts the selected
 application, and verifies API readiness, container identity, OpenSandbox
 reachability and an advancing Worker heartbeat. Data volumes are never deleted.
 
-A fresh production installation uses `SANDBOX_WORKSPACE_ROOT` directly. An
+A fresh installation uses `SANDBOX_WORKSPACE_ROOT` directly. An
 absent legacy source skips `workspace-migrate`; do not create a dummy
 legacy directory. Any existing legacy source directory, even empty, requires
-explicit migration. To copy legacy production data from
-`SANDBOX_WORKSPACE_MIGRATION_SOURCE` (the supported path is
-`/data/ai-platform-prod/runtime-workspaces`), back it up and add
+explicit migration. Set `SANDBOX_WORKSPACE_MIGRATION_SOURCE` to the inspected
+host path containing the existing data, back it up and add
 `--migrate-legacy-workspaces`. The migration mounts the source read-only, verifies
 path/type/mode/owner/size and SHA-256 inventory, and retains the source. Existing
 current-layout bind mounts with no legacy source need no migration. A retained
-legacy source still requires the explicit flag on later invocations. Older production named-volume
-layouts are not automatically supported and require operator-classified
-migration; never point an upgrade at an empty root to bypass that check.
-Internal-test retains its historical named-volume migration path.
+legacy source still requires the explicit flag on later invocations. Existing
+binds and plain local named volumes can be copied only when both API and Worker inspect
+records identify that exact source and storage identity. For a local named
+volume, use its inspected host mountpoint as the read-only migration source.
+Volume inspection must confirm the `local` driver, matching mountpoint and no
+mount options. Bind-backed local volumes, NFS and volume plugins require a
+separately classified migration because their data can disappear from the host
+mountpoint when the last container stops.
+Unsupported layouts require operator-classified migration; never point an upgrade
+at an empty root to bypass that check.
 
 To check configuration, activity and already-cached images without downloading
 or changing application/data services, add `--check`. It may run a temporary,

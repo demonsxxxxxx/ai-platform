@@ -8,6 +8,7 @@ from app.runtime.sandbox.callback_tokens import CallbackTokenBinding, callback_t
 from app.runtime.sandbox.container_provider import OpenSandboxContainerProvider
 from app.runtime.sandbox.contracts import SandboxRuntimeRequest
 from app.runtime.sandbox.workspace_manager import SandboxWorkspaceManager
+from app.execution_boundary import GOVERNED_EGRESS_PROOF_LABEL
 from app.settings import get_settings
 
 
@@ -26,9 +27,6 @@ async def test_real_opensandbox_bash_cannot_read_raw_model_credentials(
     """Exercise real Bash and report booleans only; never print credential values."""
 
     settings = get_settings()
-    if settings.sandbox_security_profile != "internal-test":
-        pytest.skip("requires the explicit OpenSandbox internal-test risk profile")
-
     suffix = uuid.uuid4().hex
     credential_canaries = [
         f"live-openai-canary-{suffix}",
@@ -74,8 +72,9 @@ async def test_real_opensandbox_bash_cannot_read_raw_model_credentials(
     try:
         lease = await provider.create_or_reuse(request, workspace)
         assert lease.provider == "opensandbox"
-        assert lease.labels["ai-platform.security_profile"] == "internal-test"
-        assert lease.labels["ai-platform.internal_test.network_mode"] == "bridge"
+        assert lease.labels["ai-platform.security_profile"] == "governed"
+        assert lease.labels["ai-platform.external_egress.network_mode"] == settings.opensandbox_expected_network_mode
+        assert GOVERNED_EGRESS_PROOF_LABEL in lease.labels
 
         sandbox = provider._sandboxes[lease.container_id]
         canary_json = json.dumps(credential_canaries)

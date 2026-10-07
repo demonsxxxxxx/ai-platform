@@ -4,7 +4,6 @@ import hmac
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
 
 import pytest
 
@@ -402,7 +401,6 @@ async def test_runtime_opensandbox_workspace_stage_failure_stops_and_releases_on
 
     class StubSettings:
         sandbox_container_provider = "opensandbox"
-        sandbox_security_profile = "governed"
         sandbox_callback_base_url = "http://platform.test"
         sandbox_callback_token = "settings-token"
         opensandbox_domain = "10.56.1.72:8080"
@@ -1513,6 +1511,11 @@ async def test_runtime_default_db_acceptance_targets_created_lease_id(tmp_path, 
 @pytest.mark.asyncio
 async def test_runtime_default_db_record_persists_trusted_opensandbox_runtime_handle(tmp_path, monkeypatch):
     calls = []
+    from app.settings import (
+        DIRECT_OPENSANDBOX_NETWORK_NAME,
+        DIRECT_OPENSANDBOX_POLICY_SUBJECT,
+        DIRECT_OPENSANDBOX_PROFILE_ID,
+    )
     from app.execution_boundary import (
         build_governed_egress_proof,
         governed_egress_authorized_native_tool_scope,
@@ -1527,12 +1530,13 @@ async def test_runtime_default_db_record_persists_trusted_opensandbox_runtime_ha
         signing_key=signing_key,
         provider="opensandbox",
         runtime_subject="runtime-subject-a",
-        policy_subject="gateway-policy-subject-a",
+        policy_subject=DIRECT_OPENSANDBOX_POLICY_SUBJECT,
         callback_subject="callback-boundary-subject-a",
         denial_subject="gateway-deny-subject-a",
-        network_id="profile-a",
-        network_name="ai-platform-opensandbox-egress-internal-v1",
-        network_internal=True,
+        network_id=DIRECT_OPENSANDBOX_PROFILE_ID,
+        network_name=DIRECT_OPENSANDBOX_NETWORK_NAME,
+        network_internal=False,
+        default_deny_outbound=False,
         tenant_id="tenant-a",
         workspace_id="workspace-a",
         user_id="user-a",
@@ -1623,124 +1627,27 @@ async def test_runtime_default_db_record_persists_trusted_opensandbox_runtime_ha
         "ai-platform.attempt_id": runtime_request.attempt_id,
     }
     assert create_kwargs["lease_payload_json"]["governed_egress_proof"] == governed_egress_proof
+    assert create_kwargs["lease_payload_json"]["governed_egress_network_name"] == DIRECT_OPENSANDBOX_NETWORK_NAME
+    assert create_kwargs["lease_payload_json"]["governed_egress_image_subject_sha256"] == governed_egress_proof[
+        "image_subject_sha256"
+    ]
+    assert create_kwargs["lease_payload_json"]["governed_egress_image_digest_sha256"] == governed_egress_proof[
+        "image_digest_sha256"
+    ]
     assert "private-capability" not in repr(create_kwargs["lease_payload_json"])
     assert "registry.example" not in repr(create_kwargs["lease_payload_json"])
     assert len(calls) == 1
 
 
 @pytest.mark.asyncio
-async def test_runtime_persists_explicit_internal_test_opensandbox_evidence_without_governed_proof(
-    tmp_path, monkeypatch
-):
-    from app.runtime.sandbox.opensandbox_policy import internal_test_opensandbox_lease_labels
-
-    runtime_request = request(
-        sandbox_mode="ephemeral",
-        browser_enabled=False,
-        tool_policy_subjects=[
-            {
-                "identity": "mcp__ai-platform-context__stage_profile_drive_file_to_workspace",
-                "mcp_server": "ai-platform-context",
-                "mcp_tool": "stage_profile_drive_file_to_workspace",
-                "registered": True,
-                "declared": True,
-                "active": True,
-                "distributed": True,
-                "identity_authorized": True,
-                "object_authorized": True,
-                "parameters_authorized": True,
-            }
-        ],
-    )
-    captured: list[dict[str, Any]] = []
-    image = "registry.example/ai-platform@sha256:" + "a" * 64
-    digest = "sha256:" + "a" * 64
-
-    class StubSettings:
-        sandbox_container_provider = "opensandbox"
-        sandbox_security_profile = "internal-test"
-        deployment_environment = "test"
-        sandbox_egress_proof_signing_key = ""
-        opensandbox_expected_network_mode = "bridge"
-        opensandbox_executor_image = image
-        opensandbox_executor_image_digest = digest
-        sandbox_executor_image = image
-        sandbox_runtime_subject = "runtime-subject-fixed-sha"
-
-        sandbox_lease_ttl_seconds = 1800
-    async def create_sandbox_lease(_conn, **kwargs):
-        captured.append(kwargs)
-        return {"id": "lease-internal-test"}
-
-    labels = internal_test_opensandbox_lease_labels(
-        runtime_request,
-        StubSettings(),
-        executor_identity_labels={},
-        skill_mount_labels={},
-    )
-    lease = ContainerLease(
-        container_id="osb-run-a",
-        container_name="opensandbox-run-a",
-        provider="opensandbox",
-        executor_url="http://opensandbox-executor.test",
-        tenant_id=runtime_request.tenant_id,
-        workspace_id=runtime_request.workspace_id,
-        user_id=runtime_request.user_id,
-        session_id=runtime_request.session_id,
-        run_id=runtime_request.run_id,
-        sandbox_mode=runtime_request.sandbox_mode,
-        browser_enabled=False,
-        workspace_host_path=str(tmp_path),
-        workspace_container_path="/workspace",
-        labels=labels,
-    )
-    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
-    monkeypatch.setattr("app.runtime.sandbox.runtime.transaction", fake_transaction)
-    monkeypatch.setattr("app.runtime.sandbox.runtime.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
-    runtime = SandboxRuntime(
-        workspace_root=_short_sandbox_workspace_root(tmp_path),
-        provider=FakeContainerProvider(),
-    )
-    workspace = runtime.workspace_manager.prepare(runtime_request)
-
-    lease_id = await runtime._record_runtime_lease(lease, runtime_request, workspace)
-
-    assert lease_id == "lease-internal-test"
-    payload = captured[0]["lease_payload_json"]
-    assert payload["security_profile"] == "internal-test"
-    assert payload["profile_drive_file_staging_authorized"] is True
-    assert payload["labels"]["ai-platform.internal_test.profile"] == "official-opensandbox-direct-v1"
-    assert payload["requested_image"] == image
-    assert payload["requested_image_digest"] == digest
-    assert "governed_egress_proof" not in payload
-
-
-@pytest.mark.asyncio
-async def test_runtime_rejects_retired_opensandbox_profile_before_persistence(tmp_path, monkeypatch):
+async def test_runtime_rejects_historical_internal_test_lease_for_persistence(tmp_path, monkeypatch):
     runtime_request = request(sandbox_mode="ephemeral", browser_enabled=False)
 
     class StubSettings:
         sandbox_container_provider = "opensandbox"
-        sandbox_security_profile = "governed"
         sandbox_callback_base_url = "http://platform.test"
         sandbox_callback_token = "settings-token"
-
         sandbox_lease_ttl_seconds = 1800
-    labels = {
-        "ai-platform.owner": "sandbox-runtime",
-        "ai-platform.tenant_id": runtime_request.tenant_id,
-        "ai-platform.workspace_id": runtime_request.workspace_id,
-        "ai-platform.user_id": runtime_request.user_id,
-        "ai-platform.session_id": runtime_request.session_id,
-        "ai-platform.run_id": runtime_request.run_id,
-        "ai-platform.attempt_id": runtime_request.attempt_id,
-        "ai-platform.sandbox_mode": runtime_request.sandbox_mode,
-        "ai-platform.browser_enabled": "false",
-        "ai-platform.provider_backend": "opensandbox",
-        "ai-platform.security_profile": "trusted_internal",
-        "ai-platform.executor.requested_image": "registry.example/ai-platform@sha256:" + "a" * 64,
-        "ai-platform.executor.requested_image_digest": "sha256:" + "a" * 64,
-    }
 
     monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
     runtime = SandboxRuntime(workspace_root=tmp_path, provider=FakeContainerProvider())
@@ -1750,7 +1657,6 @@ async def test_runtime_rejects_retired_opensandbox_profile_before_persistence(tm
         container_name="opensandbox-run-a-qat_test-runtime-attempt",
         provider="opensandbox",
         executor_url="http://osb-run-a.opensandbox.test:18000",
-        executor_headers={"X-AI-Platform-Executor-Credential": "test-executor-key"},
         tenant_id=runtime_request.tenant_id,
         workspace_id=runtime_request.workspace_id,
         user_id=runtime_request.user_id,
@@ -1759,8 +1665,8 @@ async def test_runtime_rejects_retired_opensandbox_profile_before_persistence(tm
         sandbox_mode=runtime_request.sandbox_mode,
         browser_enabled=runtime_request.browser_enabled,
         workspace_host_path=workspace.workspace_host_path,
-        workspace_container_path=workspace.workspace_container_path,
-        labels=labels,
+        workspace_container_path="/workspace",
+        labels={"ai-platform.security_profile": "internal-test"},
     )
 
     with pytest.raises(ValueError, match="sandbox_security_profile_invalid"):
@@ -1993,6 +1899,11 @@ async def test_runtime_records_opensandbox_provider_as_platform_db_lease(tmp_pat
 @pytest.mark.asyncio
 async def test_runtime_passes_private_executor_headers_to_dispatch_without_db_leak(tmp_path, monkeypatch):
     calls = []
+    from app.settings import (
+        DIRECT_OPENSANDBOX_NETWORK_NAME,
+        DIRECT_OPENSANDBOX_POLICY_SUBJECT,
+        DIRECT_OPENSANDBOX_PROFILE_ID,
+    )
 
     class StubSettings:
         sandbox_callback_base_url = "http://platform.test"
@@ -2016,12 +1927,13 @@ async def test_runtime_passes_private_executor_headers_to_dispatch_without_db_le
                 signing_key=StubSettings.sandbox_egress_proof_signing_key,
                 provider="opensandbox",
                 runtime_subject="runsc",
-                policy_subject="gateway-a",
+                policy_subject=DIRECT_OPENSANDBOX_POLICY_SUBJECT,
                 callback_subject="callback-a",
                 denial_subject="deny-a",
-                network_id="profile-a",
-                network_name="ai-platform-opensandbox-egress-internal-v1",
-                network_internal=True,
+                network_id=DIRECT_OPENSANDBOX_PROFILE_ID,
+                network_name=DIRECT_OPENSANDBOX_NETWORK_NAME,
+                network_internal=False,
+                default_deny_outbound=False,
                 tenant_id=request.tenant_id,
                 workspace_id=request.workspace_id,
                 user_id=request.user_id,

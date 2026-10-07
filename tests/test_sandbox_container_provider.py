@@ -1057,21 +1057,8 @@ class OpenSandboxSettings:
     sandbox_runtime_subject = "runtime-subject-a"
     opensandbox_base_url = "http://172.19.0.1:8080"
     opensandbox_egress_proxy_url = "http://egress.opensandbox.internal:8080"
-    opensandbox_expected_network_mode = "ai-platform-opensandbox-egress-internal-v1"
+    opensandbox_expected_network_mode = "ai-platform-opensandbox-egress-v2"
     opensandbox_executor_image_digest = "sha256:" + "a" * 64
-
-
-class InternalTestOpenSandboxSettings(OpenSandboxSettings):
-    deployment_environment = "test"
-    sandbox_security_profile = "internal-test"
-    sandbox_egress_proof_signing_key = ""
-    opensandbox_expected_network_mode = "bridge"
-    opensandbox_egress_proxy_url = "http://host.docker.internal:18043"
-    sandbox_callback_base_url = "http://host.docker.internal:8020"
-    openai_base_url = "http://direct-model.invalid/v1"
-    openai_api_key = "test-newapi-token"
-    anthropic_base_url = "http://direct-model.invalid"
-    anthropic_auth_token = "test-anthropic-token"
 
 
 def local_opensandbox_workspace(tmp_path, runtime_request=None):
@@ -1133,14 +1120,23 @@ async def test_opensandbox_provider_rejects_direct_mode_without_server_proxy(
 
 
 @pytest.mark.asyncio
-async def test_opensandbox_production_requires_the_isolated_network(monkeypatch):
+@pytest.mark.parametrize(
+    "network_name",
+    (
+        "bridge",
+        "host",
+        "none",
+        "ai-platform-opensandbox-egress-internal-v1",
+    ),
+)
+async def test_opensandbox_rejects_builtin_and_retired_networks(monkeypatch, network_name):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()
 
-    class BridgeSettings(OpenSandboxSettings):
-        opensandbox_expected_network_mode = "bridge"
+    class InvalidNetworkSettings(OpenSandboxSettings):
+        opensandbox_expected_network_mode = network_name
 
-    monkeypatch.setattr(container_provider, "get_settings", lambda: BridgeSettings())
+    monkeypatch.setattr(container_provider, "get_settings", lambda: InvalidNetworkSettings())
 
     with pytest.raises(
         container_provider.OpenSandboxCapabilityAdmissionError,
@@ -1149,6 +1145,29 @@ async def test_opensandbox_production_requires_the_isolated_network(monkeypatch)
         await opensandbox_provider().create_or_reuse(request(), workspace())
 
     assert FakeOpenSandbox.created == []
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_configured_network_is_signed_and_dispatch_bound(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    configured_network = "customer-public-egress-2026"
+
+    class ConfiguredNetworkSettings(OpenSandboxSettings):
+        opensandbox_expected_network_mode = configured_network
+
+    settings = ConfiguredNetworkSettings()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    provider = opensandbox_provider()
+    lease = await provider.create_or_reuse(request(), workspace())
+
+    assert lease.labels["ai-platform.external_egress.network_mode"] == configured_network
+    await provider.validate_for_dispatch(lease, request(), workspace())
+
+    settings.opensandbox_expected_network_mode = "another-public-egress"
+    with pytest.raises(container_provider.OpenSandboxCapabilityAdmissionError):
+        await provider.validate_for_dispatch(lease, request(), workspace())
+    assert FakeOpenSandbox.instances[lease.container_id].killed is True
 
 
 def opensandbox_provider(
@@ -1213,7 +1232,10 @@ def persisted_opensandbox_row(lease):
 
 
 @pytest.mark.asyncio
-async def test_opensandbox_renew_reconnects_persisted_identity_and_uses_maximum_timeout(monkeypatch):
+@pytest.mark.parametrize("runtime_subject", ("runtime-subject-a", "production:opensandbox", "r" * 80))
+async def test_opensandbox_renew_reconnects_persisted_identity_and_uses_maximum_timeout(
+    monkeypatch, runtime_subject,
+):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     lifecycle = importlib.import_module("app.runtime.sandbox.providers.opensandbox.startup")
     FakeOpenSandbox.reset()
@@ -1224,12 +1246,14 @@ async def test_opensandbox_renew_reconnects_persisted_identity_and_uses_maximum_
 
     cleanup = importlib.import_module("app.routes.sandbox_runtime_cleanup")
     settings = RenewalSettings()
+    settings.sandbox_runtime_subject = runtime_subject
     monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
     monkeypatch.setattr(cleanup, "get_settings", lambda: settings)
     provider = opensandbox_provider()
     lease = await provider.create_or_reuse(request(), workspace())
     persisted_lease = cleanup.container_lease_from_persisted_row(persisted_opensandbox_row(lease))
     assert persisted_lease is not None
+    assert persisted_lease.labels["ai-platform.runtime_subject"] == runtime_subject
     assert "ai-platform.executor.user" not in persisted_lease.labels
     assert FakeOpenSandbox.created[-1]["timeout"] == timedelta(seconds=2402)
 
@@ -1540,11 +1564,11 @@ async def test_opensandbox_real_create_path_does_not_require_custom_attestation(
 
 
 @pytest.mark.asyncio
-async def test_opensandbox_internal_test_direct_create_readback_health_identity_and_stop(monkeypatch):
+async def test_opensandbox_governed_create_readback_health_dispatch_and_stop(monkeypatch):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()
     FakeOpenSandboxManager.reset()
-    settings = InternalTestOpenSandboxSettings()
+    settings = OpenSandboxSettings()
     monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
     health_calls: list[tuple[Any, ...]] = []
     identity_calls: list[tuple[Any, ...]] = []
@@ -1557,10 +1581,15 @@ async def test_opensandbox_internal_test_direct_create_readback_health_identity_
 
     assert lease.provider == "opensandbox"
     assert lease.container_id == "osb-run-a"
-    assert lease.labels["ai-platform.security_profile"] == "internal-test"
-    assert lease.labels["ai-platform.internal_test.profile"] == "official-opensandbox-direct-v1"
-    assert lease.labels["ai-platform.internal_test.network_mode"] == "bridge"
+    assert lease.labels["ai-platform.security_profile"] == "governed"
+    assert lease.labels["ai-platform.external_egress.network_mode"] == settings.opensandbox_expected_network_mode
+    assert "ai-platform.governed_egress.proof" in lease.labels
+    assert lease.labels["ai-platform.executor.requested_image"] == settings.sandbox_executor_image
     assert lease.labels["ai-platform.executor.requested_image_digest"] == settings.opensandbox_executor_image_digest
+    remote_labels = FakeOpenSandbox.instances[lease.container_id].metadata
+    assert remote_labels["ai-platform.executor.uid"] == "10001"
+    assert remote_labels["ai-platform.executor.gid"] == "10001"
+    assert remote_labels["ai-platform.executor.identity_evidence"] == "authenticated-runtime-endpoint"
     assert FakeOpenSandbox.instances[lease.container_id].info_calls == 1
     assert health_calls and identity_calls
     model_capability = container_provider.derive_callback_token(
@@ -1569,80 +1598,45 @@ async def test_opensandbox_internal_test_direct_create_readback_health_identity_
     )
     assert FakeOpenSandbox.created[0]["env"]["OPENAI_API_KEY"] == model_capability
     assert FakeOpenSandbox.created[0]["env"]["ANTHROPIC_AUTH_TOKEN"] == model_capability
-    assert settings.openai_api_key not in FakeOpenSandbox.created[0]["env"].values()
-    assert settings.anthropic_auth_token not in FakeOpenSandbox.created[0]["env"].values()
     assert "MODEL_CATALOG_JSON" not in FakeOpenSandbox.created[0]["env"]
 
     await provider.validate_for_dispatch(lease, request(), workspace())
 
     assert FakeOpenSandbox.instances[lease.container_id].info_calls == 2
-    assert len(health_calls) == len(identity_calls) == 2
+    assert len(health_calls) == 1
+    assert len(identity_calls) == 1
 
-    stopped = await provider.stop(lease, reason="internal_test_acceptance")
+    stopped = await provider.stop(lease, reason="governed_acceptance")
 
     assert stopped.status == "stopped"
     assert FakeOpenSandbox.instances[lease.container_id].killed is True
     assert lease.container_id not in provider._sandboxes
 
 
-@pytest.mark.asyncio
-async def test_opensandbox_internal_test_accepts_exact_local_executor_image_id(monkeypatch):
-    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
-    FakeOpenSandbox.reset()
-    local_image_id = "sha256:" + "c" * 64
-
-    class LocalImageSettings(InternalTestOpenSandboxSettings):
-        opensandbox_executor_image = local_image_id
-        opensandbox_executor_image_digest = local_image_id
-
-    settings = LocalImageSettings()
-    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
-    provider = opensandbox_provider()
-
-    lease = await provider.create_or_reuse(request(), workspace())
-
-    assert FakeOpenSandbox.created[0]["image"] == local_image_id
-    assert lease.labels["ai-platform.executor.requested_image"] == local_image_id
-    assert lease.labels["ai-platform.executor.requested_image_digest"] == local_image_id
-
-    await provider.stop(lease, reason="internal_test_acceptance")
-
-
-@pytest.mark.parametrize(
-    ("attribute", "value"),
-    (
-        ("deployment_environment", "production"),
-        ("sandbox_container_provider", "docker"),
-        ("sandbox_security_profile", "governed"),
-        ("opensandbox_expected_network_mode", "none"),
-    ),
-)
-def test_opensandbox_rejects_local_executor_image_id_outside_exact_internal_test_contour(
-    attribute,
-    value,
-):
+def test_opensandbox_rejects_local_executor_image_id_in_governed_runtime():
     from app.runtime.sandbox.opensandbox_policy import (
         OpenSandboxProfileConfigurationError,
         requested_opensandbox_image,
     )
 
     local_image_id = "sha256:" + "d" * 64
-    settings = InternalTestOpenSandboxSettings()
+    settings = OpenSandboxSettings()
     settings.opensandbox_executor_image = local_image_id
     settings.opensandbox_executor_image_digest = local_image_id
-    setattr(settings, attribute, value)
 
     with pytest.raises(OpenSandboxProfileConfigurationError, match="immutable sha256 reference"):
         requested_opensandbox_image(settings)
 
 
 @pytest.mark.asyncio
-async def test_opensandbox_internal_test_uses_run_bound_proxy_without_provider_credentials(monkeypatch):
+async def test_opensandbox_governed_uses_run_bound_proxy_without_provider_credentials(monkeypatch):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()
 
-    class ProxySettings(InternalTestOpenSandboxSettings):
+    class ProxySettings(OpenSandboxSettings):
         model_catalog_json = '[{"id":"deepseek-v4-flash","api_key":"catalog-secret"}]'
+        openai_api_key = "test-openai-credential"
+        anthropic_auth_token = "test-anthropic-credential"
 
     settings = ProxySettings()
     monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
@@ -1650,10 +1644,10 @@ async def test_opensandbox_internal_test_uses_run_bound_proxy_without_provider_c
 
     created = FakeOpenSandbox.created[0]
     assert created["env"]["OPENAI_BASE_URL"] == (
-        "http://host.docker.internal:18043/openai/run-a/qat-test-attempt/v1"
+        "http://egress.opensandbox.internal:8080/openai/run-a/qat-test-attempt/v1"
     )
     assert created["env"]["ANTHROPIC_BASE_URL"] == (
-        "http://host.docker.internal:18043/anthropic/run-a/qat-test-attempt"
+        "http://egress.opensandbox.internal:8080/anthropic/run-a/qat-test-attempt"
     )
     assert created["env"]["OPENAI_API_KEY"] == created["env"]["ANTHROPIC_AUTH_TOKEN"]
     assert created["env"]["OPENAI_API_KEY"] not in {
@@ -1664,7 +1658,7 @@ async def test_opensandbox_internal_test_uses_run_bound_proxy_without_provider_c
     assert settings.openai_api_key not in str(created)
     assert settings.anthropic_auth_token not in str(created)
 
-    await opensandbox_provider().stop(lease, reason="internal_test_acceptance")
+    await opensandbox_provider().stop(lease, reason="governed_acceptance")
 
 
 @pytest.mark.asyncio
@@ -1676,13 +1670,13 @@ async def test_opensandbox_internal_test_uses_run_bound_proxy_without_provider_c
         "http://host.docker.internal:18043?token=secret",
     ],
 )
-async def test_opensandbox_internal_test_rejects_invalid_model_proxy_base(
+async def test_opensandbox_governed_rejects_invalid_model_proxy_base(
     monkeypatch,
     value,
 ):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()
-    settings = InternalTestOpenSandboxSettings()
+    settings = OpenSandboxSettings()
     settings.opensandbox_egress_proxy_url = value
     monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
 
@@ -1696,10 +1690,10 @@ async def test_opensandbox_internal_test_rejects_invalid_model_proxy_base(
 
 
 @pytest.mark.asyncio
-async def test_opensandbox_internal_test_dispatch_digest_drift_fails_closed_and_retains_tracking(monkeypatch):
+async def test_opensandbox_governed_dispatch_digest_drift_fails_closed_and_retains_tracking(monkeypatch):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()
-    settings = InternalTestOpenSandboxSettings()
+    settings = OpenSandboxSettings()
     monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
     provider = opensandbox_provider()
     lease = await provider.create_or_reuse(request(), workspace())
@@ -1713,58 +1707,22 @@ async def test_opensandbox_internal_test_dispatch_digest_drift_fails_closed_and_
 
 
 @pytest.mark.asyncio
-async def test_opensandbox_internal_test_orphan_cleanup_requires_exact_direct_runtime_evidence(monkeypatch):
-    from opensandbox.models.sandboxes import PaginationInfo
+async def test_opensandbox_orphan_cleanup_never_deletes_untracked_runtime(monkeypatch):
     from app.runtime.sandbox import container_provider
-    from app.runtime.sandbox.opensandbox_policy import internal_test_opensandbox_lease_labels
-    from app.runtime.sandbox.providers.opensandbox.metadata import normalize_opensandbox_metadata
-
-    settings = InternalTestOpenSandboxSettings()
+    settings = OpenSandboxSettings()
     monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
-    labels = normalize_opensandbox_metadata(
-        internal_test_opensandbox_lease_labels(
-            request(attempt_id="attempt-a"),
-            settings,
-            executor_identity_labels={},
-            skill_mount_labels={},
-        )
-    )
-    exact = FakeOpenSandbox(sandbox_id="osb-exact", metadata=labels, state="FAILED")
-    drifted = FakeOpenSandbox(
-        sandbox_id="osb-drifted",
-        metadata={**labels, "ai-platform.runtime_subject": "foreign-runtime"},
-        state="FAILED",
-    )
 
     class Manager:
         killed: list[str] = []
+        create_calls = 0
 
         @classmethod
         def create(cls, **_kwargs):
+            cls.create_calls += 1
             return cls()
 
         async def close(self):
             return None
-
-        async def list_sandbox_infos(self, filter):
-            values = [
-                sandbox
-                for sandbox in (exact, drifted)
-                if all(sandbox.metadata.get(key) == value for key, value in (filter.metadata or {}).items())
-            ]
-            return SimpleNamespace(
-                sandbox_infos=values,
-                pagination=PaginationInfo(
-                    page=filter.page,
-                    page_size=filter.page_size,
-                    total_items=len(values),
-                    total_pages=1,
-                    has_next_page=False,
-                ),
-            )
-
-        async def kill_sandbox(self, sandbox_id):
-            type(self).killed.append(sandbox_id)
 
     provider = _paged_opensandbox_provider(Manager)
     cleanup_filters = {
@@ -1780,15 +1738,120 @@ async def test_opensandbox_internal_test_orphan_cleanup_requires_exact_direct_ru
 
     results = await provider.cleanup_orphan_containers(cleanup_filters, reason="orphan_reconciliation")
 
-    assert [result.container_id for result in results] == ["osb-exact"]
-    assert Manager.killed == ["osb-exact"]
+    assert results == []
+    assert Manager.create_calls == 0
+    assert Manager.killed == []
 
 
 @pytest.mark.asyncio
-async def test_opensandbox_internal_test_direct_health_failure_cleans_real_sandbox(monkeypatch):
+async def test_historical_internal_test_cleanup_survives_config_drift_but_active_use_is_rejected(monkeypatch):
+    from app.routes.sandbox_runtime_cleanup import container_lease_from_persisted_row
+    from app.runtime.sandbox.providers.opensandbox.startup import renew_opensandbox_lifetime
+    from app.runtime.sandbox.providers.opensandbox.metadata import normalize_opensandbox_metadata
+
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    cleanup = importlib.import_module("app.routes.sandbox_runtime_cleanup")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+
+    class DriftedCurrentSettings(OpenSandboxSettings):
+        opensandbox_expected_network_mode = "current-public-egress"
+        opensandbox_executor_image = "registry.example/current@sha256:" + "b" * 64
+        opensandbox_executor_image_digest = "sha256:" + "b" * 64
+        sandbox_runtime_subject = "current-runtime-subject"
+
+    settings = DriftedCurrentSettings()
+    old_image = "registry.example/old@sha256:" + "a" * 64
+    old_digest = "sha256:" + "a" * 64
+    runtime_request = request()
+    old_labels = {
+        "ai-platform.owner": "sandbox-runtime",
+        "ai-platform.tenant_id": runtime_request.tenant_id,
+        "ai-platform.workspace_id": runtime_request.workspace_id,
+        "ai-platform.user_id": runtime_request.user_id,
+        "ai-platform.session_id": runtime_request.session_id,
+        "ai-platform.run_id": runtime_request.run_id,
+        "ai-platform.attempt_id": runtime_request.attempt_id,
+        "ai-platform.sandbox_mode": runtime_request.sandbox_mode,
+        "ai-platform.browser_enabled": "false",
+        "ai-platform.provider_backend": "opensandbox",
+        "ai-platform.security_profile": "internal-test",
+        "ai-platform.internal_test.profile": "official-opensandbox-direct-v1",
+        "ai-platform.internal_test.network_mode": "bridge",
+        "ai-platform.internal_test.runtime_identity": "runsc",
+        "ai-platform.internal_test.risk": "bridge-non-production",
+            "ai-platform.executor.requested_image": old_image,
+            "ai-platform.executor.requested_image_digest": old_digest,
+            "ai-platform.runtime_subject": "old-runtime-subject",
+            **container_provider._executor_identity_labels(),
+        }
+    remote = FakeOpenSandbox(
+        sandbox_id="osb-run-a",
+        metadata=normalize_opensandbox_metadata(
+            {**old_labels, **container_provider._executor_identity_labels()}
+        ),
+    )
+    FakeOpenSandbox.instances[remote.id] = remote
+    FakeOpenSandboxManager.sandboxes = [remote]
+    container_name = f"opensandbox-{runtime_request.run_id}-{runtime_request.attempt_id}"
+    row = {
+        "id": "lease-old",
+        "tenant_id": runtime_request.tenant_id,
+        "workspace_id": runtime_request.workspace_id,
+        "user_id": runtime_request.user_id,
+        "session_id": runtime_request.session_id,
+        "run_id": runtime_request.run_id,
+        "attempt_id": runtime_request.attempt_id,
+        "sandbox_mode": runtime_request.sandbox_mode,
+        "provider": "opensandbox",
+        "browser_enabled": False,
+        "runtime_container_id": remote.id,
+        "runtime_container_name": container_name,
+        "runtime_executor_url": remote.endpoint,
+        "runtime_workspace_container_path": "/workspace",
+        "runtime_handle_verified_at": datetime.now(timezone.utc),
+        "lease_payload_json": {
+            "security_profile": "internal-test",
+            "attempt_id": runtime_request.attempt_id,
+            "container_id": remote.id,
+            "container_name": container_name,
+            "executor_url": remote.endpoint,
+            "workspace_container_path": "/workspace",
+            "requested_image": old_image,
+            "requested_image_digest": old_digest,
+            "labels": old_labels,
+        },
+    }
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    monkeypatch.setattr(cleanup, "get_settings", lambda: settings)
+    lease = container_lease_from_persisted_row(
+        row,
+        allow_historical_internal_test_cleanup=True,
+    )
+    assert lease is not None
+    provider = opensandbox_provider()
+
+    with pytest.raises(container_provider.ContainerStartFailedError, match="identity mismatch"):
+        await renew_opensandbox_lifetime(provider, lease, settings, ttl_seconds=1801)
+    assert remote.renew_calls == []
+
+    stopped = await provider.stop(lease, reason="historical_cleanup")
+    assert stopped.status == "stopped"
+    assert remote.killed is True
+
+    with pytest.raises(container_provider.OpenSandboxCapabilityAdmissionError):
+        await provider.validate_for_dispatch(lease, runtime_request, workspace())
+    with pytest.raises(container_provider.ContainerCleanupFailedError, match="cleanup inventory is not an exact authorized match"):
+        await provider.create_or_reuse(runtime_request, workspace())
+    assert FakeOpenSandbox.created == []
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_governed_health_failure_cleans_created_sandbox(monkeypatch):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()
-    settings = InternalTestOpenSandboxSettings()
+    FakeOpenSandboxManager.reset()
+    settings = OpenSandboxSettings()
     monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
 
     with pytest.raises(container_provider.ExecutorHealthTimeoutError):
@@ -1907,7 +1970,7 @@ def test_create_container_provider_rejects_retired_profile_before_backend_select
         )(),
     )
 
-    with pytest.raises(container_provider.OpenSandboxCapabilityAdmissionError, match="selection is invalid"):
+    with pytest.raises(container_provider.OpenSandboxCapabilityAdmissionError, match="retired sandbox security profile"):
         container_provider.create_container_provider()
 
 
@@ -3769,11 +3832,22 @@ async def test_opensandbox_provider_maps_lease_and_platform_controls(monkeypatch
     assert lease.workspace_container_path == "/workspace"
     assert lease.labels["ai-platform.provider_backend"] == "opensandbox"
     assert lease.labels["ai-platform.external_egress.runtime_identity"] == "runsc"
-    assert lease.labels["ai-platform.external_egress.gateway_policy_subject"] == "stateless-nginx-egress"
+    assert lease.labels["ai-platform.external_egress.network_mode"] == "ai-platform-opensandbox-egress-v2"
+    assert lease.labels["ai-platform.external_egress.gateway_policy_subject"] == "host-public-egress-v1"
+    proof = json.loads(lease.labels["ai-platform.governed_egress.proof"])
+    assert proof["network_internal"] is False
+    assert proof["default_deny_outbound"] is False
+    assert proof["policy_bound_enforcement"] is True
+    assert proof["governed_callback_exception"] is True
     assert lease.labels["ai-platform.external_egress.executor_image"] == "registry.example/ai-platform@sha256:" + "a" * 64
     assert lease.labels["ai-platform.external_egress.executor_image_digest"] == "sha256:" + "a" * 64
     assert "ai-platform.external_egress.profile_expires_at" not in lease.labels
-    assert not any(key.startswith("ai-platform.executor.") for key in lease.labels)
+    assert {
+        key for key in lease.labels if key.startswith("ai-platform.executor.")
+    } == {
+        "ai-platform.executor.requested_image",
+        "ai-platform.executor.requested_image_digest",
+    }
 
 
 @pytest.mark.asyncio

@@ -18,6 +18,14 @@ from app.execution_boundary import (
     is_governed_egress_proof,
 )
 from app.platform.sandbox.docker_governed_network import governed_egress_proof_key_id
+from app.settings import (
+    DIRECT_OPENSANDBOX_NETWORK_NAME,
+    DIRECT_OPENSANDBOX_POLICY_SUBJECT,
+    DIRECT_OPENSANDBOX_PROFILE_ID,
+    LEGACY_DIRECT_OPENSANDBOX_NETWORK_NAME,
+    LEGACY_DIRECT_OPENSANDBOX_POLICY_SUBJECT,
+    is_valid_opensandbox_network_name,
+)
 from app.runtime.sandbox.contracts import (
     ContainerLease,
     ContainerStatus,
@@ -29,22 +37,9 @@ from app.runtime.sandbox.workspace_permissions import RUNTIME_GID, RUNTIME_UID
 SANDBOX_SECURITY_PROFILE_GOVERNED = "governed"
 SANDBOX_SECURITY_PROFILE_INTERNAL_TEST = "internal-test"
 SANDBOX_SECURITY_PROFILE_LABEL = "ai-platform.security_profile"
-DIRECT_OPENSANDBOX_PROFILE_ID = "direct-opensandbox"
-DIRECT_OPENSANDBOX_NETWORK_NAME = "ai-platform-opensandbox-egress-internal-v1"
-DIRECT_OPENSANDBOX_POLICY_SUBJECT = "stateless-nginx-egress"
 DIRECT_OPENSANDBOX_CALLBACK_SUBJECT = "api-callback-token-validation"
 DIRECT_OPENSANDBOX_DENIAL_SUBJECT = "ai-platform-sandbox-runtime"
 INTERNAL_TEST_OPENSANDBOX_PROFILE = "official-opensandbox-direct-v1"
-_ORPHAN_SCOPE_KEYS = (
-    "tenant_id",
-    "workspace_id",
-    "user_id",
-    "session_id",
-    "run_id",
-    "attempt_id",
-    "sandbox_mode",
-)
-
 _GOVERNED_EGRESS_PROOF_LABEL = "ai-platform.governed_egress.proof"
 _GOVERNED_BRIDGE_PATHS = {
     "callback": "",
@@ -145,22 +140,9 @@ def validate_opensandbox_image_reference(
     return image, digest
 
 
-def requested_opensandbox_image(
-    settings: Any,
-    *,
-    allow_local_image_id: bool | None = None,
-) -> tuple[str, str]:
+def requested_opensandbox_image(settings: Any) -> tuple[str, str]:
     """Return only a validated configured image reference and matching digest."""
 
-    if allow_local_image_id is None:
-        allow_local_image_id = (
-            str(getattr(settings, "deployment_environment", "") or "") == "test"
-            and str(getattr(settings, "sandbox_container_provider", "") or "").strip().lower()
-            == "opensandbox"
-            and str(getattr(settings, "sandbox_security_profile", "") or "")
-            == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST
-            and str(getattr(settings, "opensandbox_expected_network_mode", "") or "") == "bridge"
-        )
     image = str(getattr(settings, "opensandbox_executor_image", "") or "")
     if not image:
         image = str(getattr(settings, "sandbox_executor_image", "") or "")
@@ -168,7 +150,7 @@ def requested_opensandbox_image(
     return validate_opensandbox_image_reference(
         image,
         configured_digest,
-        allow_local_image_id=allow_local_image_id,
+        allow_local_image_id=False,
     )
 
 
@@ -333,77 +315,6 @@ def governed_opensandbox_lease_labels(
     return labels
 
 
-def internal_test_opensandbox_lease_labels(
-    request: Any,
-    settings: Any,
-    *,
-    executor_identity_labels: Mapping[str, str],
-    skill_mount_labels: Mapping[str, str],
-) -> dict[str, str]:
-    """Build explicit non-production metadata for direct official OpenSandbox acceptance."""
-
-    requested_image, requested_digest = requested_opensandbox_image(settings)
-    labels = runtime_scope_labels(request)
-    labels.update(
-        {
-            "ai-platform.provider_backend": "opensandbox",
-            SANDBOX_SECURITY_PROFILE_LABEL: SANDBOX_SECURITY_PROFILE_INTERNAL_TEST,
-            "ai-platform.internal_test.profile": INTERNAL_TEST_OPENSANDBOX_PROFILE,
-            "ai-platform.internal_test.network_mode": str(
-                getattr(settings, "opensandbox_expected_network_mode", "") or ""
-            ),
-            "ai-platform.internal_test.runtime_identity": "runsc",
-            "ai-platform.internal_test.risk": "bridge-non-production",
-            "ai-platform.executor.requested_image": requested_image,
-            "ai-platform.executor.requested_image_digest": requested_digest,
-            "ai-platform.runtime_subject": str(getattr(settings, "sandbox_runtime_subject", "") or ""),
-        }
-    )
-    labels.update(executor_identity_labels)
-    labels.update(skill_mount_labels)
-    return labels
-
-
-def internal_test_orphan_cleanup_metadata_filter(filters: Mapping[str, str]) -> dict[str, str] | None:
-    """Return an exact direct-mode inventory filter only for one complete runtime scope."""
-
-    if filters.get("security_profile") != SANDBOX_SECURITY_PROFILE_INTERNAL_TEST:
-        return None
-    if any(not str(filters.get(key) or "").strip() for key in _ORPHAN_SCOPE_KEYS):
-        return None
-    metadata = {
-        "ai-platform.owner": "sandbox-runtime",
-        "ai-platform.provider_backend": "opensandbox",
-        SANDBOX_SECURITY_PROFILE_LABEL: SANDBOX_SECURITY_PROFILE_INTERNAL_TEST,
-    }
-    metadata.update({f"ai-platform.{key}": str(filters[key]) for key in _ORPHAN_SCOPE_KEYS})
-    return metadata
-
-
-def internal_test_orphan_cleanup_expected_labels(
-    filters: Mapping[str, str],
-    settings: Any,
-) -> dict[str, str] | None:
-    """Return all immutable direct-mode evidence required before orphan deletion."""
-
-    metadata = internal_test_orphan_cleanup_metadata_filter(filters)
-    if metadata is None:
-        return None
-    requested_image, requested_digest = requested_opensandbox_image(settings)
-    metadata.update(
-        {
-            "ai-platform.internal_test.profile": INTERNAL_TEST_OPENSANDBOX_PROFILE,
-            "ai-platform.internal_test.network_mode": "bridge",
-            "ai-platform.internal_test.runtime_identity": "runsc",
-            "ai-platform.internal_test.risk": "bridge-non-production",
-            "ai-platform.executor.requested_image": requested_image,
-            "ai-platform.executor.requested_image_digest": requested_digest,
-            "ai-platform.runtime_subject": str(getattr(settings, "sandbox_runtime_subject", "") or ""),
-        }
-    )
-    return metadata
-
-
 _OPENSANDBOX_EXTERNAL_EGRESS_RUNTIME_IDENTITY = "runsc"
 
 
@@ -414,13 +325,102 @@ def _required_remote_string(labels: object, key: str) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def historical_internal_test_cleanup_expected_labels(
+    lease: ContainerLease,
+) -> dict[str, str] | None:
+    """Validate a persisted retired lease's full immutable cleanup identity."""
+
+    labels = lease.labels
+    attempt_id = _required_remote_string(labels, "ai-platform.attempt_id")
+    image = _required_remote_string(labels, "ai-platform.executor.requested_image")
+    image_digest = _required_remote_string(labels, "ai-platform.executor.requested_image_digest")
+    runtime_subject = _required_remote_string(labels, "ai-platform.runtime_subject")
+    if (
+        lease.provider != "opensandbox"
+        or attempt_id is None
+        or lease.container_name != opensandbox_container_name(lease.run_id, attempt_id)
+        or image is None
+        or image_digest is None
+        or runtime_subject is None
+    ):
+        return None
+    try:
+        validate_opensandbox_image_reference(
+            image,
+            image_digest,
+            allow_local_image_id=True,
+        )
+    except OpenSandboxProfileConfigurationError:
+        return None
+
+    expected = {
+        "ai-platform.owner": "sandbox-runtime",
+        "ai-platform.tenant_id": lease.tenant_id,
+        "ai-platform.workspace_id": lease.workspace_id,
+        "ai-platform.user_id": lease.user_id,
+        "ai-platform.session_id": lease.session_id,
+        "ai-platform.run_id": lease.run_id,
+        "ai-platform.attempt_id": attempt_id,
+        "ai-platform.sandbox_mode": lease.sandbox_mode,
+        "ai-platform.browser_enabled": "true" if lease.browser_enabled else "false",
+        "ai-platform.provider_backend": "opensandbox",
+        SANDBOX_SECURITY_PROFILE_LABEL: SANDBOX_SECURITY_PROFILE_INTERNAL_TEST,
+        "ai-platform.internal_test.profile": INTERNAL_TEST_OPENSANDBOX_PROFILE,
+        "ai-platform.internal_test.network_mode": "bridge",
+        "ai-platform.internal_test.runtime_identity": _OPENSANDBOX_EXTERNAL_EGRESS_RUNTIME_IDENTITY,
+        "ai-platform.internal_test.risk": "bridge-non-production",
+        "ai-platform.executor.requested_image": image,
+        "ai-platform.executor.requested_image_digest": image_digest,
+        "ai-platform.executor.user": f"{RUNTIME_UID}:{RUNTIME_GID}",
+        "ai-platform.executor.uid": str(RUNTIME_UID),
+        "ai-platform.executor.gid": str(RUNTIME_GID),
+        "ai-platform.executor.identity_evidence": "authenticated-runtime-endpoint",
+        "ai-platform.runtime_subject": runtime_subject,
+    }
+    try:
+        normalized_labels = opensandbox_metadata.normalize_opensandbox_metadata(labels)
+    except opensandbox_metadata.OpenSandboxMetadataError:
+        return None
+    if not opensandbox_metadata.opensandbox_metadata_matches(normalized_labels, expected):
+        return None
+    return dict(labels)
+
+
+def historical_internal_test_cleanup_identity_is_authorized(
+    status: ContainerStatus,
+    lease: ContainerLease,
+) -> bool:
+    """Authorize stop-only cleanup against exact persisted and remote identity."""
+
+    expected_labels = historical_internal_test_cleanup_expected_labels(lease)
+    observed = status.detail.get("labels")
+    if (
+        expected_labels is None
+        or not isinstance(observed, dict)
+        or status.provider != "opensandbox"
+        or status.container_id != lease.container_id
+    ):
+        return False
+    executor_identity = {
+        "ai-platform.executor.user": f"{RUNTIME_UID}:{RUNTIME_GID}",
+        "ai-platform.executor.uid": str(RUNTIME_UID),
+        "ai-platform.executor.gid": str(RUNTIME_GID),
+        "ai-platform.executor.identity_evidence": "authenticated-runtime-endpoint",
+    }
+    return (
+        opensandbox_metadata.opensandbox_status_matches_lease(observed, expected_labels)
+        and opensandbox_metadata.opensandbox_metadata_matches(observed, executor_identity)
+    )
+
+
 def _governed_cleanup_expected_binding(
     status: ContainerStatus,
     lease: ContainerLease,
 ) -> dict[str, object] | None:
     labels = status.detail.get("labels")
     attempt_id = _required_remote_string(lease.labels, "ai-platform.attempt_id")
-    if not isinstance(labels, dict) or attempt_id is None:
+    runtime_subject = _required_remote_string(lease.labels, "ai-platform.runtime_subject")
+    if not isinstance(labels, dict) or attempt_id is None or runtime_subject is None:
         return None
 
     expected_remote = {
@@ -433,6 +433,7 @@ def _governed_cleanup_expected_binding(
         "ai-platform.run_id": lease.run_id,
         "ai-platform.attempt_id": attempt_id,
         "ai-platform.sandbox_mode": lease.sandbox_mode,
+        "ai-platform.runtime_subject": runtime_subject,
     }
     if not opensandbox_metadata.opensandbox_metadata_matches(labels, expected_remote):
         return None
@@ -458,19 +459,60 @@ def _governed_cleanup_expected_binding(
     )
     if any(_required_remote_string(labels, key) is None for key in required_remote_keys):
         return None
+    network_id = _required_remote_string(labels, "ai-platform.external_egress.profile_id")
+    network_name = _required_remote_string(labels, "ai-platform.external_egress.network_mode")
+    policy_subject = _required_remote_string(
+        labels, "ai-platform.external_egress.gateway_policy_subject"
+    )
+    public_direct_identity = (
+        network_id == DIRECT_OPENSANDBOX_PROFILE_ID
+        and policy_subject == DIRECT_OPENSANDBOX_POLICY_SUBJECT
+        and is_valid_opensandbox_network_name(network_name)
+    )
+    legacy_direct_identity = (
+        network_id == DIRECT_OPENSANDBOX_PROFILE_ID
+        and network_name == LEGACY_DIRECT_OPENSANDBOX_NETWORK_NAME
+        and policy_subject == LEGACY_DIRECT_OPENSANDBOX_POLICY_SUBJECT
+    )
+    if not (public_direct_identity or legacy_direct_identity):
+        return None
     if (
         _required_remote_string(labels, SANDBOX_SECURITY_PROFILE_LABEL)
         != SANDBOX_SECURITY_PROFILE_GOVERNED
         or _required_remote_string(labels, "ai-platform.external_egress.runtime_identity")
         != _OPENSANDBOX_EXTERNAL_EGRESS_RUNTIME_IDENTITY
-        or _required_remote_string(labels, "ai-platform.external_egress.network_mode")
-        != DIRECT_OPENSANDBOX_NETWORK_NAME
         or _required_remote_string(labels, "ai-platform.external_egress.profile_version") != "v1"
         or _required_remote_string(labels, "ai-platform.external_egress.upstream_bridge_version") != "v1"
     ):
         return None
 
     return {
+        "runtime_subject": json.dumps(
+            {
+                "runtime_identity": _OPENSANDBOX_EXTERNAL_EGRESS_RUNTIME_IDENTITY,
+                "runtime_subject": runtime_subject,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        "policy_subject": policy_subject,
+        "callback_subject": _required_remote_string(
+            labels, "ai-platform.external_egress.callback_boundary_subject"
+        ),
+        "denial_subject": json.dumps(
+            {
+                "deny_audit_subject": _required_remote_string(
+                    labels, "ai-platform.external_egress.deny_audit_subject"
+                ),
+                "deny_counter_subject": _required_remote_string(
+                    labels, "ai-platform.external_egress.deny_counter_subject"
+                ),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        "network_id": network_id,
+        "network_name": network_name,
         "tenant_id": lease.tenant_id,
         "workspace_id": lease.workspace_id,
         "user_id": lease.user_id,
@@ -481,60 +523,28 @@ def _governed_cleanup_expected_binding(
     }
 
 
-def _is_internal_test_opensandbox(settings: Any) -> bool:
-    return bool(
-        str(getattr(settings, "sandbox_security_profile", "") or "")
-        == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST
-        and str(getattr(settings, "deployment_environment", "") or "") == "test"
-        and str(getattr(settings, "sandbox_container_provider", "") or "").strip().lower()
-        == "opensandbox"
-        and str(getattr(settings, "opensandbox_expected_network_mode", "") or "") == "bridge"
-    )
-
-
 def opensandbox_cleanup_identity_is_authorized(
     status: ContainerStatus,
     lease: ContainerLease,
     settings: Any,
     *,
     now: datetime,
+    allow_legacy_internal_identity: bool = False,
 ) -> bool:
     """Authorize cleanup only from exact provider-owned remote identity."""
 
     status_labels = status.detail.get("labels")
-    if not isinstance(status_labels, dict):
+    if (
+        not isinstance(status_labels, dict)
+        or status.provider != "opensandbox"
+        or status.container_id != lease.container_id
+    ):
         return False
     lease_profile = str(
         lease.labels.get(SANDBOX_SECURITY_PROFILE_LABEL) or SANDBOX_SECURITY_PROFILE_GOVERNED
     )
     if lease_profile == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST:
-        try:
-            if not _is_internal_test_opensandbox(settings):
-                return False
-            requested_image, requested_digest = requested_opensandbox_image(settings)
-            normalized_image = opensandbox_metadata.normalize_opensandbox_metadata(
-                {
-                    "ai-platform.executor.requested_image": requested_image,
-                    "ai-platform.executor.requested_image_digest": requested_digest,
-                }
-            )
-        except (OpenSandboxProfileConfigurationError, opensandbox_metadata.OpenSandboxMetadataError):
-            return False
-        return bool(
-            opensandbox_metadata.opensandbox_status_matches_lease(status_labels, lease.labels)
-            and status_labels.get(SANDBOX_SECURITY_PROFILE_LABEL)
-            == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST
-            and status_labels.get("ai-platform.internal_test.profile")
-            == INTERNAL_TEST_OPENSANDBOX_PROFILE
-            and status_labels.get("ai-platform.internal_test.network_mode") == "bridge"
-            and status_labels.get("ai-platform.internal_test.runtime_identity") == "runsc"
-            and status_labels.get("ai-platform.executor.requested_image")
-            == normalized_image["ai-platform.executor.requested_image"]
-            and status_labels.get("ai-platform.executor.requested_image_digest")
-            == normalized_image["ai-platform.executor.requested_image_digest"]
-            and lease.labels.get("ai-platform.runtime_subject")
-            == str(getattr(settings, "sandbox_runtime_subject", "") or "")
-        )
+        return historical_internal_test_cleanup_identity_is_authorized(status, lease)
     if lease_profile != SANDBOX_SECURITY_PROFILE_GOVERNED:
         return False
     encoded_proof = lease.labels.get(GOVERNED_EGRESS_PROOF_LABEL)
@@ -561,6 +571,7 @@ def opensandbox_cleanup_identity_is_authorized(
         expected_binding=expected_binding,
         now=now,
         require_fresh=False,
+        allow_legacy_opensandbox=allow_legacy_internal_identity,
     )
 
 
@@ -589,8 +600,8 @@ def opensandbox_renewal_identity_is_authorized(
     lease_profile = str(
         lease.labels.get(SANDBOX_SECURITY_PROFILE_LABEL) or SANDBOX_SECURITY_PROFILE_GOVERNED
     )
-    if lease_profile == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST:
-        return True
+    if lease_profile != SANDBOX_SECURITY_PROFILE_GOVERNED:
+        return False
     encoded_proof = lease.labels.get(GOVERNED_EGRESS_PROOF_LABEL)
     if not isinstance(encoded_proof, str):
         return False
@@ -601,6 +612,11 @@ def opensandbox_renewal_identity_is_authorized(
     expected_binding = _governed_cleanup_expected_binding(status, lease)
     return bool(
         expected_binding is not None
+        and is_valid_opensandbox_network_name(
+            getattr(settings, "opensandbox_expected_network_mode", DIRECT_OPENSANDBOX_NETWORK_NAME)
+        )
+        and expected_binding.get("network_name")
+        == getattr(settings, "opensandbox_expected_network_mode", DIRECT_OPENSANDBOX_NETWORK_NAME)
         and is_governed_egress_identity_proof(
             proof,
             provider="opensandbox",

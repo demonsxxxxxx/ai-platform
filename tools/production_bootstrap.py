@@ -40,8 +40,6 @@ SYSTEMD_UNIT = Path("/etc/systemd/system/opensandbox.service")
 UNIT_TEMPLATE = Path("deploy/opensandbox/opensandbox-production.service")
 DOCKER_SOCKET = Path("/var/run/docker.sock")
 SERVER_STATE_ROOT = Path("/var/lib/ai-platform-opensandbox")
-OPENSANDBOX_WORKSPACE_ALLOWLIST_ROOT = Path("/data/opensandbox/workspaces")
-PLATFORM_WORKSPACE_ROOT = OPENSANDBOX_WORKSPACE_ALLOWLIST_ROOT / "ai-platform-production"
 PLATFORM_WORKSPACE_UID = 10001
 PLATFORM_WORKSPACE_GID = 10001
 SERVER_CONTAINER = "ai-platform-opensandbox-server"
@@ -56,8 +54,8 @@ CONFIG_LABEL_RE = re.compile(
     r"ai-platform\.host-config-sha256=(?P<digest>[0-9a-f]{64})"
 )
 UNIT_GUARD_RE = re.compile(
-    r"/data/ai-platform-prod/releases/(?P<commit>[0-9a-f]{40})/"
-    r"tools/opensandbox_unit_guard\.py"
+    r" -I (?P<path>/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*/"
+    r"tools/opensandbox_unit_guard\.py)(?=\s|$)"
 )
 SERVER_ENV_KEYS = frozenset(
     {
@@ -67,12 +65,20 @@ SERVER_ENV_KEYS = frozenset(
         "OPENSANDBOX_SERVER_GID",
         "OPENSANDBOX_DOCKER_SOCKET_GID",
         "OPENSANDBOX_LIFECYCLE_LISTEN_ADDRESS",
+        "OPENSANDBOX_EGRESS_BRIDGE",
+        "OPENSANDBOX_EGRESS_SUBNET",
+        "OPENSANDBOX_EGRESS_PROXY_IPV4",
     }
 )
 APPLICATION_HOST_KEYS = frozenset(
     {
         "OPENSANDBOX_BASE_URL",
         "OPENSANDBOX_API_KEY",
+        "OPENSANDBOX_EXPECTED_NETWORK_MODE",
+        "OPENSANDBOX_EGRESS_BRIDGE",
+        "OPENSANDBOX_EGRESS_SUBNET",
+        "OPENSANDBOX_EGRESS_PROXY_IPV4",
+        "SANDBOX_WORKSPACE_ROOT",
     }
 )
 MAX_CONFIG_BYTES = 1024 * 1024
@@ -92,6 +98,8 @@ class OpenSandboxHostConfig:
     server_gid: int
     docker_socket_gid: int
     lifecycle_address: str
+    topology: authority.DirectOpenSandboxTopology
+    workspace_root: Path
     api_key_sha256: str
     config_sha256: str
 
@@ -270,6 +278,20 @@ def _private_ipv4(value: str, name: str) -> ipaddress.IPv4Address:
     return address
 
 
+def _workspace_root(value: Any) -> Path:
+    if not isinstance(value, str):
+        raise BootstrapError("OpenSandbox workspace root is invalid")
+    candidate = Path(value)
+    if (
+        not candidate.is_absolute()
+        or candidate.as_posix() != value
+        or ".." in candidate.parts
+        or candidate == Path("/")
+    ):
+        raise BootstrapError("OpenSandbox workspace root is invalid")
+    return candidate
+
+
 def _immutable_image(value: Any, name: str) -> tuple[str, str]:
     if not isinstance(value, str) or (match := IMAGE_RE.fullmatch(value)) is None:
         raise BootstrapError(f"{name} is not an immutable image")
@@ -318,7 +340,6 @@ def load_opensandbox_host_config(
         environment["OPENSANDBOX_LIFECYCLE_LISTEN_ADDRESS"],
         "OpenSandbox lifecycle address",
     )
-
     raw_config = _read_secure_text(
         config_file,
         expected_uid=expected_uid,
@@ -399,6 +420,21 @@ def load_opensandbox_host_config(
             "OpenSandbox server configuration violates production policy"
         )
     api_key = server.get("api_key")
+    workspace_paths = storage.get("allowed_host_paths")
+    workspace_root = (
+        _workspace_root(workspace_paths[0])
+        if isinstance(workspace_paths, list) and len(workspace_paths) == 1
+        else None
+    )
+    try:
+        topology = authority.validate_direct_opensandbox_topology(
+            docker.get("network_mode"),
+            environment["OPENSANDBOX_EGRESS_BRIDGE"],
+            environment["OPENSANDBOX_EGRESS_SUBNET"],
+            environment["OPENSANDBOX_EGRESS_PROXY_IPV4"],
+        )
+    except authority.ReleaseAuthorityError as exc:
+        raise BootstrapError("OpenSandbox egress topology is invalid") from exc
     execd_image, _ = _immutable_image(
         runtime.get("execd_image"), "OpenSandbox execd image"
     )
@@ -426,13 +462,12 @@ def load_opensandbox_host_config(
         and server.get("max_sandbox_timeout_seconds") == 86400
         and config["log"].get("level") == "INFO"
         and runtime.get("type") == "docker"
-        and storage.get("allowed_host_paths")
-        == [str(OPENSANDBOX_WORKSPACE_ALLOWLIST_ROOT)]
+        and workspace_root is not None
+        and workspace_paths == [str(workspace_root)]
         and storage.get("volume_default_size") == "1Gi"
         and store.get("type") == "sqlite"
         and store.get("path") == str(SERVER_STATE_ROOT / "opensandbox.db")
-        and docker.get("network_mode")
-        == authority.DIRECT_OPENSANDBOX_NETWORK_NAME
+        and docker.get("network_mode") == topology.network_name
         and docker.get("host_ip") == str(lifecycle)
         and docker.get("no_new_privileges") is True
         and isinstance(docker.get("pids_limit"), int)
@@ -473,6 +508,8 @@ def load_opensandbox_host_config(
         server_gid=server_gid,
         docker_socket_gid=socket_gid,
         lifecycle_address=str(lifecycle),
+        topology=topology,
+        workspace_root=workspace_root,
         api_key_sha256=hashlib.sha256(api_key.encode("utf-8")).hexdigest(),
         config_sha256=hashlib.sha256(canonical_config.encode("utf-8")).hexdigest(),
     )
@@ -495,7 +532,7 @@ def _require_application_host_contract(
     config: OpenSandboxHostConfig,
     *,
     expected_uid: int = 0,
-) -> None:
+) -> dict[str, str]:
     text = _read_secure_text(
         env_file,
         expected_uid=expected_uid,
@@ -536,14 +573,31 @@ def _require_application_host_contract(
         )
     except ValueError:
         valid_lifecycle = False
+    try:
+        application_topology = authority.validate_direct_opensandbox_topology(
+            values["OPENSANDBOX_EXPECTED_NETWORK_MODE"],
+            values["OPENSANDBOX_EGRESS_BRIDGE"],
+            values["OPENSANDBOX_EGRESS_SUBNET"],
+            values["OPENSANDBOX_EGRESS_PROXY_IPV4"],
+        )
+        application_workspace_root = _workspace_root(
+            values["SANDBOX_WORKSPACE_ROOT"]
+        )
+    except (BootstrapError, authority.ReleaseAuthorityError) as exc:
+        raise BootstrapError(
+            "production OpenSandbox host/application contract mismatch"
+        ) from exc
     if (
         not valid_lifecycle
         or hashlib.sha256(values["OPENSANDBOX_API_KEY"].encode("utf-8")).hexdigest()
         != config.api_key_sha256
+        or application_topology != config.topology
+        or application_workspace_root != config.workspace_root
     ):
         raise BootstrapError(
             "production OpenSandbox host/application contract mismatch"
         )
+    return values
 
 
 def _ensure_directory(path: Path, *, uid: int, gid: int, mode: int) -> None:
@@ -589,7 +643,7 @@ def _ensure_directory(path: Path, *, uid: int, gid: int, mode: int) -> None:
         raise BootstrapError(f"OpenSandbox {action} host directory is unsafe") from exc
 
 
-def _ensure_platform_workspace(path: Path = PLATFORM_WORKSPACE_ROOT) -> None:
+def _ensure_platform_workspace(path: Path) -> None:
     try:
         _ensure_directory(
             path,
@@ -632,6 +686,7 @@ def _render_unit(template_path: Path, commit: str, config_sha256: str) -> str:
     try:
         metadata = template_path.stat(follow_symlinks=False)
         guard_metadata = guard_path.stat(follow_symlinks=False)
+        guard_path = guard_path.resolve(strict=True)
         text = template_path.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
         raise BootstrapError("OpenSandbox systemd template is unavailable") from exc
@@ -640,13 +695,17 @@ def _render_unit(template_path: Path, commit: str, config_sha256: str) -> str:
         or not stat.S_ISREG(metadata.st_mode)
         or guard_path.is_symlink()
         or not stat.S_ISREG(guard_metadata.st_mode)
-        or text.count("@@SOURCE_COMMIT@@") != 3
+        or re.fullmatch(r"/[A-Za-z0-9/_.-]+", str(guard_path)) is None
+        or text.count("@@SOURCE_COMMIT@@") != 1
         or text.count("@@HOST_CONFIG_SHA256@@") != 1
+        or text.count("@@GUARD_PATH@@") != 2
         or "ai-platform.release-owner=production-bootstrap" not in text
     ):
         raise BootstrapError("OpenSandbox systemd template is invalid")
-    return text.replace("@@SOURCE_COMMIT@@", commit).replace(
-        "@@HOST_CONFIG_SHA256@@", config_sha256
+    return (
+        text.replace("@@SOURCE_COMMIT@@", commit)
+        .replace("@@HOST_CONFIG_SHA256@@", config_sha256)
+        .replace("@@GUARD_PATH@@", str(guard_path))
     )
 
 
@@ -668,6 +727,9 @@ def _managed_existing_unit(path: Path) -> bytes | None:
         raise BootstrapError("installed OpenSandbox unit is not bootstrap-managed")
     _unit_source_commit(payload)
     _unit_config_sha256(payload)
+    text = payload.decode("utf-8")
+    helper_path = next(UNIT_GUARD_RE.finditer(text)).group("path")
+    _require_root_owned_unit_helper(Path(helper_path))
     return payload
 
 
@@ -729,8 +791,8 @@ def _unit_source_commit(payload: bytes) -> str:
     if len(matches) != 1:
         raise BootstrapError("installed OpenSandbox unit source is invalid")
     commit = matches[0].group("commit")
-    helper_commits = [match.group("commit") for match in UNIT_GUARD_RE.finditer(text)]
-    if helper_commits != [commit, commit]:
+    helper_paths = [match.group("path") for match in UNIT_GUARD_RE.finditer(text)]
+    if len(helper_paths) != 2 or helper_paths[0] != helper_paths[1]:
         raise BootstrapError("installed OpenSandbox unit source is invalid")
     return commit
 
@@ -760,21 +822,18 @@ def _unit_is_equivalent(existing: bytes, rendered: bytes) -> bool:
     normalized_rendered, rendered_count = SOURCE_LABEL_RE.subn(
         "ai-platform.source-commit=@@SOURCE_COMMIT@@", rendered_text
     )
-    normalized_existing, existing_guard_count = UNIT_GUARD_RE.subn(
-        "/data/ai-platform-prod/releases/@@SOURCE_COMMIT@@/"
-        "tools/opensandbox_unit_guard.py",
-        normalized_existing,
-    )
-    normalized_rendered, rendered_guard_count = UNIT_GUARD_RE.subn(
-        "/data/ai-platform-prod/releases/@@SOURCE_COMMIT@@/"
-        "tools/opensandbox_unit_guard.py",
-        normalized_rendered,
-    )
+    existing_guard_paths = [
+        match.group("path") for match in UNIT_GUARD_RE.finditer(existing_text)
+    ]
+    rendered_guard_paths = [
+        match.group("path") for match in UNIT_GUARD_RE.finditer(rendered_text)
+    ]
     return (
         count == 1
         and rendered_count == 1
-        and existing_guard_count == 2
-        and rendered_guard_count == 2
+        and len(existing_guard_paths) == 2
+        and len(rendered_guard_paths) == 2
+        and existing_guard_paths == rendered_guard_paths
         and normalized_existing == normalized_rendered
     )
 
@@ -976,6 +1035,33 @@ def _probe_server_health(address: str) -> None:
         raise BootstrapError("OpenSandbox server health failed") from exc
 
 
+def _require_root_owned_unit_helper(helper: Path) -> None:
+    if not helper.is_absolute():
+        raise BootstrapError("OpenSandbox unit helper path is unsafe")
+    try:
+        for path in (helper, *helper.parents):
+            metadata = path.lstat()
+            expected_type = stat.S_ISREG if path == helper else stat.S_ISDIR
+            if (
+                not expected_type(metadata.st_mode)
+                or metadata.st_uid != 0
+                or stat.S_IMODE(metadata.st_mode) & 0o022
+            ):
+                raise BootstrapError("OpenSandbox unit helper path is unsafe")
+    except OSError as exc:
+        raise BootstrapError("OpenSandbox unit helper metadata is unavailable") from exc
+
+
+def _require_verified_source_checkout(checkout: Path, commit: str) -> None:
+    _require_root_owned_unit_helper(checkout.absolute() / "tools/opensandbox_unit_guard.py")
+    try:
+        authority.assert_clean_commit(checkout, commit)
+    except authority.ReleaseAuthorityError as exc:
+        raise BootstrapError(
+            "OpenSandbox unit source checkout does not match the requested commit"
+        ) from exc
+
+
 class HostBootstrap:
     def __init__(
         self,
@@ -1029,13 +1115,14 @@ class HostBootstrap:
         require_existing_unit: bool = False,
         application_env_file: Path | None = None,
     ) -> OpenSandboxHostConfig:
+        _require_verified_source_checkout(self.checkout, commit)
         config = load_opensandbox_host_config(self.env_file, self.config_file)
         _require_host_address_available(config.lifecycle_address, "lifecycle")
         if application_env_file is not None:
             _require_application_host_contract(application_env_file, config)
         _require_docker_prerequisites(self.runner)
         try:
-            transition._require_network_guard(self.checkout)
+            transition._require_network_guard(self.checkout, topology=config.topology)
         except transition.TransitionError as exc:
             raise BootstrapError("OpenSandbox host-input guard is invalid") from exc
         rendered = _render_unit(
@@ -1064,7 +1151,7 @@ class HostBootstrap:
             gid=config.server_gid,
             mode=0o700,
         )
-        _ensure_platform_workspace()
+        _ensure_platform_workspace(config.workspace_root)
         for image in (config.server_image, config.execd_image, config.egress_image):
             self.runner.run([*DOCKER, "pull", image], timeout=900)
             self.runner.run([*DOCKER, "image", "inspect", image], timeout=30)
@@ -1073,6 +1160,7 @@ class HostBootstrap:
         expected_service_commit = (
             commit if changed else _unit_source_commit(previous or b"")
         )
+        _require_verified_source_checkout(self.checkout, commit)
         try:
             if changed:
                 _atomic_write_unit(self.unit_path, payload)

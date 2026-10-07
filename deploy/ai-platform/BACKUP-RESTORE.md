@@ -116,8 +116,9 @@ for service in postgres redis minio; do
     > "$BACKUP/$service-volume.tar"
 done
 
-WORKSPACE_ROOT=/data/opensandbox/workspaces/ai-platform-production
-LEGACY_ROOT=/data/ai-platform-prod/runtime-workspaces
+# Match the protected configuration and recorded actual mount sources.
+WORKSPACE_ROOT=/absolute/path/to/configured-workspaces
+LEGACY_ROOT=/absolute/path/to/configured-migration-source
 if sudo -n test -d "$WORKSPACE_ROOT"; then
   sudo -n tar --acls --xattrs --numeric-owner -C "$WORKSPACE_ROOT" -cpf - . \
     > "$BACKUP/workspaces.tar"
@@ -176,8 +177,8 @@ snapshot; it does not promise that this cold-backup procedure avoids downtime.
 
 Use a separate, approved host with no production network access, no production
 OpenSandbox access, and no application writers. Do not start a second production
-Compose project on the original host. The fixed container/network names and
-workspace paths make that unsafe. Copy the recovery set onto encrypted private
+Compose project on the original host. The retained container and persistent-volume
+identities make that unsafe. Copy the recovery set onto encrypted private
 storage and verify `sha256sum --check SHA256SUMS` there.
 
 Prepare a new mode `0600` file containing only `POSTGRES_USER`, `POSTGRES_DB`, and

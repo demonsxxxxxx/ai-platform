@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 import sqlite3
+import sys
 from pathlib import Path
 
 import pytest
@@ -14,7 +15,7 @@ entry = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(entry)
 
 
-@pytest.mark.skipif(os.name != "posix", reason="real POSIX file ownership and O_NOFOLLOW required")
+@pytest.mark.skipif(sys.platform != "linux", reason="real Linux procfs descriptor paths required")
 def test_environment_snapshot_survives_original_path_replacement(tmp_path):
     original = tmp_path / ".env"
     original.write_bytes(b"SYNTHETIC=original\n")
@@ -26,15 +27,66 @@ def test_environment_snapshot_survives_original_path_replacement(tmp_path):
         original.write_bytes(b"SYNTHETIC=replaced\n")
         assert snapshot.read_bytes() == b"SYNTHETIC=original\n"
     assert not snapshot.exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="real POSIX file ownership and O_NOFOLLOW required")
+def test_protected_file_survives_original_path_replacement(tmp_path):
+    original = tmp_path / ".env"
+    original.write_bytes(b"SYNTHETIC=original\n")
+    original.chmod(0o600)
+    with entry.protected_file(original) as source:
+        assert os.fstat(source.fileno()).st_mode & 0o777 == 0o600
+        original.unlink()
+        original.write_bytes(b"SYNTHETIC=replaced\n")
+        assert source.read() == b"SYNTHETIC=original\n"
+    assert source.closed
+    assert original.read_bytes() == b"SYNTHETIC=replaced\n"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="real POSIX file ownership and O_NOFOLLOW required")
+@pytest.mark.parametrize("reader_name", ["protected_file", "protected_environment"])
+def test_protected_reader_rejects_unsafe_mode_and_symlink(tmp_path, reader_name):
+    reader = getattr(entry, reader_name)
+    original = tmp_path / ".env"
+    original.write_bytes(b"SYNTHETIC=original\n")
     original.chmod(0o644)
     with pytest.raises(entry.DeploymentError):
-        with entry.protected_environment(original):
+        with reader(original):
             pytest.fail("unsafe config was accepted")
+    original.chmod(0o600)
     link = tmp_path / "linked.env"
     link.symlink_to(original)
     with pytest.raises(OSError):
-        with entry.protected_environment(link):
+        with reader(link):
             pytest.fail("symlink was accepted")
+
+
+@pytest.mark.skipif(os.name != "posix", reason="real POSIX file ownership required")
+@pytest.mark.parametrize("reader_name", ["protected_file", "protected_environment"])
+def test_protected_reader_rejects_foreign_owner_and_closes_the_descriptor(tmp_path, monkeypatch, reader_name):
+    original = tmp_path / ".env"
+    original.write_bytes(b"SYNTHETIC=original\n")
+    original.chmod(0o600)
+    inode = original.stat().st_ino
+    fstat = os.fstat
+    descriptors = []
+
+    def foreign_owner(descriptor):
+        metadata = fstat(descriptor)
+        if metadata.st_ino != inode:
+            return metadata
+        descriptors.append(descriptor)
+        values = list(metadata)
+        values[4] = os.geteuid() + 1
+        return os.stat_result(values)
+
+    monkeypatch.setattr(entry.os, "fstat", foreign_owner)
+    with pytest.raises(entry.DeploymentError, match="owner-held"):
+        with getattr(entry, reader_name)(original):
+            pytest.fail("foreign owner was accepted")
+    assert len(descriptors) == 1
+    with pytest.raises(OSError):
+        fstat(descriptors[0])
 
 
 def test_quiescence_sql_only_excludes_expired_terminal_unclaimed_quarantine():
@@ -61,30 +113,6 @@ def test_quiescence_sql_only_excludes_expired_terminal_unclaimed_quarantine():
             db.execute("rollback to counterexample")
 
 
-def test_internal_test_model_proxy_bind_requires_private_docker_bridge_ipv4():
-    base = {
-        "services": {
-            "opensandbox-egress-proxy": {
-                "ports": [{
-                    "host_ip": "172.17.0.1", "published": "18043",
-                    "target": 8080, "protocol": "tcp",
-                }]
-            }
-        }
-    }
-    assert entry.validate_model_proxy_bind(base) == "172.17.0.1"
-    assert entry.validate_model_proxy_bind({
-        "services": {"opensandbox-egress-proxy": {}}
-    }) is None
-    for host_ip in ("", "0.0.0.0", "127.0.0.1", "169.254.1.1", "8.8.8.8", "::1"):
-        invalid = json.loads(json.dumps(base))
-        invalid["services"]["opensandbox-egress-proxy"]["ports"][0]["host_ip"] = host_ip
-        with pytest.raises(entry.DeploymentError, match="model proxy bind is invalid"):
-            entry.validate_model_proxy_bind(invalid)
-    with pytest.raises(entry.DeploymentError, match="model proxy is missing"):
-        entry.validate_model_proxy_bind({"services": {}})
-
-
 def test_quarantine_with_existing_runtime_blocks_even_without_owner_label(monkeypatch):
     def run(command, stage, timeout=90):
         return {"activity check": "0|0|0", "quarantined runtime check": "synthetic-id|synthetic-name",
@@ -104,7 +132,7 @@ def harness(tmp_path, monkeypatch):
     env.write_text("SYNTHETIC=true\n")
     state = {"calls": [], "activity_checks": 0, "race": False, "fail": None}
     workspace_root = str((tmp_path / "workspaces").resolve())
-    monkeypatch.setattr(entry, "INTERNAL_TEST_WORKSPACE_ROOT", Path(workspace_root))
+    migration_source = str((tmp_path / "legacy-workspaces").resolve())
     config = {"services": {
         service: {"image": entry.FRONTEND if service == "frontend" else entry.BACKEND}
         for service in (
@@ -115,11 +143,7 @@ def harness(tmp_path, monkeypatch):
             "workspace-init",
         )
     }}
-    config["volumes"] = {
-        "ai_platform_sandbox_workspaces": {
-            "name": "ai-platform-internal_ai_platform_sandbox_workspaces"
-        }
-    }
+    config["volumes"] = {}
     for service in entry.DATA:
         target = "/var/lib/postgresql/data" if service == "postgres" else "/data"
         source = f"ai_platform_{service}"
@@ -134,7 +158,6 @@ def harness(tmp_path, monkeypatch):
     for service in ("api", "worker"):
         config["services"][service]["environment"] = {
             "SANDBOX_WORKSPACE_ROOT": workspace_root,
-            "SANDBOX_SECURITY_PROFILE": "internal-test",
             "TRUSTED_PRINCIPAL_SECRET": "synthetic-gateway-secret-" + "a" * 32,
             "AI_SESSION_SECRET": "synthetic-session-secret-" + "b" * 32,
             "CORS_ALLOW_ORIGINS": "https://platform.example.test",
@@ -159,8 +182,8 @@ def harness(tmp_path, monkeypatch):
     ]
     config["services"]["workspace-migrate"]["volumes"] = [
         {
-            "type": "volume",
-            "source": "ai_platform_sandbox_workspaces",
+            "type": "bind",
+            "source": migration_source,
             "target": "/source-workspaces",
             "read_only": True,
         },
@@ -181,8 +204,8 @@ def harness(tmp_path, monkeypatch):
             return json.dumps(config)
         if stage == "Docker data-root inspection":
             return str((tmp_path / "docker-data").resolve())
-        if stage == "Docker bridge inspection":
-            return state.get("bridge_gateway", "")
+        if stage == "workspace volume inspection":
+            return json.dumps([state["workspace_volume"]])
         if stage == "workspace migration marker inspection":
             root = Path(config["services"]["api"]["environment"]["SANDBOX_WORKSPACE_ROOT"])
             return "incomplete" if (root / ".ai-platform-workspace-migration-v1.incomplete").exists() else "clear"
@@ -212,36 +235,124 @@ def harness(tmp_path, monkeypatch):
     state["config"] = config
     state["env"] = env
     state["state_path"] = tmp_path / ".ai-platform-install-state.json"
-    state["bridge_gateway"] = ""
     state["deploy"] = lambda offline=False, check_only=False, **kwargs: entry.deploy(tmp_path, env, ["docker"], offline, check_only, **kwargs)
     return state
 
 
-def test_internal_test_workspace_volume_identity_is_exact(harness):
+def test_workspace_migration_source_must_be_a_readonly_host_bind(harness):
     source = harness["config"]["services"]["workspace-migrate"]["volumes"][0]
-    source["source"] = "other_workspace_volume"
+    source["source"] = "relative/path"
     with pytest.raises(entry.DeploymentError, match="mount topology is invalid"):
         harness["deploy"](check_only=True)
 
-    source["source"] = "ai_platform_sandbox_workspaces"
-    harness["config"]["volumes"]["ai_platform_sandbox_workspaces"]["name"] = (
-        "other_physical_volume"
+    source["source"] = str((Path(harness["config"]["services"]["api"]["environment"]["SANDBOX_WORKSPACE_ROOT"]).parent / "legacy").resolve())
+    source["type"] = "volume"
+    with pytest.raises(entry.DeploymentError, match="mount topology is invalid"):
+        harness["deploy"](check_only=True)
+
+    source["type"] = "bind"
+    source["read_only"] = False
+    with pytest.raises(entry.DeploymentError, match="mount topology is invalid"):
+        harness["deploy"](check_only=True)
+
+
+def _set_workspace_paths(config, root: Path, source: Path) -> None:
+    root_value = str(root)
+    source_value = str(source)
+    for service in ("api", "worker"):
+        config["services"][service]["environment"]["SANDBOX_WORKSPACE_ROOT"] = root_value
+        config["services"][service]["volumes"][0].update(
+            {"source": root_value, "target": root_value}
+        )
+    config["services"]["workspace-init"]["volumes"][0]["source"] = root_value
+    target_mount = config["services"]["workspace-migrate"]["volumes"][1]
+    target_mount.update({"source": root_value, "target": "/target-workspaces"})
+    config["services"]["workspace-migrate"]["volumes"][0]["source"] = source_value
+
+
+def test_workspace_paths_accept_custom_absolute_configuration(harness, tmp_path):
+    root = tmp_path / "custom" / "runtime-workspaces"
+    source = tmp_path / "previous" / "runtime-workspaces"
+    _set_workspace_paths(harness["config"], root, source)
+
+    harness["deploy"](check_only=True)
+
+    source.mkdir(parents=True)
+    with pytest.raises(entry.DeploymentError, match="migrate-legacy-workspaces"):
+        harness["deploy"](check_only=True)
+    harness["deploy"](check_only=True, migrate_legacy=True)
+
+
+def test_api_and_worker_workspace_roots_must_match(harness):
+    harness["config"]["services"]["worker"]["environment"]["SANDBOX_WORKSPACE_ROOT"] += "-other"
+
+    with pytest.raises(entry.DeploymentError, match="API and Worker workspace roots do not match"):
+        harness["deploy"](check_only=True)
+
+
+@pytest.mark.parametrize(
+    ("service", "volume_index", "field", "value"),
+    [
+        ("workspace-init", 0, "source", "/other/workspaces"),
+        ("workspace-init", 0, "read_only", True),
+        ("workspace-migrate", 1, "source", "/other/workspaces"),
+        ("workspace-migrate", 1, "read_only", True),
+    ],
+)
+def test_workspace_initializer_and_migration_target_must_bind_the_same_writable_root(
+    harness, service, volume_index, field, value
+):
+    harness["config"]["services"][service]["volumes"][volume_index][field] = value
+
+    with pytest.raises(entry.DeploymentError, match="workspace migration mount topology is invalid"):
+        harness["deploy"](check_only=True)
+
+
+@pytest.mark.parametrize("root_kind", ["relative", "unnormalized", "docker-data-root"])
+def test_workspace_root_rejects_relative_unnormalized_and_docker_data_paths(
+    harness, tmp_path, root_kind
+):
+    if root_kind == "relative":
+        root = "relative/workspaces"
+    elif root_kind == "unnormalized":
+        root = str(tmp_path / "unused" / ".." / "workspaces")
+    else:
+        root = str(tmp_path / "docker-data" / "workspaces")
+    for service in ("api", "worker"):
+        harness["config"]["services"][service]["environment"]["SANDBOX_WORKSPACE_ROOT"] = root
+        harness["config"]["services"][service]["volumes"][0].update(
+            {"source": root, "target": root}
+        )
+    harness["config"]["services"]["workspace-init"]["volumes"][0]["source"] = root
+    harness["config"]["services"]["workspace-migrate"]["volumes"][1]["source"] = root
+
+    with pytest.raises(entry.DeploymentError, match="absolute normalized|outside Docker data-root"):
+        harness["deploy"](check_only=True)
+
+
+def test_workspace_root_and_migration_source_reject_symlinked_parents(harness, tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "linked"
+    link.symlink_to(real, target_is_directory=True)
+    root = link / "workspaces"
+    _set_workspace_paths(
+        harness["config"], root, tmp_path / "migration-source"
     )
-    with pytest.raises(entry.DeploymentError, match="mount topology is invalid"):
+
+    with pytest.raises(entry.DeploymentError, match="symlinked parents"):
         harness["deploy"](check_only=True)
 
-
-def test_workspace_root_must_match_the_reviewed_profile_allowlist(harness):
-    harness["config"]["services"]["api"]["environment"]["SANDBOX_WORKSPACE_ROOT"] += "-other"
-
-    with pytest.raises(entry.DeploymentError, match="not approved"):
+    safe_root = tmp_path / "safe-root" / "workspaces"
+    source = link / "migration-source"
+    _set_workspace_paths(harness["config"], safe_root, source)
+    with pytest.raises(entry.DeploymentError, match="symlinked parents"):
         harness["deploy"](check_only=True)
 
 
 @pytest.mark.parametrize("source_contains_target", [False, True])
 def test_workspace_migration_rejects_host_source_target_nesting(
     harness,
-    monkeypatch,
     source_contains_target,
 ):
     original_root = Path(
@@ -256,65 +367,16 @@ def test_workspace_migration_rejects_host_source_target_nesting(
         source = base / "source"
     source.mkdir(parents=True)
     target.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(entry, "PRODUCTION_WORKSPACE_ROOT", target)
-    monkeypatch.setattr(entry, "PRODUCTION_WORKSPACE_MIGRATION_SOURCE", source)
-    for service in ("api", "worker"):
-        harness["config"]["services"][service]["environment"].update(
-            {
-                "SANDBOX_SECURITY_PROFILE": "governed",
-                "SANDBOX_WORKSPACE_ROOT": str(target),
-            }
-        )
-        harness["config"]["services"][service]["volumes"][0].update(
-            {"source": str(target), "target": str(target)}
-        )
-    harness["config"]["services"]["workspace-init"]["volumes"][0]["source"] = str(
-        target
-    )
-    migration_volumes = harness["config"]["services"]["workspace-migrate"]["volumes"]
-    migration_volumes[0] = {
-        "type": "bind",
-        "source": str(source),
-        "target": "/source-workspaces",
-        "read_only": True,
-    }
-    migration_volumes[1]["source"] = str(target)
+    _set_workspace_paths(harness["config"], target, source)
 
     with pytest.raises(entry.DeploymentError, match="mount topology"):
         harness["deploy"](check_only=True)
 
 
-def test_internal_test_proxy_bind_must_match_actual_docker_bridge_gateway(harness):
-    proxy_url = "http://172.17.0.1:18043"
-    harness["config"]["services"]["opensandbox-egress-proxy"]["ports"] = [{
-        "host_ip": "172.17.0.1", "published": "18043", "target": 8080,
-        "protocol": "tcp",
-    }]
-    with pytest.raises(entry.DeploymentError, match="not the Docker bridge gateway"):
-        harness["deploy"](check_only=True)
-
-    harness["bridge_gateway"] = "172.17.0.1"
-    for service in ("api", "worker"):
-        harness["config"]["services"][service]["environment"].update({
-            "OPENSANDBOX_EGRESS_PROXY_URL": proxy_url,
-        })
-    harness["config"]["services"]["worker"]["environment"][
-        "OPENSANDBOX_EGRESS_PROXY_URL"
-    ] = "http://172.19.0.9:18043"
-    with pytest.raises(entry.DeploymentError, match="URL does not match"):
-        harness["deploy"](check_only=True)
-
-    harness["config"]["services"]["worker"]["environment"][
-        "OPENSANDBOX_EGRESS_PROXY_URL"
-    ] = proxy_url
-    harness["deploy"](check_only=True)
-    stages = [stage for stage, _ in harness["calls"]]
-    assert stages.count("Docker bridge inspection") == 3
-    assert "local image verification" in stages
-
-
 def test_package_upgrade_fences_twice_and_only_preserves_data_services(harness):
-    harness["deploy"]()
+    source = harness["config"]["services"]["workspace-migrate"]["volumes"][0]["source"]
+    Path(source).mkdir()
+    harness["deploy"](migrate_legacy=True)
     stages = [stage for stage, _ in harness["calls"]]
     assert stages.index("image download") < stages.index("admission stop")
     assert stages.count("quiescent") == 2
@@ -386,9 +448,11 @@ def test_persistent_service_failure_restores_old_services_without_migration(harn
 
 
 def test_workspace_storage_migration_failure_keeps_admission_stopped(harness):
+    source = harness["config"]["services"]["workspace-migrate"]["volumes"][0]["source"]
+    Path(source).mkdir()
     harness["fail"] = "workspace storage migration"
     with pytest.raises(entry.DeploymentError):
-        harness["deploy"]()
+        harness["deploy"](migrate_legacy=True)
     stages = [name for name, _ in harness["calls"]]
     assert "restore pre-migration admission" not in stages
     assert stages.count("failed-deployment admission stop") == 3
@@ -410,10 +474,6 @@ def production_workspace(harness, monkeypatch):
     config = harness["config"]
     root = Path(config["services"]["api"]["environment"]["SANDBOX_WORKSPACE_ROOT"])
     legacy = root.parent / "legacy"
-    monkeypatch.setattr(entry, "PRODUCTION_WORKSPACE_ROOT", root)
-    monkeypatch.setattr(entry, "PRODUCTION_WORKSPACE_MIGRATION_SOURCE", legacy)
-    for service in ("api", "worker"):
-        config["services"][service]["environment"]["SANDBOX_SECURITY_PROFILE"] = "governed"
     config["services"]["workspace-migrate"]["volumes"][0] = {
         "type": "bind", "source": str(legacy), "target": "/source-workspaces", "read_only": True,
     }
@@ -506,6 +566,30 @@ def test_resume_rejects_missing_or_changed_install_identity(harness, monkeypatch
     assert not any(name == "persistent services" for name, _ in harness["calls"])
 
 
+@pytest.mark.parametrize("failure", ["malformed-json", "non-utf8", "permissions", "symlink"])
+def test_resume_rejects_unsafe_install_state_before_mutation(harness, monkeypatch, failure):
+    production_workspace(harness, monkeypatch)
+    monkeypatch.setattr(entry, "snapshot", lambda docker, **kwargs: {"postgres": harness["data_record"]("postgres")})
+    path = harness["state_path"]
+    entry.install_state(path, harness["config"], False, create=True)
+    if failure == "malformed-json":
+        path.write_text("{invalid")
+    elif failure == "non-utf8":
+        path.write_bytes(b"\xff")
+    elif failure == "permissions":
+        path.chmod(0o644)
+    else:
+        source = path.with_suffix(".original.json")
+        path.rename(source)
+        path.symlink_to(source)
+    message = "owner-held with mode 0600" if failure == "permissions" else "intact owner-held installation state file"
+    with pytest.raises(entry.DeploymentError, match=message):
+        harness["deploy"](resume_install=True)
+    assert not set(name for name, _ in harness["calls"]) & {
+        "image download", "persistent services", "schema migration", "application startup",
+    }
+
+
 def test_snapshot_requires_resume_for_data_only_and_rejects_application_resume(monkeypatch):
     names = ["postgres"]
     monkeypatch.setattr(entry, "run", lambda *args, **kwargs: "\n".join(f"ai-platform-{name}" for name in names))
@@ -578,20 +662,106 @@ def test_failed_legacy_copy_cannot_resume_with_missing_source_or_skip_mode(harne
         harness["deploy"]()
 
 
-def test_production_upgrade_rejects_unmigrated_named_workspace_volume(harness, monkeypatch):
-    production_workspace(harness, monkeypatch)
-    original_snapshot = entry.snapshot
-    def old_snapshot(docker, **kwargs):
-        records = original_snapshot(docker, **kwargs)
-        for service in ("api", "worker"):
-            records[service]["Mounts"][0].update({
-                "Type": "volume", "Name": f"{entry.PROJECT}_ai_platform_sandbox_workspaces",
-                "Source": "/var/lib/docker/volumes/old/_data",
-            })
-        return records
-    monkeypatch.setattr(entry, "snapshot", old_snapshot)
+@pytest.mark.parametrize("mount_type", ["bind", "volume"])
+def test_existing_workspace_storage_migrates_only_from_the_inspected_source(
+    harness, monkeypatch, mount_type
+):
+    legacy = production_workspace(harness, monkeypatch)
+    legacy.mkdir()
+    source_identity = str(legacy)
+    harness["workspace_volume"] = {
+        "Name": "old-compose-project_runtime-data", "Driver": "local",
+        "Mountpoint": source_identity, "Options": None,
+    }
+    records = {service: {} for service in (*entry.DATA, *entry.APPS)}
+    for service in ("api", "worker"):
+        root = harness["config"]["services"][service]["environment"]["SANDBOX_WORKSPACE_ROOT"]
+        records[service] = {
+            "Config": {"Env": [f"SANDBOX_WORKSPACE_ROOT={root}"]},
+            "Mounts": [{
+                "Type": mount_type,
+                **({"Name": "old-compose-project_runtime-data"} if mount_type == "volume" else {}),
+                "Source": source_identity, "Destination": root, "RW": True,
+            }],
+        }
+    monkeypatch.setattr(entry, "snapshot", lambda docker, **kwargs: records)
+
+    harness["deploy"](migrate_legacy=True, check_only=True)
+    source_mount = harness["config"]["services"]["workspace-migrate"]["volumes"][0]
+    assert source_mount == {
+        "type": "bind", "source": source_identity,
+        "target": "/source-workspaces", "read_only": True,
+    }
+    assert not any(name == "admission stop" for name, _ in harness["calls"])
+
+
+@pytest.mark.parametrize("change", [
+    {"Driver": "unsupported-plugin"},
+    {"Options": {"type": "none", "o": "bind", "device": "/srv/workspaces"}},
+    {"Options": {"type": "nfs", "o": "addr=10.0.0.2", "device": ":/workspaces"}},
+    {"Mountpoint": "/wrong/source"},
+    {"Name": "other-volume"},
+])
+def test_existing_workspace_volume_requires_stable_local_storage_before_admission(harness, monkeypatch, change):
+    legacy = production_workspace(harness, monkeypatch)
+    legacy.mkdir()
+    name = "old-compose-project_runtime-data"
+    harness["workspace_volume"] = {
+        "Name": name, "Driver": "local", "Mountpoint": str(legacy),
+        "Options": None, **change,
+    }
+    records = {service: {} for service in (*entry.DATA, *entry.APPS)}
+    for service in ("api", "worker"):
+        root = harness["config"]["services"][service]["environment"]["SANDBOX_WORKSPACE_ROOT"]
+        records[service] = {
+            "Config": {"Env": [f"SANDBOX_WORKSPACE_ROOT={root}"]},
+            "Mounts": [{"Type": "volume", "Name": name, "Driver": "local",
+                        "Source": str(legacy), "Destination": root}],
+        }
+    monkeypatch.setattr(entry, "snapshot", lambda docker, **kwargs: records)
+
+    with pytest.raises(entry.DeploymentError, match="plain local volume"):
+        harness["deploy"](migrate_legacy=True)
+    assert not any(stage == "admission stop" for stage, _ in harness["calls"])
+
+
+def test_existing_workspace_volume_rejects_a_different_selected_source(harness, monkeypatch):
+    legacy = production_workspace(harness, monkeypatch)
+    legacy.mkdir()
+    records = {service: {} for service in (*entry.DATA, *entry.APPS)}
+    for service in ("api", "worker"):
+        root = harness["config"]["services"][service]["environment"]["SANDBOX_WORKSPACE_ROOT"]
+        records[service] = {
+            "Config": {"Env": [f"SANDBOX_WORKSPACE_ROOT={root}"]},
+            "Mounts": [{
+                "Type": "volume", "Name": "legacy-stack_workspace-volume",
+                "Source": str(legacy / "inspected-source"), "Destination": root, "RW": True,
+            }],
+        }
+    monkeypatch.setattr(entry, "snapshot", lambda docker, **kwargs: records)
+
     with pytest.raises(entry.DeploymentError, match="explicitly supported migration"):
-        harness["deploy"]()
+        harness["deploy"](migrate_legacy=True, check_only=True)
+    assert not any(name == "admission stop" for name, _ in harness["calls"])
+
+
+def test_existing_workspace_api_and_worker_mount_identities_must_match(harness, monkeypatch):
+    legacy = production_workspace(harness, monkeypatch)
+    legacy.mkdir()
+    records = {service: {} for service in (*entry.DATA, *entry.APPS)}
+    for service in ("api", "worker"):
+        root = harness["config"]["services"][service]["environment"]["SANDBOX_WORKSPACE_ROOT"]
+        records[service] = {
+            "Config": {"Env": [f"SANDBOX_WORKSPACE_ROOT={root}"]},
+            "Mounts": [{
+                "Type": "volume", "Name": f"old-stack_{service}-workspace",
+                "Source": str(legacy), "Destination": root, "RW": True,
+            }],
+        }
+    monkeypatch.setattr(entry, "snapshot", lambda docker, **kwargs: records)
+
+    with pytest.raises(entry.DeploymentError, match="identities do not match"):
+        harness["deploy"](migrate_legacy=True, check_only=True)
     assert not any(name == "admission stop" for name, _ in harness["calls"])
 
 

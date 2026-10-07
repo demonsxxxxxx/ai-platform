@@ -127,8 +127,7 @@ def test_minio_release_input_preserves_runtime_compatibility():
     assert "quay.io/minio/minio" not in compose_text
 
 
-@pytest.mark.parametrize("profile", ["internal-test", "production"])
-def test_compose_package_contains_only_runtime_files_with_fixed_images(tmp_path, profile):
+def test_compose_package_contains_one_runtime_archive_with_fixed_images(tmp_path):
     import tarfile
     import yaml
 
@@ -136,7 +135,7 @@ def test_compose_package_contains_only_runtime_files_with_fixed_images(tmp_path,
     _write_package_evidence(tmp_path, manifest)
     output = tmp_path / "deployment.tar.gz"
     data_images = {service: tag.rsplit(":", 1)[0] + "@sha256:" + "d" * 64 for service, tag in DATA_IMAGES.items()}
-    build_package(ROOT, manifest, profile, output, data_images, evidence_root=tmp_path)
+    build_package(ROOT, manifest, output, data_images, evidence_root=tmp_path)
     with tarfile.open(output) as archive:
         expected = {
             "compose.yaml", "compose.override.yaml", ".env.example",
@@ -195,36 +194,56 @@ def test_compose_package_contains_only_runtime_files_with_fixed_images(tmp_path,
         assert not env_keys.intersection({
             "AI_PLATFORM_IMAGE", "AI_PLATFORM_FRONTEND_IMAGE", "AI_PLATFORM_SOURCE_COMMIT",
             "OPENSANDBOX_EXECUTOR_IMAGE", "OPENSANDBOX_EXECUTOR_IMAGE_DIGEST",
-            "DEPLOYMENT_ENVIRONMENT", "SANDBOX_CONTAINER_PROVIDER", "SANDBOX_SECURITY_PROFILE",
+            "DEPLOYMENT_ENVIRONMENT", "SANDBOX_CONTAINER_PROVIDER",
             "SANDBOX_EGRESS_POLICY_ENABLED", "OPENSANDBOX_USE_SERVER_PROXY",
-            "OPENSANDBOX_EXPECTED_NETWORK_MODE", "DOCKER_SOCKET_GID",
+            "DOCKER_SOCKET_GID",
             "OPENSANDBOX_ALLOWED_EGRESS_HOSTS", "AI_PLATFORM_BUILD_COMMIT", "AI_PLATFORM_BUILD_DIRTY",
             "OPENAI_BASE_URL", "OPENAI_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN",
         })
         assert {"POSTGRES_PASSWORD", "MODEL_CONNECTION_ENCRYPTION_KEY", "OPENSANDBOX_API_KEY"} <= env_keys
-        expected_profile = "governed" if profile == "production" else "internal-test"
+        assert {
+            "OPENSANDBOX_EXPECTED_NETWORK_MODE", "OPENSANDBOX_EGRESS_BRIDGE",
+            "OPENSANDBOX_EGRESS_SUBNET", "OPENSANDBOX_EGRESS_PROXY_IPV4",
+        } <= env_keys
+        env_values = {
+            line.partition("=")[0]: line.partition("=")[2]
+            for line in env_example.splitlines()
+            if line and not line.startswith("#") and "=" in line
+        }
+        assert all(env_values[name] for name in (
+            "OPENSANDBOX_EXPECTED_NETWORK_MODE", "OPENSANDBOX_EGRESS_BRIDGE",
+            "OPENSANDBOX_EGRESS_SUBNET", "OPENSANDBOX_EGRESS_PROXY_IPV4",
+        ))
+        assert "SANDBOX_SECURITY_PROFILE" not in str(base) + str(overlay)
         for service in ("api", "worker"):
             env = {**base["services"][service]["environment"], **overlay["services"][service]["environment"]}
             assert env["SANDBOX_CONTAINER_PROVIDER"] == "opensandbox"
-            assert env["SANDBOX_SECURITY_PROFILE"] == expected_profile
-            assert env["SANDBOX_EGRESS_POLICY_ENABLED"] == ("true" if profile == "production" else "false")
+            assert env["SANDBOX_EGRESS_POLICY_ENABLED"] == "true"
             assert env["OPENSANDBOX_USE_SERVER_PROXY"] == "true"
-            assert env["OPENSANDBOX_EXPECTED_NETWORK_MODE"] == ("ai-platform-opensandbox-egress-internal-v1" if profile == "production" else "bridge")
-        assert ("OPENSANDBOX_EGRESS_PROXY_URL" in env_keys) == (profile == "internal-test")
-        assert ("OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS" in env_keys) == (profile == "internal-test")
-        assert f"SANDBOX_WORKSPACE_ROOT=/data/opensandbox/workspaces/ai-platform-{profile}" in env_example.splitlines()
+            assert env["OPENSANDBOX_EXPECTED_NETWORK_MODE"] == "${OPENSANDBOX_EXPECTED_NETWORK_MODE:?required}"
+            assert env["OPENSANDBOX_EGRESS_PROXY_URL"] == "http://egress.opensandbox.internal:8080"
+        assert "SANDBOX_WORKSPACE_ROOT=/data/opensandbox/workspaces/ai-platform" in env_example.splitlines()
+        assert "SANDBOX_WORKSPACE_MIGRATION_SOURCE=/data/ai-platform/runtime-workspaces" in env_example.splitlines()
+        assert "OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS" not in env_keys
+        assert "OPENSANDBOX_EGRESS_PROXY_URL" not in env_keys
+        assert overlay["networks"]["opensandbox_egress_v2"]["name"] == "${OPENSANDBOX_EXPECTED_NETWORK_MODE:?required}"
+        assert overlay["networks"]["opensandbox_egress_v2"]["driver_opts"]["com.docker.network.bridge.name"] == "${OPENSANDBOX_EGRESS_BRIDGE:?required}"
+        assert overlay["networks"]["opensandbox_egress_v2"]["ipam"]["config"][0]["subnet"] == "${OPENSANDBOX_EGRESS_SUBNET:?required}"
+        proxy = overlay["services"]["opensandbox-egress-proxy"]
+        assert proxy["networks"]["opensandbox_egress_v2"]["ipv4_address"] == "${OPENSANDBOX_EGRESS_PROXY_IPV4:?required}"
+        assert "ports" not in proxy
         source_env = (ROOT / "deploy/ai-platform/.env.example").read_text()
         for line in env_example.splitlines():
             if line and not line.startswith(("#", "SANDBOX_WORKSPACE_ROOT=")):
                 assert line in source_env.splitlines()
     before = output.read_bytes()
     with pytest.raises(FileExistsError):
-        build_package(ROOT, manifest, profile, output, data_images, evidence_root=tmp_path)
+        build_package(ROOT, manifest, output, data_images, evidence_root=tmp_path)
     assert output.read_bytes() == before
     manifest["subjects"][0]["image"]["immutable_ref"] = "untrusted:latest"
     rejected = tmp_path / "rejected.tar.gz"
     with pytest.raises(ValueError):
-        build_package(ROOT, manifest, profile, rejected, data_images, evidence_root=tmp_path)
+        build_package(ROOT, manifest, rejected, data_images, evidence_root=tmp_path)
     assert not rejected.exists()
 
 
@@ -691,7 +710,7 @@ def test_compose_package_rejects_missing_or_mismatched_evidence_before_writing(t
     output = tmp_path / "rejected.tar.gz"
     data_images = {service: tag.rsplit(":", 1)[0] + "@sha256:" + "d" * 64 for service, tag in DATA_IMAGES.items()}
     with pytest.raises(ValueError):
-        build_package(ROOT, manifest, "production", output, data_images, evidence_root=tmp_path)
+        build_package(ROOT, manifest, output, data_images, evidence_root=tmp_path)
     assert not output.exists()
 
 
@@ -734,7 +753,7 @@ def test_compose_package_rejects_invalid_inventory_before_writing(tmp_path, fail
     output = tmp_path / "rejected.tar.gz"
     data_images = {service: tag.rsplit(":", 1)[0] + "@sha256:" + "d" * 64 for service, tag in DATA_IMAGES.items()}
     with pytest.raises(ValueError):
-        build_package(ROOT, manifest, "production", output, data_images, evidence_root=tmp_path)
+        build_package(ROOT, manifest, output, data_images, evidence_root=tmp_path)
     assert not output.exists()
 
 
@@ -748,7 +767,7 @@ def test_compose_package_does_not_include_unlisted_files(tmp_path):
     (tmp_path / "unrelated.json").write_text("{}")
     output = tmp_path / "deployment.tar.gz"
     data_images = {service: tag.rsplit(":", 1)[0] + "@sha256:" + "d" * 64 for service, tag in DATA_IMAGES.items()}
-    build_package(ROOT, manifest, "production", output, data_images, evidence_root=tmp_path)
+    build_package(ROOT, manifest, output, data_images, evidence_root=tmp_path)
     with tarfile.open(output) as archive:
         assert ".env" not in archive.getnames()
         assert "release-evidence/.env" not in archive.getnames()

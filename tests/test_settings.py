@@ -152,36 +152,15 @@ def test_stale_run_reconciliation_settings_reject_unsafe_bounds(field, value):
         Settings(_env_file=None, **{field: value})
 
 
-def test_sandbox_security_profile_defaults_governed_and_rejects_retired_profile(
-    monkeypatch,
-):
-    assert Settings(_env_file=None).sandbox_security_profile == "governed"
+def test_legacy_sandbox_security_profile_setting_is_not_active(monkeypatch):
+    monkeypatch.setenv("SANDBOX_SECURITY_PROFILE", "internal-test")
+    settings = Settings(_env_file=None, sandbox_security_profile="internal-test")
 
-    monkeypatch.setenv("SANDBOX_SECURITY_PROFILE", "trusted_internal")
-    monkeypatch.setenv("SANDBOX_CONTAINER_PROVIDER", "opensandbox")
-
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None)
+    assert not hasattr(settings, "sandbox_security_profile")
+    assert settings.opensandbox_expected_network_mode == "ai-platform-opensandbox-egress-v2"
 
 
-def test_sandbox_security_profile_rejects_unknown_values():
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None, sandbox_security_profile="permissive")
-
-
-def test_internal_test_opensandbox_profile_requires_explicit_test_bridge_selection():
-    settings = Settings(
-        _env_file=None,
-        deployment_environment="test",
-        sandbox_container_provider="opensandbox",
-        sandbox_security_profile="internal-test",
-        opensandbox_expected_network_mode="bridge",
-    )
-
-    assert settings.sandbox_security_profile == "internal-test"
-
-
-def test_production_opensandbox_requires_the_isolated_network():
+def test_production_opensandbox_accepts_a_configured_named_egress_network():
     values = {
         "deployment_environment": "production",
         "trusted_principal_secret": _TEST_TRUSTED_PRINCIPAL_SECRET,
@@ -189,8 +168,7 @@ def test_production_opensandbox_requires_the_isolated_network():
         "existing_auth_base_url": "https://auth.internal.example",
         "existing_user_info_base_url": "https://directory.internal.example",
         "sandbox_container_provider": "opensandbox",
-        "sandbox_security_profile": "governed",
-        "opensandbox_expected_network_mode": "ai-platform-opensandbox-egress-internal-v1",
+        "opensandbox_expected_network_mode": "customer-public-egress-2026",
         "opensandbox_use_server_proxy": True,
         "sandbox_egress_policy_enabled": True,
         "opensandbox_api_key": "opensandbox-secret",
@@ -199,51 +177,44 @@ def test_production_opensandbox_requires_the_isolated_network():
     }
 
     assert Settings(_env_file=None, **values).opensandbox_expected_network_mode == (
-        "ai-platform-opensandbox-egress-internal-v1"
+        "customer-public-egress-2026"
     )
 
-    values["opensandbox_expected_network_mode"] = "bridge"
-    with pytest.raises(ValidationError, match="production_opensandbox_network_mode_invalid"):
-        Settings(_env_file=None, **values)
-
-
-@pytest.mark.parametrize(
-    "overrides",
-    [
-        {"deployment_environment": "production"},
-        {"deployment_environment": "development"},
-        {"sandbox_container_provider": "fake"},
-        {"sandbox_container_provider": "docker"},
-        {"opensandbox_expected_network_mode": "none"},
-    ],
-)
-def test_internal_test_opensandbox_profile_rejects_single_sided_or_non_test_selection(
-    overrides,
-):
-    values = {
-        "deployment_environment": "test",
-        "sandbox_container_provider": "opensandbox",
-        "sandbox_security_profile": "internal-test",
-        "opensandbox_expected_network_mode": "bridge",
-        **overrides,
-    }
-    if values["deployment_environment"] == "production":
-        values["trusted_principal_secret"] = _TEST_TRUSTED_PRINCIPAL_SECRET
-        values["ai_session_secret"] = _TEST_AI_SESSION_SECRET
-    with pytest.raises(
-        ValidationError, match="internal_test_opensandbox_profile_invalid"
+    for network_name in (
+        "none",
+        "bridge",
+        "host",
+        "ai-platform-opensandbox-egress-internal-v1",
+        "bad network name",
+        "customer-egress-",
+        "customer-egress.",
+        "customer-egress_",
+        "n" * 64,
     ):
-        Settings(_env_file=None, **values)
+        values["opensandbox_expected_network_mode"] = network_name
+        with pytest.raises(ValidationError, match="opensandbox_expected_network_mode_invalid"):
+            Settings(_env_file=None, **values)
+
+
+@pytest.mark.parametrize("name", ["n", "n" * 63, "customer-egress_2026"])
+def test_configured_network_name_is_preserved_by_remote_metadata(name):
+    from app.settings import is_valid_opensandbox_network_name
+    from app.runtime.sandbox.providers.opensandbox.metadata import normalize_opensandbox_metadata
+
+    assert is_valid_opensandbox_network_name(name)
+    labels = {"ai-platform.external_egress.network_mode": name}
+    assert normalize_opensandbox_metadata(labels) == labels
 
 
 @pytest.mark.parametrize("provider", ["fake", "docker", "opensandbox"])
-def test_retired_security_profile_is_rejected_for_every_provider(provider):
-    with pytest.raises(ValidationError):
-        Settings(
-            _env_file=None,
-            sandbox_container_provider=provider,
-            sandbox_security_profile="trusted_internal",
-        )
+def test_legacy_profile_values_do_not_change_runtime_settings(provider):
+    settings = Settings(
+        _env_file=None,
+        sandbox_container_provider=provider,
+        sandbox_security_profile="trusted_internal",
+    )
+
+    assert not hasattr(settings, "sandbox_security_profile")
 
 
 def test_retired_runtime_authority_settings_are_not_configurable(monkeypatch, tmp_path):
