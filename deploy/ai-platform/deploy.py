@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+import hashlib
 import ipaddress
 import json
 import os
@@ -14,6 +15,7 @@ import stat
 import subprocess
 import sys
 import time
+from urllib.parse import urlsplit
 
 # Filled by release_compose_package.py, never operator configuration.
 COMMIT = "@@SOURCE_COMMIT@@"
@@ -118,7 +120,7 @@ def quiescent(docker: list[str]) -> None:
             raise DeploymentError("sandbox containers block deployment")
 
 
-def snapshot(docker: list[str]) -> dict:
+def snapshot(docker: list[str], resume_install: bool = False) -> dict:
     records = {}
     names = run([*docker, "ps", "-a", "--format", "{{.Names}}"], "container inventory").splitlines()
     for service in (*DATA, *APPS):
@@ -130,25 +132,28 @@ def snapshot(docker: list[str]) -> dict:
         if labels.get("com.docker.compose.project") != PROJECT or labels.get("com.docker.compose.service") != service:
             raise DeploymentError("existing container belongs to another deployment")
         records[service] = record
-    if records and set(records) != set((*DATA, *APPS)):
+    if resume_install:
+        if set(records) - set(DATA):
+            raise DeploymentError("install resume requires data-only state; application containers require operator recovery")
+    elif records and set(records) != set((*DATA, *APPS)):
         raise DeploymentError("partial existing stack requires recovery, not a normal upgrade")
     return records
 
 
-def verify_runtime(docker: list[str], image_ids: dict[str, str], before: dict) -> None:
+def verify_runtime(docker: list[str], image_ids: dict[str, str], before: dict, workspace_migration: bool = True) -> None:
     for service in (*DATA, *APPS):
         record = inspect(docker, f"ai-platform-{service}")
         state = record["State"]
         if not state["Running"] or (service != "worker" and state.get("Health", {}).get("Status") != "healthy"):
             raise DeploymentError("service health did not converge")
         if service in DATA:
-            if before and any(record[key] != before[service][key] for key in ("Id", "Mounts", "RestartCount")):
+            if service in before and any(record[key] != before[service][key] for key in ("Id", "Mounts", "RestartCount")):
                 raise DeploymentError("persistent service identity changed")
         else:
             target = FRONTEND if service == "frontend" else BACKEND
             if record["Image"] != image_ids[target] or record["Config"]["Labels"].get("ai-platform.source-commit") != COMMIT:
                 raise DeploymentError("application image or commit mismatch")
-    for service in ("migrate", "workspace-migrate", "workspace-init"):
+    for service in ("migrate", "workspace-init", *(("workspace-migrate",) if workspace_migration else ())):
         state = inspect(docker, f"ai-platform-{service}")["State"]
         if state["Status"] != "exited" or state["ExitCode"] != 0:
             raise DeploymentError("migration or workspace initialization failed")
@@ -195,7 +200,7 @@ def validate_model_proxy_bind(config: dict) -> str | None:
     return str(address)
 
 
-def validate_workspace_storage(config: dict, docker: list[str]) -> Path:
+def validate_workspace_storage(config: dict, docker: list[str], migrate_legacy: bool = False) -> bool:
     services = config.get("services")
     if not isinstance(services, dict):
         raise DeploymentError("Compose services are invalid")
@@ -280,6 +285,8 @@ def validate_workspace_storage(config: dict, docker: list[str]) -> Path:
         source_path = Path(str(source_mount.get("source") or ""))
         try:
             source_node = source_path.lstat()
+        except FileNotFoundError:
+            source_node = None
         except OSError as exc:
             raise DeploymentError("workspace migration source is unavailable") from exc
         source_is_valid = (
@@ -288,16 +295,17 @@ def validate_workspace_storage(config: dict, docker: list[str]) -> Path:
             and source_path.is_absolute()
             and source_path == Path(os.path.abspath(source_path))
             and source_path != workspace_root
-            and stat.S_ISDIR(source_node.st_mode)
-            and not stat.S_ISLNK(source_node.st_mode)
+            and (source_node is None or stat.S_ISDIR(source_node.st_mode))
         )
         current = source_path
         while source_is_valid:
             try:
                 parent_node = current.lstat()
+            except FileNotFoundError:
+                parent_node = None
             except OSError as exc:
                 raise DeploymentError("workspace migration source cannot be inspected") from exc
-            if stat.S_ISLNK(parent_node.st_mode):
+            if parent_node is not None and stat.S_ISLNK(parent_node.st_mode):
                 source_is_valid = False
                 break
             if current.parent == current:
@@ -317,18 +325,156 @@ def validate_workspace_storage(config: dict, docker: list[str]) -> Path:
         or not source_mount.get("read_only")
     ):
         raise DeploymentError("workspace migration mount topology is invalid")
-    return workspace_root
+    if security_profile == "internal-test":
+        return True
+    if migrate_legacy:
+        if source_node is None:
+            raise DeploymentError("requested legacy workspace migration source is unavailable")
+        return True
+    if source_node is not None:
+        raise DeploymentError("legacy workspace data exists; back it up and use --migrate-legacy-workspaces")
+    return False
 
 
-def deploy(package: Path, env: Path, docker: list[str], offline: bool, check_only: bool = False) -> None:
+def verify_workspace_migration_complete(config: dict, docker: list[str]) -> None:
+    root = Path(config["services"]["api"]["environment"]["SANDBOX_WORKSPACE_ROOT"])
+    if not root.exists():
+        return
+    # workspace-init makes this directory 10001:10001/0700. The invoking
+    # operator need not be root; inspect through their authorized Docker command
+    # with no network and a read-only bind, never chmod or traverse it on the host.
+    probe = (
+        "from pathlib import Path; "
+        "p=Path('/workspaces/.ai-platform-workspace-migration-v1.incomplete'); "
+        "print('incomplete' if p.exists() or p.is_symlink() else 'clear')"
+    )
+    result = run([*docker, "run", "--rm", "--pull", "never", "--network", "none", "--read-only",
+                  "--user", "0:0", "--cap-drop", "ALL", "--cap-add", "DAC_READ_SEARCH",
+                  "--security-opt", "no-new-privileges:true", "--mount",
+                  f"type=bind,source={root},target=/workspaces,readonly",
+                  "--entrypoint", "python", BACKEND, "-B", "-c", probe],
+                 "workspace migration marker inspection")
+    if result != "clear":
+        raise DeploymentError("incomplete workspace migration requires its original source and --migrate-legacy-workspaces")
+
+
+def validate_production_config(config: dict, allow_insecure_http: bool) -> None:
+    environment = config["services"]["api"].get("environment", {})
+    if environment.get("SANDBOX_SECURITY_PROFILE") != "governed":
+        return
+    for key in ("TRUSTED_PRINCIPAL_SECRET", "AI_SESSION_SECRET"):
+        value = str(environment.get(key) or "").strip()
+        if len(value) < 32 or value.lower().startswith(("change_me", "changeme", "example", "replace")):
+            raise DeploymentError(f"{key} must be a unique generated secret of at least 32 characters")
+        if config["services"]["worker"].get("environment", {}).get(key) != environment.get(key):
+            raise DeploymentError(f"API and Worker {key} must match")
+    origins = [item.strip() for item in str(environment.get("CORS_ALLOW_ORIGINS") or "").split(",") if item.strip()]
+    if not origins or any(urlsplit(origin).scheme not in ("http", "https") or not urlsplit(origin).hostname for origin in origins):
+        raise DeploymentError("CORS_ALLOW_ORIGINS must contain browser-visible HTTP(S) origins")
+    insecure = any(urlsplit(origin).scheme == "http" for origin in origins) or any(
+        str(environment.get(key) or "").lower() not in ("true", "1")
+        for key in ("AI_SESSION_COOKIE_SECURE", "AUTH_CONTEXT_COOKIE_SECURE")
+    )
+    if insecure and not allow_insecure_http:
+        raise DeploymentError("HTTP or insecure cookies require explicit --allow-insecure-http for a trusted isolated intranet")
+    if insecure:
+        print("warning: HTTP/insecure cookies expose sessions and gateway traffic; restrict access to a trusted isolated intranet, firewall the direct API, and prefer TLS.", file=sys.stderr)
+
+
+def install_state(path: Path, config: dict, resume: bool, create: bool = False,
+                  workspace_migration: bool = False) -> None:
+    # The fingerprint binds the complete rendered configuration, including stable
+    # secrets, without retaining its contents. Recovery is never a reset path.
+    expected = {"version": 1, "commit": COMMIT, "workspace_migration": workspace_migration, "config_sha256": hashlib.sha256(
+        json.dumps(config, sort_keys=True).encode()).hexdigest()}
+    if create:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, "w") as stream:
+            json.dump(expected, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        return
+    if resume:
+        try:
+            with protected_environment(path) as pinned:
+                actual = json.loads(pinned.read_text())
+        except (OSError, ValueError):
+            raise DeploymentError("install resume requires its intact owner-held installation state file") from None
+        if actual != expected:
+            raise DeploymentError("install resume must use the same release and configuration; classify changed inputs with the recovery runbook")
+    elif path.exists() or path.is_symlink():
+        raise DeploymentError("unfinished installation state exists; use --resume-install or operator recovery")
+
+
+def resume_quiescent(docker: list[str]) -> None:
+    tables = run([
+        *docker, "exec", "ai-platform-postgres", "sh", "-ceu",
+        'psql -v ON_ERROR_STOP=1 -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "$1"',
+        "sh", "select count(*) from information_schema.tables where table_schema='public' and table_name in ('runs','run_attempts','sandbox_leases');",
+    ], "install resume schema inspection", 30)
+    if tables == "3":
+        quiescent(docker)
+    elif tables != "0":
+        raise DeploymentError("partially created activity schema requires operator recovery")
+    for owner in ("sandbox-runtime", "sandbox-native-tool"):
+        if run([*docker, "ps", "-aq", "--filter", f"label=ai-platform.owner={owner}"], "sandbox check"):
+            raise DeploymentError("sandbox containers block install resume")
+
+
+def validate_existing_workspaces(config: dict, before: dict, workspace_migration: bool) -> None:
+    for service in ("api", "worker"):
+        record = before[service]
+        environment = dict(item.split("=", 1) for item in record["Config"].get("Env", []) if "=" in item)
+        old_root = environment.get("SANDBOX_WORKSPACE_ROOT")
+        mounts = [item for item in record.get("Mounts", []) if item.get("Destination") == old_root]
+        current = config["services"][service]["environment"]["SANDBOX_WORKSPACE_ROOT"]
+        profile = config["services"][service]["environment"]["SANDBOX_SECURITY_PROFILE"]
+        if not old_root or len(mounts) != 1:
+            raise DeploymentError("existing workspace storage identity is unavailable; operator recovery required")
+        mount = mounts[0]
+        if mount.get("Type") == "bind" and mount.get("Source") == current and old_root == current:
+            continue
+        supported_legacy = (
+            profile == "governed" and mount.get("Type") == "bind"
+            and mount.get("Source") == str(PRODUCTION_WORKSPACE_MIGRATION_SOURCE)
+        ) or (
+            profile == "internal-test" and mount.get("Type") == "volume"
+            and mount.get("Name") == f"{PROJECT}_ai_platform_sandbox_workspaces"
+        )
+        if not workspace_migration or not supported_legacy:
+            raise DeploymentError("existing workspace storage needs an explicitly supported migration; operator recovery required")
+
+
+def validate_resume_data(config: dict, before: dict, image_ids: dict[str, str]) -> None:
+    for service, record in before.items():
+        expected = config["services"][service]
+        if record.get("Image") != image_ids[expected["image"]]:
+            raise DeploymentError("install resume persistent image does not match the recorded package")
+        mounts = record.get("Mounts", [])
+        expected_mounts = expected.get("volumes", [])
+        if len(mounts) != len(expected_mounts):
+            raise DeploymentError("install resume persistent mounts do not match the recorded package")
+        for wanted in expected_mounts:
+            name = config.get("volumes", {}).get(wanted.get("source"), {}).get("name")
+            matches = [item for item in mounts if item.get("Destination") == wanted.get("target")]
+            if (wanted.get("type") != "volume" or not name or len(matches) != 1
+                    or matches[0].get("Type") != "volume" or matches[0].get("Name") != name
+                    or matches[0].get("RW") != (not wanted.get("read_only", False))):
+                raise DeploymentError("install resume persistent mounts do not match the recorded package")
+
+
+def deploy(package: Path, env: Path, docker: list[str], offline: bool, check_only: bool = False,
+           *, resume_install: bool = False, state_path: Path | None = None,
+           migrate_legacy: bool = False, allow_insecure_http: bool = False) -> None:
     if "@@" in COMMIT + BACKEND + FRONTEND:
         raise DeploymentError("use the published deployment package, not the source template")
     compose = [*docker, "compose", "--project-name", PROJECT, "--env-file", str(env),
                "-f", str(package / "compose.yaml"), "-f", str(package / "compose.override.yaml")]
     run([*compose, "config", "--quiet"], "configuration")
     config = json.loads(run([*compose, "config", "--format", "json"], "configuration identity"))
+    validate_production_config(config, allow_insecure_http)
     model_proxy_bind = validate_model_proxy_bind(config)
-    validate_workspace_storage(config, docker)
+    workspace_migration = validate_workspace_storage(config, docker, migrate_legacy)
     if model_proxy_bind is not None:
         bridge_gateway = run(
             [*docker, "network", "inspect", "bridge", "--format", "{{(index .IPAM.Config 0).Gateway}}"],
@@ -348,9 +494,16 @@ def deploy(package: Path, env: Path, docker: list[str], offline: bool, check_onl
         expected = FRONTEND if service == "frontend" else BACKEND
         if config["services"][service]["image"] != expected:
             raise DeploymentError("Compose image does not match this release")
-    before = snapshot(docker)
-    if before:
+    before = snapshot(docker, resume_install=resume_install)
+    state_path = state_path or env.parent / ".ai-platform-install-state.json"
+    install_state(state_path, config, resume_install, workspace_migration=workspace_migration)
+    if before and not resume_install:
+        validate_existing_workspaces(config, before, workspace_migration)
         quiescent(docker)
+    if not before and not resume_install:
+        existing_volumes = run([*docker, "volume", "ls", "--format", "{{.Name}}"], "persistent volume inventory").splitlines()
+        if any(f"{PROJECT}_ai_platform_{service}" in existing_volumes for service in DATA):
+            raise DeploymentError("orphaned persistent volumes require operator recovery; not a fresh installation")
     run(["systemctl", "is-active", "--quiet", "opensandbox.service"], "OpenSandbox host prerequisite", 15)
     references = {entry["image"] for entry in config["services"].values()}
     if any("@sha256:" not in reference for reference in references):
@@ -363,35 +516,36 @@ def deploy(package: Path, env: Path, docker: list[str], offline: bool, check_onl
         if reference not in (image.get("RepoDigests") or []):
             raise DeploymentError("local image lacks the expected repository digest")
         image_ids[reference] = image["Id"]
+    if not workspace_migration:
+        verify_workspace_migration_complete(config, docker)
+    if resume_install:
+        validate_resume_data(config, before, image_ids)
+    if resume_install and check_only:
+        if "postgres" not in before or not before["postgres"].get("State", {}).get("Running"):
+            raise DeploymentError("resume preflight needs the existing PostgreSQL container running; --check will not start it")
+        resume_quiescent(docker)
     print("preflight: ok", flush=True)
     if check_only:
         return
+    if not before and not resume_install:
+        install_state(state_path, config, False, create=True, workspace_migration=workspace_migration)
     stopped = []
     migration_started = False
     try:
-        if before:
+        if before and not resume_install:
             for service in APPS:
                 name = f"ai-platform-{service}"
                 run([*docker, "stop", "--time", "30", name], "admission stop")
                 stopped.append(name)
             quiescent(docker)
         run([*compose, "up", "-d", "--no-recreate", "--pull", "never", "--wait", *DATA], "persistent services", 180)
+        if resume_install:
+            resume_quiescent(docker)
         migration_started = True
-        run(
-            [
-                *compose,
-                "up",
-                "--no-deps",
-                "--force-recreate",
-                "--pull",
-                "never",
-                "--exit-code-from",
-                "workspace-migrate",
-                "workspace-migrate",
-            ],
-            "workspace storage migration",
-            3600,
-        )
+        if workspace_migration:
+            run([*compose, "up", "--no-deps", "--force-recreate", "--pull", "never",
+                 "--exit-code-from", "workspace-migrate", "workspace-migrate"],
+                "workspace storage migration", 3600)
         run([*compose, "up", "--no-deps", "--force-recreate", "--pull", "never", "--exit-code-from", "migrate", "migrate"], "schema migration", 600)
         run([*compose, "up", "--no-deps", "--force-recreate", "--pull", "never", "--exit-code-from", "workspace-init", "workspace-init"], "workspace initialization", 180)
         services = [
@@ -400,7 +554,7 @@ def deploy(package: Path, env: Path, docker: list[str], offline: bool, check_onl
             if name not in (*DATA, "migrate", "workspace-migrate", "workspace-init")
         ]
         run([*compose, "up", "-d", "--no-deps", "--pull", "never", "--wait", "--wait-timeout", "180", *services], "application startup", 240)
-        verify_runtime(docker, image_ids, before)
+        verify_runtime(docker, image_ids, before, workspace_migration)
     except BaseException:
         if not migration_started:
             for name in reversed(stopped):
@@ -414,6 +568,8 @@ def deploy(package: Path, env: Path, docker: list[str], offline: bool, check_onl
                     print("warning: admission stop needs operator verification", file=sys.stderr)
             print("Deployment stopped after migration began; data retained, no automatic database or image rollback.", file=sys.stderr)
         raise
+    if not before or resume_install:
+        state_path.unlink()
     print(f"deployment: healthy ({COMMIT})", flush=True)
 
 
@@ -447,6 +603,9 @@ def main() -> int:
     parser.add_argument("--docker-cmd", default="docker")
     parser.add_argument("--offline", action="store_true", help="use already loaded, verified images without pulling")
     parser.add_argument("--check", action="store_true", help="verify config, activity and cached images only; no pulls or service changes")
+    parser.add_argument("--resume-install", action="store_true", help="resume a recorded same-package, same-config data-only first installation; never reset data")
+    parser.add_argument("--migrate-legacy-workspaces", action="store_true", help="copy retained legacy workspace storage into the approved host root")
+    parser.add_argument("--allow-insecure-http", action="store_true", help="acknowledge HTTP/insecure-cookie risk on a trusted isolated intranet")
     args = parser.parse_args()
     env = args.env_file.absolute()
     def interrupt(_signum, _frame):
@@ -455,7 +614,9 @@ def main() -> int:
     try:
         # One project-wide lock even when packages/configs reside in different directories.
         with deployment_lock(Path("/tmp/ai-platform-internal-deploy.lock")), protected_environment(env) as snapshot_env:
-            deploy(Path(__file__).resolve().parent, snapshot_env, shlex.split(args.docker_cmd), args.offline, args.check)
+            deploy(Path(__file__).resolve().parent, snapshot_env, shlex.split(args.docker_cmd), args.offline, args.check,
+                   resume_install=args.resume_install, state_path=env.parent / ".ai-platform-install-state.json",
+                   migrate_legacy=args.migrate_legacy_workspaces, allow_insecure_http=args.allow_insecure_http)
     except (DeploymentError, OSError, ValueError, KeyError, KeyboardInterrupt) as exc:
         print(str(exc) if isinstance(exc, DeploymentError) else "deployment failed: invalid input, lock unavailable or interrupted", file=sys.stderr)
         return 2

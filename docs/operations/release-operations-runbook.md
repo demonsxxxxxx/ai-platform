@@ -1,7 +1,8 @@
 # Release Operations
 
-This is the executable application release procedure. CI publishes an immutable Deployment Release containing the runtime-only package and the matching
-`release-image-manifest.json`. A host consumes that package directly. Git,
+This is the executable application release procedure. CI publishes an immutable
+Deployment Release with one operator asset, `ai-platform-production.tar.gz`,
+containing the runtime-only package and matching `release-image-manifest.json`. A host consumes that package directly. Git,
 GitHub Actions, source checkouts, and host image builds are not part of a normal
 application install or upgrade.
 
@@ -9,18 +10,22 @@ application install or upgrade.
 
 The protected Packaging workflow runs after the required Backend and Frontend
 checks. It verifies the two application image subjects, binds their complete
-`linux/amd64` registry digests, and creates two packages from the same manifest:
-
-- `ai-platform-internal-test.tar.gz`
-- `ai-platform-production.tar.gz`
+`linux/amd64` registry digests, and creates two packages from the same manifest.
+Only `ai-platform-production.tar.gz` is attached to the public Deployment Release.
+`ai-platform-internal-test.tar.gz` remains a CI artifact. GitHub's automatically
+generated source archives may still appear; they are not operator packages.
 
 Each package contains the exact Compose file, the selected OpenSandbox overlay,
-`.env.example`, `deploy.py`, the release manifest, and a short package guide.
+`.env.example`, `deploy.py`, the release manifest, package guide,
+`BACKUP-RESTORE.md`, and verified image qualification evidence in
+`release-evidence/`.
 The package pins Backend, Frontend, PostgreSQL, Redis, and MinIO by
 `repository@sha256:...`. The public Release is immutable and its package files
 must be downloaded from that one Release; do not mix package files between
-versions. The complete CI evidence remains an Actions audit artifact and is not
-needed by the host.
+versions. Additional CI audit artifacts remain in Actions. Vulnerability
+evidence separates the complete HIGH/CRITICAL inventory (including findings
+without fixes) from the fixable HIGH/CRITICAL blocking gate; a passing gate does
+not mean the complete inventory is empty.
 
 Publication is protected by the `packaging-publish` environment. The workflow
 creates a unique versioned Release only after all qualification steps pass and
@@ -40,7 +45,7 @@ A named version is reserved only after qualification and a fresh main-commit
 check. An existing tag is a hard failure, never moved or reused. If publication
 fails after reserving a tag, stop and inspect that tag and any draft Release;
 do not automatically delete, reuse, or overwrite it. A completed Release still
-requires immutable status and all three matching assets. Publishing a package
+requires immutable status and the single matching production package asset. Publishing a package
 does not install or upgrade any host.
 
 ## One-time host preparation
@@ -67,16 +72,25 @@ or release evidence. The invoking user must own the file. When Docker requires
 sudo, pass `--docker-cmd 'sudo -n docker'` to the package entry instead of
 running Compose as a different user.
 
+Production uses HTTPS origins and secure cookies by default. Generate independent
+`TRUSTED_PRINCIPAL_SECRET` and `AI_SESSION_SECRET` values of at least 32
+characters and preserve them across upgrades. An intentionally HTTP-only trusted
+isolated intranet requires its actual HTTP origin, both secure-cookie flags
+false and explicit `--allow-insecure-http`; restrict access and firewall the
+direct API. This flag acknowledges risk, not production network hardening.
+
 The production host contract is documented in
 [production host preparation](production-bootstrap.md). Its host files and
 systemd units are prerequisites, not application-release inputs.
 
 ## Install or upgrade
 
-Download the desired package and matching manifest from one immutable Deployment
-Release, extract the archive into a new directory, and keep that directory
-unchanged. Back up the database and choose a maintenance window with no active
-Runs, Attempts, leases, or sandbox containers.
+Download the production package from one immutable Deployment Release and use
+its embedded manifest; extract the archive into a new directory, and keep that directory
+unchanged. Take a coordinated database, MinIO, Redis and workspace backup and choose a
+maintenance window with no active Runs, Attempts, leases, or sandbox containers.
+Follow the [backup and recovery procedure](../../deploy/ai-platform/BACKUP-RESTORE.md), including
+a restore rehearsal, before changing an existing installation.
 
 An upgrade from the retired SSE transport additionally requires the explicit
 [legacy-state retirement](redis-streams-sse-cutover-acceptance.md#explicit-legacy-state-retirement)
@@ -104,7 +118,10 @@ project-wide deployment lock and the following gates:
 5. Keep PostgreSQL, Redis, and MinIO running with their existing containers,
    mounts, and volumes.
 6. Run the versioned migration and workspace initialization as one-shot
-   services.
+   services. Fresh/current-layout production skips legacy workspace migration;
+   any existing supported legacy source directory, even empty, requires
+   `--migrate-legacy-workspaces`
+   and a verified backup. The read-only legacy source is retained.
 7. Recreate and wait for the application services, then verify API health and
    readiness, OpenSandbox reachability, application commit/image identity, and
    an advancing Worker heartbeat.
@@ -122,8 +139,11 @@ For a no-change preflight against already loaded images:
 python3 deploy.py --env-file /absolute/path/to/.env --check
 ```
 
-`--check` does not pull, stop, recreate, migrate, or initialize services. It is
-not deployment acceptance.
+`--check` does not pull, stop, recreate, migrate, or initialize application/data
+services. After image digest verification, it may run a temporary network-disabled,
+read-only backend container to check workspace migration markers. It is not
+deployment acceptance. With `--resume-install --check`, PostgreSQL must
+already be running; the preflight never starts it.
 
 ## Already downloaded images
 
@@ -150,6 +170,15 @@ any startup or health failure stops application admission and retains data.
 The entry does not guess at binary rollback and does not reverse a database
 migration. Restore a compatible package or use the authorized database backup
 procedure after classifying the failure. Do not edit migration checksums.
+
+The only automated first-install recovery is `--resume-install` with the intact
+owner-held mode `0600` `.ai-platform-install-state.json` beside the env file, the
+same package, complete rendered configuration and migration mode, and no
+application containers (even stopped ones). Existing data images and volume
+identities must match. Changed inputs, missing journals, orphaned volumes,
+partial activity schemas and ambiguous/late startup failures require operator
+classification using the [recovery procedure](../../deploy/ai-platform/BACKUP-RESTORE.md).
+Never delete data, journals or migration markers to bypass these gates.
 
 A quarantined sandbox record is not silently deleted. Only a terminal,
 unclaimed failed-reconciliation record with a terminal Run and a verifiable

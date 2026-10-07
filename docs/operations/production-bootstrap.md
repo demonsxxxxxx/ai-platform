@@ -107,3 +107,28 @@ counts, no active work, and controller termination.
 
 Use the package's `--check` before a maintenance window. Do not run the retired
 source-checkout release controller or reconstruct a latest Release on the host.
+
+
+## First-install and storage recovery
+
+A fresh production installation initializes the current workspace root without
+creating or copying a legacy source directory. Any existing supported legacy bind
+source directory, even empty, requires a backup and `--migrate-legacy-workspaces`; old production
+named-volume layouts need a separately approved migration. The source is
+retained read-only during the package copy.
+
+For an interrupted first install, `--resume-install` is intentionally narrow:
+keep the same package, configuration and migration mode, the intact owner-held
+mode `0600` journal beside the env file, and no application containers. Changed
+inputs, missing journals, partially-created activity tables and any application
+containers require classified operator recovery. `--resume-install --check`
+never starts PostgreSQL and requires it already running. See the
+[backup, restore and recovery procedure](../../deploy/ai-platform/BACKUP-RESTORE.md) before
+changing existing data.
+
+Production defaults to HTTPS origins and secure cookies. Generate independent
+`TRUSTED_PRINCIPAL_SECRET` and `AI_SESSION_SECRET` values of at least 32
+characters. For an intentionally HTTP-only isolated intranet, configure the
+actual HTTP browser origin, set both secure-cookie flags false, and explicitly
+pass `--allow-insecure-http`. Restrict network access and firewall the direct
+API; the flag cannot protect session or gateway traffic in transit.

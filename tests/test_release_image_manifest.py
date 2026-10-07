@@ -19,7 +19,7 @@ from tools.release_image_manifest import (
     validate_manifest,
 )
 from tools import release_compose_package, release_image_manifest
-from tools.release_compose_package import DATA_IMAGES, build_package
+from tools.release_compose_package import DATA_IMAGES, EVIDENCE_FILES, build_package
 from tools.oci_image_manifest import MAX_OCI_DOCUMENT_BYTES
 
 
@@ -133,16 +133,39 @@ def test_compose_package_contains_only_runtime_files_with_fixed_images(tmp_path,
     import yaml
 
     manifest = _manifest()
+    _write_package_evidence(tmp_path, manifest)
     output = tmp_path / "deployment.tar.gz"
     data_images = {service: tag.rsplit(":", 1)[0] + "@sha256:" + "d" * 64 for service, tag in DATA_IMAGES.items()}
-    build_package(ROOT, manifest, profile, output, data_images)
+    build_package(ROOT, manifest, profile, output, data_images, evidence_root=tmp_path)
     with tarfile.open(output) as archive:
         expected = {
             "compose.yaml", "compose.override.yaml", ".env.example",
-            "release-image-manifest.json", "deploy.py", "README.md",
+            "release-image-manifest.json", "deploy.py", "README.md", "BACKUP-RESTORE.md",
             "opensandbox-egress-nginx.conf.template",
         }
+        expected.update(
+            "release-evidence/" + name.format(role=role)
+            for role in ("backend", "frontend") for name in EVIDENCE_FILES
+        )
         assert set(archive.getnames()) == expected
+        assert all(member.isfile() for member in archive.getmembers())
+        extracted_evidence = tmp_path / "extracted-evidence"
+        extracted_evidence.mkdir()
+        for name in expected:
+            if name.startswith("release-evidence/"):
+                payload = archive.extractfile(name).read()
+                assert payload == (tmp_path / Path(name).name).read_bytes()
+                (extracted_evidence / Path(name).name).write_bytes(payload)
+        validate_manifest(
+            json.load(archive.extractfile("release-image-manifest.json")),
+            expected_roles=("backend", "frontend"), evidence_root=extracted_evidence,
+        )
+        for role in ("backend", "frontend"):
+            inventory = json.load(archive.extractfile(f"release-evidence/trivy-inventory-{role}.json"))
+            assert inventory["Results"][0]["Vulnerabilities"][0]["Severity"] == "HIGH"
+            assert inventory["Results"][0]["Vulnerabilities"][0]["FixedVersion"] == ""
+            gate = json.load(archive.extractfile(f"release-evidence/trivy-{role}.json"))
+            assert gate["Results"] == []
         base = yaml.safe_load(archive.extractfile("compose.yaml").read())
         # BaseLoader preserves scalars without interpreting Compose's !reset tag.
         overlay = yaml.load(archive.extractfile("compose.override.yaml").read(), Loader=yaml.BaseLoader)
@@ -189,18 +212,19 @@ def test_compose_package_contains_only_runtime_files_with_fixed_images(tmp_path,
             assert env["OPENSANDBOX_EXPECTED_NETWORK_MODE"] == ("ai-platform-opensandbox-egress-internal-v1" if profile == "production" else "bridge")
         assert ("OPENSANDBOX_EGRESS_PROXY_URL" in env_keys) == (profile == "internal-test")
         assert ("OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS" in env_keys) == (profile == "internal-test")
+        assert f"SANDBOX_WORKSPACE_ROOT=/data/opensandbox/workspaces/ai-platform-{profile}" in env_example.splitlines()
         source_env = (ROOT / "deploy/ai-platform/.env.example").read_text()
         for line in env_example.splitlines():
-            if line and not line.startswith("#"):
+            if line and not line.startswith(("#", "SANDBOX_WORKSPACE_ROOT=")):
                 assert line in source_env.splitlines()
     before = output.read_bytes()
     with pytest.raises(FileExistsError):
-        build_package(ROOT, manifest, profile, output, data_images)
+        build_package(ROOT, manifest, profile, output, data_images, evidence_root=tmp_path)
     assert output.read_bytes() == before
     manifest["subjects"][0]["image"]["immutable_ref"] = "untrusted:latest"
     rejected = tmp_path / "rejected.tar.gz"
     with pytest.raises(ValueError):
-        build_package(ROOT, manifest, profile, rejected, data_images)
+        build_package(ROOT, manifest, profile, rejected, data_images, evidence_root=tmp_path)
     assert not rejected.exists()
 
 
@@ -610,6 +634,125 @@ def _write_evidence(root: Path, manifest: dict[str, object]) -> None:
         provenance["reverification_sha256"] = hashlib.sha256(reverified.read_bytes()).hexdigest()
         subject["evidence"]["sbom"]["sha256"] = hashlib.sha256(sbom.read_bytes()).hexdigest()
         subject["evidence"]["scan"]["sha256"] = hashlib.sha256(scan.read_bytes()).hexdigest()
+
+
+def _write_package_evidence(root: Path, manifest: dict[str, object]) -> None:
+    _write_evidence(root, manifest)
+    for subject in manifest["subjects"]:
+        role = subject["role"]
+        record = copy.deepcopy(subject)
+        provenance = record["evidence"]["provenance"]
+        provenance.pop("reverification_ref")
+        provenance.pop("reverification_sha256")
+        (root / f"subject-{role}.json").write_text(json.dumps(record), encoding="utf-8")
+        (root / f"trivy-inventory-{role}.json").write_text(
+            json.dumps({
+                "SchemaVersion": 2,
+                "ArtifactName": subject["image"]["immutable_ref"],
+                "ArtifactType": "container_image",
+                "Metadata": {
+                    "RepoDigests": [subject["image"]["immutable_ref"]],
+                    "ImageConfig": {"os": "linux", "architecture": "amd64"},
+                },
+                "Results": [{
+                    "Target": "synthetic-package",
+                    "Vulnerabilities": [{
+                        "VulnerabilityID": "CVE-2099-0001", "Severity": "HIGH",
+                        "PkgName": "synthetic-package", "InstalledVersion": "1.0",
+                        "FixedVersion": "", "Status": "affected",
+                    }],
+                }],
+            }),
+            encoding="utf-8",
+        )
+        for name in ("cosign-signature", "cosign-sbom"):
+            (root / f"{name}-{role}.json").write_text(
+                json.dumps([{"fixture": "verified", "image": subject["image"]["immutable_ref"]}]),
+                encoding="utf-8",
+            )
+
+
+@pytest.mark.parametrize("failure", ["missing", "symlink", "empty", "scan_changed", "subject_changed"])
+def test_compose_package_rejects_missing_or_mismatched_evidence_before_writing(tmp_path, failure):
+    manifest = _manifest()
+    _write_package_evidence(tmp_path, manifest)
+    target = tmp_path / "cosign-signature-backend.json"
+    if failure == "missing":
+        target.unlink()
+    elif failure == "symlink":
+        target.unlink()
+        target.symlink_to(tmp_path / "cosign-signature-frontend.json")
+    elif failure == "empty":
+        target.write_bytes(b"")
+    elif failure == "scan_changed":
+        (tmp_path / "trivy-backend.json").write_text("{}")
+    elif failure == "subject_changed":
+        (tmp_path / "subject-backend.json").write_text("{}")
+    output = tmp_path / "rejected.tar.gz"
+    data_images = {service: tag.rsplit(":", 1)[0] + "@sha256:" + "d" * 64 for service, tag in DATA_IMAGES.items()}
+    with pytest.raises(ValueError):
+        build_package(ROOT, manifest, "production", output, data_images, evidence_root=tmp_path)
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("failure", [
+    "missing", "symlink", "empty", "subject", "schema", "artifact_type", "metadata",
+    "repo_digest", "platform", "results", "vulnerabilities", "severity",
+])
+def test_compose_package_rejects_invalid_inventory_before_writing(tmp_path, failure):
+    manifest = _manifest()
+    _write_package_evidence(tmp_path, manifest)
+    target = tmp_path / "trivy-inventory-backend.json"
+    report = json.loads(target.read_bytes())
+    if failure == "missing":
+        target.unlink()
+    elif failure == "symlink":
+        target.unlink()
+        target.symlink_to(tmp_path / "trivy-inventory-frontend.json")
+    elif failure == "empty":
+        target.write_bytes(b"")
+    else:
+        if failure == "subject":
+            report["ArtifactName"] = manifest["subjects"][1]["image"]["immutable_ref"]
+        elif failure == "schema":
+            report["SchemaVersion"] = 1
+        elif failure == "artifact_type":
+            report["ArtifactType"] = "filesystem"
+        elif failure == "metadata":
+            report["Metadata"] = []
+        elif failure == "repo_digest":
+            report["Metadata"]["RepoDigests"] = ["example/image@sha256:" + "f" * 64]
+        elif failure == "platform":
+            report["Metadata"]["ImageConfig"]["architecture"] = "arm64"
+        elif failure == "results":
+            report["Results"] = {}
+        elif failure == "vulnerabilities":
+            report["Results"][0]["Vulnerabilities"] = {}
+        elif failure == "severity":
+            report["Results"][0]["Vulnerabilities"][0]["Severity"] = "unknown"
+        target.write_text(json.dumps(report), encoding="utf-8")
+    output = tmp_path / "rejected.tar.gz"
+    data_images = {service: tag.rsplit(":", 1)[0] + "@sha256:" + "d" * 64 for service, tag in DATA_IMAGES.items()}
+    with pytest.raises(ValueError):
+        build_package(ROOT, manifest, "production", output, data_images, evidence_root=tmp_path)
+    assert not output.exists()
+
+
+def test_compose_package_does_not_include_unlisted_files(tmp_path):
+    import tarfile
+
+    manifest = _manifest()
+    _write_package_evidence(tmp_path, manifest)
+    # Synthetic sentinels: the source/evidence roots must never be globbed.
+    (tmp_path / ".env").write_text("SYNTHETIC_PRIVATE_CONFIGURATION=excluded")
+    (tmp_path / "unrelated.json").write_text("{}")
+    output = tmp_path / "deployment.tar.gz"
+    data_images = {service: tag.rsplit(":", 1)[0] + "@sha256:" + "d" * 64 for service, tag in DATA_IMAGES.items()}
+    build_package(ROOT, manifest, "production", output, data_images, evidence_root=tmp_path)
+    with tarfile.open(output) as archive:
+        assert ".env" not in archive.getnames()
+        assert "release-evidence/.env" not in archive.getnames()
+        assert "release-evidence/unrelated.json" not in archive.getnames()
 
 
 def _schema() -> dict[str, object]:
