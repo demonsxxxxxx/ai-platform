@@ -396,8 +396,8 @@ def install_state(path: Path, config: dict, resume: bool, create: bool = False,
         return
     if resume:
         try:
-            with protected_environment(path) as pinned:
-                actual = json.loads(pinned.read_text())
+            with protected_file(path) as source:
+                actual = json.loads(source.read().decode("utf-8"))
         except (OSError, ValueError):
             raise DeploymentError("install resume requires its intact owner-held installation state file") from None
         if actual != expected:
@@ -574,14 +574,20 @@ def deploy(package: Path, env: Path, docker: list[str], offline: bool, check_onl
 
 
 @contextmanager
-def protected_environment(path: Path):
-    # Pin the opened inode through Linux procfs for every Compose operation.
-    # No on-disk copy of a real environment file is created.
+def protected_file(path: Path):
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     with os.fdopen(descriptor, "rb") as source:
         metadata = os.fstat(source.fileno())
         if not stat.S_ISREG(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) != 0o600 or metadata.st_uid != os.geteuid():
             raise DeploymentError("configuration must be owner-held with mode 0600")
+        yield source
+
+
+@contextmanager
+def protected_environment(path: Path):
+    # Pin the opened inode through Linux procfs for every Compose operation.
+    # No on-disk copy of a real environment file is created.
+    with protected_file(path) as source:
         yield Path(f"/proc/{os.getpid()}/fd/{source.fileno()}")
 
 

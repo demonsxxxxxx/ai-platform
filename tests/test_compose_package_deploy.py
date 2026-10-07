@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 import sqlite3
+import sys
 from pathlib import Path
 
 import pytest
@@ -14,7 +15,7 @@ entry = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(entry)
 
 
-@pytest.mark.skipif(os.name != "posix", reason="real POSIX file ownership and O_NOFOLLOW required")
+@pytest.mark.skipif(sys.platform != "linux", reason="real Linux procfs descriptor paths required")
 def test_environment_snapshot_survives_original_path_replacement(tmp_path):
     original = tmp_path / ".env"
     original.write_bytes(b"SYNTHETIC=original\n")
@@ -26,15 +27,66 @@ def test_environment_snapshot_survives_original_path_replacement(tmp_path):
         original.write_bytes(b"SYNTHETIC=replaced\n")
         assert snapshot.read_bytes() == b"SYNTHETIC=original\n"
     assert not snapshot.exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="real POSIX file ownership and O_NOFOLLOW required")
+def test_protected_file_survives_original_path_replacement(tmp_path):
+    original = tmp_path / ".env"
+    original.write_bytes(b"SYNTHETIC=original\n")
+    original.chmod(0o600)
+    with entry.protected_file(original) as source:
+        assert os.fstat(source.fileno()).st_mode & 0o777 == 0o600
+        original.unlink()
+        original.write_bytes(b"SYNTHETIC=replaced\n")
+        assert source.read() == b"SYNTHETIC=original\n"
+    assert source.closed
+    assert original.read_bytes() == b"SYNTHETIC=replaced\n"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="real POSIX file ownership and O_NOFOLLOW required")
+@pytest.mark.parametrize("reader_name", ["protected_file", "protected_environment"])
+def test_protected_reader_rejects_unsafe_mode_and_symlink(tmp_path, reader_name):
+    reader = getattr(entry, reader_name)
+    original = tmp_path / ".env"
+    original.write_bytes(b"SYNTHETIC=original\n")
     original.chmod(0o644)
     with pytest.raises(entry.DeploymentError):
-        with entry.protected_environment(original):
+        with reader(original):
             pytest.fail("unsafe config was accepted")
+    original.chmod(0o600)
     link = tmp_path / "linked.env"
     link.symlink_to(original)
     with pytest.raises(OSError):
-        with entry.protected_environment(link):
+        with reader(link):
             pytest.fail("symlink was accepted")
+
+
+@pytest.mark.skipif(os.name != "posix", reason="real POSIX file ownership required")
+@pytest.mark.parametrize("reader_name", ["protected_file", "protected_environment"])
+def test_protected_reader_rejects_foreign_owner_and_closes_the_descriptor(tmp_path, monkeypatch, reader_name):
+    original = tmp_path / ".env"
+    original.write_bytes(b"SYNTHETIC=original\n")
+    original.chmod(0o600)
+    inode = original.stat().st_ino
+    fstat = os.fstat
+    descriptors = []
+
+    def foreign_owner(descriptor):
+        metadata = fstat(descriptor)
+        if metadata.st_ino != inode:
+            return metadata
+        descriptors.append(descriptor)
+        values = list(metadata)
+        values[4] = os.geteuid() + 1
+        return os.stat_result(values)
+
+    monkeypatch.setattr(entry.os, "fstat", foreign_owner)
+    with pytest.raises(entry.DeploymentError, match="owner-held"):
+        with getattr(entry, reader_name)(original):
+            pytest.fail("foreign owner was accepted")
+    assert len(descriptors) == 1
+    with pytest.raises(OSError):
+        fstat(descriptors[0])
 
 
 def test_quiescence_sql_only_excludes_expired_terminal_unclaimed_quarantine():
@@ -504,6 +556,30 @@ def test_resume_rejects_missing_or_changed_install_identity(harness, monkeypatch
     with pytest.raises(entry.DeploymentError, match="same release and configuration"):
         harness["deploy"](resume_install=True)
     assert not any(name == "persistent services" for name, _ in harness["calls"])
+
+
+@pytest.mark.parametrize("failure", ["malformed-json", "non-utf8", "permissions", "symlink"])
+def test_resume_rejects_unsafe_install_state_before_mutation(harness, monkeypatch, failure):
+    production_workspace(harness, monkeypatch)
+    monkeypatch.setattr(entry, "snapshot", lambda docker, **kwargs: {"postgres": harness["data_record"]("postgres")})
+    path = harness["state_path"]
+    entry.install_state(path, harness["config"], False, create=True)
+    if failure == "malformed-json":
+        path.write_text("{invalid")
+    elif failure == "non-utf8":
+        path.write_bytes(b"\xff")
+    elif failure == "permissions":
+        path.chmod(0o644)
+    else:
+        source = path.with_suffix(".original.json")
+        path.rename(source)
+        path.symlink_to(source)
+    message = "owner-held with mode 0600" if failure == "permissions" else "intact owner-held installation state file"
+    with pytest.raises(entry.DeploymentError, match=message):
+        harness["deploy"](resume_install=True)
+    assert not set(name for name, _ in harness["calls"]) & {
+        "image download", "persistent services", "schema migration", "application startup",
+    }
 
 
 def test_snapshot_requires_resume_for_data_only_and_rejects_application_resume(monkeypatch):
