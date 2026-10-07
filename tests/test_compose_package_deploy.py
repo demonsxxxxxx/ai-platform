@@ -120,10 +120,26 @@ def harness(tmp_path, monkeypatch):
             "name": "ai-platform-internal_ai_platform_sandbox_workspaces"
         }
     }
+    for service in entry.DATA:
+        target = "/var/lib/postgresql/data" if service == "postgres" else "/data"
+        source = f"ai_platform_{service}"
+        config["volumes"][source] = {"name": f"{entry.PROJECT}_{source}"}
+        config["services"][service]["volumes"] = [{"type": "volume", "source": source, "target": target}]
+    def data_record(service, running=False):
+        wanted = config["services"][service]["volumes"][0]
+        return {"Image": config["services"][service]["image"], "State": {"Running": running},
+                "Mounts": [{"Type": "volume", "Name": config["volumes"][wanted["source"]]["name"],
+                            "Destination": wanted["target"], "RW": True}]}
+    state["data_record"] = data_record
     for service in ("api", "worker"):
         config["services"][service]["environment"] = {
             "SANDBOX_WORKSPACE_ROOT": workspace_root,
             "SANDBOX_SECURITY_PROFILE": "internal-test",
+            "TRUSTED_PRINCIPAL_SECRET": "synthetic-gateway-secret-" + "a" * 32,
+            "AI_SESSION_SECRET": "synthetic-session-secret-" + "b" * 32,
+            "CORS_ALLOW_ORIGINS": "https://platform.example.test",
+            "AI_SESSION_COOKIE_SECURE": "true",
+            "AUTH_CONTEXT_COOKIE_SECURE": "true",
         }
         config["services"][service]["volumes"] = [
             {
@@ -167,6 +183,9 @@ def harness(tmp_path, monkeypatch):
             return str((tmp_path / "docker-data").resolve())
         if stage == "Docker bridge inspection":
             return state.get("bridge_gateway", "")
+        if stage == "workspace migration marker inspection":
+            root = Path(config["services"]["api"]["environment"]["SANDBOX_WORKSPACE_ROOT"])
+            return "incomplete" if (root / ".ai-platform-workspace-migration-v1.incomplete").exists() else "clear"
         if stage == "local image verification":
             return json.dumps([{"Id": command[-1], "RepoDigests": [command[-1]]}])
         return ""
@@ -178,12 +197,23 @@ def harness(tmp_path, monkeypatch):
             raise entry.DeploymentError("activity appeared after first check")
 
     monkeypatch.setattr(entry, "run", run)
-    monkeypatch.setattr(entry, "snapshot", lambda docker: {service: {} for service in (*entry.DATA, *entry.APPS)})
+    def existing_snapshot(docker, **kwargs):
+        records = {service: {} for service in (*entry.DATA, *entry.APPS)}
+        for service in ("api", "worker"):
+            root = config["services"][service]["environment"]["SANDBOX_WORKSPACE_ROOT"]
+            records[service] = {
+                "Config": {"Env": [f"SANDBOX_WORKSPACE_ROOT={root}"]},
+                "Mounts": [{"Type": "bind", "Source": root, "Destination": root}],
+            }
+        return records
+    monkeypatch.setattr(entry, "snapshot", existing_snapshot)
     monkeypatch.setattr(entry, "quiescent", quiescent)
     monkeypatch.setattr(entry, "verify_runtime", lambda *args: state["calls"].append(("runtime verified", [])))
     state["config"] = config
+    state["env"] = env
+    state["state_path"] = tmp_path / ".ai-platform-install-state.json"
     state["bridge_gateway"] = ""
-    state["deploy"] = lambda offline=False, check_only=False: entry.deploy(tmp_path, env, ["docker"], offline, check_only)
+    state["deploy"] = lambda offline=False, check_only=False, **kwargs: entry.deploy(tmp_path, env, ["docker"], offline, check_only, **kwargs)
     return state
 
 
@@ -374,3 +404,235 @@ def test_post_migration_failure_fences_without_unsafe_image_rollback(harness, st
     assert stages.count("failed-deployment admission stop") == 3
     assert "restore pre-migration admission" not in stages
     assert "runtime verified" not in stages
+
+
+def production_workspace(harness, monkeypatch):
+    config = harness["config"]
+    root = Path(config["services"]["api"]["environment"]["SANDBOX_WORKSPACE_ROOT"])
+    legacy = root.parent / "legacy"
+    monkeypatch.setattr(entry, "PRODUCTION_WORKSPACE_ROOT", root)
+    monkeypatch.setattr(entry, "PRODUCTION_WORKSPACE_MIGRATION_SOURCE", legacy)
+    for service in ("api", "worker"):
+        config["services"][service]["environment"]["SANDBOX_SECURITY_PROFILE"] = "governed"
+    config["services"]["workspace-migrate"]["volumes"][0] = {
+        "type": "bind", "source": str(legacy), "target": "/source-workspaces", "read_only": True,
+    }
+    return legacy
+
+
+def test_clean_production_install_does_not_require_or_create_legacy_source(harness, monkeypatch):
+    legacy = production_workspace(harness, monkeypatch)
+    monkeypatch.setattr(entry, "snapshot", lambda docker, **kwargs: {})
+    harness["deploy"]()
+    assert not legacy.exists()
+    assert not harness["state_path"].exists()
+    stages = [name for name, _ in harness["calls"]]
+    assert "workspace storage migration" not in stages
+    assert "workspace initialization" in stages
+    assert "runtime verified" in stages
+
+
+def test_legacy_data_requires_explicit_migration_and_is_retained(harness, monkeypatch):
+    legacy = production_workspace(harness, monkeypatch)
+    legacy.mkdir()
+    sentinel = legacy / "existing-data"
+    sentinel.write_text("preserved")
+    with pytest.raises(entry.DeploymentError, match="migrate-legacy-workspaces"):
+        harness["deploy"]()
+    assert not any(name == "admission stop" for name, _ in harness["calls"])
+    harness["deploy"](migrate_legacy=True)
+    assert sentinel.read_text() == "preserved"
+    assert any(name == "workspace storage migration" for name, _ in harness["calls"])
+
+
+def test_requested_missing_legacy_source_is_rejected(harness, monkeypatch):
+    production_workspace(harness, monkeypatch)
+    with pytest.raises(entry.DeploymentError, match="source is unavailable"):
+        harness["deploy"](migrate_legacy=True)
+
+
+@pytest.mark.parametrize("key", ["TRUSTED_PRINCIPAL_SECRET", "AI_SESSION_SECRET"])
+@pytest.mark.parametrize("value", ["", "short", "change_me_gateway_secret", "change_me_" + "x" * 40])
+def test_production_secret_preflight_precedes_all_mutation(harness, monkeypatch, key, value):
+    production_workspace(harness, monkeypatch)
+    for service in ("api", "worker"):
+        harness["config"]["services"][service]["environment"][key] = value
+    with pytest.raises(entry.DeploymentError, match=key):
+        harness["deploy"]()
+    assert not set(name for name, _ in harness["calls"]) & {
+        "image download", "admission stop", "persistent services", "schema migration",
+    }
+
+
+def test_production_http_requires_explicit_acknowledgement(harness, monkeypatch, capsys):
+    production_workspace(harness, monkeypatch)
+    for service in ("api", "worker"):
+        harness["config"]["services"][service]["environment"].update({
+            "CORS_ALLOW_ORIGINS": "http://platform.internal", "AI_SESSION_COOKIE_SECURE": "false",
+            "AUTH_CONTEXT_COOKIE_SECURE": "false",
+        })
+    with pytest.raises(entry.DeploymentError, match="allow-insecure-http"):
+        harness["deploy"]()
+    harness["deploy"](allow_insecure_http=True, check_only=True)
+    assert "trusted isolated intranet" in capsys.readouterr().err
+    assert not any(name == "admission stop" for name, _ in harness["calls"])
+
+
+def test_partial_first_install_retains_state_and_same_package_can_resume(harness, monkeypatch):
+    production_workspace(harness, monkeypatch)
+    monkeypatch.setattr(entry, "snapshot", lambda docker, **kwargs: {})
+    harness["fail"] = "schema migration"
+    with pytest.raises(entry.DeploymentError, match="injected failure"):
+        harness["deploy"]()
+    assert harness["state_path"].stat().st_mode & 0o777 == 0o600
+    assert "secret" not in harness["state_path"].read_text()
+    harness["fail"] = None
+    monkeypatch.setattr(entry, "snapshot", lambda docker, **kwargs: {"postgres": harness["data_record"]("postgres")})
+    monkeypatch.setattr(entry, "resume_quiescent", lambda docker: None)
+    harness["deploy"](resume_install=True)
+    assert not harness["state_path"].exists()
+    assert not any(name == "restore pre-migration admission" for name, _ in harness["calls"])
+
+
+def test_resume_rejects_missing_or_changed_install_identity(harness, monkeypatch):
+    production_workspace(harness, monkeypatch)
+    monkeypatch.setattr(entry, "snapshot", lambda docker, **kwargs: {"postgres": harness["data_record"]("postgres")})
+    with pytest.raises(entry.DeploymentError, match="state file"):
+        harness["deploy"](resume_install=True)
+    entry.install_state(harness["state_path"], harness["config"], False, create=True)
+    harness["config"]["services"]["api"]["environment"]["CORS_ALLOW_ORIGINS"] = "https://changed.internal"
+    with pytest.raises(entry.DeploymentError, match="same release and configuration"):
+        harness["deploy"](resume_install=True)
+    assert not any(name == "persistent services" for name, _ in harness["calls"])
+
+
+def test_snapshot_requires_resume_for_data_only_and_rejects_application_resume(monkeypatch):
+    names = ["postgres"]
+    monkeypatch.setattr(entry, "run", lambda *args, **kwargs: "\n".join(f"ai-platform-{name}" for name in names))
+    monkeypatch.setattr(entry, "inspect", lambda docker, name: {
+        "Config": {"Labels": {"com.docker.compose.project": entry.PROJECT,
+                               "com.docker.compose.service": name.removeprefix("ai-platform-")}}
+    })
+    with pytest.raises(entry.DeploymentError, match="partial existing stack"):
+        entry.snapshot(["docker"])
+    assert set(entry.snapshot(["docker"], resume_install=True)) == {"postgres"}
+    names.append("api")
+    with pytest.raises(entry.DeploymentError, match="data-only state"):
+        entry.snapshot(["docker"], resume_install=True)
+
+
+@pytest.mark.parametrize("tables,accepted", [("0", True), ("3", True), ("1", False), ("2", False)])
+def test_resume_checks_existing_activity_or_rejects_partial_schema(monkeypatch, tables, accepted):
+    calls = []
+    monkeypatch.setattr(entry, "run", lambda command, stage, timeout=90: tables if stage == "install resume schema inspection" else "")
+    monkeypatch.setattr(entry, "quiescent", lambda docker: calls.append("quiescent"))
+    if accepted:
+        entry.resume_quiescent(["docker"])
+        assert calls == (["quiescent"] if tables == "3" else [])
+    else:
+        with pytest.raises(entry.DeploymentError, match="partially created activity schema"):
+            entry.resume_quiescent(["docker"])
+
+
+def test_resume_check_does_not_claim_activity_validation_without_running_database(harness, monkeypatch):
+    production_workspace(harness, monkeypatch)
+    monkeypatch.setattr(entry, "snapshot", lambda docker, **kwargs: {"postgres": harness["data_record"]("postgres")})
+    entry.install_state(harness["state_path"], harness["config"], False, create=True)
+    with pytest.raises(entry.DeploymentError, match="preflight needs.*running"):
+        harness["deploy"](resume_install=True, check_only=True)
+    assert not any(name == "persistent services" for name, _ in harness["calls"])
+
+
+def test_resume_check_checks_activity_before_success_without_mutation(harness, monkeypatch):
+    production_workspace(harness, monkeypatch)
+    monkeypatch.setattr(entry, "snapshot", lambda docker, **kwargs: {"postgres": harness["data_record"]("postgres", running=True)})
+    entry.install_state(harness["state_path"], harness["config"], False, create=True)
+    calls = []
+    monkeypatch.setattr(entry, "resume_quiescent", lambda docker: calls.append("checked"))
+    harness["deploy"](resume_install=True, check_only=True)
+    assert calls == ["checked"]
+    assert harness["state_path"].exists()
+    assert not any(name == "persistent services" for name, _ in harness["calls"])
+
+
+def test_failed_legacy_copy_cannot_resume_with_missing_source_or_skip_mode(harness, monkeypatch):
+    legacy = production_workspace(harness, monkeypatch)
+    legacy.mkdir()
+    (legacy / "data").write_text("preserve")
+    monkeypatch.setattr(entry, "snapshot", lambda docker, **kwargs: {})
+    harness["fail"] = "workspace storage migration"
+    with pytest.raises(entry.DeploymentError, match="injected failure"):
+        harness["deploy"](migrate_legacy=True)
+    (legacy / "data").unlink()
+    legacy.rmdir()
+    harness["fail"] = None
+    with pytest.raises(entry.DeploymentError, match="same release and configuration"):
+        harness["deploy"](resume_install=True)
+    with pytest.raises(entry.DeploymentError, match="source is unavailable"):
+        harness["deploy"](resume_install=True, migrate_legacy=True)
+    root = Path(harness["config"]["services"]["api"]["environment"]["SANDBOX_WORKSPACE_ROOT"])
+    root.mkdir()
+    (root / ".ai-platform-workspace-migration-v1.incomplete").touch()
+    harness["state_path"].unlink()
+    with pytest.raises(entry.DeploymentError, match="incomplete workspace migration"):
+        harness["deploy"]()
+
+
+def test_production_upgrade_rejects_unmigrated_named_workspace_volume(harness, monkeypatch):
+    production_workspace(harness, monkeypatch)
+    original_snapshot = entry.snapshot
+    def old_snapshot(docker, **kwargs):
+        records = original_snapshot(docker, **kwargs)
+        for service in ("api", "worker"):
+            records[service]["Mounts"][0].update({
+                "Type": "volume", "Name": f"{entry.PROJECT}_ai_platform_sandbox_workspaces",
+                "Source": "/var/lib/docker/volumes/old/_data",
+            })
+        return records
+    monkeypatch.setattr(entry, "snapshot", old_snapshot)
+    with pytest.raises(entry.DeploymentError, match="explicitly supported migration"):
+        harness["deploy"]()
+    assert not any(name == "admission stop" for name, _ in harness["calls"])
+
+
+@pytest.mark.parametrize("change", ["image", "mount_name", "mount_rw", "extra_mount"])
+def test_resume_rejects_changed_persistent_resource_before_service_changes(harness, monkeypatch, change):
+    production_workspace(harness, monkeypatch)
+    record = harness["data_record"]("postgres")
+    if change == "image":
+        record["Image"] = "other-image-id"
+    elif change == "mount_name":
+        record["Mounts"][0]["Name"] = "unrelated_data"
+    elif change == "mount_rw":
+        record["Mounts"][0]["RW"] = False
+    else:
+        record["Mounts"].append({"Type": "bind", "Source": "/unexpected", "Destination": "/unexpected"})
+    monkeypatch.setattr(entry, "snapshot", lambda docker, **kwargs: {"postgres": record})
+    entry.install_state(harness["state_path"], harness["config"], False, create=True)
+    with pytest.raises(entry.DeploymentError, match="persistent.*recorded package"):
+        harness["deploy"](resume_install=True)
+    assert not any(name == "persistent services" for name, _ in harness["calls"])
+
+
+def test_private_workspace_marker_is_checked_by_readonly_docker_not_host_traversal(harness, monkeypatch):
+    production_workspace(harness, monkeypatch)
+    root = Path(harness["config"]["services"]["api"]["environment"]["SANDBOX_WORKSPACE_ROOT"])
+    root.mkdir(mode=0o700)
+    calls = []
+    def run(command, stage, timeout=90):
+        calls.append(command)
+        assert stage == "workspace migration marker inspection"
+        assert command[:3] == ["sudo", "-n", "docker"]
+        assert "--read-only" in command and "--network" in command and "none" in command
+        assert f"type=bind,source={root},target=/workspaces,readonly" in command
+        assert "DAC_READ_SEARCH" in command
+        return "clear"
+    original_lstat = Path.lstat
+    def restricted_lstat(path, *args, **kwargs):
+        if path.parent == root:
+            raise PermissionError("private root")
+        return original_lstat(path, *args, **kwargs)
+    monkeypatch.setattr(Path, "lstat", restricted_lstat)
+    monkeypatch.setattr(entry, "run", run)
+    entry.verify_workspace_migration_complete(harness["config"], ["sudo", "-n", "docker"])
+    assert len(calls) == 1

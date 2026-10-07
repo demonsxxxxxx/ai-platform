@@ -276,8 +276,16 @@ class Settings(BaseSettings):
         if self.deployment_environment == "production":
             if self.frontend_poc_auth_enabled:
                 raise ValueError("frontend_poc_auth_forbidden_in_production")
-            if not self.trusted_principal_secret.strip():
-                raise ValueError("trusted_principal_secret_required_in_production")
+            for field_name in ("trusted_principal_secret", "ai_session_secret"):
+                candidate = getattr(self, field_name).strip()
+                if not candidate:
+                    raise ValueError(f"{field_name}_required_in_production")
+                if len(candidate) < 32:
+                    raise ValueError(f"{field_name}_too_short_in_production")
+                if candidate.casefold().startswith(
+                    ("change_me", "changeme", "example", "replace")
+                ):
+                    raise ValueError(f"{field_name}_placeholder_forbidden_in_production")
             unsupported_retention = {
                 "run_events": self.run_event_retention_days,
                 "context_snapshots": self.context_snapshot_retention_days,
