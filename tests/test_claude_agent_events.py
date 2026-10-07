@@ -1537,7 +1537,15 @@ async def test_timer_text_callback_failure_returns_structured_runner_error(monke
         execution_policy="sandbox_brokered",
     )
 
-    assert result.error == "claude_agent_sdk_upstream_error"
+    assert result.error == "claude_agent_sdk_execution_failed"
+    assert result.turn_diagnostics["terminal_class"] == "execution_failure"
+    assert "synthetic text callback failure" not in str(result.turn_diagnostics)
+    assert result.runtime_diagnostics["failure_source"] == "sdk_exception"
+    assert result.runtime_diagnostics["sdk"]["exception_type"] == "RuntimeError"
+    assert (
+        result.runtime_diagnostics["sdk"]["exception_message"]
+        == "synthetic text callback failure"
+    )
     assert result.message == ""
     assert result.answer_receipt is None
     assert "message.delta" in [candidate.event_type for candidate in candidates]
