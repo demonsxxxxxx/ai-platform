@@ -192,6 +192,9 @@ _MAX_PUBLIC_DELTA_CHARS = 8_192
 _SDK_TOOL_ADMISSION_FAILED = "claude_agent_sdk_tool_admission_failed"
 _SDK_EXECUTION_RECEIPT_INCOMPLETE = "claude_agent_sdk_execution_receipt_incomplete"
 _SDK_UPSTREAM_ERROR = "claude_agent_sdk_upstream_error"
+_SDK_INPUT_CONTEXT_TOO_LARGE = "claude_agent_sdk_input_context_too_large"
+_SDK_INPUT_IMAGE_INVALID = "claude_agent_sdk_input_image_invalid"
+_SDK_EXECUTION_FAILED = "claude_agent_sdk_execution_failed"
 _SDK_OUTPUT_VALIDATION_FAILED = "claude_agent_sdk_output_validation_failed"
 _SDK_PROVIDER_SESSION_FAILED = "claude_agent_sdk_provider_session_failed"
 _SDK_AUTOCOMPACT_MIN_TOKENS = 100_000
@@ -225,7 +228,17 @@ _TURN_LIMIT_ERROR_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _CONTEXT_LIMIT_ERROR_PATTERN = re.compile(
-    r"prompt\s+is\s+too\s+long|request\s+too\s+large|max\s+32mb",
+    r"prompt(?:\s+is)?\s+too\s+long|prompt_too_long|"
+    r"request\s+too\s+large|max\s+32mb|context[_ ](?:length|window)[_ ]exceeded",
+    re.IGNORECASE,
+)
+_SDK_UPSTREAM_REASONS = frozenset(
+    {"server_error", "rate_limit", "rate_limit_error", "overloaded_error", "api_error"}
+)
+_UPSTREAM_ERROR_PATTERN = re.compile(
+    r"\b(?:rate[_ -]limit(?:_error)?|overloaded_error|server_error|api_error)\b|"
+    r"\bupstream\s+(?:unavailable|service\s+unavailable)\b|"
+    r"\bAPI\s+Error:\s*(?:429|5\d\d)\b",
     re.IGNORECASE,
 )
 _SDK_PROJECT_SETTING_FILES = (".claude/settings.json", ".claude/settings.local.json")
@@ -391,7 +404,13 @@ def _diagnostic_terminal_class(
             "refresh_or_contact_admin",
             False,
         )
-    return "upstream_error", _SDK_UPSTREAM_ERROR, "retry_later", True
+    if error_code == _SDK_INPUT_CONTEXT_TOO_LARGE:
+        return "input_limit_exceeded", error_code, "shorten_or_split_request", False
+    if error_code == _SDK_INPUT_IMAGE_INVALID:
+        return "input_image_invalid", error_code, "review_input_image", False
+    if error_code == _SDK_UPSTREAM_ERROR:
+        return "upstream_error", error_code, "retry_later", True
+    return "execution_failure", _SDK_EXECUTION_FAILED, "retry_request", True
 
 
 def _public_tool_policy_denials(raw: object) -> list[dict[str, str]]:
@@ -538,6 +557,8 @@ def _canonical_sdk_error(
     result_subtype: object = "",
     stop_reason: object = "",
     terminal_reason: object = "",
+    assistant_error: object = "",
+    sdk_error_evidence: bool = True,
     tool_admission_denials: int = 0,
 ) -> str:
     error_text = str(raw_error or "").strip()
@@ -548,7 +569,7 @@ def _canonical_sdk_error(
         subtype in {"error_max_turns", "max_turns", "max_turns_exceeded"}
         or stop in {"max_turns", "max_turns_exceeded"}
         or terminal in {"max_turns", "max_turns_exceeded"}
-        or _TURN_LIMIT_ERROR_PATTERN.search(error_text)
+        or (sdk_error_evidence and _TURN_LIMIT_ERROR_PATTERN.search(error_text))
     ):
         return _SDK_TURN_LIMIT_EXCEEDED
     if terminal in {"aborted_streaming", "aborted_tools", "cancelled", "canceled"}:
@@ -557,9 +578,19 @@ def _canonical_sdk_error(
         return _SDK_TIMEOUT
     if error_text == _SDK_MISSING_STRUCTURED_TERMINAL:
         return _SDK_MISSING_STRUCTURED_TERMINAL
+    reasons = {subtype, stop, terminal, str(assistant_error or "").casefold()}
+    if sdk_error_evidence:
+        reasons.add(error_text.casefold())
+    if "image_error" in reasons:
+        return _SDK_INPUT_IMAGE_INVALID
+    if "prompt_too_long" in reasons or (
+        sdk_error_evidence and _CONTEXT_LIMIT_ERROR_PATTERN.search(error_text)
+    ):
+        return _SDK_INPUT_CONTEXT_TOO_LARGE
     if (
-        terminal in {"image_error", "prompt_too_long"}
-        or _CONTEXT_LIMIT_ERROR_PATTERN.search(error_text)
+        error_text == _SDK_UPSTREAM_ERROR
+        or reasons & _SDK_UPSTREAM_REASONS
+        or (sdk_error_evidence and _UPSTREAM_ERROR_PATTERN.search(error_text))
     ):
         return _SDK_UPSTREAM_ERROR
     if tool_admission_denials > 0:
@@ -571,7 +602,7 @@ def _canonical_sdk_error(
         "context_retrieval_registration_unavailable",
     } or error_text.startswith("project_settings_scrub_failed"):
         return error_text
-    return _SDK_UPSTREAM_ERROR
+    return _SDK_EXECUTION_FAILED
 
 
 ScopedContextRetrievalIdentity = ContextRetrievalIdentity
@@ -3300,6 +3331,8 @@ async def run_claude_agent_sdk(
     result_session_id: str | None = None
     usage: dict[str, Any] = {}
     terminal_reason: str | None = None
+    last_assistant_error: str | None = None
+    last_assistant_error_text = ""
     terminal_result_message: object | None = None
     received_structured_terminal = False
     stream_projector = (
@@ -3519,7 +3552,8 @@ async def run_claude_agent_sdk(
 
     async def consume(messages: AsyncIterator[Any]) -> ClaudeAgentSdkRunResult:
         nonlocal result_session_id, usage, terminal_reason, received_structured_terminal
-        nonlocal last_public_stage, terminal_result_message
+        nonlocal last_public_stage, terminal_result_message, last_assistant_error
+        nonlocal last_assistant_error_text
         answer_timeline = AssistantAnswerTimeline()
         terminal_answer_empty = False
         stream_projection_failed = False
@@ -3684,6 +3718,22 @@ async def run_claude_agent_sdk(
                 await flush_answer_candidates()
                 assistant_observation_scope += 1
                 diagnostic_counters["assistant_messages"] += 1
+                assistant_error = getattr(message, "error", None)
+                if isinstance(assistant_error, str) and assistant_error:
+                    # SDK error envelopes are diagnostics, never answer text.
+                    # A later ordinary assistant/result can still recover.
+                    last_assistant_error = assistant_error
+                    last_assistant_error_text = _runtime_diagnostic_text(
+                        "\n".join(
+                            str(block.text)
+                            for block in getattr(message, "content", [])
+                            if isinstance(block, TextBlock)
+                        ),
+                        max_bytes=4_096,
+                    )
+                    continue
+                last_assistant_error = None
+                last_assistant_error_text = ""
                 message_id_value = getattr(message, "message_id", None)
                 uuid_value = getattr(message, "uuid", None)
                 assistant_message_id = provider_message_identity(message_id_value)
@@ -3964,10 +4014,11 @@ async def run_claude_agent_sdk(
                         or "claude_agent_sdk_error"
                     )
                     error_code = mcp_execution_receipt_error() or _canonical_sdk_error(
-                        raw_error,
+                        f"{raw_error}\n{last_assistant_error_text}",
                         result_subtype=getattr(message, "subtype", ""),
                         stop_reason=getattr(message, "stop_reason", ""),
                         terminal_reason=resolved_terminal_reason,
+                        assistant_error=last_assistant_error,
                         tool_admission_denials=diagnostic_counters[
                             "tool_admission_denials"
                         ],
@@ -3980,7 +4031,15 @@ async def run_claude_agent_sdk(
                             runtime_diagnostics(
                                 error_code,
                                 failure_source="sdk_result_error",
-                                sdk_errors=message.errors,
+                                sdk_errors=(
+                                    {
+                                        "result_errors": message.errors,
+                                        "assistant_error": last_assistant_error,
+                                        "assistant_error_text": last_assistant_error_text,
+                                    }
+                                    if last_assistant_error is not None
+                                    else message.errors
+                                ),
                                 result_subtype=getattr(message, "subtype", None),
                                 stop_reason=getattr(message, "stop_reason", None),
                                 terminal_reason=resolved_terminal_reason,
@@ -4001,6 +4060,9 @@ async def run_claude_agent_sdk(
                         "aborted_tools",
                         "cancelled",
                         "canceled",
+                        "prompt_too_long",
+                        "image_error",
+                        *_SDK_UPSTREAM_REASONS,
                     }
                     else None
                 )
@@ -4403,7 +4465,9 @@ async def run_claude_agent_sdk(
         await close_answer_candidates_after_failure()
         seal_agent_candidates("exception")
         error_code = mcp_execution_receipt_error() or _canonical_sdk_error(
-            exc,
+            last_assistant_error_text if last_assistant_error is not None else exc,
+            assistant_error=last_assistant_error,
+            sdk_error_evidence=last_assistant_error is not None,
             tool_admission_denials=diagnostic_counters["tool_admission_denials"],
         )
         return assemble_run_result(
@@ -4414,6 +4478,11 @@ async def run_claude_agent_sdk(
                     error_code,
                     failure_source="sdk_exception",
                     terminal_reason=terminal_reason,
+                    sdk_errors=(
+                        {"assistant_error": last_assistant_error, "assistant_error_text": last_assistant_error_text}
+                        if last_assistant_error is not None
+                        else None
+                    ),
                     exception=exc,
                 )
             ),

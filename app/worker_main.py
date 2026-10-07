@@ -8,6 +8,7 @@ import logging
 import os
 from pathlib import Path
 import socket
+import sys
 import time
 from typing import Any
 import uuid
@@ -81,6 +82,7 @@ logger = logging.getLogger(__name__)
 _CANCEL_REQUESTED_ORPHAN_RECONCILIATION_SECONDS = 5
 _BULK_MAINTENANCE_PHASE_BUDGET_SECONDS = 30.0
 _CRITICAL_MAINTENANCE_PHASE_BUDGET_SECONDS = 10.0
+_WORKER_RESOURCE_CLOSE_TIMEOUT_SECONDS = 30.0
 
 
 class ReconciliationFenceLost(RuntimeError):
@@ -1017,6 +1019,66 @@ def _raise_if_background_task_stopped(task: asyncio.Task[None]) -> None:
     raise RuntimeError(f"background task exited unexpectedly: {task.get_name()}")
 
 
+async def _supervise_worker_tasks(
+    worker_tasks: list[asyncio.Task[None]],
+    background_tasks: list[asyncio.Task[None]],
+) -> None:
+    await asyncio.wait([*worker_tasks, *background_tasks], return_when=asyncio.FIRST_COMPLETED)
+    for task in background_tasks:
+        _raise_if_background_task_stopped(task)
+    for task in worker_tasks:
+        if task.done():
+            task.result()
+            raise RuntimeError(f"worker task exited unexpectedly: {task.get_name()}")
+
+
+async def _close_worker_runtime(
+    worker_runtime: Any,
+    tasks: list[asyncio.Task[None]],
+    *,
+    primary_error: BaseException | None,
+) -> None:
+    async def close() -> None:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        # Drain errors without replacing the supervisor failure. In-flight
+        # storage must finish before its slot and clients can be released.
+        await asyncio.gather(*tasks, return_exceptions=True)
+        errors: list[BaseException] = []
+        for phase, operation in (
+            ("stream_runtime", worker_runtime.aclose),
+            ("runtime_clients", _close_runtime_clients),
+        ):
+            try:
+                async with asyncio.timeout(_WORKER_RESOURCE_CLOSE_TIMEOUT_SECONDS):
+                    await operation()
+            except BaseException as exc:
+                errors.append(exc)
+                logger.warning("Worker resource close failed", extra={"cleanup_phase": phase})
+        if errors:
+            raise errors[0]
+
+    cleanup_task = asyncio.create_task(close(), name="ai-platform-worker-shutdown")
+    cancellation: asyncio.CancelledError | None = None
+    while not cleanup_task.done():
+        try:
+            await asyncio.shield(cleanup_task)
+        except asyncio.CancelledError as exc:
+            if not cleanup_task.cancelled():
+                cancellation = cancellation or exc
+        except BaseException:
+            break
+    if primary_error is not None or cancellation is not None:
+        # Always retrieve the result, even when an earlier error takes priority.
+        with contextlib.suppress(BaseException):
+            cleanup_task.result()
+        if primary_error is None:
+            raise cancellation
+    else:
+        cleanup_task.result()
+
+
 async def run_forever(
     poll_timeout_seconds: int = 5,
     idle_sleep_seconds: float = 0.5,
@@ -1058,42 +1120,30 @@ async def run_forever(
         ),
         name="ai-platform-worker-maintenance",
     )
-    background_tasks = (
+    background_tasks = [
         reconciler_task,
         heartbeat_task,
         maintenance_task,
+    ]
+    worker_task = asyncio.create_task(
+        _run_worker_slot(
+            worker_id=worker_id,
+            poll_timeout_seconds=poll_timeout_seconds,
+            idle_sleep_seconds=idle_sleep_seconds,
+            v4_capabilities=worker_runtime.capabilities,
+            attempt_lifecycle=attempt_lifecycle,
+            lifecycle=lifecycle,
+            registry=registry,
+        ),
+        name="ai-platform-worker-1",
     )
     try:
-        while True:
-            for task in background_tasks:
-                _raise_if_background_task_stopped(task)
-            try:
-                outcome = await run_once(
-                    registry=registry,
-                    timeout_seconds=poll_timeout_seconds,
-                    worker_id=worker_id,
-                    run_initial_maintenance=False,
-                    run_background_maintenance=False,
-                    v4_capabilities=worker_runtime.capabilities,
-                    attempt_lifecycle=attempt_lifecycle,
-                    lifecycle=lifecycle,
-                )
-            except Exception:
-                logger.exception("Worker iteration failed")
-                await asyncio.sleep(idle_sleep_seconds)
-                continue
-            if outcome.status == "idle":
-                await asyncio.sleep(idle_sleep_seconds)
+        await _supervise_worker_tasks([worker_task], background_tasks)
     finally:
         reconciler_stop.set()
-        for task in background_tasks:
-            if not task.done():
-                task.cancel()
-        for task in background_tasks:
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-        await worker_runtime.aclose()
-        await _close_runtime_clients()
+        await _close_worker_runtime(
+            worker_runtime, [worker_task, *background_tasks], primary_error=sys.exception()
+        )
 
 
 async def _run_worker_slot(
@@ -1104,9 +1154,15 @@ async def _run_worker_slot(
     v4_capabilities: WorkerV4Capabilities,
     attempt_lifecycle: RunAttemptLifecycleService,
     lifecycle: RunLifecycleService,
+    registry: AdapterRegistry | None = None,
 ) -> None:
-    registry = AdapterRegistry()
+    registry = registry or AdapterRegistry()
+    slot_task = asyncio.current_task()
     while True:
+        if slot_task is not None and slot_task.cancelling():
+            # Recovery may have translated cancellation into an outcome. Never
+            # lease another Run after shutdown has requested this slot to stop.
+            raise asyncio.CancelledError()
         try:
             outcome = await run_once(
                 registry=registry,
@@ -1119,6 +1175,10 @@ async def _run_worker_slot(
                 lifecycle=lifecycle,
             )
         except Exception:
+            if slot_task is not None and slot_task.cancelling():
+                # A cancelled operation may report its cleanup failure instead
+                # of CancelledError. It must not restart a shutting-down slot.
+                raise
             logger.exception("Worker slot iteration failed")
             await asyncio.sleep(idle_sleep_seconds)
             continue
@@ -1197,17 +1257,12 @@ async def run_worker_pool(
         heartbeat_task,
     ]
     try:
-        await asyncio.gather(*tasks, *background_tasks)
+        await _supervise_worker_tasks(tasks, background_tasks)
     finally:
         reconciler_stop.set()
-        for task in [*tasks, *background_tasks]:
-            if not task.done():
-                task.cancel()
-        for task in [*tasks, *background_tasks]:
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-        await worker_runtime.aclose()
-        await _close_runtime_clients()
+        await _close_worker_runtime(
+            worker_runtime, [*tasks, *background_tasks], primary_error=sys.exception()
+        )
 
 
 async def run_once_and_close(timeout_seconds: int) -> WorkerOutcome:
@@ -1225,8 +1280,7 @@ async def run_once_and_close(timeout_seconds: int) -> WorkerOutcome:
             lifecycle=lifecycle,
         )
     finally:
-        await worker_runtime.aclose()
-        await _close_runtime_clients()
+        await _close_worker_runtime(worker_runtime, [], primary_error=sys.exception())
 
 
 def main() -> None:

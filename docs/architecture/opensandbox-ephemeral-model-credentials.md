@@ -66,6 +66,14 @@ request. Anthropic version and beta headers are restricted to the installed
 CLI's fixed per-path allowlist; other upstream headers remain filtered. The
 proxy does not implement OpenSandbox lifecycle or capability admission.
 
+The pinned HTTP model transport forwards available response bytes incrementally,
+including small chunked SSE events before the upstream response completes. The
+64 KiB read size is a maximum per read, not a minimum batching threshold. The
+cumulative response-size limit still applies before each chunk is forwarded;
+completion, read failure, and closing the started body iterator close both the
+response and its connection. Existing socket timeout budgets remain unchanged;
+this transport change does not introduce retries after streaming starts.
+
 Model capacities are frozen into Run admission and ExecutionSpec v2. For Claude,
 the input capacity configures the SDK-owned automatic-compaction window; the
 model proxy does not recount `/v1/messages` requests or enforce a separate input

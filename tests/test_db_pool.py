@@ -1,4 +1,5 @@
 import asyncio
+import threading
 
 import pytest
 
@@ -227,3 +228,216 @@ async def test_pool_status_exposes_safe_config_and_stats_without_database_url(mo
     }
     assert "secret-password" not in str(status)
     assert "db.example" not in str(status)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_pool_open_finishes_close_before_retry_even_if_cancelled_again(monkeypatch):
+    opening = asyncio.Event()
+    closing = asyncio.Event()
+    release_close = asyncio.Event()
+    original_open = FakeAsyncConnectionPool.open
+
+    async def blocked_open(self, *, wait, timeout):
+        opening.set()
+        await asyncio.Event().wait()
+
+    async def blocked_close(self, *, timeout):
+        self.close_calls.append(timeout)
+        closing.set()
+        await release_close.wait()
+        self.closed = True
+
+    monkeypatch.setattr(db, "AsyncConnectionPool", FakeAsyncConnectionPool)
+    monkeypatch.setattr(db, "get_settings", lambda: PoolSettings())
+    monkeypatch.setattr(FakeAsyncConnectionPool, "open", blocked_open)
+    monkeypatch.setattr(FakeAsyncConnectionPool, "close", blocked_close)
+    opener = asyncio.create_task(db.get_pool())
+    retry = None
+    try:
+        await asyncio.wait_for(opening.wait(), timeout=0.5)
+        opener.cancel("opening cancelled")
+        await asyncio.wait_for(closing.wait(), timeout=0.5)
+        opener.cancel("cancelled again")
+        monkeypatch.setattr(FakeAsyncConnectionPool, "open", original_open)
+        retry = asyncio.create_task(db.get_pool())
+        await asyncio.sleep(0)
+        assert not opener.done()
+        assert not retry.done()
+        assert db._pool is None
+        assert len(FakeAsyncConnectionPool.instances) == 1
+        release_close.set()
+        with pytest.raises(asyncio.CancelledError, match="opening cancelled"):
+            await opener
+        replacement = await asyncio.wait_for(retry, timeout=0.5)
+        assert replacement is FakeAsyncConnectionPool.instances[1]
+        assert FakeAsyncConnectionPool.instances[0].closed
+        assert FakeAsyncConnectionPool.instances[0].close_calls == [1.25]
+        assert db._pool is replacement
+    finally:
+        release_close.set()
+        opener.cancel()
+        if retry is not None:
+            retry.cancel()
+        await asyncio.gather(opener, *([retry] if retry is not None else []), return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_open", [False, True])
+async def test_pool_initialization_error_survives_close_failure(monkeypatch, caplog, cancel_open):
+    primary = asyncio.CancelledError("open cancelled") if cancel_open else RuntimeError("open failed")
+
+    async def failed_open(self, **_kwargs):
+        raise primary
+
+    async def failed_close(self, *, timeout):
+        self.close_calls.append(timeout)
+        raise RuntimeError("private close detail")
+
+    monkeypatch.setattr(db, "AsyncConnectionPool", FakeAsyncConnectionPool)
+    monkeypatch.setattr(db, "get_settings", lambda: PoolSettings())
+    monkeypatch.setattr(FakeAsyncConnectionPool, "open", failed_open)
+    monkeypatch.setattr(FakeAsyncConnectionPool, "close", failed_close)
+
+    with pytest.raises(type(primary)) as caught:
+        await db.get_pool()
+
+    assert caught.value is primary
+    assert db._pool is None
+    assert db._pool_loop is None
+    assert db._pool_signature is None
+    assert FakeAsyncConnectionPool.instances[0].close_calls == [1.25]
+    assert "private close detail" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_cancelled_pool_open_bounds_unresponsive_close(monkeypatch):
+    close_cancelled = asyncio.Event()
+    primary = asyncio.CancelledError("open cancelled")
+
+    class Settings(PoolSettings):
+        database_pool_close_timeout_seconds = 0.01
+
+    async def failed_open(self, **_kwargs):
+        raise primary
+
+    async def blocked_close(self, *, timeout):
+        self.close_calls.append(timeout)
+        try:
+            await asyncio.Event().wait()
+        finally:
+            close_cancelled.set()
+
+    monkeypatch.setattr(db, "AsyncConnectionPool", FakeAsyncConnectionPool)
+    monkeypatch.setattr(db, "get_settings", lambda: Settings())
+    monkeypatch.setattr(db, "_POOL_CLOSE_CONNECTION_GRACE_SECONDS", 0.01)
+    monkeypatch.setattr(FakeAsyncConnectionPool, "open", failed_open)
+    monkeypatch.setattr(FakeAsyncConnectionPool, "close", blocked_close)
+
+    with pytest.raises(asyncio.CancelledError, match="open cancelled"):
+        await asyncio.wait_for(db.get_pool(), timeout=0.5)
+
+    assert close_cancelled.is_set()
+    assert db._pool is None
+    assert FakeAsyncConnectionPool.instances[0].close_calls == [0.01]
+
+
+@pytest.mark.asyncio
+async def test_close_pool_preserves_cancellation_after_finishing_close(monkeypatch):
+    closing = asyncio.Event()
+    release_close = asyncio.Event()
+
+    async def blocked_close(self, *, timeout):
+        self.close_calls.append(timeout)
+        closing.set()
+        await release_close.wait()
+        self.closed = True
+
+    monkeypatch.setattr(db, "AsyncConnectionPool", FakeAsyncConnectionPool)
+    monkeypatch.setattr(db, "get_settings", lambda: PoolSettings())
+    monkeypatch.setattr(FakeAsyncConnectionPool, "close", blocked_close)
+    pool = await db.get_pool()
+    closer = asyncio.create_task(db.close_pool())
+    try:
+        await asyncio.wait_for(closing.wait(), timeout=0.5)
+        closer.cancel("close cancelled")
+        await asyncio.sleep(0)
+        assert not closer.done()
+        assert db._pool is None
+        release_close.set()
+        with pytest.raises(asyncio.CancelledError, match="close cancelled"):
+            await closer
+        assert pool.closed
+    finally:
+        release_close.set()
+        closer.cancel()
+        await asyncio.gather(closer, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_pool_close_allows_connection_cleanup_after_worker_stop_budget(monkeypatch):
+    async def close_after_worker_timeout(self, *, timeout):
+        await asyncio.sleep(timeout)
+        self.closed = True
+
+    monkeypatch.setattr(db, "AsyncConnectionPool", FakeAsyncConnectionPool)
+    monkeypatch.setattr(db, "get_settings", lambda: PoolSettings())
+    monkeypatch.setattr(FakeAsyncConnectionPool, "close", close_after_worker_timeout)
+    pool = await db.get_pool()
+
+    await db._close_pool_for_owner_loop(pool, owner_loop=asyncio.get_running_loop(), timeout=0.01)
+
+    assert pool.closed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_close", [False, True])
+async def test_cross_loop_pool_close_keeps_owner_and_propagates_cancellation(monkeypatch, cancel_close):
+    owner_loop = asyncio.new_event_loop()
+    owner_ready = threading.Event()
+    owner_loop.call_soon(owner_ready.set)
+    owner_thread = threading.Thread(target=owner_loop.run_forever)
+    owner_thread.start()
+    current_loop = asyncio.get_running_loop()
+    closing = asyncio.Event()
+    release_close = asyncio.Event()
+    closer = None
+
+    async def remote_close(self, *, timeout):
+        assert asyncio.get_running_loop() is owner_loop
+        self.close_calls.append(timeout)
+        current_loop.call_soon_threadsafe(closing.set)
+        await release_close.wait()
+        self.closed = True
+        raise RuntimeError("private owner-loop close detail")
+
+    try:
+        assert owner_ready.wait(timeout=0.5)
+        monkeypatch.setattr(db, "AsyncConnectionPool", FakeAsyncConnectionPool)
+        monkeypatch.setattr(db, "get_settings", lambda: PoolSettings())
+        monkeypatch.setattr(FakeAsyncConnectionPool, "close", remote_close)
+        pool = await db.get_pool()
+        monkeypatch.setattr(db, "_pool_loop", owner_loop)
+        closer = asyncio.create_task(db.close_pool())
+        await asyncio.wait_for(closing.wait(), timeout=0.5)
+        if cancel_close:
+            closer.cancel("owner close cancelled")
+            await asyncio.sleep(0)
+            assert not closer.done()
+        owner_loop.call_soon_threadsafe(release_close.set)
+        if cancel_close:
+            with pytest.raises(asyncio.CancelledError, match="owner close cancelled"):
+                await closer
+        else:
+            await closer
+        assert pool.closed
+        assert pool.close_calls == [1.25]
+        assert db._pool is None
+    finally:
+        owner_loop.call_soon_threadsafe(release_close.set)
+        if closer is not None:
+            closer.cancel()
+            await asyncio.gather(closer, return_exceptions=True)
+        owner_loop.call_soon_threadsafe(owner_loop.stop)
+        owner_thread.join(timeout=1.0)
+        assert not owner_thread.is_alive()
+        owner_loop.close()

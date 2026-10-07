@@ -11,6 +11,7 @@ from app.executors.claude_agent_sdk_runner import (
     ClaudeAgentSdkNotAvailable,
     ScopedContextRetrievalIdentity,
     _canonical_sdk_error,
+    _diagnostic_terminal_class,
     _sdk_autocompact_window,
     _sdk_run_timeout_seconds,
     run_claude_agent_sdk,
@@ -100,12 +101,12 @@ def test_context_limit_error_outranks_prior_tool_denial():
         ["prompt is too long: 100001 tokens > 100000 maximum"],
         terminal_reason="prompt_too_long",
         tool_admission_denials=1,
-    ) == "claude_agent_sdk_upstream_error"
+    ) == "claude_agent_sdk_input_context_too_large"
     assert _canonical_sdk_error(
         ["Request too large (max 32MB)"],
         terminal_reason="image_error",
         tool_admission_denials=1,
-    ) == "claude_agent_sdk_upstream_error"
+    ) == "claude_agent_sdk_input_image_invalid"
 
 
 def _settings():
@@ -561,7 +562,16 @@ def _scripted_sdk(
 
         for step in steps:
             kind, value = step
-            if kind == "assistant_typed":
+            if kind == "assistant_error":
+                error_code, text = value
+                message = AssistantMessage(
+                    text,
+                    message_id=next_message_id(),
+                    uuid=next_assistant_observation_id(),
+                )
+                message.error = error_code
+                yield message
+            elif kind == "assistant_typed":
                 body = value["text"]
                 last_assistant_id = value.get("message_id")
                 yield AssistantMessage(
@@ -6337,7 +6347,7 @@ async def test_sdk_raw_observation_identity_failure_is_validation_unless_upstrea
     )
     if is_error:
         sdk.ResultMessage.is_error = True
-        sdk.ResultMessage.errors = ["synthetic upstream failure"]
+        sdk.ResultMessage.errors = ["server_error"]
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
 
@@ -7760,3 +7770,111 @@ async def test_external_write_rechecks_uncertainty_after_awaiting_admission_rece
                   for kind, value in captured['hook_results'] if kind == 'PreToolUse']
     assert admissions == ['allow', 'deny']
     assert result.error == 'mcp_execution_outcome_unknown'
+
+
+@pytest.mark.parametrize(
+    ("raw_error", "reason", "expected", "terminal_class", "retryable"),
+    [
+        ("prompt is too long: private-count", "", "input_context_too_large", "input_limit_exceeded", False),
+        ("request too large (max 32MB)", "", "input_context_too_large", "input_limit_exceeded", False),
+        ("private-error", "prompt_too_long", "input_context_too_large", "input_limit_exceeded", False),
+        ("private-error", "image_error", "input_image_invalid", "input_image_invalid", False),
+        ("private-error", "server_error", "upstream_error", "upstream_error", True),
+        ("API Error: 429", "", "upstream_error", "upstream_error", True),
+        ("upstream unavailable", "", "upstream_error", "upstream_error", True),
+        ("private internal exception", "", "execution_failed", "execution_failure", True),
+        ("sdk_rejected", "unknown", "execution_failed", "execution_failure", True),
+    ],
+)
+def test_sdk_error_classification_requires_source_evidence(raw_error, reason, expected, terminal_class, retryable):
+    code = _canonical_sdk_error(raw_error, terminal_reason=reason)
+    assert code == f"claude_agent_sdk_{expected}"
+    classification = _diagnostic_terminal_class(code)
+    assert classification[0] == terminal_class
+    assert classification[3] is retryable
+    assert "private" not in str(classification)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("sdk_error", "expected_code"),
+    [
+        ("prompt is too long: private diagnostic", "claude_agent_sdk_input_context_too_large"),
+        ("image_error", "claude_agent_sdk_input_image_invalid"),
+        ("server_error: private diagnostic", "claude_agent_sdk_upstream_error"),
+        ("private diagnostic without attribution", "claude_agent_sdk_execution_failed"),
+    ],
+)
+async def test_sdk_error_result_preserves_private_evidence_and_accepted_text(monkeypatch, tmp_path, sdk_error, expected_code):
+    captured, deltas = {}, []
+    sdk = _scripted_sdk(captured, [("assistant", "Already accepted public text.")], result_error=sdk_error)
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+    result = await run_claude_agent_sdk(prompt="answer", cwd=tmp_path, skill_id="general-chat", on_text=deltas.append)
+    assert result.error == expected_code
+    assert "Already accepted" in "".join(deltas)
+    assert result.message == ""
+    assert "private diagnostic" not in "".join(deltas)
+    assert "private diagnostic" not in str(result.turn_diagnostics)
+    assert result.runtime_diagnostics["failure_source"] == "sdk_result_error"
+    assert sdk_error in str(result.runtime_diagnostics)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("assistant_error", "error_text", "expected_code"),
+    [
+        ("rate_limit", "private provider details", "claude_agent_sdk_upstream_error"),
+        ("server_error", "private provider details", "claude_agent_sdk_upstream_error"),
+        ("invalid_request", "prompt is too long: private provider details", "claude_agent_sdk_input_context_too_large"),
+        ("unknown", "private provider details", "claude_agent_sdk_execution_failed"),
+    ],
+)
+async def test_sdk_assistant_error_envelope_is_private_classification_evidence(monkeypatch, tmp_path, assistant_error, error_text, expected_code):
+    captured, deltas = {}, []
+    sdk = _scripted_sdk(
+        captured,
+        [("assistant", "Already accepted public text."), ("assistant_error", (assistant_error, error_text))],
+        result_error="unclassified SDK terminal",
+    )
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+    result = await run_claude_agent_sdk(prompt="answer", cwd=tmp_path, skill_id="general-chat", on_text=deltas.append)
+    assert result.error == expected_code
+    assert "Already accepted" in "".join(deltas)
+    assert "private provider" not in "".join(deltas)
+    assert "private provider" not in str(result.turn_diagnostics)
+    assert error_text in str(result.runtime_diagnostics)
+    assert assistant_error in str(result.runtime_diagnostics)
+
+
+@pytest.mark.asyncio
+async def test_sdk_can_recover_after_a_private_assistant_error_envelope(monkeypatch, tmp_path):
+    captured, deltas = {}, []
+    sdk = _scripted_sdk(
+        captured,
+        [("assistant_error", ("server_error", "private provider details")), ("assistant", "Recovered answer")],
+        result_text="Recovered answer",
+    )
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+    result = await run_claude_agent_sdk(prompt="answer", cwd=tmp_path, skill_id="general-chat", on_text=deltas.append)
+    assert result.error is None
+    assert "Recovered answer" in "".join(deltas)
+    assert "private provider" not in "".join(deltas)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exception_text", ["API Error: 500 private diagnostic", "server_error", "prompt is too long", "local execution failure"])
+async def test_sdk_unknown_local_exceptions_do_not_claim_provider_or_input_failure(monkeypatch, tmp_path, exception_text):
+    def fail_locally():
+        raise ValueError(exception_text)
+
+    sdk = _scripted_sdk({}, [("probe", fail_locally)])
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+    result = await run_claude_agent_sdk(prompt="answer", cwd=tmp_path, skill_id="general-chat")
+    assert result.error == "claude_agent_sdk_execution_failed"
+    assert result.turn_diagnostics["terminal_class"] == "execution_failure"
+    assert result.runtime_diagnostics["failure_source"] == "sdk_exception"
+    assert exception_text in str(result.runtime_diagnostics)

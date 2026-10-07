@@ -942,7 +942,7 @@ def test_runtime_proxy_streams_incrementally_and_replaces_untrusted_credentials(
         def getheader(self, _name):
             return "text/event-stream"
 
-        def read(self, _size):
+        def read1(self, _size):
             return next(self.chunks)
 
         def close(self):

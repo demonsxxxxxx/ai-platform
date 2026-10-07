@@ -124,6 +124,16 @@ from app.runtime.sandbox.providers.opensandbox.startup import (
     unhealthy_readiness_fields,
 )
 from app.runtime.sandbox.providers.opensandbox import metadata as opensandbox_metadata
+from app.platform.sandbox.docker_operations import (
+    DockerOperationLane,
+    DockerLeaseRegistry,
+    DockerOperationUnavailable,
+    docker_operation_checkpoint,
+    docker_async_lifecycle,
+    cleanup_docker_orphan_resources,
+    DockerOwnedResourceScope as _DockerOwnedResourceScope,
+    stop_and_remove_docker_container as _stop_and_remove_container,
+)
 from app.runtime.sandbox.opensandbox_policy import (
     DIRECT_OPENSANDBOX_CALLBACK_SUBJECT,
     DIRECT_OPENSANDBOX_DENIAL_SUBJECT,
@@ -1774,24 +1784,6 @@ def _call_executor_health_probe(
     return health_probe(executor_url, timeout_seconds)
 
 
-def _stop_and_remove_container(container: Any) -> bool:
-    stop_succeeded = not hasattr(container, "stop")
-    if hasattr(container, "stop"):
-        try:
-            container.stop()
-            stop_succeeded = True
-        except Exception:
-            pass
-    remove_succeeded = not hasattr(container, "remove")
-    if hasattr(container, "remove"):
-        try:
-            container.remove(force=True)
-            remove_succeeded = True
-        except Exception:
-            pass
-    return remove_succeeded or (stop_succeeded and not hasattr(container, "remove"))
-
-
 def _generate_executor_auth_token() -> str:
     return secrets.token_urlsafe(32)
 
@@ -1929,27 +1921,7 @@ class FakeContainerProvider:
         return []
 
 
-@dataclass
-class _DockerOwnedResourceScope:
-    """One cleanup owner for the exact per-lease bridge and its runtime pair."""
-
-    provider: "DockerContainerProvider"
-    lease: ContainerLease
-    primary: Any | None = None
-    native: Any | None = None
-    native_socket_owned: bool = False
-
-    def abort(self) -> None:
-        """Stop tracked owned containers, then detach and remove only the owned bridge."""
-        self.provider._cleanup_runtime_pair_or_track(
-            self.primary,
-            self.native,
-            self.lease,
-            remove_native_socket=self.native_socket_owned,
-        )
-
-
-class DockerContainerProvider:
+class DockerContainerProvider(DockerLeaseRegistry):
     provider_name = "docker"
 
     def __init__(
@@ -1971,63 +1943,75 @@ class DockerContainerProvider:
         self._native_tool_probe = native_tool_probe or _default_native_tool_probe
         self._monotonic = monotonic or time.monotonic
         self._client: Any | None = None
+        self._client_lock = threading.Lock()
+        self._operations = DockerOperationLane(capacity=8, name="docker-lifecycle")
+        self._cleanup_operations = DockerOperationLane(
+            capacity=2, name="docker-cleanup", claims=self._operations,
+        )
+        self._probes = DockerOperationLane(capacity=8, name="docker-probe")
+
+    _operation_unavailable = DockerUnavailableError
+    _cleanup_failure = ContainerCleanupFailedError
 
     @staticmethod
-    def _same_tracked_lease(
-        tracked: ContainerLease,
-        expected: ContainerLease,
-    ) -> bool:
-        return (
-            tracked.container_id == expected.container_id
-            and tracked.tenant_id == expected.tenant_id
-            and tracked.workspace_id == expected.workspace_id
-            and tracked.user_id == expected.user_id
-            and tracked.session_id == expected.session_id
-            and tracked.run_id == expected.run_id
-            and tracked.labels.get("ai-platform.attempt_id")
-            == expected.labels.get("ai-platform.attempt_id")
-        )
+    def _sdk_timeout() -> float:
+        return max(float(get_settings().sandbox_container_start_timeout_seconds), 1.0)
 
-    def _remember_lease(self, lease: ContainerLease) -> None:
-        with self._leases_lock:
-            self._leases[lease.container_id] = lease
+    async def _run_probe(self, operation: Callable[..., Any], *args: Any) -> Any:
+        settings = get_settings()
+        timeout = max(self._sdk_timeout(), float(settings.sandbox_executor_health_timeout_seconds), 1.0)
+        # Existing probes may perform their final bounded HTTP request at the
+        # stage deadline. Preserve that allowance rather than shortening it.
+        return await self._probes.run(lambda: operation(*args), timeout=timeout + 2.0)
 
-    def _remember_lease_if_absent(self, lease: ContainerLease) -> None:
-        with self._leases_lock:
-            self._leases.setdefault(lease.container_id, lease)
-
-    def _forget_lease(self, lease: ContainerLease) -> None:
-        with self._leases_lock:
-            tracked = self._leases.get(lease.container_id)
-            if tracked is not None and self._same_tracked_lease(tracked, lease):
-                self._leases.pop(lease.container_id, None)
+    def _compensate_cancelled_create(
+        self, request: SandboxRuntimeRequest, workspace: WorkspaceLease,
+    ) -> None:
+        lease = _lease_from_request("docker", request, workspace, executor_url=_executor_url())
+        cached = self._cached_lease_for_run(request.run_id)
+        if cached is not None and _lease_matches_request_workspace(cached, request, workspace):
+            lease = cached
+        lease.labels["ai-platform.native_tool_required"] = _env_bool(_native_tool_required(request))
+        try:
+            primary = self._owned_primary_container(
+                lease, require_lease_identity=cached is lease,
+            )
+            native = self._owned_native_tool_container(lease)
+            if primary is not None:
+                lease.container_id = str(primary.id)
+            self._cleanup_runtime_pair_or_track(primary, native, lease)
+        except ContainerCleanupFailedError:
+            self._remember_lease_if_absent(lease)
+            raise
+        self._forget_lease(lease)
 
     def assert_available(self) -> None:
         if self._docker_client_factory is None and docker is None:
             raise DockerUnavailableError("Docker SDK for Python is not installed")
 
     def _get_client(self) -> Any:
-        if self._client is not None:
-            return self._client
-        self.assert_available()
-        if self._docker_client_factory is not None:
-            self._client = self._docker_client_factory()
-            return self._client
-        settings = get_settings()
-        self._client = docker.from_env(
-            timeout=max(
-                float(
-                    getattr(
-                        settings,
-                        "sandbox_container_start_timeout_seconds",
-                        30,
-                    )
-                    or 30
-                ),
-                1.0,
+        with self._client_lock:
+            if self._client is not None:
+                return self._client
+            self.assert_available()
+            if self._docker_client_factory is not None:
+                self._client = self._docker_client_factory()
+                return self._client
+            settings = get_settings()
+            self._client = docker.from_env(
+                timeout=max(
+                    float(
+                        getattr(
+                            settings,
+                            "sandbox_container_start_timeout_seconds",
+                            30,
+                        )
+                        or 30
+                    ),
+                    1.0,
+                )
             )
-        )
-        return self._client
+            return self._client
 
     async def _wait_for_executor_url(
         self,
@@ -2207,7 +2191,7 @@ class DockerContainerProvider:
             # not cooperatively cancellable, so it may finish after this await.
             return bool(
                 await asyncio.wait_for(
-                    asyncio.to_thread(self._native_tool_probe, container),
+                    self._run_probe(self._native_tool_probe, container),
                     timeout=remaining,
                 )
             )
@@ -2408,6 +2392,7 @@ class DockerContainerProvider:
             )
             socket_prepared = True
             create_attempted = True
+            docker_operation_checkpoint()
             container = client.containers.create(
                 image=get_settings().sandbox_executor_image,
                 name=_native_tool_container_name(request.run_id, request.attempt_id),
@@ -2427,7 +2412,9 @@ class DockerContainerProvider:
                 network_mode="none",
                 **_docker_resource_kwargs(request.resource_limits),
             )
+            docker_operation_checkpoint()
             container.start()
+            docker_operation_checkpoint()
             await self._wait_for_native_tool_socket(container, timeout_seconds)
             return container
         except asyncio.CancelledError:
@@ -2513,7 +2500,7 @@ class DockerContainerProvider:
                 connect_base_url=_executor_connect_base_url(executor_url, endpoint),
             )
             probe_url, probe_headers = prepare_executor_http_request(executor_url, executor_headers)
-            healthy = await asyncio.to_thread(
+            healthy = await self._run_probe(
                 _call_executor_health_probe,
                 self._health_probe,
                 probe_url,
@@ -2522,7 +2509,7 @@ class DockerContainerProvider:
             )
             if not healthy:
                 raise ExecutorHealthTimeoutError()
-            identity = await asyncio.to_thread(
+            identity = await self._run_probe(
                 self._identity_probe,
                 probe_url,
                 timeout_seconds,
@@ -2531,7 +2518,7 @@ class DockerContainerProvider:
             _require_expected_executor_identity(identity)
             current_settings = get_settings()
             callback = _docker_governed_callback_target(current_settings)
-            if not await asyncio.to_thread(
+            if not await self._run_probe(
                 self._callback_reachability_probe,
                 container,
                 callback.base_url,
@@ -2614,14 +2601,6 @@ class DockerContainerProvider:
         signing_key: object,
     ) -> bool:
         return _governed_egress_labels_match("docker", lease.labels, expected_labels, signing_key)
-
-    def _cached_lease_for_run(self, run_id: str) -> ContainerLease | None:
-        """Return the sole tracked Docker lease for a run, keyed by real container ID."""
-        with self._leases_lock:
-            return next(
-                (lease for lease in self._leases.values() if lease.run_id == run_id),
-                None,
-            )
 
     @staticmethod
     def _is_exact_owned_remote_container(
@@ -2731,6 +2710,7 @@ class DockerContainerProvider:
             return None
         return recovered
 
+    @docker_async_lifecycle(keyed=True, compensate="_compensate_cancelled_create")
     async def create_or_reuse(
         self,
         request: SandboxRuntimeRequest,
@@ -2741,6 +2721,7 @@ class DockerContainerProvider:
         client = self._get_client()
         try:
             client.ping()
+            docker_operation_checkpoint()
         except Exception as exc:  # pragma: no cover - branch shape varies by docker SDK/runtime
             normalized_exc = _normalize_docker_availability_error(exc)
             if normalized_exc is not None:
@@ -2817,6 +2798,7 @@ class DockerContainerProvider:
                 self._remember_lease_if_absent(cleanup_lease)
                 raise ContainerCleanupFailedError("governed network cleanup could not be confirmed") from None
             raise
+        docker_operation_checkpoint()
         owned_resources = _DockerOwnedResourceScope(self, bootstrap_lease)
         try:
             skill_mount = _prepare_trusted_skill_mount(request, workspace)
@@ -2957,6 +2939,7 @@ class DockerContainerProvider:
                 self._remember_lease_if_absent(bootstrap_lease)
                 raise ContainerCleanupFailedError("governed network cleanup could not be confirmed") from None
             raise
+        docker_operation_checkpoint()
         cold_start_started_at = self._monotonic()
         executor_auth_token = _executor_auth_token_for_request(request, settings)
         native_tool_token = _generate_executor_auth_token() if native_tool_required else ""
@@ -2992,6 +2975,7 @@ class DockerContainerProvider:
                 owned_resources.native = native_tool_container
                 owned_resources.native_socket_owned = True
             primary_create_attempted = True
+            docker_operation_checkpoint()
             container = client.containers.create(
                 image=settings.sandbox_executor_image,
                 name=bootstrap_lease.container_name,
@@ -3047,6 +3031,7 @@ class DockerContainerProvider:
                 **_docker_resource_kwargs(request.resource_limits),
             )
             owned_resources.primary = container
+            docker_operation_checkpoint()
         except CallbackTargetValidationError as exc:
             try:
                 submitted_primary = resolve_submitted_primary_container()
@@ -3098,8 +3083,10 @@ class DockerContainerProvider:
         if observed_container_id:
             bootstrap_lease.container_id = observed_container_id
         try:
+            docker_operation_checkpoint()
             if hasattr(container, "start"):
                 container.start()
+            docker_operation_checkpoint()
         except Exception as exc:
             normalized_exc = _normalize_docker_availability_error(exc)
             self._cleanup_runtime_pair_for_error(container, native_tool_container, bootstrap_lease, exc)
@@ -3123,7 +3110,7 @@ class DockerContainerProvider:
             raise
 
         try:
-            if not await asyncio.to_thread(
+            if not await self._run_probe(
                 self._callback_reachability_probe, container,
                 egress_admission.callback_base_url, egress_admission.runtime_commit,
             ):
@@ -3164,7 +3151,7 @@ class DockerContainerProvider:
         )
         probe_url, probe_headers = prepare_executor_http_request(executor_url, executor_headers)
         try:
-            healthy = await asyncio.to_thread(
+            healthy = await self._run_probe(
                 _call_executor_health_probe,
                 self._health_probe,
                 probe_url,
@@ -3191,7 +3178,7 @@ class DockerContainerProvider:
             self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
             raise ContainerStartFailedError("executor Config.User mismatch")
         try:
-            identity = await asyncio.to_thread(
+            identity = await self._run_probe(
                 self._identity_probe,
                 probe_url,
                 settings.sandbox_executor_health_timeout_seconds,
@@ -3221,9 +3208,11 @@ class DockerContainerProvider:
         )
         lease.container_id = bootstrap_lease.container_id
         lease.labels.update(bootstrap_lease.labels)
+        docker_operation_checkpoint()
         self._remember_lease(lease)
         return lease
 
+    @docker_async_lifecycle(keyed=True)
     async def validate_for_dispatch(
         self,
         lease: ContainerLease,
@@ -3297,7 +3286,7 @@ class DockerContainerProvider:
             )
             if proof is None:
                 raise GovernedEgressAdmissionError()
-            if not await asyncio.to_thread(
+            if not await self._run_probe(
                 self._callback_reachability_probe,
                 primary,
                 callback.base_url,
@@ -3348,6 +3337,7 @@ class DockerContainerProvider:
         del response_files
         return None
 
+    @docker_async_lifecycle()
     async def executor_control_endpoint(
         self,
         lease: ContainerLease,
@@ -3372,7 +3362,7 @@ class DockerContainerProvider:
                 connect_base_url=_executor_connect_base_url(executor_url, endpoint),
             )
 
-        return await asyncio.to_thread(resolve)
+        return resolve()
 
     def _stop_sync(self, lease: ContainerLease, reason: str) -> StopResult:
         primary_status = "not_found"
@@ -3410,8 +3400,16 @@ class DockerContainerProvider:
         return StopResult(container_id=lease.container_id, status=primary_status, message=reason)
 
     async def stop(self, lease: ContainerLease, *, reason: str) -> StopResult:
-        return await asyncio.to_thread(self._stop_sync, lease, reason)
+        try:
+            return await self._cleanup_operations.run(
+                lambda: self._stop_sync(lease, reason), timeout=self._sdk_timeout() * 8,
+                key=str(getattr(lease, "run_id", lease.container_id)),
+            )
+        except DockerOperationUnavailable:
+            self._remember_lease_if_absent(lease)
+            return StopResult(container_id=lease.container_id, status="failed", message="Container stop failed")
 
+    @docker_async_lifecycle()
     async def list_runtime_containers(self, filters: dict[str, str]) -> list[ContainerStatus]:
         try:
             containers = self._get_client().containers.list(
@@ -3430,67 +3428,16 @@ class DockerContainerProvider:
                 statuses.append(status)
         return [status for status in statuses if _matches_filters(status, filters)]
 
+    @docker_async_lifecycle(cleanup=True)
     async def cleanup_orphan_containers(self, filters: dict[str, str], *, reason: str) -> list[StopResult]:
-        try:
-            containers = self._get_client().containers.list(
-                all=True,
-                filters={"label": ["ai-platform.owner"]},
-            )
-        except Exception as exc:
-            normalized_exc = _normalize_docker_availability_error(exc)
-            if normalized_exc is not None:
-                raise normalized_exc from exc
-            raise
-        owned: list[tuple[Any, ContainerStatus]] = []
-        for container in containers:
-            status = _container_status_from_labels(container)
-            if status is None or not _matches_filters(status, filters):
-                continue
-            owned.append((container, status))
-        live_primary_scopes = {
-            _container_scope_key(status)
-            for _container, status in owned
-            if status.detail.get("labels", {}).get("ai-platform.owner") == "sandbox-runtime"
-            and status.status in {"created", "running", "restarting"}
-        }
-        results: list[StopResult] = []
-        for container, status in owned:
-            labels = status.detail.get("labels")
-            owner = labels.get("ai-platform.owner") if isinstance(labels, dict) else ""
-            if owner == _NATIVE_TOOL_OWNER:
-                if (
-                    status.status in {"created", "running", "restarting"}
-                    and _container_scope_key(status) in live_primary_scopes
-                ):
-                    continue
-            elif status.status == "running":
-                continue
-            elif status.status not in {"exited", "dead", "removing", "removed"}:
-                continue
-            try:
-                if hasattr(container, "remove"):
-                    container.remove(force=True)
-            except Exception:
-                results.append(StopResult(container_id=status.container_id, status="failed", message="Container cleanup failed"))
-                continue
-            results.append(StopResult(container_id=status.container_id, status="stopped", message=reason))
-        try:
-            networks = self._get_client().networks.list()
-        except Exception:
-            return results
-        for network in networks:
-            lease = _lease_from_owned_governed_network(network)
-            if lease is None or not _matches_filters(_status_from_lease(lease, status="removed"), filters):
-                continue
-            if self._remove_owned_governed_network(lease):
-                results.append(
-                    StopResult(
-                        container_id=f"network:{_governed_docker_network_name(lease)}",
-                        status="stopped",
-                        message=reason,
-                    )
-                )
-        return results
+        return cleanup_docker_orphan_resources(
+            self, filters, reason,
+            container_status=_container_status_from_labels,
+            matches_filters=_matches_filters, scope_key=_container_scope_key,
+            network_lease=_lease_from_owned_governed_network, lease_status=_status_from_lease,
+            network_name=_governed_docker_network_name, stop_result=StopResult,
+            normalize_error=_normalize_docker_availability_error,
+        )
 
 
 def _load_opensandbox_symbols() -> dict[str, Any]:

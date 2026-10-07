@@ -1,6 +1,7 @@
 from collections.abc import AsyncIterator
 import asyncio
 from contextlib import asynccontextmanager
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,8 @@ from app.settings import get_settings
 
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
+logger = logging.getLogger(__name__)
+_POOL_CLOSE_CONNECTION_GRACE_SECONDS = 1.0
 
 _pool: AsyncConnectionPool | None = None
 _pool_signature: tuple[str, int, int, float, int] | None = None
@@ -66,17 +69,43 @@ async def _close_pool_for_owner_loop(
     if pool.closed:
         return
     current_loop = asyncio.get_running_loop()
-    if owner_loop is current_loop:
-        await pool.close(timeout=timeout)
-        return
     if owner_loop is None or owner_loop.is_closed() or not owner_loop.is_running():
         return
+
+    async def close() -> None:
+        # psycopg spends its timeout waiting for workers, then closes pooled
+        # connections. Do not cancel exactly as that second phase starts.
+        async with asyncio.timeout(max(timeout, 0.0) + _POOL_CLOSE_CONNECTION_GRACE_SECONDS):
+            if owner_loop is current_loop:
+                await pool.close(timeout=timeout)
+            else:
+                await asyncio.wrap_future(
+                    asyncio.run_coroutine_threadsafe(pool.close(timeout=timeout), owner_loop)
+                )
+
+    close_task = asyncio.create_task(close(), name="ai-platform-database-pool-close")
+    cancellation: asyncio.CancelledError | None = None
+    while not close_task.done():
+        try:
+            await asyncio.shield(close_task)
+        except asyncio.CancelledError as exc:
+            if not close_task.cancelled():
+                cancellation = cancellation or exc
+        except Exception:
+            break
+    if cancellation is not None:
+        # Retrieve a secondary close error without replacing cancellation.
+        if not close_task.cancelled():
+            close_task.exception()
+        raise cancellation
     try:
-        await asyncio.wrap_future(
-            asyncio.run_coroutine_threadsafe(pool.close(timeout=timeout), owner_loop)
-        )
-    except BaseException:
-        return
+        close_task.result()
+    except Exception:
+        if owner_loop is current_loop:
+            raise
+        # Replacing another loop's pool remains best-effort, but caller
+        # cancellation above is never treated as a successful close.
+        logger.warning("Database pool owner-loop cleanup failed")
 
 
 async def get_pool() -> AsyncConnectionPool:
@@ -110,11 +139,20 @@ async def get_pool() -> AsyncConnectionPool:
         )
         try:
             await next_pool.open(wait=True, timeout=float(config["timeout_seconds"]))
-        except Exception:
-            await next_pool.close(timeout=float(getattr(settings, "database_pool_close_timeout_seconds", 5.0)))
+        except BaseException:
             _pool = None
             _pool_loop = None
             _pool_signature = None
+            try:
+                await _close_pool_for_owner_loop(
+                    next_pool,
+                    owner_loop=loop,
+                    timeout=float(getattr(settings, "database_pool_close_timeout_seconds", 5.0)),
+                )
+            except BaseException:
+                # Failed/cancelled initialization remains the primary error;
+                # neither close diagnostics nor an unpublished pool escape.
+                logger.warning("Database pool initialization cleanup failed")
             raise
         _pool = next_pool
         _pool_loop = loop

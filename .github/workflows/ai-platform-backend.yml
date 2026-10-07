@@ -100,6 +100,7 @@ jobs:
             test_files: >-
               tests/test_claude_agent_sdk_installed_contract.py
               tests/test_claude_agent_sdk_runner.py
+              tests/test_claude_agent_sdk_turn_diagnostics.py
               tests/test_claude_completion_lifecycle.py
               tests/test_claude_mcp_registration.py
               tests/test_claude_agent_worker_adapter.py
@@ -115,6 +116,7 @@ jobs:
               tests/test_sandbox_executor_async_dispatch.py
               tests/test_settings.py
               tests/test_sandbox_container_provider.py
+              tests/test_docker_async_operations.py
               tests/test_sandbox_creation_claim.py
               tests/test_opensandbox_live_credential_isolation.py
               tests/test_opensandbox_client_ca.py
@@ -150,6 +152,8 @@ jobs:
               tests/test_run_attempt_application.py
               tests/test_run_attempt_repository.py
               tests/test_worker_main.py
+              tests/test_db_pool.py
+              tests/test_redis_client.py
               tests/test_worker_maintenance.py
               tests/test_sandbox_cleanup_postgres.py
               tests/test_provider_empty_start_postgres.py
@@ -172,6 +176,7 @@ jobs:
             redis_url: ""
             test_files: >-
               tests/test_model_management.py
+              tests/test_model_upstream_stream.py
               tests/test_lambchat_frontend_compat.py::test_lambchat_model_catalog_is_empty_without_governed_connection
               tests/test_lambchat_frontend_compat.py::test_lambchat_governed_model_catalog_preserves_raw_ids
               tests/test_execution_spec.py::test_execution_spec_preserves_raw_upstream_model_identity
@@ -200,6 +205,8 @@ jobs:
               tests/test_run_diagnostics.py
               tests/test_run_persistence.py
               tests/test_run_projection.py
+              tests/test_public_run_outcome.py
+              tests/test_sdk_projection_failure_diagnostics.py
               tests/test_session_continuity.py
               tests/test_sse_v4_contract_generation.py
               tests/test_streaming_contracts.py

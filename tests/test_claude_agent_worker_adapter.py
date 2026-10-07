@@ -4701,8 +4701,8 @@ async def test_sdk_runner_records_structured_normal_stop_sequence(monkeypatch, t
     [
         ("assistant_only", "claude_agent_sdk_missing_structured_terminal"),
         ("empty", "claude_agent_sdk_missing_structured_terminal"),
-        ("error_result", "claude_agent_sdk_upstream_error"),
-        ("exception_stop_sequence", "claude_agent_sdk_upstream_error"),
+        ("error_result", "claude_agent_sdk_execution_failed"),
+        ("exception_stop_sequence", "claude_agent_sdk_execution_failed"),
     ],
 )
 async def test_sdk_runner_fails_closed_without_a_normal_structured_terminal(
@@ -5514,7 +5514,7 @@ async def test_sdk_runner_preserves_skill_use_when_query_raises_after_hook(monke
     )
 
     assert result.used_sdk is True
-    assert result.error == "claude_agent_sdk_upstream_error"
+    assert result.error == "claude_agent_sdk_execution_failed"
     assert "sdk stream disconnected" not in str(result.turn_diagnostics)
     assert result.used_skills == ["qa-file-reviewer"]
     assert result.used_skills_source == "executor_hook"

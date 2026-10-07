@@ -194,6 +194,40 @@ SDK to routes or workers:
 Renaming these methods is not a correctness requirement. Consolidating their
 invocation and durable receipts behind the application control authority is.
 
+### Docker asynchronous I/O boundary
+
+Docker's synchronous SDK lifecycle runs on provider-owned worker loops rather
+than the application event loop. The provider has eight lifecycle slots, eight
+probe slots, and two independently reserved cleanup slots; executor queues do
+not grow beyond those admissions. Request cancellation or an await deadline does
+not return a slot until the underlying thread has actually finished. Existing
+SDK and readiness-stage timeouts are retained, including the final bounded HTTP
+probe allowance; startup is not assigned a shorter aggregate timeout.
+
+Create, dispatch validation, stop, and orphan cleanup share a per-provider,
+in-process run claim. Orphan listings only nominate candidates: cleanup skips
+busy runs and holds the same atomic claim through fresh identity/status readback
+and removal. A native sidecar is rechecked against a fresh same-scope primary
+listing, and a bridge's current membership is reloaded under the claim. Therefore
+a startup that finishes after the initial orphan listing cannot turn that stale
+snapshot into deletion authority. Different runs retain independent cleanup
+capacity. A cancelled
+create checks cancellation after blocking mutation returns, before issuing the
+next mutation, and compensates only the exact owned attempt resources. The claim
+remains held through late worker completion and compensation, including a
+successful create whose result the caller never accepted. Cancellation waits at
+most the existing SDK timeout for compensation; a still-blocked worker retains
+its capacity and ownership until it can settle. Typed cleanup failure retains a
+tracked reconciliation obligation, while unrelated worker errors cannot replace
+caller cancellation. These process-local claims do not replace database attempt
+fences or establish ownership across controller processes.
+
+The legacy provider delegates this boundary and its existing tracked-lease and
+resource-cleanup helpers to `platform.sandbox.docker_operations`, the Docker SDK
+thread-isolation adapter. Docker's previous application-loop SDK calls and
+shared-default-executor probes are retired; OpenSandbox keeps its existing async
+SDK lifecycle. No provider ownership checks or durable release semantics change.
+
 ## Task workspace and Claude project instructions
 
 Each attempt receives a platform-owned `CLAUDE.md` at the root of its assigned

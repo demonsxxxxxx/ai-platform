@@ -10,6 +10,8 @@ PUBLIC_TERMINAL_DETAIL_MESSAGES = {
     "terminal_reconciliation_failed": "任务执行已结束，但结果同步失败（terminal_reconciliation_failed）。已保留可恢复的内容；请刷新会话或联系管理员并提供任务编号。",
     "run_timeout": "任务执行超时。请缩小任务范围后重试。",
     "run_budget_exhausted": "任务已达到执行轮次上限。请缩小或拆分任务后重试。",
+    "input_context_too_large": "当前输入或会话上下文超过模型处理上限。请缩短或拆分请求、减少附件，或新建会话后重试。",
+    "input_image_invalid": "输入图片无法处理或超过模型限制。请检查图片格式、尺寸和数量，调整后重试。",
     "model_service_unavailable": "模型服务暂时不可用。请稍后重试；如问题持续，请联系管理员。",
     "model_proxy_authorization_failed": "模型代理授权未通过。请重新开始任务；如问题持续，请联系管理员。",
     "model_proxy_run_binding_failed": "任务与模型运行绑定失效。请重新开始任务；如问题持续，请联系管理员。",
@@ -50,6 +52,9 @@ PUBLIC_TERMINAL_ERROR_CODE_ALIASES = {
     "claude_agent_sdk_output_validation_failed": "terminal_reconciliation_failed",
     "claude_agent_sdk_tool_admission_failed": "required_capability_unavailable",
     "claude_agent_sdk_upstream_error": "model_service_unavailable",
+    "claude_agent_sdk_input_context_too_large": "input_context_too_large",
+    "claude_agent_sdk_input_image_invalid": "input_image_invalid",
+    "claude_agent_sdk_execution_failed": "run_failed",
     "model_proxy_forbidden": "model_proxy_authorization_failed",
     "model_proxy_attempt_required": "model_proxy_authorization_failed",
     "model_proxy_capability_invalid": "model_proxy_authorization_failed",
@@ -159,7 +164,14 @@ def public_terminal_projection(
         detail_code = "run_cancelled"
         detail_kind = "cancelled"
     elif normalized_status == "failed":
-        detail_code = PUBLIC_TERMINAL_ERROR_CODE_ALIASES.get(raw_error_code, "run_failed")
+        detail_code = PUBLIC_TERMINAL_ERROR_CODE_ALIASES.get(raw_error_code)
+        if detail_code is None:
+            detail_code = (
+                raw_error_code
+                if raw_error_code in PUBLIC_TERMINAL_DETAIL_MESSAGES
+                and raw_error_code != "run_cancelled"
+                else "run_failed"
+            )
         detail_kind = "failed"
     else:
         return None
