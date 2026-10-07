@@ -1,3 +1,5 @@
+import pytest
+
 from app.runs.api import (
     PUBLIC_RUN_OUTCOME_SCHEMA_VERSION,
     public_run_outcome,
@@ -33,7 +35,8 @@ def test_public_run_outcome_reports_pre_execution_permission_failure():
     assert outcome["phase"] == "failed"
     assert outcome["detail_code"] == "capability_not_authorized"
     assert outcome["retained"] == "未记录到可确认的已完成步骤或文件。"
-    assert "重新登录" in str(outcome["next_action"])
+    assert "有权使用" in str(outcome["next_action"])
+    assert "重新登录" not in str(outcome["next_action"])
     assert outcome["problem_number"] == "run-denied"
 
 
@@ -104,3 +107,24 @@ def test_public_run_outcome_does_not_mislabel_runtime_capability_failure_as_logi
     assert outcome["detail_code"] == "required_capability_unavailable"
     assert "专家或工具配置" in str(outcome["next_action"])
     assert "重新登录" not in str(outcome["next_action"])
+
+
+@pytest.mark.parametrize(
+    ("error_code", "expected_action", "forbidden_action"),
+    [
+        ("required_capability_unavailable", "专家或工具配置", "重新登录"),
+        ("capability_not_authorized", "有权使用", "重新登录"),
+        ("context_file_storage_unavailable", "稍后重试", "重新上传"),
+        ("context_file_staging_write_failed", "稍后重试", "重新上传"),
+        ("current_request_too_large", "缩短或拆分当前请求", "重新上传"),
+        ("claude_agent_sdk_input_context_too_large", "减少附件", "服务不可用"),
+        ("claude_agent_sdk_input_image_invalid", "图片格式", "服务不可用"),
+        ("model_capacity_missing", "模型运行配置", "可以重试"),
+        ("mcp_execution_outcome_unknown", "请勿重复提交", "可以重试"),
+        ("terminal_reconciliation_failed", "刷新会话", "可以重试"),
+    ],
+)
+def test_public_run_outcome_recovery_matches_failure_cause(error_code, expected_action, forbidden_action):
+    outcome = public_run_outcome(run_id="run-safe", status="failed", error_code=error_code)
+    assert expected_action in outcome["next_action"]
+    assert forbidden_action not in outcome["next_action"]

@@ -7309,3 +7309,262 @@ async def test_docker_provider_lists_and_reclaims_running_orphan_native_tool_sid
     assert orphan_native.removed is True
     assert paired_native.removed is False
     assert foreign_native.removed is False
+
+
+async def _wait_for_docker_thread(predicate):
+    async with asyncio.timeout(2):
+        while not predicate():
+            await asyncio.sleep(0.001)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["ping", "create", "start", "reload", "list", "orphan_remove"])
+async def test_docker_provider_all_lifecycle_io_keeps_application_loop_responsive(monkeypatch, stage):
+    from app.runtime.sandbox.container_provider import DockerContainerProvider
+
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake, health_probe=lambda *_args: True,
+    )
+    selected_request, selected_workspace = request(), workspace()
+    started, release, finished = threading.Event(), threading.Event(), threading.Event()
+    if stage in {"list", "orphan_remove"}:
+        lease = await provider.create_or_reuse(selected_request, selected_workspace)
+        container = fake.containers_by_name[lease.container_name]
+        if stage == "orphan_remove":
+            container.status = "exited"
+        target, attribute = (fake.containers, "list") if stage == "list" else (container, "remove")
+    elif stage in {"start", "reload"}:
+        target, attribute = FakeDockerContainer, stage
+    else:
+        target, attribute = (fake, "ping") if stage == "ping" else (fake.containers, "create")
+    original = getattr(target, attribute)
+
+    def blocking(*args, **kwargs):
+        started.set()
+        release.wait(3)
+        finished.set()
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(target, attribute, blocking)
+    if stage == "list":
+        operation = provider.list_runtime_containers({})
+    elif stage == "orphan_remove":
+        operation = provider.cleanup_orphan_containers({}, reason="test")
+    else:
+        operation = provider.create_or_reuse(request=selected_request, workspace=selected_workspace)
+    task = asyncio.create_task(operation)
+    try:
+        await _wait_for_docker_thread(started.is_set)
+        await asyncio.sleep(0)
+        assert not finished.is_set()
+        assert not task.done()
+        release.set()
+        await task
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+        for lane in (provider._operations, provider._cleanup_operations, provider._probes):
+            lane.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["primary_create", "native_create", "start"])
+async def test_docker_cancelled_mutation_compensates_late_resource_and_fences_retry(monkeypatch, stage):
+    from app.runtime.sandbox.container_provider import DockerContainerProvider, DockerUnavailableError
+
+    fake = FakeDockerClient()
+    existing_networks = set(fake.networks_by_name)
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake, health_probe=lambda *_args: True,
+    )
+    selected_request = request(tool_policy_subjects=[native_tool_subjects()[1]] if stage == "native_create" else [])
+    selected_workspace = workspace()
+    started, release = threading.Event(), threading.Event()
+    monkeypatch.setattr(provider, "_sdk_timeout", lambda: 0.02)
+    target, attribute = (FakeDockerContainer, "start") if stage == "start" else (fake.containers, "create")
+    original = getattr(target, attribute)
+
+    def blocked_mutation(*args, **kwargs):
+        started.set()
+        release.wait(3)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(target, attribute, blocked_mutation)
+    task = asyncio.create_task(provider.create_or_reuse(selected_request, selected_workspace))
+    try:
+        await _wait_for_docker_thread(started.is_set)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        with pytest.raises(DockerUnavailableError):
+            await provider.create_or_reuse(selected_request, selected_workspace)
+        release.set()
+        await _wait_for_docker_thread(lambda: not provider._operations._keys)
+        owned = [container for container in fake.containers_by_name.values()
+                 if container.labels.get("ai-platform.attempt_id") == selected_request.attempt_id]
+        assert owned
+        assert all(container.removed for container in owned)
+        if stage != "start":
+            assert all(not container.started for container in owned)
+        assert provider._leases == {}
+        assert set(fake.networks_by_name) == existing_networks
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+        for lane in (provider._operations, provider._cleanup_operations, provider._probes):
+            lane.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["native_ready", "network_created"])
+async def test_docker_orphan_cleanup_skips_active_create_scope_but_cleans_other_run(monkeypatch, stage):
+    from app.runtime.sandbox.container_provider import DockerContainerProvider
+
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(docker_client_factory=lambda: fake, health_probe=lambda *_args: True)
+    selected_request = request(tool_policy_subjects=[native_tool_subjects()[1]])
+    selected_workspace = workspace()
+    entered, release = threading.Event(), threading.Event()
+    if stage == "native_ready":
+        def gate_native(_container):
+            entered.set()
+            release.wait(3)
+            return True
+        provider._native_tool_probe = gate_native
+    else:
+        original_create = fake.networks.create
+
+        def gate_network(*args, **kwargs):
+            network = original_create(*args, **kwargs)
+            entered.set()
+            release.wait(3)
+            return network
+        monkeypatch.setattr(fake.networks, "create", gate_network)
+    unrelated = FakeDockerContainer(
+        image="executor:test", name="unrelated-orphan", detach=True,
+        labels={"ai-platform.owner": "sandbox-runtime", "ai-platform.tenant_id": "tenant-a",
+                "ai-platform.workspace_id": "workspace-a", "ai-platform.user_id": "user-a",
+                "ai-platform.session_id": "session-a", "ai-platform.run_id": "run-unrelated",
+                "ai-platform.attempt_id": "attempt-unrelated"},
+        volumes={}, environment={},
+    )
+    unrelated.status = "exited"
+    fake.containers_by_name[unrelated.name] = unrelated
+    task = asyncio.create_task(provider.create_or_reuse(selected_request, selected_workspace))
+    try:
+        await _wait_for_docker_thread(entered.is_set)
+        attempt_networks = set(fake.networks_by_name)
+        results = await provider.cleanup_orphan_containers({"tenant_id": "tenant-a"}, reason="orphan-test")
+        assert unrelated.removed
+        assert [result.container_id for result in results] == ["exec-run-unrelated"]
+        assert set(fake.networks_by_name) == attempt_networks
+        if stage == "native_ready":
+            assert not fake.containers_by_name[native_tool_name()].removed
+        release.set()
+        lease = await task
+        assert fake.containers_by_name[lease.container_name].status == "running"
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+        for lane in (provider._operations, provider._cleanup_operations, provider._probes):
+            lane.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resource", ["native", "network"])
+async def test_docker_orphan_cleanup_claim_blocks_create_validate_and_stop_until_effect_finishes(monkeypatch, resource):
+    from app.runtime.sandbox.container_provider import DockerContainerProvider, DockerUnavailableError
+
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(docker_client_factory=lambda: fake, health_probe=lambda *_args: True)
+    selected_request = request(tool_policy_subjects=[native_tool_subjects()[1]] if resource == "native" else [])
+    selected_workspace = workspace()
+    lease = await provider.create_or_reuse(selected_request, selected_workspace)
+    primary = fake.containers_by_name.pop(lease.container_name)
+    primary.remove(force=True)
+    provider._forget_lease(lease)
+    entered, release = threading.Event(), threading.Event()
+    target = fake.containers_by_name[native_tool_name()] if resource == "native" else fake.networks_by_name[fake.created[-1]["network"]]
+    original_remove = target.remove
+
+    def gate_remove(*args, **kwargs):
+        entered.set()
+        release.wait(3)
+        return original_remove(*args, **kwargs)
+
+    monkeypatch.setattr(target, "remove", gate_remove)
+    task = asyncio.create_task(provider.cleanup_orphan_containers({"tenant_id": "tenant-a"}, reason="orphan-test"))
+    try:
+        await _wait_for_docker_thread(entered.is_set)
+        with pytest.raises(DockerUnavailableError):
+            await provider.create_or_reuse(selected_request, selected_workspace)
+        with pytest.raises(DockerUnavailableError):
+            await provider.validate_for_dispatch(lease, selected_request, selected_workspace)
+        assert (await provider.stop(lease, reason="concurrent-stop")).status == "failed"
+        assert not task.done()
+        release.set()
+        results = await task
+        assert any(result.status == "stopped" for result in results)
+        with provider._operations.claim(lease.run_id) as acquired:
+            assert acquired
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+        for lane in (provider._operations, provider._cleanup_operations, provider._probes):
+            lane.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("snapshot", ["containers", "networks"])
+async def test_docker_orphan_cleanup_refreshes_snapshot_after_create_finishes_before_claim(monkeypatch, snapshot):
+    from copy import deepcopy
+    from app.runtime.sandbox.container_provider import DockerContainerProvider
+
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(docker_client_factory=lambda: fake, health_probe=lambda *_args: True)
+    selected_request = request(tool_policy_subjects=[native_tool_subjects()[1]])
+    selected_workspace = workspace()
+    native_started, native_release = threading.Event(), threading.Event()
+    snapshot_taken, snapshot_release = threading.Event(), threading.Event()
+
+    def gate_native(_container):
+        native_started.set()
+        native_release.wait(3)
+        return True
+
+    provider._native_tool_probe = gate_native
+    create_task = asyncio.create_task(provider.create_or_reuse(selected_request, selected_workspace))
+    cleanup_task = None
+    try:
+        await _wait_for_docker_thread(native_started.is_set)
+        collection = fake.containers if snapshot == "containers" else fake.networks
+        original_list = collection.list
+
+        def stale_first_list(*args, **kwargs):
+            candidates = original_list(*args, **kwargs)
+            if not snapshot_taken.is_set():
+                if snapshot == "networks":
+                    candidates = [FakeDockerNetwork(fake, deepcopy(network["attrs"])) for network in candidates]
+                snapshot_taken.set()
+                snapshot_release.wait(3)
+            return candidates
+
+        monkeypatch.setattr(collection, "list", stale_first_list)
+        cleanup_task = asyncio.create_task(provider.cleanup_orphan_containers({"tenant_id": "tenant-a"}, reason="orphan-test"))
+        await _wait_for_docker_thread(snapshot_taken.is_set)
+        native_release.set()
+        lease = await create_task
+        network_name = fake.created[-1]["network"]
+        snapshot_release.set()
+        assert await cleanup_task == []
+        assert not fake.containers_by_name[native_tool_name()].removed
+        assert not fake.containers_by_name[lease.container_name].removed
+        assert network_name in fake.networks_by_name
+        assert fake.containers_by_name[lease.container_name].id in fake.networks_by_name[network_name]["attrs"]["Containers"]
+    finally:
+        native_release.set()
+        snapshot_release.set()
+        await asyncio.gather(create_task, *( [cleanup_task] if cleanup_task is not None else []), return_exceptions=True)
+        for lane in (provider._operations, provider._cleanup_operations, provider._probes):
+            lane.close()

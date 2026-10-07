@@ -9,6 +9,7 @@ import pytest
 
 import app.worker_main as worker_main
 from app.queue import LeaseMutationOutcome, QueueHeartbeatOutcome, QueueMessage
+from app.platform.sandbox.errors import ContainerCleanupFailedError
 from app.runs.api import RunTerminalizationProgress
 from app.worker import WorkerOutcome
 from app.streaming.application.worker_publication_v4 import WorkerV4Capabilities
@@ -2483,6 +2484,7 @@ async def test_run_forever_continues_after_transient_run_once_error(monkeypatch)
     monkeypatch.setattr("app.worker_main.run_once", fake_run_once)
     monkeypatch.setattr("app.worker_main.run_executor_terminal_reconciler", _controlled_terminal_reconciler)
     monkeypatch.setattr("app.worker_main._maintenance_until_done", _controlled_maintenance)
+    monkeypatch.setattr("app.worker_main._worker_runtime_heartbeat_until_done", _controlled_maintenance)
     monkeypatch.setattr("app.worker_main.asyncio.sleep", fake_sleep)
     monkeypatch.setattr("app.bootstrap.worker_maintenance.close_pool", fake_close_pool)
     monkeypatch.setattr("app.bootstrap.worker_maintenance.close_redis_client", fake_close_redis_client)
@@ -2804,6 +2806,332 @@ async def test_runtime_close_still_closes_database_when_redis_close_fails(monkey
         await worker_main._close_runtime_clients()
 
     assert calls == [("close_redis_client",), ("close_pool",)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("worker_count", [1, 3])
+@pytest.mark.parametrize("stop_kind", ["failure", "return", "cancellation"])
+async def test_worker_supervisor_stops_active_runs_and_cleans_up_after_background_exit(
+    monkeypatch, worker_count, stop_kind
+):
+    started = asyncio.Event()
+    calls = []
+    primary = RuntimeError("reconciler failed")
+
+    async def blocked_run_once(**_kwargs):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            calls.append("run_cancelled")
+
+    async def stopped_reconciler(*_args, **_kwargs):
+        await started.wait()
+        if stop_kind == "failure":
+            raise primary
+        if stop_kind == "cancellation":
+            raise asyncio.CancelledError()
+
+    async def close_runtime():
+        calls.append("runtime")
+        raise RuntimeError("secondary runtime close failure")
+
+    async def close_clients():
+        calls.append("clients")
+        raise RuntimeError("secondary client close failure")
+
+    monkeypatch.setattr(worker_main, "run_once", blocked_run_once)
+    monkeypatch.setattr(worker_main, "run_executor_terminal_reconciler", stopped_reconciler)
+    monkeypatch.setattr(worker_main, "_maintenance_until_done", _controlled_maintenance)
+    monkeypatch.setattr(worker_main, "_worker_runtime_heartbeat_until_done", _controlled_maintenance)
+    monkeypatch.setattr(
+        worker_main, "build_worker_v4_runtime",
+        lambda *_args: SimpleNamespace(capabilities=_TEST_V4_CAPABILITIES, aclose=close_runtime),
+    )
+    monkeypatch.setattr(worker_main, "_close_runtime_clients", close_clients)
+
+    with pytest.raises(RuntimeError, match="background task") as caught:
+        await asyncio.wait_for(worker_main.run_worker_pool(worker_count=worker_count), timeout=0.5)
+
+    if stop_kind == "failure":
+        assert caught.value.__cause__ is primary
+    assert calls.count("run_cancelled") == worker_count
+    assert calls[-2:] == ["runtime", "clients"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("worker_count", [1, 3])
+async def test_worker_shutdown_survives_repeated_cancellation_and_runtime_close_failure(
+    monkeypatch, worker_count
+):
+    started = asyncio.Event()
+    closing = asyncio.Event()
+    release_close = asyncio.Event()
+    calls = []
+
+    async def blocked_run_once(**_kwargs):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            calls.append("run_cancelled")
+
+    async def close_runtime():
+        calls.append("runtime")
+        closing.set()
+        await release_close.wait()
+        raise RuntimeError("secondary runtime close failure")
+
+    async def close_clients():
+        calls.append("clients")
+
+    monkeypatch.setattr(worker_main, "run_once", blocked_run_once)
+    monkeypatch.setattr(worker_main, "run_executor_terminal_reconciler", _controlled_terminal_reconciler)
+    monkeypatch.setattr(worker_main, "_maintenance_until_done", _controlled_maintenance)
+    monkeypatch.setattr(worker_main, "_worker_runtime_heartbeat_until_done", _controlled_maintenance)
+    monkeypatch.setattr(
+        worker_main, "build_worker_v4_runtime",
+        lambda *_args: SimpleNamespace(capabilities=_TEST_V4_CAPABILITIES, aclose=close_runtime),
+    )
+    monkeypatch.setattr(worker_main, "_close_runtime_clients", close_clients)
+    task = asyncio.create_task(worker_main.run_worker_pool(worker_count=worker_count))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=0.5)
+        task.cancel("worker cancelled")
+        await asyncio.wait_for(closing.wait(), timeout=0.5)
+        task.cancel("cancelled again")
+        await asyncio.sleep(0)
+        assert not task.done()
+        release_close.set()
+        with pytest.raises(asyncio.CancelledError, match="worker cancelled"):
+            await task
+        assert calls.count("run_cancelled") == worker_count
+        assert calls[-2:] == ["runtime", "clients"]
+    finally:
+        release_close.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("worker_count", [1, 3])
+@pytest.mark.parametrize("supervisor_failure", [False, True])
+@pytest.mark.parametrize("cleanup_result", ["exception", "outcome"])
+async def test_worker_shutdown_does_not_retry_cleanup_failure_after_slot_cancellation(
+    monkeypatch, worker_count, supervisor_failure, cleanup_result
+):
+    all_started = asyncio.Event()
+    calls = []
+    iteration_count = {}
+    primary = RuntimeError("reconciler failed")
+
+    async def run_once(*, worker_id, **_kwargs):
+        iteration_count[worker_id] = iteration_count.get(worker_id, 0) + 1
+        if iteration_count[worker_id] > 1:
+            # Make the regression fail without leaving a second iteration
+            # alive indefinitely when the cancellation-aware guard is absent.
+            raise asyncio.CancelledError("unexpected second iteration")
+        if len(iteration_count) == worker_count:
+            all_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            calls.append("cleanup_failed")
+            if cleanup_result == "outcome":
+                return WorkerOutcome(status="ownership_lost", run_id=None)
+            raise ContainerCleanupFailedError("container cleanup could not be confirmed")
+
+    async def reconciler(stop_event, **_kwargs):
+        await all_started.wait()
+        if supervisor_failure:
+            raise primary
+        await stop_event.wait()
+
+    async def close_runtime():
+        calls.append("runtime")
+
+    async def close_clients():
+        calls.append("clients")
+
+    monkeypatch.setattr(worker_main, "run_once", run_once)
+    monkeypatch.setattr(worker_main, "run_executor_terminal_reconciler", reconciler)
+    monkeypatch.setattr(worker_main, "_maintenance_until_done", _controlled_maintenance)
+    monkeypatch.setattr(worker_main, "_worker_runtime_heartbeat_until_done", _controlled_maintenance)
+    monkeypatch.setattr(
+        worker_main, "build_worker_v4_runtime",
+        lambda *_args: SimpleNamespace(capabilities=_TEST_V4_CAPABILITIES, aclose=close_runtime),
+    )
+    monkeypatch.setattr(worker_main, "_close_runtime_clients", close_clients)
+    task = asyncio.create_task(
+        worker_main.run_worker_pool(worker_count=worker_count, idle_sleep_seconds=0)
+    )
+    try:
+        await asyncio.wait_for(all_started.wait(), timeout=0.5)
+        if supervisor_failure:
+            with pytest.raises(RuntimeError, match="background task failed") as caught:
+                await asyncio.wait_for(task, timeout=0.5)
+            assert caught.value.__cause__ is primary
+        else:
+            task.cancel("worker cancelled")
+            with pytest.raises(asyncio.CancelledError, match="worker cancelled"):
+                await asyncio.wait_for(task, timeout=0.5)
+        assert list(iteration_count.values()) == [1] * worker_count
+        assert calls == ["cleanup_failed"] * worker_count + ["runtime", "clients"]
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("primary_failure", [False, True])
+async def test_run_once_and_close_attempts_all_cleanup_and_preserves_first_error(monkeypatch, primary_failure):
+    calls = []
+    processing_error = RuntimeError("processing failed")
+    close_error = RuntimeError("runtime close failed")
+
+    async def run_once(**_kwargs):
+        if primary_failure:
+            raise processing_error
+        return WorkerOutcome(status="idle", run_id=None)
+
+    async def close_runtime():
+        calls.append("runtime")
+        raise close_error
+
+    async def close_clients():
+        calls.append("clients")
+        raise RuntimeError("client close failed")
+
+    monkeypatch.setattr(worker_main, "run_once", run_once)
+    monkeypatch.setattr(
+        worker_main, "build_worker_v4_runtime",
+        lambda *_args: SimpleNamespace(capabilities=_TEST_V4_CAPABILITIES, aclose=close_runtime),
+    )
+    monkeypatch.setattr(worker_main, "_close_runtime_clients", close_clients)
+
+    with pytest.raises(RuntimeError) as caught:
+        await worker_main.run_once_and_close(timeout_seconds=1)
+
+    assert caught.value is (processing_error if primary_failure else close_error)
+    assert calls == ["runtime", "clients"]
+
+
+@pytest.mark.asyncio
+async def test_worker_runtime_close_timeout_still_closes_clients(monkeypatch):
+    calls = []
+
+    async def run_once(**_kwargs):
+        return WorkerOutcome(status="idle", run_id=None)
+
+    async def close_runtime():
+        try:
+            await asyncio.Event().wait()
+        finally:
+            calls.append("runtime_cancelled")
+
+    async def close_clients():
+        calls.append("clients")
+
+    monkeypatch.setattr(worker_main, "run_once", run_once)
+    monkeypatch.setattr(worker_main, "_WORKER_RESOURCE_CLOSE_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(
+        worker_main, "build_worker_v4_runtime",
+        lambda *_args: SimpleNamespace(capabilities=_TEST_V4_CAPABILITIES, aclose=close_runtime),
+    )
+    monkeypatch.setattr(worker_main, "_close_runtime_clients", close_clients)
+
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(worker_main.run_once_and_close(timeout_seconds=1), timeout=0.5)
+
+    assert calls == ["runtime_cancelled", "clients"]
+
+
+@pytest.mark.asyncio
+async def test_worker_shutdown_keeps_clients_open_until_cancelled_processing_finishes(monkeypatch):
+    started = asyncio.Event()
+    draining = asyncio.Event()
+    release_processing = asyncio.Event()
+    calls = []
+
+    async def blocked_run_once(**_kwargs):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            draining.set()
+            await release_processing.wait()
+            calls.append("processing_finished")
+            raise
+
+    async def close_runtime():
+        calls.append("runtime")
+
+    async def close_clients():
+        calls.append("clients")
+
+    monkeypatch.setattr(worker_main, "run_once", blocked_run_once)
+    monkeypatch.setattr(worker_main, "run_executor_terminal_reconciler", _controlled_terminal_reconciler)
+    monkeypatch.setattr(worker_main, "_maintenance_until_done", _controlled_maintenance)
+    monkeypatch.setattr(worker_main, "_worker_runtime_heartbeat_until_done", _controlled_maintenance)
+    monkeypatch.setattr(
+        worker_main, "build_worker_v4_runtime",
+        lambda *_args: SimpleNamespace(capabilities=_TEST_V4_CAPABILITIES, aclose=close_runtime),
+    )
+    monkeypatch.setattr(worker_main, "_close_runtime_clients", close_clients)
+    task = asyncio.create_task(worker_main.run_worker_pool(worker_count=1))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=0.5)
+        task.cancel("worker cancelled")
+        await asyncio.wait_for(draining.wait(), timeout=0.5)
+        task.cancel("cancelled while draining")
+        await asyncio.sleep(0)
+        assert calls == []
+        assert not task.done()
+        release_processing.set()
+        with pytest.raises(asyncio.CancelledError, match="worker cancelled"):
+            await task
+        assert calls == ["processing_finished", "runtime", "clients"]
+    finally:
+        release_processing.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_successful_run_cleanup_is_not_swallowed(monkeypatch):
+    closing = asyncio.Event()
+    release_close = asyncio.Event()
+    calls = []
+
+    async def run_once(**_kwargs):
+        return WorkerOutcome(status="idle", run_id=None)
+
+    async def close_runtime():
+        closing.set()
+        await release_close.wait()
+        calls.append("runtime")
+
+    async def close_clients():
+        calls.append("clients")
+
+    monkeypatch.setattr(worker_main, "run_once", run_once)
+    monkeypatch.setattr(
+        worker_main, "build_worker_v4_runtime",
+        lambda *_args: SimpleNamespace(capabilities=_TEST_V4_CAPABILITIES, aclose=close_runtime),
+    )
+    monkeypatch.setattr(worker_main, "_close_runtime_clients", close_clients)
+    task = asyncio.create_task(worker_main.run_once_and_close(timeout_seconds=1))
+    try:
+        await asyncio.wait_for(closing.wait(), timeout=0.5)
+        task.cancel("cancelled during cleanup")
+        release_close.set()
+        with pytest.raises(asyncio.CancelledError, match="cancelled during cleanup"):
+            await task
+        assert calls == ["runtime", "clients"]
+    finally:
+        release_close.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 @pytest.mark.asyncio

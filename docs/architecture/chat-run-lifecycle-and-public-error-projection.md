@@ -203,6 +203,25 @@ fallback. Frontend display ignores arbitrary backend message text for these
 status cards. Distinguish execution-service unavailability from explicit model
 upstream failure according to the owning code mapping.
 
+SDK error attribution requires source evidence. Explicit SDK input/context
+limits map to `input_context_too_large`; an SDK image rejection maps to
+`input_image_invalid`. They require input changes rather than an unchanged
+retry or a model-service outage claim. A typed SDK Assistant error envelope is
+private diagnostic content, not an assistant answer; a subsequent ordinary
+Assistant message may recover. Explicit provider failure in that envelope or
+the SDK Result error maps to `model_service_unavailable`. Unclassified local
+exceptions map to the neutral `run_failed` projection, even when their text
+resembles a provider error. Accepted public text and bounded private diagnostic
+evidence remain available through their existing, separate owners. Confirmed
+or uncertain external Tool effects continue to take precedence and cannot
+be downgraded into a blind retry instruction.
+
+The Runs projection accepts its own approved failure codes idempotently, so
+live delivery, history and outcome details do not erase a known cause on a
+second projection. A cancelled detail cannot be used for a failed Run; unknown
+codes and arbitrary messages still fail closed. Frontend defaults and the
+shipped locale must change together with the backend allowlist.
+
 Public-answer projection remains fail-closed for secrets, concrete Skill implementation/source details, structured executor or storage fields, and model Thinking content. Ordinary paths in intentional answer text are allowed as user-visible project context; pre-release thinking events may retain status compatibility but their body is not rendered. A recoverable disclosure omission preserves the authoritative execution status and omits the unsafe answer. Invalid SDK framing, source identity or terminal-answer reconciliation instead fails with `claude_agent_sdk_output_validation_failed`, publicly mapped to `terminal_reconciliation_failed`; it is not evidence of model-service unavailability. Private diagnostics preserve the first fixed reason, stage and location through later tool events and result normalization. Historical records with the retired projection-failure code are presented as the generic fixed `run_failed` terminal state.
 
 Successful history is complete only when the assistant has answer text or a
@@ -238,6 +257,26 @@ and time-of-check/time-of-use protection. Runtime credential issuance, endpoint
 and network reachability, file retrieval/content and Tool outcome remain runtime
 facts; moving them into admission would require side effects or provide false
 certainty.
+
+Admission recovery distinguishes authentication from permission/configuration:
+only authentication failures suggest logging in again. Unavailable required
+capabilities point to the selected expert or Tool configuration. Internal or
+file-service failures suggest waiting or contacting an administrator, not
+correcting input or uploading the same file again. Current-request limits ask
+the user to shorten the request; model-context limits may also require fewer
+attachments or a new conversation. Profile-revision and workspace conflicts
+keep their fixed refresh/reselection or workspace-switch instructions. A
+malformed HTTP success response is outcome-unknown: preserve the submission
+recovery fence and confirm history/status before any resubmission. Diagnostic
+identifiers are accepted only in their existing bounded format.
+
+This replaces blanket SDK-upstream attribution and blanket admission
+login/fix-input guidance. Historical `claude_agent_sdk_upstream_error` remains
+a compatibility input because persisted records lack evidence for retrospective
+reclassification; its current producer requires SDK source evidence. The two
+new public input codes are additive and older clients retain their unknown-code
+fallback. No queue, Run/Attempt, tenant/workspace or terminal-reconciliation
+authority, database schema, or retry side-effect policy is replaced.
 
 ## Change Contract: public outcomes and final capability admission
 

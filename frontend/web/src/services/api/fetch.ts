@@ -28,6 +28,19 @@ export class ApiRequestError extends Error {
   }
 }
 
+/** A success status without the promised JSON does not prove a write failed. */
+export class ApiProtocolError extends ApiRequestError {
+  constructor(status: number) {
+    const projection = projectSafeBackendError(
+      { code: "api_response_invalid" },
+      status,
+      i18n.getFixedT("zh"),
+    );
+    super(projection.message, status, projection.code);
+    this.name = "ApiProtocolError";
+  }
+}
+
 export function notifyForcedRelogin(): void {
   if (typeof window !== "undefined") {
     window.dispatchEvent(new CustomEvent(FORCE_RELOGIN_EVENT));
@@ -39,7 +52,16 @@ export async function apiRequestErrorFromResponse(
   response: Response,
   status = response.status,
 ): Promise<ApiRequestError> {
-  const payload: unknown = await response.json().catch(() => null);
+  // Only JSON parsing can fall back to the safe HTTP-status copy. A failed or
+  // cancelled body read must keep its original identity, including custom
+  // AbortSignal reasons, without triggering browser identity recovery.
+  const text = await response.text();
+  let payload: unknown = null;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    // Malformed error bodies cannot provide public presentation authority.
+  }
   const detail =
     payload !== null &&
     typeof payload === "object" &&
@@ -152,18 +174,24 @@ export async function authFetch<T>(
     throw await apiRequestErrorFromResponse(response);
   }
 
-  // 处理空响应
-  // 注意：当响应体为空时返回 null，调用者应处理 T | null 的情况
-  // 对于必须返回非空值的场景，API 应确保返回空对象 {} 而不是空响应
-  const text = await response.text();
-  if (!text) {
+  // Only HTTP contracts that prohibit response content may omit JSON. Keep
+  // their existing null result; an empty ordinary success could be truncation.
+  if (
+    response.status === 204 ||
+    response.status === 205 ||
+    restOptions.method?.toUpperCase() === "HEAD"
+  ) {
     return null as T;
   }
 
+  // Read outside the parse catch so transport failures and AbortError retain
+  // their original identity. Neither those failures nor malformed JSON permit
+  // replay: the server may already have committed a mutation.
+  const text = await response.text();
   try {
     return JSON.parse(text) as T;
   } catch {
-    console.warn("[authFetch] Failed to parse response as JSON");
-    return null as T;
+    // Never retain the parser's message, raw body, URL, or private diagnostics.
+    throw new ApiProtocolError(response.status);
   }
 }

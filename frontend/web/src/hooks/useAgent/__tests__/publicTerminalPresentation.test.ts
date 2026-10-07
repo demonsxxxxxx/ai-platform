@@ -73,6 +73,28 @@ test("live and replay projection use every fixed safe public terminal presentati
       /private token|runtime|secret\.log/i,
       detailCode,
     );
+    const replayed = reconstructMessagesFromEvents(
+      [{
+        id: `event-${detailCode}`,
+        event_type: "final_detail",
+        run_id: `run-${detailCode}`,
+        timestamp: "2026-10-07T00:00:00.000Z",
+        data: {
+          run_id: `run-${detailCode}`,
+          projection_version: "ai-platform.chat-public-projection.v1",
+          detail_kind: definition.detailKind,
+          detail_code: detailCode,
+          message: "private token at C:\\runtime\\secret.log",
+        },
+      } satisfies HistoryEvent],
+      new Set<string>(),
+      { activeSubagentStack: [] },
+    );
+    const replayedStatus = replayed
+      .flatMap((message) => message.parts ?? [])
+      .find((part) => part.type === "run_status");
+    assert.equal(replayedStatus?.message, definition.defaultMessage, detailCode);
+    assert.doesNotMatch(JSON.stringify(replayed), /private token|runtime|secret\.log/i);
   }
 
   const fallback = processMessageEvent(
