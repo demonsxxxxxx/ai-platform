@@ -7,12 +7,19 @@ import zlib
 
 import pytest
 
+from app.skills.application import skill_markdown
+from app.skills.infrastructure.skill_markdown_yaml import load_skill_markdown_metadata
 from app.skills import packages as skill_packages
 from app.skills.packages import (
     build_skill_package_contract,
     parse_skill_package_zip,
     validate_skill_package_contract,
 )
+
+
+@pytest.fixture(autouse=True)
+def configured_skill_markdown_loader(monkeypatch):
+    monkeypatch.setattr(skill_markdown, "_yaml_metadata_loader", load_skill_markdown_metadata)
 
 
 def package_zip(files: dict[str, str | bytes]) -> bytes:

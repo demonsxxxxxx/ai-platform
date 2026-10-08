@@ -109,6 +109,12 @@ expose concrete infrastructure adapters.
 | `execution` | queue/worker orchestration, Harness adapter ports, model/executor selection, admitted capability execution | profile/Skill authorization, durable run authority, Sandbox lifecycle |
 | `sandbox` | Sandbox Runtime lifecycle, attempt binding, callback-batch receipt, provider port, staging/recovery fences | provider SDK state as business truth, run admission |
 
+Skill `SKILL.md` front matter is parsed through `skills.application` using a
+YAML loader in `skills.infrastructure`, wired by `bootstrap.skills`. The existing
+`skills.registry` retains built-in filesystem discovery and content hashing;
+upload parsing calls the Skills API rather than treating the registry as a
+metadata-parser owner.
+
 Admin and Workbench views are projections of the owning contexts. They MUST NOT
 become a second write authority or a generic `admin` domain. Compatible-endpoint
 connection revisions, the shared model catalog, model-selection policy, and the

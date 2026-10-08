@@ -4,7 +4,9 @@ import os
 from pathlib import Path
 from typing import Any
 
-import yaml
+from app.skills.application.skill_markdown import (
+    parse_skill_markdown_front_matter as _parse_skill_markdown_front_matter,
+)
 
 
 @dataclass(frozen=True)
@@ -15,26 +17,6 @@ class BuiltinSkill:
     version: str
     source: dict[str, Any]
     entry: dict[str, Any]
-
-
-def parse_skill_markdown_front_matter(content: str) -> dict[str, str]:
-    normalized = content.lstrip("\ufeff").replace("\r\n", "\n").replace("\r", "\n")
-    if not normalized.startswith("---\n") and normalized.strip() != "---":
-        return {}
-    parts = normalized.split("---", 2)
-    if len(parts) < 3:
-        return {}
-    try:
-        metadata = yaml.safe_load(parts[1])
-    except yaml.YAMLError as exc:
-        raise ValueError("skill_front_matter_invalid_yaml") from exc
-    if not isinstance(metadata, dict):
-        return {}
-    return {
-        key: value.strip()
-        for key, value in metadata.items()
-        if isinstance(key, str) and isinstance(value, str)
-    }
 
 
 def iter_skill_files(path: Path):
@@ -93,7 +75,7 @@ class BuiltinSkillRegistry:
             if not skill_md.is_file():
                 raise ValueError(f"missing SKILL.md for built-in skill: {skill_dir.name}")
             content = skill_md.read_text(encoding="utf-8")
-            metadata = parse_skill_markdown_front_matter(content)
+            metadata = _parse_skill_markdown_front_matter(content)
             name = metadata.get("name") or skill_dir.name
             description = metadata.get("description") or ""
             if name != skill_dir.name:

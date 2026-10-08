@@ -5,6 +5,8 @@ import zipfile
 import httpx
 import pytest
 
+from app.skills.application import skill_markdown
+from app.skills.infrastructure.skill_markdown_yaml import load_skill_markdown_metadata
 from app.skills.github_import import (
     GitHubImportError,
     discover_github_skill_packages,
@@ -12,6 +14,11 @@ from app.skills.github_import import (
     github_repo_archive_url,
 )
 from app.skills.packages import MAX_SKILL_PACKAGE_TOTAL_BYTES
+
+
+@pytest.fixture(autouse=True)
+def configured_skill_markdown_loader(monkeypatch):
+    monkeypatch.setattr(skill_markdown, "_yaml_metadata_loader", load_skill_markdown_metadata)
 
 
 def archive_zip(files: dict[str, str | bytes]) -> bytes:

@@ -4,6 +4,10 @@ import os
 import subprocess
 import sys
 
+import pytest
+
+from app.skills.application import skill_markdown
+from app.skills.infrastructure.skill_markdown_yaml import load_skill_markdown_metadata
 from app.skills.release_readiness import (
     build_skill_release_readiness,
     build_skill_version_release_review,
@@ -12,6 +16,11 @@ from app.skills.release_readiness import (
     render_skill_release_readiness_markdown,
 )
 from app.skills.release_dashboard_readiness import build_skill_release_dashboard_readiness
+
+
+@pytest.fixture(autouse=True)
+def configured_skill_markdown_loader(monkeypatch):
+    monkeypatch.setattr(skill_markdown, "_yaml_metadata_loader", load_skill_markdown_metadata)
 
 
 _DASHBOARD_GAPS = [
