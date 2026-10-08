@@ -73,6 +73,40 @@ completion, read failure, and closing the started body iterator close both the
 response and its connection. Existing socket timeout budgets remain unchanged;
 this transport change does not introduce retries after streaming starts.
 
+For successful Anthropic `/v1/messages` SSE responses, the proxy emits private
+`model_wire_text` checkpoints scoped to Run, Attempt and one model call. Each
+checkpoint records the count of `text_delta` events, character length and
+SHA-256 of their concatenated UTF-8 text, never request data, raw response
+bytes, reasoning or response text. Checkpoints are emitted during streaming,
+so interrupted Runs retain partial evidence. A final record marks whether the
+response iterator finished; a missing final record does not prove completion.
+These logs are not public Run events, SessionStore entries or terminal facts.
+
+Compare `model_wire_text` with the private `executor_sdk_text_checkpoint`
+Run event for the same Run and Attempt: its `events`, `chars` and SHA-256
+cover the concatenated, framed text deltas delivered by Claude SDK, before
+answer reconciliation and public projection. The Sandbox attaches the first available checkpoint to an authorized callback
+batch, then checkpoints when the count at least doubles (starting at 128)
+and at the final `message.completed` or `model.completed` batch when present.
+Coalescing can shift the exact delta count of a checkpoint. The API validates a fixed numeric/digest-only payload and persists it under
+the existing callback receipt, with `visible_to_user=false`; it does not
+project it to public v4 events or SSE. An unacknowledged batch, cancellation,
+missing completion, disabled stream projection, or the diagnostic size limit
+can leave only partial evidence. SDK callbacks and model logs must be queried
+with administrative access; neither records raw text.
+
+For a single model call, compare the same-character-length prefix of the model
+text stream, SDK digest and ordered public `message.delta` text (whose contents
+may have been sanitized or coalesced). Matching model and SDK digests show the
+model text reached the SDK unchanged; a mismatch localizes a difference to the
+proxy-to-SDK path. A mismatch between SDK and public text implicates SDK answer
+reconciliation or platform projection, not necessarily the SDK package alone.
+Compare only verified common prefixes; multiple model calls, distinct source
+identities and terminal supplements need call/turn correlation before
+attributing a difference. Other provider paths and non-SSE responses have no
+model-side evidence. Historical Runs predating these checkpoints cannot be
+retroactively attributed.
+
 Model capacities are frozen into Run admission and ExecutionSpec v2. For Claude,
 the input capacity configures the SDK-owned automatic-compaction window; the
 model proxy does not recount `/v1/messages` requests or enforce a separate input

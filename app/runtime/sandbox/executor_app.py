@@ -56,7 +56,10 @@ from app.required_tool_contract import (
     canonical_tool_call_id,
     declaration_from_payload,
 )
-from app.runtime.kernel_contracts import AgentEvent
+from app.runtime.kernel_contracts import (
+    CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE,
+    AgentEvent,
+)
 from app.runtime.sandbox.context_retrieval_client import PlatformContextRetrievalClient
 from app.sandbox.api import (
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
@@ -1466,6 +1469,12 @@ async def _default_executor_runner(
     capability_evidence_error = {"code": ""}
     capability_evidence_lock = asyncio.Lock()
     v4_answer_stream_active = False
+    sdk_text_checkpoint: dict[str, object] | None = None
+    sdk_text_recorded_events = 0
+
+    def on_sdk_text(checkpoint: dict[str, object]) -> None:
+        nonlocal sdk_text_checkpoint
+        sdk_text_checkpoint = checkpoint
 
     def reject_capability_evidence(error_code: str) -> bool:
         capability_evidence_error["code"] = capability_evidence_error["code"] or error_code
@@ -1484,7 +1493,7 @@ async def _default_executor_runner(
         await emit_event(AgentEvent(type="assistant_delta", message=delta, payload={"delta": delta}))
 
     async def on_agent_event(candidates: tuple[Any, ...]) -> bool:
-        nonlocal v4_answer_stream_active
+        nonlocal v4_answer_stream_active, sdk_text_recorded_events
         if capability_evidence_error["code"] or not candidates:
             return False
         try:
@@ -1494,6 +1503,25 @@ async def _default_executor_runner(
         if not events:
             reject_capability_evidence("agent_event_callback_not_acknowledged")
             return False
+        checkpoint = sdk_text_checkpoint
+        if checkpoint is not None and len(events) < 100:
+            count = checkpoint.get("events")
+            finished = any(event.type in {"message.completed", "model.completed"} for event in events)
+            if (
+                type(count) is int
+                and count != sdk_text_recorded_events
+                and (
+                    sdk_text_recorded_events == 0
+                    or count >= max(128, 2 * sdk_text_recorded_events)
+                    or finished
+                )
+            ):
+                events.append(AgentEvent(
+                    type=CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE,
+                    message="",
+                    admin_only=True,
+                    payload=checkpoint,
+                ))
         callback_event = ExecutorCallbackEvent(
             session_id=request.session_id,
             run_id=request.run_id,
@@ -1516,6 +1544,8 @@ async def _default_executor_runner(
             return False
         if any(event.type == "message.delta" for event in events):
             v4_answer_stream_active = True
+        if events[-1].type == CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE:
+            sdk_text_recorded_events = events[-1].payload["events"]
         return True
 
     async def on_skill_use(skill_name: str, metadata: dict[str, Any]) -> None:
@@ -1820,6 +1850,7 @@ async def _default_executor_runner(
             "context_retrieval": context_retrieval,
             "context_retrieval_identity": context_retrieval_identity,
             "on_text": on_text,
+            "on_sdk_text": on_sdk_text,
             "on_agent_event": on_agent_event,
             "run_id": request.run_id,
             "attempt_id": request.attempt_id,

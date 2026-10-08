@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import sys
 import types
@@ -6705,6 +6706,7 @@ async def test_sandbox_streams_two_safe_raw_text_deltas_before_result_without_te
 ):
     captured = {}
     deltas = []
+    checkpoints = []
     result_gate = []
     streamed_chunks = ("Short safe ", "public answer.")
     streamed_text = "".join(streamed_chunks)
@@ -6755,6 +6757,7 @@ async def test_sandbox_streams_two_safe_raw_text_deltas_before_result_without_te
         skill_id="general-chat",
         execution_policy="sandbox_brokered",
         on_text=deltas.append,
+        on_sdk_text=checkpoints.append,
     )
 
     assert captured["include_partial_messages"] is True
@@ -6762,6 +6765,11 @@ async def test_sandbox_streams_two_safe_raw_text_deltas_before_result_without_te
     assert streamed_text.startswith("".join(result_gate))
     assert "".join(deltas) == streamed_text
     assert result.message == streamed_text
+    assert checkpoints == [
+        {"events": 1, "chars": len(streamed_chunks[0]), "sha256": hashlib.sha256(streamed_chunks[0].encode()).hexdigest()},
+        {"events": 2, "chars": len(streamed_text), "sha256": hashlib.sha256(streamed_text.encode()).hexdigest()},
+    ]
+    assert streamed_text not in str(checkpoints)
 
 
 @pytest.mark.asyncio

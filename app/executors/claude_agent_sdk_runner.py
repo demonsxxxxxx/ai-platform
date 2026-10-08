@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -1634,6 +1635,7 @@ async def run_claude_agent_sdk(
     skills: list[str] | None = None,
     client_fn: Callable[..., Any] | None = None,
     on_text: Callable[[str], Awaitable[None]] | None = None,
+    on_sdk_text: Callable[[dict[str, object]], None] | None = None,
     on_skill_use: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     on_capability_evidence: Callable[[dict[str, str]], Awaitable[bool]] | None = None,
     on_tool_lifecycle: Callable[[dict[str, str]], Awaitable[bool]] | None = None,
@@ -3555,6 +3557,9 @@ async def run_claude_agent_sdk(
         nonlocal last_public_stage, terminal_result_message, last_assistant_error
         nonlocal last_assistant_error_text
         answer_timeline = AssistantAnswerTimeline()
+        sdk_text_digest = hashlib.sha256()
+        sdk_text_chars = sdk_text_events = 0
+        sdk_text_observing = on_sdk_text is not None
         terminal_answer_empty = False
         stream_projection_failed = False
         assistant_observation_scope = 0
@@ -3670,6 +3675,25 @@ async def run_claude_agent_sdk(
                                 )
                                 continue
                         for fragment in fragments:
+                            if sdk_text_observing:
+                                try:
+                                    sdk_text_digest.update(fragment.encode("utf-8"))
+                                except UnicodeEncodeError:
+                                    sdk_text_observing = False
+                                else:
+                                    sdk_text_chars += len(fragment)
+                                    sdk_text_events += 1
+                                    if sdk_text_events <= 10_000_000 and sdk_text_chars <= 100_000_000:
+                                        try:
+                                            on_sdk_text({
+                                                "events": sdk_text_events,
+                                                "chars": sdk_text_chars,
+                                                "sha256": sdk_text_digest.hexdigest(),
+                                            })
+                                        except Exception:  # Diagnostics cannot interrupt SDK output.
+                                            pass
+                                    else:
+                                        sdk_text_observing = False
                             last_public_stage = "message"
                             delta_text = answer_timeline.accept_delta(
                                 fragment,

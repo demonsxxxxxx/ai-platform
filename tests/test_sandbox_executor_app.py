@@ -3091,6 +3091,101 @@ def test_executor_execute_uses_claude_sdk_runner_when_enabled(tmp_path, monkeypa
     assert not any("tool-permission" in str(callback) for callback in callbacks)
 
 
+def test_executor_sdk_text_checkpoint_shares_answer_callback_and_finishes_at_completion(
+    tmp_path, monkeypatch
+):
+    from app.runtime.kernel_contracts import CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE
+
+    callbacks = []
+    raw = "x" * 129
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        digest = hashlib.sha256()
+        for index, char in enumerate(raw, 1):
+            digest.update(char.encode())
+            kwargs["on_sdk_text"]({
+                "events": index, "chars": index, "sha256": digest.hexdigest(),
+            })
+            event_type = "message.completed" if index == len(raw) else "message.delta"
+            candidate = SimpleNamespace(as_agent_event_fields=lambda kind=event_type, idx=index: {
+                "type": kind, "payload": {"delta": "x"} if kind == "message.delta" else {},
+                "event_id": f"event-{idx}", "run_id": "run-a", "message_id": "msg-a",
+            })
+            assert await kwargs["on_agent_event"]((candidate,)) is True
+        return sdk_result(raw)
+
+    def callback_sender(url, payload, token):
+        callbacks.append(payload)
+        return callback_ack(payload)
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr(
+        "app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk
+    )
+    client = create_test_client(tmp_path, callback_sender=callback_sender)
+    response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed", response.json().get("error_code")
+    checkpoints = [
+        (callback, event) for callback in callbacks
+        for event in callback.get("events", [])
+        if event["type"] == CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE
+    ]
+    assert [event["payload"]["events"] for _, event in checkpoints] == [1, 128, 129]
+    assert all(callback["batch_id"] for callback, _ in checkpoints)
+    assert all(event["admin_only"] and event["message"] == "" for _, event in checkpoints)
+    assert checkpoints[-1][1]["payload"]["sha256"] == hashlib.sha256(raw.encode()).hexdigest()
+    assert all(len(callback.get("events", [])) <= 100 for callback in callbacks)
+
+
+def test_executor_sdk_text_checkpoint_survives_coalesced_partial_callbacks(
+    tmp_path, monkeypatch
+):
+    from app.runtime.kernel_contracts import CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE
+
+    callbacks = []
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        for count in (130, 270):
+            kwargs["on_sdk_text"]({
+                "events": count, "chars": count,
+                "sha256": hashlib.sha256(b"x" * count).hexdigest(),
+            })
+            candidate = SimpleNamespace(as_agent_event_fields=lambda idx=count: {
+                "type": "message.delta", "payload": {"delta": "x" * (130 if idx == 130 else 140)},
+                "event_id": f"event-{idx}", "run_id": "run-a", "message_id": "msg-a",
+            })
+            assert await kwargs["on_agent_event"]((candidate,)) is True
+        return sdk_result("x" * 270)
+
+    def callback_sender(url, payload, token):
+        callbacks.append(payload)
+        return callback_ack(payload)
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr(
+        "app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk
+    )
+    client = create_test_client(tmp_path, callback_sender=callback_sender)
+    response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed"
+    checkpoints = [
+        event["payload"]["events"] for callback in callbacks
+        for event in callback.get("events", [])
+        if event["type"] == CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE
+    ]
+    assert checkpoints == [130, 270]
+
+
 @pytest.mark.asyncio
 async def test_executor_uses_sdk_for_multiskill_request_with_qa_skill_first(
     monkeypatch,

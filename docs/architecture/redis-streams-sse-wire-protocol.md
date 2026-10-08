@@ -73,7 +73,15 @@ after the PostgreSQL commit and direct Redis batch append. Redis failure leaves
 the committed facts intact and returns a callback transport error. The existing
 executor buffer owns exact callback retry; no publication queue or terminal
 wakeup is involved. Callback transport fields and engine SDK objects are never
-browser wire fields.
+browser wire fields. The additive, admin-only
+`claude_sdk_text_checkpoint` callback item carries only cumulative text-delta
+count, character count and SHA-256 of UTF-8 SDK text. It requires a batch ID,
+shares the Run/Attempt/lease receipt with adjacent answer events, and persists
+as a private `executor_sdk_text_checkpoint` Run event; it creates no v4 row or
+ordinary-user projection. Older API images reject this newly whitelisted
+callback type, so roll out the API before the updated Sandbox executor. No
+prior event or selector is replaced; existing callback replay and public SSE
+schemas remain unchanged.
 
 Streaming body contract is explicit: each public `message.delta` frame is at
 most 8,192 code points, and this per-frame bound never becomes a cumulative

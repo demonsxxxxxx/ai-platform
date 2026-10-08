@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
+import logging
 import socket
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -18,6 +20,7 @@ from app.execution.application.model_control_plane import (
     ModelControlPlaneService,
     _runtime_proxy_headers,
 )
+from app.execution.application.model_response_evidence import observe_anthropic_text
 from app.execution.domain.model_catalog import normalize_model_token_limits, platform_model_id
 from app.execution.infrastructure import model_upstream as client
 from app.execution.infrastructure.model_management import (
@@ -1026,6 +1029,105 @@ def test_runtime_proxy_rejects_redirect_without_following(monkeypatch) -> None:
             path="/v1/chat/completions",
             provider="openai",
         )
+
+
+def test_model_proxy_observes_text_without_rewriting_or_logging_content(caplog) -> None:
+    answer = "请处理文件" * 130
+    text_event = (
+        b"data: "
+        + json.dumps({"type": "content_block_delta", "delta": {"type": "text_delta", "text": answer}}, ensure_ascii=False).encode()
+        + b"\r\n\r\n"
+    )
+    thinking_event = b'data: {"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"private-thought"}}\n\n'
+    wire = b": heartbeat\n\n" + thinking_event + text_event
+    fragments = [wire[:47], wire[47:102], wire[102:115], wire[115:]]
+    with caplog.at_level(logging.WARNING):
+        assert b"".join(observe_anthropic_text(fragments, run_id="run-test", attempt_id="attempt-test")) == wire
+    final = [record.message for record in caplog.records if "model_wire_text" in record.message][-1]
+    assert "events=1" in final and f"chars={len(answer)}" in final
+    assert hashlib.sha256(answer.encode()).hexdigest() in final
+    assert answer not in caplog.text and "private-thought" not in caplog.text
+
+    caplog.clear()
+    interrupted = observe_anthropic_text([text_event, text_event], run_id="run-test", attempt_id="attempt-test")
+    with caplog.at_level(logging.WARNING):
+        assert next(interrupted) == text_event
+        interrupted.close()
+    assert "coverage=partial_stream_end" in caplog.records[-1].message
+    assert "events=1" in caplog.records[-1].message
+
+    caplog.clear()
+    oversized = b"data: " + b"x" * (64 * 1024 + 1) + b"\n\n" + text_event
+    with caplog.at_level(logging.WARNING):
+        assert b"".join(observe_anthropic_text([oversized], run_id="run-test", attempt_id="attempt-test")) == oversized
+    assert "coverage=partial_oversized_event" in caplog.records[-1].message
+    assert "events=0" in caplog.records[-1].message
+
+
+def test_model_proxy_invalid_unicode_evidence_never_interrupts_stream(caplog) -> None:
+    malformed = b'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"\\ud800"}}\n\n'
+    later = b'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"after"}}\n\n'
+    with caplog.at_level(logging.WARNING):
+        assert b"".join(observe_anthropic_text([malformed + later], run_id="run-test", attempt_id="attempt-test")) == malformed + later
+    assert "coverage=partial_invalid_text" in caplog.records[-1].message
+    assert "events=0" in caplog.records[-1].message
+
+
+def test_model_proxy_evidence_logger_failure_does_not_interrupt_stream(monkeypatch) -> None:
+    from app.execution.application import model_response_evidence
+
+    def broken_logger(*_args):
+        raise RuntimeError("log_sink_failed")
+
+    monkeypatch.setattr(model_response_evidence._logger, "warning", broken_logger)
+    wire = b'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hello"}}\n\n'
+    assert b"".join(observe_anthropic_text([wire], run_id="run-test", attempt_id="attempt-test")) == wire
+
+
+@pytest.mark.asyncio
+async def test_model_proxy_evidence_only_wraps_authorized_anthropic_sse(caplog) -> None:
+    @asynccontextmanager
+    async def transaction():
+        yield object()
+
+    async def connection(_conn, **_kwargs):
+        return SimpleNamespace(
+            base_url="https://gateway.example", api_key="synthetic-key",
+            max_input_tokens=32000, max_output_tokens=2048, conversation_mode="empty_start",
+        )
+
+    wire = b'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hello"}}\n\n'
+    upstream = SimpleNamespace(open_stream=lambda **_kwargs: SimpleNamespace(
+        status=200, content_type="text/event-stream; charset=utf-8", body=lambda: iter([wire])
+    ))
+    service = ModelControlPlaneService(
+        transaction_factory=transaction,
+        settings_provider=lambda: SimpleNamespace(
+            model_proxy_internal_token="synthetic-internal",
+            model_connection_encryption_key="synthetic-encryption",
+            model_connection_allowed_internal_hosts="",
+        ),
+        repository=SimpleNamespace(run_connection=connection), security=SimpleNamespace(),
+        upstream=upstream, attempt_capability_verifier=lambda **_kwargs: True,
+    )
+    fields = dict(
+        body=b'{"model":"model-a","max_tokens":512,"messages":[]}',
+        run_id="run-a", attempt_id="attempt-a", internal_token="synthetic-internal",
+        model_proxy_capability="synthetic-capability", query="beta=true",
+        headers={"anthropic-version": "2023-06-01"},
+    )
+    with caplog.at_level(logging.WARNING):
+        response = await service.proxy(provider="anthropic", upstream_path="v1/messages", **fields)
+        assert b"".join(response.body) == wire
+    assert "model_wire_text" in caplog.text
+    caplog.clear()
+    upstream.open_stream = lambda **_kwargs: SimpleNamespace(
+        status=200, content_type="application/json", body=lambda: iter([wire])
+    )
+    with caplog.at_level(logging.WARNING):
+        response = await service.proxy(provider="anthropic", upstream_path="v1/messages", **fields)
+        assert b"".join(response.body) == wire
+    assert "model_wire_text" not in caplog.text
 
 
 @pytest.mark.asyncio
