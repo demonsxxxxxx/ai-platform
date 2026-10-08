@@ -281,7 +281,7 @@ def validate_workspace_storage(config: dict, docker: list[str], migrate_legacy: 
             raise DeploymentError("requested legacy workspace migration source is unavailable")
         return True
     if source_node is not None:
-        raise DeploymentError("legacy workspace data exists; back it up and use --migrate-legacy-workspaces")
+        raise DeploymentError("legacy workspace data exists; use --migrate-legacy-workspaces")
     return False
 
 

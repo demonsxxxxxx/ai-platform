@@ -673,8 +673,9 @@ def test_legacy_data_requires_explicit_migration_and_is_retained(harness, monkey
     legacy.mkdir()
     sentinel = legacy / "existing-data"
     sentinel.write_text("preserved")
-    with pytest.raises(entry.DeploymentError, match="migrate-legacy-workspaces"):
+    with pytest.raises(entry.DeploymentError, match="migrate-legacy-workspaces") as exc:
         harness["deploy"]()
+    assert "back it up" not in str(exc.value)
     assert not any(name == "admission stop" for name, _ in harness["calls"])
     harness["deploy"](migrate_legacy=True)
     assert sentinel.read_text() == "preserved"
