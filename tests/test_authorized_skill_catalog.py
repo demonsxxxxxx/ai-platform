@@ -1167,7 +1167,7 @@ async def test_every_dispatch_shape_denies_unavailable_current_authority_before_
     monkeypatch.setattr("app.skills.infrastructure.postgres.validate_replay_skill_manifests", forbidden)
     monkeypatch.setattr("app.skills.infrastructure.resolution_postgres.resolve_skill_identity", forbidden)
     monkeypatch.setattr("app.skills.catalog.resolve_authorized_skill_catalog", forbidden)
-    monkeypatch.setattr("app.worker.materialize_queued_worker_context_snapshot", forbidden)
+    monkeypatch.setattr("app.bootstrap.worker_dispatch_binding.materialize_queued_worker_context_snapshot", forbidden)
     monkeypatch.setattr("app.bootstrap.worker_dispatch_binding.create_worker_runtime_sandbox_lease", forbidden)
 
     outcome = await process_run_payload(

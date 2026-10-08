@@ -1,6 +1,12 @@
 """Bind the Runs Worker dispatch transaction to Context, MCP and Execution."""
 
-from typing import Any, Callable
+from typing import Any
+
+from app.bootstrap.context import (
+    materialize_queued_worker_context_snapshot,
+    worker_context_snapshot_ref_from_row,
+)
+from app.bootstrap.worker_early_failure import build_worker_early_failure_service
 
 from app.context_builder import executor_context_pack_from_snapshot
 from app.executors.base import project_execution_spec_to_run_payload
@@ -8,6 +14,7 @@ from app.execution.api import (
     create_worker_runtime_sandbox_lease,
     release_worker_runtime_sandbox_lease,
 )
+from app.execution_boundary import ordinary_worker_run_uses_runtime_sandbox
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 from app.mcp import api as mcp_api
 from app.platform.postgres import errors as platform_errors
@@ -58,21 +65,14 @@ async def release_worker_runtime_lease(conn: Any, lease: Any, *, reason: str) ->
 
 def build_worker_dispatch_binding_service(
     transaction_factory: Any,
-    *,
-    context_projector: Callable[..., dict[str, Any]],
-    materialize_context: Callable[..., Any],
-    compile_spec: Callable[..., Any],
-    uses_runtime_sandbox: Callable[..., bool],
-    create_runtime_lease: Callable[..., Any],
-    fail_pre_dispatch: Callable[..., Any],
 ) -> runs_api.WorkerDispatchBindingService:
     return runs_api.WorkerDispatchBindingService(
         transaction_factory=transaction_factory,
         dispatch_fence=runs_api.worker_dispatch_fence,
-        compile_spec=compile_spec,
+        compile_spec=runs_api.compile_execution_spec_for_dispatch,
         context=runs_api.WorkerDispatchContextPorts(
-            materialize=materialize_context,
-            project=context_projector,
+            materialize=materialize_queued_worker_context_snapshot,
+            project=worker_context_snapshot_ref_from_row,
             execution_pack=executor_context_pack_from_snapshot,
         ),
         execution=runs_api.WorkerDispatchExecutionPorts(
@@ -81,9 +81,9 @@ def build_worker_dispatch_binding_service(
             mcp_runtime_error=mcp_api.McpRuntimeContextError,
             append_user_event=_append_user_event,
             runtime_evidence=_worker_runtime_evidence,
-            uses_runtime_sandbox=uses_runtime_sandbox,
-            create_runtime_lease=create_runtime_lease,
+            uses_runtime_sandbox=ordinary_worker_run_uses_runtime_sandbox,
+            create_runtime_lease=create_worker_runtime_lease,
             missing_attempt_error=platform_errors.RepositoryConflictError,
         ),
-        fail_pre_dispatch=fail_pre_dispatch,
+        fail_pre_dispatch=build_worker_early_failure_service().pre_dispatch_error,
     )

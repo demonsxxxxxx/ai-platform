@@ -2,7 +2,31 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol, Self
+
+
+class WorkerDispatchPayload(Protocol):
+    """Validated queue data shared by Runs admission, binding, and commit.
+
+    The queue transport supplies its validated model. This contract describes
+    the data used by these operations without depending on that legacy model.
+    """
+
+    tenant_id: str
+    workspace_id: str
+    user_id: str
+    session_id: str
+    run_id: str
+    agent_id: str
+    skill_id: str | None
+    executor_type: str
+    context_snapshot_id: str | None
+    file_ids: list[str]
+    input: dict[str, Any]
+    skill_manifests: list[dict[str, Any]]
+    release_decision: dict[str, Any]
+
+    def model_copy(self, *, update: dict[str, Any]) -> Self: ...
 
 
 class InvalidLeasedQueueEnvelope(ValueError):

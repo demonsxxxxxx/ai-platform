@@ -9,26 +9,19 @@ from app.bootstrap.worker_attempt_lifecycle import (
 )
 from app.bootstrap.worker_dispatch_binding import (
     build_worker_dispatch_binding_service,
-    create_worker_runtime_lease,
     release_worker_runtime_lease,
 )
 from app.bootstrap.worker_dispatch_admission import (
     build_worker_dispatch_admission_service,
     resolve_worker_dispatch_principal,
 )
-from app.bootstrap.worker_early_failure import build_worker_early_failure_service
 from app.bootstrap import worker_execution as worker_execution_bootstrap
 from app.bootstrap.worker_execution_terminal import build_worker_execution_terminal_service
-from app.bootstrap.worker_locked_authorization import build_worker_locked_authorization
 from app.bootstrap.worker_result_commit import (
     build_worker_artifact_records,
     build_worker_result_commit_service,
 )
 from app.agent_apps.capability_state import exact_invoked_skills
-from app.bootstrap.context import (
-    materialize_queued_worker_context_snapshot,
-    worker_context_snapshot_ref_from_row,
-)
 from app.control_plane_contracts import standard_trace_id
 from app.db import transaction
 from app.execution.api import (
@@ -39,12 +32,10 @@ from app.execution.api import (
     enforce_required_artifact_types,
     project_worker_terminal_result,
     normalize_sandbox_reported_failure,
-    predispatch_failure_result as _pre_dispatch_failure_result,
     restored_executor_reconciliation_queue_payload as _restored_executor_reconciliation_queue_payload,
     time,
     WorkerRuntimeSandboxLease as _WorkerRuntimeSandboxLease,
 )
-from app.execution_boundary import ordinary_worker_run_uses_runtime_sandbox as _ordinary_run_uses_runtime_sandbox
 from app.executors.base import (
     ExecutorDispatchAccepted,
     ExecutorResult,
@@ -61,9 +52,7 @@ from app.runs.api import (
     InvalidLeasedQueueEnvelope,
     LeasedQueueEnvelope,
     parse_leased_queue_envelope as _parse_leased_queue_envelope,
-    compile_execution_spec_for_dispatch,
 )
-from app.settings import get_settings
 from app.streaming.api import (
     WorkerV4Capabilities,
     admit_v4_stream,
@@ -176,11 +165,7 @@ async def process_run_payload(
             transaction_factory,
             run_attempt_lifecycle=run_attempt_lifecycle,
             capabilities=v4_capabilities,
-            authorize_locked_candidate=build_worker_locked_authorization(
-                settings_provider=get_settings,
-            ).authorize,
             executor_resolution_error=resolve_executor_error,
-            predispatch_failure_result=_pre_dispatch_failure_result,
         ).admit(
             payload=payload, run_identity=run_identity, trace_id=trace_id,
             attempt_id=attempt_id, attempt_authority=attempt_lifecycle,
@@ -208,12 +193,6 @@ async def process_run_payload(
             raise RuntimeError("worker_capability_authorization_missing")
         binding = await build_worker_dispatch_binding_service(
             transaction_factory,
-            context_projector=worker_context_snapshot_ref_from_row,
-            materialize_context=materialize_queued_worker_context_snapshot,
-            compile_spec=compile_execution_spec_for_dispatch,
-            uses_runtime_sandbox=_ordinary_run_uses_runtime_sandbox,
-            create_runtime_lease=create_worker_runtime_lease,
-            fail_pre_dispatch=build_worker_early_failure_service().pre_dispatch_error,
         ).bind(
             payload=payload, run_identity=run_identity, locked_run=locked,
             trace_id=trace_id, attempt_id=attempt_id,

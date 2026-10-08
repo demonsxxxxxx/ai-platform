@@ -84,6 +84,7 @@ from app.runs.application.worker_locked_authorization import (
     WorkerLockedAuthorizationService as WorkerLockedAuthorizationService,
 )
 from app.runs.application.worker_queue_envelope import (
+    WorkerDispatchPayload as WorkerDispatchPayload,
     InvalidLeasedQueueEnvelope as InvalidLeasedQueueEnvelope,
     LeasedQueueEnvelope as LeasedQueueEnvelope,
     parse_leased_queue_envelope as parse_leased_queue_envelope,

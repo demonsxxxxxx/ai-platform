@@ -128,7 +128,11 @@ result commit, and exception/cancellation terminal transactions in
 `runs.application.worker_dispatch_admission`, `worker_locked_authorization`,
 `worker_locked_snapshot`, `worker_dispatch_binding`, `worker_result_commit`, and
 `worker_execution_terminal`. Bootstrap binds concrete repositories and other
-context services. Worker orchestrates dispatch and publishes committed events
+context services, including the complete dispatch admission and binding graphs.
+Worker supplies per-Run authority and transaction scope to those assembled
+operations; it does not choose Context projectors, specification compilers,
+placeholder lease writers, or early-failure collaborators.
+Worker orchestrates dispatch and publishes committed events
 only after each transaction exits; the former Worker capability/early-failure
 helpers and `Locked*Ports` callback bags have no compatibility owner.
 The four former `execution.api` imports `build_artifact_records`,

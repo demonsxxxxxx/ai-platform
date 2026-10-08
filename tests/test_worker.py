@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from app.bootstrap import worker_dispatch_binding
+
 import app.bootstrap.model_services as model_services
 from app.bootstrap.mcp import worker_payload_with_authorized_mcp_registration
 from app.bootstrap.agent_profiles import worker_profile_snapshot_matches_authority
@@ -2552,7 +2554,7 @@ def test_worker_sandbox_admission_delegates_executor_and_mcp_requirement(monkeyp
         }
     )
 
-    assert worker_module._ordinary_run_uses_runtime_sandbox(
+    assert worker_dispatch_binding.ordinary_worker_run_uses_runtime_sandbox(
         payload,
         context_snapshot={},
     ) is False
@@ -5064,7 +5066,7 @@ async def test_worker_requires_new_conversation_before_attempt_binding(monkeypat
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(
-        "app.worker.materialize_queued_worker_context_snapshot",
+        "app.bootstrap.worker_dispatch_binding.materialize_queued_worker_context_snapshot",
         missing_native_context,
     )
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)

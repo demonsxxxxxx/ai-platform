@@ -6,6 +6,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, AsyncContextManager, Protocol
 
+from app.runs.application.worker_capability_admission import WorkerCapabilityAuthorization
+from app.runs.application.worker_queue_envelope import WorkerDispatchPayload
 
 AsyncPort = Callable[..., Awaitable[Any]]
 
@@ -19,29 +21,29 @@ class WorkerAdmissionOutcome:
 
 @dataclass(frozen=True)
 class WorkerAuthorizedDispatchCandidate:
-    payload: Any
+    payload: WorkerDispatchPayload
     locked_run: dict[str, Any]
     run_identity: dict[str, str]
     trace_id: str
-    authorization: Any | None = None
+    authorization: WorkerCapabilityAuthorization | None = None
     outcome: WorkerAdmissionOutcome | None = None
     publish_after_commit: bool = False
 
 
 @dataclass(frozen=True)
 class WorkerDispatchAdmissionResult:
-    payload: Any
+    payload: WorkerDispatchPayload
     locked_run: dict[str, Any] | None
     run_identity: dict[str, str]
     trace_id: str
-    attempt_authority: Any
-    authorization: Any | None = None
+    attempt_authority: WorkerDispatchAttemptAuthority
+    authorization: WorkerCapabilityAuthorization | None = None
     outcome: WorkerAdmissionOutcome | None = None
     publish_after_commit: bool = False
 
 
 class WorkerDispatchAttemptAuthority(Protocol):
-    async def restore_reconciliation_authority(self, conn: Any) -> Any: ...
+    async def restore_reconciliation_authority(self, conn: Any) -> WorkerDispatchAttemptAuthority: ...
     async def is_cancel_requested(self, conn: Any) -> bool: ...
     async def cancel(
         self, conn: Any, *, capabilities: Any, result_json: dict[str, Any] | None = None,
@@ -77,7 +79,7 @@ class WorkerDispatchAdmissionService:
     async def admit(
         self,
         *,
-        payload: Any,
+        payload: WorkerDispatchPayload,
         run_identity: dict[str, str],
         trace_id: str,
         attempt_id: str,

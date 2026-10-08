@@ -1,8 +1,8 @@
 """Project one executor result before the authoritative terminal transaction."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, Protocol
 
 from app.execution.application.worker_answer_persistence import (
     assistant_artifact_metadata,
@@ -13,6 +13,17 @@ from app.execution.domain.worker_observability import (
     event_observability_kwargs,
     executor_observability,
 )
+
+
+class WorkerExecutorResult(Protocol):
+    """Executor facts consumed by the Runs-owned result transaction."""
+
+    status: str
+    result: dict[str, Any]
+    executor_payload: dict[str, Any]
+
+    @property
+    def artifacts(self) -> Sequence[object]: ...
 
 
 def enforce_worker_required_tool_completion(

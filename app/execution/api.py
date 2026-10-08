@@ -12,6 +12,7 @@ from app.execution.application.worker_skill_evidence import (
     skill_snapshot_from_result as skill_snapshot_from_result,
 )
 from app.execution.application.worker_terminal_projection import (
+    WorkerExecutorResult as WorkerExecutorResult,
     WorkerTerminalProjection as WorkerTerminalProjection,
     enforce_required_artifact_types as enforce_required_artifact_types,
     enforce_worker_required_tool_completion as enforce_worker_required_tool_completion,
@@ -51,6 +52,7 @@ from app.execution.application.executor_reconciliation import (
     with_locked_run_model_snapshot,
 )
 from app.execution.application.worker_attempt_lifecycle import (
+    WorkerBoundRunPayload,
     WorkerAttemptLifecycle,
     WorkerAttemptLifecyclePorts,
     WorkerExecutorReconciliation,
@@ -127,6 +129,8 @@ async def resolve_chat_model_selection(
     )
 
 __all__ = [
+    "WorkerExecutorResult",
+    "WorkerBoundRunPayload",
     "ClaudeAgentEventCandidate",
     "ClaudeSdkAgentEventAdapter",
     "AnswerPersistenceLimits",

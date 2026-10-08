@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
-from typing import Any, AsyncContextManager
+from typing import TYPE_CHECKING, Any, AsyncContextManager
+
+from app.runs.application.worker_queue_envelope import WorkerDispatchPayload
+
+if TYPE_CHECKING:
+    from app.execution.api import WorkerBoundRunPayload, WorkerRuntimeSandboxLease
 
 from app.runs.application.worker_dispatch_admission import WorkerAdmissionOutcome
 
@@ -30,9 +35,9 @@ class WorkerDispatchExecutionPorts:
 
 @dataclass(frozen=True)
 class WorkerDispatchBindingResult:
-    payload: Any
-    run_payload: Any | None = None
-    runtime_sandbox_lease: Any | None = None
+    payload: WorkerDispatchPayload
+    run_payload: WorkerBoundRunPayload | None = None
+    runtime_sandbox_lease: WorkerRuntimeSandboxLease | None = None
     outcome: WorkerAdmissionOutcome | None = None
     publish_after_commit: bool = False
 
