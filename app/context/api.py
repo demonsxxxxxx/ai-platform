@@ -15,6 +15,12 @@ from app.context.application.provider_sessions import (
     commit_provider_turn,
     execute_provider_session_callback,
 )
+from app.context.application.worker_attachment_projection import (
+    manifest_with_worker_attachment_metadata as manifest_with_worker_attachment_metadata,
+)
+from app.context.application.worker_snapshot_projection import (
+    project_worker_snapshot_ref as project_worker_snapshot_ref,
+)
 from app.context.application.worker_snapshot import (
     materialize_worker_context_snapshot as _materialize_worker_context_snapshot,
 )

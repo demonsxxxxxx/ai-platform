@@ -17,7 +17,8 @@ from app.runtime.sandbox.contracts import (
     StopResult,
     WorkspaceLease,
 )
-from app.runtime.sandbox.executor_client import SandboxExecutorClient, SandboxExecutorHttpError
+from app.runtime.sandbox.executor_client import SandboxExecutorClient
+from app.sandbox.api import SandboxExecutorHttpError
 from app.runtime.sandbox.readiness_evidence import ExecutorReadinessEvidence
 from app.executors.base import RunExecutionOwner
 from app.runtime.sandbox.runtime import SandboxRuntime, SandboxRuntimeCleanupError

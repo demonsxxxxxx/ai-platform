@@ -1,7 +1,30 @@
+from app.artifacts.api import (
+    build_artifact_records as build_artifact_records,
+    promote_artifact_reservations as promote_artifact_reservations,
+)
+from app.skills.api import (
+    PinnedSkillMismatch as PinnedSkillMismatch,
+    validate_pinned_skill_relative_path as validate_pinned_skill_relative_path,
+)
+from app.execution.application.worker_skill_evidence import (
+    native_used_skills_from_result as native_used_skills_from_result,
+    skill_manifests_for_persistence as skill_manifests_for_persistence,
+    skill_snapshot_from_result as skill_snapshot_from_result,
+)
+from app.execution.application.worker_terminal_projection import (
+    WorkerExecutorResult as WorkerExecutorResult,
+    WorkerTerminalProjection as WorkerTerminalProjection,
+    enforce_required_artifact_types as enforce_required_artifact_types,
+    enforce_worker_required_tool_completion as enforce_worker_required_tool_completion,
+    project_worker_terminal_result as project_worker_terminal_result,
+    worker_assistant_metadata as worker_assistant_metadata,
+)
+from app.execution.domain.worker_observability import (
+    event_observability_kwargs as event_observability_kwargs,
+    executor_observability as executor_observability,
+)
 from app.execution.application.artifact_persistence import (
     build_artifact_execution_owner,
-    build_artifact_records,
-    promote_artifact_reservations,
 )
 from app.execution.application.adapter_run import (
     WorkerRunCancelled,
@@ -9,8 +32,7 @@ from app.execution.application.adapter_run import (
     time,
 )
 from app.execution.application.pinned_skill_materialization import (
-    PinnedSkillMismatch as PinnedSkillMismatch,
-    validate_pinned_skill_relative_path as validate_pinned_skill_relative_path,
+    select_execution_skill_names as select_execution_skill_names,
 )
 from app.execution.application.skill_invocation_evidence import (
     SkillInvocationEvidenceBinder,
@@ -30,6 +52,7 @@ from app.execution.application.executor_reconciliation import (
     with_locked_run_model_snapshot,
 )
 from app.execution.application.worker_attempt_lifecycle import (
+    WorkerBoundRunPayload,
     WorkerAttemptLifecycle,
     WorkerAttemptLifecyclePorts,
     WorkerExecutorReconciliation,
@@ -40,7 +63,10 @@ from app.execution.application.worker_attempt_lifecycle import (
 from app.execution.application.worker_failure_diagnostics import (
     executor_exception_failure,
     normalized_runtime_diagnostics_payload,
+    normalize_sandbox_reported_failure,
+    sandbox_failure_prefers_cancelled,
     predispatch_failure_result,
+    public_executor_failure_message,
 )
 from app.execution.application.worker_runtime_sandbox_lease import (
     WorkerRuntimeSandboxLease as WorkerRuntimeSandboxLease,
@@ -104,6 +130,8 @@ async def resolve_chat_model_selection(
     )
 
 __all__ = [
+    "WorkerExecutorResult",
+    "WorkerBoundRunPayload",
     "ClaudeAgentEventCandidate",
     "ClaudeSdkAgentEventAdapter",
     "AnswerPersistenceLimits",
@@ -111,6 +139,7 @@ __all__ = [
     "assistant_artifact_metadata",
     "materialize_worker_answer",
     "sanitize_assistant_message",
+    "select_execution_skill_names",
     "reconciliation_agent_profile_binding_matches",
     "runtime_terminal_payload",
     "RunModelSelection",
@@ -132,7 +161,20 @@ __all__ = [
     "bind_worker_attempt_lifecycle",
     "fail_run_for_worker",
     "executor_exception_failure",
+    "executor_observability",
+    "event_observability_kwargs",
+    "native_used_skills_from_result",
+    "skill_manifests_for_persistence",
+    "skill_snapshot_from_result",
+    "WorkerTerminalProjection",
+    "enforce_required_artifact_types",
+    "enforce_worker_required_tool_completion",
+    "project_worker_terminal_result",
+    "worker_assistant_metadata",
     "normalized_runtime_diagnostics_payload",
+    "normalize_sandbox_reported_failure",
+    "sandbox_failure_prefers_cancelled",
+    "public_executor_failure_message",
     "restored_executor_reconciliation_queue_payload",
     "restored_sandbox_run_payload",
     "sandbox_reconciliation_payload",
