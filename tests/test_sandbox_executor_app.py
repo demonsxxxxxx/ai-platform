@@ -3433,6 +3433,8 @@ def test_executor_deadline_preserves_mcp_execution_uncertainty(
     payload = task_payload()
     payload["config"]["resource_limits"] = {"max_seconds": 0.1}
 
+    observed = []
+
     async def executor_runner(request, workspace_root, emit_event):
         lifecycles = [("started", "invoking")]
         if terminal_hook_seen:
@@ -3454,16 +3456,23 @@ def test_executor_deadline_preserves_mcp_execution_uncertainty(
                 ),
             ))
             assert accepted is True
+            observed.append(lifecycle)
         await asyncio.Event().wait()
+
+    async def callback_sender(_url, value, _token):
+        # This deadline case measures cancellation after the intended facts,
+        # not scheduling a synchronous fixture on the host thread pool.
+        return callback_ack(value)
 
     client = create_test_client(
         tmp_path,
-        callback_sender=lambda url, value, token: callback_ack(value),
+        callback_sender=callback_sender,
         executor_runner=executor_runner,
     )
 
     response = client.post("/v2/tasks", json=payload, headers=auth_headers())
 
+    assert observed == (["started", "completed"] if terminal_hook_seen else ["started"])
     assert response.status_code == 200
     assert response.json()["status"] == "failed"
     assert response.json()["error_code"] == expected_error
