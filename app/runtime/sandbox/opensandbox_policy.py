@@ -40,7 +40,6 @@ SANDBOX_SECURITY_PROFILE_LABEL = "ai-platform.security_profile"
 DIRECT_OPENSANDBOX_CALLBACK_SUBJECT = "api-callback-token-validation"
 DIRECT_OPENSANDBOX_DENIAL_SUBJECT = "ai-platform-sandbox-runtime"
 INTERNAL_TEST_OPENSANDBOX_PROFILE = "official-opensandbox-direct-v1"
-_GOVERNED_EGRESS_PROOF_LABEL = "ai-platform.governed_egress.proof"
 _GOVERNED_BRIDGE_PATHS = {
     "callback": "",
     "openai": "/openai/v1",
@@ -105,6 +104,34 @@ def governed_opensandbox_egress_bases(settings: Any) -> ExecutorEgressBases:
         openai_base_url=f"{proxy}/openai/v1",
         anthropic_base_url=f"{proxy}/anthropic",
     )
+
+
+def internal_test_executor_egress_bases(settings: Any, request: Any) -> ExecutorEgressBases:
+    callback = build_trusted_callback_target(
+        str(getattr(settings, "sandbox_callback_base_url", "") or ""),
+        extra_hosts=[str(getattr(settings, "sandbox_callback_host_gateway", "") or "")],
+    )
+    proxy = governed_opensandbox_egress_bases(settings).callback_base_url
+    return ExecutorEgressBases(
+        callback_base_url=callback.base_url,
+        openai_base_url=f"{proxy}/openai/{request.run_id}/{request.attempt_id}/v1",
+        anthropic_base_url=f"{proxy}/anthropic/{request.run_id}/{request.attempt_id}",
+    )
+
+
+def require_opensandbox_profile_settings(settings: Any) -> str:
+    profile = selected_opensandbox_profile(settings)
+    if not getattr(settings, "opensandbox_use_server_proxy", False):
+        raise OpenSandboxProfileConfigurationError("OpenSandbox server proxy is required")
+    required = ("opensandbox_api_key", "opensandbox_egress_proxy_url")
+    if profile == SANDBOX_SECURITY_PROFILE_GOVERNED:
+        required += ("opensandbox_base_url",)
+        if getattr(settings, "sandbox_egress_policy_enabled", False) is not True:
+            raise OpenSandboxProfileConfigurationError("OpenSandbox egress policy is required")
+    for name in required:
+        if not str(getattr(settings, name, "") or "").strip():
+            raise OpenSandboxProfileConfigurationError(f"OpenSandbox {name} is required")
+    return profile
 
 
 def validate_opensandbox_image_reference(
@@ -265,57 +292,128 @@ def opensandbox_status_from_info(info: Any) -> ContainerStatus | None:
     )
 
 
+_OPENSANDBOX_EXTERNAL_EGRESS_RUNTIME_IDENTITY = "runsc"
+
+
 def governed_opensandbox_lease_labels(
     request: Any,
-    capability: Any,
+    configuration: Mapping[str, str],
     *,
     executor_identity_labels: Mapping[str, str],
     skill_mount_labels: Mapping[str, str],
-    governed_proof_label: str | None,
+    proof_label: str | None = None,
 ) -> dict[str, str]:
-    """Build governed OpenSandbox metadata from the admitted capability."""
-
-    labels = runtime_scope_labels(request)
-    labels.update(
-        {
-            "ai-platform.provider_backend": "opensandbox",
-            "ai-platform.executor.requested_image": capability.requested_image,
-            "ai-platform.executor.requested_image_digest": capability.requested_image_digest,
-            "ai-platform.external_egress.profile_version": "v1",
-            "ai-platform.external_egress.profile_id": capability.profile_id,
-            "ai-platform.external_egress.endpoint_sha256": hashlib.sha256(
-                capability.endpoint.encode("utf-8")
-            ).hexdigest(),
-            "ai-platform.external_egress.runtime_identity": capability.runtime_identity,
-            "ai-platform.external_egress.network_mode": capability.network_mode,
-            "ai-platform.runtime_subject": capability.runtime_subject,
-            "ai-platform.external_egress.gateway_policy_subject": capability.gateway_policy_subject,
-            "ai-platform.external_egress.callback_boundary_subject": capability.callback_boundary_subject,
-            "ai-platform.external_egress.deny_audit_subject": capability.deny_audit_subject,
-            "ai-platform.external_egress.deny_counter_subject": capability.deny_counter_subject,
-            "ai-platform.external_egress.profile_requested_image": capability.requested_image,
-            "ai-platform.external_egress.profile_requested_image_digest": capability.requested_image_digest,
-            "ai-platform.external_egress.upstream_bridge_version": capability.upstream_bridge_version,
-            "ai-platform.external_egress.callback_base_sha256": hashlib.sha256(
-                capability.callback_base_url.encode("utf-8")
-            ).hexdigest(),
-            "ai-platform.external_egress.openai_base_sha256": hashlib.sha256(
-                capability.openai_base_url.encode("utf-8")
-            ).hexdigest(),
-            "ai-platform.external_egress.anthropic_base_sha256": hashlib.sha256(
-                capability.anthropic_base_url.encode("utf-8")
-            ).hexdigest(),
-            "ai-platform.external_egress.profile_expires_at": capability.expires_at,
-        }
-    )
-    if governed_proof_label is not None:
-        labels[_GOVERNED_EGRESS_PROOF_LABEL] = governed_proof_label
-    labels.update(executor_identity_labels)
-    labels.update(skill_mount_labels)
+    labels = {
+        **runtime_scope_labels(request),
+        "ai-platform.provider_backend": "opensandbox",
+        SANDBOX_SECURITY_PROFILE_LABEL: SANDBOX_SECURITY_PROFILE_GOVERNED,
+        "ai-platform.executor.requested_image": configuration["requested_image"],
+        "ai-platform.executor.requested_image_digest": configuration["requested_image_digest"],
+        "ai-platform.external_egress.profile_version": "v1",
+        "ai-platform.external_egress.profile_id": configuration["profile_id"],
+        "ai-platform.external_egress.endpoint_sha256": hashlib.sha256(configuration["endpoint"].encode()).hexdigest(),
+        "ai-platform.external_egress.runtime_identity": configuration["runtime_identity"],
+        "ai-platform.external_egress.network_mode": configuration["network_mode"],
+        "ai-platform.external_egress.gateway_policy_subject": configuration["gateway_policy_subject"],
+        "ai-platform.external_egress.callback_boundary_subject": configuration["callback_boundary_subject"],
+        "ai-platform.external_egress.deny_audit_subject": configuration["deny_audit_subject"],
+        "ai-platform.external_egress.deny_counter_subject": configuration["deny_counter_subject"],
+        "ai-platform.external_egress.executor_image": configuration["requested_image"],
+        "ai-platform.external_egress.executor_image_digest": configuration["requested_image_digest"],
+        "ai-platform.external_egress.upstream_bridge_version": configuration["upstream_bridge_version"],
+        "ai-platform.external_egress.callback_base_url_sha256": hashlib.sha256(configuration["callback_base_url"].encode()).hexdigest(),
+        "ai-platform.external_egress.openai_base_url_sha256": hashlib.sha256(configuration["openai_base_url"].encode()).hexdigest(),
+        "ai-platform.external_egress.anthropic_base_url_sha256": hashlib.sha256(configuration["anthropic_base_url"].encode()).hexdigest(),
+        "ai-platform.runtime_subject": configuration["runtime_subject"],
+        **executor_identity_labels,
+        **skill_mount_labels,
+    }
+    if proof_label is not None:
+        labels[GOVERNED_EGRESS_PROOF_LABEL] = proof_label
     return labels
 
 
-_OPENSANDBOX_EXTERNAL_EGRESS_RUNTIME_IDENTITY = "runsc"
+def internal_test_opensandbox_enabled(settings: Any) -> bool:
+    return (
+        getattr(settings, "sandbox_security_profile", "governed") == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST
+        and getattr(settings, "deployment_environment", "") == "test"
+        and str(getattr(settings, "sandbox_container_provider", "")).lower() == "opensandbox"
+        and getattr(settings, "opensandbox_expected_network_mode", "") == "bridge"
+        and getattr(settings, "sandbox_egress_policy_enabled", False) is False
+    )
+
+
+def selected_opensandbox_profile(settings: Any) -> str:
+    profile = getattr(settings, "sandbox_security_profile", SANDBOX_SECURITY_PROFILE_GOVERNED)
+    if profile == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST and internal_test_opensandbox_enabled(settings):
+        return profile
+    if profile == SANDBOX_SECURITY_PROFILE_GOVERNED:
+        if is_valid_opensandbox_network_name(
+            getattr(settings, "opensandbox_expected_network_mode", DIRECT_OPENSANDBOX_NETWORK_NAME)
+        ):
+            return profile
+        raise OpenSandboxProfileConfigurationError("OpenSandbox isolated network is required")
+    raise OpenSandboxProfileConfigurationError("OpenSandbox security profile selection is invalid")
+
+
+def internal_test_opensandbox_lease_labels(
+    request: Any,
+    settings: Any,
+    *,
+    executor_identity_labels: Mapping[str, str],
+    skill_mount_labels: Mapping[str, str],
+) -> dict[str, str]:
+    if not internal_test_opensandbox_enabled(settings):
+        raise OpenSandboxProfileConfigurationError("OpenSandbox internal-test profile is invalid")
+    image, digest = requested_opensandbox_image(settings)
+    return {
+        **runtime_scope_labels(request),
+        "ai-platform.provider_backend": "opensandbox",
+        SANDBOX_SECURITY_PROFILE_LABEL: SANDBOX_SECURITY_PROFILE_INTERNAL_TEST,
+        "ai-platform.internal_test.profile": INTERNAL_TEST_OPENSANDBOX_PROFILE,
+        "ai-platform.internal_test.network_mode": "bridge",
+        "ai-platform.internal_test.runtime_identity": "runsc",
+        "ai-platform.internal_test.risk": "bridge-non-production",
+        "ai-platform.executor.requested_image": image,
+        "ai-platform.executor.requested_image_digest": digest,
+        "ai-platform.runtime_subject": str(getattr(settings, "sandbox_runtime_subject", "") or ""),
+        **executor_identity_labels,
+        **skill_mount_labels,
+    }
+
+
+def active_internal_test_lease_is_authorized(lease: ContainerLease, settings: Any) -> bool:
+    if not internal_test_opensandbox_enabled(settings) or historical_internal_test_cleanup_expected_labels(lease) is None:
+        return False
+    try:
+        image, digest = requested_opensandbox_image(settings)
+    except OpenSandboxProfileConfigurationError:
+        return False
+    return (
+        lease.labels.get("ai-platform.executor.requested_image") == image
+        and lease.labels.get("ai-platform.executor.requested_image_digest") == digest
+        and lease.labels.get("ai-platform.runtime_subject") == getattr(settings, "sandbox_runtime_subject", "")
+    )
+
+
+def active_internal_test_identity_is_authorized(
+    status: ContainerStatus, lease: ContainerLease, settings: Any,
+) -> bool:
+    if not active_internal_test_lease_is_authorized(lease, settings):
+        return False
+    observed = status.detail.get("labels")
+    return bool(
+        status.provider == "opensandbox"
+        and status.container_id == lease.container_id
+        and isinstance(observed, dict)
+        and opensandbox_metadata.opensandbox_status_matches_lease(observed, lease.labels)
+        and opensandbox_metadata.opensandbox_metadata_matches(observed, {
+            "ai-platform.executor.user": f"{RUNTIME_UID}:{RUNTIME_GID}",
+            "ai-platform.executor.uid": str(RUNTIME_UID),
+            "ai-platform.executor.gid": str(RUNTIME_GID),
+            "ai-platform.executor.identity_evidence": "authenticated-runtime-endpoint",
+        })
+    )
 
 
 def _required_remote_string(labels: object, key: str) -> str | None:
@@ -328,7 +426,7 @@ def _required_remote_string(labels: object, key: str) -> str | None:
 def historical_internal_test_cleanup_expected_labels(
     lease: ContainerLease,
 ) -> dict[str, str] | None:
-    """Validate a persisted retired lease's full immutable cleanup identity."""
+    """Validate a persisted bridge-test lease's full immutable cleanup identity."""
 
     labels = lease.labels
     attempt_id = _required_remote_string(labels, "ai-platform.attempt_id")
@@ -371,11 +469,11 @@ def historical_internal_test_cleanup_expected_labels(
         "ai-platform.internal_test.risk": "bridge-non-production",
         "ai-platform.executor.requested_image": image,
         "ai-platform.executor.requested_image_digest": image_digest,
+        "ai-platform.runtime_subject": runtime_subject,
         "ai-platform.executor.user": f"{RUNTIME_UID}:{RUNTIME_GID}",
         "ai-platform.executor.uid": str(RUNTIME_UID),
         "ai-platform.executor.gid": str(RUNTIME_GID),
         "ai-platform.executor.identity_evidence": "authenticated-runtime-endpoint",
-        "ai-platform.runtime_subject": runtime_subject,
     }
     try:
         normalized_labels = opensandbox_metadata.normalize_opensandbox_metadata(labels)
@@ -544,7 +642,9 @@ def opensandbox_cleanup_identity_is_authorized(
         lease.labels.get(SANDBOX_SECURITY_PROFILE_LABEL) or SANDBOX_SECURITY_PROFILE_GOVERNED
     )
     if lease_profile == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST:
-        return historical_internal_test_cleanup_identity_is_authorized(status, lease)
+        return historical_internal_test_cleanup_identity_is_authorized(status, lease) or active_internal_test_identity_is_authorized(
+            status, lease, settings
+        )
     if lease_profile != SANDBOX_SECURITY_PROFILE_GOVERNED:
         return False
     encoded_proof = lease.labels.get(GOVERNED_EGRESS_PROOF_LABEL)
@@ -600,6 +700,8 @@ def opensandbox_renewal_identity_is_authorized(
     lease_profile = str(
         lease.labels.get(SANDBOX_SECURITY_PROFILE_LABEL) or SANDBOX_SECURITY_PROFILE_GOVERNED
     )
+    if lease_profile == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST:
+        return active_internal_test_identity_is_authorized(status, lease, settings)
     if lease_profile != SANDBOX_SECURITY_PROFILE_GOVERNED:
         return False
     encoded_proof = lease.labels.get(GOVERNED_EGRESS_PROOF_LABEL)

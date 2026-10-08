@@ -1,14 +1,18 @@
 # Deploy a released version
 
+This guide applies only to previously published production Releases. The current
+publication workflow emits only the internal-test bridge package; its own
+`README.md` is included in that archive. Do not use that package on a production
+host or reconstruct a production package from these source templates.
+
 Download `ai-platform-production.tar.gz`, the single operator asset,
 from the **chosen immutable Deployment Release** on the official repository.
-The manifest, verified release evidence and `BACKUP-RESTORE.md` are inside it.
-GitHub may also display its
-automatically generated source archives; those are not deployment packages.
-Do not mix files from different versions or use an untrusted archive: the package
-contains executable deployment code. Image digests and the application commit
-are already fixed in the package. Git, Actions access, a source checkout and
-host-side image builds are not required.
+The manifest and verified release evidence are inside it. GitHub may also
+display its automatically generated source archives; those are not deployment
+packages. Do not mix files from different versions or use an untrusted archive:
+the package contains executable deployment code. Image digests and the
+application commit are already fixed in the package. Git, Actions access, a
+source checkout and host-side image builds are not required.
 
 The packaged environment example contains operator configuration. Application
 image references, source commit and executor image digest are bound by the
@@ -118,9 +122,8 @@ TLS. Preserve the same generated secrets.
 
 ## Install or upgrade
 
-Back up the database, object storage, Redis, and workspace files as a coordinated
-recovery set before upgrading (see the backup checklist below). Choose a maintenance window with no
-active tasks or sandbox leases. From the extracted directory:
+Choose a maintenance window with no active tasks or sandbox leases. From the
+extracted directory:
 
 ```sh
 python3 deploy.py --env-file /absolute/path/to/.env
@@ -136,7 +139,7 @@ A fresh installation uses `SANDBOX_WORKSPACE_ROOT` directly. An
 absent legacy source skips `workspace-migrate`; do not create a dummy
 legacy directory. Any existing legacy source directory, even empty, requires
 explicit migration. Set `SANDBOX_WORKSPACE_MIGRATION_SOURCE` to the inspected
-host path containing the existing data, back it up and add
+host path containing the existing data, then add
 `--migrate-legacy-workspaces`. The migration mounts the source read-only, verifies
 path/type/mode/owner/size and SHA-256 inventory, and retains the source. Existing
 current-layout bind mounts with no legacy source need no migration. A retained
@@ -168,8 +171,8 @@ running; the project-wide lock prevents concurrent package deployments.
 
 An installation using the retired SSE transport requires explicit legacy-state
 retirement before schema migration. This is an authorized one-time data change,
-not an automatic API/Worker startup action. After a verified recovery set,
-finish/cancel old Runs and block admission. Set `CUTOVER_BEFORE` to the approved,
+not an automatic API/Worker startup action. Finish/cancel old Runs and block
+admission. Set `CUTOVER_BEFORE` to the approved,
 timezone-qualified UTC cutover timestamp. With the new package's images already
 verified, use its exact Compose project, env file and Docker command:
 
@@ -206,35 +209,6 @@ python3 deploy.py --env-file /absolute/path/to/.env --offline
 This skips downloads, not local image verification. Missing images or RepoDigests
 stop before admission changes. Never manually tag an image to pretend that it
 has the required digest. No temporary script edits or Git bundles are needed.
-
-## Backup checklist
-
-Use the packaged [backup and restore procedure](BACKUP-RESTORE.md) for concrete
-PostgreSQL custom dumps, cold Redis/MinIO volume backups, host workspace backups,
-protected keys and an isolated restore rehearsal.
-
-Before an upgrade, record the current immutable package/commit, persistent
-container and volume identities, workspace paths, and schema version. Protect
-the operator environment file and encryption/signing keys in an encrypted,
-access-controlled backup, separate from public deployment evidence. A database
-dump alone does not cover MinIO objects or workspace files.
-
-Block new admission, let active work finish, and verify no active Runs, Attempts,
-leases, or sandbox containers before stopping API, Worker and frontend for the
-backup window. Keep admission stopped while taking the coordinated set:
-
-- A PostgreSQL custom-format dump, checked with `pg_restore --list` and an
-  isolated restore rehearsal
-- MinIO objects and metadata, Redis persistent data, and the current workspace
-  root, preserving permissions and ownership; use an approved snapshot/export
-  method (raw filesystem copies require the corresponding service stopped)
-- Any retained legacy workspace source, release package/manifest, and protected
-  configuration needed to interpret and decrypt the restored data
-
-Record checksums, completion times and restore-test results. Verify all backup
-parts before proceeding. Stopping persistent services for a cold backup is a
-separate maintenance action; restart and verify the same containers before the
-package upgrade, which otherwise preserves their identity and restart counts.
 
 ## Failure and recovery
 
@@ -294,16 +268,15 @@ or first-install journal is not a license to delete that journal and retry:
 classify and approve the exact recovery operation first.
 
 There is **no automatic image or database rollback**. A prior binary may not
-understand a schema that has advanced. For an authorized restore, first preserve
-the failed state, rehearse restoration in an isolated environment, and select
-the package compatible with the backup's schema. Restore the matching database,
-object storage, Redis and workspaces from the same recovery point with all
-writers stopped; retain required encryption keys and original permissions.
-Never overwrite live data or reconnect a restored database to mismatched newer
-objects/workspaces. Do not edit migration checksums. Validate restored state,
-image identity, API readiness, advancing Worker heartbeat, OpenSandbox isolation
-and quiescence before reopening admission. Record any explicitly accepted data
-loss since the recovery point.
+understand a schema that has advanced. For an operator-authorized restore,
+first preserve the failed state and select a package compatible with the
+recovery point's schema. Restore matching database, object storage, Redis and
+workspaces with all writers stopped; retain required encryption keys and original
+permissions. Never overwrite live data or reconnect a restored database to
+mismatched newer objects/workspaces. Do not edit migration checksums. Validate
+restored state, image identity, API readiness, advancing Worker heartbeat,
+OpenSandbox isolation and quiescence before reopening admission. Record any
+explicitly accepted data loss since the recovery point.
 
 The package does not fetch `main`, change the Docker daemon proxy, provision the
 OpenSandbox host, remove historical release directories, or clean data volumes.

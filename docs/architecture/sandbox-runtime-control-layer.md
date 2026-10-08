@@ -16,13 +16,19 @@ OpenSandbox SDK directly; OpenSandbox Server owns sandbox lifecycle and runsc
 execution. The stateless model/callback proxy is an egress boundary only and
 is not a second application lifecycle.
 
-OpenSandbox tasks use an operator-configured dedicated Docker bridge with host
-NAT and public Internet access. The host guard denies private,
-link-local, metadata, host and peer destinations and new inbound connections;
-the existing model/callback proxy is the sole private task-network exception.
-The trusted OpenSandbox host control plane retains access to sandbox services.
-IPv6 is disabled on the task network and denied by bridge-scoped host rules.
-The create request keeps `network_policy=None`: OpenSandbox's egress sidecar
+For current internal-test Releases, native OpenSandbox uses ordinary Docker
+`bridge` networking with `runsc` and no OpenSandbox NAT-redirect egress sidecar.
+There is no dedicated host guard: tasks may reach routable private, public,
+metadata, peer and host addresses. This profile admits only a test deployment
+with an explicit internal-test security profile and exact image, Attempt,
+callback, proxy and workspace bindings; it makes no production isolation claim.
+The production runtime contract still uses an operator-configured dedicated
+Docker bridge with host NAT and public Internet access. Its host guard denies
+private, link-local, metadata, host and peer destinations and new inbound
+connections; the existing model/callback proxy is the sole private task-network
+exception. The trusted OpenSandbox host control plane retains access to sandbox
+services. IPv6 is disabled on that task network and denied by bridge-scoped host
+rules. Both modes keep `network_policy=None`: OpenSandbox's egress sidecar
 depends on sandbox NAT support unavailable in gVisor. Signed proof fields record
 `network_internal=false`, `default_deny_outbound=false` and the
 `host-public-egress-v1` policy subject. This is an admission binding, not a
@@ -31,29 +37,39 @@ leases remain readable as historical facts and eligible for exact-identity
 cleanup; they cannot be acquired, dispatched or renewed under the new policy.
 Provider-specific network and SDK details remain behind the existing port.
 
-The package has one OpenSandbox overlay and one runtime path. Network name,
-bridge, IPv4 subnet, proxy address, workspace root and migration source are
-operator values. Host TOML permits only the exact configured workspace root;
-OpenSandbox still receives only one authoritative Attempt directory.
+The published package currently has one internal-test overlay; no new
+production package is emitted. Its workspace root and migration source remain
+operator values, and OpenSandbox still receives only one authoritative Attempt
+directory. The retained production source overlay and host configuration are
+not changed or published by this test-profile restoration.
 
-### Change Contract: unified sandbox deployment
+### Change Contract: internal-test bridge restoration
 
-Execution owns signed Attempt/lease admission and provider cleanup; Delivery
-owns package assembly, configured storage migration and host topology checks.
-The internal-test overlay, package CLI profile selector, separate CI archive,
-active security-profile setting, bridge execution/renewal/orphan-cleanup branches
-and their active-path fixtures are retired together. Functional SDK fixtures use
-the unified signed path; live acceptance uses the selected real host.
+Execution owns the explicit test-only profile admission, Run/Attempt lease
+persistence, current-identity dispatch/renewal and exact historical cleanup.
+Delivery owns the sole internal-test package, retaining digest-pinned images
+and the unchanged Compose project/data volumes. The earlier retirement of
+active bridge execution is reversed only for test OpenSandbox on ordinary
+`bridge` with `runsc`; no production package is emitted. Existing v0.1.1
+Releases and deployed hosts remain unchanged. Superseded tests asserting that
+internal-test is always rejected or that a new production archive is published
+are replaced with scoped acceptance and rejection tests. Both the current test
+and historical stop-only lease paths retain exact identity checks. Active
+internal-test leases carry `internal_test_lease_version=active-v1`; default
+heartbeat and terminal reconstruction accepts that marker only when the current
+test profile, image and runtime subject match. Old rows remain stop-only. No fallback
+from governed to test is permitted; invalid profiles fail closed.
 
-The stable operator archive name, Compose project and persistent data-volume
-identities remain existing deployment interfaces. Database-tracked internal-test
-leases retain only full persisted/remote-identity stop cleanup. Previous signed
-internal-network leases retain historical reads and exact cleanup. Neither
-compatibility path grants new execution or renewal. Removing these cleanup
-consumers requires evidence that no retained or active record needs them.
+The package controller checks the host's actual Docker `bridge` gateway before
+pulling or stopping services. The internal-test model proxy must bind only
+that private IPv4 address on port 18043 and both API and Worker must point to
+it; the callback URL must match the same gateway with the API published on
+host port 8020. Lifecycle inputs must supply a valid private IPv4 base URL or
+a complete domain/protocol pair. This is a configuration drift gate, not a
+production network guard.
 
-Acceptance covers a configured network and workspace end to end, rejects drift
-between host/application/actual rules and mounts, and preserves image digests,
+Acceptance covers the test bridge and workspace end to end, rejects drift
+between host/application network and mounts, and preserves image digests,
 RunAttempt scope, model/callback authority, data identity and failure recovery.
 Source tests do not establish real Linux/gVisor enforcement or deployment.
 

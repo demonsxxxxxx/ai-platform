@@ -29,10 +29,13 @@ EVIDENCE_FILES = (
     "provenance-{role}.assembly-verified.json",
 )
 
-# Fixed by the packaged OpenSandbox Compose configuration, or used only by source tools.
+# Assemble the internal-test package from the same qualified image manifest.
 PACKAGE_OMITTED_ENV_KEYS = {
-    "SANDBOX_CONTAINER_PROVIDER",
-    "SANDBOX_EGRESS_POLICY_ENABLED", "OPENSANDBOX_USE_SERVER_PROXY",
+    "SANDBOX_CONTAINER_PROVIDER", "SANDBOX_SECURITY_PROFILE",
+    "SANDBOX_EGRESS_POLICY_ENABLED", "SANDBOX_EGRESS_PROOF_SIGNING_KEY",
+    "SANDBOX_EGRESS_PROOF_KEY_ID", "SANDBOX_EGRESS_PROOF_PREVIOUS_KEYS_JSON",
+    "OPENSANDBOX_USE_SERVER_PROXY", "OPENSANDBOX_EXPECTED_NETWORK_MODE",
+    "OPENSANDBOX_EGRESS_BRIDGE", "OPENSANDBOX_EGRESS_SUBNET", "OPENSANDBOX_EGRESS_PROXY_IPV4",
     "OPENAI_BASE_URL", "OPENAI_API_KEY",
     "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN",
     "DOCKER_SOCKET_GID",
@@ -164,12 +167,11 @@ def build_package(
     deployment = source / "deploy" / "ai-platform"
     files = {
         "compose.yaml": "docker-compose.yml",
-        "compose.override.yaml": "docker-compose.opensandbox.yml",
+        "compose.override.yaml": "docker-compose.opensandbox-internal-test.yml",
         "compose.profile-drive-ca.yaml": "docker-compose.profile-drive-ca.yml",
         ".env.example": ".env.example",
         "deploy.py": "deploy.py",
-        "README.md": "README.md",
-        "BACKUP-RESTORE.md": "BACKUP-RESTORE.md",
+        "README.md": "README.internal-test.md",
         "opensandbox-egress-nginx.conf.template": "opensandbox-egress-nginx.conf.template",
     }
     payloads = {}
@@ -179,6 +181,17 @@ def build_package(
             raise ValueError(f"package source is not a regular file: {original}")
         text = path.read_text(encoding="utf-8")
         if name == ".env.example":
+            text, count = re.subn(
+                r"(?m)^SANDBOX_WORKSPACE_ROOT=.*$",
+                "SANDBOX_WORKSPACE_ROOT=/data/opensandbox/workspaces/ai-platform-internal-test",
+                text,
+            )
+            if count != 1:
+                raise ValueError("package environment must contain one workspace root")
+            for key in ("OPENSANDBOX_BASE_URL", "SANDBOX_CALLBACK_BASE_URL"):
+                text, count = re.subn(rf"(?m)^{key}=.*$", f"{key}=", text)
+                if count != 1:
+                    raise ValueError(f"package environment must contain one {key}")
             omitted = PACKAGE_OMITTED_ENV_KEYS | bindings.keys()
             # Remove each assignment and its directly attached explanation.
             for key in sorted(omitted):

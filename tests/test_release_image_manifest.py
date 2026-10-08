@@ -181,7 +181,7 @@ def test_compose_package_contains_one_runtime_archive_with_fixed_images(tmp_path
     with tarfile.open(output) as archive:
         expected = {
             "compose.yaml", "compose.override.yaml", "compose.profile-drive-ca.yaml", ".env.example",
-            "release-image-manifest.json", "deploy.py", "README.md", "BACKUP-RESTORE.md",
+            "release-image-manifest.json", "deploy.py", "README.md",
             "opensandbox-egress-nginx.conf.template",
         }
         expected.update(
@@ -254,40 +254,32 @@ def test_compose_package_contains_one_runtime_archive_with_fixed_images(tmp_path
             "OPENAI_BASE_URL", "OPENAI_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN",
         })
         assert {"POSTGRES_PASSWORD", "MODEL_CONNECTION_ENCRYPTION_KEY", "OPENSANDBOX_API_KEY"} <= env_keys
-        assert {
+        assert not env_keys.intersection({
             "OPENSANDBOX_EXPECTED_NETWORK_MODE", "OPENSANDBOX_EGRESS_BRIDGE",
             "OPENSANDBOX_EGRESS_SUBNET", "OPENSANDBOX_EGRESS_PROXY_IPV4",
-        } <= env_keys
-        env_values = {
-            line.partition("=")[0]: line.partition("=")[2]
-            for line in env_example.splitlines()
-            if line and not line.startswith("#") and "=" in line
-        }
-        assert all(env_values[name] for name in (
-            "OPENSANDBOX_EXPECTED_NETWORK_MODE", "OPENSANDBOX_EGRESS_BRIDGE",
-            "OPENSANDBOX_EGRESS_SUBNET", "OPENSANDBOX_EGRESS_PROXY_IPV4",
-        ))
-        assert "SANDBOX_SECURITY_PROFILE" not in str(base) + str(overlay)
+            "SANDBOX_SECURITY_PROFILE", "SANDBOX_EGRESS_PROOF_SIGNING_KEY",
+        })
+        assert {"OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS", "OPENSANDBOX_EGRESS_PROXY_URL"} <= env_keys
         for service in ("api", "worker"):
             env = {**base["services"][service]["environment"], **overlay["services"][service]["environment"]}
+            assert env["DEPLOYMENT_ENVIRONMENT"] == "test"
             assert env["SANDBOX_CONTAINER_PROVIDER"] == "opensandbox"
-            assert env["SANDBOX_EGRESS_POLICY_ENABLED"] == "true"
+            assert env["SANDBOX_SECURITY_PROFILE"] == "internal-test"
+            assert env["SANDBOX_CALLBACK_BASE_URL"] == "${SANDBOX_CALLBACK_BASE_URL:?set SANDBOX_CALLBACK_BASE_URL}"
+            assert env["SANDBOX_EGRESS_POLICY_ENABLED"] == "false"
             assert env["OPENSANDBOX_USE_SERVER_PROXY"] == "true"
-            assert env["OPENSANDBOX_EXPECTED_NETWORK_MODE"] == "${OPENSANDBOX_EXPECTED_NETWORK_MODE:?required}"
-            assert env["OPENSANDBOX_EGRESS_PROXY_URL"] == "http://egress.opensandbox.internal:8080"
-        assert "SANDBOX_WORKSPACE_ROOT=/data/opensandbox/workspaces/ai-platform" in env_example.splitlines()
+            assert env["OPENSANDBOX_EXPECTED_NETWORK_MODE"] == "bridge"
+            assert env["OPENSANDBOX_EGRESS_PROXY_URL"] == "${OPENSANDBOX_EGRESS_PROXY_URL:?set OPENSANDBOX_EGRESS_PROXY_URL}"
+        assert "SANDBOX_WORKSPACE_ROOT=/data/opensandbox/workspaces/ai-platform-internal-test" in env_example.splitlines()
         assert "SANDBOX_WORKSPACE_MIGRATION_SOURCE=/data/ai-platform/runtime-workspaces" in env_example.splitlines()
-        assert "OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS" not in env_keys
-        assert "OPENSANDBOX_EGRESS_PROXY_URL" not in env_keys
-        assert overlay["networks"]["opensandbox_egress_v2"]["name"] == "${OPENSANDBOX_EXPECTED_NETWORK_MODE:?required}"
-        assert overlay["networks"]["opensandbox_egress_v2"]["driver_opts"]["com.docker.network.bridge.name"] == "${OPENSANDBOX_EGRESS_BRIDGE:?required}"
-        assert overlay["networks"]["opensandbox_egress_v2"]["ipam"]["config"][0]["subnet"] == "${OPENSANDBOX_EGRESS_SUBNET:?required}"
+        assert "OPENSANDBOX_BASE_URL=" in env_example.splitlines()
+        assert "SANDBOX_CALLBACK_BASE_URL=" in env_example.splitlines()
+        assert "networks" not in overlay
         proxy = overlay["services"]["opensandbox-egress-proxy"]
-        assert proxy["networks"]["opensandbox_egress_v2"]["ipv4_address"] == "${OPENSANDBOX_EGRESS_PROXY_IPV4:?required}"
-        assert "ports" not in proxy
+        assert proxy["ports"] == ["${OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS:?set OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS}:18043:8080"]
         source_env = (ROOT / "deploy/ai-platform/.env.example").read_text()
         for line in env_example.splitlines():
-            if line and not line.startswith(("#", "SANDBOX_WORKSPACE_ROOT=")):
+            if line and not line.startswith(("#", "SANDBOX_WORKSPACE_ROOT=", "OPENSANDBOX_BASE_URL=", "SANDBOX_CALLBACK_BASE_URL=")):
                 assert line in source_env.splitlines()
     before = output.read_bytes()
     with pytest.raises(FileExistsError):
