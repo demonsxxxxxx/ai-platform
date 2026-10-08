@@ -29,7 +29,10 @@ from app.routes.sandbox_runtime_cleanup import container_lease_from_persisted_ro
 from app.runs.api import RunDiagnosticsService
 from app.runs.infrastructure import postgres as runs_postgres
 from app.runtime.event_bridge import agent_event_to_executor_event
-from app.runtime.kernel_contracts import CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE
+from app.runtime.kernel_contracts import (
+    CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE,
+    CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE,
+)
 from app.runtime.sandbox.callback_tokens import (
     callback_token_id_matches_attempt,
     callback_token_matches,
@@ -157,6 +160,7 @@ async def record_executor_callback(
         in {
             PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
             CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE,
+            CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE,
         }
         for event in callback.events
     ):
@@ -190,6 +194,17 @@ async def record_executor_callback(
         }
     ]
     for item_index, event in enumerate(events):
+        if event.type == CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE:
+            event_batch.append(
+                {
+                    "event_type": "executor_sdk_text_checkpoint",
+                    "stage": "executor",
+                    "message": "",
+                    "visible_to_user": False,
+                    "payload": {**event.payload, "visible_to_user": False},
+                }
+            )
+            continue
         thinking_items = callback_thinking_summary_to_v4(
             event.model_dump(mode="python"),
             callback_index=item_index,

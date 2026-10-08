@@ -10,6 +10,7 @@ from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from app.execution.application.model_response_evidence import observe_anthropic_text
 from app.execution.application.model_selection import (
     RunModelSelection,
     resolve_chat_model_selection,
@@ -425,10 +426,20 @@ class ModelControlPlaneService:
             headers=outbound_headers,
             query=query,
         )
+        response_body = upstream.body()
+        if (
+            provider == "anthropic"
+            and upstream_path == "v1/messages"
+            and upstream.status == 200
+            and upstream.content_type.lower().startswith("text/event-stream")
+        ):
+            response_body = observe_anthropic_text(
+                response_body, run_id=run_id, attempt_id=attempt_id
+            )
         return RuntimeProxyResponse(
             status=upstream.status,
             content_type=upstream.content_type,
-            body=upstream.body(),
+            body=response_body,
         )
 
 

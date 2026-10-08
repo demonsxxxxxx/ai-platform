@@ -1,3 +1,4 @@
+import re
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -7,6 +8,7 @@ from app.validation import assert_safe_id, assert_safe_principal_user_id
 
 # Authenticated legacy write compatibility only; the current runner never emits it.
 CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE = "claude_sdk_thinking_summary"
+CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE = "claude_sdk_text_checkpoint"
 
 SUPPORTED_AGENT_EVENT_TYPES = {
     "agent_public_progress",
@@ -41,6 +43,7 @@ SUPPORTED_AGENT_EVENT_TYPES = {
     "run_completed",
     "run_cancelled",
     CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE,
+    CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE,
 } | set(AGENT_EVENT_PUBLIC_CANDIDATE_TYPES)
 
 
@@ -131,6 +134,45 @@ class AgentEvent(BaseModel):
         summary = self.payload.get("summary")
         if not isinstance(summary, str) or not summary or len(summary) > 262_144:
             raise ValueError("agent_event_thinking_summary_invalid")
+        return self
+
+    @model_validator(mode="after")
+    def validate_internal_text_checkpoint(self):
+        if self.type != CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE:
+            return self
+        payload = self.payload
+        if (
+            self.message != ""
+            or not self.admin_only
+            or any(value is not None for value in (
+                self.event_id, self.run_id, self.message_id, self.causation_event_id
+            ))
+            or set(payload) != {"call_ref", "events", "chars", "sha256", "final", "complete", "coverage"}
+            or not (
+                payload["call_ref"] is None
+                or isinstance(payload["call_ref"], str)
+                and re.fullmatch(r"[0-9a-f]{32}", payload["call_ref"]) is not None
+            )
+            or type(payload["events"]) is not int
+            or not 0 <= payload["events"] <= 10_000_000
+            or type(payload["chars"]) is not int
+            or not 0 <= payload["chars"] <= 100_000_000
+            or not isinstance(payload["sha256"], str)
+            or re.fullmatch(r"[0-9a-f]{64}", payload["sha256"]) is None
+            or type(payload["final"]) is not bool
+            or type(payload["complete"]) is not bool
+            or not isinstance(payload["coverage"], str)
+            or payload["coverage"] not in {
+                "text_delta", "partial_stream_end", "partial_missing_call_identity",
+                "partial_invalid_event", "partial_invalid_text", "partial_limit",
+                "partial_oversized_event", "partial_oversized_line", "partial_unfinished_event",
+            }
+            or (payload["call_ref"] is None and payload["coverage"] == "text_delta")
+            or (payload["complete"] and (
+                not payload["final"] or payload["coverage"] != "text_delta"
+            ))
+        ):
+            raise ValueError("agent_event_text_checkpoint_invalid")
         return self
 
 
