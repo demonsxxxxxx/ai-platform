@@ -80,8 +80,12 @@ ACK, never the query. Pending questions survive a browser reload. Old Attempts
 cannot publish, poll, acknowledge or seal the current input session.
 
 Text is bounded to 16,000 characters; a question batch has at most four questions
-and eight options per question. The public projection uses the ordinary-text
-sanitizer and typed fields, never raw tool arguments. Ordinary-user text and
+and eight options per question. The public projection uses the existing user-input
+path/Skill-marker and secret redaction policy and typed fields, never raw tool arguments.
+Question labels removed by that policy receive safe numbered placeholders; ordinal
+keys still identify the original choice within the active SDK attempt. Native raw
+question identity does not enter the new input tables or public callback projection;
+existing provider transcript persistence retains its own contract. Ordinary-user text and
 free answers are sanitized before persistence/execution as initial input already
 was. The current principal's existing administrator exemption applies to text
 and free answers; the authenticated callback receives that admitted value.

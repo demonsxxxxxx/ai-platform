@@ -29,6 +29,7 @@ from app.control_plane_contracts import (
 )
 from app.platform.public_payload import (
     sanitize_public_answer_text,
+    sanitize_public_text,
     sanitize_public_event_candidate,
 )
 from app.executors.claude.capability_policy import (
@@ -2355,7 +2356,7 @@ async def run_claude_agent_sdk(
         text = str(value)
         for token, replacement in private_replacements.items():
             text = text.replace(token, replacement)
-        return sanitize_public_answer_text(text)
+        return sanitize_public_text(text)
 
     if interaction_client is not None:
         interaction_actor = prepare_claude_run_interaction(

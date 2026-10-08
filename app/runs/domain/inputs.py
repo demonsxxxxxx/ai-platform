@@ -80,15 +80,17 @@ def canonicalize_questions(
             raise RunInputError("run_input_question_invalid")
         if value.get("key", f"q{question_index}") != f"q{question_index}":
             raise RunInputError("run_input_question_invalid")
-        question = sanitize_run_input_text(
+        question = _sanitize_question_display(
             value.get("question"),
             sanitize_text=sanitize_text,
             max_chars=MAX_RUN_ANSWER_CHARS,
+            fallback=f"Question {question_index + 1}",
         )
-        header = sanitize_run_input_text(
+        header = _sanitize_question_display(
             value.get("header"),
             sanitize_text=sanitize_text,
             max_chars=128,
+            fallback="Question",
         )
         options_value = value.get("options")
         if (
@@ -102,10 +104,11 @@ def canonicalize_questions(
                 raise RunInputError("run_input_question_invalid")
             if option.get("key", f"o{option_index}") != f"o{option_index}":
                 raise RunInputError("run_input_question_invalid")
-            label = sanitize_run_input_text(
+            label = _sanitize_question_display(
                 option.get("label"),
                 sanitize_text=sanitize_text,
                 max_chars=256,
+                fallback=f"Option {option_index + 1}",
             )
             description = sanitize_run_input_text(
                 option.get("description"),
@@ -128,6 +131,19 @@ def canonicalize_questions(
             }
         )
     return canonical
+
+
+def _sanitize_question_display(
+    value: object, *, sanitize_text: Callable[[object], str], max_chars: int, fallback: str,
+) -> str:
+    # A valid native question can become empty under the existing public path
+    # policy. Keep it answerable by ordinal key without exposing its raw label.
+    if not isinstance(value, str) or not value.strip():
+        raise RunInputError("run_input_text_invalid")
+    sanitized = sanitize_run_input_text(
+        value, sanitize_text=sanitize_text, max_chars=max_chars, allow_empty=True,
+    )
+    return sanitized if sanitized.strip() else fallback
 
 
 def canonicalize_answers(

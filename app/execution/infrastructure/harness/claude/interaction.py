@@ -11,7 +11,7 @@ from app.execution.application.run_interaction import (
     RunInputCommand,
     RunInteractionProtocol,
 )
-from app.platform.public_payload import sanitize_public_answer_text
+from app.platform.public_payload import sanitize_public_text
 
 
 QUESTION_POLL_INTERVAL_SECONDS = 0.25
@@ -28,7 +28,7 @@ class ClaudeRunInteractionActor:
         *,
         run_id: str,
         attempt_id: str,
-        sanitize_text: Callable[[object], str] = sanitize_public_answer_text,
+        sanitize_text: Callable[[object], str] = sanitize_public_text,
     ) -> None:
         if not run_id or not attempt_id:
             raise ValueError("run_interaction_identity_invalid")
@@ -200,8 +200,9 @@ class ClaudeRunInteractionActor:
 
 
 def _native_questions(tool_input: object) -> list[dict[str, Any]]:
-    # Raw SDK identity lives only inside this attempt. Persisted/public labels
-    # remain redacted; ordinal keys survive display collisions without secrets.
+    # This interaction's raw identity stays local to the attempt rather than
+    # entering the new input tables/callback projection. Existing SDK transcript
+    # persistence retains its own contract. Ordinal keys survive display redaction.
     if not isinstance(tool_input, Mapping) or not isinstance(tool_input.get("questions"), list):
         raise ClaudeRunInteractionError("run_question_input_invalid")
     try:
@@ -228,9 +229,9 @@ def _project_questions(
     questions: list[dict[str, Any]], sanitize_text: Callable[[object], str],
 ) -> list[dict[str, Any]]:
     return [{
-        "key": f"q{index}", "question": sanitize_text(item["question"]),
-        "header": sanitize_text(item["header"]), "multiSelect": item["multiSelect"],
-        "options": [{"key": f"o{option_index}", "label": sanitize_text(option["label"]),
+        "key": f"q{index}", "question": sanitize_text(item["question"]) or f"Question {index + 1}",
+        "header": sanitize_text(item["header"]) or "Question", "multiSelect": item["multiSelect"],
+        "options": [{"key": f"o{option_index}", "label": sanitize_text(option["label"]) or f"Option {option_index + 1}",
                      "description": sanitize_text(option["description"])}
                     for option_index, option in enumerate(item["options"])],
     } for index, item in enumerate(questions)]

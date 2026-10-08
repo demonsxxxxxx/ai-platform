@@ -229,8 +229,9 @@ async def test_stop_interrupts_native_client_and_releases_question_waiter(monkey
     assert interrupted.is_set() and disconnected.is_set()
 
 
+@pytest.mark.parametrize("private_labels", [False, True])
 async def test_installed_cli_waits_for_native_answer_and_continues_in_one_session(
-    monkeypatch, tmp_path,
+    monkeypatch, tmp_path, private_labels,
 ):
     from app.executors import claude_agent_sdk_runner as runner
 
@@ -239,9 +240,10 @@ async def test_installed_cli_waits_for_native_answer_and_continues_in_one_sessio
     with local_mcp_peers() as peer:
         peer.sdk_tool = "AskUserQuestion"
         peer.tool_input = {"questions": [{
-            "question": "Which sections?", "header": "Sections", "multiSelect": True,
-            "options": [{"label": "Intro", "description": "Opening"},
-                        {"label": "Results", "description": "Findings"}],
+            "question": "Read /app/private?" if private_labels else "Which sections?",
+            "header": ".claude/private" if private_labels else "Sections", "multiSelect": True,
+            "options": [{"label": "Intro /app/private" if private_labels else "Intro", "description": "Opening"},
+                        {"label": "Results /tmp/private" if private_labels else "Results", "description": "Findings"}],
         }]}
         settings = SimpleNamespace(
             claude_agent_sdk_enabled=True, claude_agent_sdk_max_turns=4,
@@ -273,6 +275,10 @@ async def test_installed_cli_waits_for_native_answer_and_continues_in_one_sessio
             assert not task.done() and len(peer.models) == 1
             assert "AskUserQuestion" in {item["name"] for item in peer.models[0]["tools"]}
             question_id = port.questions[0][0]
+            if private_labels:
+                public = port.questions[0][1]
+                assert "/app/" not in str(public) and "/tmp/" not in str(public) and ".claude/" not in str(public)
+                assert [item["label"] for item in public[0]["options"]] == ["Option 1", "Option 2"]
             port.commands.append(RunInputCommand("continue", "text", text="Also add a Chinese summary"))
             port.answer = RunInputCommand("answer", "answer", question_id=question_id,
                                           answers={"q0": ["o0", "o1"]})
@@ -284,6 +290,8 @@ async def test_installed_cli_waits_for_native_answer_and_continues_in_one_sessio
                             for block in message["content"] if block.get("type") == "tool_result"]
             native_answer = json.dumps(tool_results)
             assert "Intro" in native_answer and "Results" in native_answer
+            if private_labels:
+                assert "Intro /app/private" in native_answer and "Results /tmp/private" in native_answer
             assert not any(block.get("is_error") for block in tool_results)
             assert any("Also add a Chinese summary" in json.dumps(message)
                        for message in peer.models[2]["messages"])
@@ -314,6 +322,28 @@ async def test_native_question_uses_original_local_identity_after_redaction_coll
         assert result["questions"] == questions
         assert result["answers"] == {questions[0]["question"]: ["bob@example.test", "alice@example.test"] if multi else "bob@example.test",
                                       questions[1]["question"]: "o0"}
+    finally:
+        await actor.close()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize("marker", ["/app/private", "/tmp/private", ".claude/skills/private"])
+async def test_native_question_filters_private_paths_without_changing_execution_identity(marker):
+    port = Inputs()
+    actor = ClaudeRunInteractionActor(port, run_id="run", attempt_id="attempt")
+    questions = [{"question": f"Read {marker}?", "header": marker, "multiSelect": False,
+                  "options": [{"label": f"{marker}/first", "description": marker},
+                              {"label": f"{marker}/second", "description": marker}]}]
+    task = asyncio.create_task(actor.resolve_native_question(tool_call_id="call", tool_input={"questions": questions}))
+    try:
+        await port.question_ready.wait()
+        question_id, public = port.questions[0]
+        assert marker not in str(public)
+        assert public[0]["question"] == "Question 1"
+        assert [item["label"] for item in public[0]["options"]] == ["Option 1", "Option 2"]
+        port.answer = RunInputCommand("answer", "answer", question_id=question_id, answers={"q0": "o1"})
+        result = await asyncio.wait_for(task, 1)
+        assert result == {"questions": questions, "answers": {questions[0]["question"]: f"{marker}/second"}}
     finally:
         await actor.close()
         await asyncio.gather(task, return_exceptions=True)

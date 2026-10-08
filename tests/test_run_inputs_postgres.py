@@ -14,7 +14,7 @@ from fastapi import FastAPI
 from psycopg.rows import dict_row
 
 from app.bootstrap.run_inputs import build_run_inputs_service
-from app.runs.domain.inputs import RunInputClosed, RunInputConflict
+from app.runs.domain.inputs import RunInputClosed, RunInputConflict, RunInputError
 
 
 QUESTIONS = [{
@@ -341,6 +341,69 @@ async def test_supplementary_input_retains_existing_role_redaction_policy(inputs
                      answers={"q0": {"text": text}}, redact_public=not admin)
         answer = (await callback(service, conn, "poll", question_id="admin-answer"))["inputs"][0]["answers"]["q0"]["text"]
         assert (answer == text) is admin
+
+
+@pytest.mark.parametrize("admin", [False, True])
+@pytest.mark.parametrize("text", ["Read /app/private.txt", "Read /tmp/private.txt",
+                                  "Use .claude/skills/private", "Use C:\\private\\file.txt"])
+async def test_supplementary_paths_follow_initial_admission_and_public_read_policy(inputs_db, admin, text):
+    from app.projection_redaction import sanitize_user_control_input
+
+    connect, service = inputs_db
+    # Initial ordinary input already drops this field. Supplemental admission
+    # must not create a path around the same policy.
+    assert "input_message" not in sanitize_user_control_input({"input_message": text})
+    async with connect() as conn, conn.transaction():
+        await callback(service, conn, "open")
+        if not admin:
+            with pytest.raises(RunInputError, match="run_input_text_invalid"):
+                await submit(service, conn, input_id=str(uuid4()), text=text)
+            await callback(service, conn, "question", question_id="path-answer", questions=QUESTIONS)
+            with pytest.raises(RunInputError, match="run_input_text_invalid"):
+                await submit(service, conn, input_id=str(uuid4()), question_id="path-answer",
+                             answers={"q0": {"text": text}})
+            assert (await callback(service, conn, "poll", question_id="path-answer"))["inputs"] == []
+        else:
+            input_id = str(uuid4())
+            accepted = await submit(service, conn, input_id=input_id, text=text, redact_public=False)
+            assert await submit(service, conn, input_id=input_id, text=text, redact_public=False) == accepted
+            assert (await callback(service, conn, "settle"))["inputs"][0]["text"] == text
+            await callback(service, conn, "question", question_id="path-answer", questions=QUESTIONS)
+            await submit(service, conn, input_id=str(uuid4()), question_id="path-answer",
+                         answers={"q0": {"text": text}}, redact_public=False)
+            assert (await callback(service, conn, "poll", question_id="path-answer"))["inputs"][0]["answers"] == {"q0": {"text": text}}
+            owner = await service.get_projection(conn, tenant_id="tenant", user_id="owner", run_id="run", redact_public=False)
+            assert next(item for item in owner["inputs"] if item["kind"] == "text")["text"] == text
+        public = await service.get_projection(conn, tenant_id="tenant", user_id="owner", run_id="run")
+        history = await service.get_session_history(conn, tenant_id="tenant", user_id="owner", session_id="session")
+        assert text not in str(public) and text not in str(history)
+        if not admin:
+            assert public["inputs"] == []
+        else:
+            for projection in (public, history["runs"][0]):
+                assert next(item for item in projection["inputs"] if item["kind"] == "text")["text"] == ""
+                assert next(item for item in projection["inputs"] if item["kind"] == "answer")["answers"] == {"q0": {"text": ""}}
+
+
+@pytest.mark.parametrize("marker", ["/app/private", "/tmp/private", ".claude/skills/private"])
+async def test_question_path_redaction_keeps_safe_distinct_display_and_identity(inputs_db, marker):
+    from app.runs.domain.inputs import canonicalize_questions
+
+    connect, service = inputs_db
+    raw = [{"question": f"Read {marker}?", "header": marker, "multiSelect": False,
+            "options": [{"label": f"{marker}/first", "description": marker},
+                        {"label": f"{marker}/second", "description": marker}]}]
+    async with connect() as conn, conn.transaction():
+        await callback(service, conn, "open")
+        await callback(service, conn, "question", question_id="private-question", questions=raw)
+        projection = await service.get_projection(conn, tenant_id="tenant", user_id="owner", run_id="run")
+        batch = projection["questions"][0]["questions"]
+        assert batch == canonicalize_questions(raw, sanitize_text=service.sanitize_text)
+        assert batch[0]["question"] == "Question 1" and batch[0]["header"] == "Question"
+        assert [item["label"] for item in batch[0]["options"]] == ["Option 1", "Option 2"]
+        assert marker not in str(projection)
+        await submit(service, conn, input_id=str(uuid4()), question_id="private-question", answers={"q0": "o1"})
+        assert (await callback(service, conn, "poll", question_id="private-question"))["inputs"][0]["answers"] == {"q0": "o1"}
 
 
 @pytest.mark.parametrize("multi", [False, True])
