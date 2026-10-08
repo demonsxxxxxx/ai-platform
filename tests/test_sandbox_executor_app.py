@@ -3288,6 +3288,49 @@ async def test_model_wire_and_actual_sdk_sandbox_checkpoints_match_across_tool_c
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("sdk_error", [None, "claude_agent_sdk_execution_failed"])
+async def test_cancellation_during_final_sdk_diagnostic_flush_propagates(
+    tmp_path, monkeypatch, sdk_error,
+):
+    from app.runtime.kernel_contracts import CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE
+
+    flush_started = asyncio.Event()
+    release_flush = asyncio.Event()
+
+    async def fake_sdk(**kwargs):
+        observer = ModelTextCheckpoint(run_id=kwargs["run_id"], attempt_id=kwargs["attempt_id"], record=kwargs["on_sdk_text"])
+        observer.accept({"type": "message_start", "message": {"id": "synthetic-call"}})
+        observer.accept({"type": "content_block_delta", "delta": {"type": "text_delta", "text": "answer"}})
+        observer.finish(complete=True)
+        return sdk_result("answer", error=sdk_error)
+
+    async def emit(event):
+        if isinstance(event, ExecutorCallbackEvent) and any(
+            item.type == CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE for item in event.events
+        ):
+            flush_started.set()
+            await release_flush.wait()
+        return True
+
+    monkeypatch.setattr(executor_app, "get_settings", lambda: SimpleNamespace(claude_agent_sdk_enabled=True))
+    monkeypatch.setattr(executor_app, "run_claude_agent_sdk", fake_sdk)
+    task = asyncio.create_task(_default_executor_runner(
+        ExecutorTaskRequest.model_validate(task_payload()), tmp_path, emit,
+    ))
+    try:
+        await asyncio.wait_for(flush_started.wait(), timeout=2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert task.cancelled()
+    finally:
+        release_flush.set()
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_executor_uses_sdk_for_multiskill_request_with_qa_skill_first(
     monkeypatch,
     tmp_path,

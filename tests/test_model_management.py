@@ -1078,6 +1078,15 @@ def test_model_proxy_invalid_unicode_evidence_never_interrupts_stream(caplog) ->
     assert "events=0" in caplog.records[-1].message
 
 
+def test_model_proxy_deep_invalid_json_cannot_interrupt_forwarding(caplog):
+    # Below the SSE byte limit; Python 3.12's JSON parser raises RecursionError.
+    wire = b"data: " + b"[" * 15_000 + b"0" + b"]" * 15_000 + b"\n\n"
+    with caplog.at_level(logging.WARNING):
+        assert b"".join(observe_anthropic_text([wire], run_id="run-test", attempt_id="attempt-test")) == wire
+    assert "coverage=partial_invalid_event" in caplog.records[-1].message
+    assert "final=True complete=False" in caplog.records[-1].message
+
+
 def test_model_proxy_evidence_logger_failure_does_not_interrupt_stream(monkeypatch) -> None:
     from app.execution.application import model_response_evidence
 

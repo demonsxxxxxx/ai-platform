@@ -1889,8 +1889,8 @@ async def _default_executor_runner(
             append_sdk_text_checkpoints(diagnostics)
             try:
                 await emit_agent_event_batch(diagnostics)
-            except (Exception, asyncio.CancelledError):
-                pass  # Best effort: retain the original SDK error/cancellation.
+            except Exception:
+                pass  # Best effort; cancellation at this await must propagate.
 
     log_open_tool_lifecycles("sdk_terminal")
 

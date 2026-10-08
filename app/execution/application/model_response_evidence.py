@@ -40,7 +40,10 @@ def observe_anthropic_text(
         data_size = 0
         try:
             event = json.loads(payload)
-        except (ValueError, UnicodeDecodeError):
+        except (ValueError, UnicodeDecodeError, RecursionError):
+            observer.partial("partial_invalid_event")
+            return
+        if not isinstance(event, dict):
             observer.partial("partial_invalid_event")
             return
         observer.accept(event)
