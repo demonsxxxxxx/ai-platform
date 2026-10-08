@@ -7,6 +7,8 @@ from app.skills.application.run_admission import (
     SkillRunAdmissionPorts,
     SkillRunAdmissionService,
 )
+from app.skills.application.skill_markdown import configure_skill_markdown_loader
+from app.skills.infrastructure.skill_markdown_yaml import load_skill_markdown_metadata
 from app.skills.infrastructure import catalog_postgres, postgres, versions_postgres
 from app.skills.infrastructure.run_snapshots_postgres import (
     pin_primary_skill_mcp_tool_ids,
@@ -24,7 +26,12 @@ from app.skills.release_policy import (
 )
 
 
+def configure_skill_markdown() -> None:
+    configure_skill_markdown_loader(load_skill_markdown_metadata)
+
+
 def configure_skill_services() -> None:
+    configure_skill_markdown()
     configure_skill_display_version_persistence(postgres)
     configure_skill_run_admission(
         SkillRunAdmissionService(

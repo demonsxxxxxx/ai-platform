@@ -4,6 +4,8 @@ import json
 
 import pytest
 
+from app.skills.application import skill_markdown
+from app.skills.infrastructure.skill_markdown_yaml import load_skill_markdown_metadata
 from app.skills.pinning import (
     attach_skill_snapshot_governance,
     build_skill_manifest_ref,
@@ -16,6 +18,11 @@ from app.skills.pinning import (
     governed_locked_skill_version,
 )
 from app.skills.registry import BuiltinSkillRegistry
+
+
+@pytest.fixture(autouse=True)
+def configured_skill_markdown_loader(monkeypatch):
+    monkeypatch.setattr(skill_markdown, "_yaml_metadata_loader", load_skill_markdown_metadata)
 
 
 def write_skill(root, name, description):

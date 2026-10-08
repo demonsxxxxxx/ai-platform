@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from app.bootstrap.skills import configure_skill_markdown  # noqa: E402
 from app.skills.release_readiness import (  # noqa: E402
     build_skill_release_readiness,
     build_skill_release_review_template,
@@ -52,6 +53,7 @@ def main() -> None:
         help="Optional path to write the rendered output. By default output is written to stdout only.",
     )
     args = parser.parse_args()
+    configure_skill_markdown()
 
     if args.write_evidence_scaffold:
         if not args.skill_id:

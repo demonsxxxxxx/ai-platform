@@ -7,12 +7,19 @@ import zlib
 
 import pytest
 
+from app.skills.application import skill_markdown
+from app.skills.infrastructure.skill_markdown_yaml import load_skill_markdown_metadata
 from app.skills import packages as skill_packages
 from app.skills.packages import (
     build_skill_package_contract,
     parse_skill_package_zip,
     validate_skill_package_contract,
 )
+
+
+@pytest.fixture(autouse=True)
+def configured_skill_markdown_loader(monkeypatch):
+    monkeypatch.setattr(skill_markdown, "_yaml_metadata_loader", load_skill_markdown_metadata)
 
 
 def package_zip(files: dict[str, str | bytes]) -> bytes:
@@ -201,6 +208,42 @@ def test_parse_skill_package_zip_rejects_missing_description():
     content = package_zip({"SKILL.md": "---\nname: qa-file-reviewer\n---\n\n# Skill\n"})
 
     with pytest.raises(ValueError, match="skill_package_description_required"):
+        parse_skill_package_zip(content, expected_skill_id="qa-file-reviewer")
+
+
+@pytest.mark.parametrize("indicator", [">-", "|"])
+def test_parse_skill_package_zip_reads_multiline_description(indicator):
+    content = package_zip({
+        "SKILL.md": (
+            f"---\nname: qa-file-reviewer\ndescription: {indicator}\n"
+            "  Review Word documents\n  against reference files.\n---\n"
+        )
+    })
+
+    parsed = parse_skill_package_zip(content, expected_skill_id="qa-file-reviewer")
+
+    assert "Review Word documents" in parsed.description
+    assert "against reference files." in parsed.description
+    assert parsed.description not in {">-", "|"}
+
+
+@pytest.mark.parametrize("indicator", [">-", "|"])
+def test_parse_skill_package_zip_rejects_empty_multiline_description(indicator):
+    content = package_zip({"SKILL.md": f"---\nname: qa-file-reviewer\ndescription: {indicator}\n---\n"})
+
+    with pytest.raises(ValueError, match="skill_package_description_required"):
+        parse_skill_package_zip(content, expected_skill_id="qa-file-reviewer")
+
+
+def test_parse_skill_package_zip_rejects_unsafe_yaml_tag():
+    content = package_zip({
+        "SKILL.md": (
+            "---\nname: qa-file-reviewer\n"
+            "description: !!python/object/apply:os.system ['false']\n---\n"
+        )
+    })
+
+    with pytest.raises(ValueError, match="skill_front_matter_invalid_yaml"):
         parse_skill_package_zip(content, expected_skill_id="qa-file-reviewer")
 
 

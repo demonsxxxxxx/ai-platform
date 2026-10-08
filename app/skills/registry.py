@@ -4,6 +4,10 @@ import os
 from pathlib import Path
 from typing import Any
 
+from app.skills.application.skill_markdown import (
+    parse_skill_markdown_front_matter as _parse_skill_markdown_front_matter,
+)
+
 
 @dataclass(frozen=True)
 class BuiltinSkill:
@@ -13,22 +17,6 @@ class BuiltinSkill:
     version: str
     source: dict[str, Any]
     entry: dict[str, Any]
-
-
-def parse_skill_markdown_front_matter(content: str) -> dict[str, str]:
-    normalized = content.lstrip("\ufeff").replace("\r\n", "\n").replace("\r", "\n")
-    if not normalized.startswith("---\n") and normalized.strip() != "---":
-        return {}
-    parts = normalized.split("---", 2)
-    if len(parts) < 3:
-        return {}
-    metadata: dict[str, str] = {}
-    for line in parts[1].splitlines():
-        if ":" not in line:
-            continue
-        key, value = line.split(":", 1)
-        metadata[key.strip()] = value.strip().strip('"').strip("'")
-    return metadata
 
 
 def iter_skill_files(path: Path):
@@ -87,7 +75,7 @@ class BuiltinSkillRegistry:
             if not skill_md.is_file():
                 raise ValueError(f"missing SKILL.md for built-in skill: {skill_dir.name}")
             content = skill_md.read_text(encoding="utf-8")
-            metadata = parse_skill_markdown_front_matter(content)
+            metadata = _parse_skill_markdown_front_matter(content)
             name = metadata.get("name") or skill_dir.name
             description = metadata.get("description") or ""
             if name != skill_dir.name:

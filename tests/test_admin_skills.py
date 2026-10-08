@@ -221,13 +221,13 @@ def test_admin_skill_list_requires_admin_and_returns_safe_summary_projection(mon
             {
                 "skill_id": "native-review",
                 "name": "native-review",
-                "description": "Review local files.",
+                "description": "Old catalog description.",
                 "lifecycle_status": "active",
                 "distribution_status": "active",
                 "visible_to_user": True,
                 "latest_version": "hash-uploaded-draft",
                 "latest_version_status": "draft",
-                "current_version": "hash-builtin-current",
+                "current_version": "hash-uploaded-current",
                 "rollout_percent": 100,
             },
             {
@@ -250,10 +250,18 @@ def test_admin_skill_list_requires_admin_and_returns_safe_summary_projection(mon
         return [
             {
                 "skill_id": "native-review",
+                "version": "hash-uploaded-current",
+                "description": "Review local files.",
+                "display_version": "1.0.0",
+                "created_at": datetime(2026, 9, 14, 2, 30, tzinfo=timezone.utc),
+            },
+            {
+                "skill_id": "native-review",
                 "version": "hash-uploaded-draft",
+                "description": "Unreleased draft description.",
                 "display_version": None,
                 "created_at": datetime(2026, 9, 15, 2, 30, tzinfo=timezone.utc),
-            }
+            },
         ]
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
@@ -282,10 +290,10 @@ def test_admin_skill_list_requires_admin_and_returns_safe_summary_projection(mon
                 "visible_to_user": True,
                 "latest_version": "hash-uploaded-draft",
                 "latest_version_status": "draft",
-                "current_version": "hash-builtin-current",
+                "current_version": "hash-uploaded-current",
                 "rollout_percent": 100,
-                "latest_display_version": "1.0.0",
-                "current_display_version": None,
+                "latest_display_version": "1.0.1",
+                "current_display_version": "1.0.0",
                 "latest_uploaded_at": "2026-09-15T02:30:00+00:00",
             }
         ]
@@ -303,6 +311,7 @@ def test_admin_skill_detail_returns_skill_versions_and_snapshots(monkeypatch):
             "skill": {
                 "skill_id": "qa-file-reviewer",
                 "name": "QA File Reviewer",
+                "description": "Old catalog description.",
                 "lifecycle_status": "active",
             },
             "release_policy": {
@@ -346,6 +355,7 @@ def test_admin_skill_detail_returns_skill_versions_and_snapshots(monkeypatch):
     assert response.status_code == 200
     body = response.json()
     assert body["skill"]["skill_id"] == "qa-file-reviewer"
+    assert body["skill"]["description"] == "QA review"
     assert body["release_policy"]["current_version"] == "hash-a"
     assert body["release_policy"]["previous_version"] == "0.1.0"
     assert body["versions"][0]["content_hash"] == "hash-a"
