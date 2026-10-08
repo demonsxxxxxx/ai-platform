@@ -1245,6 +1245,38 @@ def test_answer_timeline_rejects_foreign_aggregate_suffix_for_bound_source():
     assert timeline.disabled is True
 
 
+def test_projector_captures_only_first_rejected_frame_shape():
+    projector = _projector()
+    assert projector.accept(_message_start("private-message-id")) == ()
+    assert projector.accept(_start(0, "tool_use")) == ()
+    assert projector.accept({
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {"type": "text_delta", "text": "private-prompt-and-token"},
+    }) == ()
+    assert projector.disabled
+    assert projector.failure_frame == {
+        "event_type": "content_block_delta",
+        "block_type": "other",
+        "delta_type": "text_delta",
+        "message_state": "open",
+        "open_block_type": "tool_use",
+        "index_state": "ignored",
+        "guard": "block_delta_type",
+    }
+    assert projector.accept({"type": "private-second-event"}) == ()
+    assert "private" not in str(projector.failure_frame)
+
+
+def test_projector_classifies_unknown_unhashable_block_type_without_leakage():
+    projector = _projector()
+    assert projector.accept(_message_start()) == ()
+    assert projector.accept(_start(0, {"secret": "private-token"})) == ()
+    assert projector.failure_frame["block_type"] == "other"
+    assert projector.failure_frame["guard"] == "block_start_type"
+    assert "private-token" not in str(projector.failure_frame)
+
+
 def test_projector_ignores_pinned_server_tool_result_blocks_before_public_text():
     for content_type in (
         "server_tool_result",

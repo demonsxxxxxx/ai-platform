@@ -1,16 +1,47 @@
 from collections.abc import Callable, Sequence
 from typing import Any, Literal, TypedDict
 
-from app.skills.application.skill_markdown import (
-    parse_skill_markdown_front_matter as parse_skill_markdown_front_matter,
-)
 from app.skills.application.run_admission import (
     MAX_SKILL_RUN_MANIFESTS,
     SkillRunAdmission,
     SkillRunAdmissionService,
 )
+from app.skills.application.worker_dispatch_authorization import (
+    WorkerSkillCandidate as WorkerSkillCandidate,
+    WorkerSkillCatalog as WorkerSkillCatalog,
+    WorkerSkillDispatchAuthorization as WorkerSkillDispatchAuthorization,
+)
+from app.skills.application.worker_dispatch_catalog import (
+    materialize_worker_locked_skill_snapshots as materialize_worker_locked_skill_snapshots,
+    merged_worker_pinned_manifests as _merged_worker_pinned_manifests,
+    resolve_worker_runtime_catalog as resolve_worker_runtime_catalog,
+    worker_catalog_public_metadata as worker_catalog_public_metadata,
+    worker_pinned_manifests as worker_pinned_manifests,
+    worker_catalog_binding as worker_catalog_binding,
+    worker_payload_with_authorized_catalog as worker_payload_with_authorized_catalog,
+)
+from app.skills.application.pinned_snapshot_stage import (
+    select_pinned_skill_snapshots as select_pinned_skill_snapshots,
+    stage_pinned_skill_snapshot as stage_pinned_skill_snapshot,
+)
+from app.skills.domain.catalog_error import (
+    AuthorizedSkillCatalogError as AuthorizedSkillCatalogError,
+)
+from app.skills.application.worker_skill_snapshot_persistence import (
+    persist_worker_skill_snapshots as persist_worker_skill_snapshots,
+)
+from app.skills.application.skill_markdown import (
+    parse_skill_markdown_front_matter as parse_skill_markdown_front_matter,
+)
 from app.skills.application.run_admission import (
     SkillRunVersionMismatch as SkillRunVersionMismatch,
+)
+from app.skills.domain.pinned_snapshot import (
+    PinnedSkillMismatch as PinnedSkillMismatch,
+    pin_manifests_for_result as pin_manifests_for_result,
+    skill_manifests_from_catalog as skill_manifests_from_catalog,
+    staged_skill_manifests as staged_skill_manifests,
+    validate_pinned_skill_relative_path as validate_pinned_skill_relative_path,
 )
 from app.skills.domain.snapshot_paths import (
     skill_snapshot_components_fit as skill_snapshot_components_fit,
@@ -22,6 +53,14 @@ from app.skills.domain.version_labels import (
     next_uploaded_skill_display_version,
     resolve_uploaded_skill_display_versions,
 )
+
+
+def merged_worker_pinned_manifests(
+    payload: Any, catalog: Any | None,
+) -> dict[str, dict[str, Any]]:
+    return _merged_worker_pinned_manifests(
+        payload, catalog, catalog_error_type=AuthorizedSkillCatalogError,
+    )
 
 
 class AdminSkillSummaryResponse(TypedDict):
@@ -226,6 +265,14 @@ __all__ = [
     "MAX_SKILL_RUN_MANIFESTS",
     "SkillRunAdmission",
     "SkillRunVersionMismatch",
+    "PinnedSkillMismatch",
+    "stage_pinned_skill_snapshot",
+    "select_pinned_skill_snapshots",
+    "pin_manifests_for_result",
+    "persist_worker_skill_snapshots",
+    "skill_manifests_from_catalog",
+    "staged_skill_manifests",
+    "validate_pinned_skill_relative_path",
     "admit_skill_run",
     "admit_skill_set",
     "configure_skill_run_admission",

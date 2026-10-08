@@ -6491,6 +6491,40 @@ async def test_sdk_result_replaces_body_for_selected_empty_assistant(
     assert result.message == expected_text
 
 
+@pytest.mark.asyncio
+async def test_sdk_raw_frame_failure_retains_only_first_fixed_shape(monkeypatch, tmp_path):
+    captured = {}
+    events = [
+        {
+            "type": "message_start",
+            "message": {"id": "private-id", "role": "assistant", "stop_reason": None},
+        },
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use"}},
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "text_delta", "text": "private-token"}},
+        {"type": "private-later-frame"},
+    ]
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", _streaming_sdk(captured, events))
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="synthetic", cwd=tmp_path, skill_id="general-chat",
+        execution_policy="sandbox_brokered", on_text=lambda _text: None,
+    )
+
+    assert result.error == "claude_agent_sdk_output_validation_failed"
+    assert result.runtime_diagnostics["projection_failure"] == {
+        "reason": "raw_frame_invalid", "stage": "message", "location": "raw_stream_frame",
+        "frame_shape": {
+            "event_type": "content_block_delta", "block_type": "other",
+            "delta_type": "text_delta", "message_state": "open",
+            "open_block_type": "tool_use", "index_state": "ignored",
+            "guard": "block_delta_type",
+        },
+    }
+    assert "private-token" not in str(result.runtime_diagnostics["projection_failure"])
+
+
 def _streaming_sdk(
     captured, events, *, on_before_result=None, result_text="terminal final"
 ):

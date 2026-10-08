@@ -6,7 +6,7 @@ import json
 import re
 from typing import Any
 
-from app.skills.api import skill_snapshot_components_fit
+from app.skills.domain.snapshot_paths import skill_snapshot_components_fit
 from app.skills.dependencies import validate_skill_dependency_ids
 from app.skills.execution_profiles import resolve_skill_execution_profile
 from app.skills.lifecycle import is_admin_materializable_status

@@ -30,7 +30,7 @@ from app.skills.pinning import (
     build_skill_version_manifest_pin,
     validate_skill_version_dependency_policy,
 )
-from app.skills.api import MAX_SKILL_RUN_MANIFESTS
+from app.skills.api import MAX_SKILL_RUN_MANIFESTS, AuthorizedSkillCatalogError
 from app.validation import SAFE_ID_PATTERN
 
 
@@ -50,10 +50,6 @@ UNAVAILABLE_MATERIALIZATION = "unavailable_materialization"
 _AVAILABILITY_VALUES = frozenset(
     {AVAILABLE, UNAVAILABLE_DEPENDENCY, UNAVAILABLE_MATERIALIZATION}
 )
-
-
-class AuthorizedSkillCatalogError(ValueError):
-    """Raised when an authorized Skill catalog cannot be trusted or materialized."""
 
 
 @dataclass(frozen=True, slots=True)

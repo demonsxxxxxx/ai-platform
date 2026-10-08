@@ -17,10 +17,16 @@ from openpyxl import Workbook
 from tests.support.claude_mcp import install_mcp_sessions
 from tests.support.claude_sdk import native_client_factory
 
+import app.bootstrap.context as context_bootstrap
 import app.executors.claude_agent_sdk_runner as sdk_runner
-import app.worker as worker_module
 from app.context.file_content import ContextFileContentError
+from app.control_plane_contracts import sanitize_public_text
+from app.mcp.api import mcp_capability_subject
 from app.execution.application import artifact_storage
+from app.execution_boundary import decide_worker_execution_boundary
+from app.skills.execution_profiles import effective_skill_execution_profile
+from app.required_tool_contract import builtin_capability_subjects
+from app.executors.claude import capability_policy as claude_capability_policy
 from app.executors import claude_agent_worker
 from app.executors.base import RunPayload
 from app.executors.claude_agent_sdk_runner import (
@@ -31,7 +37,6 @@ from app.executors.claude_agent_sdk_runner import (
 from app.executors.claude_agent_worker import (
     ClaudeAgentWorkerAdapter,
     PreparedSdkRun,
-    _allowed_skill_names,
     _ordinary_run_requires_sandbox,
 )
 from app.executors.registry import AdapterRegistry
@@ -246,13 +251,14 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
         description="Staged review instructions.",
     )
     pinned_manifests = _registry_pins(tmp_path / "skills", skill_id="qa-file-reviewer")
-    builtin_subjects = worker_module._builtin_capability_subjects(
+    builtin_subjects = builtin_capability_subjects(
+        canonical_manifest=effective_skill_execution_profile,
         payload=types.SimpleNamespace(skill_manifests=pinned_manifests),
         run_identity={"skill_id": "qa-file-reviewer"},
         skill={"skill_status": "active"},
         skill_decision=types.SimpleNamespace(usable=True),
     )
-    external_subject = worker_module._mcp_capability_subject(
+    external_subject = mcp_capability_subject(
         {
             "tool_id": "corp-search::query",
             "server_id": "corp-search",
@@ -266,7 +272,8 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
             "endpoint": "",
             "auth_mode": "none",
         },
-        types.SimpleNamespace(usable=True),
+        distribution_usable=True,
+        sanitize_label=sanitize_public_text,
     )
     assert external_subject is not None
     external_subject["mcp_server_config"] = {
@@ -284,7 +291,7 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
     )
     boundary_subjects = with_boundary_sandbox_local_tool_subjects(
         builtin_subjects,
-        decision=worker_module._worker_execution_boundary_decision(boundary_payload),
+        decision=decide_worker_execution_boundary(boundary_payload),
         sandbox_provider="opensandbox",
         authorized_sandbox_tool_identities=("Bash", "Write"),
     )
@@ -1547,12 +1554,12 @@ async def test_materialize_files_rejects_symlinked_inputs_directory(monkeypatch,
         }
 
     adapter = ClaudeAgentWorkerAdapter()
-    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FailIfRead)
+    monkeypatch.setattr("app.bootstrap.context.ObjectStorage", FailIfRead)
     monkeypatch.setattr(
         "app.context.infrastructure.sources_postgres.get_scoped_context_file",
         fake_get_scoped_context_file,
     )
-    monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.bootstrap.context.transaction", fake_transaction)
 
     with pytest.raises(ContextFileContentError, match="context_file_staging_write_failed"):
         await adapter._materialize_files(payload(file_ids=["file_1"]), workspace)
@@ -1583,9 +1590,9 @@ async def test_materialize_files_rejects_existing_symlinked_target(monkeypatch, 
         }
 
     adapter = ClaudeAgentWorkerAdapter()
-    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
+    monkeypatch.setattr("app.bootstrap.context.ObjectStorage", FakeStorage)
     monkeypatch.setattr("app.context.infrastructure.sources_postgres.get_scoped_context_file", fake_get_scoped_context_file)
-    monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.bootstrap.context.transaction", fake_transaction)
 
     with pytest.raises(ContextFileContentError, match="context_file_staging_write_failed"):
         await adapter._materialize_files(payload(file_ids=["file_1"]), workspace)
@@ -1623,12 +1630,12 @@ async def test_materialize_files_disambiguates_duplicate_basename_in_stage(
         }
 
     adapter = ClaudeAgentWorkerAdapter()
-    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
+    monkeypatch.setattr("app.bootstrap.context.ObjectStorage", FakeStorage)
     monkeypatch.setattr(
         "app.context.infrastructure.sources_postgres.get_scoped_context_file",
         fake_get_scoped_context_file,
     )
-    monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.bootstrap.context.transaction", fake_transaction)
 
     materialized = await adapter._materialize_files(
         payload(file_ids=["file-a", "file-b"]),
@@ -1670,9 +1677,9 @@ async def test_harness_chat_stages_authorized_attachment_under_inputs(
         }
 
     adapter = ClaudeAgentWorkerAdapter()
-    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
+    monkeypatch.setattr("app.bootstrap.context.ObjectStorage", FakeStorage)
     monkeypatch.setattr("app.context.infrastructure.sources_postgres.get_scoped_context_file", fake_get_scoped_context_file)
-    monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.bootstrap.context.transaction", fake_transaction)
 
     prepared_files = await adapter._materialize_files(
         payload(
@@ -1693,43 +1700,6 @@ async def test_harness_chat_stages_authorized_attachment_under_inputs(
     assert prepared_files.materialized_file_names == ["book.xlsx"]
     assert [item.file_id for item in prepared_files.attachment_metadata] == ["file_1"]
     assert (workspace / "inputs" / "book.xlsx").read_bytes() == raw
-
-
-
-
-
-def test_qa_file_reviewer_does_not_infer_dependency_from_skill_id():
-    selected = _allowed_skill_names(
-        types.SimpleNamespace(skill_id="qa-file-reviewer", input={}, skill_manifests=[]),
-        ["qa-file-reviewer", "minimax-docx"],
-    )
-
-    assert selected == ["qa-file-reviewer"]
-
-
-def test_ctd_stability_template_fill_does_not_infer_dependency_from_skill_id():
-    selected = _allowed_skill_names(
-        types.SimpleNamespace(skill_id="ctd-32s73-stability-template-fill", input={}, skill_manifests=[]),
-        ["ctd-32s73-stability-template-fill", "reference-fact-extraction", "general-chat"],
-    )
-
-    assert selected == ["ctd-32s73-stability-template-fill"]
-
-
-def test_allowed_skill_names_prefers_pinned_manifest_dependency_graph():
-
-    selected = _allowed_skill_names(
-        payload(
-            skill_id="qa-file-reviewer",
-            skill_manifests=[
-                _test_skill_manifest("qa-file-reviewer", dependency_ids=["minimax-docx"]),
-                _test_skill_manifest("minimax-docx"),
-            ],
-        ),
-        ["qa-file-reviewer", "minimax-docx"],
-    )
-
-    assert selected == ["qa-file-reviewer", "minimax-docx"]
 
 
 @pytest.mark.asyncio
@@ -1761,15 +1731,6 @@ async def test_agent_run_records_pinned_manifest_dependency_graph(monkeypatch, t
     assert runtime_requests[0].attempt_id == "qat-test-attempt"
     assert runtime_requests[0].context_manifest["queue_attempt_id"] == "qat-test-attempt"
     assert result.executor_payload["skill_manifests"][0]["dependency_ids"] == ["legacy-helper"]
-
-
-def test_general_chat_does_not_stage_all_platform_skills_by_default():
-    selected = _allowed_skill_names(
-        payload(agent_id="general-agent", skill_id="general-chat", input={"message": "hello"}),
-        ["qa-file-reviewer", "minimax-docx"],
-    )
-
-    assert selected == []
 
 
 @pytest.mark.asyncio
@@ -3786,7 +3747,7 @@ async def test_agent_run_rejects_pinned_skill_snapshot_file_over_worker_cap(monk
     write_skill(tmp_path / "skills", name="qa-file-reviewer", description="Review Word documents.")
     write_skill(tmp_path / "skills", name="minimax-docx", description="Manipulate Word documents.")
     pins = _registry_pins(tmp_path / "skills", skill_id="qa-file-reviewer", input_payload={})
-    monkeypatch.setattr("app.executors.claude_agent_worker.MAX_SKILL_SNAPSHOT_FILE_BYTES", 8)
+    monkeypatch.setattr("app.skills.pinning.MAX_SKILL_SNAPSHOT_FILE_BYTES", 8)
     async def no_files(payload, workspace):
         return []
 
@@ -4117,14 +4078,9 @@ async def test_skill_progress_is_absent_without_skills_and_has_no_false_completi
 
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
-    original_allowed_skill_names = claude_agent_worker._allowed_skill_names
-    monkeypatch.setattr(
-        "app.executors.claude_agent_worker._allowed_skill_names",
-        lambda *_args, **_kwargs: [],
-    )
 
     prepared, failure = await adapter._prepare_sdk_run(
-        payload(file_ids=[]),
+        payload(file_ids=[], skill_id=None, skill_manifests=[], execution_kind="harness_chat"),
         event_sink=event_sink,
     )
 
@@ -4132,10 +4088,6 @@ async def test_skill_progress_is_absent_without_skills_and_has_no_false_completi
     assert prepared is not None
     assert prepared.staged_skill_names == []
     assert events == []
-    monkeypatch.setattr(
-        "app.executors.claude_agent_worker._allowed_skill_names",
-        original_allowed_skill_names,
-    )
 
     def fail_stage(*_args, **_kwargs):
         raise RuntimeError("staging failed")
@@ -4263,7 +4215,7 @@ async def test_sandbox_dispatch_uses_frozen_epoch_id_across_runs_and_new_adapter
 
 
 def test_sandbox_runtime_does_not_mint_tools_without_worker_authority():
-    subjects = claude_agent_worker._sandbox_runtime_tool_policy_subjects(
+    subjects = claude_capability_policy.sandbox_runtime_tool_policy_subjects(
         types.SimpleNamespace(input={"message": "请执行 Bash 命令 pwd"}),
         sandbox_provider="opensandbox",
     )
@@ -4289,7 +4241,7 @@ def test_sandbox_runtime_keeps_the_worker_authorized_local_tool_subset():
         }
     )
 
-    subjects = claude_agent_worker._sandbox_runtime_tool_policy_subjects(
+    subjects = claude_capability_policy.sandbox_runtime_tool_policy_subjects(
         payload,
         sandbox_provider="opensandbox",
     )
@@ -4321,7 +4273,7 @@ def test_sandbox_runtime_maps_authorized_profile_drive_read_to_workspace_staging
         input={"_runtime_tool_policy_subjects": [profile_drive_read]}
     )
 
-    subjects = claude_agent_worker._sandbox_runtime_tool_policy_subjects(
+    subjects = claude_capability_policy.sandbox_runtime_tool_policy_subjects(
         payload,
         sandbox_provider="opensandbox",
     )
@@ -4337,7 +4289,7 @@ def test_sandbox_runtime_maps_authorized_profile_drive_read_to_workspace_staging
     denied_payload = types.SimpleNamespace(
         input={"_runtime_tool_policy_subjects": [profile_drive_read]}
     )
-    denied_subjects = claude_agent_worker._sandbox_runtime_tool_policy_subjects(
+    denied_subjects = claude_capability_policy.sandbox_runtime_tool_policy_subjects(
         denied_payload,
         sandbox_provider="opensandbox",
     )
@@ -4362,7 +4314,7 @@ def test_context_tool_subjects_are_manifest_scoped_and_reserved_input_is_rebuilt
             ]
         }
     )
-    subjects = sdk_runner.runtime_tool_policy_subjects(
+    subjects = claude_capability_policy.runtime_tool_policy_subjects(
         payload,
         {
             "schema_version": "ai-platform.context-manifest.v1",
@@ -4418,8 +4370,8 @@ def test_worker_constructs_context_retrieval_authority_from_existing_scope(monke
             )
             return authority
 
-    monkeypatch.setattr(claude_agent_worker, "ContextRetrievalAuthority", AuthorityFactory)
-    monkeypatch.setattr(claude_agent_worker, "ObjectStorage", lambda: storage)
+    monkeypatch.setattr(context_bootstrap, "ContextRetrievalAuthority", AuthorityFactory)
+    monkeypatch.setattr(context_bootstrap, "ObjectStorage", lambda: storage)
     current_payload = payload(
         context_pack={
             "schema_version": "ai-platform.executor-context-pack.v1",
@@ -4446,10 +4398,10 @@ def test_worker_constructs_context_retrieval_authority_from_existing_scope(monke
     assert identity is not None
     assert identity.__dict__ == scope.model_dump()
     assert captured["factory"] == (
-        claude_agent_worker.transaction,
+        context_bootstrap.transaction,
         storage,
         tmp_path,
-        claude_agent_worker.run_storage_io,
+        context_bootstrap.run_storage_io,
     )
 
 
