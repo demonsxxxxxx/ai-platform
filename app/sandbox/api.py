@@ -26,9 +26,6 @@ from app.sandbox.domain.runtime_diagnostics import (
     exception_chain_from_error as exception_chain_from_error,
 )
 from app.sandbox.domain.runtime_diagnostics import (
-    normalize_sdk_raw_frame_shape as normalize_sdk_raw_frame_shape,
-)
-from app.sandbox.domain.runtime_diagnostics import (
     normalize_sdk_runtime_diagnostics as normalize_sdk_runtime_diagnostics,
 )
 from app.sandbox.domain.runtime_diagnostics import (

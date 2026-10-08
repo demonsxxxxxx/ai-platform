@@ -6,6 +6,7 @@ import pytest
 
 from app.platform.postgres.limits import json_size_bytes
 from app.runs.application.diagnostics import RunDiagnosticsService
+from app.runs.domain import diagnostics as runs_diagnostics_contract
 from app.runs.domain.diagnostics import (
     RUN_DIAGNOSTICS_MAX_BYTES,
     RUN_DIAGNOSTICS_SCHEMA_VERSION,
@@ -19,6 +20,7 @@ from app.sandbox.api import (
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
     normalize_sdk_runtime_diagnostics,
 )
+from app.sandbox.domain import runtime_diagnostics as sandbox_diagnostics_contract
 
 
 NOW = datetime(2026, 9, 13, 8, 0, tzinfo=timezone.utc)
@@ -232,6 +234,12 @@ def test_projection_failure_survives_sandbox_and_runs_diagnostic_boundaries():
     assert sandbox_projection["projection_failure"] == expected
     assert observation["runtime_diagnostics"]["projection_failure"] == expected
     assert repeated_sandbox_projection["projection_failure"] == expected
+
+
+def test_raw_frame_shape_label_contracts_match_across_boundaries():
+    assert runs_diagnostics_contract._RUN_RAW_FRAME_LABELS == (
+        sandbox_diagnostics_contract._RAW_FRAME_SHAPE_LABELS
+    )
 
 
 def test_raw_frame_shape_survives_sandbox_runs_and_rejects_untrusted_values():

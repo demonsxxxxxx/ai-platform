@@ -10,8 +10,6 @@ import math
 import re
 from typing import Any
 
-from app.sandbox.api import normalize_sdk_raw_frame_shape
-
 RUN_DIAGNOSTICS_SCHEMA_VERSION = "ai-platform.run-diagnostics.v1"
 RUN_DIAGNOSTICS_BUDGET_POLICY_VERSION = "run-diagnostics-budget.v1"
 RUN_DIAGNOSTICS_REDACTION_POLICY_VERSION = "run-diagnostics-redaction.v1"
@@ -259,6 +257,53 @@ def sanitize_runtime_diagnostics(value: object) -> dict[str, Any]:
     return projected
 
 
+_RUN_RAW_FRAME_LABELS = {
+    "event_type": frozenset({
+        "ping", "message_start", "message_delta", "message_stop",
+        "content_block_start", "content_block_stop", "content_block_delta", "other",
+    }),
+    "block_type": frozenset({
+        "text", "thinking", "redacted_thinking", "tool_use", "server_tool_use",
+        "mcp_tool_use", "tool_result", "server_tool_result", "advisor_tool_result",
+        "mcp_tool_result", "tool_search_tool_result", "web_search_tool_result",
+        "web_fetch_tool_result", "code_execution_tool_result",
+        "bash_code_execution_tool_result", "text_editor_code_execution_tool_result",
+        "other",
+    }),
+    "delta_type": frozenset({
+        "text_delta", "thinking_delta", "signature_delta", "input_json_delta", "other",
+    }),
+    "message_state": frozenset({"open", "closed"}),
+    "open_block_type": frozenset({
+        "none", "text", "thinking", "redacted_thinking", "tool_use",
+        "server_tool_use", "mcp_tool_use", "tool_result", "server_tool_result",
+        "advisor_tool_result", "mcp_tool_result", "tool_search_tool_result",
+        "web_search_tool_result", "web_fetch_tool_result", "code_execution_tool_result",
+        "bash_code_execution_tool_result", "text_editor_code_execution_tool_result",
+    }),
+    "index_state": frozenset({"invalid", "active", "ignored", "completed", "other"}),
+    "guard": frozenset({
+        "parent_binding", "event_object", "event_type", "message_start",
+        "message_delta_state", "message_delta_object", "message_delta_stop_reason",
+        "message_delta_stop_sequence", "message_delta_conflict", "message_stop",
+        "block_start_state", "block_start_index", "block_start_type",
+        "block_start_limit", "block_stop_index", "block_delta_index",
+        "block_delta_object", "block_delta_type", "block_delta_text",
+    }),
+}
+
+
+def _sanitize_raw_frame_shape(value: object) -> dict[str, str] | None:
+    if not isinstance(value, dict) or set(value) != set(_RUN_RAW_FRAME_LABELS):
+        return None
+    if any(
+        not isinstance(value[key], str) or value[key] not in allowed
+        for key, allowed in _RUN_RAW_FRAME_LABELS.items()
+    ):
+        return None
+    return {key: value[key] for key in _RUN_RAW_FRAME_LABELS}
+
+
 def _sanitize_projection_failure(value: object) -> dict[str, Any] | None:
     """Retain bounded diagnostic labels already classified by the executor owner."""
     if not isinstance(value, dict):
@@ -274,7 +319,7 @@ def _sanitize_projection_failure(value: object) -> dict[str, Any] | None:
         and projected["location"] == "raw_stream_frame"
         and "frame_shape" in value
     ):
-        frame_shape = normalize_sdk_raw_frame_shape(value["frame_shape"])
+        frame_shape = _sanitize_raw_frame_shape(value["frame_shape"])
         if frame_shape is not None:
             projected["frame_shape"] = frame_shape
     return projected
