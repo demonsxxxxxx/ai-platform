@@ -266,10 +266,18 @@ async def admin_list_skills(
         for row in display_rows
         if row.get("created_at") is not None
     }
+    uploaded_descriptions = {
+        (str(row["skill_id"]), str(row["version"])): row["description"]
+        for row in display_rows
+        if isinstance(row.get("description"), str) and row["description"]
+    }
     for item in items:
         skill_id = str(item.get("skill_id") or "")
         latest_version = item.get("latest_version")
         current_version = item.get("current_version")
+        item["description"] = uploaded_descriptions.get(
+            (skill_id, str(current_version or "")), item.get("description")
+        )
         item["latest_display_version"] = display_versions.get(
             (skill_id, str(latest_version or ""))
         )
@@ -314,6 +322,14 @@ async def admin_skill_detail(
         (version for version in versions if str(version.get("version") or "") == current_version),
         versions[0] if versions else {},
     )
+    selected_description = selected_version.get("description")
+    if (
+        current_version
+        and str(selected_version.get("version") or "") == current_version
+        and isinstance(selected_description, str)
+        and selected_description
+    ):
+        detail["skill"]["description"] = selected_description
     dependency_ids = selected_version.get("dependency_ids")
     if not isinstance(dependency_ids, list) or not all(isinstance(item, str) for item in dependency_ids):
         dependency_ids = []

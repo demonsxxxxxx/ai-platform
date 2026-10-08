@@ -204,6 +204,42 @@ def test_parse_skill_package_zip_rejects_missing_description():
         parse_skill_package_zip(content, expected_skill_id="qa-file-reviewer")
 
 
+@pytest.mark.parametrize("indicator", [">-", "|"])
+def test_parse_skill_package_zip_reads_multiline_description(indicator):
+    content = package_zip({
+        "SKILL.md": (
+            f"---\nname: qa-file-reviewer\ndescription: {indicator}\n"
+            "  Review Word documents\n  against reference files.\n---\n"
+        )
+    })
+
+    parsed = parse_skill_package_zip(content, expected_skill_id="qa-file-reviewer")
+
+    assert "Review Word documents" in parsed.description
+    assert "against reference files." in parsed.description
+    assert parsed.description not in {">-", "|"}
+
+
+@pytest.mark.parametrize("indicator", [">-", "|"])
+def test_parse_skill_package_zip_rejects_empty_multiline_description(indicator):
+    content = package_zip({"SKILL.md": f"---\nname: qa-file-reviewer\ndescription: {indicator}\n---\n"})
+
+    with pytest.raises(ValueError, match="skill_package_description_required"):
+        parse_skill_package_zip(content, expected_skill_id="qa-file-reviewer")
+
+
+def test_parse_skill_package_zip_rejects_unsafe_yaml_tag():
+    content = package_zip({
+        "SKILL.md": (
+            "---\nname: qa-file-reviewer\n"
+            "description: !!python/object/apply:os.system ['false']\n---\n"
+        )
+    })
+
+    with pytest.raises(ValueError, match="skill_front_matter_invalid_yaml"):
+        parse_skill_package_zip(content, expected_skill_id="qa-file-reviewer")
+
+
 def test_parse_skill_package_zip_rejects_name_mismatch():
     content = package_zip({"SKILL.md": skill_md(name="other-skill")})
 

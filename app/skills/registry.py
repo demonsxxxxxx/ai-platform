@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 
 @dataclass(frozen=True)
 class BuiltinSkill:
@@ -22,13 +24,17 @@ def parse_skill_markdown_front_matter(content: str) -> dict[str, str]:
     parts = normalized.split("---", 2)
     if len(parts) < 3:
         return {}
-    metadata: dict[str, str] = {}
-    for line in parts[1].splitlines():
-        if ":" not in line:
-            continue
-        key, value = line.split(":", 1)
-        metadata[key.strip()] = value.strip().strip('"').strip("'")
-    return metadata
+    try:
+        metadata = yaml.safe_load(parts[1])
+    except yaml.YAMLError as exc:
+        raise ValueError("skill_front_matter_invalid_yaml") from exc
+    if not isinstance(metadata, dict):
+        return {}
+    return {
+        key: value.strip()
+        for key, value in metadata.items()
+        if isinstance(key, str) and isinstance(value, str)
+    }
 
 
 def iter_skill_files(path: Path):

@@ -27,6 +27,31 @@ def test_parse_skill_front_matter_handles_bom_and_crlf():
     assert metadata["description"] == "Word document generation."
 
 
+@pytest.mark.parametrize(
+    ("indicator", "expected"),
+    [(">-", "First line second line"), ("|", "First line\nsecond line")],
+)
+def test_parse_skill_front_matter_multiline_description(indicator, expected):
+    metadata = parse_skill_markdown_front_matter(
+        f"---\nname: ctd-review\ndescription: {indicator}\n  First line\n  second line\n---\n"
+    )
+
+    assert metadata["description"] == expected
+
+
+def test_parse_skill_front_matter_quoted_description_with_colon():
+    metadata = parse_skill_markdown_front_matter(
+        '---\nname: ctd-review\ndescription: "Review: Word documents"\n---\n'
+    )
+
+    assert metadata["description"] == "Review: Word documents"
+
+
+def test_parse_skill_front_matter_rejects_invalid_yaml():
+    with pytest.raises(ValueError, match="skill_front_matter_invalid_yaml"):
+        parse_skill_markdown_front_matter("---\nname: ctd-review\ndescription: [invalid\n---\n")
+
+
 def test_builtin_registry_discovers_skill_from_platform_root(tmp_path):
     skill_dir = tmp_path / "qa-file-reviewer"
     skill_dir.mkdir()
