@@ -10,6 +10,8 @@ import math
 import re
 from typing import Any
 
+from app.sandbox.api import normalize_sdk_raw_frame_shape
+
 RUN_DIAGNOSTICS_SCHEMA_VERSION = "ai-platform.run-diagnostics.v1"
 RUN_DIAGNOSTICS_BUDGET_POLICY_VERSION = "run-diagnostics-budget.v1"
 RUN_DIAGNOSTICS_REDACTION_POLICY_VERSION = "run-diagnostics-redaction.v1"
@@ -257,7 +259,7 @@ def sanitize_runtime_diagnostics(value: object) -> dict[str, Any]:
     return projected
 
 
-def _sanitize_projection_failure(value: object) -> dict[str, str] | None:
+def _sanitize_projection_failure(value: object) -> dict[str, Any] | None:
     """Retain bounded diagnostic labels already classified by the executor owner."""
     if not isinstance(value, dict):
         return None
@@ -267,6 +269,14 @@ def _sanitize_projection_failure(value: object) -> dict[str, str] | None:
         if not isinstance(label, str) or not re.fullmatch(r"[a-z][a-z_]{0,63}", label):
             return None
         projected[key] = label
+    if (
+        projected["reason"] == "raw_frame_invalid"
+        and projected["location"] == "raw_stream_frame"
+        and "frame_shape" in value
+    ):
+        frame_shape = normalize_sdk_raw_frame_shape(value["frame_shape"])
+        if frame_shape is not None:
+            projected["frame_shape"] = frame_shape
     return projected
 
 
