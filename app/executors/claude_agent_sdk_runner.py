@@ -302,13 +302,17 @@ class _ProjectionFailure:
     reason: str
     stage: str
     location: str
+    frame_shape: dict[str, str] | None = None
 
-    def as_dict(self) -> dict[str, str]:
-        return {
+    def as_dict(self) -> dict[str, Any]:
+        result = {
             "reason": self.reason,
             "stage": self.stage,
             "location": self.location,
         }
+        if self.frame_shape is not None:
+            result["frame_shape"] = self.frame_shape
+        return result
 
 
 class _SessionStoreAppendTracker:
@@ -3564,6 +3568,7 @@ async def run_claude_agent_sdk(
             reason: str,
             stage: str,
             location: str,
+            frame_shape: dict[str, str] | None = None,
         ) -> None:
             nonlocal stream_projection_failed, first_projection_failure
             if first_projection_failure is None:
@@ -3571,6 +3576,7 @@ async def run_claude_agent_sdk(
                     reason=reason,
                     stage=stage,
                     location=location,
+                    frame_shape=frame_shape,
                 )
             stream_projection_failed = True
             answer_stream_gate.fail_closed()
@@ -3644,6 +3650,7 @@ async def run_claude_agent_sdk(
                             ),
                             stage="message",
                             location="raw_stream_frame",
+                            frame_shape=stream_projector.failure_frame,
                         )
                     else:
                         if (

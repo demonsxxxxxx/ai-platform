@@ -184,6 +184,18 @@ output-capacity validation, and their existing errors are unchanged.
   semantics, infer Thinking from ordinary answer text, or change SSE/Run terminal
   authority requires a revised contract.
 
+## Raw Stream Failure Diagnostics
+
+Sandbox-brokered SDK runs with an `on_text` callback validate raw `StreamEvent`
+framing before public answer projection. On the first `raw_frame_invalid` rejection,
+private `projection_failure.frame_shape` records only allowlisted event, block,
+and delta type labels, the message/open-block/index state, and the failed
+validator guard. Unknown types map to `other`; no raw frame, payload, text,
+identifier, index value, or tool input is persisted. Sandbox normalization and
+Runs admin diagnostics enforce the same closed shape contract. This adds no
+ordinary-user field and changes neither the fail-closed decision nor text
+publication. No superseded production path, assertion, or selector is in scope.
+
 ## Redis Lifecycle Authority
 
 `REDIS_MAX_CONNECTIONS=10` controls `Redis.from_url(max_connections=...)` for
