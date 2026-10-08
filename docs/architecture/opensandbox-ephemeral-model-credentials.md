@@ -10,7 +10,7 @@ Status: accepted source contract. Runtime publication is a separate release gate
   governed OpenSandbox topology. The administrator Models page owns the upstream
   origin, write-only credential, enabled directory, capacities and default.
 - **Bounded paths:** model-control-plane and OpenSandbox credential application
-  logic and tests, the unified OpenSandbox Compose overlay, package assembly,
+  logic and tests, the internal-test OpenSandbox Compose overlay, package assembly,
   this contract, and the existing model administration component and mounted test.
 - **Preserved invariants:** Run/Attempt and capability binding, endpoint
   validation and DNS pinning, write-only provider credentials, frozen model and
@@ -28,24 +28,23 @@ Status: accepted source contract. Runtime publication is a separate release gate
   output. Stop deployment if active work exists, the selected package's proxy
   topology is unavailable, the immutable image is unqualified, a non-404 count
   error would be masked, or any secret would enter source, logs or evidence.
-- **Retirement and compatibility:** the internal-test package, ordinary-bridge
-  execution branch, host-published proxy port and direct provider-credential
-  forwarding are removed. Tests and deployed executors use the same
-  database-owned platform proxy and signed lease path. Existing database-tracked
-  internal-test leases retain exact-identity stop-only cleanup; they cannot
-  authorize new execution or renewal. Rollback uses the prior immutable package
-  and configuration after activity is drained.
+- **Retirement and compatibility:** direct provider-credential forwarding remains
+  removed. The restored test-only ordinary-bridge package uses the same
+  database-owned platform model proxy and Run/Attempt-bound short-lived
+  capability, with a host-published proxy port reachable only on the intended
+  private interface. Its leases carry exact test-profile identity rather than
+  a governed network proof. Production signed leases and historical test leases
+  retain their own exact cleanup checks. Rollback uses a prior immutable package
+  and retained configuration after activity is drained.
 
 ## Decision
 
 All OpenSandbox executors receive only a Run/Attempt-bound model proxy
 capability, never long-lived OpenAI or Anthropic credentials. The runtime reaches
-the proxy on its dedicated task bridge. That bridge permits public Internet
-egress through host NAT; host firewall rules deny private, link-local, metadata,
-host and peer access, with the model/callback proxy as the explicit private
-exception. Its physical network name, bridge, subnet and proxy address are
-operator configuration, checked against the protected host configuration.
-API and Worker use the official
+the proxy through the host-published private test bridge endpoint for
+internal-test; the retained production topology uses its dedicated task
+bridge with host guard. The ordinary test bridge does not deny private,
+link-local, metadata, host or peer destinations. API and Worker use the official
 OpenSandbox SDK directly; the OpenSandbox Server owns lifecycle and runsc
 execution.
 

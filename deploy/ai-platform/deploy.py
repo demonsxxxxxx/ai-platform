@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from contextlib import contextmanager
 import hashlib
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -315,6 +316,88 @@ def validate_production_config(config: dict, allow_insecure_http: bool) -> None:
         print("warning: HTTP/insecure cookies expose sessions and gateway traffic; restrict access to a trusted isolated intranet, firewall the direct API, and prefer TLS.", file=sys.stderr)
 
 
+def validate_internal_test_bridge(config: dict, docker: list[str]) -> None:
+    services = config["services"]
+    api = services["api"].get("environment", {})
+    worker = services["worker"].get("environment", {})
+    proxy = services.get("opensandbox-egress-proxy", {})
+    if api.get("SANDBOX_SECURITY_PROFILE") != "internal-test" and not proxy.get("ports"):
+        return
+    for environment in (api, worker):
+        if any(str(environment.get(key) or "").lower() != value for key, value in (
+            ("DEPLOYMENT_ENVIRONMENT", "test"),
+            ("SANDBOX_CONTAINER_PROVIDER", "opensandbox"),
+            ("SANDBOX_SECURITY_PROFILE", "internal-test"),
+            ("OPENSANDBOX_EXPECTED_NETWORK_MODE", "bridge"),
+            ("SANDBOX_EGRESS_POLICY_ENABLED", "false"),
+            ("OPENSANDBOX_USE_SERVER_PROXY", "true"),
+        )):
+            raise DeploymentError("internal-test OpenSandbox profile configuration is invalid")
+        base = str(environment.get("OPENSANDBOX_BASE_URL") or "").strip()
+        domain = str(environment.get("OPENSANDBOX_DOMAIN") or "").strip()
+        protocol = str(environment.get("OPENSANDBOX_PROTOCOL") or "").strip()
+        if not base and (not domain or not protocol):
+            raise DeploymentError("OpenSandbox lifecycle endpoint is required")
+        for value in (base, f"{protocol}://{domain}" if domain and protocol else ""):
+            if not value:
+                continue
+            try:
+                parsed = urlsplit(value)
+                port = parsed.port
+                host = ipaddress.ip_address(parsed.hostname or "")
+                valid = (
+                    parsed.scheme in ("http", "https") and host.version == 4
+                    and host.is_private and not host.is_loopback and not host.is_link_local
+                    and not host.is_unspecified and not host.is_reserved
+                    and parsed.netloc == f"{host}:{port}" and port is not None and 0 < port <= 65535
+                    and parsed.path in ("", "/") and not parsed.query and not parsed.fragment
+                )
+            except ValueError:
+                valid = False
+            if not valid:
+                raise DeploymentError("OpenSandbox lifecycle endpoint must be a private IPv4 URL")
+        if base and domain and protocol and base.rstrip("/") != f"{protocol}://{domain}":
+            raise DeploymentError("OpenSandbox lifecycle endpoints conflict")
+    if (
+        len(str(api.get("SANDBOX_CALLBACK_TOKEN") or "")) < 32
+        or api.get("SANDBOX_CALLBACK_TOKEN") != worker.get("SANDBOX_CALLBACK_TOKEN")
+    ):
+        raise DeploymentError("internal-test callback credential must match and contain at least 32 characters")
+    for key in ("OPENSANDBOX_BASE_URL", "OPENSANDBOX_DOMAIN", "OPENSANDBOX_PROTOCOL", "OPENSANDBOX_EGRESS_PROXY_URL"):
+        if api.get(key) != worker.get(key):
+            raise DeploymentError("API and Worker OpenSandbox endpoints must match")
+    ports = proxy.get("ports")
+    if not isinstance(ports, list) or len(ports) != 1 or not isinstance(ports[0], dict):
+        raise DeploymentError("internal-test proxy binding is invalid")
+    api_ports = services["api"].get("ports")
+    if not isinstance(api_ports, list) or len(api_ports) != 1 or not isinstance(api_ports[0], dict):
+        raise DeploymentError("internal-test API callback port is invalid")
+    port = ports[0]
+    callback_port = api_ports[0]
+    try:
+        gateway = json.loads(run([*docker, "network", "inspect", "bridge"], "Docker bridge inspection"))
+        bridge = gateway[0]
+        address = ipaddress.ip_address(bridge["IPAM"]["Config"][0]["Gateway"])
+        if (
+            len(gateway) != 1 or bridge["Driver"] != "bridge" or bridge["Internal"]
+            or address.version != 4 or not address.is_private or address.is_loopback
+            or address.is_link_local or address.is_unspecified
+            or port.get("host_ip") != str(address)
+            or str(port.get("published")) != "18043" or port.get("target") != 8080
+            or port.get("protocol") != "tcp"
+            or api.get("OPENSANDBOX_EGRESS_PROXY_URL") != f"http://{address}:18043"
+            or callback_port.get("host_ip") not in (None, "", "0.0.0.0", str(address))
+            or callback_port.get("target") != 8020 or callback_port.get("protocol") != "tcp"
+            or not str(callback_port.get("published") or "").isdigit()
+            or not 0 < int(callback_port["published"]) <= 65535
+            or api.get("SANDBOX_CALLBACK_BASE_URL") != f"http://{address}:{callback_port['published']}"
+            or api.get("SANDBOX_CALLBACK_BASE_URL") != worker.get("SANDBOX_CALLBACK_BASE_URL")
+        ):
+            raise ValueError
+    except (ValueError, KeyError, IndexError, TypeError):
+        raise DeploymentError("internal-test proxy must bind the private Docker bridge gateway; API, Worker and callback URLs must match") from None
+
+
 def install_state(path: Path, config: dict, resume: bool, create: bool = False,
                   workspace_migration: bool = False) -> None:
     # The fingerprint binds the complete rendered configuration, including stable
@@ -442,6 +525,7 @@ def deploy(package: Path, env: Path, docker: list[str], offline: bool, check_onl
     run([*compose, "config", "--quiet"], "configuration")
     config = json.loads(run([*compose, "config", "--format", "json"], "configuration identity"))
     validate_production_config(config, allow_insecure_http)
+    validate_internal_test_bridge(config, docker)
     workspace_migration = validate_workspace_storage(config, docker, migrate_legacy)
     for service in ("api", "worker", "migrate", "workspace-migrate", "workspace-init", "frontend"):
         expected = FRONTEND if service == "frontend" else BACKEND

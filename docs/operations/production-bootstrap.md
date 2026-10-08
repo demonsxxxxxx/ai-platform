@@ -141,9 +141,13 @@ be the browser-visible frontend origin.
 
 ## Install or upgrade the application
 
-Download the matching immutable production package from one Deployment Release,
-extract it, and reuse the owner-held application environment file. From the
-package directory run:
+This production host procedure applies only when a separate, reviewed immutable
+production Release is available. The current publication workflow emits only
+`ai-platform-internal-test.tar.gz`; do not deploy that test bridge package here.
+Previously published production Releases remain immutable but may be too old
+for the current schema. When a qualified production package exists, download it
+from one Release, extract it, and reuse the owner-held application environment
+file. From the package directory run:
 
 ```sh
 python3 deploy.py \

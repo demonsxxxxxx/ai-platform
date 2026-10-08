@@ -1564,6 +1564,60 @@ async def test_opensandbox_real_create_path_does_not_require_custom_attestation(
 
 
 @pytest.mark.asyncio
+async def test_internal_test_bridge_create_dispatch_renew_and_stop(monkeypatch):
+    from datetime import datetime, timezone
+    from app.runtime.sandbox.opensandbox_policy import opensandbox_renewal_identity_is_authorized
+
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+
+    class BridgeSettings(OpenSandboxSettings):
+        deployment_environment = "test"
+        sandbox_security_profile = "internal-test"
+        sandbox_egress_policy_enabled = False
+        sandbox_egress_proof_signing_key = ""
+        opensandbox_expected_network_mode = "bridge"
+        opensandbox_egress_proxy_url = "http://host.docker.internal:18043"
+
+    settings = BridgeSettings()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    health_calls = []
+    identity_calls = []
+    provider = opensandbox_provider(
+        health_probe=lambda *args: health_calls.append(args) or True,
+        identity_probe=lambda *args: identity_calls.append(args) or {"uid": 10001, "gid": 10001},
+    )
+    lease = await provider.create_or_reuse(request(), workspace())
+    created = FakeOpenSandbox.created[0]
+    assert created["network_policy"] is None
+    assert created["metadata"]["ai-platform.internal_test.network_mode"] == "bridge"
+    assert lease.labels["ai-platform.security_profile"] == "internal-test"
+    assert lease.labels["ai-platform.executor.identity_evidence"] == "authenticated-runtime-endpoint"
+    assert "ai-platform.governed_egress.proof" not in lease.labels
+    fresh_provider = opensandbox_provider()
+    _, recovered_headers = await fresh_provider.executor_control_endpoint(lease, request())
+    assert recovered_headers[container_provider.EXECUTOR_AUTH_HEADER] == created["env"]["AI_PLATFORM_EXECUTOR_AUTH_TOKEN"]
+    assert recovered_headers[container_provider.EXECUTOR_AUTH_HEADER]
+    assert container_provider.executor_callback_target(settings, "opensandbox").base_url == settings.sandbox_callback_base_url
+    assert created["env"]["SANDBOX_CALLBACK_BASE_URL"] == settings.sandbox_callback_base_url
+    assert created["env"]["OPENAI_BASE_URL"].startswith("http://host.docker.internal:18043/openai/")
+    status = container_provider._opensandbox_status_from_info(FakeOpenSandbox.instances[lease.container_id].get_info())
+    assert opensandbox_renewal_identity_is_authorized(status, lease, settings, now=datetime.now(timezone.utc))
+    reused = await provider.create_or_reuse(request(), workspace())
+    assert reused.container_id == lease.container_id
+    assert len(FakeOpenSandbox.created) == 1
+    assert FakeOpenSandbox.instances[lease.container_id].killed is False
+    await provider.validate_for_dispatch(lease, request(), workspace())
+    assert len(health_calls) == len(identity_calls) == 3
+
+    settings.sandbox_runtime_subject = "changed-runtime"
+    assert not opensandbox_renewal_identity_is_authorized(status, lease, settings, now=datetime.now(timezone.utc))
+    settings.sandbox_runtime_subject = "runtime-subject-a"
+    assert (await provider.stop(lease, reason="bridge-test-complete")).status == "stopped"
+
+
+@pytest.mark.asyncio
 async def test_opensandbox_governed_create_readback_health_dispatch_and_stop(monkeypatch):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()
@@ -1954,7 +2008,7 @@ def test_create_container_provider_rejects_unknown_provider(monkeypatch):
         container_provider.create_container_provider()
 
 
-def test_create_container_provider_rejects_retired_profile_before_backend_selection(monkeypatch):
+def test_create_container_provider_rejects_unknown_profile_before_backend_selection(monkeypatch):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     container_provider.reset_container_provider_cache()
     monkeypatch.setattr(
@@ -1970,7 +2024,7 @@ def test_create_container_provider_rejects_retired_profile_before_backend_select
         )(),
     )
 
-    with pytest.raises(container_provider.OpenSandboxCapabilityAdmissionError, match="retired sandbox security profile"):
+    with pytest.raises(container_provider.OpenSandboxCapabilityAdmissionError, match="security profile selection is invalid"):
         container_provider.create_container_provider()
 
 

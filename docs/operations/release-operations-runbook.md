@@ -2,7 +2,7 @@
 
 This is the executable application release procedure. An explicitly requested
 version publishes an immutable Deployment Release with one operator asset,
-`ai-platform-production.tar.gz`,
+`ai-platform-internal-test.tar.gz`,
 containing the runtime-only package and matching `release-image-manifest.json`. A host consumes that package directly. Git,
 GitHub Actions, source checkouts, and host image builds are not part of a normal
 application install or upgrade.
@@ -14,11 +14,11 @@ runs, independently of the Backend and Frontend checks. Before requesting a
 formal version, verify those required checks passed for the selected main commit.
 Packaging verifies the two application image subjects, binds their complete
 `linux/amd64` registry digests, and creates one package from the manifest.
-Only an explicit version attaches `ai-platform-production.tar.gz` to a public
+Only an explicit version attaches `ai-platform-internal-test.tar.gz` to an immutable
 Deployment Release. GitHub's automatically generated source archives may still
 appear; they are not operator packages.
 
-The package contains the exact Compose file, the unified OpenSandbox overlay,
+The package contains the exact Compose file, internal-test OpenSandbox overlay,
 `.env.example`, `deploy.py`, the release manifest, package guide,
 `BACKUP-RESTORE.md`, and verified image qualification evidence in
 `release-evidence/`.
@@ -46,8 +46,8 @@ cannot retain fixed vulnerabilities. The normal main-source, environment,
 scan, signature, and attestation gates still apply.
 
 For a daily test package, open the successful main Packaging run's Actions
-artifacts and download `ai-platform-production-<commit>-<run>-<attempt>`.
-That artifact contains only `ai-platform-production.tar.gz` and is retained for
+artifacts and download `ai-platform-internal-test-<commit>-<run>-<attempt>`.
+That artifact contains only `ai-platform-internal-test.tar.gz` and is retained for
 seven days. It is produced on main pushes and blank-version manual runs after
 package qualification; it is a temporary test package, not a formal Release or
 production deployment approval. Separate audit evidence remains for 30 days.
@@ -59,16 +59,19 @@ A named version is reserved only after qualification and a fresh main-commit
 check. An existing tag is a hard failure, never moved or reused. If publication
 fails after reserving a tag, stop and inspect that tag and any draft Release;
 do not automatically delete, reuse, or overwrite it. A completed Release still
-requires immutable status and the single matching production package asset. Publishing a package
+requires immutable status and the single matching internal-test package asset. Publishing a package
 does not install or upgrade any host.
 
 ## One-time host preparation
 
 Use a Linux host with Python 3, Docker, Compose v2 with `--wait` and `!reset`,
-and an active `opensandbox.service`. Prepare the OpenSandbox host policy,
-`runsc` runtime, lifecycle address, credentials, network guard, and workspace
-permissions through the production host procedure before using the production
-package. This host setup is not repeated for every application upgrade.
+and an active `opensandbox.service`. The internal-test host must retain native
+Docker `bridge` networking and `runsc` gVisor runtime, with the OpenSandbox
+NAT-redirect egress sidecar disabled. The test bridge has no production host
+network guard: a task can reach routable host, private and public destinations.
+Limit this package to a trusted isolated test host. The existing production
+host contract remains documented in [production host preparation](production-bootstrap.md),
+but this workflow does not publish a new production package for s75.
 
 Create or retain one owner-held mode `0600` environment file. For a new host:
 
@@ -86,20 +89,20 @@ or release evidence. The invoking user must own the file. When Docker requires
 sudo, pass `--docker-cmd 'sudo -n docker'` to the package entry instead of
 running Compose as a different user.
 
-Production uses HTTPS origins and secure cookies by default. Generate independent
-`TRUSTED_PRINCIPAL_SECRET` and `AI_SESSION_SECRET` values of at least 32
-characters and preserve them across upgrades. An intentionally HTTP-only trusted
+The package controller still requires non-placeholder `TRUSTED_PRINCIPAL_SECRET`
+and `AI_SESSION_SECRET` values of at least 32 characters. Preserve the existing
+values across upgrades. An intentionally HTTP-only trusted
 isolated intranet requires its actual HTTP origin, both secure-cookie flags
 false and explicit `--allow-insecure-http`; restrict access and firewall the
-direct API. This flag acknowledges risk, not production network hardening.
+direct API. This flag acknowledges risk, not network hardening.
 
-The production host contract is documented in
-[production host preparation](production-bootstrap.md). Its host files and
-systemd units are prerequisites, not application-release inputs.
+The OpenSandbox test bridge, workspace Host bind, lifecycle service and proxy
+binding are documented in the packaged `README.md`; verify actual `runsc`
+execution and egress separately from controller readiness.
 
 ## Install or upgrade
 
-Download the production package from one immutable Deployment Release and use
+Download the internal-test package from one immutable Deployment Release and use
 its embedded manifest; extract the archive into a new directory, and keep that directory
 unchanged. Take a coordinated database, MinIO, Redis and workspace backup and choose a
 maintenance window with no active Runs, Attempts, leases, or sandbox containers.
@@ -132,7 +135,7 @@ project-wide deployment lock and the following gates:
 5. Keep PostgreSQL, Redis, and MinIO running with their existing containers,
    mounts, and volumes.
 6. Run the versioned migration and workspace initialization as one-shot
-   services. Fresh/current-layout production skips legacy workspace migration;
+   services. Fresh/current-layout installations skip legacy workspace migration;
    any existing supported legacy source directory, even empty, requires
    `--migrate-legacy-workspaces`
    and a verified backup. The read-only legacy source is retained.

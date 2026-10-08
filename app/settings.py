@@ -52,6 +52,7 @@ class Settings(BaseSettings):
 
     sandbox_workspace_root: str = Field(default="/tmp/ai-platform-sandbox-workspaces")
     sandbox_container_provider: str = Field(default="fake")
+    sandbox_security_profile: Literal["governed", "internal-test"] = Field(default="governed")
     sandbox_executor_image: str = Field(default="ai-platform-executor:dev")
     sandbox_executor_published_host: str = Field(default="127.0.0.1")
     sandbox_callback_base_url: str = Field(default="http://127.0.0.1:8000")
@@ -264,7 +265,7 @@ class Settings(BaseSettings):
         if not isinstance(value, str):
             raise ValueError("opensandbox_expected_network_mode_invalid")
         candidate = value.strip()
-        if not is_valid_opensandbox_network_name(candidate):
+        if candidate != "bridge" and not is_valid_opensandbox_network_name(candidate):
             raise ValueError("opensandbox_expected_network_mode_invalid")
         return candidate
 
@@ -274,7 +275,17 @@ class Settings(BaseSettings):
             raise ValueError("default_tenant_id_must_be_default_deployment_scope")
         if self.object_delete_retry_cap_seconds < self.object_delete_retry_base_seconds:
             raise ValueError("object_delete_retry_cap_below_base")
+        if self.sandbox_security_profile == "internal-test" and not (
+            self.deployment_environment == "test"
+            and self.sandbox_container_provider == "opensandbox"
+            and self.opensandbox_expected_network_mode == "bridge"
+        ):
+            raise ValueError("internal_test_opensandbox_profile_invalid")
+        if self.opensandbox_expected_network_mode == "bridge" and self.sandbox_security_profile != "internal-test":
+            raise ValueError("opensandbox_expected_network_mode_invalid")
         if self.deployment_environment == "production" and self.sandbox_container_provider == "opensandbox":
+            if self.sandbox_security_profile != "governed":
+                raise ValueError("production_opensandbox_profile_invalid")
             if not self.opensandbox_use_server_proxy:
                 raise ValueError("production_opensandbox_server_proxy_required")
             if not self.sandbox_egress_policy_enabled:

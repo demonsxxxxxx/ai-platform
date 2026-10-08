@@ -43,7 +43,7 @@ finished or explicitly cancelled through its normal authority.
 set -euo pipefail
 umask 077
 ENV_FILE=/absolute/path/to/operator.env
-RUNNING_ARCHIVE=/absolute/path/to/currently-running/ai-platform-production.tar.gz
+RUNNING_ARCHIVE=/absolute/path/to/currently-running/ai-platform-internal-test.tar.gz
 BACKUP_ROOT=/mnt/encrypted-backups/ai-platform
 BACKUP="$BACKUP_ROOT/$(date -u +%Y%m%dT%H%M%SZ)"
 DOCKER=(docker) # Or: DOCKER=(sudo -n docker)

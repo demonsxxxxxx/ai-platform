@@ -15,6 +15,99 @@ entry = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(entry)
 
 
+def test_internal_test_bridge_preflight_binds_proxy_and_lifecycle(monkeypatch):
+    api = {
+        "DEPLOYMENT_ENVIRONMENT": "test",
+        "SANDBOX_CONTAINER_PROVIDER": "opensandbox",
+        "SANDBOX_SECURITY_PROFILE": "internal-test",
+        "OPENSANDBOX_EXPECTED_NETWORK_MODE": "bridge",
+        "SANDBOX_EGRESS_POLICY_ENABLED": "false",
+        "SANDBOX_CALLBACK_TOKEN": "synthetic-callback-key-with-enough-entropy-2026",
+        "SANDBOX_CALLBACK_BASE_URL": "http://172.17.0.1:8020",
+        "OPENSANDBOX_USE_SERVER_PROXY": "true",
+        "OPENSANDBOX_EGRESS_PROXY_URL": "http://172.17.0.1:18043",
+        "OPENSANDBOX_BASE_URL": "http://172.18.0.1:8080",
+        "OPENSANDBOX_DOMAIN": "",
+        "OPENSANDBOX_PROTOCOL": "",
+    }
+    config = {"services": {
+        "api": {"environment": api, "ports": [{"host_ip": "", "published": "8020", "target": 8020, "protocol": "tcp"}]},
+        "worker": {"environment": dict(api)},
+        "opensandbox-egress-proxy": {"ports": [{
+            "host_ip": "172.17.0.1", "published": "18043", "target": 8080, "protocol": "tcp",
+        }]},
+    }}
+    bridge = [{"Driver": "bridge", "Internal": False, "IPAM": {"Config": [{"Gateway": "172.17.0.1"}]}}]
+    calls = []
+
+    def inspect_bridge(command, stage, timeout=90):
+        calls.append((command, stage))
+        return json.dumps(bridge)
+
+    monkeypatch.setattr(entry, "run", inspect_bridge)
+    entry.validate_internal_test_bridge(config, ["docker"])
+    assert calls == [(["docker", "network", "inspect", "bridge"], "Docker bridge inspection")]
+    api["SANDBOX_CALLBACK_TOKEN"] = "short"
+    with pytest.raises(entry.DeploymentError, match="callback credential must match"):
+        entry.validate_internal_test_bridge(config, ["docker"])
+    api["SANDBOX_CALLBACK_TOKEN"] = config["services"]["worker"]["environment"]["SANDBOX_CALLBACK_TOKEN"]
+    api["SANDBOX_CALLBACK_BASE_URL"] = "http://api.sandbox.internal:8020"
+    with pytest.raises(entry.DeploymentError, match="callback URLs must match"):
+        entry.validate_internal_test_bridge(config, ["docker"])
+    api["SANDBOX_CALLBACK_BASE_URL"] = "http://172.17.0.1:8020"
+    config["services"]["api"]["ports"][0]["host_ip"] = "127.0.0.1"
+    with pytest.raises(entry.DeploymentError, match="callback URLs must match"):
+        entry.validate_internal_test_bridge(config, ["docker"])
+    config["services"]["api"]["ports"][0]["host_ip"] = ""
+    api["OPENSANDBOX_BASE_URL"] = ""
+    api["OPENSANDBOX_DOMAIN"] = "172.18.0.1:8080"
+    api["OPENSANDBOX_PROTOCOL"] = "http"
+    config["services"]["worker"]["environment"] = dict(api)
+    entry.validate_internal_test_bridge(config, ["docker"])
+
+    for field, value in (
+        ("host_ip", "0.0.0.0"),
+        ("host_ip", "172.17.0.2"),
+        ("published", "18044"),
+    ):
+        port = config["services"]["opensandbox-egress-proxy"]["ports"][0]
+        before = port[field]
+        port[field] = value
+        with pytest.raises(entry.DeploymentError, match="proxy must bind"):
+            entry.validate_internal_test_bridge(config, ["docker"])
+        port[field] = before
+    api["OPENSANDBOX_EGRESS_PROXY_URL"] = "http://172.17.0.2:18043"
+    with pytest.raises(entry.DeploymentError, match="API and Worker OpenSandbox endpoints must match"):
+        entry.validate_internal_test_bridge(config, ["docker"])
+    config["services"]["worker"]["environment"] = dict(api)
+    with pytest.raises(entry.DeploymentError, match="proxy must bind"):
+        entry.validate_internal_test_bridge(config, ["docker"])
+    api["OPENSANDBOX_EGRESS_PROXY_URL"] = "http://172.17.0.1:18043"
+    config["services"]["worker"]["environment"] = dict(api)
+    bridge[0]["IPAM"]["Config"][0]["Gateway"] = "172.17.0.2"
+    with pytest.raises(entry.DeploymentError, match="proxy must bind"):
+        entry.validate_internal_test_bridge(config, ["docker"])
+    bridge[0]["IPAM"]["Config"][0]["Gateway"] = "172.17.0.1"
+    api["OPENSANDBOX_DOMAIN"] = ""
+    config["services"]["worker"]["environment"] = dict(api)
+    with pytest.raises(entry.DeploymentError, match="lifecycle endpoint is required"):
+        entry.validate_internal_test_bridge(config, ["docker"])
+    api["OPENSANDBOX_BASE_URL"] = "http://user:pass@172.18.0.1:8080"
+    config["services"]["worker"]["environment"] = dict(api)
+    with pytest.raises(entry.DeploymentError, match="private IPv4 URL"):
+        entry.validate_internal_test_bridge(config, ["docker"])
+    for host in ("127.0.0.1", "0.0.0.0", "169.254.169.254", "8.8.8.8", "host.docker.internal"):
+        api["OPENSANDBOX_BASE_URL"] = f"http://{host}:8080"
+        config["services"]["worker"]["environment"] = dict(api)
+        with pytest.raises(entry.DeploymentError, match="private IPv4 URL"):
+            entry.validate_internal_test_bridge(config, ["docker"])
+    api["OPENSANDBOX_BASE_URL"] = ""
+    api["OPENSANDBOX_DOMAIN"] = "8.8.8.8:8080"
+    config["services"]["worker"]["environment"] = dict(api)
+    with pytest.raises(entry.DeploymentError, match="private IPv4 URL"):
+        entry.validate_internal_test_bridge(config, ["docker"])
+
+
 @pytest.mark.skipif(sys.platform != "linux", reason="real Linux procfs descriptor paths required")
 def test_environment_snapshot_survives_original_path_replacement(tmp_path):
     original = tmp_path / ".env"

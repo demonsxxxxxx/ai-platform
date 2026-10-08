@@ -1586,16 +1586,55 @@ def test_inactive_heartbeat_does_not_reconstruct_or_renew(monkeypatch):
 
 
 def test_opensandbox_callback_renews_without_business_lock_then_commits_fenced_receipt(monkeypatch):
-    patch_callback_settings(monkeypatch, callback_settings("secret", lease_ttl_seconds=731))
+    from app.runtime.sandbox.opensandbox_policy import internal_test_opensandbox_lease_labels
+    from app.routes.sandbox_runtime_cleanup import container_lease_from_persisted_row
+
+    settings = callback_settings("secret", lease_ttl_seconds=731)
+    settings.deployment_environment = "test"
+    settings.sandbox_container_provider = "opensandbox"
+    settings.sandbox_security_profile = "internal-test"
+    settings.sandbox_egress_policy_enabled = False
+    settings.opensandbox_expected_network_mode = "bridge"
+    settings.opensandbox_executor_image = "registry.example/ai-platform@sha256:" + "a" * 64
+    settings.opensandbox_executor_image_digest = "sha256:" + "a" * 64
+    settings.sandbox_runtime_subject = "direct-opensandbox"
+    patch_callback_settings(monkeypatch, settings)
+    monkeypatch.setattr("app.routes.sandbox_runtime_cleanup.get_settings", lambda: settings)
     order = []
     transaction_state = {"active": False}
+    labels = internal_test_opensandbox_lease_labels(
+        SimpleNamespace(tenant_id="tenant-a", workspace_id="workspace-a", user_id="user-a",
+                        session_id="session-a", run_id="run-a", attempt_id="attempt-a",
+                        sandbox_mode="ephemeral", browser_enabled=False),
+        settings,
+        executor_identity_labels={
+            "ai-platform.executor.user": "10001:10001",
+            "ai-platform.executor.uid": "10001",
+            "ai-platform.executor.gid": "10001",
+            "ai-platform.executor.identity_evidence": "authenticated-runtime-endpoint",
+        },
+        skill_mount_labels={},
+    )
     heartbeat_row = {
         "id": "lease-attempt-a",
         "provider": "opensandbox",
+        "tenant_id": "tenant-a", "workspace_id": "workspace-a", "user_id": "user-a",
+        "session_id": "session-a", "run_id": "run-a", "attempt_id": "attempt-a",
+        "sandbox_mode": "ephemeral", "browser_enabled": False,
+        "runtime_container_id": "osb-run-a",
+        "runtime_container_name": "opensandbox-run-a-attempt-a",
+        "runtime_executor_url": "http://executor.test:18000",
+        "runtime_workspace_container_path": "/workspace",
+        "runtime_handle_verified_at": "2026-10-08T00:00:00Z",
         "lease_payload_json": {
-            "attempt_id": "attempt-a",
-            "owner_generation": "7",
+            "attempt_id": "attempt-a", "owner_generation": "7",
             "callback_token_id": "cbt:run-a:attempt-a",
+            "security_profile": "internal-test", "internal_test_lease_version": "active-v1",
+            "container_id": "osb-run-a", "container_name": "opensandbox-run-a-attempt-a",
+            "executor_url": "http://executor.test:18000", "workspace_container_path": "/workspace",
+            "requested_image": settings.opensandbox_executor_image,
+            "requested_image_digest": settings.opensandbox_executor_image_digest,
+            "labels": labels,
         },
     }
 
@@ -1643,7 +1682,8 @@ def test_opensandbox_callback_renews_without_business_lock_then_commits_fenced_r
 
     from app.routes import runtime_callbacks
 
-    persisted_lease = SimpleNamespace(provider="opensandbox")
+    persisted_lease = container_lease_from_persisted_row(heartbeat_row)
+    assert persisted_lease is not None
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
     monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'get_run_identity', get_run_identity)
     monkeypatch.setattr(
@@ -1656,11 +1696,6 @@ def test_opensandbox_callback_renews_without_business_lock_then_commits_fenced_r
         runtime_callbacks.sandbox_lease_repository,
         "record_sandbox_executor_heartbeat",
         fake_heartbeat,
-    )
-    monkeypatch.setattr(
-        runtime_callbacks,
-        "container_lease_from_persisted_row",
-        lambda row: persisted_lease,
     )
     monkeypatch.setattr(runtime_callbacks, "create_container_provider", lambda _name: FakeProvider())
     monkeypatch.setattr(runtime_callbacks, "renew_opensandbox_lifetime", fake_renew)

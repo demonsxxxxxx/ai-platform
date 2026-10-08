@@ -1,5 +1,10 @@
 # Deploy a released version
 
+This guide applies only to previously published production Releases. The current
+publication workflow emits only the internal-test bridge package; its own
+`README.md` is included in that archive. Do not use that package on a production
+host or reconstruct a production package from these source templates.
+
 Download `ai-platform-production.tar.gz`, the single operator asset,
 from the **chosen immutable Deployment Release** on the official repository.
 The manifest, verified release evidence and `BACKUP-RESTORE.md` are inside it.

@@ -241,7 +241,8 @@ def test_release_publication_fails_closed_without_reusing_version(
             ]
         elif call["kind"] == "create":
             assert args[:3] == ["release", "create", version]
-            assert args[3:5] == ["ai-platform-production.tar.gz", "--repo"]
+            assert args[3:5] == ["ai-platform-internal-test.tar.gz", "--repo"]
+
             assert args[args.index("--title") + 1] == version
             assert "--verify-tag" in args
             assert "--target" not in args
@@ -295,10 +296,10 @@ def test_release_shell_rejects_unconfirmed_or_non_manual_main_before_github(
     assert not log.exists(), "rejected publication must not call GitHub"
 
 
-def test_temporary_production_package_is_run_bound_and_short_lived():
+def test_temporary_internal_test_package_is_run_bound_and_short_lived():
     steps = _workflow()["jobs"]["release-manifest"]["steps"]
     upload = next(
-        step for step in steps if step.get("name") == "Upload temporary production package"
+        step for step in steps if step.get("name") == "Upload temporary internal-test package"
     )
     evidence = next(
         step for step in steps if step.get("name") == "Upload ready release image evidence"
@@ -318,10 +319,10 @@ def test_temporary_production_package_is_run_bound_and_short_lived():
     )
     assert upload["uses"] == evidence["uses"]
     assert upload["with"] == {
-        "name": "ai-platform-production-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}",
+        "name": "ai-platform-internal-test-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}",
         "if-no-files-found": "error",
         "retention-days": "7",
-        "path": "ai-platform-production.tar.gz",
+        "path": "ai-platform-internal-test.tar.gz",
     }
     assert "continue-on-error" not in upload
     assert evidence["with"]["retention-days"] == "30"
@@ -809,9 +810,9 @@ def test_release_manifest_reverifies_exact_downloaded_bundles_with_pinned_gh():
     assert "ASSET_PATH" not in public["env"]
     assert "ASSET_LABEL" not in public["env"]
     assert 'release create "$RELEASE_TAG"' in public["run"]
-    assert '"ai-platform-production.tar.gz"' in public["run"]
+    assert '"ai-platform-internal-test.tar.gz"' in public["run"]
     assert "release-image-manifest.json" not in public["run"]
-    assert "ai-platform-internal-test.tar.gz" not in public["run"]
+    assert "ai-platform-production.tar.gz" not in public["run"]
     assert "release upload" not in public["run"]
     assert "release edit" not in public["run"]
     assert "--draft" not in public["run"]
@@ -1081,24 +1082,20 @@ def test_deployment_release_is_immutable_minimal_and_fresh_main_bound():
     assert 'api "repos/$GITHUB_REPOSITORY/git/ref/heads/main"' in release["run"]
     assert 'test "$current_main" = "$GITHUB_SHA"' in release["run"]
     assert 'release create "$RELEASE_TAG"' in release["run"]
-    assert '"ai-platform-production.tar.gz"' in release["run"]
+    assert '"ai-platform-internal-test.tar.gz"' in release["run"]
     package = next(step for step in steps if "tools/release_compose_package.py" in step.get("run", ""))
     verification = next(step for step in steps if "tools/release_image_manifest.py verify" in step.get("run", ""))
     assert steps.index(verification) < steps.index(package) < steps.index(release)
     assert "--profile" not in package["run"]
     assert "for profile" not in package["run"]
     assert package["run"].count("python tools/release_compose_package.py") == 1
-    assert "--output ai-platform-production.tar.gz" in package["run"]
-    assert "ai-platform-internal-test.tar.gz" not in package["run"]
+    assert "--output ai-platform-internal-test.tar.gz" in package["run"]
+    assert "ai-platform-production.tar.gz" not in package["run"]
     assert "--manifest release-image-manifest.json" in package["run"]
     assert "--evidence-root ." in package["run"]
-    assert "ai-platform-internal-test.tar.gz" not in release["run"]
+    assert "ai-platform-production.tar.gz" not in release["run"]
     assert "release-image-manifest.json" not in release["run"]
-    assert not any(
-        "internal-test" in step.get("name", "").lower()
-        or "internal-test" in str(step.get("with", {})).lower()
-        for step in steps
-    )
+    assert not any("production.tar.gz" in str(step) for step in steps)
     assert "release upload" not in release["run"]
     assert "release edit" not in release["run"]
     assert "--latest=false" in release["run"]
