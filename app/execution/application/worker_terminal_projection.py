@@ -13,22 +13,16 @@ from app.execution.domain.worker_observability import (
     event_observability_kwargs,
     executor_observability,
 )
-from app.required_tool_contract import (
-    RequiredCapabilityDecision,
-    required_tool_completion_for_run,
-)
 
 
 def enforce_worker_required_tool_completion(
     result: Any, *, payload: Any, run_identity: dict[str, str],
-    attempt_id: str, required_tool_decision: Any | None,
+    attempt_id: str, required_tool_decision: Any,
+    check_completion: Callable[..., Any],
 ) -> Any:
-    authorization = required_tool_decision or RequiredCapabilityDecision(
-        True, "required_tool_not_declared", "", "",
-    )
-    completion = required_tool_completion_for_run(
+    completion = check_completion(
         payload=payload, run_identity=run_identity,
-        attempt_id=attempt_id, authorization=authorization,
+        attempt_id=attempt_id, authorization=required_tool_decision,
         executor_payload=result.executor_payload,
     )
     if result.status != "succeeded" or completion.allowed:

@@ -14,7 +14,7 @@ from app.skills.application.worker_dispatch_authorization import (
 from app.skills.application.worker_dispatch_catalog import (
     materialize_worker_locked_skill_snapshots as materialize_worker_locked_skill_snapshots,
     merged_worker_pinned_manifests as _merged_worker_pinned_manifests,
-    resolve_worker_runtime_catalog as _resolve_worker_runtime_catalog,
+    resolve_worker_runtime_catalog as resolve_worker_runtime_catalog,
     worker_catalog_public_metadata as worker_catalog_public_metadata,
     worker_pinned_manifests as worker_pinned_manifests,
     worker_catalog_binding as worker_catalog_binding,
@@ -24,12 +24,9 @@ from app.skills.application.pinned_snapshot_stage import (
     select_pinned_skill_snapshots as select_pinned_skill_snapshots,
     stage_pinned_skill_snapshot as stage_pinned_skill_snapshot,
 )
-from app.skills.registry import BuiltinSkill as BuiltinSkill
-from app.skills.stager import SkillStager as SkillStager
 from app.skills.domain.catalog_error import (
     AuthorizedSkillCatalogError as AuthorizedSkillCatalogError,
 )
-from app.skills.stager import materialize_worker_pinned_skill as materialize_worker_pinned_skill
 from app.skills.application.worker_skill_snapshot_persistence import (
     persist_worker_skill_snapshots as persist_worker_skill_snapshots,
 )
@@ -56,19 +53,6 @@ from app.skills.domain.version_labels import (
     next_uploaded_skill_display_version,
     resolve_uploaded_skill_display_versions,
 )
-
-
-def resolve_worker_runtime_catalog(payload: Any) -> Any | None:
-    from app.skills.catalog import (
-        AuthorizedSkillCatalogBinding,
-        load_runtime_authorized_skill_catalog,
-    )
-
-    return _resolve_worker_runtime_catalog(
-        payload, catalog_binding_type=AuthorizedSkillCatalogBinding,
-        catalog_error_type=AuthorizedSkillCatalogError,
-        load_catalog=load_runtime_authorized_skill_catalog,
-    )
 
 
 def merged_worker_pinned_manifests(

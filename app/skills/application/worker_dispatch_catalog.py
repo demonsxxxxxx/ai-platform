@@ -3,8 +3,6 @@
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from app.control_plane_contracts import RUN_EXECUTION_KIND_HARNESS_CHAT
-
 
 async def materialize_worker_locked_skill_snapshots(
     conn: Any, *, tenant_id: str, run_id: str,
@@ -22,10 +20,11 @@ async def materialize_worker_locked_skill_snapshots(
 
 
 def resolve_worker_runtime_catalog(
-    payload: Any, *, catalog_binding_type: Callable[..., Any],
+    payload: Any, *, harness_execution_kind: str,
+    catalog_binding_type: Callable[..., Any],
     catalog_error_type: type[Exception], load_catalog: Callable[..., Any],
 ) -> Any | None:
-    if payload.execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT:
+    if payload.execution_kind == harness_execution_kind:
         return None
     if payload.skill_id is None:
         raise catalog_error_type("authorized_skill_catalog_binding_invalid")

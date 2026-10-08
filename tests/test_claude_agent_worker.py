@@ -5,7 +5,8 @@ import stat
 import pytest
 
 from app.execution.api import artifact_type
-from app.skills.api import materialize_worker_pinned_skill, select_pinned_skill_snapshots
+from app.bootstrap.skills import materialize_worker_pinned_skill
+from app.skills.api import select_pinned_skill_snapshots
 from app.skills.registry import skill_content_hash
 
 

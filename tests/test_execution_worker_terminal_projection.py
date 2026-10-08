@@ -9,7 +9,7 @@ from app.execution.api import (
 from app.executors.base import ExecutorResult
 
 
-def test_required_tool_completion_fail_closes_success_without_evidence(monkeypatch):
+def test_required_tool_completion_fail_closes_success_without_evidence():
     result = ExecutorResult(
         status="succeeded", adapter_version="v1", executor_type="stub",
         executor_version="v1", capabilities={}, result={"message": "done"},
@@ -21,13 +21,11 @@ def test_required_tool_completion_fail_closes_success_without_evidence(monkeypat
         calls.append(kwargs)
         return SimpleNamespace(allowed=False, reason="required_tool_completion_evidence_missing")
 
-    monkeypatch.setattr(
-        "app.execution.application.worker_terminal_projection.required_tool_completion_for_run",
-        check,
-    )
     projected = enforce_worker_required_tool_completion(
         result, payload=object(), run_identity={"run_id": "run"},
-        attempt_id="attempt", required_tool_decision=None,
+        attempt_id="attempt",
+        required_tool_decision=SimpleNamespace(allowed=True),
+        check_completion=check,
     )
     assert calls[0]["attempt_id"] == "attempt"
     assert projected.status == "failed"

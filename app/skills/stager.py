@@ -92,6 +92,7 @@ def harden_skill_staging_tree(root: Path) -> None:
 
 def materialize_worker_pinned_skill(
     skill_name: str, pin: dict[str, Any], snapshot_root: Path,
+    *, max_file_bytes: int, max_total_bytes: int,
 ) -> BuiltinSkill:
     def prepare_target(workspace_root: Path, target: Path) -> None:
         ensure_creatable_inside(workspace_root, target, "pinned skill path must stay inside the run workspace")
@@ -106,7 +107,6 @@ def materialize_worker_pinned_skill(
         write_skill_staging_file(output, content)
 
     from app.skills.api import stage_pinned_skill_snapshot
-    from app.skills.pinning import MAX_SKILL_SNAPSHOT_FILE_BYTES, MAX_SKILL_SNAPSHOT_TOTAL_BYTES
 
     target, expected_hash = stage_pinned_skill_snapshot(
         skill_name, pin, snapshot_root,
@@ -115,8 +115,8 @@ def materialize_worker_pinned_skill(
         has_skill_markdown=lambda path: (path / "SKILL.md").is_file(),
         content_hash=skill_content_hash,
         remove_invalid_target=lambda path: shutil.rmtree(path, ignore_errors=True),
-        max_file_bytes=MAX_SKILL_SNAPSHOT_FILE_BYTES,
-        max_total_bytes=MAX_SKILL_SNAPSHOT_TOTAL_BYTES,
+        max_file_bytes=max_file_bytes,
+        max_total_bytes=max_total_bytes,
     )
     return BuiltinSkill(
         name=skill_name,

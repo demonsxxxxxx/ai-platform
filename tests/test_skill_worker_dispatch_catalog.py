@@ -26,6 +26,39 @@ async def test_locked_worker_skill_snapshot_conflict_returns_no_manifests():
     assert result is None
 
 
+def test_worker_runtime_catalog_uses_only_the_bound_skill_input():
+    from app.skills.api import resolve_worker_runtime_catalog
+
+    payload = SimpleNamespace(
+        execution_kind="skill", skill_id="selected", skill_manifests=[{"skill_id": "selected"}],
+        input={"message": "hello"}, tenant_id="tenant", workspace_id="workspace",
+        user_id="user", session_id="session", run_id="run", agent_id="agent",
+    )
+    calls = []
+
+    def load(input_payload, *, expected_binding, pinned_manifests):
+        calls.append((input_payload, expected_binding, pinned_manifests))
+        return "bound-catalog"
+
+    assert resolve_worker_runtime_catalog(
+        payload, harness_execution_kind="harness",
+        catalog_binding_type=SimpleNamespace,
+        catalog_error_type=AuthorizedSkillCatalogError,
+        load_catalog=load,
+    ) == "bound-catalog"
+    assert calls[0][0] == {"message": "hello"}
+    assert calls[0][1].selected_skill_id == "selected"
+    assert calls[0][2] == payload.skill_manifests
+    payload.execution_kind = "harness"
+    assert resolve_worker_runtime_catalog(
+        payload, harness_execution_kind="harness",
+        catalog_binding_type=SimpleNamespace,
+        catalog_error_type=AuthorizedSkillCatalogError,
+        load_catalog=load,
+    ) is None
+    assert len(calls) == 1
+
+
 def test_worker_catalog_pin_merge_rejects_mismatched_current_content():
     payload = SimpleNamespace(skill_manifests=[{"skill_id": "skill", "content_hash": "hash-one"}])
     catalog = SimpleNamespace(

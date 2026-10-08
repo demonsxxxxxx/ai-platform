@@ -30,8 +30,7 @@ from app.skills.pinning import (
     build_skill_version_manifest_pin,
     validate_skill_version_dependency_policy,
 )
-from app.skills.api import MAX_SKILL_RUN_MANIFESTS
-from app.skills.domain.catalog_error import AuthorizedSkillCatalogError
+from app.skills.api import MAX_SKILL_RUN_MANIFESTS, AuthorizedSkillCatalogError
 from app.validation import SAFE_ID_PATTERN
 
 

@@ -112,7 +112,8 @@ expose concrete infrastructure adapters.
 Execution selects staged Skill names from already-admitted IDs and pinned
 manifests in `execution.application.pinned_skill_materialization`. Skills owns
 the catalog binding, pinned snapshot path, byte-limit and hash checks, staging,
-mismatch projection, and manifest evidence through `skills.api`. The Claude
+mismatch projection, and manifest evidence through `skills.api` with legacy
+staging/catalog dependencies assembled by `bootstrap.skills`. The Claude
 adapter translates already-authorized Skills and Context material into SDK and
 Sandbox Runtime requests; selection never grants access beyond Skills-owned
 admission. MCP owns authorized tool registration and runtime subject projection

@@ -24,7 +24,7 @@ from app.bootstrap.worker_result_commit import (
     build_worker_artifact_records,
     build_worker_result_commit_service,
 )
-from app.agent_apps.api import exact_invoked_skills
+from app.agent_apps.capability_state import exact_invoked_skills
 from app.bootstrap.context import (
     materialize_queued_worker_context_snapshot,
     worker_context_snapshot_ref_from_row,
@@ -37,7 +37,6 @@ from app.execution.api import (
     bind_worker_attempt_lifecycle,
     executor_exception_failure as _executor_exception_failure,
     enforce_required_artifact_types,
-    enforce_worker_required_tool_completion,
     project_worker_terminal_result,
     normalize_sandbox_reported_failure,
     predispatch_failure_result as _pre_dispatch_failure_result,
@@ -329,7 +328,7 @@ async def process_run_payload(
         result = normalize_sandbox_reported_failure(result)
         if capability_authorization is None:
             raise RuntimeError("worker_capability_authorization_missing")
-        result = enforce_worker_required_tool_completion(
+        result = worker_execution_bootstrap.enforce_worker_required_tool_completion(
             result, payload=payload, run_identity=run_identity,
             attempt_id=attempt_id,
             required_tool_decision=capability_authorization.required_tool_decision,

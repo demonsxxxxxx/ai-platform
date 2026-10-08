@@ -77,13 +77,10 @@ from app.runtime.sandbox.contracts import (
 )
 from app.runtime.sandbox.runtime import SandboxRuntime
 from app.settings import get_settings
+from app.bootstrap.skills import materialize_worker_pinned_skill, resolve_worker_runtime_catalog
 from app.skills.api import (
     AuthorizedSkillCatalogError,
-    BuiltinSkill,
-    SkillStager,
-    materialize_worker_pinned_skill,
     merged_worker_pinned_manifests,
-    resolve_worker_runtime_catalog,
     worker_catalog_public_metadata,
     worker_pinned_manifests,
     pin_manifests_for_result,
@@ -91,6 +88,8 @@ from app.skills.api import (
     skill_manifests_from_catalog,
     staged_skill_manifests,
 )
+from app.skills.registry import BuiltinSkill
+from app.skills.stager import SkillStager
 from app.storage import ObjectStorage
 
 _SANDBOX_SUCCESS_TERMINAL_STATUSES = {"completed", "succeeded"}

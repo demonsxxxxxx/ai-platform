@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.agent_apps.api import exact_invoked_skills
+from app.agent_apps.capability_state import exact_invoked_skills
 from app.artifacts import api as artifacts_api
 from app.artifacts.infrastructure import records_postgres as artifact_records_postgres
 from app.conversations.infrastructure import postgres as conversations_postgres
