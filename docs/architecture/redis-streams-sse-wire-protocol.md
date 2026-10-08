@@ -74,8 +74,12 @@ the committed facts intact and returns a callback transport error. The existing
 executor buffer owns exact callback retry; no publication queue or terminal
 wakeup is involved. Callback transport fields and engine SDK objects are never
 browser wire fields. The additive, admin-only
-`claude_sdk_text_checkpoint` callback item carries only cumulative text-delta
-count, character count and SHA-256 of UTF-8 SDK text. It requires a batch ID,
+`claude_sdk_text_checkpoint` callback item carries only an opaque Run/Attempt
+scoped `call_ref`, per-response text-delta count, character count, SHA-256 of
+raw UTF-8 SDK text, and `final`/`complete`/`coverage` diagnostic flags. Both
+proxy and SDK retain exact event 1/128/256/... samples and a final observation;
+answer coalescing changes delivery time, not the sampled prefix. The callback
+contains no provider message ID, text, reasoning or tool inputs. It requires a batch ID,
 shares the Run/Attempt/lease receipt with adjacent answer events, and persists
 as a private `executor_sdk_text_checkpoint` Run event; it creates no v4 row or
 ordinary-user projection. Older API images reject this newly whitelisted

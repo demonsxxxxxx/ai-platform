@@ -147,13 +147,30 @@ class AgentEvent(BaseModel):
             or any(value is not None for value in (
                 self.event_id, self.run_id, self.message_id, self.causation_event_id
             ))
-            or set(payload) != {"events", "chars", "sha256"}
+            or set(payload) != {"call_ref", "events", "chars", "sha256", "final", "complete", "coverage"}
+            or not (
+                payload["call_ref"] is None
+                or isinstance(payload["call_ref"], str)
+                and re.fullmatch(r"[0-9a-f]{32}", payload["call_ref"]) is not None
+            )
             or type(payload["events"]) is not int
-            or not 1 <= payload["events"] <= 10_000_000
+            or not 0 <= payload["events"] <= 10_000_000
             or type(payload["chars"]) is not int
             or not 0 <= payload["chars"] <= 100_000_000
             or not isinstance(payload["sha256"], str)
             or re.fullmatch(r"[0-9a-f]{64}", payload["sha256"]) is None
+            or type(payload["final"]) is not bool
+            or type(payload["complete"]) is not bool
+            or not isinstance(payload["coverage"], str)
+            or payload["coverage"] not in {
+                "text_delta", "partial_stream_end", "partial_missing_call_identity",
+                "partial_invalid_event", "partial_invalid_text", "partial_limit",
+                "partial_oversized_event", "partial_oversized_line", "partial_unfinished_event",
+            }
+            or (payload["call_ref"] is None and payload["coverage"] == "text_delta")
+            or (payload["complete"] and (
+                not payload["final"] or payload["coverage"] != "text_delta"
+            ))
         ):
             raise ValueError("agent_event_text_checkpoint_invalid")
         return self

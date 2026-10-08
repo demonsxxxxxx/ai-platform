@@ -78,32 +78,49 @@ For successful Anthropic `/v1/messages` SSE responses, the proxy emits private
 checkpoint records the count of `text_delta` events, character length and
 SHA-256 of their concatenated UTF-8 text, never request data, raw response
 bytes, reasoning or response text. Checkpoints are emitted during streaming,
-so interrupted Runs retain partial evidence. A final record marks whether the
-response iterator finished; a missing final record does not prove completion.
+so interrupted Runs retain partial evidence. `final=true` marks the last
+observation of that response; `complete=true` requires `message_stop` and full
+diagnostic coverage, not merely HTTP EOF. Samples have both flags false.
 These logs are not public Run events, SessionStore entries or terminal facts.
 
 Compare `model_wire_text` with the private `executor_sdk_text_checkpoint`
-Run event for the same Run and Attempt: its `events`, `chars` and SHA-256
-cover the concatenated, framed text deltas delivered by Claude SDK, before
-answer reconciliation and public projection. The Sandbox attaches the first available checkpoint to an authorized callback
-batch, then checkpoints when the count at least doubles (starting at 128)
-and at the final `message.completed` or `model.completed` batch when present.
-Coalescing can shift the exact delta count of a checkpoint. The API validates a fixed numeric/digest-only payload and persists it under
-the existing callback receipt, with `visible_to_user=false`; it does not
+Run event for the same Run, Attempt and `call_ref`: both sides derive this
+32-hex opaque reference from the provider `message_start.message.id` using
+HMAC-SHA256 with a Run/Attempt-derived scope. The scope is an existing private
+binding, not a new secret or deployment prerequisite. Raw message IDs are
+never logged; references cannot be correlated across Attempts or Runs. They
+are private diagnostic fields, not metric labels or public message identities.
+Missing identities remain unbound (`call_ref=null`, incomplete coverage).
+`events`, `chars` and SHA-256 cover raw `text_delta` events within that single
+response, including tool-before text and subagent text, before answer
+reconciliation and public projection. Each new response resets the digest.
+Both sides sample at events 1, 128, 256, 512 and subsequent powers of two,
+and emit a final observation on `message_stop` or early stream closure.
+The Sandbox queues these immutable snapshots and attaches them to the next
+authorized callback without changing their counts when answers coalesce.
+Remaining diagnostics are flushed through that same private callback channel
+on SDK exit; failure of this best-effort flush preserves errors/cancellation.
+The queue retains at most 64 snapshots and the SDK tracks at most 64 active
+parent scopes; overflow or unacknowledged delivery can leave partial evidence.
+The API validates the fixed digest/count/reference/lifecycle payload and
+persists it under the existing callback receipt, with `visible_to_user=false`; it does not
 project it to public v4 events or SSE. An unacknowledged batch, cancellation,
-missing completion, disabled stream projection, or the diagnostic size limit
+missing completion, missing call identity, or the diagnostic size limit
 can leave only partial evidence. SDK callbacks and model logs must be queried
 with administrative access; neither records raw text.
 
-For a single model call, compare the same-character-length prefix of the model
-text stream, SDK digest and ordered public `message.delta` text (whose contents
-may have been sanitized or coalesced). Matching model and SDK digests show the
-model text reached the SDK unchanged; a mismatch localizes a difference to the
+For a single model response, compare identical `(Run, Attempt, call_ref,
+events, chars)` checkpoints and their digest; use `final`, `complete` and
+`coverage` to distinguish samples, complete responses and interrupted prefixes.
+Do not compare a per-response digest with concatenated text across calls.
+Matching model and SDK digests show the model text reached the SDK unchanged
+at that checkpoint; a mismatch localizes a difference to the
 proxy-to-SDK path. A mismatch between SDK and public text implicates SDK answer
 reconciliation or platform projection, not necessarily the SDK package alone.
-Compare only verified common prefixes; multiple model calls, distinct source
-identities and terminal supplements need call/turn correlation before
-attributing a difference. Other provider paths and non-SSE responses have no
+Compare only verified common prefixes. Public text can contain separators,
+sanitization and terminal supplements; private checkpoints are not a public
+answer transcript or proof of Run completion. Other provider paths and
+non-SSE responses have no
 model-side evidence. Historical Runs predating these checkpoints cannot be
 retroactively attributed.
 

@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 from collections.abc import Iterable, Iterator
-from uuid import uuid4
+from app.execution.domain.model_text_checkpoint import ModelTextCheckpoint
 
 
 _logger = logging.getLogger(__name__)
@@ -17,27 +16,23 @@ def observe_anthropic_text(
     body: Iterable[bytes], *, run_id: str, attempt_id: str
 ) -> Iterator[bytes]:
     """Forward bytes unchanged and checkpoint model text before the SDK sees it."""
-    call_id = uuid4().hex
     pending = bytearray()
     data_lines: list[bytes] = []
     data_size = 0
-    digest = hashlib.sha256()
-    chars = events = 0
-    complete = False
     observing = True
-    coverage = "text_delta"
 
-    def record() -> None:
-        try:
-            _logger.warning(
-                "model_wire_text run_id=%s attempt_id=%s call_id=%s events=%d chars=%d sha256=%s coverage=%s",
-                run_id, attempt_id, call_id, events, chars, digest.hexdigest(), coverage,
-            )
-        except Exception:  # Diagnostics cannot interrupt the model stream.
-            pass
+    def record(checkpoint: dict[str, object]) -> None:
+        _logger.warning(
+            "model_wire_text run_id=%s attempt_id=%s call_ref=%s events=%d chars=%d sha256=%s final=%s complete=%s coverage=%s",
+            run_id, attempt_id, checkpoint["call_ref"], checkpoint["events"],
+            checkpoint["chars"], checkpoint["sha256"], checkpoint["final"],
+            checkpoint["complete"], checkpoint["coverage"],
+        )
+
+    observer = ModelTextCheckpoint(run_id=run_id, attempt_id=attempt_id, record=record)
 
     def accept_event() -> None:
-        nonlocal chars, events, coverage, data_size, observing
+        nonlocal data_size
         if not observing or not data_lines:
             return
         payload = b"\n".join(data_lines)
@@ -46,28 +41,9 @@ def observe_anthropic_text(
         try:
             event = json.loads(payload)
         except (ValueError, UnicodeDecodeError):
-            coverage = "partial_invalid_event"
+            observer.partial("partial_invalid_event")
             return
-        if not isinstance(event, dict) or event.get("type") != "content_block_delta":
-            return
-        delta = event.get("delta")
-        if not isinstance(delta, dict) or delta.get("type") != "text_delta":
-            return
-        text = delta.get("text")
-        if not isinstance(text, str):
-            coverage = "partial_invalid_text"
-            return
-        try:
-            encoded = text.encode("utf-8")
-        except UnicodeEncodeError:
-            coverage = "partial_invalid_text"
-            observing = False
-            return
-        digest.update(encoded)
-        chars += len(text)
-        events += 1
-        if events == 1 or (events >= 128 and events & (events - 1) == 0):
-            record()
+        observer.accept(event)
 
     try:
         for chunk in body:
@@ -83,20 +59,17 @@ def observe_anthropic_text(
                         data_size += len(data)
                         if data_size > _MAX_SSE_LINE_BYTES:
                             observing = False
-                            coverage = "partial_oversized_event"
+                            observer.partial("partial_oversized_event")
                             break
                         data_lines.append(data)
                 if len(pending) > _MAX_SSE_LINE_BYTES:
                     observing = False
-                    coverage = "partial_oversized_line"
+                    observer.partial("partial_oversized_line")
                 if not observing:
                     pending.clear()
                     data_lines.clear()
             yield chunk
-        if coverage == "text_delta" and (pending or data_lines):
-            coverage = "partial_unfinished_event"
-        complete = True
+        if pending or data_lines:
+            observer.partial("partial_unfinished_event")
     finally:
-        if not complete and coverage == "text_delta":
-            coverage = "partial_stream_end"
-        record()
+        observer.finish()

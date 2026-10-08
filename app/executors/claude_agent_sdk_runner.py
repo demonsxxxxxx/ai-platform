@@ -1,6 +1,5 @@
 import asyncio
 import base64
-import hashlib
 import json
 import logging
 import os
@@ -51,7 +50,7 @@ from app.executors.claude.prompts import (
     translation_target_language as _prompt_translation_target_language,
 )
 from app.bootstrap.claude_client import prepare_claude_client_close
-from app.execution.api import ClaudeSdkAgentEventAdapter
+from app.execution.api import ClaudeSdkAgentEventAdapter, ModelTextCheckpoint
 from app.executors.claude_stream_projection import (
     AssistantAnswerTimeline,
     ClaudeStreamProjector,
@@ -3502,13 +3501,47 @@ async def run_claude_agent_sdk(
                     return
 
     async def consume(messages: AsyncIterator[Any]) -> ClaudeAgentSdkRunResult:
+        if on_sdk_text is None:
+            return await consume_messages(messages)
+        observers: dict[str | None, ModelTextCheckpoint] = {}
+
+        async def observed_messages() -> AsyncIterator[Any]:
+            try:
+                async for message in messages:
+                    if isinstance(message, StreamEvent):
+                        scope = getattr(message, "parent_tool_use_id", None)
+                        event = message.event
+                        if (
+                            (scope is None or isinstance(scope, str) and len(scope) <= 1024)
+                            and isinstance(event, dict)
+                        ):
+                            if event.get("type") == "message_start":
+                                previous = observers.pop(scope, None)
+                                if previous is not None:
+                                    previous.finish()
+                            observer = observers.get(scope)
+                            if observer is None and len(observers) < 64:
+                                observer = observers[scope] = ModelTextCheckpoint(
+                                    run_id=run_id or "", attempt_id=attempt_id or "",
+                                    record=on_sdk_text,
+                                )
+                            if observer is not None:
+                                observer.accept(event)
+                                if observer.finished:
+                                    observers.pop(scope, None)
+                    yield message
+            finally:
+                for observer in observers.values():
+                    observer.finish()
+
+        async with aclosing(observed_messages()) as observed:
+            return await consume_messages(observed)
+
+    async def consume_messages(messages: AsyncIterator[Any]) -> ClaudeAgentSdkRunResult:
         nonlocal result_session_id, usage, terminal_reason, received_structured_terminal
         nonlocal last_public_stage, terminal_result_message, last_assistant_error
         nonlocal last_assistant_error_text
         answer_timeline = AssistantAnswerTimeline()
-        sdk_text_digest = hashlib.sha256()
-        sdk_text_chars = sdk_text_events = 0
-        sdk_text_observing = on_sdk_text is not None
         terminal_answer_empty = False
         stream_projection_failed = False
         assistant_observation_scope = 0
@@ -3627,25 +3660,6 @@ async def run_claude_agent_sdk(
                                 )
                                 continue
                         for fragment in fragments:
-                            if sdk_text_observing:
-                                try:
-                                    sdk_text_digest.update(fragment.encode("utf-8"))
-                                except UnicodeEncodeError:
-                                    sdk_text_observing = False
-                                else:
-                                    sdk_text_chars += len(fragment)
-                                    sdk_text_events += 1
-                                    if sdk_text_events <= 10_000_000 and sdk_text_chars <= 100_000_000:
-                                        try:
-                                            on_sdk_text({
-                                                "events": sdk_text_events,
-                                                "chars": sdk_text_chars,
-                                                "sha256": sdk_text_digest.hexdigest(),
-                                            })
-                                        except Exception:  # Diagnostics cannot interrupt SDK output.
-                                            pass
-                                    else:
-                                        sdk_text_observing = False
                             last_public_stage = "message"
                             delta_text = answer_timeline.accept_delta(
                                 fragment,

@@ -1453,7 +1453,8 @@ def test_executor_callback_persists_sdk_text_checkpoint_privately_with_v4_receip
     events = [AgentEvent(**item.as_agent_event_fields()).model_dump() for item in adapter.accept_answer_text("answer")]
     checkpoint = AgentEvent(
         type=CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE, message="", admin_only=True,
-        payload={"events": 1, "chars": 6, "sha256": hashlib.sha256(b"answer").hexdigest()},
+        payload={"call_ref": "a" * 32, "events": 1, "chars": 6, "sha256": hashlib.sha256(b"answer").hexdigest(),
+                 "final": True, "complete": True, "coverage": "text_delta"},
     ).model_dump()
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
     monkeypatch.setattr(_owner_runs_infrastructure_postgres, "get_run_identity", fake_get_run_identity)
@@ -1489,9 +1490,17 @@ def test_executor_callback_persists_sdk_text_checkpoint_privately_with_v4_receip
 
 @pytest.mark.parametrize("invalid", [
     {"message": "raw answer"}, {"admin_only": False}, {"event_id": ""},
-    {"payload": {"events": True, "chars": 1, "sha256": "0" * 64}},
-    {"payload": {"events": 1, "chars": 1, "sha256": "not-a-digest"}},
-    {"payload": {"events": 1, "chars": 1, "sha256": "0" * 64, "raw": "secret"}},
+    {"payload_patch": {"events": True}},
+    {"payload_patch": {"sha256": "not-a-digest"}},
+    {"payload_patch": {"raw": "secret"}},
+    {"payload_patch": {"call_ref": "private-message-id"}},
+    {"payload_patch": {"call_ref": None}},
+    {"payload_patch": {"final": False, "complete": True}},
+    {"payload_patch": {"final": True, "complete": True, "coverage": "partial_stream_end"}},
+    {"payload_patch": {"final": 1}},
+    {"payload_patch": {"complete": 1}},
+    {"payload_patch": {"coverage": "raw secret"}},
+    {"payload_patch": {"coverage": {"raw": "secret"}}},
 ])
 def test_executor_callback_rejects_invalid_sdk_text_checkpoint(invalid):
     from pydantic import ValidationError
@@ -1499,9 +1508,11 @@ def test_executor_callback_rejects_invalid_sdk_text_checkpoint(invalid):
 
     fields = {
         "type": CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE, "message": "", "admin_only": True,
-        "payload": {"events": 1, "chars": 1, "sha256": hashlib.sha256(b"x").hexdigest()},
-        **invalid,
+        "payload": {"call_ref": "a" * 32, "events": 1, "chars": 1, "sha256": hashlib.sha256(b"x").hexdigest(),
+                    "final": False, "complete": False, "coverage": "text_delta"},
+        **{key: value for key, value in invalid.items() if key != "payload_patch"},
     }
+    fields["payload"].update(invalid.get("payload_patch", {}))
     with pytest.raises(ValidationError, match="agent_event_text_checkpoint_invalid"):
         AgentEvent(**fields)
 
@@ -1513,7 +1524,8 @@ async def test_executor_callback_requires_batch_identity_for_text_checkpoint() -
 
     checkpoint = AgentEvent(
         type=CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE, admin_only=True,
-        payload={"events": 1, "chars": 1, "sha256": hashlib.sha256(b"x").hexdigest()},
+        payload={"call_ref": "a" * 32, "events": 1, "chars": 1, "sha256": hashlib.sha256(b"x").hexdigest(),
+                 "final": False, "complete": False, "coverage": "text_delta"},
     )
     callback = ExecutorCallbackEvent.model_validate(callback_payload(
         new_message=None, state_patch={}, events=[checkpoint.model_dump()],
