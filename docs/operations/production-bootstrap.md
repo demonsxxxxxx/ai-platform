@@ -119,11 +119,13 @@ drained maintenance window and the matching immutable application package:
 Rollback also requires a drained window: restore the previous package, server
 TOML and guard together, then verify the previous topology before admission.
 
-The retired internal-test topology has no new package or runtime selection.
-Database-tracked historical leases remain eligible for stop-only cleanup when
-their complete persisted scope, image, executor identity and remote metadata
-match. They cannot be created, reused, dispatched or renewed. Missing identity
-evidence requires classified recovery.
+Historical internal-test leases without the current `active-v1` marker remain
+eligible for stop-only cleanup when their complete persisted scope, image,
+executor identity and remote metadata match. They cannot be recreated,
+reused, dispatched or renewed. The separate internal-test package may create
+and renew new `active-v1` leases on its test bridge; this production host must
+not select that package. Missing historical identity evidence requires
+classified recovery.
 
 ## Verify the host
 

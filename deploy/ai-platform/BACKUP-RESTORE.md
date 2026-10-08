@@ -20,9 +20,13 @@ access-controlled backup. Retain `MODEL_CONNECTION_ENCRYPTION_KEY`, every still-
 key and key ID in `MCP_ENCRYPTION_KEYS_JSON`, `MCP_ENCRYPTION_CURRENT_KEY_ID`,
 `TRUSTED_PRINCIPAL_SECRET`, `AI_SESSION_SECRET`, company JWT material, database and
 MinIO credentials, OpenSandbox/callback/proxy tokens, and current/previous egress
-proof signing keys. Do not generate replacements during recovery: old encrypted
-records require their original keys. Never print environment files, full Docker
-inspect output, resolved Compose configuration, or credentials into evidence.
+proof signing keys. If ProfileDrive uses a private CA, preserve the existing
+public CA host file named by `PROFILE_DRIVE_TRANSFER_CA_CERT_HOST_FILE`, its
+checksum, owner and mode. Restore it at the same absolute path before package
+preflight; do not generate a replacement certificate or include a private key.
+Do not generate replacement secrets during recovery: old encrypted records
+require their original keys. Never print environment files, full Docker inspect
+output, resolved Compose configuration, or credentials into evidence.
 
 The examples use Bash, GNU tar with ACL/xattr support, `age` with an approved
 backup public recipient, and the authorized local Linux Docker daemon. The backup
@@ -130,6 +134,14 @@ if sudo -n test -d "$LEGACY_ROOT"; then
     > "$BACKUP/legacy-workspaces.tar"
 fi
 age -r "$BACKUP_RECIPIENT" -o "$BACKUP/operator.env.age" "$ENV_FILE"
+# If the operator env configures a ProfileDrive private CA, set CA_HOST_FILE to
+# its existing public certificate host path; leave it unset otherwise.
+if test -n "${CA_HOST_FILE:-}"; then
+  test -f "$CA_HOST_FILE" && test ! -L "$CA_HOST_FILE"
+  stat -c '%u:%g %a %s' -- "$CA_HOST_FILE" > "$BACKUP/profile-drive-ca-metadata.txt"
+  cp --no-clobber -- "$CA_HOST_FILE" "$BACKUP/profile-drive-ca.pem"
+  (cd "$BACKUP" && sha256sum profile-drive-ca.pem > profile-drive-ca.sha256)
+fi
 # Preserve the entire original immutable package, including every runtime template.
 cp --no-clobber -- "$RUNNING_ARCHIVE" "$BACKUP/running-release.tar.gz"
 # Encrypt the host configuration separately; adjust paths to the approved host layout.
@@ -179,7 +191,10 @@ Use a separate, approved host with no production network access, no production
 OpenSandbox access, and no application writers. Do not start a second production
 Compose project on the original host. The retained container and persistent-volume
 identities make that unsafe. Copy the recovery set onto encrypted private
-storage and verify `sha256sum --check SHA256SUMS` there.
+storage and verify `sha256sum --check SHA256SUMS` there. If a ProfileDrive CA was
+configured, also check `profile-drive-ca.sha256` from the backup directory and
+compare its recorded owner/mode before restoring the certificate at the
+original absolute host path. Do not install or test a private key as a CA.
 
 Prepare a new mode `0600` file containing only `POSTGRES_USER`, `POSTGRES_DB`, and
 `POSTGRES_PASSWORD` for this isolated PostgreSQL instance using a secure editor or
