@@ -352,6 +352,7 @@ def test_commentary_candidates_are_separate_from_the_terminal_answer_receipt():
         "commentary.delta",
     ]
     assert events[0].message_id == continued[0].message_id == adapter.message_id
+    assert events[0].payload["summary_id"].startswith("worktrace_")
     assert events[0].payload["summary_id"] == continued[0].payload["summary_id"]
     assert events[0].event_id != continued[0].event_id
     assert adapter.answer_receipt is None
@@ -381,6 +382,21 @@ def test_commentary_candidates_are_separate_from_the_terminal_answer_receipt():
         )
         == ()
     )
+
+
+def test_commentary_rejects_private_path_spanning_event_chunks():
+    adapter = _adapter()
+
+    assert adapter.accept_commentary_text(
+        "x" * 8_191 + "/tmp/private.txt", commentary_identity="tool-turn"
+    ) == ()
+    accepted = adapter.accept_commentary_text(
+        "Checking public sources.", commentary_identity="tool-turn"
+    )
+
+    assert [event.payload["delta"] for event in accepted] == ["Checking public sources."]
+    assert accepted[0].payload["summary_id"].startswith("worktrace_")
+    assert adapter.answer_receipt is None
 
 
 def test_answer_candidate_failure_does_not_advance_receipt_state():
@@ -1593,7 +1609,7 @@ async def test_timer_text_callback_failure_does_not_override_cancelled_result(
         for event in framed[:3]:
             yield event
         await asyncio.sleep(0.1)
-        yield sdk.ResultMessage(
+        terminal = sdk.ResultMessage(
             subtype="success",
             duration_ms=12,
             duration_api_ms=10,
@@ -1603,8 +1619,9 @@ async def test_timer_text_callback_failure_does_not_override_cancelled_result(
             stop_reason="aborted_streaming",
             result="",
             uuid="result-cancelled-observation",
-            terminal_reason="cancelled",
         )
+        terminal.terminal_reason = "cancelled"
+        yield terminal
 
     result = await run_claude_agent_sdk(
         prompt="answer",

@@ -48,8 +48,8 @@ they are not interchangeable:
 | SDK `ThinkingBlock` | Provider model-reasoning content | The current runner discards it and `thinking.display` is `omitted` |
 | `ResultMessage.result` | Ordinary-text SDK terminal observation | It cannot overwrite acknowledged public text, validate an artifact, or declare Run success; streamed persistence uses committed rows and an exact receipt |
 | `attach_file` | Optional platform-owned response-file selection action | It publishes zero or more validated deliverables independently of terminal answer text |
-| `message.delta` | V4 incremental Assistant body chunk, included in the answer receipt | Every accepted Claude Assistant text fragment uses this body; later Tool use does not reclassify or withdraw it |
-| `commentary.delta` | Explicit disclosure-safe public summary from an authorized producer | It renders inline and remains excluded from the answer receipt; it is not inferred from a tool-using Claude turn |
+| `message.delta` | V4 incremental final-answer body chunk, included in the answer receipt | Claude text is withheld until its Assistant source is classified; tool-using narration cannot be reclassified after answer commitment |
+| `commentary.delta` | Disclosure-safe public summary or marked Claude work narration | Existing summaries remain inline; work narration uses a server-owned `worktrace_` summary ID and folds with work activity. Neither enters the answer receipt |
 | `thinking.*` | Legacy public-reasoning compatibility events | The current runner does not emit them; retained readers do not make hidden model reasoning public |
 | `model.completed` | Model completion duration, turn-count, and stop-category metadata | It is neither answer content nor Run terminal authority |
 
@@ -57,8 +57,11 @@ The Chat history API has a separate compatibility projection: strict persisted
 `message.delta` and `commentary.delta` rows leave that API as `message:chunk`
 and `summary`. This does not create another event authority; the frontend maps
 both live v4 and compatibility-history shapes into the same `text` and `summary`
-message parts. The ordinary-user display matrix and legacy raw-tool retirement
-are owned by
+message parts. The server-generated `worktrace_` summary ID marks source-classified
+Claude work narration for collapsible presentation; previously persisted summaries
+stay inline. No payload fields or event names change, so older v4 readers still
+accept the frames and render work narration as an ordinary summary. The ordinary-user
+display matrix and legacy raw-tool retirement are owned by
 [Chat Run lifecycle and public error projection](chat-run-lifecycle-and-public-error-projection.md#ordinary-user-execution-presentation).
 
 ## Executor callback boundary
@@ -80,8 +83,10 @@ most 8,192 code points, and this per-frame bound never becomes a cumulative
 answer cutoff. `message.completed` is metadata-only with
 `{delta_count,text_length}`; its `causation_event_id` identifies the last delta
 and the completion never carries full text. `commentary.delta` is separately
-bounded to 8,192 code points and carries a stable `summary_id`; it is an explicit
-public summary, not answer content or capability evidence. The SDK terminal result closes ordinary assistant text;
+bounded to 8,192 code points and carries a stable `summary_id`; neither a public
+summary nor SDK work narration contributes to answer content or capability evidence.
+A Claude tool-bearing source is checked and redacted as a whole before chunking,
+then sent in callback batches of at most 100 events. The SDK terminal result closes ordinary assistant text;
 optional final files are selected separately through `attach_file` and projected
 as ordered artifact parts after storage succeeds. Worker, API, and frontend
 support for this closed event is deployed release-atomically because older v4
@@ -170,8 +175,8 @@ not persisted publication state, and is stripped at the public boundary.
 The closed Agent-kernel application registry is:
 
 - `message.started`, `message.delta`, `message.completed`;
-- `commentary.delta` for an explicit sanitized public summary rendered inline,
-  never terminal answer content;
+- `commentary.delta` for a sanitized public summary or Claude tool-turn work
+  narration; `worktrace_` summary IDs fold as work activity, never answer text;
 - `thinking.started`, `thinking.delta`, `thinking.completed`, `model.completed`;
 - `agent.progress` for fixed, server-owned execution-phase lifecycle;
 - `tool.started`, `tool.completed`, `tool.failed`, `tool.denied`;

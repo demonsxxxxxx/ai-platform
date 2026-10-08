@@ -3534,6 +3534,22 @@ async def run_claude_agent_sdk(
                 await callback_result
         return True
 
+    async def publish_commentary_text(value: str, *, identity: object) -> bool:
+        if not value or agent_event_adapter is None:
+            return True
+        for token in sorted(private_replacements, key=lambda item: (-len(item), item)):
+            value = value.replace(token, private_replacements[token])
+        value = sanitize_public_answer_text(value)
+        candidates = agent_event_adapter.accept_commentary_text(
+            value, commentary_identity=identity,
+        )
+        if not candidates:
+            return True  # Unsafe narration is omitted, never turned into answer text.
+        for offset in range(0, len(candidates), 100):
+            if not await publish_agent_candidates(candidates[offset : offset + 100]):
+                return False
+        return True
+
     async def _client_messages(client: Any) -> AsyncIterator[Any]:
         pending_tasks: set[str] = set()
         async with aclosing(client.receive_messages()) as responses:
@@ -3559,6 +3575,35 @@ async def run_claude_agent_sdk(
         nonlocal last_public_stage, terminal_result_message, last_assistant_error
         nonlocal last_assistant_error_text
         answer_timeline = AssistantAnswerTimeline()
+        pending_raw_text: list[str] = []
+        pending_message_key: object = None
+        pending_text = ""
+        pending_tool = False
+        pending_seen_sources: set[object] = set()
+        commentary_texts: list[str] = []
+        classified_answer = ""
+        typed_text_observed = False
+        last_assistant_tool_stop = False
+        async def flush_pending() -> None:
+            nonlocal pending_message_key, pending_text, pending_tool, classified_answer
+            if pending_text:
+                if pending_tool:
+                    commentary_texts.append(pending_text)
+                    await flush_answer_candidates()
+                    await publish_commentary_text(
+                        pending_text, identity=f"assistant-{assistant_observation_scope}",
+                    )
+                else:
+                    classified_answer += pending_text
+                    for public_text in answer_stream_gate.accept(pending_text):
+                        await publish_terminal_text(
+                            public_text, source_identity=pending_message_key,
+                        )
+            pending_message_key = None
+            pending_text = ""
+            pending_tool = False
+            pending_seen_sources.clear()
+
         terminal_answer_empty = False
         stream_projection_failed = False
         assistant_observation_scope = 0
@@ -3616,6 +3661,17 @@ async def run_claude_agent_sdk(
                     and raw_stream_event["delta"].get("type") == "text_delta"
                 ):
                     await flush_answer_candidates()
+                if (
+                    isinstance(raw_stream_event, dict)
+                    and raw_stream_event.get("type") == "message_start"
+                    and pending_raw_text
+                ):
+                    fail_stream_projection(
+                        reason="unbound_raw_text_source",
+                        stage="message",
+                        location="raw_stream_frame",
+                    )
+                    continue
                 if (
                     isinstance(raw_stream_event, dict)
                     and raw_stream_event.get("type") == "content_block_start"
@@ -3700,11 +3756,8 @@ async def run_claude_agent_sdk(
                                     location="answer_delta",
                                 )
                                 break
-                            for public_text in answer_stream_gate.accept(delta_text):
-                                await publish_terminal_text(
-                                    public_text,
-                                    source_identity=stream_projector.text_source_identity,
-                                )
+                            if delta_text:
+                                pending_raw_text.append(delta_text)
                         if stream_projection_failed:
                             continue
                         completed_source = stream_projector.take_completed_text_source_identity()
@@ -3720,6 +3773,29 @@ async def run_claude_agent_sdk(
                                     stage="message",
                                     location="raw_source_close",
                                 )
+                if (
+                    not stream_projection_failed
+                    and isinstance(raw_stream_event, dict)
+                    and raw_stream_event.get("type") == "message_stop"
+                    and stream_projector is not None
+                ):
+                    if (
+                        pending_message_key is not None
+                        and pending_seen_sources
+                        and pending_message_key[0] == stream_projector.message_id
+                    ):
+                        pending_tool = pending_tool or stream_projector.last_stop_reason == "tool_use"
+                        if pending_raw_text:
+                            pending_text += "".join(pending_raw_text)
+                            pending_raw_text.clear()
+                        await flush_pending()
+                    elif pending_raw_text and stream_projector.last_stop_reason == "tool_use":
+                        narration = "".join(pending_raw_text)
+                        pending_raw_text.clear()
+                        commentary_texts.append(narration)
+                        await publish_commentary_text(
+                            narration, identity=f"raw-{stream_projector.message_id}",
+                        )
                 continue
             if isinstance(message, AssistantMessage):
                 await flush_answer_candidates()
@@ -3924,20 +4000,14 @@ async def run_claude_agent_sdk(
                             text_source_ordinal,
                         )
                     last_public_stage = "message"
-                    for public_text in answer_stream_gate.accept(
-                        answer_timeline.accept_assistant(
-                            text,
-                            source_identity=source_identity,
-                            message_identity=message_identity,
-                            parent_tool_use_id=parent_tool_use_id,
-                            observed_identity=assistant_observation_id,
-                            observation_scope=assistant_observation_scope,
-                        )
-                    ):
-                        await publish_terminal_text(
-                            public_text,
-                            source_identity=source_identity,
-                        )
+                    answer_timeline.accept_assistant(
+                        text,
+                        source_identity=source_identity,
+                        message_identity=message_identity,
+                        parent_tool_use_id=parent_tool_use_id,
+                        observed_identity=assistant_observation_id,
+                        observation_scope=assistant_observation_scope,
+                    )
                 if answer_timeline.disabled:
                     fail_stream_projection(
                         reason=(
@@ -3947,6 +4017,54 @@ async def run_claude_agent_sdk(
                         stage="message",
                         location="typed_answer",
                     )
+                else:
+                    source_key = (assistant_message_id, parent_tool_use_id)
+                    if pending_message_key is not None and source_key != pending_message_key:
+                        await flush_pending()
+                    observed_text = "".join(text_values.values())
+                    if not observed_text and pending_raw_text:
+                        observed_text = "".join(pending_raw_text)
+                    had_raw_text = bool(pending_raw_text)
+                    pending_raw_text.clear()
+                    if not observed_text and pending_text and not had_raw_text and stream_projector is None:
+                        await flush_pending()
+                    if observed_text:
+                        typed_text_observed = True
+                        source_keys = tuple(
+                            typed_source_identities.get(ordinal, (message_identity, ordinal))
+                            for ordinal, _block in typed_text_blocks
+                        )
+                        if pending_message_key == source_key and pending_text:
+                            if source_keys and all(
+                                source in pending_seen_sources for source in source_keys
+                            ):
+                                prefix = "\n\n" if pending_text.startswith("\n\n") else ""
+                                previous_text = pending_text[len(prefix) :]
+                                if observed_text.startswith(previous_text):
+                                    pending_text = prefix + observed_text
+                                elif not previous_text.startswith(observed_text):
+                                    fail_stream_projection(
+                                        reason="assistant_text_conflict",
+                                        stage="message",
+                                        location="typed_answer",
+                                    )
+                            else:
+                                separator = "\n\n" if stream_projector is None and not had_raw_text else ""
+                                pending_text += separator + observed_text
+                        else:
+                            pending_text = (
+                                "\n\n" + observed_text
+                                if stream_projector is None and classified_answer
+                                else observed_text
+                            )
+                        pending_seen_sources.update(source_keys)
+                        pending_message_key = source_key
+                    last_assistant_tool_stop = typed_stop_reason == "tool_use"
+                    pending_tool = pending_tool or last_assistant_tool_stop
+                    if typed_stop_reason in {"tool_use", "end_turn"} and (
+                        stream_projector is None or not stream_projector.raw_lifecycle_observed
+                    ):
+                        await flush_pending()
                 await flush_answer_candidates()
             elif isinstance(message, ResultMessage):
                 terminal_result_message = message
@@ -4138,9 +4256,21 @@ async def run_claude_agent_sdk(
                 ]
                 await flush_answer_candidates()
                 received_structured_terminal = True
+                if not final_answer.strip() and not stream_projection_failed:
+                    await flush_pending()
                 if final_answer.strip() and not stream_projection_failed:
                     result_binding = answer_timeline.latest_binding
                     if (
+                        stream_projector is None
+                        and (pending_tool or last_assistant_tool_stop)
+                        and commentary_texts
+                        and not classified_answer
+                        and stop_reason == "end_turn"
+                        and not final_answer.startswith(answer_timeline.text)
+                    ):
+                        # A tool-only source can precede an independent terminal answer.
+                        result_suffix = final_answer
+                    elif (
                         result_binding is None
                         and not answer_timeline.has_answer_source
                         and (
@@ -4181,16 +4311,26 @@ async def run_claude_agent_sdk(
                             location="result_body",
                         )
                     else:
+                        await flush_pending()
                         result_source_identity = (
                             result_binding[0]
                             if result_binding is not None
                             else ("result", result_identity)
                         )
-                        for public_text in answer_stream_gate.accept(result_suffix):
-                            await publish_terminal_text(
-                                public_text,
-                                source_identity=result_source_identity,
-                            )
+                        if typed_text_observed:
+                            answer_suffix = result_suffix
+                        else:
+                            answer_suffix = answer_timeline.text
+                        narrated_prefix = "".join(commentary_texts)
+                        if narrated_prefix and answer_suffix.startswith(narrated_prefix):
+                            answer_suffix = answer_suffix[len(narrated_prefix) :]
+                        if answer_suffix:
+                            classified_answer += answer_suffix
+                            for public_text in answer_stream_gate.accept(answer_suffix):
+                                await publish_terminal_text(
+                                    public_text,
+                                    source_identity=result_source_identity,
+                                )
                 terminal_reason = resolved_terminal_reason or (
                     str(stop_reason).strip()
                     if isinstance(stop_reason, str) and stop_reason.strip()
@@ -4217,11 +4357,11 @@ async def run_claude_agent_sdk(
             terminal_error = _SDK_OUTPUT_VALIDATION_FAILED
         if (
             terminal_error is None and terminal_answer_empty
-            and not answer_timeline.text.strip() and not response_files
+            and not classified_answer.strip() and not response_files
         ):
             terminal_error = _SDK_MISSING_STRUCTURED_TERMINAL
         finished_answer = answer_stream_gate.finish(
-            final_text=answer_timeline.text,
+            final_text=classified_answer,
             release=True,
         )
         terminal_source_identity = (

@@ -156,6 +156,7 @@ export interface SummaryPart {
   type: "summary";
   content: string;
   summary_id?: string;
+  kind?: "work_trace";
   depth?: number;
   agent_id?: string;
   isStreaming?: boolean;

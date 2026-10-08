@@ -718,6 +718,7 @@ export function processMessageEvent(
         type: "summary",
         content: summaryContent,
         summary_id: data.summary_id,
+        kind: data.summary_id?.startsWith("worktrace_") ? "work_trace" : undefined,
         depth,
         agent_id: agentId,
         isStreaming,

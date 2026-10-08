@@ -1483,6 +1483,17 @@ def test_lambchat_history_restores_strict_v4_commentary_as_work_summary() -> Non
                 "__stream_v4": stream_receipt,
             },
         },
+        {
+            **base,
+            "id": "evt4-work-trace",
+            "sequence": 3,
+            "event_type": "commentary.delta",
+            "payload_json": {
+                "summary_id": "worktrace_public_1",
+                "delta": "Checking sources.",
+                "__stream_v4": stream_receipt,
+            },
+        },
     ]
 
     history = [
@@ -1501,12 +1512,16 @@ def test_lambchat_history_restores_strict_v4_commentary_as_work_summary() -> Non
     ]
 
     summaries = [event for event in history if event["event_type"] == "summary"]
-    assert len(summaries) == 1
+    assert len(summaries) == 2
     assert summaries[0]["data"]["summary_id"] == "summary-public-1"
     assert summaries[0]["data"]["content"] == "正在检查授权输入。"
     assert summaries[0]["data"]["payload"] == {
         "summary_id": "summary-public-1",
         "delta": "正在检查授权输入。",
+    }
+    assert summaries[1]["data"]["payload"] == {
+        "summary_id": "worktrace_public_1",
+        "delta": "Checking sources.",
     }
     assert "__stream_v4" not in str(history)
     assert "tool_input" not in str(history)

@@ -38,16 +38,19 @@ them into one summary that the user may reopen. The display contract is:
 | Surface | Ordinary-user presentation | Allowed content |
 | --- | --- | --- |
 | Assistant answer, artifacts, permission requests, failures, and cancellation | Visible outside the work-details fold | Accepted answer text, authorized artifact labels/actions, and fixed actionable status copy |
-| `commentary.delta` | Visible inline outside the work-details fold | Explicit sanitized public summary from an authorized producer; it is not inferred from a tool-using Claude turn |
+| `commentary.delta` with `worktrace_` summary ID | Visible in work details; collapsible after the Run ends | Full-segment-sanitized Claude tool-turn prose, not model Thinking or raw Tool payload |
+| Other `commentary.delta` | Visible inline outside the work-details fold | Existing explicit sanitized public summaries and historical events |
 | Tool lifecycle | Visible inside work details | Fixed public category label and canonical name derived from the allowlisted category (`skill`, `mcp`, `read`, `write`, `edit`, `search`, or `execute`); `skill` alone may use its sanitized, authorized v4 `display_name`; lifecycle status; and bounded duration |
 | Execution, Sandbox, Todo, and subagent lifecycle | Visible inside work details | Fixed or allowlisted phase/category labels, status, bounded progress/duration, and an explicitly safe file basename when the public execution contract supplies one |
 | Routine queue, context, intent, heartbeat, and model-completion metadata | Hidden from the transcript unless separately actionable | No ordinary-user card |
 | Model reasoning and raw execution data | Always hidden | No `ThinkingBlock`, `thinking.*` body, private prompt, executed command/arguments, private runtime path, raw query/file/diff/Tool/MCP/Skill result, private identifier, storage key, credential, trace, or executor payload |
 
-The table describes existing v4 rendering. All accepted public Assistant prose
-remains visible in message order, including work-progress text; only tool and
-execution activities fold after completion. User-requested code, JSON examples
-and non-sensitive task references are ordinary Assistant content. A script executed internally and the same
+The table describes v4 rendering. Validated Tool-turn work narration is
+visible in message order within work details; final-answer text remains outside
+that fold. The distinction is determined before publication from the SDK
+source, not inferred by moving already committed text. User-requested code,
+JSON examples and non-sensitive task references are ordinary Assistant answer
+content. A script executed internally and the same
 syntax intentionally supplied as an answer have different sources and policies.
 
 Final files are optional ordered parts of the Run's single assistant response.

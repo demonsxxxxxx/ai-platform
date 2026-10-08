@@ -18,6 +18,7 @@ from app.kernel.memory_redaction import (
     MEMORY_REDACTION_MODE_STRICT,
     redact_memory_text,
 )
+from app.platform.public_payload import sanitize_public_text
 from app.sandbox.api import AssistantAnswerReceipt
 from app.streaming.domain.protocol_v4 import (
     PUBLIC_APPLICATION_EVENT_TYPES,
@@ -669,11 +670,14 @@ class ClaudeSdkAgentEventAdapter:
         if identity is None:
             return ()
         try:
-            if _safe_text(
-                value,
-                maximum=len(value),
-                sanitizer=self._sanitizer,
-            ) is None:
+            if (
+                _safe_text(
+                    value,
+                    maximum=len(value),
+                    sanitizer=self._sanitizer,
+                ) is None
+                or sanitize_public_text(value) != value
+            ):
                 self._omit_public_projection()
                 return ()
         except Exception:  # noqa: BLE001 - projection faults omit only this text.
@@ -681,7 +685,7 @@ class ClaudeSdkAgentEventAdapter:
             return ()
 
         summary_id = _opaque(
-            "summary",
+            "worktrace",
             self.run_id,
             "commentary",
             f"{self.attempt_id}:{identity}",

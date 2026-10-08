@@ -8,13 +8,14 @@ SSE envelope、授权、重放和终态分别继续由
 
 ## 1. 产品合同
 
-公开的 Assistant 文字应边生成边显示，包括计划、过程说明、阶段发现和最终回答。
-后续出现工具调用不改变已经公开文字的归属，也不构成延迟或隐藏该文字的理由。
+公开的最终回答由 Assistant 来源完成校验后追加；工具回合的原文过程说明经完整脱敏校验进入可折叠工作记录。
+首字可能等待该 Assistant 来源的工具/终止标记；已经提交的正文不会在后续工具调用时被改写。
 
 | 内容 | 普通用户看到什么 | 发布依据 |
 | --- | --- | --- |
-| Assistant 的公开文字 | 生成中有序追加，结束后保留在正文 | SDK text block，经增量脱敏和公共事件持久化 |
-| 平台生成的公开过程摘要 | 在正文中直接可见，不要求再点开面板 | 明确的 `commentary.delta` 生产者，经相同公开边界校验 |
+| Assistant 的最终回答 | 来源确认后有序追加，结束后保留在正文 | SDK text block，经增量脱敏和公共事件持久化 |
+| 工具回合的原文过程说明 | 在工作记录中可见，结束后可折叠，不混入最终回答 | SDK 来源和 Tool/stop 标记，经全文脱敏校验及 `commentary.delta` 发布 |
+| 平台生成的公开过程摘要 | 在正文中直接可见 | 明确的 `commentary.delta` 生产者，经相同公开边界校验 |
 | 工具、Skill、MCP、子任务活动 | 获准公开的类别、名称、状态、进度和耗时；完成后可折叠 | 平台验证的生命周期事件 |
 | 文件 | 回复末尾零个或多个附件卡片 | Agent 显式 `attach_file`，平台验证、保存并授权 |
 | 脚本、命令参数、stdout/stderr、工具输入和原始结果 | 不进入普通用户文本事件 | 私有执行证据边界 |
@@ -65,9 +66,12 @@ SSE envelope、授权、重放和终态分别继续由
 ```mermaid
 flowchart LR
   SDK[Claude SDK 私有事件] --> F[raw block framing]
-  F -->|text delta| G[公开文本脱敏 gate]
+  F -->|text delta / typed body| V[严格来源对账与工具分类]
   F -->|thinking / tool JSON| X[丢弃公开文本候选]
-  G --> C[现有串行 callback]
+  V -->|最终回答| G[公开答案脱敏 gate]
+  V -->|工具叙述| W[整段脱敏和路径校验]
+  W --> C[现有串行 callback]
+  G --> C
   C --> P[PostgreSQL 公共事件]
   P --> R[Redis Stream]
   R --> S[API SSE]
@@ -80,35 +84,39 @@ flowchart LR
 
 ### 3.1 Claude SDK 适配
 
-1. `include_partial_messages=True` 时，`ClaudeStreamProjector` 只验证 raw message/block framing。
-   它在精确的 text block 内立即返回 `text_delta`，不保存整轮原文，也不判断“过程”或“最终”。
+1. `include_partial_messages=True` 时，`ClaudeStreamProjector` 验证 raw message/block framing。
+   `text_delta` 首先进入严格身份和覆盖率时间线，等待 Assistant 来源的 Tool/stop 标记再分配公开事件；它不能预先提交不可撤销的答案 delta。
 2. Thinking、tool input JSON、server tool input 和其他非 text block 只用于排除错误来源，其 delta 不进入公开正文。
 3. raw `message_start`、block index、block stop 和 `message_stop` 执行防御性校验。
    显式 message 内不能重复使用已关闭的 block index；未携带完整 envelope 或生命周期不完整的旧兼容序列已经退出并拒绝。
 4. typed `AssistantMessage` 不是 raw framing 边界。官方顺序允许它先于对应 `content_block_stop` 到达，因此不能在 typed 消息到达时清空 projector。
-5. typed TextBlock 用于补足未观察到的安全后缀，并和已流出的前缀对账；如果它在同一 open indexed text source 的首个 raw delta 前到达，其 body 建立该 source 的 coverage/digest/published state，后续匹配的 raw body 只作 replay no-op；ToolUseBlock 只登记工具身份和公开生命周期。
-6. `ResultMessage.result` 是终态补充观察。它只补充同一 source 尚未公开的后缀；如果 identity、framing 或已观察正文冲突，保留已经显示的安全文字并 fail closed，不用 Result 覆盖或另造无依据的正文来源。
-   当前 SDK 会在 Result 中移除 `cc-memory` 标签。适配器仅接受它与同一 source 的已验证 typed 正文完全等价的情况，使用有界的长度与摘要证据，不重写或重复发布已公开文字；其他正文差异仍按冲突处理。
+5. typed TextBlock 用于同一来源的补全和对账，不能单凭这次观察把待分类文本提交为最终回答；若它先于同一 open indexed text source 的 raw delta 到达，后续匹配的 raw body 只作 replay no-op。
+   ToolUseBlock 只登记工具身份和公开生命周期；整个 Assistant 来源在 stop/tool 标记确认后才分类。
+6. `ResultMessage.result` 是终态补充观察。它不能覆盖已确认的答案或把工具叙述再次发布为答案；同一来源继续由严格时间线校验。
+   非流式兼容模式下，只有已观察工具回合且尚无答案时，允许独立的 Result 答案；仅删除开头完整重复的工具叙述，不能按任意子串裁剪真实答案。
+   identity、framing 或已观察正文冲突时保留已显示的安全文字并 fail closed。
+   当前 SDK 会在 Result 中移除 `cc-memory` 标签；只有和同一来源的已验证 typed 正文等价时才接纳，不重写或重复发布。
 7. 同一文本先由 raw delta、后由 typed TextBlock 或 Result 观察时，只发布一次。不同来源即使文字相同也不做全局字符串去重。
 8. SDK 单次调用按顺序消费；正文来源和最近的 raw/typed 观察使用确定性的有界窗口对账。窗口内的相同观察只处理一次，冲突拒绝追加；窗口外不作重复判定，不使用概率过滤器中断正常新输出。回调重试与 SSE 断线重放由各自的事件序号和回执处理，不在 SDK 适配层重复实现。窗口只限制对账证据，不限制累计公开正文长度。
 9. 没有 `TextBlock` 的非空 typed `AssistantMessage`（例如 Thinking/ToolUse）是新的 turn boundary：它会 retire 当前 answer binding，后续 streamed/Sandbox `ResultMessage` 必须等新的 raw answer source 才能通过；没有既有 answer source 的显式 non-streaming Result-only 兼容仍保留。
 
-所有 Assistant 公开文字统一进入 `message.delta`。后续出现 ToolUseBlock 不把早先正文改写成 `commentary.delta`。
-`commentary.delta` 继续保留给明确的、已经脱敏的公共摘要生产者和历史 v4 记录，不由 Claude turn 的工具分类推断产生。
+所有 Assistant 文本先判断来源：工具回合中可公开的原文用带 `worktrace_` 标识的 `commentary.delta`，最终回答用 `message.delta`。
+已发布的答案永不被后续 ToolUseBlock 重分类；旧 `commentary.delta` 摘要仍原样呈现，非工具回合的公开摘要也不被折叠。
 
 ### 3.2 脱敏、失败和终态
 
-`PublicAnswerStreamGate` 仍负责跨 chunk 私有 token、SDK call ID 和敏感后缀的有界处理。
-它是答案内容的唯一过滤入口；分片后的候选和回调接收端只检查结构、长度、身份，不再次按片段判断私有 token。候选构造失败必须中止交付，不能跳过正文后返回成功。
-工具参数和原始结果从未成为输入候选；对普通技术回答不能按代码围栏、JSON 或路径形式整体删除。
+`PublicAnswerStreamGate` 仍负责答案跨 chunk 私有 token、SDK call ID 和敏感后缀的有界处理。
+工具叙述单独进行完整私有标识替换、脱敏及禁止路径扫描，再按 8,192 字符拆分并以至多 100 个事件为一批提交；任何未确认批次都会停止后续发布。
+候选构造失败不能跳过正文后返回成功。工具参数和原始结果从未成为输入候选；
+对正常最终回答不能按代码围栏、JSON 或路径形式整体删除。
 
 一旦安全前缀已经提交到公共事件，就不能在工具失败、Run 失败或 Result 不一致时撤回。
 后续终态仍可因工具 receipt、callback ACK、权限或 Run 校验失败而 fail-close；这影响成功判定和附件交付，不伪造已经显示文字从未存在。
 未稳定的短后缀可以留到下一 delta 或终态释放，避免跨 chunk 泄漏，这不等同于整轮缓冲。
 
 `message.completed` 关闭公开正文，不代表工具或 Run 成功。Worker 继续校验当前 Attempt 的 `AssistantAnswerReceipt`、工具证据和 terminal fence 后才能持久化成功结果。
-answer receipt 覆盖本次 v4 回复中实际提交的完整 Assistant 正文，包括公开过程说明和最终回答。
-正文时间线保存片段，只在需要完整文本时合并，避免每次 delta 都复制累计正文。
+answer receipt 只覆盖本次回复中实际提交的最终答案，不包含独立的工具叙述。
+正文时间线仍保存分片以完成对账；首字会因等待来源标记而延迟。
 SDK 的 Result 与 Run 终态仍是不同边界：有在途的本地 Agent/Workflow 时继续消费，直到后续 Result。关闭阶段先完成 SessionStore 的最终刷新、停止消息读取并等待工具控制回调结束，再校验最终回执和记录序号、交付业务结果。最后一次 mirror 写入失败仍然阻止成功。
 CLI 进程退出、临时会话目录和 MCP 连接回收由原生命周期任务继续完成，不占用业务完成等待或执行期限；执行器持有清理任务并在关闭时收敛，资源清理另有 30 秒期限。关闭前后的 MCP 生命周期始终由同一任务持有，清理错误只记录诊断，不能产生第二个相反的 Run 结果。此边界适配固定的 SDK 0.2.130，使用已安装 SDK 的 Query/Client 测试验证顺序。
 
@@ -117,7 +125,7 @@ CLI 进程退出、临时会话目录和 MCP 连接回收由原生命周期任�
 前端继续使用现有 v4 reducer：
 
 - `message.delta` 追加为持续可见的 Markdown 正文；
-- `commentary.delta` 形成的 summary 直接在正文中显示，不再放入“工作详情”折叠面板；
+- `commentary.delta` 中 `summary_id` 以服务端 `worktrace_` 开头的记录在“工作详情”可折叠显示；既有 summary 仍在正文直接显示；
 - tool、subagent、execution step/process 和 todo 属于工作活动，可在完成后折叠；
 - Thinking 和未授权的原始工具字段不渲染；
 - artifact 卡片按消息顺序显示在回复末尾，下载仍走授权接口。
@@ -160,26 +168,11 @@ gap 恢复先应用持久化历史。若尚未收到 `message.started` 而无法
 
 ## 6. 被替换的设计与兼容性
 
-PR #1562 早期实现曾缓存整个 SDK turn，等 typed fragment、下一 message 或 Result 后，再根据 tool use 把文本分类为 answer/commentary。该方案被替换，原因是：
+PR #1562 的即时公开策略把每个 Claude raw text delta 写进不可撤销的答案账本；同一来源后来出现 ToolUseBlock 时已无法将开头的过程说明移入工作记录。当前实现只暂存尚未分类的来源文本，保持主线严格的 raw/typed 身份与覆盖率校验，不重引入跨 provider turn 的旧 `ClaudeStreamTurn` 缓冲或放宽 fail-closed 规则。
 
-- 首字必须等待整段边界，产品上不是真正流式；
-- 同一 provider message 可产生多个 typed fragment，typed fragment 也可能先于 raw block stop；
-- 一个后续 ToolUseBlock 会改变先前普通文字的展示位置；
-- `_text_parts` 按整轮累计原文，缺少自然的局部内存上限；
-- Result 前才 flush 会把 transport streaming 退化成终态批量显示。
+保留 v4 envelope、PostgreSQL/Redis 顺序、Last-Event-ID、gap/hydrate、答案回执和现有 Tool/subagent/artifact 事件。已提交的旧答案行不重写；旧公开摘要和 `commentary.delta` 历史仍在正文显示。新生成的工作叙述由服务端 `worktrace_` 摘要 ID 标记，新客户端折叠，旧客户端按既有摘要显示，不需要 schema 或数据库迁移。
 
-当前保留的功能：
-
-- v4 envelope、PostgreSQL/Redis 顺序、Last-Event-ID、gap/hydrate 和 answer receipt；
-- 旧 `commentary.delta` history 的读取与公开 summary 展示；
-- typed-only SDK 模式的完整 TextBlock/Result 补全；
-- 现有 tool/subagent/artifact 事件和显式文件交付。
-
-删除的 live 行为：
-
-- `ClaudeStreamTurn`、`queue_stream_turn` 和整轮文本缓冲；
-- 因 stop reason 或 ToolUseBlock 把 Claude Assistant 文字重新分类成 commentary；
-- 跨 source 的字符串前缀/相等判断、Result 冲突追加和不完整 framing 后的 typed fallback；这些路径不再作为兼容行为保留。
+退役的是 raw text 立即发布为最终答案的旧路径及其测试断言；新的正文只由确认为答案的 Assistant 来源及安全 Result 后缀构成。工具叙述整段检查后分片并按 100 个事件的回调上限分批，缺少回执即停止发布。工具描述仍不是能力完成证据，原始工具输入、结果和 Thinking 继续不公开。
 
 ## 7. 验收边界
 
@@ -187,14 +180,15 @@ PR #1562 早期实现曾缓存整个 SDK turn，等 typed fragment、下一 mess
 
 | 场景 | 必须观察到的结果 |
 | --- | --- |
-| 慢速纯文本 | 首个稳定安全 delta 在 typed TextBlock/Result 前进入公开消息 |
-| Thinking → text → tool | Thinking 和工具 JSON 不出现；text 在工具前可见且只出现一次 |
+| 慢速纯文本 | 首个答案 delta 等来源分类后发布；Result 只补安全后缀 |
+| Thinking → text → tool | Thinking 和工具 JSON 不出现；工具回合原文只进入可折叠工作记录 |
 | AssistantMessage 先于 block stop | projector 不被 typed 边界错误关闭，后续 raw 事件仍可校验 |
-| 文字 → 已验证工具 → 文字 | 两段文字在 Result 前有可见前缀；工具状态独立 |
-| private token 跨两个 delta | 前缀有界保留，最终替换后无原 token |
-| Result 相同、扩展或冲突 | 相同不重放；同一 source 的扩展只补后缀；identity/framing 冲突 fail closed 并保留已公开前缀 |
-| 工具失败、Run 失败、取消 | 已提交安全文字保留，终态和附件不伪造成功 |
+| 文字 → 已验证工具 → 文字 | 工具叙述、答案与工具状态分开，回调和 Run 终态各有回执 |
+| 私有 token 或禁止路径跨 8,192 字符边界 | 叙述整段拒绝或替换；没有分片泄漏或退化为答案 |
+| 超长工具叙述、第二批回调拒绝 | 每批最多 100 事件；拒绝后不继续发布答案或宣称成功 |
+| Result 相同、扩展或冲突 | 重复叙述不进入答案；真实答案中引用相同短语不被任意删去；严格流式冲突仍 fail closed |
+| 工具失败、Run 失败、取消 | 已提交安全文字保留，未确认的文本、终态和附件不伪造成功 |
 | 无附件、多个附件、Skill output 临时文件 | 只有显式 `attach_file` 清单成为附件，顺序稳定 |
-| SSE 断线、重放、hydrate | 正文、公开摘要、工具和附件顺序一致，不重新执行 |
+| SSE 断线、重放、hydrate | 正文、工作叙述、旧公开摘要、工具和附件顺序一致，不重新执行 |
 
 本地单元测试和生成 schema 验证代码合同。真实 PostgreSQL、Redis、Claude provider、代理层和浏览器 paint 时序必须另做 External Acceptance；CI 通过不能写成已部署或用户端实测完成。

@@ -159,16 +159,20 @@ output-capacity validation, and their existing errors are unchanged.
   unchanged.
 - **Behavior:** every level uses adaptive thinking with `display=omitted`, so the
   model may reason internally without returning Thinking text. The runner does
-  not publish returned `ThinkingBlock` text. Ordinary Assistant text feeds the
-  public `message.delta` projection regardless of later tool use. Explicit
-  platform-authored public summaries may still use `commentary.delta`. Ordinary chat consumes `ResultMessage.result`, while
+  not publish returned `ThinkingBlock` text. Tool-bearing Assistant text is
+  projected as sanitized `commentary.delta` work narration after source
+  classification; final-answer sources use `message.delta`. Existing explicit
+  public summaries still use `commentary.delta`. Ordinary chat consumes `ResultMessage.result`, while
   persisted streamed content is governed by the acknowledged-text/receipt
   contract above. Optional `attach_file` selections are independent. Neither
   ordinary text nor commentary requires structured output. Both frontend
   rendering paths exclude legacy thinking parts.
 - **Compatibility and retirement:** no new wire or schema field is added. The
-  misleading `public summarized-thinking text` prompt instruction is retired;
-  it has no persisted or client compatibility surface. `claude_sdk_thinking_summary`
+  misleading `public summarized-thinking text` prompt instruction and the old
+  immediately committed pre-Tool answer policy are retired; historical answer
+  rows remain immutable. A server-generated `worktrace_` summary ID lets new
+  readers fold work narration while older readers display the same valid v4
+  event inline. `claude_sdk_thinking_summary`
   remains an authenticated legacy callback write path, and `thinking.*` readers
   remain for those callbacks and retained persisted history; the current Runner
   does not produce either event family, and the current Chat UI displays neither
