@@ -173,6 +173,46 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
             "tool-1",
             {},
         )
+        can_use = options.kwargs["can_use_tool"]
+        assert (await can_use("Bash", {"command": "echo safe"})).behavior == "allow"
+        assert (
+            await can_use("Write", {"file_path": "outputs/delivery/out.txt", "content": "safe"})
+        ).behavior == "allow"
+        assert (await can_use("Write", {"file_path": "out.txt", "content": "safe"})).behavior == "allow"
+        assert (
+            await can_use("Write", {"file_path": "inputs/source.docx", "content": "unsafe"})
+        ).behavior == "deny"
+        assert (
+            await can_use("Write", {"file_path": "CLAUDE.md", "content": "unsafe"})
+        ).behavior == "deny"
+        assert (await can_use("Skill", {"skill": "qa-file-reviewer"})).behavior == "allow"
+        assert (await can_use("Skill", {"skill": "unknown-skill"})).behavior == "deny"
+        assert (await can_use("mcp__corp-search__query", {"query": "safe"})).behavior == "allow"
+        assert (await can_use("mcp__corp-search__query_extra", {"query": "safe"})).behavior == "deny"
+        assert (await can_use("mcp__corp-search__query", {"query": "safe", "scope": "other"})).behavior == "allow"
+
+        hook = options.kwargs["hooks"]["PreToolUse"][0].hooks[0]
+        bash_input = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "echo safe"},
+            "tool_use_id": "bash-call-1",
+        }
+        allowed = await hook(bash_input, "bash-call-1")
+        denied = await hook(
+            {
+                "tool_name": "WebFetch",
+                "tool_input": {"url": "https://example.test"},
+                "tool_use_id": "web-call-2",
+            },
+            "web-call-2",
+        )
+        assert allowed["hookSpecificOutput"]["permissionDecision"] == "allow"
+        assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert lifecycle_facts == [("bash-call-1", "started")]
+        # The admitted call must settle inside the active session before EOF.
+        await options.kwargs["hooks"]["PostToolUse"][-1].hooks[0](
+            {**bash_input, "hook_event_name": "PostToolUse"}, "bash-call-1", {}
+        )
         yield StreamEvent(
             {
                 "type": "message_start",
@@ -335,23 +375,8 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
     assert captured["pre_invocation_skill_write"].behavior == "deny"
     assert captured["pre_invocation_output_write"].behavior == "allow"
 
-    can_use = captured["can_use_tool"]
-    assert (await can_use("Bash", {"command": "echo safe"})).behavior == "allow"
-    assert (
-        await can_use("Write", {"file_path": "outputs/delivery/out.txt", "content": "safe"})
-    ).behavior == "allow"
-    assert (await can_use("Write", {"file_path": "out.txt", "content": "safe"})).behavior == "allow"
-    assert (
-        await can_use("Write", {"file_path": "inputs/source.docx", "content": "unsafe"})
-    ).behavior == "deny"
-    assert (
-        await can_use("Write", {"file_path": "CLAUDE.md", "content": "unsafe"})
-    ).behavior == "deny"
-    assert (await can_use("Skill", {"skill": "qa-file-reviewer"})).behavior == "allow"
-    assert (await can_use("Skill", {"skill": "unknown-skill"})).behavior == "deny"
-    assert (await can_use("mcp__corp-search__query", {"query": "safe"})).behavior == "allow"
-    assert (await can_use("mcp__corp-search__query_extra", {"query": "safe"})).behavior == "deny"
-    assert (await can_use("mcp__corp-search__query", {"query": "safe", "scope": "other"})).behavior == "allow"
+    with pytest.raises(RuntimeError, match="claude_callback_after_stream_closed"):
+        await captured["can_use_tool"]("Bash", {"command": "echo safe"})
     for endpoint in (
         "https://mcp.example.test/v1?api_key=redacted",
         "https://mcp.example.test/v1?token=redacted",
@@ -367,25 +392,16 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
         ) == {}
 
     hook = captured["hooks"]["PreToolUse"][0].hooks[0]
-    allowed = await hook(
-        {
-            "tool_name": "Bash",
-            "tool_input": {"command": "echo safe"},
-            "tool_use_id": "bash-call-1",
-        },
-        "bash-call-1",
-    )
-    denied = await hook(
-        {
-            "tool_name": "WebFetch",
-            "tool_input": {"url": "https://example.test"},
-            "tool_use_id": "web-call-2",
-        },
-        "web-call-2",
-    )
-    assert allowed["hookSpecificOutput"]["permissionDecision"] == "allow"
-    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert lifecycle_facts == [("bash-call-1", "started")]
+    with pytest.raises(RuntimeError, match="claude_callback_after_stream_closed"):
+        await hook(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "echo safe"},
+                "tool_use_id": "bash-call-after-close",
+            },
+            "bash-call-after-close",
+        )
+    assert lifecycle_facts == [("bash-call-1", "started"), ("bash-call-1", "completed")]
 
 
 class FakeQueryResult:
@@ -5076,6 +5092,15 @@ async def test_sdk_runner_does_not_expose_worker_local_bash_fast_path(monkeypatc
             captured.update(kwargs)
 
     async def query(prompt, options):
+        denied = await captured["can_use_tool"]("Bash", {"command": "echo local"}, None)
+        assert denied.behavior == "deny"
+        hook = captured["hooks"]["PreToolUse"][0].hooks[0]
+        hook_result = await hook(
+            {"tool_name": "Bash", "tool_input": {"command": "echo local"}},
+            None,
+            None,
+        )
+        assert hook_result["hookSpecificOutput"]["permissionDecision"] == "deny"
         yield AssistantMessage([TextBlock("ok")])
         yield ResultMessage()
 
@@ -5106,7 +5131,7 @@ async def test_sdk_runner_does_not_expose_worker_local_bash_fast_path(monkeypatc
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: current_settings)
 
-    await run_claude_agent_sdk(
+    result = await run_claude_agent_sdk(
         prompt="hello",
         cwd=tmp_path,
         skill_id="qa-file-reviewer",
@@ -5115,15 +5140,16 @@ async def test_sdk_runner_does_not_expose_worker_local_bash_fast_path(monkeypatc
 
     assert captured["tools"] == ["Read", "Glob", "LS", "Skill"]
     assert "Bash" not in captured["tools"]
-    denied = await captured["can_use_tool"]("Bash", {"command": "echo local"}, None)
-    assert denied.behavior == "deny"
+    assert result.error is None
+    with pytest.raises(RuntimeError, match="claude_callback_after_stream_closed"):
+        await captured["can_use_tool"]("Bash", {"command": "echo local"}, None)
     hook = captured["hooks"]["PreToolUse"][0].hooks[0]
-    hook_result = await hook(
-        {"tool_name": "Bash", "tool_input": {"command": "echo local"}},
-        None,
-        None,
-    )
-    assert hook_result["hookSpecificOutput"]["permissionDecision"] == "deny"
+    with pytest.raises(RuntimeError, match="claude_callback_after_stream_closed"):
+        await hook(
+            {"tool_name": "Bash", "tool_input": {"command": "echo local"}},
+            None,
+            None,
+        )
 
 
 @pytest.mark.asyncio

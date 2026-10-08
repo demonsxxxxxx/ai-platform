@@ -1999,6 +1999,26 @@ async def get_run(
     )
 
 
+@router.get("/sessions/{session_id}/run-inputs")
+async def get_session_run_inputs(
+    session_id: str,
+    request: Request,
+    before_run_id: str | None = None,
+    limit: int = 20,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, Any]:
+    service = _require_run_inputs_service(request)
+    async with transaction() as conn:
+        projection = await service.get_session_history(
+            conn, tenant_id=principal.tenant_id, user_id=principal.user_id,
+            session_id=session_id, before_run_id=before_run_id, limit=limit,
+            redact_public=not is_ai_admin(principal),
+        )
+    if projection is None:
+        raise HTTPException(status_code=404, detail="session_not_found")
+    return projection
+
+
 @router.get("/runs/{run_id}/inputs")
 async def get_run_inputs(
     run_id: str,
@@ -2012,6 +2032,7 @@ async def get_run_inputs(
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
             run_id=run_id,
+            redact_public=not is_ai_admin(principal),
         )
     if projection is None:
         raise HTTPException(status_code=404, detail="run_not_found")
@@ -2036,7 +2057,8 @@ async def submit_run_input(
                 input_id=str(submission.input_id),
                 text=submission.text,
                 question_id=submission.question_id,
-                answers=submission.answers,
+                answers=submission.model_dump()["answers"],
+                redact_public=not is_ai_admin(principal),
             )
     except RunInputError as exc:
         raise _run_input_http_error(exc) from exc

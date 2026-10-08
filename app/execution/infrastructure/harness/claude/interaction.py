@@ -102,7 +102,8 @@ class ClaudeRunInteractionActor:
             return {key: value for key, value in cached.items()}
         task = self._question_tasks.get(tool_call_id)
         if task is None:
-            questions = _project_questions(tool_input, self._sanitize_text)
+            native_questions = _native_questions(tool_input)
+            questions = _project_questions(native_questions, self._sanitize_text)
             question_id = str(
                 uuid.uuid5(
                     uuid.NAMESPACE_URL,
@@ -110,7 +111,7 @@ class ClaudeRunInteractionActor:
                 )
             )
             task = asyncio.create_task(
-                self._publish_and_wait(tool_call_id=tool_call_id, question_id=question_id, questions=questions)
+                self._publish_and_wait(tool_call_id=tool_call_id, question_id=question_id, questions=questions, native_questions=native_questions)
             )
             self._question_tasks[tool_call_id] = task
         updated_input = await asyncio.shield(task)
@@ -144,6 +145,7 @@ class ClaudeRunInteractionActor:
         tool_call_id: str,
         question_id: str,
         questions: list[dict[str, Any]],
+        native_questions: list[dict[str, Any]],
     ) -> dict[str, Any]:
         snapshot = await self._port.publish_question(
             question_id=question_id,
@@ -151,8 +153,6 @@ class ClaudeRunInteractionActor:
         )
         if snapshot.state != "open":
             raise ClaudeRunInteractionError("run_question_session_inactive")
-        if snapshot.questions is not None:
-            questions = [dict(item) for item in snapshot.questions]
         while not self._closed.is_set():
             snapshot = await self._port.poll(question_id=question_id)
             if snapshot.state != "open":
@@ -165,12 +165,12 @@ class ClaudeRunInteractionActor:
                     continue
                 if command.answers is None:
                     raise ClaudeRunInteractionError("run_question_answers_invalid")
-                answers = dict(command.answers)
+                answers = _native_answers(command.answers, native_questions)
                 # The SDK post-tool hook confirms that the native question
                 # consumed its answer. A denied/stopped question stays closed
                 # and unprocessed rather than reporting a premature receipt.
                 self._question_inputs[tool_call_id] = command.input_id
-                return {"questions": questions, "answers": answers}
+                return {"questions": native_questions, "answers": answers}
             try:
                 await asyncio.wait_for(
                     self._closed.wait(), timeout=QUESTION_POLL_INTERVAL_SECONDS
@@ -199,26 +199,60 @@ class ClaudeRunInteractionActor:
         raise asyncio.CancelledError
 
 
-def _project_questions(
-    tool_input: object, sanitize_text: Callable[[object], str],
-) -> list[dict[str, Any]]:
-    # Runs owns field limits, answer validation and the canonical public shape.
-    # Here remove platform-private tokens before sending model-generated text.
+def _native_questions(tool_input: object) -> list[dict[str, Any]]:
+    # Raw SDK identity lives only inside this attempt. Persisted/public labels
+    # remain redacted; ordinal keys survive display collisions without secrets.
     if not isinstance(tool_input, Mapping) or not isinstance(tool_input.get("questions"), list):
         raise ClaudeRunInteractionError("run_question_input_invalid")
     try:
-        return [
-            {
-                "question": sanitize_text(item["question"]),
-                "header": sanitize_text(item.get("header") or "Question"),
-                "multiSelect": item.get("multiSelect", False),
-                "options": [
-                    {"label": sanitize_text(option["label"]),
-                     "description": sanitize_text(option.get("description") or "")}
-                    for option in item["options"]
-                ],
-            }
-            for item in tool_input["questions"]
-        ]
-    except (KeyError, TypeError, AttributeError) as exc:
+        questions = [{
+            "question": item["question"], "header": item.get("header") or "Question",
+            "multiSelect": item.get("multiSelect", False),
+            "options": [{"label": option["label"], "description": option.get("description") or ""}
+                        for option in item["options"]],
+        } for item in tool_input["questions"]]
+        if (not 1 <= len(questions) <= 4
+            or any(not isinstance(item["question"], str) for item in questions)
+            or len({item["question"] for item in questions}) != len(questions)):
+            raise ValueError("invalid_questions")
+        for item in questions:
+            labels = [option["label"] for option in item["options"]]
+            if any(not isinstance(label, str) for label in labels) or len(set(labels)) != len(labels):
+                raise ValueError("invalid_options")
+        return questions
+    except (KeyError, TypeError, AttributeError, ValueError) as exc:
         raise ClaudeRunInteractionError("run_question_input_invalid") from exc
+
+
+def _project_questions(
+    questions: list[dict[str, Any]], sanitize_text: Callable[[object], str],
+) -> list[dict[str, Any]]:
+    return [{
+        "key": f"q{index}", "question": sanitize_text(item["question"]),
+        "header": sanitize_text(item["header"]), "multiSelect": item["multiSelect"],
+        "options": [{"key": f"o{option_index}", "label": sanitize_text(option["label"]),
+                     "description": sanitize_text(option["description"])}
+                    for option_index, option in enumerate(item["options"])],
+    } for index, item in enumerate(questions)]
+
+
+def _native_answers(
+    answers: Mapping[str, object], questions: list[dict[str, Any]],
+) -> dict[str, str | list[str]]:
+    if set(answers) != {f"q{index}" for index in range(len(questions))}:
+        raise ClaudeRunInteractionError("run_question_answers_invalid")
+    result: dict[str, str | list[str]] = {}
+    for index, question in enumerate(questions):
+        answer = answers[f"q{index}"]
+        options = {f"o{i}": option["label"] for i, option in enumerate(question["options"])}
+        if isinstance(answer, dict) and set(answer) == {"text"} and isinstance(answer["text"], str) and answer["text"].strip():
+            result[question["question"]] = answer["text"]
+        elif isinstance(answer, str) and not question["multiSelect"] and answer in options:
+            result[question["question"]] = options[answer]
+        elif (isinstance(answer, list) and question["multiSelect"] and answer
+              and all(isinstance(key, str) and key in options for key in answer)
+              and len(set(answer)) == len(answer)):
+            result[question["question"]] = [options[key] for key in answer]
+        else:
+            raise ClaudeRunInteractionError("run_question_answers_invalid")
+    return result

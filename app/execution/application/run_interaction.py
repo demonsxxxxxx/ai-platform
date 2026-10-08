@@ -17,7 +17,7 @@ class RunInputCommand:
     kind: RunInputKind
     text: str | None = None
     question_id: str | None = None
-    answers: Mapping[str, str | list[str]] | None = None
+    answers: Mapping[str, str | list[str] | dict[str, str]] | None = None
 
 
 @dataclass(frozen=True)

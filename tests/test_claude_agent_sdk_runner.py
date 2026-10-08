@@ -2888,8 +2888,9 @@ def _mcp_hook_steps(subject, *, call_id="mcp-call-1", terminal="completed"):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("continue_after_denial", [False, True])
 async def test_sdk_permission_denial_closes_started_internal_mcp_lifecycle(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, continue_after_denial
 ):
     captured, lifecycle_facts = {}, []
     subject = internal_context_tool_policy_subjects(["read_run_artifact"])[0]
@@ -2938,6 +2939,42 @@ async def test_sdk_permission_denial_closes_started_internal_mcp_lifecycle(
         )
         return True
 
+    interaction_kwargs = {}
+    if continue_after_denial:
+        from app.execution.application.run_interaction import RunInputCommand
+        from tests.test_claude_run_interactions import Inputs
+        from builtins import anext
+        port = Inputs([RunInputCommand("continue", "text", text="try another approach")])
+        queries = []
+
+        class Client:
+            def __init__(self, options):
+                self.stream = None
+
+            async def connect(self, stream):
+                self.stream = stream
+                await anext(stream)
+
+            async def query(self, prompt, session_id):
+                queries.append((prompt, session_id))
+
+            async def receive_messages(self):
+                for matcher in captured["hooks"]["PreToolUse"]:
+                    for hook in matcher.hooks:
+                        await hook(hook_input, call_id, {})
+                yield sdk.ResultMessage("first-result")
+                final = sdk.ResultMessage("final-result")
+                final.permission_denials = []
+                yield final
+                with pytest.raises(StopAsyncIteration):
+                    await anext(self.stream)
+
+            async def disconnect(self):
+                await self.stream.aclose()
+
+        interaction_kwargs = {"interaction_client": port, "client_fn": Client,
+                              "run_id": "run-a", "attempt_id": "attempt-a"}
+
     result = await run_claude_agent_sdk(
         prompt="use scoped history",
         cwd=tmp_path,
@@ -2954,6 +2991,7 @@ async def test_sdk_permission_denial_closes_started_internal_mcp_lifecycle(
             agent_id="general-agent",
         ),
         on_tool_lifecycle=acknowledge,
+        **interaction_kwargs,
     )
 
     assert lifecycle_facts == [
@@ -2962,6 +3000,10 @@ async def test_sdk_permission_denial_closes_started_internal_mcp_lifecycle(
     ]
     assert result.error is None
     assert result.turn_diagnostics["counters"]["tool_admission_denials"] == 2
+
+    if continue_after_denial:
+        assert queries == [("try another approach", "sdk-session")]
+        assert port.acks == ["continue"]
 
 
 @pytest.mark.asyncio

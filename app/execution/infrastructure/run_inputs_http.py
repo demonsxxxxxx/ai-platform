@@ -207,12 +207,15 @@ class RunInputCallbackClient:
             raise RunInputCallbackError("run_input_response_invalid")
         if not isinstance(answers, dict) or len(answers) > 4:
             raise RunInputCallbackError("run_input_response_invalid")
-        normalized_answers: dict[str, str | list[str]] = {}
+        normalized_answers: dict[str, str | list[str] | dict[str, str]] = {}
         for question, answer in answers.items():
             if not isinstance(question, str) or not question or len(question) > 16_000:
                 raise RunInputCallbackError("run_input_response_invalid")
             if isinstance(answer, str) and len(answer) <= 16_000:
                 normalized_answers[question] = answer
+            elif (isinstance(answer, dict) and set(answer) == {"text"}
+                  and isinstance(answer["text"], str) and 0 < len(answer["text"]) <= 16_000):
+                normalized_answers[question] = {"text": answer["text"]}
             elif isinstance(answer, list) and len(answer) <= 8 and all(
                 isinstance(item, str) and len(item) <= 256 for item in answer
             ):

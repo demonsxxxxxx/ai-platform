@@ -21,6 +21,36 @@ def _json_dumps(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
+async def get_owner_session(
+    conn: AsyncConnection, *, tenant_id: str, user_id: str, session_id: str,
+) -> dict[str, Any] | None:
+    cursor = await conn.execute(
+        "select id from sessions where tenant_id=%s and user_id=%s and id=%s and status='active'",
+        (tenant_id, user_id, session_id),
+    )
+    return await cursor.fetchone()
+
+
+async def list_owner_session_runs(
+    conn: AsyncConnection, *, tenant_id: str, user_id: str, session_id: str,
+    before_run_id: str | None, limit: int,
+) -> list[dict[str, Any]]:
+    cursor = await conn.execute(
+        """
+        select r.id from runs r
+        where r.tenant_id=%s and r.user_id=%s and r.session_id=%s
+          and (%s::text is null or (r.created_at, r.id) < (
+            select c.created_at, c.id from runs c
+            where c.tenant_id=r.tenant_id and c.user_id=r.user_id
+              and c.session_id=r.session_id and c.id=%s
+          ))
+        order by r.created_at desc, r.id desc limit %s
+        """,
+        (tenant_id, user_id, session_id, before_run_id, before_run_id, limit),
+    )
+    return await cursor.fetchall()
+
+
 async def get_owner_run(
     conn: AsyncConnection,
     *,

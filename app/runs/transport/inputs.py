@@ -8,6 +8,11 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 
+class RunInputFreeTextAnswer(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    text: str = Field(min_length=1, max_length=16_000)
+
+
 class RunInputSubmissionRequest(BaseModel):
     """HTTP boundary for one idempotent Run input submission."""
 
@@ -16,7 +21,7 @@ class RunInputSubmissionRequest(BaseModel):
     input_id: UUID
     text: str | None = Field(default=None, max_length=16_000)
     question_id: str | None = Field(default=None, min_length=1, max_length=128)
-    answers: dict[str, str | list[str]] | None = None
+    answers: dict[str, str | list[str] | RunInputFreeTextAnswer] | None = None
 
     @model_validator(mode="after")
     def exactly_one_input_kind(self) -> "RunInputSubmissionRequest":
@@ -30,6 +35,7 @@ class RunInputSubmissionRequest(BaseModel):
 class RunInputQuestionOptionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    key: str = Field(pattern=r"^o[0-7]$")
     label: str = Field(min_length=1, max_length=256)
     description: str = Field(default="", max_length=2_000)
 
@@ -37,6 +43,7 @@ class RunInputQuestionOptionRequest(BaseModel):
 class RunInputQuestionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    key: str = Field(pattern=r"^q[0-3]$")
     question: str = Field(min_length=1, max_length=16_000)
     header: str = Field(min_length=1, max_length=128)
     options: list[RunInputQuestionOptionRequest] = Field(max_length=8)

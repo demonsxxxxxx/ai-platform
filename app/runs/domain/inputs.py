@@ -75,9 +75,10 @@ def canonicalize_questions(
     if not isinstance(values, list) or not values or len(values) > MAX_RUN_QUESTION_BATCH:
         raise RunInputError("run_input_question_invalid")
     canonical: list[dict[str, Any]] = []
-    seen_questions: set[str] = set()
-    for value in values:
+    for question_index, value in enumerate(values):
         if not isinstance(value, dict):
+            raise RunInputError("run_input_question_invalid")
+        if value.get("key", f"q{question_index}") != f"q{question_index}":
             raise RunInputError("run_input_question_invalid")
         question = sanitize_run_input_text(
             value.get("question"),
@@ -96,9 +97,10 @@ def canonicalize_questions(
         ):
             raise RunInputError("run_input_question_invalid")
         options: list[dict[str, str]] = []
-        seen_labels: set[str] = set()
-        for option in options_value:
+        for option_index, option in enumerate(options_value):
             if not isinstance(option, dict):
+                raise RunInputError("run_input_question_invalid")
+            if option.get("key", f"o{option_index}") != f"o{option_index}":
                 raise RunInputError("run_input_question_invalid")
             label = sanitize_run_input_text(
                 option.get("label"),
@@ -111,17 +113,14 @@ def canonicalize_questions(
                 max_chars=2_000,
                 allow_empty=True,
             )
-            if label in seen_labels:
-                raise RunInputError("run_input_question_invalid")
-            seen_labels.add(label)
-            options.append({"label": label, "description": description})
+            options.append({"key": f"o{option_index}", "label": label, "description": description})
         multi_select = value.get("multiSelect")
-        if not isinstance(multi_select, bool) or question in seen_questions:
+        if not isinstance(multi_select, bool):
             raise RunInputError("run_input_question_invalid")
-        seen_questions.add(question)
         # Explicit projection prevents SDK tool arguments from becoming public fields.
         canonical.append(
             {
+                "key": f"q{question_index}",
                 "question": question,
                 "header": header,
                 "options": options,
@@ -136,23 +135,25 @@ def canonicalize_answers(
     *,
     questions: list[dict[str, Any]],
     sanitize_text: Callable[[object], str],
-) -> dict[str, str | list[str]]:
+) -> dict[str, str | list[str] | dict[str, str]]:
     if not isinstance(values, dict) or not questions:
         raise RunInputError("run_input_answers_invalid")
-    by_question = {str(item["question"]): item for item in questions}
+    by_question = {str(item["key"]): item for item in questions}
     if set(values) != set(by_question):
         raise RunInputError("run_input_answers_invalid")
-    canonical: dict[str, str | list[str]] = {}
+    canonical: dict[str, str | list[str] | dict[str, str]] = {}
     for question_text, answer in values.items():
         question = by_question[question_text]
-        labels = {str(option["label"]) for option in question["options"]}
+        labels = {str(option["key"]) for option in question["options"]}
+        if isinstance(answer, dict) and set(answer) == {"text"}:
+            canonical[question_text] = {"text": sanitize_run_input_text(
+                answer["text"], sanitize_text=sanitize_text, max_chars=MAX_RUN_ANSWER_CHARS,
+            )}
+            continue
         if isinstance(answer, str):
-            safe_answer = sanitize_run_input_text(
-                answer,
-                sanitize_text=sanitize_text,
-                max_chars=MAX_RUN_ANSWER_CHARS,
-            )
-            canonical[question_text] = safe_answer
+            if question["multiSelect"] or answer not in labels:
+                raise RunInputError("run_input_answers_invalid")
+            canonical[question_text] = answer
             continue
         if (
             not isinstance(answer, list)
@@ -163,14 +164,9 @@ def canonicalize_answers(
             raise RunInputError("run_input_answers_invalid")
         selected: list[str] = []
         for item in answer:
-            safe_item = sanitize_run_input_text(
-                item,
-                sanitize_text=sanitize_text,
-                max_chars=256,
-            )
-            if safe_item not in labels or safe_item in selected:
+            if not isinstance(item, str) or item not in labels or item in selected:
                 raise RunInputError("run_input_answers_invalid")
-            selected.append(safe_item)
+            selected.append(item)
         canonical[question_text] = selected
     return canonical
 

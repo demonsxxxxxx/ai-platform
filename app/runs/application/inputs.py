@@ -20,6 +20,15 @@ from app.runs.domain.inputs import (
 
 
 class RunInputsPersistence(Protocol):
+    async def get_owner_session(
+        self, conn: Any, *, tenant_id: str, user_id: str, session_id: str
+    ) -> dict[str, Any] | None: ...
+
+    async def list_owner_session_runs(
+        self, conn: Any, *, tenant_id: str, user_id: str, session_id: str,
+        before_run_id: str | None, limit: int,
+    ) -> list[dict[str, Any]]: ...
+
     async def get_owner_run(
         self, conn: Any, *, tenant_id: str, user_id: str, run_id: str, for_update: bool = False
     ) -> dict[str, Any] | None: ...
@@ -127,6 +136,7 @@ class RunInputsService:
         tenant_id: str,
         user_id: str,
         run_id: str,
+        redact_public: bool = True,
     ) -> dict[str, Any] | None:
         run = await self.persistence.get_owner_run(
             conn,
@@ -162,6 +172,7 @@ class RunInputsService:
             "inputs": [
                 self._public_input(
                     row,
+                    redact_public=redact_public,
                     closed=(
                         current_attempt_id is None
                         or str(row.get("attempt_id") or "") != current_attempt_id
@@ -183,6 +194,31 @@ class RunInputsService:
             ],
         }
 
+    async def get_session_history(
+        self, conn: Any, *, tenant_id: str, user_id: str, session_id: str,
+        before_run_id: str | None = None, limit: int = 20, redact_public: bool = True,
+    ) -> dict[str, Any] | None:
+        if await self.persistence.get_owner_session(
+            conn, tenant_id=tenant_id, user_id=user_id, session_id=session_id,
+        ) is None:
+            return None
+        limit = max(1, min(limit, 100))
+        rows = await self.persistence.list_owner_session_runs(
+            conn, tenant_id=tenant_id, user_id=user_id, session_id=session_id,
+            before_run_id=before_run_id, limit=limit + 1,
+        )
+        projections = []
+        for row in rows[:limit]:
+            projection = await self.get_projection(
+                conn, tenant_id=tenant_id, user_id=user_id, run_id=str(row["id"]),
+                redact_public=redact_public,
+            )
+            if projection is not None:
+                projections.append(projection)
+        has_more = len(rows) > limit
+        return {"session_id": session_id, "runs": projections, "has_more": has_more,
+                "next_before_run_id": str(rows[limit - 1]["id"]) if has_more else None}
+
     async def submit(
         self,
         conn: Any,
@@ -193,8 +229,10 @@ class RunInputsService:
         input_id: str,
         text: str | None = None,
         question_id: str | None = None,
-        answers: dict[str, str | list[str]] | None = None,
+        answers: dict[str, str | list[str] | dict[str, str]] | None = None,
+        redact_public: bool = True,
     ) -> dict[str, str] | None:
+        input_sanitizer = self.sanitize_text if redact_public else lambda value: value
         run = await self.persistence.get_owner_run(
             conn,
             tenant_id=tenant_id,
@@ -219,6 +257,7 @@ class RunInputsService:
             await self._require_same_submission(
                 conn,
                 existing=existing,
+                sanitize_text=input_sanitizer,
                 text=text,
                 question_id=question_id,
                 answers=answers,
@@ -248,7 +287,7 @@ class RunInputsService:
         if kind == "text":
             stored_text = sanitize_run_input_text(
                 text,
-                sanitize_text=self.sanitize_text,
+                sanitize_text=input_sanitizer,
             )
         else:
             assert question_id is not None and answers is not None
@@ -266,7 +305,7 @@ class RunInputsService:
             stored_answers = canonicalize_answers(
                 answers,
                 questions=canonical_questions,
-                sanitize_text=self.sanitize_text,
+                sanitize_text=input_sanitizer,
             )
             if str(question.get("status") or "") != "pending":
                 raise RunInputConflict("run_input_question_already_answered")
@@ -372,7 +411,7 @@ class RunInputsService:
                 attempt_id=attempt_id,
                 question_id=question_id,
             )
-            return {"state": state, "inputs": [self._public_input(row) for row in rows]}
+            return {"state": state, "inputs": [self._public_input(row, redact_public=False) for row in rows]}
 
         if operation == "ack":
             assert input_ids is not None
@@ -399,7 +438,7 @@ class RunInputsService:
             if queued_text:
                 return {
                     "state": "open",
-                    "inputs": [self._public_input(queued_text[0])],
+                    "inputs": [self._public_input(queued_text[0], redact_public=False)],
                 }
             session = await self.persistence.seal_session(
                 conn,
@@ -433,9 +472,10 @@ class RunInputsService:
         conn: Any,
         *,
         existing: dict[str, Any],
+        sanitize_text: Callable[[object], str],
         text: str | None,
         question_id: str | None,
-        answers: dict[str, str | list[str]] | None,
+        answers: dict[str, str | list[str] | dict[str, str]] | None,
         tenant_id: str,
         run_id: str,
     ) -> None:
@@ -445,7 +485,7 @@ class RunInputsService:
         if expected_kind == "text":
             safe_text = sanitize_run_input_text(
                 text,
-                sanitize_text=self.sanitize_text,
+                sanitize_text=sanitize_text,
             )
             if existing.get("text") != safe_text:
                 raise RunInputConflict()
@@ -468,7 +508,7 @@ class RunInputsService:
         safe_answers = canonicalize_answers(
             answers,
             questions=canonical_questions,
-            sanitize_text=self.sanitize_text,
+            sanitize_text=sanitize_text,
         )
         if existing.get("answers") != safe_answers:
             raise RunInputConflict()
@@ -481,13 +521,15 @@ class RunInputsService:
         row: dict[str, Any],
         *,
         closed: bool = False,
+        redact_public: bool = True,
     ) -> dict[str, Any]:
+        sanitizer = self.sanitize_text if redact_public else lambda value: value
         kind = str(row.get("kind") or "")
         text = row.get("text")
         safe_text = (
             sanitize_run_input_text(
                 text,
-                sanitize_text=self.sanitize_text,
+                sanitize_text=sanitizer,
                 allow_empty=True,
             )
             if isinstance(text, str)
@@ -497,21 +539,26 @@ class RunInputsService:
         answers: dict[str, Any] = {}
         if isinstance(raw_answers, dict):
             for key, value in raw_answers.items():
-                safe_key = self.sanitize_text(key)
+                safe_key = sanitizer(key) if isinstance(key, str) else None
                 if not isinstance(safe_key, str):
                     continue
                 if isinstance(value, str):
                     answers[safe_key] = sanitize_run_input_text(
                         value,
-                        sanitize_text=self.sanitize_text,
+                        sanitize_text=sanitizer,
                         max_chars=MAX_RUN_ANSWER_CHARS,
                         allow_empty=True,
                     )
+                elif isinstance(value, dict) and set(value) == {"text"}:
+                    answers[safe_key] = {"text": sanitize_run_input_text(
+                        value["text"], sanitize_text=sanitizer,
+                        max_chars=MAX_RUN_ANSWER_CHARS, allow_empty=True,
+                    )}
                 elif isinstance(value, list):
                     answers[safe_key] = [
                         sanitize_run_input_text(
                             item,
-                            sanitize_text=self.sanitize_text,
+                            sanitize_text=sanitizer,
                             max_chars=MAX_RUN_ANSWER_CHARS,
                             allow_empty=True,
                         )

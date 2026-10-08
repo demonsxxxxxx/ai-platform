@@ -3708,6 +3708,12 @@ async def run_claude_agent_sdk(
                     # Drain the public stream through its final mirror flush,
                     # without processing more output or supplementary inputs.
                     continue
+                if isinstance(message, ResultMessage):
+                    permission_denials = getattr(message, "permission_denials", None)
+                    if isinstance(permission_denials, list):
+                        diagnostic_counters["tool_admission_denials"] += len(permission_denials)
+                        for denial in permission_denials:
+                            await reconcile_sdk_permission_denial(denial)
                 if isinstance(message, TaskStartedMessage):
                     if message.task_type in {"local_agent", "local_workflow"}:
                         pending_tasks.add(message.task_id)
@@ -4168,14 +4174,8 @@ async def run_claude_agent_sdk(
                 diagnostic_counters["turns_observed"] = _bounded_diagnostic_counter(
                     continuation_turns + getattr(message, "num_turns", 0)
                 )
-                permission_denials = getattr(message, "permission_denials", None)
-                if isinstance(permission_denials, list):
-                    diagnostic_counters["tool_admission_denials"] += len(
-                        permission_denials
-                    )
-                    for denial in permission_denials:
-                        await reconcile_sdk_permission_denial(denial)
                 result_session_id = message.session_id
+                permission_denials = getattr(message, "permission_denials", None)
                 usage = _merge_sdk_usage(continuation_usage, message.usage or message.model_usage or {})
                 sdk_terminal_reason = getattr(message, "terminal_reason", None)
                 resolved_terminal_reason = (

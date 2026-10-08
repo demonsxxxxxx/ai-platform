@@ -1,6 +1,6 @@
 # Claude Run interaction and completion
 
-Baseline: `e47f17e43fa1e632ebd30a8f3d39a3d7cb1cba48`.
+The additive input protocol uses schema version `2026.10.07.1`.
 
 Runs owns durable supplementary text and question answers. Execution owns their
 translation into the current Claude session. These inputs retain the current
@@ -9,7 +9,8 @@ Run/Attempt, Profile, model, tools and files; they do not create another Run.
 Supplementary text is queued while the current SDK query executes and sent with
 the public `ClaudeSDKClient.query` at its next result boundary. The initial
 streaming input remains open until the Run has no accepted supplementary text.
-Model questions use native `AskUserQuestion`; its PreToolUse hook awaits an
+Every model Result reconciles its permission-denial receipts before a subsequent
+input continues the Run, including results from background turns. Model questions use native `AskUserQuestion`; its PreToolUse hook awaits an
 answer and supplies the answers through `updatedInput`. The successful native
 PostToolUse hook acknowledges consumption; UI submission alone does not mark
 an answer applied. Cancellation interrupts the SDK and releases input waiters.
@@ -20,6 +21,11 @@ PreToolUse is the single question entry; there is no second question handler in
 
 - `GET /runs/{run_id}/inputs` returns
   `{run_id, state, inputs, questions}` for the authenticated Run owner.
+- `GET /sessions/{session_id}/run-inputs?limit=20&before_run_id=...` returns
+  `{session_id, runs, has_more, next_before_run_id}` for the authenticated session
+  owner. Runs are ordered by `(created_at, id)` descending with an exclusive
+  cursor in the same tenant/user/session. A foreign or absent cursor yields an
+  empty page. Each item uses the same Run projection below.
 - `POST /runs/{run_id}/inputs` accepts either
   `{input_id, text}` or `{input_id, question_id, answers}`. `input_id` is a
   client-generated UUID retained across retries. The response is
@@ -33,11 +39,23 @@ PreToolUse is the single question entry; there is no second question handler in
   receipts remain queued/applied.
 - Question rows contain `question_id`, `questions`, `status` (`pending`,
   `answered`, `resolved`, or `closed`), `created_at`. Each question has
-  `question`, `header`, `options: [{label, description}]`, `multiSelect`.
-  Answers map the exact question string to selected labels or free text.
+  `key`, `question`, `header`, `options: [{key, label, description}]`, `multiSelect`.
+  Question keys (`q0`…`q3`) and per-question option keys (`o0`…`o7`) are stable
+  ordinals inside the batch. Answers map question keys to a selected option key,
+  an array of keys for multi-select, or `{text: ...}` for free text. Free text is
+  explicit so a literal `o0` cannot be mistaken for an option selection.
+  Labels are display text and may collide after redaction. The SDK adapter keeps
+  original question/option identity only in the active attempt and translates
+  accepted keys back to native `AskUserQuestion` values. Raw model-generated
+  question text is neither persisted nor sent through the callback.
 
 No new SSE event is required. Chat queries this projection while the Run is
-active, and retrieves it when restoring the conversation. It displays queued
+active. A separate session/auth-bound history projection restores every loaded
+Run page on refresh and supports loading older pages; replacing the active Run
+retains prior rounds as read-only history. The active Run overrides its history
+snapshot by Run ID. Session or principal replacement aborts old reads and drops
+old projections. Persisted pre-key records use a display-only legacy mapping;
+new submissions require the current key contract. It displays queued
 text separately from persisted conversation Messages and shows pending questions
 as answerable cards. Text and answers are Run input facts; the existing provider
 coverage continues to count the original conversation user message and final
@@ -63,7 +81,12 @@ cannot publish, poll, acknowledge or seal the current input session.
 
 Text is bounded to 16,000 characters; a question batch has at most four questions
 and eight options per question. The public projection uses the ordinary-text
-sanitizer and typed fields, never raw tool arguments. The table is Run-owned and
+sanitizer and typed fields, never raw tool arguments. Ordinary-user text and
+free answers are sanitized before persistence/execution as initial input already
+was. The current principal's existing administrator exemption applies to text
+and free answers; the authenticated callback receives that admitted value.
+Ordinary-user reads still reapply public redaction. Selection identities carry
+only ordinals, regardless of the submitting role. The table is Run-owned and
 cascades with Run deletion. The native question hook uses the Run deadline,
 or a one-day ceiling when execution has no configured deadline.
 

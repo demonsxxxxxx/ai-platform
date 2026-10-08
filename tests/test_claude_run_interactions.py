@@ -107,10 +107,10 @@ async def test_native_question_is_one_pending_batch_until_answered():
     await port.question_ready.wait()
     assert not task.done()
     question_id, questions = port.questions[0]
-    port.answer = RunInputCommand("answer", "answer", question_id=question_id, answers={"Which sections?": ["Intro", "Results"]})
+    port.answer = RunInputCommand("answer", "answer", question_id=question_id, answers={"q0": ["o0", "o1"]})
     try:
         result = await asyncio.wait_for(task, 1)
-        assert result == {"questions": questions, "answers": {"Which sections?": ["Intro", "Results"]}}
+        assert result == {"questions": tool_input["questions"], "answers": {"Which sections?": ["Intro", "Results"]}}
         assert await actor.resolve_native_question(tool_call_id="call", tool_input=tool_input) == result
         assert len(port.questions) == 1 and port.acks == []
         await actor.acknowledge_native_question("call")
@@ -275,7 +275,7 @@ async def test_installed_cli_waits_for_native_answer_and_continues_in_one_sessio
             question_id = port.questions[0][0]
             port.commands.append(RunInputCommand("continue", "text", text="Also add a Chinese summary"))
             port.answer = RunInputCommand("answer", "answer", question_id=question_id,
-                                          answers={"Which sections?": ["Intro", "Results"]})
+                                          answers={"q0": ["o0", "o1"]})
             result = await asyncio.wait_for(task, 10)
             assert result.error is None, result.runtime_diagnostics
             assert port.acks == ["answer", "continue"]
@@ -293,3 +293,27 @@ async def test_installed_cli_waits_for_native_answer_and_continues_in_one_sessio
                 task.cancel()
             if task is not None:
                 await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize("multi", [False, True])
+async def test_native_question_uses_original_local_identity_after_redaction_collision(multi):
+    port = Inputs()
+    actor = ClaudeRunInteractionActor(port, run_id="run", attempt_id="attempt")
+    questions = [{"question": f"Send to {email}?", "header": "Contact", "multiSelect": multi,
+                  "options": [{"label": "alice@example.test", "description": ""},
+                              {"label": "bob@example.test", "description": ""}]}
+                 for email in ("alice@example.test", "bob@example.test")]
+    task = asyncio.create_task(actor.resolve_native_question(tool_call_id="call", tool_input={"questions": questions}))
+    try:
+        await port.question_ready.wait()
+        question_id, public = port.questions[0]
+        assert "example.test" not in str(public)
+        port.answer = RunInputCommand("answer", "answer", question_id=question_id,
+                                     answers={"q0": ["o1", "o0"] if multi else "o1", "q1": {"text": "o0"}})
+        result = await asyncio.wait_for(task, 1)
+        assert result["questions"] == questions
+        assert result["answers"] == {questions[0]["question"]: ["bob@example.test", "alice@example.test"] if multi else "bob@example.test",
+                                      questions[1]["question"]: "o0"}
+    finally:
+        await actor.close()
+        await asyncio.gather(task, return_exceptions=True)
