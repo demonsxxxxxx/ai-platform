@@ -19,7 +19,8 @@ Deployment Release. GitHub's automatically generated source archives may still
 appear; they are not operator packages.
 
 The package contains the exact Compose file, the unified OpenSandbox overlay,
-`.env.example`, `deploy.py`, the release manifest, package guide,
+an optional ProfileDrive CA bind overlay, `.env.example`, `deploy.py`, the release
+manifest, package guide,
 `BACKUP-RESTORE.md`, and verified image qualification evidence in
 `release-evidence/`.
 The package pins Backend, Frontend, PostgreSQL, Redis, and MinIO by

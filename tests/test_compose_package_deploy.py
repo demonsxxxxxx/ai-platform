@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 from pathlib import Path
 
@@ -130,7 +131,7 @@ def harness(tmp_path, monkeypatch):
     # Permission metadata is POSIX-only; do not fake subprocess or runner verdicts.
     env = tmp_path / ".env"
     env.write_text("SYNTHETIC=true\n")
-    state = {"calls": [], "activity_checks": 0, "race": False, "fail": None}
+    state = {"calls": [], "activity_checks": 0, "race": False, "fail": None, "ca_host": ""}
     workspace_root = str((tmp_path / "workspaces").resolve())
     migration_source = str((tmp_path / "legacy-workspaces").resolve())
     config = {"services": {
@@ -202,6 +203,8 @@ def harness(tmp_path, monkeypatch):
             raise entry.DeploymentError(stage + ": injected failure")
         if stage == "configuration identity":
             return json.dumps(config)
+        if stage == "configuration inputs":
+            return "PROFILE_DRIVE_TRANSFER_CA_CERT_HOST_FILE=" + state["ca_host"]
         if stage == "Docker data-root inspection":
             return str((tmp_path / "docker-data").resolve())
         if stage == "workspace volume inspection":
@@ -237,6 +240,77 @@ def harness(tmp_path, monkeypatch):
     state["state_path"] = tmp_path / ".ai-platform-install-state.json"
     state["deploy"] = lambda offline=False, check_only=False, **kwargs: entry.deploy(tmp_path, env, ["docker"], offline, check_only, **kwargs)
     return state
+
+
+def test_profile_drive_ca_bind_is_optional_and_preflight_requires_readable_file(harness, tmp_path, monkeypatch):
+    import certifi
+
+    monkeypatch.setattr(entry, "validate_workspace_storage", lambda *args, **kwargs: False)
+    harness["deploy"](check_only=True)
+    assert not any("compose.profile-drive-ca.yaml" in str(command) for _, command in harness["calls"])
+
+    ca_target = "/etc/ssl/certs/profile-drive-ca.pem"
+    ca_source = tmp_path / "public-ca.pem"
+    api = harness["config"]["services"]["api"]
+    ca_mount = {"type": "bind", "source": str(ca_source), "target": ca_target, "read_only": True}
+    api["volumes"].append(ca_mount)
+
+    harness["ca_host"] = str(ca_source)
+    with pytest.raises(entry.DeploymentError, match="requires both host and container paths"):
+        harness["deploy"](check_only=True)
+    harness["ca_host"] = ""
+    api["environment"]["PROFILE_DRIVE_TRANSFER_CA_CERT_FILE"] = ca_target
+    with pytest.raises(entry.DeploymentError, match="requires both host and container paths"):
+        harness["deploy"](check_only=True)
+    harness["ca_host"] = str(ca_source)
+    with pytest.raises(entry.DeploymentError, match="must be a readable"):
+        harness["deploy"](check_only=True)
+    ca_source.write_text("not a certificate")
+    with pytest.raises(entry.DeploymentError, match="public certificate material only"):
+        harness["deploy"](check_only=True)
+    public_bundle = Path(certifi.where()).read_bytes()
+    ca_source.write_bytes(public_bundle + b"\n-----BEGIN PRIVATE KEY-----\nsynthetic-only\n")
+    with pytest.raises(entry.DeploymentError, match="public certificate material only"):
+        harness["deploy"](check_only=True)
+    ca_source.write_bytes(public_bundle)
+    if os.name == "posix":
+        ca_source.chmod(0o644)
+    harness["deploy"](check_only=True)
+    assert any("compose.profile-drive-ca.yaml" in str(command) for _, command in harness["calls"])
+    probe_calls = [command for stage, command in harness["calls"] if stage == "ProfileDrive CA runtime verification"]
+    assert len(probe_calls) == 1
+    assert all(flag in probe_calls[0] for flag in ("--network", "none", "--read-only", "--user", "10001:10001"))
+    harness["fail"] = "ProfileDrive CA runtime verification"
+    with pytest.raises(entry.DeploymentError, match="runtime verification"):
+        harness["deploy"](check_only=True)
+    harness["fail"] = None
+    ca_mount["read_only"] = False
+    with pytest.raises(entry.DeploymentError, match="must be a readable"):
+        harness["deploy"](check_only=True)
+    ca_mount["read_only"] = True
+    if os.name == "posix":
+        ca_link = tmp_path / "linked-ca.pem"
+        ca_link.symlink_to(ca_source)
+        ca_mount["source"] = str(ca_link)
+        with pytest.raises(entry.DeploymentError, match="must be a readable"):
+            harness["deploy"](check_only=True)
+
+
+def test_profile_drive_ca_runtime_probe_rejects_non_certificates_and_private_keys(tmp_path):
+    import certifi
+
+    ca_source = tmp_path / "public-ca.pem"
+    def probe():
+        return subprocess.run([sys.executable, "-B", "-c", entry.PROFILE_DRIVE_CA_PROBE, str(ca_source)],
+                              capture_output=True, timeout=10).returncode
+
+    ca_source.write_text("not a certificate")
+    assert probe() != 0
+    public_bundle = Path(certifi.where()).read_bytes()
+    ca_source.write_bytes(public_bundle)
+    assert probe() == 0
+    ca_source.write_bytes(public_bundle + b"\n-----BEGIN PRIVATE KEY-----\nsynthetic-only\n")
+    assert probe() != 0
 
 
 def test_workspace_migration_source_must_be_a_readonly_host_bind(harness):

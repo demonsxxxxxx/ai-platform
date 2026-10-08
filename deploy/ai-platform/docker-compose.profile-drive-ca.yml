@@ -1,0 +1,9 @@
+services:
+  api:
+    volumes:
+      - type: bind
+        source: ${PROFILE_DRIVE_TRANSFER_CA_CERT_HOST_FILE:?set the host path to the public CA certificate}
+        target: ${PROFILE_DRIVE_TRANSFER_CA_CERT_FILE:?set the API container CA path}
+        read_only: true
+        bind:
+          create_host_path: false

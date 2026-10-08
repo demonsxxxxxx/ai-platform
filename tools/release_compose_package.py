@@ -165,6 +165,7 @@ def build_package(
     files = {
         "compose.yaml": "docker-compose.yml",
         "compose.override.yaml": "docker-compose.opensandbox.yml",
+        "compose.profile-drive-ca.yaml": "docker-compose.profile-drive-ca.yml",
         ".env.example": ".env.example",
         "deploy.py": "deploy.py",
         "README.md": "README.md",
