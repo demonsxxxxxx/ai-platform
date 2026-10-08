@@ -6,6 +6,7 @@ import pytest
 
 from app.platform.postgres.limits import json_size_bytes
 from app.runs.application.diagnostics import RunDiagnosticsService
+from app.runs.domain import diagnostics as runs_diagnostics_contract
 from app.runs.domain.diagnostics import (
     RUN_DIAGNOSTICS_MAX_BYTES,
     RUN_DIAGNOSTICS_SCHEMA_VERSION,
@@ -19,6 +20,7 @@ from app.sandbox.api import (
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
     normalize_sdk_runtime_diagnostics,
 )
+from app.sandbox.domain import runtime_diagnostics as sandbox_diagnostics_contract
 
 
 NOW = datetime(2026, 9, 13, 8, 0, tzinfo=timezone.utc)
@@ -232,6 +234,40 @@ def test_projection_failure_survives_sandbox_and_runs_diagnostic_boundaries():
     assert sandbox_projection["projection_failure"] == expected
     assert observation["runtime_diagnostics"]["projection_failure"] == expected
     assert repeated_sandbox_projection["projection_failure"] == expected
+
+
+def test_raw_frame_shape_label_contracts_match_across_boundaries():
+    assert runs_diagnostics_contract._RUN_RAW_FRAME_LABELS == (
+        sandbox_diagnostics_contract._RAW_FRAME_SHAPE_LABELS
+    )
+
+
+def test_raw_frame_shape_survives_sandbox_runs_and_rejects_untrusted_values():
+    shape = {
+        "event_type": "content_block_delta", "block_type": "other",
+        "delta_type": "text_delta", "message_state": "open",
+        "open_block_type": "tool_use", "index_state": "ignored",
+        "guard": "block_delta_type",
+    }
+    failure = {
+        "reason": "raw_frame_invalid", "stage": "message",
+        "location": "raw_stream_frame", "frame_shape": shape,
+    }
+    projected = normalize_sdk_runtime_diagnostics(
+        runtime_diagnostics(projection_failure=failure)
+    )
+    observation = build_failure_observation(
+        attempt_id="attempt-a", source="worker_executor", stage="terminalization",
+        error_code="claude_agent_sdk_output_validation_failed",
+        runtime_diagnostics=sanitize_runtime_diagnostics(projected), received_at=NOW,
+    )
+    assert observation["runtime_diagnostics"]["projection_failure"] == failure
+    assert normalize_sdk_runtime_diagnostics(
+        observation["runtime_diagnostics"]
+    )["projection_failure"] == failure
+    assert "frame_shape" not in sanitize_runtime_diagnostics({
+        "projection_failure": {**failure, "frame_shape": {**shape, "guard": "private_token"}},
+    })["projection_failure"]
 
 
 @pytest.mark.asyncio

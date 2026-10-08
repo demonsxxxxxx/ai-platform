@@ -19,6 +19,17 @@ _EXPECTED = {
 }
 
 
+_FRAME_SHAPE = {
+    "event_type": "content_block_delta",
+    "block_type": "other",
+    "delta_type": "text_delta",
+    "message_state": "open",
+    "open_block_type": "tool_use",
+    "index_state": "ignored",
+    "guard": "block_delta_type",
+}
+
+
 def _runtime_diagnostics(**overrides):
     value = {
         "schema_version": sandbox_api.SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
@@ -80,6 +91,26 @@ def test_projection_failure_drops_payload_and_identifier_extras():
     } in normalized["normalization_losses"]
 
 
+def test_raw_frame_shape_rejects_private_values_at_sandbox_boundary():
+    expected = {
+        "reason": "raw_frame_invalid", "stage": "message", "location": "raw_stream_frame",
+    }
+    for shape in (
+        {**_FRAME_SHAPE, "event_type": "private-token"},
+        {**_FRAME_SHAPE, "payload": "private-token"},
+        {**_FRAME_SHAPE, "guard": ["private-token"]},
+    ):
+        normalized = sandbox_api.normalize_sdk_runtime_diagnostics(
+            _runtime_diagnostics(projection_failure={**expected, "frame_shape": shape})
+        )
+        assert normalized["projection_failure"] == expected
+        assert "private-token" not in str(normalized)
+    normalized = sandbox_api.normalize_sdk_runtime_diagnostics(
+        _runtime_diagnostics(projection_failure={**expected, "frame_shape": _FRAME_SHAPE})
+    )
+    assert normalized["projection_failure"] == {**expected, "frame_shape": _FRAME_SHAPE}
+
+
 def test_projection_failure_survives_diagnostic_byte_budget(monkeypatch):
     max_bytes = 4_096
     monkeypatch.setattr(
@@ -90,7 +121,10 @@ def test_projection_failure_survives_diagnostic_byte_budget(monkeypatch):
 
     normalized = sandbox_api.normalize_sdk_runtime_diagnostics(
         _runtime_diagnostics(
-            projection_failure=_EXPECTED,
+            projection_failure={
+                "reason": "raw_frame_invalid", "stage": "message",
+                "location": "raw_stream_frame", "frame_shape": _FRAME_SHAPE,
+            },
             sdk={
                 "exception_message": "x" * 8_192,
                 "exception_traceback": "y" * 8_192,
@@ -104,7 +138,7 @@ def test_projection_failure_survives_diagnostic_byte_budget(monkeypatch):
         allow_nan=False,
     ).encode("utf-8")
 
-    assert normalized["projection_failure"] == _EXPECTED
+    assert normalized["projection_failure"]["frame_shape"] == _FRAME_SHAPE
     assert len(encoded) <= max_bytes
 
 

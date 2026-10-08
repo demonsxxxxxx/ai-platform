@@ -80,6 +80,22 @@ _NON_TEXT_DELTA_TYPES = {
     "text_editor_code_execution_tool_result": frozenset(),
 }
 
+_RAW_EVENT_TYPES = frozenset({
+    "ping", "message_start", "message_delta", "message_stop",
+    "content_block_start", "content_block_stop", "content_block_delta",
+})
+_RAW_DELTA_TYPES = frozenset(
+    {"text_delta", "thinking_delta", "signature_delta", "input_json_delta"}
+)
+_RAW_FRAME_GUARDS = frozenset({
+    "parent_binding", "event_object", "event_type", "message_start",
+    "message_delta_state", "message_delta_object", "message_delta_stop_reason",
+    "message_delta_stop_sequence", "message_delta_conflict", "message_stop",
+    "block_start_state", "block_start_index", "block_start_type",
+    "block_start_limit", "block_stop_index", "block_delta_index",
+    "block_delta_object", "block_delta_type", "block_delta_text",
+})
+
 _CLI_STRIPPED_CC_MEMORY_TAG = re.compile(r"</?cc-memory\b[^>]*>", re.ASCII)
 _NORMALIZED_FINGERPRINT_CHUNK_CHARS = 64 * 1024
 
@@ -1200,6 +1216,51 @@ class ClaudeStreamProjector:
         self._disabled = False
         self._partial_emitted = False
         self._failure_reason: str | None = None
+        self._frame_shape: dict[str, str] | None = None
+        self._failure_frame: dict[str, str] | None = None
+
+    @property
+    def failure_frame(self) -> dict[str, str] | None:
+        """First rejected raw frame, reduced to fixed structural labels."""
+
+        return self._failure_frame
+
+    @staticmethod
+    def _type_label(value: object, allowed: frozenset[str]) -> str:
+        return value if isinstance(value, str) and value in allowed else "other"
+
+    def _describe_frame(self, event: object) -> dict[str, str]:
+        raw = event if isinstance(event, dict) else {}
+        block = raw.get("content_block")
+        delta = raw.get("delta")
+        index = raw.get("index")
+        if not self._is_exact_index(index):
+            index_state = "invalid"
+        elif index == self._active_text_index and self._active_text_index is not None:
+            index_state = "active"
+        elif index == self._ignored_block_index and self._ignored_block_index is not None:
+            index_state = "ignored"
+        elif index in self._completed_block_indexes:
+            index_state = "completed"
+        else:
+            index_state = "other"
+        return {
+            "event_type": self._type_label(raw.get("type"), _RAW_EVENT_TYPES),
+            "block_type": self._type_label(
+                block.get("type") if isinstance(block, dict) else None,
+                _KNOWN_BLOCK_TYPES,
+            ),
+            "delta_type": self._type_label(
+                delta.get("type") if isinstance(delta, dict) else None,
+                _RAW_DELTA_TYPES,
+            ),
+            "message_state": "open" if self._explicit_message_open else "closed",
+            "open_block_type": (
+                "text" if self._active_text_index is not None
+                else self._ignored_block_type or "none"
+            ),
+            "index_state": index_state,
+        }
 
     @property
     def disabled(self) -> bool:
@@ -1380,16 +1441,17 @@ class ClaudeStreamProjector:
 
         if self._disabled:
             return ()
+        self._frame_shape = self._describe_frame(event)
         if parent_tool_use_id is not None and (
             not isinstance(parent_tool_use_id, str) or not parent_tool_use_id
         ):
-            self._disable()
+            self._disable(guard="parent_binding")
             return ()
         if self._explicit_message_open and parent_tool_use_id != self._parent_tool_use_id:
-            self._disable()
+            self._disable(guard="parent_binding")
             return ()
         if not isinstance(event, dict):
-            self._disable()
+            self._disable(guard="event_object")
             return ()
         event_type = event.get("type")
         if event_type == "ping":
@@ -1407,7 +1469,7 @@ class ClaudeStreamProjector:
             return self._accept_stop(event)
         if event_type == "content_block_delta":
             return self._accept_delta(event)
-        self._disable()
+        self._disable(guard="event_type")
         return ()
 
     def close_unfinished(self) -> None:
@@ -1435,7 +1497,7 @@ class ClaudeStreamProjector:
             or self._ignored_block_index is not None
             or self._completed_block_indexes
         ):
-            self._disable()
+            self._disable(guard="message_start")
             return ()
         self._raw_sources.clear()
         self._raw_text_sources.clear()
@@ -1456,22 +1518,22 @@ class ClaudeStreamProjector:
 
     def _accept_message_delta(self, event: dict[str, Any]) -> tuple[str, ...]:
         if not self._explicit_message_open or self._active_text_index is not None or self._ignored_block_index is not None:
-            self._disable()
+            self._disable(guard="message_delta_state")
             return ()
         delta = event.get("delta")
         if not isinstance(delta, dict):
-            self._disable()
+            self._disable(guard="message_delta_object")
             return ()
         stop_reason = delta.get("stop_reason")
         if stop_reason is not None and not is_known_stop_reason(stop_reason):
-            self._disable()
+            self._disable(guard="message_delta_stop_reason")
             return ()
         if "stop_sequence" in delta and delta["stop_sequence"] is not None and not isinstance(delta["stop_sequence"], str):
-            self._disable()
+            self._disable(guard="message_delta_stop_sequence")
             return ()
         if stop_reason is not None:
             if self._message_stop_reason not in (None, stop_reason):
-                self._disable()
+                self._disable(guard="message_delta_conflict")
                 return ()
             self._message_stop_reason = stop_reason
         self._message_delta_seen = True
@@ -1486,7 +1548,7 @@ class ClaudeStreamProjector:
             or not self._message_delta_seen
             or self._message_stop_reason is None
         ):
-            self._disable()
+            self._disable(guard="message_stop")
             return ()
         self._explicit_message_open = False
         self._completed_block_indexes.clear()
@@ -1498,7 +1560,7 @@ class ClaudeStreamProjector:
             or self._active_text_index is not None
             or self._ignored_block_index is not None
         ):
-            self._disable()
+            self._disable(guard="block_start_state")
             return ()
         index = event.get("index")
         content_block = event.get("content_block")
@@ -1507,14 +1569,14 @@ class ClaudeStreamProjector:
             or not isinstance(content_block, dict)
             or (self._explicit_message_open and index in self._completed_block_indexes)
         ):
-            self._disable()
+            self._disable(guard="block_start_index")
             return ()
         content_type = content_block.get("type")
-        if content_type not in _KNOWN_BLOCK_TYPES:
-            self._disable()
+        if not isinstance(content_type, str) or content_type not in _KNOWN_BLOCK_TYPES:
+            self._disable(guard="block_start_type")
             return ()
         if len(self._raw_sources) >= _MAX_RECONCILIATION_BINDINGS:
-            self._disable()
+            self._disable(guard="block_start_limit")
             return ()
         self._block_generation += 1
         source_identity = (
@@ -1540,7 +1602,7 @@ class ClaudeStreamProjector:
         index = event.get("index")
         if self._ignored_block_index is not None:
             if self._ignored_block_type is None or not self._is_ignored_index(index):
-                self._disable()
+                self._disable(guard="block_stop_index")
                 return ()
             self._ignored_block_index = None
             self._ignored_block_type = None
@@ -1548,7 +1610,7 @@ class ClaudeStreamProjector:
                 self._completed_block_indexes.add(index)
             return ()
         if not self._is_active_index(index):
-            self._disable()
+            self._disable(guard="block_stop_index")
             return ()
         self._active_text_index = None
         self._completed_text_source_identity = self._last_text_source_identity
@@ -1560,34 +1622,37 @@ class ClaudeStreamProjector:
         index = event.get("index")
         delta = event.get("delta")
         if self._ignored_block_index is not None:
-            if (
-                self._ignored_block_type is None
-                or not self._is_ignored_index(index)
-                or not isinstance(delta, dict)
-                or not isinstance(delta.get("type"), str)
-                or delta.get("type") not in _NON_TEXT_DELTA_TYPES.get(self._ignored_block_type, ())
-            ):
-                self._disable()
+            if self._ignored_block_type is None or not self._is_ignored_index(index):
+                self._disable(guard="block_delta_index")
+            elif not isinstance(delta, dict):
+                self._disable(guard="block_delta_object")
+            elif not isinstance(delta.get("type"), str) or delta.get("type") not in _NON_TEXT_DELTA_TYPES.get(self._ignored_block_type, ()):
+                self._disable(guard="block_delta_type")
             return ()
-        if self._active_text_index is None:
-            self._disable()
+        if self._active_text_index is None or not self._is_active_index(index):
+            self._disable(guard="block_delta_index")
             return ()
-        if not self._is_active_index(index) or not isinstance(delta, dict):
-            self._disable()
+        if not isinstance(delta, dict):
+            self._disable(guard="block_delta_object")
             return ()
         if delta.get("type") != "text_delta":
-            self._disable()
+            self._disable(guard="block_delta_type")
             return ()
         text = delta.get("text")
         if not isinstance(text, str) or not text:
-            self._disable()
+            self._disable(guard="block_delta_text")
             return ()
         self._partial_emitted = True
         return (text,)
 
-    def _disable(self, reason: str = "raw_frame_invalid") -> None:
+    def _disable(self, reason: str = "raw_frame_invalid", *, guard: str = "event_type") -> None:
         if self._failure_reason is None:
             self._failure_reason = reason
+            if reason == "raw_frame_invalid" and self._frame_shape is not None:
+                self._failure_frame = {
+                    **self._frame_shape,
+                    "guard": guard if guard in _RAW_FRAME_GUARDS else "event_type",
+                }
         self._disabled = True
         self._active_text_index = None
         self._ignored_block_index = None
