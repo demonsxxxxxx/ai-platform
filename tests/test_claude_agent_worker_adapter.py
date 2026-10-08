@@ -61,10 +61,17 @@ from app.sandbox.domain.runtime_diagnostics import (
     normalize_sdk_runtime_diagnostics,
 )
 from app.runtime.sandbox.workspace_manager import SandboxWorkspaceManager
+from app.skills.application import skill_markdown
+from app.skills.infrastructure.skill_markdown_yaml import load_skill_markdown_metadata
 from app.skills.pinning import build_uploaded_skill_manifest_pin
 from app.skills.registry import BuiltinSkillRegistry, iter_skill_files
 from app.storage import StoredObject
 from app.worker import WorkerRunCancelled
+
+
+@pytest.fixture(autouse=True)
+def configured_skill_markdown_loader(monkeypatch):
+    monkeypatch.setattr(skill_markdown, "_yaml_metadata_loader", load_skill_markdown_metadata)
 
 
 def _materialized_xlsx_bytes() -> bytes:

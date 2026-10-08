@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import shlex
 import signal
+import ssl
 import stat
 import subprocess
 import sys
@@ -70,6 +71,17 @@ assert observed.tzinfo is not None
 assert -5 <= time.time() - observed.timestamp() <= 30
 os.kill(p['pid'], 0)
 print(json.dumps([p['worker_id'], p['pid'], observed.timestamp()]))
+"""
+PROFILE_DRIVE_CA_PROBE = """
+import ssl, sys
+from pathlib import Path
+path = Path(sys.argv[1])
+if not 0 < path.stat().st_size <= 1048576:
+    raise SystemExit(1)
+data = path.read_bytes()
+if b'-----BEGIN CERTIFICATE-----' not in data or b'PRIVATE KEY-----' in data:
+    raise SystemExit(1)
+ssl.create_default_context(cafile=str(path))
 """
 
 
@@ -524,6 +536,36 @@ def deploy(package: Path, env: Path, docker: list[str], offline: bool, check_onl
                "-f", str(package / "compose.yaml"), "-f", str(package / "compose.override.yaml")]
     run([*compose, "config", "--quiet"], "configuration")
     config = json.loads(run([*compose, "config", "--format", "json"], "configuration identity"))
+    ca_target = config["services"]["api"].get("environment", {}).get("PROFILE_DRIVE_TRANSFER_CA_CERT_FILE")
+    ca_host = next((line.partition("=")[2].strip()
+                    for line in run([*compose, "config", "--environment"], "configuration inputs").splitlines()
+                    if line.startswith("PROFILE_DRIVE_TRANSFER_CA_CERT_HOST_FILE=")), "")
+    if bool(ca_target) != bool(ca_host):
+        raise DeploymentError("ProfileDrive CA requires both host and container paths")
+    ca_source = None
+    if ca_target:
+        compose.extend(["-f", str(package / "compose.profile-drive-ca.yaml")])
+        run([*compose, "config", "--quiet"], "ProfileDrive CA configuration")
+        config = json.loads(run([*compose, "config", "--format", "json"], "configuration identity"))
+        mounts = [mount for mount in config["services"]["api"].get("volumes", [])
+                  if mount.get("target") == ca_target]
+        ca_source = mounts[0].get("source") if len(mounts) == 1 else None
+        if (len(mounts) != 1 or mounts[0].get("type") != "bind"
+                or not mounts[0].get("read_only")
+                or not isinstance(ca_source, str) or not Path(ca_source).is_absolute()
+                or not Path(ca_source).is_file() or not os.access(ca_source, os.R_OK)
+                or Path(ca_source).resolve() != Path(ca_source)):
+            raise DeploymentError("ProfileDrive CA must be a readable, read-only host file bind")
+        try:
+            metadata = Path(ca_source).stat()
+            if (os.name == "posix" and metadata.st_mode & 0o022) or not 0 < metadata.st_size <= 1048576:
+                raise ValueError("unsafe CA file")
+            content = Path(ca_source).read_bytes()
+            if b"-----BEGIN CERTIFICATE-----" not in content or b"PRIVATE KEY-----" in content:
+                raise ValueError("invalid CA content")
+            ssl.create_default_context(cafile=ca_source)
+        except (OSError, ValueError, ssl.SSLError):
+            raise DeploymentError("ProfileDrive CA must contain public certificate material only") from None
     validate_production_config(config, allow_insecure_http)
     validate_internal_test_bridge(config, docker)
     workspace_migration = validate_workspace_storage(config, docker, migrate_legacy)
@@ -553,6 +595,12 @@ def deploy(package: Path, env: Path, docker: list[str], offline: bool, check_onl
         if reference not in (image.get("RepoDigests") or []):
             raise DeploymentError("local image lacks the expected repository digest")
         image_ids[reference] = image["Id"]
+    if ca_source:
+        run([*docker, "run", "--rm", "--pull", "never", "--network", "none", "--read-only",
+             "--user", "10001:10001", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
+             "--mount", f"type=bind,source={ca_source},target={ca_target},readonly",
+             "--entrypoint", "python", BACKEND, "-B", "-c", PROFILE_DRIVE_CA_PROBE,
+             ca_target], "ProfileDrive CA runtime verification", 30)
     if not workspace_migration:
         verify_workspace_migration_complete(config, docker)
     if resume_install:

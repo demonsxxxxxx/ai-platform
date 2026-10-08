@@ -34,12 +34,19 @@ gateway address. The package controller compares that host bind with the
 actual bridge gateway and the API/Worker `OPENSANDBOX_EGRESS_PROXY_URL`
 (`http://<bridge-gateway>:18043`); do not publish it on 0.0.0.0.
 `SANDBOX_RUNTIME_SUBJECT` and `SANDBOX_WORKSPACE_ROOT` must match the existing
-test installation. Both API
-and Worker need the same model encryption and callback credentials; the
-existing `SANDBOX_CALLBACK_TOKEN` must contain at least 32 characters because
-it also derives test executor control authentication. Preserve it across
-restarts. Model connection contents remain administrator-owned and are not
-stored in this package.
+test installation. Both API and Worker need the same model encryption and
+callback credentials; the existing `SANDBOX_CALLBACK_TOKEN` must contain at
+least 32 characters because it also derives test executor control
+authentication. Preserve it across restarts. Model connection contents remain
+administrator-owned and are not stored in this package.
+
+For private-CA ProfileDrive HTTPS imports, retain the existing public CA file
+and set both `PROFILE_DRIVE_TRANSFER_CA_CERT_HOST_FILE` (absolute, readable host
+file) and `PROFILE_DRIVE_TRANSFER_CA_CERT_FILE` (API container path). The
+optional packaged CA overlay mounts only that certificate read-only. Preflight
+rejects missing, linked, malformed, group/world-writable and private-key files
+and verifies the mount as the API user. Never mount a private key or replace the
+existing certificate without its approved renewal procedure.
 
 Keep the existing externally owned `.env` (mode 0600), data volumes, PostgreSQL,
 Redis, MinIO and workspace directory. Do not copy `.env.example` over it, create

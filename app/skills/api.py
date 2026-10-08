@@ -1,6 +1,9 @@
 from collections.abc import Callable, Sequence
 from typing import Any, Literal, TypedDict
 
+from app.skills.application.skill_markdown import (
+    parse_skill_markdown_front_matter as parse_skill_markdown_front_matter,
+)
 from app.skills.application.run_admission import (
     MAX_SKILL_RUN_MANIFESTS,
     SkillRunAdmission,

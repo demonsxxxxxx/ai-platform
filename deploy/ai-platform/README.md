@@ -91,6 +91,22 @@ The configuration must be owned by the invoking user. If that user requires
 sudo for Docker, use `--docker-cmd 'sudo -n docker'`; do not run the entire
 entry as another user against a differently owned configuration.
 
+For ProfileDrive HTTPS file imports with a private CA, set
+`PROFILE_DRIVE_TRANSFER_CA_CERT_HOST_FILE` to an absolute, readable host path
+containing only the trusted public CA certificate and set
+`PROFILE_DRIVE_TRANSFER_CA_CERT_FILE` to its target path inside the API container.
+Only when that target is configured does deployment apply the package's CA
+Compose overlay. Deployment preflight rejects missing, linked, malformed,
+group/world-writable or private-key-bearing host files and checks the CA from a
+network-disabled backend container running as the API user. Compose binds the
+file read-only and never creates a missing host path. Never mount the TLS
+private key. Verify the certificate matches the configured HTTPS upstream and
+has not expired. The mount survives application container recreation as long
+as the host certificate and Compose configuration remain in place. Plan
+certificate renewal before expiry; after replacing a certificate file,
+recreate the API container through the authorized release procedure so its bind
+mount uses the new file.
+
 Production requires independent generated `TRUSTED_PRINCIPAL_SECRET` and
 `AI_SESSION_SECRET` values of at least 32 characters; blank values and known
 placeholder prefixes are rejected before application services stop. Preserve

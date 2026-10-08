@@ -20,8 +20,7 @@ from app.skills.release_readiness import (
     _RELEASE_EVIDENCE_CATEGORIES,
     _VULNERABILITY_EVIDENCE_NAMES,
 )
-from app.skills.registry import parse_skill_markdown_front_matter
-from app.skills.api import is_valid_executable_skill_name
+from app.skills.api import is_valid_executable_skill_name, parse_skill_markdown_front_matter
 
 MAX_SKILL_PACKAGE_FILE_BYTES = MAX_SKILL_SNAPSHOT_FILE_BYTES
 MAX_SKILL_PACKAGE_TOTAL_BYTES = MAX_SKILL_SNAPSHOT_TOTAL_BYTES

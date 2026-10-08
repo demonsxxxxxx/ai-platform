@@ -2746,6 +2746,7 @@ def test_worker_main_once_closes_database_pool(monkeypatch, capsys):
 
     monkeypatch.setattr(sys, "argv", ["worker", "--once", "--timeout", "7"])
     monkeypatch.setattr("app.worker_main.configure_model_services", configure_model_services)
+    monkeypatch.setattr("app.worker_main.configure_skill_markdown", lambda: calls.append(("configure_skill_markdown",)))
     monkeypatch.setattr("app.worker_main.require_schema_current", require_schema_current)
     monkeypatch.setattr("app.worker_main.run_once", fake_run_once)
     monkeypatch.setattr("app.bootstrap.worker_maintenance.close_pool", fake_close_pool)
@@ -2755,6 +2756,7 @@ def test_worker_main_once_closes_database_pool(monkeypatch, capsys):
 
     assert calls == [
         ("configure_model_services",),
+        ("configure_skill_markdown",),
         ("require_schema_current",),
         ("run_once", 7),
         ("close_redis_client",),
@@ -2777,6 +2779,7 @@ def test_worker_main_uses_configured_worker_concurrency(monkeypatch):
 
     monkeypatch.setattr(sys, "argv", ["worker", "--timeout", "9"])
     monkeypatch.setattr("app.worker_main.configure_model_services", configure_model_services)
+    monkeypatch.setattr("app.worker_main.configure_skill_markdown", lambda: calls.append(("configure_skill_markdown",)))
     monkeypatch.setattr("app.worker_main.get_settings", lambda: Settings())
     monkeypatch.setattr("app.worker_main.run_worker_pool", fake_run_worker_pool)
 
@@ -2784,6 +2787,7 @@ def test_worker_main_uses_configured_worker_concurrency(monkeypatch):
 
     assert calls == [
         ("configure_model_services",),
+        ("configure_skill_markdown",),
         ("run_worker_pool", 10, 9),
     ]
 
