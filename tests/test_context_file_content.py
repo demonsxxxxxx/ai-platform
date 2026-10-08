@@ -106,6 +106,42 @@ def test_validate_context_file_for_stage_accepts_xlsx_above_legacy_cell_limit():
     validate_context_file_for_stage(_row("large.xlsx", XLSX_CONTENT_TYPE, raw), raw)
 
 
+def test_validate_context_file_for_stage_accepts_xlsx_large_expanded_entry():
+    raw = _zip_with_added_part(
+        _xlsx_bytes_with_cells(2),
+        "customXml/padding.xml",
+        b"<root>"
+        + hashlib.shake_256(b"xlsx-size-fixture").hexdigest(4 * 1024 * 1024).encode()
+        + b"x" * (1024 * 1024)
+        + b"</root>",
+    )
+
+    validate_context_file_for_stage(_row("large.xlsx", XLSX_CONTENT_TYPE, raw), raw)
+
+
+def test_validate_context_file_for_stage_rejects_xlsx_compressed_entry_above_limit():
+    raw = _zip_with_added_part(
+        _xlsx_bytes_with_cells(2),
+        "customXml/padding.bin",
+        b"x" * (8 * 1024 * 1024 + 1),
+        compression=ZIP_STORED,
+    )
+
+    with pytest.raises(ContextFileContentError, match="context_file_xlsx_archive_invalid"):
+        validate_context_file_for_stage(_row("large.xlsx", XLSX_CONTENT_TYPE, raw), raw)
+
+
+def test_validate_context_file_for_stage_rejects_xlsx_expanded_package_above_limit():
+    stream = io.BytesIO(_xlsx_bytes_with_cells(2))
+    with ZipFile(stream, "a", compression=ZIP_STORED) as archive:
+        for index in range(5):
+            archive.writestr(f"customXml/padding{index}.bin", b"x" * (7 * 1024 * 1024))
+    raw = stream.getvalue()
+
+    with pytest.raises(ContextFileContentError, match="context_file_xlsx_archive_invalid"):
+        validate_context_file_for_stage(_row("large.xlsx", XLSX_CONTENT_TYPE, raw), raw)
+
+
 @pytest.mark.parametrize(
     ("name", "content_type", "raw"),
     [
