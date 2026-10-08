@@ -20,8 +20,7 @@ appear; they are not operator packages.
 
 The package contains the exact Compose file, internal-test OpenSandbox overlay,
 an optional ProfileDrive CA bind overlay, `.env.example`, `deploy.py`, the release
-manifest, package guide,
-`BACKUP-RESTORE.md`, and verified image qualification evidence in
+manifest, package guide and verified image qualification evidence in
 `release-evidence/`.
 The package pins Backend, Frontend, PostgreSQL, Redis, and MinIO by
 `repository@sha256:...`. The public Release is immutable and its package files
@@ -105,10 +104,10 @@ execution and egress separately from controller readiness.
 
 Download the internal-test package from one immutable Deployment Release and use
 its embedded manifest; extract the archive into a new directory, and keep that directory
-unchanged. Take a coordinated database, MinIO, Redis and workspace backup and choose a
-maintenance window with no active Runs, Attempts, leases, or sandbox containers.
-Follow the [backup and recovery procedure](../../deploy/ai-platform/BACKUP-RESTORE.md), including
-a restore rehearsal, before changing an existing installation.
+unchanged. Choose a maintenance window with no active Runs, Attempts, leases,
+or sandbox containers. The controller does not create a backup and cannot
+reverse a completed database migration; without a recovery point, data may not
+be recoverable after a migration failure.
 
 An upgrade from the retired SSE transport additionally requires the explicit
 [legacy-state retirement](redis-streams-sse-cutover-acceptance.md#explicit-legacy-state-retirement)
@@ -139,7 +138,8 @@ project-wide deployment lock and the following gates:
    services. Fresh/current-layout installations skip legacy workspace migration;
    any existing supported legacy source directory, even empty, requires
    `--migrate-legacy-workspaces`
-   and a verified backup. The read-only legacy source is retained.
+   and an explicitly inspected migration source. The read-only legacy source
+   is retained.
 7. Recreate and wait for the application services, then verify API health and
    readiness, OpenSandbox reachability, application commit/image identity, and
    an advancing Worker heartbeat.
@@ -186,8 +186,8 @@ changes. If activity appears during the second check, migration does not start
 and the stopped application containers are restarted. After migration begins,
 any startup or health failure stops application admission and retains data.
 The entry does not guess at binary rollback and does not reverse a database
-migration. Restore a compatible package or use the authorized database backup
-procedure after classifying the failure. Do not edit migration checksums.
+migration. Use a schema-compatible corrected package or an operator-authorized
+restore after classifying the failure. Do not edit migration checksums.
 
 The only automated first-install recovery is `--resume-install` with the intact
 owner-held mode `0600` `.ai-platform-install-state.json` beside the env file, the
@@ -195,8 +195,8 @@ same package, complete rendered configuration and migration mode, and no
 application containers (even stopped ones). Existing data images and volume
 identities must match. Changed inputs, missing journals, orphaned volumes,
 partial activity schemas and ambiguous/late startup failures require operator
-classification using the [recovery procedure](../../deploy/ai-platform/BACKUP-RESTORE.md).
-Never delete data, journals or migration markers to bypass these gates.
+classification. Never delete data, journals or migration markers to bypass
+these gates.
 
 A quarantined sandbox record is not silently deleted. Only a terminal,
 unclaimed failed-reconciliation record with a terminal Run and a verifiable

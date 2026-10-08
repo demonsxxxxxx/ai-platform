@@ -174,7 +174,7 @@ source-checkout release controller or reconstruct a latest Release on the host.
 
 A fresh production installation initializes the current workspace root without
 creating or copying a legacy source directory. Any selected existing legacy
-source directory, even empty, requires a backup and `--migrate-legacy-workspaces`.
+source directory, even empty, requires `--migrate-legacy-workspaces`.
 Existing bind or local volume data must match the configured migration source's
 inspected host path and both running containers' storage identity. The source is
 retained read-only during the package copy.
@@ -184,9 +184,8 @@ keep the same package, configuration and migration mode, the intact owner-held
 mode `0600` journal beside the env file, and no application containers. Changed
 inputs, missing journals, partially-created activity tables and any application
 containers require classified operator recovery. `--resume-install --check`
-never starts PostgreSQL and requires it already running. See the
-[backup, restore and recovery procedure](../../deploy/ai-platform/BACKUP-RESTORE.md) before
-changing existing data.
+never starts PostgreSQL and requires it already running. Classify changes
+to existing data before retrying a failed install.
 
 Production defaults to HTTPS origins and secure cookies. Generate independent
 `TRUSTED_PRINCIPAL_SECRET` and `AI_SESSION_SECRET` values of at least 32

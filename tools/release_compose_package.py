@@ -172,7 +172,6 @@ def build_package(
         ".env.example": ".env.example",
         "deploy.py": "deploy.py",
         "README.md": "README.internal-test.md",
-        "BACKUP-RESTORE.md": "BACKUP-RESTORE.md",
         "opensandbox-egress-nginx.conf.template": "opensandbox-egress-nginx.conf.template",
     }
     payloads = {}

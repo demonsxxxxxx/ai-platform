@@ -1,9 +1,9 @@
 # Deploy an internal-test Release
 
 Use only `ai-platform-internal-test.tar.gz` from an immutable official Release.
-Its `deploy.py`, `compose.yaml`, `compose.override.yaml`, pinned image manifest,
-release evidence and `BACKUP-RESTORE.md` belong to the same commit. Do not repack
-this archive or mix it with the earlier production package. Keep the existing
+Its `deploy.py`, `compose.yaml`, `compose.override.yaml`, pinned image manifest
+and release evidence belong to the same commit. Do not repack this archive or
+mix it with the earlier production package. Keep the existing
 `/data/ai-platform-internal-test` configuration, volumes and workspace identity.
 The controller's activity gate, migration and workspace initialization remain
 mandatory; schema migration does not automatically roll back.
@@ -49,8 +49,8 @@ existing certificate without its approved renewal procedure.
 
 Keep the existing externally owned `.env` (mode 0600), data volumes, PostgreSQL,
 Redis, MinIO and workspace directory. Do not copy `.env.example` over it, create
-replacement secrets, or remove legacy workspaces. Follow the coordinated backup
-and restore requirements in `BACKUP-RESTORE.md` before stateful migration.
+replacement secrets, or remove legacy workspaces. The controller does not
+create a backup or automatically reverse a completed schema migration.
 From an extracted official package, check with:
 
 ```sh
@@ -58,8 +58,8 @@ python3 deploy.py --env-file /path/to/existing/.env --check --allow-insecure-htt
 ```
 
 Use `--allow-insecure-http` only when the existing intranet browser origin is
-HTTP and the risk is accepted. Once preflight, backups and a maintenance window
-are ready, run the same package controller without `--check`. Independently
+HTTP and the risk is accepted. Once preflight and a maintenance window are
+ready, run the same package controller without `--check`. Independently
 verify the commit/digests, retained data service identities, workspace bind,
 real `runsc` task, callback, network behavior and persisted-lease cleanup before
 retiring the previous Release. Tenant-wide admin orphan cleanup intentionally

@@ -181,7 +181,7 @@ def test_compose_package_contains_one_runtime_archive_with_fixed_images(tmp_path
     with tarfile.open(output) as archive:
         expected = {
             "compose.yaml", "compose.override.yaml", "compose.profile-drive-ca.yaml", ".env.example",
-            "release-image-manifest.json", "deploy.py", "README.md", "BACKUP-RESTORE.md",
+            "release-image-manifest.json", "deploy.py", "README.md",
             "opensandbox-egress-nginx.conf.template",
         }
         expected.update(
