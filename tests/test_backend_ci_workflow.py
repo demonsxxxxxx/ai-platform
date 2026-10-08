@@ -59,6 +59,8 @@ BACKEND_TEST_SHARDS = {
         "tests/test_claude_stream_projection.py",
         "tests/test_claude_agent_sdk_turn_diagnostics.py",
         "tests/test_claude_completion_lifecycle.py",
+        "tests/test_claude_run_interactions.py",
+        "tests/test_claude_callback_completion.py",
         "tests/test_claude_mcp_registration.py",
         "tests/test_claude_agent_worker_adapter.py",
         "tests/test_claude_agent_worker_file_continuity.py",
@@ -161,6 +163,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_run_diagnostics_postgres.py",
         "tests/test_schema_migrations.py",
         "tests/test_schema_migrations_postgres.py",
+        "tests/test_run_inputs_postgres.py",
         "tests/test_schema.py::test_schema_declares_attempt_identity_state_and_fences",
     ),
     "v4-durable-streaming": (

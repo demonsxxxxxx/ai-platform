@@ -6525,6 +6525,13 @@ test("useAgent paginates backend-shaped history and merges an older successful R
   })) as typeof sessionApi.getStatus;
   globalThis.fetch = (async (input) => {
     const url = new URL(String(input), "http://test.local");
+    const inputRunId = url.pathname.match(/\/runs\/([^/]+)\/inputs$/)?.[1];
+    if (inputRunId) {
+      return historyJsonResponse({
+        run_id: decodeURIComponent(inputRunId), state: "inactive", inputs: [], questions: [],
+      });
+    }
+    assert.ok(url.pathname.endsWith("/events"), "only history requests belong to pagination");
     requests.push(url);
     const runId = url.searchParams.get("run_id");
     const cursor = url.searchParams.get("cursor");
@@ -6765,6 +6772,13 @@ test(`useAgent preserves the visible answer when ${terminalStatus} exact history
   })) as typeof sessionApi.getStatus;
   globalThis.fetch = (async (input) => {
     const url = new URL(String(input), "http://test.local");
+    const inputRunId = url.pathname.match(/\/runs\/([^/]+)\/inputs$/)?.[1];
+    if (inputRunId) {
+      return historyJsonResponse({
+        run_id: decodeURIComponent(inputRunId), state: "inactive", inputs: [], questions: [],
+      });
+    }
+    assert.ok(url.pathname.endsWith("/events"), "only history requests belong to pagination");
     requests.push(url);
     if (url.searchParams.get("run_id") === "run-empty-successful-shell") {
       return historyJsonResponse({
@@ -8303,6 +8317,7 @@ test("useAgent synchronously retires an active Chat SSE from the production auth
   const originalGlobalFetch = globalThis.fetch;
   const originalWindowFetch = dom.window.fetch;
   let streamSignal: AbortSignal | null = null;
+  let inputsSignal: AbortSignal | null = null;
   let rejectStream!: (reason?: unknown) => void;
   let statusCalls = 0;
   let streamCalls = 0;
@@ -8325,7 +8340,17 @@ test("useAgent synchronously retires an active Chat SSE from the production auth
       status: "running",
     };
   }) as typeof sessionApi.getStatus;
-  const nonClosingStream = ((_input: RequestInfo | URL, init?: RequestInit) => {
+  const nonClosingStream = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input), "http://test.local");
+    if (/\/runs\/[^/]+\/inputs$/.test(url.pathname)) {
+      inputsSignal = init?.signal as AbortSignal;
+      return new Promise<Response>((_resolve, reject) => {
+        inputsSignal?.addEventListener("abort", () => {
+          reject(Object.assign(new Error("old inputs request retired"), { name: "AbortError" }));
+        }, { once: true });
+      });
+    }
+    assert.equal(url.pathname, "/api/chat/sessions/session-auth-event-stream/stream");
     streamCalls += 1;
     streamSignal = init?.signal as AbortSignal;
     return new Promise<Response>((_resolve, reject) => {
@@ -8340,7 +8365,9 @@ test("useAgent synchronously retires an active Chat SSE from the production auth
       await Promise.resolve();
     });
     const activeStreamSignal = streamSignal as AbortSignal | null;
+    const activeInputsSignal = inputsSignal as AbortSignal | null;
     assert.ok(activeStreamSignal, "the Chat SSE should be active before auth turnover");
+    assert.ok(activeInputsSignal, "the Run inputs read should be active before auth turnover");
     assert.equal(activeStreamSignal.aborted, false);
     const toast = (await import("react-hot-toast")).default, originalDismiss = toast.dismiss;
     const dismissedToastIds: Array<string | undefined> = [];
@@ -8358,6 +8385,8 @@ test("useAgent synchronously retires an active Chat SSE from the production auth
         true,
         "the event must synchronously abort the old Chat SSE before returning",
       );
+      assert.equal(activeInputsSignal.aborted, true,
+        "the event must synchronously retire the old Run inputs before returning");
       assert.deepEqual(dismissedToastIds, ["chat-queue"]);
     });
     assert.equal(harness.hook.currentRunId, null);

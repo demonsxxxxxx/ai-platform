@@ -84,6 +84,83 @@ export interface SessionArtifactFilesResponse {
   files: SessionArtifactFile[];
 }
 
+export type RunInputSessionState = "open" | "sealed" | "inactive";
+export type RunInputStatus = "queued" | "applied" | "closed";
+export type RunQuestionStatus = "pending" | "answered" | "resolved" | "closed";
+export type RunInputAnswer = string | string[];
+
+export interface RunInputQuestionOption {
+  label: string;
+  description: string;
+}
+
+export interface RunInputQuestion {
+  question: string;
+  header: string;
+  options: RunInputQuestionOption[];
+  multiSelect: boolean;
+}
+
+export interface RunInputQuestionBatch {
+  question_id: string;
+  questions: RunInputQuestion[];
+  status: RunQuestionStatus;
+  created_at: string;
+}
+
+export interface RunInputRecord {
+  input_id: string;
+  kind: "text" | "answer";
+  text: string | null;
+  question_id: string | null;
+  answers: Record<string, RunInputAnswer> | null;
+  status: RunInputStatus;
+  created_at: string;
+}
+
+/** Safe public projection of Run-owned continuation inputs and questions. */
+export interface RunInputsProjection {
+  run_id: string;
+  state: RunInputSessionState;
+  inputs: RunInputRecord[];
+  questions: RunInputQuestionBatch[];
+}
+
+export type RunInputSubmissionRequest =
+  | { input_id: string; text: string }
+  | {
+      input_id: string;
+      question_id: string;
+      answers: Record<string, RunInputAnswer>;
+    };
+
+export interface RunInputSubmissionResponse {
+  input_id: string;
+  status: RunInputStatus;
+}
+
+/** Check ownership and the envelope once; Runs owns field validation. */
+export function parseRunInputsProjection(
+  value: unknown,
+  expectedRunId: string,
+): RunInputsProjection {
+  const projection = value as RunInputsProjection | null;
+  if (
+    !projection || projection.run_id !== expectedRunId ||
+    !["open", "sealed", "inactive"].includes(projection.state) ||
+    !Array.isArray(projection.inputs) || !Array.isArray(projection.questions)
+  ) {
+    throw new Error("invalid_run_inputs_projection");
+  }
+  return {
+    ...projection,
+    inputs: projection.inputs.map((input) => ({
+      ...input,
+      answers: input.kind === "text" ? null : input.answers,
+    })),
+  };
+}
+
 export interface CapabilitySuggestion {
   capability_id: string;
   label: string;
@@ -298,6 +375,10 @@ export function buildSessionArtifactFilesUrl(sessionId: string): string {
 
 export function buildRunCancelUrl(runId: string): string {
   return `${API_BASE}/api/ai/runs/${runId}/cancel`;
+}
+
+export function buildRunInputsUrl(runId: string): string {
+  return `${API_BASE}/api/ai/runs/${encodeURIComponent(runId)}/inputs`;
 }
 
 export type RunControlMutationAction = "retry" | "resume";
@@ -677,6 +758,39 @@ export const sessionApi = {
       method: "POST",
       signal: options.signal,
     });
+  },
+
+  /** Read the typed public continuation-input and question projection. */
+  async getRunInputs(
+    runId: string,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<RunInputsProjection> {
+    const response = await authFetch<unknown>(buildRunInputsUrl(runId), {
+      cache: "no-store",
+      signal: options.signal,
+    });
+    return parseRunInputsProjection(response, runId);
+  },
+
+  /** Submit supplementary text or answers to the same current Run. */
+  async submitRunInput(
+    runId: string,
+    body: RunInputSubmissionRequest,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<RunInputSubmissionResponse> {
+    const response = await authFetch<unknown>(buildRunInputsUrl(runId), {
+      method: "POST",
+      body: JSON.stringify(body),
+      signal: options.signal,
+    });
+    if (
+      typeof response !== "object" || response === null || Array.isArray(response) ||
+      (response as { input_id?: unknown }).input_id !== body.input_id ||
+      !["queued", "applied"].includes((response as { status?: unknown }).status as string)
+    ) {
+      throw new Error("invalid_run_input_submission_response");
+    }
+    return response as RunInputSubmissionResponse;
   },
 
   /** Create or resolve one queued retry child under an opaque operation id. */

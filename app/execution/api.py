@@ -79,6 +79,7 @@ from typing import Any
 
 from app.execution.application.model_control_plane import configured_model_control_plane
 from app.execution.application.provider_sessions import claude_provider_session_dispatch
+from app.execution.application.run_interaction import RunInteractionProtocol
 from app.execution.application.model_selection import (
     RunModelSelection as RunModelSelection,
 )
@@ -113,6 +114,7 @@ __all__ = [
     "reconciliation_agent_profile_binding_matches",
     "runtime_terminal_payload",
     "RunModelSelection",
+    "RunInteractionProtocol",
     "SkillInvocationEvidenceBinder",
     "WorkerRunCancelled",
     "artifact_content_type",

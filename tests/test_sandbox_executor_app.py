@@ -880,6 +880,23 @@ async def test_sandbox_terminal_only_answer_batches_executor_callback_events(
             self.accepted_final_sequence = 1
 
     monkeypatch.setattr(executor_app, "build_claude_session_store", lambda **_kwargs: Store())
+
+    from app.execution.application.run_interaction import RunInputSnapshot
+
+    class Inputs:
+        async def open(self):
+            return RunInputSnapshot("open")
+
+        async def settle(self):
+            return RunInputSnapshot("sealed")
+
+    input_scopes = []
+
+    def input_client(**kwargs):
+        input_scopes.append(kwargs)
+        return Inputs()
+
+    monkeypatch.setattr(executor_app, "build_run_input_callback_client", input_client)
     raw = task_payload()
     raw["sdk_session_id"] = "sdk-session-a"
     request = ExecutorTaskRequest.model_validate(raw)
@@ -895,6 +912,13 @@ async def test_sandbox_terminal_only_answer_batches_executor_callback_events(
         event for event in emitted if isinstance(event, ExecutorCallbackEvent)
     ]
     assert result["status"] == "completed", result.get("error_code")
+    assert input_scopes == [{
+        "callback_base_url": TRUSTED_CALLBACK_BASE_URL,
+        "callback_token": request.callback_token,
+        "callback_token_id": request.callback_token_id,
+        "run_id": request.run_id,
+        "attempt_id": request.attempt_id,
+    }]
     assert result["provider_session_final_sequence"] == 1
     assert result["message"] == ""
     assert len(callbacks) > 1

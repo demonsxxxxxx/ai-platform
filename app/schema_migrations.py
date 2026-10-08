@@ -40,7 +40,8 @@ CLAUDE_CONTEXT_CUTOVER_SCHEMA_VERSION = "2026.09.15.2"
 SANDBOX_PROVIDER_RENEWAL_SCHEMA_VERSION = "2026.09.16.1"
 REPOSITORY_SKILL_RETIREMENT_SCHEMA_VERSION = "2026.09.22.1"
 HUMAN_APPROVAL_AND_LEGACY_MULTI_AGENT_RETIREMENT_SCHEMA_VERSION = "2026.09.26.1"
-TARGET_SCHEMA_VERSION = HUMAN_APPROVAL_AND_LEGACY_MULTI_AGENT_RETIREMENT_SCHEMA_VERSION
+RUN_INPUTS_SCHEMA_VERSION = "2026.10.07.1"
+TARGET_SCHEMA_VERSION = RUN_INPUTS_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
 # The Stream-only cutover retires old index contracts and is not binary rollback-compatible.
 CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = STREAM_ONLY_SCHEMA_VERSION
@@ -56,6 +57,9 @@ CRITICAL_RELATIONS = (
     "model_gateway_revisions",
     "model_catalog_entries",
     "run_attempts",
+    "run_input_sessions",
+    "run_input_questions",
+    "run_inputs",
     "run_skill_materializations",
     "run_events",
     "agent_profile_favorites",
@@ -148,6 +152,22 @@ CRITICAL_COLUMNS = (
     ("run_attempts", "error_code", "text", False),
     ("run_attempts", "created_at", "timestamptz", True),
     ("run_attempts", "updated_at", "timestamptz", True),
+    ("run_input_sessions", "tenant_id", "text", True),
+    ("run_input_sessions", "run_id", "text", True),
+    ("run_input_sessions", "attempt_id", "text", True),
+    ("run_input_sessions", "state", "text", True),
+    ("run_input_sessions", "sealed_at", "timestamptz", False),
+    ("run_input_questions", "attempt_id", "text", True),
+    ("run_input_questions", "question_id", "text", True),
+    ("run_input_questions", "questions", "jsonb", True),
+    ("run_input_questions", "status", "text", True),
+    ("run_inputs", "input_id", "uuid", True),
+    ("run_inputs", "attempt_id", "text", True),
+    ("run_inputs", "kind", "text", True),
+    ("run_inputs", "text", "text", False),
+    ("run_inputs", "question_id", "text", False),
+    ("run_inputs", "answers", "jsonb", True),
+    ("run_inputs", "status", "text", True),
     ("run_skill_materializations", "materialization_sha256", "text", True),
     ("run_skill_materializations", "manifest_json", "jsonb", True),
     ("messages", "content", "text", True),
@@ -290,6 +310,22 @@ CRITICAL_CONSTRAINTS = (
     ("run_attempts", "chk_run_attempts_terminal_time"),
     ("run_attempts", "run_attempts_tenant_id_run_id_ordinal_key"),
     ("run_attempts", "run_attempts_tenant_id_run_id_queue_attempt_id_key"),
+    ("run_input_sessions", "run_input_sessions_pkey"),
+    ("run_input_sessions", "fk_run_input_sessions_run"),
+    ("run_input_sessions", "chk_run_input_sessions_identity"),
+    ("run_input_sessions", "chk_run_input_sessions_state"),
+    ("run_input_sessions", "chk_run_input_sessions_sealed_time"),
+    ("run_input_questions", "run_input_questions_pkey"),
+    ("run_input_questions", "fk_run_input_questions_session"),
+    ("run_input_questions", "chk_run_input_questions_identity"),
+    ("run_input_questions", "chk_run_input_questions_payload"),
+    ("run_input_questions", "chk_run_input_questions_status"),
+    ("run_inputs", "run_inputs_pkey"),
+    ("run_inputs", "fk_run_inputs_session"),
+    ("run_inputs", "fk_run_inputs_question"),
+    ("run_inputs", "chk_run_inputs_kind"),
+    ("run_inputs", "chk_run_inputs_status"),
+    ("run_inputs", "chk_run_inputs_payload"),
     ("sse_stream_authorities", "chk_sse_stream_authority_open_format"),
     ("sse_stream_authorities", "chk_sse_stream_authority_pending_confirmation"),
     ("files", "chk_files_lifecycle_state"),
@@ -894,6 +930,13 @@ STATIC_INDEX_DEFINITIONS = (
         ("tenant_id", "workspace_id", "user_id", "id", "agent_id"),
         (False, False, False, False, False),
         unique=True,
+    ),
+    StaticIndexDefinition(
+        "idx_run_inputs_queued",
+        "run_inputs",
+        ("tenant_id", "run_id", "attempt_id", "kind", "created_at", "input_id"),
+        (False, False, False, False, False, False),
+        "status = 'queued'",
     ),
 )
 CRITICAL_INDEXES = (
