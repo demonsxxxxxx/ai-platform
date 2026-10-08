@@ -164,7 +164,9 @@ def test_profile_drive_ca_overlay_keeps_workspace_mount_in_rendered_compose(tmp_
     assert any(item["source"] == str(workspace) and item["target"] == "/workspaces" for item in mounts)
     ca = next(item for item in mounts if item["target"] == ca_target)
     assert ca["type"] == "bind" and ca["source"] == str(public_ca)
-    assert ca["read_only"] and ca["bind"]["create_host_path"] is False
+    assert ca["read_only"]
+    # Compose omits the false create_host_path default in its rendered JSON.
+    assert ca.get("bind", {}).get("create_host_path", False) is False
 
 
 def test_compose_package_contains_one_runtime_archive_with_fixed_images(tmp_path):
