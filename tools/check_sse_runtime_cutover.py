@@ -499,9 +499,10 @@ def _is_awaited_call_statement(statement: ast.stmt, qualified_name: str) -> bool
 
 
 def _worker_admission_failures(worker: ast.AST) -> list[str]:
+    dispatch_name = "worker_execution_bootstrap.submit_worker_run_until_cancelled"
     dispatch_line = _unique_call_line(
         _calls(worker),
-        qualified_name="_submit_run_until_cancelled",
+        qualified_name=dispatch_name,
     )
     if dispatch_line is None:
         return ["worker.py:v4_admission_not_before_sdk_dispatch"]
@@ -513,7 +514,7 @@ def _worker_admission_failures(worker: ast.AST) -> list[str]:
                 continue
             for dispatch_index, statement in enumerate(value):
                 if (
-                    "_submit_run_until_cancelled",
+                    dispatch_name,
                     dispatch_line,
                 ) not in _calls(statement):
                     continue

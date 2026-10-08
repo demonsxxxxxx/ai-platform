@@ -13,10 +13,27 @@ from pathlib import Path
 
 import pytest
 
+from app.bootstrap import worker_dispatch_binding
+
 import app.bootstrap.model_services as model_services
+from app.bootstrap.mcp import worker_payload_with_authorized_mcp_registration
+from app.bootstrap.agent_profiles import worker_profile_snapshot_matches_authority
+from app.agent_apps.api import locked_agent_profile_identity_valid
+from app.bootstrap.worker_capability_admission import build_worker_capability_admission_service
+from app.bootstrap.worker_early_failure import _locked_run_principal
+from app.bootstrap.worker_locked_authorization import payload_from_locked_run
+from app.required_tool_contract import (
+    builtin_capability_subjects,
+    required_tool_completion_for_run,
+    required_tool_authorization_for_run,
+    with_boundary_sandbox_local_tool_subjects,
+)
+from app.execution_boundary import decide_worker_execution_boundary
+from app.skills.execution_profiles import effective_skill_execution_profile
 import app.execution.application.model_control_plane as model_control_plane_module
 import app.execution.application.worker_attempt_lifecycle as worker_attempt_lifecycle_module
 import app.runs.application.model_snapshot as run_model_snapshot_module
+import app.bootstrap.worker_execution as worker_execution_bootstrap
 import app.worker as worker_module
 from app.runs.infrastructure import lifecycle_postgres as run_lifecycle_postgres
 import app.mcp.infrastructure.tool_policies_postgres as _repo_app_mcp_infrastructure_tool_policies_postgres
@@ -26,7 +43,7 @@ import app.skills.infrastructure.postgres as _repo_app_skills_infrastructure_pos
 import app.skills.infrastructure.run_snapshots_postgres as _repo_app_skills_infrastructure_run_snapshots_postgres
 import app.streaming.infrastructure.run_events_postgres as _repo_app_streaming_infrastructure_run_events_postgres
 from app.auth import AuthPrincipal, is_ai_admin
-from app.control_plane_contracts import standard_trace_id
+from app.control_plane_contracts import sanitize_public_text, standard_trace_id
 from app.execution.api import (
     reconciliation_agent_profile_binding_matches,
     restored_executor_reconciliation_queue_payload,
@@ -45,6 +62,7 @@ from app.executors.base import (
 )
 from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
+from app.mcp.api import mcp_capability_subject
 from app.mcp.infrastructure import postgres as mcp_postgres
 from app.mcp.infrastructure import runtime as mcp_runtime
 from app.principal_authority import CURRENT_PRINCIPAL_DENIAL_REASON, PrincipalAuthorityDenied
@@ -54,10 +72,10 @@ from app.platform.sandbox.errors import (
 )
 from app.platform.postgres.errors import RepositoryConflictError, RepositoryNotFoundError
 from app.required_tool_contract import declaration_from_input
-from app.runs.api import RunAttemptLifecycleService, RunTerminalizationProgress
+from app.runs.api import InvalidLeasedQueueEnvelope, RunAttemptLifecycleService, RunTerminalizationProgress
 from app.runtime.sandbox import container_provider
 from app.runtime.sandbox.container_provider import NativeToolAdmissionError
-from app.runtime.sandbox.executor_client import SandboxExecutorHttpError
+from app.sandbox.api import SandboxExecutorHttpError
 from app.runtime.sandbox.readiness_evidence import ExecutorReadinessEvidence
 from app.skills.execution_profiles import resolve_skill_execution_profile
 from app.streaming.application.durable_v4 import V4PendingAdmission
@@ -68,8 +86,6 @@ from app.streaming.domain.transport import canonical_json_bytes
 from app.worker import (
     process_run_payload as _process_run_payload,
     WorkerOutcome,
-    _locked_run_principal,
-    _payload_from_locked_run,
     parse_queue_payload,
 )
 from tests.support.executor_stubs import FailingExecutorStub, SuccessfulExecutorStub
@@ -454,7 +470,7 @@ async def test_worker_submit_monitor_preserves_normal_terminal_result():
         cancel_checks += 1
         return False
 
-    result = await worker_module._submit_run_until_cancelled(
+    result = await worker_execution_bootstrap.submit_worker_run_until_cancelled(
         expected,
         payload,
         event_sink=None,
@@ -503,7 +519,7 @@ async def test_worker_submit_monitor_external_cancellation_stops_registered_owne
     )
 
     task = asyncio.create_task(
-        worker_module._submit_run_until_cancelled(
+        worker_execution_bootstrap.submit_worker_run_until_cancelled(
             OwnedAdapter(),
             payload,
             event_sink=None,
@@ -532,9 +548,9 @@ def test_authoritative_leased_envelope_extracts_attempt_before_extra_forbid():
     assert envelope.attempt_id == "qat-test-attempt"
     assert envelope.payload.run_id == "run-a"
     assert "_queue_attempt_id" not in envelope.payload.model_dump()
-    with pytest.raises(worker_module.InvalidLeasedQueueEnvelope):
+    with pytest.raises(InvalidLeasedQueueEnvelope):
         worker_module.parse_leased_queue_envelope({key: value for key, value in raw.items() if key != "_queue_attempt_id"})
-    with pytest.raises(worker_module.InvalidLeasedQueueEnvelope):
+    with pytest.raises(InvalidLeasedQueueEnvelope):
         worker_module.parse_leased_queue_envelope({**raw, "_queue_attempt_id": ""})
 
 
@@ -683,7 +699,7 @@ async def test_worker_submit_monitor_emits_truthful_silent_progress_without_assi
         skill_manifests=[primary_manifest("general-chat", skill_version)],
     )
 
-    result = await worker_module._submit_run_until_cancelled(
+    result = await worker_execution_bootstrap.submit_worker_run_until_cancelled(
         SilentAdapter(),
         payload,
         event_sink=event_sink,
@@ -794,7 +810,8 @@ def test_worker_ignores_uploaded_v1_local_tool_list_before_sandbox_boundary():
         )
     )
 
-    subjects = worker_module._builtin_capability_subjects(
+    subjects = builtin_capability_subjects(
+        canonical_manifest=effective_skill_execution_profile,
         payload=payload,
         run_identity={"skill_id": "native-review"},
         skill={"skill_id": "native-review", "skill_status": "active"},
@@ -836,7 +853,8 @@ def test_general_chat_catalog_aggregation_drives_mount_and_native_bash_admission
         )
     )
 
-    subjects = worker_module._builtin_capability_subjects(
+    subjects = builtin_capability_subjects(
+        canonical_manifest=effective_skill_execution_profile,
         payload=payload,
         run_identity={"skill_id": "general-chat"},
         skill={"skill_id": "general-chat", "skill_status": "active"},
@@ -891,7 +909,8 @@ def test_worker_keeps_bash_available_without_required_completion():
             },
         )
     )
-    subjects = worker_module._builtin_capability_subjects(
+    subjects = builtin_capability_subjects(
+        canonical_manifest=effective_skill_execution_profile,
         payload=payload,
         run_identity={"skill_id": "qa-file-reviewer"},
         skill={"skill_id": "qa-file-reviewer", "skill_status": "active"},
@@ -900,16 +919,16 @@ def test_worker_keeps_bash_available_without_required_completion():
     by_identity = {subject["identity"]: subject for subject in subjects}
     assert set(by_identity) == {"Skill"}
     assert by_identity["Skill"]["execution_strategy"] == "sandbox_full_local"
-    sandbox_subjects = worker_module.with_boundary_sandbox_local_tool_subjects(
+    sandbox_subjects = with_boundary_sandbox_local_tool_subjects(
         subjects,
-        decision=worker_module._worker_execution_boundary_decision(payload),
+        decision=decide_worker_execution_boundary(payload),
         sandbox_provider="opensandbox",
     )
     assert {"Bash", "Write", "Skill"}.issubset(
         {subject["identity"] for subject in sandbox_subjects}
     )
 
-    authorization = worker_module.required_tool_authorization_for_run(
+    authorization = required_tool_authorization_for_run(
         payload=payload,
         run_identity={
             "tenant_id": "tenant-a",
@@ -922,7 +941,7 @@ def test_worker_keeps_bash_available_without_required_completion():
         subjects=subjects,
         admin_bypass=False,
     )
-    missing = worker_module.required_tool_completion_for_run(
+    missing = required_tool_completion_for_run(
         payload=payload,
         run_identity={
             "tenant_id": "tenant-a",
@@ -955,7 +974,8 @@ def test_worker_rejects_skill_snapshot_without_execution_profile():
     )
 
     with pytest.raises(ValueError, match="run_skill_snapshot_execution_profile_mismatch"):
-        worker_module._builtin_capability_subjects(
+        builtin_capability_subjects(
+            canonical_manifest=effective_skill_execution_profile,
             payload=payload,
             run_identity={"skill_id": "native-review"},
             skill={"skill_id": "native-review", "skill_status": "active"},
@@ -1038,9 +1058,7 @@ def default_cancel_not_requested(monkeypatch):
     global _TEST_RUN_LIFECYCLE
     _CURRENT_QUEUE_PAYLOAD = None
     _TEST_RUN_LIFECYCLE = _FakeRunLifecycle()
-    original_locked_agent_profile_identity_valid = (
-        worker_module.locked_agent_profile_identity_valid
-    )
+    original_locked_agent_profile_identity_valid = locked_agent_profile_identity_valid
 
     def capture_queue_payload(raw):
         global _CURRENT_QUEUE_PAYLOAD
@@ -1051,7 +1069,7 @@ def default_cancel_not_requested(monkeypatch):
     def materialize_legacy_locked_run(locked_run, *, run_identity):
         if locked_run is True:
             locked_run = locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
-        return _payload_from_locked_run(locked_run, run_identity=run_identity)
+        return payload_from_locked_run(locked_run, run_identity=run_identity)
 
     def validate_materialized_locked_agent_profile(agent_profile, locked_run):
         if locked_run is True:
@@ -1108,13 +1126,13 @@ def default_cancel_not_requested(monkeypatch):
 
     monkeypatch.setattr("app.context.api.prepare_provider_epoch", prepare_native_epoch)
     monkeypatch.setattr("app.worker.parse_queue_payload", capture_queue_payload)
-    monkeypatch.setattr("app.worker._payload_from_locked_run", materialize_legacy_locked_run)
+    monkeypatch.setattr("app.bootstrap.worker_locked_authorization.payload_from_locked_run", materialize_legacy_locked_run)
     monkeypatch.setattr(
-        "app.worker.locked_agent_profile_identity_valid",
+        "app.agent_apps.api.locked_agent_profile_identity_valid",
         validate_materialized_locked_agent_profile,
     )
     monkeypatch.setattr(
-        "app.worker.reauthorize_bound_profile_for_worker_dispatch",
+        "app.agent_apps.api.reauthorize_bound_profile_for_worker_dispatch",
         reauthorize_test_profile,
     )
 
@@ -1133,7 +1151,7 @@ def default_cancel_not_requested(monkeypatch):
         return _test_current_principal(user_id=user_id, tenant_id=tenant_id)
 
     monkeypatch.setattr(
-        "app.worker.resolve_current_principal",
+        "app.bootstrap.worker_dispatch_admission.resolve_current_principal",
         resolve_test_current_principal,
         raising=False,
     )
@@ -1171,12 +1189,12 @@ def default_cancel_not_requested(monkeypatch):
             )
         }
 
-    monkeypatch.setattr("app.worker._load_run_model_snapshot", load_test_model)
+    monkeypatch.setattr("app.runs.api.load_run_model_snapshot", load_test_model)
 
     async def ready_fence(_conn, **_kwargs):
         return "ready"
 
-    monkeypatch.setattr("app.worker.worker_dispatch_fence", ready_fence)
+    monkeypatch.setattr("app.runs.api.worker_dispatch_fence", ready_fence)
 
     async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
         locked_run = await _TEST_RUN_LIFECYCLE.mark_run_running(
@@ -1267,7 +1285,7 @@ def default_cancel_not_requested(monkeypatch):
             metadata_json=metadata_json,
         )
 
-    monkeypatch.setattr("app.worker.persist_assistant_with_provider_coverage", persist_test_assistant)
+    monkeypatch.setattr("app.runs.api.persist_assistant_with_provider_coverage", persist_test_assistant)
 
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
@@ -1378,10 +1396,10 @@ def default_cancel_not_requested(monkeypatch):
         }
 
     monkeypatch.setattr(
-        "app.worker.sandbox_lease_repository.create_sandbox_lease",
+        "app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.create_sandbox_lease",
         create_sandbox_lease,
     )
-    monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease, raising=False)
+    monkeypatch.setattr("app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease, raising=False)
 
     async def resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
         ragflow_skill = skill_id == "ragflow-knowledge-search"
@@ -1470,12 +1488,12 @@ def default_cancel_not_requested(monkeypatch):
         raising=False,
     )
     monkeypatch.setattr(
-        "app.worker.mcp_api.get_mcp_tool_registry_entry",
+        "app.mcp.api.get_mcp_tool_registry_entry",
         get_mcp_tool_registry_entry,
         raising=False,
     )
     monkeypatch.setattr(
-        "app.worker.mcp_api.mcp_runtime_metadata_usable",
+        "app.mcp.domain.authorization_projection.mcp_runtime_metadata_usable",
         mcp_postgres.mcp_runtime_metadata_usable,
     )
     monkeypatch.setattr('app.identity.infrastructure.audit_postgres.append_audit_log', append_audit_log, raising=False)
@@ -1516,7 +1534,7 @@ def default_cancel_not_requested(monkeypatch):
         )
 
     monkeypatch.setattr(
-        "app.worker.resolve_authorized_skill_catalog",
+        "app.skills.catalog.resolve_authorized_skill_catalog",
         resolve_authorized_skill_catalog,
         raising=False,
     )
@@ -1556,44 +1574,28 @@ async def test_harness_chat_worker_reauthorizes_mcp_without_skill_authority(
         "execution_kind": "harness_chat",
         "skill_id": "",
     }
-    sentinel = object()
     captured = {}
 
-    async def forbid_skill_snapshot(*_args, **_kwargs):
-        raise AssertionError("Harness chat must not resolve Skill snapshots")
+    class FakeMcp:
+        async def authorize(self, _conn, **kwargs):
+            captured.update(kwargs)
+            return types.SimpleNamespace(
+                payload=payload, decisions=(), denial=None, tool_policy_audits=(),
+            )
 
-    async def fake_reauthorize_mcp(_conn, **kwargs):
-        captured.update(kwargs)
-        return sentinel
+    admission = build_worker_capability_admission_service(
+        settings_provider=lambda: types.SimpleNamespace(sandbox_container_provider="opensandbox")
+    )
+    admission._mcp = FakeMcp()
 
-    monkeypatch.setattr(
-        _owner_skills_infrastructure_run_snapshots_postgres,
-        'validate_run_skill_snapshots_for_dispatch',
-        forbid_skill_snapshot,
-    )
-    monkeypatch.setattr(
-        worker_module,
-        "_reauthorize_mcp_capabilities",
-        fake_reauthorize_mcp,
-    )
-    monkeypatch.setattr(
-        worker_module,
-        "get_settings",
-        lambda: types.SimpleNamespace(sandbox_container_provider="opensandbox"),
-    )
-
-    result = await worker_module._reauthorize_worker_capabilities(
-        object(),
-        payload=payload,
-        run_identity=run_identity,
+    result = await admission.authorize(
+        object(), payload=payload, run_identity=run_identity,
         attempt_id="attempt-a",
         current_principal=_test_current_principal(
-            user_id="user-a",
-            tenant_id="tenant-a",
+            user_id="user-a", tenant_id="tenant-a",
         ),
     )
-
-    assert result is sentinel
+    assert result.denial is None
     assert captured["requested_tool_ids"] == ["search-a"]
     assert [
         subject["identity"] for subject in captured["tool_policy_subjects"]
@@ -1647,7 +1649,7 @@ def test_locked_harness_run_reconstructs_null_skill_identity():
         }
     }
 
-    reconstructed = worker_module._payload_from_locked_run(
+    reconstructed = payload_from_locked_run(
         locked_run,
         run_identity=run_identity,
     )
@@ -1706,7 +1708,7 @@ def test_locked_run_uses_one_complete_model_authority(
         "skill_id": "",
     }
 
-    reconstructed = worker_module._payload_from_locked_run(
+    reconstructed = payload_from_locked_run(
         locked_run,
         run_identity=run_identity,
     )
@@ -2121,11 +2123,11 @@ async def test_bound_agent_executor_reconciliation_uses_session_pins_and_termina
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr(
-        "app.worker.reauthorize_bound_profile_for_worker_dispatch",
+        "app.agent_apps.api.reauthorize_bound_profile_for_worker_dispatch",
         reauthorize_profile,
     )
     monkeypatch.setattr(
-        "app.worker.sandbox_lease_repository.is_sandbox_executor_reconciliation_claim_current",
+        "app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.is_sandbox_executor_reconciliation_claim_current",
         has_reconciliation_claim,
     )
 
@@ -2280,7 +2282,7 @@ async def test_v2_reconciliation_snapshot_terminalizes_and_persists_assistant_me
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr(
-        "app.worker.promote_provisional_artifact_cleanup",
+        "app.persistence.artifacts.promote_provisional_artifact_cleanup",
         promote_artifact_cleanup,
     )
     monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.create_artifact', create_artifact)
@@ -2296,7 +2298,7 @@ async def test_v2_reconciliation_snapshot_terminalizes_and_persists_assistant_me
         terminalize_attempt,
     )
     monkeypatch.setattr(
-        "app.worker.sandbox_lease_repository.is_sandbox_executor_reconciliation_claim_current",
+        "app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.is_sandbox_executor_reconciliation_claim_current",
         has_reconciliation_claim,
     )
 
@@ -2457,7 +2459,7 @@ def test_agent_profile_snapshot_rejects_authority_skill_version_mismatch():
         mcp_tool_ids=tuple(_owner_runs_infrastructure_capability_admission_postgres.extract_run_mcp_tool_ids(payload.input)),
     )
 
-    assert worker_module._agent_profile_snapshot_matches_authority(payload, admission) is False
+    assert worker_profile_snapshot_matches_authority(payload, admission) is False
 
 
 @pytest.mark.parametrize(
@@ -2527,7 +2529,7 @@ def test_agent_profile_snapshot_matches_run_pins_for_multiskill_and_harness(
         ),
     )
 
-    assert worker_module._agent_profile_snapshot_matches_authority(payload, admission) is True
+    assert worker_profile_snapshot_matches_authority(payload, admission) is True
 
 
 def test_worker_sandbox_admission_delegates_executor_and_mcp_requirement(monkeypatch):
@@ -2552,7 +2554,7 @@ def test_worker_sandbox_admission_delegates_executor_and_mcp_requirement(monkeyp
         }
     )
 
-    assert worker_module._ordinary_run_uses_runtime_sandbox(
+    assert worker_dispatch_binding.ordinary_worker_run_uses_runtime_sandbox(
         payload,
         context_snapshot={},
     ) is False
@@ -2583,11 +2585,10 @@ def test_worker_propagates_exact_authorized_mcp_subject_without_permission_looku
         "auth_mode": "none",
         "allowed_tools": ["query"],
     }
-    subject = worker_module._mcp_capability_subject(
-        tool,
-        types.SimpleNamespace(usable=True),
+    subject = mcp_capability_subject(
+        tool, distribution_usable=True, sanitize_label=sanitize_public_text
     )
-    authorized = worker_module._payload_with_authorized_mcp_registration(
+    authorized = worker_payload_with_authorized_mcp_registration(
         payload,
         allowed_entries=[tool],
         tool_policy_subjects=[subject],
@@ -2604,25 +2605,25 @@ def test_worker_propagates_exact_authorized_mcp_subject_without_permission_looku
     assert subject["parameter_delegation"] == "external_mcp"
     assert subject["public_tool_label"] == "Corporate Search"
     assert subject["public_tool_category"] == "mcp"
-    assert worker_module._mcp_capability_subject(
+    assert mcp_capability_subject(
         {**tool, "endpoint": "https://token@example.test/v1"},
-        types.SimpleNamespace(usable=True),
+        distribution_usable=True, sanitize_label=sanitize_public_text,
     ) is None
-    assert worker_module._mcp_capability_subject(
+    assert mcp_capability_subject(
         {**tool, "auth_mode": "api-key"},
-        types.SimpleNamespace(usable=True),
+        distribution_usable=True, sanitize_label=sanitize_public_text,
     ) is None
-    assert worker_module._mcp_capability_subject(
+    assert mcp_capability_subject(
         {**tool, "endpoint": "https://mcp.example.test/v1?api_key=redacted"},
-        types.SimpleNamespace(usable=True),
+        distribution_usable=True, sanitize_label=sanitize_public_text,
     ) is None
-    assert worker_module._mcp_capability_subject(
+    assert mcp_capability_subject(
         {**tool, "endpoint": "https://mcp.example.test/v1?token=redacted"},
-        types.SimpleNamespace(usable=True),
+        distribution_usable=True, sanitize_label=sanitize_public_text,
     ) is None
-    assert worker_module._mcp_capability_subject(
+    assert mcp_capability_subject(
         {**tool, "endpoint": "https://mcp.example.test/v1#fragment"},
-        types.SimpleNamespace(usable=True),
+        distribution_usable=True, sanitize_label=sanitize_public_text,
     ) is None
     source = (Path(__file__).parents[1] / "app" / "worker.py").read_text(encoding="utf-8")
     assert "get_exact_tool_permission_decision(" not in source
@@ -2761,7 +2762,7 @@ def test_locked_agent_profile_identity_requires_exact_physical_pin(
     elif pin_change == "session_hash":
         locked_run["session_admitted_agent_profile_hash"] = "b" * 64
 
-    assert worker_module.locked_agent_profile_identity_valid(
+    assert locked_agent_profile_identity_valid(
         candidate,
         locked_run,
     ) is expected
@@ -2804,7 +2805,7 @@ def test_locked_generic_agent_requires_explicit_null_physical_pins(pin_change, e
     elif field is not None:
         locked_run[field] = 7 if field.endswith("revision") else "a" * 64
 
-    assert worker_module.locked_agent_profile_identity_valid({}, locked_run) is expected
+    assert locked_agent_profile_identity_valid({}, locked_run) is expected
 
 
 @pytest.mark.asyncio
@@ -2890,14 +2891,14 @@ async def test_worker_binds_pinned_harness_profile_before_adapter(monkeypatch, p
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
     monkeypatch.setattr(
-        "app.worker.reauthorize_bound_profile_for_worker_dispatch",
+        "app.agent_apps.api.reauthorize_bound_profile_for_worker_dispatch",
         reauthorize,
     )
 
     async def load_frozen_model(_conn, **_kwargs):
         return locked_run
 
-    monkeypatch.setattr("app.worker._load_run_model_snapshot", load_frozen_model)
+    monkeypatch.setattr("app.runs.api.load_run_model_snapshot", load_frozen_model)
 
     outcome = await process_run_payload(
         raw,
@@ -3021,7 +3022,7 @@ async def test_worker_reauthorizes_pinned_profile_before_adapter(
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
     monkeypatch.setattr(
-        "app.worker.reauthorize_bound_profile_for_worker_dispatch",
+        "app.agent_apps.api.reauthorize_bound_profile_for_worker_dispatch",
         reauthorize,
     )
     v4_capabilities = _FAKE_WORKER_V4_CAPABILITIES
@@ -3029,7 +3030,7 @@ async def test_worker_reauthorizes_pinned_profile_before_adapter(
         async def deny_current_principal(**_kwargs):
             raise PrincipalAuthorityDenied()
 
-        monkeypatch.setattr("app.worker.resolve_current_principal", deny_current_principal)
+        monkeypatch.setattr("app.bootstrap.worker_dispatch_admission.resolve_current_principal", deny_current_principal)
         v4_capabilities = WorkerV4Capabilities(
             pending_admissions=_FakeWorkerV4Admission(calls),
             event_persistence=_FakeWorkerV4Persistence(),
@@ -3128,7 +3129,7 @@ async def test_worker_rechecks_queued_state_after_current_principal_http(monkeyp
 
     monkeypatch.setattr("app.worker.transaction", recording_transaction)
     monkeypatch.setattr('app.runs.infrastructure.postgres.get_run', get_run)
-    monkeypatch.setattr("app.worker.resolve_current_principal", resolve_current_principal)
+    monkeypatch.setattr("app.bootstrap.worker_dispatch_admission.resolve_current_principal", resolve_current_principal)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
 
@@ -3418,11 +3419,18 @@ async def test_worker_returns_after_durable_executor_dispatch_acceptance(monkeyp
     async def complete_run(*_args, **_kwargs):
         raise AssertionError("dispatch acceptance must not terminalize the run")
 
+    async def release_lease(*_args, **_kwargs):
+        raise AssertionError("detached execution retains its lease for reconciliation")
+
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', append_message)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
+    monkeypatch.setattr(
+        "app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.release_sandbox_lease",
+        release_lease,
+    )
 
     outcome = await process_run_payload(raw, AdapterRegistry({"fake": AcceptedAdapter()}))
 
@@ -3557,7 +3565,7 @@ async def test_worker_does_not_append_success_terminal_events_when_run_is_alread
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "classify_success_commit_block", classify_success_commit_block)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
-    monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
+    monkeypatch.setattr("app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
 
     outcome = await process_run_payload(base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"), AdapterRegistry({"fake": SuccessfulExecutorStub()}))
 
@@ -3765,8 +3773,8 @@ async def test_worker_records_runtime_sandbox_lease_around_successful_executor_r
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
-    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
-    monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
+    monkeypatch.setattr("app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr("app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
 
     outcome = await process_run_payload(
         base_payload(
@@ -3938,76 +3946,6 @@ async def test_worker_starts_and_terminalizes_durable_attempt_around_dispatch(mo
     assert next(index for index, item in enumerate(calls) if item[0] == "start") < next(
         index for index, item in enumerate(calls) if item[0] == "terminal"
     )
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "helper_name",
-    (
-        "_fail_worker_pre_dispatch_error",
-        "_fail_locked_run_snapshot",
-        "_fail_worker_capability_authorization",
-    ),
-)
-async def test_worker_early_failure_helpers_preserve_attempt_lifecycle(
-    monkeypatch,
-    helper_name,
-):
-    captured = {}
-    raw = base_payload()
-    payload = worker_module.parse_leased_queue_envelope(raw).payload
-    run_identity = worker_module._payload_identity(payload)
-    attempt_lifecycle = object()
-
-    async def fail_run_for_worker(_conn, **kwargs):
-        captured.update(kwargs)
-        return False
-
-    monkeypatch.setattr(worker_module, "_fail_run_for_worker", fail_run_for_worker)
-
-    common = {
-        "payload": payload,
-        "run_identity": run_identity,
-        "v4_capabilities": _FAKE_WORKER_V4_CAPABILITIES,
-        "attempt_lifecycle": attempt_lifecycle,
-    }
-    if helper_name == "_fail_worker_pre_dispatch_error":
-        outcome = await worker_module._fail_worker_pre_dispatch_error(
-            object(),
-            **common,
-            error_code="early_failure",
-            error_message="early failure",
-            event_stage="worker",
-            event_payload={"visible_to_user": False},
-        )
-    elif helper_name == "_fail_locked_run_snapshot":
-        outcome = await worker_module._fail_locked_run_snapshot(
-            object(),
-            **common,
-            locked_run=locked_run_from_payload(raw),
-            trace_id="trace-run-a",
-        )
-    else:
-        denial = worker_module._worker_capability_record(
-            "skill",
-            "general-chat",
-            worker_module._denied_capability_decision("test_denial"),
-        )
-        outcome = await worker_module._fail_worker_capability_authorization(
-            object(),
-            **common,
-            authorization=worker_module._WorkerCapabilityAuthorization(
-                payload,
-                SimpleNamespace(),
-                (),
-                denial,
-            ),
-            trace_id="trace-run-a",
-        )
-
-    assert outcome.outcome.status == "skipped"
-    assert captured["attempt_lifecycle"] is attempt_lifecycle
-    assert captured["capabilities"] is _FAKE_WORKER_V4_CAPABILITIES
 
 
 @pytest.mark.asyncio
@@ -4216,7 +4154,7 @@ async def test_worker_does_not_record_placeholder_lease_for_sandbox_required_ord
     monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.create_artifact', create_artifact)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
-    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", fail_create_sandbox_lease)
+    monkeypatch.setattr("app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.create_sandbox_lease", fail_create_sandbox_lease)
 
     outcome = await process_run_payload(
         base_payload(
@@ -4272,7 +4210,7 @@ async def test_worker_does_not_record_runtime_sandbox_lease_when_cancelled_befor
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "is_cancel_requested", is_cancel_requested)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "cancel_run", cancel_run)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
-    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", fail_create_sandbox_lease)
+    monkeypatch.setattr("app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.create_sandbox_lease", fail_create_sandbox_lease)
 
     outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": ShouldNotRunAdapter()}))
 
@@ -4316,8 +4254,8 @@ async def test_worker_releases_runtime_sandbox_lease_when_executor_raises(monkey
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
-    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
-    monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
+    monkeypatch.setattr("app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr("app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
 
     outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": RaisingAdapter()}))
 
@@ -4395,11 +4333,11 @@ async def test_worker_moves_http_failure_diagnostics_before_terminal_result(
         lambda: RecordingDiagnosticsService(),
     )
     monkeypatch.setattr(
-        "app.worker.sandbox_lease_repository.create_sandbox_lease",
+        "app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.create_sandbox_lease",
         create_sandbox_lease,
     )
     monkeypatch.setattr(
-        "app.worker.sandbox_lease_repository.release_sandbox_lease",
+        "app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.release_sandbox_lease",
         release_sandbox_lease,
     )
 
@@ -4451,8 +4389,8 @@ async def test_worker_persists_native_tool_admission_failure_as_safe_stage_code(
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
-    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
-    monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
+    monkeypatch.setattr("app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr("app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
 
     outcome = await process_run_payload(
         base_payload(),
@@ -4508,8 +4446,8 @@ async def test_worker_releases_runtime_sandbox_lease_when_adapter_reports_failur
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
-    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
-    monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
+    monkeypatch.setattr("app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr("app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
 
     outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": FailingExecutorStub()}))
 
@@ -4548,7 +4486,7 @@ async def test_worker_does_not_append_failure_terminal_events_when_run_is_alread
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
-    monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
+    monkeypatch.setattr("app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
 
     outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": FailingExecutorStub()}))
 
@@ -4611,8 +4549,8 @@ async def test_worker_releases_runtime_sandbox_lease_when_cancelled_on_event_bou
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "is_cancel_requested", is_cancel_requested)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "cancel_run", cancel_run)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
-    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
-    monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
+    monkeypatch.setattr("app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr("app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
 
     outcome = await process_run_payload(base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"), AdapterRegistry({"fake": StreamingAdapter()}))
 
@@ -4732,7 +4670,7 @@ async def test_worker_prefers_cancelled_after_executor_failure_when_cancel_reque
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "cancel_run", cancel_run)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker', get_context_snapshot_for_worker)
-    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", fail_create_sandbox_lease)
+    monkeypatch.setattr("app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.create_sandbox_lease", fail_create_sandbox_lease)
 
     outcome = await process_run_payload(
         base_payload(
@@ -4837,7 +4775,7 @@ async def test_worker_does_not_append_cancel_terminal_event_when_cancel_update_i
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "cancel_run", cancel_run)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
-    monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
+    monkeypatch.setattr("app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
 
     outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": RaisingAdapter()}))
 
@@ -4922,7 +4860,7 @@ async def test_worker_keeps_runtime_failure_when_cancel_requested_but_runtime_fa
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "cancel_run", cancel_run)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker', get_context_snapshot_for_worker)
-    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", fail_create_sandbox_lease)
+    monkeypatch.setattr("app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.create_sandbox_lease", fail_create_sandbox_lease)
 
     outcome = await process_run_payload(
         base_payload(
@@ -4943,8 +4881,9 @@ async def test_worker_keeps_runtime_failure_when_cancel_requested_but_runtime_fa
     assert ("event", "error", "worker") in calls
 
 
+@pytest.mark.parametrize("failure_stage", ["terminal_write", "malformed_artifact"])
 @pytest.mark.asyncio
-async def test_worker_releases_runtime_sandbox_lease_when_terminal_persistence_raises(monkeypatch):
+async def test_worker_releases_runtime_sandbox_lease_when_terminal_persistence_raises(monkeypatch, failure_stage):
     calls = []
     tx_counter = 0
 
@@ -4996,15 +4935,35 @@ async def test_worker_releases_runtime_sandbox_lease_when_terminal_persistence_r
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
-    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
-    monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
+    monkeypatch.setattr("app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr("app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
 
-    with pytest.raises(RuntimeError, match="terminal write failed"):
-        await process_run_payload(base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"), AdapterRegistry({"fake": SuccessfulExecutorStub()}))
+    class MalformedArtifactResult:
+        async def submit_run(self, payload, event_sink=None):
+            accepted = await SuccessfulExecutorStub().submit_run(payload, event_sink)
+            return replace(accepted, executor_payload={"required_artifact_types": None})
 
-    complete_call = next(item for item in calls if item[0] == "complete")
+    adapter = MalformedArtifactResult() if failure_stage == "malformed_artifact" else SuccessfulExecutorStub()
+    if failure_stage == "malformed_artifact":
+        with pytest.raises(TypeError, match="NoneType"):
+            await process_run_payload(
+                base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"),
+                AdapterRegistry({"fake": adapter}),
+            )
+    else:
+        with pytest.raises(RuntimeError, match="terminal write failed"):
+            await process_run_payload(
+                base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"),
+                AdapterRegistry({"fake": adapter}),
+            )
+
     release_call = next(item for item in calls if item[0] == "lease_release")
-    assert complete_call[1] != release_call[1]
+    if failure_stage == "terminal_write":
+        complete_call = next(item for item in calls if item[0] == "complete")
+        assert complete_call[1] != release_call[1]
+        assert calls.index(complete_call) < calls.index(release_call)
+    else:
+        assert not any(item[0] == "complete" for item in calls)
     assert release_call[2] == {
         "tenant_id": "tenant-a",
         "user_id": "user-a",
@@ -5012,7 +4971,6 @@ async def test_worker_releases_runtime_sandbox_lease_when_terminal_persistence_r
         "lease_id": "lease-terminal-error-a",
         "reason": "run_terminal_interrupted",
     }
-    assert calls.index(complete_call) < calls.index(release_call)
 
 
 @pytest.mark.asyncio
@@ -5115,7 +5073,7 @@ async def test_worker_requires_new_conversation_before_attempt_binding(monkeypat
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(
-        "app.worker.materialize_queued_worker_context_snapshot",
+        "app.bootstrap.worker_dispatch_binding.materialize_queued_worker_context_snapshot",
         missing_native_context,
     )
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
@@ -5260,7 +5218,7 @@ async def test_worker_uses_scoped_db_context_snapshot_instead_of_queue_copy(monk
     monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker', get_context_snapshot_for_worker)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
-    monkeypatch.setattr("app.worker._load_run_model_snapshot", load_frozen_model)
+    monkeypatch.setattr("app.runs.api.load_run_model_snapshot", load_frozen_model)
 
     outcome = await process_run_payload(
         base_payload(
@@ -5378,11 +5336,11 @@ async def test_worker_uses_private_context_manifest_from_scoped_db_snapshot(monk
     async def persist_assistant(*args, **kwargs):
         return "msg-a"
 
-    monkeypatch.setattr("app.worker.persist_assistant_with_provider_coverage", persist_assistant)
+    monkeypatch.setattr("app.runs.api.persist_assistant_with_provider_coverage", persist_assistant)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker._load_run_model_snapshot", load_frozen_model)
+    monkeypatch.setattr("app.runs.api.load_run_model_snapshot", load_frozen_model)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker', get_context_snapshot_for_worker)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
@@ -5468,10 +5426,10 @@ async def test_worker_uses_scoped_db_context_snapshot_when_queue_copy_missing(mo
     async def persist_assistant(*args, **kwargs):
         return "msg-a"
 
-    monkeypatch.setattr("app.worker.persist_assistant_with_provider_coverage", persist_assistant)
+    monkeypatch.setattr("app.runs.api.persist_assistant_with_provider_coverage", persist_assistant)
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker._load_run_model_snapshot", load_frozen_model)
+    monkeypatch.setattr("app.runs.api.load_run_model_snapshot", load_frozen_model)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker', get_context_snapshot_for_worker)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
@@ -6000,7 +5958,7 @@ async def test_worker_rejects_queue_payload_identity_mismatch_before_context_or_
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
-    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", fail_create_sandbox_lease)
+    monkeypatch.setattr("app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.create_sandbox_lease", fail_create_sandbox_lease)
 
     outcome = await process_run_payload(
         base_payload(
@@ -6243,7 +6201,7 @@ async def test_worker_uses_db_run_input_and_snapshot_files_when_queue_fields_are
     monkeypatch.setattr(model_services, "PostgresRunModelSnapshotRepository", SnapshotRepository)
     model_services.configure_model_services()
     monkeypatch.setattr(
-        "app.worker._load_run_model_snapshot",
+        "app.runs.api.load_run_model_snapshot",
         run_model_snapshot_module.load_run_model_snapshot,
     )
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
@@ -6307,7 +6265,7 @@ async def test_worker_does_not_refresh_missing_context_for_unknown_executor(monk
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
-    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", fail_create_sandbox_lease)
+    monkeypatch.setattr("app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.create_sandbox_lease", fail_create_sandbox_lease)
 
     outcome = await process_run_payload(
         base_payload(
@@ -7703,7 +7661,7 @@ async def test_worker_stops_silent_executor_after_cancel_requested(monkeypatch):
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
 
-    original_submit_until_cancelled = worker_module._submit_run_until_cancelled
+    original_submit_until_cancelled = worker_execution_bootstrap.submit_worker_run_until_cancelled
 
     async def submit_until_cancelled(
         adapter,
@@ -7722,7 +7680,7 @@ async def test_worker_stops_silent_executor_after_cancel_requested(monkeypatch):
             poll_interval_seconds=0.01,
         )
 
-    monkeypatch.setattr("app.worker._submit_run_until_cancelled", submit_until_cancelled)
+    monkeypatch.setattr("app.bootstrap.worker_execution.submit_worker_run_until_cancelled", submit_until_cancelled)
 
     outcome = await asyncio.wait_for(
         process_run_payload(base_payload(), AdapterRegistry({"fake": SilentAdapter()})),
@@ -7816,10 +7774,10 @@ async def test_worker_waits_for_non_cooperative_adapter_before_cancel_terminal_a
         'app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker',
         get_context_snapshot_for_worker,
     )
-    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
-    monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
+    monkeypatch.setattr("app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr("app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
 
-    original_submit_until_cancelled = worker_module._submit_run_until_cancelled
+    original_submit_until_cancelled = worker_execution_bootstrap.submit_worker_run_until_cancelled
 
     async def submit_until_cancelled(
         adapter,
@@ -7840,7 +7798,7 @@ async def test_worker_waits_for_non_cooperative_adapter_before_cancel_terminal_a
             progress_interval_seconds=60,
         )
 
-    monkeypatch.setattr("app.worker._submit_run_until_cancelled", submit_until_cancelled)
+    monkeypatch.setattr("app.bootstrap.worker_execution.submit_worker_run_until_cancelled", submit_until_cancelled)
 
     task = asyncio.create_task(
         process_run_payload(
@@ -8675,7 +8633,7 @@ def _install_task6_worker_fakes(
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(
-        "app.worker.resolve_current_principal",
+        "app.bootstrap.worker_dispatch_admission.resolve_current_principal",
         resolve_task6_current_principal,
         raising=False,
     )
@@ -8688,7 +8646,7 @@ def _install_task6_worker_fakes(
         raising=False,
     )
     monkeypatch.setattr(
-        "app.worker.mcp_api.get_mcp_tool_registry_entry",
+        "app.mcp.api.get_mcp_tool_registry_entry",
         get_mcp_tool_registry_entry,
         raising=False,
     )
@@ -8699,8 +8657,8 @@ def _install_task6_worker_fakes(
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
     monkeypatch.setattr('app.skills.infrastructure.run_snapshots_postgres.upsert_run_skill_snapshot', upsert_run_skill_snapshot)
     monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.create_artifact', create_artifact)
-    monkeypatch.setattr("app.worker.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
-    monkeypatch.setattr("app.worker.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
+    monkeypatch.setattr("app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr("app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
     monkeypatch.setattr(mcp_runtime, "get_mcp_principal_jwt_store", lambda: JwtStore())
     monkeypatch.setattr(
         mcp_postgres,
@@ -8716,18 +8674,7 @@ def _install_task6_worker_fakes(
         ),
     )
     monkeypatch.setattr(
-        worker_module.mcp_api,
-        "get_mcp_tool_registry_entry",
-        get_mcp_tool_registry_entry,
-    )
-    monkeypatch.setattr(
-        worker_module.mcp_api,
-        "mcp_runtime_metadata_usable",
-        mcp_postgres.mcp_runtime_metadata_usable,
-    )
-    monkeypatch.setattr(
-        worker_module.mcp_api,
-        "attach_mcp_server_configs",
+        "app.mcp.api.attach_mcp_server_configs",
         mcp_runtime.attach_mcp_server_configs,
     )
 
@@ -9560,3 +9507,98 @@ async def test_worker_locked_snapshot_invalid_never_falls_back_to_queue_mcp_inpu
     )
     assert "queue-only-tool" not in evidence
     assert "queue-private-marker" not in evidence
+
+
+@pytest.mark.asyncio
+async def test_worker_external_cancellation_releases_placeholder_after_adapter_stops(monkeypatch):
+    calls = []
+    started = asyncio.Event()
+    raw = base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent")
+
+    class WaitingAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                calls.append("adapter_stopped")
+
+    async def release_lease(conn, **kwargs):
+        assert calls == ["adapter_stopped"]
+        assert kwargs["reason"] == "run_terminal_interrupted"
+        calls.append("placeholder_released")
+
+    async def append_event(conn, **kwargs):
+        return "event-synthetic"
+
+    monkeypatch.setattr("app.streaming.infrastructure.run_events_postgres.append_event", append_event)
+
+    monkeypatch.setattr(
+        "app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.release_sandbox_lease",
+        release_lease,
+    )
+    task = asyncio.create_task(process_run_payload(
+        raw, AdapterRegistry({"fake": WaitingAdapter()}), transaction_factory=fake_transaction,
+    ))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=2)
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    assert calls == ["adapter_stopped", "placeholder_released"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal_path", ["result", "exception", "cancelled"])
+async def test_worker_retries_placeholder_cleanup_when_terminal_commit_rolls_back(monkeypatch, terminal_path):
+    calls = []
+    fail_commit = True
+
+    @asynccontextmanager
+    async def failing_commit_transaction():
+        nonlocal fail_commit
+        writes = []
+        yield writes
+        if writes and fail_commit:
+            fail_commit = False
+            calls.append("terminal_rollback")
+            raise RuntimeError("synthetic terminal commit failed")
+        if writes:
+            calls.append("cleanup_committed")
+
+    async def release_lease(conn, **kwargs):
+        conn.append("lease_release")
+        calls.append(kwargs["reason"])
+
+    async def append_event(conn, **kwargs):
+        return "event-synthetic"
+
+    monkeypatch.setattr("app.streaming.infrastructure.run_events_postgres.append_event", append_event)
+    monkeypatch.setattr("app.conversations.infrastructure.postgres.append_message", fake_append_message)
+
+    class TerminalAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            if terminal_path == "exception":
+                raise RuntimeError("synthetic executor failed")
+            if terminal_path == "cancelled":
+                raise worker_module.WorkerRunCancelled
+            return await SuccessfulExecutorStub().submit_run(payload, event_sink)
+
+    monkeypatch.setattr(
+        "app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.release_sandbox_lease",
+        release_lease,
+    )
+    with pytest.raises(RuntimeError, match="synthetic terminal commit failed"):
+        await process_run_payload(
+            base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"),
+            AdapterRegistry({"fake": TerminalAdapter()}),
+            transaction_factory=failing_commit_transaction,
+        )
+    assert calls == [
+        {"result": "run_succeeded", "exception": "run_failed", "cancelled": "run_cancelled"}[terminal_path],
+        "terminal_rollback", "run_terminal_interrupted", "cleanup_committed",
+    ]

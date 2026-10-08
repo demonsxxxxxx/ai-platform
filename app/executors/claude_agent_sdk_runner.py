@@ -41,7 +41,6 @@ from app.executors.claude.capability_policy import (
     _extract_skill_names_from_tool_input,
     _mcp_server_options,
     _parameters_match_subject,
-    claude_context_retrieval_tools,
     internal_context_tool_policy_subjects,
     internal_response_tool_policy_subjects,
 )
@@ -72,14 +71,9 @@ from app.required_tool_contract import (
     RequiredCapabilityEvidence,
     RequiredToolContractError,
     canonical_tool_call_id,
-    declaration_from_input,
     declaration_from_payload,
-    with_sandbox_local_tool_capability_subjects,
 )
-from app.runtime.sandbox.contracts import (
-    PROFILE_DRIVE_READ_TEXT_IDENTITY,
-    PROFILE_DRIVE_STAGE_TOOL,
-)
+from app.runtime.sandbox.contracts import PROFILE_DRIVE_STAGE_TOOL
 from app.sandbox.api import (
     SDK_RUNTIME_DIAGNOSTIC_DETAIL_LIMIT as _MAX_RUNTIME_DIAGNOSTIC_DETAIL_ENTRIES,
     SDK_RUNTIME_DIAGNOSTIC_IDENTITY_MAX_BYTES as _MAX_RUNTIME_DIAGNOSTIC_IDENTITY_BYTES,
@@ -103,55 +97,6 @@ from app.tool_policy import evaluate_tool_policy
 
 _context_pack_prompt_section = _prompt_context_pack_prompt_section
 _translation_target_language = _prompt_translation_target_language
-
-
-def runtime_tool_policy_subjects(
-    payload: Any,
-    context_manifest: dict[str, Any] | None = None,
-) -> list[dict[str, Any]]:
-    value = payload.input.get("_runtime_tool_policy_subjects")
-    internal_prefixes = (
-        _SDK_INTERNAL_CONTEXT_IDENTITY_PREFIX,
-        _SDK_INTERNAL_RESPONSE_IDENTITY_PREFIX,
-    )
-    subjects = (
-        [
-            dict(item)
-            for item in value
-            if isinstance(item, dict)
-            and not str(item.get("identity") or "").startswith(internal_prefixes)
-        ]
-        if isinstance(value, list)
-        else []
-    )
-    subjects.extend(
-        internal_context_tool_policy_subjects(
-            claude_context_retrieval_tools(context_manifest)
-        )
-    )
-    subjects.extend(internal_response_tool_policy_subjects())
-    return subjects
-
-
-def sandbox_runtime_tool_policy_subjects(
-    payload: Any,
-    context_manifest: dict[str, Any] | None = None,
-    *,
-    sandbox_provider: str,
-) -> list[dict[str, Any]]:
-    subjects = runtime_tool_policy_subjects(payload, context_manifest)
-    if PROFILE_DRIVE_READ_TEXT_IDENTITY in _canonical_tool_policy_subjects(subjects):
-        subjects = [
-            subject
-            for subject in subjects
-            if subject.get("identity") != PROFILE_DRIVE_READ_TEXT_IDENTITY
-        ]
-        subjects.extend(internal_context_tool_policy_subjects([PROFILE_DRIVE_STAGE_TOOL]))
-    return with_sandbox_local_tool_capability_subjects(
-        subjects,
-        sandbox_provider=sandbox_provider,
-        required_declaration=declaration_from_input(payload.input),
-    )
 
 
 _SDK_ENV_ALLOWLIST = {

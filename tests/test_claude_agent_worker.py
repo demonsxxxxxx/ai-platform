@@ -5,8 +5,8 @@ import stat
 import pytest
 
 from app.execution.api import artifact_type
-from app.executors.claude_agent_worker import _materialize_pinned_skill
-from app.executors.claude_agent_worker import _select_pinned_skills
+from app.bootstrap.skills import materialize_worker_pinned_skill
+from app.skills.api import select_pinned_skill_snapshots
 from app.skills.registry import skill_content_hash
 
 
@@ -45,7 +45,7 @@ def test_pinned_skill_materialization_uses_safe_modes_under_restrictive_umask(tm
     workspace.chmod(0o770)
     previous_umask = os.umask(0o007)
     try:
-        materialized = _materialize_pinned_skill("report", pin, workspace / ".pins")
+        materialized = materialize_worker_pinned_skill("report", pin, workspace / ".pins")
     finally:
         os.umask(previous_umask)
 
@@ -71,11 +71,12 @@ def test_worker_rejects_overlong_legacy_skill_pin_before_filesystem_write(tmp_pa
         ],
     }
 
-    selected, mismatches = _select_pinned_skills(
+    selected, mismatches = select_pinned_skill_snapshots(
         [],
         ["legacy-skill"],
         {"legacy-skill": pin},
         tmp_path / "workspace" / ".pins" / "skills",
+        materialize=materialize_worker_pinned_skill,
     )
 
     assert selected == []
