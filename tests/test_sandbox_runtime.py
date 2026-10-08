@@ -1605,7 +1605,7 @@ async def test_runtime_default_db_record_persists_trusted_opensandbox_runtime_ha
     monkeypatch.setattr("app.runtime.sandbox.runtime.sandbox_lease_repository.fence_sandbox_lease_release", release_sandbox_lease)
 
     runtime = SandboxRuntime(
-        workspace_root=tmp_path,
+        workspace_root=_short_sandbox_workspace_root(tmp_path),
         provider=OpenSandboxProvider(executor_url="http://unused.test"),
         execute_task=execute,
         callback_token_resolver=lambda token_id: "secret-token",
@@ -1641,6 +1641,90 @@ async def test_runtime_default_db_record_persists_trusted_opensandbox_runtime_ha
 
 
 @pytest.mark.asyncio
+async def test_internal_test_bridge_lease_persists_exact_cleanup_identity(tmp_path, monkeypatch):
+    from app.routes.sandbox_runtime_cleanup import container_lease_from_persisted_row
+    from app.runtime.sandbox.opensandbox_policy import internal_test_opensandbox_lease_labels
+
+    runtime_request = request(sandbox_mode="ephemeral", browser_enabled=False)
+    image = "registry.example/ai-platform@sha256:" + "a" * 64
+    settings = SimpleNamespace(
+        sandbox_container_provider="opensandbox",
+        sandbox_security_profile="internal-test",
+        deployment_environment="test",
+        opensandbox_expected_network_mode="bridge",
+        sandbox_egress_policy_enabled=False,
+        opensandbox_executor_image=image,
+        opensandbox_executor_image_digest="sha256:" + "a" * 64,
+        sandbox_runtime_subject="bridge-test-runtime",
+        sandbox_callback_base_url="http://platform.test",
+        sandbox_callback_token="test-callback-token",
+        sandbox_lease_ttl_seconds=1800,
+    )
+    calls = []
+
+    async def create_lease(conn, **kwargs):
+        calls.append(kwargs)
+        return {"id": "bridge-lease-a"}
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: settings)
+    monkeypatch.setattr("app.runtime.sandbox.runtime.transaction", fake_transaction)
+    monkeypatch.setattr("app.runtime.sandbox.runtime.sandbox_lease_repository.create_sandbox_lease", create_lease)
+    runtime = SandboxRuntime(workspace_root=_short_sandbox_workspace_root(tmp_path), provider=FakeContainerProvider())
+    workspace = runtime.workspace_manager.prepare(runtime_request)
+    labels = internal_test_opensandbox_lease_labels(
+        runtime_request,
+        settings,
+        executor_identity_labels={
+            "ai-platform.executor.user": "10001:10001",
+            "ai-platform.executor.uid": "10001",
+            "ai-platform.executor.gid": "10001",
+            "ai-platform.executor.identity_evidence": "authenticated-runtime-endpoint",
+        },
+        skill_mount_labels={},
+    )
+    lease = ContainerLease(
+        container_id="osb-run-a",
+        container_name="opensandbox-run-a-qat_test-runtime-attempt",
+        provider="opensandbox",
+        executor_url="http://osb-run-a.opensandbox.test:18000",
+        tenant_id=runtime_request.tenant_id,
+        workspace_id=runtime_request.workspace_id,
+        user_id=runtime_request.user_id,
+        session_id=runtime_request.session_id,
+        run_id=runtime_request.run_id,
+        sandbox_mode=runtime_request.sandbox_mode,
+        browser_enabled=runtime_request.browser_enabled,
+        workspace_host_path=workspace.workspace_host_path,
+        workspace_container_path="/workspace",
+        labels=labels,
+    )
+    await runtime._record_runtime_lease(lease, runtime_request, workspace)
+    payload = calls[0]["lease_payload_json"]
+    assert payload["security_profile"] == "internal-test"
+    assert payload["internal_test_lease_version"] == "active-v1"
+    assert payload["requested_image"] == image
+    assert "governed_egress_proof" not in payload
+    assert "ai-platform.executor.identity_evidence" in payload["labels"]
+    row = {**calls[0], "id": "bridge-lease-a", "runtime_handle_verified_at": "2026-10-08T00:00:00Z", "lease_payload_json": payload}
+    restored = container_lease_from_persisted_row(row, allow_historical_internal_test_cleanup=True)
+    assert restored is not None and restored.labels["ai-platform.security_profile"] == "internal-test"
+    monkeypatch.setattr("app.routes.sandbox_runtime_cleanup.get_settings", lambda: settings)
+    assert container_lease_from_persisted_row(row) is not None
+    settings.sandbox_runtime_subject = "changed-runtime"
+    assert container_lease_from_persisted_row(row) is None
+    assert container_lease_from_persisted_row(row, allow_historical_internal_test_cleanup=True) is not None
+    settings.sandbox_runtime_subject = "runtime-subject-a"
+    historical = {**row, "lease_payload_json": {key: value for key, value in payload.items() if key != "internal_test_lease_version"}}
+    assert container_lease_from_persisted_row(historical) is None
+    unverified = lease.model_copy(update={"labels": {
+        **lease.labels, "ai-platform.executor.identity_evidence": "unverified",
+    }})
+    with pytest.raises(ValueError, match="sandbox_security_profile_invalid"):
+        await runtime._record_runtime_lease(unverified, runtime_request, workspace)
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_runtime_rejects_historical_internal_test_lease_for_persistence(tmp_path, monkeypatch):
     runtime_request = request(sandbox_mode="ephemeral", browser_enabled=False)
 
@@ -1651,7 +1735,7 @@ async def test_runtime_rejects_historical_internal_test_lease_for_persistence(tm
         sandbox_lease_ttl_seconds = 1800
 
     monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
-    runtime = SandboxRuntime(workspace_root=tmp_path, provider=FakeContainerProvider())
+    runtime = SandboxRuntime(workspace_root=_short_sandbox_workspace_root(tmp_path), provider=FakeContainerProvider())
     workspace = runtime.workspace_manager.prepare(runtime_request)
     lease = ContainerLease(
         container_id="osb-run-a",

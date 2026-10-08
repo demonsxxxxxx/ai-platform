@@ -586,7 +586,7 @@ jobs:
             --expected-role backend \
             --expected-role frontend
 
-      - name: Assemble runtime-only Compose deployment packages
+      - name: Assemble internal-test Compose deployment package
         run: |
           set -euo pipefail
           python - <<'PY'
@@ -599,7 +599,7 @@ jobs:
             --manifest release-image-manifest.json \
             --data-images data-images.json \
             --evidence-root . \
-            --output ai-platform-production.tar.gz
+            --output ai-platform-internal-test.tar.gz
 
       - name: Upload ready release image evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -615,14 +615,14 @@ jobs:
             cosign-*.json
             provenance-*.json
 
-      - name: Upload temporary production package
+      - name: Upload temporary internal-test package
         if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.release_version == '')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ai-platform-production-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ai-platform-internal-test-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           if-no-files-found: error
           retention-days: 7
-          path: ai-platform-production.tar.gz
+          path: ai-platform-internal-test.tar.gz
 
       - name: Publish explicit versioned Release
         if: >-
@@ -653,7 +653,7 @@ jobs:
           "$GH_CLI_BIN" api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
             -f "ref=refs/tags/$RELEASE_TAG" -f "sha=$GITHUB_SHA" --silent
           "$GH_CLI_BIN" release create "$RELEASE_TAG" \
-            "ai-platform-production.tar.gz" \
+            "ai-platform-internal-test.tar.gz" \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --title "$RELEASE_TAG" \

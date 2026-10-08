@@ -5,11 +5,13 @@ from __future__ import annotations
 import argparse
 from contextlib import contextmanager
 import hashlib
+import ipaddress
 import json
 import os
 from pathlib import Path
 import shlex
 import signal
+import ssl
 import stat
 import subprocess
 import sys
@@ -69,6 +71,17 @@ assert observed.tzinfo is not None
 assert -5 <= time.time() - observed.timestamp() <= 30
 os.kill(p['pid'], 0)
 print(json.dumps([p['worker_id'], p['pid'], observed.timestamp()]))
+"""
+PROFILE_DRIVE_CA_PROBE = """
+import ssl, sys
+from pathlib import Path
+path = Path(sys.argv[1])
+if not 0 < path.stat().st_size <= 1048576:
+    raise SystemExit(1)
+data = path.read_bytes()
+if b'-----BEGIN CERTIFICATE-----' not in data or b'PRIVATE KEY-----' in data:
+    raise SystemExit(1)
+ssl.create_default_context(cafile=str(path))
 """
 
 
@@ -268,7 +281,7 @@ def validate_workspace_storage(config: dict, docker: list[str], migrate_legacy: 
             raise DeploymentError("requested legacy workspace migration source is unavailable")
         return True
     if source_node is not None:
-        raise DeploymentError("legacy workspace data exists; back it up and use --migrate-legacy-workspaces")
+        raise DeploymentError("legacy workspace data exists; use --migrate-legacy-workspaces")
     return False
 
 
@@ -313,6 +326,87 @@ def validate_production_config(config: dict, allow_insecure_http: bool) -> None:
         raise DeploymentError("HTTP or insecure cookies require explicit --allow-insecure-http for a trusted isolated intranet")
     if insecure:
         print("warning: HTTP/insecure cookies expose sessions and gateway traffic; restrict access to a trusted isolated intranet, firewall the direct API, and prefer TLS.", file=sys.stderr)
+
+
+def validate_internal_test_bridge(config: dict, docker: list[str]) -> None:
+    services = config["services"]
+    api = services["api"].get("environment", {})
+    worker = services["worker"].get("environment", {})
+    proxy = services.get("opensandbox-egress-proxy", {})
+    if api.get("SANDBOX_SECURITY_PROFILE") != "internal-test" and not proxy.get("ports"):
+        return
+    for environment in (api, worker):
+        if any(str(environment.get(key) or "").lower() != value for key, value in (
+            ("DEPLOYMENT_ENVIRONMENT", "test"),
+            ("SANDBOX_CONTAINER_PROVIDER", "opensandbox"),
+            ("SANDBOX_SECURITY_PROFILE", "internal-test"),
+            ("OPENSANDBOX_EXPECTED_NETWORK_MODE", "bridge"),
+            ("SANDBOX_EGRESS_POLICY_ENABLED", "false"),
+            ("OPENSANDBOX_USE_SERVER_PROXY", "true"),
+        )):
+            raise DeploymentError("internal-test OpenSandbox profile configuration is invalid")
+        base = str(environment.get("OPENSANDBOX_BASE_URL") or "").strip()
+        domain = str(environment.get("OPENSANDBOX_DOMAIN") or "").strip()
+        protocol = str(environment.get("OPENSANDBOX_PROTOCOL") or "").strip()
+        if not base and (not domain or not protocol):
+            raise DeploymentError("OpenSandbox lifecycle endpoint is required")
+        for value in (base, f"{protocol}://{domain}" if domain and protocol else ""):
+            if not value:
+                continue
+            try:
+                parsed = urlsplit(value)
+                port = parsed.port
+                host = ipaddress.ip_address(parsed.hostname or "")
+                valid = (
+                    parsed.scheme in ("http", "https") and host.version == 4
+                    and host.is_private and not host.is_loopback and not host.is_link_local
+                    and not host.is_unspecified and not host.is_reserved
+                    and parsed.netloc == f"{host}:{port}" and port is not None and 0 < port <= 65535
+                    and parsed.path in ("", "/") and not parsed.query and not parsed.fragment
+                )
+            except ValueError:
+                valid = False
+            if not valid:
+                raise DeploymentError("OpenSandbox lifecycle endpoint must be a private IPv4 URL")
+        if base and domain and protocol and base.rstrip("/") != f"{protocol}://{domain}":
+            raise DeploymentError("OpenSandbox lifecycle endpoints conflict")
+    if (
+        len(str(api.get("SANDBOX_CALLBACK_TOKEN") or "")) < 32
+        or api.get("SANDBOX_CALLBACK_TOKEN") != worker.get("SANDBOX_CALLBACK_TOKEN")
+    ):
+        raise DeploymentError("internal-test callback credential must match and contain at least 32 characters")
+    for key in ("OPENSANDBOX_BASE_URL", "OPENSANDBOX_DOMAIN", "OPENSANDBOX_PROTOCOL", "OPENSANDBOX_EGRESS_PROXY_URL"):
+        if api.get(key) != worker.get(key):
+            raise DeploymentError("API and Worker OpenSandbox endpoints must match")
+    ports = proxy.get("ports")
+    if not isinstance(ports, list) or len(ports) != 1 or not isinstance(ports[0], dict):
+        raise DeploymentError("internal-test proxy binding is invalid")
+    api_ports = services["api"].get("ports")
+    if not isinstance(api_ports, list) or len(api_ports) != 1 or not isinstance(api_ports[0], dict):
+        raise DeploymentError("internal-test API callback port is invalid")
+    port = ports[0]
+    callback_port = api_ports[0]
+    try:
+        gateway = json.loads(run([*docker, "network", "inspect", "bridge"], "Docker bridge inspection"))
+        bridge = gateway[0]
+        address = ipaddress.ip_address(bridge["IPAM"]["Config"][0]["Gateway"])
+        if (
+            len(gateway) != 1 or bridge["Driver"] != "bridge" or bridge["Internal"]
+            or address.version != 4 or not address.is_private or address.is_loopback
+            or address.is_link_local or address.is_unspecified
+            or port.get("host_ip") != str(address)
+            or str(port.get("published")) != "18043" or port.get("target") != 8080
+            or port.get("protocol") != "tcp"
+            or api.get("OPENSANDBOX_EGRESS_PROXY_URL") != f"http://{address}:18043"
+            or callback_port.get("host_ip") not in (None, "", "0.0.0.0", str(address))
+            or callback_port.get("target") != 8020 or callback_port.get("protocol") != "tcp"
+            or str(callback_port.get("published")) != "8020"
+            or api.get("SANDBOX_CALLBACK_BASE_URL") != f"http://{address}:8020"
+            or api.get("SANDBOX_CALLBACK_BASE_URL") != worker.get("SANDBOX_CALLBACK_BASE_URL")
+        ):
+            raise ValueError
+    except (ValueError, KeyError, IndexError, TypeError):
+        raise DeploymentError("internal-test proxy must bind the private Docker bridge gateway; API, Worker and callback URLs must match") from None
 
 
 def install_state(path: Path, config: dict, resume: bool, create: bool = False,
@@ -441,7 +535,38 @@ def deploy(package: Path, env: Path, docker: list[str], offline: bool, check_onl
                "-f", str(package / "compose.yaml"), "-f", str(package / "compose.override.yaml")]
     run([*compose, "config", "--quiet"], "configuration")
     config = json.loads(run([*compose, "config", "--format", "json"], "configuration identity"))
+    ca_target = config["services"]["api"].get("environment", {}).get("PROFILE_DRIVE_TRANSFER_CA_CERT_FILE")
+    ca_host = next((line.partition("=")[2].strip()
+                    for line in run([*compose, "config", "--environment"], "configuration inputs").splitlines()
+                    if line.startswith("PROFILE_DRIVE_TRANSFER_CA_CERT_HOST_FILE=")), "")
+    if bool(ca_target) != bool(ca_host):
+        raise DeploymentError("ProfileDrive CA requires both host and container paths")
+    ca_source = None
+    if ca_target:
+        compose.extend(["-f", str(package / "compose.profile-drive-ca.yaml")])
+        run([*compose, "config", "--quiet"], "ProfileDrive CA configuration")
+        config = json.loads(run([*compose, "config", "--format", "json"], "configuration identity"))
+        mounts = [mount for mount in config["services"]["api"].get("volumes", [])
+                  if mount.get("target") == ca_target]
+        ca_source = mounts[0].get("source") if len(mounts) == 1 else None
+        if (len(mounts) != 1 or mounts[0].get("type") != "bind"
+                or not mounts[0].get("read_only")
+                or not isinstance(ca_source, str) or not Path(ca_source).is_absolute()
+                or not Path(ca_source).is_file() or not os.access(ca_source, os.R_OK)
+                or Path(ca_source).resolve() != Path(ca_source)):
+            raise DeploymentError("ProfileDrive CA must be a readable, read-only host file bind")
+        try:
+            metadata = Path(ca_source).stat()
+            if (os.name == "posix" and metadata.st_mode & 0o022) or not 0 < metadata.st_size <= 1048576:
+                raise ValueError("unsafe CA file")
+            content = Path(ca_source).read_bytes()
+            if b"-----BEGIN CERTIFICATE-----" not in content or b"PRIVATE KEY-----" in content:
+                raise ValueError("invalid CA content")
+            ssl.create_default_context(cafile=ca_source)
+        except (OSError, ValueError, ssl.SSLError):
+            raise DeploymentError("ProfileDrive CA must contain public certificate material only") from None
     validate_production_config(config, allow_insecure_http)
+    validate_internal_test_bridge(config, docker)
     workspace_migration = validate_workspace_storage(config, docker, migrate_legacy)
     for service in ("api", "worker", "migrate", "workspace-migrate", "workspace-init", "frontend"):
         expected = FRONTEND if service == "frontend" else BACKEND
@@ -469,6 +594,12 @@ def deploy(package: Path, env: Path, docker: list[str], offline: bool, check_onl
         if reference not in (image.get("RepoDigests") or []):
             raise DeploymentError("local image lacks the expected repository digest")
         image_ids[reference] = image["Id"]
+    if ca_source:
+        run([*docker, "run", "--rm", "--pull", "never", "--network", "none", "--read-only",
+             "--user", "10001:10001", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
+             "--mount", f"type=bind,source={ca_source},target={ca_target},readonly",
+             "--entrypoint", "python", BACKEND, "-B", "-c", PROFILE_DRIVE_CA_PROBE,
+             ca_target], "ProfileDrive CA runtime verification", 30)
     if not workspace_migration:
         verify_workspace_migration_complete(config, docker)
     if resume_install:

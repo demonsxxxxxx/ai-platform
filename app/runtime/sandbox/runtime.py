@@ -56,7 +56,9 @@ from app.runtime.sandbox.readiness_evidence import (
 )
 from app.runtime.sandbox.opensandbox_policy import (
     SANDBOX_SECURITY_PROFILE_GOVERNED,
+    SANDBOX_SECURITY_PROFILE_INTERNAL_TEST,
     SANDBOX_SECURITY_PROFILE_LABEL,
+    active_internal_test_lease_is_authorized,
 )
 from app.runtime.sandbox.workspace_manager import SandboxWorkspaceManager
 from app.settings import DIRECT_OPENSANDBOX_NETWORK_NAME, get_settings
@@ -206,7 +208,14 @@ class SandboxRuntime:
         lease_security_profile = str(
             lease.labels.get(SANDBOX_SECURITY_PROFILE_LABEL) or SANDBOX_SECURITY_PROFILE_GOVERNED
         )
-        if lease_security_profile != SANDBOX_SECURITY_PROFILE_GOVERNED:
+        if lease_security_profile == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST:
+            if (
+                lease.provider != "opensandbox"
+                or lease.labels.get("ai-platform.attempt_id") != request.attempt_id
+                or not active_internal_test_lease_is_authorized(lease, settings)
+            ):
+                raise ValueError("sandbox_security_profile_invalid")
+        elif lease_security_profile != SANDBOX_SECURITY_PROFILE_GOVERNED:
             raise ValueError("sandbox_security_profile_invalid")
         authorized_skill_scope = governed_egress_authorized_skill_scope(
             skill_ids=request.skill_ids,
@@ -241,6 +250,7 @@ class SandboxRuntime:
         )
         if (
             lease.provider in REAL_SANDBOX_PROVIDERS
+            and lease_security_profile == SANDBOX_SECURITY_PROFILE_GOVERNED
             and governed_egress_proof is None
         ):
             raise ValueError("governed_egress_proof_invalid")
@@ -255,6 +265,18 @@ class SandboxRuntime:
                 )
             )
         }
+        if lease_security_profile == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST:
+            persisted_labels.update({
+                key: lease.labels[key]
+                for key in (
+                    "ai-platform.executor.requested_image",
+                    "ai-platform.executor.requested_image_digest",
+                    "ai-platform.executor.user",
+                    "ai-platform.executor.uid",
+                    "ai-platform.executor.gid",
+                    "ai-platform.executor.identity_evidence",
+                )
+            })
         lease_payload = {
             "source": "sandbox_runtime",
             "evidence_class": "runtime_lease_projection",
@@ -292,6 +314,10 @@ class SandboxRuntime:
             for subject in request.tool_policy_subjects
         ):
             lease_payload[PROFILE_DRIVE_STAGE_LEASE_FLAG] = True
+        if lease_security_profile == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST:
+            lease_payload["internal_test_lease_version"] = "active-v1"
+            lease_payload["requested_image"] = image_subject
+            lease_payload["requested_image_digest"] = image_digest
         if governed_egress_proof is not None:
             lease_payload["governed_egress_proof"] = governed_egress_proof
             if lease.provider == "opensandbox":

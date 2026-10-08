@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 from pathlib import Path
 
@@ -13,6 +14,108 @@ ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("package_deploy", ROOT / "deploy/ai-platform/deploy.py")
 entry = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(entry)
+
+
+def test_internal_test_bridge_preflight_binds_proxy_and_lifecycle(monkeypatch):
+    api = {
+        "DEPLOYMENT_ENVIRONMENT": "test",
+        "SANDBOX_CONTAINER_PROVIDER": "opensandbox",
+        "SANDBOX_SECURITY_PROFILE": "internal-test",
+        "OPENSANDBOX_EXPECTED_NETWORK_MODE": "bridge",
+        "SANDBOX_EGRESS_POLICY_ENABLED": "false",
+        "SANDBOX_CALLBACK_TOKEN": "synthetic-callback-key-with-enough-entropy-2026",
+        "SANDBOX_CALLBACK_BASE_URL": "http://172.17.0.1:8020",
+        "OPENSANDBOX_USE_SERVER_PROXY": "true",
+        "OPENSANDBOX_EGRESS_PROXY_URL": "http://172.17.0.1:18043",
+        "OPENSANDBOX_BASE_URL": "http://172.18.0.1:8080",
+        "OPENSANDBOX_DOMAIN": "",
+        "OPENSANDBOX_PROTOCOL": "",
+    }
+    config = {"services": {
+        "api": {"environment": api, "ports": [{"host_ip": "", "published": "8020", "target": 8020, "protocol": "tcp"}]},
+        "worker": {"environment": dict(api)},
+        "opensandbox-egress-proxy": {"ports": [{
+            "host_ip": "172.17.0.1", "published": "18043", "target": 8080, "protocol": "tcp",
+        }]},
+    }}
+    bridge = [{"Driver": "bridge", "Internal": False, "IPAM": {"Config": [{"Gateway": "172.17.0.1"}]}}]
+    calls = []
+
+    def inspect_bridge(command, stage, timeout=90):
+        calls.append((command, stage))
+        return json.dumps(bridge)
+
+    monkeypatch.setattr(entry, "run", inspect_bridge)
+    entry.validate_internal_test_bridge(config, ["docker"])
+    assert calls == [(["docker", "network", "inspect", "bridge"], "Docker bridge inspection")]
+    api["SANDBOX_CALLBACK_TOKEN"] = "short"
+    with pytest.raises(entry.DeploymentError, match="callback credential must match"):
+        entry.validate_internal_test_bridge(config, ["docker"])
+    api["SANDBOX_CALLBACK_TOKEN"] = config["services"]["worker"]["environment"]["SANDBOX_CALLBACK_TOKEN"]
+    api["SANDBOX_CALLBACK_BASE_URL"] = "http://api.sandbox.internal:8020"
+    with pytest.raises(entry.DeploymentError, match="callback URLs must match"):
+        entry.validate_internal_test_bridge(config, ["docker"])
+    api["SANDBOX_CALLBACK_BASE_URL"] = "http://172.17.0.1:8020"
+    config["services"]["api"]["ports"][0]["host_ip"] = "127.0.0.1"
+    with pytest.raises(entry.DeploymentError, match="callback URLs must match"):
+        entry.validate_internal_test_bridge(config, ["docker"])
+    config["services"]["api"]["ports"][0]["host_ip"] = ""
+    for forbidden_port in ("9527", "18043"):
+        config["services"]["api"]["ports"][0]["published"] = forbidden_port
+        api["SANDBOX_CALLBACK_BASE_URL"] = f"http://172.17.0.1:{forbidden_port}"
+        config["services"]["worker"]["environment"] = dict(api)
+        with pytest.raises(entry.DeploymentError, match="callback URLs must match"):
+            entry.validate_internal_test_bridge(config, ["docker"])
+    config["services"]["api"]["ports"][0]["published"] = "8020"
+    api["SANDBOX_CALLBACK_BASE_URL"] = "http://172.17.0.1:8020"
+    config["services"]["worker"]["environment"] = dict(api)
+    api["OPENSANDBOX_BASE_URL"] = ""
+    api["OPENSANDBOX_DOMAIN"] = "172.18.0.1:8080"
+    api["OPENSANDBOX_PROTOCOL"] = "http"
+    config["services"]["worker"]["environment"] = dict(api)
+    entry.validate_internal_test_bridge(config, ["docker"])
+
+    for field, value in (
+        ("host_ip", "0.0.0.0"),
+        ("host_ip", "172.17.0.2"),
+        ("published", "18044"),
+    ):
+        port = config["services"]["opensandbox-egress-proxy"]["ports"][0]
+        before = port[field]
+        port[field] = value
+        with pytest.raises(entry.DeploymentError, match="proxy must bind"):
+            entry.validate_internal_test_bridge(config, ["docker"])
+        port[field] = before
+    api["OPENSANDBOX_EGRESS_PROXY_URL"] = "http://172.17.0.2:18043"
+    with pytest.raises(entry.DeploymentError, match="API and Worker OpenSandbox endpoints must match"):
+        entry.validate_internal_test_bridge(config, ["docker"])
+    config["services"]["worker"]["environment"] = dict(api)
+    with pytest.raises(entry.DeploymentError, match="proxy must bind"):
+        entry.validate_internal_test_bridge(config, ["docker"])
+    api["OPENSANDBOX_EGRESS_PROXY_URL"] = "http://172.17.0.1:18043"
+    config["services"]["worker"]["environment"] = dict(api)
+    bridge[0]["IPAM"]["Config"][0]["Gateway"] = "172.17.0.2"
+    with pytest.raises(entry.DeploymentError, match="proxy must bind"):
+        entry.validate_internal_test_bridge(config, ["docker"])
+    bridge[0]["IPAM"]["Config"][0]["Gateway"] = "172.17.0.1"
+    api["OPENSANDBOX_DOMAIN"] = ""
+    config["services"]["worker"]["environment"] = dict(api)
+    with pytest.raises(entry.DeploymentError, match="lifecycle endpoint is required"):
+        entry.validate_internal_test_bridge(config, ["docker"])
+    api["OPENSANDBOX_BASE_URL"] = "http://user:pass@172.18.0.1:8080"
+    config["services"]["worker"]["environment"] = dict(api)
+    with pytest.raises(entry.DeploymentError, match="private IPv4 URL"):
+        entry.validate_internal_test_bridge(config, ["docker"])
+    for host in ("127.0.0.1", "0.0.0.0", "169.254.169.254", "8.8.8.8", "host.docker.internal"):
+        api["OPENSANDBOX_BASE_URL"] = f"http://{host}:8080"
+        config["services"]["worker"]["environment"] = dict(api)
+        with pytest.raises(entry.DeploymentError, match="private IPv4 URL"):
+            entry.validate_internal_test_bridge(config, ["docker"])
+    api["OPENSANDBOX_BASE_URL"] = ""
+    api["OPENSANDBOX_DOMAIN"] = "8.8.8.8:8080"
+    config["services"]["worker"]["environment"] = dict(api)
+    with pytest.raises(entry.DeploymentError, match="private IPv4 URL"):
+        entry.validate_internal_test_bridge(config, ["docker"])
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="real Linux procfs descriptor paths required")
@@ -130,7 +233,7 @@ def harness(tmp_path, monkeypatch):
     # Permission metadata is POSIX-only; do not fake subprocess or runner verdicts.
     env = tmp_path / ".env"
     env.write_text("SYNTHETIC=true\n")
-    state = {"calls": [], "activity_checks": 0, "race": False, "fail": None}
+    state = {"calls": [], "activity_checks": 0, "race": False, "fail": None, "ca_host": ""}
     workspace_root = str((tmp_path / "workspaces").resolve())
     migration_source = str((tmp_path / "legacy-workspaces").resolve())
     config = {"services": {
@@ -202,6 +305,8 @@ def harness(tmp_path, monkeypatch):
             raise entry.DeploymentError(stage + ": injected failure")
         if stage == "configuration identity":
             return json.dumps(config)
+        if stage == "configuration inputs":
+            return "PROFILE_DRIVE_TRANSFER_CA_CERT_HOST_FILE=" + state["ca_host"]
         if stage == "Docker data-root inspection":
             return str((tmp_path / "docker-data").resolve())
         if stage == "workspace volume inspection":
@@ -237,6 +342,77 @@ def harness(tmp_path, monkeypatch):
     state["state_path"] = tmp_path / ".ai-platform-install-state.json"
     state["deploy"] = lambda offline=False, check_only=False, **kwargs: entry.deploy(tmp_path, env, ["docker"], offline, check_only, **kwargs)
     return state
+
+
+def test_profile_drive_ca_bind_is_optional_and_preflight_requires_readable_file(harness, tmp_path, monkeypatch):
+    import certifi
+
+    monkeypatch.setattr(entry, "validate_workspace_storage", lambda *args, **kwargs: False)
+    harness["deploy"](check_only=True)
+    assert not any("compose.profile-drive-ca.yaml" in str(command) for _, command in harness["calls"])
+
+    ca_target = "/etc/ssl/certs/profile-drive-ca.pem"
+    ca_source = tmp_path / "public-ca.pem"
+    api = harness["config"]["services"]["api"]
+    ca_mount = {"type": "bind", "source": str(ca_source), "target": ca_target, "read_only": True}
+    api["volumes"].append(ca_mount)
+
+    harness["ca_host"] = str(ca_source)
+    with pytest.raises(entry.DeploymentError, match="requires both host and container paths"):
+        harness["deploy"](check_only=True)
+    harness["ca_host"] = ""
+    api["environment"]["PROFILE_DRIVE_TRANSFER_CA_CERT_FILE"] = ca_target
+    with pytest.raises(entry.DeploymentError, match="requires both host and container paths"):
+        harness["deploy"](check_only=True)
+    harness["ca_host"] = str(ca_source)
+    with pytest.raises(entry.DeploymentError, match="must be a readable"):
+        harness["deploy"](check_only=True)
+    ca_source.write_text("not a certificate")
+    with pytest.raises(entry.DeploymentError, match="public certificate material only"):
+        harness["deploy"](check_only=True)
+    public_bundle = Path(certifi.where()).read_bytes()
+    ca_source.write_bytes(public_bundle + b"\n-----BEGIN PRIVATE KEY-----\nsynthetic-only\n")
+    with pytest.raises(entry.DeploymentError, match="public certificate material only"):
+        harness["deploy"](check_only=True)
+    ca_source.write_bytes(public_bundle)
+    if os.name == "posix":
+        ca_source.chmod(0o644)
+    harness["deploy"](check_only=True)
+    assert any("compose.profile-drive-ca.yaml" in str(command) for _, command in harness["calls"])
+    probe_calls = [command for stage, command in harness["calls"] if stage == "ProfileDrive CA runtime verification"]
+    assert len(probe_calls) == 1
+    assert all(flag in probe_calls[0] for flag in ("--network", "none", "--read-only", "--user", "10001:10001"))
+    harness["fail"] = "ProfileDrive CA runtime verification"
+    with pytest.raises(entry.DeploymentError, match="runtime verification"):
+        harness["deploy"](check_only=True)
+    harness["fail"] = None
+    ca_mount["read_only"] = False
+    with pytest.raises(entry.DeploymentError, match="must be a readable"):
+        harness["deploy"](check_only=True)
+    ca_mount["read_only"] = True
+    if os.name == "posix":
+        ca_link = tmp_path / "linked-ca.pem"
+        ca_link.symlink_to(ca_source)
+        ca_mount["source"] = str(ca_link)
+        with pytest.raises(entry.DeploymentError, match="must be a readable"):
+            harness["deploy"](check_only=True)
+
+
+def test_profile_drive_ca_runtime_probe_rejects_non_certificates_and_private_keys(tmp_path):
+    import certifi
+
+    ca_source = tmp_path / "public-ca.pem"
+    def probe():
+        return subprocess.run([sys.executable, "-B", "-c", entry.PROFILE_DRIVE_CA_PROBE, str(ca_source)],
+                              capture_output=True, timeout=10).returncode
+
+    ca_source.write_text("not a certificate")
+    assert probe() != 0
+    public_bundle = Path(certifi.where()).read_bytes()
+    ca_source.write_bytes(public_bundle)
+    assert probe() == 0
+    ca_source.write_bytes(public_bundle + b"\n-----BEGIN PRIVATE KEY-----\nsynthetic-only\n")
+    assert probe() != 0
 
 
 def test_workspace_migration_source_must_be_a_readonly_host_bind(harness):
@@ -497,8 +673,9 @@ def test_legacy_data_requires_explicit_migration_and_is_retained(harness, monkey
     legacy.mkdir()
     sentinel = legacy / "existing-data"
     sentinel.write_text("preserved")
-    with pytest.raises(entry.DeploymentError, match="migrate-legacy-workspaces"):
+    with pytest.raises(entry.DeploymentError, match="migrate-legacy-workspaces") as exc:
         harness["deploy"]()
+    assert "back it up" not in str(exc.value)
     assert not any(name == "admission stop" for name, _ in harness["calls"])
     harness["deploy"](migrate_legacy=True)
     assert sentinel.read_text() == "preserved"

@@ -119,11 +119,13 @@ drained maintenance window and the matching immutable application package:
 Rollback also requires a drained window: restore the previous package, server
 TOML and guard together, then verify the previous topology before admission.
 
-The retired internal-test topology has no new package or runtime selection.
-Database-tracked historical leases remain eligible for stop-only cleanup when
-their complete persisted scope, image, executor identity and remote metadata
-match. They cannot be created, reused, dispatched or renewed. Missing identity
-evidence requires classified recovery.
+Historical internal-test leases without the current `active-v1` marker remain
+eligible for stop-only cleanup when their complete persisted scope, image,
+executor identity and remote metadata match. They cannot be recreated,
+reused, dispatched or renewed. The separate internal-test package may create
+and renew new `active-v1` leases on its test bridge; this production host must
+not select that package. Missing historical identity evidence requires
+classified recovery.
 
 ## Verify the host
 
@@ -141,9 +143,13 @@ be the browser-visible frontend origin.
 
 ## Install or upgrade the application
 
-Download the matching immutable production package from one Deployment Release,
-extract it, and reuse the owner-held application environment file. From the
-package directory run:
+This production host procedure applies only when a separate, reviewed immutable
+production Release is available. The current publication workflow emits only
+`ai-platform-internal-test.tar.gz`; do not deploy that test bridge package here.
+Previously published production Releases remain immutable but may be too old
+for the current schema. When a qualified production package exists, download it
+from one Release, extract it, and reuse the owner-held application environment
+file. From the package directory run:
 
 ```sh
 python3 deploy.py \
@@ -168,7 +174,7 @@ source-checkout release controller or reconstruct a latest Release on the host.
 
 A fresh production installation initializes the current workspace root without
 creating or copying a legacy source directory. Any selected existing legacy
-source directory, even empty, requires a backup and `--migrate-legacy-workspaces`.
+source directory, even empty, requires `--migrate-legacy-workspaces`.
 Existing bind or local volume data must match the configured migration source's
 inspected host path and both running containers' storage identity. The source is
 retained read-only during the package copy.
@@ -178,9 +184,8 @@ keep the same package, configuration and migration mode, the intact owner-held
 mode `0600` journal beside the env file, and no application containers. Changed
 inputs, missing journals, partially-created activity tables and any application
 containers require classified operator recovery. `--resume-install --check`
-never starts PostgreSQL and requires it already running. See the
-[backup, restore and recovery procedure](../../deploy/ai-platform/BACKUP-RESTORE.md) before
-changing existing data.
+never starts PostgreSQL and requires it already running. Classify changes
+to existing data before retrying a failed install.
 
 Production defaults to HTTPS origins and secure cookies. Generate independent
 `TRUSTED_PRINCIPAL_SECRET` and `AI_SESSION_SECRET` values of at least 32

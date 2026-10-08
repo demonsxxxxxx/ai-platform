@@ -642,8 +642,8 @@ def test_opensandbox_overlay_uses_direct_sdk_and_stateless_egress_proxy():
     example_values = env_example_values(env_example)
     for name, value in OPENSANDBOX_GUARD_TOPOLOGY.items():
         assert example_values[name] == value
-    assert "OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS" not in example_values
-    assert "OPENSANDBOX_EGRESS_PROXY_URL" not in example_values
+    assert example_values["OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS"] == ""
+    assert example_values["OPENSANDBOX_EGRESS_PROXY_URL"] == ""
     for fixed_key in (
         "DEPLOYMENT_ENVIRONMENT",
         "SANDBOX_SECURITY_PROFILE",

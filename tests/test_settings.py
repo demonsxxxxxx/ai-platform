@@ -152,12 +152,26 @@ def test_stale_run_reconciliation_settings_reject_unsafe_bounds(field, value):
         Settings(_env_file=None, **{field: value})
 
 
-def test_legacy_sandbox_security_profile_setting_is_not_active(monkeypatch):
-    monkeypatch.setenv("SANDBOX_SECURITY_PROFILE", "internal-test")
-    settings = Settings(_env_file=None, sandbox_security_profile="internal-test")
+def test_internal_test_bridge_profile_is_scoped_to_test_opensandbox():
+    values = {
+        "deployment_environment": "test",
+        "sandbox_container_provider": "opensandbox",
+        "sandbox_security_profile": "internal-test",
+        "opensandbox_expected_network_mode": "bridge",
+    }
+    settings = Settings(_env_file=None, **values)
+    assert settings.sandbox_security_profile == "internal-test"
+    assert settings.opensandbox_expected_network_mode == "bridge"
 
-    assert not hasattr(settings, "sandbox_security_profile")
-    assert settings.opensandbox_expected_network_mode == "ai-platform-opensandbox-egress-v2"
+    for field, value, error in (
+        ("deployment_environment", "production", "internal_test_opensandbox_profile_invalid"),
+        ("sandbox_container_provider", "docker", "internal_test_opensandbox_profile_invalid"),
+        ("opensandbox_expected_network_mode", "host", "opensandbox_expected_network_mode_invalid"),
+    ):
+        with pytest.raises(ValidationError, match=error):
+            Settings(_env_file=None, **{**values, field: value})
+    with pytest.raises(ValidationError, match="opensandbox_expected_network_mode_invalid"):
+        Settings(_env_file=None, deployment_environment="production", opensandbox_expected_network_mode="bridge")
 
 
 def test_production_opensandbox_accepts_a_configured_named_egress_network():
@@ -207,14 +221,13 @@ def test_configured_network_name_is_preserved_by_remote_metadata(name):
 
 
 @pytest.mark.parametrize("provider", ["fake", "docker", "opensandbox"])
-def test_legacy_profile_values_do_not_change_runtime_settings(provider):
-    settings = Settings(
-        _env_file=None,
-        sandbox_container_provider=provider,
-        sandbox_security_profile="trusted_internal",
-    )
-
-    assert not hasattr(settings, "sandbox_security_profile")
+def test_unknown_security_profile_fails_closed(provider):
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            sandbox_container_provider=provider,
+            sandbox_security_profile="trusted_internal",
+        )
 
 
 def test_retired_runtime_authority_settings_are_not_configurable(monkeypatch, tmp_path):

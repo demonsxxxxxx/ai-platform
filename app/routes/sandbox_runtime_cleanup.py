@@ -18,6 +18,7 @@ from app.runtime.sandbox.opensandbox_policy import (
     SANDBOX_SECURITY_PROFILE_GOVERNED,
     SANDBOX_SECURITY_PROFILE_INTERNAL_TEST,
     SANDBOX_SECURITY_PROFILE_LABEL,
+    active_internal_test_lease_is_authorized,
     historical_internal_test_cleanup_expected_labels,
 )
 from app.sandbox.infrastructure import leases_postgres as sandbox_leases_postgres
@@ -150,7 +151,12 @@ def container_lease_from_persisted_row(
                 else ""
             ) or SANDBOX_SECURITY_PROFILE_GOVERNED
         if security_profile == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST:
-            if not allow_historical_internal_test_cleanup:
+            if (
+                lease_payload.get("internal_test_lease_version") != "active-v1"
+                and not allow_historical_internal_test_cleanup
+            ):
+                return None
+            if lease_payload.get("internal_test_lease_version") not in (None, "active-v1"):
                 return None
             persisted = lease_payload.get("labels")
             if not isinstance(persisted, dict) or any(
@@ -236,8 +242,11 @@ def container_lease_from_persisted_row(
         workspace_container_path=workspace_container_path,
         labels=labels,
     )
-    if historical_internal_test and historical_internal_test_cleanup_expected_labels(lease) is None:
-        return None
+    if historical_internal_test:
+        if historical_internal_test_cleanup_expected_labels(lease) is None:
+            return None
+        if not allow_historical_internal_test_cleanup and not active_internal_test_lease_is_authorized(lease, get_settings()):
+            return None
     return lease
 
 

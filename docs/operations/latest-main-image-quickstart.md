@@ -1,7 +1,8 @@
 # Deployment package quickstart
 
-The public immutable Deployment Release contains one runtime-only package,
-`ai-platform-production.tar.gz`, with its matching manifest inside.
+The new immutable Deployment Release contains one runtime-only test package,
+`ai-platform-internal-test.tar.gz`, with its matching manifest inside. It
+cannot be used for production or s75. Earlier production Releases are unchanged.
 
 Extract the archive into a new directory and do not mix files with another
 version. The package contains the exact Compose files, immutable application and
@@ -12,12 +13,11 @@ access, source files, or a host build.
 ## First install
 
 The host needs Linux, Python 3, Docker, Compose v2 with `--wait` and `!reset`,
-and the already-provisioned `opensandbox.service`. Production OpenSandbox
-credentials, network policy, `runsc`, the lifecycle address, and workspace
-permissions are one-time host preparation; see [production host preparation](production-bootstrap.md).
-Set the workspace root and four network topology values for the selected host;
-they must match the protected OpenSandbox host configuration. The example values
-are defaults, not enforced installation paths or network identities.
+and the already-provisioned `opensandbox.service` using Docker `bridge` and
+`runsc`. The test bridge has no dedicated host guard and can reach routable
+internal addresses; deploy only to a trusted isolated test host. Configure
+reachable callback/proxy endpoints and the existing workspace root; see the
+package `README.md`. Do not use the production host topology for this package.
 
 For a new installation, create the environment file in the extracted directory:
 

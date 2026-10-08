@@ -31,6 +31,17 @@ test("AppShell and Chat keep one scroll owner for each transcript state", () => 
   assert.doesNotMatch(list, /workbenchSurface\.catalog\.content/);
 });
 
+test("model admin view owns vertical scrolling for large candidate lists", () => {
+  const catalog = read("src/components/panels/ModelCatalogPanel.tsx");
+  const admin = read("src/components/panels/ModelAdminControl.tsx");
+
+  assert.match(
+    catalog,
+    /data-frontend-governance-state=\{adminState\}\s+className=\{`\$\{workbenchSurface\.page\} overflow-y-auto`\}/,
+  );
+  assert.doesNotMatch(admin, /overflow-y-auto/);
+});
+
 test("skills, market, detail, workspace, and builder share responsive outer gutters", () => {
   const skills = read("src/components/panels/SkillsHubPanel.tsx");
   const market = read("src/features/agent-market/AgentMarketRoute.tsx");
