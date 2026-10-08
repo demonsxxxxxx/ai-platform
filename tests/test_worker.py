@@ -3419,11 +3419,18 @@ async def test_worker_returns_after_durable_executor_dispatch_acceptance(monkeyp
     async def complete_run(*_args, **_kwargs):
         raise AssertionError("dispatch acceptance must not terminalize the run")
 
+    async def release_lease(*_args, **_kwargs):
+        raise AssertionError("detached execution retains its lease for reconciliation")
+
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', append_message)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
+    monkeypatch.setattr(
+        "app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.release_sandbox_lease",
+        release_lease,
+    )
 
     outcome = await process_run_payload(raw, AdapterRegistry({"fake": AcceptedAdapter()}))
 
@@ -9500,3 +9507,98 @@ async def test_worker_locked_snapshot_invalid_never_falls_back_to_queue_mcp_inpu
     )
     assert "queue-only-tool" not in evidence
     assert "queue-private-marker" not in evidence
+
+
+@pytest.mark.asyncio
+async def test_worker_external_cancellation_releases_placeholder_after_adapter_stops(monkeypatch):
+    calls = []
+    started = asyncio.Event()
+    raw = base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent")
+
+    class WaitingAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                calls.append("adapter_stopped")
+
+    async def release_lease(conn, **kwargs):
+        assert calls == ["adapter_stopped"]
+        assert kwargs["reason"] == "run_terminal_interrupted"
+        calls.append("placeholder_released")
+
+    async def append_event(conn, **kwargs):
+        return "event-synthetic"
+
+    monkeypatch.setattr("app.streaming.infrastructure.run_events_postgres.append_event", append_event)
+
+    monkeypatch.setattr(
+        "app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.release_sandbox_lease",
+        release_lease,
+    )
+    task = asyncio.create_task(process_run_payload(
+        raw, AdapterRegistry({"fake": WaitingAdapter()}), transaction_factory=fake_transaction,
+    ))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=2)
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    assert calls == ["adapter_stopped", "placeholder_released"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal_path", ["result", "exception", "cancelled"])
+async def test_worker_retries_placeholder_cleanup_when_terminal_commit_rolls_back(monkeypatch, terminal_path):
+    calls = []
+    fail_commit = True
+
+    @asynccontextmanager
+    async def failing_commit_transaction():
+        nonlocal fail_commit
+        writes = []
+        yield writes
+        if writes and fail_commit:
+            fail_commit = False
+            calls.append("terminal_rollback")
+            raise RuntimeError("synthetic terminal commit failed")
+        if writes:
+            calls.append("cleanup_committed")
+
+    async def release_lease(conn, **kwargs):
+        conn.append("lease_release")
+        calls.append(kwargs["reason"])
+
+    async def append_event(conn, **kwargs):
+        return "event-synthetic"
+
+    monkeypatch.setattr("app.streaming.infrastructure.run_events_postgres.append_event", append_event)
+    monkeypatch.setattr("app.conversations.infrastructure.postgres.append_message", fake_append_message)
+
+    class TerminalAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            if terminal_path == "exception":
+                raise RuntimeError("synthetic executor failed")
+            if terminal_path == "cancelled":
+                raise worker_module.WorkerRunCancelled
+            return await SuccessfulExecutorStub().submit_run(payload, event_sink)
+
+    monkeypatch.setattr(
+        "app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.release_sandbox_lease",
+        release_lease,
+    )
+    with pytest.raises(RuntimeError, match="synthetic terminal commit failed"):
+        await process_run_payload(
+            base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"),
+            AdapterRegistry({"fake": TerminalAdapter()}),
+            transaction_factory=failing_commit_transaction,
+        )
+    assert calls == [
+        {"result": "run_succeeded", "exception": "run_failed", "cancelled": "run_cancelled"}[terminal_path],
+        "terminal_rollback", "run_terminal_interrupted", "cleanup_committed",
+    ]

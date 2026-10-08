@@ -7,7 +7,8 @@ from app.runs.api import WorkerResultCommitCommand, WorkerResultCommitService
 
 
 @pytest.mark.asyncio
-async def test_lost_success_cas_rolls_back_all_worker_result_facts_before_classification():
+@pytest.mark.parametrize("target", ["succeeded", "failed", "cancelled"])
+async def test_lost_terminal_cas_rolls_back_all_worker_result_facts(target):
     transactions = []
     releases = []
 
@@ -46,9 +47,17 @@ async def test_lost_success_cas_rolls_back_all_worker_result_facts_before_classi
 
     class Attempt:
         async def is_cancel_requested(self, conn):
-            return False
+            return target == "cancelled"
 
         async def complete(self, conn, **kwargs):
+            conn.append("cas_failed")
+            return False
+
+        async def fail(self, conn, **kwargs):
+            conn.append("cas_failed")
+            return False
+
+        async def cancel(self, conn, **kwargs):
             conn.append("cas_failed")
             return False
 
@@ -63,11 +72,14 @@ async def test_lost_success_cas_rolls_back_all_worker_result_facts_before_classi
         persist_assistant=record_assistant, append_user_event=record_user_event,
         append_hidden_event=noop, persist_failure_event=noop,
         public_failure_message=lambda result: "safe failure",
-        prefers_cancelled=lambda result: False,
+        prefers_cancelled=lambda result: True,
     )
     command = WorkerResultCommitCommand(
         payload=SimpleNamespace(tenant_id="tenant", run_id="run"),
-        result=SimpleNamespace(status="succeeded", artifacts=[], executor_payload={}),
+        result=SimpleNamespace(
+            status="succeeded" if target == "succeeded" else "failed",
+            artifacts=[], executor_payload={}, result={},
+        ),
         result_payload={"message": "safe"}, artifact_records=[],
         skill_snapshot={"used_skills": []}, terminal_event_kwargs={},
         attempt_id="attempt", trace_id="trace",
@@ -78,8 +90,11 @@ async def test_lost_success_cas_rolls_back_all_worker_result_facts_before_classi
 
     assert outcome.status == "skipped"
     assert outcome.publish_run_event is True
-    assert transactions == [
-        ("rollback", ["locked_run", "artifacts", "skills", "assistant", "assistant_message_created", "cas_failed"]),
-        ("commit", ["classified"]),
-    ]
+    expected_writes = ["locked_run", "artifacts", "skills"]
+    if target == "succeeded":
+        expected_writes += ["assistant", "assistant_message_created"]
+    expected_writes += ["cas_failed"]
+    assert transactions == [("rollback", expected_writes)] + (
+        [("commit", ["classified"])] if target == "succeeded" else []
+    )
     assert releases == []

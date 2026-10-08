@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, AsyncContextManager, Protocol
+from typing import TYPE_CHECKING, Any, AsyncContextManager, Protocol
+
+from app.runs.application.worker_queue_envelope import WorkerDispatchPayload
+
+if TYPE_CHECKING:
+    from app.execution.api import WorkerExecutorResult
 
 
 AsyncPort = Callable[..., Awaitable[Any]]
@@ -25,8 +30,8 @@ class WorkerAttemptCommitAuthority(Protocol):
 
 @dataclass(frozen=True)
 class WorkerResultCommitCommand:
-    payload: Any
-    result: Any
+    payload: WorkerDispatchPayload
+    result: WorkerExecutorResult
     result_payload: dict[str, Any]
     artifact_records: list[dict[str, Any]]
     skill_snapshot: dict[str, list[str]]
@@ -45,8 +50,8 @@ class WorkerResultCommitOutcome:
     publish_run_event: bool = True
 
 
-class _WorkerSuccessCommitBlocked(Exception):
-    """Rollback all success-visible facts before classifying a lost CAS."""
+class _WorkerResultCommitBlocked(Exception):
+    """Rollback every result fact when the terminal CAS loses authority."""
 
 
 _STALE = WorkerResultCommitOutcome(
@@ -106,7 +111,7 @@ class WorkerResultCommitService:
                 if locked_run is None or str(locked_run.get("status") or "") in {
                     "succeeded", "failed", "cancelled"
                 }:
-                    raise _WorkerSuccessCommitBlocked()
+                    raise _WorkerResultCommitBlocked()
                 if command.reconciliation_lease_id is not None and not await self._reconciliation_claim_current(
                     conn,
                     lease_id=command.reconciliation_lease_id,
@@ -159,7 +164,7 @@ class WorkerResultCommitService:
                         conn, capabilities=capabilities, result_json=result_payload
                     )
                     if not terminal_written:
-                        raise _WorkerSuccessCommitBlocked()
+                        raise _WorkerResultCommitBlocked()
                     await self._append_user_event(
                         conn, tenant_id=payload.tenant_id, run_id=payload.run_id,
                         event_type="run_succeeded", stage="worker", message="Run succeeded",
@@ -184,7 +189,7 @@ class WorkerResultCommitService:
                         conn, capabilities=capabilities, result_json={"message": "任务已取消"}
                     )
                     if not terminal_written:
-                        return _STALE
+                        raise _WorkerResultCommitBlocked()
                     await release_runtime_lease(conn, reason="run_cancelled")
                     return WorkerResultCommitOutcome("cancelled")
                 terminal_written = await attempt_authority.fail(
@@ -192,7 +197,7 @@ class WorkerResultCommitService:
                     error_message=error_message, result_json=result_payload,
                 )
                 if not terminal_written:
-                    return _STALE
+                    raise _WorkerResultCommitBlocked()
                 await self._persist_failure_event(
                     conn, tenant_id=payload.tenant_id, run_id=payload.run_id,
                     result=result, attempt_id=command.attempt_id,
@@ -200,7 +205,9 @@ class WorkerResultCommitService:
                 )
                 await release_runtime_lease(conn, reason="run_failed")
                 return WorkerResultCommitOutcome("failed", error_code, error_message)
-        except _WorkerSuccessCommitBlocked:
+        except _WorkerResultCommitBlocked:
+            if result.status != "succeeded":
+                return _STALE
             async with self._transaction_factory() as conn:
                 blocked_reason = await attempt_authority.classify_success_commit_block(conn)
                 if blocked_reason == "cancel_requested":

@@ -135,6 +135,10 @@ placeholder lease writers, or early-failure collaborators.
 Worker orchestrates dispatch and publishes committed events
 only after each transaction exits; the former Worker capability/early-failure
 helpers and `Locked*Ports` callback bags have no compatibility owner.
+Result persistence rolls back artifacts, Skill snapshots, messages, and events
+when any terminal CAS loses authority. Worker interruption cleanup covers only
+its SDK placeholder lease, marks release after transaction commit, and leaves
+detached provider resources with the Sandbox reconciler.
 The four former `execution.api` imports `build_artifact_records`,
 `promote_artifact_reservations`, `PinnedSkillMismatch`, and
 `validate_pinned_skill_relative_path` remain identity-only compatibility exports

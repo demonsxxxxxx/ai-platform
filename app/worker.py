@@ -210,6 +210,8 @@ async def process_run_payload(
                 terminal_after_transaction = _WorkerTerminalAfterTransaction(early_outcome, payload)
             return early_outcome
         run_payload = binding.run_payload
+        if run_payload is None:
+            raise RuntimeError("worker_dispatch_payload_missing")
         runtime_sandbox_lease = binding.runtime_sandbox_lease
     finally:
         if terminal_after_transaction is not None:
@@ -246,7 +248,6 @@ async def process_run_payload(
             raise WorkerRunCancelled
 
     async def release_runtime_sandbox_lease(conn, *, reason: str) -> None:
-        nonlocal runtime_sandbox_lease_released
         if reconciliation is not None:
             return
         if runtime_sandbox_lease is None or runtime_sandbox_lease_released:
@@ -254,9 +255,11 @@ async def process_run_payload(
         await release_worker_runtime_lease(
             conn, runtime_sandbox_lease, reason=reason,
         )
-        runtime_sandbox_lease_released = True
+        # This write is provisional until the owning terminal transaction exits.
 
     async def cleanup_runtime_sandbox_lease_after_interruption() -> None:
+        # Binding returns only SDK placeholder leases; detached provider leases
+        # and reconciliation claims retain their Sandbox-owned cleanup authority.
         if runtime_sandbox_execution_detached:
             return
         if runtime_sandbox_lease is None or runtime_sandbox_lease_released:
@@ -268,74 +271,76 @@ async def process_run_payload(
             return
 
     try:
-        if adapter is None:
-            raise RuntimeError("executor_adapter_not_resolved")
+        try:
+            if adapter is None:
+                raise RuntimeError("executor_adapter_not_resolved")
 
-        if reconciliation is not None:
-            started_at = time.monotonic()
-            result: ExecutorResult | ExecutorDispatchAccepted = reconciliation.result
-        else:
-            await admit_v4_stream(
-                v4_capabilities,
-                tenant_id=run_payload.tenant_id,
-                run_id=run_payload.run_id,
-                attempt_id=run_payload.attempt_id,
+            if reconciliation is not None:
+                started_at = time.monotonic()
+                result: ExecutorResult | ExecutorDispatchAccepted = reconciliation.result
+            else:
+                await admit_v4_stream(
+                    v4_capabilities,
+                    tenant_id=run_payload.tenant_id,
+                    run_id=run_payload.run_id,
+                    attempt_id=run_payload.attempt_id,
+                )
+
+                async def cancel_requested() -> bool:
+                    async with transaction_factory() as conn:
+                        return await attempt_lifecycle.is_cancel_requested(conn)
+
+                execution_owner = worker_execution_bootstrap.build_worker_execution_owner(
+                    run_payload, transaction_factory,
+                )
+                started_at = time.monotonic()
+                result = await worker_execution_bootstrap.submit_worker_run_until_cancelled(
+                    adapter,
+                    run_payload,
+                    event_sink=event_sink,
+                    cancel_requested=cancel_requested,
+                    execution_owner=execution_owner,
+                )
+            if isinstance(result, ExecutorDispatchAccepted):
+                if not result.lease_id:
+                    raise ValueError("executor_dispatch_acceptance_lease_missing")
+                runtime_sandbox_execution_detached = True
+                return WorkerOutcome(status="running", run_id=run_payload.run_id)
+            latency_ms = max(int((time.monotonic() - started_at) * 1000), 0)
+            result.validate()
+            result = normalize_sandbox_reported_failure(result)
+            if capability_authorization is None:
+                raise RuntimeError("worker_capability_authorization_missing")
+            result = worker_execution_bootstrap.enforce_worker_required_tool_completion(
+                result, payload=payload, run_identity=run_identity,
+                attempt_id=attempt_id,
+                required_tool_decision=capability_authorization.required_tool_decision,
             )
-
-            async def cancel_requested() -> bool:
-                async with transaction_factory() as conn:
-                    return await attempt_lifecycle.is_cancel_requested(conn)
-
-            execution_owner = worker_execution_bootstrap.build_worker_execution_owner(
-                run_payload, transaction_factory,
+        except WorkerRunCancelled:
+            cancelled = await build_worker_execution_terminal_service(
+                transaction_factory, capabilities=v4_capabilities,
+            ).cancel(
+                attempt=attempt_lifecycle, capabilities=v4_capabilities,
+                release_runtime_lease=release_runtime_sandbox_lease,
             )
-            started_at = time.monotonic()
-            result = await worker_execution_bootstrap.submit_worker_run_until_cancelled(
-                adapter,
-                run_payload,
-                event_sink=event_sink,
-                cancel_requested=cancel_requested,
-                execution_owner=execution_owner,
+            runtime_sandbox_lease_released = cancelled.status == "cancelled"
+            await publish_run_event(v4_capabilities, tenant_id=payload.tenant_id, run_id=payload.run_id)
+            return WorkerOutcome(cancelled.status, payload.run_id, cancelled.error_code, cancelled.error_message)
+        except Exception as exc:  # noqa: BLE001 - worker boundary terminalizes all failures.
+            failure_code, failure_message, failure_result = _executor_exception_failure(exc)
+            terminal = await build_worker_execution_terminal_service(
+                transaction_factory, capabilities=v4_capabilities,
+            ).fail_or_cancel(
+                payload=payload, attempt_id=attempt_id,
+                attempt=attempt_lifecycle, capabilities=v4_capabilities,
+                failure_code=failure_code, failure_message=failure_message,
+                failure_result=failure_result,
+                release_runtime_lease=release_runtime_sandbox_lease,
             )
-        if isinstance(result, ExecutorDispatchAccepted):
-            if not result.lease_id:
-                raise ValueError("executor_dispatch_acceptance_lease_missing")
-            runtime_sandbox_execution_detached = True
-            return WorkerOutcome(status="running", run_id=run_payload.run_id)
-        latency_ms = max(int((time.monotonic() - started_at) * 1000), 0)
-        result.validate()
-        result = normalize_sandbox_reported_failure(result)
-        if capability_authorization is None:
-            raise RuntimeError("worker_capability_authorization_missing")
-        result = worker_execution_bootstrap.enforce_worker_required_tool_completion(
-            result, payload=payload, run_identity=run_identity,
-            attempt_id=attempt_id,
-            required_tool_decision=capability_authorization.required_tool_decision,
-        )
-    except WorkerRunCancelled:
-        cancelled = await build_worker_execution_terminal_service(
-            transaction_factory, capabilities=v4_capabilities,
-        ).cancel(
-            attempt=attempt_lifecycle, capabilities=v4_capabilities,
-            release_runtime_lease=release_runtime_sandbox_lease,
-        )
-        await publish_run_event(v4_capabilities, tenant_id=payload.tenant_id, run_id=payload.run_id)
-        return WorkerOutcome(cancelled.status, payload.run_id, cancelled.error_code, cancelled.error_message)
-    except Exception as exc:  # noqa: BLE001 - worker boundary terminalizes all failures.
-        failure_code, failure_message, failure_result = _executor_exception_failure(exc)
-        terminal = await build_worker_execution_terminal_service(
-            transaction_factory, capabilities=v4_capabilities,
-        ).fail_or_cancel(
-            payload=payload, attempt_id=attempt_id,
-            attempt=attempt_lifecycle, capabilities=v4_capabilities,
-            failure_code=failure_code, failure_message=failure_message,
-            failure_result=failure_result,
-            release_runtime_lease=release_runtime_sandbox_lease,
-        )
-        await publish_run_event(v4_capabilities, tenant_id=payload.tenant_id, run_id=payload.run_id)
-        return WorkerOutcome(terminal.status, payload.run_id, terminal.error_code, terminal.error_message)
+            runtime_sandbox_lease_released = terminal.status in {"failed", "cancelled"}
+            await publish_run_event(v4_capabilities, tenant_id=payload.tenant_id, run_id=payload.run_id)
+            return WorkerOutcome(terminal.status, payload.run_id, terminal.error_code, terminal.error_message)
 
-    try:
         artifact_records = build_worker_artifact_records(
             result, reconciliation=reconciliation is not None,
         )
@@ -370,11 +375,12 @@ async def process_run_payload(
             capabilities=v4_capabilities,
             release_runtime_lease=release_runtime_sandbox_lease,
         )
+        runtime_sandbox_lease_released = committed.status in {"succeeded", "failed", "cancelled"}
+        if committed.publish_run_event:
+            await publish_run_event(v4_capabilities, tenant_id=payload.tenant_id, run_id=payload.run_id)
+        return WorkerOutcome(committed.status, payload.run_id, committed.error_code, committed.error_message)
     finally:
         await cleanup_runtime_sandbox_lease_after_interruption()
-    if committed.publish_run_event:
-        await publish_run_event(v4_capabilities, tenant_id=payload.tenant_id, run_id=payload.run_id)
-    return WorkerOutcome(committed.status, payload.run_id, committed.error_code, committed.error_message)
 
 
 async def reconcile_executor_terminal_result(
