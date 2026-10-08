@@ -48,10 +48,8 @@ from app.runtime.sandbox.callback_tokens import (
     derive_callback_token,
 )
 from app.runtime.sandbox.event_normalizer import container_started_event
-from app.runtime.sandbox.executor_client import (
-    SandboxExecutorClient,
-    normalize_executor_reported_failure,
-)
+from app.runtime.sandbox.executor_client import SandboxExecutorClient
+from app.sandbox.api import normalize_executor_reported_failure
 from app.runtime.sandbox.readiness_evidence import (
     ExecutorReadinessEvidence,
     safe_readiness_evidence_payload,

@@ -1,6 +1,11 @@
 from dataclasses import dataclass
 from typing import Any, Callable, Literal, TypedDict
 
+from app.agent_apps.capability_state import exact_invoked_skills as exact_invoked_skills
+from app.agent_apps.application.worker_profile_snapshot import (
+    reauthorize_worker_locked_profile as reauthorize_worker_locked_profile,
+    worker_profile_snapshot_matches as worker_profile_snapshot_matches,
+)
 from app.agent_apps.application.skill_set_pinning import pin_agent_skill_set
 from app.agent_apps.domain.profile_definition import (
     locked_agent_profile_identity_valid as locked_agent_profile_identity_valid,

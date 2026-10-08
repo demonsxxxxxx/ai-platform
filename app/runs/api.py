@@ -51,6 +51,48 @@ from app.runs.domain.thinking import (
 from app.runs.application.cancellation import (
     CancelRequestAuthority as CancelRequestAuthority,
 )
+from app.runs.application.worker_dispatch_admission import (
+    WorkerAdmissionOutcome as WorkerAdmissionOutcome,
+    WorkerAuthorizedDispatchCandidate as WorkerAuthorizedDispatchCandidate,
+    WorkerDispatchAdmissionResult as WorkerDispatchAdmissionResult,
+    WorkerDispatchAdmissionService as WorkerDispatchAdmissionService,
+)
+from app.runs.application.worker_execution_terminal import (
+    WorkerExecutionTerminalOutcome as WorkerExecutionTerminalOutcome,
+    WorkerExecutionTerminalService as WorkerExecutionTerminalService,
+)
+from app.runs.application.worker_early_failure import (
+    WorkerEarlyFailureService as WorkerEarlyFailureService,
+    WorkerEarlyTerminal as WorkerEarlyTerminal,
+    WorkerEarlyTerminalOutcome as WorkerEarlyTerminalOutcome,
+)
+from app.runs.application.worker_capability_admission import (
+    WorkerCapabilityAdmissionService as WorkerCapabilityAdmissionService,
+    WorkerCapabilityAuthorization as WorkerCapabilityAuthorization,
+    WorkerRequiredToolPorts as WorkerRequiredToolPorts,
+)
+from app.runs.application.worker_dispatch_binding import (
+    WorkerDispatchBindingResult as WorkerDispatchBindingResult,
+    WorkerDispatchBindingService as WorkerDispatchBindingService,
+    WorkerDispatchContextPorts as WorkerDispatchContextPorts,
+    WorkerDispatchExecutionPorts as WorkerDispatchExecutionPorts,
+)
+from app.runs.application.worker_locked_snapshot import (
+    WorkerLockedSnapshotService as WorkerLockedSnapshotService,
+)
+from app.runs.application.worker_locked_authorization import (
+    WorkerLockedAuthorizationService as WorkerLockedAuthorizationService,
+)
+from app.runs.application.worker_queue_envelope import (
+    InvalidLeasedQueueEnvelope as InvalidLeasedQueueEnvelope,
+    LeasedQueueEnvelope as LeasedQueueEnvelope,
+    parse_leased_queue_envelope as parse_leased_queue_envelope,
+)
+from app.runs.application.worker_result_commit import (
+    WorkerResultCommitCommand as WorkerResultCommitCommand,
+    WorkerResultCommitOutcome as WorkerResultCommitOutcome,
+    WorkerResultCommitService as WorkerResultCommitService,
+)
 from app.runs.application.lifecycle import RunLifecycleService as RunLifecycleService
 from app.runs.application.terminalization_v4 import (
     cancel_run_with_v4 as cancel_run_with_v4,

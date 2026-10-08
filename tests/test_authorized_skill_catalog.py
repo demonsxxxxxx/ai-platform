@@ -43,12 +43,12 @@ from app.skills.catalog import (
 )
 from app.skills.pinning import build_skill_manifest_ref, build_skill_version_manifest_pin
 from app.skills.release_policy import RELEASE_DECISION_SCHEMA_VERSION
-from app.worker import (
-    _builtin_capability_subjects,
-    _payload_with_authorized_skill_catalog,
-    _reauthorize_worker_capabilities,
-    process_run_payload,
-)
+from app.bootstrap.skills import worker_payload_with_authorized_skill_catalog
+from app.bootstrap.worker_capability_admission import build_worker_capability_admission_service
+from app.settings import get_settings
+from app.worker import process_run_payload
+from app.required_tool_contract import builtin_capability_subjects
+from app.skills.execution_profiles import effective_skill_execution_profile
 
 
 def test_catalog_parser_uses_shared_run_manifest_closure_limit(monkeypatch):
@@ -816,7 +816,7 @@ async def test_worker_overwrites_injected_catalog_without_authorizing_discovery_
         skill_manifests=[],
     )
 
-    rebuilt = _payload_with_authorized_skill_catalog(payload, resolution=resolution)
+    rebuilt = worker_payload_with_authorized_skill_catalog(payload, resolution=resolution)
     loaded = load_runtime_authorized_skill_catalog(
         rebuilt.input,
         expected_binding=_binding(),
@@ -829,7 +829,8 @@ async def test_worker_overwrites_injected_catalog_without_authorizing_discovery_
         admin_bypass=False,
         decision_reason="allowed",
     )
-    subjects = _builtin_capability_subjects(
+    subjects = builtin_capability_subjects(
+        canonical_manifest=effective_skill_execution_profile,
         payload=rebuilt,
         run_identity={"skill_id": "general-chat"},
         skill={"skill_status": "active"},
@@ -893,7 +894,7 @@ async def test_worker_dispatch_authorizes_only_selected_dependency_closure(monke
     monkeypatch.setattr(_owner_skills_infrastructure_resolution_postgres, 'resolve_skill_identity', resolve_selected)
     monkeypatch.setattr(_owner_identity_infrastructure_capability_distributions_postgres, 'get_capability_distribution_row', get_distribution)
     monkeypatch.setattr(_owner_runs_infrastructure_capability_admission_postgres, 'run_mcp_tool_ids_for_skill', lambda *_args, **_kwargs: [])
-    monkeypatch.setattr("app.worker.resolve_authorized_skill_catalog", resolve_catalog_with_current_authority)
+    monkeypatch.setattr("app.skills.catalog.resolve_authorized_skill_catalog", resolve_catalog_with_current_authority)
 
     primary_manifest = _manifest_from_row(rows[0])
     primary_version = str(primary_manifest["version"])
@@ -942,7 +943,9 @@ async def test_worker_dispatch_authorizes_only_selected_dependency_closure(monke
         )
 
     principal = await current_principal(user_id="user-a", tenant_id="tenant-a")
-    authorization = await _reauthorize_worker_capabilities(
+    authorization = await build_worker_capability_admission_service(
+        settings_provider=get_settings,
+    ).authorize(
         object(),
         payload=payload,
         run_identity=run_identity,
@@ -1107,7 +1110,7 @@ def _install_dispatch_failure_fakes(monkeypatch, locked_run, primary_manifest, c
             "max_input_tokens", "max_output_tokens",
         )}
 
-    monkeypatch.setattr("app.worker._load_run_model_snapshot", load_frozen_model)
+    monkeypatch.setattr("app.runs.api.load_run_model_snapshot", load_frozen_model)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr("app.streaming.infrastructure.run_events_postgres.append_event", append_event)
     monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", append_audit_log)
@@ -1159,13 +1162,13 @@ async def test_every_dispatch_shape_denies_unavailable_current_authority_before_
             calls.append(("registry", None))
             raise AssertionError("executor registry must not be resolved")
 
-    monkeypatch.setattr("app.worker.resolve_current_principal", unavailable_current_principal)
+    monkeypatch.setattr("app.bootstrap.worker_dispatch_admission.resolve_current_principal", unavailable_current_principal)
     monkeypatch.setattr("app.skills.infrastructure.run_snapshots_postgres.validate_run_skill_snapshots_for_dispatch", forbidden)
     monkeypatch.setattr("app.skills.infrastructure.postgres.validate_replay_skill_manifests", forbidden)
     monkeypatch.setattr("app.skills.infrastructure.resolution_postgres.resolve_skill_identity", forbidden)
-    monkeypatch.setattr("app.worker.resolve_authorized_skill_catalog", forbidden)
+    monkeypatch.setattr("app.skills.catalog.resolve_authorized_skill_catalog", forbidden)
     monkeypatch.setattr("app.worker.materialize_queued_worker_context_snapshot", forbidden)
-    monkeypatch.setattr("app.worker._create_worker_runtime_sandbox_lease", forbidden)
+    monkeypatch.setattr("app.bootstrap.worker_dispatch_binding.create_worker_runtime_sandbox_lease", forbidden)
 
     outcome = await process_run_payload(
         raw,
@@ -1243,7 +1246,7 @@ async def test_queued_admin_snapshot_cannot_restore_revoked_current_skill_access
             calls.append(("registry", None))
             raise AssertionError("revoked current access must precede executor resolution")
 
-    monkeypatch.setattr("app.worker.resolve_current_principal", current_principal)
+    monkeypatch.setattr("app.bootstrap.worker_dispatch_admission.resolve_current_principal", current_principal)
     monkeypatch.setattr("app.skills.infrastructure.run_snapshots_postgres.validate_run_skill_snapshots_for_dispatch", validate_snapshots)
     monkeypatch.setattr("app.skills.infrastructure.postgres.validate_replay_skill_manifests", validate_replay)
     monkeypatch.setattr("app.skills.infrastructure.resolution_postgres.resolve_skill_identity", resolve_selected)

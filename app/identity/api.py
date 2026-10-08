@@ -1,3 +1,10 @@
+from app.identity.application.worker_distribution import (
+    WorkerCapabilityDecision as WorkerCapabilityDecision,
+    WorkerDistributionAuthority as WorkerDistributionAuthority,
+)
+from app.identity.application.worker_capability_audit import (
+    WorkerCapabilityAuditService as WorkerCapabilityAuditService,
+)
 from app.identity.application.admin_user_diagnostics import (
     ADMIN_USER_DIAGNOSTICS_SCHEMA_VERSION,
     AdminUserDiagnosticsService,
@@ -15,6 +22,9 @@ from app.identity.application.profile_metadata import (
 )
 
 __all__ = [
+    "WorkerCapabilityAuditService",
+    "WorkerCapabilityDecision",
+    "WorkerDistributionAuthority",
     "ADMIN_USER_DIAGNOSTICS_SCHEMA_VERSION",
     "AdminUserDiagnosticsService",
     "AdminUserDiagnosticsStore",
