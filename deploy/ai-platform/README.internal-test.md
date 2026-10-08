@@ -23,9 +23,8 @@ Run/Attempt identity, callback token and model proxy capability remain checked.
 Set `OPENSANDBOX_DOMAIN` and `OPENSANDBOX_PROTOCOL` for the private lifecycle
 server (or a valid `OPENSANDBOX_BASE_URL`). Its address must be a private
 non-loopback IPv4 literal reachable from the API and Worker containers.
-Configure
-`SANDBOX_CALLBACK_BASE_URL` must be the explicit
-`http://<bridge-gateway>:<published-API-port>`; the Compose-only
+Set `SANDBOX_CALLBACK_BASE_URL` to
+`http://<bridge-gateway>:8020` with the API published on host port 8020;
 `api.sandbox.internal` alias is not reachable from ordinary Docker `bridge`.
 Set `OPENSANDBOX_EGRESS_PROXY_URL` to the host endpoint reachable from the
 ordinary OpenSandbox bridge. Bind the proxy's port 18043

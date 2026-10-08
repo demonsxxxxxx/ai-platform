@@ -63,10 +63,10 @@ from governed to test is permitted; invalid profiles fail closed.
 The package controller checks the host's actual Docker `bridge` gateway before
 pulling or stopping services. The internal-test model proxy must bind only
 that private IPv4 address on port 18043 and both API and Worker must point to
-it; the callback URL must match the same gateway and the API published port.
-Lifecycle inputs must supply a valid private IPv4 base URL or a complete
-domain/protocol pair. This is a configuration drift gate, not a production
-network guard.
+it; the callback URL must match the same gateway with the API published on
+host port 8020. Lifecycle inputs must supply a valid private IPv4 base URL or
+a complete domain/protocol pair. This is a configuration drift gate, not a
+production network guard.
 
 Acceptance covers the test bridge and workspace end to end, rejects drift
 between host/application network and mounts, and preserves image digests,

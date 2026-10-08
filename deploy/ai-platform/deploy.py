@@ -400,9 +400,8 @@ def validate_internal_test_bridge(config: dict, docker: list[str]) -> None:
             or api.get("OPENSANDBOX_EGRESS_PROXY_URL") != f"http://{address}:18043"
             or callback_port.get("host_ip") not in (None, "", "0.0.0.0", str(address))
             or callback_port.get("target") != 8020 or callback_port.get("protocol") != "tcp"
-            or not str(callback_port.get("published") or "").isdigit()
-            or not 0 < int(callback_port["published"]) <= 65535
-            or api.get("SANDBOX_CALLBACK_BASE_URL") != f"http://{address}:{callback_port['published']}"
+            or str(callback_port.get("published")) != "8020"
+            or api.get("SANDBOX_CALLBACK_BASE_URL") != f"http://{address}:8020"
             or api.get("SANDBOX_CALLBACK_BASE_URL") != worker.get("SANDBOX_CALLBACK_BASE_URL")
         ):
             raise ValueError

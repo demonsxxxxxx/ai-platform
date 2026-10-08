@@ -60,6 +60,15 @@ def test_internal_test_bridge_preflight_binds_proxy_and_lifecycle(monkeypatch):
     with pytest.raises(entry.DeploymentError, match="callback URLs must match"):
         entry.validate_internal_test_bridge(config, ["docker"])
     config["services"]["api"]["ports"][0]["host_ip"] = ""
+    for forbidden_port in ("9527", "18043"):
+        config["services"]["api"]["ports"][0]["published"] = forbidden_port
+        api["SANDBOX_CALLBACK_BASE_URL"] = f"http://172.17.0.1:{forbidden_port}"
+        config["services"]["worker"]["environment"] = dict(api)
+        with pytest.raises(entry.DeploymentError, match="callback URLs must match"):
+            entry.validate_internal_test_bridge(config, ["docker"])
+    config["services"]["api"]["ports"][0]["published"] = "8020"
+    api["SANDBOX_CALLBACK_BASE_URL"] = "http://172.17.0.1:8020"
+    config["services"]["worker"]["environment"] = dict(api)
     api["OPENSANDBOX_BASE_URL"] = ""
     api["OPENSANDBOX_DOMAIN"] = "172.18.0.1:8080"
     api["OPENSANDBOX_PROTOCOL"] = "http"
