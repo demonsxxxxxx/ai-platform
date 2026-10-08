@@ -771,6 +771,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   const [runInputsRunId, setRunInputsRunId] = useState<string | null>(null);
   const runInputs = useRunInputs({
     sessionId,
+    identityKey: runControlAuthIdentity,
     runId: runInputsRunId,
     isRunActive: Boolean(currentRunId && currentRunId === runInputsRunId),
   });

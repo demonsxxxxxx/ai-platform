@@ -32,7 +32,7 @@ import {
   ChatInput,
   type ChatInputDraftSnapshot,
 } from "../../chat/ChatInput";
-import { RunQuestionCard } from "../../chat/RunQuestionCard";
+import { RunInputHistory } from "../../chat/RunInputHistory";
 import { WelcomePage } from "../../chat/WelcomePage";
 import { AgentIdentityAvatar } from "../../agent/AgentIdentityAvatar";
 import { WorkbenchRightPanel } from "../../workbench/WorkbenchRightPanel";
@@ -1051,78 +1051,7 @@ export function ChatView({
           </button>
         </div>
       ) : null}
-      {runInputs?.projection ? (
-        <div className="mx-auto mb-2 flex max-h-[min(30dvh,18rem)] w-full max-w-[68rem] flex-col gap-2 overflow-y-auto overscroll-contain break-words px-2" data-run-input-history>
-          {runInputs.projection.questions
-            .filter((batch) => {
-              const hasAnswer = runInputs.projection?.inputs.some(
-                (input) => input.kind === "answer" && input.question_id === batch.question_id,
-              );
-              return (
-                batch.status === "pending" ||
-                batch.status === "closed" ||
-                (batch.status === "answered" &&
-                  (runInputs.projection?.state !== "open" || !hasAnswer))
-              );
-            })
-            .map((batch) => (
-              <RunQuestionCard key={batch.question_id} batch={batch} runInputs={runInputs} canSend={canSendInCurrentView} />
-            ))}
-          {runInputs.projection.inputs.map((input) => {
-            const question = input.kind === "answer"
-              ? runInputs.projection?.questions.find(
-                  (batch) => batch.question_id === input.question_id,
-                )
-              : undefined;
-            const closedUnprocessed =
-              input.status === "closed" ||
-              ((runInputs.isClosed || runInputs.projection?.state !== "open") &&
-              (input.status === "queued" ||
-                (input.kind === "answer" && question !== undefined && question.status !== "resolved")));
-            const statusLabel = closedUnprocessed
-              ? t("chat.runInputs.unprocessed", "任务已结束，未处理")
-              : input.status === "queued"
-                ? t("chat.runInputs.queued", "排队中")
-                : t("chat.runInputs.applied", "任务已接收");
-            if (input.kind === "text") {
-              return (
-                <article
-                  className="rounded-xl border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-3 py-2"
-                  data-run-input-entry="text"
-                  key={input.input_id}
-                >
-                  <div className="mb-1 flex items-center justify-between gap-3 text-xs text-[var(--theme-text-secondary)]">
-                    <span>{t("chat.runInputs.textEntry", "补充到当前任务")}</span>
-                    <span>{statusLabel}</span>
-                  </div>
-                  <p className="whitespace-pre-wrap text-sm text-[var(--theme-text)]">{input.text}</p>
-                </article>
-              );
-            }
-            if (!input.answers) return null;
-            return (
-              <article
-                className="rounded-xl border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-3 py-2"
-                data-run-input-entry="answer"
-                key={input.input_id}
-              >
-                <div className="mb-1 flex items-center justify-between gap-3 text-xs text-[var(--theme-text-secondary)]">
-                  <span>{t("chat.runInputs.answerEntry", "已提交答复")}</span>
-                  <span>{statusLabel}</span>
-                </div>
-                <div className="space-y-1">
-                  {Object.entries(input.answers).map(([question, answer]) => (
-                    <p className="whitespace-pre-wrap text-sm text-[var(--theme-text)]" key={question}>
-                      <span className="font-medium">{question} </span>
-                      {Array.isArray(answer) ? answer.join("、") : answer}
-                    </p>
-                  ))}
-                </div>
-              </article>
-            );
-          })}
-        </div>
-      ) : null}
+      {runInputs ? <RunInputHistory runInputs={runInputs} canSend={canSendInCurrentView} /> : null}
       <ChatInput
         {...chatInputProps}
         className="mx-auto max-w-[68rem] px-2"

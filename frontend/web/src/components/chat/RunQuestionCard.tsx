@@ -1,7 +1,8 @@
 import { useId, useState } from "react";
 import { useTranslation } from "react-i18next";
-import type { RunInputQuestionBatch } from "../../services/api/session";
+import type { RunInputAnswer, RunInputQuestionBatch } from "../../services/api/session";
 import type { RunInputsController } from "../../hooks/useAgent/types";
+import { presentRunInputOption } from "./runInputPresentation";
 
 interface QuestionDraft {
   selected: string[];
@@ -29,15 +30,15 @@ export function RunQuestionCard({
     setAnswerAttempted(false);
   };
 
-  const answers: Record<string, string | string[]> = {};
+  const answers: Record<string, RunInputAnswer> = {};
   for (const question of batch.questions) {
-    const draft = drafts[question.question] ?? { selected: [], text: "" };
+    const draft = drafts[question.key] ?? { selected: [], text: "" };
     if (draft.text.trim()) {
-      answers[question.question] = draft.text.trim();
+      answers[question.key] = { text: draft.text.trim() };
     } else if (question.multiSelect && draft.selected.length > 0) {
-      answers[question.question] = draft.selected;
+      answers[question.key] = draft.selected;
     } else if (!question.multiSelect && draft.selected[0]) {
-      answers[question.question] = draft.selected[0];
+      answers[question.key] = draft.selected[0];
     }
   }
 
@@ -67,7 +68,7 @@ export function RunQuestionCard({
       >
         <p className="text-xs text-[var(--theme-text-secondary)]">{status}</p>
         {batch.questions.map((question) => (
-          <p className="mt-1 text-sm text-[var(--theme-text)]" key={question.question}>
+          <p className="mt-1 text-sm text-[var(--theme-text)]" key={question.key}>
             {question.question}
           </p>
         ))}
@@ -95,10 +96,10 @@ export function RunQuestionCard({
       >
         <div className="space-y-4">
           {batch.questions.map((question, questionIndex) => {
-            const draft = drafts[question.question] ?? { selected: [], text: "" };
+            const draft = drafts[question.key] ?? { selected: [], text: "" };
             const groupName = `${groupId}-${questionIndex}`;
             return (
-              <fieldset className="min-w-0" key={question.question}>
+              <fieldset className="min-w-0" key={question.key}>
                 {question.header ? (
                   <legend className="mb-1 text-xs font-medium text-[var(--theme-text-secondary)]">
                     {question.header}
@@ -109,12 +110,12 @@ export function RunQuestionCard({
                 </p>
                 {question.options.length > 0 ? (
                   <div className="space-y-1.5">
-                    {question.options.map((option, optionIndex) => {
-                      const selected = draft.selected.includes(option.label);
+                    {question.options.map((option) => {
+                      const selected = draft.selected.includes(option.key);
                       return (
                         <label
                           className="flex cursor-pointer items-start gap-2 rounded-lg border border-[var(--theme-border)] px-2.5 py-2 text-sm hover:bg-[var(--theme-bg-sidebar)] has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-60"
-                          key={`${option.label}:${optionIndex}`}
+                          key={option.key}
                         >
                           <input
                             checked={selected}
@@ -122,20 +123,20 @@ export function RunQuestionCard({
                             disabled={readOnly || busy}
                             name={groupName}
                             onChange={() =>
-                              updateDraft(question.question, (previous) => {
+                              updateDraft(question.key, (previous) => {
                                 if (!question.multiSelect) {
-                                  return { selected: [option.label], text: "" };
+                                  return { selected: [option.key], text: "" };
                                 }
-                                const selectedOptions = previous.selected.includes(option.label)
-                                  ? previous.selected.filter((label) => label !== option.label)
-                                  : [...previous.selected, option.label];
+                                const selectedOptions = previous.selected.includes(option.key)
+                                  ? previous.selected.filter((key) => key !== option.key)
+                                  : [...previous.selected, option.key];
                                 return { selected: selectedOptions, text: "" };
                               })
                             }
                             type={question.multiSelect ? "checkbox" : "radio"}
                           />
                           <span className="min-w-0">
-                            <span className="block text-[var(--theme-text)]">{option.label}</span>
+                            <span className="block text-[var(--theme-text)]">{presentRunInputOption(question, option.key)}</span>
                             {option.description ? (
                               <span className="mt-0.5 block text-xs text-[var(--theme-text-secondary)]">
                                 {option.description}
@@ -155,7 +156,7 @@ export function RunQuestionCard({
                   disabled={readOnly || busy}
                   maxLength={16_000}
                   onChange={(event) =>
-                    updateDraft(question.question, (previous) => ({
+                    updateDraft(question.key, (previous) => ({
                       ...previous,
                       selected: [],
                       text: event.target.value,

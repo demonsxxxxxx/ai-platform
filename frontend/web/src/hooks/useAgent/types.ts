@@ -37,6 +37,12 @@ export interface RunInputsController {
   sessionId: string | null;
   runId: string | null;
   projection: RunInputsProjection | null;
+  history: RunInputsProjection[];
+  historyIsLoading: boolean;
+  historyLoadFailed: boolean;
+  historyHasMore: boolean;
+  loadMoreHistory: () => Promise<boolean>;
+  refreshHistory: () => Promise<boolean>;
   isLoading: boolean;
   loadFailed: boolean;
   isClosed: boolean;

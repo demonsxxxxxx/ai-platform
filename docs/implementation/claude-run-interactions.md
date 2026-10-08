@@ -19,14 +19,14 @@ PreToolUse is the single question entry; there is no second question handler in
 
 ## Public HTTP contract
 
-- `GET /runs/{run_id}/inputs` returns
+- `GET /api/ai/runs/{run_id}/inputs` returns
   `{run_id, state, inputs, questions}` for the authenticated Run owner.
-- `GET /sessions/{session_id}/run-inputs?limit=20&before_run_id=...` returns
+- `GET /api/ai/sessions/{session_id}/run-inputs?limit=20&before_run_id=...` returns
   `{session_id, runs, has_more, next_before_run_id}` for the authenticated session
   owner. Runs are ordered by `(created_at, id)` descending with an exclusive
   cursor in the same tenant/user/session. A foreign or absent cursor yields an
   empty page. Each item uses the same Run projection below.
-- `POST /runs/{run_id}/inputs` accepts either
+- `POST /api/ai/runs/{run_id}/inputs` accepts either
   `{input_id, text}` or `{input_id, question_id, answers}`. `input_id` is a
   client-generated UUID retained across retries. The response is
   `{input_id, status}`. Accepted text is `queued`, then `applied` after the SDK
@@ -47,7 +47,8 @@ PreToolUse is the single question entry; there is no second question handler in
   Labels are display text and may collide after redaction. The SDK adapter keeps
   original question/option identity only in the active attempt and translates
   accepted keys back to native `AskUserQuestion` values. Raw model-generated
-  question text is neither persisted nor sent through the callback.
+  question identity does not enter the new input tables or the public callback
+  projection; existing provider transcript persistence retains its own contract.
 
 No new SSE event is required. Chat queries this projection while the Run is
 active. A separate session/auth-bound history projection restores every loaded
@@ -55,7 +56,12 @@ Run page on refresh and supports loading older pages; replacing the active Run
 retains prior rounds as read-only history. The active Run overrides its history
 snapshot by Run ID. Session or principal replacement aborts old reads and drops
 old projections. Persisted pre-key records use a display-only legacy mapping;
-new submissions require the current key contract. It displays queued
+new submissions require the current key contract. Refresh starts pagination
+again from the fresh first-page cursor and inserts gap pages in Run order while
+deduplicating cached records. Current pending questions appear above older history;
+a newly pending batch resets the history scroll position. Colliding public option
+labels use safe ordinal numbering in both cards and accepted-answer history.
+Chat displays queued
 text separately from persisted conversation Messages and shows pending questions
 as answerable cards. Text and answers are Run input facts; the existing provider
 coverage continues to count the original conversation user message and final

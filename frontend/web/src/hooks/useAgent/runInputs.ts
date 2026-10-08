@@ -7,6 +7,7 @@ import {
 } from "../../services/api/session";
 import { ApiRequestError } from "../../services/api/fetch";
 import { uuid } from "../../utils/uuid";
+import { useRunInputHistory } from "./runInputHistory";
 import type {
   RunInputAcceptedSubmission,
   RunInputPendingSubmission,
@@ -29,8 +30,8 @@ interface RunInputsState {
   lastAcceptedSubmission: RunInputAcceptedSubmission | null;
 }
 
-function ownerKey(sessionId: string | null, runId: string | null): string | null {
-  return sessionId && runId ? JSON.stringify([sessionId, runId]) : null;
+function ownerKey(sessionId: string | null, runId: string | null, identityKey: string): string | null {
+  return sessionId && runId ? JSON.stringify([sessionId, runId, identityKey]) : null;
 }
 
 function viewOfAttempt(
@@ -100,12 +101,14 @@ export function useRunInputs({
   sessionId,
   runId,
   isRunActive,
+  identityKey = "",
 }: {
   sessionId: string | null;
   runId: string | null;
   isRunActive: boolean;
+  identityKey?: string;
 }): RunInputsController {
-  const owner = ownerKey(sessionId, runId);
+  const owner = ownerKey(sessionId, runId, identityKey);
   const ownerRef = useRef(owner);
   const ownerGenerationRef = useRef(0);
   const readSequenceRef = useRef(0);
@@ -122,6 +125,11 @@ export function useRunInputs({
     pendingSubmission: null,
     lastAcceptedSubmission: null,
   });
+  const history = useRunInputHistory({
+    sessionId, identityKey, runId, isRunActive,
+    projection: state.owner === owner ? state.projection : null,
+  });
+  const retireHistory = history.retire;
 
   useLayoutEffect(() => {
     if (ownerRef.current === owner) return;
@@ -157,6 +165,7 @@ export function useRunInputs({
   );
 
   const retire = useCallback(() => {
+    retireHistory();
     ownerRef.current = null;
     ownerGenerationRef.current += 1;
     readSequenceRef.current += 1;
@@ -168,7 +177,7 @@ export function useRunInputs({
       isClosed: true, pendingSubmission: null, lastAcceptedSubmission: null,
       submissionError: null,
     }));
-  }, []);
+  }, [retireHistory]);
 
   const readSnapshot = useCallback(async () => {
     if (!sessionId || !runId || !owner || ownerRef.current !== owner) return false;
@@ -370,6 +379,7 @@ export function useRunInputs({
     (buildRequest: (inputId: string) => RunInputSubmissionRequest): Promise<boolean> => {
       if (
         !owner ||
+        !isRunActive ||
         ownerRef.current !== owner ||
         !state.projection ||
         state.owner !== owner ||
@@ -393,7 +403,7 @@ export function useRunInputs({
       pendingAttemptRef.current = attempt;
       return executeAttempt(attempt);
     },
-    [executeAttempt, owner, state.isClosed, state.owner, state.projection],
+    [executeAttempt, isRunActive, owner, state.isClosed, state.owner, state.projection],
   );
 
   const submitText = useCallback(
@@ -425,7 +435,7 @@ export function useRunInputs({
       const batch = state.projection?.questions.find(
         (question) => question.question_id === questionId && question.status === "pending",
       );
-      const questionNames = batch?.questions.map((question) => question.question) ?? [];
+      const questionNames = batch?.questions.map((question) => question.key) ?? [];
       const answerNames = Object.keys(answers);
       const complete = Boolean(
         batch &&
@@ -433,12 +443,14 @@ export function useRunInputs({
           questionNames.every((name) => {
             if (!Object.hasOwn(answers, name)) return false;
             const answer = answers[name];
-            if (typeof answer === "string") return answer.trim().length > 0;
-            const question = batch.questions.find((item) => item.question === name);
+            const question = batch.questions.find((item) => item.key === name);
+            if (typeof answer === "string") return Boolean(!question?.multiSelect && question?.options.some((option) => option.key === answer));
+            if (!Array.isArray(answer)) return Boolean(answer && typeof answer.text === "string" && answer.text.trim().length > 0 && answer.text.length <= 16_000);
             return Boolean(
               question?.multiSelect &&
                 answer.length > 0 &&
-                answer.every((label) => question.options.some((option) => option.label === label)),
+                new Set(answer).size === answer.length &&
+                answer.every((key) => question.options.some((option) => option.key === key)),
             );
           }),
       );
@@ -486,6 +498,12 @@ export function useRunInputs({
         sessionId,
         runId,
         projection: visibleState.projection,
+        history: history.runs,
+        historyIsLoading: history.isLoading,
+        historyLoadFailed: history.loadFailed,
+        historyHasMore: history.hasMore,
+        loadMoreHistory: history.loadMore,
+        refreshHistory: history.refresh,
         isLoading: visibleState.isLoading,
         loadFailed: visibleState.loadFailed,
         isClosed:
@@ -503,6 +521,7 @@ export function useRunInputs({
     },
     [
       owner,
+      history,
       isRunActive,
       state,
       readSnapshot,

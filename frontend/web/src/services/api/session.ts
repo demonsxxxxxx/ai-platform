@@ -87,14 +87,16 @@ export interface SessionArtifactFilesResponse {
 export type RunInputSessionState = "open" | "sealed" | "inactive";
 export type RunInputStatus = "queued" | "applied" | "closed";
 export type RunQuestionStatus = "pending" | "answered" | "resolved" | "closed";
-export type RunInputAnswer = string | string[];
+export type RunInputAnswer = string | string[] | { text: string };
 
 export interface RunInputQuestionOption {
+  key: string;
   label: string;
   description: string;
 }
 
 export interface RunInputQuestion {
+  key: string;
   question: string;
   header: string;
   options: RunInputQuestionOption[];
@@ -124,6 +126,35 @@ export interface RunInputsProjection {
   state: RunInputSessionState;
   inputs: RunInputRecord[];
   questions: RunInputQuestionBatch[];
+}
+
+export interface SessionRunInputsResponse {
+  session_id: string;
+  runs: RunInputsProjection[];
+  has_more: boolean;
+  next_before_run_id: string | null;
+}
+
+export function parseSessionRunInputs(
+  value: unknown,
+  expectedSessionId: string,
+): SessionRunInputsResponse {
+  const page = value as SessionRunInputsResponse | null;
+  if (
+    !page || page.session_id !== expectedSessionId || !Array.isArray(page.runs) ||
+    typeof page.has_more !== "boolean" ||
+    (page.next_before_run_id !== null && typeof page.next_before_run_id !== "string") ||
+    (page.has_more && !page.next_before_run_id)
+  ) throw new Error("invalid_session_run_inputs_projection");
+  const ids = new Set<string>();
+  const runs = page.runs.map((run) => {
+    if (!run || typeof run.run_id !== "string" || !run.run_id || ids.has(run.run_id)) {
+      throw new Error("invalid_session_run_inputs_projection");
+    }
+    ids.add(run.run_id);
+    return parseRunInputsProjection(run, run.run_id);
+  });
+  return { ...page, runs };
 }
 
 export type RunInputSubmissionRequest =
@@ -770,6 +801,20 @@ export const sessionApi = {
       signal: options.signal,
     });
     return parseRunInputsProjection(response, runId);
+  },
+
+  /** Restore all Run-owned inputs in an authorized Session, newest page first. */
+  async getRunInputHistory(
+    sessionId: string,
+    options: { beforeRunId?: string; limit?: number; signal?: AbortSignal } = {},
+  ): Promise<SessionRunInputsResponse> {
+    const params = new URLSearchParams({ limit: String(options.limit ?? 20) });
+    if (options.beforeRunId) params.set("before_run_id", options.beforeRunId);
+    const response = await authFetch<unknown>(
+      `${API_BASE}/api/ai/sessions/${encodeURIComponent(sessionId)}/run-inputs?${params}`,
+      { cache: "no-store", signal: options.signal },
+    );
+    return parseSessionRunInputs(response, sessionId);
   },
 
   /** Submit supplementary text or answers to the same current Run. */

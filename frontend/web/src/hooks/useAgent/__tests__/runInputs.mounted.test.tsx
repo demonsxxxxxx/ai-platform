@@ -1,20 +1,31 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { afterEach, beforeEach } from "node:test";
 // jsdom 26 is the pinned mounted-test runtime and does not ship declarations.
 // @ts-expect-error jsdom runtime import.
 import { JSDOM } from "jsdom";
 import { act, createElement } from "react";
 
 import { RunQuestionCard } from "../../../components/chat/RunQuestionCard.tsx";
+import { RunInputHistory } from "../../../components/chat/RunInputHistory.tsx";
+import { presentRunInputAnswer } from "../../../components/chat/runInputPresentation.ts";
 import type {
   RunInputRecord,
   RunInputSubmissionRequest,
   RunInputsProjection,
+  SessionRunInputsResponse,
 } from "../../../services/api/session.ts";
 import { sessionApi } from "../../../services/api/session.ts";
 import { installBrowserAuthTestDb } from "../../__tests__/browserAuthTestDb.ts";
 import { useRunInputs } from "../runInputs.ts";
 import type { RunInputsController } from "../types.ts";
+
+const originalHistoryApi = sessionApi.getRunInputHistory;
+beforeEach(() => {
+  sessionApi.getRunInputHistory = async (sessionId) => ({
+    session_id: sessionId, runs: [], has_more: false, next_before_run_id: null,
+  });
+});
+afterEach(() => { sessionApi.getRunInputHistory = originalHistoryApi; });
 
 function installDom() {
   const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", {
@@ -92,12 +103,13 @@ function questionProjection(
         created_at: "2026-10-07T00:00:00Z",
         questions: [
           {
+            key: "q0",
             question: "Which formats should I include?",
             header: "Output",
             multiSelect: true,
             options: [
-              { label: "Brief", description: "A short summary" },
-              { label: "Detailed", description: "More explanation" },
+              { key: "o0", label: "Brief", description: "A short summary" },
+              { key: "o1", label: "Detailed", description: "More explanation" },
             ],
           },
         ],
@@ -202,7 +214,7 @@ test("restores Run questions after remount and submits multi-select answers to t
     assert.ok("question_id" in submissions[0].body);
     assert.equal(submissions[0].body.question_id, "question-batch-1");
     assert.deepEqual(submissions[0].body.answers, {
-      "Which formats should I include?": ["Brief", "Detailed"],
+      q0: ["o0", "o1"],
     });
 
     await act(async () => root.unmount());
@@ -504,6 +516,228 @@ test("retries failed final reads and can refresh stale input history after compl
     assert.equal(controls().loadFailed, false);
     assert.equal(controls().projection?.state, "inactive");
     assert.equal(controls().isClosed, true);
+  } finally {
+    await act(async () => root.unmount());
+    sessionApi.getRunInputs = originalGet;
+    env.restore();
+  }
+});
+
+test("answers indistinguishable redacted options by key and distinguishes free text from option keys", async () => {
+  const env = installDom();
+  const { createRoot } = await import("react-dom/client");
+  const container = env.dom.window.document.getElementById("root");
+  assert.ok(container);
+  const root = createRoot(container);
+  const originalGet = sessionApi.getRunInputs;
+  const originalSubmit = sessionApi.submitRunInput;
+  const projection = questionProjection("run-private");
+  projection.questions[0].questions[0].options.forEach((option) => { option.label = "[redacted-email]"; });
+  const bodies: RunInputSubmissionRequest[] = [];
+  sessionApi.getRunInputs = async () => structuredClone(projection);
+  sessionApi.submitRunInput = async (_runId, body) => {
+    bodies.push(body);
+    return { input_id: body.input_id, status: "applied" };
+  };
+  let latest: RunInputsController | null = null;
+  function Probe() {
+    latest = useRunInputs({ sessionId: "session-private", runId: "run-private", isRunActive: true });
+    const controls = latest;
+    return controls.projection ? createElement(RunQuestionCard, { batch: controls.projection.questions[0], runInputs: controls, canSend: true }) : null;
+  }
+  const controls = () => latest as RunInputsController;
+  try {
+    await act(async () => { root.render(createElement(Probe)); await flush(); });
+    const boxes = container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]');
+    assert.match(boxes[0].closest("label")?.textContent ?? "", /1\. \[redacted-email\]/);
+    assert.match(boxes[1].closest("label")?.textContent ?? "", /2\. \[redacted-email\]/);
+    await act(async () => { boxes[0].click(); boxes[1].click(); });
+    assert.equal(boxes[0].checked, true);
+    assert.equal(boxes[1].checked, true);
+    const form = container.querySelector("form");
+    assert.ok(form);
+    await act(async () => { form.dispatchEvent(new env.dom.window.Event("submit", { bubbles: true, cancelable: true })); await flush(); });
+    assert.deepEqual(bodies[0], { input_id: bodies[0].input_id, question_id: "question-batch-1", answers: { q0: ["o0", "o1"] } });
+    await act(async () => { assert.equal(await controls().submitAnswers("question-batch-1", { q0: { text: "o0" } }), true); });
+    assert.ok("answers" in bodies[1]);
+    assert.deepEqual(bodies[1].answers, { q0: { text: "o0" } });
+    const batch = projection.questions[0];
+    assert.deepEqual(presentRunInputAnswer("q0", ["o0", "o1"], batch), { question: "Which formats should I include?", answer: "1. [redacted-email]、2. [redacted-email]" });
+    assert.deepEqual(presentRunInputAnswer("q0", { text: "o0" }, batch), { question: "Which formats should I include?", answer: "o0" });
+    assert.equal(presentRunInputAnswer("q0", "unknown-internal-key", batch).answer, null);
+  } finally {
+    await act(async () => root.unmount());
+    sessionApi.getRunInputs = originalGet;
+    sessionApi.submitRunInput = originalSubmit;
+    env.restore();
+  }
+});
+
+function completedProjection(runId: string, text: string): RunInputsProjection {
+  const projection = questionProjection(runId, { state: "inactive", status: "resolved" });
+  projection.inputs = [
+    { input_id: `${runId}-text`, kind: "text", text, question_id: null, answers: null, status: "applied", created_at: "2026-10-07T00:00:01Z" },
+    { input_id: `${runId}-answer`, kind: "answer", text: null, question_id: "question-batch-1", answers: { q0: ["o0", "o1"] }, status: "applied", created_at: "2026-10-07T00:00:02Z" },
+  ];
+  return projection;
+}
+
+test("restores and pages completed Run input history through the next Run and a remount", async () => {
+  const env = installDom();
+  const { createRoot } = await import("react-dom/client");
+  const container = env.dom.window.document.getElementById("root");
+  assert.ok(container);
+  let root = createRoot(container);
+  const originalGet = sessionApi.getRunInputs;
+  let runId = "run-current";
+  const previous = completedProjection("run-previous", "previous continuation");
+  const older = completedProjection("run-older", "older continuation");
+  const current = completedProjection("run-current", "current continuation");
+  const requested: Array<string | undefined> = [];
+  sessionApi.getRunInputs = async (id) => id === "run-current" ? structuredClone(current) : questionProjection(id);
+  sessionApi.getRunInputHistory = async (sessionId, options = {}) => {
+    assert.equal(sessionId, "session-history");
+    requested.push(options.beforeRunId);
+    if (options.beforeRunId) return { session_id: sessionId, runs: [older], has_more: false, next_before_run_id: null };
+    return {
+      session_id: sessionId, runs: runId === "run-current" ? [current, previous] : [questionProjection(runId), current, previous],
+      has_more: true, next_before_run_id: "run-previous",
+    };
+  };
+  let latest: RunInputsController | null = null;
+  function Probe() {
+    latest = useRunInputs({ sessionId: "session-history", runId, isRunActive: runId !== "run-current", identityKey: "tenant-a:user-a" });
+    return createElement(RunInputHistory, { runInputs: latest, canSend: true });
+  }
+  const controls = () => latest as RunInputsController;
+  const render = async () => { await act(async () => { root.render(createElement(Probe)); await flush(); }); };
+  try {
+    await render();
+    assert.match(container.textContent ?? "", /previous continuation/);
+    assert.match(container.textContent ?? "", /current continuation/);
+    assert.match(container.textContent ?? "", /Brief、Detailed/);
+    assert.doesNotMatch(container.textContent ?? "", /q0|o0|o1/);
+    assert.equal(container.querySelector('[data-run-input-history-run="run-previous"]')?.getAttribute("data-run-input-read-only"), "true");
+    await act(async () => { assert.equal(await controls().loadMoreHistory(), true); });
+    assert.equal(requested.at(-1), "run-previous");
+    assert.match(container.textContent ?? "", /older continuation/);
+    assert.equal(controls().historyHasMore, false);
+    const historyRegion = container.querySelector<HTMLDivElement>("[data-run-input-history]");
+    assert.ok(historyRegion);
+    historyRegion.scrollTop = 200;
+    runId = "run-next";
+    await render();
+    assert.match(container.textContent ?? "", /older continuation/);
+    assert.match(container.textContent ?? "", /current continuation/);
+    assert.equal(controls().history.filter((run) => run.run_id === "run-next").length, 1);
+    assert.equal(container.querySelector('[data-run-input-history-run="run-current"] input'), null);
+    assert.equal(container.querySelector('[data-run-input-history-run="run-next"] input')?.hasAttribute("disabled"), false);
+    assert.equal(container.querySelector("[data-run-input-history-run]")?.getAttribute("data-run-input-history-run"), "run-next");
+    assert.equal(historyRegion.scrollTop, 0, "a new pending question must be visible before older history");
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await render();
+    assert.match(container.textContent ?? "", /current continuation/);
+    assert.match(container.textContent ?? "", /previous continuation/);
+    await act(async () => { await controls().loadMoreHistory(); });
+    assert.match(container.textContent ?? "", /older continuation/);
+  } finally {
+    await act(async () => root.unmount());
+    sessionApi.getRunInputs = originalGet;
+    env.restore();
+  }
+});
+
+test("refresh traverses a disjoint history gap in order even when its first page overlaps a live projection", async () => {
+  const env = installDom();
+  const { createRoot } = await import("react-dom/client");
+  const container = env.dom.window.document.getElementById("root");
+  assert.ok(container);
+  const root = createRoot(container);
+  const originalGet = sessionApi.getRunInputs;
+  let refreshed = false;
+  const ids = (values: string[]) => values.map((id) => completedProjection(id, `${id} continuation`));
+  const requested: Array<string | undefined> = [];
+  sessionApi.getRunInputs = async () => questionProjection("live");
+  sessionApi.getRunInputHistory = async (sessionId, options = {}) => {
+    requested.push(options.beforeRunId);
+    if (!refreshed) return { session_id: sessionId, runs: ids(["old2", "old1"]), has_more: true, next_before_run_id: "old1" };
+    if (!options.beforeRunId) return { session_id: sessionId, runs: [questionProjection("live"), ...ids(["new2"])], has_more: true, next_before_run_id: "new2" };
+    if (options.beforeRunId === "new2") return { session_id: sessionId, runs: ids(["mid2", "mid1"]), has_more: true, next_before_run_id: "mid1" };
+    assert.equal(options.beforeRunId, "mid1");
+    return { session_id: sessionId, runs: ids(["old2", "old1"]), has_more: false, next_before_run_id: null };
+  };
+  let latest: RunInputsController | null = null;
+  function Probe() {
+    latest = useRunInputs({ sessionId: "session-gap", runId: "live", isRunActive: true, identityKey: "tenant:user" });
+    return createElement(RunInputHistory, { runInputs: latest, canSend: true });
+  }
+  const controls = () => latest as RunInputsController;
+  try {
+    await act(async () => { root.render(createElement(Probe)); await flush(); });
+    assert.deepEqual(controls().history.map((run) => run.run_id), ["live", "old2", "old1"]);
+    refreshed = true;
+    await act(async () => { assert.equal(await controls().refreshHistory(), true); });
+    await act(async () => { assert.equal(await controls().loadMoreHistory(), true); });
+    assert.equal(requested.at(-1), "new2", "fresh-page cursor must replace the disjoint cached cursor");
+    assert.deepEqual(controls().history.map((run) => run.run_id), ["live", "new2", "mid2", "mid1", "old2", "old1"]);
+    await act(async () => { assert.equal(await controls().loadMoreHistory(), true); });
+    assert.equal(requested.at(-1), "mid1");
+    assert.deepEqual(controls().history.map((run) => run.run_id), ["live", "new2", "mid2", "mid1", "old2", "old1"]);
+    assert.equal(controls().historyHasMore, false);
+  } finally {
+    await act(async () => root.unmount());
+    sessionApi.getRunInputs = originalGet;
+    env.restore();
+  }
+});
+
+test("drops delayed history pages on session or auth identity changes and preserves history after read failure", async () => {
+  const env = installDom();
+  const { createRoot } = await import("react-dom/client");
+  const container = env.dom.window.document.getElementById("root");
+  assert.ok(container);
+  const root = createRoot(container);
+  const originalGet = sessionApi.getRunInputs;
+  let sessionId = "session-old";
+  let identityKey = "tenant-old:user-old";
+  let fail = false;
+  let resolveOld!: (value: SessionRunInputsResponse) => void;
+  const old = new Promise<SessionRunInputsResponse>((resolve) => { resolveOld = resolve; });
+  let resolveAuth!: (value: SessionRunInputsResponse) => void;
+  const oldAuth = new Promise<SessionRunInputsResponse>((resolve) => { resolveAuth = resolve; });
+  sessionApi.getRunInputs = async () => questionProjection("run-shared");
+  sessionApi.getRunInputHistory = async (id) => {
+    if (id === "session-old") return old;
+    if (identityKey === "tenant-old:user-old") return oldAuth;
+    if (fail) throw new Error("offline");
+    return { session_id: id, runs: [completedProjection("run-safe", "safe continuation")], has_more: false, next_before_run_id: null };
+  };
+  let latest: RunInputsController | null = null;
+  function Probe() {
+    latest = useRunInputs({ sessionId, identityKey, runId: "run-shared", isRunActive: false });
+    return createElement(RunInputHistory, { runInputs: latest, canSend: true });
+  }
+  const controls = () => latest as RunInputsController;
+  const render = async () => { await act(async () => { root.render(createElement(Probe)); await flush(); }); };
+  try {
+    await render();
+    sessionId = "session-new";
+    await render();
+    identityKey = "tenant-new:user-new";
+    await render();
+    resolveOld({ session_id: "session-old", runs: [completedProjection("run-private-old", "old private continuation")], has_more: false, next_before_run_id: null });
+    resolveAuth({ session_id: "session-new", runs: [completedProjection("run-private-auth", "auth private continuation")], has_more: false, next_before_run_id: null });
+    await act(async () => flush());
+    assert.match(container.textContent ?? "", /safe continuation/);
+    assert.doesNotMatch(container.textContent ?? "", /private continuation/);
+    fail = true;
+    await act(async () => { assert.equal(await controls().refreshHistory(), false); });
+    assert.equal(controls().historyLoadFailed, true);
+    assert.match(container.textContent ?? "", /safe continuation/);
+    assert.ok(container.querySelector("[data-run-input-history-failure]"));
+    await act(async () => { controls().retire(); });
+    assert.doesNotMatch(container.textContent ?? "", /safe continuation/);
   } finally {
     await act(async () => root.unmount());
     sessionApi.getRunInputs = originalGet;
