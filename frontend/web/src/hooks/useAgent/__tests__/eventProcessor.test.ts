@@ -424,6 +424,30 @@ test("fails closed for an absent or foreign terminal projection version", () => 
   }
 });
 
+test("keeps work traces collapsible while old public summaries stay inline", () => {
+  const trace = processMessageEvent(
+    "summary",
+    { content: "Checking sources.", summary_id: "worktrace_1" },
+    [], "", [], 0, [], true, "message-1",
+  );
+  const replay = processMessageEvent(
+    "summary",
+    { content: " Continuing.", summary_id: "worktrace_1" },
+    trace.parts, "", [], 0, [], true, "message-1",
+  );
+  const summary = processMessageEvent(
+    "summary",
+    { content: "Published summary", summary_id: "summary-old" },
+    replay.parts, "", [], 0, [], true, "message-1",
+  );
+  const visible = getVisibleMessageParts(summary.parts);
+  assert.equal(visible.length, 2);
+  assert.deepEqual(visible.map((part) => part.type === "summary" ? [part.content, part.kind] : []), [
+    ["Checking sources. Continuing.", "work_trace"],
+    ["Published summary", undefined],
+  ]);
+});
+
 test("merges streamed summary chunks inside a subagent by summary id", () => {
   let parts: MessagePart[] = [
     {

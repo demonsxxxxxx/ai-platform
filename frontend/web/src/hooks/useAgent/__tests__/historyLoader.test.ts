@@ -285,6 +285,33 @@ test("production compatibility history reconstructs each persisted user turn bef
   );
 });
 
+test("reconstructs marked work traces as collapsible parts without changing old summaries", () => {
+  const events: HistoryEvent[] = [
+    ...["worktrace_1", "summary_2"].map((summaryId, index) => ({
+      id: `commentary-${index}`,
+      type: "summary",
+      event_type: "summary",
+      run_id: "run-v4-trace",
+      sequence: index + 1,
+      timestamp: "2026-09-20T00:00:00Z",
+      data: {
+        projection_version: "ai-platform.chat-public-projection.v1",
+        event_id: `commentary-${index}`,
+        run_id: "run-v4-trace",
+        event_type: "summary",
+        summary_id: summaryId,
+        content: `Public text ${index}`,
+        payload: { summary_id: summaryId, delta: `Public text ${index}` },
+      },
+    })),
+  ];
+  const messages = reconstructMessagesFromEvents(events, new Set<string>(), { activeSubagentStack: [] });
+  const parts = getVisibleMessageParts(messages[0]?.parts || []);
+  assert.equal(parts.length, 2);
+  assert.equal(parts[0]?.type === "summary" && parts[0].kind, "work_trace");
+  assert.equal(parts[1]?.type === "summary" && parts[1].kind, undefined);
+});
+
 test("reconstructs compact v4 compatibility history as commentary plus answer", () => {
   const messages = reconstructMessagesFromEvents(
     [

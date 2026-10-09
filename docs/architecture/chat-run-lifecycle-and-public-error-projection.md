@@ -32,22 +32,27 @@ owns the detailed adapter and compatibility rules.
 ### Ordinary-user execution presentation
 
 Chat presents user-meaningful work state, not an executor transcript. The active
-Run keeps its disclosure-safe work details expanded; terminal convergence folds
-them into one summary that the user may reopen. The display contract is:
+Run opens details during a work phase and collapses earlier work when safe answer
+preview begins. Same-phase text updates preserve manual choices; terminal
+convergence folds work into a summary that the user may reopen. The display contract is:
 
 | Surface | Ordinary-user presentation | Allowed content |
 | --- | --- | --- |
 | Assistant answer, artifacts, permission requests, failures, and cancellation | Visible outside the work-details fold | Accepted answer text, authorized artifact labels/actions, and fixed actionable status copy |
-| `commentary.delta` | Visible inline outside the work-details fold | Explicit sanitized public summary from an authorized producer; it is not inferred from a tool-using Claude turn |
+| `message.part.delta` / classification | Pending and answer outside the fold; work inside | Incrementally gated Assistant prose with explicit stable part identity |
+| Retained `commentary.delta` with `worktrace_` summary ID | Visible in work details | Legacy sanitized work narration |
+| Other `commentary.delta` | Visible inline outside the work-details fold | Existing explicit sanitized public summaries and historical events |
 | Tool lifecycle | Visible inside work details | Fixed public category label and canonical name derived from the allowlisted category (`skill`, `mcp`, `read`, `write`, `edit`, `search`, or `execute`); `skill` alone may use its sanitized, authorized v4 `display_name`; lifecycle status; and bounded duration |
 | Execution, Sandbox, Todo, and subagent lifecycle | Visible inside work details | Fixed or allowlisted phase/category labels, status, bounded progress/duration, and an explicitly safe file basename when the public execution contract supplies one |
 | Routine queue, context, intent, heartbeat, and model-completion metadata | Hidden from the transcript unless separately actionable | No ordinary-user card |
 | Model reasoning and raw execution data | Always hidden | No `ThinkingBlock`, `thinking.*` body, private prompt, executed command/arguments, private runtime path, raw query/file/diff/Tool/MCP/Skill result, private identifier, storage key, credential, trace, or executor payload |
 
-The table describes existing v4 rendering. All accepted public Assistant prose
-remains visible in message order, including work-progress text; only tool and
-execution activities fold after completion. User-requested code, JSON examples
-and non-sensitive task references are ordinary Assistant content. A script executed internally and the same
+The table describes v4 rendering. Validated Tool-turn work narration is
+visible in message order within work details; final-answer text remains outside
+that fold. The distinction follows explicit provider-bound part classification facts;
+classification updates display grouping while prior delta rows remain immutable. User-requested code,
+JSON examples and non-sensitive task references are ordinary Assistant answer
+content. A script executed internally and the same
 syntax intentionally supplied as an answer have different sources and policies.
 
 Final files are optional ordered parts of the Run's single assistant response.
@@ -97,8 +102,8 @@ panel store or markup. Conversation-wide derived views such as the image gallery
 index only accepted message content, authorized attachments, and recursively
 filtered public subagent children; they never scan raw Tool or subagent payloads.
 
-This presentation uses existing v4 public events and does not add an SSE event,
-second history shape, or new execution authority. The ordinary Chat renderer no
+This presentation uses the coordinated v4 part event extension described in the
+streaming design, with the same execution and history authority. The ordinary Chat renderer no
 longer renders legacy `Message.toolCalls`/`toolResults` or tool parts lacking v4
 public metadata. Those fields may still deserialize while old state is read, but
 they are ignored as display input; no authorized ordinary-user compatibility
@@ -123,7 +128,8 @@ admission and browser rendering safety are unchanged by this content policy.
 Live delivery, committed history and terminal hydration use the same content
 policy. The frontend adapter maps metadata-only `message.completed` to a public
 activity rather than a final text chunk, and builds Assistant text from accepted
-`message.delta` frames. Full Assistant messages reconcile their own streamed
+legacy `message.delta` or versioned part frames. Final copy/receipt select answer
+parts; pending previews and work prose retain independent roles. Full Assistant messages reconcile their own streamed
 fragments by stable source identity. A distinct final answer must not be
 discarded because it is not a prefix extension of earlier narration; absent or
 ambiguous source identity fails closed instead. Repeated delivery of the same

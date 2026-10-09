@@ -5,9 +5,11 @@ import { MarkdownContent } from "./MarkdownContent";
 export function SummaryItem({
   content,
   isStreaming,
+  workTrace = false,
 }: {
   content: string;
   isStreaming?: boolean;
+  workTrace?: boolean;
 }) {
   const { t } = useTranslation();
 
@@ -19,7 +21,7 @@ export function SummaryItem({
       <FileText size={14} className="mt-1 shrink-0 opacity-60" />
       <div className="min-w-0 flex-1">
         <div className="mb-1 text-xs font-medium opacity-70">
-          {t("chat.message.summary")}
+          {t(workTrace ? "chat.workDetails.title" : "chat.message.summary")}
         </div>
         <MarkdownContent content={content} isStreaming={isStreaming} />
       </div>

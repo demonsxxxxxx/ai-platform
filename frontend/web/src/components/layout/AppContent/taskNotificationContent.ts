@@ -4,6 +4,11 @@ import type {
   SessionEventsResponse,
 } from "../../../types";
 import { reconstructMessagesFromEvents } from "../../../hooks/useAgent/historyLoader";
+import {
+  assistantTextPartRole,
+  hasMarkedAssistantTextParts,
+  selectAssistantCopyText,
+} from "../../../types/assistantTextParts";
 
 const MAX_NOTIFICATION_SUMMARY_LENGTH = 20;
 
@@ -73,6 +78,9 @@ function getLatestAssistantSummary(
 
 function extractAssistantText(message: Message): string {
   if (message.parts?.length) {
+    if (hasMarkedAssistantTextParts(message.parts)) {
+      return selectAssistantCopyText(message.parts);
+    }
     const partsText = collectPartText(message.parts);
     if (partsText) {
       return partsText;
@@ -86,7 +94,13 @@ function collectPartText(parts: MessagePart[]): string {
   const textParts: string[] = [];
 
   for (const part of parts) {
-    if (part.type === "text" || part.type === "summary") {
+    if (part.type === "text") {
+      const role = assistantTextPartRole(part);
+      if (role === null || role === "pending" || role === "work") continue;
+      textParts.push(part.content);
+      continue;
+    }
+    if (part.type === "summary" && part.kind !== "work_trace") {
       textParts.push(part.content);
       continue;
     }

@@ -241,7 +241,11 @@ export interface EventData {
   // ai-platform run_event fields
   event_id?: string;
   sequence?: number;
+  stream_incarnation?: number;
   event_type?: string;
+  part_id?: string;
+  delta?: string;
+  role?: string;
   stage?: string;
   severity?: "info" | "warning" | "error" | string;
   payload?: Record<string, unknown>;
@@ -566,7 +570,12 @@ export interface HistoryEventData {
   timestamp?: string;
   event_id?: string;
   run_id?: string;
+  message_id?: string;
   sequence?: number;
+  stream_incarnation?: number;
+  part_id?: string;
+  delta?: string;
+  role?: string;
   event_type?: string;
   stage?: string;
   severity?: string;
@@ -603,7 +612,6 @@ export interface HistoryEventData {
     size: number;
     url: string;
   }>;
-  message_id?: string;
   locked_skill_label?: string;
 }
 

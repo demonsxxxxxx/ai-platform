@@ -6,6 +6,8 @@ export const STREAM_DESIGN_ID = "ai-platform.redis-streams-sse-event-channel.v4"
 export const PUBLIC_STREAM_EVENT_TYPES = [
   "message.started",
   "message.delta",
+  "message.part.delta",
+  "message.part.classified",
   "message.completed",
   "commentary.delta",
   "thinking.started",
@@ -78,6 +80,8 @@ export const PUBLIC_TOOL_CATEGORIES = [
 export const PUBLIC_APPLICATION_EVENT_TYPES = [
   "message.started",
   "message.delta",
+  "message.part.delta",
+  "message.part.classified",
   "message.completed",
   "commentary.delta",
   "thinking.started",
@@ -114,6 +118,8 @@ export const PUBLIC_CONTROL_EVENT_TYPES = [
 export const PUBLIC_MESSAGE_CORRELATED_EVENT_TYPES = [
   "message.started",
   "message.delta",
+  "message.part.delta",
+  "message.part.classified",
   "message.completed",
   "commentary.delta",
   "thinking.started",
@@ -137,6 +143,8 @@ export const PUBLIC_PAYLOAD_FIELDS = {
   "stream.end": ["terminal_event_id"],
   "message.started": [],
   "message.delta": ["delta"],
+  "message.part.delta": ["schema_version", "part_id", "delta"],
+  "message.part.classified": ["schema_version", "part_id", "role"],
   "message.completed": ["delta_count", "text_length"],
   "commentary.delta": ["summary_id", "delta"],
   "thinking.started": ["thinking_id", "public_summary"],
@@ -171,6 +179,8 @@ export const PUBLIC_REQUIRED_PAYLOAD_FIELDS = {
   "stream.end": ["terminal_event_id"],
   "message.started": [],
   "message.delta": ["delta"],
+  "message.part.delta": ["schema_version", "part_id", "delta"],
+  "message.part.classified": ["schema_version", "part_id", "role"],
   "message.completed": ["delta_count", "text_length"],
   "commentary.delta": ["summary_id", "delta"],
   "thinking.started": [],
@@ -203,6 +213,9 @@ export const PUBLIC_PAYLOAD_ENUMS = {
   "stream.heartbeat.status": ["queued", "running"],
   "stream.gap.reason": ["retained_history_unavailable", "stream_missing", "stream_continuity_unproven", "stream_incarnation_mismatch"],
   "stream.gap.recovery": ["reload_durable_state"],
+  "message.part.delta.schema_version": ["ai-platform.assistant-text-part.v1"],
+  "message.part.classified.schema_version": ["ai-platform.assistant-text-part.v1"],
+  "message.part.classified.role": ["answer", "work"],
   "thinking.started.public_summary": ["Analyzing the request"],
   "thinking.completed.public_summary": ["Analysis step completed"],
   "agent.progress.schema_version": ["ai-platform.public-agent-progress.v1"],
@@ -236,6 +249,7 @@ export const PUBLIC_PAYLOAD_ENUMS = {
 } as const;
 export const PUBLIC_PAYLOAD_STRING_BOUNDS = {
   "message.delta.delta": [1, 8192],
+  "message.part.delta.delta": [1, 8192],
   "commentary.delta.delta": [1, 8192],
   "thinking.delta.delta": [1, 8192],
   "agent.progress.message": [1, 128],
@@ -280,7 +294,7 @@ export const PUBLIC_PAYLOAD_INTEGER_BOUNDS = {
   "artifact.created.size_bytes": [0, 1099511627776],
   "artifact.ready.size_bytes": [0, 1099511627776],
 } as const;
-export const PUBLIC_PAYLOAD_REF_FIELDS = ["artifact_id", "decision_id", "operation_id", "step_id", "subagent_id", "summary_id", "terminal_event_id", "thinking_id"] as const;
+export const PUBLIC_PAYLOAD_REF_FIELDS = ["artifact_id", "decision_id", "operation_id", "part_id", "step_id", "subagent_id", "summary_id", "terminal_event_id", "thinking_id"] as const;
 export const PUBLIC_PAYLOAD_NULLABLE_REF_FIELDS = ["earliest_available_event_id", "evidence_ref", "latest_available_event_id", "requested_event_id"] as const;
 export const PUBLIC_PAYLOAD_REF_ARRAY_FIELDS = ["artifact_refs", "evidence_refs"] as const;
 
@@ -312,7 +326,7 @@ export type PublicApplicationEnvelopeV4 = {
   "run_id": RunIdV4;
   "message_id": NullableSafeRefV4;
   "seq": number;
-  "event_type": "message.started" | "message.delta" | "message.completed" | "commentary.delta" | "thinking.started" | "thinking.delta" | "thinking.completed" | "model.completed" | "agent.progress" | "tool.started" | "tool.completed" | "tool.failed" | "tool.denied" | "subagent.started" | "subagent.progress" | "subagent.completed" | "subagent.failed" | "subagent.cancelled" | "artifact.created" | "artifact.ready" | "artifact.failed" | "policy.checking" | "policy.allowed" | "policy.denied" | "run.cancel_requested" | "run.succeeded" | "run.cancelled" | "run.failed";
+  "event_type": "message.started" | "message.delta" | "message.part.delta" | "message.part.classified" | "message.completed" | "commentary.delta" | "thinking.started" | "thinking.delta" | "thinking.completed" | "model.completed" | "agent.progress" | "tool.started" | "tool.completed" | "tool.failed" | "tool.denied" | "subagent.started" | "subagent.progress" | "subagent.completed" | "subagent.failed" | "subagent.cancelled" | "artifact.created" | "artifact.ready" | "artifact.failed" | "policy.checking" | "policy.allowed" | "policy.denied" | "run.cancel_requested" | "run.succeeded" | "run.cancelled" | "run.failed";
   "stream_incarnation": number;
   "replayable": true;
   "trace_ref": NullableTraceRefV4;
@@ -387,6 +401,24 @@ export type MessageDeltaEventV4 = PublicMessageApplicationEnvelopeV4 & {
   "event_type": "message.delta";
   "payload": {
   "delta": string;
+};
+};
+
+export type MessagePartDeltaEventV4 = PublicMessageApplicationEnvelopeV4 & {
+  "event_type": "message.part.delta";
+  "payload": {
+  "schema_version": "ai-platform.assistant-text-part.v1";
+  "part_id": SafeRefV4;
+  "delta": string;
+};
+};
+
+export type MessagePartClassifiedEventV4 = PublicMessageApplicationEnvelopeV4 & {
+  "event_type": "message.part.classified";
+  "payload": {
+  "schema_version": "ai-platform.assistant-text-part.v1";
+  "part_id": SafeRefV4;
+  "role": "answer" | "work";
 };
 };
 
@@ -644,7 +676,7 @@ export type RunFailedEventV4 = PublicApplicationEnvelopeV4 & {
 };
 };
 
-export type PublicApplicationEventV4 = MessageStartedEventV4 | MessageDeltaEventV4 | MessageCompletedEventV4 | CommentaryDeltaEventV4 | ThinkingStartedEventV4 | ThinkingDeltaEventV4 | ThinkingCompletedEventV4 | ModelCompletedEventV4 | AgentProgressEventV4 | ToolStartedEventV4 | ToolCompletedEventV4 | ToolFailedEventV4 | ToolDeniedEventV4 | SubagentStartedEventV4 | SubagentProgressEventV4 | SubagentCompletedEventV4 | SubagentFailedEventV4 | SubagentCancelledEventV4 | ArtifactCreatedEventV4 | ArtifactReadyEventV4 | ArtifactFailedEventV4 | PolicyCheckingEventV4 | PolicyAllowedEventV4 | PolicyDeniedEventV4 | RunCancelRequestedEventV4 | RunSucceededEventV4 | RunCancelledEventV4 | RunFailedEventV4;
+export type PublicApplicationEventV4 = MessageStartedEventV4 | MessageDeltaEventV4 | MessagePartDeltaEventV4 | MessagePartClassifiedEventV4 | MessageCompletedEventV4 | CommentaryDeltaEventV4 | ThinkingStartedEventV4 | ThinkingDeltaEventV4 | ThinkingCompletedEventV4 | ModelCompletedEventV4 | AgentProgressEventV4 | ToolStartedEventV4 | ToolCompletedEventV4 | ToolFailedEventV4 | ToolDeniedEventV4 | SubagentStartedEventV4 | SubagentProgressEventV4 | SubagentCompletedEventV4 | SubagentFailedEventV4 | SubagentCancelledEventV4 | ArtifactCreatedEventV4 | ArtifactReadyEventV4 | ArtifactFailedEventV4 | PolicyCheckingEventV4 | PolicyAllowedEventV4 | PolicyDeniedEventV4 | RunCancelRequestedEventV4 | RunSucceededEventV4 | RunCancelledEventV4 | RunFailedEventV4;
 
 export type PublicTransportControlEventV4 = StreamOpenControlV4 | StreamHeartbeatControlV4 | StreamGapControlV4 | StreamEndControlV4;
 

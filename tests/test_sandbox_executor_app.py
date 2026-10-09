@@ -925,8 +925,9 @@ async def test_sandbox_terminal_only_answer_batches_executor_callback_events(
     assert all(len(callback.events) <= 100 for callback in callbacks)
 
     events = [event for callback in callbacks for event in callback.events]
-    deltas = [event for event in events if event.type == "message.delta"]
-    assert len(deltas) == 101
+    deltas = [event for event in events if event.type == "message.part.delta"]
+    assert len(deltas) >= 101
+    assert not any(event.type == "message.delta" for event in events)
     assert "".join(event.payload["delta"] for event in deltas) == answer
     assert sum(len(event.payload["delta"]) for event in deltas) == len(answer)
     assert all(len(event.payload["delta"]) <= 8_192 for event in deltas)
@@ -944,7 +945,7 @@ async def test_sandbox_terminal_only_answer_batches_executor_callback_events(
     }
     assert completion.causation_event_id == deltas[-1].event_id
     assert result["answer_receipt"] == {
-        "schema_version": "ai-platform.assistant-answer-receipt.v1",
+        "schema_version": "ai-platform.assistant-answer-receipt.v2",
         "message_id": deltas[0].message_id,
         "delta_count": len(deltas),
         "text_length": len(answer),
@@ -3025,7 +3026,8 @@ def test_executor_execute_streams_runner_events_and_phase_timings(tmp_path):
     assert callbacks[-1][1]["sdk_session_id"] is None
 
 
-def test_executor_execute_uses_claude_sdk_runner_when_enabled(tmp_path, monkeypatch):
+@pytest.mark.parametrize("text_event_type", ["message.delta", "message.part.delta"])
+def test_executor_execute_uses_claude_sdk_runner_when_enabled(tmp_path, monkeypatch, text_event_type):
     callbacks = []
     calls = {}
 
@@ -3043,8 +3045,11 @@ def test_executor_execute_uses_claude_sdk_runner_when_enabled(tmp_path, monkeypa
         assert "on_tool_permission" not in kwargs
         candidate = SimpleNamespace(
             as_agent_event_fields=lambda: {
-                "type": "message.delta",
-                "payload": {"delta": "sdk partial"},
+                "type": text_event_type,
+                "payload": ({"delta": "sdk partial"} if text_event_type == "message.delta" else {
+                    "schema_version": "ai-platform.assistant-text-part.v1",
+                    "part_id": "part_sdk_partial", "delta": "sdk partial",
+                }),
                 "event_id": "evt_sdk_partial",
                 "run_id": "run-a",
                 "message_id": "msg-a",
@@ -3103,7 +3108,7 @@ def test_executor_execute_uses_claude_sdk_runner_when_enabled(tmp_path, monkeypa
     assert session_store._callback_token == "secret"
     assert session_store._provider_session_id == "stable-provider-id"
     assert any(
-        event["type"] == "message.delta"
+        event["type"] == text_event_type
         for callback in callbacks
         for event in callback.get("events", [])
     )
@@ -3317,18 +3322,28 @@ async def test_model_wire_and_actual_sdk_sandbox_checkpoints_match_across_tool_c
     assert_response_checkpoints(wire_before, sdk_before, [before_text])
     assert_response_checkpoints(wire_after, sdk_after, after_chunks, complete=ending == "complete")
     assert wire_before[0]["call_ref"] != wire_after[0]["call_ref"]
-    # Earlier samples survive real coalescing at 130/270, including interruption.
+    # Every earlier sample shares the public candidate ACK, including interruption.
+    # Callback transport batching is covered by the runtime emitter tests.
     paired_counts = [[event["payload"]["events"] for event in callback["events"]
                      if event["type"] == CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE
                      and event["payload"]["call_ref"] == wire_after[0]["call_ref"]]
                     for callback in callbacks
-                    if any(event["type"] == "message.delta" for event in callback["events"])]
-    assert [1, 128] in paired_counts and [256] in paired_counts
+                    if any(event["type"] in {"message.delta", "message.part.delta"} for event in callback["events"])]
+    assert [count for counts in paired_counts for count in counts] == [1, 128, 256]
     public_events = [event for callback in callbacks for event in callback["events"]
                      if event["type"] != CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE]
-    public_text = "".join(event["payload"].get("delta", "") for event in public_events
-                          if event["type"] == "message.delta")
+    parts = {}
+    for event in public_events:
+        if event["type"] == "message.part.delta":
+            parts.setdefault(event["payload"]["part_id"], []).append(event["payload"]["delta"])
+    assert len(parts) == 2
+    public_text = "\n\n".join("".join(chunks) for chunks in parts.values())
     assert public_text == before_text + "\n\n" + "".join(after_chunks)
+    roles = {event["payload"]["part_id"]: event["payload"]["role"]
+             for event in public_events if event["type"] == "message.part.classified"}
+    assert roles[next(iter(parts))] == "work"
+    if ending == "complete":
+        assert list(roles.values()) == ["work", "answer"]
     assert "call_ref" not in json.dumps(public_events)
     assert "private-model-before" not in caplog.text
     assert "private-model-after" not in caplog.text
@@ -4642,7 +4657,8 @@ async def test_supervisor_heartbeat_does_not_block_deltas_and_drains_before_term
 
 
 @pytest.mark.asyncio
-async def test_message_delta_buffer_batches_without_rewriting_event_identity(monkeypatch):
+@pytest.mark.parametrize("event_type", ["message.delta", "message.part.delta"])
+async def test_message_delta_buffer_batches_without_rewriting_event_identity(monkeypatch, event_type):
     delivered: list[ExecutorCallbackEvent] = []
 
     async def deliver(callback):
@@ -4652,7 +4668,13 @@ async def test_message_delta_buffer_batches_without_rewriting_event_identity(mon
     monkeypatch.setattr(executor_app, "_MESSAGE_DELTA_FLUSH_SECONDS", 0)
     buffer = executor_app._MessageDeltaCallbackBuffer(deliver)
     for index in range(101):
-        await buffer.enqueue(message_delta_callback(index, "x"))
+        callback = message_delta_callback(index, "x")
+        if event_type == "message.part.delta":
+            event = callback.events[0].model_copy(update={"type": event_type, "payload": {
+                "schema_version": "ai-platform.assistant-text-part.v1", "part_id": "part_buffer", "delta": "x",
+            }})
+            callback = callback.model_copy(update={"events": [event]})
+        await buffer.enqueue(callback)
 
     assert await buffer.close() is True
     assert [len(callback.events) for callback in delivered] == [100, 1]

@@ -4,7 +4,6 @@ import toast from "react-hot-toast";
 import { Copy, Info, RefreshCw, Sparkles } from "lucide-react";
 import type {
   Message,
-  MessagePart,
   TokenUsagePart,
 } from "../../../types";
 import { useTranslation } from "react-i18next";
@@ -24,6 +23,7 @@ import type { RevealPreviewOpenSource } from "./items/revealPreviewState";
 import { createMessageAnchorId } from "../../layout/AppContent/messageOutline";
 import { formatDateTime, formatDateTimeShort } from "../../../utils/datetime";
 import { copyToClipboard } from "../../../utils/clipboard";
+import { selectAssistantCopyText } from "../../../types/assistantTextParts";
 import {
   createArtifactDownloadScope,
   type ArtifactDownloadScopeContext,
@@ -277,17 +277,10 @@ export const ChatMessage = memo(function ChatMessage({
 
   // Get assistant message's plain text content for copying
   const getAssistantTextContent = (): string => {
-    if (hasParts) {
-      // Extract all text content from parts
-      return visibleParts
-        .filter(
-          (part): part is Extract<MessagePart, { type: "text" }> =>
-            part.type === "text",
-        )
-        .map((part) => part.content)
-        .join("\n");
-    }
-    return message.content || "";
+    return selectAssistantCopyText(
+      hasParts ? visibleParts : message.parts,
+      hasParts ? "" : message.content || "",
+    );
   };
 
   // Assistant message: left layout

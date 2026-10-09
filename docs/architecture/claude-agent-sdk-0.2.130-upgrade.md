@@ -55,7 +55,7 @@ types used by this adapter.
 | `HookMatcher` | `matcher`, `hooks`, and `timeout` remain available | Exact `PostToolUse` evidence remains the only Skill-success authority |
 | Messages | `AssistantMessage`, `TextBlock`, `ThinkingBlock`, and `StreamEvent` remain adapter inputs; a typed Assistant fragment need not close a whole turn | Raw text deltas stream into the public Assistant body; typed text reconciles missing suffixes; Thinking and non-text deltas are excluded |
 | Terminal result | `ResultMessage` adds `terminal_reason` while retaining result/error/session/usage fields | Ordinary `result` text is executor completion input; committed public text and its receipt own streamed content; Runs owns business outcome; files are selected separately |
-| Partial streaming | `include_partial_messages=True` remains supported | Raw text feeds the public answer gate immediately; later tool use does not reclassify or withdraw accepted Assistant text |
+| Partial streaming | `include_partial_messages=True` remains supported | Raw text feeds the public answer gate immediately; later provider-bound classification groups work parts without rewriting accepted delta rows |
 | Settings | `setting_sources` remains supported | Only explicit project settings are loaded after platform-controlled scrubbing |
 | Permissions | `permission_mode`, allowed tools, disallowed tools, and `can_use_tool` remain supported | Platform authorization, admission, sandbox, and context remain authoritative |
 | Limits | `max_turns`, `effort`, and `max_thinking_tokens` remain supported | Max-turn termination maps to a stable public platform error |
@@ -159,16 +159,17 @@ output-capacity validation, and their existing errors are unchanged.
   unchanged.
 - **Behavior:** every level uses adaptive thinking with `display=omitted`, so the
   model may reason internally without returning Thinking text. The runner does
-  not publish returned `ThinkingBlock` text. Ordinary Assistant text feeds the
-  public `message.delta` projection regardless of later tool use. Explicit
-  platform-authored public summaries may still use `commentary.delta`. Ordinary chat consumes `ResultMessage.result`, while
-  persisted streamed content is governed by the acknowledged-text/receipt
-  contract above. Optional `attach_file` selections are independent. Neither
-  ordinary text nor commentary requires structured output. Both frontend
-  rendering paths exclude legacy thinking parts.
-- **Compatibility and retirement:** no new wire or schema field is added. The
-  misleading `public summarized-thinking text` prompt instruction is retired;
-  it has no persisted or client compatibility surface. `claude_sdk_thinking_summary`
+  not publish returned `ThinkingBlock` text. Safe Assistant suffixes now use
+  versioned part deltas and explicit answer/work classification; existing
+  commentary/worktrace and v1 answer history remain readable. Ordinary chat
+  consumes `ResultMessage.result` as a terminal observation, with persisted
+  facts and receipt v2 governing final selection. Optional files remain independent.
+- **Compatibility and retirement:** the current
+  [streaming message design](../implementation/streaming-message-parts-design.md)
+  replaces classification-time buffering and worktrace production and specifies
+  the coordinated schema, receipt and reader release. Historical rows remain
+  immutable. The Thinking prompt and effort/display exclusions remain unchanged.
+  `claude_sdk_thinking_summary`
   remains an authenticated legacy callback write path, and `thinking.*` readers
   remain for those callbacks and retained persisted history; the current Runner
   does not produce either event family, and the current Chat UI displays neither
