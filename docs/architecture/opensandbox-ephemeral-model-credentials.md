@@ -94,6 +94,8 @@ Missing identities remain unbound (`call_ref=null`, incomplete coverage).
 `events`, `chars` and SHA-256 cover raw `text_delta` events within that single
 response, including tool-before text and subagent text, before answer
 reconciliation and public projection. Each new response resets the digest.
+The SDK also observes frames drained after an interrupt through public EOF;
+that tail contributes only to private checkpoints, never to further public output.
 Both sides sample at events 1, 128, 256, 512 and subsequent powers of two,
 and emit a final observation on `message_stop` or early stream closure.
 The Sandbox queues these immutable snapshots and attaches them to the next

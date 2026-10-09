@@ -1,6 +1,7 @@
 """Completion ordering using the installed SDK Query, without a provider."""
 
 import asyncio
+import hashlib
 import sys
 from types import SimpleNamespace
 
@@ -13,6 +14,7 @@ from claude_agent_sdk import ProcessError
 from app.execution.infrastructure.harness.claude_client_lifecycle import ClaudeClientCloseBoundary
 from app.executors.claude_agent_sdk_runner import run_claude_agent_sdk
 from tests.test_claude_agent_sdk_runner import _fake_sdk, _settings
+from tests.support.model_text import response_events
 
 
 class ClosingTransport:
@@ -184,6 +186,17 @@ async def test_stop_settles_pending_session_store_tail_before_terminal_result(
     tail_started, release_tail = asyncio.Event(), asyncio.Event()
     transport = ClosingTransport()
     cleanup_tasks = set()
+    checkpoints, public_chunks = [], []
+    events = response_events("drained-model-response", ["before", "tail"])
+
+    async def on_text(text):
+        public_chunks.append(text)
+
+    def stream_event(index, event):
+        return {
+            "type": "stream_event", "event": event, "uuid": f"drain-{index}",
+            "session_id": "stable-provider-id", "parent_tool_use_id": None,
+        }
 
     async def write(_data):
         written.set()
@@ -196,8 +209,12 @@ async def test_stop_settles_pending_session_store_tail_before_terminal_result(
         path = str(tmp_path / "project" / "stable-provider-id.jsonl")
         yield {"type": "transcript_mirror", "filePath": path, "entries": [{"uuid": "initial"}]}
         if not forced_close:
+            for index, event in enumerate(events[:3]):
+                yield stream_event(index, event)
             receiving.set()
             await interrupted.wait()
+            for index, event in enumerate(events[3:], 3):
+                yield stream_event(index, event)
         yield {"type": "transcript_mirror", "filePath": path, "entries": [{"uuid": "tail"}]}
         if forced_close:
             receiving.set()
@@ -252,6 +269,7 @@ async def test_stop_settles_pending_session_store_tail_before_terminal_result(
     task = asyncio.create_task(run_claude_agent_sdk(
         prompt="hello", cwd=tmp_path, skill_id=None, session_id="stable-provider-id",
         session_store=store, provider_session_resume_required=False, cleanup_tasks=cleanup_tasks,
+        run_id="run", attempt_id="attempt", on_sdk_text=checkpoints.append, on_text=on_text,
     ))
     try:
         await asyncio.wait_for(receiving.wait(), 1)
@@ -275,6 +293,13 @@ async def test_stop_settles_pending_session_store_tail_before_terminal_result(
             assert result.error == "claude_agent_sdk_timeout"
         if not forced_close:
             assert not transport.closed.is_set() and len(cleanup_tasks) == 1
+            assert [item["events"] for item in checkpoints] == [1, 2]
+            final = checkpoints[-1]
+            assert final["final"] is True and final["complete"] is True
+            assert final["coverage"] == "text_delta" and final["chars"] == 10
+            assert final["sha256"] == hashlib.sha256(b"beforetail").hexdigest()
+            assert len(final["call_ref"]) == 32
+            assert "tail" not in "".join(public_chunks)
     finally:
         release_tail.set()
         transport.release.set()

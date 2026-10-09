@@ -2,6 +2,7 @@
 
 import asyncio
 from builtins import anext
+import hashlib
 import json
 import os
 import sys
@@ -14,6 +15,7 @@ from app.execution.infrastructure.harness.claude.interaction import ClaudeRunInt
 from app.executors.claude_agent_sdk_runner import run_claude_agent_sdk
 from tests.test_claude_agent_sdk_runner import _fake_sdk, _settings
 from tests.support.mcp_protocol_peers import local_mcp_peers
+from tests.support.model_text import response_events
 
 
 class Inputs:
@@ -48,7 +50,7 @@ async def test_continuations_use_one_client_and_session_then_finish_input(monkey
     captured = {}
     sdk = _fake_sdk(captured, hook_invocations=[])
     port = Inputs([RunInputCommand("one", "text", text="second"), RunInputCommand("two", "text", text="last")])
-    clients, queries = [], []
+    clients, queries, checkpoints = [], [], []
 
     class Client:
         def __init__(self, options):
@@ -66,7 +68,12 @@ async def test_continuations_use_one_client_and_session_then_finish_input(monkey
 
         async def receive_messages(self):
             for index, text in enumerate(["first", "second", "last"]):
+                events = response_events(f"turn-{index}", [text])
+                for event in events[:3]:
+                    yield sdk.StreamEvent(event)
                 yield sdk.AssistantMessage([sdk.TextBlock(text)], message_id=f"turn-{index}")
+                for event in events[3:]:
+                    yield sdk.StreamEvent(event)
                 result = sdk.ResultMessage()
                 result.result = text
                 result.uuid = f"result-{index}"
@@ -83,7 +90,7 @@ async def test_continuations_use_one_client_and_session_then_finish_input(monkey
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
     result = await run_claude_agent_sdk(
         prompt="first", cwd=tmp_path, skill_id=None, run_id="run", attempt_id="attempt",
-        interaction_client=port, client_fn=Client,
+        interaction_client=port, client_fn=Client, on_sdk_text=checkpoints.append,
     )
     assert result.error is None
     assert len(clients) == 1 and clients[0].input_done.is_set()
@@ -93,6 +100,13 @@ async def test_continuations_use_one_client_and_session_then_finish_input(monkey
     assert result.usage == {"input_tokens": 30, "output_tokens": 6}
     assert result.message.endswith("last")
     assert "AskUserQuestion" in captured["tools"]
+    finals = [item for item in checkpoints if item["final"]]
+    assert len(checkpoints) == 6 and len(finals) == 3
+    assert len({item["call_ref"] for item in finals}) == 3
+    for checkpoint, text in zip(finals, ["first", "second", "last"], strict=True):
+        assert checkpoint["events"] == 1 and checkpoint["chars"] == len(text)
+        assert checkpoint["sha256"] == hashlib.sha256(text.encode()).hexdigest()
+        assert checkpoint["complete"] is True and checkpoint["coverage"] == "text_delta"
 
 
 async def test_native_question_is_one_pending_batch_until_answered():

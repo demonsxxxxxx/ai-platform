@@ -3649,7 +3649,10 @@ async def run_claude_agent_sdk(
                     async for message in responses:
                         yield message
 
-        async with aclosing(receive_until_closed()) as responses:
+        async with (
+            aclosing(receive_until_closed()) as raw_responses,
+            aclosing(observed_model_messages(raw_responses)) as responses,
+        ):
             async for message in responses:
                 if stop_requested:
                     # Drain the public stream through its final mirror flush,
@@ -3710,9 +3713,11 @@ async def run_claude_agent_sdk(
         elif final_result is not None and not stop_requested:
             yield final_result
 
-    async def consume(messages: AsyncIterator[Any]) -> ClaudeAgentSdkRunResult:
+    async def observed_model_messages(messages: AsyncIterator[Any]) -> AsyncIterator[Any]:
         if on_sdk_text is None:
-            return await consume_messages(messages)
+            async for message in messages:
+                yield message
+            return
         observers: dict[str | None, ModelTextCheckpoint] = {}
 
         async def observed_messages() -> AsyncIterator[Any]:
@@ -3745,9 +3750,10 @@ async def run_claude_agent_sdk(
                     observer.finish()
 
         async with aclosing(observed_messages()) as observed:
-            return await consume_messages(observed)
+            async for message in observed:
+                yield message
 
-    async def consume_messages(messages: AsyncIterator[Any]) -> ClaudeAgentSdkRunResult:
+    async def consume(messages: AsyncIterator[Any]) -> ClaudeAgentSdkRunResult:
         nonlocal result_session_id, usage, terminal_reason, received_structured_terminal
         nonlocal last_public_stage, terminal_result_message, last_assistant_error
         nonlocal last_assistant_error_text
