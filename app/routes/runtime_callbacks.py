@@ -7,6 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
+from app.bootstrap.run_inputs import RunInputsCallbackRequest
 from app.context import api as context_api
 from app.context.infrastructure import snapshot_postgres as context_snapshot
 from app.context.retrieval import (
@@ -26,10 +27,19 @@ from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 from app.platform.public_payload import sanitize_public_reasoning_text
 from app.public_execution import PUBLIC_AGENT_PROGRESS_EVENT_TYPE
 from app.routes.sandbox_runtime_cleanup import container_lease_from_persisted_row
-from app.runs.api import RunDiagnosticsService
+from app.runs.api import (
+    RunInputClosed,
+    RunInputConflict,
+    RunInputError,
+    RunInputsService,
+    RunDiagnosticsService,
+)
 from app.runs.infrastructure import postgres as runs_postgres
 from app.runtime.event_bridge import agent_event_to_executor_event
-from app.runtime.kernel_contracts import CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE
+from app.runtime.kernel_contracts import (
+    CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE,
+    CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE,
+)
 from app.runtime.sandbox.callback_tokens import (
     callback_token_id_matches_attempt,
     callback_token_matches,
@@ -74,6 +84,12 @@ logger = logging.getLogger(__name__)
 TERMINAL_RUN_STATUSES = {"succeeded", "failed", "cancelled", "canceled"}
 _TERMINAL_EXECUTOR_CALLBACK_STATUSES = {"completed", "failed", "cancelled"}
 MAX_PROVIDER_SESSION_CALLBACK_BODY_BYTES = context_api.MAX_PROVIDER_SESSION_BATCH_BYTES + 64 * 1024
+
+
+
+
+
+
 
 
 async def _enforce_provider_session_callback_body_limit(request: Request) -> bytes:
@@ -157,6 +173,7 @@ async def record_executor_callback(
         in {
             PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
             CLAUDE_SDK_THINKING_SUMMARY_EVENT_TYPE,
+            CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE,
         }
         for event in callback.events
     ):
@@ -190,6 +207,17 @@ async def record_executor_callback(
         }
     ]
     for item_index, event in enumerate(events):
+        if event.type == CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE:
+            event_batch.append(
+                {
+                    "event_type": "executor_sdk_text_checkpoint",
+                    "stage": "executor",
+                    "message": "",
+                    "visible_to_user": False,
+                    "payload": {**event.payload, "visible_to_user": False},
+                }
+            )
+            continue
         thinking_items = callback_thinking_summary_to_v4(
             event.model_dump(mode="python"),
             callback_index=item_index,
@@ -566,6 +594,59 @@ def _provider_session_http_error(exc: Exception) -> HTTPException:
     if code in _PROVIDER_SESSION_CONFLICT_ERRORS:
         return HTTPException(status_code=409, detail=code)
     return HTTPException(status_code=503, detail="provider_session_callback_failed")
+
+
+@router.post("/runtime/callbacks/inputs")
+async def run_inputs_callback(
+    request: Request,
+    callback: RunInputsCallbackRequest,
+    callback_token: str | None = Header(
+        default=None, alias="X-AI-Platform-Callback-Token"
+    ),
+) -> dict[str, Any]:
+    """Apply one Run input operation through the existing callback authority."""
+
+    _require_valid_callback_token(
+        callback_token,
+        callback.callback_token_id,
+        run_id=callback.run_id,
+        attempt_id=callback.attempt_id,
+    )
+    service = getattr(request.app.state, "run_inputs_service", None)
+    if not isinstance(service, RunInputsService):
+        raise HTTPException(status_code=503, detail="run_inputs_unavailable")
+    try:
+        async with transaction() as conn:
+            run_identity, _lease = await _lock_current_runtime_attempt_then_run(
+                conn,
+                run_id=callback.run_id,
+                attempt_id=callback.attempt_id,
+                callback_token_id=callback.callback_token_id,
+            )
+            return await service.callback(
+                conn,
+                tenant_id=str(run_identity.get("tenant_id") or ""),
+                run=run_identity,
+                run_id=callback.run_id,
+                attempt_id=callback.attempt_id,
+                operation=callback.operation,
+                question_id=callback.question_id,
+                questions=(
+                    [item.model_dump() for item in callback.questions]
+                    if callback.questions is not None
+                    else None
+                ),
+                input_ids=[str(item) for item in callback.input_ids]
+                if callback.input_ids is not None
+                else None,
+            )
+    except RunInputError as exc:
+        status_code = (
+            409
+            if isinstance(exc, (RunInputClosed, RunInputConflict))
+            else 422
+        )
+        raise HTTPException(status_code=status_code, detail=exc.code) from exc
 
 
 @router.post(

@@ -12,6 +12,52 @@ import type {
   RunControlLifecycle,
 } from "./runControlLifecycle";
 import type { FailureGuidance } from "../../types/failureGuidance";
+import type {
+  RunInputAnswer,
+  RunInputsProjection,
+} from "../../services/api/session";
+
+export interface RunInputPendingSubmission {
+  inputId: string;
+  kind: "text" | "answer";
+  state: "submitting" | "uncertain";
+  text?: string;
+  questionId?: string;
+}
+
+export interface RunInputAcceptedSubmission {
+  inputId: string;
+  kind: "text" | "answer";
+  text?: string;
+  questionId?: string;
+}
+
+/** Run-scoped controls and the typed public continuation-input projection. */
+export interface RunInputsController {
+  sessionId: string | null;
+  runId: string | null;
+  projection: RunInputsProjection | null;
+  history: RunInputsProjection[];
+  historyIsLoading: boolean;
+  historyLoadFailed: boolean;
+  historyHasMore: boolean;
+  loadMoreHistory: () => Promise<boolean>;
+  refreshHistory: () => Promise<boolean>;
+  isLoading: boolean;
+  loadFailed: boolean;
+  isClosed: boolean;
+  submissionError: string | null;
+  pendingSubmission: RunInputPendingSubmission | null;
+  lastAcceptedSubmission: RunInputAcceptedSubmission | null;
+  submitText: (text: string) => Promise<boolean>;
+  submitAnswers: (
+    questionId: string,
+    answers: Record<string, RunInputAnswer>,
+  ) => Promise<boolean>;
+  retryPendingSubmission: () => Promise<boolean>;
+  refresh: () => Promise<boolean>;
+  retire: () => void;
+}
 
 export type SubmissionOutcome =
   | { status: "accepted" }
@@ -591,6 +637,9 @@ export interface UseAgentReturn {
   failureGuidance: FailureGuidance | null;
   sessionId: string | null;
   currentRunId: string | null;
+  /** Latest Run selected for supplementary text and question recovery. */
+  runInputsRunId: string | null;
+  runInputs: RunInputsController;
   canStopGeneration: boolean;
   isReconnecting: boolean;
   connectionStatus: ConnectionStatus;

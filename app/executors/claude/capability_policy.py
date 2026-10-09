@@ -8,7 +8,11 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from app.context_manifest import available_context_retrieval_tools
-from app.runtime.sandbox.contracts import PROFILE_DRIVE_STAGE_TOOL
+from app.runtime.sandbox.contracts import PROFILE_DRIVE_READ_TEXT_IDENTITY, PROFILE_DRIVE_STAGE_TOOL
+from app.required_tool_contract import (
+    declaration_from_input,
+    with_sandbox_local_tool_capability_subjects,
+)
 from app.tool_policy import BUILTIN_TOOL_PARAMETER_CONTRACTS, evaluate_tool_policy
 
 _SDK_INTERNAL_CONTEXT_TOOLS = (
@@ -21,6 +25,55 @@ _SDK_INTERNAL_CONTEXT_TOOLS = (
 _SDK_INTERNAL_CONTEXT_IDENTITY_PREFIX = "mcp__ai-platform-context__"
 _SDK_INTERNAL_RESPONSE_TOOLS = ("attach_file",)
 _SDK_INTERNAL_RESPONSE_IDENTITY_PREFIX = "mcp__ai-platform-response__"
+def runtime_tool_policy_subjects(
+    payload: Any,
+    context_manifest: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    value = payload.input.get("_runtime_tool_policy_subjects")
+    internal_prefixes = (
+        _SDK_INTERNAL_CONTEXT_IDENTITY_PREFIX,
+        _SDK_INTERNAL_RESPONSE_IDENTITY_PREFIX,
+    )
+    subjects = (
+        [
+            dict(item)
+            for item in value
+            if isinstance(item, dict)
+            and not str(item.get("identity") or "").startswith(internal_prefixes)
+        ]
+        if isinstance(value, list)
+        else []
+    )
+    subjects.extend(
+        internal_context_tool_policy_subjects(
+            claude_context_retrieval_tools(context_manifest)
+        )
+    )
+    subjects.extend(internal_response_tool_policy_subjects())
+    return subjects
+
+
+def sandbox_runtime_tool_policy_subjects(
+    payload: Any,
+    context_manifest: dict[str, Any] | None = None,
+    *,
+    sandbox_provider: str,
+) -> list[dict[str, Any]]:
+    subjects = runtime_tool_policy_subjects(payload, context_manifest)
+    if PROFILE_DRIVE_READ_TEXT_IDENTITY in _canonical_tool_policy_subjects(subjects):
+        subjects = [
+            subject
+            for subject in subjects
+            if subject.get("identity") != PROFILE_DRIVE_READ_TEXT_IDENTITY
+        ]
+        subjects.extend(internal_context_tool_policy_subjects([PROFILE_DRIVE_STAGE_TOOL]))
+    return with_sandbox_local_tool_capability_subjects(
+        subjects,
+        sandbox_provider=sandbox_provider,
+        required_declaration=declaration_from_input(payload.input),
+    )
+
+
 _SKILL_INPUT_MAX_BYTES = 64 * 1024
 _SKILL_INPUT_MAX_DEPTH = 16
 _SDK_INTERNAL_CONTEXT_PARAMETER_KEYS = {

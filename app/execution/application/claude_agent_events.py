@@ -18,7 +18,6 @@ from app.kernel.memory_redaction import (
     MEMORY_REDACTION_MODE_STRICT,
     redact_memory_text,
 )
-from app.platform.public_payload import sanitize_public_text
 from app.streaming.domain.protocol_v4 import (
     PUBLIC_APPLICATION_EVENT_TYPES,
     PUBLIC_PAYLOAD_ENUMS,
@@ -911,6 +910,7 @@ class ClaudeSdkAgentEventAdapter:
         identity = _safe_private_identity(commentary_identity)
         if identity is None:
             return ()
+        full_payload = {"delta": value}
         try:
             if (
                 _safe_text(
@@ -918,7 +918,7 @@ class ClaudeSdkAgentEventAdapter:
                     maximum=len(value),
                     sanitizer=self._sanitizer,
                 ) is None
-                or sanitize_public_text(value) != value
+                or self._payload_sanitizer(full_payload) != full_payload
             ):
                 self._omit_public_projection()
                 return ()

@@ -293,3 +293,55 @@ async def test_raw_only_part_is_acknowledged_before_message_stop(source_routing_
         run_id="run-1651", attempt_id="attempt-1651", execution_policy="sandbox_brokered",
     )
     assert_answer(result, events, "Raw answer.")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raw", [False, True])
+async def test_whitespace_source_and_empty_result_cannot_complete_successfully(source_routing_settings, raw):
+    import claude_agent_sdk as sdk
+
+    async def source(*, prompt, options):
+        del prompt, options
+        if raw:
+            for event in text_source(sdk, "provider-blank", " \t\n", typed=False):
+                yield event
+        else:
+            yield sdk.AssistantMessage(
+                content=[sdk.TextBlock(text=" \t\n")], model="model-a",
+                message_id="provider-blank", uuid="blank-text", stop_reason="end_turn",
+            )
+        yield terminal(sdk, "")
+
+    result, events, _ = await execute(source_routing_settings, source, partial=raw)
+    assert result.error == "claude_agent_sdk_missing_structured_terminal"
+    assert result.answer_receipt is None
+    assert not any(event.event_type == "message.completed" for event in events)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first,second", [("Prior private-", "value after."), ("private-", "value")])
+async def test_cross_source_gate_failure_rejects_successful_sdk_result(
+    source_routing_settings, monkeypatch, first, second,
+):
+    import claude_agent_sdk as sdk
+
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.sanitize_public_answer_text",
+        lambda value: value.replace("private-value", "[redacted]"),
+    )
+
+    async def source(*, prompt, options):
+        del prompt, options
+        for event in text_source(sdk, "provider-first", first, typed=False):
+            yield event
+        for event in text_source(sdk, "provider-second", second, typed=False):
+            yield event
+        yield terminal(sdk, first + "\n\n" + second)
+
+    result, events, _ = await execute(source_routing_settings, source, partial=True)
+    assert result.error == "claude_agent_sdk_output_validation_failed"
+    assert result.answer_receipt is None
+    assert not any(event.event_type == "message.completed" for event in events)
+    preview = "".join(event.payload["delta"] for event in events if event.event_type == "message.part.delta")
+    assert preview == ("Prior " if first.startswith("Prior ") else "")
+    assert "private-value" not in preview

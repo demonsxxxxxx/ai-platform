@@ -121,12 +121,12 @@ async def test_materialize_files_restages_prior_run_legacy_office_file_byte_for_
         }
 
     adapter = ClaudeAgentWorkerAdapter()
-    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
+    monkeypatch.setattr("app.bootstrap.context.ObjectStorage", FakeStorage)
     monkeypatch.setattr(
         "app.context.infrastructure.sources_postgres.get_scoped_context_file",
         fake_get_scoped_context_file,
     )
-    monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.bootstrap.context.transaction", fake_transaction)
 
     materialized = await adapter._materialize_files(
         payload(file_ids=["file-prior"]),
@@ -158,7 +158,7 @@ async def test_materialize_files_fails_when_primary_file_is_not_snapshot_authori
         "app.context.infrastructure.sources_postgres.get_scoped_context_file",
         missing_file,
     )
-    monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.bootstrap.context.transaction", fake_transaction)
 
     with pytest.raises(ValueError, match="context_file_unavailable"):
         await adapter._materialize_files(payload(file_ids=["file-missing"]), workspace)
@@ -195,12 +195,12 @@ async def test_materialize_files_fails_when_snapshot_file_identity_mismatches(
         return row
 
     adapter = ClaudeAgentWorkerAdapter()
-    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
+    monkeypatch.setattr("app.bootstrap.context.ObjectStorage", FakeStorage)
     monkeypatch.setattr(
         "app.context.infrastructure.sources_postgres.get_scoped_context_file",
         fake_get_scoped_context_file,
     )
-    monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.bootstrap.context.transaction", fake_transaction)
 
     with pytest.raises(ValueError, match="context_file_identity_mismatch"):
         await adapter._materialize_files(payload(file_ids=["file-prior"]), workspace)
@@ -233,12 +233,12 @@ async def test_materialize_files_uses_bounded_object_read_and_rejects_oversized_
         }
 
     adapter = ClaudeAgentWorkerAdapter()
-    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
+    monkeypatch.setattr("app.bootstrap.context.ObjectStorage", FakeStorage)
     monkeypatch.setattr(
         "app.context.infrastructure.sources_postgres.get_scoped_context_file",
         fake_get_scoped_context_file,
     )
-    monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.bootstrap.context.transaction", fake_transaction)
 
     with pytest.raises(ValueError, match="context_file_identity_mismatch"):
         await adapter._materialize_files(payload(file_ids=["file-prior"]), workspace)
@@ -272,7 +272,7 @@ async def test_materialize_files_rejects_declared_total_before_object_reads(
         }
 
     adapter = ClaudeAgentWorkerAdapter()
-    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
+    monkeypatch.setattr("app.bootstrap.context.ObjectStorage", FakeStorage)
     monkeypatch.setattr(
         "app.context.file_continuity._MAX_CONTEXT_FILE_STAGE_TOTAL_BYTES",
         3,
@@ -281,7 +281,7 @@ async def test_materialize_files_rejects_declared_total_before_object_reads(
         "app.context.infrastructure.sources_postgres.get_scoped_context_file",
         fake_get_scoped_context_file,
     )
-    monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.bootstrap.context.transaction", fake_transaction)
 
     with pytest.raises(ValueError, match="context_file_too_large"):
         await adapter._materialize_files(payload(file_ids=["file-a", "file-b"]), workspace)
@@ -315,12 +315,12 @@ async def test_materialize_files_stages_pdf_active_content(monkeypatch, tmp_path
         }
 
     adapter = ClaudeAgentWorkerAdapter()
-    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
+    monkeypatch.setattr("app.bootstrap.context.ObjectStorage", FakeStorage)
     monkeypatch.setattr(
         "app.context.infrastructure.sources_postgres.get_scoped_context_file",
         fake_get_scoped_context_file,
     )
-    monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.bootstrap.context.transaction", fake_transaction)
 
     materialized = await adapter._materialize_files(payload(file_ids=["file-active"]), workspace)
 
@@ -364,12 +364,12 @@ async def test_materialize_files_reports_original_attachment_ordinal(monkeypatch
         }
 
     adapter = ClaudeAgentWorkerAdapter()
-    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
+    monkeypatch.setattr("app.bootstrap.context.ObjectStorage", FakeStorage)
     monkeypatch.setattr(
         "app.context.infrastructure.sources_postgres.get_scoped_context_file",
         fake_get_scoped_context_file,
     )
-    monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.bootstrap.context.transaction", fake_transaction)
 
     with pytest.raises(ValueError, match="context_file_identity_mismatch") as captured:
         await adapter._materialize_files(
@@ -425,9 +425,9 @@ async def test_materialize_files_uses_real_scoped_repository_query_for_prior_run
         yield conn
 
     adapter = ClaudeAgentWorkerAdapter()
-    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
+    monkeypatch.setattr("app.bootstrap.context.ObjectStorage", FakeStorage)
     monkeypatch.setattr(
-        "app.executors.claude_agent_worker.transaction",
+        "app.bootstrap.context.transaction",
         real_repository_transaction,
     )
 
@@ -495,12 +495,12 @@ async def test_materialize_files_cleans_all_written_copies_after_io_failure(
         return original_write_bytes(path, content)
 
     adapter = ClaudeAgentWorkerAdapter()
-    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
+    monkeypatch.setattr("app.bootstrap.context.ObjectStorage", FakeStorage)
     monkeypatch.setattr(
         "app.context.infrastructure.sources_postgres.get_scoped_context_file",
         fake_get_scoped_context_file,
     )
-    monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.bootstrap.context.transaction", fake_transaction)
     monkeypatch.setattr(
         type(workspace),
         "mkdir" if failure_point == "mkdir" else "write_bytes",
@@ -550,12 +550,12 @@ async def test_materialize_files_preserves_preexisting_target_and_fails_before_o
         }
 
     adapter = ClaudeAgentWorkerAdapter()
-    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
+    monkeypatch.setattr("app.bootstrap.context.ObjectStorage", FakeStorage)
     monkeypatch.setattr(
         "app.context.infrastructure.sources_postgres.get_scoped_context_file",
         fake_get_scoped_context_file,
     )
-    monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.bootstrap.context.transaction", fake_transaction)
 
     with pytest.raises(ValueError, match="context_file_name_conflict"):
         await adapter._materialize_files(payload(file_ids=["file-a"]), workspace)

@@ -464,6 +464,7 @@ export function ChatAppContent({
     messages,
     sessionId,
     currentRunId,
+    runInputs,
     canStopGeneration,
     isLoading,
     isLoadingHistory,
@@ -1358,6 +1359,7 @@ export function ChatAppContent({
             sessionId={visibleSessionId}
             conversationIdentityKey={conversationIdentityKey}
             currentRunId={visibleCurrentRunId}
+            runInputs={agentWorkspaceTranscriptReady ? runInputs : undefined}
             canStopGeneration={
               agentWorkspaceTranscriptReady && canStopGeneration
             }

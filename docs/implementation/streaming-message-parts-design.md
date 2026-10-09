@@ -127,6 +127,8 @@ producer、schema/decoder、Worker、history 和 frontend 必须协调发布。�
 fail closed，需要更新；没有运行时协商、双流或 silent fallback。新行和 v2 receipt 存在期间必须
 保留新版 readers。回滚 producer 要保留这些 readers 和当前 schema/index readiness，不能直接
 回滚到无法读取新事实的旧镜像；原有 release runbook 的迁移约束继续适用。
+schema/index ledger 升级后，旧镜像的精确 readiness 检查会拒绝新增索引合同；
+历史数据仍保留，但旧镜像不作为本次升级的二进制回滚目标。
 
 ## 验收边界
 

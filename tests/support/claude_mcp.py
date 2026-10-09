@@ -9,7 +9,7 @@ from app.execution.infrastructure.claude_mcp import ClaudeMcpRegistration
 
 
 def install_mcp_sessions(monkeypatch):
-    def prepare(subjects, configs):
+    def prepare(subjects, configs, callback_wrapper=None):
         @asynccontextmanager
         async def session_factory(config):
             names = [
@@ -28,6 +28,7 @@ def install_mcp_sessions(monkeypatch):
 
         return ClaudeMcpRegistration(
             subjects, configs, session_factory=session_factory, list_tools=list_tools,
+            callback_wrapper=callback_wrapper,
         )
 
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.prepare_claude_mcp", prepare)

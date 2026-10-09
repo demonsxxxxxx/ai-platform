@@ -508,6 +508,7 @@ def test_stream_only_schema_change_advances_schema_version():
 
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
+    assert schema_migrations.RUN_INPUTS_SCHEMA_VERSION == "2026.10.07.1"
     assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.10.09.1"
     assert (
         schema_migrations.TARGET_SCHEMA_VERSION
@@ -530,6 +531,9 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "model_gateway_revisions",
         "model_catalog_entries",
         "run_attempts",
+        "run_input_sessions",
+        "run_input_questions",
+        "run_inputs",
         "run_skill_materializations",
         "run_events",
         "agent_profile_favorites",
@@ -578,6 +582,28 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "provider_session_append_receipts": (("expected_sequence", "int8", True),
                                              ("batch_sha256", "text", True)),
         "provider_turn_receipts": (("committed_coverage_sha256", "text", False),),
+        "run_input_sessions": (
+            ("tenant_id", "text", True),
+            ("run_id", "text", True),
+            ("attempt_id", "text", True),
+            ("state", "text", True),
+            ("sealed_at", "timestamptz", False),
+        ),
+        "run_input_questions": (
+            ("attempt_id", "text", True),
+            ("question_id", "text", True),
+            ("questions", "jsonb", True),
+            ("status", "text", True),
+        ),
+        "run_inputs": (
+            ("input_id", "uuid", True),
+            ("attempt_id", "text", True),
+            ("kind", "text", True),
+            ("text", "text", False),
+            ("question_id", "text", False),
+            ("answers", "jsonb", True),
+            ("status", "text", True),
+        ),
         "conversation_context_checkpoints": (("source_sha256", "text", True), ("state", "text", True)),
         "run_context_snapshots": (("conversation_authority_json", "jsonb", False),),
     }.items():
@@ -592,15 +618,29 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         ("provider_session_entries", "uq_provider_entry_global_sequence"),
         ("provider_session_append_receipts", "provider_session_append_receipts_pkey"),
         ("provider_turn_receipts", "fk_provider_turn_epoch"),
+        ("run_input_sessions", "fk_run_input_sessions_run"),
+        ("run_input_sessions", "chk_run_input_sessions_state"),
+        ("run_input_sessions", "chk_run_input_sessions_sealed_time"),
+        ("run_input_questions", "fk_run_input_questions_session"),
+        ("run_input_questions", "chk_run_input_questions_status"),
+        ("run_inputs", "fk_run_inputs_session"),
+        ("run_inputs", "fk_run_inputs_question"),
+        ("run_inputs", "chk_run_inputs_status"),
+        ("run_inputs", "chk_run_inputs_payload"),
     ):
         assert constraint in schema_migrations.CRITICAL_CONSTRAINTS
     for index in (
         ("idx_sessions_provider_scope", True),
         ("uq_provider_entry_sdk_uuid", True),
         ("idx_provider_entry_view", False),
+        ("idx_run_inputs_queued", False),
     ):
         assert index in schema_migrations.CRITICAL_INDEXES
     schema = schema_migrations.schema_sql().lower()
+    assert "references runs(tenant_id, id) on delete cascade" in schema
+    assert "status in ('pending', 'answered', 'resolved', 'closed')" in schema
+    assert "status in ('queued', 'applied')" in schema
+    assert "where status = 'queued'" in schema
     assert "create table if not exists provider_session_bindings" not in schema
     assert "unique (epoch_id, sequence)" in schema
     assert "provider_session_legacy_binding_requires_disposition" in schema
@@ -1192,6 +1232,14 @@ def test_sandbox_executor_async_terminal_columns_are_additive():
         "check (executor_reconciliation_status in "
         "('waiting_terminal', 'pending', 'claimed', 'retry', 'finalized', 'failed'))"
     ) in schema
+
+
+def test_part_lookup_indexes_are_created_only_by_the_concurrent_phase():
+    core_sql = schema_migrations.schema_sql().lower()
+    for name in ("idx_run_events_v4_message_facts", "idx_run_events_v4_part_facts", "idx_run_events_v4_source_facts"):
+        assert name not in core_sql
+        migration = next(item for item in schema_migrations.CONCURRENT_INDEX_MIGRATIONS if item.name == name)
+        assert "create index concurrently" in migration.sql.lower()
 
 
 @pytest.mark.asyncio

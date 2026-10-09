@@ -4,6 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.mcp.application.worker_dispatch_authorization import (
+    WorkerMcpDispatchAuthorization as WorkerMcpDispatchAuthorization,
+    WorkerMcpDispatchService as WorkerMcpDispatchService,
+    WorkerToolPolicyAudit as WorkerToolPolicyAudit,
+    project_authorized_worker_mcp_payload as project_authorized_worker_mcp_payload,
+)
 from app.mcp.application.live_catalog import (
     LiveMcpServerResult,
     LiveMcpTool,
@@ -12,6 +18,11 @@ from app.mcp.application.runtime_registry import (
     LiveMcpCatalogProxy,
     configure_mcp_runtime_services,
     mcp_runtime_services,
+)
+from app.mcp.domain.authorization_projection import (
+    authorized_mcp_registration_input as authorized_mcp_registration_input,
+    mcp_capability_subject as mcp_capability_subject,
+    mcp_tool_lifecycle_status as mcp_tool_lifecycle_status,
 )
 from app.mcp.domain.errors import McpRuntimeContextError
 from app.mcp.domain.headers import (
@@ -151,6 +162,9 @@ __all__ = [
     "McpRuntimeContextError",
     "assert_mcp_tool_reference",
     "attach_mcp_server_configs",
+    "authorized_mcp_registration_input",
+    "mcp_capability_subject",
+    "mcp_tool_lifecycle_status",
     "authorize_available_chat_mcp_tools",
     "authorize_selected_chat_mcp_tools",
     "build_mcp_tool_reference",

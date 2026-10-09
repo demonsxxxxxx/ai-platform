@@ -116,6 +116,7 @@ import {
   type RunControlOwner,
   type RunControlParentIdentity,
 } from "./useAgent/runControlLifecycle";
+import { useRunInputs } from "./useAgent/runInputs";
 import type { FailureGuidance } from "../types/failureGuidance";
 
 function getSelectedSkillRecoverableCode(
@@ -767,6 +768,14 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatus>("disconnected");
   const [currentRunId, setCurrentRunId] = useState<string | null>(null);
+  const [runInputsRunId, setRunInputsRunId] = useState<string | null>(null);
+  const runInputs = useRunInputs({
+    sessionId,
+    identityKey: runControlAuthIdentity,
+    runId: runInputsRunId,
+    isRunActive: Boolean(currentRunId && currentRunId === runInputsRunId),
+  });
+  const retireRunInputs = runInputs.retire;
   const [canStopGeneration, setCanStopGeneration] = useState(false);
   const [newlyCreatedSession, setNewlyCreatedSession] =
     useState<BackendSession | null>(null);
@@ -1071,6 +1080,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       lastHistoryTimestampRef.current = null;
       currentRunIdRef.current = null;
       setCurrentRunId(null);
+      retireRunInputs();
+      setRunInputsRunId(null);
       setIsLoading(false);
       setConnectionStatus("disconnected");
       setIsInitializingSandbox(false);
@@ -1091,6 +1102,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     clearReconcileOwners,
     handoffActivePreAdmissionSubmission,
     invalidateRunControl,
+    retireRunInputs,
   ]);
 
   const convergeRunLifecycle = useCallback(
@@ -1855,6 +1867,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       sessionAgentAuthorityRef.current = null;
       sessionIdRef.current = targetSessionId;
       setSessionId(targetSessionId);
+      setRunInputsRunId(null);
       sessionAgentIdRef.current = DEFAULT_CHAT_AGENT_ID;
       setSessionAgentId(DEFAULT_CHAT_AGENT_ID);
       sessionGenerationRef.current += 1;
@@ -1967,6 +1980,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             sessionData,
             eventsData,
           });
+          setRunInputsRunId(historyCurrentRunId);
           if (
             previousSessionId === targetSessionId &&
             previousRunId !== historyCurrentRunId
@@ -2792,6 +2806,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           );
           setCurrentRunId(newRunId);
           currentRunIdRef.current = newRunId;
+          setRunInputsRunId(newRunId);
           const runControlSessionId = newSessionId || requestSessionId;
           if (runControlSessionId) {
             bindRunControlParent(runControlSessionId, newRunId);
@@ -3031,6 +3046,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     setError(null);
     setFailureGuidance(null);
     setCurrentRunId(null);
+    setRunInputsRunId(null);
     setNewlyCreatedSession(null);
     setIsLoading(false);
     setIsLoadingHistory(false);
@@ -3545,6 +3561,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     failureGuidance,
     sessionId,
     currentRunId,
+    runInputsRunId,
+    runInputs,
     canStopGeneration,
     isReconnecting:
       connectionStatus === "reconnecting" ||

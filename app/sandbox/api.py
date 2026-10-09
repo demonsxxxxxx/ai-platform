@@ -4,6 +4,12 @@ from dataclasses import asdict, dataclass
 from re import fullmatch
 from typing import Literal, Mapping
 
+from app.sandbox.domain.executor_failure import (
+    SandboxExecutorHttpError as SandboxExecutorHttpError,
+    canonical_executor_reported_failure_code as canonical_executor_reported_failure_code,
+    executor_reported_failure_message as executor_reported_failure_message,
+    normalize_executor_reported_failure as normalize_executor_reported_failure,
+)
 from app.sandbox.domain.runtime_diagnostics import (
     SDK_RUNTIME_DIAGNOSTIC_DETAIL_LIMIT as SDK_RUNTIME_DIAGNOSTIC_DETAIL_LIMIT,
 )

@@ -17,10 +17,16 @@ from openpyxl import Workbook
 from tests.support.claude_mcp import install_mcp_sessions
 from tests.support.claude_sdk import native_client_factory
 
+import app.bootstrap.context as context_bootstrap
 import app.executors.claude_agent_sdk_runner as sdk_runner
-import app.worker as worker_module
 from app.context.file_content import ContextFileContentError
+from app.control_plane_contracts import sanitize_public_text
+from app.mcp.api import mcp_capability_subject
 from app.execution.application import artifact_storage
+from app.execution_boundary import decide_worker_execution_boundary
+from app.skills.execution_profiles import effective_skill_execution_profile
+from app.required_tool_contract import builtin_capability_subjects
+from app.executors.claude import capability_policy as claude_capability_policy
 from app.executors import claude_agent_worker
 from app.executors.base import RunPayload
 from app.executors.claude_agent_sdk_runner import (
@@ -31,7 +37,6 @@ from app.executors.claude_agent_sdk_runner import (
 from app.executors.claude_agent_worker import (
     ClaudeAgentWorkerAdapter,
     PreparedSdkRun,
-    _allowed_skill_names,
     _ordinary_run_requires_sandbox,
 )
 from app.executors.registry import AdapterRegistry
@@ -173,6 +178,46 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
             "tool-1",
             {},
         )
+        can_use = options.kwargs["can_use_tool"]
+        assert (await can_use("Bash", {"command": "echo safe"})).behavior == "allow"
+        assert (
+            await can_use("Write", {"file_path": "outputs/delivery/out.txt", "content": "safe"})
+        ).behavior == "allow"
+        assert (await can_use("Write", {"file_path": "out.txt", "content": "safe"})).behavior == "allow"
+        assert (
+            await can_use("Write", {"file_path": "inputs/source.docx", "content": "unsafe"})
+        ).behavior == "deny"
+        assert (
+            await can_use("Write", {"file_path": "CLAUDE.md", "content": "unsafe"})
+        ).behavior == "deny"
+        assert (await can_use("Skill", {"skill": "qa-file-reviewer"})).behavior == "allow"
+        assert (await can_use("Skill", {"skill": "unknown-skill"})).behavior == "deny"
+        assert (await can_use("mcp__corp-search__query", {"query": "safe"})).behavior == "allow"
+        assert (await can_use("mcp__corp-search__query_extra", {"query": "safe"})).behavior == "deny"
+        assert (await can_use("mcp__corp-search__query", {"query": "safe", "scope": "other"})).behavior == "allow"
+
+        hook = options.kwargs["hooks"]["PreToolUse"][0].hooks[0]
+        bash_input = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "echo safe"},
+            "tool_use_id": "bash-call-1",
+        }
+        allowed = await hook(bash_input, "bash-call-1")
+        denied = await hook(
+            {
+                "tool_name": "WebFetch",
+                "tool_input": {"url": "https://example.test"},
+                "tool_use_id": "web-call-2",
+            },
+            "web-call-2",
+        )
+        assert allowed["hookSpecificOutput"]["permissionDecision"] == "allow"
+        assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert lifecycle_facts == [("bash-call-1", "started")]
+        # The admitted call must settle inside the active session before EOF.
+        await options.kwargs["hooks"]["PostToolUse"][-1].hooks[0](
+            {**bash_input, "hook_event_name": "PostToolUse"}, "bash-call-1", {}
+        )
         yield StreamEvent(
             {
                 "type": "message_start",
@@ -246,13 +291,14 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
         description="Staged review instructions.",
     )
     pinned_manifests = _registry_pins(tmp_path / "skills", skill_id="qa-file-reviewer")
-    builtin_subjects = worker_module._builtin_capability_subjects(
+    builtin_subjects = builtin_capability_subjects(
+        canonical_manifest=effective_skill_execution_profile,
         payload=types.SimpleNamespace(skill_manifests=pinned_manifests),
         run_identity={"skill_id": "qa-file-reviewer"},
         skill={"skill_status": "active"},
         skill_decision=types.SimpleNamespace(usable=True),
     )
-    external_subject = worker_module._mcp_capability_subject(
+    external_subject = mcp_capability_subject(
         {
             "tool_id": "corp-search::query",
             "server_id": "corp-search",
@@ -266,7 +312,8 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
             "endpoint": "",
             "auth_mode": "none",
         },
-        types.SimpleNamespace(usable=True),
+        distribution_usable=True,
+        sanitize_label=sanitize_public_text,
     )
     assert external_subject is not None
     external_subject["mcp_server_config"] = {
@@ -284,7 +331,7 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
     )
     boundary_subjects = with_boundary_sandbox_local_tool_subjects(
         builtin_subjects,
-        decision=worker_module._worker_execution_boundary_decision(boundary_payload),
+        decision=decide_worker_execution_boundary(boundary_payload),
         sandbox_provider="opensandbox",
         authorized_sandbox_tool_identities=("Bash", "Write"),
     )
@@ -335,23 +382,8 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
     assert captured["pre_invocation_skill_write"].behavior == "deny"
     assert captured["pre_invocation_output_write"].behavior == "allow"
 
-    can_use = captured["can_use_tool"]
-    assert (await can_use("Bash", {"command": "echo safe"})).behavior == "allow"
-    assert (
-        await can_use("Write", {"file_path": "outputs/delivery/out.txt", "content": "safe"})
-    ).behavior == "allow"
-    assert (await can_use("Write", {"file_path": "out.txt", "content": "safe"})).behavior == "allow"
-    assert (
-        await can_use("Write", {"file_path": "inputs/source.docx", "content": "unsafe"})
-    ).behavior == "deny"
-    assert (
-        await can_use("Write", {"file_path": "CLAUDE.md", "content": "unsafe"})
-    ).behavior == "deny"
-    assert (await can_use("Skill", {"skill": "qa-file-reviewer"})).behavior == "allow"
-    assert (await can_use("Skill", {"skill": "unknown-skill"})).behavior == "deny"
-    assert (await can_use("mcp__corp-search__query", {"query": "safe"})).behavior == "allow"
-    assert (await can_use("mcp__corp-search__query_extra", {"query": "safe"})).behavior == "deny"
-    assert (await can_use("mcp__corp-search__query", {"query": "safe", "scope": "other"})).behavior == "allow"
+    with pytest.raises(RuntimeError, match="claude_callback_after_stream_closed"):
+        await captured["can_use_tool"]("Bash", {"command": "echo safe"})
     for endpoint in (
         "https://mcp.example.test/v1?api_key=redacted",
         "https://mcp.example.test/v1?token=redacted",
@@ -367,25 +399,16 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
         ) == {}
 
     hook = captured["hooks"]["PreToolUse"][0].hooks[0]
-    allowed = await hook(
-        {
-            "tool_name": "Bash",
-            "tool_input": {"command": "echo safe"},
-            "tool_use_id": "bash-call-1",
-        },
-        "bash-call-1",
-    )
-    denied = await hook(
-        {
-            "tool_name": "WebFetch",
-            "tool_input": {"url": "https://example.test"},
-            "tool_use_id": "web-call-2",
-        },
-        "web-call-2",
-    )
-    assert allowed["hookSpecificOutput"]["permissionDecision"] == "allow"
-    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert lifecycle_facts == [("bash-call-1", "started")]
+    with pytest.raises(RuntimeError, match="claude_callback_after_stream_closed"):
+        await hook(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "echo safe"},
+                "tool_use_id": "bash-call-after-close",
+            },
+            "bash-call-after-close",
+        )
+    assert lifecycle_facts == [("bash-call-1", "started"), ("bash-call-1", "completed")]
 
 
 class FakeQueryResult:
@@ -1547,12 +1570,12 @@ async def test_materialize_files_rejects_symlinked_inputs_directory(monkeypatch,
         }
 
     adapter = ClaudeAgentWorkerAdapter()
-    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FailIfRead)
+    monkeypatch.setattr("app.bootstrap.context.ObjectStorage", FailIfRead)
     monkeypatch.setattr(
         "app.context.infrastructure.sources_postgres.get_scoped_context_file",
         fake_get_scoped_context_file,
     )
-    monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.bootstrap.context.transaction", fake_transaction)
 
     with pytest.raises(ContextFileContentError, match="context_file_staging_write_failed"):
         await adapter._materialize_files(payload(file_ids=["file_1"]), workspace)
@@ -1583,9 +1606,9 @@ async def test_materialize_files_rejects_existing_symlinked_target(monkeypatch, 
         }
 
     adapter = ClaudeAgentWorkerAdapter()
-    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
+    monkeypatch.setattr("app.bootstrap.context.ObjectStorage", FakeStorage)
     monkeypatch.setattr("app.context.infrastructure.sources_postgres.get_scoped_context_file", fake_get_scoped_context_file)
-    monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.bootstrap.context.transaction", fake_transaction)
 
     with pytest.raises(ContextFileContentError, match="context_file_staging_write_failed"):
         await adapter._materialize_files(payload(file_ids=["file_1"]), workspace)
@@ -1623,12 +1646,12 @@ async def test_materialize_files_disambiguates_duplicate_basename_in_stage(
         }
 
     adapter = ClaudeAgentWorkerAdapter()
-    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
+    monkeypatch.setattr("app.bootstrap.context.ObjectStorage", FakeStorage)
     monkeypatch.setattr(
         "app.context.infrastructure.sources_postgres.get_scoped_context_file",
         fake_get_scoped_context_file,
     )
-    monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.bootstrap.context.transaction", fake_transaction)
 
     materialized = await adapter._materialize_files(
         payload(file_ids=["file-a", "file-b"]),
@@ -1670,9 +1693,9 @@ async def test_harness_chat_stages_authorized_attachment_under_inputs(
         }
 
     adapter = ClaudeAgentWorkerAdapter()
-    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
+    monkeypatch.setattr("app.bootstrap.context.ObjectStorage", FakeStorage)
     monkeypatch.setattr("app.context.infrastructure.sources_postgres.get_scoped_context_file", fake_get_scoped_context_file)
-    monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.bootstrap.context.transaction", fake_transaction)
 
     prepared_files = await adapter._materialize_files(
         payload(
@@ -1693,43 +1716,6 @@ async def test_harness_chat_stages_authorized_attachment_under_inputs(
     assert prepared_files.materialized_file_names == ["book.xlsx"]
     assert [item.file_id for item in prepared_files.attachment_metadata] == ["file_1"]
     assert (workspace / "inputs" / "book.xlsx").read_bytes() == raw
-
-
-
-
-
-def test_qa_file_reviewer_does_not_infer_dependency_from_skill_id():
-    selected = _allowed_skill_names(
-        types.SimpleNamespace(skill_id="qa-file-reviewer", input={}, skill_manifests=[]),
-        ["qa-file-reviewer", "minimax-docx"],
-    )
-
-    assert selected == ["qa-file-reviewer"]
-
-
-def test_ctd_stability_template_fill_does_not_infer_dependency_from_skill_id():
-    selected = _allowed_skill_names(
-        types.SimpleNamespace(skill_id="ctd-32s73-stability-template-fill", input={}, skill_manifests=[]),
-        ["ctd-32s73-stability-template-fill", "reference-fact-extraction", "general-chat"],
-    )
-
-    assert selected == ["ctd-32s73-stability-template-fill"]
-
-
-def test_allowed_skill_names_prefers_pinned_manifest_dependency_graph():
-
-    selected = _allowed_skill_names(
-        payload(
-            skill_id="qa-file-reviewer",
-            skill_manifests=[
-                _test_skill_manifest("qa-file-reviewer", dependency_ids=["minimax-docx"]),
-                _test_skill_manifest("minimax-docx"),
-            ],
-        ),
-        ["qa-file-reviewer", "minimax-docx"],
-    )
-
-    assert selected == ["qa-file-reviewer", "minimax-docx"]
 
 
 @pytest.mark.asyncio
@@ -1761,15 +1747,6 @@ async def test_agent_run_records_pinned_manifest_dependency_graph(monkeypatch, t
     assert runtime_requests[0].attempt_id == "qat-test-attempt"
     assert runtime_requests[0].context_manifest["queue_attempt_id"] == "qat-test-attempt"
     assert result.executor_payload["skill_manifests"][0]["dependency_ids"] == ["legacy-helper"]
-
-
-def test_general_chat_does_not_stage_all_platform_skills_by_default():
-    selected = _allowed_skill_names(
-        payload(agent_id="general-agent", skill_id="general-chat", input={"message": "hello"}),
-        ["qa-file-reviewer", "minimax-docx"],
-    )
-
-    assert selected == []
 
 
 @pytest.mark.asyncio
@@ -3786,7 +3763,7 @@ async def test_agent_run_rejects_pinned_skill_snapshot_file_over_worker_cap(monk
     write_skill(tmp_path / "skills", name="qa-file-reviewer", description="Review Word documents.")
     write_skill(tmp_path / "skills", name="minimax-docx", description="Manipulate Word documents.")
     pins = _registry_pins(tmp_path / "skills", skill_id="qa-file-reviewer", input_payload={})
-    monkeypatch.setattr("app.executors.claude_agent_worker.MAX_SKILL_SNAPSHOT_FILE_BYTES", 8)
+    monkeypatch.setattr("app.skills.pinning.MAX_SKILL_SNAPSHOT_FILE_BYTES", 8)
     async def no_files(payload, workspace):
         return []
 
@@ -4117,14 +4094,9 @@ async def test_skill_progress_is_absent_without_skills_and_has_no_false_completi
 
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
-    original_allowed_skill_names = claude_agent_worker._allowed_skill_names
-    monkeypatch.setattr(
-        "app.executors.claude_agent_worker._allowed_skill_names",
-        lambda *_args, **_kwargs: [],
-    )
 
     prepared, failure = await adapter._prepare_sdk_run(
-        payload(file_ids=[]),
+        payload(file_ids=[], skill_id=None, skill_manifests=[], execution_kind="harness_chat"),
         event_sink=event_sink,
     )
 
@@ -4132,10 +4104,6 @@ async def test_skill_progress_is_absent_without_skills_and_has_no_false_completi
     assert prepared is not None
     assert prepared.staged_skill_names == []
     assert events == []
-    monkeypatch.setattr(
-        "app.executors.claude_agent_worker._allowed_skill_names",
-        original_allowed_skill_names,
-    )
 
     def fail_stage(*_args, **_kwargs):
         raise RuntimeError("staging failed")
@@ -4263,7 +4231,7 @@ async def test_sandbox_dispatch_uses_frozen_epoch_id_across_runs_and_new_adapter
 
 
 def test_sandbox_runtime_does_not_mint_tools_without_worker_authority():
-    subjects = claude_agent_worker._sandbox_runtime_tool_policy_subjects(
+    subjects = claude_capability_policy.sandbox_runtime_tool_policy_subjects(
         types.SimpleNamespace(input={"message": "请执行 Bash 命令 pwd"}),
         sandbox_provider="opensandbox",
     )
@@ -4289,7 +4257,7 @@ def test_sandbox_runtime_keeps_the_worker_authorized_local_tool_subset():
         }
     )
 
-    subjects = claude_agent_worker._sandbox_runtime_tool_policy_subjects(
+    subjects = claude_capability_policy.sandbox_runtime_tool_policy_subjects(
         payload,
         sandbox_provider="opensandbox",
     )
@@ -4321,7 +4289,7 @@ def test_sandbox_runtime_maps_authorized_profile_drive_read_to_workspace_staging
         input={"_runtime_tool_policy_subjects": [profile_drive_read]}
     )
 
-    subjects = claude_agent_worker._sandbox_runtime_tool_policy_subjects(
+    subjects = claude_capability_policy.sandbox_runtime_tool_policy_subjects(
         payload,
         sandbox_provider="opensandbox",
     )
@@ -4337,7 +4305,7 @@ def test_sandbox_runtime_maps_authorized_profile_drive_read_to_workspace_staging
     denied_payload = types.SimpleNamespace(
         input={"_runtime_tool_policy_subjects": [profile_drive_read]}
     )
-    denied_subjects = claude_agent_worker._sandbox_runtime_tool_policy_subjects(
+    denied_subjects = claude_capability_policy.sandbox_runtime_tool_policy_subjects(
         denied_payload,
         sandbox_provider="opensandbox",
     )
@@ -4362,7 +4330,7 @@ def test_context_tool_subjects_are_manifest_scoped_and_reserved_input_is_rebuilt
             ]
         }
     )
-    subjects = sdk_runner.runtime_tool_policy_subjects(
+    subjects = claude_capability_policy.runtime_tool_policy_subjects(
         payload,
         {
             "schema_version": "ai-platform.context-manifest.v1",
@@ -4418,8 +4386,8 @@ def test_worker_constructs_context_retrieval_authority_from_existing_scope(monke
             )
             return authority
 
-    monkeypatch.setattr(claude_agent_worker, "ContextRetrievalAuthority", AuthorityFactory)
-    monkeypatch.setattr(claude_agent_worker, "ObjectStorage", lambda: storage)
+    monkeypatch.setattr(context_bootstrap, "ContextRetrievalAuthority", AuthorityFactory)
+    monkeypatch.setattr(context_bootstrap, "ObjectStorage", lambda: storage)
     current_payload = payload(
         context_pack={
             "schema_version": "ai-platform.executor-context-pack.v1",
@@ -4446,10 +4414,10 @@ def test_worker_constructs_context_retrieval_authority_from_existing_scope(monke
     assert identity is not None
     assert identity.__dict__ == scope.model_dump()
     assert captured["factory"] == (
-        claude_agent_worker.transaction,
+        context_bootstrap.transaction,
         storage,
         tmp_path,
-        claude_agent_worker.run_storage_io,
+        context_bootstrap.run_storage_io,
     )
 
 
@@ -5076,6 +5044,15 @@ async def test_sdk_runner_does_not_expose_worker_local_bash_fast_path(monkeypatc
             captured.update(kwargs)
 
     async def query(prompt, options):
+        denied = await captured["can_use_tool"]("Bash", {"command": "echo local"}, None)
+        assert denied.behavior == "deny"
+        hook = captured["hooks"]["PreToolUse"][0].hooks[0]
+        hook_result = await hook(
+            {"tool_name": "Bash", "tool_input": {"command": "echo local"}},
+            None,
+            None,
+        )
+        assert hook_result["hookSpecificOutput"]["permissionDecision"] == "deny"
         yield AssistantMessage([TextBlock("ok")])
         yield ResultMessage()
 
@@ -5106,7 +5083,7 @@ async def test_sdk_runner_does_not_expose_worker_local_bash_fast_path(monkeypatc
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: current_settings)
 
-    await run_claude_agent_sdk(
+    result = await run_claude_agent_sdk(
         prompt="hello",
         cwd=tmp_path,
         skill_id="qa-file-reviewer",
@@ -5115,15 +5092,16 @@ async def test_sdk_runner_does_not_expose_worker_local_bash_fast_path(monkeypatc
 
     assert captured["tools"] == ["Read", "Glob", "LS", "Skill"]
     assert "Bash" not in captured["tools"]
-    denied = await captured["can_use_tool"]("Bash", {"command": "echo local"}, None)
-    assert denied.behavior == "deny"
+    assert result.error is None
+    with pytest.raises(RuntimeError, match="claude_callback_after_stream_closed"):
+        await captured["can_use_tool"]("Bash", {"command": "echo local"}, None)
     hook = captured["hooks"]["PreToolUse"][0].hooks[0]
-    hook_result = await hook(
-        {"tool_name": "Bash", "tool_input": {"command": "echo local"}},
-        None,
-        None,
-    )
-    assert hook_result["hookSpecificOutput"]["permissionDecision"] == "deny"
+    with pytest.raises(RuntimeError, match="claude_callback_after_stream_closed"):
+        await hook(
+            {"tool_name": "Bash", "tool_input": {"command": "echo local"}},
+            None,
+            None,
+        )
 
 
 @pytest.mark.asyncio

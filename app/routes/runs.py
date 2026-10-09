@@ -10,6 +10,7 @@ from app.agent_apps.api import AgentProfileAuthority
 from app.agent_apps.infrastructure import catalog_postgres as agent_apps_catalog
 from app.artifacts.infrastructure import records_postgres as artifacts_records
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
+from app.bootstrap.run_inputs import RunInputSubmissionRequest
 from app.capabilities import get_capability
 from app.context import file_continuity as context_file_continuity
 from app.context.file_continuity import has_file_input_mode, primary_file_ids_for_run
@@ -103,6 +104,10 @@ from app.run_provenance import (
     safe_provenance_graph_id,
 )
 from app.runs.api import (
+    RunInputClosed,
+    RunInputConflict,
+    RunInputError,
+    RunInputsService,
     RunCancellationUseCase,
     RunDiagnosticsService,
     bind_run_model,
@@ -146,6 +151,20 @@ def _require_run_cancellation_use_case(request: Request) -> RunCancellationUseCa
     if type(use_case) is not RunCancellationUseCase:
         raise RuntimeError("run_cancellation_use_case_unavailable")
     return use_case
+
+
+def _require_run_inputs_service(request: Request) -> RunInputsService:
+    service = getattr(request.app.state, "run_inputs_service", None)
+    if not isinstance(service, RunInputsService):
+        raise HTTPException(status_code=503, detail="run_inputs_unavailable")
+    return service
+
+
+def _run_input_http_error(exc: RunInputError) -> HTTPException:
+    status_code = 409 if isinstance(exc, (RunInputClosed, RunInputConflict)) else 422
+    return HTTPException(status_code=status_code, detail=exc.code)
+
+
 
 
 RUN_PLAYBACK_CONTRACT_VERSION = "ai-platform.run-playback.v1"
@@ -1978,6 +1997,74 @@ async def get_run(
         error_message=error_message,
         context_window=context_ref["context_window"],
     )
+
+
+@router.get("/sessions/{session_id}/run-inputs")
+async def get_session_run_inputs(
+    session_id: str,
+    request: Request,
+    before_run_id: str | None = None,
+    limit: int = 20,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, Any]:
+    service = _require_run_inputs_service(request)
+    async with transaction() as conn:
+        projection = await service.get_session_history(
+            conn, tenant_id=principal.tenant_id, user_id=principal.user_id,
+            session_id=session_id, before_run_id=before_run_id, limit=limit,
+            redact_public=not is_ai_admin(principal),
+        )
+    if projection is None:
+        raise HTTPException(status_code=404, detail="session_not_found")
+    return projection
+
+
+@router.get("/runs/{run_id}/inputs")
+async def get_run_inputs(
+    run_id: str,
+    request: Request,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, Any]:
+    service = _require_run_inputs_service(request)
+    async with transaction() as conn:
+        projection = await service.get_projection(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            run_id=run_id,
+            redact_public=not is_ai_admin(principal),
+        )
+    if projection is None:
+        raise HTTPException(status_code=404, detail="run_not_found")
+    return projection
+
+
+@router.post("/runs/{run_id}/inputs")
+async def submit_run_input(
+    run_id: str,
+    submission: RunInputSubmissionRequest,
+    request: Request,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, str]:
+    service = _require_run_inputs_service(request)
+    try:
+        async with transaction() as conn:
+            result = await service.submit(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                run_id=run_id,
+                input_id=str(submission.input_id),
+                text=submission.text,
+                question_id=submission.question_id,
+                answers=submission.model_dump()["answers"],
+                redact_public=not is_ai_admin(principal),
+            )
+    except RunInputError as exc:
+        raise _run_input_http_error(exc) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="run_not_found")
+    return result
 
 
 @router.get("/runs/{run_id}/playback")

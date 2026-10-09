@@ -134,6 +134,17 @@ class AssistantTextSourceBufferTests(unittest.TestCase):
             self.router.mark_answer(self.first)
         self.assertEqual(self.router.role_for(self.first), "work")
 
+    def test_meaningful_answer_excludes_whitespace_and_reclassified_work(self):
+        self.router.append_reconciled(self.first, self.first, " \t\n")
+        self.router.mark_answer(self.first)
+        self.assertTrue(self.router.has_answer_sources)
+        self.assertFalse(self.router.has_meaningful_answer_sources)
+        self.router.append_reconciled(self.first, self.first, "Answer.")
+        self.assertTrue(self.router.has_meaningful_answer_sources)
+        self.router.mark_tool(self.first)
+        self.assertFalse(self.router.has_meaningful_answer_sources)
+        self.router.take(self.first)
+
     def test_separator_conflict_does_not_mutate_source_state(self):
         self.router.append_reconciled(self.first, self.first, "First")
         self.router.take(self.first)

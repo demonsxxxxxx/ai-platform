@@ -20,6 +20,9 @@ from app.streaming.application.worker_publication_v4 import (
     persist_worker_event,
     publish_run_event,
 )
+from app.streaming.application.worker_event_projection import (
+    append_worker_user_event as append_worker_user_event,
+)
 from app.streaming.domain.live import (
     REDIS_ID_PATTERN,
     RUN_ID_PATTERN,
@@ -80,6 +83,7 @@ __all__ = [
     "V4PublicationTransport",
     "V4PublicationTransportUnavailable",
     "V4StreamEntry",
+    "append_worker_user_event",
     "AssistantAnswerReceiptError",
     "ReconstructedAssistantAnswer",
     "WorkerV4Capabilities",

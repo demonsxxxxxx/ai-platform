@@ -48,9 +48,12 @@ class AssistantTextSourceBuffer:
         self._retired_sources: dict[Hashable, None] = {}
         self._timeline_owners: dict[Hashable, Hashable] = {}
         self._answer_source_count = 0
+        self._meaningful_sources: set[Hashable] = set()
+        self._meaningful_answer_source_count = 0
 
     def _evict_source(self, message_key: Hashable) -> None:
         self._sources.pop(message_key, None)
+        self._meaningful_sources.discard(message_key)
         self._retired_sources.pop(message_key, None)
         self._timeline_owners = {
             timeline_key: owner
@@ -136,6 +139,8 @@ class AssistantTextSourceBuffer:
         has_text, role = self._state(message_key)
         if role == "answer" and has_text:
             self._answer_source_count = max(0, self._answer_source_count - 1)
+            if message_key in self._meaningful_sources:
+                self._meaningful_answer_source_count -= 1
         self._sources[message_key] = (has_text, "work" if role != "work" else role)
 
     def mark_answer(self, message_key: Hashable) -> None:
@@ -145,6 +150,8 @@ class AssistantTextSourceBuffer:
             raise ValueError("assistant_text_source_role_conflict")
         if role != "answer" and has_text:
             self._answer_source_count += 1
+            if message_key in self._meaningful_sources:
+                self._meaningful_answer_source_count += 1
         self._sources[message_key] = (has_text, "answer")
 
     def role_for(self, message_key: Hashable) -> str | None:
@@ -158,6 +165,20 @@ class AssistantTextSourceBuffer:
     @property
     def has_answer_sources(self) -> bool:
         return self._answer_source_count > 0
+
+    @property
+    def has_meaningful_answer_sources(self) -> bool:
+        return self._meaningful_answer_source_count > 0
+
+    def _observe_text(self, message_key: Hashable, text: str) -> None:
+        had_text, role = self._state(message_key)
+        if role == "answer" and not had_text:
+            self._answer_source_count += 1
+        if text.strip() and message_key not in self._meaningful_sources:
+            self._meaningful_sources.add(message_key)
+            if role == "answer":
+                self._meaningful_answer_source_count += 1
+        self._sources[message_key] = (True, role)
 
     def owner_for_timeline(self, timeline_message_key: Hashable) -> Hashable | None:
         return self._timeline_owners.get(timeline_message_key)
@@ -212,10 +233,7 @@ class AssistantTextSourceBuffer:
         self._previous_timeline_message = timeline_message_key
         self._timeline_owners[timeline_message_key] = message_key
         if routed:
-            had_text, role = self._state(message_key)
-            if role == "answer" and not had_text:
-                self._answer_source_count += 1
-            self._sources[message_key] = (True, role)
+            self._observe_text(message_key, routed)
         return routed
 
     def append_explicit_result(
@@ -232,10 +250,7 @@ class AssistantTextSourceBuffer:
         hash(message_key)
         self.begin(message_key)
         if delta:
-            had_text, role = self._state(message_key)
-            if role == "answer" and not had_text:
-                self._answer_source_count += 1
-            self._sources[message_key] = (True, role)
+            self._observe_text(message_key, delta)
         return delta
 
     def take(
