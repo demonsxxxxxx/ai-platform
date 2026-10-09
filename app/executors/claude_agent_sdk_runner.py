@@ -55,10 +55,10 @@ from app.bootstrap.claude_client import (
     prepare_claude_callback_tracker,
     prepare_claude_run_interaction,
     prepare_claude_text_sources,
+    prepare_claude_typed_observations,
 )
 from app.execution.api import (
     ClaudeSdkAgentEventAdapter,
-    ClaudeTypedBlockObservations,
     ModelTextCheckpoint,
     RunInteractionProtocol,
 )
@@ -3680,7 +3680,7 @@ async def run_claude_agent_sdk(
         nonlocal result_session_id, usage, terminal_reason, received_structured_terminal
         nonlocal last_public_stage, terminal_result_message, last_assistant_error
         nonlocal last_assistant_error_text, first_projection_failure
-        typed_observations = ClaudeTypedBlockObservations()
+        typed_observations = prepare_claude_typed_observations()
         source_router = prepare_claude_text_sources()
         pending_callback_text: dict[tuple[object, ...], list[str]] = {}
         last_callback_answer_source: tuple[object, ...] | None = None
