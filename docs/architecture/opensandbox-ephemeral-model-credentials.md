@@ -149,6 +149,20 @@ or polling is required. Plaintext provider credentials never appear in an
 OpenSandbox request, environment, Run, lease, queue payload, metadata, event,
 receipt, callback, response, or lifecycle payload.
 
+The administrator page keeps editable connection and model drafts separate from
+the last saved state. Loading configuration reports it as untested. Testing uses
+the current draft and does not change candidates; discovery replaces the candidate
+directory while preserving edits for matching model identities. Neither probe
+rewrites the draft endpoint or saves configuration. Editing the endpoint clears
+an entered credential; a saved credential can be reused only for the same origin.
+Connection edits, cancellation, reload, permission loss and unmount abort owned
+requests and invalidate stale callbacks. Saving locks the draft until the atomic
+publication returns, then adopts the acknowledged revision and clears the entered
+credential. A revision conflict retains the draft and requires fresh discovery;
+other publication failures retain the draft for retry. Cancellation restores the
+last saved baseline. Explicit reload clears entered credentials and replaces edits
+with the saved state when loading succeeds.
+
 Run admission pins the active connection revision, exact upstream model ID,
 and input/output capacities. Existing Runs and Attempts retain that immutable
 snapshot after later publication. The internal proxy serves only queued or running Runs whose requested model

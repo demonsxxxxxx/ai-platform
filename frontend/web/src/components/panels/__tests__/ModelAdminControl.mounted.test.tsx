@@ -259,6 +259,15 @@ test("Model admin discovery is a draft and only publication changes the active c
     assert.equal(calls.publish.length, 1);
     assert.equal(inputByLabel(container, "模型 API Key").value, "super-secret-key");
 
+    // Discovery keeps existing selections and user edits for the same model.
+    assert.equal(inputByLabel(container, "openai/gpt-5 最大输入 Token").value, "32000");
+    await React.act(async () => {
+      changeMountedInput(inputByLabel(container, "openai/gpt-5 最大输入 Token"), "");
+      changeMountedInput(inputByLabel(container, "openai/gpt-5 最大输出 Token"), "");
+      const checkbox = inputByLabel(container, "启用 GPT-5");
+      checkbox.checked = false;
+      changeMountedInput(checkbox, checkbox.value);
+    });
     const statusSelect = selectByLabel(container, "筛选模型状态");
     await React.act(async () => {
       changeMountedInput(statusSelect, "unavailable");
@@ -298,8 +307,8 @@ test("Model admin discovery is a draft and only publication changes the active c
     });
     assert.equal(container.querySelectorAll('[role="alert"]').length, 0);
     assert.match(nodeText(actionBar), /已启用 1 \/ 1/);
-    assert.match(nodeText(actionBar), /切换和编辑仅修改草稿，发布后生效/);
-    assert.match(nodeText(publishButton), /发布到全员/);
+    assert.match(nodeText(actionBar), /有未保存的修改/);
+    assert.match(nodeText(publishButton), /保存并生效/);
     await React.act(async () => {
       publishButton.dispatchEvent({ type: "click", bubbles: true });
       await Promise.resolve();
@@ -314,7 +323,7 @@ test("Model admin discovery is a draft and only publication changes the active c
     assert.equal(calls.publish[1].models[0].is_default, true);
     assert.equal(calls.publish[1].models[0].max_input_tokens, 32000);
     assert.equal(calls.publish[1].models[0].max_output_tokens, 2048);
-    assert.match(nodeText(container), /已配置/);
+    assert.match(nodeText(container), /已生效配置/);
     assert.doesNotMatch(renderedParagraphText(container), /super-secret-key/);
 
     modelAdminApi.discover = async () => {
@@ -352,7 +361,7 @@ test("Model admin discovery is a draft and only publication changes the active c
     });
     await waitFor(
       React,
-      () => controlStates.at(-1) === "degraded",
+      () => controlStates[controlStates.length - 1] === "degraded",
       "admin control should report a degraded initial projection",
     );
     assert.deepEqual(controlStates.slice(-2), ["loading", "degraded"]);
