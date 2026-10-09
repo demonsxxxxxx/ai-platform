@@ -750,6 +750,57 @@ def project_persisted_message_delta_v4(
         return None
 
 
+def project_persisted_message_part_v4(
+    row: Mapping[str, object],
+    *,
+    tenant_id: str,
+    run_id: str,
+) -> dict[str, object] | None:
+    """Authorize and project one persisted assistant text-part fact for history."""
+
+    try:
+        if (
+            row.get("tenant_id") != tenant_id
+            or row.get("run_id") != run_id
+            or row.get("v4_attempt_authorized") is not True
+            or row.get("event_type")
+            not in {"message.part.delta", "message.part.classified"}
+        ):
+            return None
+        metadata = _metadata(row)
+        if metadata is None:
+            return None
+        attempt_id = _safe_ref(metadata.get("attempt_id"), name="attempt_id")
+        stream_incarnation = _positive_int(
+            metadata.get("stream_incarnation"), name="stream_incarnation"
+        )
+        authorization_epoch = _positive_int(
+            metadata.get("authorization_epoch"), name="authorization_epoch"
+        )
+        authority = _PersistedHistoryAuthority(
+            tenant_id=tenant_id,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            stream_incarnation=stream_incarnation,
+            authorization_epoch=authorization_epoch,
+        )
+        projected = project_public_v4(row, authority=authority)
+        public = (
+            _project_validated_internal_envelope_v4(projected)
+            if projected is not None
+            else None
+        )
+        return (
+            public
+            if public is not None
+            and public.get("event_type")
+            in {"message.part.delta", "message.part.classified"}
+            else None
+        )
+    except V4ProjectionError:
+        return None
+
+
 __all__ = [
     "V4ProjectionError",
     "V4StreamEntry",
@@ -757,6 +808,7 @@ __all__ = [
     "build_v4_control",
     "opaque_message_id",
     "project_persisted_message_delta_v4",
+    "project_persisted_message_part_v4",
     "project_public_envelope_v4",
     "project_public_v4",
     "stream_end_event_id",

@@ -139,6 +139,7 @@ class FakeIndexConnection:
                     "column_names": list(migration.column_names),
                     "descending": list(migration.descending),
                     "opclass_names": list(migration.opclass_names),
+                    "key_expressions": list(migration.key_expressions),
                     "predicate": migration.predicate_expression or None,
                 }
                 if params[0] in self.state.indexes
@@ -237,6 +238,7 @@ class FakeSchemaStatusConnection:
                     "column_names": list(migration.column_names),
                     "descending": list(migration.descending),
                     "opclass_names": list(migration.opclass_names),
+                    "key_expressions": list(migration.key_expressions),
                     "predicate": migration.predicate_expression,
                 }
             )
@@ -506,17 +508,17 @@ def test_stream_only_schema_change_advances_schema_version():
 
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.09.26.1"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.10.09.1"
     assert (
         schema_migrations.TARGET_SCHEMA_VERSION
-        == schema_migrations.HUMAN_APPROVAL_AND_LEGACY_MULTI_AGENT_RETIREMENT_SCHEMA_VERSION
+        == schema_migrations.ASSISTANT_TEXT_PART_INDEX_SCHEMA_VERSION
     )
     assert schema_migrations.CLAUDE_CONTEXT_CUTOVER_SCHEMA_VERSION == "2026.09.15.2"
     assert schema_migrations.CLAUDE_PROVIDER_SESSION_SCHEMA_VERSION == "2026.09.04.1"
     assert schema_migrations.FILE_UPLOAD_SESSION_SCHEMA_VERSION == "2026.09.03.1"
     assert (
         schema_migrations.CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION
-        == schema_migrations.STREAM_ONLY_SCHEMA_VERSION
+        == schema_migrations.ASSISTANT_TEXT_PART_INDEX_SCHEMA_VERSION
     )
     assert schema_migrations.BAOYU_TRANSLATE_RETIREMENT_SCHEMA_VERSION == "2026.09.07.1"
     assert schema_migrations.CRITICAL_RELATIONS == (
@@ -1190,3 +1192,18 @@ def test_sandbox_executor_async_terminal_columns_are_additive():
         "check (executor_reconciliation_status in "
         "('waiting_terminal', 'pending', 'claimed', 'retry', 'finalized', 'failed'))"
     ) in schema
+
+
+@pytest.mark.asyncio
+async def test_part_lookup_index_readiness_checks_expressions():
+    migration = next(item for item in schema_migrations.CONCURRENT_INDEX_MIGRATIONS if item.name == "idx_run_events_v4_part_facts")
+    values = {"ready": True, "is_unique": False, "table_name": migration.table_name,
+              "access_method": migration.access_method, "column_names": list(migration.column_names),
+              "descending": list(migration.descending), "key_expressions": list(migration.key_expressions),
+              "predicate": None}
+    class Connection:
+        async def execute(self, _query, _params):
+            return FakeCursor(values)
+    assert await schema_migrations._index_is_ready(Connection(), migration)
+    values["key_expressions"][4] = "payload_json ->> 'source_event_id'"
+    assert not await schema_migrations._index_is_ready(Connection(), migration)

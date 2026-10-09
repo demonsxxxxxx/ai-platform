@@ -215,7 +215,7 @@ def _message_delta_size(callback: ExecutorCallbackEvent) -> int | None:
     for event in callback.events:
         delta = event.payload.get("delta")
         if (
-            event.type != "message.delta"
+            event.type not in {"message.delta", "message.part.delta"}
             or not event.event_id
             or not event.run_id
             or not event.message_id
@@ -1514,7 +1514,7 @@ async def _default_executor_runner(
             if isinstance(emit_event, _SealableExecutorEventEmitter):
                 emit_event.seal_capability_failure()
             return False
-        if any(event.type == "message.delta" for event in events):
+        if any(event.type in {"message.delta", "message.part.delta"} for event in events):
             v4_answer_stream_active = True
         return True
 
@@ -2486,7 +2486,7 @@ def create_executor_app(
             if executor_first_token_latency_ms is None and any(
                 item.type == "assistant_delta"
                 or (
-                    item.type == "message.delta"
+                    item.type in {"message.delta", "message.part.delta"}
                     and isinstance(item.payload.get("delta"), str)
                     and item.payload["delta"]
                 )

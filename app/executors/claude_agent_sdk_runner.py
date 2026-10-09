@@ -52,13 +52,13 @@ from app.executors.claude.prompts import (
 )
 from app.bootstrap.claude_client import prepare_claude_client_close
 from app.execution.api import ClaudeSdkAgentEventAdapter
+from app.executors.claude.assistant_text_sources import AssistantTextSourceBuffer
 from app.executors.claude_stream_projection import (
     AssistantAnswerTimeline,
     ClaudeStreamProjector,
     provider_message_identity,
 )
 from app.executors.public_answer_stream import (
-    PublicAnswerCoalescer,
     PublicAnswerStreamGate,
 )
 from app.required_tool_contract import (
@@ -1969,7 +1969,11 @@ async def run_claude_agent_sdk(
         else None
     )
     sandbox_partial_streaming = (
-        on_text is not None and execution_policy == "sandbox_brokered"
+        execution_policy == "sandbox_brokered"
+        and (
+            on_text is not None
+            or bool(run_id and attempt_id and on_agent_event is not None)
+        )
     )
     sandbox_brokered = execution_policy == "sandbox_brokered"
     authorized_subjects = _canonical_tool_policy_subjects(tool_policy_subjects)
@@ -2314,6 +2318,9 @@ async def run_claude_agent_sdk(
     private_replacements = {
         token: private_replacement for token in private_capability_tokens
     }
+    workspace_token = str(cwd)
+    if cwd.is_absolute() and workspace_token and len(workspace_token) <= 512:
+        private_replacements[workspace_token] = private_replacement
     for kind, identity in capability_plan.available:
         if kind != "skill":
             continue
@@ -2365,7 +2372,6 @@ async def run_claude_agent_sdk(
 
     agent_public_answer_chunks: list[str] = []
     agent_event_callback_failed = False
-    answer_coalescer: PublicAnswerCoalescer | None = None
 
     async def publish_agent_candidates(candidates: tuple[Any, ...]) -> bool:
         nonlocal agent_event_callback_failed
@@ -2411,6 +2417,7 @@ async def run_claude_agent_sdk(
         nonlocal capability_evidence_rejected
         if not capability_evidence_rejected:
             capability_evidence_rejected = True
+            answer_stream_gate.fail_closed()
             capability_evidence.clear()
             used_skill_names.clear()
         return False
@@ -3471,84 +3478,19 @@ async def run_claude_agent_sdk(
             return "required_tool_completion_evidence_mismatch"
         return None
 
-    async def emit_coalesced_answer_text(value: str) -> bool:
-        nonlocal agent_event_callback_failed
-        if agent_event_adapter is None:
-            return True
-        accepted_chunks: list[str] = []
-        for offset in range(0, len(value), 8_192):
-            chunk = value[offset : offset + 8_192]
-            candidates = agent_event_adapter.accept_answer_text(
-                chunk,
-            )
-            if not candidates:
-                agent_event_callback_failed = True
-                return False
-            if not await publish_agent_candidates(candidates):
-                return False
-            accepted_chunks.append(chunk)
-        projected_value = "".join(accepted_chunks)
-        if not projected_value:
-            return True
-        if on_text is not None:
-            callback_result = on_text(projected_value)
-            if isawaitable(callback_result):
-                await callback_result
-        agent_public_answer_chunks.append(projected_value)
+    async def flush_answer_candidates() -> bool:
+        # Part deltas are acknowledged synchronously at their source boundary.
         return True
 
-    answer_coalescer = (
-        PublicAnswerCoalescer(emit_coalesced_answer_text)
-        if agent_event_adapter is not None
-        else None
-    )
-
-    async def flush_answer_candidates() -> bool:
-        return answer_coalescer is None or await answer_coalescer.flush()
-
     async def close_answer_candidates(*, flush: bool = True) -> bool:
-        return answer_coalescer is None or await answer_coalescer.close(flush=flush)
+        del flush
+        return True
 
     async def close_answer_candidates_after_failure() -> bool:
         try:
             return await close_answer_candidates(flush=True)
         except (Exception, asyncio.CancelledError):
             return False
-
-    async def publish_terminal_text(
-        value: str,
-        *,
-        source_identity: object = None,
-        project_agent: bool = True,
-    ) -> bool:
-        if not value:
-            return True
-        if project_agent and answer_coalescer is not None:
-            return await answer_coalescer.push(
-                value,
-                source_identity=source_identity,
-            )
-        if on_text is not None:
-            callback_result = on_text(value)
-            if isawaitable(callback_result):
-                await callback_result
-        return True
-
-    async def publish_commentary_text(value: str, *, identity: object) -> bool:
-        if not value or agent_event_adapter is None:
-            return True
-        for token in sorted(private_replacements, key=lambda item: (-len(item), item)):
-            value = value.replace(token, private_replacements[token])
-        value = sanitize_public_answer_text(value)
-        candidates = agent_event_adapter.accept_commentary_text(
-            value, commentary_identity=identity,
-        )
-        if not candidates:
-            return True  # Unsafe narration is omitted, never turned into answer text.
-        for offset in range(0, len(candidates), 100):
-            if not await publish_agent_candidates(candidates[offset : offset + 100]):
-                return False
-        return True
 
     async def _client_messages(client: Any) -> AsyncIterator[Any]:
         pending_tasks: set[str] = set()
@@ -3575,34 +3517,185 @@ async def run_claude_agent_sdk(
         nonlocal last_public_stage, terminal_result_message, last_assistant_error
         nonlocal last_assistant_error_text
         answer_timeline = AssistantAnswerTimeline()
-        pending_raw_text: list[str] = []
-        pending_message_key: object = None
-        pending_text = ""
-        pending_tool = False
-        pending_seen_sources: set[object] = set()
-        commentary_texts: list[str] = []
-        classified_answer = ""
-        typed_text_observed = False
-        last_assistant_tool_stop = False
-        async def flush_pending() -> None:
-            nonlocal pending_message_key, pending_text, pending_tool, classified_answer
-            if pending_text:
-                if pending_tool:
-                    commentary_texts.append(pending_text)
-                    await flush_answer_candidates()
-                    await publish_commentary_text(
-                        pending_text, identity=f"assistant-{assistant_observation_scope}",
-                    )
-                else:
-                    classified_answer += pending_text
-                    for public_text in answer_stream_gate.accept(pending_text):
-                        await publish_terminal_text(
-                            public_text, source_identity=pending_message_key,
+        source_router = AssistantTextSourceBuffer()
+        pending_callback_text: dict[tuple[object, ...], list[str]] = {}
+        last_callback_answer_source: tuple[object, ...] | None = None
+
+        async def deliver_answer_text(
+            source_key: tuple[object, ...],
+            chunk: str,
+        ) -> None:
+            nonlocal last_callback_answer_source
+            if (
+                last_callback_answer_source is not None
+                and last_callback_answer_source != source_key
+            ):
+                if on_text is not None:
+                    callback_result = on_text("\n\n")
+                    if isawaitable(callback_result):
+                        await callback_result
+                agent_public_answer_chunks.append("\n\n")
+            if on_text is not None:
+                callback_result = on_text(chunk)
+                if isawaitable(callback_result):
+                    await callback_result
+            agent_public_answer_chunks.append(chunk)
+            last_callback_answer_source = source_key
+
+        async def flush_classified_callback_text(
+            source_key: tuple[object, ...],
+            role: str,
+        ) -> None:
+            pending = pending_callback_text.get(source_key)
+            if role != "answer":
+                pending_callback_text.pop(source_key, None)
+                return
+            for chunk in tuple(pending or ()):
+                await deliver_answer_text(source_key, chunk)
+            pending_callback_text.pop(source_key, None)
+
+        async def publish_part_text(
+            source_key: tuple[object, ...],
+            value: str,
+        ) -> bool:
+            if not value:
+                return True
+            for offset in range(0, len(value), 8_192):
+                chunk = value[offset : offset + 8_192]
+                if agent_event_adapter is not None:
+                    candidates = agent_event_adapter.accept_part_text(source_key, chunk)
+                    if not candidates or not await publish_agent_candidates(candidates):
+                        fail_stream_projection(
+                            reason="agent_event_callback_not_acknowledged",
+                            stage="message",
+                            location="part_delta_ack",
                         )
-            pending_message_key = None
-            pending_text = ""
-            pending_tool = False
-            pending_seen_sources.clear()
+                        return False
+                role = source_router.role_for(source_key)
+                if role == "answer":
+                    await deliver_answer_text(source_key, chunk)
+                elif role == "work":
+                    pending_callback_text.pop(source_key, None)
+                elif on_text is not None or agent_event_adapter is None:
+                    pending_callback_text.setdefault(source_key, []).append(chunk)
+                if agent_event_adapter is not None and role is not None:
+                    try:
+                        candidates = agent_event_adapter.classify_text_part(
+                            source_key, role,
+                        )
+                    except ValueError:
+                        fail_stream_projection(
+                            reason="assistant_part_classification_invalid",
+                            stage="message",
+                            location="part_classification",
+                        )
+                        return False
+                    if candidates and not await publish_agent_candidates(candidates):
+                        fail_stream_projection(
+                            reason="agent_event_callback_not_acknowledged",
+                            stage="message",
+                            location="part_classification_ack",
+                        )
+                        return False
+            return True
+
+        async def append_reconciled_text(
+            source_key: tuple[object, ...],
+            timeline_message_key: tuple[object, ...],
+            delta: str,
+        ) -> bool:
+            try:
+                source_router.bind_timeline(source_key, timeline_message_key)
+                routed_delta = source_router.append_reconciled(
+                    source_key, timeline_message_key, delta,
+                )
+            except (TypeError, ValueError):
+                fail_stream_projection(
+                    reason="assistant_text_conflict",
+                    stage="message",
+                    location="typed_answer",
+                )
+                return False
+            return await publish_source_text(source_key, routed_delta)
+
+        async def publish_source_text(
+            source_key: tuple[object, ...],
+            delta: str,
+        ) -> bool:
+            required_identities = {identity for _kind, identity in required_builtin_declarations}
+            required_failure = any(
+                state == "failed" and identity in required_identities
+                for (identity, _call_id), state in governed_builtin_invocation_states.items()
+            )
+            if capability_evidence_rejected or governed_builtin_lifecycle_rejected or required_failure:
+                answer_stream_gate.fail_closed()
+                return True
+            for offset in range(0, len(delta), 8_192):
+                suffix = delta[offset : offset + 8_192]
+                for owner, public_text in answer_stream_gate.accept_routed(
+                    suffix,
+                    source_identity=source_key,
+                ):
+                    if not await publish_part_text(owner, public_text):
+                        return False
+            return True
+
+        async def classify_source(
+            source_key: tuple[object, ...],
+            role: str,
+        ) -> bool:
+            try:
+                if role == "work":
+                    source_router.mark_tool(source_key)
+                else:
+                    source_router.mark_answer(source_key)
+            except (TypeError, ValueError):
+                fail_stream_projection(
+                    reason="assistant_part_classification_invalid",
+                    stage="message",
+                    location="part_classification",
+                )
+                return False
+            if (
+                agent_event_adapter is not None
+                and agent_event_adapter.has_text_part(source_key)
+            ):
+                try:
+                    candidates = agent_event_adapter.classify_text_part(source_key, role)
+                except ValueError:
+                    fail_stream_projection(
+                        reason="assistant_part_classification_invalid",
+                        stage="message",
+                        location="part_classification",
+                    )
+                    return False
+                if candidates and not await publish_agent_candidates(candidates):
+                    fail_stream_projection(
+                        reason="agent_event_callback_not_acknowledged",
+                        stage="message",
+                        location="part_classification_ack",
+                    )
+                    return False
+            await flush_classified_callback_text(source_key, role)
+            return True
+
+        async def retire_source(source_key: tuple[object, ...]) -> bool:
+            metadata = source_router.take(source_key)
+            if metadata is None:
+                return True
+            if metadata.has_text and metadata.role is None:
+                return await classify_source(source_key, "answer")
+            return True
+
+        async def select_source(source_key: tuple[object, ...]) -> bool:
+            previous = source_router.message_key
+            if previous is not None and previous != source_key:
+                if not await retire_source(previous):
+                    return False
+                if source_router.message_key == previous:
+                    source_router.take(previous)
+            source_router.begin(source_key)
+            return True
 
         terminal_answer_empty = False
         stream_projection_failed = False
@@ -3663,17 +3756,6 @@ async def run_claude_agent_sdk(
                     await flush_answer_candidates()
                 if (
                     isinstance(raw_stream_event, dict)
-                    and raw_stream_event.get("type") == "message_start"
-                    and pending_raw_text
-                ):
-                    fail_stream_projection(
-                        reason="unbound_raw_text_source",
-                        stage="message",
-                        location="raw_stream_frame",
-                    )
-                    continue
-                if (
-                    isinstance(raw_stream_event, dict)
                     and raw_stream_event.get("type") == "content_block_start"
                     and isinstance(raw_stream_event.get("content_block"), dict)
                     and raw_stream_event["content_block"].get("type")
@@ -3709,6 +3791,13 @@ async def run_claude_agent_sdk(
                             frame_shape=stream_projector.failure_frame,
                         )
                     else:
+                        raw_source_key = (
+                            stream_projector.message_id,
+                            stream_projector.parent_tool_use_id,
+                        )
+                        if raw_stream_event.get("type") == "message_start":
+                            if not await select_source(raw_source_key):
+                                continue
                         if (
                             isinstance(raw_stream_event, dict)
                             and raw_stream_event.get("type") == "content_block_start"
@@ -3757,9 +3846,19 @@ async def run_claude_agent_sdk(
                                 )
                                 break
                             if delta_text:
-                                pending_raw_text.append(delta_text)
+                                if not await append_reconciled_text(
+                                    raw_source_key, raw_source_key, delta_text,
+                                ):
+                                    break
                         if stream_projection_failed:
                             continue
+                        if (
+                            raw_stream_event.get("type") == "content_block_start"
+                            and isinstance(raw_stream_event.get("content_block"), dict)
+                            and raw_stream_event["content_block"].get("type") == "tool_use"
+                        ):
+                            if not await classify_source(raw_source_key, "work"):
+                                continue
                         completed_source = stream_projector.take_completed_text_source_identity()
                         if completed_source is not None:
                             await flush_answer_candidates()
@@ -3779,23 +3878,32 @@ async def run_claude_agent_sdk(
                     and raw_stream_event.get("type") == "message_stop"
                     and stream_projector is not None
                 ):
-                    if (
-                        pending_message_key is not None
-                        and pending_seen_sources
-                        and pending_message_key[0] == stream_projector.message_id
-                    ):
-                        pending_tool = pending_tool or stream_projector.last_stop_reason == "tool_use"
-                        if pending_raw_text:
-                            pending_text += "".join(pending_raw_text)
-                            pending_raw_text.clear()
-                        await flush_pending()
-                    elif pending_raw_text and stream_projector.last_stop_reason == "tool_use":
-                        narration = "".join(pending_raw_text)
-                        pending_raw_text.clear()
-                        commentary_texts.append(narration)
-                        await publish_commentary_text(
-                            narration, identity=f"raw-{stream_projector.message_id}",
+                    source_key = (
+                        stream_projector.message_id,
+                        stream_projector.parent_tool_use_id,
+                    )
+                    if source_router.message_key not in (None, source_key):
+                        fail_stream_projection(
+                            reason="unbound_raw_text_source",
+                            stage="message",
+                            location="raw_stream_frame",
                         )
+                        continue
+                    source_router.begin(source_key)
+                    if stream_projector.last_stop_reason == "tool_use":
+                        if not await classify_source(source_key, "work"):
+                            continue
+                    elif (
+                        stream_projector.last_stop_reason in {"end_turn", "stop_sequence"}
+                        and source_router.has_text_for(source_key)
+                    ):
+                        if source_router.role_for(source_key) is None:
+                            if not await classify_source(source_key, "answer"):
+                                continue
+                    # Raw framing owns the boundary; every unique part delta is
+                    # acknowledged before this message_stop is accepted.
+                    source_router.take(source_key)
+                    await flush_answer_candidates()
                 continue
             if isinstance(message, AssistantMessage):
                 await flush_answer_candidates()
@@ -3897,6 +4005,19 @@ async def run_claude_agent_sdk(
                         parent_tool_use_id,
                         compatibility_generation,
                     )
+                source_identity = (
+                    assistant_message_id
+                    if stream_projector is not None
+                    else assistant_observation_id
+                    or f"assistant-observation-{assistant_observation_scope}"
+                )
+                source_key = (
+                    source_identity
+                    or ("anonymous-assistant", assistant_observation_scope),
+                    parent_tool_use_id,
+                )
+                if not await select_source(source_key):
+                    continue
                 text_blocks = [
                     block for block in content if isinstance(block, TextBlock)
                 ]
@@ -3914,6 +4035,7 @@ async def run_claude_agent_sdk(
                     text_values[text_source_ordinal] = text
                 if (
                     stream_projector is not None
+                    and stream_projector.raw_lifecycle_observed
                     and typed_text_blocks
                     and not stream_projector.validate_typed_text_source_count(
                         len(typed_text_blocks)
@@ -3930,11 +4052,14 @@ async def run_claude_agent_sdk(
                 if stream_projection_failed:
                     continue
                 if not text_blocks:
+                    if typed_stop_reason == "tool_use":
+                        if not await classify_source(source_key, "work"):
+                            continue
                     if stream_projector is not None:
                         stream_projector.retire_text_source()
                     answer_timeline.retire_answer_binding()
                 typed_source_identities: dict[int, tuple[object, ...]] = {}
-                if stream_projector is not None:
+                if stream_projector is not None and stream_projector.raw_lifecycle_observed:
                     for (
                         text_source_ordinal,
                         _block,
@@ -3979,35 +4104,49 @@ async def run_claude_agent_sdk(
                 for block in content:
                     if type(block).__name__ in {"ToolUseBlock", "ServerToolUseBlock"}:
                         register_dynamic_tool_call_id(getattr(block, "id", None))
+                text_source_ordinal = 0
                 for block_index, block in enumerate(content):
-                    if agent_event_adapter is not None:
-                        await publish_agent_candidates(
-                            agent_event_adapter.accept_content_block(
-                                block,
-                                block_index=block_index,
-                                message_identity=assistant_message_identity,
+                    if isinstance(block, TextBlock):
+                        current_ordinal = text_source_ordinal
+                        text_source_ordinal += 1
+                        diagnostic_counters["text_blocks"] += 1
+                        text = text_values.get(current_ordinal)
+                        if text is not None:
+                            timeline_source_identity = typed_source_identities.get(
+                                current_ordinal
                             )
-                        )
-                for text_source_ordinal, _block in typed_text_blocks:
-                    diagnostic_counters["text_blocks"] += 1
-                    text = text_values.get(text_source_ordinal)
-                    if text is None:
-                        continue
-                    source_identity = typed_source_identities.get(text_source_ordinal)
-                    if source_identity is None:
-                        source_identity = (
-                            message_identity,
-                            text_source_ordinal,
-                        )
-                    last_public_stage = "message"
-                    answer_timeline.accept_assistant(
-                        text,
-                        source_identity=source_identity,
-                        message_identity=message_identity,
-                        parent_tool_use_id=parent_tool_use_id,
-                        observed_identity=assistant_observation_id,
-                        observation_scope=assistant_observation_scope,
-                    )
+                            if timeline_source_identity is None:
+                                timeline_source_identity = (
+                                    message_identity,
+                                    current_ordinal,
+                                )
+                            last_public_stage = "message"
+                            delta_text = answer_timeline.accept_assistant(
+                                text,
+                                source_identity=timeline_source_identity,
+                                message_identity=message_identity,
+                                parent_tool_use_id=parent_tool_use_id,
+                                observed_identity=assistant_observation_id,
+                                observation_scope=assistant_observation_scope,
+                            )
+                            if not await append_reconciled_text(
+                                source_key, message_identity, delta_text,
+                            ):
+                                break
+                    else:
+                        if type(block).__name__ == "ToolUseBlock":
+                            if not await classify_source(source_key, "work"):
+                                break
+                        if agent_event_adapter is not None:
+                            await publish_agent_candidates(
+                                agent_event_adapter.accept_content_block(
+                                    block,
+                                    block_index=block_index,
+                                    message_identity=assistant_message_identity,
+                                )
+                            )
+                    if stream_projection_failed:
+                        break
                 if answer_timeline.disabled:
                     fail_stream_projection(
                         reason=(
@@ -4018,53 +4157,22 @@ async def run_claude_agent_sdk(
                         location="typed_answer",
                     )
                 else:
-                    source_key = (assistant_message_id, parent_tool_use_id)
-                    if pending_message_key is not None and source_key != pending_message_key:
-                        await flush_pending()
-                    observed_text = "".join(text_values.values())
-                    if not observed_text and pending_raw_text:
-                        observed_text = "".join(pending_raw_text)
-                    had_raw_text = bool(pending_raw_text)
-                    pending_raw_text.clear()
-                    if not observed_text and pending_text and not had_raw_text and stream_projector is None:
-                        await flush_pending()
-                    if observed_text:
-                        typed_text_observed = True
-                        source_keys = tuple(
-                            typed_source_identities.get(ordinal, (message_identity, ordinal))
-                            for ordinal, _block in typed_text_blocks
-                        )
-                        if pending_message_key == source_key and pending_text:
-                            if source_keys and all(
-                                source in pending_seen_sources for source in source_keys
-                            ):
-                                prefix = "\n\n" if pending_text.startswith("\n\n") else ""
-                                previous_text = pending_text[len(prefix) :]
-                                if observed_text.startswith(previous_text):
-                                    pending_text = prefix + observed_text
-                                elif not previous_text.startswith(observed_text):
-                                    fail_stream_projection(
-                                        reason="assistant_text_conflict",
-                                        stage="message",
-                                        location="typed_answer",
-                                    )
-                            else:
-                                separator = "\n\n" if stream_projector is None and not had_raw_text else ""
-                                pending_text += separator + observed_text
-                        else:
-                            pending_text = (
-                                "\n\n" + observed_text
-                                if stream_projector is None and classified_answer
-                                else observed_text
-                            )
-                        pending_seen_sources.update(source_keys)
-                        pending_message_key = source_key
-                    last_assistant_tool_stop = typed_stop_reason == "tool_use"
-                    pending_tool = pending_tool or last_assistant_tool_stop
-                    if typed_stop_reason in {"tool_use", "end_turn"} and (
-                        stream_projector is None or not stream_projector.raw_lifecycle_observed
+                    has_tool = typed_stop_reason == "tool_use"
+                    if has_tool:
+                        if not await classify_source(source_key, "work"):
+                            continue
+                    elif typed_stop_reason == "end_turn" and (
+                        stream_projector is None
+                        or not stream_projector.raw_lifecycle_observed
+                        or stream_projector.last_stop_reason == "end_turn"
                     ):
-                        await flush_pending()
+                        if not await classify_source(source_key, "answer"):
+                            continue
+                    if typed_stop_reason in {"tool_use", "end_turn"} and (
+                        stream_projector is None
+                        or not stream_projector.raw_lifecycle_observed
+                    ):
+                        source_router.take(source_key)
                 await flush_answer_candidates()
             elif isinstance(message, ResultMessage):
                 terminal_result_message = message
@@ -4256,20 +4364,71 @@ async def run_claude_agent_sdk(
                 ]
                 await flush_answer_candidates()
                 received_structured_terminal = True
-                if not final_answer.strip() and not stream_projection_failed:
-                    await flush_pending()
+                if not stream_projection_failed:
+                    active_source = source_router.message_key
+                    if active_source is not None:
+                        if (
+                            source_router.role_for(active_source) is None
+                        ):
+                            if stop_reason in {"end_turn", "stop_sequence"} or (stop_reason is None and stream_projector is None):
+                                await classify_source(active_source, "answer")
+                            else:
+                                fail_stream_projection(
+                                    reason="assistant_part_classification_pending",
+                                    stage="message",
+                                    location="result_part_classification",
+                                )
+                        source_router.take(active_source)
                 if final_answer.strip() and not stream_projection_failed:
                     result_binding = answer_timeline.latest_binding
+                    result_source_key: tuple[object, ...] | None = None
+                    explicit_result_source = False
+                    bound_source_key = (
+                        source_router.owner_for_timeline(result_binding[1])
+                        if result_binding is not None
+                        else None
+                    )
+                    bound_source_is_work = (
+                        bound_source_key is not None
+                        and source_router.role_for(bound_source_key) == "work"
+                    )
                     if (
-                        stream_projector is None
-                        and (pending_tool or last_assistant_tool_stop)
-                        and commentary_texts
-                        and not classified_answer
+                        result_binding is not None
+                        and stream_projector is None
+                        and not source_router.has_answer_sources
                         and stop_reason == "end_turn"
-                        and not final_answer.startswith(answer_timeline.text)
+                        and bound_source_is_work
                     ):
-                        # A tool-only source can precede an independent terminal answer.
-                        result_suffix = final_answer
+                        # The nonstreaming SDK may return a final answer after a
+                        # verified work-only provider message.
+                        result_suffix = (
+                            final_answer[len(answer_timeline.text) :]
+                            if final_answer.startswith(answer_timeline.text)
+                            else final_answer
+                        )
+                        result_source_key = ("result", str(result_identity))
+                        explicit_result_source = True
+                    elif (
+                        result_binding is not None
+                        and stream_projector is not None
+                        and not source_router.has_answer_sources
+                        and stop_reason == "end_turn"
+                        and bound_source_is_work
+                    ):
+                        # A raw tool turn may carry the final answer only in its
+                        # verified Result suffix. Reconcile that suffix against
+                        # the observed work source, then give it a distinct
+                        # answer part so the work part stays immutable.
+                        result_suffix = answer_timeline.accept_result(
+                            final_answer,
+                            source_identity=result_binding[0],
+                            message_identity=result_binding[1],
+                            parent_tool_use_id=result_binding[2],
+                            result_identity=result_identity,
+                            terminal_reason=stop_reason,
+                        )
+                        result_source_key = ("result", str(result_identity))
+                        explicit_result_source = True
                     elif (
                         result_binding is None
                         and not answer_timeline.has_answer_source
@@ -4286,6 +4445,8 @@ async def run_claude_agent_sdk(
                             result_identity=result_identity,
                             terminal_reason=stop_reason,
                         )
+                        result_source_key = ("result", str(result_identity))
+                        explicit_result_source = True
                     else:
                         result_suffix = answer_timeline.accept_result(
                             final_answer,
@@ -4301,6 +4462,7 @@ async def run_claude_agent_sdk(
                             result_identity=result_identity,
                             terminal_reason=stop_reason,
                         )
+                        result_source_key = bound_source_key
                     if answer_timeline.disabled:
                         fail_stream_projection(
                             reason=(
@@ -4311,26 +4473,56 @@ async def run_claude_agent_sdk(
                             location="result_body",
                         )
                     else:
-                        await flush_pending()
-                        result_source_identity = (
-                            result_binding[0]
-                            if result_binding is not None
-                            else ("result", result_identity)
-                        )
-                        if typed_text_observed:
-                            answer_suffix = result_suffix
-                        else:
-                            answer_suffix = answer_timeline.text
-                        narrated_prefix = "".join(commentary_texts)
-                        if narrated_prefix and answer_suffix.startswith(narrated_prefix):
-                            answer_suffix = answer_suffix[len(narrated_prefix) :]
-                        if answer_suffix:
-                            classified_answer += answer_suffix
-                            for public_text in answer_stream_gate.accept(answer_suffix):
-                                await publish_terminal_text(
-                                    public_text,
-                                    source_identity=result_source_identity,
+                        if result_suffix:
+                            if result_source_key is None:
+                                fail_stream_projection(
+                                    reason="terminal_result_body_conflict",
+                                    stage="message",
+                                    location="result_source_unbound",
                                 )
+                            elif explicit_result_source:
+                                try:
+                                    routed_result = source_router.append_explicit_result(
+                                        result_source_key, result_suffix,
+                                    )
+                                except (TypeError, ValueError):
+                                    fail_stream_projection(
+                                        reason="terminal_result_body_conflict",
+                                        stage="message",
+                                        location="result_source_invalid",
+                                    )
+                                else:
+                                    if await classify_source(result_source_key, "answer"):
+                                        await publish_source_text(
+                                            result_source_key, routed_result,
+                                        )
+                            else:
+                                if source_router.role_for(result_source_key) == "work":
+                                    fail_stream_projection(
+                                        reason="terminal_result_body_conflict",
+                                        stage="message",
+                                        location="result_work_source",
+                                    )
+                                elif source_router.role_for(result_source_key) is None:
+                                    if stop_reason == "end_turn":
+                                        await classify_source(result_source_key, "answer")
+                                    else:
+                                        fail_stream_projection(
+                                            reason="assistant_part_classification_pending",
+                                            stage="message",
+                                            location="result_part_classification",
+                                        )
+                                if not stream_projection_failed:
+                                    if not await append_reconciled_text(
+                                        result_source_key,
+                                        result_binding[1],
+                                        result_suffix,
+                                    ):
+                                        fail_stream_projection(
+                                            reason="terminal_result_body_conflict",
+                                            stage="message",
+                                            location="result_suffix_publication",
+                                        )
                 terminal_reason = resolved_terminal_reason or (
                     str(stop_reason).strip()
                     if isinstance(stop_reason, str) and stop_reason.strip()
@@ -4357,51 +4549,47 @@ async def run_claude_agent_sdk(
             terminal_error = _SDK_OUTPUT_VALIDATION_FAILED
         if (
             terminal_error is None and terminal_answer_empty
-            and not classified_answer.strip() and not response_files
+            and not source_router.has_answer_sources and not response_files
         ):
             terminal_error = _SDK_MISSING_STRUCTURED_TERMINAL
-        finished_answer = answer_stream_gate.finish(
-            final_text=classified_answer,
+        if (
+            terminal_error is None
+            and agent_event_adapter is not None
+            and agent_event_adapter.has_unclassified_text_parts
+        ):
+            fail_stream_projection(
+                reason="assistant_part_classification_pending",
+                stage="message",
+                location="terminal_part_classification",
+            )
+            terminal_error = _SDK_OUTPUT_VALIDATION_FAILED
+        _finished_answer, routed_final_chunks = answer_stream_gate.finish_routed(
+            # The reconciled Timeline has already supplied every verified
+            # suffix; only the gate's bounded sanitizer tail may remain.
+            final_text="",
             release=True,
-        )
-        terminal_source_identity = (
-            answer_timeline.latest_binding[0]
-            if answer_timeline.latest_binding is not None
-            else None
+            fallback_source_identity=source_router.message_key,
         )
         terminal_text_acknowledged = True
         if not answer_stream_gate.failed and isinstance(
             terminal_result_message, ResultMessage
         ):
-            for public_text in finished_answer.chunks:
-                if not await publish_terminal_text(
-                    public_text,
-                    source_identity=terminal_source_identity,
+            for source_key, public_text in routed_final_chunks:
+                if not isinstance(source_key, tuple) or not await publish_part_text(
+                    source_key, public_text,
                 ):
                     terminal_text_acknowledged = False
-                    terminal_error = (
-                        mcp_execution_receipt_error()
-                        or terminal_error
-                        or "agent_event_callback_not_acknowledged"
+                    fail_stream_projection(
+                        reason="assistant_part_source_unbound",
+                        stage="message",
+                        location="terminal_part_suffix",
                     )
+                    terminal_error = _SDK_OUTPUT_VALIDATION_FAILED
                     break
-        coalescer_closed = (
-            await close_answer_candidates(flush=True)
-            if terminal_error is None
-            else await close_answer_candidates_after_failure()
-        )
-        if not coalescer_closed:
-            terminal_text_acknowledged = False
-            terminal_error = (
-                mcp_execution_receipt_error()
-                or terminal_error
-                or "agent_event_callback_not_acknowledged"
-            )
-        delivered_final_text = (
-            "".join(agent_public_answer_chunks)
-            if agent_event_adapter is not None
-            else finished_answer.final_text
-        )
+        if terminal_error is None and capability_completion_error() is None and mcp_execution_receipt_error() is None:
+            for source_key in tuple(pending_callback_text):
+                await flush_classified_callback_text(source_key, source_router.role_for(source_key) or "pending")
+        delivered_final_text = "".join(agent_public_answer_chunks)
         if (
             terminal_text_acknowledged
             and not answer_stream_gate.failed
@@ -4433,7 +4621,7 @@ async def run_claude_agent_sdk(
             else delivered_final_text if not answer_stream_gate.failed else ""
         )
         return assemble_run_result(
-            message="" if answer_receipt is not None else public_final_result_text,
+            message="" if sandbox_brokered and agent_event_adapter is not None else public_final_result_text,
             answer_receipt=answer_receipt,
             error=terminal_error,
             terminal_reason=terminal_reason,

@@ -14,6 +14,8 @@ from app.streaming.events import PUBLIC_MESSAGE_CORRELATED_EVENT_TYPES
 _V4_EVENT_STAGES = {
     "message.started": "message",
     "message.delta": "message",
+    "message.part.delta": "message",
+    "message.part.classified": "message",
     "message.completed": "message",
     "commentary.delta": "message",
     "thinking.started": "message",
@@ -72,7 +74,7 @@ EVENT_STAGE_MAP = {
 
 _V4_MESSAGE_EVENT_TYPES = PUBLIC_MESSAGE_CORRELATED_EVENT_TYPES
 _V4_PATH_PRESERVING_TEXT_PAYLOAD_EVENT_TYPES = frozenset(
-    {"message.delta", "thinking.delta"}
+    {"message.delta", "message.part.delta", "thinking.delta"}
 )
 _V4_RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 _V4_SAFE_REF_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,255}$")

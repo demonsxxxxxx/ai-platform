@@ -40,10 +40,11 @@ CLAUDE_CONTEXT_CUTOVER_SCHEMA_VERSION = "2026.09.15.2"
 SANDBOX_PROVIDER_RENEWAL_SCHEMA_VERSION = "2026.09.16.1"
 REPOSITORY_SKILL_RETIREMENT_SCHEMA_VERSION = "2026.09.22.1"
 HUMAN_APPROVAL_AND_LEGACY_MULTI_AGENT_RETIREMENT_SCHEMA_VERSION = "2026.09.26.1"
-TARGET_SCHEMA_VERSION = HUMAN_APPROVAL_AND_LEGACY_MULTI_AGENT_RETIREMENT_SCHEMA_VERSION
+ASSISTANT_TEXT_PART_INDEX_SCHEMA_VERSION = "2026.10.09.1"
+TARGET_SCHEMA_VERSION = ASSISTANT_TEXT_PART_INDEX_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
 # The Stream-only cutover retires old index contracts and is not binary rollback-compatible.
-CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = STREAM_ONLY_SCHEMA_VERSION
+CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = ASSISTANT_TEXT_PART_INDEX_SCHEMA_VERSION
 RUN_ATTEMPT_FUTURE_HEARTBEAT_TOLERANCE_SECONDS = 5
 MIGRATION_LOCK_ID = 7_226_391_831_505_901_103
 INDEX_MIGRATION_LOCK_ID = 7_226_391_831_505_901_104
@@ -672,6 +673,7 @@ class ConcurrentIndexMigration:
     unique: bool = False
     access_method: str = "btree"
     opclass_names: tuple[str, ...] = ()
+    key_expressions: tuple[str, ...] = ()
 
     @property
     def checksum_sha256(self) -> str:
@@ -690,9 +692,34 @@ class StaticIndexDefinition:
     unique: bool = False
     access_method: str = "btree"
     opclass_names: tuple[str, ...] = ()
+    key_expressions: tuple[str, ...] = ()
 
 
 CONCURRENT_INDEX_MIGRATIONS = (
+    ConcurrentIndexMigration(
+        'idx_run_events_v4_message_facts',
+        "create index concurrently if not exists idx_run_events_v4_message_facts "
+        "on run_events(tenant_id, run_id, (payload_json -> '__stream_v4' ->> 'attempt_id'), (payload_json -> '__stream_v4' ->> 'stream_incarnation'), (payload_json -> '__stream_v4' ->> 'message_id'), event_type, sequence)",
+        "run_events", ("tenant_id", "run_id", "event_type", "sequence"),
+        (False, False, False, False, False, False, False),
+        key_expressions=('tenant_id', 'run_id', "payload_json -> '__stream_v4' ->> 'attempt_id'", "payload_json -> '__stream_v4' ->> 'stream_incarnation'", "payload_json -> '__stream_v4' ->> 'message_id'", 'event_type', 'sequence'),
+    ),
+    ConcurrentIndexMigration(
+        'idx_run_events_v4_part_facts',
+        "create index concurrently if not exists idx_run_events_v4_part_facts "
+        "on run_events(tenant_id, run_id, (payload_json -> '__stream_v4' ->> 'attempt_id'), (payload_json -> '__stream_v4' ->> 'stream_incarnation'), (payload_json ->> 'part_id'), event_type, sequence)",
+        "run_events", ("tenant_id", "run_id", "event_type", "sequence"),
+        (False, False, False, False, False, False, False),
+        key_expressions=('tenant_id', 'run_id', "payload_json -> '__stream_v4' ->> 'attempt_id'", "payload_json -> '__stream_v4' ->> 'stream_incarnation'", "payload_json ->> 'part_id'", 'event_type', 'sequence'),
+    ),
+    ConcurrentIndexMigration(
+        'idx_run_events_v4_source_facts',
+        "create index concurrently if not exists idx_run_events_v4_source_facts "
+        "on run_events(tenant_id, run_id, (payload_json -> '__stream_v4' ->> 'attempt_id'), (payload_json -> '__stream_v4' ->> 'stream_incarnation'), (payload_json -> '__stream_v4' ->> 'source_event_id'), event_type, sequence)",
+        "run_events", ("tenant_id", "run_id", "event_type", "sequence"),
+        (False, False, False, False, False, False, False),
+        key_expressions=('tenant_id', 'run_id', "payload_json -> '__stream_v4' ->> 'attempt_id'", "payload_json -> '__stream_v4' ->> 'stream_incarnation'", "payload_json -> '__stream_v4' ->> 'source_event_id'", 'event_type', 'sequence'),
+    ),
     ConcurrentIndexMigration(
         "idx_messages_tenant_session_created",
         "create index concurrently if not exists idx_messages_tenant_session_created "
@@ -1043,6 +1070,11 @@ async def _index_is_ready(
                  where classes.position <= indexes.indnkeyatts
                  order by classes.position
                ) as opclass_names,
+               array(
+                 select pg_get_indexdef(indexes.indexrelid, position, true)
+                 from generate_series(1, indexes.indnkeyatts) position
+                 order by position
+               ) as key_expressions,
                pg_get_expr(indexes.indpred, indexes.indrelid) as predicate
         from pg_index indexes
         join pg_class relations on relations.oid = indexes.indrelid
@@ -1065,6 +1097,13 @@ async def _index_is_ready(
         return False
     if migration.opclass_names and tuple(row.get("opclass_names") or ()) != migration.opclass_names:
         return False
+    if migration.key_expressions:
+        def normalize_key(value: str) -> str:
+            return " ".join(value.lower().replace("::text", "").replace("(", " ").replace(")", " ").split())
+        if tuple(normalize_key(value) for value in row.get("key_expressions") or ()) != tuple(
+            normalize_key(value) for value in migration.key_expressions
+        ):
+            return False
     predicate = " ".join(
         str(row.get("predicate") or "")
         .lower()

@@ -1967,33 +1967,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             sessionData,
             eventsData,
           });
-          const historySequence = maxAcceptedRunEventSequence(
-            eventsData.events,
-            historyCurrentRunId,
-          );
-          const acceptedProgress = acceptedRunEventSequenceRef.current;
-          if (
-            historyCurrentRunId &&
-            acceptedProgress.sessionId === targetSessionId &&
-            acceptedProgress.runId === historyCurrentRunId
-          ) {
-            if (
-              historySequence !== null &&
-              (acceptedProgress.sequence === null ||
-                historySequence > acceptedProgress.sequence)
-            ) {
-              acceptedRunEventSequenceRef.current = {
-                ...acceptedProgress,
-                sequence: historySequence,
-              };
-            }
-          } else {
-            acceptedRunEventSequenceRef.current = {
-              sessionId: historyCurrentRunId ? targetSessionId : null,
-              runId: historyCurrentRunId,
-              sequence: historySequence,
-            };
-          }
           if (
             previousSessionId === targetSessionId &&
             previousRunId !== historyCurrentRunId
@@ -2047,6 +2020,35 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
                 { activeSubagentStack: activeSubagentStackRef.current },
               )
             : [];
+          // Only accepted history may advance the local sequence watermark.
+          // Versioned text-part projection failures throw during reconstruction.
+          const historySequence = maxAcceptedRunEventSequence(
+            eventsData.events,
+            historyCurrentRunId,
+          );
+          const acceptedProgress = acceptedRunEventSequenceRef.current;
+          if (
+            historyCurrentRunId &&
+            acceptedProgress.sessionId === targetSessionId &&
+            acceptedProgress.runId === historyCurrentRunId
+          ) {
+            if (
+              historySequence !== null &&
+              (acceptedProgress.sequence === null ||
+                historySequence > acceptedProgress.sequence)
+            ) {
+              acceptedRunEventSequenceRef.current = {
+                ...acceptedProgress,
+                sequence: historySequence,
+              };
+            }
+          } else {
+            acceptedRunEventSequenceRef.current = {
+              sessionId: historyCurrentRunId ? targetSessionId : null,
+              runId: historyCurrentRunId,
+              sequence: historySequence,
+            };
+          }
           if (targetRunId) {
             reconstructedMessages = mergeHydratedRunSegment(
               [],

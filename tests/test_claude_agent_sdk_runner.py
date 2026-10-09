@@ -125,6 +125,24 @@ def _settings():
     )
 
 
+def _assistant_text_part_roles(events):
+    return {
+        event.payload["part_id"]: event.payload["role"]
+        for event in events
+        if event.event_type == "message.part.classified"
+    }
+
+
+def _assistant_text_part_deltas(events, *, role=None):
+    roles = _assistant_text_part_roles(events)
+    return [
+        event
+        for event in events
+        if event.event_type == "message.part.delta"
+        and (role is None or roles.get(event.payload["part_id"]) == role)
+    ]
+
+
 @pytest.mark.asyncio
 async def test_sdk_requires_native_client_and_rejects_legacy_query_only(
     monkeypatch, tmp_path
@@ -3224,7 +3242,7 @@ async def test_sdk_completed_mcp_keeps_receipt_error_on_late_publication_failure
 
     async def acknowledge_candidates(candidates):
         event_types = {event.event_type for event in candidates}
-        if rejected_terminal_stage == "answer" and "message.delta" in event_types:
+        if rejected_terminal_stage == "answer" and "message.part.delta" in event_types:
             return False
         if rejected_terminal_stage == "result" and "model.completed" in event_types:
             return False
@@ -3522,7 +3540,7 @@ async def test_sdk_actual_mcp_streams_public_text_without_waiting_for_receipt(
         on_capability_evidence=None if outcome == "missing" else acknowledge,
     )
 
-    if outcome in {"stale", "duplicate"}:
+    if outcome in {"stale", "duplicate", "missing"}:
         assert sealed_probe == []
     else:
         assert sealed_probe
@@ -3572,12 +3590,15 @@ async def test_sdk_actual_mcp_streams_public_text_without_waiting_for_receipt(
             assert (result.error, result.message, deltas) == (expected, "", [])
         else:
             assert result.error == expected
-            assert result.message == text
+            assert result.message == ("" if outcome in {"false", "exception", "missing"} else text)
+            assert result.answer_receipt is None
             assert "mcp_execution_" not in result.message
             assert "private callback failure" not in result.message
             assert "retryable" in result.turn_diagnostics
             assert result.turn_diagnostics["retryable"] is False
-            assert "".join(deltas) == text
+            assert text.startswith("".join(deltas))
+            if outcome == "missing":
+                assert deltas == []
         if outcome == "overflow":
             assert "projection_failure_reason" not in result.turn_diagnostics
 
@@ -3900,12 +3921,10 @@ async def test_sdk_restarts_answer_disclosure_boundary_for_sequential_capabiliti
     assert result.error == "mcp_execution_outcome_unknown"
     assert result.turn_diagnostics["retryable"] is False
     assert result.message == ""
-    assert deltas == []
-    assert not any("first verified answer" in repr(event.as_dict()) for event in candidate_events)
-    assert not any(
-        "second capability in-flight text" in repr(event.as_dict())
-        for event in candidate_events
-    )
+    assert "".join(deltas).startswith("first verified ")
+    assert result.answer_receipt is None
+    assert any(event.event_type == "message.part.delta" for event in candidate_events)
+    assert not any(event.event_type == "message.completed" for event in candidate_events)
 
 
 @pytest.mark.asyncio
@@ -4375,6 +4394,7 @@ async def test_sdk_selected_skill_resumes_stream_after_incomplete_tool_block_bou
     ]
     assert "claude_sdk_thinking_summary" not in event_types
     assert "message.delta" not in event_types
+    assert "message.part.delta" not in event_types
 
 
 @pytest.mark.asyncio
@@ -5553,7 +5573,8 @@ async def test_sdk_sandbox_typed_end_turn_conflicts_with_raw_tool_use_stop(
 
     assert result.error == "claude_agent_sdk_output_validation_failed"
     assert result.message == ""
-    assert deltas == []
+    assert deltas and body.startswith("".join(deltas))
+    assert "".join(deltas) != body
 
 
 @pytest.mark.asyncio
@@ -5882,18 +5903,19 @@ async def test_sdk_waits_to_classify_split_assistant_text_before_later_tool_bloc
         attempt_id="attempt-split-turn",
     )
 
-    commentary_text = "".join(
+    work_text = "".join(
         str(candidate.payload["delta"])
         for candidate in candidates
-        if candidate.event_type == "commentary.delta"
+        if candidate.event_type == "message.part.delta"
+        and _assistant_text_part_roles(candidates).get(candidate.payload["part_id"]) == "work"
     )
     expected_text = (
         "Checking before the next step. Still checking.Final user answer"
     )
     assert observed_after_thinking == []
-    assert observed_after_text == []
-    assert commentary_text == expected_text
-    assert not any(candidate.event_type == "message.delta" for candidate in candidates)
+    assert observed_after_text == ["message.started", "message.part.delta"]
+    assert work_text == expected_text
+    assert not _assistant_text_part_deltas(candidates, role="answer")
     assert deltas == []
     assert result.error is None
     assert result.message == ""
@@ -5925,13 +5947,12 @@ async def test_sdk_tool_narration_uses_work_trace_without_answer_receipt(
         run_id="run-work-trace", attempt_id="attempt-work-trace",
     )
 
-    commentary = [event for event in candidates if event.event_type == "commentary.delta"]
-    answer = [event for event in candidates if event.event_type == "message.delta"]
+    work = _assistant_text_part_deltas(candidates, role="work")
+    answer = _assistant_text_part_deltas(candidates, role="answer")
     assert result.error is None
-    assert [event.payload["summary_id"].startswith("worktrace_") for event in commentary] == [True]
-    assert "".join(event.payload["delta"] for event in commentary) == "Checking █ before answering."
-    assert [event.payload["delta"] for event in answer] == ["Final user answer"]
-    assert deltas == ["Final user answer"]
+    assert "".join(event.payload["delta"] for event in work) == "Checking █ before answering."
+    assert "".join(event.payload["delta"] for event in answer) == "Final user answer"
+    assert "".join(deltas) == "Final user answer"
     assert result.answer_receipt is None
     assert result.message == "Final user answer"
 
@@ -5975,8 +5996,8 @@ async def test_sdk_tool_narration_terminal_fallback_keeps_only_answer(
 
     assert result.error is None
     assert "".join(deltas) == expected_answer
-    assert [event.payload["delta"] for event in candidates if event.event_type == "commentary.delta"] == ["Checking sources. "]
-    assert "".join(event.payload["delta"] for event in candidates if event.event_type == "message.delta") == expected_answer
+    assert "".join(event.payload["delta"] for event in _assistant_text_part_deltas(candidates, role="work")) == "Checking sources. "
+    assert "".join(event.payload["delta"] for event in _assistant_text_part_deltas(candidates, role="answer")) == expected_answer
     assert result.message == expected_answer
 
 
@@ -6023,8 +6044,8 @@ async def test_sdk_raw_only_tool_turn_narration_uses_work_trace(
     )
 
     assert result.error is None
-    assert [event.payload["delta"] for event in candidates if event.event_type == "commentary.delta"] == ["Checking sources. "]
-    assert "".join(event.payload["delta"] for event in candidates if event.event_type == "message.delta") == expected_answer
+    assert "".join(event.payload["delta"] for event in _assistant_text_part_deltas(candidates, role="work")) == "Checking sources. "
+    assert "".join(event.payload["delta"] for event in _assistant_text_part_deltas(candidates, role="answer")) == expected_answer
     assert "".join(deltas) == expected_answer
     assert result.message == ""
     assert (result.answer_receipt is not None) == bool(expected_answer)
@@ -6038,7 +6059,7 @@ async def test_sdk_tool_narration_batches_at_callback_limit(
     captured, batches, deltas = {}, [], []
     steps = []
     sdk = _scripted_sdk(captured, steps, result_text="Done.")
-    narration = "x" * (8_192 * 100 + 1)
+    narration = "x " * (8_192 * 50) + "x"
     steps.append(("assistant_blocks", [
         sdk.TextBlock(narration),
         sdk.ToolUseBlock(id="tool-1", name="Read", input={}),
@@ -6055,19 +6076,16 @@ async def test_sdk_tool_narration_batches_at_callback_limit(
         on_text=deltas.append, on_agent_event=acknowledge,
         run_id="run-long-work-trace", attempt_id="attempt-long-work-trace",
     )
-    commentary_batches = [
-        [event for event in batch if event.event_type == "commentary.delta"]
-        for batch in batches
-    ]
-    assert [len(batch) for batch in commentary_batches if batch] == [100, 1]
+    assert all(len(batch) <= 100 for batch in batches)
     if reject_second_batch:
         assert result.error == "agent_event_callback_not_acknowledged"
         assert deltas == []
     else:
         assert result.error is None
-        commentary = [event for batch in commentary_batches for event in batch]
-        assert len({event.payload["summary_id"] for event in commentary}) == 1
-        assert "".join(event.payload["delta"] for event in commentary) == narration
+        work = _assistant_text_part_deltas(
+            [event for batch in batches for event in batch], role="work",
+        )
+        assert "".join(event.payload["delta"] for event in work) == narration
         assert deltas == ["Done."]
 
 
@@ -6163,13 +6181,12 @@ async def test_sdk_tool_turn_omits_unsafe_work_trace_before_result(
         attempt_id="attempt-commentary",
     )
 
-    commentary = [
-        candidate
-        for candidate in candidates
-        if candidate.event_type == "commentary.delta"
-    ]
-    assert observed_before_result == []
-    assert commentary == []  # Runtime paths are omitted from work traces.
+    work = _assistant_text_part_deltas(candidates, role="work")
+    assert "message.part.delta" in observed_before_result
+    assert not any(candidate.event_type == "commentary.delta" for candidate in candidates)
+    assert "Checking █ in █ before the next step." == "".join(
+        candidate.payload["delta"] for candidate in work
+    )
     assert "".join(deltas) == "Final user answer"
     assert result.error is None
     assert result.message == "Final user answer"
@@ -6304,26 +6321,24 @@ async def test_sdk_projects_answer_candidates_before_turn_boundary(
     assert message_events[0].event_type == "message.started"
     assert message_events[-1].event_type == "message.completed"
     assert all(
-        event.event_type == "message.delta" for event in message_events[1:-1]
+        event.event_type in {"message.part.delta", "message.part.classified"}
+        for event in message_events[1:-1]
     )
+    answer_deltas = _assistant_text_part_deltas(candidates, role="answer")
     assert "".join(
         event.payload["delta"]
-        for event in message_events
-        if event.event_type == "message.delta"
+        for event in answer_deltas
     ) == omitted + delivered
-    delta_events = [
-        event for event in message_events if event.event_type == "message.delta"
-    ]
     assert message_events[-1].payload == {
-        "delta_count": len(delta_events),
+        "delta_count": len(answer_deltas),
         "text_length": len(omitted + delivered),
     }
     assert result.answer_receipt == {
-        "schema_version": "ai-platform.assistant-answer-receipt.v1",
-        "message_id": message_events[0].message_id,
-        "delta_count": len(delta_events),
+        "schema_version": "ai-platform.assistant-answer-receipt.v2",
+        "message_id": answer_deltas[0].message_id,
+        "delta_count": len(answer_deltas),
         "text_length": len(omitted + delivered),
-        "last_delta_event_id": delta_events[-1].event_id,
+        "last_delta_event_id": answer_deltas[-1].event_id,
     }
     assert result.turn_diagnostics["counters"]["public_projection_omissions"] == 0
 
@@ -6361,8 +6376,7 @@ async def test_sdk_preserves_gate_output_across_8192_candidate_boundary(
 
     answer_deltas = [
         event.payload["delta"]
-        for event in candidates
-        if event.event_type == "message.delta"
+        for event in _assistant_text_part_deltas(candidates, role="answer")
     ]
     assert len(answer) == 8_195
     assert result.error is None
@@ -6375,15 +6389,14 @@ async def test_sdk_preserves_gate_output_across_8192_candidate_boundary(
 
 
 @pytest.mark.asyncio
-async def test_sdk_candidate_omission_cannot_be_reported_as_success(
+async def test_sdk_rejected_part_candidate_cannot_be_reported_as_success(
     monkeypatch, tmp_path
 ):
     captured, candidates, deltas = {}, [], []
 
-    def reject_answer_delta(value):
-        if isinstance(value, dict) and value.get("event_type") == "message.delta":
-            raise RuntimeError("synthetic answer candidate failure")
-        return sanitize_public_event_candidate(value)
+    def reject_part_batch(batch):
+        candidates.extend(batch)
+        return not any(event.event_type == "message.part.delta" for event in batch)
 
     monkeypatch.setitem(
         sys.modules,
@@ -6398,27 +6411,22 @@ async def test_sdk_candidate_omission_cannot_be_reported_as_success(
         "app.executors.claude_agent_sdk_runner.get_settings",
         _sandbox_brokered_settings,
     )
-    monkeypatch.setattr(
-        "app.executors.claude_agent_sdk_runner.sanitize_public_event_candidate",
-        reject_answer_delta,
-    )
-
     result = await run_claude_agent_sdk(
         prompt="answer",
         cwd=tmp_path,
         skill_id="general-chat",
         execution_policy="sandbox_brokered",
         on_text=deltas.append,
-        on_agent_event=lambda batch: candidates.extend(batch) or True,
+        on_agent_event=reject_part_batch,
         run_id="run-answer-candidate-failure",
         attempt_id="attempt-answer-candidate-failure",
     )
 
     assert result.error is not None
     assert result.answer_receipt is None
-    assert not any(event.event_type == "message.delta" for event in candidates)
+    assert any(event.event_type == "message.part.delta" for event in candidates)
+    assert not any(event.event_type == "message.completed" for event in candidates)
     assert deltas == []
-    assert result.turn_diagnostics["counters"]["public_projection_omissions"] == 1
 
 
 @pytest.mark.asyncio
@@ -6463,7 +6471,7 @@ async def test_sdk_completion_projection_failure_keeps_delivered_text_without_re
     )
 
     assert result.error is None
-    assert result.message == delivered
+    assert result.message == ""
     assert result.answer_receipt is None
     assert "".join(deltas) == delivered
     event_types = [candidate.event_type for candidate in candidates]
@@ -6473,7 +6481,7 @@ async def test_sdk_completion_projection_failure_keeps_delivered_text_without_re
     assert "".join(
         candidate.payload["delta"]
         for candidate in candidates
-        if candidate.event_type == "message.delta"
+        if candidate.event_type == "message.part.delta"
     ) == delivered
     assert result.turn_diagnostics["counters"]["public_projection_omissions"] == 1
 
@@ -6502,7 +6510,8 @@ async def test_sdk_conflicting_result_keeps_terminal_body(
     )
 
     assert result.error == "claude_agent_sdk_output_validation_failed"
-    assert deltas == []
+    assert "".join(deltas) == "Complete Assistant "
+    assert "Conflicting terminal result" not in "".join(deltas)
     assert result.message == ""
     assert result.runtime_diagnostics["projection_failure"] == {
         "reason": "terminal_result_body_conflict",
@@ -6928,7 +6937,7 @@ def _sandbox_brokered_settings():
 
 
 @pytest.mark.asyncio
-async def test_sandbox_waits_for_source_to_publish_safe_raw_text_without_terminal_replay(
+async def test_sandbox_publishes_closed_raw_source_before_result_without_terminal_replay(
     monkeypatch, tmp_path
 ):
     captured = {}
@@ -6986,7 +6995,7 @@ async def test_sandbox_waits_for_source_to_publish_safe_raw_text_without_termina
     )
 
     assert captured["include_partial_messages"] is True
-    assert result_gate == []
+    assert result_gate and streamed_text.startswith("".join(result_gate))
     assert "".join(deltas) == streamed_text
     assert result.message == streamed_text
 
@@ -7124,7 +7133,7 @@ async def test_sandbox_stream_ignores_complete_tool_use_block_before_safe_text(
     monkeypatch, tmp_path
 ):
     captured = {}
-    deltas = []
+    deltas, candidates = [], []
     raw_streamed_text = "Safe answer after tool-1 use."
     public_streamed_text = "Safe answer after \u2588 use."
     events = [
@@ -7178,12 +7187,19 @@ async def test_sandbox_stream_ignores_complete_tool_use_block_before_safe_text(
         skill_id="general-chat",
         execution_policy="sandbox_brokered",
         on_text=deltas.append,
+        on_agent_event=lambda batch: candidates.extend(batch) or True,
+        run_id="run-raw-work", attempt_id="attempt-raw-work",
     )
 
     assert captured["include_partial_messages"] is True
     assert result.error is None
-    assert "".join(deltas) == public_streamed_text
-    assert result.message == public_streamed_text
+    assert deltas == []
+    assert result.message == ""
+    assert result.answer_receipt is None
+    work = _assistant_text_part_deltas(candidates, role="work")
+    assert "".join(event.payload["delta"] for event in work) == public_streamed_text
+    assert not _assistant_text_part_deltas(candidates, role="answer")
+    assert "partial_json" not in repr([event.as_dict() for event in candidates])
 
 
 @pytest.mark.asyncio
@@ -7863,7 +7879,7 @@ async def test_sdk_cli_stripped_result_completes_wrapped_stream_with_answer_rece
     delta_events = [
         candidate
         for candidate in message_events
-        if candidate.event_type == "message.delta"
+        if candidate.event_type == "message.part.delta"
     ]
     assert result.error is None
     assert result.received_structured_terminal is True
@@ -7873,7 +7889,7 @@ async def test_sdk_cli_stripped_result_completes_wrapped_stream_with_answer_rece
     assert message_events[-1].event_type == "message.completed"
     assert "".join(event.payload["delta"] for event in delta_events) == body
     assert result.answer_receipt == {
-        "schema_version": "ai-platform.assistant-answer-receipt.v1",
+        "schema_version": "ai-platform.assistant-answer-receipt.v2",
         "message_id": message_events[0].message_id,
         "delta_count": len(delta_events),
         "text_length": len(body),

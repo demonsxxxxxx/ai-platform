@@ -50,45 +50,28 @@ Runs owns business success. Optional files use `attach_file` and Artifact
 validation independently of text; neither a JSON object nor prose creates an
 artifact record.
 
-The adapter reconciles raw and typed Claude text before committing its public
-classification. A Tool-bearing Assistant source publishes sanitized prose as
-`commentary.delta` with a server-generated `worktrace_` summary ID; other
-sources publish only validated answer text through `message.delta`. Previously
-published answer rows cannot be reclassified. Existing explicit public summaries
-and retained history still use `commentary.delta` and render inline. Work traces
-fold with Tool/execution activity, and neither commentary kind enters the answer
-receipt. Hidden reasoning, raw tool arguments and results,
-private runtime values, credentials and approvals remain excluded.
-Intentional non-sensitive code and task references in Assistant prose are not
-raw tool data; apply the owning Chat content policy rather than a blanket path
-or JSON ban.
+The adapter reconciles raw/typed text and immediately gates each unique suffix
+before `message.part.delta`. A stable public part identifies its verified
+provider message; later `message.part.classified` facts select answer/work.
+Safe pending previews are visible before Tool/stop or Result; Thinking and raw
+Tool fields remain excluded. Work parts fold with activity and never enter the
+v2 answer receipt. Retained delta/v1 receipt and commentary/worktrace readers
+keep legacy semantics. No committed event row is rewritten.
 
-The raw projector treats `AssistantMessage` as a typed block observation, not a
-raw framing boundary, because it can precede the corresponding block stop.
-Raw deltas enter the strict identity/coverage timeline but wait for the source's
-Tool/stop classification before public projection. The public-answer gate still
-handles cross-chunk private tokens for answer sources. Work narration is
-redacted and checked in full before its 8,192-code-point chunks; callback
-batches contain at most 100 events and stop after an unacknowledged batch.
-Typed TextBlock and `ResultMessage.result` reconcile missing suffixes without
-replaying tool narration into the answer. The
-[streaming message design](../implementation/streaming-message-parts-design.md)
-defines this v4 behavior and the source exclusions that keep tool input, results
-and Thinking out of the body.
+The raw projector owns framing; typed blocks may arrive before block stop.
+The gate retains only necessary sensitive suffixes with their exact source
+ownership. Result adds only verified suffixes. Every callback still passes
+current Attempt/lease authority and exact receipt/ACK, with <=8192 code points
+per part delta and <=100 events per batch. Tool completion evidence and Run
+success remain independent. Invalid classifications or history fail closed.
 
-Keep the current callback, schema, history and renderer tests for v4 consumers.
-New regression coverage must distinguish raw deltas, typed block observations,
-message stop, SDK result, exact answer receipt and platform Run terminal.
-Focused regression tests own raw/typed ordering, source classification,
-full-segment commentary validation, callback capacity, stateful answer
-redaction, resource bounds and terminal reconciliation.
-
-The earlier immediate-publication rule is superseded for Claude sources: no
-existing committed `message.delta` row is reclassified, but future Tool-turn
-prose is a distinct work trace. Existing summary rows and readers remain
-compatible without a new schema field; older clients display new work traces
-inline until refreshed. No wire schema, storage migration or rollback authority
-changes. Remove obsolete early-publication assertions as part of this change.
+The [streaming message design](../implementation/streaming-message-parts-design.md)
+and [wire contract](redis-streams-sse-wire-protocol.md#change-contract-incremental-assistant-parts-and-final-selection)
+own the closed event family, receipt v2, UI phase rules, additive lookup indexes
+and coordinated release/rollback requirements. New readers must remain available
+while new rows and v2 receipts exist. This replaces classification-time whole
+source publication; selectors and owning tests now prove visible safe prefixes
+before stop, replay dedupe and final selection across live/history recovery.
 
 ## Change Contract: Compact terminal history hydration
 

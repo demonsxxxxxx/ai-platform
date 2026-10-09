@@ -167,9 +167,15 @@ export interface TextPart {
   content: string;
   /** Stable logical identity for a protocol text segment across replay/hydration. */
   logical_id?: string;
+  /** Public provider-message source identity for the v1 assistant text-part stream. */
+  public_part_id?: string;
+  /** Classification attached to a public assistant text source. */
+  text_role?: AssistantTextRole;
   depth?: number;
   agent_id?: string;
 }
+
+export type AssistantTextRole = "pending" | "answer" | "work";
 
 export interface ThinkingPart {
   type: "thinking";

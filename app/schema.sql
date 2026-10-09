@@ -3032,3 +3032,9 @@ where id = 'ragflow-knowledge-search';
 update tool_policies
 set status = 'disabled', visible_to_user = false
 where tool_id = 'ragflow-knowledge-search';
+
+create index if not exists idx_run_events_v4_message_facts on run_events(tenant_id, run_id, (payload_json -> '__stream_v4' ->> 'attempt_id'), (payload_json -> '__stream_v4' ->> 'stream_incarnation'), (payload_json -> '__stream_v4' ->> 'message_id'), event_type, sequence);
+
+create index if not exists idx_run_events_v4_part_facts on run_events(tenant_id, run_id, (payload_json -> '__stream_v4' ->> 'attempt_id'), (payload_json -> '__stream_v4' ->> 'stream_incarnation'), (payload_json ->> 'part_id'), event_type, sequence);
+
+create index if not exists idx_run_events_v4_source_facts on run_events(tenant_id, run_id, (payload_json -> '__stream_v4' ->> 'attempt_id'), (payload_json -> '__stream_v4' ->> 'stream_incarnation'), (payload_json -> '__stream_v4' ->> 'source_event_id'), event_type, sequence);

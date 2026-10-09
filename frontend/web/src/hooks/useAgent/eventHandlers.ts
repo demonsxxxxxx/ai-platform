@@ -25,7 +25,11 @@ import {
   PUBLIC_EXECUTION_EVENT_TYPES,
 } from "./types";
 import { clearAllLoadingStates } from "./messageParts";
-import { convertAttachments, processMessageEvent } from "./eventProcessor";
+import {
+  convertAttachments,
+  processMessageEvent,
+  type ProcessMessageEventResult,
+} from "./eventProcessor";
 import {
   type PublicStreamPresentation,
   type PublicStreamPresentationOwner,
@@ -39,6 +43,10 @@ import {
   isV4MessageCorrelatedEventType,
   type V4PublicEvent,
 } from "../../components/chat/assistant-ui/publicEventAdapter";
+import {
+  assistantTextPartIdIsPresentInOtherMessage,
+  isAssistantTextPartEventType,
+} from "../../types/assistantTextParts";
 
 /**
  * Context passed to event handler
@@ -277,9 +285,9 @@ function isCurrentV4GapOwner(
     acceptedCursor.runId === binding.runId &&
     acceptedCursor.streamIncarnation === binding.streamIncarnation
   ) {
-    const requestedEventId = event.event.payload.requested_event_id;
-    const requestedIncarnation =
-      event.event.payload.requested_stream_incarnation;
+    const payload = event.event.payload as Record<string, unknown>;
+    const requestedEventId = payload.requested_event_id;
+    const requestedIncarnation = payload.requested_stream_incarnation;
     return (
       requestedEventId !== null &&
       requestedIncarnation === binding.streamIncarnation &&
@@ -295,8 +303,9 @@ function isCurrentV4GapOwner(
         acceptedCursor.runId === binding.runId));
   return (
     cursorIsUnbound &&
-    event.event.payload.requested_event_id === null &&
-    event.event.payload.requested_stream_incarnation === null
+    (event.event.payload as Record<string, unknown>).requested_event_id === null &&
+    (event.event.payload as Record<string, unknown>)
+      .requested_stream_incarnation === null
   );
 }
 
@@ -626,6 +635,49 @@ export function handlePublicRunStreamEventV4(
   } else if (ownerMatchesRun && messageCorrelatedEvent) {
     projectedMessageId = owner!.reducerMessageId;
   }
+  let precomputedTextMutation: ProcessMessageEventResult | null = null;
+  if (
+    event.eventType === "message.delta" ||
+    isAssistantTextPartEventType(event.eventType)
+  ) {
+    const targetMessage = ctx.messagesRef.current.find(
+      (message) => message.id === projectedMessageId,
+    );
+    if (
+      !targetMessage ||
+      targetMessage.role !== "assistant" ||
+      (isAssistantTextPartEventType(event.eventType) &&
+        targetMessage.runId !== binding.runId)
+    ) {
+      return false;
+    }
+    if (isAssistantTextPartEventType(event.eventType)) {
+      const payload = event.event.payload as unknown as Record<string, unknown>;
+      const partId = payload.part_id;
+      if (
+        typeof partId !== "string" ||
+        assistantTextPartIdIsPresentInOtherMessage(
+          ctx.messagesRef.current,
+          projectedMessageId,
+          partId,
+        )
+      ) {
+        return false;
+      }
+    }
+    precomputedTextMutation = processMessageEvent(
+      event,
+      undefined,
+      targetMessage.parts || [],
+      targetMessage.content,
+      targetMessage.toolCalls || [],
+      0,
+      ctx.activeSubagentStackRef.current,
+      true,
+      projectedMessageId,
+    );
+    if (precomputedTextMutation.accepted === false) return false;
+  }
   const acceptedCursor = ctx.acceptedStreamCursorRef?.current;
   if (
     acceptedCursor?.sessionId === binding.sessionId &&
@@ -711,7 +763,7 @@ export function handlePublicRunStreamEventV4(
   let didApply = false;
   const next = ctx.messagesRef.current.map((message) => {
     if (message.id !== projectedMessageId) return message;
-    const result = processMessageEvent(
+    const result = precomputedTextMutation || processMessageEvent(
       event,
       undefined,
       message.parts || [],
@@ -722,6 +774,7 @@ export function handlePublicRunStreamEventV4(
       true,
       projectedMessageId,
     );
+    if (result.accepted === false) return message;
     didApply = true;
     const updated: Message = {
       ...message,
