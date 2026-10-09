@@ -269,6 +269,9 @@ test("Model admin discovery is a draft and only publication changes the active c
     });
 
     const enabled = inputByLabel(container, "启用 GPT-5");
+    const actionBar = container.querySelectorAll("[data-model-admin-action-bar]")[0];
+    assert.ok(actionBar);
+    assert.match(nodeText(actionBar), /已启用 0 \/ 1/);
     enabled.checked = true;
     const defaultInput = inputByLabel(container, "设为默认 GPT-5");
     defaultInput.checked = true;
@@ -278,6 +281,8 @@ test("Model admin discovery is a draft and only publication changes the active c
       changeMountedInput(inputByLabel(container, "openai/gpt-5 最大输入 Token"), "32000");
       changeMountedInput(inputByLabel(container, "openai/gpt-5 最大输出 Token"), "2048");
     });
+    assert.match(nodeText(actionBar), /已启用 1 \/ 1/);
+    assert.match(nodeText(actionBar), /切换和编辑仅修改草稿，发布后生效/);
     assert.match(nodeText(publishButton), /发布到全员/);
     await React.act(async () => {
       publishButton.dispatchEvent({ type: "click", bubbles: true });
