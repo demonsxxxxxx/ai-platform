@@ -449,6 +449,16 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
               reason: "tool_parameters_not_authorized",
             },
           ],
+          projection_failure: {
+            reason: "raw_frame_invalid",
+            stage: "message",
+            location: "raw_stream_frame",
+            frame_shape: {
+              event_type: "content_block_delta", block_type: "other", delta_type: "text_delta",
+              message_state: "open", open_block_type: "tool_use", index_state: "ignored",
+              guard: "block_delta_type",
+            },
+          },
           normalization_losses: [],
         },
         {
@@ -475,6 +485,14 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
           reason: "tool_parameters_not_authorized",
         },
       ],
+      projection_failure: {
+        reason: "raw_frame_invalid", stage: "message", location: "raw_stream_frame",
+        frame_shape: {
+          event_type: "content_block_delta", block_type: "other", delta_type: "text_delta",
+          message_state: "open", open_block_type: "tool_use", index_state: "ignored",
+          guard: "block_delta_type",
+        },
+      },
       executor_protocol: {
         reported: {
           task_status: "callback_failed",
@@ -703,6 +721,14 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
     assert.match(container.textContent ?? "", /ACTUAL_STACK_TAIL_MARKER/);
     assert.match(container.textContent ?? "", /tool_parameters_not_authorized/);
     assert.match(container.textContent ?? "", /逐条观测证据/);
+  const projectionEvidence = container.querySelector("[data-projection-failure-evidence]");
+  assert.ok(projectionEvidence);
+  assert.match(projectionEvidence.textContent ?? "", /输出校验断点/);
+  assert.match(projectionEvidence.textContent ?? "", /block_delta_type/);
+  assert.match(projectionEvidence.textContent ?? "", /raw_stream_frame/);
+  const observationEvidence = Array.from(container.querySelectorAll("details") as NodeListOf<HTMLDetailsElement>)
+    .find((item) => item.querySelector("summary")?.textContent?.includes("sdk_result_error"));
+  assert.match(observationEvidence?.querySelector("pre")?.textContent ?? "", /block_delta_type/);
     assert.match(container.textContent ?? "", /ACTUAL_CHAIN_MARKER/);
     assert.match(container.textContent ?? "", /message.delta/);
     assert.match(container.textContent ?? "", /第 1 \/ 2 页 · 共 21 条/);

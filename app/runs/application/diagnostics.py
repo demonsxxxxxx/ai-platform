@@ -395,6 +395,7 @@ def _project_observations(
         "tool_calls": [],
         "tool_policy_denials": [],
         "executor_protocol": None,
+        "projection_failure": None,
         "observations": [],
     }
     losses: list[dict[str, Any]] = []
@@ -427,6 +428,9 @@ def _project_observations(
                 else [],
                 "executor_protocol": evidence.get("executor_protocol")
                 if isinstance(evidence.get("executor_protocol"), dict)
+                else None,
+                "projection_failure": evidence.get("projection_failure")
+                if isinstance(evidence.get("projection_failure"), dict)
                 else None,
                 "normalization_losses": evidence.get("normalization_losses")
                 if isinstance(evidence.get("normalization_losses"), list)
@@ -475,6 +479,9 @@ def _project_observations(
             and _projection_identity(record_projection) != _projection_identity(root)
         ):
             handling.append(record_projection)
+        projection_failure = evidence.get("projection_failure")
+        if details["projection_failure"] is None and isinstance(projection_failure, dict):
+            details["projection_failure"] = projection_failure
         protocol_evidence = evidence.get("executor_protocol")
         if details["executor_protocol"] is None and isinstance(protocol_evidence, dict):
             details["executor_protocol"] = protocol_evidence

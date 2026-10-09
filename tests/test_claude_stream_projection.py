@@ -1245,6 +1245,32 @@ def test_answer_timeline_rejects_foreign_aggregate_suffix_for_bound_source():
     assert timeline.disabled is True
 
 
+def test_projector_accepts_empty_text_deltas_without_emitting_or_changing_source():
+    projector = _projector()
+    assert projector.accept(_message_start()) == ()
+    assert projector.accept(_start(0, "text")) == ()
+    source = projector.text_source_identity
+    assert projector.accept(_text_delta("")) == ()
+    assert projector.accept(_text_delta("answer")) == ("answer",)
+    assert projector.accept(_text_delta("")) == ()
+    assert projector.text_source_identity == source
+    assert projector.accept(_stop(0)) == ()
+    for event in _message_end():
+        assert projector.accept(event) == ()
+    assert projector.disabled is False
+    assert projector.failure_frame is None
+
+
+@pytest.mark.parametrize("text", [None, False, 0, [], {}])
+def test_projector_still_rejects_non_string_text_deltas(text):
+    projector = _projector()
+    projector.accept(_message_start())
+    projector.accept(_start(0, "text"))
+    assert projector.accept(_text_delta(text)) == ()
+    assert projector.disabled is True
+    assert projector.failure_frame["guard"] == "block_delta_text"
+
+
 def test_projector_captures_only_first_rejected_frame_shape():
     projector = _projector()
     assert projector.accept(_message_start("private-message-id")) == ()

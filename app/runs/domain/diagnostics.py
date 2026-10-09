@@ -192,7 +192,7 @@ def build_failure_observation(
 def sanitize_runtime_diagnostics(value: object) -> dict[str, Any]:
     """Project one normalized SDK payload into the private Runs storage contract."""
 
-    if not isinstance(value, dict):
+    if not isinstance(value, dict) or not value:
         return {}
     losses = sanitize_run_diagnostic_losses(value.get("normalization_losses"))
     sdk = value.get("sdk") if isinstance(value.get("sdk"), dict) else {}

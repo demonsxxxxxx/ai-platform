@@ -59,7 +59,7 @@
 
 ## SDK 来源、安全与顺序
 
-`ClaudeStreamProjector` 只接受完整 raw message/block framing。typed `AssistantMessage`
+`ClaudeStreamProjector` 只接受完整 raw message/block framing。已通过索引和类型校验的空字符串 `text_delta` 是不发布文字的空操作；非字符串仍拒绝。typed `AssistantMessage`
 可以先于 raw block stop 到达，不能替代 framing 边界。`AssistantAnswerTimeline` 是
 raw/typed/Result 新增后缀的唯一对账来源，typed replay 不重新拼接全文。
 来源 router 只持有分类和有界身份窗口，不为分类扣留整段正文。

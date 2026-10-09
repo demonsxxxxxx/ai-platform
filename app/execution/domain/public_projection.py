@@ -85,8 +85,8 @@ def claude_sdk_failure_message(sdk_result: object) -> str:
             "The executor ended without an authoritative terminal result. Please retry."
         ),
         "claude_agent_sdk_output_validation_failed": (
-            "This run's output could not be validated, so the result could not be "
-            "synchronized. Please refresh the session or contact an administrator."
+            "This run's output could not be validated. "
+            "Please contact an administrator and provide the run ID."
         ),
         "claude_agent_sdk_tool_admission_failed": (
             "The selected capability or tool was not admitted by platform policy."

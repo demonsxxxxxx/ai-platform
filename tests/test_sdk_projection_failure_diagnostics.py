@@ -160,9 +160,12 @@ def test_sdk_output_validation_failure_keeps_fixed_code_and_public_taxonomy():
         "claude_agent_sdk_output_validation_failed"
     )
     assert claude_sdk_failure_message(output_validation) == (
-        "This run's output could not be validated, so the result could not be "
-        "synchronized. Please refresh the session or contact an administrator."
+        "This run's output could not be validated. "
+        "Please contact an administrator and provide the run ID."
     )
     assert public_terminal_projection(
         "failed", "claude_agent_sdk_output_validation_failed"
+    )["detail_code"] == "run_failed"
+    assert public_terminal_projection(
+        "failed", "terminal_reconciliation_failed"
     )["detail_code"] == "terminal_reconciliation_failed"

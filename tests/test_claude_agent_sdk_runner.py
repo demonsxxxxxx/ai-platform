@@ -6742,6 +6742,42 @@ async def test_sdk_result_replaces_body_for_selected_empty_assistant(
 
 
 @pytest.mark.asyncio
+async def test_sandbox_stream_empty_text_deltas_preserve_success(monkeypatch, tmp_path):
+    deltas = []
+    events = [
+        {
+            "type": "message_start",
+            "message": {"id": "stream-message", "role": "assistant", "stop_reason": None},
+        },
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "text"}},
+        *[
+            {"type": "content_block_delta", "index": 0,
+             "delta": {"type": "text_delta", "text": text}}
+            for text in ("", "answer", "")
+        ],
+        {"type": "content_block_stop", "index": 0},
+        {"type": "message_delta", "delta": {"stop_reason": "end_turn"}},
+        {"type": "message_stop"},
+    ]
+    monkeypatch.setitem(
+        sys.modules, "claude_agent_sdk", _streaming_sdk({}, events, result_text="answer")
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings", _sandbox_brokered_settings
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="synthetic", cwd=tmp_path, skill_id="general-chat",
+        execution_policy="sandbox_brokered", on_text=deltas.append,
+    )
+
+    assert result.error is None
+    assert result.received_structured_terminal is True
+    assert "".join(deltas) == result.message == "answer"
+    assert "projection_failure" not in result.runtime_diagnostics
+
+
+@pytest.mark.asyncio
 async def test_sdk_raw_frame_failure_retains_only_first_fixed_shape(monkeypatch, tmp_path):
     captured = {}
     events = [
