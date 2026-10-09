@@ -109,6 +109,27 @@ assistant-ui、目录和通知使用相同角色选择。分类精确更新对�
 历史同 ID 的内容和角色优先于旧 live 状态，仅补确实缺失的安全文字、附件与活动。
 恢复仍绑定原 Run，不能覆盖下一轮。终态卡片与已公开安全文本并存。
 
+## 管理端公开回答读取
+
+Run Monitor 通过 Streaming API 的 `project_persisted_assistant_text_messages` 读取已持久化
+公开事实。读取器要求同租户、Run 和受授权 Attempt，分别按 Attempt、incarnation、epoch、
+message 分组；每条事实继续经过既有公开 v4 投影，再复用
+`reduce_assistant_text_part_message`。只有完成计数、长度与 causation 一致的最终 answer
+选择进入管理员 `worker_execution.messages` 与 `response`，work 不成为答案。
+组装后仍执行整段脱敏，避免跨 delta 的敏感串泄漏；内部身份不进入浏览器展示字段。
+
+`response` 与消息列表共享一次投影，选择序号最新的非空 answer；最新空消息不会遮盖
+已经确认的答案。旧 `message.delta`/带正文的历史 completed、commentary 和只有
+`assistant_delta` 的管理员历史保留原有只读兼容语义；出现可见 v4 消息时抑制
+`assistant_delta` 镜像，part 与旧 delta 混用的 lifecycle 不走旧答案路径。
+管理端的独立最新消息选择器退役。
+
+`answer_projection` 仅说明监控读取事实：available、incomplete、invalid 或 unknown，
+附未完成和校验失败的消息数量。缺少完成事实（包括 work-only）不确认最终答案，
+非法分类或计数冲突不静默修复；缺少已采集证据时原因未知。它不证明 SDK 没有正文、
+聊天持久化成功或截图中某条 Run 的根因，也不改变 Run 状态。私有 SDK/result、工具返回
+和生产重放不能作为回答回填来源。历史公开安全预览继续由 Chat owning reader 展示。
+
 ## 文件交付
 
 `attach_file` 继续验证工作区路径、Skill 边界、数量和预算后记录有序 descriptor。

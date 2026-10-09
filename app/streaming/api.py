@@ -1,5 +1,9 @@
 """Application boundary for the Redis Stream-only runtime."""
 
+from app.streaming.application.assistant_text_projection import (
+    AssistantTextMessageProjection,
+    project_persisted_assistant_text_messages,
+)
 from app.streaming.application.callback_events_v4 import (
     V4CallbackItem,
     callback_item_to_v4,
@@ -73,6 +77,8 @@ from app.streaming.domain.transport import (
 
 
 __all__ = [
+    "AssistantTextMessageProjection",
+    "project_persisted_assistant_text_messages",
     "RunCursor",
     "REDIS_ID_PATTERN",
     "RUN_ID_PATTERN",

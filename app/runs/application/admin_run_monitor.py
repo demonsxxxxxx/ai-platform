@@ -3,9 +3,10 @@
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
-from app.streaming.api import V4_METADATA_KEY
+from app.streaming.api import AssistantTextMessageProjection, V4_METADATA_KEY
 
 _V4_MESSAGE_TYPES = frozenset({"message.delta", "message.completed"})
+_V4_PART_TYPES = frozenset({"message.part.delta", "message.part.classified"})
 _V4_COMMENTARY_TYPE = "commentary.delta"
 _LEGACY_MESSAGE_TYPE = "assistant_delta"
 _TOOL_START_TYPES = frozenset({"mcp_tool_call_started", "tool_call_started", "tool.started"})
@@ -22,7 +23,7 @@ def _sequence(event: Mapping[str, Any], index: int) -> tuple[int, int]:
     return index + 1, index
 
 
-def _message_identity(event: Mapping[str, Any]) -> str | None:
+def _message_identity(event: Mapping[str, Any]) -> tuple[str, str, int, int] | None:
     payload = event.get("payload")
     if not isinstance(payload, Mapping):
         return None
@@ -30,7 +31,14 @@ def _message_identity(event: Mapping[str, Any]) -> str | None:
     if not isinstance(metadata, Mapping):
         return None
     message_id = metadata.get("message_id")
-    return message_id if isinstance(message_id, str) and message_id else None
+    if not isinstance(message_id, str) or not message_id:
+        return None
+    return (
+        message_id,
+        metadata.get("attempt_id") if isinstance(metadata.get("attempt_id"), str) else "",
+        metadata.get("stream_incarnation") if type(metadata.get("stream_incarnation")) is int else 0,
+        metadata.get("authorization_epoch") if type(metadata.get("authorization_epoch")) is int else 0,
+    )
 
 
 def _text_field(event: Mapping[str, Any], key: str) -> str | None:
@@ -41,81 +49,16 @@ def _text_field(event: Mapping[str, Any], key: str) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def assemble_admin_model_output(
-    events: Sequence[Mapping[str, Any]],
-    *,
-    sanitize_text: Callable[[str], str],
-) -> str:
-    """Assemble only authorized assistant-body events, then sanitize the whole body.
-
-    The complete-body sanitization is required because one private token or path can
-    be split across otherwise harmless persisted chunks. A v4 message identity is
-    also used to select the latest message and prevent compatibility mirroring from
-    duplicating its output.
-    """
-
-    ordered = sorted(enumerate(events), key=lambda item: _sequence(item[1], item[0]))
-    has_v4_message = any(
-        event.get("type") in _V4_MESSAGE_TYPES and event.get("visible_to_user") is True
-        for _, event in ordered
-    )
-    if has_v4_message:
-        messages: dict[str, list[str]] = {}
-        latest_identity: str | None = None
-        latest_position = (-1, -1)
-        completed: dict[str, str] = {}
-        for index, event in ordered:
-            if event.get("type") not in _V4_MESSAGE_TYPES:
-                continue
-            if event.get("visible_to_user") is not True:
-                continue
-            identity = _message_identity(event)
-            if identity is None:
-                continue
-            position = _sequence(event, index)
-            if position > latest_position:
-                latest_identity, latest_position = identity, position
-            messages.setdefault(identity, [])
-            if event.get("type") == "message.delta":
-                delta = _text_field(event, "delta")
-                if delta is not None:
-                    messages[identity].append(delta)
-            else:
-                content = _text_field(event, "content")
-                if content is not None:
-                    completed[identity] = content
-        if latest_identity is None:
-            return ""
-        body = completed.get(latest_identity, "".join(messages.get(latest_identity, [])))
-    else:
-        body_parts: list[str] = []
-        seen_ids: set[str] = set()
-        for index, event in ordered:
-            if event.get("type") != _LEGACY_MESSAGE_TYPE or event.get("visible_to_user") is not True:
-                continue
-            event_id = event.get("event_id")
-            if isinstance(event_id, str) and event_id:
-                if event_id in seen_ids:
-                    continue
-                seen_ids.add(event_id)
-            delta = _text_field(event, "delta")
-            if delta is None:
-                message = event.get("message")
-                delta = message if isinstance(message, str) and message else None
-            if delta is not None:
-                body_parts.append(delta)
-        body = "".join(body_parts)
-
-    if not body:
-        return ""
-    sanitized = sanitize_text(body)
-    return sanitized if isinstance(sanitized, str) else ""
+def _latest_answer(messages: Sequence[Mapping[str, Any]]) -> str:
+    answers = [message for message in messages if message["kind"] == "answer"]
+    return max(answers, key=lambda message: message["sequence"])["text"] if answers else ""
 
 
 def assemble_admin_public_messages(
     events: Sequence[Mapping[str, Any]],
     *,
     sanitize_text: Callable[[str], str],
+    part_messages: Sequence[AssistantTextMessageProjection] = (),
 ) -> list[dict[str, Any]]:
     """Project each visible Assistant message after whole-message redaction.
 
@@ -125,10 +68,14 @@ def assemble_admin_public_messages(
 
     ordered = sorted(enumerate(events), key=lambda item: _sequence(item[1], item[0]))
     has_v4_answer = any(
-        event.get("visible_to_user") is True and event.get("type") in _V4_MESSAGE_TYPES
+        event.get("visible_to_user") is True and event.get("type") in _V4_MESSAGE_TYPES | _V4_PART_TYPES
         for _, event in ordered
     )
-    blocks: dict[tuple[str, str, str], dict[str, Any]] = {}
+    part_identities = {
+        _message_identity(event) for _, event in ordered
+        if event.get("visible_to_user") is True and event.get("type") in _V4_PART_TYPES
+    }
+    blocks: dict[tuple[str, object, str], dict[str, Any]] = {}
     seen_legacy_ids: set[str] = set()
     for index, event in ordered:
         if event.get("visible_to_user") is not True:
@@ -138,6 +85,8 @@ def assemble_admin_public_messages(
             identity = _message_identity(event)
             if identity is None:
                 continue
+            if event_type in _V4_MESSAGE_TYPES and identity in part_identities:
+                continue  # Part lifecycles are owned by Streaming's validated reducer.
             kind = "commentary" if event_type == _V4_COMMENTARY_TYPE else "answer"
             summary_id = ""
             if kind == "commentary":
@@ -199,6 +148,19 @@ def assemble_admin_public_messages(
                 "created_at": block["last_created_at"] if block["kind"] == "answer" else block["created_at"],
             }
         )
+    for message in part_messages:
+        if message.status != "complete" or not message.text:
+            continue
+        sanitized = sanitize_text(message.text)
+        if not isinstance(sanitized, str) or not sanitized:
+            continue
+        messages.append({
+            "ordinal": 0, "kind": "answer", "text": sanitized,
+            "sequence": message.sequence, "created_at": message.created_at,
+        })
+    messages.sort(key=lambda message: message["sequence"])
+    for ordinal, message in enumerate(messages, 1):
+        message["ordinal"] = ordinal
     return messages
 
 
@@ -247,6 +209,7 @@ def build_admin_worker_execution(
     events: Sequence[Mapping[str, Any]],
     *,
     sanitize_text: Callable[[str], str],
+    part_messages: Sequence[AssistantTextMessageProjection] = (),
 ) -> dict[str, Any]:
     """Project one Run into its safe, human-readable Worker execution."""
 
@@ -326,9 +289,20 @@ def build_admin_worker_execution(
             action["result_summary"] = result_summary
             action["finished_at"] = event.get("created_at")
 
+    messages = assemble_admin_public_messages(
+        events, sanitize_text=sanitize_text, part_messages=part_messages,
+    )
+    response = _latest_answer(messages)
+    incomplete = sum(message.status == "incomplete" for message in part_messages)
+    invalid = sum(message.status == "invalid" for message in part_messages)
     return {
-        "response": assemble_admin_model_output(events, sanitize_text=sanitize_text),
-        "messages": assemble_admin_public_messages(events, sanitize_text=sanitize_text),
+        "response": response,
+        "messages": messages,
+        "answer_projection": {
+            "status": "available" if response else "invalid" if invalid else "incomplete" if incomplete else "unknown",
+            "incomplete_messages": incomplete,
+            "invalid_messages": invalid,
+        },
         "actions": actions,
         "model": model,
     }

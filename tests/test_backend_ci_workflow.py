@@ -165,6 +165,7 @@ BACKEND_TEST_SHARDS = {
     ),
     "run-control-contracts": (
         "tests/test_admin_run_detail.py",
+        "tests/test_admin_part_messages.py",
         "tests/test_admin_runtime_routes.py",
         "tests/test_chat_selected_skill_routing.py",
         "tests/test_claude_agent_events.py",
