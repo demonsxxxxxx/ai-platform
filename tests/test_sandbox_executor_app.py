@@ -3231,6 +3231,7 @@ async def test_model_wire_and_actual_sdk_sandbox_checkpoints_match_across_tool_c
         _full_sandbox_local_tool_capability_subjects, _scripted_sdk, _settings,
     )
     from app.runtime.kernel_contracts import CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE
+    from app.execution.application.run_interaction import RunInputSnapshot
 
     install_mcp_sessions(monkeypatch)
     caplog.set_level(logging.WARNING)
@@ -3264,6 +3265,22 @@ async def test_model_wire_and_actual_sdk_sandbox_checkpoints_match_across_tool_c
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
     monkeypatch.setattr(executor_app, "get_settings", _settings)
     monkeypatch.setattr(executor_app, "build_claude_session_store", lambda **_kwargs: None)
+    input_scopes, input_operations = [], []
+
+    class Inputs:
+        async def open(self):
+            input_operations.append("open")
+            return RunInputSnapshot("open")
+
+        async def settle(self):
+            input_operations.append("settle")
+            return RunInputSnapshot("sealed")
+
+    def input_client(**kwargs):
+        input_scopes.append(kwargs)
+        return Inputs()
+
+    monkeypatch.setattr(executor_app, "build_run_input_callback_client", input_client)
     payload = task_payload()
     payload["config"]["tool_policy_subjects"] = _full_sandbox_local_tool_capability_subjects(
         [], sandbox_provider="opensandbox",
@@ -3285,6 +3302,14 @@ async def test_model_wire_and_actual_sdk_sandbox_checkpoints_match_across_tool_c
         if ending == "upstream_error":
             assert result["error_code"] == "claude_agent_sdk_execution_failed"
 
+    assert input_scopes == [{
+        "callback_base_url": TRUSTED_CALLBACK_BASE_URL,
+        "callback_token": request.callback_token,
+        "callback_token_id": request.callback_token_id,
+        "run_id": request.run_id,
+        "attempt_id": request.attempt_id,
+    }]
+    assert input_operations == (["open", "settle"] if ending == "complete" else ["open"])
     checkpoints = [event["payload"] for callback in callbacks for event in callback["events"]
                    if event["type"] == CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE]
     sdk_before = [item for item in checkpoints if item["call_ref"] == wire_before[0]["call_ref"]]

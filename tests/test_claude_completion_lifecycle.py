@@ -187,10 +187,15 @@ async def test_stop_settles_pending_session_store_tail_before_terminal_result(
     transport = ClosingTransport()
     cleanup_tasks = set()
     checkpoints, public_chunks = [], []
-    events = response_events("drained-model-response", ["before", "tail"])
+    before_text = "Visible prefix. " * 1024
+    tail_text = "Suppressed drain tail. " * 512
+    before_published = asyncio.Event()
+    events = response_events("drained-model-response", [before_text, tail_text])
+    events.insert(3, {"type": "ping"})
 
     async def on_text(text):
         public_chunks.append(text)
+        before_published.set()
 
     def stream_event(index, event):
         return {
@@ -209,11 +214,11 @@ async def test_stop_settles_pending_session_store_tail_before_terminal_result(
         path = str(tmp_path / "project" / "stable-provider-id.jsonl")
         yield {"type": "transcript_mirror", "filePath": path, "entries": [{"uuid": "initial"}]}
         if not forced_close:
-            for index, event in enumerate(events[:3]):
+            for index, event in enumerate(events[:4]):
                 yield stream_event(index, event)
             receiving.set()
             await interrupted.wait()
-            for index, event in enumerate(events[3:], 3):
+            for index, event in enumerate(events[4:], 4):
                 yield stream_event(index, event)
         yield {"type": "transcript_mirror", "filePath": path, "entries": [{"uuid": "tail"}]}
         if forced_close:
@@ -270,9 +275,12 @@ async def test_stop_settles_pending_session_store_tail_before_terminal_result(
         prompt="hello", cwd=tmp_path, skill_id=None, session_id="stable-provider-id",
         session_store=store, provider_session_resume_required=False, cleanup_tasks=cleanup_tasks,
         run_id="run", attempt_id="attempt", on_sdk_text=checkpoints.append, on_text=on_text,
+        execution_policy="sandbox_brokered",
     ))
     try:
         await asyncio.wait_for(receiving.wait(), 1)
+        if not forced_close:
+            await asyncio.wait_for(before_published.wait(), 1)
         if stop_mode == "cancel":
             task.cancel()
         await asyncio.wait_for(tail_started.wait(), 1)
@@ -296,10 +304,13 @@ async def test_stop_settles_pending_session_store_tail_before_terminal_result(
             assert [item["events"] for item in checkpoints] == [1, 2]
             final = checkpoints[-1]
             assert final["final"] is True and final["complete"] is True
-            assert final["coverage"] == "text_delta" and final["chars"] == 10
-            assert final["sha256"] == hashlib.sha256(b"beforetail").hexdigest()
+            assert final["coverage"] == "text_delta"
+            assert final["chars"] == len(before_text + tail_text)
+            assert final["sha256"] == hashlib.sha256((before_text + tail_text).encode()).hexdigest()
             assert len(final["call_ref"]) == 32
-            assert "tail" not in "".join(public_chunks)
+            public_text = "".join(public_chunks)
+            assert before_text[:100] in public_text
+            assert "Suppressed drain tail." not in public_text
     finally:
         release_tail.set()
         transport.release.set()
