@@ -243,3 +243,7 @@ routing owner 的 `test_raw_only_part_is_acknowledged_before_message_stop` 由�
 数量必须等于公开 ACK 数量的旧对账假设，公开 part 单独验证完成块来源及错误后的不可公开性。
 SDK worker 的正常消息夹具将误设的 child scope 改为主消息；独立子 Agent 私有正文排除用例
 保持有效。旧 on_text 回调在终态安全门后交付；live 预览继续通过已 ACK 的公开 part 事实验证。
+`test_claude_agent_events.py` 的 tool-only 用例改为 SDK 成功且无公开 receipt/正文，仍完整验证
+工具、子 Agent 活动与标识脱敏；普通 receipt 用例修正误设的 child scope，legacy inline
+用例明确提供完成块且 Result 为私有不同正文。`test_context_prompt_continuity.py` 的正常
+公开消息也改为 main scope，Context 工具权限、作用域、脱敏和关闭后 callback 拒绝断言保留。
