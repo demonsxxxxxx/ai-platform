@@ -3155,12 +3155,8 @@ def test_sandbox_runtime_without_private_diagnostics_does_not_synthesize_rejecti
                 timings={},
             ),
         )
-        if not carrier:
-            assert "runtime_diagnostics" not in result.result
-            assert "runtime_diagnostics" not in result.executor_payload
-        else:
-            assert result.result["runtime_diagnostics"]["error_code"] == "runtime_diagnostics_rejected"
-            assert result.executor_payload["runtime_diagnostics"] == result.result["runtime_diagnostics"]
+        assert "runtime_diagnostics" not in result.result
+        assert "runtime_diagnostics" not in result.executor_payload
 
 
 def test_sandbox_runtime_preserves_private_runtime_diagnostics(tmp_path):

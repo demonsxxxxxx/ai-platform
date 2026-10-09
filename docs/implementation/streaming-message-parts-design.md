@@ -81,7 +81,7 @@ flowchart LR
 ### 3.1 Claude SDK 适配
 
 1. `include_partial_messages=True` 时，`ClaudeStreamProjector` 只验证 raw message/block framing。
-   它在精确的 text block 内立即返回 `text_delta`，不保存整轮原文，也不判断“过程”或“最终”。
+   它在精确的 text block 内立即返回非空 `text_delta`；合法空字符串是无发布、无状态变更的空操作，非字符串仍拒绝。它不保存整轮原文，也不判断“过程”或“最终”。
 2. Thinking、tool input JSON、server tool input 和其他非 text block 只用于排除错误来源，其 delta 不进入公开正文。
 3. raw `message_start`、block index、block stop 和 `message_stop` 执行防御性校验。
    显式 message 内不能重复使用已关闭的 block index；未携带完整 envelope 或生命周期不完整的旧兼容序列已经退出并拒绝。

@@ -201,6 +201,14 @@ export function RunDiagnosticsSection({
               </ul>
             </div>
           ) : null}
+          {diagnostics.details.projection_failure ? (
+            <div className="rounded-md border border-[var(--theme-border)] p-3" data-projection-failure-evidence>
+              <h4 className="text-xs font-medium text-[var(--theme-text)]">输出校验断点</h4>
+              <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-[var(--theme-text-secondary)]">
+                {diagnosticJson(diagnostics.details.projection_failure)}
+              </pre>
+            </div>
+          ) : null}
           {protocolEvidence ? (
             <div
               className="rounded-md border border-[var(--theme-border)] p-3"
@@ -305,6 +313,7 @@ export function RunDiagnosticsSection({
                         tool_calls: observation.tool_calls,
                         tool_policy_denials: observation.tool_policy_denials,
                         executor_protocol: observation.executor_protocol,
+                        projection_failure: observation.projection_failure,
                         normalization_losses: observation.normalization_losses,
                       })}
                     </pre>

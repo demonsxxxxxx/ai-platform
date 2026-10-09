@@ -1639,8 +1639,10 @@ class ClaudeStreamProjector:
             self._disable(guard="block_delta_type")
             return ()
         text = delta.get("text")
-        if not isinstance(text, str) or not text:
+        if not isinstance(text, str):
             self._disable(guard="block_delta_text")
+            return ()
+        if not text:
             return ()
         self._partial_emitted = True
         return (text,)

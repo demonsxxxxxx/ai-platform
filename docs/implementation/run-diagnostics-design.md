@@ -100,7 +100,7 @@ flowchart LR
 
 保留各信任边界的验证，但在同一受信进程内传递已验证类型，退出层层重建字典的重复实现。SDK 特有字段只在 SDK 适配器转换；通用合并和预算只有 Runs 一个实现。
 
-当前 SDK v1 归一化结果使用 `failure_observations` 与 `normalization_losses`，不再用 `{}` 同时表示所有失败；未知 schema 和无效字段生成安全拒绝观察，不回显未知载荷。Run 级持久契约将它们封装为不可变 `observations` 与顶层 `losses`，并补齐 `not_collected`、`legacy_record`、`unsupported_schema` 等查询状态。`transport_unavailable`、`redacted` 和保留期限缺失只有在对应采集事实落库后才能展示，当前实现不会凭空生成。
+当前 SDK v1 归一化结果使用 `failure_observations` 与 `normalization_losses`。缺失、`null` 和空对象 `{}` 表示没有诊断，Sandbox 归一化和 Runs 存储投影均保持为空，不创建失败观察；成功 Run 仍可保存实际存在的诊断。非空对象的未知 schema、非对象载荷和无效字段生成安全拒绝观察，不回显未知载荷。Run 级持久契约将它们封装为不可变 `observations` 与顶层 `losses`，并补齐 `not_collected`、`legacy_record`、`unsupported_schema` 等查询状态。`transport_unavailable`、`redacted` 和保留期限缺失只有在对应采集事实落库后才能展示，当前实现不会凭空生成。
 
 HTTP 错误响应有独立预算。首批保留现有 4 KiB body 解析上限：合法小响应中的私有诊断进入异常对象的独立载体；非法或超限 body 只生成安全的拒绝/loss，不解析或回显原内容。把受信 envelope 扩到 128 KiB 必须与 Executor 响应、Worker 保存和组件发布一起完成，不能由客户端单边放大。结构值的 4 KiB 与 SDK 诊断总量 128 KiB 仍分别生效。
 
@@ -176,6 +176,8 @@ Chat admission 先解析显式、继承及 Agent Profile 注入的 MCP 工具，
 Run Monitor 的列表和详情概览从既有 Session、User、Workspace、Agent Profile 与 Skill 权威投影标题和名称，并按当前公共文本规则再次脱敏、有界截断。技术 ID 仍作为查询键和可折叠排障信息返回，但不作为默认视觉标题；该投影不新增一套名称或任务状态权威。
 
 详情的执行记录从已持久化的公开事件重建：按消息身份拼接每条可见 Agent 正文和过程说明，再对整条文本脱敏；工具开始/终态按调用身份合并为逐次动作，只展示受控名称、状态、耗时与脱敏概要。调用身份用于同一调用的诊断证据关联，仅在折叠技术信息中显示，不作为视觉标题。状态心跳不作为新的执行步骤；失败概览将首条留存观察关联到 Attempt 和可用的运行环境，分开展示其来源错误、脱敏异常摘要、后续处理和 Run 终态错误，并同步提示证据裁剪。这里的“首条留存”仍非根因证明。管理员投影不开放 SDK 推理、原始命令/参数/结果或私有流元数据；服务端在完成消息拼接后从详情事件中移除私有事件及 `__stream_v4`。
+
+SDK 输出校验的 `projection_failure`（原因、阶段、位置及可用的首个拒绝帧 `frame_shape`）经过既有字段白名单后，保留到管理响应的逐条观察、首个可用断点汇总及同快照诊断包；Run Monitor 显示输出校验断点。结构标签不包含帧正文、提示词、工具参数或原始标识。缺少 `frame_shape` 的历史记录继续显示已有原因，不推断当时的拒绝条件。
 
 单 Run 记录有界，首版直接获取一份快照；不引入另一套诊断事件流。前端在现有 RunMonitor 详情按需加载，运行中按现有有界轮询策略刷新；切换或关闭详情时递增请求序列并核对当前 Run，旧响应不会写入新详情。普通用户接口和 SSE 不加入私有观察。
 
@@ -258,6 +260,8 @@ Run Monitor 的列表和详情概览从既有 Session、User、Workspace、Agent
 | protocol-only caller transaction/catch | 只有 probe 分支自行隔离，其他诊断失败可否决终态 | Worker 调和 | 删除调用者特例，统一由 Runs 服务和 Repository savepoint 降级 | `RunDiagnosticsService` / `PostgresRunDiagnosticsRepository`；故障注入与真实 PostgreSQL 选择器 |
 | 管理详情首条观察汇总 | 后续调和/收集观察不可完整定位 | Run Monitor | 保留旧汇总形状兼容，新增有界 `observations`；同身份 handling 不重复 | Runs 管理投影；多观察后端和挂载组件测试 |
 | Sandbox 通用公共错误 | 公共信息安全但丢失原始 typed code | 普通用户与管理员 | 公共 code/message 保持不变，私有观察保留原 code、stage 和有界证据 | Worker 异常映射测试 |
+
+本次输出排查修复同时退役空对象生成 `runtime_diagnostics_rejected` / 空失败观察的分支与对应断言、管理投影遗漏 `projection_failure` 的旧形状，以及 SDK 输出校验失败映射为对账失败的别名。既有 `test_run_diagnostics.py` 覆盖归一化→Runs 合并→管理查询→ZIP 和私有字段排除，`test_sdk_projection_failure_diagnostics.py` 区分输出失败与真实对账失败；这些测试继续使用现有 CI 显式选择器。历史 result 的只读 reader 保留在 Runs，空载体显示 `not_collected`；已持久化的旧错误观察不批量重写。其他废弃路径不在本次范围内。
 
 ### 7.3 硬编码分类规则
 

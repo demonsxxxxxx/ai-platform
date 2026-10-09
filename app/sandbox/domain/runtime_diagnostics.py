@@ -830,7 +830,7 @@ def _project_list(
 def normalize_sdk_runtime_diagnostics(value: object) -> dict[str, Any]:
     """Validate and bound private SDK diagnostics at every sandbox boundary."""
 
-    if value is None:
+    if value is None or (isinstance(value, dict) and not value):
         return {}
     if not isinstance(value, dict):
         return runtime_diagnostics_rejection(reason="invalid_payload")
