@@ -191,11 +191,18 @@ Sandbox-brokered SDK runs with an `on_text` callback validate raw `StreamEvent`
 framing before public answer projection. On the first `raw_frame_invalid` rejection,
 private `projection_failure.frame_shape` records only allowlisted event, block,
 and delta type labels, the message/open-block/index state, and the failed
-validator guard. Unknown types map to `other`; no raw frame, payload, text,
-identifier, index value, or tool input is persisted. Sandbox normalization and
-Runs admin diagnostics enforce the same closed shape contract. This adds no
-ordinary-user field and changes neither the fail-closed decision nor text
-publication. No superseded production path, assertion, or selector is in scope.
+validator guard. `preceding_frames` contains at most four accepted frames in
+arrival order, with those same structural labels except the guard; the rejected
+frame is never in that list. Unknown types map to `other`; no raw frame, payload,
+text, identifier, index value, or tool input is persisted. Sandbox normalization
+and Runs admin diagnostics independently enforce the bounded closed shapes. An
+older record without `preceding_frames` remains readable. This evidence locates
+the first SDK-delivered protocol conflict, but cannot prove whether the model,
+bundled CLI, SDK transport, or a replay produced it; compare the affected
+release's actual SDK/CLI versions and approved upstream evidence before changing
+the framing validator. This adds no ordinary-user field and changes neither the
+fail-closed decision nor text publication. No superseded production path,
+assertion, or selector is in scope.
 
 ## Redis Lifecycle Authority
 

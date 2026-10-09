@@ -390,6 +390,52 @@ async def test_authorized_session_runs_can_bind_one_workspace_for_continuation_i
 
 
 @pytest.mark.asyncio
+async def test_authorized_session_run_projections_keep_tenant_identity_for_history_replay():
+    conn = RecordingConnection()
+
+    await _repo_owner_app_conversations_infrastructure_session_queries_postgres.list_authorized_session_runs(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        session_id="session-a",
+        limit=50,
+    )
+    first_sql, _ = conn.calls[-1]
+
+    await _repo_owner_app_conversations_infrastructure_session_queries_postgres.list_authorized_session_runs_by_ids(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_ids=["run-a"],
+    )
+    cursor_sql, params = conn.calls[-1]
+
+    for sql in (first_sql, cursor_sql):
+        select_clause = sql.split("from ", 1)[0]
+        assert "runs.id" in select_clause
+        assert "runs.tenant_id" in select_clause
+        assert "runs.result_json" in select_clause
+    assert params == (["run-a"], "tenant-a", "user-a", "session-a")
+
+
+@pytest.mark.asyncio
+async def test_authorized_session_run_cursor_projection_is_query_free_for_empty_ids():
+    conn = RecordingConnection()
+
+    rows = await _repo_owner_app_conversations_infrastructure_session_queries_postgres.list_authorized_session_runs_by_ids(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_ids=[],
+    )
+
+    assert rows == []
+    assert conn.calls == []
+
+
+@pytest.mark.asyncio
 async def test_authorized_messages_bind_tenant_session_owner_and_stable_order():
     conn = RecordingConnection()
 
