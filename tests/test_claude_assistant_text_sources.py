@@ -2,7 +2,7 @@
 
 import unittest
 
-from app.executors.claude.assistant_text_sources import AssistantTextSourceBuffer
+from app.execution.infrastructure.harness.claude.assistant_text_sources import AssistantTextSourceBuffer
 
 
 class AssistantTextSourceBufferTests(unittest.TestCase):

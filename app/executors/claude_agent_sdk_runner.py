@@ -56,7 +56,7 @@ from app.bootstrap.claude_client import (
     prepare_claude_run_interaction,
 )
 from app.execution.api import ClaudeSdkAgentEventAdapter, ModelTextCheckpoint, RunInteractionProtocol
-from app.executors.claude.assistant_text_sources import AssistantTextSourceBuffer
+from app.execution.infrastructure.harness.claude.assistant_text_sources import AssistantTextSourceBuffer
 from app.executors.claude_stream_projection import (
     AssistantAnswerTimeline,
     ClaudeStreamProjector,
