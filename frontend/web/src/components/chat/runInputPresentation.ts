@@ -31,4 +31,3 @@ export function presentRunInputAnswer(
     answer: values.every((value) => value !== null) ? values.join("、") : null,
   };
 }
-
