@@ -2,7 +2,7 @@
 
 Status: source candidate; deployment and external acceptance are separate
 Owner: Context + Execution + Runs
-Last updated: 2026-09-28
+Last updated: 2026-10-09
 
 ## Decision
 
@@ -55,8 +55,10 @@ This change is limited to:
 - Runs terminal composition previously coupled to checkpoint usage;
 - owning tests and these architecture documents.
 
-No frontend, SSE wire, public message schema, authorization policy, provider
-callback protocol, database migration, or deployment change is in scope.
+No frontend, SSE wire, public message schema, provider callback request/response
+schema, database migration, or deployment change is in scope. The cancellation
+drain qualification is limited to native append persistence; current tool,
+input and history-load authorization remains unchanged.
 
 ### Preserved invariants
 
@@ -171,6 +173,28 @@ inconsistent receipt is a conflict; callbacks do not recreate it under an
 existing writer. Scoped locks, current Attempt/lease checks, owner generation,
 and frozen coverage checks apply to every callback.
 
+Before returning native entries or child paths, the callback verifies the
+whole bounded epoch against its existing entry count, contiguous global
+sequence, transcript byte count and append-batch digests. Child paths share
+that global sequence; a main-only scan cannot prove epoch completeness. This
+checks the native records already being restored, not platform message bodies.
+A mismatch reports `provider_session_integrity_mismatch`; absent complete
+append receipt coverage reports `provider_session_integrity_unavailable`.
+Neither condition silently resumes a prefix or fabricates replacement receipts.
+
+Cancellation advances the Attempt owner generation and revokes ordinary
+runtime callbacks. Only provider `append` may drain the already-claimed writer
+through its original unexpired, unreleased active lease, while that exact
+queue-worker Attempt is `cancel_requested` and its Run remains running with a
+cancellation request. The generation must be exactly one ahead of that writer
+and lease. This exception cannot claim a writer, load history, invoke a tool,
+accept input, survive takeover, or persist after terminalization.
+
+Turn-limit, timeout, missing authoritative terminal and provider-persistence
+failures direct users to a new conversation and are not advertised as same-Run
+retries. Failed started turns may leave native state dirty or coverage incomplete;
+the public advice does not promise that the same Session can resume.
+
 Execution captures the final provider sequence after the SDK's closing mirror
 flush and after all message/control producers have stopped. The sandbox carries
 that sequence through its terminal result to the existing coverage transaction.
@@ -206,6 +230,16 @@ This is an intentional compatibility break for existing conversations without
 one exact usable native epoch: users must start a new conversation. There is no
 fallback owner and no planned removal date for the retained read-only data;
 future schema retirement requires a separate migration contract and inventory.
+
+The native epoch layout has written append receipts atomically with entries,
+sequence/count and byte metadata since its first main implementation in
+`3199a8fd0938444cfdbcc62c3bab34fdfaf93918` (#1397). No supported main writer
+without those receipts was identified. Existing runtime results without a
+`final_sequence` retain their terminal-commit compatibility path; their native
+append receipts still validate normally. The unshipped experimental binding
+layout already requires explicit data disposition in `schema.sql`. A database
+with imported or missing receipts has unverified continuity and is rejected;
+this source inventory does not establish the contents of deployed databases.
 
 ## Evidence Ceiling
 

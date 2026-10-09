@@ -7829,6 +7829,8 @@ async def test_sdk_provider_session_requires_main_append_for_success(
 
     assert result.error == "claude_agent_sdk_provider_session_failed"
     assert result.message == ""
+    assert result.turn_diagnostics["action"] == "start_new_conversation"
+    assert result.turn_diagnostics["retryable"] is False
 
 
 @pytest.mark.asyncio

@@ -355,11 +355,11 @@ def _diagnostic_terminal_class(
         return (
             "max_turn_exhausted",
             _SDK_TURN_LIMIT_EXCEEDED,
-            "continue_or_narrow_request",
-            True,
+            "start_new_conversation",
+            False,
         )
     if error_code == _SDK_TIMEOUT:
-        return "timeout", _SDK_TIMEOUT, "retry_or_split_request", True
+        return "timeout", _SDK_TIMEOUT, "start_new_conversation", False
     if error_code in {
         _SDK_MISSING_STRUCTURED_TERMINAL,
         "executor_missing_structured_terminal",
@@ -367,9 +367,11 @@ def _diagnostic_terminal_class(
         return (
             "missing_terminal",
             _SDK_MISSING_STRUCTURED_TERMINAL,
-            "retry_request",
-            True,
+            "start_new_conversation",
+            False,
         )
+    if error_code == _SDK_PROVIDER_SESSION_FAILED:
+        return "provider_session_failure", error_code, "start_new_conversation", False
     if error_code in {
         MCP_EXECUTION_SUCCEEDED_RECEIPT_INCOMPLETE,
         MCP_EXECUTION_OUTCOME_UNKNOWN,

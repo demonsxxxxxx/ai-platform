@@ -672,6 +672,7 @@ async def provider_session_callback(
                 run_id=callback.run_id,
                 attempt_id=callback.attempt_id,
                 callback_token_id=callback.callback_token_id,
+                allow_provider_tail=callback.action == "append",
             )
             result = await context_api.execute_provider_session_callback(
                 conn,
@@ -712,6 +713,7 @@ async def _require_current_runtime_attempt(
     run_id: str,
     attempt_id: str,
     callback_token_id: str,
+    allow_provider_tail: bool = False,
 ) -> dict[str, Any]:
     leases = await sandbox_leases.list_current_sandbox_runtime_leases_for_attempt(
         conn,
@@ -719,6 +721,10 @@ async def _require_current_runtime_attempt(
         run_id=run_id,
         attempt_id=attempt_id,
     )
+    if not leases and allow_provider_tail:
+        leases = await sandbox_leases.list_cancelling_provider_tail_leases_for_attempt(
+            conn, tenant_id=tenant_id, run_id=run_id, attempt_id=attempt_id,
+        )
     if len(leases) != 1:
         raise HTTPException(status_code=409, detail="sandbox_runtime_attempt_inactive")
     lease = leases[0]
@@ -742,6 +748,7 @@ async def _lock_current_runtime_attempt_then_run(
     attempt_id: str,
     callback_token_id: str,
     session_id: str | None = None,
+    allow_provider_tail: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     run_hint = await runs_postgres.get_run_identity(conn, run_id=run_id, for_update=False)
     if run_hint is None:
@@ -764,6 +771,7 @@ async def _lock_current_runtime_attempt_then_run(
         run_id=run_id,
         attempt_id=attempt_id,
         callback_token_id=callback_token_id,
+        allow_provider_tail=allow_provider_tail,
     )
     return locked_run, lease
 
