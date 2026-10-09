@@ -24,6 +24,14 @@ import {
 import { clearAllLoadingStates } from "./messageParts";
 import { parseDate } from "../../utils/datetime";
 import { getPublicTerminalPresentationDefinition } from "./publicTerminalPresentation";
+import { CHAT_PUBLIC_PROJECTION_VERSION } from "./types";
+import {
+  assistantTextPartRole,
+  composeAssistantPreviewText,
+  hasMarkedAssistantTextParts,
+  isAssistantTextPartEventType,
+  isValidAssistantTextPartPayload,
+} from "../../types/assistantTextParts";
 
 function resolveUserMessageId(
   event: HistoryEvent,
@@ -40,6 +48,180 @@ function resolveUserMessageId(
 
 interface ProcessHistoryOptions {
   activeSubagentStack: SubagentStackItem[];
+  activeProtocolMessageOwner?: {
+    messageId: string;
+    streamIncarnation: number;
+  } | null;
+}
+
+export class InvalidAssistantTextPartHistoryError extends Error {
+  constructor() {
+    super("Assistant text-part history projection is invalid");
+    this.name = "InvalidAssistantTextPartHistoryError";
+  }
+}
+
+const PROTOCOL_MESSAGE_EVENT_TYPES = new Set([
+  "message.started",
+  "message.delta",
+  "message.completed",
+  "message.part.delta",
+  "message.part.classified",
+  "commentary.delta",
+]);
+
+const HISTORY_PROTOCOL_ENVELOPE_FIELDS = new Set([
+  "event_id",
+  "run_id",
+  "message_id",
+  "protocol_message_id",
+  "sequence",
+  "seq",
+  "stream_incarnation",
+  "event_type",
+  "timestamp",
+  "emitted_at",
+  "schema",
+  "trace_ref",
+  "causation_event_id",
+  "replayable",
+]);
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function historyEventData(event: HistoryEvent): Record<string, unknown> {
+  return asRecord(event.data);
+}
+
+function historyEventIdentity(event: HistoryEvent): string | undefined {
+  const data = historyEventData(event);
+  if (
+    PROTOCOL_MESSAGE_EVENT_TYPES.has(event.event_type) &&
+    typeof data.event_id === "string" &&
+    data.event_id
+  ) {
+    return data.event_id;
+  }
+  if (
+    event.event_type === "message:chunk" &&
+    data.projection_kind === "assistant_delta" &&
+    typeof data.event_id === "string" &&
+    data.event_id
+  ) {
+    return data.event_id;
+  }
+  return event.id !== undefined && event.id !== null
+    ? event.id.toString()
+    : undefined;
+}
+
+function normalizeProtocolHistoryEventData(
+  event: HistoryEvent,
+): HistoryEventData | null {
+  const raw = historyEventData(event);
+  const nestedPayload = asRecord(raw.payload);
+  const hasNestedPayload = Object.hasOwn(raw, "payload");
+  if (isAssistantTextPartEventType(event.event_type)) {
+    const expectedPayloadKeys =
+      event.event_type === "message.part.delta"
+        ? ["schema_version", "part_id", "delta"]
+        : ["schema_version", "part_id", "role"];
+    if (
+      !hasNestedPayload &&
+      Object.keys(raw).some(
+        (key) =>
+          !expectedPayloadKeys.includes(key) &&
+          !HISTORY_PROTOCOL_ENVELOPE_FIELDS.has(key),
+      )
+    ) {
+      return null;
+    }
+    const payload = hasNestedPayload
+      ? nestedPayload
+      : Object.fromEntries(
+          expectedPayloadKeys
+            .filter((key) => Object.hasOwn(raw, key))
+            .map((key) => [key, raw[key]]),
+        );
+    if (!isValidAssistantTextPartPayload(event.event_type, payload)) {
+      return null;
+    }
+    const messageId = raw.message_id ?? raw.protocol_message_id;
+    const eventId = raw.event_id;
+    const sequence = event.sequence ?? raw.sequence ?? raw.seq;
+    const streamIncarnation = raw.stream_incarnation;
+    const runId = raw.run_id ?? event.run_id;
+    if (
+      typeof eventId !== "string" ||
+      !eventId ||
+      typeof messageId !== "string" ||
+      !messageId ||
+      typeof runId !== "string" ||
+      !runId ||
+      typeof sequence !== "number" ||
+      !Number.isSafeInteger(sequence) ||
+      sequence < 1 ||
+      typeof streamIncarnation !== "number" ||
+      !Number.isSafeInteger(streamIncarnation) ||
+      streamIncarnation < 1
+    ) {
+      return null;
+    }
+    return {
+      ...(payload as HistoryEventData),
+      event_id: eventId,
+      run_id: runId,
+      message_id: messageId,
+      sequence,
+      stream_incarnation: streamIncarnation,
+      event_type: event.event_type,
+      timestamp:
+        typeof raw.timestamp === "string"
+          ? raw.timestamp
+          : typeof raw.emitted_at === "string"
+            ? raw.emitted_at
+            : event.timestamp,
+    };
+  }
+
+  const sequence = event.sequence ?? raw.sequence ?? raw.seq;
+  const eventId = raw.event_id ?? event.id?.toString();
+  const messageId = raw.message_id ?? raw.protocol_message_id;
+  const runId = raw.run_id ?? event.run_id;
+  const merged: Record<string, unknown> = {
+    ...raw,
+    ...nestedPayload,
+    ...(typeof eventId === "string" ? { event_id: eventId } : {}),
+    ...(typeof messageId === "string" ? { message_id: messageId } : {}),
+    ...(typeof runId === "string" ? { run_id: runId } : {}),
+    ...(typeof sequence === "number" ? { sequence } : {}),
+    ...(typeof raw.stream_incarnation === "number"
+      ? { stream_incarnation: raw.stream_incarnation }
+      : {}),
+    event_type: event.event_type,
+    timestamp:
+      typeof raw.timestamp === "string"
+        ? raw.timestamp
+        : typeof raw.emitted_at === "string"
+          ? raw.emitted_at
+          : event.timestamp,
+  };
+  if (event.event_type === "message.delta") {
+    if (typeof merged.delta !== "string") return null;
+    merged.content = merged.delta;
+    merged.projection_version = CHAT_PUBLIC_PROJECTION_VERSION;
+    merged.projection_kind = "assistant_delta";
+  } else if (event.event_type === "commentary.delta") {
+    if (typeof merged.delta !== "string" || typeof merged.summary_id !== "string") {
+      return null;
+    }
+    merged.content = merged.delta;
+  }
+  return merged as HistoryEventData;
 }
 
 function parseEventTimestamp(
@@ -79,6 +261,10 @@ function compatibilityHistoryRank(event: HistoryEvent): number {
 }
 
 const DIRECT_HISTORY_PROCESSOR_EVENTS = new Set([
+  "message.started",
+  "message.completed",
+  "message.part.delta",
+  "message.part.classified",
   "agent:call",
   "agent:result",
   "thinking",
@@ -115,6 +301,8 @@ function historyProcessorEventType(
   event: HistoryEvent,
   data: HistoryEventData,
 ): string {
+  if (event.event_type === "message.delta") return "message:chunk";
+  if (event.event_type === "commentary.delta") return "summary";
   if (
     typeof event.sequence === "number" &&
     !DIRECT_HISTORY_PROCESSOR_EVENTS.has(event.event_type)
@@ -135,24 +323,77 @@ function processHistoryEvent(
   opts: ProcessHistoryOptions,
 ): Message | null {
   const eventType = event.event_type;
-  const eventData = event.data as HistoryEventData;
+  const normalizedProtocolData =
+    PROTOCOL_MESSAGE_EVENT_TYPES.has(eventType) ||
+    eventType === "commentary.delta"
+      ? normalizeProtocolHistoryEventData(event)
+      : null;
+  const malformedProtocolProjection =
+    (isAssistantTextPartEventType(eventType) ||
+      eventType === "commentary.delta" ||
+      (PROTOCOL_MESSAGE_EVENT_TYPES.has(eventType) &&
+        asRecord(event.data).stream_incarnation !== undefined)) &&
+    !normalizedProtocolData;
+  if (malformedProtocolProjection) {
+    if (isAssistantTextPartEventType(eventType)) {
+      throw new InvalidAssistantTextPartHistoryError();
+    }
+    return currentAssistantMessage;
+  }
+  const eventData =
+    normalizedProtocolData || (event.data as HistoryEventData);
   const depth = eventData.depth || 0;
   const agentId = eventData.agent_id;
+
+  if (eventType === "message.started") {
+    const messageId = eventData.message_id;
+    const streamIncarnation = eventData.stream_incarnation;
+    const currentOwner = opts.activeProtocolMessageOwner;
+    if (
+      currentOwner &&
+      (currentOwner.messageId !== messageId ||
+        currentOwner.streamIncarnation !== streamIncarnation)
+    ) {
+      return currentAssistantMessage;
+    }
+  } else if (
+    isAssistantTextPartEventType(eventType) ||
+    ((eventType === "message.delta" ||
+      eventType === "message.completed" ||
+      eventType === "commentary.delta") &&
+      eventData.stream_incarnation !== undefined)
+  ) {
+    const owner = opts.activeProtocolMessageOwner;
+    if (
+      !owner ||
+      eventData.message_id !== owner.messageId ||
+      eventData.stream_incarnation !== owner.streamIncarnation
+    ) {
+      if (isAssistantTextPartEventType(eventType)) {
+        throw new InvalidAssistantTextPartHistoryError();
+      }
+      return currentAssistantMessage;
+    }
+  }
 
   // Track processed event IDs using the durable outer id when present, or the
   // public event identity carried by compatibility history.
   const usesProtocolTextIdentity =
     eventType === "message:chunk" &&
     eventData.projection_kind === "assistant_delta";
-  const eventIdentity =
-    usesProtocolTextIdentity &&
-    typeof eventData.event_id === "string" &&
-    eventData.event_id
+  const eventIdentity = PROTOCOL_MESSAGE_EVENT_TYPES.has(eventType)
+    ? historyEventIdentity({ ...event, data: eventData })
+    : usesProtocolTextIdentity &&
+        typeof eventData.event_id === "string" &&
+        eventData.event_id
       ? eventData.event_id
       : event.id !== undefined && event.id !== null
         ? event.id.toString()
         : undefined;
-  if (eventIdentity) {
+  const deferEventIdentity =
+    PROTOCOL_MESSAGE_EVENT_TYPES.has(eventType) ||
+    eventType === "commentary.delta";
+  if (eventIdentity && !deferEventIdentity) {
     processedEventIds.add(eventIdentity);
   }
 
@@ -212,7 +453,9 @@ function processHistoryEvent(
   const eventDataWithEnvelope = {
     ...eventData,
     event_id:
-      event.id !== undefined && event.id !== null
+      deferEventIdentity && typeof eventData.event_id === "string"
+        ? eventData.event_id
+        : event.id !== undefined && event.id !== null
         ? event.id.toString()
         : eventData.event_id,
     run_id: eventData.run_id || event.run_id,
@@ -232,6 +475,29 @@ function processHistoryEvent(
     false, // isStreaming = false for history
     msg.id,
   );
+
+  if (result.accepted === false) {
+    if (isAssistantTextPartEventType(eventType)) {
+      throw new InvalidAssistantTextPartHistoryError();
+    }
+    return currentAssistantMessage;
+  }
+  if (eventIdentity && deferEventIdentity) {
+    processedEventIds.add(eventIdentity);
+  }
+  if (
+    eventType === "message.started" &&
+    typeof eventData.message_id === "string" &&
+    eventData.message_id &&
+    typeof eventData.stream_incarnation === "number" &&
+    Number.isSafeInteger(eventData.stream_incarnation) &&
+    eventData.stream_incarnation >= 1
+  ) {
+    opts.activeProtocolMessageOwner = {
+      messageId: eventData.message_id,
+      streamIncarnation: eventData.stream_incarnation,
+    };
+  }
 
   // Apply result to message
   msg.parts = result.parts;
@@ -273,6 +539,13 @@ export function reconstructMessagesFromEvents(
   processedEventIds: Set<string>,
   opts: ProcessHistoryOptions,
 ): Message[] {
+  // A rejected versioned projection must not partially advance the caller's
+  // replay identity set or subagent/message-owner state.
+  const pendingProcessedEventIds = new Set(processedEventIds);
+  const processingOptions: ProcessHistoryOptions = {
+    activeSubagentStack: [...opts.activeSubagentStack],
+    activeProtocolMessageOwner: null,
+  };
   // A run's compatibility projection is ordered by persisted sequence, then
   // artifact/final payload, then its synthetic terminal. Across runs, retain
   // the backend's authoritative creation-order grouping: completion timestamps
@@ -282,18 +555,7 @@ export function reconstructMessagesFromEvents(
   // from scratch and may legitimately contain events already seen live.
   const seenHistoryEventIds = new Set<string>();
   const uniqueEvents = events.filter((event) => {
-    const eventData = event.data as HistoryEventData;
-    const usesProtocolTextIdentity =
-      event.event_type === "message:chunk" &&
-      eventData?.projection_kind === "assistant_delta";
-    const eventIdentity =
-      usesProtocolTextIdentity &&
-      typeof eventData?.event_id === "string" &&
-      eventData.event_id
-        ? eventData.event_id
-        : event.id !== undefined && event.id !== null
-          ? event.id.toString()
-          : undefined;
+    const eventIdentity = historyEventIdentity(event);
     if (eventIdentity && seenHistoryEventIds.has(eventIdentity)) return false;
     if (eventIdentity) seenHistoryEventIds.add(eventIdentity);
     return true;
@@ -347,7 +609,11 @@ export function reconstructMessagesFromEvents(
     ) {
       reconstructedMessages.push(currentAssistantMessage);
       currentAssistantMessage = null;
-      opts.activeSubagentStack.splice(0, opts.activeSubagentStack.length);
+      processingOptions.activeSubagentStack.splice(
+        0,
+        processingOptions.activeSubagentStack.length,
+      );
+      processingOptions.activeProtocolMessageOwner = null;
     }
 
     // Handle user message separately
@@ -370,6 +636,7 @@ export function reconstructMessagesFromEvents(
             : undefined,
         runId: event.run_id,
       });
+      processingOptions.activeProtocolMessageOwner = null;
       continue;
     }
 
@@ -408,6 +675,7 @@ export function reconstructMessagesFromEvents(
         });
       }
       currentAssistantMessage = null;
+      processingOptions.activeProtocolMessageOwner = null;
       continue;
     }
 
@@ -421,8 +689,8 @@ export function reconstructMessagesFromEvents(
         const updatedMessage = processHistoryEvent(
           event,
           lastMessage,
-          processedEventIds,
-          opts,
+          pendingProcessedEventIds,
+          processingOptions,
         );
         if (updatedMessage) {
           reconstructedMessages[lastMessageIndex] = updatedMessage;
@@ -435,14 +703,23 @@ export function reconstructMessagesFromEvents(
     currentAssistantMessage = processHistoryEvent(
       event,
       currentAssistantMessage,
-      processedEventIds,
-      opts,
+      pendingProcessedEventIds,
+      processingOptions,
     );
   }
 
   if (currentAssistantMessage) {
     reconstructedMessages.push(currentAssistantMessage);
   }
+
+  processedEventIds.clear();
+  pendingProcessedEventIds.forEach((eventId) => processedEventIds.add(eventId));
+  opts.activeSubagentStack.splice(
+    0,
+    opts.activeSubagentStack.length,
+    ...processingOptions.activeSubagentStack,
+  );
+  opts.activeProtocolMessageOwner = processingOptions.activeProtocolMessageOwner;
 
   return reconstructedMessages;
 }
@@ -456,7 +733,13 @@ export function hasDisplayableRunAnswer(
     if (message.role !== "assistant" || message.runId !== runId) return false;
     const parts = message.parts || [];
     const hasTextPart = parts.some(
-      (part) => part.type === "text" && !part.depth && Boolean(part.content.trim()),
+      (part) =>
+        part.type === "text" &&
+        !part.depth &&
+        Boolean(part.content.trim()) &&
+        assistantTextPartRole(part) !== null &&
+        assistantTextPartRole(part) !== "pending" &&
+        assistantTextPartRole(part) !== "work",
     );
     const hasDeliverableArtifact = parts.some(
       (part) =>
@@ -474,7 +757,9 @@ export function hasDisplayableRunAnswer(
     return (
       hasTextPart ||
       hasDeliverableArtifact ||
-      (!hasTerminalDetail && Boolean(message.content.trim()))
+      (!hasTerminalDetail &&
+        !hasMarkedAssistantTextParts(parts) &&
+        Boolean(message.content.trim()))
     );
   });
 }
@@ -613,12 +898,24 @@ export function mergeHydratedRunSegment(
     .map((identity) => authoritativeByIdentity.get(identity))
     .filter((message): message is Message => Boolean(message));
   if (authoritativeSegment.length === 0) return messages;
+  const hasAuthoritativePublicText = authoritativeSegment.some(
+    (message) =>
+      message.role === "assistant" &&
+      message.runId === runId &&
+      (message.parts || []).some(
+        (part) =>
+          part.type === "text" &&
+          Boolean(part.content) &&
+          assistantTextPartRole(part) !== null,
+      ),
+  );
 
-  // Failed/cancelled history may contain only the fixed terminal detail.
-  // Keep the answer already observed while accepting the terminal presentation.
+  // Failed/cancelled history can be an exact but partial public projection.
+  // Prefer its content and role for every stable source it contains; retain
+  // only safe live sources that are genuinely absent from that history.
   if (
-    hasDisplayableRunAnswer(messages, runId) &&
-    !hasDisplayableRunAnswer(authoritativeSegment, runId)
+    !hasDisplayableRunAnswer(authoritativeSegment, runId) ||
+    !hasAuthoritativePublicText
   ) {
     const previous = messages.find(
       (message) => message.role === "assistant" && message.runId === runId,
@@ -626,13 +923,77 @@ export function mergeHydratedRunSegment(
     const recoveredIndex = authoritativeSegment.findIndex((message) => message.role === "assistant");
     const recovered = authoritativeSegment[recoveredIndex];
     if (previous && recovered) {
+      const authoritativeTextParts = (recovered.parts || []).filter(
+        (part) =>
+          part.type === "text" &&
+          Boolean(part.content) &&
+          assistantTextPartRole(part) !== null,
+      );
+      const authoritativePartIds = new Set(
+        authoritativeTextParts.flatMap((part) =>
+          part.type === "text" && part.public_part_id
+            ? [part.public_part_id]
+            : [],
+        ),
+      );
+      const previousTextParts = (previous.parts || []).filter(
+        (part) =>
+          part.type === "text" &&
+          Boolean(part.content) &&
+          assistantTextPartRole(part) !== null,
+      );
+      const missingPreviousTextParts = previousTextParts.filter((part) => {
+        if (authoritativeTextParts.length === 0) return true;
+        return (
+          part.type === "text" &&
+          Boolean(part.public_part_id) &&
+          !authoritativePartIds.has(part.public_part_id!)
+        );
+      });
+      const authoritativeArtifactIds = new Set(
+        (recovered.parts || []).flatMap((part) =>
+          part.type === "artifact" ? [part.artifact_id] : [],
+        ),
+      );
+      const missingPreviousArtifacts = (previous.parts || []).filter(
+        (part) =>
+          part.type === "artifact" &&
+          !authoritativeArtifactIds.has(part.artifact_id),
+      );
+      const recoveredOtherParts = (recovered.parts || []).filter(
+        (part) => part.type !== "text" && part.type !== "artifact",
+      );
+      const recoveredHasTerminalDetail = (recovered.parts || []).some(
+        (part) =>
+          part.type === "run_status" &&
+          Boolean(getPublicTerminalPresentationDefinition(part.event_type)),
+      );
+      const recoveredHasLegacyAnswer =
+        Boolean(recovered.content.trim()) && !recoveredHasTerminalDetail;
+      const parts = [
+        ...authoritativeTextParts,
+        ...missingPreviousTextParts,
+        ...missingPreviousArtifacts,
+        ...recoveredOtherParts,
+      ];
+      const attachments = [...(recovered.attachments || [])];
+      const attachmentIds = new Set(attachments.map((attachment) => attachment.id));
+      for (const attachment of previous.attachments || []) {
+        if (!attachmentIds.has(attachment.id)) {
+          attachments.push(attachment);
+          attachmentIds.add(attachment.id);
+        }
+      }
+      const hasVersionedText = hasMarkedAssistantTextParts(parts);
       authoritativeSegment[recoveredIndex] = {
         ...recovered,
-        content: previous.content,
-        parts: [
-          ...(previous.parts || []).filter((part) => part.type === "text" || part.type === "artifact"),
-          ...(recovered.parts || []).filter((part) => part.type !== "text" && part.type !== "artifact"),
-        ],
+        content: hasVersionedText
+          ? composeAssistantPreviewText(parts)
+          : authoritativeTextParts.length > 0 || recoveredHasLegacyAnswer
+            ? recovered.content
+            : previous.content,
+        attachments,
+        parts,
       };
     }
   }

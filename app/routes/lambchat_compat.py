@@ -59,6 +59,7 @@ from app.streaming.api import (
     V4StreamEntry,
     live_redis_id_is_after,
     project_persisted_message_delta_v4,
+    project_persisted_message_part_v4,
     validate_public_application_payload_v4,
     _project_validated_internal_envelope_v4,
 )
@@ -861,6 +862,17 @@ def _persisted_v4_message_delta(
     )
 
 
+def _persisted_v4_message_part_event(
+    run: dict[str, Any], event: dict[str, Any]
+) -> dict[str, object] | None:
+    """Return one strictly authorized assistant text-part event for history."""
+    return project_persisted_message_part_v4(
+        event,
+        tenant_id=str(run.get("tenant_id") or ""),
+        run_id=str(run["id"]),
+    )
+
+
 def _assistant_delta_projection(
     run: dict[str, Any],
     event: dict[str, Any],
@@ -1231,6 +1243,42 @@ def _compatibility_events_for_run_page(
                 pending_answer_events.append((event, answer_event))
             else:
                 emit_answer_event(event, answer_event)
+            continue
+        if raw_event_type in {"message.part.delta", "message.part.classified"}:
+            part_event = _persisted_v4_message_part_event(run, event)
+            if part_event is None:
+                raise HTTPException(
+                    status_code=500, detail="history_part_event_invalid"
+                )
+            flush_pending_answer_events()
+            part_payload = part_event.get("payload")
+            if not isinstance(part_payload, dict):
+                raise HTTPException(
+                    status_code=500, detail="history_part_event_invalid"
+                )
+            event_type = str(part_event["event_type"])
+            compatibility_events.append(
+                _CompatibilityWireEvent(
+                    id=str(part_event["event_id"]),
+                    stream_event_type=event_type,
+                    stream_data=part_event,
+                    history_event={
+                        "id": event["id"],
+                        "schema_version": EVENT_ENVELOPE_SCHEMA_VERSION,
+                        "trace_id": str(event.get("trace_id") or trace_id),
+                        "type": event_type,
+                        "event_type": event_type,
+                        "stage": "answer",
+                        "severity": "info",
+                        "visible_to_user": True,
+                        "payload": part_payload,
+                        "sequence": part_event["seq"],
+                        "data": part_event,
+                        "timestamp": event.get("created_at"),
+                        "run_id": run_id,
+                    },
+                )
+            )
             continue
         envelope = _public_run_event_envelope(run, event, principal)
         if envelope is None:

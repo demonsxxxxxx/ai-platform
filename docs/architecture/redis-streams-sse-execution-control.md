@@ -50,36 +50,28 @@ Runs owns business success. Optional files use `attach_file` and Artifact
 validation independently of text; neither a JSON object nor prose creates an
 artifact record.
 
-The current adapter sends every accepted Claude Assistant text fragment through
-`message.delta`; later Tool use does not reclassify or withdraw the text.
-Explicit platform-authored public summaries and retained history may still use
-`commentary.delta`, with a stable summary identity. The UI renders that summary
-inline while keeping Tool and execution activities foldable. Commentary does
-not enter the answer receipt. Hidden reasoning, raw tool arguments and results,
-private runtime values, credentials and approvals remain excluded.
-Intentional non-sensitive code and task references in Assistant prose are not
-raw tool data; apply the owning Chat content policy rather than a blanket path
-or JSON ban.
+The adapter reconciles raw/typed text and immediately gates each unique suffix
+before `message.part.delta`. A stable public part identifies its verified
+provider message; later `message.part.classified` facts select answer/work.
+Safe pending previews are visible before Tool/stop or Result; Thinking and raw
+Tool fields remain excluded. Work parts fold with activity and never enter the
+v2 answer receipt. Retained delta/v1 receipt and commentary/worktrace readers
+keep legacy semantics. No committed event row is rewritten.
 
-The raw projector treats `AssistantMessage` as a typed block observation, not a
-raw framing boundary, because it can precede the corresponding block stop.
-Text deltas pass the stateful public-answer gate immediately; typed TextBlock and
-`ResultMessage.result` only reconcile missing suffixes. The
-[streaming message design](../implementation/streaming-message-parts-design.md)
-defines this v4 behavior and the source exclusions that keep tool input, results
-and Thinking out of the body.
+The raw projector owns framing; typed blocks may arrive before block stop.
+The gate retains only necessary sensitive suffixes with their exact source
+ownership. Result adds only verified suffixes. Every callback still passes
+current Attempt/lease authority and exact receipt/ACK, with <=8192 code points
+per part delta and <=100 events per batch. Tool completion evidence and Run
+success remain independent. Invalid classifications or history fail closed.
 
-Keep the current callback, schema, history and renderer tests for v4 consumers.
-New regression coverage must distinguish raw deltas, typed block observations,
-message stop, SDK result, exact answer receipt and platform Run terminal.
-Focused regression tests own raw/typed ordering, stateful redaction, resource
-bounds and the retirement of whole-turn buffering.
-
-The former structured-output-only commentary description is retired as current
-guidance; the anchor above remains for document links. Existing v4 event readers
-remain for their identified live and historical consumers. This repair retires
-only Claude whole-turn buffering and tool-based text reclassification; it does
-not change the wire schema, storage migration or rollback authority.
+The [streaming message design](../implementation/streaming-message-parts-design.md)
+and [wire contract](redis-streams-sse-wire-protocol.md#change-contract-incremental-assistant-parts-and-final-selection)
+own the closed event family, receipt v2, UI phase rules, additive lookup indexes
+and coordinated release/rollback requirements. New readers must remain available
+while new rows and v2 receipts exist. This replaces classification-time whole
+source publication; selectors and owning tests now prove visible safe prefixes
+before stop, replay dedupe and final selection across live/history recovery.
 
 ## Change Contract: Compact terminal history hydration
 

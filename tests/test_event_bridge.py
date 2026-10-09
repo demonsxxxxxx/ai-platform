@@ -250,3 +250,15 @@ def test_readiness_failure_bridge_retains_safe_payload_for_admin_only():
             "created_at": None,
         },
     ) is None
+
+
+@pytest.mark.parametrize("event_type,payload", [
+    ("message.part.delta", {"schema_version": "ai-platform.assistant-text-part.v1", "part_id": "part_safe", "delta": "Safe /task/report.py example"}),
+    ("message.part.classified", {"schema_version": "ai-platform.assistant-text-part.v1", "part_id": "part_safe", "role": "work"}),
+])
+def test_assistant_text_part_events_preserve_closed_public_fields(event_type, payload):
+    event = AgentEvent(type=event_type, event_id="evt_part_safe", run_id="run-safe", message_id="msg-safe", payload=payload)
+    projected = agent_event_to_executor_event(event)
+    assert projected["event_type"] == event_type
+    assert projected["stage"] == "message"
+    assert projected["payload"] == payload

@@ -10,6 +10,7 @@ import { ChevronDown, ListTree } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { MessagePart } from "../../../types";
 import { isWorkActivityPart } from "./messagePartVisibility";
+import { shouldExpandWorkActivity } from "./workActivityExpansion";
 
 export interface WorkActivityIssueCounts {
   failed: number;
@@ -57,16 +58,17 @@ export function MessageWorkActivity({
   ) => ReactNode;
 }) {
   const { t } = useTranslation();
-  const [expanded, setExpanded] = useState(Boolean(isStreaming));
-  const wasStreamingRef = useRef(Boolean(isStreaming));
+  const autoExpanded = shouldExpandWorkActivity(parts, isStreaming, isWorkActivityPart);
+  const [expanded, setExpanded] = useState(autoExpanded);
+  const previousPhaseRef = useRef({ messageId, autoExpanded });
 
   useEffect(() => {
-    const isNowStreaming = Boolean(isStreaming);
-    if (wasStreamingRef.current && !isNowStreaming) {
-      setExpanded(false);
+    const previous = previousPhaseRef.current;
+    if (previous.messageId !== messageId || previous.autoExpanded !== autoExpanded) {
+      setExpanded(autoExpanded);
     }
-    wasStreamingRef.current = isNowStreaming;
-  }, [isStreaming]);
+    previousPhaseRef.current = { messageId, autoExpanded };
+  }, [messageId, autoExpanded]);
 
   const workActivityCount = parts.filter(isWorkActivityPart).length;
   const issueCounts = countWorkActivityIssues(parts);

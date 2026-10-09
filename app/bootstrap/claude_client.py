@@ -5,6 +5,11 @@ from app.execution.infrastructure.harness.claude_client_lifecycle import (
     ClaudeInjectedCallbackTracker,
 )
 from app.execution.infrastructure.harness.claude.interaction import ClaudeRunInteractionActor
+from app.execution.infrastructure.harness.claude.assistant_text_sources import AssistantTextSourceBuffer
+
+
+def prepare_claude_text_sources():
+    return AssistantTextSourceBuffer()
 
 
 def prepare_claude_client_close(client):

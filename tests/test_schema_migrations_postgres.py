@@ -926,7 +926,12 @@ async def test_real_postgres_repository_skill_retirement_upgrades_exact_main_and
         assert result["status"] == "applied"
         assert result["version"] == schema_migrations.TARGET_SCHEMA_VERSION
         async with factory() as conn:
-            assert (await exact_base.schema_status(conn))["ready"] is True
+            assert (await schema_migrations.schema_status(conn))["ready"] is True
+            old_status = await exact_base.schema_status(conn)
+            # The new part lookup index contract advances its exact ledger.
+            # Old binaries must reject that ledger while history stays intact.
+            assert old_status["ready"] is False
+            assert old_status["index_ledger_current"] is False
         ledger_rows = await (
             await admin.execute(
                 "select version, checksum_sha256 from schema_migrations order by version"

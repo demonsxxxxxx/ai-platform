@@ -186,7 +186,7 @@ async def test_stop_settles_pending_session_store_tail_before_terminal_result(
     tail_started, release_tail = asyncio.Event(), asyncio.Event()
     transport = ClosingTransport()
     cleanup_tasks = set()
-    checkpoints, public_chunks = [], []
+    checkpoints, public_chunks, public_candidates = [], [], []
     before_text = "Visible prefix. " * 1024
     tail_text = "Suppressed drain tail. " * 512
     before_published = asyncio.Event()
@@ -195,7 +195,12 @@ async def test_stop_settles_pending_session_store_tail_before_terminal_result(
 
     async def on_text(text):
         public_chunks.append(text)
-        before_published.set()
+
+    async def on_agent_event(batch):
+        public_candidates.extend(batch)
+        if any(event.event_type == "message.part.delta" for event in batch):
+            before_published.set()
+        return True
 
     def stream_event(index, event):
         return {
@@ -275,6 +280,7 @@ async def test_stop_settles_pending_session_store_tail_before_terminal_result(
         prompt="hello", cwd=tmp_path, skill_id=None, session_id="stable-provider-id",
         session_store=store, provider_session_resume_required=False, cleanup_tasks=cleanup_tasks,
         run_id="run", attempt_id="attempt", on_sdk_text=checkpoints.append, on_text=on_text,
+        on_agent_event=on_agent_event,
         execution_policy="sandbox_brokered",
     ))
     try:
@@ -308,9 +314,12 @@ async def test_stop_settles_pending_session_store_tail_before_terminal_result(
             assert final["chars"] == len(before_text + tail_text)
             assert final["sha256"] == hashlib.sha256((before_text + tail_text).encode()).hexdigest()
             assert len(final["call_ref"]) == 32
-            public_text = "".join(public_chunks)
+            public_text = "".join(event.payload["delta"] for event in public_candidates
+                                  if event.event_type == "message.part.delta")
             assert before_text[:100] in public_text
             assert "Suppressed drain tail." not in public_text
+            assert public_chunks == []  # The preview remained unclassified at cancellation.
+            assert not any(event.event_type == "message.completed" for event in public_candidates)
     finally:
         release_tail.set()
         transport.release.set()

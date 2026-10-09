@@ -1349,6 +1349,9 @@ class ClaudeStreamProjector:
         if stop_reason is not None and not is_known_stop_reason(stop_reason):
             self._disable("assistant_observation_invalid")
             return False
+        if not self._saw_explicit_message and typed_id != getattr(self, "_last_typed_message_id", None):
+            self._message_stop_reason = None
+            self._last_typed_message_id = typed_id
         if stop_reason is not None:
             if self._message_stop_reason not in (None, stop_reason):
                 self._disable("assistant_observation_invalid")
