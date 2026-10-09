@@ -5,6 +5,33 @@ from inspect import signature
 from pathlib import Path
 
 
+def test_locked_sdk_parser_preserves_raw_events_and_scoped_block_observations():
+    from claude_agent_sdk._internal.message_parser import parse_message
+    from claude_agent_sdk.types import AssistantMessage, StreamEvent
+
+    assert version("claude-agent-sdk") == "0.2.130"
+    event = {"type": "content_block_start", "index": 2, "content_block": {
+        "type": "tool_use", "id": "synthetic-tool", "name": "Read", "input": {},
+    }}
+    raw = parse_message({"type": "stream_event", "uuid": "raw-observation",
+        "session_id": "synthetic-session", "event": event, "parent_tool_use_id": None})
+    assert isinstance(raw, StreamEvent)
+    assert raw.event == event
+    assert raw.uuid == "raw-observation"
+    assert raw.parent_tool_use_id is None
+    for ordinal, parent in enumerate([None, "synthetic-parent"]):
+        observation = parse_message({"type": "assistant", "uuid": f"typed-{ordinal}",
+            "parent_tool_use_id": parent, "message": {
+                "id": "provider-message", "model": "model-a", "stop_reason": None,
+                "content": [{"type": "text", "text": "synthetic block"}],
+            }})
+        assert isinstance(observation, AssistantMessage)
+        assert observation.message_id == "provider-message"
+        assert observation.uuid == f"typed-{ordinal}"
+        assert observation.parent_tool_use_id == parent
+        assert len(observation.content) == 1
+
+
 def test_installed_claude_agent_sdk_02130_contract(tmp_path):
     installed_version = version("claude-agent-sdk")
     assert installed_version == "0.2.130"

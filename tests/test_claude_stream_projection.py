@@ -1396,7 +1396,6 @@ def test_projector_binds_typed_text_to_ordered_raw_text_source_after_omitted_non
     source = projector.text_source_identity
     assert source is not None
     assert projector.accept(_text_delta("safe text", index=1)) == ("safe text",)
-    assert projector.validate_typed_text_source_count(1) is True
     assert projector.observe_typed(message_id="sdk-message", uuid="typed-observation") is True
     assert projector.typed_text_source_identity(
         text_source_ordinal=0,
@@ -1427,13 +1426,11 @@ def test_projector_binds_each_per_block_typed_text_to_next_raw_window():
         assert projector.accept(_text_delta("B", index=2)) == ("B",)
         assert projector.accept(_stop(2)) == ()
 
-        assert projector.validate_typed_text_source_count(1) is True
         assert projector.observe_typed(message_id="sdk-message", uuid="typed-A") is True
         assert projector.typed_text_source_identity(
             text_source_ordinal=0,
             text_source_count=1,
         ) == first_source
-        assert projector.validate_typed_text_source_count(1) is True
         assert projector.observe_typed(message_id="sdk-message", uuid="typed-B") is True
         assert projector.typed_text_source_identity(
             text_source_ordinal=0,
@@ -1446,7 +1443,7 @@ def test_projector_rejects_ambiguous_typed_raw_text_source_count():
     projector = _projector()
     assert projector.accept(_message_start()) == ()
     assert projector.accept(_start(0, "text")) == ()
-    assert projector.validate_typed_text_source_count(2) is False
+    assert projector.typed_text_source_identity(text_source_ordinal=0, text_source_count=2) is None
     assert projector.disabled is True
 
 
@@ -1488,7 +1485,6 @@ def test_projector_returns_text_immediately_without_a_lexical_or_length_gate(tex
     for event in _message_end():
         assert projector.accept(event) == ()
     assert projector.disabled is False
-    assert projector.partial_emitted is True
 
 
 def test_projector_follows_real_message_order_and_ignores_non_text_blocks():
@@ -1569,10 +1565,10 @@ def test_projector_bounds_raw_block_sources_per_message():
     for index in range(128):
         assert projector.accept(_start(index, "thinking")) == ()
         assert projector.accept(_stop(index)) == ()
-    assert len(projector._raw_sources) == 128
+    assert len(projector._completed_block_indexes) == 128
     assert projector.accept(_start(128, "thinking")) == ()
     assert projector.disabled is True
-    assert len(projector._raw_sources) == 128
+    assert projector.failure_frame["guard"] == "block_start_limit"
 
 
 def test_projector_rejects_typed_observation_after_message_stop():

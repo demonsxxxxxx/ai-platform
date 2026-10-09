@@ -7,7 +7,7 @@ import {
   mergeHydratedRunSegment,
   reconstructMessagesFromEvents,
 } from "../historyLoader";
-import { selectAssistantCopyText } from "../../../types/assistantTextParts";
+import { reduceAssistantTextPartEvent, selectAssistantCopyText } from "../../../types/assistantTextParts";
 
 const runId = "run-history";
 const protocolMessageId = "protocol-history";
@@ -138,6 +138,47 @@ test("partial history keeps an unclassified public preview visible but out of co
   assert.equal(partial?.type === "text" ? partial.text_role : null, "pending");
   assert.equal(selectAssistantCopyText(assistant?.parts), "");
   assert.equal(processedEventIds.has("event-partial"), true);
+});
+
+test("quarantined preview and independent answer converge in live and history", () => {
+  for (const initialRole of ["pending", "answer"] as const) {
+    const events = [
+      ...baseEvents(),
+      partEvent("message.part.delta", "preview-delta", 2, {
+        schema_version: "ai-platform.assistant-text-part.v1", part_id: "part_broken", delta: "Safe preview",
+      }),
+      ...(initialRole === "answer" ? [partEvent("message.part.classified", "early-answer", 3, {
+        schema_version: "ai-platform.assistant-text-part.v1", part_id: "part_broken", role: "answer",
+      })] : []),
+      partEvent("message.part.classified", "quarantined-work", 4, {
+        schema_version: "ai-platform.assistant-text-part.v1", part_id: "part_broken", role: "work",
+      }),
+      partEvent("message.part.delta", "final-delta", 5, {
+        schema_version: "ai-platform.assistant-text-part.v1", part_id: "part_fresh", delta: "Safe final answer",
+      }),
+      partEvent("message.part.classified", "final-answer", 6, {
+        schema_version: "ai-platform.assistant-text-part.v1", part_id: "part_fresh", role: "answer",
+      }),
+      partEvent("message.completed", "complete", 7, { delta_count: 1, text_length: 17 }),
+    ];
+    let live = reconstruct(baseEvents()).messages.find((message) => message.role === "assistant")?.parts ?? [];
+    for (const event of events.filter((event) => event.event_type.startsWith("message.part."))) {
+      const data = event.data as Record<string, unknown>;
+      const reduced = reduceAssistantTextPartEvent(event.event_type, {
+        ...data, ...(data.payload as Record<string, unknown>),
+      }, live);
+      assert.equal(reduced.accepted, true);
+      live = reduced.parts;
+    }
+    const history = reconstruct(events).messages.find((message) => message.role === "assistant");
+    const shape = (parts: NonNullable<Message["parts"]>) => parts.filter((part) => part.type === "text")
+      .map((part) => part.type === "text" ? [part.public_part_id, part.text_role, part.content] : []);
+    assert.deepEqual(shape(live), shape(history?.parts ?? []));
+    assert.deepEqual(shape(live), [["part_broken", "work", "Safe preview"], ["part_fresh", "answer", "Safe final answer"]]);
+    assert.equal(history?.content, "Safe final answer");
+    assert.equal(selectAssistantCopyText(live), "Safe final answer");
+    assert.equal(selectAssistantCopyText(history?.parts), "Safe final answer");
+  }
 });
 
 test("malformed, foreign, orphan, contradictory, and post-terminal part history fails atomically", () => {

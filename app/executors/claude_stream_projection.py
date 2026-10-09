@@ -1206,16 +1206,13 @@ class ClaudeStreamProjector:
         self._message_delta_seen = False
         self._message_generation = 0
         self._block_generation = 0
-        self._raw_sources: list[_RawBlockSource] = []
         self._raw_text_sources: list[_RawBlockSource] = []
-        self._raw_sources_by_index: dict[int, _RawBlockSource] = {}
         self._last_text_source_identity: tuple[object, ...] | None = None
         self._completed_text_source_identity: tuple[object, ...] | None = None
         self._typed_text_source_cursor = 0
         self._typed_text_source_window_count: int | None = None
         self._typed_text_source_window_sources: tuple[_RawBlockSource, ...] = ()
         self._disabled = False
-        self._partial_emitted = False
         self._failure_reason: str | None = None
         self._frame_shape: dict[str, str] | None = None
         self._failure_frame: dict[str, str] | None = None
@@ -1275,7 +1272,7 @@ class ClaudeStreamProjector:
 
     @property
     def disabled(self) -> bool:
-        """Whether an unsafe or conflicting event permanently disabled output."""
+        """Whether the current raw message is quarantined."""
 
         return self._disabled
 
@@ -1284,12 +1281,6 @@ class ClaudeStreamProjector:
         """First fixed framing failure observed by this projector."""
 
         return self._failure_reason
-
-    @property
-    def partial_emitted(self) -> bool:
-        """Whether this projector has emitted any text in its lifetime."""
-
-        return self._partial_emitted
 
     @property
     def typed_lifecycle_observed(self) -> bool:
@@ -1306,6 +1297,10 @@ class ClaudeStreamProjector:
     @property
     def message_id(self) -> str | None:
         return self._message_id
+
+    @property
+    def message_open(self) -> bool:
+        return self._explicit_message_open
 
     @property
     def parent_tool_use_id(self) -> str | None:
@@ -1436,11 +1431,6 @@ class ClaudeStreamProjector:
             self._typed_text_source_window_sources = ()
         return source_identity
 
-    def validate_typed_text_source_count(self, text_source_count: object) -> bool:
-        """Validate a typed message's local text-source window."""
-
-        return self._typed_text_source_window(text_source_count) is not None
-
     def accept(
         self,
         event: object,
@@ -1454,7 +1444,20 @@ class ClaudeStreamProjector:
         """
 
         if self._disabled:
-            return ()
+            # Recovery requires a new explicitly identified main message;
+            # typed observations and Result never repair rejected framing.
+            message = event.get("message") if isinstance(event, dict) else None
+            if not (
+                isinstance(event, dict) and event.get("type") == "message_start"
+                and isinstance(message, dict)
+                and isinstance(message.get("id"), str) and message["id"]
+                and message["id"] != self._message_id
+                and message.get("role") == "assistant"
+                and message.get("stop_reason") is None
+                and parent_tool_use_id is None
+            ):
+                return ()
+            self._disabled = False
         self._frame_shape = self._describe_frame(event)
         if parent_tool_use_id is not None and (
             not isinstance(parent_tool_use_id, str) or not parent_tool_use_id
@@ -1517,9 +1520,7 @@ class ClaudeStreamProjector:
         ):
             self._disable(guard="message_start")
             return ()
-        self._raw_sources.clear()
         self._raw_text_sources.clear()
-        self._raw_sources_by_index.clear()
         self._last_text_source_identity = None
         self._completed_text_source_identity = None
         self._typed_text_source_cursor = 0
@@ -1593,7 +1594,7 @@ class ClaudeStreamProjector:
         if not isinstance(content_type, str) or content_type not in _KNOWN_BLOCK_TYPES:
             self._disable(guard="block_start_type")
             return ()
-        if len(self._raw_sources) >= _MAX_RECONCILIATION_BINDINGS:
+        if len(self._completed_block_indexes) >= _MAX_RECONCILIATION_BINDINGS:
             self._disable(guard="block_start_limit")
             return ()
         self._block_generation += 1
@@ -1605,8 +1606,6 @@ class ClaudeStreamProjector:
             self._block_generation,
         )
         source = _RawBlockSource(identity=source_identity, content_type=content_type)
-        self._raw_sources.append(source)
-        self._raw_sources_by_index[index] = source
         if content_type != "text":
             self._ignored_block_index = index
             self._ignored_block_type = content_type
@@ -1662,7 +1661,6 @@ class ClaudeStreamProjector:
             return ()
         if not text:
             return ()
-        self._partial_emitted = True
         return (text,)
 
     def _disable(self, reason: str = "raw_frame_invalid", *, guard: str = "event_type") -> None:

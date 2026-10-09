@@ -59,11 +59,47 @@
 
 ## SDK 来源、安全与顺序
 
-`ClaudeStreamProjector` 只接受完整 raw message/block framing。已通过索引和类型校验的空字符串 `text_delta` 是不发布文字的空操作；非字符串仍拒绝。typed `AssistantMessage`
+`ClaudeStreamProjector` 保留严格 raw message/block framing；同消息重叠块、缺 stop、
+错误索引或类型仍拒绝。消息闭合前只发布经过脱敏的 pending 预览。局部 raw 异常
+隔离当前消息，已 ACK 的安全片段分类为 work，不能进入答案或 receipt；后续 typed
+或 Result 不修补它。仅不同 provider ID、主 Agent、完整 raw framing 的后续消息可恢复。
+如果最终仍处于隔离状态，或者 ACK、脱敏、身份/正文对账、工具证据或 SDK 终态失败，
+仍走对应失败路径。没有伪造 stop，也没有采用未证实的不同索引重叠容错策略。
+
+锁定 SDK `0.2.130` 的 parser 原样传递 `StreamEvent.event`，typed 消息保留 provider
+message ID、观察 UUID 和 `parent_tool_use_id`；这证明身份字段映射，不证明线上事故
+帧的来源或完整性。官方 [流式文档](https://code.claude.com/docs/en/agent-sdk/streaming-output)
+说明 typed 消息按非空内容块交付，可能先于 raw stop；不是整条消息的终态快照。
+因此 raw 模式的 answer 分类等待 raw message_stop，高层消息没有成为新的回填权威。
+子 Agent 文字不进入主答案；其工具身份仍登记到既有脱敏 gate，工具活动继续由
+获准生命周期回调管理。raw 状态只属于当前主消息，不按 index 跨消息或 Agent 共享。
+
+已通过索引和类型校验的空字符串 `text_delta` 是不发布文字的空操作；非字符串仍拒绝。typed `AssistantMessage`
 可以先于 raw block stop 到达，不能替代 framing 边界。`AssistantAnswerTimeline` 是
 raw/typed/Result 新增后缀的唯一对账来源，typed replay 不重新拼接全文。
 来源 router 只持有分类和有界身份窗口，不为分类扣留整段正文。
+重复的 typed 来源计数预校验、无消费方的 raw 索引来源集合和仅供测试读取的
+partial 标志已移除；raw 全来源列表只用于计数，改用既有 completed 索引集合限额。
+Timeline 的身份、重放及前缀一致性校验保留，用于保护已 ACK 的公开事实，不是另一套工具协议权威。
 空工具来源收尾时清除工具状态；raw-only 后续答案不依赖整轮是否见过 typed 文本。
+
+本次字段审计仅覆盖这条投影路径；下列内部状态不写入历史，公开 part/receipt 字段保持兼容。
+
+| 字段或状态 | 来源与实际消费行为 | 处置及兼容性 |
+| --- | --- | --- |
+| provider message ID / observation UUID / parent ID | SDK parser；runner、router、Timeline 用于主/子作用域、raw/typed 绑定及重放识别 | 保留；不能替代公开 message ID |
+| text source identity / generations | Projector；Timeline 绑定正文、block stop 和 typed 来源 | 保留，防止不同消息或来源错误合并 |
+| stop reason / message open | raw/typed 生命周期；runner 选择 work/answer 并验证终态 | 保留；raw 模式须等 message_stop 才选择答案 |
+| completed block indexes | 已验证 raw stop；Projector 拒绝索引复用并限制来源数量 | 保留；替代只被计数的 `_raw_sources` 列表 |
+| `_raw_sources_by_index` / `_partial_emitted` | 前者只写不读；后者只有测试读取 | 删除；实际文字输出断言保留，无历史消费方 |
+| `validate_typed_text_source_count` | runner 预校验，随后来源绑定重复调用同一窗口验证 | 删除预校验入口；`typed_text_source_identity` 保留验证 |
+| first failure shape / preceding frames | Projector；runner 私有、有界、无正文诊断 | 保留；成功分支经既有诊断保存通道留存，从公开结果剥离，不改管理端接口 |
+
+未来替换 SDK 的最小接缝是 executor 适配层：负责 provider 消息/块身份、Agent
+作用域和终态向既有安全答案 gate、part 分类及 receipt 合同的映射。Claude raw
+framing 和 raw/typed/Result 对账细节留在 `app/executors`，不成为平台公开字段。
+现有 sandbox runtime 诊断归一化与 Worker 的 SDK 诊断投影仍耦合既有 SDK schema，
+替换时需在适配层映射；不因本次修复改变通用持久化、前端或新建插件框架。
 
 每个新增后缀在任何公开 callback 前经过同一个 `PublicAnswerStreamGate`。
 gate 保留必要的敏感短后缀及其来源跨度，后续释放仍属于原片段；已知 token 替换属于 token

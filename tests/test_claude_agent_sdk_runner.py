@@ -4429,9 +4429,11 @@ async def test_sdk_selected_skill_resumes_stream_after_incomplete_tool_block_bou
         thinking_effort="high",
     )
 
-    assert result.error == "claude_agent_sdk_output_validation_failed"
-    assert observed_before_result == []
-    assert deltas == []
+    assert result.error is None
+    assert text.startswith("".join(observed_before_result))
+    assert "".join(deltas) == text
+    assert result.answer_receipt["text_length"] == len(text)
+    assert result.runtime_diagnostics["projection_failure"]["reason"] == "raw_frame_invalid"
     assert result.message == ""
     event_types = [
         candidate.event_type
@@ -4441,7 +4443,7 @@ async def test_sdk_selected_skill_resumes_stream_after_incomplete_tool_block_bou
     ]
     assert "claude_sdk_thinking_summary" not in event_types
     assert "message.delta" not in event_types
-    assert "message.part.delta" not in event_types
+    assert "message.part.delta" in event_types
 
 
 @pytest.mark.asyncio
@@ -5620,8 +5622,8 @@ async def test_sdk_sandbox_typed_end_turn_conflicts_with_raw_tool_use_stop(
 
     assert result.error == "claude_agent_sdk_output_validation_failed"
     assert result.message == ""
-    assert deltas and body.startswith("".join(deltas))
-    assert "".join(deltas) != body
+    assert deltas == []
+    assert result.answer_receipt is None
 
 
 @pytest.mark.asyncio

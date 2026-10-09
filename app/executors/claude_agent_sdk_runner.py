@@ -3917,19 +3917,37 @@ async def run_claude_agent_sdk(
             location: str,
             frame_shape: dict[str, str] | None = None,
             preceding_frames: tuple[dict[str, str], ...] = (),
+            fatal: bool = True,
         ) -> None:
             nonlocal stream_projection_failed, first_projection_failure
             if first_projection_failure is None:
                 first_projection_failure = _ProjectionFailure(
-                    reason=reason,
-                    stage=stage,
-                    location=location,
+                    reason=reason, stage=stage, location=location,
                     frame_shape=frame_shape,
                     preceding_frames=preceding_frames,
                 )
-            stream_projection_failed = True
-            answer_stream_gate.fail_closed()
-            answer_timeline.fail_closed(first_projection_failure.reason)
+            if fatal:
+                stream_projection_failed = True
+                answer_stream_gate.fail_closed()
+                answer_timeline.fail_closed(reason)
+
+        async def quarantine_raw_message() -> None:
+            fail_stream_projection(
+                reason=stream_projector.failure_reason or "raw_frame_invalid",
+                stage="message", location="raw_stream_frame",
+                frame_shape=stream_projector.failure_frame,
+                preceding_frames=stream_projector.failure_frame_history,
+                fatal=False,
+            )
+            source_key = source_router.message_key
+            if source_key is not None:
+                # Keep acknowledged safe preview as work; incomplete framing
+                # cannot authorize final-answer selection or terminal repair.
+                if source_router.has_text_for(source_key):
+                    await classify_source(source_key, "work")
+                pending_callback_text.pop(source_key, None)
+                source_router.take(source_key)
+            answer_timeline.retire_answer_binding()
 
         async for message in messages:
             mcp_registration.check_message(message)
@@ -3975,6 +3993,8 @@ async def run_claude_agent_sdk(
                     register_dynamic_tool_call_id(
                         raw_stream_event["content_block"].get("id")
                     )
+                if getattr(message, "parent_tool_use_id", None) is not None:
+                    continue
                 if stream_projector is not None:
                     raw_observation_identity = getattr(message, "uuid", None)
                     if (
@@ -3987,21 +4007,16 @@ async def run_claude_agent_sdk(
                             location="stream_observation_identity",
                         )
                         continue
-                    fragments = stream_projector.accept(
-                        raw_stream_event,
-                        parent_tool_use_id=getattr(message, "parent_tool_use_id", None),
-                    )
+                    if (
+                        isinstance(raw_stream_event, dict)
+                        and raw_stream_event.get("type") == "message_start"
+                        and stream_projector.message_open
+                    ):
+                        stream_projector.close_unfinished()
+                        await quarantine_raw_message()
+                    fragments = stream_projector.accept(raw_stream_event)
                     if stream_projector.disabled:
-                        fail_stream_projection(
-                            reason=(
-                                stream_projector.failure_reason
-                                or "raw_frame_invalid"
-                            ),
-                            stage="message",
-                            location="raw_stream_frame",
-                            frame_shape=stream_projector.failure_frame,
-                            preceding_frames=stream_projector.failure_frame_history,
-                        )
+                        await quarantine_raw_message()
                     else:
                         raw_source_key = (
                             stream_projector.message_id,
@@ -4119,6 +4134,14 @@ async def run_claude_agent_sdk(
                 continue
             if isinstance(message, AssistantMessage):
                 await flush_answer_candidates()
+                content = getattr(message, "content", None)
+                for block in content if isinstance(content, list) else ():
+                    if type(block).__name__ in {"ToolUseBlock", "ServerToolUseBlock"}:
+                        register_dynamic_tool_call_id(getattr(block, "id", None))
+                if getattr(message, "parent_tool_use_id", None) is not None:
+                    continue
+                if stream_projector is not None and stream_projector.disabled:
+                    continue
                 assistant_observation_scope += 1
                 diagnostic_counters["assistant_messages"] += 1
                 assistant_error = getattr(message, "error", None)
@@ -4147,7 +4170,6 @@ async def run_claude_agent_sdk(
                 )
                 parent_tool_use_id = getattr(message, "parent_tool_use_id", None)
                 typed_stop_reason = getattr(message, "stop_reason", None)
-                content = getattr(message, "content", None)
                 if (
                     not isinstance(content, list)
                     or (
@@ -4245,22 +4267,6 @@ async def run_claude_agent_sdk(
                         )
                         continue
                     text_values[text_source_ordinal] = text
-                if (
-                    stream_projector is not None
-                    and stream_projector.raw_lifecycle_observed
-                    and typed_text_blocks
-                    and not stream_projector.validate_typed_text_source_count(
-                        len(typed_text_blocks)
-                    )
-                ):
-                    fail_stream_projection(
-                        reason=(
-                            stream_projector.failure_reason
-                            or "typed_text_source_count_mismatch"
-                        ),
-                        stage="message",
-                        location="typed_text_source_count",
-                    )
                 if stream_projection_failed:
                     continue
                 if not text_blocks:
@@ -4313,9 +4319,6 @@ async def run_claude_agent_sdk(
                             )
                 if stream_projection_failed:
                     continue
-                for block in content:
-                    if type(block).__name__ in {"ToolUseBlock", "ServerToolUseBlock"}:
-                        register_dynamic_tool_call_id(getattr(block, "id", None))
                 text_source_ordinal = 0
                 for block_index, block in enumerate(content):
                     if isinstance(block, TextBlock):
@@ -4376,7 +4379,6 @@ async def run_claude_agent_sdk(
                     elif typed_stop_reason == "end_turn" and (
                         stream_projector is None
                         or not stream_projector.raw_lifecycle_observed
-                        or stream_projector.last_stop_reason == "end_turn"
                     ):
                         if not await classify_source(source_key, "answer"):
                             continue
@@ -4388,17 +4390,14 @@ async def run_claude_agent_sdk(
                 await flush_answer_candidates()
             elif isinstance(message, ResultMessage):
                 terminal_result_message = message
-                if stream_projector is not None:
+                if stream_projector is not None and stream_projector.message_open:
                     stream_projector.close_unfinished()
-                    if stream_projector.disabled:
-                        fail_stream_projection(
-                            reason=(
-                                stream_projector.failure_reason
-                                or "unfinished_raw_stream"
-                            ),
-                            stage="message",
-                            location="result_unfinished_stream",
-                        )
+                    await quarantine_raw_message()
+                if stream_projector is not None and stream_projector.disabled:
+                    fail_stream_projection(
+                        reason=stream_projector.failure_reason or "unfinished_raw_stream",
+                        stage="message", location="result_unfinished_stream",
+                    )
                 diagnostic_counters["result_messages"] += 1
                 diagnostic_counters["turns_observed"] = _bounded_diagnostic_counter(
                     continuation_turns + getattr(message, "num_turns", 0)
@@ -4740,12 +4739,8 @@ async def run_claude_agent_sdk(
             stream_projector.close_unfinished()
             if stream_projector.disabled:
                 fail_stream_projection(
-                    reason=(
-                        stream_projector.failure_reason
-                        or "unfinished_raw_stream"
-                    ),
-                    stage="message",
-                    location="stream_finalization",
+                    reason=stream_projector.failure_reason or "unfinished_raw_stream",
+                    stage="message", location="stream_finalization",
                 )
         terminal_error = (
             _SDK_MISSING_STRUCTURED_TERMINAL
@@ -4842,17 +4837,20 @@ async def run_claude_agent_sdk(
             terminal_reason=terminal_reason,
             received_structured_terminal=received_structured_terminal,
             runtime_diagnostics_snapshot=lambda: (
-                runtime_diagnostics(
-                    terminal_error,
-                    failure_source="terminal_validation",
+                {key: value for key, value in runtime_diagnostics(
+                    terminal_error or "claude_agent_sdk_raw_message_quarantined",
+                    failure_source="terminal_validation" if terminal_error else "raw_stream_projection",
                     result_subtype=getattr(terminal_result_message, "subtype", None),
                     stop_reason=getattr(terminal_result_message, "stop_reason", None),
                     terminal_reason=terminal_reason,
                     permission_denials=getattr(
                         terminal_result_message, "permission_denials", None
                     ),
-                )
-                if terminal_error is not None
+                ).items() if terminal_error or key in {
+                    "schema_version", "error_code", "failure_source",
+                    "failure_stage", "projection_failure",
+                }}
+                if terminal_error is not None or first_projection_failure is not None
                 else {}
             ),
             include_terminal_files=True,

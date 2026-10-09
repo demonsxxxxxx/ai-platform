@@ -200,9 +200,18 @@ older record without `preceding_frames` remains readable. This evidence locates
 the first SDK-delivered protocol conflict, but cannot prove whether the model,
 bundled CLI, SDK transport, or a replay produced it; compare the affected
 release's actual SDK/CLI versions and approved upstream evidence before changing
-the framing validator. This adds no ordinary-user field and changes neither the
-fail-closed decision nor text publication. No superseded production path,
-assertion, or selector is in scope.
+the framing validator. The current [streaming message design](../implementation/streaming-message-parts-design.md)
+keeps rejection local to the damaged message and permits a separately identified,
+valid main-message lifecycle to recover. It retains the strict rejection of
+overlapping blocks and missing stops; neither typed text nor Result repairs the
+damaged message. A recovered runner result retains this bounded first-rejection
+shape under the private `claude_agent_sdk_raw_message_quarantined` diagnostic label;
+the business result remains independent. This successful carrier includes only
+fixed labels and the first framing rejection, excluding SDK/tool content. Worker success forwards the already
+normalized private carrier to the existing terminal diagnostic capture, which
+separates it from the public result and records it with tenant/Run/Attempt scope.
+It uses the existing bounded, idempotent observation path; neither a diagnostics
+schema nor a public field is added here.
 
 ## Redis Lifecycle Authority
 

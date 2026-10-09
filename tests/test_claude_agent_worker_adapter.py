@@ -3133,7 +3133,8 @@ def test_sandbox_runtime_unknown_or_error_terminal_status_fails_closed(runtime_s
     assert result.executor_payload["runtime_terminal_status"] == runtime_status
 
 
-def test_sandbox_runtime_without_private_diagnostics_does_not_synthesize_rejection(tmp_path):
+@pytest.mark.parametrize("runtime_status", ["failed", "completed"])
+def test_sandbox_runtime_without_private_diagnostics_does_not_synthesize_rejection(tmp_path, runtime_status):
     adapter = ClaudeAgentWorkerAdapter()
     prepared = PreparedSdkRun(
         workspace=tmp_path,
@@ -3149,12 +3150,13 @@ def test_sandbox_runtime_without_private_diagnostics_does_not_synthesize_rejecti
             sandbox_writing_payload(agent_id="general-agent", skill_id="general-chat"),
             prepared,
             types.SimpleNamespace(
-                status="failed",
+                status=runtime_status,
                 provider="docker",
-                executor_response={"status": "failed", "error_code": "executor_reported_failure", **carrier},
+                executor_response={"status": runtime_status, "tool_invocation_evidence": [], **carrier},
                 timings={},
             ),
         )
+        assert result.status == ("succeeded" if runtime_status == "completed" else "failed")
         assert "runtime_diagnostics" not in result.result
         assert "runtime_diagnostics" not in result.executor_payload
 
