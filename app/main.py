@@ -22,6 +22,7 @@ from app.bootstrap.run_lifecycle import (
 )
 from app.bootstrap.run_attempt_lifecycle import build_run_attempt_lifecycle_service
 from app.bootstrap.run_diagnostics import build_run_diagnostics_service
+from app.bootstrap.run_inputs import build_run_inputs_service
 from app.bootstrap.skills import configure_skill_services
 from app.bootstrap.streaming import build_run_stream_runtime
 from app.db import close_pool, transaction
@@ -98,6 +99,7 @@ def create_app() -> FastAPI:
     app = FastAPI(title="AI Platform API", version="0.1.0", lifespan=lifespan)
     app.state.run_attempt_lifecycle = build_run_attempt_lifecycle_service()
     app.state.run_diagnostics_service = build_run_diagnostics_service()
+    app.state.run_inputs_service = build_run_inputs_service()
     settings = get_settings()
     app.add_middleware(
         CORSMiddleware,

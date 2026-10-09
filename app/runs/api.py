@@ -213,3 +213,9 @@ from app.runs.domain.terminalization import (
 from app.runs.application.attempt_lifecycle import (
     RunAttemptLifecycleService as RunAttemptLifecycleService,
 )
+from app.runs.application.inputs import RunInputsService as RunInputsService
+from app.runs.domain.inputs import (
+    RunInputClosed as RunInputClosed,
+    RunInputConflict as RunInputConflict,
+    RunInputError as RunInputError,
+)

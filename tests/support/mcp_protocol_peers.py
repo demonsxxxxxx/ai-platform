@@ -19,6 +19,7 @@ def local_mcp_peers():
                {"name": "unselected_sibling", "inputSchema": {"type": "object"}}],
         models=[], calls=[], requests=[], replies=queue.Queue(), stopped=threading.Event(),
         sse_closed=threading.Event(), is_error=False, sdk_tool=SDK_TOOL,
+        tool_input={"query": "synthetic"},
     )
 
     class Handler(BaseHTTPRequestHandler):
@@ -83,12 +84,12 @@ def local_mcp_peers():
                     for block in message.get("content", []) if isinstance(block, dict)
                 )
                 content = {"type": "text", "text": "Synthetic lookup complete."} if used_tool else {
-                    "type": "tool_use", "id": "toolu_synthetic", "name": state.sdk_tool, "input": {"query": "synthetic"},
+                    "type": "tool_use", "id": "toolu_synthetic", "name": state.sdk_tool, "input": state.tool_input,
                 }
                 stop_reason = "end_turn" if used_tool else "tool_use"
                 events = [
                     ("message_start", {"type": "message_start", "message": {
-                        "id": "msg_synthetic", "type": "message", "role": "assistant",
+                        "id": f"msg_synthetic_{len(state.models)}", "type": "message", "role": "assistant",
                         "model": request["model"], "content": [], "stop_reason": None,
                         "stop_sequence": None, "usage": {"input_tokens": 10, "output_tokens": 0},
                     }}),

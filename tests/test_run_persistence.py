@@ -133,7 +133,7 @@ async def test_run_queries_preserve_scope_projection_and_for_update():
     identity_sql, identity_params = conn.calls[1]
     assert identity_sql == (
         "select id, tenant_id, workspace_id, user_id, session_id, agent_id, "
-        "status, context_snapshot_id from runs where id = %s for update"
+        "status, context_snapshot_id, cancel_requested_at from runs where id = %s for update"
     )
     assert identity_params == ("run-a",)
 

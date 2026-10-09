@@ -880,6 +880,23 @@ async def test_sandbox_terminal_only_answer_batches_executor_callback_events(
             self.accepted_final_sequence = 1
 
     monkeypatch.setattr(executor_app, "build_claude_session_store", lambda **_kwargs: Store())
+
+    from app.execution.application.run_interaction import RunInputSnapshot
+
+    class Inputs:
+        async def open(self):
+            return RunInputSnapshot("open")
+
+        async def settle(self):
+            return RunInputSnapshot("sealed")
+
+    input_scopes = []
+
+    def input_client(**kwargs):
+        input_scopes.append(kwargs)
+        return Inputs()
+
+    monkeypatch.setattr(executor_app, "build_run_input_callback_client", input_client)
     raw = task_payload()
     raw["sdk_session_id"] = "sdk-session-a"
     request = ExecutorTaskRequest.model_validate(raw)
@@ -895,6 +912,13 @@ async def test_sandbox_terminal_only_answer_batches_executor_callback_events(
         event for event in emitted if isinstance(event, ExecutorCallbackEvent)
     ]
     assert result["status"] == "completed", result.get("error_code")
+    assert input_scopes == [{
+        "callback_base_url": TRUSTED_CALLBACK_BASE_URL,
+        "callback_token": request.callback_token,
+        "callback_token_id": request.callback_token_id,
+        "run_id": request.run_id,
+        "attempt_id": request.attempt_id,
+    }]
     assert result["provider_session_final_sequence"] == 1
     assert result["message"] == ""
     assert len(callbacks) > 1
@@ -3207,6 +3231,7 @@ async def test_model_wire_and_actual_sdk_sandbox_checkpoints_match_across_tool_c
         _full_sandbox_local_tool_capability_subjects, _scripted_sdk, _settings,
     )
     from app.runtime.kernel_contracts import CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE
+    from app.execution.application.run_interaction import RunInputSnapshot
 
     install_mcp_sessions(monkeypatch)
     caplog.set_level(logging.WARNING)
@@ -3240,6 +3265,22 @@ async def test_model_wire_and_actual_sdk_sandbox_checkpoints_match_across_tool_c
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
     monkeypatch.setattr(executor_app, "get_settings", _settings)
     monkeypatch.setattr(executor_app, "build_claude_session_store", lambda **_kwargs: None)
+    input_scopes, input_operations = [], []
+
+    class Inputs:
+        async def open(self):
+            input_operations.append("open")
+            return RunInputSnapshot("open")
+
+        async def settle(self):
+            input_operations.append("settle")
+            return RunInputSnapshot("sealed")
+
+    def input_client(**kwargs):
+        input_scopes.append(kwargs)
+        return Inputs()
+
+    monkeypatch.setattr(executor_app, "build_run_input_callback_client", input_client)
     payload = task_payload()
     payload["config"]["tool_policy_subjects"] = _full_sandbox_local_tool_capability_subjects(
         [], sandbox_provider="opensandbox",
@@ -3261,6 +3302,14 @@ async def test_model_wire_and_actual_sdk_sandbox_checkpoints_match_across_tool_c
         if ending == "upstream_error":
             assert result["error_code"] == "claude_agent_sdk_execution_failed"
 
+    assert input_scopes == [{
+        "callback_base_url": TRUSTED_CALLBACK_BASE_URL,
+        "callback_token": request.callback_token,
+        "callback_token_id": request.callback_token_id,
+        "run_id": request.run_id,
+        "attempt_id": request.attempt_id,
+    }]
+    assert input_operations == (["open", "settle"] if ending == "complete" else ["open"])
     checkpoints = [event["payload"] for callback in callbacks for event in callback["events"]
                    if event["type"] == CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE]
     sdk_before = [item for item in checkpoints if item["call_ref"] == wire_before[0]["call_ref"]]
@@ -3648,6 +3697,8 @@ def test_executor_deadline_preserves_mcp_execution_uncertainty(
     payload = task_payload()
     payload["config"]["resource_limits"] = {"max_seconds": 0.1}
 
+    observed = []
+
     async def executor_runner(request, workspace_root, emit_event):
         lifecycles = [("started", "invoking")]
         if terminal_hook_seen:
@@ -3669,16 +3720,23 @@ def test_executor_deadline_preserves_mcp_execution_uncertainty(
                 ),
             ))
             assert accepted is True
+            observed.append(lifecycle)
         await asyncio.Event().wait()
+
+    async def callback_sender(_url, value, _token):
+        # This deadline case measures cancellation after the intended facts,
+        # not scheduling a synchronous fixture on the host thread pool.
+        return callback_ack(value)
 
     client = create_test_client(
         tmp_path,
-        callback_sender=lambda url, value, token: callback_ack(value),
+        callback_sender=callback_sender,
         executor_runner=executor_runner,
     )
 
     response = client.post("/v2/tasks", json=payload, headers=auth_headers())
 
+    assert observed == (["started", "completed"] if terminal_hook_seen else ["started"])
     assert response.status_code == 200
     assert response.json()["status"] == "failed"
     assert response.json()["error_code"] == expected_error

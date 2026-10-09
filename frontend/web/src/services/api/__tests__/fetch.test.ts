@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { ApiProtocolError, ApiRequestError, authFetch } from "../fetch.ts";
 import { apiRequestErrorFromResponse } from "../fetch.ts";
 import { registerAuthScopedCacheClearer } from "../authCacheInvalidation.ts";
+import { parseSessionRunInputs, sessionApi } from "../session.ts";
 
 function installFetchAuthStubs({
   fetchImpl,
@@ -520,4 +521,23 @@ test("authFetch preserves cancelled and failed body reads without wrapping or id
       }
     }
   }
+});
+
+test("session Run input history binds its envelope and encodes the pagination cursor", async () => {
+  const page = { session_id: "session/owned", runs: [{ run_id: "run-safe", state: "inactive", inputs: [], questions: [] }], has_more: true, next_before_run_id: "run-safe" };
+  const requests: Array<{ url: string; init?: RequestInit }> = [];
+  const env = installFetchAuthStubs({ fetchImpl: async (input, init) => {
+    requests.push({ url: String(input), init });
+    return new Response(JSON.stringify(page), { status: 200 });
+  } });
+  try {
+    const result = await sessionApi.getRunInputHistory("session/owned", { beforeRunId: "run/older?", limit: 20 });
+    assert.deepEqual(result, page);
+    assert.equal(requests[0].url, "/api/ai/sessions/session%2Fowned/run-inputs?limit=20&before_run_id=run%2Folder%3F");
+    assert.equal(requests[0].init?.cache, "no-store");
+    assert.throws(() => parseSessionRunInputs({ ...page, session_id: "session-foreign" }, "session/owned"), /invalid_session_run_inputs_projection/);
+    assert.throws(() => parseSessionRunInputs({ ...page, next_before_run_id: null }, "session/owned"), /invalid_session_run_inputs_projection/);
+    assert.throws(() => parseSessionRunInputs({ ...page, runs: [page.runs[0], page.runs[0]] }, "session/owned"), /invalid_session_run_inputs_projection/);
+    assert.throws(() => parseSessionRunInputs({ ...page, runs: [{ run_id: "run-safe", state: "bad", inputs: [], questions: [] }] }, "session/owned"), /invalid_run_inputs_projection/);
+  } finally { env.restore(); }
 });

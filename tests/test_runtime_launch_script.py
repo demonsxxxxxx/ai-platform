@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import json
+import re
 from pathlib import Path
 import shlex
 import shutil
@@ -1294,7 +1295,13 @@ def test_opensandbox_network_guard_allows_public_egress_and_keeps_host_boundarie
 def test_opensandbox_egress_proxy_preserves_existing_model_and_callback_authorities():
     template = OPENSANDBOX_EGRESS_TEMPLATE.read_text(encoding="utf-8")
 
-    assert "/api/ai/runtime/callbacks/(executor|context-retrieval|tool-permission)" in template
+    # The proxy must forward every current fenced callback and no retired route.
+    callbacks = set(re.findall(r'@router\.post\(\s*"/runtime/callbacks/([^"/]+)"',
+                              Path("app/routes/runtime_callbacks.py").read_text()))
+    match = re.search(r'/api/ai/runtime/callbacks/\(([^)]+)\)\$', template)
+    assert match is not None
+    assert set(match.group(1).split("|")) == callbacks
+    assert callbacks == {"executor", "context-retrieval", "provider-session", "inputs"}
     assert 'location ~ "^/openai/(?<openai_run_id>[A-Za-z0-9_-]{1,128})/(?<openai_attempt_id>[A-Za-z0-9_-]{1,128})/(?<openai_model_path>v1/(chat/completions|responses))$" {' in template
     assert 'location ~ "^/anthropic/(?<anthropic_run_id>[A-Za-z0-9_-]{1,128})/(?<anthropic_attempt_id>[A-Za-z0-9_-]{1,128})/(?<anthropic_model_path>v1/messages(?:/count_tokens)?)$" {' in template
     assert "/api/ai/internal/model-proxy/openai/" in template

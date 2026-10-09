@@ -17,6 +17,11 @@ import { installTestDom } from "./testDom.ts";
 const dom = installTestDom();
 installBrowserAuthTestDb();
 
+let productionRunInputReads: Pick<
+  typeof import("../../../services/api/session.ts").sessionApi,
+  "getRunInputs" | "getRunInputHistory"
+> | null = null;
+
 function clearPersistedSubmissionReferences() {
   for (let index = dom.window.localStorage.length - 1; index >= 0; index -= 1) {
     const key = dom.window.localStorage.key(index);
@@ -45,6 +50,7 @@ async function loadReactHarness({
   sessionRouteLifecycle = false,
   sessionRouteBasePath,
   initialRoute = "/chat",
+  realRunInputReads = false,
 }: {
   agentOptions?: UseAgentOptions;
   strict?: boolean;
@@ -53,6 +59,7 @@ async function loadReactHarness({
   sessionRouteLifecycle?: boolean;
   sessionRouteBasePath?: string;
   initialRoute?: string;
+  realRunInputReads?: boolean;
 } = {}) {
   if (!preserveSubmissionReferences) {
     clearPersistedSubmissionReferences();
@@ -91,6 +98,11 @@ async function loadReactHarness({
   const originalGetCurrentUser = authApi.getCurrentUser;
   const originalBootstrapAuthContext = authApi.bootstrapAuthContext;
   const originalGetAuthoritative = sessionApi.getAuthoritative;
+  const originalGetRunInputs = sessionApi.getRunInputs;
+  const originalGetRunInputHistory = sessionApi.getRunInputHistory;
+  // Nested harnesses can retire in either order. Capture the real transport
+  // once so the auth-fencing regression never inherits another harness's mock.
+  productionRunInputReads ??= { getRunInputs: originalGetRunInputs, getRunInputHistory: originalGetRunInputHistory };
   let currentAuthUser = {
     id: "user-a",
     tenant_id: "tenant-a",
@@ -121,8 +133,18 @@ async function loadReactHarness({
     purpose: "conversation",
     agent_conversation: null,
   });
+  // Run input persistence has its own mounted suite. Keep these read owners
+  // explicit so a playback transport stub only observes playback requests.
+  if (realRunInputReads) {
+    Object.assign(sessionApi, productionRunInputReads);
+  } else {
+    sessionApi.getRunInputs = async (runId) => ({ run_id: runId, state: "inactive", inputs: [], questions: [] });
+    sessionApi.getRunInputHistory = async (sessionId) => ({ session_id: sessionId, runs: [], has_more: false, next_before_run_id: null });
+  }
   const restoreSessionApi = () => {
     sessionApi.getAuthoritative = originalGetAuthoritative;
+    sessionApi.getRunInputs = originalGetRunInputs;
+    sessionApi.getRunInputHistory = originalGetRunInputHistory;
   };
 
   function Probe() {
@@ -6525,6 +6547,13 @@ test("useAgent paginates backend-shaped history and merges an older successful R
   })) as typeof sessionApi.getStatus;
   globalThis.fetch = (async (input) => {
     const url = new URL(String(input), "http://test.local");
+    const inputRunId = url.pathname.match(/\/runs\/([^/]+)\/inputs$/)?.[1];
+    if (inputRunId) {
+      return historyJsonResponse({
+        run_id: decodeURIComponent(inputRunId), state: "inactive", inputs: [], questions: [],
+      });
+    }
+    assert.ok(url.pathname.endsWith("/events"), "only history requests belong to pagination");
     requests.push(url);
     const runId = url.searchParams.get("run_id");
     const cursor = url.searchParams.get("cursor");
@@ -6765,6 +6794,13 @@ test(`useAgent preserves the visible answer when ${terminalStatus} exact history
   })) as typeof sessionApi.getStatus;
   globalThis.fetch = (async (input) => {
     const url = new URL(String(input), "http://test.local");
+    const inputRunId = url.pathname.match(/\/runs\/([^/]+)\/inputs$/)?.[1];
+    if (inputRunId) {
+      return historyJsonResponse({
+        run_id: decodeURIComponent(inputRunId), state: "inactive", inputs: [], questions: [],
+      });
+    }
+    assert.ok(url.pathname.endsWith("/events"), "only history requests belong to pagination");
     requests.push(url);
     if (url.searchParams.get("run_id") === "run-empty-successful-shell") {
       return historyJsonResponse({
@@ -8291,7 +8327,7 @@ test("useAgent synchronously aborts a deferred run-control GET from the producti
 
 test("useAgent synchronously retires an active Chat SSE from the production auth-incarnation event", async () => {
   let restoreToastDismiss: (() => void) | null = null;
-  const harness = await loadReactHarness();
+  const harness = await loadReactHarness({ realRunInputReads: true });
   const { BROWSER_AUTH_INCARCINATION_EVENT } = await import(
     "../../browserAuthCoordinator.ts"
   );
@@ -8303,6 +8339,8 @@ test("useAgent synchronously retires an active Chat SSE from the production auth
   const originalGlobalFetch = globalThis.fetch;
   const originalWindowFetch = dom.window.fetch;
   let streamSignal: AbortSignal | null = null;
+  let inputsSignal: AbortSignal | null = null;
+  let historySignal: AbortSignal | null = null;
   let rejectStream!: (reason?: unknown) => void;
   let statusCalls = 0;
   let streamCalls = 0;
@@ -8325,7 +8363,25 @@ test("useAgent synchronously retires an active Chat SSE from the production auth
       status: "running",
     };
   }) as typeof sessionApi.getStatus;
-  const nonClosingStream = ((_input: RequestInfo | URL, init?: RequestInit) => {
+  const nonClosingStream = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input), "http://test.local");
+    if (/\/runs\/[^/]+\/inputs$/.test(url.pathname)) {
+      inputsSignal = init?.signal as AbortSignal;
+      return new Promise<Response>((_resolve, reject) => {
+        inputsSignal?.addEventListener("abort", () => {
+          reject(Object.assign(new Error("old inputs request retired"), { name: "AbortError" }));
+        }, { once: true });
+      });
+    }
+    if (/\/sessions\/[^/]+\/run-inputs$/.test(url.pathname)) {
+      historySignal = init?.signal as AbortSignal;
+      return new Promise<Response>((_resolve, reject) => {
+        historySignal?.addEventListener("abort", () => {
+          reject(Object.assign(new Error("old history request retired"), { name: "AbortError" }));
+        }, { once: true });
+      });
+    }
+    assert.equal(url.pathname, "/api/chat/sessions/session-auth-event-stream/stream");
     streamCalls += 1;
     streamSignal = init?.signal as AbortSignal;
     return new Promise<Response>((_resolve, reject) => {
@@ -8340,7 +8396,11 @@ test("useAgent synchronously retires an active Chat SSE from the production auth
       await Promise.resolve();
     });
     const activeStreamSignal = streamSignal as AbortSignal | null;
+    const activeInputsSignal = inputsSignal as AbortSignal | null;
+    const activeHistorySignal = historySignal as AbortSignal | null;
     assert.ok(activeStreamSignal, "the Chat SSE should be active before auth turnover");
+    assert.ok(activeInputsSignal, "the Run inputs read should be active before auth turnover");
+    assert.ok(activeHistorySignal, "the session Run input history read should be active before auth turnover");
     assert.equal(activeStreamSignal.aborted, false);
     const toast = (await import("react-hot-toast")).default, originalDismiss = toast.dismiss;
     const dismissedToastIds: Array<string | undefined> = [];
@@ -8358,6 +8418,10 @@ test("useAgent synchronously retires an active Chat SSE from the production auth
         true,
         "the event must synchronously abort the old Chat SSE before returning",
       );
+      assert.equal(activeInputsSignal.aborted, true,
+        "the event must synchronously retire the old Run inputs before returning");
+      assert.equal(activeHistorySignal.aborted, true,
+        "the event must synchronously retire old session Run input history before returning");
       assert.deepEqual(dismissedToastIds, ["chat-queue"]);
     });
     assert.equal(harness.hook.currentRunId, null);

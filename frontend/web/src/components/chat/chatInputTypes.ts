@@ -13,6 +13,7 @@ import type { ProfileDriveFileReference } from "../../services/api/profileDrive"
 import type {
   StopGenerationResult,
   SubmissionOutcome,
+  RunInputsController,
 } from "../../hooks/useAgent/types";
 import type {
   SelectedSkillRecoverableCode,
@@ -97,6 +98,8 @@ export interface ChatInputProps {
   ) => void | Promise<unknown>;
   pendingInput?: string | null;
   onPendingInputConsumed?: () => void;
+  /** Separate same-Run continuation field; it never submits composer selections. */
+  runInputs?: RunInputsController;
   className?: string;
 
   /** INTERNAL: panel state lifted from ChatInput for ChatView layout. */

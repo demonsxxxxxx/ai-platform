@@ -82,10 +82,11 @@ def _stable_aliases(
 
 
 class ClaudeMcpRegistration:
-    def __init__(self, subjects, configs, *, session_factory, list_tools):
+    def __init__(self, subjects, configs, *, session_factory, list_tools, callback_wrapper=None):
         self.configs = configs
         self._session_factory = session_factory
         self._list_tools = list_tools
+        self._track_callback = callback_wrapper or (lambda callback: callback)
         self.aliases: dict[str, str] = {}
         self.sdk_names: dict[str, str] = {}
         self.server_aliases: dict[str, str] = {
@@ -164,6 +165,7 @@ class ClaudeMcpRegistration:
             return [tool for tool, _remote_name in selected.values()]
 
         @server.call_tool(validate_input=False)
+        @self._track_callback
         async def call_selected_tool(name: str, arguments: dict[str, Any]):
             if name not in selected:
                 return CallToolResult(

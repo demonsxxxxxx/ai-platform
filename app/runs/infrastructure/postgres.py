@@ -1086,7 +1086,7 @@ async def get_run_identity(
 ) -> dict[str, Any] | None:
     sql = (
         "select id, tenant_id, workspace_id, user_id, session_id, agent_id, status, "
-        "context_snapshot_id from runs where id = %s"
+        "context_snapshot_id, cancel_requested_at from runs where id = %s"
     )
     if for_update:
         sql = f"{sql} for update"

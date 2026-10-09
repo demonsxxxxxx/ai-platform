@@ -62,6 +62,7 @@ from app.runtime.kernel_contracts import (
     AgentEvent,
 )
 from app.runtime.sandbox.context_retrieval_client import PlatformContextRetrievalClient
+from app.bootstrap.run_inputs_client import build_run_input_callback_client
 from app.sandbox.api import (
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
     normalize_sdk_runtime_diagnostics,
@@ -1825,6 +1826,13 @@ async def _default_executor_runner(
             provider_session_id=request.sdk_session_id,
         )
         sdk_kwargs = {
+            "interaction_client": build_run_input_callback_client(
+                callback_base_url=request.callback_target.base_url,
+                callback_token=request.callback_token,
+                callback_token_id=request.callback_token_id,
+                run_id=request.run_id,
+                attempt_id=request.attempt_id,
+            ),
             "cleanup_tasks": sdk_cleanup_tasks,
             "prompt": request.prompt,
             "cwd": workspace_root,

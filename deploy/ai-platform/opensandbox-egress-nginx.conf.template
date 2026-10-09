@@ -13,7 +13,7 @@ server {
 
     # Callback authentication remains the API's callback-token contract. The
     # proxy only provides the network entry and never becomes a lifecycle API.
-    location ~ ^/api/ai/runtime/callbacks/(executor|context-retrieval|tool-permission)$ {
+    location ~ ^/api/ai/runtime/callbacks/(executor|context-retrieval|provider-session|inputs)$ {
         if ($request_method != POST) { return 405; }
         proxy_pass ${AI_PLATFORM_API_UPSTREAM};
         proxy_http_version 1.1;

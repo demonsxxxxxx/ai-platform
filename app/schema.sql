@@ -732,6 +732,93 @@ create index if not exists idx_run_attempts_lease_reconcile
   on run_attempts(lease_expires_at asc, tenant_id, run_id, id)
   where status in ('claimed', 'running', 'cancel_requested', 'expired');
 
+create table if not exists run_input_sessions (
+  tenant_id text not null,
+  run_id text not null,
+  attempt_id text not null,
+  state text not null default 'open',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  sealed_at timestamptz,
+  constraint run_input_sessions_pkey primary key (tenant_id, run_id, attempt_id),
+  constraint fk_run_input_sessions_run foreign key (tenant_id, run_id)
+    references runs(tenant_id, id) on delete cascade,
+  constraint chk_run_input_sessions_identity check (
+    tenant_id <> '' and run_id <> '' and attempt_id <> ''
+  ),
+  constraint chk_run_input_sessions_state check (
+    state in ('open', 'sealed')
+  ),
+  constraint chk_run_input_sessions_sealed_time check (
+    (state = 'open' and sealed_at is null)
+    or (state = 'sealed' and sealed_at is not null)
+  )
+);
+
+create table if not exists run_input_questions (
+  tenant_id text not null,
+  run_id text not null,
+  attempt_id text not null,
+  question_id text not null,
+  questions jsonb not null,
+  status text not null default 'pending',
+  created_at timestamptz not null default now(),
+  constraint run_input_questions_pkey primary key (
+    tenant_id, run_id, attempt_id, question_id
+  ),
+  constraint fk_run_input_questions_session foreign key (
+    tenant_id, run_id, attempt_id
+  ) references run_input_sessions(tenant_id, run_id, attempt_id) on delete cascade,
+  constraint chk_run_input_questions_identity check (
+    question_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
+  ),
+  constraint chk_run_input_questions_payload check (
+    case when jsonb_typeof(questions) = 'array'
+      then jsonb_array_length(questions) between 1 and 4
+      else false
+    end
+  ),
+  constraint chk_run_input_questions_status check (
+    status in ('pending', 'answered', 'resolved', 'closed')
+  )
+);
+
+create table if not exists run_inputs (
+  input_id uuid not null,
+  tenant_id text not null,
+  run_id text not null,
+  attempt_id text not null,
+  kind text not null,
+  text text,
+  question_id text,
+  answers jsonb not null default '{}'::jsonb,
+  status text not null default 'queued',
+  created_at timestamptz not null default now(),
+  constraint run_inputs_pkey primary key (tenant_id, run_id, input_id),
+  constraint fk_run_inputs_session foreign key (
+    tenant_id, run_id, attempt_id
+  ) references run_input_sessions(tenant_id, run_id, attempt_id) on delete cascade,
+  constraint fk_run_inputs_question foreign key (
+    tenant_id, run_id, attempt_id, question_id
+  ) references run_input_questions(
+    tenant_id, run_id, attempt_id, question_id
+  ) on delete cascade,
+  constraint chk_run_inputs_kind check (kind in ('text', 'answer')),
+  constraint chk_run_inputs_status check (status in ('queued', 'applied')),
+  constraint chk_run_inputs_payload check (
+    (kind = 'text'
+      and text is not null and btrim(text) <> '' and char_length(text) <= 16000
+      and question_id is null and answers = '{}'::jsonb)
+    or (kind = 'answer'
+      and text is null and question_id is not null
+      and jsonb_typeof(answers) = 'object' and answers <> '{}'::jsonb)
+  )
+);
+
+create index if not exists idx_run_inputs_queued
+  on run_inputs(tenant_id, run_id, attempt_id, kind, created_at, input_id)
+  where status = 'queued';
+
 create or replace function ai_platform_guard_run_attempt_transition()
 returns trigger
 language plpgsql
