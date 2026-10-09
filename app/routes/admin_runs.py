@@ -336,6 +336,7 @@ async def admin_run_detail(
     detail["worker_execution"] = build_admin_worker_execution(
         detail.get("events", []),
         sanitize_text=sanitize_public_text,
+        part_messages=detail.pop("_assistant_text_messages", ()),
     )
     # The Worker projection needs persisted identities to join message chunks.
     # Keep private events and internal stream metadata out of the browser detail.

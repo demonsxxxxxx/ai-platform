@@ -750,13 +750,13 @@ def project_persisted_message_delta_v4(
         return None
 
 
-def project_persisted_message_part_v4(
+def project_persisted_assistant_message_v4(
     row: Mapping[str, object],
     *,
     tenant_id: str,
     run_id: str,
 ) -> dict[str, object] | None:
-    """Authorize and project one persisted assistant text-part fact for history."""
+    """Authorize one historical assistant lifecycle fact before ledger reduction."""
 
     try:
         if (
@@ -764,7 +764,8 @@ def project_persisted_message_part_v4(
             or row.get("run_id") != run_id
             or row.get("v4_attempt_authorized") is not True
             or row.get("event_type")
-            not in {"message.part.delta", "message.part.classified"}
+            not in {"message.started", "message.delta", "message.part.delta",
+                    "message.part.classified", "message.completed"}
         ):
             return None
         metadata = _metadata(row)
@@ -794,11 +795,21 @@ def project_persisted_message_part_v4(
             public
             if public is not None
             and public.get("event_type")
-            in {"message.part.delta", "message.part.classified"}
+            in {"message.started", "message.delta", "message.part.delta",
+                "message.part.classified", "message.completed"}
             else None
         )
     except V4ProjectionError:
         return None
+
+
+def project_persisted_message_part_v4(
+    row: Mapping[str, object], *, tenant_id: str, run_id: str,
+) -> dict[str, object] | None:
+    """Authorize and project one persisted assistant text-part fact for history."""
+    if row.get("event_type") not in {"message.part.delta", "message.part.classified"}:
+        return None
+    return project_persisted_assistant_message_v4(row, tenant_id=tenant_id, run_id=run_id)
 
 
 __all__ = [
@@ -809,6 +820,7 @@ __all__ = [
     "opaque_message_id",
     "project_persisted_message_delta_v4",
     "project_persisted_message_part_v4",
+    "project_persisted_assistant_message_v4",
     "project_public_envelope_v4",
     "project_public_v4",
     "stream_end_event_id",

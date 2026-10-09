@@ -1617,6 +1617,36 @@ async def test_real_v2_answer_receipt_reconstructs_final_answer_parts_without_a_
 
 
 @pytest.mark.asyncio
+async def test_real_admin_part_reader_uses_authorized_attempt_rows():
+    from app.runs.application.admin_run_monitor import build_admin_worker_execution
+    from app.runs.infrastructure.admin_queries_postgres import get_admin_run_detail
+    from tests.test_streaming_answer_receipt import _part_answer_fixture
+
+    async with _schema(with_current_attempt=True) as (dsn, schema, (tenant, run, attempt)):
+        rows, _receipt = _part_answer_fixture()
+        message_id = opaque_message_id(tenant, run)
+        async with _connection_factory(dsn, schema) as conn:
+            for row in rows:
+                row["payload_json"]["__stream_v4"].update(attempt_id=attempt, message_id=message_id)
+                await conn.execute(
+                    "insert into run_events(id, tenant_id, run_id, sequence, event_type, stage, visible_to_user, payload_json) values (%s, %s, %s, %s, %s, 'agent_kernel', true, %s::jsonb)",
+                    (row["id"], tenant, run, row["sequence"], row["event_type"], json.dumps(row["payload_json"])),
+                )
+        async with _connection_factory(dsn, schema) as conn:
+            detail = await get_admin_run_detail(conn, tenant_id=tenant, run_id=run)
+            assert detail is not None
+            messages = detail.pop("_assistant_text_messages")
+            assert len(messages) == 1
+            assert messages[0].status == "complete"
+            projected = build_admin_worker_execution(
+                detail["events"], part_messages=messages, sanitize_text=sanitize_public_text,
+            )
+            assert projected["response"] == "hello world"
+            assert [message["text"] for message in projected["messages"]] == ["hello world"]
+            assert projected["answer_projection"]["status"] == "available"
+
+
+@pytest.mark.asyncio
 async def test_real_long_part_append_uses_bounded_index_lookups():
     async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
         authority = _authority(tenant, run, attempt)

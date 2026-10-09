@@ -317,6 +317,11 @@ export interface AdminWorkerExecutionMessage {
 export interface AdminWorkerExecution {
   response: string;
   messages?: AdminWorkerExecutionMessage[];
+  answer_projection?: {
+    status: "available" | "incomplete" | "invalid" | "unknown";
+    incomplete_messages: number;
+    invalid_messages: number;
+  };
   actions: AdminWorkerExecutionAction[];
   model: {
     turn_count?: number | null;

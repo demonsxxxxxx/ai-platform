@@ -72,11 +72,10 @@ Chat and SSE contracts until explicitly replaced.
 ## Delivery and operations
 
 [Agent 流式消息与最终交付方案](implementation/streaming-message-parts-design.md)
-compares primary open-source evidence and defines a proposed migration to
-incremental public text parts with separate final-answer selection and optional
-attachments. It records the v4 classification gap, SDK block boundaries,
-frontend/history consistency, protocol cutover and falsifiable acceptance.
-It is not an active schema, completed implementation or runtime acceptance claim.
+records the accepted #1651 source contract for incremental public text parts,
+final-answer receipt selection, history and frontend consumers, optional attachments,
+and the administrator reader. Source completion does not establish deployment or
+runtime acceptance; external validation remains tied to the release source.
 
 [State authority implementation plan](implementation/state-authority-convergence.md)
 turns the fixed-source Yuxi comparison into bounded cleanup and recovery slices,
