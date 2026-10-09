@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 
 from tests.support.claude_sdk import native_client_factory
 
-from app.execution.api import ClaudeAgentEventCandidate
+from app.execution.api import ClaudeAgentEventCandidate, ModelTextCheckpoint
 from app.executors.claude_agent_sdk_runner import ClaudeAgentSdkNotAvailable
 from app.public_execution import PUBLIC_EXECUTION_V2_STEP_PAYLOAD_FIELDS
 from app.platform.public_payload import sanitize_public_payload
@@ -3113,6 +3113,245 @@ def test_executor_execute_uses_claude_sdk_runner_when_enabled(tmp_path, monkeypa
         for event in callback.get("events", [])
     )
     assert not any("tool-permission" in str(callback) for callback in callbacks)
+
+
+def test_executor_sdk_text_checkpoint_shares_answer_callback_and_finishes_at_completion(
+    tmp_path, monkeypatch
+):
+    from app.runtime.kernel_contracts import CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE
+
+    callbacks = []
+    raw = "x" * 129
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        observer = ModelTextCheckpoint(run_id=kwargs["run_id"], attempt_id=kwargs["attempt_id"], record=kwargs["on_sdk_text"])
+        observer.accept({"type": "message_start", "message": {"id": "private-model-id"}})
+        for index, char in enumerate(raw, 1):
+            observer.accept({"type": "content_block_delta", "delta": {"type": "text_delta", "text": char}})
+            if index == len(raw):
+                observer.accept({"type": "message_stop"})
+            event_type = "message.completed" if index == len(raw) else "message.delta"
+            candidate = SimpleNamespace(as_agent_event_fields=lambda kind=event_type, idx=index: {
+                "type": kind, "payload": {"delta": "x"} if kind == "message.delta" else {},
+                "event_id": f"event-{idx}", "run_id": "run-a", "message_id": "msg-a",
+            })
+            assert await kwargs["on_agent_event"]((candidate,)) is True
+        return sdk_result(raw)
+
+    def callback_sender(url, payload, token):
+        callbacks.append(payload)
+        return callback_ack(payload)
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr(
+        "app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk
+    )
+    client = create_test_client(tmp_path, callback_sender=callback_sender)
+    response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed", response.json().get("error_code")
+    checkpoints = [
+        (callback, event) for callback in callbacks
+        for event in callback.get("events", [])
+        if event["type"] == CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE
+    ]
+    assert [event["payload"]["events"] for _, event in checkpoints] == [1, 128, 129]
+    assert all(callback["batch_id"] for callback, _ in checkpoints)
+    assert all(event["admin_only"] and event["message"] == "" for _, event in checkpoints)
+    assert checkpoints[-1][1]["payload"]["sha256"] == hashlib.sha256(raw.encode()).hexdigest()
+    assert checkpoints[-1][1]["payload"]["final"] is True
+    assert checkpoints[-1][1]["payload"]["complete"] is True
+    assert all(len(callback.get("events", [])) <= 100 for callback in callbacks)
+
+
+def test_executor_sdk_text_checkpoint_survives_coalesced_partial_callbacks(
+    tmp_path, monkeypatch
+):
+    from app.runtime.kernel_contracts import CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE
+
+    callbacks = []
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        observer = ModelTextCheckpoint(run_id=kwargs["run_id"], attempt_id=kwargs["attempt_id"], record=kwargs["on_sdk_text"])
+        observer.accept({"type": "message_start", "message": {"id": "private-model-id"}})
+        observed = 0
+        for count in (130, 270):
+            for _ in range(observed, count):
+                observer.accept({"type": "content_block_delta", "delta": {"type": "text_delta", "text": "x"}})
+            observed = count
+            candidate = SimpleNamespace(as_agent_event_fields=lambda idx=count: {
+                "type": "message.delta", "payload": {"delta": "x" * (130 if idx == 130 else 140)},
+                "event_id": f"event-{idx}", "run_id": "run-a", "message_id": "msg-a",
+            })
+            assert await kwargs["on_agent_event"]((candidate,)) is True
+        observer.finish()
+        return sdk_result("x" * 270)
+
+    def callback_sender(url, payload, token):
+        callbacks.append(payload)
+        return callback_ack(payload)
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr(
+        "app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk
+    )
+    client = create_test_client(tmp_path, callback_sender=callback_sender)
+    response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed"
+    checkpoints = [
+        event["payload"]["events"] for callback in callbacks
+        for event in callback.get("events", [])
+        if event["type"] == CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE
+    ]
+    assert checkpoints == [1, 128, 256, 270]
+    final = [event["payload"] for callback in callbacks for event in callback.get("events", [])
+             if event["type"] == CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE][-1]
+    assert final["final"] is True and final["complete"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ending", ["complete", "upstream_error", "cancel"])
+async def test_model_wire_and_actual_sdk_sandbox_checkpoints_match_across_tool_calls(
+    tmp_path, monkeypatch, caplog, ending,
+):
+    from tests.support.claude_mcp import install_mcp_sessions
+    from tests.support.model_text import (
+        assert_response_checkpoints, proxy_checkpoints, response_events,
+    )
+    from tests.test_claude_agent_sdk_runner import (
+        _full_sandbox_local_tool_capability_subjects, _scripted_sdk, _settings,
+    )
+    from app.runtime.kernel_contracts import CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE
+
+    install_mcp_sessions(monkeypatch)
+    caplog.set_level(logging.WARNING)
+    before_text, after_chunks = "Before the tool. ", ["续"] * 270
+    before = response_events("private-model-before", [before_text], stop_reason="tool_use")
+    before[-2:-2] = [
+        {"type": "content_block_start", "index": 1, "content_block": {"type": "tool_use", "id": "tool-private", "name": "Write"}},
+        {"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": "private-tool-input"}},
+        {"type": "content_block_stop", "index": 1},
+    ]
+    after = response_events("private-model-after", after_chunks, complete=ending == "complete")
+    wire_before = proxy_checkpoints(before, caplog)
+    wire_after = proxy_checkpoints(after, caplog)
+    hook = {"tool_name": "Write", "tool_use_id": "tool-private",
+            "tool_input": {"file_path": str(tmp_path / "output" / "result.txt"), "content": "done"}}
+    steps = [*(('stream', event) for event in before),
+             ("hook", ("PreToolUse", hook, "tool-private")),
+             ("hook", ("PostToolUse", hook, "tool-private")),
+             *(('stream', event) for event in after)]
+
+    def interrupt():
+        if ending == "cancel":
+            raise asyncio.CancelledError("synthetic cancellation")
+        raise RuntimeError("synthetic upstream interruption")
+
+    if ending != "complete":
+        steps.append(("probe", interrupt))
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", _scripted_sdk(
+        {}, steps, result_text=before_text + "\n\n" + "".join(after_chunks),
+    ))
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+    monkeypatch.setattr(executor_app, "get_settings", _settings)
+    monkeypatch.setattr(executor_app, "build_claude_session_store", lambda **_kwargs: None)
+    payload = task_payload()
+    payload["config"]["tool_policy_subjects"] = _full_sandbox_local_tool_capability_subjects(
+        [], sandbox_provider="opensandbox",
+    )
+    callbacks = []
+
+    async def emit(event):
+        if isinstance(event, ExecutorCallbackEvent):
+            callbacks.append(event.model_dump())
+        return True
+
+    request = ExecutorTaskRequest.model_validate(payload)
+    if ending == "cancel":
+        with pytest.raises(asyncio.CancelledError):
+            await _default_executor_runner(request, tmp_path, emit)
+    else:
+        result = await _default_executor_runner(request, tmp_path, emit)
+        assert result["status"] == ("completed" if ending == "complete" else "failed"), result
+        if ending == "upstream_error":
+            assert result["error_code"] == "claude_agent_sdk_execution_failed"
+
+    checkpoints = [event["payload"] for callback in callbacks for event in callback["events"]
+                   if event["type"] == CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE]
+    sdk_before = [item for item in checkpoints if item["call_ref"] == wire_before[0]["call_ref"]]
+    sdk_after = [item for item in checkpoints if item["call_ref"] == wire_after[0]["call_ref"]]
+    assert_response_checkpoints(wire_before, sdk_before, [before_text])
+    assert_response_checkpoints(wire_after, sdk_after, after_chunks, complete=ending == "complete")
+    assert wire_before[0]["call_ref"] != wire_after[0]["call_ref"]
+    # Earlier samples survive real coalescing at 130/270, including interruption.
+    paired_counts = [[event["payload"]["events"] for event in callback["events"]
+                     if event["type"] == CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE
+                     and event["payload"]["call_ref"] == wire_after[0]["call_ref"]]
+                    for callback in callbacks
+                    if any(event["type"] == "message.delta" for event in callback["events"])]
+    assert [1, 128] in paired_counts and [256] in paired_counts
+    public_events = [event for callback in callbacks for event in callback["events"]
+                     if event["type"] != CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE]
+    public_text = "".join(event["payload"].get("delta", "") for event in public_events
+                          if event["type"] == "message.delta")
+    assert public_text == before_text + "\n\n" + "".join(after_chunks)
+    assert "call_ref" not in json.dumps(public_events)
+    assert "private-model-before" not in caplog.text
+    assert "private-model-after" not in caplog.text
+    assert "private-tool-input" not in caplog.text
+    assert before_text not in caplog.text and "续" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sdk_error", [None, "claude_agent_sdk_execution_failed"])
+async def test_cancellation_during_final_sdk_diagnostic_flush_propagates(
+    tmp_path, monkeypatch, sdk_error,
+):
+    from app.runtime.kernel_contracts import CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE
+
+    flush_started = asyncio.Event()
+    release_flush = asyncio.Event()
+
+    async def fake_sdk(**kwargs):
+        observer = ModelTextCheckpoint(run_id=kwargs["run_id"], attempt_id=kwargs["attempt_id"], record=kwargs["on_sdk_text"])
+        observer.accept({"type": "message_start", "message": {"id": "synthetic-call"}})
+        observer.accept({"type": "content_block_delta", "delta": {"type": "text_delta", "text": "answer"}})
+        observer.finish(complete=True)
+        return sdk_result("answer", error=sdk_error)
+
+    async def emit(event):
+        if isinstance(event, ExecutorCallbackEvent) and any(
+            item.type == CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE for item in event.events
+        ):
+            flush_started.set()
+            await release_flush.wait()
+        return True
+
+    monkeypatch.setattr(executor_app, "get_settings", lambda: SimpleNamespace(claude_agent_sdk_enabled=True))
+    monkeypatch.setattr(executor_app, "run_claude_agent_sdk", fake_sdk)
+    task = asyncio.create_task(_default_executor_runner(
+        ExecutorTaskRequest.model_validate(task_payload()), tmp_path, emit,
+    ))
+    try:
+        await asyncio.wait_for(flush_started.wait(), timeout=2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert task.cancelled()
+    finally:
+        release_flush.set()
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
 
 @pytest.mark.asyncio

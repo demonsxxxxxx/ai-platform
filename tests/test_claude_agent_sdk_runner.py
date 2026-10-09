@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import sys
 import types
@@ -6786,6 +6787,7 @@ async def test_sandbox_streams_two_safe_raw_text_deltas_before_result_without_te
 ):
     captured = {}
     deltas = []
+    checkpoints = []
     result_gate = []
     streamed_chunks = ("Short safe ", "public answer.")
     streamed_text = "".join(streamed_chunks)
@@ -6836,6 +6838,8 @@ async def test_sandbox_streams_two_safe_raw_text_deltas_before_result_without_te
         skill_id="general-chat",
         execution_policy="sandbox_brokered",
         on_text=deltas.append,
+        on_sdk_text=checkpoints.append,
+        run_id="run-a", attempt_id="attempt-a",
     )
 
     assert captured["include_partial_messages"] is True
@@ -6843,6 +6847,16 @@ async def test_sandbox_streams_two_safe_raw_text_deltas_before_result_without_te
     assert streamed_text.startswith("".join(result_gate))
     assert "".join(deltas) == streamed_text
     assert result.message == streamed_text
+    assert [{key: item[key] for key in ("events", "chars", "sha256", "final", "complete", "coverage")}
+            for item in checkpoints] == [
+        {"events": 1, "chars": len(streamed_chunks[0]), "sha256": hashlib.sha256(streamed_chunks[0].encode()).hexdigest(),
+         "final": False, "complete": False, "coverage": "text_delta"},
+        {"events": 2, "chars": len(streamed_text), "sha256": hashlib.sha256(streamed_text.encode()).hexdigest(),
+         "final": True, "complete": True, "coverage": "text_delta"},
+    ]
+    assert len(checkpoints[0]["call_ref"]) == 32
+    assert checkpoints[0]["call_ref"] == checkpoints[1]["call_ref"]
+    assert streamed_text not in str(checkpoints)
 
 
 @pytest.mark.asyncio

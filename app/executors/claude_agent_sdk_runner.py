@@ -55,7 +55,7 @@ from app.bootstrap.claude_client import (
     prepare_claude_callback_tracker,
     prepare_claude_run_interaction,
 )
-from app.execution.api import ClaudeSdkAgentEventAdapter, RunInteractionProtocol
+from app.execution.api import ClaudeSdkAgentEventAdapter, ModelTextCheckpoint, RunInteractionProtocol
 from app.executors.claude_stream_projection import (
     AssistantAnswerTimeline,
     ClaudeStreamProjector,
@@ -1653,6 +1653,7 @@ async def run_claude_agent_sdk(
     skills: list[str] | None = None,
     client_fn: Callable[..., Any] | None = None,
     on_text: Callable[[str], Awaitable[None]] | None = None,
+    on_sdk_text: Callable[[dict[str, object]], None] | None = None,
     on_skill_use: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     on_capability_evidence: Callable[[dict[str, str]], Awaitable[bool]] | None = None,
     on_tool_lifecycle: Callable[[dict[str, str]], Awaitable[bool]] | None = None,
@@ -3710,6 +3711,43 @@ async def run_claude_agent_sdk(
             yield final_result
 
     async def consume(messages: AsyncIterator[Any]) -> ClaudeAgentSdkRunResult:
+        if on_sdk_text is None:
+            return await consume_messages(messages)
+        observers: dict[str | None, ModelTextCheckpoint] = {}
+
+        async def observed_messages() -> AsyncIterator[Any]:
+            try:
+                async for message in messages:
+                    if isinstance(message, StreamEvent):
+                        scope = getattr(message, "parent_tool_use_id", None)
+                        event = message.event
+                        if (
+                            (scope is None or isinstance(scope, str) and len(scope) <= 1024)
+                            and isinstance(event, dict)
+                        ):
+                            if event.get("type") == "message_start":
+                                previous = observers.pop(scope, None)
+                                if previous is not None:
+                                    previous.finish()
+                            observer = observers.get(scope)
+                            if observer is None and len(observers) < 64:
+                                observer = observers[scope] = ModelTextCheckpoint(
+                                    run_id=run_id or "", attempt_id=attempt_id or "",
+                                    record=on_sdk_text,
+                                )
+                            if observer is not None:
+                                observer.accept(event)
+                                if observer.finished:
+                                    observers.pop(scope, None)
+                    yield message
+            finally:
+                for observer in observers.values():
+                    observer.finish()
+
+        async with aclosing(observed_messages()) as observed:
+            return await consume_messages(observed)
+
+    async def consume_messages(messages: AsyncIterator[Any]) -> ClaudeAgentSdkRunResult:
         nonlocal result_session_id, usage, terminal_reason, received_structured_terminal
         nonlocal last_public_stage, terminal_result_message, last_assistant_error
         nonlocal last_assistant_error_text

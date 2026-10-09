@@ -78,6 +78,7 @@ from app.execution.application.claude_agent_events import (
     ClaudeSdkAgentEventAdapter,
     runtime_terminal_payload,
 )
+from app.execution.domain.model_text_checkpoint import ModelTextCheckpoint as ModelTextCheckpoint
 from app.execution.application.stale_terminalization import (
     stage_stale_run_reconciliation,
 )
@@ -130,6 +131,7 @@ async def resolve_chat_model_selection(
     )
 
 __all__ = [
+    "ModelTextCheckpoint",
     "WorkerExecutorResult",
     "WorkerBoundRunPayload",
     "ClaudeAgentEventCandidate",

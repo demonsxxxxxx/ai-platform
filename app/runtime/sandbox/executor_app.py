@@ -16,6 +16,7 @@ import re
 import time
 import traceback
 import uuid
+from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass
@@ -56,7 +57,10 @@ from app.required_tool_contract import (
     canonical_tool_call_id,
     declaration_from_payload,
 )
-from app.runtime.kernel_contracts import AgentEvent
+from app.runtime.kernel_contracts import (
+    CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE,
+    AgentEvent,
+)
 from app.runtime.sandbox.context_retrieval_client import PlatformContextRetrievalClient
 from app.bootstrap.run_inputs_client import build_run_input_callback_client
 from app.sandbox.api import (
@@ -1467,6 +1471,31 @@ async def _default_executor_runner(
     capability_evidence_error = {"code": ""}
     capability_evidence_lock = asyncio.Lock()
     v4_answer_stream_active = False
+    sdk_text_checkpoints: deque[AgentEvent] = deque(maxlen=64)
+
+    def on_sdk_text(checkpoint: dict[str, object]) -> None:
+        try:
+            sdk_text_checkpoints.append(AgentEvent(
+                type=CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE,
+                message="", admin_only=True, payload=dict(checkpoint),
+            ))
+        except (TypeError, ValueError):
+            pass  # Invalid diagnostics cannot change answer/error semantics.
+
+    def append_sdk_text_checkpoints(events: list[AgentEvent]) -> None:
+        while sdk_text_checkpoints and len(events) < 100:
+            events.append(sdk_text_checkpoints.popleft())
+
+    async def emit_agent_event_batch(events: list[AgentEvent]) -> bool:
+        return await emit_event(ExecutorCallbackEvent(
+            session_id=request.session_id,
+            run_id=request.run_id,
+            attempt_id=request.attempt_id,
+            callback_token_id=request.callback_token_id,
+            batch_id=callback_batch_ids.next_id(),
+            status="running", progress=20,
+            state_patch={"stage": "agent_event"}, events=events,
+        ))
 
     def reject_capability_evidence(error_code: str) -> bool:
         capability_evidence_error["code"] = capability_evidence_error["code"] or error_code
@@ -1495,19 +1524,9 @@ async def _default_executor_runner(
         if not events:
             reject_capability_evidence("agent_event_callback_not_acknowledged")
             return False
-        callback_event = ExecutorCallbackEvent(
-            session_id=request.session_id,
-            run_id=request.run_id,
-            attempt_id=request.attempt_id,
-            callback_token_id=request.callback_token_id,
-            batch_id=callback_batch_ids.next_id(),
-            status="running",
-            progress=20,
-            state_patch={"stage": "agent_event"},
-            events=events,
-        )
+        append_sdk_text_checkpoints(events)
         try:
-            acknowledged = await emit_event(callback_event)
+            acknowledged = await emit_agent_event_batch(events)
         except Exception:  # noqa: BLE001
             acknowledged = False
         if acknowledged is not True:
@@ -1828,6 +1847,7 @@ async def _default_executor_runner(
             "context_retrieval": context_retrieval,
             "context_retrieval_identity": context_retrieval_identity,
             "on_text": on_text,
+            "on_sdk_text": on_sdk_text,
             "on_agent_event": on_agent_event,
             "run_id": request.run_id,
             "attempt_id": request.attempt_id,
@@ -1871,6 +1891,14 @@ async def _default_executor_runner(
     except Exception:
         log_open_tool_lifecycles("runner_exception")
         raise
+    finally:
+        if sdk_text_checkpoints:
+            diagnostics: list[AgentEvent] = []
+            append_sdk_text_checkpoints(diagnostics)
+            try:
+                await emit_agent_event_batch(diagnostics)
+            except Exception:
+                pass  # Best effort; cancellation at this await must propagate.
 
     log_open_tool_lifecycles("sdk_terminal")
 
