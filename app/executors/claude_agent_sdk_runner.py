@@ -54,9 +54,9 @@ from app.bootstrap.claude_client import (
     prepare_claude_client_close,
     prepare_claude_callback_tracker,
     prepare_claude_run_interaction,
+    prepare_claude_text_sources,
 )
 from app.execution.api import ClaudeSdkAgentEventAdapter, ModelTextCheckpoint, RunInteractionProtocol
-from app.execution.infrastructure.harness.claude.assistant_text_sources import AssistantTextSourceBuffer
 from app.executors.claude_stream_projection import (
     AssistantAnswerTimeline,
     ClaudeStreamProjector,
@@ -3716,7 +3716,7 @@ async def run_claude_agent_sdk(
         nonlocal last_public_stage, terminal_result_message, last_assistant_error
         nonlocal last_assistant_error_text
         answer_timeline = AssistantAnswerTimeline()
-        source_router = AssistantTextSourceBuffer()
+        source_router = prepare_claude_text_sources()
         pending_callback_text: dict[tuple[object, ...], list[str]] = {}
         last_callback_answer_source: tuple[object, ...] | None = None
 
