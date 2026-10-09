@@ -111,6 +111,40 @@ def test_raw_frame_shape_rejects_private_values_at_sandbox_boundary():
     assert normalized["projection_failure"] == {**expected, "frame_shape": _FRAME_SHAPE}
 
 
+def test_preceding_frames_keep_only_bounded_structural_labels():
+    expected = {
+        "reason": "raw_frame_invalid", "stage": "message", "location": "raw_stream_frame",
+        "frame_shape": _FRAME_SHAPE,
+    }
+    frame = {
+        "event_type": "content_block_start", "block_type": "tool_use",
+        "delta_type": "other", "message_state": "open",
+        "open_block_type": "none", "index_state": "other",
+    }
+    valid = sandbox_api.normalize_sdk_runtime_diagnostics(
+        _runtime_diagnostics(projection_failure={**expected, "preceding_frames": [frame]})
+    )
+    assert valid["projection_failure"]["preceding_frames"] == [frame]
+    assert sandbox_api.normalize_sdk_runtime_diagnostics(valid)["projection_failure"] == (
+        valid["projection_failure"]
+    )
+
+    for invalid in (
+        [], [frame] * 5, (frame,),
+        [{**frame, "index": 1}],
+        [{**frame, "block_type": "private-token"}],
+        [{**frame, "guard": "block_start_state"}],
+    ):
+        normalized = sandbox_api.normalize_sdk_runtime_diagnostics(
+            _runtime_diagnostics(projection_failure={**expected, "preceding_frames": invalid})
+        )
+        assert normalized["projection_failure"] == expected
+        assert {
+            "field": "projection_failure.preceding_frames", "reason": "invalid_field"
+        } in normalized["normalization_losses"]
+        assert "private-token" not in str(normalized)
+
+
 def test_projection_failure_survives_diagnostic_byte_budget(monkeypatch):
     max_bytes = 4_096
     monkeypatch.setattr(
@@ -124,6 +158,9 @@ def test_projection_failure_survives_diagnostic_byte_budget(monkeypatch):
             projection_failure={
                 "reason": "raw_frame_invalid", "stage": "message",
                 "location": "raw_stream_frame", "frame_shape": _FRAME_SHAPE,
+                "preceding_frames": [
+                    {key: value for key, value in _FRAME_SHAPE.items() if key != "guard"}
+                ] * 4,
             },
             sdk={
                 "exception_message": "x" * 8_192,
@@ -139,6 +176,7 @@ def test_projection_failure_survives_diagnostic_byte_budget(monkeypatch):
     ).encode("utf-8")
 
     assert normalized["projection_failure"]["frame_shape"] == _FRAME_SHAPE
+    assert len(normalized["projection_failure"]["preceding_frames"]) == 4
     assert len(encoded) <= max_bytes
 
 
