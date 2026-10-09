@@ -56,9 +56,11 @@ from app.bootstrap.claude_client import (
     prepare_claude_run_interaction,
     prepare_claude_text_sources,
 )
-from app.execution.api import ClaudeSdkAgentEventAdapter, ModelTextCheckpoint, RunInteractionProtocol
-from app.execution.infrastructure.harness.claude.typed_blocks import (
+from app.execution.api import (
+    ClaudeSdkAgentEventAdapter,
     ClaudeTypedBlockObservations,
+    ModelTextCheckpoint,
+    RunInteractionProtocol,
 )
 from app.executors.public_answer_stream import (
     PublicAnswerStreamGate,

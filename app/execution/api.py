@@ -107,6 +107,9 @@ from typing import Any
 from app.execution.application.model_control_plane import configured_model_control_plane
 from app.execution.application.provider_sessions import claude_provider_session_dispatch
 from app.execution.application.run_interaction import RunInteractionProtocol
+from app.execution.infrastructure.harness.claude.typed_blocks import (
+    ClaudeTypedBlockObservations,
+)
 from app.execution.application.model_selection import (
     RunModelSelection as RunModelSelection,
 )
@@ -136,6 +139,7 @@ __all__ = [
     "WorkerBoundRunPayload",
     "ClaudeAgentEventCandidate",
     "ClaudeSdkAgentEventAdapter",
+    "ClaudeTypedBlockObservations",
     "AnswerPersistenceLimits",
     "WorkerAnswerMaterialization",
     "assistant_artifact_metadata",
