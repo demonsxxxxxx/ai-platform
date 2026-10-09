@@ -29,6 +29,7 @@ from app.control_plane_contracts import (
 )
 from app.platform.public_payload import (
     sanitize_public_answer_text,
+    sanitize_public_text,
     sanitize_public_event_candidate,
 )
 from app.executors.claude.capability_policy import (
@@ -41,7 +42,6 @@ from app.executors.claude.capability_policy import (
     _extract_skill_names_from_tool_input,
     _mcp_server_options,
     _parameters_match_subject,
-    claude_context_retrieval_tools,
     internal_context_tool_policy_subjects,
     internal_response_tool_policy_subjects,
 )
@@ -50,8 +50,12 @@ from app.executors.claude.prompts import (
     context_pack_prompt_section as _prompt_context_pack_prompt_section,
     translation_target_language as _prompt_translation_target_language,
 )
-from app.bootstrap.claude_client import prepare_claude_client_close
-from app.execution.api import ClaudeSdkAgentEventAdapter
+from app.bootstrap.claude_client import (
+    prepare_claude_client_close,
+    prepare_claude_callback_tracker,
+    prepare_claude_run_interaction,
+)
+from app.execution.api import ClaudeSdkAgentEventAdapter, ModelTextCheckpoint, RunInteractionProtocol
 from app.executors.claude_stream_projection import (
     AssistantAnswerTimeline,
     ClaudeStreamProjector,
@@ -72,14 +76,9 @@ from app.required_tool_contract import (
     RequiredCapabilityEvidence,
     RequiredToolContractError,
     canonical_tool_call_id,
-    declaration_from_input,
     declaration_from_payload,
-    with_sandbox_local_tool_capability_subjects,
 )
-from app.runtime.sandbox.contracts import (
-    PROFILE_DRIVE_READ_TEXT_IDENTITY,
-    PROFILE_DRIVE_STAGE_TOOL,
-)
+from app.runtime.sandbox.contracts import PROFILE_DRIVE_STAGE_TOOL
 from app.sandbox.api import (
     SDK_RUNTIME_DIAGNOSTIC_DETAIL_LIMIT as _MAX_RUNTIME_DIAGNOSTIC_DETAIL_ENTRIES,
     SDK_RUNTIME_DIAGNOSTIC_IDENTITY_MAX_BYTES as _MAX_RUNTIME_DIAGNOSTIC_IDENTITY_BYTES,
@@ -103,55 +102,6 @@ from app.tool_policy import evaluate_tool_policy
 
 _context_pack_prompt_section = _prompt_context_pack_prompt_section
 _translation_target_language = _prompt_translation_target_language
-
-
-def runtime_tool_policy_subjects(
-    payload: Any,
-    context_manifest: dict[str, Any] | None = None,
-) -> list[dict[str, Any]]:
-    value = payload.input.get("_runtime_tool_policy_subjects")
-    internal_prefixes = (
-        _SDK_INTERNAL_CONTEXT_IDENTITY_PREFIX,
-        _SDK_INTERNAL_RESPONSE_IDENTITY_PREFIX,
-    )
-    subjects = (
-        [
-            dict(item)
-            for item in value
-            if isinstance(item, dict)
-            and not str(item.get("identity") or "").startswith(internal_prefixes)
-        ]
-        if isinstance(value, list)
-        else []
-    )
-    subjects.extend(
-        internal_context_tool_policy_subjects(
-            claude_context_retrieval_tools(context_manifest)
-        )
-    )
-    subjects.extend(internal_response_tool_policy_subjects())
-    return subjects
-
-
-def sandbox_runtime_tool_policy_subjects(
-    payload: Any,
-    context_manifest: dict[str, Any] | None = None,
-    *,
-    sandbox_provider: str,
-) -> list[dict[str, Any]]:
-    subjects = runtime_tool_policy_subjects(payload, context_manifest)
-    if PROFILE_DRIVE_READ_TEXT_IDENTITY in _canonical_tool_policy_subjects(subjects):
-        subjects = [
-            subject
-            for subject in subjects
-            if subject.get("identity") != PROFILE_DRIVE_READ_TEXT_IDENTITY
-        ]
-        subjects.extend(internal_context_tool_policy_subjects([PROFILE_DRIVE_STAGE_TOOL]))
-    return with_sandbox_local_tool_capability_subjects(
-        subjects,
-        sandbox_provider=sandbox_provider,
-        required_declaration=declaration_from_input(payload.input),
-    )
 
 
 _SDK_ENV_ALLOWLIST = {
@@ -320,12 +270,43 @@ class _SessionStoreAppendTracker:
         self._store = store
         self.main_append_acknowledged = False
         self.final_sequence: int | None = None
+        self._failed_calls: list[tuple[str, tuple[Any, ...]]] = []
+        self.active_calls = 0
+        self._idle = asyncio.Event()
+        self._idle.set()
+
+    async def _call(self, operation: Callable[..., Awaitable[Any]], *args: Any) -> Any:
+        self.active_calls += 1
+        self._idle.clear()
+        try:
+            result = await operation(*args)
+        except BaseException:
+            failure = (operation.__name__, args)
+            if failure not in self._failed_calls:
+                self._failed_calls.append(failure)
+            raise
+        else:
+            # The SDK retries an identical mirror batch. A confirmed receipt
+            # resolves that failure; unrelated successful writes do not.
+            self._failed_calls = [item for item in self._failed_calls if item != (operation.__name__, args)]
+            return result
+        finally:
+            self.active_calls -= 1
+            if self.active_calls == 0:
+                self._idle.set()
+
+    @property
+    def failed(self) -> bool:
+        return bool(self._failed_calls)
+
+    async def wait_idle(self) -> None:
+        await self._idle.wait()
 
     async def load(self, key: Any) -> Any:
-        return await self._store.load(key)
+        return await self._call(self._store.load, key)
 
     async def append(self, key: Any, entries: Any) -> None:
-        await self._store.append(key, entries)
+        await self._call(self._store.append, key, entries)
         sequence = getattr(self._store, "accepted_final_sequence", None)
         if type(sequence) is int and sequence >= 1:
             self.final_sequence = sequence
@@ -334,7 +315,7 @@ class _SessionStoreAppendTracker:
             self.main_append_acknowledged = True
 
     async def list_subkeys(self, key: Any = None) -> Any:
-        return await self._store.list_subkeys(key)
+        return await self._call(self._store.list_subkeys, key)
 
 
 class ClaudeAgentSdkNotAvailable(RuntimeError):
@@ -345,6 +326,19 @@ def _bounded_diagnostic_counter(value: object) -> int:
     if not isinstance(value, int) or isinstance(value, bool):
         return 0
     return max(0, min(value, _MAX_TURN_DIAGNOSTIC_COUNTER))
+
+
+def _merge_sdk_usage(previous: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(previous)
+    for key, value in current.items():
+        old = merged.get(key)
+        if isinstance(value, dict) and isinstance(old, dict):
+            merged[key] = _merge_sdk_usage(old, value)
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            merged[key] = value + (old if isinstance(old, (int, float)) else 0)
+        else:
+            merged[key] = value
+    return merged
 
 
 def _diagnostic_terminal_class(
@@ -703,10 +697,12 @@ def _sdk_permission_type(sdk: object, name: str):
             behavior: str = default_behavior,
             message: str = "",
             interrupt: bool = False,
+            updated_input: dict[str, Any] | None = None,
         ):
             self.behavior = behavior
             self.message = message
             self.interrupt = interrupt
+            self.updated_input = updated_input
 
     return PermissionResult
 
@@ -834,12 +830,29 @@ def _context_retrieval_tool_error(
     }
 
 
+def _track_sdk_mcp_handler(
+    tool: Any,
+    *,
+    callback_wrapper: Callable[[Any], Any] | None,
+) -> Any:
+    if callback_wrapper is None:
+        return tool
+    handler = getattr(tool, "handler", None)
+    if callable(handler):
+        tool.handler = callback_wrapper(handler)
+        return tool
+    if callable(tool):
+        return callback_wrapper(tool)
+    return tool
+
+
 def _build_context_retrieval_mcp_server(
     sdk: object,
     *,
     retrieval: ContextRetrievalAuthority | None,
     identity: ScopedContextRetrievalIdentity | None,
     tool_names: list[str] | None = None,
+    callback_wrapper: Callable[[Any], Any] | None = None,
 ):
     if retrieval is None or identity is None:
         return None
@@ -934,18 +947,19 @@ def _build_context_retrieval_mcp_server(
     async def search_memory(args):
         return await _run("search_memory", args)
 
+    tools = [
+        read_run_artifact,
+        stage_context_file_to_workspace,
+        stage_run_artifact_to_workspace,
+        stage_profile_drive_file_to_workspace,
+        search_memory,
+    ]
     return create_server(
         "ai-platform-context",
         version="1.0.0",
         tools=[
-            tool
-            for tool in (
-                read_run_artifact,
-                stage_context_file_to_workspace,
-                stage_run_artifact_to_workspace,
-                stage_profile_drive_file_to_workspace,
-                search_memory,
-            )
+            _track_sdk_mcp_handler(tool, callback_wrapper=callback_wrapper)
+            for tool in tools
             if tool.name in selected_tool_names
         ],
     )
@@ -1057,6 +1071,7 @@ def _build_response_mcp_server(
     allowed_skill_names: set[str] | frozenset[str],
     attached_files: list[dict[str, str]],
     diagnostic_counters: dict[str, Any],
+    callback_wrapper: Callable[[Any], Any] | None = None,
 ):
     sdk_tool = getattr(sdk, "tool", None)
     create_server = getattr(sdk, "create_sdk_mcp_server", None)
@@ -1141,7 +1156,7 @@ def _build_response_mcp_server(
     return create_server(
         "ai-platform-response",
         version="1.0.0",
-        tools=[attach_file],
+        tools=[_track_sdk_mcp_handler(attach_file, callback_wrapper=callback_wrapper)],
     )
 
 
@@ -1638,6 +1653,7 @@ async def run_claude_agent_sdk(
     skills: list[str] | None = None,
     client_fn: Callable[..., Any] | None = None,
     on_text: Callable[[str], Awaitable[None]] | None = None,
+    on_sdk_text: Callable[[dict[str, object]], None] | None = None,
     on_skill_use: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     on_capability_evidence: Callable[[dict[str, str]], Awaitable[bool]] | None = None,
     on_tool_lifecycle: Callable[[dict[str, str]], Awaitable[bool]] | None = None,
@@ -1647,6 +1663,7 @@ async def run_claude_agent_sdk(
     | None = None,
     run_id: str | None = None,
     attempt_id: str | None = None,
+    interaction_client: RunInteractionProtocol | None = None,
     tool_policy_subjects: list[dict[str, Any]] | None = None,
     execution_policy: str = "worker_local_legacy",
     public_skill_metadata: dict[str, dict[str, str]] | None = None,
@@ -1654,6 +1671,10 @@ async def run_claude_agent_sdk(
     cleanup_tasks: set[asyncio.Task[Any]] | None = None,
 ) -> ClaudeAgentSdkRunResult:
     thinking_effort = normalize_thinking_effort(thinking_effort)
+    callback_tracker = prepare_claude_callback_tracker()
+    interaction_actor = None
+    if interaction_client is not None and not (run_id and attempt_id):
+        raise ValueError("run_interaction_identity_invalid")
     if (model_max_input_tokens is None) != (model_max_output_tokens is None) or any(
         value is not None and (type(value) is not int or not 1 <= value <= 10_000_000)
         for value in (model_max_input_tokens, model_max_output_tokens)
@@ -2084,6 +2105,7 @@ async def run_claude_agent_sdk(
             sdk,
             retrieval=context_retrieval,
             identity=context_retrieval_identity,
+            callback_wrapper=callback_tracker.wrap,
             tool_names=(
                 requested_internal_context_tools
                 if tool_policy_subjects is not None
@@ -2141,6 +2163,7 @@ async def run_claude_agent_sdk(
             allowed_skill_names=allowed_skill_names,
             attached_files=response_file_descriptors,
             diagnostic_counters=diagnostic_counters,
+            callback_wrapper=callback_tracker.wrap,
         )
     except Exception:  # noqa: BLE001 - optional response attachments stay unavailable.
         response_server = None
@@ -2192,7 +2215,7 @@ async def run_claude_agent_sdk(
             _mcp_server_options(authorized_subjects) if sandbox_brokered else {}
         )
         mcp_registration = prepare_claude_mcp(
-            authorized_subjects if sandbox_brokered else {}, mcp_servers
+            authorized_subjects if sandbox_brokered else {}, mcp_servers, callback_tracker.wrap
         )
         allowed_tools = [
             mcp_registration.sdk_names.get(name, name) for name in allowed_tools
@@ -2329,6 +2352,18 @@ async def run_claude_agent_sdk(
         private_replacements=private_replacements,
         sanitizer=sanitize_public_answer_text,
     )
+
+    def sanitize_question_text(value: object) -> str:
+        text = str(value)
+        for token, replacement in private_replacements.items():
+            text = text.replace(token, replacement)
+        return sanitize_public_text(text)
+
+    if interaction_client is not None:
+        interaction_actor = prepare_claude_run_interaction(
+            interaction_client, run_id=run_id, attempt_id=attempt_id,
+            sanitize_text=sanitize_question_text,
+        )
 
     def replacement_for_private_token(token: str) -> str:
         return private_replacements.get(token, private_replacement)
@@ -2825,6 +2860,35 @@ async def run_claude_agent_sdk(
         hook_input_is_mapping = isinstance(hook_input, dict)
         hook_input = hook_input if hook_input_is_mapping else {}
         tool_name = ""
+        if (
+            interaction_actor is not None
+            and hook_input_is_mapping
+            and str(hook_input.get("tool_name") or "") == "AskUserQuestion"
+        ):
+            call_id = exact_hook_tool_call_id(hook_input, tool_use_id)
+            try:
+                updated_input = await interaction_actor.resolve_native_question(
+                    tool_call_id=call_id,
+                    tool_input=hook_input.get("tool_input"),
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - fail closed without exposing input.
+                return {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": "run_question_unavailable",
+                    }
+                }
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                    "permissionDecisionReason": "run_question_answered",
+                    "updatedInput": updated_input,
+                }
+            }
         if not hook_input_is_mapping:
             decision = evaluate_tool_policy(tool={})
         else:
@@ -3140,6 +3204,12 @@ async def run_claude_agent_sdk(
             hook_input = hook_input if isinstance(hook_input, dict) else {}
             tool_name = str(hook_input.get("tool_name") or "")
             identity = adapter_identity(tool_name)
+            if tool_name == "AskUserQuestion" and interaction_actor is not None:
+                if lifecycle == "completed":
+                    await interaction_actor.acknowledge_native_question(
+                        exact_hook_tool_call_id(hook_input, tool_use_id)
+                    )
+                return {}
             if (
                 tool_name.lower() == "skill"
                 or identity.startswith("mcp__")
@@ -3293,6 +3363,15 @@ async def run_claude_agent_sdk(
             include_skill=bool(allowed_skill_names),
         )
     )
+    if interaction_actor is not None:
+        sdk_tools.append("AskUserQuestion")
+    if hooks is not None:
+        for matchers in hooks.values():
+            for matcher in matchers:
+                matcher.hooks = [callback_tracker.wrap(hook) for hook in matcher.hooks]
+        if interaction_actor is not None:
+            # A question may remain pending for the Run's execution deadline.
+            hooks["PreToolUse"][0].timeout = timeout_seconds or 86_400.0
     # The installed SDK's SystemPromptPreset preserves Claude Code's default
     # system prompt while adding only server-owned profile instructions.
     sdk_system_prompt: dict[str, str] = {"type": "preset", "preset": "claude_code"}
@@ -3324,7 +3403,7 @@ async def run_claude_agent_sdk(
         ),
         skills=configured_skills,
         max_turns=max_turns,
-        can_use_tool=can_use_tool,
+        can_use_tool=callback_tracker.wrap(can_use_tool),
         hooks=hooks,
         include_partial_messages=sandbox_partial_streaming,
         setting_sources=["project"],
@@ -3337,8 +3416,11 @@ async def run_claude_agent_sdk(
     terminal_reason: str | None = None
     last_assistant_error: str | None = None
     last_assistant_error_text = ""
+    terminal_stream_error: Exception | None = None
     terminal_result_message: object | None = None
     received_structured_terminal = False
+    continuation_usage: dict[str, Any] = {}
+    continuation_turns = 0
     stream_projector = (
         ClaudeStreamProjector()
         if sandbox_partial_streaming
@@ -3550,10 +3632,54 @@ async def run_claude_agent_sdk(
                 return False
         return True
 
+    receive_stream_closed = False
+    receiving_started = False
+    stop_requested = False
+
     async def _client_messages(client: Any) -> AsyncIterator[Any]:
+        nonlocal continuation_usage, continuation_turns, terminal_stream_error, receive_stream_closed
         pending_tasks: set[str] = set()
-        async with aclosing(client.receive_messages()) as responses:
+        final_result = None
+        mirror_error = None
+
+        async def receive_until_closed() -> AsyncIterator[Any]:
+            nonlocal terminal_stream_error
+            try:
+                async with aclosing(client.receive_messages()) as responses:
+                    async for message in responses:
+                        yield message
+            except Exception as exc:
+                if (
+                    not stop_requested and (
+                        final_result is None
+                        or not final_result.is_error
+                        or not str(exc).startswith("Claude Code returned an error result: ")
+                    )
+                ):
+                    raise
+                # SDK 0.2.130 reports the CLI's intentional nonzero exit as an
+                # error frame before final flush/EOF. Retain the error Result
+                # and drain the public stream's remainder to that same EOF.
+                terminal_stream_error = exc
+                async with aclosing(client.receive_messages()) as responses:
+                    async for message in responses:
+                        yield message
+
+        async with (
+            aclosing(receive_until_closed()) as raw_responses,
+            aclosing(observed_model_messages(raw_responses)) as responses,
+        ):
             async for message in responses:
+                if stop_requested:
+                    # Drain the public stream through its final mirror flush,
+                    # without processing more output or supplementary inputs.
+                    continue
+                if isinstance(message, ResultMessage):
+                    permission_denials = getattr(message, "permission_denials", None)
+                    if isinstance(permission_denials, list):
+                        diagnostic_counters["tool_admission_denials"] += len(permission_denials)
+                        for denial in permission_denials:
+                            await reconcile_sdk_permission_denial(denial)
                 if isinstance(message, TaskStartedMessage):
                     if message.task_type in {"local_agent", "local_workflow"}:
                         pending_tasks.add(message.task_id)
@@ -3566,9 +3692,82 @@ async def run_claude_agent_sdk(
                     # A background agent may wake a follow-up turn. Its first
                     # Result is not the completion of the platform Run.
                     continue
-                yield message
+                if isinstance(message, MirrorErrorMessage):
+                    mirror_error = message
+                    if interaction_actor is not None:
+                        await interaction_actor.cancel()
+                    continue
                 if isinstance(message, ResultMessage):
-                    return
+                    if interaction_actor is not None and not message.is_error and mirror_error is None:
+                        command = await interaction_actor.settle_at_result()
+                        if command is not None:
+                            continuation_usage = _merge_sdk_usage(
+                                continuation_usage, message.usage or message.model_usage or {}
+                            )
+                            continuation_turns += _bounded_diagnostic_counter(message.num_turns)
+                            diagnostic_counters["result_messages"] += 1
+                            await interaction_actor.apply_text_at_result(
+                                client, command, session_id=message.session_id
+                            )
+                            continue
+                    elif interaction_actor is not None:
+                        await interaction_actor.cancel()
+                    final_result = message
+                    continue
+                yield message
+        receive_stream_closed = True
+        # The public EOF follows the SDK reader's final transcript flush. Stop
+        # our injected callbacks and join their finalizers before consuming the
+        # terminal result; physical SDK teardown is a separate phase.
+        if interaction_actor is not None:
+            await interaction_actor.close()
+        await callback_tracker.seal_and_wait()
+        if provider_session_store is not None:
+            await provider_session_store.wait_idle()
+        if mirror_error is not None:
+            yield mirror_error
+        elif final_result is not None and not stop_requested:
+            yield final_result
+
+    async def observed_model_messages(messages: AsyncIterator[Any]) -> AsyncIterator[Any]:
+        if on_sdk_text is None:
+            async for message in messages:
+                yield message
+            return
+        observers: dict[str | None, ModelTextCheckpoint] = {}
+
+        async def observed_messages() -> AsyncIterator[Any]:
+            try:
+                async for message in messages:
+                    if isinstance(message, StreamEvent):
+                        scope = getattr(message, "parent_tool_use_id", None)
+                        event = message.event
+                        if (
+                            (scope is None or isinstance(scope, str) and len(scope) <= 1024)
+                            and isinstance(event, dict)
+                        ):
+                            if event.get("type") == "message_start":
+                                previous = observers.pop(scope, None)
+                                if previous is not None:
+                                    previous.finish()
+                            observer = observers.get(scope)
+                            if observer is None and len(observers) < 64:
+                                observer = observers[scope] = ModelTextCheckpoint(
+                                    run_id=run_id or "", attempt_id=attempt_id or "",
+                                    record=on_sdk_text,
+                                )
+                            if observer is not None:
+                                observer.accept(event)
+                                if observer.finished:
+                                    observers.pop(scope, None)
+                    yield message
+            finally:
+                for observer in observers.values():
+                    observer.finish()
+
+        async with aclosing(observed_messages()) as observed:
+            async for message in observed:
+                yield message
 
     async def consume(messages: AsyncIterator[Any]) -> ClaudeAgentSdkRunResult:
         nonlocal result_session_id, usage, terminal_reason, received_structured_terminal
@@ -4081,17 +4280,11 @@ async def run_claude_agent_sdk(
                         )
                 diagnostic_counters["result_messages"] += 1
                 diagnostic_counters["turns_observed"] = _bounded_diagnostic_counter(
-                    getattr(message, "num_turns", 0)
+                    continuation_turns + getattr(message, "num_turns", 0)
                 )
-                permission_denials = getattr(message, "permission_denials", None)
-                if isinstance(permission_denials, list):
-                    diagnostic_counters["tool_admission_denials"] += len(
-                        permission_denials
-                    )
-                    for denial in permission_denials:
-                        await reconcile_sdk_permission_denial(denial)
                 result_session_id = message.session_id
-                usage = message.usage or message.model_usage or {}
+                permission_denials = getattr(message, "permission_denials", None)
+                usage = _merge_sdk_usage(continuation_usage, message.usage or message.model_usage or {})
                 sdk_terminal_reason = getattr(message, "terminal_reason", None)
                 resolved_terminal_reason = (
                     str(sdk_terminal_reason).strip()
@@ -4169,6 +4362,7 @@ async def run_claude_agent_sdk(
                                 stop_reason=getattr(message, "stop_reason", None),
                                 terminal_reason=resolved_terminal_reason,
                                 permission_denials=permission_denials,
+                                exception=terminal_stream_error,
                             )
                         ),
                     )
@@ -4458,17 +4652,29 @@ async def run_claude_agent_sdk(
     consume_cancellation: asyncio.CancelledError | None = None
     pending_result: ClaudeAgentSdkRunResult | None = None
     result_ready: asyncio.Future[ClaudeAgentSdkRunResult] = asyncio.get_running_loop().create_future()
+    protocol_settled: asyncio.Future[None] = asyncio.get_running_loop().create_future()
     cleanup_deadline: asyncio.TimerHandle | None = None
+    active_client: Any | None = None
+
+    async def interrupt_execution() -> None:
+        if interaction_actor is not None:
+            await interaction_actor.cancel()
+        if active_client is not None:
+            try:
+                await asyncio.wait_for(active_client.interrupt(), timeout=1.0)
+            except Exception:  # noqa: BLE001 - cancellation still closes the client.
+                pass
 
     async def protocol_closed(mirror_failed: bool) -> None:
         nonlocal cleanup_deadline
         if pending_result is None or result_ready.done():
             return
-        # All SDK producers have stopped. Validate mutable callback/store
+        # The SDK receive stream is closed. Validate mutable callback/store
         # observations once here, not against an earlier Result snapshot.
         error = None if pending_result.received_structured_terminal else pending_result.error
         if error is None and provider_session_store is not None and (
             mirror_failed
+            or provider_session_store.failed
             or not provider_session_store.main_append_acknowledged
             or provider_session_store.final_sequence is None
             or result_session_id != session_id
@@ -4517,22 +4723,57 @@ async def run_claude_agent_sdk(
         )
 
     async def consume_with_cancellation_identity() -> ClaudeAgentSdkRunResult:
-        nonlocal consume_cancellation, pending_result
+        nonlocal consume_cancellation, pending_result, active_client, receiving_started
         try:
             async with mcp_registration.activate(options):
                 client = client_factory(options)
-                close_boundary = prepare_claude_client_close(client, protocol_closed)
+                active_client = client
+                close_boundary = prepare_claude_client_close(client)
+                disconnected = False
                 try:
-                    await client.connect()
+                    if interaction_actor is not None:
+                        await interaction_actor.open()
+                        initial_prompt = interaction_actor.initial_prompt_stream({
+                            "type": "user",
+                            "message": {"role": "user", "content": sdk_prompt},
+                            "parent_tool_use_id": None,
+                            "session_id": session_id or "default",
+                        })
+                    else:
+                        initial_prompt = _sdk_user_prompt_stream(sdk_prompt, session_id=session_id)
+                    # connect(stream) owns the SDK input producer and closes
+                    # stdin when the stream ends. query(stream) alone does not.
+                    await client.connect(initial_prompt)
                     close_boundary.bind()
-                    await client.query(
-                        _sdk_user_prompt_stream(sdk_prompt, session_id=session_id),
-                        session_id=session_id or "default",
-                    )
+                    receiving_started = True
                     async with aclosing(_client_messages(client)) as messages:
                         pending_result = await consume(messages)
+                    if provider_session_store is not None and not receive_stream_closed:
+                        # An early processor exit did not consume public EOF.
+                        # Public disconnect is then the only supported final
+                        # mirror flush, and must finish before Run terminality.
+                        await close_boundary.disconnect()
+                        disconnected = True
+                        await provider_session_store.wait_idle()
+                    await protocol_closed(close_boundary.mirror_failed)
+                except asyncio.CancelledError as exc:
+                    consume_cancellation = exc
+                    raise
                 finally:
-                    await close_boundary.disconnect()
+                    if interaction_actor is not None:
+                        await interaction_actor.cancel()
+                    await callback_tracker.seal_and_wait()
+                    if provider_session_store is not None and not receive_stream_closed and not disconnected:
+                        # Forced cancellation cannot leave pending mirror
+                        # batches behind the terminal callback. In this fallback
+                        # the SDK only exposes the combined public disconnect.
+                        await close_boundary.disconnect()
+                        disconnected = True
+                        await provider_session_store.wait_idle()
+                    if not protocol_settled.done():
+                        protocol_settled.set_result(None)
+                    if not disconnected:
+                        await close_boundary.disconnect()
             return pending_result
         except asyncio.CancelledError as exc:
             consume_cancellation = exc
@@ -4541,6 +4782,8 @@ async def run_claude_agent_sdk(
     consume_task = asyncio.create_task(consume_with_cancellation_identity())
 
     def lifecycle_done(task: asyncio.Task[Any]) -> None:
+        if not protocol_settled.done():
+            protocol_settled.set_result(None)
         if cleanup_deadline is not None:
             cleanup_deadline.cancel()
         if cleanup_tasks is not None:
@@ -4550,7 +4793,7 @@ async def run_claude_agent_sdk(
         except BaseException as exc:
             if not result_ready.done():
                 result_ready.set_exception(exc)
-            else:
+            elif not isinstance(exc, asyncio.CancelledError):
                 # Only resource teardown remains after result_ready. Never
                 # turn its failure into a second, contradictory Run result.
                 _logger.warning("Claude SDK resource cleanup failed: %s", type(exc).__name__)
@@ -4561,6 +4804,34 @@ async def run_claude_agent_sdk(
     consume_task.add_done_callback(lifecycle_done)
     if cleanup_tasks is not None:
         cleanup_tasks.add(consume_task)
+
+    async def stop_execution() -> None:
+        nonlocal cleanup_deadline, stop_requested
+        stop_requested = True
+        await interrupt_execution()
+        await callback_tracker.seal_and_wait()
+        if provider_session_store is not None and receiving_started:
+            # Let interrupt and input-stream closure produce public EOF, whose
+            # reader flush includes batches not yet handed to SessionStore.
+            # A stalled protocol uses public disconnect in the finally fallback.
+            done, _pending = await asyncio.wait(
+                {protocol_settled}, timeout=_SDK_CLEANUP_TIMEOUT_SECONDS
+            )
+            if not done:
+                consume_task.cancel()
+        else:
+            consume_task.cancel()
+        if cleanup_tasks is not None:
+            # Only cleanup after confirmed EOF/store settlement may continue
+            # under the existing lifespan owner.
+            await asyncio.shield(protocol_settled)
+            if cleanup_deadline is None and not consume_task.done():
+                cleanup_deadline = asyncio.get_running_loop().call_later(
+                    _SDK_CLEANUP_TIMEOUT_SECONDS, consume_task.cancel
+                )
+        else:
+            await asyncio.wait({consume_task})
+
     try:
         result = await asyncio.wait_for(
             asyncio.shield(result_ready), timeout=timeout_seconds
@@ -4572,13 +4843,7 @@ async def run_claude_agent_sdk(
         return result
     except asyncio.CancelledError:
         result_ready.cancel()
-        consume_task.cancel()
-        try:
-            await consume_task
-        except asyncio.CancelledError:
-            pass
-        except Exception:  # noqa: BLE001
-            pass
+        await stop_execution()
         await close_answer_candidates_after_failure()
         seal_agent_candidates("cancelled")
         if (
@@ -4589,13 +4854,7 @@ async def run_claude_agent_sdk(
         raise
     except TimeoutError:
         result_ready.cancel()
-        consume_task.cancel()
-        try:
-            await consume_task
-        except asyncio.CancelledError:
-            pass
-        except Exception:  # noqa: BLE001
-            pass
+        await stop_execution()
         error_code = mcp_execution_receipt_error() or _SDK_TIMEOUT
         return assemble_run_result(
             message="",

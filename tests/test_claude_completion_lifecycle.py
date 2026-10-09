@@ -1,18 +1,20 @@
 """Completion ordering using the installed SDK Query, without a provider."""
 
 import asyncio
+import hashlib
 import sys
-from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
 from claude_agent_sdk._internal import transcript_mirror_batcher
 from claude_agent_sdk._internal.query import Query
 from claude_agent_sdk._internal.transcript_mirror_batcher import TranscriptMirrorBatcher
+from claude_agent_sdk import ProcessError
 
 from app.execution.infrastructure.harness.claude_client_lifecycle import ClaudeClientCloseBoundary
 from app.executors.claude_agent_sdk_runner import run_claude_agent_sdk
 from tests.test_claude_agent_sdk_runner import _fake_sdk, _settings
+from tests.support.model_text import response_events
 
 
 class ClosingTransport:
@@ -32,61 +34,288 @@ class ClosingTransport:
             self.closed.set()
 
 
-@pytest.mark.asyncio
-async def test_installed_query_joins_reader_and_control_callbacks_before_completion():
+@pytest.mark.parametrize("error_result", [True, False])
+async def test_installed_query_error_exit_keeps_error_result_and_final_flush(
+    monkeypatch, tmp_path, error_result,
+):
+    import claude_agent_sdk as sdk
+
+    written, tail_started, release_tail = asyncio.Event(), asyncio.Event(), asyncio.Event()
     transport = ClosingTransport()
-    query = Query(transport, is_streaming_mode=True)
-    control_started, control_drained = asyncio.Event(), asyncio.Event()
-    release_control, protocol_closed = asyncio.Event(), asyncio.Event()
-    reader_drained = asyncio.Event()
-    owner = asyncio.current_task()
+    cleanup_tasks = set()
 
-    async def control():
-        control_started.set()
-        try:
-            await asyncio.Event().wait()
-        finally:
-            await release_control.wait()
-            control_drained.set()
+    async def write(_data):
+        written.set()
 
-    async def reader():
-        try:
-            await asyncio.Event().wait()
-        finally:
-            reader_drained.set()
+    async def end_input():
+        pass
 
-    from claude_agent_sdk._internal._task_compat import spawn_detached
+    async def read_messages():
+        await written.wait()
+        path = str(tmp_path / "project" / "stable-provider-id.jsonl")
+        yield {"type": "transcript_mirror", "filePath": path, "entries": [{"uuid": "initial"}]}
+        yield {
+            "type": "result", "subtype": "error_max_turns" if error_result else "success",
+            "is_error": error_result, "duration_ms": 1, "duration_api_ms": 1, "num_turns": 1,
+            "session_id": "stable-provider-id", "result": "done", "usage": {"input_tokens": 11},
+            "errors": ["Reached maximum number of turns (1)"] if error_result else [],
+            "stop_reason": "max_turns" if error_result else "end_turn", "uuid": "result",
+        }
+        yield {"type": "transcript_mirror", "filePath": path, "entries": [{"uuid": "tail"}]}
+        raise ProcessError("synthetic CLI exit", exit_code=1)
 
-    query.spawn_task(control())
-    query._read_task = spawn_detached(reader())
-    await control_started.wait()
+    transport.write, transport.end_input, transport.read_messages = write, end_input, read_messages
 
-    async def disconnect():
-        await query.close()
-        query.close_receive_stream()
+    class Store:
+        accepted_final_sequence = None
 
-    client = SimpleNamespace(_query=query, disconnect=disconnect)
+        async def load(self, _key):
+            return None
 
-    async def completed(failed):
-        assert not failed
-        assert reader_drained.is_set() and control_drained.is_set()
-        assert asyncio.current_task() is cleanup
-        assert asyncio.current_task() is not owner
-        protocol_closed.set()
+        async def append(self, _key, entries):
+            if entries[0]["uuid"] == "tail":
+                tail_started.set()
+                await release_tail.wait()
+                self.accepted_final_sequence = 2
+            else:
+                self.accepted_final_sequence = 1
 
-    boundary = ClaudeClientCloseBoundary(client, completed)
-    boundary.bind()
-    cleanup = asyncio.create_task(boundary.disconnect())
+    async def connect_inner(client, _prompt, actual_prompt):
+        client._transport = transport
+        query = Query(transport, is_streaming_mode=True,
+                      hooks=client._convert_hooks_to_internal_format(client.options.hooks))
+        client._query = query
+
+        async def mirror_error(_key, _error):
+            pass
+
+        query.set_transcript_mirror_batcher(TranscriptMirrorBatcher(
+            store=client.options.session_store, projects_dir=str(tmp_path), on_error=mirror_error,
+        ))
+        await query.start()
+        query.spawn_task(query.stream_input(actual_prompt))
+
+    monkeypatch.setattr(sdk.ClaudeSDKClient, "_connect_inner", connect_inner)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+    task = asyncio.create_task(run_claude_agent_sdk(
+        prompt="hello", cwd=tmp_path, skill_id=None, session_id="stable-provider-id",
+        session_store=Store(), provider_session_resume_required=False, cleanup_tasks=cleanup_tasks,
+    ))
     try:
-        await reader_drained.wait()
-        assert not protocol_closed.is_set()
-        release_control.set()
-        await asyncio.wait_for(protocol_closed.wait(), 1)
-        assert not cleanup.done()
-    finally:
-        release_control.set()
+        await asyncio.wait_for(tail_started.wait(), 2)
+        if error_result:
+            assert not task.done()
+        release_tail.set()
         transport.release.set()
-        await cleanup
+        result = await asyncio.wait_for(task, 2)
+        if error_result:
+            assert result.error == "claude_agent_sdk_turn_limit_exceeded"
+            assert result.session_id == "stable-provider-id" and result.usage == {"input_tokens": 11}
+            assert result.runtime_diagnostics["failure_source"] == "sdk_result_error"
+        else:
+            assert result.error == "claude_agent_sdk_execution_failed"
+    finally:
+        release_tail.set()
+        transport.release.set()
+        await asyncio.gather(task, *list(cleanup_tasks), return_exceptions=True)
+
+
+@pytest.mark.parametrize("stop_mode", ["cancel", "timeout"])
+async def test_execution_stop_transfers_slow_public_disconnect_to_cleanup_owner(
+    monkeypatch, tmp_path, stop_mode,
+):
+    sdk = _fake_sdk({}, hook_invocations=[])
+    transport = ClosingTransport()
+    started, interrupted = asyncio.Event(), asyncio.Event()
+    cleanup_tasks = set()
+
+    class Client(sdk.ClaudeSDKClient):
+        async def connect(self, prompt):
+            await super().connect(prompt)
+            self._query = Query(transport, is_streaming_mode=True)
+
+        async def receive_messages(self):
+            started.set()
+            await asyncio.Event().wait()
+            yield sdk.ResultMessage()
+
+        async def interrupt(self):
+            interrupted.set()
+
+        async def disconnect(self):
+            try:
+                await self._query.close()
+            finally:
+                self._query.close_receive_stream()
+                await super().disconnect()
+
+    settings = _settings()
+    settings.claude_agent_sdk_timeout_seconds = 0.03 if stop_mode == "timeout" else 10
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: settings)
+    task = asyncio.create_task(run_claude_agent_sdk(
+        prompt="hello", cwd=tmp_path, skill_id=None, client_fn=Client, cleanup_tasks=cleanup_tasks,
+    ))
+    try:
+        await asyncio.wait_for(started.wait(), 1)
+        if stop_mode == "cancel":
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 1)
+        else:
+            result = await asyncio.wait_for(task, 1)
+            assert result.error == "claude_agent_sdk_timeout"
+        await asyncio.wait_for(transport.started.wait(), 1)
+        assert interrupted.is_set() and not transport.closed.is_set() and len(cleanup_tasks) == 1
+    finally:
+        transport.release.set()
+        await asyncio.gather(task, *list(cleanup_tasks), return_exceptions=True)
+    assert transport.closed.is_set() and not cleanup_tasks
+
+
+
+
+@pytest.mark.parametrize("stop_mode", ["cancel", "timeout"])
+@pytest.mark.parametrize("forced_close", [False, True])
+async def test_stop_settles_pending_session_store_tail_before_terminal_result(
+    monkeypatch, tmp_path, stop_mode, forced_close,
+):
+    import claude_agent_sdk as sdk
+
+    written, receiving, interrupted = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    tail_started, release_tail = asyncio.Event(), asyncio.Event()
+    transport = ClosingTransport()
+    cleanup_tasks = set()
+    checkpoints, public_chunks = [], []
+    before_text = "Visible prefix. " * 1024
+    tail_text = "Suppressed drain tail. " * 512
+    before_published = asyncio.Event()
+    events = response_events("drained-model-response", [before_text, tail_text])
+    events.insert(3, {"type": "ping"})
+
+    async def on_text(text):
+        public_chunks.append(text)
+        before_published.set()
+
+    def stream_event(index, event):
+        return {
+            "type": "stream_event", "event": event, "uuid": f"drain-{index}",
+            "session_id": "stable-provider-id", "parent_tool_use_id": None,
+        }
+
+    async def write(_data):
+        written.set()
+
+    async def end_input():
+        pass
+
+    async def read_messages():
+        await written.wait()
+        path = str(tmp_path / "project" / "stable-provider-id.jsonl")
+        yield {"type": "transcript_mirror", "filePath": path, "entries": [{"uuid": "initial"}]}
+        if not forced_close:
+            for index, event in enumerate(events[:4]):
+                yield stream_event(index, event)
+            receiving.set()
+            await interrupted.wait()
+            for index, event in enumerate(events[4:], 4):
+                yield stream_event(index, event)
+        yield {"type": "transcript_mirror", "filePath": path, "entries": [{"uuid": "tail"}]}
+        if forced_close:
+            receiving.set()
+            await asyncio.Event().wait()
+
+    transport.write, transport.end_input, transport.read_messages = write, end_input, read_messages
+
+    class Store:
+        accepted_final_sequence = None
+
+        def __init__(self):
+            self.entries = []
+
+        async def load(self, _key):
+            return None
+
+        async def append(self, _key, entries):
+            if any(entry["uuid"] == "tail" for entry in entries):
+                tail_started.set()
+                await release_tail.wait()
+                self.accepted_final_sequence = 2
+            else:
+                self.accepted_final_sequence = 1
+            self.entries.extend(entry["uuid"] for entry in entries)
+
+    store = Store()
+
+    async def connect_inner(client, _prompt, actual_prompt):
+        client._transport = transport
+        query = Query(transport, is_streaming_mode=True,
+                      hooks=client._convert_hooks_to_internal_format(client.options.hooks))
+        client._query = query
+
+        async def mirror_error(_key, _error):
+            pass
+
+        query.set_transcript_mirror_batcher(TranscriptMirrorBatcher(
+            store=client.options.session_store, projects_dir=str(tmp_path), on_error=mirror_error,
+        ))
+        await query.start()
+        query.spawn_task(query.stream_input(actual_prompt))
+
+    async def interrupt(_client):
+        interrupted.set()
+
+    settings = _settings()
+    settings.claude_agent_sdk_timeout_seconds = 0.03 if stop_mode == "timeout" else 10
+    monkeypatch.setattr(sdk.ClaudeSDKClient, "_connect_inner", connect_inner)
+    monkeypatch.setattr(sdk.ClaudeSDKClient, "interrupt", interrupt)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: settings)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner._SDK_CLEANUP_TIMEOUT_SECONDS", 0.1)
+    task = asyncio.create_task(run_claude_agent_sdk(
+        prompt="hello", cwd=tmp_path, skill_id=None, session_id="stable-provider-id",
+        session_store=store, provider_session_resume_required=False, cleanup_tasks=cleanup_tasks,
+        run_id="run", attempt_id="attempt", on_sdk_text=checkpoints.append, on_text=on_text,
+        execution_policy="sandbox_brokered",
+    ))
+    try:
+        await asyncio.wait_for(receiving.wait(), 1)
+        if not forced_close:
+            await asyncio.wait_for(before_published.wait(), 1)
+        if stop_mode == "cancel":
+            task.cancel()
+        await asyncio.wait_for(tail_started.wait(), 1)
+        assert interrupted.is_set() and not task.done() and not transport.started.is_set()
+        release_tail.set()
+        await asyncio.wait_for(transport.started.wait(), 1)
+        assert "tail" in store.entries
+        if forced_close:
+            # Without public EOF the SDK exposes flush and teardown only as a
+            # combined disconnect. Do not claim settlement before it finishes.
+            assert not task.done()
+            transport.release.set()
+        if stop_mode == "cancel":
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 1)
+        else:
+            result = await asyncio.wait_for(task, 1)
+            assert result.error == "claude_agent_sdk_timeout"
+        if not forced_close:
+            assert not transport.closed.is_set() and len(cleanup_tasks) == 1
+            assert [item["events"] for item in checkpoints] == [1, 2]
+            final = checkpoints[-1]
+            assert final["final"] is True and final["complete"] is True
+            assert final["coverage"] == "text_delta"
+            assert final["chars"] == len(before_text + tail_text)
+            assert final["sha256"] == hashlib.sha256((before_text + tail_text).encode()).hexdigest()
+            assert len(final["call_ref"]) == 32
+            public_text = "".join(public_chunks)
+            assert before_text[:100] in public_text
+            assert "Suppressed drain tail." not in public_text
+    finally:
+        release_tail.set()
+        transport.release.set()
+        await asyncio.gather(task, *list(cleanup_tasks), return_exceptions=True)
+    assert transport.closed.is_set() and not cleanup_tasks
 
 
 @pytest.mark.asyncio
@@ -95,14 +324,34 @@ async def test_installed_query_joins_reader_and_control_callbacks_before_complet
 async def test_runner_completes_after_final_mirror_before_slow_teardown(
     monkeypatch, tmp_path, tail_failure, cleanup_failure
 ):
-    captured = {}
-    sdk = _fake_sdk(captured, hook_invocations=[])
+    import claude_agent_sdk as sdk
+
     transport = ClosingTransport()
     transport.error = cleanup_failure
+    written, input_ended = asyncio.Event(), asyncio.Event()
     tail_started, release_tail = asyncio.Event(), asyncio.Event()
-    mcp_closed = asyncio.Event()
     cleanup_tasks = set()
-    lifecycle_owner = []
+
+    async def write(_data):
+        written.set()
+
+    async def end_input():
+        input_ended.set()
+
+    async def read_messages():
+        await written.wait()
+        path = str(tmp_path / "project" / "stable-provider-id.jsonl")
+        yield {"type": "transcript_mirror", "filePath": path, "entries": [{"uuid": "initial"}]}
+        yield {
+            "type": "result", "subtype": "success", "is_error": False,
+            "duration_ms": 1, "duration_api_ms": 1, "num_turns": 1,
+            "session_id": "stable-provider-id", "result": "done", "usage": {},
+            "stop_reason": "end_turn", "uuid": "result",
+        }
+        yield {"type": "transcript_mirror", "filePath": path, "entries": [{"uuid": "tail"}]}
+        await input_ended.wait()
+
+    transport.write, transport.end_input, transport.read_messages = write, end_input, read_messages
 
     class Store:
         accepted_final_sequence = None
@@ -120,71 +369,43 @@ async def test_runner_completes_after_final_mirror_before_slow_teardown(
             else:
                 self.accepted_final_sequence = 1
 
-    class Client(sdk.ClaudeSDKClient):
-        async def connect(self):
-            lifecycle_owner.append(asyncio.current_task())
-            await super().connect()
-            self._query = Query(transport, is_streaming_mode=True)
+    async def connect_inner(client, _prompt, actual_prompt):
+        assert client._custom_transport is None
+        client._transport = transport
+        query = Query(transport, is_streaming_mode=True,
+                      hooks=client._convert_hooks_to_internal_format(client.options.hooks))
+        client._query = query
 
-            async def mirror_error(_key, _error):
-                pass  # SDK reports an event after the consumer's Result.
+        async def mirror_error(_key, _error):
+            pass
 
-            self._query.set_transcript_mirror_batcher(TranscriptMirrorBatcher(
-                store=self.options.session_store,
-                projects_dir=str(tmp_path),
-                on_error=mirror_error,
-            ))
+        query.set_transcript_mirror_batcher(TranscriptMirrorBatcher(
+            store=client.options.session_store, projects_dir=str(tmp_path), on_error=mirror_error,
+        ))
+        await query.start()
+        query.spawn_task(query.stream_input(actual_prompt))
 
-        async def disconnect(self):
-            assert asyncio.current_task() is lifecycle_owner[0]
-            self._query._transcript_mirror_batcher.enqueue(
-                str(tmp_path / "project" / "stable-provider-id.jsonl"),
-                [{"uuid": "tail"}],
-            )
-            try:
-                await self._query.close()
-            finally:
-                self._query.close_receive_stream()
-                await super().disconnect()
-
-    @asynccontextmanager
-    async def activate(_options):
-        try:
-            yield
-        finally:
-            assert transport.closed.is_set()
-            assert asyncio.current_task() is lifecycle_owner[0]
-            mcp_closed.set()
-
-    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
+    monkeypatch.setattr(sdk.ClaudeSDKClient, "_connect_inner", connect_inner)
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
-    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.prepare_claude_mcp", lambda *_: SimpleNamespace(
-        configs={}, aliases={}, sdk_names={}, activate=activate, check_message=lambda _: None,
-        canonical_identity=lambda value: value,
-    ))
     monkeypatch.setattr(transcript_mirror_batcher, "MIRROR_APPEND_BACKOFF_S", [0, 0])
     task = asyncio.create_task(run_claude_agent_sdk(
-        prompt="hello", cwd=tmp_path, skill_id=None,
-        session_id="stable-provider-id", session_store=Store(),
-        provider_session_resume_required=False,
-        client_fn=Client, cleanup_tasks=cleanup_tasks,
+        prompt="hello", cwd=tmp_path, skill_id=None, session_id="stable-provider-id",
+        session_store=Store(), provider_session_resume_required=False,
+        cleanup_tasks=cleanup_tasks,
     ))
     try:
-        await asyncio.wait_for(tail_started.wait(), 1)
+        await asyncio.wait_for(tail_started.wait(), 2)
         assert not task.done() and not transport.started.is_set()
         release_tail.set()
-        result = await asyncio.wait_for(task, 1)
+        result = await asyncio.wait_for(task, 2)
         assert result.error == ("claude_agent_sdk_provider_session_failed" if tail_failure else None)
         assert result.provider_final_sequence == (None if tail_failure else 2)
-        assert not mcp_closed.is_set()
-        assert not transport.closed.is_set()
-        assert len(cleanup_tasks) == 1
+        assert not transport.closed.is_set() and len(cleanup_tasks) == 1
     finally:
         release_tail.set()
         transport.release.set()
         await asyncio.gather(task, *list(cleanup_tasks), return_exceptions=True)
-    assert mcp_closed.is_set()
-    assert not cleanup_tasks
+    assert transport.closed.is_set() and not cleanup_tasks
 
 
 @pytest.mark.asyncio
@@ -195,8 +416,8 @@ async def test_runner_execution_deadline_does_not_include_resource_cleanup(monke
     cleanup_tasks = set()
 
     class Client(sdk.ClaudeSDKClient):
-        async def connect(self):
-            await super().connect()
+        async def connect(self, prompt):
+            await super().connect(prompt)
             self._query = Query(transport, is_streaming_mode=True)
 
         async def disconnect(self):
@@ -278,7 +499,7 @@ async def test_installed_client_keeps_native_resume_and_materialized_cleanup(mon
 
     transport = ClosingTransport()
     materialized_cleanup = asyncio.Event()
-    resumed, ready = [], []
+    resumed = []
 
     async def cleanup():
         materialized_cleanup.set()
@@ -292,19 +513,16 @@ async def test_installed_client_keeps_native_resume_and_materialized_cleanup(mon
         client._query = Query(transport, is_streaming_mode=True)
         client._transport = transport
 
-    async def completed(failed):
-        ready.append(failed)
-
     monkeypatch.setattr(session_resume, "materialize_resume_session", materialize)
     monkeypatch.setattr(sdk.ClaudeSDKClient, "_connect_inner", connect_inner)
     client = sdk.ClaudeSDKClient(sdk.ClaudeAgentOptions(resume="native-session"))
     await client.connect()
-    boundary = ClaudeClientCloseBoundary(client, completed)
+    boundary = ClaudeClientCloseBoundary(client)
     boundary.bind()
     task = asyncio.create_task(boundary.disconnect())
     try:
         await asyncio.wait_for(transport.started.wait(), 1)
-        assert resumed == ["native-session"] and ready == [False]
+        assert resumed == ["native-session"]
         assert not materialized_cleanup.is_set()
     finally:
         transport.release.set()
@@ -312,53 +530,6 @@ async def test_installed_client_keeps_native_resume_and_materialized_cleanup(mon
     assert materialized_cleanup.is_set()
 
 
-@pytest.mark.asyncio
-async def test_failed_child_does_not_abandon_other_control_callbacks():
-    transport = ClosingTransport()
-    transport.release.set()
-    query = Query(transport, is_streaming_mode=True)
-    slow_started, release_slow, quiet = asyncio.Event(), asyncio.Event(), asyncio.Event()
-
-    async def failing():
-        try:
-            await asyncio.Event().wait()
-        finally:
-            raise RuntimeError("synthetic control failure")
-
-    async def slow():
-        slow_started.set()
-        try:
-            await asyncio.Event().wait()
-        finally:
-            await release_slow.wait()
-            quiet.set()
-
-    query.spawn_task(failing())
-    query.spawn_task(slow())
-    await slow_started.wait()
-
-    async def disconnect():
-        try:
-            await query.close()
-        finally:
-            query.close_receive_stream()
-
-    async def completed(_failed):
-        raise AssertionError("a failed control callback cannot announce completion")
-
-    boundary = ClaudeClientCloseBoundary(SimpleNamespace(_query=query, disconnect=disconnect), completed)
-    boundary.bind()
-    task = asyncio.create_task(boundary.disconnect())
-    try:
-        await asyncio.sleep(0.01)
-        assert not task.done() and not transport.started.is_set()
-        release_slow.set()
-        with pytest.raises(RuntimeError, match="synthetic control failure"):
-            await task
-        assert quiet.is_set()
-    finally:
-        release_slow.set()
-        await asyncio.gather(task, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -368,8 +539,8 @@ async def test_eof_without_result_preserves_missing_terminal_before_teardown(mon
     cleanup_tasks = set()
 
     class Client(sdk.ClaudeSDKClient):
-        async def connect(self):
-            await super().connect()
+        async def connect(self, prompt):
+            await super().connect(prompt)
             self._query = Query(transport, is_streaming_mode=True)
 
         async def receive_messages(self):

@@ -4367,7 +4367,7 @@ def test_authoritative_inspection_catalog_cannot_be_replaced_with_forged_subject
     assert native["authorized_manifest"]["execution_profile"]["command_isolation"] == "sibling-tool-sandbox-v1"
 
     monkeypatch.setattr(
-        "app.worker._builtin_capability_subjects",
+        "app.required_tool_contract.builtin_capability_subjects",
         lambda **kwargs: [
             {
                 "identity": "Skill",

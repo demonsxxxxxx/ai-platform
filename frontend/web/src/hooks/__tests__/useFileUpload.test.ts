@@ -442,7 +442,6 @@ test("page drops and Composer drops use the same upload controller", () => {
   assert.match(dragAndDrop, /uploadControls,\s*clearPageDragAttachments: uploadControls\.clearUploads/);
   assert.match(appContent, /uploadControls=\{uploadControls\}/);
   assert.match(chatView, /uploadControls: FileUploadControls/);
-  assert.match(chatView, /uploadControls,\s*\n\s*\};/);
   assert.match(chatInput, /sharedControls: sharedUploadControls/);
 });
 

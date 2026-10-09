@@ -1,5 +1,3 @@
-import base64
-import binascii
 import inspect
 import shutil
 import threading
@@ -12,23 +10,31 @@ from app.context_builder import executor_context_pack_from_snapshot
 from app.context.api import (
     ContextFileContentError,
     context_file_executor_failure,
+    manifest_with_worker_attachment_metadata,
 )
-from app.bootstrap.context import materialize_worker_context_files
+from app.bootstrap.context import (
+    ContextRetrievalAuthority,
+    ContextRetrievalIdentity,
+    materialize_worker_context_files,
+    worker_context_retrieval_authority,
+)
 from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION
-from app.context.retrieval import ContextRetrievalAuthority
 from app.control_plane_contracts import (
     LEGACY_SYNTHETIC_CHAT_SKILL_ID,
     RUN_EXECUTION_KIND_HARNESS_CHAT,
     RUN_EXECUTION_KIND_SKILL,
     standard_trace_id,
 )
-from app.db import transaction
 from app.execution_boundary import (
     CLAUDE_WORKER_EXECUTOR,
     ExecutionBoundaryDecision,
     decide_execution_boundary,
 )
-from app.executors.claude.capability_policy import _canonical_tool_policy_subjects
+from app.executors.claude.capability_policy import (
+    CapabilityExecutionPlan,
+    _canonical_tool_policy_subjects,
+    sandbox_runtime_tool_policy_subjects,
+)
 from app.executors.base import (
     ArtifactManifest,
     ExecutorDispatchAccepted,
@@ -37,23 +43,16 @@ from app.executors.base import (
     RunExecutionOwner,
     RunPayload,
 )
-from app.executors.claude_agent_sdk_runner import (
-    CapabilityExecutionPlan,
-    ScopedContextRetrievalIdentity,
-    build_skill_prompt,
-    project_sdk_turn_diagnostics,
-    sandbox_runtime_tool_policy_subjects as _sandbox_runtime_tool_policy_subjects,
-)
+from app.executors.claude_agent_sdk_runner import project_sdk_turn_diagnostics
 from app.executors.claude.prompts import (
     CurrentRequestTooLargeError,
+    build_skill_prompt,
     build_harness_chat_prompt, compose_system_prompt,
 )
 from app.execution import api as execution_api
 from app.execution.api import (
-    PinnedSkillMismatch,
     collect_workspace_artifacts,
     runtime_terminal_payload,
-    validate_pinned_skill_relative_path,
 )
 from app.path_safety import ensure_creatable_inside, ensure_path_inside
 from app.required_tool_contract import (
@@ -78,19 +77,20 @@ from app.runtime.sandbox.contracts import (
 )
 from app.runtime.sandbox.runtime import SandboxRuntime
 from app.settings import get_settings
-from app.skills.catalog import (
-    AuthorizedSkillCatalogBinding,
+from app.bootstrap.skills import materialize_worker_pinned_skill, resolve_worker_runtime_catalog
+from app.skills.api import (
     AuthorizedSkillCatalogError,
-    AuthorizedSkillCatalogResolution,
-    load_runtime_authorized_skill_catalog,
+    merged_worker_pinned_manifests,
+    worker_catalog_public_metadata,
+    worker_pinned_manifests,
+    pin_manifests_for_result,
+    select_pinned_skill_snapshots,
+    skill_manifests_from_catalog,
+    staged_skill_manifests,
 )
-from app.skills.pinning import (
-    MAX_SKILL_SNAPSHOT_FILE_BYTES,
-    MAX_SKILL_SNAPSHOT_TOTAL_BYTES,
-)
-from app.skills.registry import BuiltinSkill, skill_content_hash
-from app.skills.stager import SkillStager, ensure_skill_staging_directory, write_skill_staging_file
-from app.storage import ObjectStorage, ObjectStorageSizeLimitError, run_storage_io
+from app.skills.registry import BuiltinSkill
+from app.skills.stager import SkillStager
+from app.storage import ObjectStorage
 
 _SANDBOX_SUCCESS_TERMINAL_STATUSES = {"completed", "succeeded"}
 _TOOL_PERMISSION_POLL_INTERVAL_SECONDS = 0.25
@@ -303,49 +303,6 @@ def _runtime_request_skill_ids(
     )
 
 
-def _authorized_skill_catalog_binding(
-    payload: RunPayload,
-) -> AuthorizedSkillCatalogBinding:
-    if payload.skill_id is None:
-        raise AuthorizedSkillCatalogError("authorized_skill_catalog_binding_invalid")
-    return AuthorizedSkillCatalogBinding(
-        tenant_id=payload.tenant_id,
-        workspace_id=payload.workspace_id,
-        user_id=payload.user_id,
-        session_id=payload.session_id,
-        run_id=payload.run_id,
-        agent_id=payload.agent_id,
-        selected_skill_id=payload.skill_id,
-    )
-
-
-def _runtime_authorized_skill_catalog(
-    payload: RunPayload,
-) -> AuthorizedSkillCatalogResolution | None:
-    if payload.execution_kind == RUN_EXECUTION_KIND_HARNESS_CHAT:
-        return None
-    return load_runtime_authorized_skill_catalog(
-        payload.input,
-        expected_binding=_authorized_skill_catalog_binding(payload),
-        pinned_manifests=payload.skill_manifests,
-    )
-
-
-def _authorized_catalog_public_skill_metadata(
-    catalog: AuthorizedSkillCatalogResolution | None,
-) -> dict[str, dict[str, str]]:
-    if catalog is None:
-        return {}
-    return {
-        entry.skill_id: {
-            "name": entry.name,
-            "version": entry.version,
-            "availability": entry.availability,
-        }
-        for entry in catalog.snapshot.entries
-    }
-
-
 def _public_sdk_turn_diagnostics(
     payload: RunPayload,
     value: object,
@@ -366,58 +323,6 @@ def _public_sdk_turn_diagnostics(
         used_skill_ids=used_skill_ids,
         public_skill_metadata=public_skill_metadata,
     )
-
-
-def _merged_pinned_skill_manifests(
-    payload: RunPayload,
-    catalog: AuthorizedSkillCatalogResolution | None,
-) -> dict[str, dict[str, Any]]:
-    pinned = _pinned_skill_manifests(payload)
-    if catalog is None:
-        return pinned
-    for manifest in catalog.manifests:
-        skill_id = str(manifest.get("skill_id") or "")
-        existing = pinned.get(skill_id)
-        if existing is not None:
-            existing_version = str(existing.get("content_hash") or existing.get("version") or "")
-            runtime_version = str(manifest.get("content_hash") or manifest.get("version") or "")
-            if existing_version != runtime_version:
-                raise AuthorizedSkillCatalogError("authorized_skill_catalog_pin_mismatch")
-            continue
-        pinned[skill_id] = manifest
-    return pinned
-
-
-def _context_manifest_with_attachment_metadata(
-    manifest: dict[str, Any] | None,
-    metadata: list[_AuthorizedAttachmentMetadata],
-) -> dict[str, Any]:
-    """Enrich authorized attachment refs with sandbox materialization metadata."""
-
-    result = dict(manifest or {})
-    raw_files = result.get("files")
-    if not metadata or not isinstance(raw_files, list):
-        return result
-    metadata_by_file_id = {item.file_id: item for item in metadata}
-    enriched_files: list[Any] = []
-    for raw_file in raw_files:
-        if not isinstance(raw_file, dict):
-            enriched_files.append(raw_file)
-            continue
-        file_ref = dict(raw_file)
-        item = metadata_by_file_id.get(str(file_ref.get("file_id") or ""))
-        if item is not None:
-            file_ref.update(
-                {
-                    "name": item.file_name,
-                    "content_type": item.content_type,
-                    "size_bytes": item.size_bytes,
-                    "requires_retrieval": True,
-                }
-            )
-        enriched_files.append(file_ref)
-    result["files"] = enriched_files
-    return result
 
 
 def _payload_sandbox_mode(payload: RunPayload) -> str:
@@ -604,15 +509,13 @@ class ClaudeAgentWorkerAdapter:
         payload: RunPayload,
         context_pack: dict[str, Any],
         workspace: Path,
-    ) -> tuple[ContextRetrievalAuthority | None, ScopedContextRetrievalIdentity | None]:
+    ) -> tuple[ContextRetrievalAuthority | None, ContextRetrievalIdentity | None]:
         scope = self._context_retrieval_scope_for_payload(payload, context_pack)
         if scope is None:
             return None, None
         return (
-            ContextRetrievalAuthority.for_workspace_transaction(
-                transaction, ObjectStorage(), workspace, storage_io=run_storage_io
-            ),
-            ScopedContextRetrievalIdentity(**scope.model_dump()),
+            worker_context_retrieval_authority(workspace),
+            ContextRetrievalIdentity(**scope.model_dump()),
         )
 
     def _context_retrieval_scope_for_payload(
@@ -707,8 +610,8 @@ class ClaudeAgentWorkerAdapter:
             pin_mismatches: list[dict[str, str]] = []
         else:
             try:
-                authorized_catalog = _runtime_authorized_skill_catalog(payload)
-                pinned_manifests = _merged_pinned_skill_manifests(
+                authorized_catalog = resolve_worker_runtime_catalog(payload)
+                pinned_manifests = merged_worker_pinned_manifests(
                     payload,
                     authorized_catalog,
                 )
@@ -726,16 +629,23 @@ class ClaudeAgentWorkerAdapter:
                 )
             skills = []
             available_names = list(pinned_manifests)
-            allowed_skill_names = _allowed_skill_names(
-                payload,
-                available_names,
-                authorized_catalog=authorized_catalog,
+            allowed_skill_names = execution_api.select_execution_skill_names(
+                selected_skill_id=payload.skill_id,
+                requested_skill_ids=(
+                    _string_list(payload.input.get("skill_ids")) if authorized_catalog is None else []
+                ),
+                available_skill_ids=available_names,
+                pinned_manifests=worker_pinned_manifests(payload) if authorized_catalog is None else {},
+                authorized_skill_ids=(
+                    authorized_catalog.materialized_skill_ids if authorized_catalog is not None else None
+                ),
             )
-            selected_skills, pin_mismatches = _select_pinned_skills(
+            selected_skills, pin_mismatches = select_pinned_skill_snapshots(
                 skills,
                 allowed_skill_names,
                 pinned_manifests,
                 _pinned_snapshot_root(resolved_workspace),
+                materialize=materialize_worker_pinned_skill,
             )
         if pin_mismatches:
             if event_sink is not None:
@@ -776,7 +686,7 @@ class ClaudeAgentWorkerAdapter:
                     "allowed_skills": allowed_skill_names,
                     "staged_skills": [],
                     "used_skills": [],
-                    "skill_manifests": _pin_manifests_for_result(pinned_manifests, allowed_skill_names),
+                    "skill_manifests": pin_manifests_for_result(pinned_manifests, allowed_skill_names),
                     "pin_mismatches": pin_mismatches,
                 },
             )
@@ -801,7 +711,7 @@ class ClaudeAgentWorkerAdapter:
         if prompt_context_manifest is not None:
             prompt_context_pack = dict(prompt_context_pack)
             prompt_context_pack["context_manifest"] = (
-                _context_manifest_with_attachment_metadata(
+                manifest_with_worker_attachment_metadata(
                     prompt_context_manifest,
                     attachment_metadata,
                 )
@@ -858,7 +768,7 @@ class ClaudeAgentWorkerAdapter:
                 pinned_manifests=pinned_manifests,
                 allowed_skill_names=allowed_skill_names,
                 staged_skill_names=staged_skill_names,
-                public_skill_metadata=_authorized_catalog_public_skill_metadata(
+                public_skill_metadata=worker_catalog_public_metadata(
                     authorized_catalog
                 ),
                 prompt=prompt_builder_kwargs["user_message"],
@@ -881,7 +791,7 @@ class ClaudeAgentWorkerAdapter:
         settings = get_settings()
         context_pack = self._executor_context_pack(payload)
         context_manifest = _context_manifest_from_pack(context_pack)
-        runtime_context_manifest = _context_manifest_with_attachment_metadata(
+        runtime_context_manifest = manifest_with_worker_attachment_metadata(
             context_manifest,
             prepared.attachment_metadata,
         )
@@ -893,7 +803,7 @@ class ClaudeAgentWorkerAdapter:
             "workspace": str(prepared.workspace),
             "allowed_skill_names": list(prepared.allowed_skill_names),
             "staged_skill_names": list(prepared.staged_skill_names),
-            "skill_manifests": _skill_manifests(
+            "skill_manifests": staged_skill_manifests(
                 prepared.selected_skills,
                 used_skill_names=[],
                 pins=prepared.pinned_manifests,
@@ -922,7 +832,7 @@ class ClaudeAgentWorkerAdapter:
                 if skill_id in prepared.public_skill_metadata
             },
             mcp_tool_ids=_string_list(payload.input.get("mcp_tool_ids")),
-            tool_policy_subjects=_sandbox_runtime_tool_policy_subjects(
+            tool_policy_subjects=sandbox_runtime_tool_policy_subjects(
                 payload,
                 runtime_context_manifest,
                 sandbox_provider=str(settings.sandbox_container_provider),
@@ -1165,12 +1075,12 @@ class ClaudeAgentWorkerAdapter:
         )
         used_skills_source = _sdk_used_skills_source(runtime_sdk_result, used_skill_names)
         skill_manifests = (
-            _skill_manifests_from_catalog(
+            skill_manifests_from_catalog(
                 prepared.skill_manifests,
                 used_skill_names=used_skill_names,
             )
             if isinstance(prepared, PreparedSandboxFinalization)
-            else _skill_manifests(
+            else staged_skill_manifests(
                 prepared.selected_skills,
                 used_skill_names=used_skill_names,
                 pins=prepared.pinned_manifests,
@@ -1391,21 +1301,7 @@ class ClaudeAgentWorkerAdapter:
     async def _materialize_files(self, payload: RunPayload, workspace: Path) -> list[str]:
         if not payload.file_ids:
             return []
-        if workspace.exists() and workspace.is_symlink():
-            raise ValueError("run workspace must not be a symlink")
-        result = await materialize_worker_context_files(
-            transaction_factory=transaction,
-            storage=ObjectStorage(),
-            storage_io=run_storage_io,
-            storage_size_limit_error=ObjectStorageSizeLimitError,
-            workspace=workspace,
-            tenant_id=payload.tenant_id,
-            workspace_id=payload.workspace_id,
-            user_id=payload.user_id,
-            session_id=payload.session_id,
-            run_id=payload.run_id,
-            file_ids=payload.file_ids,
-        )
+        result = await materialize_worker_context_files(payload=payload, workspace=workspace)
         return _MaterializedFileNames(
             list(result.file_names),
             attachment_metadata=[
@@ -1457,49 +1353,6 @@ def _string_list(value: object) -> list[str]:
     return [str(item) for item in value]
 
 
-def _allowed_skill_names(
-    payload: RunPayload,
-    available_names: list[str],
-    *,
-    authorized_catalog: AuthorizedSkillCatalogResolution | None = None,
-) -> list[str]:
-    available = set(available_names)
-    if authorized_catalog is not None:
-        return [
-            skill_id
-            for skill_id in authorized_catalog.materialized_skill_ids
-            if skill_id in available
-        ]
-    requested = _string_list(payload.input.get("skill_ids"))
-    if payload.skill_id and payload.skill_id in available:
-        requested.insert(0, payload.skill_id)
-    if not requested:
-        return []
-    selected = list(dict.fromkeys(name for name in requested if name in available))
-    pinned_manifests = _pinned_skill_manifests(payload)
-    if pinned_manifests:
-        return _with_pinned_manifest_dependencies(selected, pinned_manifests)
-    return selected
-
-
-def _with_pinned_manifest_dependencies(selected: list[str], pins: dict[str, dict[str, Any]]) -> list[str]:
-    expanded: list[str] = []
-
-    def add_skill(skill_name: str) -> None:
-        if skill_name in expanded:
-            return
-        expanded.append(skill_name)
-        manifest = pins.get(skill_name)
-        if not manifest:
-            return
-        for dependency_id in _string_list(manifest.get("dependency_ids")):
-            add_skill(dependency_id)
-
-    for skill_name in selected:
-        add_skill(skill_name)
-    return expanded
-
-
 def _run_workspace(settings: object, payload: RunPayload) -> Path:
     return Path(settings.claude_agent_workspace_root) / payload.tenant_id / payload.run_id
 
@@ -1547,206 +1400,3 @@ def _sdk_used_skills_source(sdk_result: object | None, used_skill_names: list[st
         return "none"
     source = str(getattr(sdk_result, "used_skills_source", "") or "").strip()
     return source or "executor_hook"
-
-
-def _pinned_skill_manifests(payload: RunPayload) -> dict[str, dict[str, Any]]:
-    return {
-        str(item.get("skill_id")).strip(): item
-        for item in payload.skill_manifests
-        if isinstance(item, dict) and str(item.get("skill_id") or "").strip()
-    }
-
-
-def _materialize_pinned_skill(skill_name: str, pin: dict[str, Any], snapshot_root: Path) -> BuiltinSkill:
-    if Path(skill_name).name != skill_name:
-        raise ValueError(f"invalid pinned skill name: {skill_name}")
-    expected_hash = str(pin.get("content_hash") or pin.get("version") or "")
-    if not expected_hash:
-        raise ValueError(f"pinned skill missing content hash: {skill_name}")
-    target = snapshot_root / skill_name
-    workspace_root = snapshot_root.parent
-    ensure_creatable_inside(workspace_root, target, "pinned skill path must stay inside the run workspace")
-    if target.exists():
-        shutil.rmtree(target)
-    ensure_skill_staging_directory(workspace_root, target)
-    ensure_creatable_inside(workspace_root, target, "pinned skill path must stay inside the run workspace")
-    total_bytes = 0
-    for item in pin.get("files") or []:
-        if not isinstance(item, dict):
-            # The pinned-skill payload contract reports malformed entries as value errors.
-            raise ValueError(f"invalid pinned skill file entry: {skill_name}")  # noqa: TRY004
-        relative_path = str(item.get("relative_path") or "")
-        validate_pinned_skill_relative_path(relative_path, skill_name=skill_name)
-        content = base64.b64decode(str(item.get("content_base64") or ""), validate=True)
-        if "size_bytes" not in item:
-            raise ValueError(f"pinned skill file missing size_bytes: {skill_name}")
-        if int(item["size_bytes"]) != len(content):
-            raise ValueError(f"pinned skill file size mismatch: {skill_name}")
-        if len(content) > MAX_SKILL_SNAPSHOT_FILE_BYTES:
-            raise ValueError(f"pinned skill file too large: {skill_name}")
-        total_bytes += len(content)
-        if total_bytes > MAX_SKILL_SNAPSHOT_TOTAL_BYTES:
-            raise ValueError(f"pinned skill snapshot too large: {skill_name}")
-        output = target / relative_path
-        ensure_creatable_inside(target, output, f"invalid pinned skill file path: {skill_name}")
-        ensure_skill_staging_directory(target, output.parent)
-        write_skill_staging_file(output, content)
-    if not (target / "SKILL.md").is_file():
-        raise ValueError(f"pinned skill missing SKILL.md: {skill_name}")
-    actual_hash = skill_content_hash(target)
-    if actual_hash != expected_hash:
-        shutil.rmtree(target, ignore_errors=True)
-        raise PinnedSkillMismatch(
-            f"pinned skill content hash mismatch: {skill_name}",
-            actual_content_hash=actual_hash,
-        )
-    return BuiltinSkill(
-        name=skill_name,
-        description=str(pin.get("description") or ""),
-        path=target,
-        version=expected_hash,
-        source=pin.get("source") if isinstance(pin.get("source"), dict) else {},
-        entry={"kind": "run-snapshot", "path": str(target)},
-    )
-
-
-def _select_pinned_skills(
-    skills,
-    allowed_skill_names: list[str],
-    pins: dict[str, dict[str, Any]],
-    snapshot_root: Path,
-):
-    selected = []
-    mismatches = []
-    by_name = {skill.name: skill for skill in skills}
-    for skill_name in allowed_skill_names:
-        skill = by_name.get(skill_name)
-        pin = pins.get(skill_name)
-        if not pin:
-            mismatches.append(
-                {
-                    "skill_id": skill_name,
-                    "expected_content_hash": "",
-                    "actual_content_hash": skill.version if skill else "",
-                    "reason": "missing_pinned_manifest",
-                }
-            )
-            continue
-        expected = str((pin or {}).get("content_hash") or (pin or {}).get("version") or "")
-        if pin.get("files"):
-            try:
-                selected.append(_materialize_pinned_skill(skill_name, pin, snapshot_root))
-            except PinnedSkillMismatch as exc:
-                mismatches.append(
-                    {
-                        "skill_id": skill_name,
-                        "expected_content_hash": expected,
-                        "actual_content_hash": exc.actual_content_hash,
-                        "reason": str(exc),
-                    }
-                )
-            except (binascii.Error, ValueError) as exc:
-                mismatches.append(
-                    {
-                        "skill_id": skill_name,
-                        "expected_content_hash": expected,
-                        "actual_content_hash": "",
-                        "reason": str(exc),
-                    }
-            )
-            continue
-        if not expected:
-            mismatches.append(
-                {
-                    "skill_id": skill_name,
-                    "expected_content_hash": "",
-                    "actual_content_hash": skill.version if skill else "",
-                    "reason": "missing_pinned_content_hash",
-                }
-            )
-            continue
-        if not pin.get("files"):
-            mismatches.append(
-                {
-                    "skill_id": skill_name,
-                    "expected_content_hash": expected,
-                    "actual_content_hash": skill.version if skill else "",
-                    "reason": "missing_pinned_snapshot",
-                }
-            )
-            continue
-        if expected and (skill is None or skill.version != expected):
-            mismatches.append(
-                {
-                    "skill_id": skill_name,
-                    "expected_content_hash": expected,
-                    "actual_content_hash": skill.version if skill else "",
-                }
-            )
-            continue
-    return selected, mismatches
-
-
-def _pin_manifests_for_result(pins: dict[str, dict[str, Any]], allowed_skill_names: list[str]) -> list[dict[str, Any]]:
-    manifests: list[dict[str, Any]] = []
-    for skill_name in allowed_skill_names:
-        pin = pins.get(skill_name)
-        if not pin:
-            continue
-        manifest = {key: value for key, value in pin.items() if key != "files"}
-        version = str(manifest.get("version") or pin.get("content_hash") or "")
-        content_hash = str(manifest.get("content_hash") or pin.get("version") or version)
-        manifest["version"] = version
-        manifest["content_hash"] = content_hash
-        manifest.setdefault("dependency_ids", [])
-        manifest["allowed"] = bool(manifest.get("allowed", True))
-        manifest["staged"] = False
-        manifest["used"] = False
-        manifests.append(manifest)
-    return manifests
-
-
-def _skill_manifests_from_catalog(
-    manifests: list[dict[str, Any]],
-    *,
-    used_skill_names: list[str],
-) -> list[dict[str, Any]]:
-    used = set(used_skill_names)
-    return [
-        {
-            **dict(manifest),
-            "used": str(manifest.get("skill_id") or "") in used,
-        }
-        for manifest in manifests
-    ]
-
-
-def _skill_manifests(selected_skills, *, used_skill_names: list[str], pins: dict[str, dict[str, Any]] | None = None) -> list[dict[str, Any]]:
-    used = set(used_skill_names)
-    staged = {skill.name for skill in selected_skills}
-    pinned_manifests = dict(pins or {})
-    manifests = []
-    for skill in selected_skills:
-        pin = pinned_manifests.get(skill.name)
-        if pin is not None:
-            dependency_ids = [
-                dependency_id
-                for dependency_id in _string_list(pin.get("dependency_ids"))
-                if dependency_id in staged
-            ]
-        else:
-            dependency_ids = []
-        manifests.append(
-            {
-                "skill_id": skill.name,
-                "description": skill.description,
-                "version": skill.version,
-                "content_hash": skill.version,
-                "source": skill.source,
-                "dependency_ids": dependency_ids,
-                "allowed": True,
-                "staged": True,
-                "used": skill.name in used,
-            }
-        )
-    return manifests

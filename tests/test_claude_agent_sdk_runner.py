@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import sys
 import types
@@ -6,6 +7,7 @@ import types
 import pytest
 
 from tests.support.claude_mcp import install_mcp_sessions
+from tests.support.claude_sdk import native_client_factory
 
 from app.executors.claude_agent_sdk_runner import (
     ClaudeAgentSdkNotAvailable,
@@ -229,27 +231,25 @@ def _captured_sdk_prompt(captured):
 
 
 def _client_sdk(module, captured):
-    class FakeClient:
+    async def message_source(**kwargs):
+        async for message in module.query(**kwargs):
+            yield message
+
+    class FakeClient(native_client_factory(message_source)):
         def __init__(self, options):
+            super().__init__(options)
             self.options = options
-            self.responses = None
             captured["client_mcp_server_types_at_construction"] = {
                 name: config.get("type") if isinstance(config, dict) else None
                 for name, config in getattr(options, "mcp_servers", {}).items()
             }
 
-        async def connect(self):
+        async def connect(self, prompt):
             captured["client_connected"] = True
-
-        async def query(self, prompt, session_id="default"):
-            assert session_id
-            self.responses = module.query(prompt=prompt, options=self.options)
-
-        async def receive_messages(self):
-            async for message in self.responses:
-                yield message
+            await super().connect(prompt)
 
         async def disconnect(self):
+            await super().disconnect()
             captured["client_disconnected"] = True
 
     module.ClaudeSDKClient = FakeClient
@@ -322,6 +322,10 @@ def _fake_sdk(
 
     async def query(*, prompt, options):
         captured["sdk_user_messages"] = [item async for item in prompt]
+        captured["permission_results"] = [
+            await captured["can_use_tool"](*probe)
+            for probe in captured.get("permission_probes", [])
+        ]
         if mirror_error:
             yield MirrorErrorMessage()
             return
@@ -510,6 +514,10 @@ def _scripted_sdk(
     async def query(*, prompt, options):
         del options
         captured["sdk_user_messages"] = [item async for item in prompt]
+        captured["permission_results"] = [
+            await captured["can_use_tool"](*probe)
+            for probe in captured.get("permission_probes", [])
+        ]
 
         raw_text_by_index = {}
         raw_message_id = None
@@ -1049,6 +1057,7 @@ async def test_sdk_structured_output_protocol_does_not_bypass_capability_admissi
     tmp_path,
 ):
     captured = {}
+    captured["permission_probes"] = [("StructuredOutput", {"answer": "done", "deliverables": []}, {"tool_use_id": "structured-output-call-1"})]
     lifecycle_facts = []
     hook_input = {
         "tool_name": "StructuredOutput",
@@ -1084,11 +1093,7 @@ async def test_sdk_structured_output_protocol_does_not_bypass_capability_admissi
     )
 
     pretool_output = captured["hook_results"][0][1]["hookSpecificOutput"]
-    permission = await captured["can_use_tool"](
-        hook_input["tool_name"],
-        hook_input["tool_input"],
-        {"tool_use_id": hook_input["tool_use_id"]},
-    )
+    permission = captured["permission_results"][0]
     assert pretool_output["permissionDecision"] == "deny"
     assert permission.behavior == "deny"
     assert lifecycle_facts == []
@@ -1102,6 +1107,7 @@ async def test_sdk_structured_output_name_is_not_a_global_tool_allowance(
     tmp_path,
 ):
     captured = {}
+    captured["permission_probes"] = [("StructuredOutput", {"answer": "done", "deliverables": []}, {"tool_use_id": "structured-output-call-1"})]
     monkeypatch.setitem(
         sys.modules,
         "claude_agent_sdk",
@@ -1118,11 +1124,7 @@ async def test_sdk_structured_output_name_is_not_a_global_tool_allowance(
         skill_id=None,
     )
 
-    permission = await captured["can_use_tool"](
-        "StructuredOutput",
-        {"answer": "done", "deliverables": []},
-        {"tool_use_id": "structured-output-call-1"},
-    )
+    permission = captured["permission_results"][0]
     assert permission.behavior == "deny"
     assert permission.message == "tool_identity_malformed"
 
@@ -2650,6 +2652,7 @@ async def test_required_sandbox_bash_failure_rejects_unframed_typed_body(
 @pytest.mark.asyncio
 async def test_local_sdk_bash_remains_unavailable(monkeypatch, tmp_path):
     captured = {}
+    captured["permission_probes"] = [("Bash", {"command": "pwd"})]
     monkeypatch.setitem(
         sys.modules,
         "claude_agent_sdk",
@@ -2666,7 +2669,7 @@ async def test_local_sdk_bash_remains_unavailable(monkeypatch, tmp_path):
         skill_id="general-chat",
         execution_policy="worker_local_legacy",
     )
-    denied = await captured["can_use_tool"]("Bash", {"command": "pwd"})
+    denied = captured["permission_results"][0]
 
     assert result.error is None
     assert "Bash" not in captured["tools"]
@@ -2838,12 +2841,13 @@ async def test_sdk_disconnects_before_selected_mcp_session_closes(
     async def list_tools(_session):
         return [types.SimpleNamespace(name="search")]
 
-    def prepare(subjects, configs):
+    def prepare(subjects, configs, callback_wrapper=None):
         return ClaudeMcpRegistration(
             subjects,
             configs,
             session_factory=session_factory,
             list_tools=list_tools,
+            callback_wrapper=callback_wrapper,
         )
 
     monkeypatch.setitem(
@@ -2886,8 +2890,9 @@ def _mcp_hook_steps(subject, *, call_id="mcp-call-1", terminal="completed"):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("continue_after_denial", [False, True])
 async def test_sdk_permission_denial_closes_started_internal_mcp_lifecycle(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, continue_after_denial
 ):
     captured, lifecycle_facts = {}, []
     subject = internal_context_tool_policy_subjects(["read_run_artifact"])[0]
@@ -2936,6 +2941,42 @@ async def test_sdk_permission_denial_closes_started_internal_mcp_lifecycle(
         )
         return True
 
+    interaction_kwargs = {}
+    if continue_after_denial:
+        from app.execution.application.run_interaction import RunInputCommand
+        from tests.test_claude_run_interactions import Inputs
+        from builtins import anext
+        port = Inputs([RunInputCommand("continue", "text", text="try another approach")])
+        queries = []
+
+        class Client:
+            def __init__(self, options):
+                self.stream = None
+
+            async def connect(self, stream):
+                self.stream = stream
+                await anext(stream)
+
+            async def query(self, prompt, session_id):
+                queries.append((prompt, session_id))
+
+            async def receive_messages(self):
+                for matcher in captured["hooks"]["PreToolUse"]:
+                    for hook in matcher.hooks:
+                        await hook(hook_input, call_id, {})
+                yield sdk.ResultMessage("first-result")
+                final = sdk.ResultMessage("final-result")
+                final.permission_denials = []
+                yield final
+                with pytest.raises(StopAsyncIteration):
+                    await anext(self.stream)
+
+            async def disconnect(self):
+                await self.stream.aclose()
+
+        interaction_kwargs = {"interaction_client": port, "client_fn": Client,
+                              "run_id": "run-a", "attempt_id": "attempt-a"}
+
     result = await run_claude_agent_sdk(
         prompt="use scoped history",
         cwd=tmp_path,
@@ -2952,6 +2993,7 @@ async def test_sdk_permission_denial_closes_started_internal_mcp_lifecycle(
             agent_id="general-agent",
         ),
         on_tool_lifecycle=acknowledge,
+        **interaction_kwargs,
     )
 
     assert lifecycle_facts == [
@@ -2961,6 +3003,10 @@ async def test_sdk_permission_denial_closes_started_internal_mcp_lifecycle(
     assert result.error is None
     assert result.turn_diagnostics["counters"]["tool_admission_denials"] == 2
 
+    if continue_after_denial:
+        assert queries == [("try another approach", "sdk-session")]
+        assert port.acks == ["continue"]
+
 
 @pytest.mark.asyncio
 async def test_sdk_explicit_skillless_harness_registers_no_skill_tool(
@@ -2968,6 +3014,7 @@ async def test_sdk_explicit_skillless_harness_registers_no_skill_tool(
     tmp_path,
 ):
     captured = {}
+    captured["permission_probes"] = [("Skill", {"skill": "untrusted-skill"})]
     reported = []
 
     async def on_skill_use(skill_name, metadata):
@@ -2999,7 +3046,7 @@ async def test_sdk_explicit_skillless_harness_registers_no_skill_tool(
     assert all(
         matcher.matcher != "Skill" for matcher in captured["hooks"]["PostToolUse"]
     )
-    denied = await captured["can_use_tool"]("Skill", {"skill": "untrusted-skill"})
+    denied = captured["permission_results"][0]
     assert denied.behavior == "deny"
 
 
@@ -6589,18 +6636,19 @@ async def test_sdk_first_projection_failure_survives_later_skill_hook(
             ("hook", ("PreToolUse", hook_input, "late-skill")),
         ]
     )
-    original_disconnect = sdk.ClaudeSDKClient.disconnect
+    original_receive = sdk.ClaudeSDKClient.receive_messages
 
-    async def disconnect(client):
+    async def receive_messages(client):
+        async for message in original_receive(client):
+            yield message
         matcher = next(
             item
             for item in captured["hooks"]["PostToolUse"]
             if item.matcher == "Skill"
         )
         await matcher.hooks[0](hook_input, "late-skill", {})
-        await original_disconnect(client)
 
-    sdk.ClaudeSDKClient.disconnect = disconnect
+    sdk.ClaudeSDKClient.receive_messages = receive_messages
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
 
@@ -6933,6 +6981,7 @@ async def test_sandbox_waits_for_source_to_publish_safe_raw_text_without_termina
 ):
     captured = {}
     deltas = []
+    checkpoints = []
     result_gate = []
     streamed_chunks = ("Short safe ", "public answer.")
     streamed_text = "".join(streamed_chunks)
@@ -6983,12 +7032,24 @@ async def test_sandbox_waits_for_source_to_publish_safe_raw_text_without_termina
         skill_id="general-chat",
         execution_policy="sandbox_brokered",
         on_text=deltas.append,
+        on_sdk_text=checkpoints.append,
+        run_id="run-a", attempt_id="attempt-a",
     )
 
     assert captured["include_partial_messages"] is True
     assert result_gate == []
     assert "".join(deltas) == streamed_text
     assert result.message == streamed_text
+    assert [{key: item[key] for key in ("events", "chars", "sha256", "final", "complete", "coverage")}
+            for item in checkpoints] == [
+        {"events": 1, "chars": len(streamed_chunks[0]), "sha256": hashlib.sha256(streamed_chunks[0].encode()).hexdigest(),
+         "final": False, "complete": False, "coverage": "text_delta"},
+        {"events": 2, "chars": len(streamed_text), "sha256": hashlib.sha256(streamed_text.encode()).hexdigest(),
+         "final": True, "complete": True, "coverage": "text_delta"},
+    ]
+    assert len(checkpoints[0]["call_ref"]) == 32
+    assert checkpoints[0]["call_ref"] == checkpoints[1]["call_ref"]
+    assert streamed_text not in str(checkpoints)
 
 
 @pytest.mark.asyncio
@@ -7776,25 +7837,17 @@ async def test_native_client_delegates_compaction_to_cli_without_session_open_qu
         async def append(self, _key, _entries):
             return None
 
-    class Client:
-        def __init__(self, options):
-            self.options = options
-            self.responses = None
-
-        async def connect(self):
+    class Client(sdk.ClaudeSDKClient):
+        async def connect(self, prompt):
             captured["connected"] = True
-
-        async def query(self, prompt, session_id="default"):
-            assert prompt != "/compact"
             captured["business_query"] = True
-            captured["query_session_id"] = session_id
-            self.responses = sdk.query(prompt=prompt, options=self.options)
-
-        async def receive_messages(self):
-            async for message in self.responses:
-                yield message
+            captured["query_session_id"] = (
+                getattr(self.options, "session_id", None) or getattr(self.options, "resume", None)
+            )
+            await super().connect(prompt)
 
         async def disconnect(self):
+            await super().disconnect()
             captured["disconnected"] = True
 
     result = await run_claude_agent_sdk(
@@ -7888,14 +7941,15 @@ async def test_protocol_close_includes_late_skill_outcome_without_sticky_failure
     skill_name = "qa-review"
     hook_input = {"tool_name": "Skill", "tool_use_id": "late-skill", "tool_input": {"skill": skill_name}}
     sdk = _scripted_sdk(captured, [("hook", ("PreToolUse", hook_input, "late-skill"))])
-    original_disconnect = sdk.ClaudeSDKClient.disconnect
+    original_receive = sdk.ClaudeSDKClient.receive_messages
 
-    async def disconnect(client):
+    async def receive_messages(client):
+        async for message in original_receive(client):
+            yield message
         matcher = next(item for item in captured["hooks"][terminal] if item.matcher == "Skill")
         await matcher.hooks[0](hook_input, "late-skill", {})
-        await original_disconnect(client)
 
-    sdk.ClaudeSDKClient.disconnect = disconnect
+    sdk.ClaudeSDKClient.receive_messages = receive_messages
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
     result = await run_claude_agent_sdk(

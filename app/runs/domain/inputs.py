@@ -1,0 +1,200 @@
+"""Run-owned supplementary text and native question input rules."""
+
+from __future__ import annotations
+
+import re
+from typing import Any, Callable
+from uuid import UUID
+
+
+MAX_RUN_INPUT_CHARS = 16_000
+MAX_RUN_QUESTION_BATCH = 4
+MAX_RUN_QUESTION_OPTIONS = 8
+MAX_RUN_QUESTION_ID_CHARS = 128
+MAX_RUN_ANSWER_CHARS = 16_000
+_QUESTION_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
+
+
+class RunInputError(ValueError):
+    """Base class for stable Run input validation and lifecycle errors."""
+
+    code = "run_input_invalid"
+
+    def __init__(self, code: str | None = None) -> None:
+        self.code = code or self.code
+        super().__init__(self.code)
+
+
+class RunInputClosed(RunInputError):
+    code = "run_input_closed"
+
+
+class RunInputConflict(RunInputError):
+    code = "run_input_id_conflict"
+
+
+def normalize_input_id(value: UUID | str) -> str:
+    try:
+        return str(value if isinstance(value, UUID) else UUID(value))
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise RunInputError("run_input_id_invalid") from exc
+
+
+def normalize_question_id(value: object) -> str:
+    if (
+        not isinstance(value, str)
+        or value != value.strip()
+        or not _QUESTION_ID_PATTERN.fullmatch(value)
+    ):
+        raise RunInputError("run_input_question_id_invalid")
+    return value
+
+
+def sanitize_run_input_text(
+    value: object,
+    *,
+    sanitize_text: Callable[[object], str],
+    max_chars: int = MAX_RUN_INPUT_CHARS,
+    allow_empty: bool = False,
+) -> str:
+    if not isinstance(value, str) or len(value) > max_chars:
+        raise RunInputError("run_input_text_invalid")
+    result = sanitize_text(value)
+    if not isinstance(result, str) or (not allow_empty and not result.strip()):
+        raise RunInputError("run_input_text_invalid")
+    if len(result) > max_chars:
+        raise RunInputError("run_input_text_invalid")
+    return result
+
+
+def canonicalize_questions(
+    values: object,
+    *,
+    sanitize_text: Callable[[object], str],
+) -> list[dict[str, Any]]:
+    if not isinstance(values, list) or not values or len(values) > MAX_RUN_QUESTION_BATCH:
+        raise RunInputError("run_input_question_invalid")
+    canonical: list[dict[str, Any]] = []
+    for question_index, value in enumerate(values):
+        if not isinstance(value, dict):
+            raise RunInputError("run_input_question_invalid")
+        if value.get("key", f"q{question_index}") != f"q{question_index}":
+            raise RunInputError("run_input_question_invalid")
+        question = _sanitize_question_display(
+            value.get("question"),
+            sanitize_text=sanitize_text,
+            max_chars=MAX_RUN_ANSWER_CHARS,
+            fallback=f"Question {question_index + 1}",
+        )
+        header = _sanitize_question_display(
+            value.get("header"),
+            sanitize_text=sanitize_text,
+            max_chars=128,
+            fallback="Question",
+        )
+        options_value = value.get("options")
+        if (
+            not isinstance(options_value, list)
+            or len(options_value) > MAX_RUN_QUESTION_OPTIONS
+        ):
+            raise RunInputError("run_input_question_invalid")
+        options: list[dict[str, str]] = []
+        for option_index, option in enumerate(options_value):
+            if not isinstance(option, dict):
+                raise RunInputError("run_input_question_invalid")
+            if option.get("key", f"o{option_index}") != f"o{option_index}":
+                raise RunInputError("run_input_question_invalid")
+            label = _sanitize_question_display(
+                option.get("label"),
+                sanitize_text=sanitize_text,
+                max_chars=256,
+                fallback=f"Option {option_index + 1}",
+            )
+            description = sanitize_run_input_text(
+                option.get("description"),
+                sanitize_text=sanitize_text,
+                max_chars=2_000,
+                allow_empty=True,
+            )
+            options.append({"key": f"o{option_index}", "label": label, "description": description})
+        multi_select = value.get("multiSelect")
+        if not isinstance(multi_select, bool):
+            raise RunInputError("run_input_question_invalid")
+        # Explicit projection prevents SDK tool arguments from becoming public fields.
+        canonical.append(
+            {
+                "key": f"q{question_index}",
+                "question": question,
+                "header": header,
+                "options": options,
+                "multiSelect": multi_select,
+            }
+        )
+    return canonical
+
+
+def _sanitize_question_display(
+    value: object, *, sanitize_text: Callable[[object], str], max_chars: int, fallback: str,
+) -> str:
+    # A valid native question can become empty under the existing public path
+    # policy. Keep it answerable by ordinal key without exposing its raw label.
+    if not isinstance(value, str) or not value.strip():
+        raise RunInputError("run_input_text_invalid")
+    sanitized = sanitize_run_input_text(
+        value, sanitize_text=sanitize_text, max_chars=max_chars, allow_empty=True,
+    )
+    return sanitized if sanitized.strip() else fallback
+
+
+def canonicalize_answers(
+    values: object,
+    *,
+    questions: list[dict[str, Any]],
+    sanitize_text: Callable[[object], str],
+) -> dict[str, str | list[str] | dict[str, str]]:
+    if not isinstance(values, dict) or not questions:
+        raise RunInputError("run_input_answers_invalid")
+    by_question = {str(item["key"]): item for item in questions}
+    if set(values) != set(by_question):
+        raise RunInputError("run_input_answers_invalid")
+    canonical: dict[str, str | list[str] | dict[str, str]] = {}
+    for question_text, answer in values.items():
+        question = by_question[question_text]
+        labels = {str(option["key"]) for option in question["options"]}
+        if isinstance(answer, dict) and set(answer) == {"text"}:
+            canonical[question_text] = {"text": sanitize_run_input_text(
+                answer["text"], sanitize_text=sanitize_text, max_chars=MAX_RUN_ANSWER_CHARS,
+            )}
+            continue
+        if isinstance(answer, str):
+            if question["multiSelect"] or answer not in labels:
+                raise RunInputError("run_input_answers_invalid")
+            canonical[question_text] = answer
+            continue
+        if (
+            not isinstance(answer, list)
+            or not question["multiSelect"]
+            or not answer
+            or len(answer) > len(labels)
+        ):
+            raise RunInputError("run_input_answers_invalid")
+        selected: list[str] = []
+        for item in answer:
+            if not isinstance(item, str) or item not in labels or item in selected:
+                raise RunInputError("run_input_answers_invalid")
+            selected.append(item)
+        canonical[question_text] = selected
+    return canonical
+
+
+def public_question(
+    questions: object,
+    *,
+    sanitize_text: Callable[[object], str],
+) -> list[dict[str, Any]]:
+    """Reapply the public question shape and text sanitizer on read."""
+
+    try:
+        return canonicalize_questions(questions, sanitize_text=sanitize_text)
+    except RunInputError:
+        return []

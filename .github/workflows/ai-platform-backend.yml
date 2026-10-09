@@ -103,11 +103,16 @@ jobs:
               tests/test_claude_stream_projection.py
               tests/test_claude_agent_sdk_turn_diagnostics.py
               tests/test_claude_completion_lifecycle.py
+              tests/test_claude_run_interactions.py
+              tests/test_claude_callback_completion.py
               tests/test_claude_mcp_registration.py
               tests/test_claude_agent_worker_adapter.py
+              tests/test_execution_pinned_skill_materialization.py
               tests/test_claude_agent_worker_file_continuity.py
               tests/test_context_file_content.py
               tests/test_context_prompt_continuity.py
+              tests/test_context_worker_snapshot_projection.py
+              tests/test_context_worker_attachment_projection.py
               tests/test_context_retrieval_callback.py
               tests/test_sandbox_document_capability.py
               tests/test_required_tool_contract.py
@@ -127,6 +132,7 @@ jobs:
               tests/test_sandbox_runtime_cleanup.py
               tests/test_sandbox_runtime_control_layer.py
               tests/test_sandbox_runtime_evidence_script.py
+              tests/test_skill_execution_profiles.py
               tests/test_validation.py
               tests/test_contract.py
           - shard: repository-worker-streaming
@@ -139,12 +145,25 @@ jobs:
               tests/test_context_persistence.py
               tests/test_conversations_persistence.py
               tests/test_files_artifacts_persistence.py
+              tests/test_artifact_manifest_projection.py
               tests/test_identity_capability_distribution.py
+              tests/test_identity_worker_capability_audit.py
+              tests/test_identity_worker_distribution.py
               tests/test_mcp_persistence.py
+              tests/test_mcp_authorization_projection.py
+              tests/test_mcp_worker_dispatch_authorization.py
               tests/test_runs_admin.py
               tests/test_runs_admission_lifecycle.py
               tests/test_runs_persistence.py
+              tests/test_runs_worker_result_commit.py
+              tests/test_runs_worker_queue_envelope.py
               tests/test_runs_replay.py
+              tests/test_runs_worker_capability_admission.py
+              tests/test_runs_worker_dispatch_admission.py
+              tests/test_runs_worker_dispatch_binding.py
+              tests/test_runs_worker_early_failure.py
+              tests/test_runs_worker_execution_terminal.py
+              tests/test_runs_worker_locked_authorization.py
               tests/test_sandbox_persistence.py
               tests/test_skills_authorization.py
               tests/test_skills_catalog_releases.py
@@ -165,8 +184,13 @@ jobs:
               tests/test_streaming_control.py
               tests/test_streaming_postgres.py
               tests/test_streaming_repository.py
+              tests/test_streaming_worker_event_projection.py
               tests/test_runtime_callbacks.py
               tests/test_worker.py
+              tests/test_execution_worker_failure_projection.py
+              tests/test_execution_worker_observability.py
+              tests/test_execution_worker_skill_evidence.py
+              tests/test_execution_worker_terminal_projection.py
               tests/test_lambchat_sse_v21.py
               tests/test_app_lifespan.py
               tests/test_runtime_launch_script.py
@@ -222,6 +246,7 @@ jobs:
               tests/test_run_diagnostics_postgres.py
               tests/test_schema_migrations.py
               tests/test_schema_migrations_postgres.py
+              tests/test_run_inputs_postgres.py
               tests/test_schema.py::test_schema_declares_attempt_identity_state_and_fences
           - shard: v4-durable-streaming
             postgres_image: postgres:16-alpine
@@ -373,6 +398,7 @@ jobs:
           timeout --signal=TERM --kill-after=30s 10m \
             uv run --locked --extra test python -m pytest \
               tests/test_agent_profile_authority.py \
+              tests/test_agent_apps_worker_profile_snapshot.py \
               tests/test_agent_profile_lifecycle.py \
               tests/test_agent_profile_routes.py \
               tests/test_agent_profiles.py \
@@ -383,6 +409,10 @@ jobs:
               tests/test_skill_lifecycle.py \
               tests/test_skill_registry.py \
               tests/test_skill_stager.py \
+              tests/test_skill_pinned_snapshot_stage.py \
+              tests/test_skill_worker_snapshot_persistence.py \
+              tests/test_skill_worker_dispatch_catalog.py \
+              tests/test_skill_worker_dispatch_authorization.py \
               tests/test_skill_release_policy.py \
               tests/test_chat_routes.py \
               tests/test_skills_marketplace_routes.py \

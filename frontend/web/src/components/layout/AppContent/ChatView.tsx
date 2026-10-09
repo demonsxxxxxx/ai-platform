@@ -32,6 +32,7 @@ import {
   ChatInput,
   type ChatInputDraftSnapshot,
 } from "../../chat/ChatInput";
+import { RunInputHistory } from "../../chat/RunInputHistory";
 import { WelcomePage } from "../../chat/WelcomePage";
 import { AgentIdentityAvatar } from "../../agent/AgentIdentityAvatar";
 import { WorkbenchRightPanel } from "../../workbench/WorkbenchRightPanel";
@@ -75,6 +76,7 @@ import type { AgentProfilePublicProjection } from "../../../types/agentProfile";
 import type {
   StopGenerationResult,
   SubmissionOutcome,
+  RunInputsController,
 } from "../../../hooks/useAgent/types";
 import type {
   SelectedSkillRecoverableCode,
@@ -148,6 +150,7 @@ interface ChatViewProps {
   sessionId: string | null;
   conversationIdentityKey: string;
   currentRunId: string | null;
+  runInputs?: RunInputsController;
   canStopGeneration: boolean;
   isLoading: boolean;
   isLoadingHistory: boolean;
@@ -218,6 +221,7 @@ export function ChatView({
   sessionId,
   conversationIdentityKey,
   currentRunId,
+  runInputs,
   canStopGeneration,
   isLoading,
   isLoadingHistory,
@@ -925,6 +929,7 @@ export function ChatView({
     onAttachmentsChange,
     onProfileDriveFileDrop: handleProfileDriveFileDrop,
     uploadControls,
+    runInputs,
   };
 
   const assistantUiActions = useMemo(
@@ -1038,6 +1043,15 @@ export function ChatView({
           ))}
         </div>
       ) : null}
+      {runInputs?.loadFailed ? (
+        <div className="mx-auto mb-2 flex w-full max-w-[68rem] items-center justify-between gap-3 rounded-xl border border-[var(--theme-warning-ring)] bg-[var(--theme-warning-soft)] px-3 py-2 text-xs text-[var(--theme-warning)]" role="status" data-run-input-read-failure>
+          <span>{t("chat.runInputs.loadFailed", "暂时无法读取任务输入状态，显示的记录可能尚未更新。")}</span>
+          <button className="shrink-0 underline" onClick={() => void runInputs.refresh()} type="button">
+            {t("common.retry", "重试")}
+          </button>
+        </div>
+      ) : null}
+      {runInputs ? <RunInputHistory runInputs={runInputs} canSend={canSendInCurrentView} /> : null}
       <ChatInput
         {...chatInputProps}
         className="mx-auto max-w-[68rem] px-2"
