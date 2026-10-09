@@ -293,15 +293,39 @@ _RUN_RAW_FRAME_LABELS = {
 }
 
 
-def _sanitize_raw_frame_shape(value: object) -> dict[str, str] | None:
-    if not isinstance(value, dict) or set(value) != set(_RUN_RAW_FRAME_LABELS):
+_RUN_RAW_FRAME_OBSERVATION_LABELS = {
+    key: allowed for key, allowed in _RUN_RAW_FRAME_LABELS.items()
+    if key != "guard"
+}
+
+
+def _sanitize_raw_frame_labels(
+    value: object, labels: dict[str, frozenset[str]]
+) -> dict[str, str] | None:
+    if not isinstance(value, dict) or set(value) != set(labels):
         return None
     if any(
         not isinstance(value[key], str) or value[key] not in allowed
-        for key, allowed in _RUN_RAW_FRAME_LABELS.items()
+        for key, allowed in labels.items()
     ):
         return None
-    return {key: value[key] for key in _RUN_RAW_FRAME_LABELS}
+    return {key: value[key] for key in labels}
+
+
+def _sanitize_raw_frame_shape(value: object) -> dict[str, str] | None:
+    return _sanitize_raw_frame_labels(value, _RUN_RAW_FRAME_LABELS)
+
+
+def _sanitize_raw_frame_history(value: object) -> list[dict[str, str]] | None:
+    if not isinstance(value, list) or not 1 <= len(value) <= 4:
+        return None
+    normalized = []
+    for frame in value:
+        shape = _sanitize_raw_frame_labels(frame, _RUN_RAW_FRAME_OBSERVATION_LABELS)
+        if shape is None:
+            return None
+        normalized.append(shape)
+    return normalized
 
 
 def _sanitize_projection_failure(value: object) -> dict[str, Any] | None:
@@ -322,6 +346,14 @@ def _sanitize_projection_failure(value: object) -> dict[str, Any] | None:
         frame_shape = _sanitize_raw_frame_shape(value["frame_shape"])
         if frame_shape is not None:
             projected["frame_shape"] = frame_shape
+    if (
+        projected["reason"] == "raw_frame_invalid"
+        and projected["location"] == "raw_stream_frame"
+        and "preceding_frames" in value
+    ):
+        preceding_frames = _sanitize_raw_frame_history(value["preceding_frames"])
+        if preceding_frames is not None:
+            projected["preceding_frames"] = preceding_frames
     return projected
 
 

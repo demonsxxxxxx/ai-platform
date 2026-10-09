@@ -357,15 +357,39 @@ _RAW_FRAME_SHAPE_LABELS = {
 }
 
 
-def normalize_sdk_raw_frame_shape(value: object) -> dict[str, str] | None:
-    if not isinstance(value, dict) or set(value) != set(_RAW_FRAME_SHAPE_LABELS):
+_RAW_FRAME_OBSERVATION_LABELS = {
+    key: allowed for key, allowed in _RAW_FRAME_SHAPE_LABELS.items()
+    if key != "guard"
+}
+
+
+def _normalize_raw_frame_labels(
+    value: object, labels: dict[str, frozenset[str]]
+) -> dict[str, str] | None:
+    if not isinstance(value, dict) or set(value) != set(labels):
         return None
     if any(
         not isinstance(value[key], str) or value[key] not in allowed
-        for key, allowed in _RAW_FRAME_SHAPE_LABELS.items()
+        for key, allowed in labels.items()
     ):
         return None
-    return {key: value[key] for key in _RAW_FRAME_SHAPE_LABELS}
+    return {key: value[key] for key in labels}
+
+
+def normalize_sdk_raw_frame_shape(value: object) -> dict[str, str] | None:
+    return _normalize_raw_frame_labels(value, _RAW_FRAME_SHAPE_LABELS)
+
+
+def normalize_sdk_raw_frame_history(value: object) -> list[dict[str, str]] | None:
+    if not isinstance(value, list) or not 1 <= len(value) <= 4:
+        return None
+    normalized = []
+    for frame in value:
+        shape = _normalize_raw_frame_labels(frame, _RAW_FRAME_OBSERVATION_LABELS)
+        if shape is None:
+            return None
+        normalized.append(shape)
+    return normalized
 
 
 def _normalize_sdk_projection_failure(value: object) -> dict[str, Any] | None:
@@ -390,6 +414,10 @@ def _normalize_sdk_projection_failure(value: object) -> dict[str, Any] | None:
         frame_shape = normalize_sdk_raw_frame_shape(value["frame_shape"])
         if frame_shape is not None:
             projected["frame_shape"] = frame_shape
+    if "preceding_frames" in value and reason == "raw_frame_invalid" and location == "raw_stream_frame":
+        preceding_frames = normalize_sdk_raw_frame_history(value["preceding_frames"])
+        if preceding_frames is not None:
+            projected["preceding_frames"] = preceding_frames
     return projected
 
 
@@ -953,11 +981,16 @@ def normalize_sdk_runtime_diagnostics(value: object) -> dict[str, Any]:
             normalized["projection_failure"] = projection_failure
             if isinstance(raw_projection_failure, dict):
                 extra_count = len(
-                    set(raw_projection_failure) - {"reason", "stage", "location", "frame_shape"}
+                    set(raw_projection_failure)
+                    - {"reason", "stage", "location", "frame_shape", "preceding_frames"}
                 )
                 if "frame_shape" in raw_projection_failure and "frame_shape" not in projection_failure:
                     _append_loss(
                         losses, field="projection_failure.frame_shape", reason="invalid_field"
+                    )
+                if "preceding_frames" in raw_projection_failure and "preceding_frames" not in projection_failure:
+                    _append_loss(
+                        losses, field="projection_failure.preceding_frames", reason="invalid_field"
                     )
                 if extra_count:
                     _append_loss(

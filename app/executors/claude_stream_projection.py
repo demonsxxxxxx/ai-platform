@@ -2,7 +2,7 @@
 
 import hashlib
 import re
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -95,6 +95,7 @@ _RAW_FRAME_GUARDS = frozenset({
     "block_start_limit", "block_stop_index", "block_delta_index",
     "block_delta_object", "block_delta_type", "block_delta_text",
 })
+_MAX_FAILURE_FRAME_HISTORY = 4
 
 _CLI_STRIPPED_CC_MEMORY_TAG = re.compile(r"</?cc-memory\b[^>]*>", re.ASCII)
 _NORMALIZED_FINGERPRINT_CHUNK_CHARS = 64 * 1024
@@ -1218,6 +1219,16 @@ class ClaudeStreamProjector:
         self._failure_reason: str | None = None
         self._frame_shape: dict[str, str] | None = None
         self._failure_frame: dict[str, str] | None = None
+        self._recent_frame_shapes: deque[dict[str, str]] = deque(
+            maxlen=_MAX_FAILURE_FRAME_HISTORY
+        )
+        self._failure_frame_history: tuple[dict[str, str], ...] = ()
+
+    @property
+    def failure_frame_history(self) -> tuple[dict[str, str], ...]:
+        """Accepted structural frames immediately before the first rejection."""
+
+        return self._failure_frame_history
 
     @property
     def failure_frame(self) -> dict[str, str] | None:
@@ -1458,22 +1469,26 @@ class ClaudeStreamProjector:
             return ()
         event_type = event.get("type")
         if event_type == "ping":
-            return ()
-        if event_type == "message_start":
+            result = ()
+        elif event_type == "message_start":
             self._parent_tool_use_id = parent_tool_use_id
-            return self._accept_message_start(event)
-        if event_type == "message_delta":
-            return self._accept_message_delta(event)
-        if event_type == "message_stop":
-            return self._accept_message_stop(event)
-        if event_type == "content_block_start":
-            return self._accept_start(event)
-        if event_type == "content_block_stop":
-            return self._accept_stop(event)
-        if event_type == "content_block_delta":
-            return self._accept_delta(event)
-        self._disable(guard="event_type")
-        return ()
+            result = self._accept_message_start(event)
+        elif event_type == "message_delta":
+            result = self._accept_message_delta(event)
+        elif event_type == "message_stop":
+            result = self._accept_message_stop(event)
+        elif event_type == "content_block_start":
+            result = self._accept_start(event)
+        elif event_type == "content_block_stop":
+            result = self._accept_stop(event)
+        elif event_type == "content_block_delta":
+            result = self._accept_delta(event)
+        else:
+            self._disable(guard="event_type")
+            result = ()
+        if not self._disabled and self._frame_shape is not None:
+            self._recent_frame_shapes.append(dict(self._frame_shape))
+        return result
 
     def close_unfinished(self) -> None:
         """Disable raw framing that never received its exact stop event."""
@@ -1658,6 +1673,9 @@ class ClaudeStreamProjector:
                     **self._frame_shape,
                     "guard": guard if guard in _RAW_FRAME_GUARDS else "event_type",
                 }
+                self._failure_frame_history = tuple(
+                    dict(frame) for frame in self._recent_frame_shapes
+                )
         self._disabled = True
         self._active_text_index = None
         self._ignored_block_index = None

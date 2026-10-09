@@ -253,6 +253,7 @@ class _ProjectionFailure:
     stage: str
     location: str
     frame_shape: dict[str, str] | None = None
+    preceding_frames: tuple[dict[str, str], ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         result = {
@@ -262,6 +263,8 @@ class _ProjectionFailure:
         }
         if self.frame_shape is not None:
             result["frame_shape"] = self.frame_shape
+        if self.preceding_frames:
+            result["preceding_frames"] = [dict(frame) for frame in self.preceding_frames]
         return result
 
 
@@ -3913,6 +3916,7 @@ async def run_claude_agent_sdk(
             stage: str,
             location: str,
             frame_shape: dict[str, str] | None = None,
+            preceding_frames: tuple[dict[str, str], ...] = (),
         ) -> None:
             nonlocal stream_projection_failed, first_projection_failure
             if first_projection_failure is None:
@@ -3921,6 +3925,7 @@ async def run_claude_agent_sdk(
                     stage=stage,
                     location=location,
                     frame_shape=frame_shape,
+                    preceding_frames=preceding_frames,
                 )
             stream_projection_failed = True
             answer_stream_gate.fail_closed()
@@ -3995,6 +4000,7 @@ async def run_claude_agent_sdk(
                             stage="message",
                             location="raw_stream_frame",
                             frame_shape=stream_projector.failure_frame,
+                            preceding_frames=stream_projector.failure_frame_history,
                         )
                     else:
                         raw_source_key = (

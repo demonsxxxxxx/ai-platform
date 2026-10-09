@@ -6807,8 +6807,59 @@ async def test_sdk_raw_frame_failure_retains_only_first_fixed_shape(monkeypatch,
             "open_block_type": "tool_use", "index_state": "ignored",
             "guard": "block_delta_type",
         },
+        "preceding_frames": [
+            {
+                "event_type": "message_start", "block_type": "other",
+                "delta_type": "other", "message_state": "closed",
+                "open_block_type": "none", "index_state": "invalid",
+            },
+            {
+                "event_type": "content_block_start", "block_type": "tool_use",
+                "delta_type": "other", "message_state": "open",
+                "open_block_type": "none", "index_state": "other",
+            },
+        ],
     }
     assert "private-token" not in str(result.runtime_diagnostics["projection_failure"])
+
+
+@pytest.mark.asyncio
+async def test_sdk_overlapping_tool_starts_fail_closed_with_structural_history(
+    monkeypatch, tmp_path
+):
+    events = [
+        {
+            "type": "message_start",
+            "message": {"id": "private-id", "role": "assistant", "stop_reason": None},
+        },
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use"}},
+        {
+            "type": "content_block_delta", "index": 0,
+            "delta": {"type": "input_json_delta", "partial_json": "private-tool-input"},
+        },
+        {"type": "content_block_start", "index": 1, "content_block": {"type": "tool_use"}},
+    ]
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", _streaming_sdk({}, events))
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    result = await run_claude_agent_sdk(
+        prompt="synthetic", cwd=tmp_path, skill_id="general-chat",
+        execution_policy="sandbox_brokered", on_text=lambda _text: None,
+    )
+
+    assert result.error == "claude_agent_sdk_output_validation_failed"
+    assert result.answer_receipt is None
+    failure = result.runtime_diagnostics["projection_failure"]
+    assert failure["frame_shape"] == {
+        "event_type": "content_block_start", "block_type": "tool_use",
+        "delta_type": "other", "message_state": "open",
+        "open_block_type": "tool_use", "index_state": "other",
+        "guard": "block_start_state",
+    }
+    assert [frame["event_type"] for frame in failure["preceding_frames"]] == [
+        "message_start", "content_block_start", "content_block_delta",
+    ]
+    assert "private" not in str(failure)
 
 
 def _streaming_sdk(

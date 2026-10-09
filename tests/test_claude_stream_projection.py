@@ -1294,6 +1294,61 @@ def test_projector_captures_only_first_rejected_frame_shape():
     assert "private" not in str(projector.failure_frame)
 
 
+def test_projector_captures_preceding_structural_frames_for_overlapping_tool_starts():
+    projector = _projector()
+    assert projector.accept(_message_start("private-message-id")) == ()
+    assert projector.accept(_start(0, "tool_use")) == ()
+    assert projector.accept({
+        "type": "content_block_delta", "index": 0,
+        "delta": {"type": "input_json_delta", "partial_json": "private-tool-input"},
+    }) == ()
+    assert projector.accept(_start(1, "tool_use")) == ()
+
+    assert projector.disabled is True
+    assert projector.failure_frame == {
+        "event_type": "content_block_start", "block_type": "tool_use",
+        "delta_type": "other", "message_state": "open",
+        "open_block_type": "tool_use", "index_state": "other",
+        "guard": "block_start_state",
+    }
+    assert projector.failure_frame_history == (
+        {
+            "event_type": "message_start", "block_type": "other",
+            "delta_type": "other", "message_state": "closed",
+            "open_block_type": "none", "index_state": "invalid",
+        },
+        {
+            "event_type": "content_block_start", "block_type": "tool_use",
+            "delta_type": "other", "message_state": "open",
+            "open_block_type": "none", "index_state": "other",
+        },
+        {
+            "event_type": "content_block_delta", "block_type": "other",
+            "delta_type": "input_json_delta", "message_state": "open",
+            "open_block_type": "tool_use", "index_state": "ignored",
+        },
+    )
+    assert "private" not in str(projector.failure_frame_history)
+    assert projector.accept(_stop(0)) == ()
+    assert len(projector.failure_frame_history) == 3
+
+
+def test_projector_bounds_preceding_frames_to_four():
+    projector = _projector()
+    projector.accept(_message_start())
+    projector.accept(_start(0, "tool_use"))
+    for _ in range(9):
+        assert projector.accept({
+            "type": "content_block_delta", "index": 0,
+            "delta": {"type": "input_json_delta", "partial_json": "private-data"},
+        }) == ()
+    projector.accept(_start(1, "tool_use"))
+
+    assert len(projector.failure_frame_history) == 4
+    assert all(frame["event_type"] == "content_block_delta" for frame in projector.failure_frame_history)
+    assert "private-data" not in str(projector.failure_frame_history)
+
+
 def test_projector_classifies_unknown_unhashable_block_type_without_leakage():
     projector = _projector()
     assert projector.accept(_message_start()) == ()

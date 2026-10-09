@@ -308,6 +308,9 @@ def test_raw_frame_shape_label_contracts_match_across_boundaries():
     assert runs_diagnostics_contract._RUN_RAW_FRAME_LABELS == (
         sandbox_diagnostics_contract._RAW_FRAME_SHAPE_LABELS
     )
+    assert runs_diagnostics_contract._RUN_RAW_FRAME_OBSERVATION_LABELS == (
+        sandbox_diagnostics_contract._RAW_FRAME_OBSERVATION_LABELS
+    )
 
 
 def test_raw_frame_shape_survives_sandbox_runs_and_rejects_untrusted_values():
@@ -317,9 +320,15 @@ def test_raw_frame_shape_survives_sandbox_runs_and_rejects_untrusted_values():
         "open_block_type": "tool_use", "index_state": "ignored",
         "guard": "block_delta_type",
     }
+    preceding = {
+        "event_type": "content_block_start", "block_type": "tool_use",
+        "delta_type": "other", "message_state": "open",
+        "open_block_type": "none", "index_state": "other",
+    }
     failure = {
         "reason": "raw_frame_invalid", "stage": "message",
         "location": "raw_stream_frame", "frame_shape": shape,
+        "preceding_frames": [preceding],
     }
     projected = normalize_sdk_runtime_diagnostics(
         runtime_diagnostics(projection_failure=failure)
@@ -336,6 +345,10 @@ def test_raw_frame_shape_survives_sandbox_runs_and_rejects_untrusted_values():
     assert "frame_shape" not in sanitize_runtime_diagnostics({
         "projection_failure": {**failure, "frame_shape": {**shape, "guard": "private_token"}},
     })["projection_failure"]
+    for invalid in ([preceding] * 5, [{**preceding, "index": "private_token"}]):
+        assert "preceding_frames" not in sanitize_runtime_diagnostics({
+            "projection_failure": {**failure, "preceding_frames": invalid},
+        })["projection_failure"]
 
 
 @pytest.mark.asyncio
@@ -894,6 +907,11 @@ async def test_admin_projection_returns_structured_root_attempts_and_losses():
             "open_block_type": "tool_use", "index_state": "ignored",
             "guard": "block_delta_type",
         },
+        "preceding_frames": [{
+            "event_type": "content_block_start", "block_type": "tool_use",
+            "delta_type": "other", "message_state": "open",
+            "open_block_type": "none", "index_state": "other",
+        }],
     }
     normalized = normalize_sdk_runtime_diagnostics(runtime_diagnostics(
         projection_failure={**projection_failure, "body": "PRIVATE_PAYLOAD_MARKER"},
