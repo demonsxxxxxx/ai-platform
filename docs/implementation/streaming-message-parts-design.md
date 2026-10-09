@@ -234,6 +234,8 @@ routing owner 的 `test_raw_only_part_is_acknowledged_before_message_stop` 由�
 空成功合同改为验证 SDK 成功且无公开 receipt；已提供的正文、receipt 和产物仍须通过完整校验。
 旧测试夹具不再从 raw stop/Result 正文创建 AssistantMessage，正常与安全用例使用明确完成块。
 历史 raw checkpoint/diagnostic readers 与完整原生会话生命周期继续保留。
+晚到私有标识与已经 ACK 的文字发生真实泄露时，安全失败独立于投影已关闭状态和首次诊断
+标签；关闭的 gate 继续检测已公开标识，不恢复或重发正文。
 
 `tests/test_sandbox_executor_app.py` 的 terminal-only batching 用例改为明确 completed-block
 来源；保留超过 100 项事件和 8192 字节分批验收。三种 tool checkpoint 结局（成功、上游错误、

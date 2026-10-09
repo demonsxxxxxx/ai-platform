@@ -695,8 +695,9 @@ async def test_optional_sdk_stop_string_and_empty_observation_do_not_erase_publi
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("projection_gap", [False, True])
 async def test_late_private_identity_discovery_remains_a_safety_failure(
-    source_routing_settings,
+    source_routing_settings, projection_gap,
 ):
     import claude_agent_sdk as sdk
 
@@ -708,6 +709,10 @@ async def test_late_private_identity_discovery_remains_a_safety_failure(
             "first-1",
             sdk.TextBlock(text="Visible previously-unknown-call text. " * 200),
         )
+        if projection_gap:
+            yield assistant(
+                sdk, "invalid", "invalid-1", sdk.TextBlock(text=None),
+            )
         yield assistant(
             sdk,
             "child",

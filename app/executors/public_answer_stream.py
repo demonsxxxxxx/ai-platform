@@ -152,6 +152,7 @@ class PublicAnswerStreamGate:
         self._active_capability_invocations: set[tuple[str, str, str]] = set()
         self._failed = False
         self._failure_reason: str | None = None
+        self._private_token_exposed = False
         self._projection_omissions = 0
         self._finished = False
         if (
@@ -175,6 +176,12 @@ class PublicAnswerStreamGate:
         """Return the first public-safe projection fault reason."""
 
         return self._failure_reason
+
+    @property
+    def private_token_exposed(self) -> bool:
+        """Retain actual disclosure independently of the first projection fault."""
+
+        return self._private_token_exposed
 
     @property
     def projection_omissions(self) -> int:
@@ -573,7 +580,17 @@ class PublicAnswerStreamGate:
     ) -> None:
         """Learn executor-private tokens before later answer text can expose them."""
 
-        if self._failed or self._finished:
+        if self._finished:
+            return
+        previous_tokens = set(self._tokens)
+        self._add_replacements(private_replacements)
+        added_tokens = set(self._tokens) - previous_tokens
+        if added_tokens:
+            published_text = self._published_text()
+            if any(token in published_text for token in added_tokens):
+                self._fail("private_token_already_published")
+                return
+        if self._failed:
             return
         prior_pending = self._pending
         prior_spans = list(self._pending_source_spans)
@@ -582,16 +599,6 @@ class PublicAnswerStreamGate:
         ):
             self._fail("upstream_projection_failed")
             return
-        previous_tokens = set(self._tokens)
-        self._add_replacements(private_replacements)
-        if self._failed:
-            return
-        added_tokens = set(self._tokens) - previous_tokens
-        if added_tokens:
-            published_text = self._published_text()
-            if any(token in published_text for token in added_tokens):
-                self._fail("private_token_already_published")
-                return
         pending = self._project(self._pending, recoverable=True)
         if pending is None:
             self._pending = ""
@@ -640,6 +647,8 @@ class PublicAnswerStreamGate:
         if self._finished:
             return PublicAnswerFinish((), "")
         if release is not True:
+            return self._discard()
+        if self._private_token_exposed:
             return self._discard()
         published_text = self._published_text()
         if self._failed:
@@ -809,6 +818,8 @@ class PublicAnswerStreamGate:
         self._pending_source_spans = []
 
     def _fail(self, reason: str) -> None:
+        if reason == "private_token_already_published":
+            self._private_token_exposed = True
         if self._failure_reason is None:
             self._failure_reason = (
                 public_answer_failure_reason(reason) or "upstream_projection_failed"

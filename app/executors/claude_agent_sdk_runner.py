@@ -4162,7 +4162,7 @@ async def run_claude_agent_sdk(
                 stage="message",
                 location="terminal_part_gate",
             )
-            if answer_stream_gate.failure_reason == "private_token_already_published":
+            if answer_stream_gate.private_token_exposed:
                 terminal_error = terminal_error or _SDK_OUTPUT_VALIDATION_FAILED
         terminal_text_acknowledged = True
         if not answer_stream_gate.failed and isinstance(
