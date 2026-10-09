@@ -152,6 +152,7 @@ export function ModelAdminControl({
     }
   };
 
+  const enabledCount = draft.filter((model) => model.enabled).length;
   const visibleDraft = draft.filter((model) => {
     const normalizedQuery = query.trim().toLowerCase();
     const matchesQuery = !normalizedQuery
@@ -169,10 +170,10 @@ export function ModelAdminControl({
   return (
     <section
       aria-label="模型管理"
-      className="min-w-0 space-y-4 p-4"
+      className="flex min-h-full min-w-0 shrink-0 flex-col gap-4 p-4 lg:h-full lg:min-h-0 lg:shrink"
       data-model-admin-control
     >
-      <div className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-4">
+      <div className="shrink-0 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-4">
         <h2 className="mb-3 text-sm font-semibold">连接配置</h2>
         <div className="grid min-w-0 gap-3 lg:grid-cols-[minmax(16rem,1fr)_minmax(14rem,1fr)_auto_auto]">
           <label className="flex min-w-0 flex-col gap-1.5 text-sm">
@@ -232,8 +233,8 @@ export function ModelAdminControl({
         {message ? <p className="mt-3 text-sm text-[var(--theme-text-secondary)]" role="status">{message}</p> : null}
       </div>
 
-      <div className="overflow-hidden rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)]">
-        <div className="flex flex-col gap-3 border-b border-[var(--theme-border)] p-3 md:flex-row md:items-center md:justify-between">
+      <div className="flex min-w-0 shrink-0 flex-col overflow-hidden rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] lg:min-h-0 lg:flex-1 lg:shrink">
+        <div className="flex shrink-0 flex-col gap-3 border-b border-[var(--theme-border)] p-3 md:flex-row md:items-center md:justify-between">
           <div className="flex min-w-0 flex-1 flex-col gap-3 sm:flex-row">
             <label className="relative min-w-0 sm:max-w-sm sm:flex-1">
               <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--theme-text-secondary)]" size={16} aria-hidden="true" />
@@ -256,21 +257,14 @@ export function ModelAdminControl({
               ))}
             </select>
           </div>
-          <button
-            className="btn-primary inline-flex h-10 items-center justify-center gap-2"
-            data-model-admin-publish
-            disabled={busy !== null || !discovered}
-            onClick={() => void publish()}
-            type="button"
-          >
-            <Save size={16} aria-hidden="true" />
-            发布到全员
-          </button>
+          <span className="shrink-0 text-xs text-[var(--theme-text-secondary)]">
+            显示 {visibleDraft.length} / {draft.length} 个模型
+          </span>
         </div>
 
-        <div className="overflow-x-auto">
+        <div className="min-w-0 overflow-x-auto lg:min-h-0 lg:flex-1 lg:overflow-auto" data-model-admin-table-scroll>
           <table className="w-full min-w-[880px] table-fixed text-left text-sm">
-            <thead className="bg-[var(--theme-background)] text-xs text-[var(--theme-text-secondary)]">
+            <thead className="sticky top-0 z-10 bg-[var(--theme-workbench-panel)] text-xs text-[var(--theme-text-secondary)]">
               <tr>
                 <th className="w-24 px-4 py-3 font-medium">启用</th>
                 <th className="w-[28%] px-4 py-3 font-medium">显示名称 / 上游模型 ID</th>
@@ -373,6 +367,21 @@ export function ModelAdminControl({
             </tbody>
           </table>
         </div>
+      </div>
+      <div className="sticky bottom-0 z-10 flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 py-2 lg:static" data-model-admin-action-bar>
+        <p className="text-xs text-[var(--theme-text-secondary)]" aria-live="polite">
+          已启用 {enabledCount} / {draft.length} · 切换和编辑仅修改草稿，发布后生效
+        </p>
+        <button
+          className="btn-primary inline-flex h-10 items-center justify-center gap-2"
+          data-model-admin-publish
+          disabled={busy !== null || !discovered}
+          onClick={() => void publish()}
+          type="button"
+        >
+          <Save size={16} aria-hidden="true" />
+          发布到全员
+        </button>
       </div>
     </section>
   );

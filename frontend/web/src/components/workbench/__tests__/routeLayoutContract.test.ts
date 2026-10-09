@@ -31,15 +31,16 @@ test("AppShell and Chat keep one scroll owner for each transcript state", () => 
   assert.doesNotMatch(list, /workbenchSurface\.catalog\.content/);
 });
 
-test("model admin view owns vertical scrolling for large candidate lists", () => {
+test("model admin keeps actions visible while its table scrolls on wide screens", () => {
   const catalog = read("src/components/panels/ModelCatalogPanel.tsx");
   const admin = read("src/components/panels/ModelAdminControl.tsx");
 
-  assert.match(
-    catalog,
-    /data-frontend-governance-state=\{adminState\}\s+className=\{`\$\{workbenchSurface\.page\} overflow-y-auto`\}/,
-  );
-  assert.doesNotMatch(admin, /overflow-y-auto/);
+  assert.match(catalog, /data-frontend-governance-state=\{adminState\}\s+className=\{`\$\{workbenchSurface\.page\} overflow-y-auto lg:overflow-hidden`\}/);
+  assert.match(admin, /flex min-h-full min-w-0 shrink-0 flex-col gap-4 p-4 lg:h-full lg:min-h-0 lg:shrink/);
+  assert.match(admin, /lg:min-h-0 lg:flex-1 lg:overflow-auto" data-model-admin-table-scroll/);
+  assert.match(admin, /sticky top-0 z-10 bg-/);
+  assert.match(admin, /data-model-admin-action-bar/);
+  assert.ok(admin.indexOf("data-model-admin-action-bar") > admin.indexOf("data-model-admin-table-scroll"));
 });
 
 test("skills, market, detail, workspace, and builder share responsive outer gutters", () => {

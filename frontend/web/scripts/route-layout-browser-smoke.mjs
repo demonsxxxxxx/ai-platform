@@ -86,7 +86,7 @@ function bootstrapSource() {
       if (url.pathname.startsWith('/api/')) state.requests.push({ path: url.pathname, method });
       if (url.pathname === '/api/ai/auth/me') return json({
         user_id: 'layout-admin', user_name: 'layout-admin', display_name: 'Layout Admin', tenant_id: 'tenant-layout',
-        roles: ['admin'], permissions: ['chat:read','chat:write','session:read','session:write','skill:admin','skill:read','skill:write','skill:delete','agent_profile:admin'],
+        roles: ['admin'], permissions: ['chat:read','chat:write','session:read','session:write','skill:admin','skill:read','skill:write','skill:delete','agent_profile:admin','model:admin'],
         is_admin: true, source: 'cookie_session'
       });
       if (url.pathname === '/api/ai/auth/bootstrap' && method === 'POST') return json({
@@ -124,6 +124,16 @@ function bootstrapSource() {
       if (url.pathname === '/api/ai/admin/agent-profiles') return json({ agent_profiles: [adminProfile] });
       if (url.pathname === '/api/ai/admin/agent-profiles/agt_support/history') return json({ agent_profiles: [adminProfile] });
       if (url.pathname === '/api/mcp/chat-tools') return json({ tools: [], count: 0, unavailable: [] });
+      if (url.pathname === '/api/ai/admin/models') return json({
+        connection: { configured: true, revision: 7, base_url: 'https://gateway.example.invalid', key_fingerprint: 'synthetic' },
+        models: Array.from({ length: 26 }, (_, index) => ({
+          id: 'mdl-' + index, value: 'demo/model-' + index, label: 'Model ' + index,
+          provider: 'compatible', enabled: index === 0, available: true, is_default: index === 0,
+          order: index + 1, last_seen_revision: 7, last_seen_at: '2026-01-01T00:00:00Z',
+          max_input_tokens: index === 0 ? 32000 : undefined,
+          max_output_tokens: index === 0 ? 2048 : undefined
+        }))
+      });
       if (url.pathname === '/api/agent/models/available') return json({
         models: [{ id: 'model-enterprise', value: 'model-enterprise', label: 'Enterprise Claude', provider: 'anthropic' }],
         count: 1, enabled_count: 1, default_model_id: 'model-enterprise'
@@ -221,6 +231,14 @@ const cases = [
     ],
     requiredRequests: ["/api/ai/admin/agent-profiles", "/api/skills/"],
   },
+  {
+    path: "/models",
+    selector: "[data-model-admin-control]",
+    name: "models",
+    scroller: (viewport) => viewport.width >= 1024 ? "[data-model-admin-table-scroll]" : "[data-model-catalog-shell]",
+    requiredSelectors: ["[data-model-admin-table-scroll]", "[data-model-admin-action-bar]", "[data-model-admin-publish]"],
+    requiredRequests: ["/api/ai/admin/models"],
+  },
 ];
 const viewports = [
   { name: "desktop", width: 1440, height: 900, mobile: false },
@@ -268,8 +286,9 @@ async function runCase(viewport, scenario) {
       })`,
       `${viewport.name}:${scenario.name}:required-controls`,
     );
+    const scrollerSelector = typeof scenario.scroller === "function" ? scenario.scroller(viewport) : scenario.scroller;
     const layout = await browser.client.evaluate(`(() => {
-      const target = ${scenario.scroller ? `document.querySelector(${JSON.stringify(scenario.scroller)})` : "document.scrollingElement"};
+      const target = ${scrollerSelector ? `document.querySelector(${JSON.stringify(scrollerSelector)})` : "document.scrollingElement"};
       if (target) target.scrollTop = target.scrollHeight;
       const rect = target?.getBoundingClientRect();
       const requestedPaths = new Set(window.__routeLayoutSmoke.requests.map((request) => request.path));
@@ -296,6 +315,29 @@ async function runCase(viewport, scenario) {
     ) {
       throw new Error(`layout_failed:${viewport.name}:${scenario.name}:${JSON.stringify({ layout, reachable, missingRequests })}`);
     }
+    let modelLayout = null;
+    if (scenario.name === "models") {
+      modelLayout = await browser.client.evaluate(`(() => {
+        const table = document.querySelector('[data-model-admin-table-scroll]');
+        const header = table.querySelector('thead').getBoundingClientRect();
+        const tableRect = table.getBoundingClientRect();
+        const bar = document.querySelector('[data-model-admin-action-bar]').getBoundingClientRect();
+        return {
+          rows: table.querySelectorAll('tbody tr').length,
+          tableScrollable: table.scrollHeight > table.clientHeight,
+          headerPinned: Math.abs(header.top - tableRect.top) < 3 && header.bottom <= tableRect.bottom,
+          headerOpaque: getComputedStyle(table.querySelector('thead')).backgroundColor !== 'rgba(0, 0, 0, 0)',
+          actionVisible: bar.top >= 0 && bar.bottom <= innerHeight + 1,
+          actionBelowTable: bar.top >= tableRect.bottom - 2,
+        };
+      })()`);
+      if (modelLayout.rows !== 26 || !modelLayout.actionVisible || !modelLayout.headerOpaque ||
+        (viewport.width >= 1024 && (!modelLayout.tableScrollable || !modelLayout.headerPinned || !modelLayout.actionBelowTable)) ||
+        (viewport.width < 1024 && layout.scrollHeight <= layout.clientHeight + 1)
+      ) {
+        throw new Error(`model_layout_failed:${viewport.name}:${JSON.stringify(modelLayout)}`);
+      }
+    }
     let overlay = null;
     if (scenario.popover) {
       await browser.client.evaluate(`(() => { const node = document.querySelector('.department-selector__trigger'); if (!node) throw new Error('department_trigger_missing'); node.click(); })()`);
@@ -311,7 +353,7 @@ async function runCase(viewport, scenario) {
       );
     }
     const screenshot = await captureScreenshot(browser.client, evidenceDir, `${viewport.name}-${scenario.name}`);
-    return { viewport: viewport.name, route: scenario.path, layout, reachable, overlay, screenshot };
+    return { viewport: viewport.name, route: scenario.path, layout, reachable, modelLayout, overlay, screenshot };
   } finally {
     await browser.close();
   }
