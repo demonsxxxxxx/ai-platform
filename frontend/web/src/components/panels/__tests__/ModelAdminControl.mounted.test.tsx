@@ -278,9 +278,25 @@ test("Model admin discovery is a draft and only publication changes the active c
     await React.act(async () => {
       changeMountedInput(enabled, enabled.value);
       changeMountedInput(defaultInput, defaultInput.value);
+    });
+    assert.match(nodeText(actionBar), /已启用 1 \/ 1/);
+    for (const label of ["openai/gpt-5 最大输入 Token", "openai/gpt-5 最大输出 Token"]) {
+      const field = container.querySelectorAll("input")
+        .find((candidate) => candidate.getAttribute("aria-label") === label);
+      assert.equal(field?.getAttribute("placeholder"), "必填");
+      assert.equal(field?.getAttribute("aria-required"), "true");
+    }
+    await React.act(async () => {
+      publishButton.dispatchEvent({ type: "click", bubbles: true });
+    });
+    assert.equal(calls.publish.length, 1, "missing limits must not reach the publish API");
+    assert.match(nodeText(actionBar), /请填写 GPT-5 的最大输入和输出 Token/);
+    assert.equal(container.querySelectorAll('[role="alert"]').length, 1);
+    await React.act(async () => {
       changeMountedInput(inputByLabel(container, "openai/gpt-5 最大输入 Token"), "32000");
       changeMountedInput(inputByLabel(container, "openai/gpt-5 最大输出 Token"), "2048");
     });
+    assert.equal(container.querySelectorAll('[role="alert"]').length, 0);
     assert.match(nodeText(actionBar), /已启用 1 \/ 1/);
     assert.match(nodeText(actionBar), /切换和编辑仅修改草稿，发布后生效/);
     assert.match(nodeText(publishButton), /发布到全员/);

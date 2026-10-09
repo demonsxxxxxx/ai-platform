@@ -64,6 +64,7 @@ export function ModelAdminControl({
   const [discovered, setDiscovered] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [publishError, setPublishError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
@@ -99,6 +100,7 @@ export function ModelAdminControl({
     setDiscovered(false);
     setDiscoveredRevision(null);
     setError(null);
+    setPublishError(null);
     setMessage(null);
     try {
       const result = await modelAdminApi.discover(baseUrl.trim(), credential || undefined);
@@ -119,18 +121,28 @@ export function ModelAdminControl({
       ? { ...model, ...change }
       : change.is_default ? { ...model, is_default: false } : model));
     setMessage(null);
+    setPublishError(null);
   };
 
   const publish = async () => {
     const enabled = draft.filter((model) => model.enabled);
+    setPublishError(null);
     if (!discovered) {
-      setError("请先获取当前上游模型，再发布配置。");
+      setPublishError("请先获取当前上游模型，再发布配置。");
       return;
     }
-    if (!enabled.length || enabled.filter((model) => model.is_default).length !== 1
-      || enabled.some((model) => !validTokenLimit(model.max_input_tokens)
-        || !validTokenLimit(model.max_output_tokens))) {
-      setError("请启用至少一个模型，为启用模型填写输入和输出 Token 上限，并指定唯一默认模型。");
+    if (!enabled.length) {
+      setPublishError("请至少启用一个模型。");
+      return;
+    }
+    const invalid = enabled.find((model) => !validTokenLimit(model.max_input_tokens)
+      || !validTokenLimit(model.max_output_tokens));
+    if (invalid) {
+      setPublishError(`请填写 ${invalid.label} 的最大输入和输出 Token（1–10,000,000）。`);
+      return;
+    }
+    if (enabled.filter((model) => model.is_default).length !== 1) {
+      setPublishError("请在已启用模型中指定唯一默认模型。");
       return;
     }
     setBusy("publish");
@@ -146,7 +158,7 @@ export function ModelAdminControl({
       setDiscovered(false);
       setMessage("已发布模型配置；用户重新加载聊天页面后获取最新列表。");
     } catch (caught) {
-      setError(errorMessage(caught));
+      setPublishError(errorMessage(caught));
     } finally {
       setBusy(null);
     }
@@ -317,7 +329,8 @@ export function ModelAdminControl({
                       min={1}
                       max={10000000}
                       onChange={(event) => updateDraft(model.id, { max_input_tokens: event.target.value ? Number(event.target.value) : undefined })}
-                      placeholder="—"
+                      placeholder={model.enabled ? "必填" : "—"}
+                      aria-required={model.enabled}
                       type="number"
                       value={model.max_input_tokens ?? ""}
                     />
@@ -330,7 +343,8 @@ export function ModelAdminControl({
                       min={1}
                       max={10000000}
                       onChange={(event) => updateDraft(model.id, { max_output_tokens: event.target.value ? Number(event.target.value) : undefined })}
-                      placeholder="—"
+                      placeholder={model.enabled ? "必填" : "—"}
+                      aria-required={model.enabled}
                       type="number"
                       value={model.max_output_tokens ?? ""}
                     />
@@ -369,9 +383,13 @@ export function ModelAdminControl({
         </div>
       </div>
       <div className="sticky bottom-0 z-10 flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 py-2 lg:static" data-model-admin-action-bar>
-        <p className="text-xs text-[var(--theme-text-secondary)]" aria-live="polite">
-          已启用 {enabledCount} / {draft.length} · 切换和编辑仅修改草稿，发布后生效
-        </p>
+        {publishError ? (
+          <p className="text-xs text-[var(--theme-danger)]" role="alert">{publishError}</p>
+        ) : (
+          <p className="text-xs text-[var(--theme-text-secondary)]" aria-live="polite">
+            已启用 {enabledCount} / {draft.length} · 切换和编辑仅修改草稿，发布后生效
+          </p>
+        )}
         <button
           className="btn-primary inline-flex h-10 items-center justify-center gap-2"
           data-model-admin-publish

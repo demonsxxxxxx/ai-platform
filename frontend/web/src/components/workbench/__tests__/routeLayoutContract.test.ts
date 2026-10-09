@@ -15,7 +15,7 @@ test("AppShell and Chat keep one scroll owner for each transcript state", () => 
 
   assert.match(
     shell,
-    /relative z-0 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden/,
+    /relative z-0 flex min-h-0 min-w-0 flex-1 flex-col \$\{activeTab === "models" \? "overflow-clip" : "overflow-hidden"\}/,
   );
   assert.match(chat, /min-h-0 flex-1 overflow-hidden[^"]*flex flex-col/);
   assert.doesNotMatch(chat, /min-h-0 flex-1 overflow-y-auto[^"]*flex flex-col/);
