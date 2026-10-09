@@ -55,7 +55,7 @@ types used by this adapter.
 | `HookMatcher` | `matcher`, `hooks`, and `timeout` remain available | Exact `PostToolUse` evidence remains the only Skill-success authority |
 | Messages | `AssistantMessage`, `TextBlock`, `ThinkingBlock`, and `StreamEvent` remain adapter inputs; a typed Assistant fragment need not close a whole turn | Raw text deltas stream into the public Assistant body; typed text reconciles missing suffixes; Thinking and non-text deltas are excluded |
 | Terminal result | `ResultMessage` adds `terminal_reason` while retaining result/error/session/usage fields | Ordinary `result` text is executor completion input; committed public text and its receipt own streamed content; Runs owns business outcome; files are selected separately |
-| Partial streaming | `include_partial_messages=True` remains supported | Raw text feeds the public answer gate immediately; later provider-bound classification groups work parts without rewriting accepted delta rows |
+| Partial streaming | SDK supports `include_partial_messages=True`; the Claude adapter selects `False` | Completed main `AssistantMessage` blocks feed the existing public gate; raw/Result bodies have no public text authority. Provider-bound classification groups work without rewriting accepted rows |
 | Settings | `setting_sources` remains supported | Only explicit project settings are loaded after platform-controlled scrubbing |
 | Permissions | `permission_mode`, allowed tools, disallowed tools, and `can_use_tool` remain supported | Platform authorization, admission, sandbox, and context remain authoritative |
 | Limits | `max_turns`, `effort`, and `max_thinking_tokens` remain supported | Max-turn termination maps to a stable public platform error |
