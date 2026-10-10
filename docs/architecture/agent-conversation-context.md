@@ -60,6 +60,24 @@ controlled system channel. Claude does not receive `read_session_messages`.
 Provider IDs, transcript entries, callback credentials and storage/runtime details
 remain private. Public Context summaries expose counts and safe provenance.
 
+## Bounded Artifact Text Retrieval
+
+`read_run_artifact` authorizes the exact scoped artifact before storage access.
+Its text preview reads at most the requested byte budget plus one sentinel byte,
+then closes the object body, including on read errors. The sentinel establishes
+`truncated` without trusting declared object length. Only budgeted bytes are
+decoded; incomplete UTF-8 suffixes and invalid bytes are ignored as before, then
+existing content redaction applies. Large objects still return a truncated
+preview rather than a whole-object size-limit error.
+
+The Context repository prefix operation replaces the preview's unbounded object
+read in both connection and transaction adapters. No unbounded compatibility
+fallback remains in this preview path. Full staging/export keeps the existing
+whole-object bounded read, size and identity checks. Storage worker timeout and
+cancellation retain capacity until blocking I/O ends; the prefix operation closes
+its body when that operation exits. This does not change Run/Attempt locks,
+callback authorization, the retrieval response shape, or persisted artifacts.
+
 ## Retirement And Acceptance
 
 The generic v1 history renderer, explicit historical-ID fallback, checkpoint

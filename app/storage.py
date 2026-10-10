@@ -164,6 +164,28 @@ class ObjectStorage:
         finally:
             body.close()
 
+    def get_bytes_prefix(self, *, storage_key: str, max_bytes: int) -> bytes:
+        """Read at most max_bytes without rejecting a larger object; always close."""
+
+        if max_bytes < 0:
+            raise ValueError("max_bytes must be non-negative")
+        if max_bytes == 0:
+            return b""
+        response = self.client.get_object(Bucket=self.bucket, Key=storage_key)
+        body = response["Body"]
+        chunks: list[bytes] = []
+        remaining = max_bytes
+        try:
+            while remaining:
+                chunk = body.read(min(64 * 1024, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            return b"".join(chunks)
+        finally:
+            body.close()
+
     def get_bytes_bounded(self, *, storage_key: str, max_bytes: int) -> bytes:
         """Read one object in bounded chunks and always close its response body."""
 

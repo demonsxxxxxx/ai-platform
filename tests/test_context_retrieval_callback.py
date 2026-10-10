@@ -747,3 +747,247 @@ def test_platform_context_client_rejects_invalid_empty_artifact_byte_counts(tmp_
             workspace_root=str(tmp_path), max_bytes=32,
         )
     assert not list(tmp_path.iterdir())
+
+
+class _ArtifactPrefixBody:
+    def __init__(self, payload, *, chunk_bytes=2):
+        self.payload = payload
+        self.chunk_bytes = chunk_bytes
+        self.position = 0
+        self.read_sizes = []
+        self.closed = False
+
+    def read(self, size):
+        assert size > 0, "prefix reads must always have a positive byte bound"
+        self.read_sizes.append(size)
+        start = self.position
+        self.position = min(len(self.payload), start + min(size, self.chunk_bytes))
+        return self.payload[start:self.position]
+
+    def close(self):
+        self.closed = True
+
+
+def _artifact_prefix_authority(monkeypatch, body, *, transactional=False, allowed=True):
+    from app.context import retrieval as retrieval_module
+    from app.storage import ObjectStorage, run_storage_io
+
+    scope = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "run_id": "run-a",
+    }
+    storage_calls = []
+
+    async def get_artifact(conn, **kwargs):
+        assert kwargs == {**scope, "artifact_id": "artifact-a"}
+        if not allowed:
+            return None
+        return {
+            "id": "artifact-a",
+            "label": "report.txt",
+            "artifact_type": "report_txt",
+            "storage_key": "private/artifact-a",
+            # Preview truncation must come from bytes, not stale declared size.
+            "size_bytes": 1,
+        }
+
+    class Client:
+        def get_object(self, **kwargs):
+            storage_calls.append(kwargs)
+            assert kwargs == {"Bucket": "bucket", "Key": "private/artifact-a"}
+            return {"Body": body}
+
+    def forbidden_full_read(*args, **kwargs):
+        raise AssertionError("a text preview must not use whole-object reads")
+
+    monkeypatch.setattr(
+        retrieval_module.context_sources_postgres, "get_scoped_context_artifact", get_artifact,
+    )
+    storage = ObjectStorage.__new__(ObjectStorage)
+    storage.bucket = "bucket"
+    storage.client = Client()
+    storage.get_bytes = forbidden_full_read
+    storage.get_bytes_bounded = forbidden_full_read
+    if transactional:
+        authority = ContextRetrievalAuthority.for_transaction(_Transaction, storage)
+    else:
+        authority = ContextRetrievalAuthority.for_broker_connection(
+            object(), storage, storage_io=run_storage_io,
+        )
+    return authority, scope, storage_calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transactional", [False, True])
+@pytest.mark.parametrize(
+    ("payload", "cap", "content", "truncated"),
+    [
+        (b"", 1, "", False),
+        (b"a", 1, "a", False),
+        (b"ab", 1, "a", True),
+        (b"x" * 1048576, 1, "x", True),
+        ("你好".encode(), 3, "你", True),
+        ("你好".encode(), 4, "你", True),
+        ("你好".encode(), 6, "你好", False),
+        ("A😀Z".encode(), 3, "A", True),
+        (b"a\xffb", 3, "ab", False),
+    ],
+    ids=("empty", "exact", "sentinel", "large", "utf8-exact", "utf8-cut", "utf8-full", "utf8-four-byte", "invalid-utf8"),
+)
+async def test_context_artifact_preview_reads_only_prefix_and_closes_body(
+    monkeypatch, transactional, payload, cap, content, truncated,
+):
+    body = _ArtifactPrefixBody(payload)
+    authority, scope, storage_calls = _artifact_prefix_authority(
+        monkeypatch, body, transactional=transactional,
+    )
+
+    result = await authority.execute(
+        "read_run_artifact", scope, {"artifact_id": "artifact-a", "max_bytes": cap},
+    )
+
+    assert result["content"] == content
+    assert result["truncated"] is truncated
+    assert result["artifact_id"] == "artifact-a"
+    assert result["label"] == "report.txt"
+    assert "private/artifact-a" not in json.dumps(result)
+    assert body.position == min(len(payload), cap + 1)
+    assert max(body.read_sizes) <= cap + 1
+    assert body.closed
+    assert len(storage_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_context_artifact_preview_caps_large_chunks_and_preserves_redaction(monkeypatch):
+    body = _ArtifactPrefixBody(b"x" * 1048576, chunk_bytes=1048576)
+    authority, scope, _ = _artifact_prefix_authority(monkeypatch, body)
+    result = await authority.execute(
+        "read_run_artifact", scope, {"artifact_id": "artifact-a", "max_bytes": 262144},
+    )
+    assert result["content"] == "x" * 262144
+    assert result["truncated"] is True
+    assert body.position == 262145
+    assert max(body.read_sizes) == 65536
+    assert body.closed
+
+    body = _ArtifactPrefixBody(b"/tmp/private/runtime.txt")
+    authority, scope, _ = _artifact_prefix_authority(monkeypatch, body)
+    result = await authority.execute("read_run_artifact", scope, {"artifact_id": "artifact-a"})
+    assert result["content"] == ""
+    assert result["truncated"] is False
+    assert body.closed
+
+
+@pytest.mark.asyncio
+async def test_context_artifact_preview_denial_precedes_storage_access(monkeypatch):
+    body = _ArtifactPrefixBody(b"private contents")
+    authority, scope, storage_calls = _artifact_prefix_authority(monkeypatch, body, allowed=False)
+    with pytest.raises(ContextRetrievalDenied, match="^context_scope_denied$"):
+        await authority.execute("read_run_artifact", scope, {"artifact_id": "artifact-a"})
+    assert storage_calls == []
+    assert body.read_sizes == []
+
+
+@pytest.mark.asyncio
+async def test_context_artifact_preview_closes_body_on_storage_error(monkeypatch):
+    class FailedBody(_ArtifactPrefixBody):
+        def read(self, size):
+            super().read(size)
+            raise OSError("synthetic interrupted object read")
+
+    body = FailedBody(b"partial")
+    authority, scope, _ = _artifact_prefix_authority(monkeypatch, body)
+    with pytest.raises(OSError, match="synthetic interrupted object read"):
+        await authority.execute("read_run_artifact", scope, {"artifact_id": "artifact-a"})
+    assert body.closed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel", [False, True], ids=("timeout", "cancel"))
+async def test_context_artifact_prefix_abandonment_holds_capacity_until_body_closes(
+    monkeypatch, cancel,
+):
+    import asyncio
+    import threading
+
+    from app import storage as storage_module
+
+    entered = threading.Event()
+    release = threading.Event()
+    closed = threading.Event()
+    admissions = asyncio.BoundedSemaphore(1)
+    slots = asyncio.Semaphore(1)
+    monkeypatch.setattr(storage_module, "_STORAGE_IO_ADMISSIONS", admissions)
+    monkeypatch.setattr(storage_module, "_STORAGE_IO_SLOTS", slots)
+
+    class PausedBody(_ArtifactPrefixBody):
+        def read(self, size):
+            entered.set()
+            if not release.wait(timeout=5):
+                raise TimeoutError("test did not release the synthetic read")
+            return super().read(size)
+
+        def close(self):
+            super().close()
+            closed.set()
+
+    body = PausedBody(b"longer than preview")
+    authority, scope, _ = _artifact_prefix_authority(monkeypatch, body)
+
+    async def bounded_io(operation, *args, **kwargs):
+        return await storage_module.run_storage_io(
+            operation, *args, timeout_seconds=5 if cancel else 0.05, **kwargs,
+        )
+
+    authority._storage_io = bounded_io
+    task = asyncio.create_task(authority.execute(
+        "read_run_artifact", scope, {"artifact_id": "artifact-a", "max_bytes": 1},
+    ))
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        if cancel:
+            task.cancel()
+        with pytest.raises(asyncio.CancelledError if cancel else storage_module.StorageIOTimeoutError):
+            await task
+        assert not body.closed
+        with pytest.raises(storage_module.StorageIOBusyError):
+            await storage_module.run_storage_io(lambda: "must not start")
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+        assert await asyncio.to_thread(closed.wait, 2)
+        # Wait for the worker's capacity callback before restoring global slots.
+        await asyncio.wait_for(admissions.acquire(), timeout=2)
+        admissions.release()
+    assert body.closed
+    assert body.position == 2
+    assert await storage_module.run_storage_io(lambda: "available") == "available"
+
+
+def test_context_retrieval_callback_returns_large_artifact_as_truncated_preview(monkeypatch):
+    body = _ArtifactPrefixBody(b"x" * 1048576)
+    authority, _, storage_calls = _artifact_prefix_authority(monkeypatch, body)
+    calls = _patch_route(monkeypatch)
+    monkeypatch.setattr(
+        ContextRetrievalAuthority,
+        "for_broker_connection",
+        staticmethod(lambda conn, storage, *, storage_io: authority),
+    )
+
+    with TestClient(create_app()) as client:
+        response = client.post(
+            "/api/ai/runtime/callbacks/context-retrieval",
+            headers={"X-AI-Platform-Callback-Token": _token("secret")},
+            json=_payload(arguments={"artifact_id": "artifact-a", "max_bytes": 1}),
+        )
+
+    assert response.status_code == 200
+    assert response.json()["result"]["content"] == "x"
+    assert response.json()["result"]["truncated"] is True
+    assert body.position == 2
+    assert body.closed
+    assert len(storage_calls) == 1
+    assert calls[0][0] == "event"
