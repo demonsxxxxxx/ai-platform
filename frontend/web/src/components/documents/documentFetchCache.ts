@@ -103,6 +103,22 @@ export function isUnsafeUnauthenticatedDocumentUrl(
     return false;
   }
 
+  // Relative-looking strings can normalize to an external origin (for
+  // example /\\host/path). Reject them before selecting the native transport.
+  const currentOrigin = options.currentOrigin ?? getCurrentOrigin();
+  try {
+    const baseOrigin = new URL(currentOrigin ?? "http://localhost").origin;
+    const parsed = new URL(trimmed, baseOrigin);
+    if (
+      !["http:", "https:"].includes(parsed.protocol) ||
+      parsed.origin !== baseOrigin
+    ) {
+      return true;
+    }
+  } catch {
+    return true;
+  }
+
   return hasAbsoluteScheme(trimmed) || isApiDocumentUrl(trimmed, options);
 }
 
