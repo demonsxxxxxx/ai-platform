@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { RefreshCw, Save, ShieldCheck } from "lucide-react";
 import { useTranslation } from "react-i18next";
+
+import { useAuth } from "../../hooks/useAuth";
 
 import { RoleSelector } from "../mcp/RoleSelector";
 import { DepartmentDirectorySelector } from "./DepartmentDirectorySelector";
@@ -58,6 +60,14 @@ export function SkillDistributionGovernancePanel({
   selectedSkillId,
 }: SkillDistributionGovernancePanelProps) {
   const { t } = useTranslation();
+  const { user, isAuthenticated } = useAuth();
+  const authScope = JSON.stringify([user?.tenant_id, user?.id, isAuthenticated]);
+  const mounted = useRef(false);
+  const authGeneration = useRef(0);
+  const authScopeRef = useRef(authScope);
+  const selectionGeneration = useRef(0);
+  const loadSequence = useRef(0);
+  const activeSave = useRef<object | null>(null);
   const [distributions, setDistributions] = useState<CapabilityDistribution[]>([]);
   const [draft, setDraft] = useState<CapabilityDistributionUpdate | null>(null);
   const [departmentScope, setDepartmentScope] =
@@ -69,6 +79,32 @@ export function SkillDistributionGovernancePanel({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+
+  useLayoutEffect(() => {
+    mounted.current = true;
+    authScopeRef.current = authScope;
+    setLoading(true);
+    setDraft(null);
+    setLoadError(null);
+    authGeneration.current += 1;
+    loadSequence.current += 1;
+    setDistributions([]);
+    setDirectory(null);
+    return () => {
+      mounted.current = false;
+      authGeneration.current += 1;
+      loadSequence.current += 1;
+      activeSave.current = null;
+    };
+  }, [authScope]);
+
+  useLayoutEffect(() => {
+    selectionGeneration.current += 1;
+    activeSave.current = null;
+    setSaving(false);
+    setSaveError(null);
+    setSaved(false);
+  }, [authScope, selectedSkillId]);
 
   const distributionBySkillId = useMemo(
     () => new Map(distributions.map((item) => [item.capabilityId, item])),
@@ -83,14 +119,20 @@ export function SkillDistributionGovernancePanel({
   );
 
   const load = useCallback(async () => {
+    const request = ++loadSequence.current;
+    const generation = authGeneration.current;
+    const ownsRequest = () => mounted.current && authScopeRef.current === authScope && generation === authGeneration.current && request === loadSequence.current;
+    if (!isAuthenticated) { setLoading(false); return; }
     setLoading(true);
     setLoadError(null);
     setDirectoryError(null);
+    setSaved(false);
     try {
       const [distributionResult, directoryResult] = await Promise.allSettled([
         capabilityDistributionApi.list("skill"),
         capabilityDistributionApi.departmentDirectory(),
       ]);
+      if (!ownsRequest()) return;
       if (distributionResult.status === "rejected") {
         throw distributionResult.reason;
       }
@@ -102,14 +144,15 @@ export function SkillDistributionGovernancePanel({
         setDirectoryError(t("skills.governance.errors.directoryUnavailable"));
       }
     } catch (error) {
+      if (!ownsRequest()) return;
       setLoadError(t(safeDistributionErrorKey(error)));
       setDistributions([]);
       setDraft(null);
       setDirectory(null);
     } finally {
-      setLoading(false);
+      if (ownsRequest()) setLoading(false);
     }
-  }, [t]);
+  }, [t, authScope, isAuthenticated]);
 
   useEffect(() => {
     void load();
@@ -120,12 +163,10 @@ export function SkillDistributionGovernancePanel({
     setDepartmentScope(
       selectedDistribution?.departmentIds.length ? "restricted" : "all",
     );
-    setSaveError(null);
-    setSaved(false);
   }, [selectedDistribution, selectedSkillId]);
 
   const save = async () => {
-    if (!selectedSkillId || !draft || saving) return;
+    if (!mounted.current || !selectedSkillId || !draft || loading || activeSave.current) return;
     if (
       directory === null ||
       !departmentSelection.authoritative ||
@@ -134,6 +175,12 @@ export function SkillDistributionGovernancePanel({
       setSaveError(t("skills.governance.errors.directoryNotAuthoritative"));
       return;
     }
+    const request = {};
+    activeSave.current = request;
+    const generation = authGeneration.current;
+    const selection = selectionGeneration.current;
+    const ownsScope = () => mounted.current && generation === authGeneration.current;
+    const ownsEditor = () => ownsScope() && selection === selectionGeneration.current && activeSave.current === request;
     setSaving(true);
     setSaveError(null);
     setSaved(false);
@@ -147,18 +194,24 @@ export function SkillDistributionGovernancePanel({
         selectedSkillId,
         update,
       );
+      if (!ownsEditor()) return;
+      if (savedDistribution.capabilityId !== selectedSkillId) throw new Error("distribution_receipt_mismatch");
       setDistributions((current) => [
         ...current.filter(
           (item) => item.capabilityId !== savedDistribution.capabilityId,
         ),
         savedDistribution,
       ]);
+      if (!ownsEditor()) return;
       setDraft(createDraft(savedDistribution));
       setSaved(true);
     } catch (error) {
-      setSaveError(t(safeDistributionErrorKey(error)));
+      if (ownsEditor()) setSaveError(t(safeDistributionErrorKey(error)));
     } finally {
-      setSaving(false);
+      if (ownsEditor()) {
+        activeSave.current = null;
+        setSaving(false);
+      }
     }
   };
 
@@ -354,7 +407,7 @@ export function SkillDistributionGovernancePanel({
               <div className="es-field mt-4">
                 <span className="es-label">{t("skills.governance.roles.allowed")}</span>
                 <span className="es-hint">{t("skills.governance.roles.hint")}</span>
-                <div className="mt-1">
+                <fieldset className="mt-1" disabled={saving}>
                   <RoleSelector
                     onChange={(allowedRoles) =>
                       setDraft((current) =>
@@ -363,7 +416,7 @@ export function SkillDistributionGovernancePanel({
                     }
                     selectedRoles={draft.allowedRoles}
                   />
-                </div>
+                </fieldset>
               </div>
 
               <div className="mt-5 flex flex-wrap items-center gap-3">
