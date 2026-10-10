@@ -60,6 +60,7 @@ import { FailureGuidanceCard } from "../../common/FailureGuidanceCard";
 import { openPersistentToolPanel } from "../../chat/ChatMessage/items/persistentToolPanelState";
 import { agentProfileApi } from "../../../services/api/agentProfile";
 import { sessionApi } from "../../../services/api/session";
+import type { BackendSession } from "../../../services/api";
 import { uuid } from "../../../utils/uuid";
 import type {
   AgentConversationIdentity,
@@ -68,6 +69,7 @@ import type {
 import {
   buildAgentMarketDetailPath,
   buildAgentMarketWorkspacePath,
+  buildSessionHistoryPath,
 } from "../../../features/agent-market/agentMarketSelection";
 
 export type AgentConversationRecoveryPhase = "generic" | "loading" | "bound" | "blocked";
@@ -1174,6 +1176,13 @@ export function ChatAppContent({
     () => setMobileSidebarOpen(false),
     [setMobileSidebarOpen],
   );
+  const handleSelectGlobalHistorySession = useCallback(
+    (session: BackendSession) => {
+      navigate(buildSessionHistoryPath(session.id, session.agent_conversation));
+      setMobileSidebarOpen(false);
+    },
+    [navigate, setMobileSidebarOpen],
+  );
   const handleSelectSessionAndClose = useCallback(
     async (id: string) => {
       const selectionRequestId = ++agentWorkspaceSelectionRequestIdRef.current;
@@ -1274,6 +1283,9 @@ export function ChatAppContent({
           ref={sidebarRef}
           currentSessionId={sessionId}
           onSelectSession={handleSelectSessionAndClose}
+          onSelectGlobalHistorySession={
+            agentWorkspace ? handleSelectGlobalHistorySession : undefined
+          }
           onNewSession={handleNewSessionAndClose}
           newSession={newlyCreatedSession}
           mobileOpen={mobileSidebarOpen}

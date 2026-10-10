@@ -90,3 +90,17 @@ test("SessionListContent gives ordinary users a Chinese Agent Market entry and a
   assert.match(source, /data-agent-history-group/);
   assert.match(source, /aria-expanded=\{isExpanded\}/);
 });
+
+test("Agent workspace exposes global history beside task history and keeps both available on mobile", () => {
+  const source = readFileSync(
+    join(process.cwd(), "src/components/panels/SidebarParts/SessionListContent.tsx"),
+    "utf8",
+  );
+
+  assert.match(source, /groupSessionsByAgent\(globalSessions\)/);
+  assert.match(source, /data-workbench-global-history/);
+  assert.match(source, /data-workbench-mobile-history/);
+  assert.match(source, /全部对话/);
+  assert.match(source, /任务历史/);
+  assert.match(source, /onSelectGlobalSession\(session\)/);
+});

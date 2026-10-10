@@ -9,7 +9,7 @@ function read(relativePath: string): string {
   return readFileSync(join(root, "src", relativePath), "utf8");
 }
 
-test("Agent chat workspace has a separate history panel and keeps one session source", () => {
+test("Agent chat keeps expert task history separate from workspace-wide history", () => {
   const panel = read("features/agent-market/AgentConversationPanel.tsx");
   const chat = read("components/layout/AppContent/ChatAppContent.tsx");
   const shell = read("components/layout/AppContent/AppShell.tsx");
@@ -48,18 +48,23 @@ test("Agent chat workspace has a separate history panel and keeps one session so
   assert.match(chat, /contentSidebar=\{[\s\S]*?<AgentConversationPanel/);
   assert.match(chat, /profile=\{agentWorkspace\}/);
   assert.match(chat, /source=\{agentWorkspaceSessionSource\}/);
+  assert.match(chat, /buildSessionHistoryPath\(session\.id, session\.agent_conversation\)/);
+  assert.match(chat, /onSelectGlobalHistorySession=\{[\s\S]*handleSelectGlobalHistorySession/);
   assert.match(shell, /<WorkbenchMenuHost/);
   assert.doesNotMatch(shell, /<Header|showHeaderUserMenu/);
   assert.match(shell, /contentSidebar\?: ReactNode/);
   assert.match(shell, /\{contentSidebar\}/);
 });
 
-test("Agent chat keeps new conversation and history in the navigation below the three-column breakpoint", () => {
+test("Agent chat keeps task history in the workspace panel and exposes both histories on mobile", () => {
   const sessionSidebar = read("components/panels/SidebarParts/SessionListContent.tsx");
   const panel = read("features/agent-market/AgentConversationPanel.tsx");
 
+  assert.match(sessionSidebar, /data-workbench-global-history/);
+  assert.match(sessionSidebar, /data-workbench-mobile-history/);
   assert.match(sessionSidebar, /agentHistoryInMainPanel \? "space-y-1 xl:hidden"/);
-  assert.match(sessionSidebar, /agentWorkspace && agentHistoryInMainPanel \? "xl:hidden"/);
+  assert.match(sessionSidebar, /全部对话/);
+  assert.match(sessionSidebar, /任务历史/);
   assert.match(panel, /xl:flex[\s\S]*w-60/);
   assert.match(panel, /收起历史会话/);
   assert.match(panel, /展开历史会话/);

@@ -45,14 +45,20 @@ server-side and appended to the executor system prompt.
 
 1. The authenticated root, post-login fallback, and bare `/chat` route open the
    Agent Market.
-2. Generic Chat creation, search, and history controls are not discoverable in
-   authenticated navigation.
+2. Generic Chat creation and search controls are not discoverable in authenticated
+   navigation. The user's global session history remains available as a
+   disclosure-safe navigation list grouped by public Agent identity.
 3. Existing `/chat/:sessionId` deep links remain a compatibility reader in this
    slice. The canonical Chat components remain because Agent Workspace reuses
    their streaming, files, history, and composer implementation.
-4. Agent Workspace navigation retains its Agent-scoped task history and uses
-   task language: “start new task” and “task history”. It must not expose a
-   generic Chat entry.
+4. Agent Workspace navigation keeps two distinct history scopes: global session
+   history in the primary navigation and Agent-scoped task history in the
+   adjacent workspace panel. Desktop shows both; narrower layouts offer a
+   switch between them. A global history selection opens the session under its
+   original Agent or generic compatibility route and never reclassifies it as a
+   task for the currently selected Agent. Workspace controls still use task
+   language: “start new task” and “task history”; they must not expose generic
+   Chat creation or search.
 
 ### Agent Market and Workspace
 
@@ -213,9 +219,12 @@ the browser.
   cards and recovery actions remain usable, and no generic Chat entry appears.
 - Builder initially shows the three core fields; every progressive section can
   be opened with keyboard and retains entered values.
-- Agent Workspace shows expert identity, task examples, task history, the shared
-  enabled-model selector, and a task-oriented composer without exposing the
-  other capability selectors.
+- Agent Workspace shows expert identity, task examples, task history, global
+  session history in the primary navigation, the shared enabled-model selector,
+  and a task-oriented composer without exposing the other capability selectors.
+- Global history selection preserves the session's original Agent identity (or
+  generic `/chat/:sessionId` compatibility route) and does not bind another
+  Agent's session into the currently open workspace.
 - Skill Admin archive confirmation, loading state, success removal, failure
   recovery, and batch partial failure are visually and semantically clear.
 
