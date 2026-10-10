@@ -583,9 +583,9 @@ async def test_platform_context_client_rejects_oversized_profile_drive_file_with
 
 
 @pytest.mark.asyncio
-async def test_platform_context_client_stages_brokered_bytes_without_returning_token(tmp_path, monkeypatch):
+@pytest.mark.parametrize("raw", [b"docx-bytes", b""])
+async def test_platform_context_client_stages_brokered_bytes_without_returning_token(tmp_path, monkeypatch, raw):
     requests = []
-    raw = b"docx-bytes"
 
     class Response:
         status_code = 200
@@ -643,6 +643,8 @@ async def test_platform_context_client_stages_brokered_bytes_without_returning_t
 
     assert (tmp_path / "context" / "artifact-a" / "translated.docx").read_bytes() == raw
     assert result["workspace_path"] == "context/artifact-a/translated.docx"
+    assert result["bytes_staged"] == len(raw)
+    assert result["audit"]["bytes_read"] == len(raw)
     assert "secret" not in str(result)
     assert requests[0][1]["run_id"] == "run-a"
     assert requests[0][1]["attempt_id"] == "attempt-a"
@@ -683,7 +685,8 @@ async def test_platform_context_client_rejects_forged_scope_before_callback(monk
 
 
 @pytest.mark.asyncio
-async def test_callback_dispatcher_exports_only_bounded_broker_payload():
+@pytest.mark.parametrize("content", ["artifact-bytes", ""])
+async def test_callback_dispatcher_exports_only_bounded_broker_payload(content):
     retrieval = ContextRetrievalAuthority(
         InMemoryContextRetrievalRepository(
             artifacts=[
@@ -695,8 +698,8 @@ async def test_callback_dispatcher_exports_only_bounded_broker_payload():
                     "run_id": "run-a",
                     "artifact_id": "artifact-a",
                     "label": "translated.docx",
-                    "content": "artifact-bytes",
-                    "size_bytes": len("artifact-bytes".encode("utf-8")),
+                    "content": content,
+                    "size_bytes": len(content.encode("utf-8")),
                 }
             ]
         ),
@@ -717,7 +720,30 @@ async def test_callback_dispatcher_exports_only_bounded_broker_payload():
         {"artifact_id": "artifact-a", "max_bytes": 32},
     )
 
-    assert base64.b64decode(result["content_base64"]) == b"artifact-bytes"
+    assert base64.b64decode(result["content_base64"]) == content.encode("utf-8")
+    assert result["bytes_read"] == len(content.encode("utf-8"))
     assert result["artifact_id"] == "artifact-a"
     assert result["name"] == "translated.docx"
     assert "content_bytes" not in result
+
+
+@pytest.mark.parametrize("count", [None, -1, 1, True, False, 0.0, "0", "missing"])
+def test_platform_context_client_rejects_invalid_empty_artifact_byte_counts(tmp_path, count):
+    scope = ContextRetrievalScope(
+        tenant_id="tenant-a", workspace_id="workspace-a", user_id="user-a",
+        session_id="session-a", run_id="run-a", agent_id="agent-a",
+    )
+    client = PlatformContextRetrievalClient(
+        callback_url="http://platform.test/context-retrieval",
+        callback_token_id="cbt:run-a:attempt-a", callback_token="synthetic",
+        attempt_id="attempt-a", scope=scope,
+    )
+    result = {"artifact_id": "artifact-a", "name": "empty.txt", "content_base64": ""}
+    if count != "missing":
+        result["bytes_read"] = count
+    with pytest.raises(ContextRetrievalDenied, match="context_scope_denied"):
+        client._stage_result(
+            result, id_key="artifact_id", expected_id="artifact-a",
+            workspace_root=str(tmp_path), max_bytes=32,
+        )
+    assert not list(tmp_path.iterdir())

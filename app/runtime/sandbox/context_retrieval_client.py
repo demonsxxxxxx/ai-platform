@@ -316,7 +316,12 @@ class PlatformContextRetrievalClient:
             raw_bytes = base64.b64decode(str(result.get("content_base64") or ""), validate=True)
         except (binascii.Error, ValueError) as exc:
             raise RuntimeError("context_retrieval_callback_invalid") from exc
-        if len(raw_bytes) > max(1, int(max_bytes)) or int(result.get("bytes_read") or -1) != len(raw_bytes):
+        bytes_read = result.get("bytes_read")
+        if (
+            type(bytes_read) is not int
+            or bytes_read != len(raw_bytes)
+            or len(raw_bytes) > max(1, int(max_bytes))
+        ):
             raise ContextRetrievalDenied("context_scope_denied")
         safe_id = "".join(char if char.isalnum() or char in "-_" else "_" for char in expected_id)
         raw_name = str(result.get("name") or "context.bin").replace("\\", "/")
