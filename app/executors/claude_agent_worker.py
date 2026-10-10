@@ -1258,7 +1258,7 @@ class ClaudeAgentWorkerAdapter:
             },
             artifacts=artifacts,
             executor_payload={
-                **common_payload,
+                **common_payload, **diagnostic_payload,
                 "sdk_turn_diagnostics": turn_diagnostics,
             },
         )

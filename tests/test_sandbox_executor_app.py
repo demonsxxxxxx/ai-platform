@@ -387,6 +387,7 @@ async def test_shutdown_deadline_never_overtakes_uncertain_body_callback(
         assert not any(callback.get("terminal_result") for callback in callbacks)
 
 
+
 @pytest.mark.asyncio
 async def test_shutdown_deadline_bounds_unconfirmed_terminal_callback(
     tmp_path,
@@ -440,6 +441,7 @@ async def test_shutdown_deadline_bounds_unconfirmed_terminal_callback(
         await asyncio.sleep(0.05)
 
 
+
 @pytest.mark.asyncio
 async def test_shutdown_deadline_does_not_start_terminal_retry_after_expiry(
     tmp_path,
@@ -488,6 +490,7 @@ async def test_shutdown_deadline_does_not_start_terminal_retry_after_expiry(
     await asyncio.wait_for(lifespan.__aexit__(None, None, None), timeout=0.5)
 
     assert terminal_attempts == 1
+
 
 
 @pytest.mark.asyncio
@@ -560,6 +563,7 @@ async def test_api_cancel_keeps_started_terminal_owned_until_shutdown_deadline(
         await asyncio.wait_for(terminal_finished.wait(), timeout=1)
 
 
+
 @pytest.mark.asyncio
 async def test_api_cancel_waits_for_in_flight_heartbeat_before_terminal(
     tmp_path,
@@ -625,6 +629,7 @@ async def test_api_cancel_waits_for_in_flight_heartbeat_before_terminal(
         await asyncio.wait_for(lifespan.__aexit__(None, None, None), timeout=1)
     finally:
         heartbeat_release.set()
+
 
 
 @pytest.mark.asyncio
@@ -718,6 +723,7 @@ async def test_api_cancel_transport_error_in_heartbeat_suppresses_terminal(
         heartbeat_failure.set()
 
 
+
 def test_removed_v1_execute_route_returns_404(tmp_path):
     client = create_test_client(tmp_path)
 
@@ -790,7 +796,7 @@ def test_executor_rejects_invalid_thinking_effort():
 
 
 @pytest.mark.asyncio
-async def test_sandbox_terminal_only_answer_batches_executor_callback_events(
+async def test_sandbox_completed_block_answer_batches_executor_callback_events(
     monkeypatch,
     tmp_path,
 ):
@@ -806,7 +812,14 @@ async def test_sandbox_terminal_only_answer_batches_executor_callback_events(
             self.hooks = hooks
 
     class AssistantMessage:
-        pass
+        message_id = "completed-provider"
+        uuid = "completed-block-uuid"
+        parent_tool_use_id = None
+        stop_reason = None
+        def __init__(self):
+            block = TextBlock()
+            block.text = answer
+            self.content = [block]
 
     class StreamEvent:
         pass
@@ -836,6 +849,7 @@ async def test_sandbox_terminal_only_answer_batches_executor_callback_events(
         del prompt
         assert options.session_id == "sdk-session-a"
         await options.session_store.append("sdk-session-a", [{"uuid": "entry-ack"}])
+        yield AssistantMessage()
         yield ResultMessage()
 
     fake_sdk = SimpleNamespace(
@@ -953,6 +967,7 @@ async def test_sandbox_terminal_only_answer_batches_executor_callback_events(
     }
 
 
+
 @pytest.mark.asyncio
 async def test_skillless_executor_skips_skill_staging_and_registers_no_skills(
     monkeypatch,
@@ -995,6 +1010,7 @@ async def test_skillless_executor_skips_skill_staging_and_registers_no_skills(
         and event.phase == "skill_staging"
         for event in events
     )
+
 
 
 @pytest.mark.asyncio
@@ -1040,6 +1056,7 @@ async def test_executor_passes_authorized_public_skill_metadata_to_sdk(
     ]
 
 
+
 @pytest.mark.asyncio
 async def test_executor_fails_closed_if_run_model_capacity_is_not_bound(monkeypatch, tmp_path):
     async def forbidden_sdk(**_kwargs):
@@ -1056,6 +1073,7 @@ async def test_executor_fails_closed_if_run_model_capacity_is_not_bound(monkeypa
     result = await _default_executor_runner(request, tmp_path, emit_event)
     assert result["status"] == "failed"
     assert result["error_code"] == "model_capacity_missing"
+
 
 
 @pytest.mark.asyncio
@@ -1116,6 +1134,7 @@ async def test_executor_binds_only_completed_required_bash_lifecycle(
         assert result["error_code"] == "required_tool_completion_evidence_mismatch"
 
 
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("terminal_lifecycle", ["completed", "failed"])
 async def test_executor_records_optional_bash_lifecycle_without_requiring_invocation(
@@ -1165,6 +1184,7 @@ async def test_executor_records_optional_bash_lifecycle_without_requiring_invoca
     assert {item.tool_call_id for item in evidence} == {"bash-call-1"}
 
 
+
 @pytest.mark.asyncio
 async def test_executor_optional_bash_can_complete_without_invocation(monkeypatch, tmp_path):
     class StubSettings:
@@ -1186,6 +1206,7 @@ async def test_executor_optional_bash_can_complete_without_invocation(monkeypatc
 
     assert result["status"] == "completed"
     assert result[TOOL_INVOCATION_EVIDENCE_KEY] == []
+
 
 
 @pytest.mark.asyncio
@@ -1238,6 +1259,7 @@ async def test_executor_records_read_only_grep_without_terminal_evidence_failure
     )
 
 
+
 @pytest.mark.asyncio
 async def test_executor_binds_bash_evidence_without_optional_context_retrieval_scope(
     monkeypatch,
@@ -1280,6 +1302,7 @@ async def test_executor_binds_bash_evidence_without_optional_context_retrieval_s
     assert {(item.tenant_id, item.workspace_id, item.user_id) for item in evidence} == {
         ("tenant-a", "workspace-a", "user-a")
     }
+
 
 
 @pytest.mark.asyncio
@@ -1391,6 +1414,7 @@ async def test_executor_rejects_conflicting_required_bash_lifecycle(
     )
 
 
+
 def test_runtime_diagnostic_wrapper_preserves_first_failure_and_appends_handling():
     original = {
         "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
@@ -1465,6 +1489,7 @@ async def test_executor_rejects_unacknowledged_required_bash_lifecycle(
     assert REQUIRED_CAPABILITY_EVIDENCE_KEY not in result
 
 
+
 @pytest.mark.asyncio
 async def test_executor_preserves_sdk_error_when_required_bash_completed(
     monkeypatch,
@@ -1505,6 +1530,7 @@ async def test_executor_preserves_sdk_error_when_required_bash_completed(
     assert result["error_code"] == "claude_agent_sdk_upstream_error"
     assert result[REQUIRED_CAPABILITY_EVIDENCE_KEY]["tool_call_id"] == "bash-call-1"
     assert result[REQUIRED_CAPABILITY_EVIDENCE_KEY]["lifecycle_phase"] == "completed"
+
 
 
 @pytest.mark.asyncio
@@ -1554,6 +1580,7 @@ async def test_executor_keeps_optional_tool_admission_failure_with_structured_an
     assert "error_code" not in result
 
 
+
 @pytest.mark.asyncio
 async def test_executor_rejects_missing_required_bash_even_when_sdk_errors(
     monkeypatch,
@@ -1588,6 +1615,7 @@ async def test_executor_rejects_missing_required_bash_even_when_sdk_errors(
     assert REQUIRED_CAPABILITY_EVIDENCE_KEY not in result
 
 
+
 @pytest.mark.asyncio
 async def test_executor_preserves_missing_structured_terminal_over_required_bash(
     monkeypatch,
@@ -1620,6 +1648,7 @@ async def test_executor_preserves_missing_structured_terminal_over_required_bash
     assert result["status"] == "failed"
     assert result["error_code"] == "claude_agent_sdk_missing_structured_terminal"
     assert REQUIRED_CAPABILITY_EVIDENCE_KEY not in result
+
 
 
 def test_executor_http_response_preserves_private_required_capability_evidence(tmp_path):
@@ -1695,6 +1724,7 @@ async def test_default_non_permission_callback_fails_fast(monkeypatch):
         "accepted": True
     }
     assert observed["timeout"] == 10.0
+
 
 
 def test_executor_runtime_identity_requires_lease_credential_and_returns_only_effective_ids(tmp_path, monkeypatch):
@@ -1986,6 +2016,7 @@ async def test_sdk_timeout_preserved_over_pending_tool_invocation_state(
     assert terminal_records[0].sandbox_execution_status == "failed"
     assert terminal_records[0].sandbox_error_code == "claude_agent_sdk_timeout"
     assert not hasattr(terminal_records[0], "sandbox_terminal_reason")
+
 
 
 @pytest.mark.parametrize(
@@ -2321,6 +2352,7 @@ async def test_executor_rejects_unknown_capability_identity_without_inference(mo
     assert all(isinstance(event, executor_app._PlatformExecutionPhaseFact) for event in events)
 
 
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "invocation_id",
@@ -2376,6 +2408,7 @@ async def test_executor_rejects_unpersistable_local_tool_invocation_id(
     assert all(isinstance(event, executor_app._PlatformExecutionPhaseFact) for event in events)
 
 
+
 @pytest.mark.asyncio
 async def test_executor_preserves_mcp_execution_receipt_error_after_callback_loss(
     tmp_path,
@@ -2418,6 +2451,7 @@ async def test_executor_preserves_mcp_execution_receipt_error_after_callback_los
         == "mcp_execution_succeeded_receipt_incomplete"
     )
     assert result["capability_evidence"] == []
+
 
 
 @pytest.mark.parametrize(
@@ -2602,6 +2636,7 @@ async def test_executor_tool_lifecycle_cancellation_logs_one_terminal_fact(
     assert len(tool_records) == 1
     assert tool_records[0].sandbox_tool_lifecycle == "cancelled"
     assert tool_records[0].sandbox_tool_lifecycle_reason == "callback_cancelled"
+
 
 
 @pytest.mark.parametrize("cancel_target", ["lock_owner", "lock_waiter"])
@@ -2823,6 +2858,7 @@ async def test_executor_serializes_concurrent_capability_transitions(
     assert len(result["capability_evidence"]) == (4 if second_accepted else 0)
     if not second_accepted:
         assert result["error_code"] == "capability_lifecycle_sequence_invalid"
+
 
 
 def test_executor_execute_fails_closed_after_final_delta_without_structured_terminal(tmp_path, monkeypatch):
@@ -3252,10 +3288,19 @@ async def test_model_wire_and_actual_sdk_sandbox_checkpoints_match_across_tool_c
     wire_after = proxy_checkpoints(after, caplog)
     hook = {"tool_name": "Write", "tool_use_id": "tool-private",
             "tool_input": {"file_path": str(tmp_path / "output" / "result.txt"), "content": "done"}}
-    steps = [*(('stream', event) for event in before),
-             ("hook", ("PreToolUse", hook, "tool-private")),
-             ("hook", ("PostToolUse", hook, "tool-private")),
-             *(('stream', event) for event in after)]
+    steps = []
+    sdk = _scripted_sdk({}, steps, result_text="PRIVATE_RESULT")
+    steps.extend([
+        *(('stream', event) for event in before),
+        ("assistant_typed", {"text": "", "message_id": "private-model-before", "uuid": "completed-before",
+            "content": [sdk.TextBlock(before_text), sdk.ToolUseBlock(id="tool-private", name="Write", input=hook["tool_input"])]}),
+        ("hook", ("PreToolUse", hook, "tool-private")),
+        ("hook", ("PostToolUse", hook, "tool-private")),
+        *(('stream', event) for event in after),
+    ])
+    if ending == "complete":
+        steps.append(("assistant_typed", {"text": "".join(after_chunks),
+            "message_id": "private-model-after", "uuid": "completed-after"}))
 
     def interrupt():
         if ending == "cancel":
@@ -3264,9 +3309,7 @@ async def test_model_wire_and_actual_sdk_sandbox_checkpoints_match_across_tool_c
 
     if ending != "complete":
         steps.append(("probe", interrupt))
-    monkeypatch.setitem(sys.modules, "claude_agent_sdk", _scripted_sdk(
-        {}, steps, result_text=before_text + "\n\n" + "".join(after_chunks),
-    ))
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
     monkeypatch.setattr(executor_app, "get_settings", _settings)
     monkeypatch.setattr(executor_app, "build_claude_session_store", lambda **_kwargs: None)
@@ -3322,23 +3365,19 @@ async def test_model_wire_and_actual_sdk_sandbox_checkpoints_match_across_tool_c
     assert_response_checkpoints(wire_before, sdk_before, [before_text])
     assert_response_checkpoints(wire_after, sdk_after, after_chunks, complete=ending == "complete")
     assert wire_before[0]["call_ref"] != wire_after[0]["call_ref"]
-    # Every earlier sample shares the public candidate ACK, including interruption.
-    # Callback transport batching is covered by the runtime emitter tests.
-    paired_counts = [[event["payload"]["events"] for event in callback["events"]
-                     if event["type"] == CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE
-                     and event["payload"]["call_ref"] == wire_after[0]["call_ref"]]
-                    for callback in callbacks
-                    if any(event["type"] in {"message.delta", "message.part.delta"} for event in callback["events"])]
-    assert [count for counts in paired_counts for count in counts] == [1, 128, 256]
+    # Raw wire/SDK observations retain their bounded hashes independently of
+    # public completed blocks. No partial raw text becomes public or requires
+    # a shared public-text ACK; callback transport batching has its own tests.
+    assert [item["events"] for item in sdk_after] == [1, 128, 256, 270]
     public_events = [event for callback in callbacks for event in callback["events"]
                      if event["type"] != CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE]
     parts = {}
     for event in public_events:
         if event["type"] == "message.part.delta":
             parts.setdefault(event["payload"]["part_id"], []).append(event["payload"]["delta"])
-    assert len(parts) == 2
+    assert len(parts) == (2 if ending == "complete" else 1)
     public_text = "\n\n".join("".join(chunks) for chunks in parts.values())
-    assert public_text == before_text + "\n\n" + "".join(after_chunks)
+    assert public_text == (before_text + "\n\n" + "".join(after_chunks) if ending == "complete" else before_text)
     roles = {event["payload"]["part_id"]: event["payload"]["role"]
              for event in public_events if event["type"] == "message.part.classified"}
     assert roles[next(iter(parts))] == "work"
@@ -3349,6 +3388,7 @@ async def test_model_wire_and_actual_sdk_sandbox_checkpoints_match_across_tool_c
     assert "private-model-after" not in caplog.text
     assert "private-tool-input" not in caplog.text
     assert before_text not in caplog.text and "续" not in caplog.text
+
 
 
 @pytest.mark.asyncio
@@ -3394,6 +3434,7 @@ async def test_cancellation_during_final_sdk_diagnostic_flush_propagates(
             await asyncio.gather(task, return_exceptions=True)
 
 
+
 @pytest.mark.asyncio
 async def test_executor_uses_sdk_for_multiskill_request_with_qa_skill_first(
     monkeypatch,
@@ -3432,6 +3473,7 @@ async def test_executor_uses_sdk_for_multiskill_request_with_qa_skill_first(
     assert result["used_skills"] == skill_ids
     assert captured["skill_id"] == "qa-file-reviewer"
     assert captured["skills"] == skill_ids
+
 
 
 def test_executor_execute_fails_when_claude_sdk_disabled(tmp_path, monkeypatch):
@@ -3568,6 +3610,7 @@ async def test_default_executor_runs_raw_xlsx_from_inputs_without_typed_attachme
     assert result["status"] == "completed"
     assert "attachment_contexts" not in captured
     assert (inputs / "book.xlsx").read_bytes() == b"not-a-workbook"
+
 
 
 def test_executor_execute_fails_closed_for_manifest_without_valid_scope(tmp_path, monkeypatch):
@@ -3850,6 +3893,7 @@ async def test_executor_deadline_waits_for_runner_cleanup_before_terminal_respon
         loop.set_exception_handler(previous_exception_handler)
 
 
+
 @pytest.mark.asyncio
 async def test_executor_deadline_reports_cleanup_timeout_without_waiting_forever(tmp_path, monkeypatch):
     runner_cancelled = asyncio.Event()
@@ -3897,6 +3941,7 @@ async def test_executor_deadline_reports_cleanup_timeout_without_waiting_forever
         if not endpoint_task.done():
             await asyncio.wait({endpoint_task}, timeout=0.5)
         await asyncio.wait_for(runner_finished.wait(), timeout=0.5)
+
 
 
 def test_executor_execute_allows_runner_with_larger_fractional_deadline(tmp_path):
@@ -3985,6 +4030,7 @@ async def test_default_executor_runner_seals_when_agent_event_emit_is_rejected(t
     assert [event.type for event in callback_batches[0].events] == ["message.delta"]
 
 
+
 def test_executor_execute_does_not_rewrite_runner_timeout_error_as_deadline(tmp_path, caplog):
     caplog.set_level(logging.INFO, logger=executor_app.__name__)
     async def executor_runner(request, workspace_root, emit_event):
@@ -4053,6 +4099,7 @@ async def test_executor_execute_rejects_invalid_deadline_without_invoking_runner
     assert "requested_max_seconds" not in result
     assert "timeout_elapsed_ms" not in result
     assert runner_called is False
+
 
 
 @pytest.mark.parametrize("runner_kind", ["partial", "callable", "decorated"])
@@ -4173,6 +4220,7 @@ async def test_executor_execute_preserves_caller_cancellation(tmp_path):
     assert runner_cancelled.is_set()
 
 
+
 @pytest.mark.asyncio
 async def test_executor_execute_reports_cleanup_failure_when_caller_cancellation_cleanup_fails(tmp_path):
     runner_started = asyncio.Event()
@@ -4205,6 +4253,7 @@ async def test_executor_execute_reports_cleanup_failure_when_caller_cancellation
 
     assert result["status"] == "failed"
     assert result["error_code"] == "executor_cleanup_failed"
+
 
 
 def test_executor_execute_fails_closed_for_sync_runner_with_positive_deadline(tmp_path):
@@ -4534,6 +4583,7 @@ async def test_message_delta_buffer_does_not_batch_past_utf8_bound(monkeypatch):
     assert [item.events[0].payload["delta"] for item in delivered] == ["1234", "56"]
 
 
+
 @pytest.mark.asyncio
 async def test_message_delta_waits_for_cancelled_direct_barrier(monkeypatch):
     direct_started = asyncio.Event()
@@ -4575,6 +4625,7 @@ async def test_message_delta_waits_for_cancelled_direct_barrier(monkeypatch):
     assert delivered == ["direct", "delta"]
 
 
+
 @pytest.mark.asyncio
 async def test_message_delta_buffer_cancel_is_bounded(monkeypatch):
     direct_started = asyncio.Event()
@@ -4596,6 +4647,7 @@ async def test_message_delta_buffer_cancel_is_bounded(monkeypatch):
     await asyncio.wait_for(buffer.cancel(), timeout=1)
 
     await asyncio.wait_for(direct_cancelled.wait(), timeout=1)
+
 
 
 @pytest.mark.asyncio
@@ -4656,6 +4708,7 @@ async def test_supervisor_heartbeat_does_not_block_deltas_and_drains_before_term
         await asyncio.wait_for(lifespan.__aexit__(None, None, None), timeout=1)
 
 
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("event_type", ["message.delta", "message.part.delta"])
 async def test_message_delta_buffer_batches_without_rewriting_event_identity(monkeypatch, event_type):
@@ -4681,6 +4734,7 @@ async def test_message_delta_buffer_batches_without_rewriting_event_identity(mon
     assert [
         event.event_id for callback in delivered for event in callback.events
     ] == [f"evt_{index}" for index in range(101)]
+
 
 
 @pytest.mark.asyncio
@@ -4711,6 +4765,7 @@ async def test_message_delta_buffer_backpressures_when_queue_is_full(monkeypatch
     assert await buffer.close()
 
 
+
 @pytest.mark.asyncio
 async def test_message_delta_buffer_propagates_worker_failure_without_hanging():
     async def fail(_callback):
@@ -4721,6 +4776,7 @@ async def test_message_delta_buffer_propagates_worker_failure_without_hanging():
 
     with pytest.raises(RuntimeError, match="delivery bug"):
         await asyncio.wait_for(buffer.close(), timeout=1)
+
 
 
 def test_executor_batches_adjacent_message_deltas_before_tool_boundary(tmp_path):
@@ -4828,6 +4884,7 @@ async def test_executor_consumes_next_delta_while_callback_is_in_flight(tmp_path
     )
 
 
+
 def test_executor_reuses_default_callback_client_for_app_lifespan(tmp_path, monkeypatch):
     clients = []
     callbacks: list[dict[str, object]] = []
@@ -4928,6 +4985,7 @@ async def test_shutdown_deadline_bounds_shared_callback_client_close(tmp_path, m
     finally:
         release_close.set()
         await asyncio.sleep(0.05)
+
 
 
 def test_executor_retries_assistant_delta_with_immutable_batch(tmp_path, caplog):
@@ -5312,6 +5370,7 @@ async def test_exhausted_transport_callback_suppresses_terminal(tmp_path):
     finally:
         if not lifespan_closed:
             await asyncio.wait_for(lifespan.__aexit__(None, None, None), timeout=1)
+
 
 
 def test_executor_does_not_emit_redundant_finished_progress_callback(tmp_path, monkeypatch):

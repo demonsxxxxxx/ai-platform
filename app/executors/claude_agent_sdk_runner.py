@@ -55,12 +55,12 @@ from app.bootstrap.claude_client import (
     prepare_claude_callback_tracker,
     prepare_claude_run_interaction,
     prepare_claude_text_sources,
+    prepare_claude_typed_observations,
 )
-from app.execution.api import ClaudeSdkAgentEventAdapter, ModelTextCheckpoint, RunInteractionProtocol
-from app.executors.claude_stream_projection import (
-    AssistantAnswerTimeline,
-    ClaudeStreamProjector,
-    provider_message_identity,
+from app.execution.api import (
+    ClaudeSdkAgentEventAdapter,
+    ModelTextCheckpoint,
+    RunInteractionProtocol,
 )
 from app.executors.public_answer_stream import (
     PublicAnswerStreamGate,
@@ -252,8 +252,6 @@ class _ProjectionFailure:
     reason: str
     stage: str
     location: str
-    frame_shape: dict[str, str] | None = None
-    preceding_frames: tuple[dict[str, str], ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         result = {
@@ -261,10 +259,6 @@ class _ProjectionFailure:
             "stage": self.stage,
             "location": self.location,
         }
-        if self.frame_shape is not None:
-            result["frame_shape"] = self.frame_shape
-        if self.preceding_frames:
-            result["preceding_frames"] = [dict(frame) for frame in self.preceding_frames]
         return result
 
 
@@ -1992,13 +1986,6 @@ async def run_claude_agent_sdk(
         and skill_id in configured_skills
         else None
     )
-    sandbox_partial_streaming = (
-        execution_policy == "sandbox_brokered"
-        and (
-            on_text is not None
-            or bool(run_id and attempt_id and on_agent_event is not None)
-        )
-    )
     sandbox_brokered = execution_policy == "sandbox_brokered"
     authorized_subjects = _canonical_tool_policy_subjects(tool_policy_subjects)
     if (
@@ -2840,7 +2827,6 @@ async def run_claude_agent_sdk(
                 invocation_id=context_tool_use_id,
             )
             if agent_event_adapter is not None:
-                await flush_answer_candidates()
                 await publish_agent_candidates(
                     agent_event_adapter.accept_policy_decision(
                         tool_name=tool_name,
@@ -2976,7 +2962,6 @@ async def run_claude_agent_sdk(
         )
         public_policy_acknowledged = True
         if agent_event_adapter is not None:
-            await flush_answer_candidates()
             public_policy_acknowledged = await publish_agent_candidates(
                 agent_event_adapter.accept_policy_decision(
                     tool_name=tool_name,
@@ -3037,7 +3022,6 @@ async def run_claude_agent_sdk(
                 capability_evidence_acknowledged is True
                 and agent_event_adapter is not None
             ):
-                await flush_answer_candidates()
                 candidates = agent_event_adapter.accept_hook(
                     "PreToolUse", hook_input, tool_use_id=resolved_tool_call_id
                 )
@@ -3103,7 +3087,6 @@ async def run_claude_agent_sdk(
                 if evidence_acknowledged is not True:
                     break
             if agent_event_adapter is not None and evidence_acknowledged is True:
-                await flush_answer_candidates()
                 await publish_agent_candidates(
                     agent_event_adapter.accept_hook(
                         "PostToolUseFailure"
@@ -3151,7 +3134,6 @@ async def run_claude_agent_sdk(
                     lifecycle_phase=lifecycle_phase,
                 )
             if agent_event_adapter is not None and evidence_acknowledged is True:
-                await flush_answer_candidates()
                 candidates = agent_event_adapter.accept_hook(
                     "PostToolUseFailure"
                     if lifecycle_phase == "failed"
@@ -3238,7 +3220,6 @@ async def run_claude_agent_sdk(
                 lifecycle=lifecycle,
             )
             if agent_event_adapter is not None and lifecycle_acknowledged is True:
-                await flush_answer_candidates()
                 await publish_agent_candidates(
                     agent_event_adapter.accept_hook(
                         "PostToolUseFailure"
@@ -3415,7 +3396,7 @@ async def run_claude_agent_sdk(
         max_turns=max_turns,
         can_use_tool=callback_tracker.wrap(can_use_tool),
         hooks=hooks,
-        include_partial_messages=sandbox_partial_streaming,
+        include_partial_messages=False,
         setting_sources=["project"],
         **provider_session_options,
         **thinking_options,
@@ -3431,11 +3412,6 @@ async def run_claude_agent_sdk(
     received_structured_terminal = False
     continuation_usage: dict[str, Any] = {}
     continuation_turns = 0
-    stream_projector = (
-        ClaudeStreamProjector()
-        if sandbox_partial_streaming
-        else None
-    )
 
     def mcp_execution_conflict_observed() -> bool:
         return mcp_execution_conflicted or bool(
@@ -3562,20 +3538,6 @@ async def run_claude_agent_sdk(
         ):
             return "required_tool_completion_evidence_mismatch"
         return None
-
-    async def flush_answer_candidates() -> bool:
-        # Part deltas are acknowledged synchronously at their source boundary.
-        return True
-
-    async def close_answer_candidates(*, flush: bool = True) -> bool:
-        del flush
-        return True
-
-    async def close_answer_candidates_after_failure() -> bool:
-        try:
-            return await close_answer_candidates(flush=True)
-        except (Exception, asyncio.CancelledError):
-            return False
 
     receive_stream_closed = False
     receiving_started = False
@@ -3717,8 +3679,8 @@ async def run_claude_agent_sdk(
     async def consume(messages: AsyncIterator[Any]) -> ClaudeAgentSdkRunResult:
         nonlocal result_session_id, usage, terminal_reason, received_structured_terminal
         nonlocal last_public_stage, terminal_result_message, last_assistant_error
-        nonlocal last_assistant_error_text
-        answer_timeline = AssistantAnswerTimeline()
+        nonlocal last_assistant_error_text, first_projection_failure
+        typed_observations = prepare_claude_typed_observations()
         source_router = prepare_claude_text_sources()
         pending_callback_text: dict[tuple[object, ...], list[str]] = {}
         last_callback_answer_source: tuple[object, ...] | None = None
@@ -3774,11 +3736,9 @@ async def run_claude_agent_sdk(
                         )
                         return False
                 role = source_router.role_for(source_key)
-                if role == "answer":
-                    await deliver_answer_text(source_key, chunk)
-                elif role == "work":
+                if role == "work":
                     pending_callback_text.pop(source_key, None)
-                elif on_text is not None or agent_event_adapter is None:
+                else:
                     pending_callback_text.setdefault(source_key, []).append(chunk)
                 if agent_event_adapter is not None and role is not None:
                     try:
@@ -3800,25 +3760,6 @@ async def run_claude_agent_sdk(
                         )
                         return False
             return True
-
-        async def append_reconciled_text(
-            source_key: tuple[object, ...],
-            timeline_message_key: tuple[object, ...],
-            delta: str,
-        ) -> bool:
-            try:
-                source_router.bind_timeline(source_key, timeline_message_key)
-                routed_delta = source_router.append_reconciled(
-                    source_key, timeline_message_key, delta,
-                )
-            except (TypeError, ValueError):
-                fail_stream_projection(
-                    reason="assistant_text_conflict",
-                    stage="message",
-                    location="typed_answer",
-                )
-                return False
-            return await publish_source_text(source_key, routed_delta)
 
         async def publish_source_text(
             source_key: tuple[object, ...],
@@ -3856,8 +3797,11 @@ async def run_claude_agent_sdk(
             try:
                 if role == "work":
                     source_router.mark_tool(source_key)
-                else:
+                elif source_router.has_meaningful_text_for(source_key):
                     source_router.mark_answer(source_key)
+                else:
+                    role = "work"
+                    source_router.mark_tool(source_key)
             except (TypeError, ValueError):
                 fail_stream_projection(
                     reason="assistant_part_classification_invalid",
@@ -3885,7 +3829,8 @@ async def run_claude_agent_sdk(
                         location="part_classification_ack",
                     )
                     return False
-            await flush_classified_callback_text(source_key, role)
+            if role == "work":
+                await flush_classified_callback_text(source_key, role)
             return True
 
         async def retire_source(source_key: tuple[object, ...]) -> bool:
@@ -3906,30 +3851,23 @@ async def run_claude_agent_sdk(
             source_router.begin(source_key)
             return True
 
-        terminal_answer_empty = False
         stream_projection_failed = False
-        assistant_observation_scope = 0
 
         def fail_stream_projection(
             *,
             reason: str,
             stage: str,
             location: str,
-            frame_shape: dict[str, str] | None = None,
-            preceding_frames: tuple[dict[str, str], ...] = (),
         ) -> None:
             nonlocal stream_projection_failed, first_projection_failure
             if first_projection_failure is None:
                 first_projection_failure = _ProjectionFailure(
-                    reason=reason,
+                    reason=(reason if reason in {"assistant_observation_invalid", "typed_text_block_invalid"} else "assistant_text_conflict"),
                     stage=stage,
-                    location=location,
-                    frame_shape=frame_shape,
-                    preceding_frames=preceding_frames,
+                    location=(location if location == "assistant_observation" else "typed_answer"),
                 )
             stream_projection_failed = True
             answer_stream_gate.fail_closed()
-            answer_timeline.fail_closed(first_projection_failure.reason)
 
         async for message in messages:
             mcp_registration.check_message(message)
@@ -3951,454 +3889,100 @@ async def run_claude_agent_sdk(
                     TaskUpdatedMessage,
                 ),
             ):
-                await flush_answer_candidates()
                 await publish_agent_candidates(
                     agent_event_adapter.accept_task_message(message)
                 )
                 continue
             if isinstance(message, StreamEvent):
-                raw_stream_event = message.event
-                if not (
-                    isinstance(raw_stream_event, dict)
-                    and raw_stream_event.get("type") == "content_block_delta"
-                    and isinstance(raw_stream_event.get("delta"), dict)
-                    and raw_stream_event["delta"].get("type") == "text_delta"
-                ):
-                    await flush_answer_candidates()
-                if (
-                    isinstance(raw_stream_event, dict)
-                    and raw_stream_event.get("type") == "content_block_start"
-                    and isinstance(raw_stream_event.get("content_block"), dict)
-                    and raw_stream_event["content_block"].get("type")
-                    in {"tool_use", "server_tool_use"}
-                ):
-                    register_dynamic_tool_call_id(
-                        raw_stream_event["content_block"].get("id")
-                    )
-                if stream_projector is not None:
-                    raw_observation_identity = getattr(message, "uuid", None)
-                    if (
-                        not isinstance(raw_observation_identity, str)
-                        or not raw_observation_identity
-                    ):
-                        fail_stream_projection(
-                            reason="raw_observation_identity_invalid",
-                            stage="message",
-                            location="stream_observation_identity",
-                        )
-                        continue
-                    fragments = stream_projector.accept(
-                        raw_stream_event,
-                        parent_tool_use_id=getattr(message, "parent_tool_use_id", None),
-                    )
-                    if stream_projector.disabled:
-                        fail_stream_projection(
-                            reason=(
-                                stream_projector.failure_reason
-                                or "raw_frame_invalid"
-                            ),
-                            stage="message",
-                            location="raw_stream_frame",
-                            frame_shape=stream_projector.failure_frame,
-                            preceding_frames=stream_projector.failure_frame_history,
-                        )
-                    else:
-                        raw_source_key = (
-                            stream_projector.message_id,
-                            stream_projector.parent_tool_use_id,
-                        )
-                        if raw_stream_event.get("type") == "message_start":
-                            if not await select_source(raw_source_key):
-                                continue
-                        if (
-                            isinstance(raw_stream_event, dict)
-                            and raw_stream_event.get("type") == "content_block_start"
-                            and isinstance(raw_stream_event.get("content_block"), dict)
-                            and raw_stream_event["content_block"].get("type") == "text"
-                        ):
-                            if not answer_timeline.establish_raw_source(
-                                stream_projector.text_source_identity,
-                                message_identity=(
-                                    stream_projector.message_id,
-                                    stream_projector.parent_tool_use_id,
-                                ),
-                                parent_tool_use_id=stream_projector.parent_tool_use_id,
-                            ):
-                                fail_stream_projection(
-                                    reason=(
-                                        answer_timeline.failure_reason
-                                        or "raw_text_source_invalid"
-                                    ),
-                                    stage="message",
-                                    location="raw_text_source",
-                                )
-                                continue
-                        for fragment in fragments:
-                            last_public_stage = "message"
-                            delta_text = answer_timeline.accept_delta(
-                                fragment,
-                                source_identity=stream_projector.text_source_identity,
-                                message_identity=(
-                                    stream_projector.message_id,
-                                    stream_projector.parent_tool_use_id,
-                                )
-                                if stream_projector.message_id is not None
-                                else None,
-                                parent_tool_use_id=stream_projector.parent_tool_use_id,
-                                observed_identity=raw_observation_identity,
-                            )
-                            if answer_timeline.disabled:
-                                fail_stream_projection(
-                                    reason=(
-                                        answer_timeline.failure_reason
-                                        or "raw_delta_conflict"
-                                    ),
-                                    stage="message",
-                                    location="answer_delta",
-                                )
-                                break
-                            if delta_text:
-                                if not await append_reconciled_text(
-                                    raw_source_key, raw_source_key, delta_text,
-                                ):
-                                    break
-                        if stream_projection_failed:
-                            continue
-                        if (
-                            raw_stream_event.get("type") == "content_block_start"
-                            and isinstance(raw_stream_event.get("content_block"), dict)
-                            and raw_stream_event["content_block"].get("type") == "tool_use"
-                        ):
-                            if not await classify_source(raw_source_key, "work"):
-                                continue
-                        completed_source = stream_projector.take_completed_text_source_identity()
-                        if completed_source is not None:
-                            await flush_answer_candidates()
-                            answer_timeline.close_raw_source(completed_source)
-                            if answer_timeline.disabled:
-                                fail_stream_projection(
-                                    reason=(
-                                        answer_timeline.failure_reason
-                                        or "raw_source_close_conflict"
-                                    ),
-                                    stage="message",
-                                    location="raw_source_close",
-                                )
-                if (
-                    not stream_projection_failed
-                    and isinstance(raw_stream_event, dict)
-                    and raw_stream_event.get("type") == "message_stop"
-                    and stream_projector is not None
-                ):
-                    source_key = (
-                        stream_projector.message_id,
-                        stream_projector.parent_tool_use_id,
-                    )
-                    if source_router.message_key not in (None, source_key):
-                        fail_stream_projection(
-                            reason="unbound_raw_text_source",
-                            stage="message",
-                            location="raw_stream_frame",
-                        )
-                        continue
-                    source_router.begin(source_key)
-                    if stream_projector.last_stop_reason == "tool_use":
-                        if not await classify_source(source_key, "work"):
-                            continue
-                    elif (
-                        stream_projector.last_stop_reason in {"end_turn", "stop_sequence"}
-                        and source_router.has_text_for(source_key)
-                    ):
-                        if source_router.role_for(source_key) is None:
-                            if not await classify_source(source_key, "answer"):
-                                continue
-                    # Raw framing owns the boundary; every unique part delta is
-                    # acknowledged before this message_stop is accepted.
-                    source_router.take(source_key)
-                    await flush_answer_candidates()
+                # Completed SDK blocks are the sole public text input. Raw
+                # noise cannot publish prose or control answer completion.
                 continue
             if isinstance(message, AssistantMessage):
-                await flush_answer_candidates()
-                assistant_observation_scope += 1
+                content = getattr(message, "content", None)
+                for block in content if isinstance(content, list) else ():
+                    if type(block).__name__ in {"ToolUseBlock", "ServerToolUseBlock"}:
+                        register_dynamic_tool_call_id(getattr(block, "id", None))
+                if getattr(message, "parent_tool_use_id", None) is not None:
+                    continue
+                # Tool evidence has its own authority. Even rejected text or
+                # replay identity must not hide a late tool-input conflict.
+                if agent_event_adapter is not None and isinstance(content, list):
+                    for block_index, block in enumerate(content):
+                        if not isinstance(block, TextBlock):
+                            await publish_agent_candidates(agent_event_adapter.accept_content_block(
+                                block, block_index=block_index,
+                                message_identity=getattr(message, "message_id", None),
+                            ))
                 diagnostic_counters["assistant_messages"] += 1
                 assistant_error = getattr(message, "error", None)
-                if isinstance(assistant_error, str) and assistant_error:
-                    # SDK error envelopes are diagnostics, never answer text.
-                    # A later ordinary assistant/result can still recover.
-                    last_assistant_error = assistant_error
-                    last_assistant_error_text = _runtime_diagnostic_text(
-                        "\n".join(
-                            str(block.text)
-                            for block in getattr(message, "content", [])
-                            if isinstance(block, TextBlock)
-                        ),
-                        max_bytes=4_096,
-                    )
+                if assistant_error is not None:
+                    last_assistant_error = str(assistant_error)
+                    if isinstance(content, list):
+                        last_assistant_error_text = _runtime_diagnostic_text(
+                            "\n".join(
+                                str(getattr(block, "text", ""))
+                                for block in content if isinstance(block, TextBlock)
+                            ),
+                            max_bytes=4096,
+                        )
                     continue
                 last_assistant_error = None
                 last_assistant_error_text = ""
-                message_id_value = getattr(message, "message_id", None)
-                uuid_value = getattr(message, "uuid", None)
-                assistant_message_id = provider_message_identity(message_id_value)
-                assistant_observation_id = (
-                    uuid_value
-                    if isinstance(uuid_value, str) and uuid_value
-                    else None
-                )
-                parent_tool_use_id = getattr(message, "parent_tool_use_id", None)
                 typed_stop_reason = getattr(message, "stop_reason", None)
-                content = getattr(message, "content", None)
-                if (
-                    not isinstance(content, list)
-                    or (
-                        message_id_value is not None
-                        and assistant_message_id is None
-                    )
-                    or (
-                        uuid_value is not None
-                        and assistant_observation_id is None
-                    )
-                    or (
-                        stream_projector is not None
-                        and (
-                            assistant_message_id is None
-                            or assistant_observation_id is None
-                        )
-                    )
-                    or (
-                        parent_tool_use_id is not None
-                        and (
-                            not isinstance(parent_tool_use_id, str)
-                            or not parent_tool_use_id
-                        )
-                    )
-                ):
+                if not isinstance(content, list):
                     fail_stream_projection(
                         reason="assistant_observation_invalid",
                         stage="message",
                         location="assistant_observation",
                     )
                     continue
-                if any(
-                    type(block).__name__ == "ToolUseBlock"
-                    for block in content
-                ) and typed_stop_reason is None:
-                    typed_stop_reason = "tool_use"
-                if stream_projector is not None and not stream_projector.observe_typed(
-                    message_id=message_id_value,
-                    uuid=uuid_value,
-                    parent_tool_use_id=parent_tool_use_id,
-                    stop_reason=typed_stop_reason,
-                ):
+                source_key = (getattr(message, "message_id", None), None)
+                try:
+                    observed = typed_observations.accept(
+                        message_id=source_key[0],
+                        uuid=getattr(message, "uuid", None),
+                        stop_reason=typed_stop_reason,
+                        blocks=[(type(block).__name__, getattr(block, "id", None), getattr(block, "name", None),
+                            getattr(block, "text", None) if isinstance(block, TextBlock) else
+                            json.dumps(getattr(block, "input", None), sort_keys=True) if type(block).__name__ in {"ToolUseBlock", "ServerToolUseBlock"} else None)
+                            for block in content],
+                    )
+                except (TypeError, ValueError) as exc:
                     fail_stream_projection(
-                        reason=(
-                            stream_projector.failure_reason
-                            or "assistant_observation_invalid"
-                        ),
+                        reason=str(exc) if str(exc) in {
+                            "typed_text_block_invalid", "assistant_observation_invalid",
+                        } else "assistant_observation_invalid",
                         stage="message",
                         location="assistant_observation",
                     )
                     continue
-                if stream_projector is not None:
-                    assistant_message_identity = assistant_message_id
-                    message_identity = (assistant_message_id, parent_tool_use_id)
-                else:
-                    compatibility_generation: object = (
-                        assistant_observation_id
-                        if assistant_observation_id is not None
-                        else ("assistant", assistant_observation_scope)
-                    )
-                    assistant_message_identity = (
-                        assistant_message_id or assistant_observation_id
-                    )
-                    message_identity = (
-                        "typed-only",
-                        assistant_message_id,
-                        parent_tool_use_id,
-                        compatibility_generation,
-                    )
-                source_identity = (
-                    assistant_message_id
-                    if stream_projector is not None
-                    else assistant_observation_id
-                    or f"assistant-observation-{assistant_observation_scope}"
-                )
-                source_key = (
-                    source_identity
-                    or ("anonymous-assistant", assistant_observation_scope),
-                    parent_tool_use_id,
-                )
+                if not observed or stream_projection_failed:
+                    continue
                 if not await select_source(source_key):
                     continue
-                text_blocks = [
-                    block for block in content if isinstance(block, TextBlock)
-                ]
-                typed_text_blocks = list(enumerate(text_blocks))
-                text_values: dict[int, str] = {}
-                for text_source_ordinal, block in typed_text_blocks:
-                    text = getattr(block, "text", None)
-                    if not isinstance(text, str):
-                        fail_stream_projection(
-                            reason="typed_text_block_invalid",
-                            stage="message",
-                            location="typed_text_block",
-                        )
-                        continue
-                    text_values[text_source_ordinal] = text
-                if (
-                    stream_projector is not None
-                    and stream_projector.raw_lifecycle_observed
-                    and typed_text_blocks
-                    and not stream_projector.validate_typed_text_source_count(
-                        len(typed_text_blocks)
-                    )
-                ):
-                    fail_stream_projection(
-                        reason=(
-                            stream_projector.failure_reason
-                            or "typed_text_source_count_mismatch"
-                        ),
-                        stage="message",
-                        location="typed_text_source_count",
-                    )
-                if stream_projection_failed:
+                has_tool = typed_stop_reason == "tool_use" or any(
+                    type(block).__name__ == "ToolUseBlock" for block in content
+                )
+                if has_tool and not await classify_source(source_key, "work"):
                     continue
-                if not text_blocks:
-                    if typed_stop_reason == "tool_use":
-                        if not await classify_source(source_key, "work"):
-                            continue
-                    if stream_projector is not None:
-                        stream_projector.retire_text_source()
-                    answer_timeline.retire_answer_binding()
-                typed_source_identities: dict[int, tuple[object, ...]] = {}
-                if stream_projector is not None and stream_projector.raw_lifecycle_observed:
-                    for (
-                        text_source_ordinal,
-                        _block,
-                    ) in typed_text_blocks:
-                        source_identity = stream_projector.typed_text_source_identity(
-                            text_source_ordinal=text_source_ordinal,
-                            text_source_count=len(typed_text_blocks),
-                        )
-                        if source_identity is None:
-                            fail_stream_projection(
-                                reason=(
-                                    stream_projector.failure_reason
-                                    or "typed_text_source_missing"
-                                ),
-                                stage="message",
-                                location="typed_text_source",
-                            )
-                            break
-                        typed_source_identities[text_source_ordinal] = source_identity
-                    if not stream_projection_failed:
-                        if not answer_timeline.validate_assistant_observations(
-                            [
-                                (
-                                    text_values[text_source_ordinal],
-                                    typed_source_identities[text_source_ordinal],
-                                    message_identity,
-                                    parent_tool_use_id,
-                                )
-                                for text_source_ordinal, _block in typed_text_blocks
-                            ]
-                        ):
-                            fail_stream_projection(
-                                reason=(
-                                    answer_timeline.failure_reason
-                                    or "assistant_text_coverage_conflict"
-                                ),
-                                stage="message",
-                                location="typed_answer_coverage",
-                            )
-                if stream_projection_failed:
-                    continue
-                for block in content:
-                    if type(block).__name__ in {"ToolUseBlock", "ServerToolUseBlock"}:
-                        register_dynamic_tool_call_id(getattr(block, "id", None))
-                text_source_ordinal = 0
                 for block_index, block in enumerate(content):
                     if isinstance(block, TextBlock):
-                        current_ordinal = text_source_ordinal
-                        text_source_ordinal += 1
+                        text = block.text
                         diagnostic_counters["text_blocks"] += 1
-                        text = text_values.get(current_ordinal)
-                        if text is not None:
-                            timeline_source_identity = typed_source_identities.get(
-                                current_ordinal
+                        last_public_stage = "message"
+                        try:
+                            text = source_router.append_text(source_key, text)
+                        except (TypeError, ValueError):
+                            fail_stream_projection(
+                                reason="assistant_text_conflict",
+                                stage="message",
+                                location="typed_answer",
                             )
-                            if timeline_source_identity is None:
-                                timeline_source_identity = (
-                                    message_identity,
-                                    current_ordinal,
-                                )
-                            last_public_stage = "message"
-                            delta_text = answer_timeline.accept_assistant(
-                                text,
-                                source_identity=timeline_source_identity,
-                                message_identity=message_identity,
-                                parent_tool_use_id=parent_tool_use_id,
-                                observed_identity=assistant_observation_id,
-                                observation_scope=assistant_observation_scope,
-                            )
-                            if not await append_reconciled_text(
-                                source_key, message_identity, delta_text,
-                            ):
-                                break
-                    else:
-                        if type(block).__name__ == "ToolUseBlock":
-                            if not await classify_source(source_key, "work"):
-                                break
-                        if agent_event_adapter is not None:
-                            await publish_agent_candidates(
-                                agent_event_adapter.accept_content_block(
-                                    block,
-                                    block_index=block_index,
-                                    message_identity=assistant_message_identity,
-                                )
-                            )
-                    if stream_projection_failed:
-                        break
-                if answer_timeline.disabled:
-                    fail_stream_projection(
-                        reason=(
-                            answer_timeline.failure_reason
-                            or "assistant_text_conflict"
-                        ),
-                        stage="message",
-                        location="typed_answer",
-                    )
-                else:
-                    has_tool = typed_stop_reason == "tool_use"
-                    if has_tool:
-                        if not await classify_source(source_key, "work"):
-                            continue
-                    elif typed_stop_reason == "end_turn" and (
-                        stream_projector is None
-                        or not stream_projector.raw_lifecycle_observed
-                        or stream_projector.last_stop_reason == "end_turn"
-                    ):
-                        if not await classify_source(source_key, "answer"):
-                            continue
-                    if typed_stop_reason in {"tool_use", "end_turn"} and (
-                        stream_projector is None
-                        or not stream_projector.raw_lifecycle_observed
-                    ):
-                        source_router.take(source_key)
-                await flush_answer_candidates()
+                            break
+                        if not await publish_source_text(source_key, text):
+                            break
             elif isinstance(message, ResultMessage):
                 terminal_result_message = message
-                if stream_projector is not None:
-                    stream_projector.close_unfinished()
-                    if stream_projector.disabled:
-                        fail_stream_projection(
-                            reason=(
-                                stream_projector.failure_reason
-                                or "unfinished_raw_stream"
-                            ),
-                            stage="message",
-                            location="result_unfinished_stream",
-                        )
                 diagnostic_counters["result_messages"] += 1
                 diagnostic_counters["turns_observed"] = _bounded_diagnostic_counter(
                     continuation_turns + getattr(message, "num_turns", 0)
@@ -4414,36 +3998,6 @@ async def run_claude_agent_sdk(
                     else None
                 )
                 stop_reason = getattr(message, "stop_reason", None)
-                result_identity_value = getattr(message, "uuid", None)
-                if result_identity_value is None:
-                    result_identity = (
-                        "result-without-sdk-identity"
-                        if stream_projector is None
-                        or (
-                            not stream_projector.raw_lifecycle_observed
-                            and not stream_projector.typed_lifecycle_observed
-                        )
-                        else None
-                    )
-                else:
-                    result_identity = (
-                        result_identity_value
-                        if isinstance(result_identity_value, str)
-                        and result_identity_value
-                        else None
-                    )
-                if not answer_timeline.validate_result_identity(
-                    result_identity,
-                    stop_reason,
-                ):
-                    fail_stream_projection(
-                        reason=(
-                            answer_timeline.failure_reason
-                            or "terminal_result_identity_invalid"
-                        ),
-                        stage="message",
-                        location="result_identity",
-                    )
                 if message.is_error:
                     close_failed_terminal("result_error")
                     raw_error = (
@@ -4527,8 +4081,6 @@ async def run_claude_agent_sdk(
                             )
                         ),
                     )
-                final_answer = str(message.result or "")
-                terminal_answer_empty = not final_answer.strip()
                 try:
                     response_file_descriptors[:] = [
                         _response_file_descriptor(
@@ -4569,196 +4121,24 @@ async def run_claude_agent_sdk(
                 response_files[:] = [
                     item["source_path"] for item in response_file_descriptors
                 ]
-                await flush_answer_candidates()
                 received_structured_terminal = True
                 if not stream_projection_failed:
                     active_source = source_router.message_key
                     if active_source is not None:
-                        if (
-                            source_router.role_for(active_source) is None
-                        ):
-                            if stop_reason in {"end_turn", "stop_sequence"} or (stop_reason is None and stream_projector is None):
-                                await classify_source(active_source, "answer")
-                            else:
-                                fail_stream_projection(
-                                    reason="assistant_part_classification_pending",
-                                    stage="message",
-                                    location="result_part_classification",
-                                )
+                        if source_router.role_for(active_source) is None:
+                            await classify_source(active_source, "answer")
                         source_router.take(active_source)
-                if final_answer.strip() and not stream_projection_failed:
-                    result_binding = answer_timeline.latest_binding
-                    result_source_key: tuple[object, ...] | None = None
-                    explicit_result_source = False
-                    bound_source_key = (
-                        source_router.owner_for_timeline(result_binding[1])
-                        if result_binding is not None
-                        else None
-                    )
-                    bound_source_is_work = (
-                        bound_source_key is not None
-                        and source_router.role_for(bound_source_key) == "work"
-                    )
-                    if (
-                        result_binding is not None
-                        and stream_projector is None
-                        and not source_router.has_answer_sources
-                        and stop_reason == "end_turn"
-                        and bound_source_is_work
-                    ):
-                        # The nonstreaming SDK may return a final answer after a
-                        # verified work-only provider message.
-                        result_suffix = (
-                            final_answer[len(answer_timeline.text) :]
-                            if final_answer.startswith(answer_timeline.text)
-                            else final_answer
-                        )
-                        result_source_key = ("result", str(result_identity))
-                        explicit_result_source = True
-                    elif (
-                        result_binding is not None
-                        and stream_projector is not None
-                        and not source_router.has_answer_sources
-                        and stop_reason == "end_turn"
-                        and bound_source_is_work
-                    ):
-                        # A raw tool turn may carry the final answer only in its
-                        # verified Result suffix. Reconcile that suffix against
-                        # the observed work source, then give it a distinct
-                        # answer part so the work part stays immutable.
-                        result_suffix = answer_timeline.accept_result(
-                            final_answer,
-                            source_identity=result_binding[0],
-                            message_identity=result_binding[1],
-                            parent_tool_use_id=result_binding[2],
-                            result_identity=result_identity,
-                            terminal_reason=stop_reason,
-                        )
-                        result_source_key = ("result", str(result_identity))
-                        explicit_result_source = True
-                    elif (
-                        result_binding is None
-                        and not answer_timeline.has_answer_source
-                        and (
-                            stream_projector is None
-                            or (
-                                not stream_projector.raw_lifecycle_observed
-                                and not stream_projector.typed_lifecycle_observed
-                            )
-                        )
-                    ):
-                        result_suffix = answer_timeline.accept_result_only(
-                            final_answer,
-                            result_identity=result_identity,
-                            terminal_reason=stop_reason,
-                        )
-                        result_source_key = ("result", str(result_identity))
-                        explicit_result_source = True
-                    else:
-                        result_suffix = answer_timeline.accept_result(
-                            final_answer,
-                            source_identity=(
-                                result_binding[0] if result_binding is not None else None
-                            ),
-                            message_identity=(
-                                result_binding[1] if result_binding is not None else None
-                            ),
-                            parent_tool_use_id=(
-                                result_binding[2] if result_binding is not None else None
-                            ),
-                            result_identity=result_identity,
-                            terminal_reason=stop_reason,
-                        )
-                        result_source_key = bound_source_key
-                    if answer_timeline.disabled:
-                        fail_stream_projection(
-                            reason=(
-                                answer_timeline.failure_reason
-                                or "terminal_result_body_conflict"
-                            ),
-                            stage="message",
-                            location="result_body",
-                        )
-                    else:
-                        if result_suffix:
-                            if result_source_key is None:
-                                fail_stream_projection(
-                                    reason="terminal_result_body_conflict",
-                                    stage="message",
-                                    location="result_source_unbound",
-                                )
-                            elif explicit_result_source:
-                                try:
-                                    routed_result = source_router.append_explicit_result(
-                                        result_source_key, result_suffix,
-                                    )
-                                except (TypeError, ValueError):
-                                    fail_stream_projection(
-                                        reason="terminal_result_body_conflict",
-                                        stage="message",
-                                        location="result_source_invalid",
-                                    )
-                                else:
-                                    if await classify_source(result_source_key, "answer"):
-                                        await publish_source_text(
-                                            result_source_key, routed_result,
-                                        )
-                            else:
-                                if source_router.role_for(result_source_key) == "work":
-                                    fail_stream_projection(
-                                        reason="terminal_result_body_conflict",
-                                        stage="message",
-                                        location="result_work_source",
-                                    )
-                                elif source_router.role_for(result_source_key) is None:
-                                    if stop_reason == "end_turn":
-                                        await classify_source(result_source_key, "answer")
-                                    else:
-                                        fail_stream_projection(
-                                            reason="assistant_part_classification_pending",
-                                            stage="message",
-                                            location="result_part_classification",
-                                        )
-                                if not stream_projection_failed:
-                                    if not await append_reconciled_text(
-                                        result_source_key,
-                                        result_binding[1],
-                                        result_suffix,
-                                    ):
-                                        fail_stream_projection(
-                                            reason="terminal_result_body_conflict",
-                                            stage="message",
-                                            location="result_suffix_publication",
-                                        )
                 terminal_reason = resolved_terminal_reason or (
                     str(stop_reason).strip()
                     if isinstance(stop_reason, str) and stop_reason.strip()
                     else None
                 )
                 break
-        if stream_projector is not None:
-            stream_projector.close_unfinished()
-            if stream_projector.disabled:
-                fail_stream_projection(
-                    reason=(
-                        stream_projector.failure_reason
-                        or "unfinished_raw_stream"
-                    ),
-                    stage="message",
-                    location="stream_finalization",
-                )
         terminal_error = (
             _SDK_MISSING_STRUCTURED_TERMINAL
             if not received_structured_terminal
             else None
         )
-        if terminal_error is None and stream_projection_failed:
-            terminal_error = _SDK_OUTPUT_VALIDATION_FAILED
-        if (
-            terminal_error is None and terminal_answer_empty
-            and not source_router.has_meaningful_answer_sources and not response_files
-        ):
-            terminal_error = _SDK_MISSING_STRUCTURED_TERMINAL
         if (
             terminal_error is None
             and agent_event_adapter is not None
@@ -4769,10 +4149,9 @@ async def run_claude_agent_sdk(
                 stage="message",
                 location="terminal_part_classification",
             )
-            terminal_error = _SDK_OUTPUT_VALIDATION_FAILED
         _finished_answer, routed_final_chunks = answer_stream_gate.finish_routed(
-            # The reconciled Timeline has already supplied every verified
-            # suffix; only the gate's bounded sanitizer tail may remain.
+            # Completed blocks already supplied all text; only the gate's
+            # bounded sanitizer tail may remain.
             final_text="",
             release=True,
             fallback_source_identity=source_router.message_key,
@@ -4783,7 +4162,8 @@ async def run_claude_agent_sdk(
                 stage="message",
                 location="terminal_part_gate",
             )
-            terminal_error = terminal_error or _SDK_OUTPUT_VALIDATION_FAILED
+            if answer_stream_gate.private_token_exposed:
+                terminal_error = terminal_error or _SDK_OUTPUT_VALIDATION_FAILED
         terminal_text_acknowledged = True
         if not answer_stream_gate.failed and isinstance(
             terminal_result_message, ResultMessage
@@ -4798,14 +4178,24 @@ async def run_claude_agent_sdk(
                         stage="message",
                         location="terminal_part_suffix",
                     )
-                    terminal_error = _SDK_OUTPUT_VALIDATION_FAILED
                     break
-        if terminal_error is None and capability_completion_error() is None and mcp_execution_receipt_error() is None:
+        public_terminal_allowed = (
+            terminal_error is None
+            and not answer_stream_gate.failed
+            and capability_completion_error() is None
+            and not mcp_execution_conflict_observed()
+            and not agent_event_callback_failed
+            and not read_only_lifecycle_rejected
+            and "started" not in observed_read_only_invocation_states.values()
+        )
+        if public_terminal_allowed:
             for source_key in tuple(pending_callback_text):
-                await flush_classified_callback_text(source_key, source_router.role_for(source_key) or "pending")
+                await flush_classified_callback_text(
+                    source_key, source_router.role_for(source_key) or "pending",
+                )
         delivered_final_text = "".join(agent_public_answer_chunks)
         if (
-            terminal_error is None
+            public_terminal_allowed
             and terminal_text_acknowledged
             and not answer_stream_gate.failed
             and isinstance(terminal_result_message, ResultMessage)
@@ -4835,6 +4225,13 @@ async def run_claude_agent_sdk(
             if terminal_error == "agent_event_callback_not_acknowledged"
             else delivered_final_text if not answer_stream_gate.failed else ""
         )
+        if (
+            terminal_error is None and not delivered_final_text
+            and not response_files and first_projection_failure is None
+        ):
+            first_projection_failure = _ProjectionFailure(
+                reason="typed_text_source_missing", stage="message", location="typed_text_source",
+            )
         return assemble_run_result(
             message="" if sandbox_brokered and agent_event_adapter is not None else public_final_result_text,
             answer_receipt=answer_receipt,
@@ -4853,7 +4250,13 @@ async def run_claude_agent_sdk(
                     ),
                 )
                 if terminal_error is not None
-                else {}
+                else {
+                    "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+                    "error_code": _SDK_OUTPUT_VALIDATION_FAILED,
+                    "failure_source": "public_projection",
+                    "failure_stage": first_projection_failure.stage,
+                    "projection_failure": first_projection_failure.as_dict(),
+                } if first_projection_failure is not None else {}
             ),
             include_terminal_files=True,
         )
@@ -5053,7 +4456,6 @@ async def run_claude_agent_sdk(
     except asyncio.CancelledError:
         result_ready.cancel()
         await stop_execution()
-        await close_answer_candidates_after_failure()
         seal_agent_candidates("cancelled")
         if (
             consume_cancellation is not None
@@ -5077,7 +4479,6 @@ async def run_claude_agent_sdk(
             ),
         )
     except Exception as exc:  # noqa: BLE001
-        await close_answer_candidates_after_failure()
         seal_agent_candidates("exception")
         error_code = mcp_execution_receipt_error() or _canonical_sdk_error(
             last_assistant_error_text if last_assistant_error is not None else exc,

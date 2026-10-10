@@ -53,9 +53,9 @@ types used by this adapter.
 | `query` | Keyword `prompt`, `options`, and optional `transport` remain available | The async iterator stays inside the runner adapter |
 | `ClaudeAgentOptions` | Existing model, system prompt, tools, hooks, session, limits, and stream fields remain available | Constructed only after platform admission and Skill-name validation |
 | `HookMatcher` | `matcher`, `hooks`, and `timeout` remain available | Exact `PostToolUse` evidence remains the only Skill-success authority |
-| Messages | `AssistantMessage`, `TextBlock`, `ThinkingBlock`, and `StreamEvent` remain adapter inputs; a typed Assistant fragment need not close a whole turn | Raw text deltas stream into the public Assistant body; typed text reconciles missing suffixes; Thinking and non-text deltas are excluded |
-| Terminal result | `ResultMessage` adds `terminal_reason` while retaining result/error/session/usage fields | Ordinary `result` text is executor completion input; committed public text and its receipt own streamed content; Runs owns business outcome; files are selected separately |
-| Partial streaming | `include_partial_messages=True` remains supported | Raw text feeds the public answer gate immediately; later provider-bound classification groups work parts without rewriting accepted delta rows |
+| Messages | `AssistantMessage` carries independently completed blocks; several observations may share a provider message; child scope uses `parent_tool_use_id` | Only eligible main `TextBlock` content enters the public gate; Thinking, child text, raw prose and private errors are excluded; exact UUID replay is suppressed |
+| Terminal result | `ResultMessage` adds `terminal_reason` while retaining result/error/session/usage fields | Result controls SDK completion, error, session and usage, never public body repair; committed public text and receipt own the answer; Runs owns business outcome; files are selected separately |
+| Partial streaming | SDK supports `include_partial_messages=True`; the Claude adapter selects `False` | Completed main `AssistantMessage` blocks feed the existing public gate; raw/Result bodies have no public text authority. Provider-bound classification groups work without rewriting accepted rows |
 | Settings | `setting_sources` remains supported | Only explicit project settings are loaded after platform-controlled scrubbing |
 | Permissions | `permission_mode`, allowed tools, disallowed tools, and `can_use_tool` remain supported | Platform authorization, admission, sandbox, and context remain authoritative |
 | Limits | `max_turns`, `effort`, and `max_thinking_tokens` remain supported | Max-turn termination maps to a stable public platform error |
@@ -161,9 +161,10 @@ output-capacity validation, and their existing errors are unchanged.
   model may reason internally without returning Thinking text. The runner does
   not publish returned `ThinkingBlock` text. Safe Assistant suffixes now use
   versioned part deltas and explicit answer/work classification; existing
-  commentary/worktrace and v1 answer history remain readable. Ordinary chat
-  consumes `ResultMessage.result` as a terminal observation, with persisted
-  facts and receipt v2 governing final selection. Optional files remain independent.
+  commentary/worktrace and v1 answer history remain readable. Completed main SDK
+  text is the sole public text source, with persisted facts and receipt v2 governing
+  final selection. SDK success may have no public answer; no Result body is used to
+  fill that gap. Optional files remain independent.
 - **Compatibility and retirement:** the current
   [streaming message design](../implementation/streaming-message-parts-design.md)
   replaces classification-time buffering and worktrace production and specifies

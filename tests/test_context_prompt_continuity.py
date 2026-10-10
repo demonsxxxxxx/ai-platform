@@ -268,7 +268,7 @@ async def test_sdk_runner_wires_scoped_context_retrieval_mcp_server(monkeypatch,
             self.content = content
             self.message_id = "provider-message-context-retrieval"
             self.uuid = "assistant-observation-context-retrieval"
-            self.parent_tool_use_id = "parent-tool-context-retrieval"
+            self.parent_tool_use_id = None
             self.stop_reason = None
 
     class ResultMessage:

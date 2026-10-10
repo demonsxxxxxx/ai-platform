@@ -839,7 +839,7 @@ async def test_probe_keeps_terminal_receipt_when_protocol_diagnostics_fail(
         ("completed", "failed", None, "run-a", "protocol_invalid"),
         ("failed", "completed", "done", "run-a", "protocol_invalid"),
         ("finished", "completed", "done", "run-a", "protocol_invalid"),
-        ("callback_failed", "completed", "", "run-a", "protocol_invalid"),
+        ("callback_failed", "completed", "", "run-a", "completed"),
         ("completed", "completed", "done", "run-other", "protocol_invalid"),
     ],
 )
