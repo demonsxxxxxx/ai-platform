@@ -177,11 +177,16 @@ def _assignment_name(node: ast.stmt) -> str | None:
     return None
 
 
-def _runner_policy(source: str) -> dict[str, object]:
+def _runner_ast(source: str) -> ast.Module:
+    """Use the source-decoding semantics of the executable Git blob."""
     try:
-        module = ast.parse(source)
+        return ast.parse(source.encode("utf-8"))
     except SyntaxError as error:
         raise TrustedGovernanceError("trusted runner must parse as Python") from error
+
+
+def _runner_policy(source: str) -> dict[str, object]:
+    module = _runner_ast(source)
     assignments = {
         name: [node for node in module.body if _assignment_name(node) == name]
         for name in _POLICY_NAMES
@@ -243,7 +248,7 @@ def _validate_policy(policy: Mapping[str, object]) -> None:
 
 
 def _runner_logic(source: str) -> str:
-    module = ast.parse(source)
+    module = _runner_ast(source)
     module.body = [
         node for node in module.body if _assignment_name(node) not in _POLICY_NAMES
     ]

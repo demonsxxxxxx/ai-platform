@@ -1199,7 +1199,7 @@ def _validate_exception(
 
 def _parse_python(source: str, path: str, *, candidate: bool) -> ast.Module:
     try:
-        return ast.parse(source, filename=path)
+        return ast.parse(source.encode("utf-8"), filename=path)
     except SyntaxError as exc:
         code = "candidate_python_syntax" if candidate else "base_python_syntax"
         raise ArchitectureError(code, f"cannot parse {path}:{exc.lineno}: {exc.msg}") from exc
