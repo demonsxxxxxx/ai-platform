@@ -93,7 +93,6 @@ from app.skills.stager import SkillStager
 from app.storage import ObjectStorage
 
 _SANDBOX_SUCCESS_TERMINAL_STATUSES = {"completed", "succeeded"}
-_TOOL_PERMISSION_POLL_INTERVAL_SECONDS = 0.25
 
 
 async def _emit_public_progress_event(
