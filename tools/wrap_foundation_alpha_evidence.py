@@ -300,6 +300,8 @@ def _schema_version(verifier: str, verifier_output: dict[str, Any]) -> str:
 
 
 def _result(verifier_output: dict[str, Any]) -> str:
+    if "ok" in verifier_output and verifier_output["ok"] is not True:
+        return "ok:false"
     checks = verifier_output.get("checks")
     if isinstance(checks, list) and checks:
         all_passed = all(

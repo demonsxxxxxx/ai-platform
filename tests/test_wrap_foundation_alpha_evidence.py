@@ -4,6 +4,8 @@ import sys
 
 import pytest
 
+from app.foundation_alpha_readiness import _release_evidence_entry_base_is_valid
+from scripts import verify_executor_context_pack
 from tools.wrap_foundation_alpha_evidence import build_release_evidence_entry
 
 
@@ -605,6 +607,69 @@ def test_wraps_list_style_verifier_checks_and_attached_runtime_payload():
     assert "sandbox_workdir" not in serialized
     assert "internal prompt material" not in serialized
     assert "tenants/default/private" not in serialized
+
+
+def _wrap_synthetic_verdict(verifier_output):
+    return build_release_evidence_entry(
+        evidence_id="synthetic-verdict", verifier="scripts/verify_executor_context_pack.py",
+        artifact_kind="executor_context_pack_runtime_source_probe",
+        verifier_output={**verifier_output, "redaction_scan_status": "passed"},
+        commit_sha=COMMIT, runtime_subject_commit_sha=COMMIT,
+        captured_at="2026-06-17T10:00:00+08:00", image=IMAGE, image_id=IMAGE_ID,
+        image_labels=image_labels(), source_snapshot=source_snapshot(),
+        command="synthetic-verdict-fixture", review_status="reviewed",
+    )
+
+
+@pytest.mark.parametrize("aggregate,checks,expected", [
+    ({}, [{"name": "synthetic", "passed": True}], True),
+    ({}, [{"name": "synthetic", "passed": False}], False),
+    ({}, [], False),
+    ({"ok": True}, [{"name": "synthetic", "passed": True}], True),
+    ({"ok": True}, [{"name": "synthetic", "passed": False}], False),
+    ({"ok": False}, [{"name": "synthetic", "passed": True}], False),
+    ({"ok": False}, [], False),
+    ({"ok": None}, [{"name": "synthetic", "passed": True}], False),
+    ({"ok": 1}, [{"name": "synthetic", "passed": True}], False),
+    ({"ok": "true"}, [{"name": "synthetic", "passed": True}], False),
+    ({"ok": True}, [{"name": "synthetic", "passed": "true"}], False),
+    ({"ok": True}, ["malformed-check"], False),
+])
+def test_wrapped_aggregate_and_checks_must_agree_before_readiness_acceptance(aggregate, checks, expected):
+    entry = _wrap_synthetic_verdict({**aggregate, "checks": checks})
+
+    assert entry["evidence_ref"]["result"] == ("ok:true" if expected else "ok:false")
+    assert _release_evidence_entry_base_is_valid(entry, COMMIT) is expected
+    assert entry["artifact_kind"] == "executor_context_pack_runtime_source_probe"
+
+
+@pytest.mark.parametrize("passed", (False, True))
+def test_current_list_only_verifier_producer_remains_compatible(passed):
+    exit_code, checks = verify_executor_context_pack.run_checks([
+        lambda: verify_executor_context_pack.CheckResult(
+            "synthetic_projection_check", passed, "synthetic fixture only"
+        ),
+    ])
+    # This is the current producer's list-only JSON shape; it has no aggregate key.
+    verifier_output = {"checks": [check.to_dict() for check in checks]}
+
+    entry = _wrap_synthetic_verdict(verifier_output)
+
+    assert exit_code == (0 if passed else 1)
+    assert entry["evidence_ref"]["result"] == ("ok:true" if passed else "ok:false")
+    assert _release_evidence_entry_base_is_valid(entry, COMMIT) is passed
+    assert entry["artifact_kind"] == "executor_context_pack_runtime_source_probe"
+
+
+def test_failed_cleanup_aggregate_is_not_overridden_by_partial_passed_checks():
+    entry = _wrap_synthetic_verdict({
+        "ok": False,
+        "checks": [{"name": "synthetic_dispatch_check", "passed": True}],
+        "cleanup": {"status": "failed"},
+    })
+
+    assert entry["evidence_ref"]["result"] == "ok:false"
+    assert _release_evidence_entry_base_is_valid(entry, COMMIT) is False
 
 
 def test_wraps_b1_memory_context_smoke_payload_for_readiness_consumption():

@@ -292,6 +292,7 @@ jobs:
             test_files: >-
               tests/test_governance_readiness.py
               tests/test_foundation_alpha_readiness.py
+              tests/test_wrap_foundation_alpha_evidence.py
               tests/test_compose_package_deploy.py
               tests/test_production_bootstrap.py
               tests/test_release_authority.py
