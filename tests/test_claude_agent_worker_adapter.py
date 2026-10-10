@@ -3133,7 +3133,8 @@ def test_sandbox_runtime_unknown_or_error_terminal_status_fails_closed(runtime_s
     assert result.executor_payload["runtime_terminal_status"] == runtime_status
 
 
-def test_sandbox_runtime_without_private_diagnostics_does_not_synthesize_rejection(tmp_path):
+@pytest.mark.parametrize("runtime_status", ["failed", "completed"])
+def test_sandbox_runtime_without_private_diagnostics_does_not_synthesize_rejection(tmp_path, runtime_status):
     adapter = ClaudeAgentWorkerAdapter()
     prepared = PreparedSdkRun(
         workspace=tmp_path,
@@ -3149,12 +3150,13 @@ def test_sandbox_runtime_without_private_diagnostics_does_not_synthesize_rejecti
             sandbox_writing_payload(agent_id="general-agent", skill_id="general-chat"),
             prepared,
             types.SimpleNamespace(
-                status="failed",
+                status=runtime_status,
                 provider="docker",
-                executor_response={"status": "failed", "error_code": "executor_reported_failure", **carrier},
+                executor_response={"status": runtime_status, "tool_invocation_evidence": [], **carrier},
                 timings={},
             ),
         )
+        assert result.status == ("succeeded" if runtime_status == "completed" else "failed")
         assert "runtime_diagnostics" not in result.result
         assert "runtime_diagnostics" not in result.executor_payload
 
@@ -4763,7 +4765,7 @@ async def test_sdk_runner_passes_staged_skill_names(monkeypatch, tmp_path):
             self.content = content
             self.message_id = "provider-message-staged-skills"
             self.uuid = "assistant-observation-staged-skills"
-            self.parent_tool_use_id = "parent-tool-staged-skills"
+            self.parent_tool_use_id = None
             self.stop_reason = None
 
     class ResultMessage:
@@ -4833,6 +4835,7 @@ async def test_sdk_runner_passes_staged_skill_names(monkeypatch, tmp_path):
     )
 
 
+
 @pytest.mark.asyncio
 async def test_sdk_runner_uses_run_model_override(monkeypatch, tmp_path):
     captured = {}
@@ -4846,7 +4849,7 @@ async def test_sdk_runner_uses_run_model_override(monkeypatch, tmp_path):
             self.content = content
             self.message_id = "provider-message-model-override"
             self.uuid = "assistant-observation-model-override"
-            self.parent_tool_use_id = "parent-tool-model-override"
+            self.parent_tool_use_id = None
             self.stop_reason = None
 
     class ResultMessage:
@@ -4904,6 +4907,7 @@ async def test_sdk_runner_uses_run_model_override(monkeypatch, tmp_path):
     assert captured["model"] == "deepseek-v4-pro"
 
 
+
 @pytest.mark.asyncio
 async def test_sdk_runner_keeps_authorized_skill_available_without_forced_invocation(
     monkeypatch, tmp_path
@@ -4920,7 +4924,7 @@ async def test_sdk_runner_keeps_authorized_skill_available_without_forced_invoca
             self.content = content
             self.message_id = "provider-message-authorized-skill"
             self.uuid = "assistant-observation-authorized-skill"
-            self.parent_tool_use_id = "parent-tool-authorized-skill"
+            self.parent_tool_use_id = None
             self.stop_reason = None
 
     class ResultMessage:
@@ -5001,6 +5005,7 @@ async def test_sdk_runner_keeps_authorized_skill_available_without_forced_invoca
     ]
     assert "Authoritative platform Skill requirement" not in malicious_prompt
     assert 'exactly this input: {"skill":"qa-file-reviewer"}' not in malicious_prompt
+
 
 
 @pytest.mark.asyncio
@@ -5120,7 +5125,7 @@ async def test_sdk_runner_removes_project_settings_before_sdk_launch(monkeypatch
             self.content = content
             self.message_id = "provider-message-project-settings"
             self.uuid = "assistant-observation-project-settings"
-            self.parent_tool_use_id = "parent-tool-project-settings"
+            self.parent_tool_use_id = None
             self.stop_reason = None
 
     class ResultMessage:
@@ -5190,6 +5195,7 @@ async def test_sdk_runner_removes_project_settings_before_sdk_launch(monkeypatch
     assert captured["setting_sources"] == ["project"]
 
 
+
 @pytest.mark.asyncio
 async def test_sdk_runner_allows_authorized_skill_without_tool_invocation(
     monkeypatch, tmp_path
@@ -5201,7 +5207,7 @@ async def test_sdk_runner_allows_authorized_skill_without_tool_invocation(
             self.content = content
             self.message_id = "provider-message-unused-skill"
             self.uuid = "assistant-observation-unused-skill"
-            self.parent_tool_use_id = "parent-tool-unused-skill"
+            self.parent_tool_use_id = None
             self.stop_reason = None
 
     class TextBlock:
@@ -5278,6 +5284,7 @@ async def test_sdk_runner_allows_authorized_skill_without_tool_invocation(
     assert result.error is None
     assert result.message == "manual answer without using the selected Skill"
     assert result.used_skills == []
+
 
 
 @pytest.mark.asyncio
@@ -5631,7 +5638,7 @@ async def test_sdk_runner_propagates_cancelled_error_from_stream_callback(monkey
             self.content = content
             self.message_id = "provider-message-cancelled-callback"
             self.uuid = "assistant-observation-cancelled-callback"
-            self.parent_tool_use_id = "parent-tool-cancelled-callback"
+            self.parent_tool_use_id = None
             self.stop_reason = None
 
     class ResultMessage:
@@ -5687,4 +5694,5 @@ async def test_sdk_runner_propagates_cancelled_error_from_stream_callback(monkey
             skill_id="general-chat",
             on_text=on_text,
         )
+
 # ruff: noqa: RUF012

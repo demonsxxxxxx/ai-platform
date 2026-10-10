@@ -144,15 +144,18 @@ class WorkerResultCommitService:
                         assistant_message_for_persistence, assistant_message_metadata,
                         command.attempt_id, result_payload,
                     )
-                    await self._append_user_event(
-                        conn, tenant_id=payload.tenant_id, run_id=payload.run_id,
-                        event_type="assistant_message_created", stage="message",
-                        message="Assistant response is ready",
-                        payload={
-                            "artifact_count": len(result.artifacts),
-                            "skills": command.skill_snapshot,
-                        },
-                    )
+                    # The empty assistant row remains a provider-coverage
+                    # anchor; only an actual public response is ready to read.
+                    if str(assistant_message_for_persistence or result_payload.get("message") or "").strip() or artifact_records:
+                        await self._append_user_event(
+                            conn, tenant_id=payload.tenant_id, run_id=payload.run_id,
+                            event_type="assistant_message_created", stage="message",
+                            message="Assistant response is ready",
+                            payload={
+                                "artifact_count": len(result.artifacts),
+                                "skills": command.skill_snapshot,
+                            },
+                        )
                     if cancel_requested:
                         await self._append_user_event(
                             conn, tenant_id=payload.tenant_id, run_id=payload.run_id,

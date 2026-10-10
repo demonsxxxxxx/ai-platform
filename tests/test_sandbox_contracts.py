@@ -66,11 +66,13 @@ def test_sandbox_model_budget_is_strict_at_both_transports():
             })
 
 
-def test_terminal_callback_rejects_empty_success_result():
-    with pytest.raises(ValidationError, match="non-empty message"):
-        ExecutorTerminalResult.model_validate(
-            {"status": "succeeded", "run_id": "run-a"}
-        )
+@pytest.mark.parametrize("status", ["completed", "succeeded"])
+def test_terminal_callback_preserves_success_without_a_public_answer(status):
+    result = ExecutorTerminalResult.model_validate({"status": status, "run_id": "run-a"})
+    assert result.status == status
+    assert result.message == ""
+    assert result.answer_receipt is None
+    assert result.response_files == []
 
 
 def test_terminal_callback_accepts_empty_success_with_a_receipt():

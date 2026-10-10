@@ -6,6 +6,11 @@ from app.execution.infrastructure.harness.claude_client_lifecycle import (
 )
 from app.execution.infrastructure.harness.claude.interaction import ClaudeRunInteractionActor
 from app.execution.infrastructure.harness.claude.assistant_text_sources import AssistantTextSourceBuffer
+from app.execution.infrastructure.harness.claude.typed_blocks import ClaudeTypedBlockObservations
+
+
+def prepare_claude_typed_observations():
+    return ClaudeTypedBlockObservations()
 
 
 def prepare_claude_text_sources():

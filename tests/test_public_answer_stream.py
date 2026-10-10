@@ -576,6 +576,25 @@ def test_dynamic_private_identity_registration_checks_all_routed_public_parts():
     assert finished.chunks == ()
 
 
+def test_dynamic_private_identity_detection_survives_a_projection_failure():
+    gate = _gate()
+    source = ("provider-a", None)
+    published = gate.accept_routed("Publicly visible call/id. ", source_identity=source)
+    assert "call/id" in "".join(text for _owner, text in published)
+
+    gate.fail_closed()
+    gate.register_private_replacements({"call/id": "tool invocation"})
+
+    assert gate.failed is True
+    assert gate.failure_reason == "upstream_projection_failed"
+    assert gate.private_token_exposed is True
+    assert gate.accept("must stay closed") == ()
+    finished, terminal = gate.finish_routed(
+        final_text="", release=True, fallback_source_identity=source,
+    )
+    assert not terminal and not finished.chunks and not finished.final_text
+
+
 def test_unrelated_dynamic_token_prefix_does_not_fail_publication():
     gate = _gate()
 
