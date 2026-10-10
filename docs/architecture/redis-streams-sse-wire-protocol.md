@@ -462,9 +462,12 @@ timer clears its own reference before starting the connection attempt.
   Failed/cancelled terminals never carry an answer receipt. Streamed Sandbox
   terminal inline text remains empty; legacy v1 rows and receipts remain readable.
 - **Ordering and recovery:** existing Tool and terminal receipt barriers remain.
-  Live, replay, gap and terminal history apply exact part identities. Invalid
-  history cannot advance accepted watermarks or make the Run complete. Hydration
-  preserves authoritative roles and newer suffixes within the same Run.
+  Live, replay, gap and terminal history apply exact part identities. Public
+  history replays authorized `message.started` before its parts and
+  `message.completed` when persisted, including across pagination; unmarked
+  legacy lifecycle rows remain omitted. Invalid history cannot advance accepted
+  watermarks or make the Run complete. Hydration preserves authoritative roles
+  and newer suffixes within the same Run.
 - **Bounds:** 8192 code points per delta and 100 events per callback remain.
   Normal part append uses bounded indexed lifecycle/owner/role/source lookups
   under the Run fence; completion and receipt validate the full persisted ledger.
