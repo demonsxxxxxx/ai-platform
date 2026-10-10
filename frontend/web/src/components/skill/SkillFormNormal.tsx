@@ -204,6 +204,7 @@ export function SkillFormNormal(a: SkillFormActions) {
                 <input
                   type="text"
                   value={a.files[a.activeFileIndex]?.path || ""}
+                  readOnly={!a.files[a.activeFileIndex]?.loaded || a.files[a.activeFileIndex]?.binary}
                   onChange={(e) =>
                     a.updateFilePath(a.activeFileIndex, e.target.value)
                   }
