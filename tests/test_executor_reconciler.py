@@ -257,8 +257,7 @@ async def test_reconciler_drains_backlog_before_cleanup_or_probe(monkeypatch):
         reconcile,
     )
     monkeypatch.setattr(
-        executor_reconciler,
-        "cleanup_failed_sandbox_executor_reconciliation_leases",
+        executor_reconciler._sandbox_cleanup, "cleanup_failed_sandbox_executor_reconciliation_leases",
         unexpected,
     )
     monkeypatch.setattr(
@@ -300,7 +299,7 @@ async def test_reconciler_signal_failure_retains_bounded_polling_fallback(monkey
 
     monkeypatch.setattr(executor_reconciler, "_RECONCILIATION_IDLE_SECONDS", 0.05)
     monkeypatch.setattr(executor_reconciler, "reconcile_pending_executor_terminals_once", reconcile)
-    monkeypatch.setattr(executor_reconciler, "cleanup_failed_sandbox_executor_reconciliation_leases", no_work)
+    monkeypatch.setattr(executor_reconciler._sandbox_cleanup, "cleanup_failed_sandbox_executor_reconciliation_leases", no_work)
     monkeypatch.setattr(executor_reconciler, "probe_suspect_executor_tasks_once", no_work)
     monkeypatch.setattr(executor_reconciler, "wait_for_executor_reconciliation_signal", unavailable)
     await asyncio.wait_for(run_executor_terminal_reconciler(stop_event), timeout=1)
@@ -350,7 +349,7 @@ async def test_terminal_signal_is_consumed_while_maintenance_is_blocked(
 
     monkeypatch.setattr(executor_reconciler, "reconcile_pending_executor_terminals_once", reconcile)
     monkeypatch.setattr(
-        executor_reconciler, "cleanup_failed_sandbox_executor_reconciliation_leases",
+        executor_reconciler._sandbox_cleanup, "cleanup_failed_sandbox_executor_reconciliation_leases",
         blocked if slow_phase == "cleanup" else no_work,
     )
     monkeypatch.setattr(
@@ -400,7 +399,7 @@ async def test_terminal_reconciler_shutdown_joins_cancellation_resistant_mainten
         stop_event.set()
 
     monkeypatch.setattr(executor_reconciler, "reconcile_pending_executor_terminals_once", reconcile)
-    monkeypatch.setattr(executor_reconciler, "cleanup_failed_sandbox_executor_reconciliation_leases", cleanup)
+    monkeypatch.setattr(executor_reconciler._sandbox_cleanup, "cleanup_failed_sandbox_executor_reconciliation_leases", cleanup)
     monkeypatch.setattr(executor_reconciler, "probe_suspect_executor_tasks_once", no_probe)
     monkeypatch.setattr(executor_reconciler, "wait_for_executor_reconciliation_signal", signal)
     task = asyncio.create_task(run_executor_terminal_reconciler(stop_event))
@@ -490,7 +489,7 @@ async def test_terminal_artifact_conversion_uses_storage_bridge(monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        executor_reconciler, "container_lease_from_persisted_row", lambda _row: lease
+        executor_reconciler._sandbox_cleanup, "container_lease_from_persisted_row", lambda _row: lease
     )
     monkeypatch.setattr(
         executor_reconciler, "_container_provider_for_lease", lambda _lease: provider
@@ -775,7 +774,7 @@ async def test_probe_releases_active_executor_for_future_heartbeat_checks(monkey
     monkeypatch.setattr("app.executor_reconciler._context_payload", lambda _row: ({}, object()))
     monkeypatch.setattr("app.executor_reconciler._reconciliation_request", lambda *_args: object())
     monkeypatch.setattr(
-        "app.executor_reconciler.container_lease_from_persisted_row",
+        "app.executor_reconciler._sandbox_cleanup.container_lease_from_persisted_row",
         lambda _row: SimpleNamespace(provider="fake"),
     )
     monkeypatch.setattr(
@@ -1039,7 +1038,7 @@ async def test_probe_preserves_matching_terminal_status_and_rejects_contradictio
     monkeypatch.setattr("app.executor_reconciler._context_payload", lambda _row: ({}, object()))
     monkeypatch.setattr("app.executor_reconciler._reconciliation_request", lambda *_args: object())
     monkeypatch.setattr(
-        "app.executor_reconciler.container_lease_from_persisted_row",
+        "app.executor_reconciler._sandbox_cleanup.container_lease_from_persisted_row",
         lambda _row: SimpleNamespace(provider="fake"),
     )
     monkeypatch.setattr(
@@ -1116,7 +1115,7 @@ async def test_probe_cancellation_releases_claim_before_propagating(monkeypatch)
     monkeypatch.setattr("app.executor_reconciler._context_payload", lambda _row: ({}, object()))
     monkeypatch.setattr("app.executor_reconciler._reconciliation_request", lambda *_args: object())
     monkeypatch.setattr(
-        "app.executor_reconciler.container_lease_from_persisted_row",
+        "app.executor_reconciler._sandbox_cleanup.container_lease_from_persisted_row",
         lambda _row: SimpleNamespace(provider="fake"),
     )
     monkeypatch.setattr(
@@ -1172,7 +1171,7 @@ async def test_probe_terminalizes_authoritatively_missing_sandbox_immediately(mo
     monkeypatch.setattr("app.executor_reconciler._context_payload", lambda _row: ({}, object()))
     monkeypatch.setattr("app.executor_reconciler._reconciliation_request", lambda *_args: object())
     monkeypatch.setattr(
-        "app.executor_reconciler.container_lease_from_persisted_row",
+        "app.executor_reconciler._sandbox_cleanup.container_lease_from_persisted_row",
         lambda _row: SimpleNamespace(provider="fake"),
     )
     monkeypatch.setattr(
@@ -1240,7 +1239,7 @@ async def test_probe_retry_persists_only_safe_error_code(monkeypatch):
     monkeypatch.setattr("app.executor_reconciler._context_payload", lambda _row: ({}, object()))
     monkeypatch.setattr("app.executor_reconciler._reconciliation_request", lambda *_args: object())
     monkeypatch.setattr(
-        "app.executor_reconciler.container_lease_from_persisted_row",
+        "app.executor_reconciler._sandbox_cleanup.container_lease_from_persisted_row",
         lambda _row: SimpleNamespace(provider="fake"),
     )
     monkeypatch.setattr(
@@ -1606,8 +1605,7 @@ async def test_reconciler_drains_ready_rows_without_idle_wait(monkeypatch):
 
     monkeypatch.setattr(executor_reconciler, "reconcile_pending_executor_terminals_once", reconcile)
     monkeypatch.setattr(
-        executor_reconciler,
-        "cleanup_failed_sandbox_executor_reconciliation_leases",
+        executor_reconciler._sandbox_cleanup, "cleanup_failed_sandbox_executor_reconciliation_leases",
         no_work,
     )
     monkeypatch.setattr(executor_reconciler, "probe_suspect_executor_tasks_once", no_probe)
@@ -1647,8 +1645,7 @@ async def test_reconciler_waits_when_no_terminal_or_probe_progress(monkeypatch):
         retry_only,
     )
     monkeypatch.setattr(
-        executor_reconciler,
-        "cleanup_failed_sandbox_executor_reconciliation_leases",
+        executor_reconciler._sandbox_cleanup, "cleanup_failed_sandbox_executor_reconciliation_leases",
         no_work,
     )
     monkeypatch.setattr(
@@ -1737,8 +1734,7 @@ async def test_reconciler_observes_signal_written_during_empty_database_scan(mon
         reconcile,
     )
     monkeypatch.setattr(
-        executor_reconciler,
-        "cleanup_failed_sandbox_executor_reconciliation_leases",
+        executor_reconciler._sandbox_cleanup, "cleanup_failed_sandbox_executor_reconciliation_leases",
         no_work,
     )
     monkeypatch.setattr(
@@ -1810,8 +1806,7 @@ async def test_reconciler_immediately_processes_terminal_persisted_by_probe(monk
         reconcile,
     )
     monkeypatch.setattr(
-        executor_reconciler,
-        "cleanup_failed_sandbox_executor_reconciliation_leases",
+        executor_reconciler._sandbox_cleanup, "cleanup_failed_sandbox_executor_reconciliation_leases",
         cleanup,
     )
     monkeypatch.setattr(
@@ -1927,14 +1922,14 @@ async def test_reconciler_drains_receiptless_terminal_backlog_before_probe_idle(
     monkeypatch.setattr(executor_reconciler, "_context_payload", lambda _row: ({}, object()))
     monkeypatch.setattr(executor_reconciler, "_reconciliation_request", lambda *_args: object())
     monkeypatch.setattr(
-        executor_reconciler, "container_lease_from_persisted_row",
+        executor_reconciler._sandbox_cleanup, "container_lease_from_persisted_row",
         lambda _row: SimpleNamespace(provider="fake"),
     )
     monkeypatch.setattr(executor_reconciler, "create_container_provider", lambda _name: Provider())
     monkeypatch.setattr(executor_reconciler, "SandboxExecutorClient", Client)
     monkeypatch.setattr(executor_reconciler, "reconcile_pending_executor_terminals_once", reconcile)
     monkeypatch.setattr(
-        executor_reconciler, "cleanup_failed_sandbox_executor_reconciliation_leases", cleanup,
+        executor_reconciler._sandbox_cleanup, "cleanup_failed_sandbox_executor_reconciliation_leases", cleanup,
     )
     monkeypatch.setattr(executor_reconciler, "wait_for_executor_reconciliation_signal", idle_signal)
 
@@ -1966,7 +1961,7 @@ async def test_reconciler_scans_postgres_when_redis_wakeup_is_unavailable(monkey
     monkeypatch.setattr("app.executor_reconciler.transaction", _transaction)
     monkeypatch.setattr("app.executor_reconciler.reconcile_pending_executor_terminals_once", reconcile)
     monkeypatch.setattr(
-        "app.executor_reconciler.cleanup_failed_sandbox_executor_reconciliation_leases",
+        "app.executor_reconciler._sandbox_cleanup.cleanup_failed_sandbox_executor_reconciliation_leases",
         cleanup,
     )
     monkeypatch.setattr("app.executor_reconciler.wait_for_executor_reconciliation_signal", unavailable)
@@ -2019,8 +2014,7 @@ async def test_reconciler_cursor_failure_uses_polling_without_uncursored_xread(
         reconcile,
     )
     monkeypatch.setattr(
-        executor_reconciler,
-        "cleanup_failed_sandbox_executor_reconciliation_leases",
+        executor_reconciler._sandbox_cleanup, "cleanup_failed_sandbox_executor_reconciliation_leases",
         cleanup,
     )
     monkeypatch.setattr(
@@ -2628,7 +2622,7 @@ async def test_failed_reconciliation_quarantines_only_unverifiable_runtime(monke
     owner = "app.executor_reconciler"
     monkeypatch.setattr(f"{owner}.transaction", _transaction)
     monkeypatch.setattr(f"{owner}._terminalize_reconciliation_failure", terminalize)
-    monkeypatch.setattr(f"{owner}.container_lease_from_persisted_row", lambda _row: None)
+    monkeypatch.setattr(f"{owner}._sandbox_cleanup.container_lease_from_persisted_row", lambda _row: None)
     monkeypatch.setattr(
         f"{owner}.sandbox_lease_repository.quarantine_sandbox_executor_reconciliation",
         quarantine,
@@ -2683,7 +2677,7 @@ async def test_verified_runtime_stop_failure_remains_eligible_for_cleanup(monkey
     monkeypatch.setattr(f"{owner}.transaction", _transaction)
     monkeypatch.setattr(f"{owner}._terminalize_reconciliation_failure", terminalize)
     monkeypatch.setattr(
-        f"{owner}.container_lease_from_persisted_row",
+        f"{owner}._sandbox_cleanup.container_lease_from_persisted_row",
         lambda _row: SimpleNamespace(provider="fake"),
     )
     monkeypatch.setattr(

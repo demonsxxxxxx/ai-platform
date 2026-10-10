@@ -1,3 +1,5 @@
+from app.bootstrap.sandbox_cleanup import build_sandbox_runtime_cleanup
+
 import asyncio
 import hashlib
 import inspect
@@ -17,6 +19,8 @@ import pytest
 
 from app.runtime.sandbox.callback_tokens import CallbackTokenBinding, callback_token_id_for_binding
 from app.runtime.sandbox.contracts import SandboxRuntimeRequest, WorkspaceLease
+
+sandbox_runtime_cleanup = build_sandbox_runtime_cleanup()
 
 
 requires_secure_opensandbox_transfer = pytest.mark.skipif(
@@ -1244,11 +1248,11 @@ async def test_opensandbox_renew_reconnects_persisted_identity_and_uses_maximum_
         sandbox_lease_ttl_seconds = 2401
         opensandbox_timeout_seconds = 2402
 
-    cleanup = importlib.import_module("app.routes.sandbox_runtime_cleanup")
+    cleanup = sandbox_runtime_cleanup
     settings = RenewalSettings()
     settings.sandbox_runtime_subject = runtime_subject
     monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
-    monkeypatch.setattr(cleanup, "get_settings", lambda: settings)
+    monkeypatch.setattr("app.bootstrap.sandbox_cleanup.get_settings", lambda: settings)
     provider = opensandbox_provider()
     lease = await provider.create_or_reuse(request(), workspace())
     persisted_lease = cleanup.container_lease_from_persisted_row(persisted_opensandbox_row(lease))
@@ -1291,7 +1295,7 @@ async def test_opensandbox_renew_rejects_missing_provider_receipt(monkeypatch):
 @pytest.mark.asyncio
 async def test_opensandbox_renew_rejects_previous_key_identity(monkeypatch):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
-    cleanup = importlib.import_module("app.routes.sandbox_runtime_cleanup")
+    cleanup = sandbox_runtime_cleanup
     lifecycle = importlib.import_module("app.runtime.sandbox.providers.opensandbox.startup")
     FakeOpenSandbox.reset()
 
@@ -1309,7 +1313,7 @@ async def test_opensandbox_renew_rejects_previous_key_identity(monkeypatch):
     monkeypatch.setattr(container_provider, "get_settings", lambda: previous_settings)
     provider = opensandbox_provider()
     lease = await provider.create_or_reuse(request(), workspace())
-    monkeypatch.setattr(cleanup, "get_settings", lambda: current_settings)
+    monkeypatch.setattr("app.bootstrap.sandbox_cleanup.get_settings", lambda: current_settings)
     persisted_lease = cleanup.container_lease_from_persisted_row(persisted_opensandbox_row(lease))
     assert persisted_lease is not None
 
@@ -1799,12 +1803,11 @@ async def test_opensandbox_orphan_cleanup_never_deletes_untracked_runtime(monkey
 
 @pytest.mark.asyncio
 async def test_historical_internal_test_cleanup_survives_config_drift_but_active_use_is_rejected(monkeypatch):
-    from app.routes.sandbox_runtime_cleanup import container_lease_from_persisted_row
+    container_lease_from_persisted_row = sandbox_runtime_cleanup.container_lease_from_persisted_row
     from app.runtime.sandbox.providers.opensandbox.startup import renew_opensandbox_lifetime
     from app.runtime.sandbox.providers.opensandbox.metadata import normalize_opensandbox_metadata
 
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
-    cleanup = importlib.import_module("app.routes.sandbox_runtime_cleanup")
     FakeOpenSandbox.reset()
     FakeOpenSandboxManager.reset()
 
@@ -1877,7 +1880,7 @@ async def test_historical_internal_test_cleanup_survives_config_drift_but_active
         },
     }
     monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
-    monkeypatch.setattr(cleanup, "get_settings", lambda: settings)
+    monkeypatch.setattr("app.bootstrap.sandbox_cleanup.get_settings", lambda: settings)
     lease = container_lease_from_persisted_row(
         row,
         allow_historical_internal_test_cleanup=True,
@@ -5984,7 +5987,7 @@ async def test_docker_callback_probe_interruption_cleans_created_resources(monke
 @pytest.mark.asyncio
 @pytest.mark.parametrize("native_required", [False, True])
 async def test_docker_cleanup_from_persisted_lease_stops_owned_runtime_pair(monkeypatch, tmp_path, native_required):
-    from app.routes.sandbox_runtime_cleanup import container_lease_from_persisted_row
+    container_lease_from_persisted_row = sandbox_runtime_cleanup.container_lease_from_persisted_row
     from app.runtime.sandbox.container_provider import DockerContainerProvider
 
     settings = governed_docker_settings(sandbox_workspace_root=str(tmp_path))

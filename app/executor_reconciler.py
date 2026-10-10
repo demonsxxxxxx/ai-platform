@@ -19,10 +19,7 @@ from app.executors.base import ExecutorResult, RunPayload
 from app.executors.registry import AdapterRegistry
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 from app.persistence.artifacts import reserve_provisional_artifact_cleanup
-from app.routes.sandbox_runtime_cleanup import (
-    cleanup_failed_sandbox_executor_reconciliation_leases,
-    container_lease_from_persisted_row,
-)
+from app.bootstrap.sandbox_cleanup import build_sandbox_runtime_cleanup
 from app.runtime.sandbox.container_provider import create_container_provider
 from app.runtime.sandbox.contracts import (
     ExecutorTerminalResult,
@@ -56,6 +53,8 @@ from app.worker import (
     publish_run_event,
     reconcile_executor_terminal_result,
 )
+
+_sandbox_cleanup = build_sandbox_runtime_cleanup()
 
 _RECONCILIATION_BATCH_SIZE = 1
 _RECONCILIATION_CLAIM_STALE_SECONDS = 300
@@ -479,7 +478,7 @@ async def _finish_terminal_reconciliation_failure(
         run_diagnostics=run_diagnostics,
         reconciliation_error_code=error_code,
     )
-    lease = container_lease_from_persisted_row(lease_row)
+    lease = _sandbox_cleanup.container_lease_from_persisted_row(lease_row)
     if lease is None:
         await _quarantine_failed_reconciliation(
             lease_row,
@@ -559,7 +558,7 @@ async def _collect_workspace_and_convert_result(
         ) from exc
     request = _reconciliation_request(lease_row, run_payload)
     workspace = SandboxWorkspaceManager().prepare(request)
-    lease = container_lease_from_persisted_row(lease_row)
+    lease = _sandbox_cleanup.container_lease_from_persisted_row(lease_row)
     if lease is None:
         raise _permanent_reconciliation_error(
             "executor_reconciliation_runtime_handle_invalid"
@@ -717,7 +716,7 @@ async def probe_suspect_executor_tasks_once(
         try:
             _context, run_payload = _context_payload(lease_row)
             request = _reconciliation_request(lease_row, run_payload)
-            lease = container_lease_from_persisted_row(lease_row)
+            lease = _sandbox_cleanup.container_lease_from_persisted_row(lease_row)
             if lease is None:
                 raise ValueError("executor_reconciliation_runtime_handle_invalid")
             provider = _container_provider_for_lease(lease)
@@ -929,7 +928,7 @@ async def reconcile_pending_executor_terminals_once(
                     )
                     request = _reconciliation_request(lease_row, run_payload)
                     workspace = SandboxWorkspaceManager().prepare(request)
-                    lease = container_lease_from_persisted_row(lease_row)
+                    lease = _sandbox_cleanup.container_lease_from_persisted_row(lease_row)
                     if lease is None:
                         raise _permanent_reconciliation_error(
                             "executor_reconciliation_runtime_handle_invalid"
@@ -1108,7 +1107,7 @@ async def run_executor_terminal_reconciler(
                 for name, operation, repeat_on_progress in (
                     (
                         "executor-reconciliation-cleanup",
-                        lambda: cleanup_failed_sandbox_executor_reconciliation_leases(
+                        lambda: _sandbox_cleanup.cleanup_failed_sandbox_executor_reconciliation_leases(
                             provider_factory=create_container_provider,
                         ),
                         False,

@@ -1,3 +1,5 @@
+from app.bootstrap.sandbox_cleanup import build_sandbox_runtime_cleanup
+
 import app.context.infrastructure.snapshot_postgres as _owner_context_infrastructure_snapshot_postgres
 import app.identity.infrastructure.postgres as _owner_identity_infrastructure_postgres
 import app.persistence.chat_submissions as _owner_persistence_chat_submissions
@@ -22,6 +24,8 @@ from app.runs.domain.execution_spec import (
     compile_execution_spec,
 )
 from app.runs.infrastructure.postgres import create_run_attempt, transition_run_attempt
+
+sandbox_runtime_cleanup = build_sandbox_runtime_cleanup()
 
 
 POSTGRES_DSN_ENV = "AI_PLATFORM_S0A_SCHEMA_TEST_DSN"
@@ -576,10 +580,8 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
     from app.platform.postgres import sandbox_leases as sandbox_lease_repository
     from app.runs.application import attempt_lifecycle
     from app.runs.infrastructure import postgres as run_attempt_persistence
-    from app.routes.sandbox_runtime_cleanup import (
-        cleanup_expired_sandbox_runtime_leases,
-        cleanup_failed_sandbox_executor_reconciliation_leases,
-    )
+    cleanup_expired_sandbox_runtime_leases = sandbox_runtime_cleanup.cleanup_expired_sandbox_runtime_leases
+    cleanup_failed_sandbox_executor_reconciliation_leases = sandbox_runtime_cleanup.cleanup_failed_sandbox_executor_reconciliation_leases
 
     lifecycle = attempt_lifecycle.RunAttemptLifecycleService(persistence=run_attempt_persistence)
     monkeypatch.setattr(

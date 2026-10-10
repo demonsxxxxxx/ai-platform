@@ -1,3 +1,5 @@
+from app.bootstrap.sandbox_cleanup import build_sandbox_runtime_cleanup
+
 import app.runs.infrastructure.postgres as _owner_runs_infrastructure_postgres
 import app.sandbox.infrastructure.leases_postgres as _owner_sandbox_infrastructure_leases_postgres
 import app.streaming.infrastructure.run_events_postgres as _owner_streaming_infrastructure_run_events_postgres
@@ -22,6 +24,8 @@ from app.runtime.sandbox.contracts import (
     ExecutorCallbackEvent,
 )
 from app.streaming.infrastructure import v4 as streaming_v4
+
+sandbox_runtime_cleanup = build_sandbox_runtime_cleanup()
 
 
 class CallbackEventPersistence:
@@ -1713,7 +1717,7 @@ def test_inactive_heartbeat_does_not_reconstruct_or_renew(monkeypatch):
 
 def test_opensandbox_callback_renews_without_business_lock_then_commits_fenced_receipt(monkeypatch):
     from app.runtime.sandbox.opensandbox_policy import internal_test_opensandbox_lease_labels
-    from app.routes.sandbox_runtime_cleanup import container_lease_from_persisted_row
+    container_lease_from_persisted_row = sandbox_runtime_cleanup.container_lease_from_persisted_row
 
     settings = callback_settings("secret", lease_ttl_seconds=731)
     settings.deployment_environment = "test"
@@ -1725,7 +1729,7 @@ def test_opensandbox_callback_renews_without_business_lock_then_commits_fenced_r
     settings.opensandbox_executor_image_digest = "sha256:" + "a" * 64
     settings.sandbox_runtime_subject = "direct-opensandbox"
     patch_callback_settings(monkeypatch, settings)
-    monkeypatch.setattr("app.routes.sandbox_runtime_cleanup.get_settings", lambda: settings)
+    monkeypatch.setattr("app.bootstrap.sandbox_cleanup.get_settings", lambda: settings)
     order = []
     transaction_state = {"active": False}
     labels = internal_test_opensandbox_lease_labels(

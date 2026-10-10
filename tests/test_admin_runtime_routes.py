@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 from app.main import create_app
 from app.routes.admin_runtime import _backpressure_snapshot, _sanitize_observability_summary
-from app.routes.sandbox_runtime_cleanup import SandboxRuntimeCleanupError
+from app.sandbox.api import SandboxRuntimeCleanupError
 from app.runtime.sandbox.contracts import ContainerStatus, StopResult
 from app.settings import Settings
 from tests.support.db_transactions import opaque_transaction
@@ -203,7 +203,7 @@ def patch_db_only_cleanup(monkeypatch):
         return []
 
     monkeypatch.setattr(
-        "app.routes.admin_runtime.cleanup_expired_sandbox_leases",
+        "app.routes.admin_runtime._sandbox_cleanup.cleanup_expired_sandbox_leases",
         fake_cleanup_expired_sandbox_leases,
     )
 
@@ -220,7 +220,7 @@ def patch_empty_leases(monkeypatch):
 
     monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
     monkeypatch.setattr(
-        "app.routes.admin_runtime.cleanup_expired_sandbox_runtime_leases",
+        "app.routes.admin_runtime._sandbox_cleanup.cleanup_expired_sandbox_runtime_leases",
         fake_cleanup_expired_sandbox_runtime_leases,
     )
     patch_db_only_cleanup(monkeypatch)
@@ -250,7 +250,7 @@ def patch_real_leases(monkeypatch, *run_ids):
 
     monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
     monkeypatch.setattr(
-        "app.routes.admin_runtime.cleanup_expired_sandbox_runtime_leases",
+        "app.routes.admin_runtime._sandbox_cleanup.cleanup_expired_sandbox_runtime_leases",
         fake_cleanup_expired_sandbox_runtime_leases,
     )
     patch_db_only_cleanup(monkeypatch)
@@ -552,7 +552,7 @@ def test_admin_runtime_containers_includes_sandbox_leases(monkeypatch):
     monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
     monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
     monkeypatch.setattr(
-        "app.routes.admin_runtime.cleanup_expired_sandbox_runtime_leases",
+        "app.routes.admin_runtime._sandbox_cleanup.cleanup_expired_sandbox_runtime_leases",
         fake_cleanup_expired_sandbox_runtime_leases,
     )
     patch_db_only_cleanup(monkeypatch)
@@ -596,7 +596,7 @@ def test_admin_runtime_placeholder_cleanup_failure_does_not_break_real_projectio
     monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
     monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
     monkeypatch.setattr(
-        "app.routes.admin_runtime.cleanup_expired_sandbox_runtime_leases",
+        "app.routes.admin_runtime._sandbox_cleanup.cleanup_expired_sandbox_runtime_leases",
         placeholder_cleanup_failure,
     )
     patch_db_only_cleanup(monkeypatch)
@@ -652,7 +652,7 @@ def test_admin_runtime_containers_lists_only_active_sandbox_leases(monkeypatch):
     monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
     monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
     monkeypatch.setattr(
-        "app.routes.admin_runtime.cleanup_expired_sandbox_runtime_leases",
+        "app.routes.admin_runtime._sandbox_cleanup.cleanup_expired_sandbox_runtime_leases",
         fake_cleanup_expired_sandbox_runtime_leases,
     )
     patch_db_only_cleanup(monkeypatch)
@@ -735,7 +735,7 @@ def test_admin_runtime_containers_can_include_released_sandbox_lease_history(mon
     monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
     monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
     monkeypatch.setattr(
-        "app.routes.admin_runtime.cleanup_expired_sandbox_runtime_leases",
+        "app.routes.admin_runtime._sandbox_cleanup.cleanup_expired_sandbox_runtime_leases",
         fake_cleanup_expired_sandbox_runtime_leases,
         raising=False,
     )
@@ -826,7 +826,7 @@ def test_admin_runtime_hides_stale_active_proof_but_keeps_signed_terminal_histor
     monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
     monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
     monkeypatch.setattr(
-        "app.routes.admin_runtime.cleanup_expired_sandbox_runtime_leases",
+        "app.routes.admin_runtime._sandbox_cleanup.cleanup_expired_sandbox_runtime_leases",
         fake_cleanup_expired_sandbox_runtime_leases,
         raising=False,
     )
@@ -899,7 +899,7 @@ def test_admin_runtime_containers_filters_foreign_tenant_sandbox_leases(monkeypa
     monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
     monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
     monkeypatch.setattr(
-        "app.routes.admin_runtime.cleanup_expired_sandbox_runtime_leases",
+        "app.routes.admin_runtime._sandbox_cleanup.cleanup_expired_sandbox_runtime_leases",
         fake_cleanup_expired_sandbox_runtime_leases,
     )
     patch_db_only_cleanup(monkeypatch)
@@ -932,7 +932,7 @@ def test_admin_runtime_containers_cleans_expired_leases_before_listing(monkeypat
     monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
     monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
     monkeypatch.setattr(
-        "app.routes.admin_runtime.cleanup_expired_sandbox_runtime_leases",
+        "app.routes.admin_runtime._sandbox_cleanup.cleanup_expired_sandbox_runtime_leases",
         fake_cleanup_expired_sandbox_runtime_leases,
         raising=False,
     )
@@ -974,7 +974,7 @@ def test_admin_runtime_containers_cleans_provider_orphans_before_listing(monkeyp
     monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
     monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
     monkeypatch.setattr(
-        "app.routes.admin_runtime.cleanup_expired_sandbox_runtime_leases",
+        "app.routes.admin_runtime._sandbox_cleanup.cleanup_expired_sandbox_runtime_leases",
         fake_cleanup_expired_sandbox_runtime_leases,
         raising=False,
     )
@@ -1088,7 +1088,7 @@ def test_admin_runtime_containers_fails_closed_when_sandbox_cleanup_fails(monkey
     monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
     monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
     monkeypatch.setattr(
-        "app.routes.admin_runtime.cleanup_expired_sandbox_runtime_leases",
+        "app.routes.admin_runtime._sandbox_cleanup.cleanup_expired_sandbox_runtime_leases",
         fake_cleanup_expired_sandbox_runtime_leases,
         raising=False,
     )
@@ -1306,12 +1306,12 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
     monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
     monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
     monkeypatch.setattr(
-        "app.routes.admin_runtime.cleanup_expired_sandbox_runtime_leases",
+        "app.routes.admin_runtime._sandbox_cleanup.cleanup_expired_sandbox_runtime_leases",
         fake_cleanup_expired_sandbox_runtime_leases,
         raising=False,
     )
     monkeypatch.setattr(
-        "app.routes.admin_runtime.cleanup_expired_sandbox_leases",
+        "app.routes.admin_runtime._sandbox_cleanup.cleanup_expired_sandbox_leases",
         fake_cleanup_expired_sandbox_leases,
         raising=False,
     )
@@ -1520,12 +1520,12 @@ def test_admin_runtime_overview_can_skip_maintenance_cleanup_for_probe_snapshots
     monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
     monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
     monkeypatch.setattr(
-        "app.routes.admin_runtime.cleanup_expired_sandbox_runtime_leases",
+        "app.routes.admin_runtime._sandbox_cleanup.cleanup_expired_sandbox_runtime_leases",
         fail_runtime_cleanup,
         raising=False,
     )
     monkeypatch.setattr(
-        "app.routes.admin_runtime.cleanup_expired_sandbox_leases",
+        "app.routes.admin_runtime._sandbox_cleanup.cleanup_expired_sandbox_leases",
         fail_db_cleanup,
         raising=False,
     )
@@ -1927,7 +1927,7 @@ def test_admin_runtime_overview_fails_closed_when_sandbox_cleanup_fails(monkeypa
     monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
     monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
     monkeypatch.setattr(
-        "app.routes.admin_runtime.cleanup_expired_sandbox_runtime_leases",
+        "app.routes.admin_runtime._sandbox_cleanup.cleanup_expired_sandbox_runtime_leases",
         fake_cleanup_expired_sandbox_runtime_leases,
         raising=False,
     )

@@ -26,7 +26,7 @@ from app.mcp.api import McpRuntimeContextError, get_mcp_principal_jwt_store
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 from app.platform.public_payload import sanitize_public_reasoning_text
 from app.public_execution import PUBLIC_AGENT_PROGRESS_EVENT_TYPE
-from app.routes.sandbox_runtime_cleanup import container_lease_from_persisted_row
+from app.bootstrap.sandbox_cleanup import build_sandbox_runtime_cleanup
 from app.runs.api import (
     RunInputClosed,
     RunInputConflict,
@@ -76,6 +76,8 @@ from app.streaming.api import (
 )
 from app.streaming.infrastructure import run_events_postgres as streaming_run_events
 from app.streaming.redis import get_stream_authority
+
+_sandbox_cleanup = build_sandbox_runtime_cleanup()
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -484,7 +486,7 @@ async def record_executor_callback(
 
     if renewal_fence is not None:
         try:
-            persisted_lease = container_lease_from_persisted_row(renewal_row or {})
+            persisted_lease = _sandbox_cleanup.container_lease_from_persisted_row(renewal_row or {})
             if persisted_lease is None or persisted_lease.provider != "opensandbox":
                 raise ValueError("sandbox_runtime_renewal_lease_unavailable")
             provider = create_container_provider(persisted_lease.provider)

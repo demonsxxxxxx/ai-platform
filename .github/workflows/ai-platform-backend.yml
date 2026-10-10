@@ -135,6 +135,7 @@ jobs:
               tests/test_sandbox_workspace_manager.py
               tests/test_sandbox_runtime.py
               tests/test_sandbox_runtime_cleanup.py
+              tests/test_sandbox_cleanup_application.py
               tests/test_sandbox_runtime_control_layer.py
               tests/test_sandbox_runtime_evidence_script.py
               tests/test_skill_execution_profiles.py
