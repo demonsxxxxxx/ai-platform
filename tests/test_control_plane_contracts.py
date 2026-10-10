@@ -183,6 +183,37 @@ def test_public_payload_sanitizer_removes_runtime_private_aliases():
     }
 
 
+@pytest.mark.parametrize("delegate_used", [False, True])
+@pytest.mark.parametrize(
+    "delegate_key,boundary_key",
+    [
+        ("delegate_used", "worker_boundary"),
+        ("delegateUsed", "workerBoundary"),
+        ("delegate-used", "worker-boundary"),
+    ],
+)
+def test_public_payload_sanitizer_keeps_retired_executor_metadata_private(
+    delegate_used, delegate_key, boundary_key,
+):
+    legacy_metadata = {delegate_key: delegate_used, boundary_key: "historical-executor"}
+    historical_result = {
+        "message": "Historical answer",
+        **legacy_metadata,
+        "nested": [dict(legacy_metadata)],
+        "tuple_payload": ({"safe": "kept", **legacy_metadata},),
+    }
+
+    assert sanitize_public_payload(historical_result) == {
+        "message": "Historical answer",
+        "nested": [{}],
+        "tuple_payload": ({"safe": "kept"},),
+    }
+    # Reading a historical result must not rewrite the stored private payload.
+    assert historical_result[delegate_key] is delegate_used
+    assert historical_result[boundary_key] == "historical-executor"
+    assert historical_result["nested"] == [legacy_metadata]
+
+
 def test_public_payload_sanitizer_redacts_secret_like_executor_values():
     payload = sanitize_public_payload(
         {

@@ -28,7 +28,7 @@ from app.skills.execution_profiles import effective_skill_execution_profile
 from app.required_tool_contract import builtin_capability_subjects
 from app.executors.claude import capability_policy as claude_capability_policy
 from app.executors import claude_agent_worker
-from app.executors.base import RunPayload
+from app.executors.base import ExecutorResult, RunPayload
 from app.executors.claude_agent_sdk_runner import (
     build_sdk_env,
     build_skill_prompt,
@@ -72,6 +72,14 @@ from app.skills.pinning import build_uploaded_skill_manifest_pin
 from app.skills.registry import BuiltinSkillRegistry, iter_skill_files
 from app.storage import StoredObject
 from app.worker import WorkerRunCancelled
+
+
+def _assert_executor_identity_without_retired_metadata(result: ExecutorResult) -> None:
+    result.validate()
+    assert result.executor_type == "claude-agent-worker"
+    retired_keys = {"delegate_used", "worker_boundary"}
+    assert retired_keys.isdisjoint(result.result)
+    assert retired_keys.isdisjoint(result.executor_payload)
 
 
 @pytest.fixture(autouse=True)
@@ -817,6 +825,7 @@ async def test_submit_run_classifies_context_file_size_failure_without_starting_
     assert diagnostic["exception_chain"] == ["ContextFileContentError"]
     assert len(diagnostic["diagnostic_id"]) == 16
     int(diagnostic["diagnostic_id"], 16)
+    _assert_executor_identity_without_retired_metadata(result)
 
 
 @pytest.mark.asyncio
@@ -1749,6 +1758,17 @@ async def test_agent_run_records_pinned_manifest_dependency_graph(monkeypatch, t
     assert result.executor_payload["skill_manifests"][0]["dependency_ids"] == ["legacy-helper"]
 
 
+def test_catalog_failure_omits_retired_executor_metadata():
+    result = ClaudeAgentWorkerAdapter()._authorized_skill_catalog_failure_result(
+        "authorized_skill_catalog_invalid"
+    )
+
+    assert result.status == "failed"
+    assert result.result["error_code"] == "authorized_skill_catalog_invalid"
+    assert result.result["sdk_used"] is False
+    _assert_executor_identity_without_retired_metadata(result)
+
+
 @pytest.mark.asyncio
 async def test_sdk_disabled_fails_closed_without_secondary_executor(monkeypatch, tmp_path):
     adapter = ClaudeAgentWorkerAdapter()
@@ -1763,9 +1783,8 @@ async def test_sdk_disabled_fails_closed_without_secondary_executor(monkeypatch,
     assert result.executor_type == "claude-agent-worker"
     assert result.status == "failed"
     assert result.result["error_code"] == "claude_agent_sdk_disabled"
-    assert result.result["delegate_used"] is False
+    _assert_executor_identity_without_retired_metadata(result)
     assert result.result["sdk_used"] is False
-    assert result.executor_payload["worker_boundary"] == "claude-agent-worker"
 
 
 @pytest.mark.asyncio
@@ -1782,7 +1801,7 @@ async def test_sdk_disabled_keeps_single_harness_boundary(monkeypatch, tmp_path)
 
     assert result.status == "failed"
     assert result.result["error_code"] == "claude_agent_sdk_disabled"
-    assert result.result["delegate_used"] is False
+    _assert_executor_identity_without_retired_metadata(result)
 
 @pytest.mark.asyncio
 async def test_sandbox_skill_staging_matches_attempt_lease_and_isolates_retries(
@@ -1947,7 +1966,7 @@ async def test_agent_run_stages_platform_skills_before_sdk(monkeypatch, tmp_path
 
     assert result.status == "succeeded"
     assert result.result["sdk_used"] is True
-    assert result.result["delegate_used"] is False
+    _assert_executor_identity_without_retired_metadata(result)
     assert result.result["allowed_skills"] == ["qa-file-reviewer"]
     assert result.result["staged_skills"] == ["qa-file-reviewer"]
     assert result.result["used_skills"] == ["qa-file-reviewer"]
@@ -2720,6 +2739,7 @@ async def test_unknown_claude_execution_tier_fails_before_any_execution_helper(m
 
     assert result.status == "failed"
     assert result.result["error_code"] == "untrusted_claude_execution_tier"
+    _assert_executor_identity_without_retired_metadata(result)
 
 
 def test_sandbox_runtime_fake_provider_result_fails_closed(monkeypatch, tmp_path):
@@ -2751,6 +2771,7 @@ def test_sandbox_runtime_fake_provider_result_fails_closed(monkeypatch, tmp_path
 
     assert result.status == "failed"
     assert result.result["error_code"] == "sandbox_real_provider_required"
+    _assert_executor_identity_without_retired_metadata(result)
 
 
 def test_sandbox_runtime_marks_unconfirmed_mcp_execution_non_retryable(tmp_path):
@@ -2791,6 +2812,7 @@ def test_sandbox_runtime_marks_unconfirmed_mcp_execution_non_retryable(tmp_path)
     assert result.result["sdk_turn_diagnostics"]["terminal_class"] == (
         "execution_outcome_unknown"
     )
+    _assert_executor_identity_without_retired_metadata(result)
 
 
 def test_sandbox_runtime_preserves_bash_invocation_lifecycle_evidence(tmp_path):
@@ -3144,6 +3166,7 @@ def test_sandbox_runtime_unknown_or_error_terminal_status_fails_closed(runtime_s
         else "executor_reported_failure"
     )
     assert result.executor_payload["runtime_terminal_status"] == runtime_status
+    _assert_executor_identity_without_retired_metadata(result)
 
 
 @pytest.mark.parametrize("runtime_status", ["failed", "completed"])
@@ -3632,6 +3655,7 @@ async def test_agent_run_fails_closed_when_dependency_pin_is_missing(monkeypatch
     assert result.executor_payload["pin_mismatches"][0]["skill_id"] == "minimax-docx"
     assert result.executor_payload["pin_mismatches"][0]["reason"] == "missing_pinned_manifest"
     assert runtime_requests == []
+    _assert_executor_identity_without_retired_metadata(result)
 
 
 @pytest.mark.asyncio
@@ -3827,7 +3851,7 @@ async def test_general_chat_with_files_stays_on_sdk_path(monkeypatch, tmp_path):
 
     assert result.status == "succeeded"
     assert result.result["message"] == "hello from sdk"
-    assert result.result["delegate_used"] is False
+    _assert_executor_identity_without_retired_metadata(result)
     assert result.result["allowed_skills"] == ["general-chat"]
     assert runtime_requests[0].skill_ids == ["general-chat"]
     assert result.result["staged_skills"] == ["general-chat"]
@@ -4040,7 +4064,7 @@ async def test_sdk_runtime_error_is_reported_without_delegate(monkeypatch, tmp_p
     assert result.status == "failed"
     assert result.result["error_code"] == "claude_agent_sdk_runtime_error"
     assert result.result["sdk_used"] is True
-    assert result.result["delegate_used"] is False
+    _assert_executor_identity_without_retired_metadata(result)
     assert "projection_failure_reason" not in result.result["sdk_turn_diagnostics"]
     assert "C:/tenant" not in str(result.result)
 
@@ -4083,6 +4107,7 @@ async def test_prompt_preflight_returns_typed_failure_before_runtime_dispatch(
     assert failure is not None
     assert failure.status == "failed"
     assert failure.result["error_code"] == "current_request_too_large"
+    _assert_executor_identity_without_retired_metadata(failure)
     assert failure.result["sdk_used"] is False
     assert sdk_calls == 0
 
@@ -5646,7 +5671,7 @@ async def test_sdk_disabled_does_not_emit_secondary_executor_marker(monkeypatch,
 
     assert result.status == "failed"
     assert result.result["error_code"] == "claude_agent_sdk_disabled"
-    assert result.result["delegate_used"] is False
+    _assert_executor_identity_without_retired_metadata(result)
     assert events == []
 
 

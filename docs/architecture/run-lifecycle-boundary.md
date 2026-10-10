@@ -183,6 +183,24 @@ SDK `model.completed.duration_ms` and private SDK-stage timings remain separate
 metrics. This change does not rewrite historical terminal results or alter token
 and cache counters.
 
+### 4.2 Executor identity metadata and retained results
+
+Execution's adapter result envelope owns `executor_type`; the terminal projection
+preserves it in `runs.result_json.executor.executor_type`. New Claude adapter
+results and private executor payloads omit `worker_boundary` and `delegate_used`:
+the former duplicated that identity and the latter was a constant, not verified
+SDK delegation evidence. Their removal does not change SDK subagents, execution
+selection, capability evidence, or Run/Attempt authority.
+
+These optional JSON keys are not required by `ai-platform.executor-result.v1`
+and have no database columns or schema constraints. Existing result JSON remains
+readable without migration, backfill, or rewriting; absence is valid and does not
+need a replacement default. `app/platform/public_payload.py` retains both keys
+and their normalized aliases in its forbidden-public-key contract for historical
+records. Remove that compatibility protection only after proving no retained
+record or supported input can contain them, under the
+[public-projection contract](chat-run-lifecycle-and-public-error-projection.md).
+
 ## 5. Composition and call rules
 
 ### API process

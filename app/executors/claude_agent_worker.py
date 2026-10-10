@@ -404,13 +404,9 @@ class ClaudeAgentWorkerAdapter:
                     "message": "Claude worker execution boundary rejected the run.",
                     "error_code": decision.reason,
                     "sdk_used": False,
-                    "delegate_used": False,
-                    "worker_boundary": self.executor_type,
                 },
                 executor_payload={
                     "sdk_used": False,
-                    "delegate_used": False,
-                    "worker_boundary": self.executor_type,
                     "execution_boundary": decision.reason,
                 },
             )
@@ -474,15 +470,11 @@ class ClaudeAgentWorkerAdapter:
                 "skill_id": payload.skill_id,
                 "sdk_used": sdk_used,
                 "sdk_error": sdk_error,
-                "delegate_used": False,
-                "worker_boundary": self.executor_type,
                 "sdk_turn_diagnostics": turn_diagnostics,
             },
             executor_payload={
                 "sdk_used": sdk_used,
                 "sdk_error": sdk_error,
-                "delegate_used": False,
-                "worker_boundary": self.executor_type,
                 "sdk_turn_diagnostics": turn_diagnostics,
             },
         )
@@ -546,8 +538,6 @@ class ClaudeAgentWorkerAdapter:
                 "error_code": error_code,
                 "sdk_used": False,
                 "sdk_error": error_code,
-                "delegate_used": False,
-                "worker_boundary": self.executor_type,
                 "allowed_skills": [],
                 "staged_skills": [],
                 "used_skills": [],
@@ -556,8 +546,6 @@ class ClaudeAgentWorkerAdapter:
             executor_payload={
                 "sdk_used": False,
                 "sdk_error": error_code,
-                "delegate_used": False,
-                "worker_boundary": self.executor_type,
                 "allowed_skills": [],
                 "staged_skills": [],
                 "used_skills": [],
@@ -671,8 +659,6 @@ class ClaudeAgentWorkerAdapter:
                     "error_code": "skill_version_pin_mismatch",
                     "sdk_used": False,
                     "sdk_error": "skill_version_pin_mismatch",
-                    "delegate_used": False,
-                    "worker_boundary": self.executor_type,
                     "allowed_skills": allowed_skill_names,
                     "staged_skills": [],
                     "used_skills": [],
@@ -681,8 +667,6 @@ class ClaudeAgentWorkerAdapter:
                 executor_payload={
                     "sdk_used": False,
                     "sdk_error": "skill_version_pin_mismatch",
-                    "delegate_used": False,
-                    "worker_boundary": self.executor_type,
                     "allowed_skills": allowed_skill_names,
                     "staged_skills": [],
                     "used_skills": [],
@@ -749,15 +733,11 @@ class ClaudeAgentWorkerAdapter:
                     "error_code": "current_request_too_large",
                     "sdk_used": False,
                     "sdk_error": "current_request_too_large",
-                    "delegate_used": False,
-                    "worker_boundary": self.executor_type,
                 },
                 artifacts=[],
                 executor_payload={
                     "sdk_used": False,
                     "sdk_error": "current_request_too_large",
-                    "delegate_used": False,
-                    "worker_boundary": self.executor_type,
                 },
             )
         return (
@@ -919,8 +899,6 @@ class ClaudeAgentWorkerAdapter:
                 "message": "A real sandbox provider is required for Claude worker execution.",
                 "error_code": "sandbox_real_provider_required",
                 "sdk_used": False,
-                "delegate_used": False,
-                "worker_boundary": self.executor_type,
             },
             artifacts=[],
             executor_payload={
@@ -947,14 +925,10 @@ class ClaudeAgentWorkerAdapter:
                 "message": message,
                 "error_code": safe_error_code,
                 "sdk_used": False,
-                "delegate_used": False,
-                "worker_boundary": self.executor_type,
             },
             artifacts=[],
             executor_payload={
                 "sdk_used": False,
-                "delegate_used": False,
-                "worker_boundary": self.executor_type,
                 "context_file_failure": diagnostic,
             },
         )
@@ -1093,8 +1067,6 @@ class ClaudeAgentWorkerAdapter:
             "sdk_used": bool(executor_response.get("sdk_used")),
             "sdk_usage": executor_response.get("sdk_usage", {}) or {},
             **runtime_terminal_payload(executor_response, runtime_status=runtime_status),
-            "delegate_used": False,
-            "worker_boundary": self.executor_type,
             "allowed_skills": prepared.allowed_skill_names,
             "staged_skills": prepared.staged_skill_names,
             "used_skills": used_skill_names,
@@ -1111,8 +1083,6 @@ class ClaudeAgentWorkerAdapter:
         )
         failure_result_context = {
             "sdk_used": bool(executor_response.get("sdk_used")),
-            "delegate_used": False,
-            "worker_boundary": self.executor_type,
             "allowed_skills": prepared.allowed_skill_names,
             "staged_skills": prepared.staged_skill_names,
             "used_skills": used_skill_names,
@@ -1249,8 +1219,6 @@ class ClaudeAgentWorkerAdapter:
                 "artifact_count": len(artifacts),
                 "sdk_used": bool(executor_response.get("sdk_used")),
                 "sdk_error": None,
-                "delegate_used": False,
-                "worker_boundary": self.executor_type,
                 "allowed_skills": prepared.allowed_skill_names,
                 "staged_skills": prepared.staged_skill_names,
                 "used_skills": used_skill_names,

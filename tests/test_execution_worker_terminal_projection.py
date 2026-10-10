@@ -1,6 +1,8 @@
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from app.agent_apps.capability_state import exact_invoked_skills
 from app.execution.api import (
     enforce_required_artifact_types,
@@ -112,3 +114,37 @@ def test_terminal_projection_uses_native_skill_evidence_and_public_artifact_fiel
     assert projection.result_payload["runtime_diagnostics"] == {"private": "retained only in durable result"}
     assert projection.terminal_event_kwargs["input_token_count"] == 3
     assert projection.terminal_event_kwargs["trace_id"] == "trace-1"
+
+
+@pytest.mark.parametrize(
+    "legacy_metadata",
+    [
+        {},
+        {"delegate_used": False, "worker_boundary": "claude-agent-worker"},
+        {"delegate_used": True, "worker_boundary": "historical-executor"},
+    ],
+    ids=["current", "legacy-unused", "legacy-used"],
+)
+def test_terminal_projection_accepts_current_and_legacy_executor_metadata(legacy_metadata):
+    result = ExecutorResult(
+        status="succeeded", adapter_version="v1", executor_type="claude-agent-worker",
+        executor_version="v1", capabilities={},
+        result={"message": "Historical answer", **legacy_metadata},
+        executor_payload=dict(legacy_metadata),
+    )
+    result.validate()
+
+    projection = project_worker_terminal_result(
+        result, [], trace_id="trace-1", latency_ms=12,
+        invoked_skill_ids=exact_invoked_skills,
+    )
+
+    assert projection.result_payload["message"] == "Historical answer"
+    assert projection.result_payload["executor"]["executor_type"] == "claude-agent-worker"
+    for key in ("delegate_used", "worker_boundary"):
+        if key in legacy_metadata:
+            assert projection.result_payload[key] == legacy_metadata[key]
+        else:
+            assert key not in projection.result_payload
+    assert result.result == {"message": "Historical answer", **legacy_metadata}
+    assert result.executor_payload == legacy_metadata
