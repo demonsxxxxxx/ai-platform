@@ -138,8 +138,11 @@ export function useDocumentPreviewState(props: DocumentPreviewProps) {
   // Data state
   const [data, setData] = useState<PreviewData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [stateIdentity, setStateIdentity] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const actionOwnerRef = useRef<symbol | null>(null);
+  const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const [pptUrl, setPptUrl] = useState<string | null>(null);
@@ -163,15 +166,15 @@ export function useDocumentPreviewState(props: DocumentPreviewProps) {
   const [toolbarCompact, setToolbarCompact] = useState(false);
   const previewIdentity = useMemo(
     () =>
-      [
+      JSON.stringify([
         path,
-        content ?? "",
+        content ?? null,
         s3Key ?? "",
         previewUrl ?? "",
         signedUrl ?? "",
         externalImageUrl ?? "",
         mimeType ?? "",
-      ].join("\u0000"),
+      ]),
     [content, externalImageUrl, mimeType, path, previewUrl, s3Key, signedUrl],
   );
 
@@ -227,11 +230,17 @@ export function useDocumentPreviewState(props: DocumentPreviewProps) {
     mime === XLSX_CONTENT_TYPE &&
     !!xlsxPreviewUrl;
   const resolvedImageFile = imageFile || !!mime?.startsWith("image/");
-  const resolvedVideoFile = videoFile || !!mime?.startsWith("video/");
+  // .ts is also MPEG transport stream; an explicit text MIME disambiguates it.
+  const typeScriptSource =
+    ext === "ts" &&
+    (!!mime?.startsWith("text/") || mime === "application/typescript" ||
+      mime === "application/javascript");
+  const resolvedVideoFile =
+    (videoFile && !typeScriptSource) || !!mime?.startsWith("video/");
   const resolvedAudioFile = audioFile || !!mime?.startsWith("audio/");
   const resolvedPdfFile = pdfFile || mime === "application/pdf";
   const resolvedBinaryFile =
-    binaryFile && !resolvedVideoFile && !resolvedAudioFile;
+    binaryFile && !typeScriptSource && !resolvedVideoFile && !resolvedAudioFile;
   const hasSupportedPreview =
     resolvedImageFile ||
     resolvedVideoFile ||
@@ -249,7 +258,7 @@ export function useDocumentPreviewState(props: DocumentPreviewProps) {
   const unsupportedPreviewFile = !hasSupportedPreview && !resolvedBinaryFile;
   const isCurrentData = data?.identity === previewIdentity;
   const currentData = isCurrentData ? data : null;
-  const currentLoading = loading || (!!data && !isCurrentData);
+  const currentLoading = loading || stateIdentity !== previewIdentity;
 
   // Memoized values
   const language = useMemo(() => detectLanguage(fileName), [fileName]);
@@ -285,6 +294,9 @@ export function useDocumentPreviewState(props: DocumentPreviewProps) {
 
   // Content loading
   useEffect(() => {
+    const actionOwner = Symbol("preview");
+    actionOwnerRef.current = actionOwner;
+    setStateIdentity(previewIdentity);
     setLoading(true);
     setError(null);
     setData(null);
@@ -298,10 +310,22 @@ export function useDocumentPreviewState(props: DocumentPreviewProps) {
     setHtmlContent("");
     setVideoUrl(null);
     setAudioUrl(null);
+    setDocUrl(null);
+    setCopied(false);
+    setShowImageViewer(false);
+    setViewSource(false);
     setArrayBuffer(null);
     setExcalidrawData("");
     setResolvedUrl(null);
     let cancelled = false;
+    const ownedObjectUrls = new Set<string>();
+    const ownObjectUrl = (url: string): string => {
+      if (url.startsWith("blob:")) {
+        if (cancelled) URL.revokeObjectURL(url);
+        else ownedObjectUrls.add(url);
+      }
+      return url;
+    };
     const setCurrentData = (nextContent: string) => {
       if (!cancelled) {
         setData({ content: nextContent, path, identity: previewIdentity });
@@ -332,7 +356,7 @@ export function useDocumentPreviewState(props: DocumentPreviewProps) {
 
         if (dxfFile) {
           const blob = new Blob([content], { type: "text/plain" });
-          const url = URL.createObjectURL(blob);
+          const url = ownObjectUrl(URL.createObjectURL(blob));
           setCadUrl(url);
           setCadKind("dxf");
           setCurrentData("");
@@ -349,7 +373,7 @@ export function useDocumentPreviewState(props: DocumentPreviewProps) {
 
         if (htmlFile) {
           const blob = new Blob([content], { type: "text/html" });
-          const url = URL.createObjectURL(blob);
+          const url = ownObjectUrl(URL.createObjectURL(blob));
           setHtmlUrl(url);
           setHtmlContent(content);
           setCurrentData("");
@@ -372,12 +396,14 @@ export function useDocumentPreviewState(props: DocumentPreviewProps) {
           setResolvedUrl(url);
 
           if (resolvedImageFile) {
-            setImageUrl(
+            const nextUrl = ownObjectUrl(
               await resolveDocumentPreviewUrl({
                 url,
                 mimeType: mimeType || mime || "application/octet-stream",
               }),
             );
+            if (cancelled) return;
+            setImageUrl(nextUrl);
             setCurrentData("");
             setLoading(false);
             return;
@@ -385,8 +411,9 @@ export function useDocumentPreviewState(props: DocumentPreviewProps) {
 
           if (resolvedPdfFile) {
             const buffer = await fetchDocumentArrayBuffer(url);
+            if (cancelled) return;
             const blob = new Blob([buffer], { type: "application/pdf" });
-            const previewUrl = URL.createObjectURL(blob);
+            const previewUrl = ownObjectUrl(URL.createObjectURL(blob));
             setPdfUrl(previewUrl);
             setCurrentData("");
             setLoading(false);
@@ -394,36 +421,42 @@ export function useDocumentPreviewState(props: DocumentPreviewProps) {
           }
 
           if (resolvedVideoFile) {
-            setVideoUrl(
+            const nextUrl = ownObjectUrl(
               await resolveDocumentPreviewUrl({
                 url,
                 mimeType: mimeType || mime || "video/mp4",
               }),
             );
+            if (cancelled) return;
+            setVideoUrl(nextUrl);
             setCurrentData("");
             setLoading(false);
             return;
           }
 
           if (resolvedAudioFile) {
-            setAudioUrl(
+            const nextUrl = ownObjectUrl(
               await resolveDocumentPreviewUrl({
                 url,
                 mimeType: mimeType || mime || "audio/mpeg",
               }),
             );
+            if (cancelled) return;
+            setAudioUrl(nextUrl);
             setCurrentData("");
             setLoading(false);
             return;
           }
 
           if (cadFile) {
-            setCadUrl(
+            const nextUrl = ownObjectUrl(
               await resolveDocumentPreviewUrl({
                 url,
                 mimeType: mimeType || mime || "application/octet-stream",
               }),
             );
+            if (cancelled) return;
+            setCadUrl(nextUrl);
             setCadKind(dxfFile ? "dxf" : "dwg");
             setCurrentData("");
             setLoading(false);
@@ -432,6 +465,7 @@ export function useDocumentPreviewState(props: DocumentPreviewProps) {
 
           if (pptFile) {
             const buffer = await resolvePptPreviewBuffer({ url });
+            if (cancelled) return;
             setPptxBuffer(buffer);
             setCurrentData("");
             setLoading(false);
@@ -439,13 +473,10 @@ export function useDocumentPreviewState(props: DocumentPreviewProps) {
           }
 
           if (htmlFile) {
+            const text = await fetchDocumentText(url);
+            if (cancelled) return;
             setHtmlUrl(url);
-            try {
-              const text = await fetchDocumentText(url);
-              setHtmlContent(text);
-            } catch (e) {
-              console.error("Failed to fetch HTML content:", e);
-            }
+            setHtmlContent(text);
             setCurrentData("");
             setLoading(false);
             return;
@@ -453,6 +484,7 @@ export function useDocumentPreviewState(props: DocumentPreviewProps) {
 
           if (excalidrawFile) {
             const text = await fetchDocumentText(url);
+            if (cancelled) return;
             setExcalidrawData(text);
             setCurrentData("");
             setLoading(false);
@@ -460,12 +492,14 @@ export function useDocumentPreviewState(props: DocumentPreviewProps) {
           }
 
           if (legacyDocFile) {
-            setDocUrl(
+            const nextUrl = ownObjectUrl(
               await resolveDocumentPreviewUrl({
                 url,
                 mimeType: mimeType || mime || "application/msword",
               }),
             );
+            if (cancelled) return;
+            setDocUrl(nextUrl);
             setCurrentData("");
             setLoading(false);
             return;
@@ -477,6 +511,7 @@ export function useDocumentPreviewState(props: DocumentPreviewProps) {
             setCurrentData("");
           } else if (wordPreviewFile) {
             const buffer = await fetchDocumentArrayBuffer(url);
+            if (cancelled) return;
             setArrayBuffer(buffer);
             setCurrentData("");
           } else if (xlsxPreviewFile) {
@@ -487,6 +522,7 @@ export function useDocumentPreviewState(props: DocumentPreviewProps) {
             return;
           } else {
             const text = await fetchDocumentText(url);
+            if (cancelled) return;
             setCurrentData(text);
           }
           setLoading(false);
@@ -507,43 +543,29 @@ export function useDocumentPreviewState(props: DocumentPreviewProps) {
     loadContent();
     return () => {
       cancelled = true;
+      if (actionOwnerRef.current === actionOwner) actionOwnerRef.current = null;
+      if (copiedTimerRef.current !== null) clearTimeout(copiedTimerRef.current);
+      copiedTimerRef.current = null;
+      for (const url of ownedObjectUrls) URL.revokeObjectURL(url);
+      ownedObjectUrls.clear();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [path, content, s3Key, previewUrl, signedUrl, externalImageUrl, mimeType]);
-
-  // Blob URL cleanup
-  useEffect(() => {
-    return () => {
-      if (htmlUrl?.startsWith("blob:")) {
-        URL.revokeObjectURL(htmlUrl);
-      }
-      if (cadUrl?.startsWith("blob:")) {
-        URL.revokeObjectURL(cadUrl);
-      }
-      if (pdfUrl?.startsWith("blob:")) {
-        URL.revokeObjectURL(pdfUrl);
-      }
-      if (imageUrl?.startsWith("blob:")) {
-        URL.revokeObjectURL(imageUrl);
-      }
-      if (videoUrl?.startsWith("blob:")) {
-        URL.revokeObjectURL(videoUrl);
-      }
-      if (audioUrl?.startsWith("blob:")) {
-        URL.revokeObjectURL(audioUrl);
-      }
-      if (docUrl?.startsWith("blob:")) {
-        URL.revokeObjectURL(docUrl);
-      }
-    };
-  }, [audioUrl, cadUrl, docUrl, htmlUrl, imageUrl, pdfUrl, videoUrl]);
+  }, [
+    path, content, s3Key, previewUrl, signedUrl, externalImageUrl, mimeType,
+    previewIdentity, mime, t, unsupportedPreviewFile, dxfFile, dwgFile,
+    htmlFile, xlsxPreviewUrl, resolvedImageFile, resolvedPdfFile,
+    resolvedVideoFile, resolvedAudioFile, cadFile, pptFile, excalidrawFile,
+    legacyDocFile, resolvedBinaryFile, wordPreviewFile, xlsxPreviewFile,
+  ]);
 
   // Action handlers
   const handleCopy = async () => {
     if (currentData?.content) {
+      const actionOwner = actionOwnerRef.current;
       await copyToClipboard(currentData.content);
+      if (!actionOwner || actionOwnerRef.current !== actionOwner) return;
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      if (copiedTimerRef.current !== null) clearTimeout(copiedTimerRef.current);
+      copiedTimerRef.current = setTimeout(() => setCopied(false), 2000);
     }
   };
 

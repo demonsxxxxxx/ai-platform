@@ -35,8 +35,15 @@ test("PDF preview uses a local PDF blob URL instead of embedding the download UR
 });
 
 test("PDF preview revokes generated blob URLs", () => {
-  assert.match(stateSource, /if \(pdfUrl\?\.startsWith\("blob:"\)\)/);
-  assert.match(stateSource, /URL\.revokeObjectURL\(pdfUrl\)/);
+  const pdfBranch = sliceBetween(
+    stateSource,
+    "if (resolvedPdfFile) {",
+    "if (resolvedVideoFile) {",
+  );
+  assert.match(pdfBranch, /ownObjectUrl\(URL\.createObjectURL\(blob\)\)/);
+  assert.match(stateSource, /ownedObjectUrls\.add\(url\)/);
+  assert.match(stateSource, /for \(const url of ownedObjectUrls\) URL\.revokeObjectURL\(url\)/);
+  assert.match(stateSource, /ownedObjectUrls\.clear\(\)/);
 });
 
 test("remote document preview validates URLs before storing or fetching them", () => {
