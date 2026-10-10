@@ -194,6 +194,9 @@ importers:
       word-extractor:
         specifier: 1.0.4
         version: 1.0.4
+      yaml:
+        specifier: 1.10.3
+        version: 1.10.3
     devDependencies:
       '@eslint/js':
         specifier: ^9.17.0

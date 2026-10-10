@@ -143,6 +143,7 @@ export function SkillFormFullscreen(a: SkillFormActions) {
                       }
                       className="flex-1 min-h-0"
                       filePath={a.files[a.activeFileIndex]?.path}
+                      readOnly={!a.files[a.activeFileIndex]?.loaded || a.files[a.activeFileIndex]?.binary}
                     />
                   </div>
                 );
