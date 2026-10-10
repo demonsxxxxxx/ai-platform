@@ -1971,6 +1971,13 @@ async def test_retry_admission_reuses_queue_identity_after_a_ledger_update_loss(
     submission["request_fingerprint_sha256"] = old_fingerprint
     enqueued_payloads: list[dict[str, object]] = []
     finalize_attempts = 0
+    committed_events = []
+
+    @asynccontextmanager
+    async def acknowledgement_transaction():
+        pending_events = []
+        yield pending_events
+        committed_events.extend(pending_events)
 
     async def get_submission(*_args, **_kwargs):
         return submission
@@ -1985,8 +1992,8 @@ async def test_retry_admission_reuses_queue_identity_after_a_ledger_update_loss(
     async def read_admission(_payload):
         return QueueAdmissionMetadata(1, 7, "stable-message-id") if enqueued_payloads else None
 
-    async def append_event(*_args, **_kwargs):
-        return None
+    async def append_event(conn, **kwargs):
+        conn.append(kwargs)
 
     async def finalize(*_args, **kwargs):
         nonlocal finalize_attempts
@@ -1996,7 +2003,7 @@ async def test_retry_admission_reuses_queue_identity_after_a_ledger_update_loss(
         submission["state"] = "queued"
         submission["outcome_json"] = kwargs["outcome_json"]
 
-    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.chat.transaction", acknowledgement_transaction)
     monkeypatch.setattr(_owner_persistence_chat_submissions, 'get_chat_submission', get_submission, raising=False)
     monkeypatch.setattr(_owner_runs_infrastructure_creation_postgres, 'get_authorized_run', get_run, raising=False)
     monkeypatch.setattr("app.routes.chat._validate_queue_payload_for_enqueue", lambda payload: payload)
@@ -2016,6 +2023,7 @@ async def test_retry_admission_reuses_queue_identity_after_a_ledger_update_loss(
             principal=principal(),
             submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
         )
+    assert committed_events == []
     response = await _admit_chat_submission(
         principal=principal(),
         submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
@@ -2023,6 +2031,8 @@ async def test_retry_admission_reuses_queue_identity_after_a_ledger_update_loss(
 
     assert response.state == "queued"
     assert len(enqueued_payloads) == 1
+    assert len(committed_events) == 1
+    assert committed_events[0]["event_type"] == "queued"
 
     assert response.outcome.run_id == submission["run_id"]
     assert submission["request_fingerprint_sha256"] == old_fingerprint
@@ -5714,3 +5724,96 @@ async def test_chat_stream_real_authorizer_maps_agent_skill_state_to_generic_403
     assert exc_info.value.detail == "capability_not_authorized"
     assert execute_params == [("ragflow-knowledge-search", "tenant-a", "sop-assistant")]
     assert audits == [("chat_stream", "ragflow-knowledge-search", "capability_not_authorized")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("position,ordinal", [(0, 0), (2, 7)])
+async def test_queue_success_records_event_and_receipt_on_callers_connection(
+    monkeypatch, position, ordinal
+):
+    from app.models import ChatStreamResponse
+    from app.routes.chat import _persist_chat_queue_success
+
+    conn = object()
+    calls = []
+
+    async def append_event(connection, **kwargs):
+        calls.append(("event", connection, kwargs))
+
+    async def finalize(connection, **kwargs):
+        calls.append(("receipt", connection, kwargs))
+
+    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, "append_event", append_event)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, "finalize_chat_submission", finalize)
+    outcome = ChatStreamResponse(session_id="session-1", run_id="run-1", status="queued")
+    await _persist_chat_queue_success(
+        conn,
+        principal=principal(),
+        run_id="run-1",
+        queue_admission=QueueAdmissionMetadata(position, ordinal, "stable-message-id"),
+        outcome=outcome,
+        submission_id="submission-1",
+    )
+
+    assert [call[0] for call in calls] == ["event", "receipt"]
+    assert all(call[1] is conn for call in calls)
+    assert calls[0][2] == {
+        "tenant_id": principal().tenant_id,
+        "run_id": "run-1",
+        "event_type": "queued",
+        "stage": "queue",
+        "message": "任务队列接纳完成",
+        "payload": {
+            "visible_to_user": False,
+            "source": "admin_runtime_queue",
+            "queue_position": position or None,
+            "queue_admission_ordinal": ordinal or None,
+            "queue_probe_source": "redis_metadata",
+        },
+    }
+    assert calls[1][2] == {
+        "tenant_id": principal().tenant_id,
+        "user_id": principal().user_id,
+        "submission_id": "submission-1",
+        "state": "queued",
+        "outcome_json": outcome.model_dump(mode="json"),
+        "queue_position": position or None,
+        "queue_admission_ordinal": ordinal or None,
+        "queue_message_id": "stable-message-id",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_stage", ["event", "receipt"])
+async def test_queue_success_propagates_write_failure_to_transaction_owner(
+    monkeypatch, failure_stage
+):
+    from app.models import ChatStreamResponse
+    from app.routes.chat import _persist_chat_queue_success
+
+    calls = []
+    failure = RuntimeError("synthetic persistence failure")
+
+    async def append_event(_connection, **_kwargs):
+        calls.append("event")
+        if failure_stage == "event":
+            raise failure
+
+    async def finalize(_connection, **_kwargs):
+        calls.append("receipt")
+        raise failure
+
+    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, "append_event", append_event)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, "finalize_chat_submission", finalize)
+    with pytest.raises(RuntimeError) as raised:
+        await _persist_chat_queue_success(
+            object(),
+            principal=principal(),
+            run_id="run-1",
+            queue_admission=QueueAdmissionMetadata(2, 7, "stable-message-id"),
+            outcome=ChatStreamResponse(session_id="session-1", run_id="run-1", status="queued"),
+            submission_id="submission-1",
+        )
+
+    assert raised.value is failure
+    assert calls == (["event"] if failure_stage == "event" else ["event", "receipt"])
