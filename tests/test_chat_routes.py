@@ -2575,8 +2575,18 @@ async def test_list_messages_returns_stable_bounded_cursor(monkeypatch):
     }
 @pytest.mark.asyncio
 @pytest.mark.parametrize("enqueue_mode", ["normal", "reply_lost_readback", "unknown"])
+@pytest.mark.parametrize(
+    "current_message",
+    [
+        "review this document",
+        '格式化 JSON：{"path":"/tmp/example.json"}',
+        "Review /home/example/report.txt",
+        "Review output/report.csv",
+        r"Review C:\examples\report.json",
+    ],
+)
 async def test_chat_stream_capability_distribution_creates_run_with_auth_snapshot(
-    monkeypatch, enqueue_mode
+    monkeypatch, enqueue_mode, current_message
 ):
     calls = []
 
@@ -2614,6 +2624,7 @@ async def test_chat_stream_capability_distribution_creates_run_with_auth_snapsho
         return "ses_3"
 
     async def fake_create_run(conn, **kwargs):
+        assert kwargs["input_json"]["input"]["message"] == current_message
         calls.append(("run", kwargs["user_id"], kwargs["skill_id"], kwargs["input_json"]["file_ids"]))
         calls.append(
             (
@@ -2717,7 +2728,7 @@ async def test_chat_stream_capability_distribution_creates_run_with_auth_snapsho
         ChatStreamRequest(
             agent_id="document-review",
             selected_skill={"skill_id": "qa-file-reviewer", "expected_version": "0.1.0"},
-            message="review this document",
+            message=current_message,
             agent_options={"model_id": "deepseek-v4-pro"},
             attachments=[{"key": "file_1", "name": "review.docx"}],
         ),
@@ -2726,6 +2737,9 @@ async def test_chat_stream_capability_distribution_creates_run_with_auth_snapsho
 
     assert response.run_id == "run_3"
     assert response.session_id == "ses_3"
+    queued_input = next(item[1]["input"] for item in calls if item[0] == "queue_payload")
+    assert queued_input["message"] == current_message
+    assert ("message", "user", current_message, "run_3") in calls
     if enqueue_mode == "unknown":
         assert response.status == "accepted_pending_enqueue"
         assert response.queue_position is None
@@ -2763,13 +2777,13 @@ async def test_chat_stream_capability_distribution_creates_run_with_auth_snapsho
     assert len(ref["materialization_sha256"]) == 64
     assert "files" not in ref
     assert "content_base64" not in json.dumps(ref, ensure_ascii=False)
-    assert ("message", "user", "review this document", "run_3") in calls
+    assert ("message", "user", current_message, "run_3") in calls
     message_metadata = next(item[1] for item in calls if item[0] == "message_metadata")
     assert message_metadata["locked_skill"] == {"label": "internal-comms"}
     assert "qa-file-reviewer" not in json.dumps(message_metadata, ensure_ascii=False)
     assert "0.1.0" not in json.dumps(message_metadata, ensure_ascii=False)
     assert "/skill" not in json.dumps(message_metadata, ensure_ascii=False)
-    assert ("context", "chat_stream", ["msg_3"], ["file_1"], {"message": "review this document"}, True) in calls
+    assert ("context", "chat_stream", ["msg_3"], ["file_1"], {"message": current_message}, True) in calls
     assert queue_payload["context_snapshot_id"] == "ctx_chat_3"
     assert queue_payload["context_snapshot"]["source"] == "chat_stream"
     assert queue_payload["context_snapshot"]["message_count"] == 1

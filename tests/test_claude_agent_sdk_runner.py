@@ -6225,12 +6225,25 @@ async def test_outer_cancellation_reaches_sdk_query_cleanup(monkeypatch, tmp_pat
     ("stored_transcript", "expected_option"),
     [(None, "session_id"), ([{"uuid": "entry-1"}], "resume")],
 )
+@pytest.mark.parametrize(
+    "current_message",
+    [
+        "continue",
+        '格式化 JSON：{"path":"/tmp/example.json"}',
+        "Review /home/example/report.txt",
+        "Review output/report.csv",
+        r"Review C:\examples\report.json",
+    ],
+)
 async def test_sdk_provider_session_options_are_exclusive_and_eager(
     monkeypatch,
     tmp_path,
     stored_transcript,
     expected_option,
+    current_message,
 ):
+    from app.runs.infrastructure.capability_admission_postgres import normalize_run_input_for_enqueue
+
     captured = {}
 
     append_calls = []
@@ -6250,8 +6263,11 @@ async def test_sdk_provider_session_options_are_exclusive_and_eager(
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", _fake_sdk(captured, hook_invocations=[]))
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
 
+    admitted_input = normalize_run_input_for_enqueue(
+        {"message": current_message, "prompt": "stale alias"}, redact_public=True
+    )
     result = await run_claude_agent_sdk(
-        prompt="continue",
+        prompt=str(admitted_input.get("message") or admitted_input.get("prompt") or ""),
         cwd=tmp_path,
         skill_id=None,
         session_id="stable-provider-id",
@@ -6260,6 +6276,7 @@ async def test_sdk_provider_session_options_are_exclusive_and_eager(
     )
 
     assert result.error is None
+    assert captured["sdk_user_messages"][0]["message"]["content"] == current_message
     assert result.provider_final_sequence == 1
     assert captured["session_store_flush"] == "eager"
     assert captured["session_store"] is not None

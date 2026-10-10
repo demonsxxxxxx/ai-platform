@@ -97,15 +97,29 @@ def strip_caller_run_auth_snapshot_fields(value: Any) -> Any:
 
 
 def normalize_run_input_for_enqueue(input_payload: object, *, redact_public: bool) -> dict[str, Any]:
-    """Sanitize run input while preserving validated explicit MCP selectors."""
+    """Normalize control metadata without rewriting the private current user turn.
+
+    Public response projection is a separate boundary. Applying its path/secret
+    filters to the SDK user text can erase a legitimate request and select a
+    different legacy prompt instead. These scalar fields are user content, not
+    capability declarations; their contents never restore control authority.
+    """
 
     if not isinstance(input_payload, dict):
         return {}
     top_level_tools_present, top_level_tool_ids = _explicit_mcp_tool_scope(input_payload)
+    current_turn_text = {
+        key: input_payload[key]
+        for key in ("message", "prompt")
+        if isinstance(input_payload.get(key), str)
+    }
+    control_input = {
+        key: value for key, value in input_payload.items() if key not in current_turn_text
+    }
     if redact_public:
-        cleaned = sanitize_user_control_input(input_payload)
+        cleaned = sanitize_user_control_input(control_input)
     else:
-        stripped = strip_server_owned_control_metadata(input_payload)
+        stripped = strip_server_owned_control_metadata(control_input)
         cleaned = stripped if isinstance(stripped, dict) else {}
     normalized = strip_caller_run_auth_snapshot_fields(cleaned)
     if not isinstance(normalized, dict):
@@ -115,6 +129,7 @@ def normalize_run_input_for_enqueue(input_payload: object, *, redact_public: boo
             normalized.pop(key, None)
     if top_level_tools_present:
         normalized["mcp_tool_ids"] = top_level_tool_ids
+    normalized.update(current_turn_text)
     return normalized
 
 
