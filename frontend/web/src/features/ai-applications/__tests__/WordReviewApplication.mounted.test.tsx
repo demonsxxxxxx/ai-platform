@@ -12,7 +12,7 @@ const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http:
 Object.assign(globalThis, { window: dom.window, document: dom.window.document, localStorage: dom.window.localStorage, sessionStorage: dom.window.sessionStorage, HTMLElement: dom.window.HTMLElement, CustomEvent: dom.window.CustomEvent, IS_REACT_ACT_ENVIRONMENT: true });
 Object.defineProperty(globalThis, "navigator", { configurable: true, value: dom.window.navigator });
 installBrowserAuthTestDb();
-const { act, createElement } = await import("react");
+const { act, createElement, useLayoutEffect } = await import("react");
 const { createRoot } = await import("react-dom/client");
 const { MemoryRouter, Routes, Route } = await import("react-router-dom");
 const { AuthProvider, useAuth } = await import("../../../hooks/useAuth");
@@ -29,7 +29,7 @@ function button(container: HTMLElement, label: string) { const found = Array.fro
 const historyValues = () => Object.keys(localStorage).filter(key => key.startsWith("wordReviewHistory")).map(key => JSON.parse(localStorage.getItem(key)!));
 
 type Fetcher = (url: string, init: RequestInit) => Promise<Response> | Response;
-async function harness(options: { review?: Fetcher; history?: Fetcher; cancel?: Fetcher } = {}) {
+async function harness(options: { review?: Fetcher; history?: Fetcher; cancel?: Fetcher; onScopeCommit?: (user: User | null) => void } = {}) {
   const old = { fetch: globalThis.fetch, xhr: globalThis.XMLHttpRequest, bootstrap: authApi.bootstrapAuthContext, user: authApi.getCurrentUser, confirm: window.confirm };
   let auth!: ReturnType<typeof useAuth>; let user = principal(); let uploads = 0; const calls: Array<{ url: string; init: RequestInit }> = [];
   localStorage.clear(); window.confirm = () => true;
@@ -51,7 +51,7 @@ async function harness(options: { review?: Fetcher; history?: Fetcher; cancel?: 
     throw new Error(`Unexpected synthetic request ${url}`);
   }) as typeof fetch;
   const container = document.createElement("div"); document.body.append(container); const root = createRoot(container);
-  function Probe() { auth = useAuth(); return createElement(MemoryRouter, { initialEntries: ["/apps/word-review"] }, createElement(Routes, null, createElement(Route, { path: "/apps/:appKey", element: createElement(AgentApplicationRoute) }))); }
+  function Probe() { const currentAuth = useAuth(); auth = currentAuth; useLayoutEffect(() => { options.onScopeCommit?.(currentAuth.user); }, [currentAuth.user]); return createElement(MemoryRouter, { initialEntries: ["/apps/word-review"] }, createElement(Routes, null, createElement(Route, { path: "/apps/:appKey", element: createElement(AgentApplicationRoute) }))); }
   await act(async () => { root.render(createElement(AuthProvider, null, createElement(Probe))); });
   assert.equal(auth.isAuthenticated, true);
   let unmounted = false;
@@ -173,5 +173,25 @@ test("late cancellation from a failed attempt cannot abort the same task's retry
     assert.ok(view.container.querySelector(".task-card.is-running"));
     await act(async () => { second.enqueue(new TextEncoder().encode(success)); second.close(); });
     assert.ok(view.container.querySelector(".task-card.is-completed")); assert.equal(attempts, 2);
+  } finally { await view.close(); }
+});
+
+
+test("initial history resolving in the replacement scope layout cannot paint old-owner data", async () => {
+  const history = deferred<Response>(); let reads = 0; let resolvedInLayout = false;
+  const view = await harness({
+    history: () => ++reads === 1 ? history.promise : json({ items: [] }),
+    onScopeCommit: user => {
+      if (user?.id === "user-b") {
+        resolvedInLayout = true;
+        history.resolve(json({ items: [{ name: "old-layout-owner.docx", status: "completed", task_id: "old-layout-task" }] }));
+      }
+    },
+  });
+  try {
+    await view.setUser(principal("user-b", "tenant-b"));
+    assert.equal(resolvedInLayout, true);
+    await act(async () => { Array.from(view.container.querySelectorAll("button")).find(node => node.textContent?.startsWith("历史记录"))!.click(); });
+    assert.doesNotMatch(view.container.textContent!, /old-layout-owner/); assert.deepEqual(historyValues(), []);
   } finally { await view.close(); }
 });

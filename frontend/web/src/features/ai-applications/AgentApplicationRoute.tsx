@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import toast from "react-hot-toast";
 import {
@@ -926,7 +926,7 @@ function useWordReviewController(workId: string, tenantId: string) {
   const cancelConfirmedRef = useRef(new Set<string>());
   const historyRequestSeq = useRef(0);
   const statsRequestSeq = useRef(0);
-  const ownsScope = (generation: number) => mountedRef.current && scopeGeneration.current === generation && scopeKeyRef.current === scopeKey;
+  const ownsScope = useCallback((generation: number) => mountedRef.current && scopeGeneration.current === generation && scopeKeyRef.current === scopeKey, [scopeKey]);
   const ownsTask = (localId: string) => ownsScope(taskOwnersRef.current.get(localId) ?? -1);
 
   useLayoutEffect(() => {
@@ -1048,6 +1048,8 @@ function useWordReviewController(workId: string, tenantId: string) {
   useEffect(() => {
     let active = true;
     if (!workId) return;
+    const owner = scopeGeneration.current;
+    const ownsInitialLoad = () => active && ownsScope(owner);
     const historyRequest = ++historyRequestSeq.current;
     const statsRequest = ++statsRequestSeq.current;
     setHistory(readLocalWordReviewHistory(historyStorageKey));
@@ -1056,14 +1058,14 @@ function useWordReviewController(workId: string, tenantId: string) {
         fetchWordReviewStats(),
         fetchWordReviewHistory(workId),
       ]);
-      if (!active) return;
+      if (!ownsInitialLoad()) return;
       if (statsRequest === statsRequestSeq.current) {
         if (statsResult.status === "fulfilled") setStats(statsResult.value);
         setStatsLoading(false);
       }
       if (historyRequest === historyRequestSeq.current) {
         if (historyResult.status === "fulfilled") {
-          setHistory((current) => active ? mergeWordReviewHistory(historyResult.value, current) : current);
+          setHistory((current) => ownsInitialLoad() ? mergeWordReviewHistory(historyResult.value, current) : current);
         } else {
           setHistoryError("服务端历史记录暂时无法获取，当前显示本地记录。");
         }
@@ -1075,7 +1077,7 @@ function useWordReviewController(workId: string, tenantId: string) {
       setServiceLoading(false);
     })();
     return () => { active = false; };
-  }, [workId, historyStorageKey]);
+  }, [workId, historyStorageKey, ownsScope]);
 
   useEffect(() => {
     const pageCount = Math.max(1, Math.ceil(history.length / WORD_REVIEW_HISTORY_PAGE_SIZE));
