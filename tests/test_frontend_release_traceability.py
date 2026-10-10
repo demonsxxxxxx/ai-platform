@@ -30,6 +30,7 @@ EXPECTED_CI_VERIFY = (
     "&& corepack pnpm run test:model-admin "
     "&& corepack pnpm run test:sse "
     "&& corepack pnpm run test:document-previews "
+    "&& corepack pnpm run test:pwa "
     "&& eslint . && tsc -b && vite build "
     "&& node scripts/write-build-provenance.mjs"
 )
