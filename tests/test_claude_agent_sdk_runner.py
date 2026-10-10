@@ -22,6 +22,7 @@ from app.executors.claude.capability_policy import (
     _canonical_tool_policy_subjects,
     _mcp_server_options,
     internal_context_tool_policy_subjects,
+    internal_response_tool_policy_subjects,
 )
 from app.platform.public_payload import (
     sanitize_public_event_candidate,
@@ -5060,13 +5061,14 @@ async def test_sdk_attach_file_selects_ordered_final_deliverables(monkeypatch, t
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("select_file", [False, True])
+@pytest.mark.parametrize("publish_events", [False, True])
 async def test_response_delivery_observes_real_sdk_mcp_dispatch(
-    monkeypatch, tmp_path, select_file
+    monkeypatch, tmp_path, select_file, publish_events
 ):
     import claude_agent_sdk as installed_sdk
     from mcp import types as mcp_types
 
-    captured, lifecycle = {}, []
+    captured, lifecycle, public_events = {}, [], []
     (tmp_path / "final.txt").write_text("synthetic deliverable", encoding="utf-8")
     sdk = _scripted_sdk(captured, [], result_text="任务已完成")
     sdk.tool = installed_sdk.tool
@@ -5114,13 +5116,20 @@ async def test_response_delivery_observes_real_sdk_mcp_dispatch(
         lifecycle.append(fact)
         return True
 
+    async def acknowledge_events(events):
+        public_events.extend(events)
+        return True
+
     sdk.query = query
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
     result = await run_claude_agent_sdk(
         prompt="请提供文件", cwd=tmp_path, skill_id=None,
         execution_policy="sandbox_brokered",
-        tool_policy_subjects=[], on_tool_lifecycle=acknowledge,
+        tool_policy_subjects=internal_response_tool_policy_subjects(),
+        on_tool_lifecycle=acknowledge,
+        on_agent_event=acknowledge_events if publish_events else None,
+        run_id="run-response-delivery", attempt_id="attempt-response-delivery",
     )
 
     assert result.error is None
@@ -5133,6 +5142,15 @@ async def test_response_delivery_observes_real_sdk_mcp_dispatch(
     assert [fact["lifecycle"] for fact in lifecycle] == (
         ["started", "completed"] if select_file else []
     )
+    tool_events = [event for event in public_events if event.event_type.startswith("tool.")]
+    assert [event.event_type for event in tool_events] == (
+        ["tool.started", "tool.completed"] if select_file and publish_events else []
+    )
+    assert all(event.payload["display_name"] == "交付文件" for event in tool_events)
+    serialized = json.dumps([event.payload for event in public_events], ensure_ascii=False)
+    assert all(value not in serialized for value in (
+        "mcp__", "ai-platform-response", "attach_file", "file-call", "final.txt",
+    ))
 
 
 

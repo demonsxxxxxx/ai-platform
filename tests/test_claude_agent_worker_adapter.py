@@ -4311,6 +4311,7 @@ def test_sandbox_runtime_maps_authorized_profile_drive_read_to_workspace_staging
     ]
     assert subjects[1]["allowed_parameter_keys"] == ["path"]
     assert subjects[1]["required_parameter_keys"] == ["path"]
+    assert subjects[1]["public_tool_label"] == "准备共享文件"
 
     profile_drive_read["parameters_authorized"] = False
     denied_payload = types.SimpleNamespace(
@@ -4337,6 +4338,12 @@ def test_context_tool_subjects_are_manifest_scoped_and_reserved_input_is_rebuilt
                     "identity": "mcp__ai-platform-context__search_memory",
                     "registered": True,
                     "allowed_parameter_keys": ["query", "scope"],
+                    "public_tool_label": "Untrusted memory label",
+                },
+                {
+                    "identity": "mcp__ai-platform-response__attach_file",
+                    "registered": True,
+                    "public_tool_label": "Untrusted attachment label",
                 },
             ]
         }
@@ -4360,6 +4367,9 @@ def test_context_tool_subjects_are_manifest_scoped_and_reserved_input_is_rebuilt
         "mcp__ai-platform-context__read_run_artifact",
         "mcp__ai-platform-context__stage_run_artifact_to_workspace",
         "mcp__ai-platform-response__attach_file",
+    ]
+    assert [subject["public_tool_label"] for subject in subjects[1:]] == [
+        "读取任务文件", "准备任务文件", "交付文件",
     ]
     assert subjects[1]["allowed_parameter_keys"] == ["artifact_id", "max_bytes"]
     assert subjects[2]["write_capable"] is True
