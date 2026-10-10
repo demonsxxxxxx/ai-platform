@@ -54,6 +54,8 @@ AGENT_SKILL_CONTRACT_TESTS = (
     "tests/test_skill_worker_dispatch_catalog.py",
     "tests/test_skill_worker_dispatch_authorization.py",
     "tests/test_skill_release_policy.py",
+    "tests/test_admin_skills.py",
+    "tests/test_skill_run_admission.py",
     "tests/test_chat_routes.py",
     "tests/test_skills_marketplace_routes.py",
 )
@@ -223,6 +225,7 @@ BACKEND_TEST_SHARDS = {
     ),
     "release-governance-authority": (
         "tests/test_governance_readiness.py",
+        "tests/test_foundation_alpha_readiness.py",
         "tests/test_compose_package_deploy.py",
         "tests/test_production_bootstrap.py",
         "tests/test_release_authority.py",
