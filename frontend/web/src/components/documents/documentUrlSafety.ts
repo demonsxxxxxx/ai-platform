@@ -74,7 +74,16 @@ export function isAllowedAuthenticatedArtifactFileUrl(
 
   const currentOrigin = options.currentOrigin ?? getCurrentOrigin();
   try {
-    const parsed = new URL(trimmed, currentOrigin ?? "http://localhost");
+    const baseOrigin = new URL(currentOrigin ?? "http://localhost").origin;
+    const parsed = new URL(trimmed, baseOrigin);
+    // WHATWG URL parsing normalizes backslashes and embedded whitespace.
+    // The parsed destination, not the input's lexical scheme, owns this gate.
+    if (
+      !["http:", "https:"].includes(parsed.protocol) ||
+      parsed.origin !== baseOrigin
+    ) {
+      return false;
+    }
     if (isSensitiveInternalPath(`${parsed.pathname}${parsed.search}`)) {
       return false;
     }

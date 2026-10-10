@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 
 test("App uses ChatPageSkeleton for the top-level route suspense fallback", () => {
   const appSource = readFileSync(
-    new URL("../../App.tsx", import.meta.url),
+    new URL("../../../App.tsx", import.meta.url),
     "utf8",
   );
 
@@ -18,7 +18,7 @@ test("App uses ChatPageSkeleton for the top-level route suspense fallback", () =
 
 test("legacy route loading shell component is removed", () => {
   assert.equal(
-    existsSync(new URL("./RouteLoadingShell.ts", import.meta.url)),
+    existsSync(new URL("../RouteLoadingShell.ts", import.meta.url)),
     false,
   );
 });

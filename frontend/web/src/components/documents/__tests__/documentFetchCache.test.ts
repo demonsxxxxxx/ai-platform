@@ -184,3 +184,23 @@ test("document request selector authenticates only artifact and upload file api 
     false,
   );
 });
+
+test("normalized external destinations never reach either document transport", async () => {
+  clearDocumentFetchCaches();
+  const calls: string[] = [];
+  const request: typeof fetch = async (input) => {
+    calls.push(String(input));
+    return new Response("unexpected");
+  };
+  for (const prefix of ["\\\\outside.invalid", "/\\outside.invalid", "https:\t//outside.invalid", "//outside.invalid"]) {
+    for (const path of ["/api/ai/files/file-1/preview", "/ordinary.txt"]) {
+      await assert.rejects(fetchDocumentText(`${prefix}${path}`, {
+        currentOrigin: "https://app.example.test",
+        authenticatedRequest: request,
+        fetchImpl: request,
+      }), /Unsafe/);
+    }
+  }
+  assert.deepEqual(calls, []);
+  assert.equal(await fetchDocumentText("/ordinary.txt", { currentOrigin: "https://app.example.test", fetchImpl: async () => new Response("safe-relative") }), "safe-relative");
+});
