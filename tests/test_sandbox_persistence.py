@@ -789,7 +789,28 @@ async def test_executor_acceptance_preserves_terminal_and_reconciliation_owners(
     assert "else executor_reconciliation_status end" in conn.sql
     assert "executor_reconciliation_claim_token =" not in conn.sql
     assert "executor_terminal_json =" not in conn.sql
+    assert "executor_reconciliation_context_json = %s::jsonb" in conn.sql
+    assert conn.params == (
+        '{"adapter_name": "test"}', 1800, "lease-a", "tenant-a", "run-a", "attempt-a",
+    )
     assert "and tenant_id = %s and run_id = %s and attempt_id = %s and status = 'active'" in conn.sql
+
+
+@pytest.mark.asyncio
+async def test_executor_acceptance_rejects_context_write_outside_active_attempt_scope():
+    from app.platform.postgres.sandbox_leases import record_sandbox_executor_accepted
+
+    conn = SingleRowConnection(None)
+    with pytest.raises(
+        SandboxLeaseReleaseScopeMismatchError,
+        match="^sandbox_executor_attempt_inactive$",
+    ):
+        await record_sandbox_executor_accepted(
+            conn, tenant_id="tenant-a", run_id="run-a", attempt_id="attempt-a",
+            lease_id="lease-a", reconciliation_context={"adapter_name": "test"},
+        )
+    assert conn.params[-4:] == ("lease-a", "tenant-a", "run-a", "attempt-a")
+    assert "and status = 'active'" in conn.sql
 
 
 @pytest.fixture

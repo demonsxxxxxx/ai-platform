@@ -3096,6 +3096,67 @@ def test_get_run_http_projection_returns_null_skill_id_for_ordinary_user(monkeyp
     assert payload["capability_id"] == "general_chat"
 
 
+@pytest.mark.parametrize("admin", [False, True])
+@pytest.mark.parametrize(
+    ("agent_id", "skill_id", "public_agent_id"),
+    [
+        ("translate", "baoyu-translate", "retired-agent"),
+        ("baoyu-translate", "baoyu-translate", "retired-agent"),
+        ("private-retired-profile", "baoyu-translate", "retired-agent"),
+        ("general-agent", "general-chat", "general-agent"),
+        ("qa-word-review", "qa-file-reviewer", "document-review"),
+    ],
+)
+def test_get_run_http_projects_retired_identity_without_disclosing_raw_ids(
+    monkeypatch, admin, agent_id, skill_id, public_agent_id,
+):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    owner = principal(roles=["admin"] if admin else [])
+
+    async def authorized_run(conn, *, tenant_id, user_id, run_id):
+        assert (tenant_id, user_id, run_id) == ("tenant-a", "user-a", "run-retained")
+        return {
+            "id": run_id,
+            "session_id": "session-retained",
+            **RUN_SCHEMA_FIELDS,
+            "agent_id": agent_id,
+            "skill_id": skill_id,
+            "status": "succeeded",
+            "input_json": {"agent_id": agent_id, "skill_id": skill_id},
+            "result_json": {"message": "done"},
+            "error_code": None,
+            "error_message": None,
+        }
+
+    async def no_rows(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(runs_module, "transaction", fake_transaction)
+    monkeypatch.setattr(runs_module.runs_creation, "get_authorized_run", authorized_run)
+    monkeypatch.setattr(runs_module.artifacts_records, "list_run_artifacts", no_rows)
+    monkeypatch.setattr(runs_module.streaming_run_events, "list_run_events", no_rows)
+    monkeypatch.setattr(runs_module.runs_steps, "list_run_steps", no_rows)
+    app = FastAPI()
+    app.include_router(runs_module.router, prefix="/api/ai")
+    app.dependency_overrides[runs_module.require_principal] = lambda: owner
+
+    with TestClient(app) as client:
+        response = client.get("/api/ai/runs/run-retained")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["agent_id"] == (agent_id if admin else public_agent_id)
+    assert payload["skill_id"] == (skill_id if admin else None)
+    assert payload["run_id"] == "run-retained"
+    assert payload["session_id"] == "session-retained"
+    if not admin:
+        assert skill_id not in response.text
+        if agent_id != public_agent_id:
+            assert agent_id not in response.text
+
+
 @pytest.mark.asyncio
 async def test_get_run_rejects_missing_contract_versions(monkeypatch):
     async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):

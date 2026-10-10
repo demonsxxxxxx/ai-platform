@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createElement } from "react";
+import { act, createElement, useLayoutEffect } from "react";
+// jsdom is the pinned mounted-test runtime and does not ship declarations here.
+// @ts-expect-error jsdom runtime import.
+import { JSDOM } from "jsdom";
+import { clearAuthScopedCaches } from "../../../../services/api/authCacheInvalidation.ts";
+import { AttachmentPreviewHost } from "../../AttachmentPreviewHost.tsx";
+import { getAttachmentPreviewState, openAttachmentPreview } from "../../attachmentPreviewStore.ts";
+import { claimChatPreviewSession } from "../../chatPreviewSession.ts";
+import { BlockPreviewPortal } from "../items/McpBlockPreview.tsx";
+import { getBlockPreview, openBlockPreview } from "../items/blockPreviewStore.ts";
+import { getSidebarHistoryLength, goBackSidebar } from "../items/sidebarHistoryStore.ts";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { MessagePart } from "../../../../types";
 import { clearAllLoadingStates } from "../../../../hooks/useAgent/messageParts.ts";
@@ -518,4 +528,161 @@ test("renders a specific safe file-size failure instead of a generic failure", (
   assert.match(markup, /文件超过处理上限/);
   assert.match(markup, /文件超过 128 MB，或文件总量超过 256 MB/);
   assert.doesNotMatch(markup, /private|token-bearing|storage stage/);
+});
+
+async function withPreviewOwnerDom(run: (harness: {
+  render: (ownerKey: string, attachment?: boolean) => Promise<void>;
+  remount: () => Promise<void>;
+  body: () => string;
+  act: typeof import("react").act;
+}) => Promise<void>) {
+  const dom = new JSDOM("<!doctype html><div id='root'></div>", {
+    url: "http://localhost/", pretendToBeVisual: true,
+  });
+  const values: Record<string, unknown> = {
+    window: dom.window, document: dom.window.document,
+    localStorage: dom.window.localStorage, sessionStorage: dom.window.sessionStorage,
+    navigator: dom.window.navigator, HTMLElement: dom.window.HTMLElement,
+    Element: dom.window.Element, Node: dom.window.Node, CustomEvent: dom.window.CustomEvent,
+    ResizeObserver: class { observe() {} unobserve() {} disconnect() {} },
+    requestAnimationFrame: (callback: FrameRequestCallback) => dom.window.setTimeout(() => callback(Date.now()), 0),
+    cancelAnimationFrame: (handle: number) => dom.window.clearTimeout(handle),
+    IS_REACT_ACT_ENVIRONMENT: true,
+  };
+  const previous = new Map(Object.keys(values).map((key) => [
+    key, Object.getOwnPropertyDescriptor(globalThis, key),
+  ]));
+  for (const [key, value] of Object.entries(values)) {
+    Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
+  }
+  dom.window.matchMedia = () => ({
+    matches: false, addEventListener() {}, removeEventListener() {},
+    addListener() {}, removeListener() {}, dispatchEvent: () => false,
+    media: "", onchange: null,
+  });
+  const { createRoot } = await import("react-dom/client");
+  let root = createRoot(dom.window.document.getElementById("root")!);
+  function PreviewOwner({ ownerKey, attachment }: { ownerKey: string; attachment: boolean }) {
+    useLayoutEffect(() => { claimChatPreviewSession(ownerKey); }, [ownerKey]);
+    return createElement(attachment ? AttachmentPreviewHost : BlockPreviewPortal);
+  }
+  clearAuthScopedCaches();
+  try {
+    await run({
+      async render(ownerKey, attachment = false) {
+        await act(async () => { root.render(createElement(PreviewOwner, { ownerKey, attachment })); });
+      },
+      async remount() {
+        await act(async () => { root.unmount(); });
+        root = createRoot(dom.window.document.getElementById("root")!);
+      },
+      body: () => dom.window.document.body.textContent ?? "",
+      act,
+    });
+  } finally {
+    await act(async () => { root.unmount(); });
+    clearAuthScopedCaches();
+    for (const [key, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else Reflect.deleteProperty(globalThis, key);
+    }
+    dom.window.close();
+  }
+}
+
+test("preview auth invalidation clears mounted text and captured sidebar history before a new owner remounts", async () => {
+  await withPreviewOwnerDom(async ({ render, remount, body, act }) => {
+    await render("owner-a:session-a");
+    await act(async () => { openBlockPreview({ type: "text", text: "synthetic first preview" }); });
+    await act(async () => { openBlockPreview({ type: "text", text: "synthetic owner A text" }); });
+    assert.ok(getSidebarHistoryLength() > 0);
+    assert.match(body(), /synthetic owner A text/);
+    await act(async () => { clearAuthScopedCaches(); });
+    assert.equal(getBlockPreview(), null);
+    assert.equal(getSidebarHistoryLength(), 0);
+    assert.equal(goBackSidebar(), false);
+    assert.doesNotMatch(body(), /synthetic owner A text|synthetic first preview/);
+    await remount();
+    await render("owner-b:session-b");
+    assert.doesNotMatch(body(), /synthetic owner A text|synthetic first preview/);
+  });
+});
+
+test("preview auth invalidation removes attachment metadata from the mounted host and a same-user new login", async () => {
+  await withPreviewOwnerDom(async ({ render, remount, body, act }) => {
+    await render("owner-a:session-a", true);
+    await act(async () => { openAttachmentPreview({
+      id: "synthetic-file-a", key: "synthetic-file-a", name: "synthetic-owner-A-file.png",
+      type: "image", mimeType: "image/png", size: 1,
+      url: "data:image/png;base64,aGVsbG8=",
+    }, "user-message"); });
+    for (let attempt = 0; attempt < 50 && !body().includes("synthetic-owner-A-file.png"); attempt += 1) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    }
+    assert.match(body(), /synthetic-owner-A-file\.png/);
+    await act(async () => { clearAuthScopedCaches(); });
+    assert.equal(getAttachmentPreviewState(), null);
+    assert.doesNotMatch(body(), /synthetic-owner-A-file\.png/);
+    await remount();
+    await render("owner-a:session-a", true);
+    assert.doesNotMatch(body(), /synthetic-owner-A-file\.png/);
+  });
+});
+
+test("preview same-session remount preserves active text and valid back navigation", async () => {
+  await withPreviewOwnerDom(async ({ render, remount, body, act }) => {
+    await render("owner-a:session-a");
+    await act(async () => { openBlockPreview({ type: "text", text: "first same-owner preview" }); });
+    await act(async () => { openBlockPreview({ type: "text", text: "second same-owner preview" }); });
+    await remount();
+    await render("owner-a:session-a");
+    assert.match(body(), /second same-owner preview/);
+    await act(async () => { assert.equal(goBackSidebar(), true); });
+    assert.match(body(), /first same-owner preview/);
+  });
+});
+
+test("preview session transition clears state even when the host is subscribing for the first time", async () => {
+  await withPreviewOwnerDom(async ({ render, remount, body, act }) => {
+    claimChatPreviewSession("owner-a:session-a");
+    openBlockPreview({ type: "text", text: "previous session preview" });
+    await render("owner-a:session-b");
+    assert.equal(getBlockPreview(), null);
+    assert.doesNotMatch(body(), /previous session preview/);
+    await act(async () => { openBlockPreview({ type: "text", text: "new session preview" }); });
+    await remount();
+    await render("owner-a:session-b");
+    assert.match(body(), /new session preview/);
+    assert.equal(goBackSidebar(), false);
+  });
+});
+
+test("preview session transition clears attachment state without restoring an old host snapshot", async () => {
+  await withPreviewOwnerDom(async ({ render, body }) => {
+    claimChatPreviewSession("owner-a:session-a");
+    openAttachmentPreview({ id: "old", key: "old", name: "previous-session.png", type: "image", mimeType: "image/png", size: 1 }, "user-message");
+    await render("owner-a:session-b", true);
+    assert.equal(getAttachmentPreviewState(), null);
+    assert.doesNotMatch(body(), /previous-session\.png/);
+  });
+});
+
+test("departing preview owner cleanup cannot close a newer session's preview", async () => {
+  await withPreviewOwnerDom(async ({ render, body, act }) => {
+    const { createRoot } = await import("react-dom/client");
+    const oldContainer = document.createElement("div");
+    document.body.append(oldContainer);
+    const oldRoot = createRoot(oldContainer);
+    function DepartingOwner() {
+      useLayoutEffect(() => { claimChatPreviewSession("old-owner:old-session"); }, []);
+      return null;
+    }
+    await act(async () => { oldRoot.render(createElement(DepartingOwner)); });
+    await render("new-owner:new-session");
+    await act(async () => { openBlockPreview({ type: "text", text: "new owner's valid preview" }); });
+    await act(async () => { oldRoot.unmount(); });
+    assert.match(body(), /new owner's valid preview/);
+    assert.equal(getBlockPreview()?.text, "new owner's valid preview");
+    oldContainer.remove();
+  });
 });

@@ -522,53 +522,6 @@ async def record_sandbox_executor_terminal_diagnostics(
     return await cursor.fetchone() is not None
 
 
-async def record_sandbox_executor_reconciliation_context(
-    connection: Any,
-    *,
-    tenant_id: str,
-    run_id: str,
-    attempt_id: str,
-    lease_id: str,
-    context: dict[str, Any],
-) -> dict[str, Any]:
-    cursor = await connection.execute(
-        """
-        update sandbox_leases
-        set executor_reconciliation_context_json = %s::jsonb,
-            executor_reconciliation_status = case
-              when executor_terminal_json is null then 'waiting_terminal'
-              else 'pending'
-            end,
-            updated_at = now()
-        where id = %s
-          and tenant_id = %s
-          and run_id = %s
-          and attempt_id = %s
-          and status = 'active'
-          and executor_reconciliation_status <> 'finalized'
-          and (
-            executor_reconciliation_context_json is null
-            or executor_reconciliation_context_json = %s::jsonb
-          )
-        returning *
-        """,
-        (
-            json.dumps(context, ensure_ascii=False),
-            lease_id,
-            tenant_id,
-            run_id,
-            attempt_id,
-            json.dumps(context, ensure_ascii=False),
-        ),
-    )
-    row = await cursor.fetchone()
-    if row is None:
-        raise SandboxLeaseReleaseScopeMismatchError(
-            "sandbox_executor_reconciliation_context_scope_mismatch"
-        )
-    return dict(row)
-
-
 async def claim_sandbox_executor_suspects(
     connection: Any,
     *,

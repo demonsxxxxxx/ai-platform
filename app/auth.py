@@ -170,6 +170,8 @@ def verify_principal_session(token: str) -> AuthPrincipal:
         signing_input = payload_part
     else:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_session")
+    if not signing_input.isascii():
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_session")
     expected = hmac.new(_session_secret().encode("utf-8"), signing_input.encode("ascii"), hashlib.sha256).digest()
     try:
         provided = _b64url_decode(signature_part)
@@ -354,7 +356,9 @@ async def require_principal(request: Request) -> AuthPrincipal:
             detail="trusted_principal_secret_not_configured",
         )
     provided_secret = request.headers.get("x-ai-gateway-secret", "")
-    if not compare_digest(provided_secret, expected_secret):
+    if not provided_secret.isascii() or not compare_digest(
+        provided_secret.encode("ascii"), expected_secret.encode("utf-8")
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="invalid_gateway_principal_secret",

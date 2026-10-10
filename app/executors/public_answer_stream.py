@@ -1,5 +1,6 @@
 import asyncio
-from collections.abc import Awaitable, Callable, Mapping
+import re
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 
 from app.execution.api import public_answer_failure_reason
@@ -138,12 +139,17 @@ class PublicAnswerStreamGate:
         *,
         private_replacements: Mapping[str, str],
         sanitizer: Callable[[str], str],
+        public_replacements: Mapping[str, str] | None = None,
         max_private_token_chars: int = 512,
     ) -> None:
         self._sanitizer = sanitizer
         self._max_private_token_chars = max_private_token_chars
         self._replacements: dict[str, str] = {}
+        self._public_replacements: dict[str, str] = {}
+        self._public_values: set[str] = set()
+        self._replacement_pattern: re.Pattern[str] | None = None
         self._tokens: tuple[str, ...] = ()
+        self._private_tokens: tuple[str, ...] = ()
         self._pending = ""
         self._pending_source_spans: list[tuple[object, int]] = []
         self._published_suffix = ""
@@ -163,6 +169,11 @@ class PublicAnswerStreamGate:
         ):
             self._fail("invalid_configuration")
         else:
+            try:
+                self._public_replacements = dict(public_replacements or {})
+            except (TypeError, ValueError):
+                self._fail("invalid_configuration")
+                return
             self._add_replacements(private_replacements)
 
     @property
@@ -204,10 +215,13 @@ class PublicAnswerStreamGate:
         projected_candidate = self._project(raw_candidate, recoverable=True)
         if projected_candidate is None:
             return self._emit(_RECOVERED_TEXT)
-        raw_hold = (
-            0
-            if any(token in raw_candidate for token in self._tokens)
-            else self._private_prefix_chars(raw_candidate)
+        raw_hold = max(
+            (
+                0
+                if any(token in raw_candidate for token in self._tokens)
+                else self._private_prefix_chars(raw_candidate)
+            ),
+            self._replacement_prefix_chars(raw_candidate, self._public_values),
         )
         if raw_hold:
             if raw_hold > self._max_private_token_chars:
@@ -412,11 +426,17 @@ class PublicAnswerStreamGate:
         matched = False
         index = 0
         while index < len(text):
-            token = next(
-                (candidate for candidate in self._tokens if text.startswith(candidate, index)),
-                None,
+            match = (
+                self._replacement_pattern.match(text, index)
+                if self._replacement_pattern is not None
+                else None
             )
-            if token is not None:
+            token = match.group() if match is not None else None
+            if token in self._public_values:
+                for offset, character in enumerate(token):
+                    self._append_text_segment(result, owner_at(index + offset), character)
+                index += len(token)
+            elif token is not None:
                 matched = True
                 self._append_text_segment(
                     result,
@@ -583,8 +603,15 @@ class PublicAnswerStreamGate:
         if self._finished:
             return
         previous_tokens = set(self._tokens)
+        reclassified_public_tokens = {
+            token
+            for token, replacement in self._public_replacements.items()
+            if isinstance(private_replacements, Mapping)
+            and token in private_replacements
+            and private_replacements[token] != replacement
+        }
         self._add_replacements(private_replacements)
-        added_tokens = set(self._tokens) - previous_tokens
+        added_tokens = (set(self._tokens) - previous_tokens) | reclassified_public_tokens
         if added_tokens:
             published_text = self._published_text()
             if any(token in published_text for token in added_tokens):
@@ -717,17 +744,43 @@ class PublicAnswerStreamGate:
         self._tokens = tuple(
             sorted(self._replacements, key=lambda value: (-len(value), value))
         )
+        self._private_tokens = tuple(
+            token for token in self._tokens if token not in self._public_replacements
+        )
         if any(
+            self._replacements.get(token) != replacement
+            for token, replacement in self._public_replacements.items()
+        ) or any(
             token in replacement
-            for token in self._tokens
+            for token in self._private_tokens
             for replacement in self._replacements.values()
         ):
             self._fail("private_replacement_invalid")
+            return
+        self._public_values = set(self._public_replacements.values())
+        match_values = sorted(
+            set(self._tokens) | self._public_values,
+            key=lambda value: (-len(value), value),
+        )
+        self._replacement_pattern = (
+            re.compile("|".join(re.escape(value) for value in match_values))
+            if match_values
+            else None
+        )
 
     def _project(self, text: str, *, recoverable: bool = False) -> str | None:
-        candidate = text
-        for token in self._tokens:
-            candidate = candidate.replace(token, self._replacements[token])
+        candidate = (
+            self._replacement_pattern.sub(
+                lambda match: (
+                    match.group()
+                    if match.group() in self._public_values
+                    else self._replacements[match.group()]
+                ),
+                text,
+            )
+            if self._replacement_pattern is not None
+            else text
+        )
         try:
             sanitized = self._sanitizer(candidate)
         except Exception:  # noqa: BLE001
@@ -739,7 +792,7 @@ class PublicAnswerStreamGate:
         if (
             not isinstance(sanitized, str)
             or (candidate and not sanitized)
-            or any(token in sanitized for token in self._tokens)
+            or any(token in sanitized for token in self._private_tokens)
         ):
             if recoverable:
                 self._omit("sanitizer_rejected")
@@ -754,11 +807,14 @@ class PublicAnswerStreamGate:
             max_chars=self._max_private_token_chars,
             track_ambiguous_prefixes=True,
         )
-        return max(self._private_replacement_prefix_chars(text), sanitizer_hold)
+        return max(
+            self._replacement_prefix_chars(text, (*self._tokens, *self._public_values)),
+            sanitizer_hold,
+        )
 
-    def _private_replacement_prefix_chars(self, text: str) -> int:
+    def _replacement_prefix_chars(self, text: str, tokens: Iterable[str]) -> int:
         held = 0
-        for token in self._tokens:
+        for token in tokens:
             limit = min(len(text), len(token) - 1)
             for size in range(limit, held, -1):
                 if text.endswith(token[:size]):
@@ -776,7 +832,7 @@ class PublicAnswerStreamGate:
         replacement = "private value"
         boundary = len(self._published_suffix)
         combined = self._published_suffix + candidate
-        for token in self._tokens:
+        for token in self._private_tokens:
             first_start = max(0, boundary - len(token) + 1)
             for start in range(first_start, boundary):
                 if combined.startswith(token, start) and boundary < start + len(token):
@@ -789,7 +845,9 @@ class PublicAnswerStreamGate:
         projected = self._project(candidate, recoverable=recoverable)
         if projected is None:
             return None
-        if any(token in self._published_suffix + projected for token in self._tokens):
+        if any(
+            token in self._published_suffix + projected for token in self._private_tokens
+        ):
             if recoverable:
                 self._omit("private_token_boundary_conflict")
             else:

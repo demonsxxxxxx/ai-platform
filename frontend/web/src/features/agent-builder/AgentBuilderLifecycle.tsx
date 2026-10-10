@@ -23,46 +23,52 @@ export function AgentBuilderLifecycle({
   onUnpublish: (publishedRevision: number) => void;
   onRetire: () => void;
 }) {
-  const [history, setHistory] = useState<AgentProfileAdminProjection[]>([]);
-  const [historyState, setHistoryState] = useState<"idle" | "loading" | "ready" | "error">(
-    "idle",
-  );
+  const historyOwner = JSON.stringify([editor.agentId, editor.revision]);
+  const [historySnapshot, setHistorySnapshot] = useState<{
+    owner: string;
+    state: "idle" | "loading" | "ready" | "error";
+    items: AgentProfileAdminProjection[];
+  } | null>(null);
+  // An effect can run after a new editor has rendered. Never expose a prior
+  // owner's rows or state while waiting for that effect or its network reply.
+  const history = historySnapshot?.owner === historyOwner ? historySnapshot.items : [];
+  const historyState = historySnapshot?.owner === historyOwner
+    ? historySnapshot.state : editor.agentId ? "loading" : "idle";
   const [testMessage, setTestMessage] = useState("");
   const [retireConfirmationOpen, setRetireConfirmationOpen] = useState(false);
 
   useEffect(() => {
     const agentId = editor.agentId;
     if (!agentId) {
-      setHistory([]);
-      setHistoryState("idle");
+      setHistorySnapshot({ owner: historyOwner, state: "idle", items: [] });
       return;
     }
     let active = true;
-    setHistoryState("loading");
+    setHistorySnapshot({ owner: historyOwner, state: "loading", items: [] });
     void agentProfileApi
       .listHistory(agentId)
       .then((response) => {
         if (!active) return;
-        setHistory(response.agent_profiles);
-        setHistoryState("ready");
+        if (response.agent_profiles.some((profile) => profile.agent_id !== agentId)) {
+          throw new Error("agent_history_owner_mismatch");
+        }
+        setHistorySnapshot({ owner: historyOwner, state: "ready", items: response.agent_profiles });
       })
       .catch(() => {
         if (!active) return;
-        setHistory([]);
-        setHistoryState("error");
+        setHistorySnapshot({ owner: historyOwner, state: "error", items: [] });
       });
     return () => {
       active = false;
     };
-  }, [editor.agentId, editor.revision]);
+  }, [editor.agentId, historyOwner]);
 
   const publishedVersions = listPublishedAgentProfileVersions(history);
   const cleanPublished =
     Boolean(editor.agentId) && editor.status === "published" && !isAgentProfileEditorDirty(editor);
-  const historyPublishedRevision = editor.status === "withdrawn"
-    ? null
-    : publishedVersions.find(({ profile }) => profile.status === "published")?.profile.revision ?? null;
-  const publishedRevision = editor.publishedRevision ?? historyPublishedRevision;
+  // The editor is hydrated from the authoritative admin projection. Explicit
+  // null means unpublished; old immutable snapshots cannot override it.
+  const publishedRevision = editor.publishedRevision;
   const canUnpublish = Boolean(
     editor.agentId && publishedRevision && !isAgentProfileEditorDirty(editor),
   );

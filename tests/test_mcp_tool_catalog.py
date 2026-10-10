@@ -1,3 +1,4 @@
+import asyncio
 import ipaddress
 import json
 
@@ -190,3 +191,86 @@ def test_discovery_request_rejects_static_dynamic_header_collision():
             static_headers={"JWT-Authorization": "static"},
             jwt_authorization="Bearer user.jwt",
         )
+
+
+@pytest.mark.asyncio
+async def test_http_discovery_total_deadline_includes_dns(monkeypatch):
+    cancelled = asyncio.Event()
+
+    async def stalled_resolution(*_args):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    monkeypatch.setattr(catalog, "_resolve_discovery_addresses", stalled_resolution)
+    adapter = StreamableHttpMcpToolDiscoveryAdapter(timeout_seconds=0.02)
+    with pytest.raises(McpToolDiscoveryError, match="^transport_failure$"):
+        await asyncio.wait_for(
+            adapter.discover_definitions(
+                "https://mcp.example/tools", jwt_authorization="Bearer user.jwt",
+            ),
+            timeout=2,
+        )
+    assert cancelled.is_set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("caller_cancel", [False, True])
+async def test_http_discovery_deadline_and_cancel_close_partial_page(monkeypatch, caller_cancel):
+    entered = asyncio.Event()
+    closed = asyncio.Event()
+    clients = []
+
+    class StalledStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            # An incomplete SSE response can trickle indefinitely under the
+            # transport's per-read timeout. The whole discovery must still end.
+            yield b'data: {"result":'
+            entered.set()
+            await asyncio.Event().wait()
+
+        async def aclose(self):
+            closed.set()
+
+    async def handler(request):
+        payload = json.loads(request.content)
+        if payload["method"] == "initialize":
+            return httpx.Response(200, json={"result": {"protocolVersion": "2025-03-26"}})
+        if payload["method"] == "notifications/initialized":
+            return httpx.Response(202)
+        if not payload["params"]:
+            return httpx.Response(200, json={"result": {"tools": [], "nextCursor": "page-2"}})
+        assert payload["params"] == {"cursor": "page-2"}
+        return httpx.Response(
+            200, headers={"Content-Type": "text/event-stream"}, stream=StalledStream(),
+        )
+
+    real_client = httpx.AsyncClient
+
+    def client_factory(**kwargs):
+        client = real_client(transport=httpx.MockTransport(handler), **kwargs)
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr(catalog.httpx, "AsyncClient", client_factory)
+    monkeypatch.setattr(catalog, "_resolve_discovery_addresses", lambda *_args: _resolved("8.8.8.8"))
+    adapter = StreamableHttpMcpToolDiscoveryAdapter(timeout_seconds=60 if caller_cancel else 0.05)
+    task = asyncio.create_task(adapter.discover_definitions(
+        "https://mcp.example/tools", jwt_authorization="Bearer user.jwt",
+    ))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        if caller_cancel:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            with pytest.raises(McpToolDiscoveryError, match="^transport_failure$"):
+                await asyncio.wait_for(task, timeout=2)
+        assert closed.is_set()
+        assert len(clients) == 1 and clients[0].is_closed
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

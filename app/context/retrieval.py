@@ -127,6 +127,10 @@ class ContextRetrievalRepository(Protocol):
     ) -> list[dict[str, Any]]:
         ...
 
+    def read_storage_prefix(self, row: dict[str, Any], *, max_bytes: int) -> bytes:
+        """Read at most max_bytes, without requiring the complete object to fit."""
+        ...
+
     def read_storage_bytes(
         self,
         row: dict[str, Any],
@@ -231,6 +235,12 @@ class RepositoryContextRetrievalRepository:
         )
         return [dict(row) for row in rows]
 
+    def read_storage_prefix(self, row: dict[str, Any], *, max_bytes: int) -> bytes:
+        storage_key = str(row.get("storage_key") or "")
+        if not storage_key:
+            return b""
+        return self._storage.get_bytes_prefix(storage_key=storage_key, max_bytes=max_bytes)
+
     def read_storage_bytes(
         self,
         row: dict[str, Any],
@@ -279,6 +289,12 @@ class TransactionalContextRetrievalRepository:
         async with self._transaction_factory() as conn:
             rows = await context_postgres.list_scoped_context_memory_records(conn, **kwargs)
         return [dict(row) for row in rows]
+
+    def read_storage_prefix(self, row: dict[str, Any], *, max_bytes: int) -> bytes:
+        storage_key = str(row.get("storage_key") or "")
+        if not storage_key:
+            return b""
+        return self._storage.get_bytes_prefix(storage_key=storage_key, max_bytes=max_bytes)
 
     def read_storage_bytes(
         self,
@@ -864,9 +880,14 @@ class ContextRetrievalAuthority:
         *,
         max_bytes: int,
     ) -> tuple[str, bool]:
-        raw = await self._raw_content_bytes(row)
-        truncated = len(raw) > max_bytes
-        bounded = raw[: max(0, int(max_bytes))] if truncated else raw
+        byte_cap = max(0, int(max_bytes))
+        raw = await self._storage_io(
+            self._repository.read_storage_prefix,
+            row,
+            max_bytes=byte_cap + 1,
+        )
+        truncated = len(raw) > byte_cap
+        bounded = raw[:byte_cap]
         text, text_truncated = _bounded_text(bounded.decode("utf-8", errors="ignore"))
         return text, truncated or text_truncated
 

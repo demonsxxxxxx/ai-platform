@@ -485,16 +485,8 @@ def _public_skill_replacement(
     )
     if not name:
         return None
-    fullwidth_name = "".join(
-        "\u3000"
-        if character.isspace() and character.isascii()
-        else chr(ord(character) + 0xFEE0)
-        if "!" <= character <= "~"
-        else character
-        for character in name
-        if character.isprintable()
-    )
-    return f"【技能：{fullwidth_name}】" if fullwidth_name else None
+    name = "".join(character for character in name if character.isprintable())
+    return f"【技能：{name}】" if name else None
 
 
 def project_sdk_turn_diagnostics(
@@ -2285,7 +2277,7 @@ async def run_claude_agent_sdk(
     private_capability_tokens = {
         identity
         for kind, identity in capability_plan.available
-        if kind in {"skill", "mcp"}
+        if kind == "mcp"
     }
     private_capability_tokens.update(mcp_registration.aliases)
     private_capability_tokens.update(
@@ -2293,13 +2285,6 @@ async def run_claude_agent_sdk(
         for identity in authorized_subjects
         if isinstance(identity, str) and identity.startswith("mcp__")
     )
-    skill_subject = authorized_subjects.get("Skill")
-    if isinstance(skill_subject, dict):
-        private_capability_tokens.update(
-            name
-            for name in skill_subject.get("allowed_skill_names", [])
-            if isinstance(name, str)
-        )
     private_capability_tokens.update(
         str(subject["mcp_server_config"]["url"])
         for subject in authorized_subjects.values()
@@ -2328,6 +2313,17 @@ async def run_claude_agent_sdk(
         )
         if isinstance(value, str) and value
     )
+    non_skill_private_tokens = private_capability_tokens.copy()
+    private_capability_tokens.update(
+        identity for kind, identity in capability_plan.available if kind == "skill"
+    )
+    skill_subject = authorized_subjects.get("Skill")
+    if isinstance(skill_subject, dict):
+        private_capability_tokens.update(
+            name
+            for name in skill_subject.get("allowed_skill_names", [])
+            if isinstance(name, str)
+        )
     private_replacement = "\u2588"
     private_skill_replacement = "【技能】"
     private_replacements = {
@@ -2336,19 +2332,28 @@ async def run_claude_agent_sdk(
     workspace_token = str(cwd)
     if cwd.is_absolute() and workspace_token and len(workspace_token) <= 512:
         private_replacements[workspace_token] = private_replacement
+    public_skill_replacements = {}
     for kind, identity in capability_plan.available:
         if kind != "skill":
             continue
-        public_replacement = (
-            _public_skill_replacement(identity, public_skill_metadata)
-            or private_skill_replacement
-        )
-        if not any(
-            token in public_replacement for token in private_capability_tokens
+        public_replacement = _public_skill_replacement(identity, public_skill_metadata)
+        replacement = public_replacement or private_skill_replacement
+        if (
+            any(token in replacement for token in non_skill_private_tokens)
+            or any(
+                token in replacement
+                for token in private_replacements
+                if token != identity
+            )
+            or identity == workspace_token
         ):
-            private_replacements[identity] = public_replacement
+            continue
+        private_replacements[identity] = replacement
+        if public_replacement and identity in replacement:
+            public_skill_replacements[identity] = replacement
     answer_stream_gate = PublicAnswerStreamGate(
         private_replacements=private_replacements,
+        public_replacements=public_skill_replacements,
         sanitizer=sanitize_public_answer_text,
     )
 
@@ -2370,7 +2375,11 @@ async def run_claude_agent_sdk(
     def register_dynamic_tool_call_id(value: object) -> None:
         call_id = canonical_tool_call_id(value)
         if call_id is not None:
-            replacement = replacement_for_private_token(call_id)
+            replacement = (
+                private_replacement
+                if call_id in public_skill_replacements
+                else replacement_for_private_token(call_id)
+            )
             private_replacements[call_id] = replacement
             answer_stream_gate.register_private_replacements(
                 {call_id: replacement}
@@ -2485,6 +2494,7 @@ async def run_claude_agent_sdk(
             answer_stream_gate.fail_closed()
             return reject_capability_evidence()
         if lifecycle_phase == "invocation_requested":
+            register_dynamic_tool_call_id(tool_call_id)
             lifecycle_replacements = {
                 tool_call_id: replacement_for_private_token(tool_call_id)
             }
@@ -2614,6 +2624,8 @@ async def run_claude_agent_sdk(
                 return reject_governed_lifecycle()
             record_read_only_lifecycle_denial()
             return False
+        if lifecycle == "started":
+            register_dynamic_tool_call_id(call_id)
         if lifecycle_observed and lifecycle == "started":
             answer_stream_gate.seal(
                 {call_id: replacement_for_private_token(call_id)},

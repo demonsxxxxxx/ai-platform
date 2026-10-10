@@ -1,3 +1,4 @@
+import { registerAuthScopedCacheClearer } from "../../../../services/api/authCacheInvalidation";
 import { createSingletonStore } from "./createSingletonStore";
 import { closeCurrentToolPanel } from "./ToolResultPanel";
 import {
@@ -63,3 +64,5 @@ export function openBlockPreview(data: BlockPreviewData): void {
 export function closeBlockPreview(): void {
   store.set(null);
 }
+
+registerAuthScopedCacheClearer(closeBlockPreview);

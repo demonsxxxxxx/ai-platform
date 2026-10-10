@@ -9,8 +9,8 @@ import os
 import re
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import unquote, unquote_plus, urlsplit, urlunsplit
-from urllib.request import Request, urlopen
+from urllib.parse import unquote, unquote_plus, urljoin, urlsplit, urlunsplit
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 SCHEMA_VERSION = "ai-platform.auth-rbac-smoke.v1"
@@ -130,10 +130,61 @@ def sanitize_base_url(value: str) -> str:
     return urlunsplit((parsed.scheme, netloc, parsed.path.rstrip("/"), "", ""))
 
 
+class AuthenticatedRedirectError(URLError):
+    def __init__(self) -> None:
+        super().__init__("authenticated_redirect_origin_mismatch")
+
+
+def _http_origin(url: str) -> tuple[str, str, int] | None:
+    try:
+        parsed = urlsplit(url)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+        ):
+            return None
+        port = parsed.port if parsed.port is not None else (443 if parsed.scheme == "https" else 80)
+        return parsed.scheme, parsed.hostname, port
+    except (TypeError, ValueError):
+        return None
+
+
+class _SameOriginRedirectHandler(HTTPRedirectHandler):
+    def __init__(self, origin: tuple[str, str, int]) -> None:
+        self._origin = origin
+
+    def http_error_302(self, request, response, code, message, headers):
+        target = headers.get("location", headers.get("uri"))
+        if target is not None:
+            try:
+                target_origin = _http_origin(urljoin(request.full_url, target))
+            except (TypeError, ValueError):
+                target_origin = None
+            if target_origin != self._origin:
+                response.close()
+                raise AuthenticatedRedirectError()
+        return super().http_error_302(request, response, code, message, headers)
+
+    http_error_301 = http_error_302
+    http_error_303 = http_error_302
+    http_error_307 = http_error_302
+    http_error_308 = http_error_302
+
+
+def open_authenticated_request(request: Request, *, timeout_seconds: float):
+    """Keep all smoke/capture redirects on the explicitly selected API origin."""
+    origin = _http_origin(request.full_url)
+    if origin is None:
+        raise AuthenticatedRedirectError()
+    return build_opener(_SameOriginRedirectHandler(origin)).open(request, timeout=timeout_seconds)
+
+
 def _request_json(url: str, *, headers: dict[str, str] | None = None, timeout_seconds: float = 10.0) -> tuple[int, Any]:
     request = Request(url, headers={"Accept": "application/json", **(headers or {})}, method="GET")
     try:
-        with urlopen(request, timeout=timeout_seconds) as response:
+        with open_authenticated_request(request, timeout_seconds=timeout_seconds) as response:
             raw = response.read()
             return int(response.status), json.loads(raw.decode("utf-8")) if raw else None
     except HTTPError as exc:

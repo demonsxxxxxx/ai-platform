@@ -6,7 +6,7 @@
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
 }
 
-.review-hero {
+.review-page .review-hero {
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
@@ -15,11 +15,11 @@
   margin: 0 auto 22px;
 }
 
-.hero-copy {
+.review-page .hero-copy {
   min-width: 0;
 }
 
-.hero-copy h1 {
+.review-page .hero-copy h1 {
   margin: 0;
   color: #111827;
   font-size: 24px;
@@ -27,14 +27,14 @@
   line-height: 1.28;
 }
 
-.hero-copy p {
+.review-page .hero-copy p {
   margin: 6px 0 0;
   color: #4b5563;
   font-size: 14px;
   line-height: 1.5;
 }
 
-.hero-status {
+.review-page .hero-status {
   display: grid;
   grid-template-columns: repeat(3, minmax(104px, 1fr)) repeat(2, minmax(138px, 1.2fr));
   align-items: stretch;
@@ -42,7 +42,7 @@
   gap: 10px;
 }
 
-.status-item {
+.review-page .status-item {
   display: flex;
   min-height: 78px;
   flex-direction: column;
@@ -54,12 +54,12 @@
   box-shadow: 0 1px 2px rgb(15 23 42 / 4%);
 }
 
-.status-item:nth-child(n + 4) {
+.review-page .status-item:nth-child(n + 4) {
   border-color: #bfdbfe;
   background: #eff6ff;
 }
 
-.status-value {
+.review-page .status-value {
   color: #111827;
   font-size: 24px;
   font-weight: 700;
@@ -67,11 +67,11 @@
   font-variant-numeric: tabular-nums;
 }
 
-.status-item:nth-child(n + 4) .status-value {
+.review-page .status-item:nth-child(n + 4) .status-value {
   color: #1565c0;
 }
 
-.status-label {
+.review-page .status-label {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -82,11 +82,11 @@
   white-space: nowrap;
 }
 
-.status-item:nth-child(n + 4) .status-label {
+.review-page .status-item:nth-child(n + 4) .status-label {
   color: #1e40af;
 }
 
-.status-badge {
+.review-page .status-badge {
   padding: 1px 5px;
   border-radius: 4px;
   color: #1565c0;
@@ -96,7 +96,7 @@
   line-height: 1.4;
 }
 
-.review-workbench {
+.review-page .review-workbench {
   display: grid;
   grid-template-columns: 360px minmax(0, 1fr);
   align-items: start;
@@ -105,8 +105,8 @@
   margin: 0 auto;
 }
 
-.upload-panel,
-.task-panel {
+.review-page .upload-panel,
+.review-page .task-panel {
   min-width: 0;
   border: 1px solid #e5e7eb;
   border-radius: 16px;
@@ -114,16 +114,16 @@
   box-shadow: 0 1px 2px rgb(15 23 42 / 4%);
 }
 
-.upload-panel,
-.task-panel {
+.review-page .upload-panel,
+.review-page .task-panel {
   padding: 24px;
 }
 
-.task-panel {
+.review-page .task-panel {
   min-height: 420px;
 }
 
-.panel-header {
+.review-page .panel-header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -131,7 +131,7 @@
   margin-bottom: 18px;
 }
 
-.panel-header h2 {
+.review-page .panel-header h2 {
   margin: 0;
   color: #111827;
   font-size: 16px;
@@ -139,8 +139,8 @@
   line-height: 1.3;
 }
 
-.panel-subtitle,
-.panel-header p {
+.review-page .panel-subtitle,
+.review-page .panel-header p {
   display: block;
   margin-top: 6px;
   color: #9ca3af;
@@ -148,8 +148,8 @@
   line-height: 1.4;
 }
 
-.capability-tabs,
-.task-tabs {
+.review-page .capability-tabs,
+.review-page .task-tabs {
   display: flex;
   gap: 4px;
   margin: 18px -4px 0;
@@ -157,8 +157,8 @@
   border-bottom: 1px solid #e9eef2;
 }
 
-.capability-tabs button,
-.task-tabs button {
+.review-page .capability-tabs button,
+.review-page .task-tabs button {
   min-width: 0;
   padding: 10px 12px;
   border: 0;
@@ -170,13 +170,13 @@
   cursor: pointer;
 }
 
-.capability-tabs button.is-active,
-.task-tabs button.is-active {
+.review-page .capability-tabs button.is-active,
+.review-page .task-tabs button.is-active {
   border-bottom-color: #4f46e5;
   color: #4f46e5;
 }
 
-.review-upload {
+.review-page .review-upload {
   display: flex;
   width: 100%;
   min-height: 184px;
@@ -193,31 +193,31 @@
   cursor: pointer;
 }
 
-.review-upload:hover {
+.review-page .review-upload:hover {
   border-color: #4f46e5;
   background: #eef2ff;
 }
 
-.review-upload strong {
+.review-page .review-upload strong {
   margin-top: 12px;
   color: #111827;
   font-size: 14px;
   font-weight: 400;
 }
 
-.review-upload span {
+.review-page .review-upload span {
   margin-top: 5px;
   color: #4f46e5;
   font-size: 12px;
 }
 
-.upload-list {
+.review-page .upload-list {
   display: grid;
   gap: 8px;
   margin-top: 16px;
 }
 
-.upload-item {
+.review-page .upload-item {
   display: flex;
   min-width: 0;
   align-items: center;
@@ -228,8 +228,8 @@
   background: #fafcfd;
 }
 
-.upload-item-icon,
-.file-icon {
+.review-page .upload-item-icon,
+.review-page .file-icon {
   display: flex;
   flex: 0 0 auto;
   align-items: center;
@@ -237,13 +237,13 @@
   color: #4f46e5;
 }
 
-.upload-item-info {
+.review-page .upload-item-info {
   min-width: 0;
   flex: 1;
 }
 
-.upload-item-name,
-.task-name {
+.review-page .upload-item-name,
+.review-page .task-name {
   display: block;
   overflow: hidden;
   color: #3b5266;
@@ -253,8 +253,8 @@
   white-space: nowrap;
 }
 
-.upload-item-meta,
-.task-meta {
+.review-page .upload-item-meta,
+.review-page .task-meta {
   display: flex;
   flex-wrap: wrap;
   gap: 6px 12px;
@@ -263,9 +263,9 @@
   font-size: 11px;
 }
 
-.icon-button,
-.secondary-button,
-.primary-button {
+.review-page .icon-button,
+.review-page .secondary-button,
+.review-page .primary-button {
   display: inline-flex;
   min-width: 0;
   align-items: center;
@@ -275,7 +275,7 @@
   cursor: pointer;
 }
 
-.icon-button {
+.review-page .icon-button {
   width: 28px;
   height: 28px;
   flex: 0 0 auto;
@@ -284,13 +284,13 @@
   background: transparent;
 }
 
-.icon-button:hover {
+.review-page .icon-button:hover {
   color: #c35b50;
   background: #f5eaea;
 }
 
-.primary-button,
-.secondary-button {
+.review-page .primary-button,
+.review-page .secondary-button {
   min-height: 40px;
   padding: 0 14px;
   border-radius: 7px;
@@ -298,34 +298,34 @@
   font-weight: 600;
 }
 
-.primary-button {
+.review-page .primary-button {
   color: #fff;
   background: #4f46e5;
 }
 
-.primary-button:hover:not(:disabled) {
+.review-page .primary-button:hover:not(:disabled) {
   background: #4338ca;
 }
 
-.secondary-button {
+.review-page .secondary-button {
   border: 1px solid #dce5ed;
   color: #62798b;
   background: #fff;
 }
 
-.secondary-button:hover:not(:disabled) {
+.review-page .secondary-button:hover:not(:disabled) {
   border-color: #c5d3de;
   background: #f8fafc;
 }
 
-.primary-button:disabled,
-.secondary-button:disabled,
-.icon-button:disabled {
+.review-page .primary-button:disabled,
+.review-page .secondary-button:disabled,
+.review-page .icon-button:disabled {
   cursor: not-allowed;
   opacity: 0.48;
 }
 
-.upload-reminder {
+.review-page .upload-reminder {
   display: flex;
   align-items: flex-start;
   gap: 8px;
@@ -339,38 +339,38 @@
   line-height: 1.5;
 }
 
-.primary-actions {
+.review-page .primary-actions {
   display: flex;
   flex-direction: column;
   gap: 12px;
   margin-top: 20px;
 }
 
-.primary-actions .primary-button,
-.primary-actions .secondary-button {
+.review-page .primary-actions .primary-button,
+.review-page .primary-actions .secondary-button {
   width: 100%;
   min-height: 40px;
   margin: 0;
   border-radius: 8px;
 }
 
-.primary-actions .primary-button {
+.review-page .primary-actions .primary-button {
   border: 1px solid #4f46e5;
   color: #fff;
   background: #4f46e5;
 }
 
-.primary-actions .primary-button:hover:not(:disabled) {
+.review-page .primary-actions .primary-button:hover:not(:disabled) {
   border-color: #4338ca;
   background: #4338ca;
 }
 
-.task-tab-count {
+.review-page .task-tab-count {
   color: inherit;
   font-weight: 400;
 }
 
-.empty-state {
+.review-page .empty-state {
   display: flex;
   min-height: 280px;
   flex-direction: column;
@@ -384,21 +384,21 @@
   font-size: 12px;
 }
 
-.empty-state-icon {
+.review-page .empty-state-icon {
   display: flex;
   align-items: center;
   justify-content: center;
   color: #9ca3af;
 }
 
-.task-list {
+.review-page .task-list {
   display: flex;
   flex-direction: column;
   gap: 12px;
   margin-top: 16px;
 }
 
-.task-card {
+.review-page .task-card {
   display: block;
   min-width: 0;
   padding: 16px;
@@ -409,29 +409,29 @@
   transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
 }
 
-.task-card:hover {
+.review-page .task-card:hover {
   border-color: #d1d5db;
   box-shadow: 0 8px 18px rgb(15 23 42 / 8%);
 }
 
-.task-card.is-running,
-.task-card.is-uploading {
+.review-page .task-card.is-running,
+.review-page .task-card.is-uploading {
   border-color: rgb(217 119 6 / 34%);
   box-shadow: 0 8px 18px rgb(217 119 6 / 8%);
 }
 
-.task-card.is-failed {
+.review-page .task-card.is-failed {
   border-color: rgb(245 108 108 / 42%);
 }
 
-.task-main {
+.review-page .task-main {
   display: flex;
   min-width: 0;
   flex: 1;
   gap: 16px;
 }
 
-.file-icon {
+.review-page .file-icon {
   display: flex;
   width: 40px;
   height: 40px;
@@ -443,23 +443,23 @@
   background: #eef2ff;
 }
 
-.task-content {
+.review-page .task-content {
   min-width: 0;
   flex: 1;
 }
 
-.task-title-row {
+.review-page .task-title-row {
   display: flex;
   align-items: center;
   gap: 10px;
   margin-bottom: 6px;
 }
 
-.task-title-row .task-name {
+.review-page .task-title-row .task-name {
   flex: 1;
 }
 
-.task-name {
+.review-page .task-name {
   display: block;
   min-width: 0;
   overflow: hidden;
@@ -470,7 +470,7 @@
   white-space: nowrap;
 }
 
-.task-meta {
+.review-page .task-meta {
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
@@ -480,7 +480,7 @@
   line-height: 1.5;
 }
 
-.status-tag {
+.review-page .status-tag {
   flex: 0 0 auto;
   padding: 3px 10px;
   border: 1px solid #d1d5db;
@@ -492,26 +492,26 @@
   line-height: 1.3;
 }
 
-.status-tag.is-uploading,
-.status-tag.is-running {
+.review-page .status-tag.is-uploading,
+.review-page .status-tag.is-running {
   border-color: #f4c27a;
   color: #b45309;
   background: #fff7ed;
 }
 
-.status-tag.is-completed {
+.review-page .status-tag.is-completed {
   border-color: #a7f3d0;
   color: #047857;
   background: #ecfdf5;
 }
 
-.status-tag.is-failed {
+.review-page .status-tag.is-failed {
   border-color: #fecaca;
   color: #b42318;
   background: #fef0f0;
 }
 
-.progress-track {
+.review-page .progress-track {
   height: 6px;
   margin-top: 12px;
   overflow: hidden;
@@ -519,7 +519,7 @@
   background: #f3f4f6;
 }
 
-.progress-track span {
+.review-page .progress-track span {
   display: block;
   height: 100%;
   border-radius: inherit;
@@ -527,15 +527,15 @@
   transition: width 200ms ease;
 }
 
-.task-card.is-completed .progress-track span {
+.review-page .task-card.is-completed .progress-track span {
   background: #10b981;
 }
 
-.task-card.is-failed .progress-track span {
+.review-page .task-card.is-failed .progress-track span {
   background: #ef4444;
 }
 
-.task-error {
+.review-page .task-error {
   margin-top: 10px;
   padding: 8px 10px;
   border-radius: 8px;
@@ -545,7 +545,7 @@
   line-height: 1.5;
 }
 
-.result-summary {
+.review-page .result-summary {
   margin-top: 10px;
   padding: 8px 10px;
   border-radius: 8px;
@@ -556,7 +556,7 @@
   white-space: pre-wrap;
 }
 
-.task-actions {
+.review-page .task-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -564,15 +564,15 @@
   padding-left: 56px;
 }
 
-.task-actions .secondary-button,
-.task-actions .primary-button {
+.review-page .task-actions .secondary-button,
+.review-page .task-actions .primary-button {
   min-height: 30px;
   padding: 0 9px;
   border-radius: 8px;
   font-size: 11px;
 }
 
-.result-files {
+.review-page .result-files {
   display: grid;
   gap: 7px;
   margin-top: 12px;
@@ -581,7 +581,7 @@
   background: #f2f8f6;
 }
 
-.result-files-title {
+.review-page .result-files-title {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -590,7 +590,7 @@
   font-weight: 600;
 }
 
-.result-file {
+.review-page .result-file {
   display: flex;
   align-items: center;
   gap: 5px;
@@ -605,7 +605,7 @@
   cursor: pointer;
 }
 
-.history-tools {
+.review-page .history-tools {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -614,8 +614,8 @@
   border-bottom: 1px solid #edf1f4;
 }
 
-.history-select-all,
-.history-count {
+.review-page .history-select-all,
+.review-page .history-count {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -623,27 +623,27 @@
   font-size: 12px;
 }
 
-.history-count {
+.review-page .history-count {
   margin-right: auto;
 }
 
-.history-card-main {
+.review-page .history-card-main {
   align-items: flex-start;
 }
 
-.history-card-main > input,
-.history-select-all input {
+.review-page .history-card-main > input,
+.review-page .history-select-all input {
   margin-top: 5px;
   accent-color: #238f85;
 }
 
-.result-file-group {
+.review-page .result-file-group {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
 }
 
-.history-pagination {
+.review-page .history-pagination {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -653,12 +653,12 @@
   font-size: 12px;
 }
 
-.connection-notice {
+.review-page .connection-notice {
   margin-bottom: 16px;
 }
 
 @media (max-width: 1080px) {
-  .review-workbench {
+  .review-page .review-workbench {
     grid-template-columns: 1fr;
   }
 }
@@ -668,33 +668,33 @@
     padding: 14px;
   }
 
-  .review-hero {
+  .review-page .review-hero {
     flex-direction: column;
     align-items: stretch;
   }
 
-  .hero-status {
+  .review-page .hero-status {
     width: 100%;
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .status-item {
+  .review-page .status-item {
     min-height: 68px;
   }
 
-  .hero-copy h1 {
+  .review-page .hero-copy h1 {
     font-size: 22px;
   }
 
-  .panel-header {
+  .review-page .panel-header {
     flex-direction: column;
   }
 
-  .task-main {
+  .review-page .task-main {
     flex-direction: column;
   }
 
-  .task-actions {
+  .review-page .task-actions {
     padding-left: 0;
   }
 }
@@ -704,17 +704,17 @@
     padding: 12px;
   }
 
-  .hero-status {
+  .review-page .hero-status {
     grid-template-columns: 1fr;
   }
 
-  .upload-panel,
-  .task-panel {
+  .review-page .upload-panel,
+  .review-page .task-panel {
     padding: 16px;
     border-radius: 12px;
   }
 
-  .task-title-row {
+  .review-page .task-title-row {
     align-items: flex-start;
     flex-direction: column;
   }

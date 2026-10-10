@@ -37,9 +37,8 @@ from app.executors.claude_agent_sdk_runner import (
 )
 from app.public_execution import (
     PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
-    PublicExecutionPhasePublisher,
+    PublicAgentProgressPublisher,
     PublicExecutionV2Projector,
-    public_execution_phase_progress_payload,
 )
 from app.required_tool_contract import (
     MCP_EXECUTION_OUTCOME_UNKNOWN,
@@ -483,20 +482,12 @@ class _PlatformExecutionPhaseFact(NamedTuple):
 
     def public_events(
         self,
-        publisher: PublicExecutionPhasePublisher,
+        publisher: PublicAgentProgressPublisher,
     ) -> list[AgentEvent]:
-        step = publisher.project(phase=self.phase, lifecycle=self.lifecycle)
-        if step is None:
-            return []
-        progress = public_execution_phase_progress_payload(
-            phase=self.phase,
-            lifecycle=self.lifecycle,
-            step_id=step.step_id,
-        )
+        progress = publisher.project(phase=self.phase, lifecycle=self.lifecycle)
         if progress is None:
             return []
         return [
-            AgentEvent(type=step.event_type, message="", payload=step.payload_json),
             AgentEvent(
                 type=PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
                 message="",
@@ -1414,10 +1405,6 @@ async def _default_executor_runner(
             "sdk_used": False,
             "executor_mode": "context_retrieval_invalid",
         }
-    await emit_event(
-        _PlatformExecutionPhaseFact("attachment_materialization", "completed")
-    )
-
     if getattr(get_settings(), "claude_agent_sdk_enabled", False) is not True:
         error_code = "claude_agent_sdk_disabled"
         return {
@@ -2336,7 +2323,7 @@ def create_executor_app(
         stream_delivery_failure: dict[str, str | None] = {"error_code": None}
         heartbeat_stop = asyncio.Event()
         public_execution_projector = PublicExecutionV2Projector()
-        public_execution_phase_publisher = PublicExecutionPhasePublisher()
+        public_agent_progress_publisher = PublicAgentProgressPublisher()
         runner_event_lock = asyncio.Lock()
         active_progress_tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
         progress_tasks: set[asyncio.Task[None]] = set()
@@ -2612,7 +2599,7 @@ def create_executor_app(
                     stop_active_progress(active_progress[0])
             elif isinstance(event, _PlatformExecutionPhaseFact):
                 agent_event = None
-                agent_events = event.public_events(public_execution_phase_publisher)
+                agent_events = event.public_events(public_agent_progress_publisher)
                 if not agent_events:
                     return True
                 event_type = event.type

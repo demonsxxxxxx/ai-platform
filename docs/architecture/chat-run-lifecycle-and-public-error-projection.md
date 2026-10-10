@@ -29,6 +29,15 @@ into the Assistant body and keeps raw tool blocks, results and Thinking outside
 that source. The [streaming message design](../implementation/streaming-message-parts-design.md)
 owns the detailed adapter and compatibility rules.
 
+Retained Run details remain readable after the translation Agent or its Skill
+retires. The Run response reuses the Session `retired-agent` tombstone for an
+ordinary owner, preserving the non-null public `agent_id` contract without
+exposing the raw retired identity. Administrator diagnostics retain the original
+Agent and Skill IDs. This replaces only the nullable identity at the Run response
+seam: shared nested-payload redaction, ownership checks, and retired execution
+admission denial remain unchanged. There is no new compatibility endpoint,
+schema, or historical-data rewrite.
+
 ### Ordinary-user execution presentation
 
 Chat presents user-meaningful work state, not an executor transcript. The active
@@ -87,8 +96,20 @@ sanitized `skill` `display_name` sourced from current authorized Skill metadata
 is presentation authority and is retained in a dedicated public field. The same
 authority applies when accepted answer text names an authorized Skill: the answer
 gate substitutes the sanitized public display name, while an authorized internal
-Skill without public metadata receives only the fixed Skill category label. Other
-private capability identifiers remain redacted. Other Tool `display_name` values
+Skill without public metadata receives only the fixed Skill category label. Public
+names retain their original printable characters; ASCII letters, digits, punctuation
+and spaces are not converted to fullwidth. Authorized display names may contain
+their own Skill identity, including an exact match or a version suffix. The adapter
+supplies those approved replacements separately from independent private values;
+the stream gate preserves their characters and applies each replacement idempotently
+through chunk boundaries, source routing and terminal release. This does not exempt
+credentials, private MCP identities, runtime paths or dynamically registered tool-call
+IDs from redaction. All hook and lifecycle call-ID entries use the same dynamic
+classification; a public identity later claimed as a private call ID fails closed
+and records disclosure when it already appeared in accepted text. The former
+fullwidth conversion and its test expectations are retired; already committed
+historical text is not rewritten. Other private capability
+identifiers remain redacted. Other Tool `display_name` values
 and all subagent `display_name` values remain protocol facts but are not
 presentation authority in compatibility-shaped parts; ordinary chat derives their
 fixed labels from the allowlisted category and subagent kind.

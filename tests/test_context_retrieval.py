@@ -270,9 +270,9 @@ async def test_artifact_storage_read_does_not_block_event_loop():
                 "label": "report.txt",
             }
 
-        def read_storage_bytes(self, row, *, max_bytes=None):
+        def read_storage_prefix(self, row, *, max_bytes):
             storage_threads.append(threading.get_ident())
-            return b"artifact content"
+            return b"artifact content"[:max_bytes]
 
     retrieval = ContextRetrieval(BlockingRepository())
     result = await retrieval.read_run_artifact(

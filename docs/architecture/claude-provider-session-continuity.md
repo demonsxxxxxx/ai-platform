@@ -19,6 +19,12 @@ Claude conversation continuity has one production path: the Claude Agent SDK
   channel. Agent Profile instructions remain capped at 16,000 characters; the
   composed private executor system channel is separately capped at 64,000 so
   bounded control material can be appended without weakening profile admission.
+- Admission preserves those top-level scalar user-text fields verbatim, including
+  paths and JSON literals. They remain private execution input and cannot grant
+  capabilities. Server-owned control fields and current authorization are still
+  checked independently; public responses continue to use their own path and
+  secret redaction. A public-output filter must not erase the current request or
+  cause the legacy prompt alias to replace a nonempty current message.
 - Platform Messages, Context snapshots, and source digests remain authorization,
   audit, and provider-coverage receipts. Their historical bodies are never
   reconstructed into the Claude prompt.

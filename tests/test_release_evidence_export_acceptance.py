@@ -126,6 +126,70 @@ def test_release_evidence_export_acceptance_fails_closed_on_private_payload(tmp_
     assert "raw_storage_key" not in serialized
 
 
+def test_release_evidence_export_acceptance_rejects_redaction_markers_with_raw_values(tmp_path):
+    unsafe_values = [
+        "<redacted> Bearer synthetic-leaked-value",
+        "[redacted] synthetic-private-value",
+        "synthetic-private-value [redacted-secret]",
+    ]
+    for field in ("gate", "evidence_ref"):
+        for index, unsafe_value in enumerate(unsafe_values):
+            evidence_root = tmp_path / field / str(index)
+            _write_entry(
+                evidence_root,
+                _valid_entry(**{field: {"authorization": unsafe_value}}),
+            )
+
+            acceptance = build_release_evidence_export_acceptance(evidence_root=evidence_root)
+
+            assert acceptance["status"] == "blocked_forbidden_evidence"
+            assert acceptance["safe_entry_count"] == 0
+            assert acceptance["entries"] == []
+            assert acceptance["blocked_entries"][0]["reasons"] == ["forbidden_marker_detected"]
+            assert "synthetic-leaked-value" not in json.dumps(acceptance)
+            assert "synthetic-private-value" not in json.dumps(acceptance)
+
+
+def test_release_evidence_export_acceptance_accepts_complete_redaction_or_negative_values(tmp_path):
+    safe_values = [False, None, "<redacted>", "[redacted]", "[redacted-secret]", "  <REDACTED>  "]
+    for index, safe_value in enumerate(safe_values):
+        evidence_root = tmp_path / str(index)
+        _write_entry(
+            evidence_root,
+            _valid_entry(evidence_ref={"authorization": safe_value}),
+        )
+
+        acceptance = build_release_evidence_export_acceptance(evidence_root=evidence_root)
+
+        assert acceptance["status"] == "ready_for_operator_review"
+        assert acceptance["safe_entry_count"] == 1
+        assert acceptance["blockers"] == []
+
+
+def test_release_evidence_export_acceptance_requires_at_least_one_safe_entry(tmp_path):
+    for case in ("empty", "non_entry_only", "legacy_only", "all_excluded"):
+        evidence_root = tmp_path / case
+        evidence_root.mkdir()
+        if case in {"non_entry_only", "all_excluded"}:
+            (evidence_root / "unrelated.json").write_text("{}", encoding="utf-8")
+        if case in {"legacy_only", "all_excluded"}:
+            legacy_entry = _valid_entry(artifact_kind="211_runtime_smoke")
+            legacy_entry.pop("runtime_subject_commit_sha")
+            _write_entry(evidence_root, legacy_entry)
+
+        acceptance = build_release_evidence_export_acceptance(evidence_root=evidence_root)
+
+        assert acceptance["status"] == "blocked_no_evidence_entries"
+        assert acceptance["safe_entry_count"] == 0
+        assert acceptance["entries"] == []
+        assert acceptance["blockers"] == ["no_evidence_entries"]
+        assert acceptance["blocked_entry_count"] == 0
+        assert acceptance["entry_count"] == acceptance["excluded_entry_count"]
+        assert acceptance["excluded_entry_count"] == {
+            "empty": 0, "non_entry_only": 1, "legacy_only": 1, "all_excluded": 2,
+        }[case]
+
+
 def test_release_evidence_export_acceptance_fails_closed_on_host_and_socket_paths(tmp_path):
     unsafe_entry = _valid_entry(
         evidence_ref={

@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+// jsdom is the pinned mounted-test runtime and does not ship declarations here.
+// @ts-expect-error jsdom runtime import.
+import { JSDOM } from "jsdom";
+import { useInputHistory } from "../../../../hooks/useInputHistory.ts";
+import { clearAuthScopedCaches } from "../../../../services/api/authCacheInvalidation.ts";
 
 import type { Message } from "../../../../types/message.ts";
 import type { SessionInputFile } from "../../../../services/api/session.ts";
@@ -126,4 +131,165 @@ test("keeps active conversations wide, readable, and visually compact", () => {
   assert.match(message, /max-w-\[68rem\]/);
   assert.match(userMessage, /max-w-\[68rem\]/);
   assert.match(userMessage, /sm:max-w-\[75%\]/);
+});
+
+// Exercise the real hook while mounted: storage isolation alone is insufficient
+// because a composer can retain loaded history through an identity transition.
+type HistoryOwner = { id: string; tenant_id?: string } | null;
+
+async function withInputHistory(
+  run: (harness: {
+    render: (owner: HistoryOwner, mountKey?: string) => Promise<void>;
+    current: () => ReturnType<typeof useInputHistory>;
+    storage: Storage;
+    act: typeof import("react").act;
+  }) => Promise<void>,
+) {
+  const dom = new JSDOM("<div id='root'></div>", { url: "http://localhost/" });
+  const values = {
+    window: dom.window,
+    document: dom.window.document,
+    localStorage: dom.window.localStorage,
+    IS_REACT_ACT_ENVIRONMENT: true,
+  };
+  const previous = new Map(Object.keys(values).map((key) => [
+    key, Object.getOwnPropertyDescriptor(globalThis, key),
+  ]));
+  for (const [key, value] of Object.entries(values)) {
+    Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
+  }
+  const { act, createElement } = await import("react");
+  const { createRoot } = await import("react-dom/client");
+  const root = createRoot(dom.window.document.getElementById("root")!);
+  let current!: ReturnType<typeof useInputHistory>;
+  function Probe({ owner }: { owner: HistoryOwner }) {
+    current = useInputHistory(owner);
+    return createElement("div", null, current.history.join("|"));
+  }
+  clearAuthScopedCaches();
+  try {
+    await run({
+      render: async (owner, key = "composer") => {
+        await act(async () => { root.render(createElement(Probe, { owner, key })); });
+      },
+      current: () => current,
+      storage: dom.window.localStorage,
+      act,
+    });
+  } finally {
+    await act(async () => { root.unmount(); });
+    clearAuthScopedCaches();
+    for (const [key, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else Reflect.deleteProperty(globalThis, key);
+    }
+    dom.window.close();
+  }
+}
+
+const historyOwnerA = { id: "history-user-a", tenant_id: "history-tenant-a" };
+const historyOwnerB = { id: "history-user-b", tenant_id: "history-tenant-a" };
+
+test("input history discards unowned legacy prompts instead of assigning them to a login", async () => {
+  await withInputHistory(async ({ render, current, storage }) => {
+    storage.setItem("chatInputHistory", JSON.stringify(["synthetic previous owner's prompt"]));
+    await render(historyOwnerB);
+    assert.deepEqual(current().history, []);
+    assert.equal(current().navigateUp(""), null);
+    assert.equal(storage.getItem("chatInputHistory"), null);
+  });
+});
+
+test("input history changes owner and tenant without exposing loaded prompts or drafts", async () => {
+  await withInputHistory(async ({ render, current, act }) => {
+    await render(historyOwnerA);
+    await act(async () => { current().pushHistory("synthetic A prompt"); });
+    assert.equal(current().navigateUp("synthetic A unsent draft"), "synthetic A prompt");
+    const stale = current();
+    await render(historyOwnerB);
+    assert.deepEqual(current().history, []);
+    assert.equal(current().navigateDown(), null);
+    assert.equal(current().navigateUp(""), null);
+    await act(async () => { stale.pushHistory("late old-owner submission"); });
+    assert.equal(stale.navigateUp(""), null);
+    assert.deepEqual(current().history, []);
+    await render(historyOwnerA);
+    assert.deepEqual(current().history, ["synthetic A prompt"]);
+    await act(async () => { stale.pushHistory("late submission after A to B to A"); });
+    assert.equal(stale.navigateUp(""), null);
+    assert.deepEqual(current().history, ["synthetic A prompt"]);
+    await render({ ...historyOwnerA, tenant_id: "history-tenant-b" });
+    assert.deepEqual(current().history, []);
+  });
+});
+
+test("input history clears mounted and remounted state on logout and same-user login", async () => {
+  await withInputHistory(async ({ render, current, storage, act }) => {
+    await render(historyOwnerA);
+    await act(async () => { current().pushHistory("synthetic A prompt"); });
+    current().navigateUp("synthetic A draft");
+    const stale = current();
+    await act(async () => {
+      clearAuthScopedCaches();
+      // Invalidation must fence event handlers synchronously, before rerender.
+      assert.equal(stale.navigateUp(""), null);
+      assert.equal(stale.navigateDown(), null);
+      stale.pushHistory("late submission after logout");
+    });
+    assert.deepEqual(current().history, []);
+    assert.equal(current().navigateDown(), null);
+    assert.equal(storage.length, 0);
+    await render(null);
+    await render(historyOwnerB, "new-owner");
+    assert.deepEqual(current().history, []);
+    await render(historyOwnerA, "same-user-new-login");
+    assert.deepEqual(current().history, []);
+    await act(async () => { current().pushHistory("fresh login prompt"); });
+    assert.deepEqual(current().history, ["fresh login prompt"]);
+  });
+});
+
+test("input history preserves same-owner remount and navigation, and bounds stored entries", async () => {
+  await withInputHistory(async ({ render, current, storage, act }) => {
+    await render(historyOwnerA);
+    await act(async () => {
+      for (let index = 0; index < 205; index += 1) current().pushHistory(`prompt ${index}`);
+      current().pushHistory("   ");
+    });
+    assert.equal(current().history.length, 200);
+    assert.equal(current().history[0], "prompt 5");
+    await render(historyOwnerA, "remounted-composer");
+    assert.equal(current().navigateUp("unsent draft"), "prompt 204");
+    assert.equal(current().navigateUp("prompt 204"), "prompt 203");
+    assert.equal(current().navigateDown(), "prompt 204");
+    assert.equal(current().navigateDown(), "unsent draft");
+    assert.equal(storage.getItem("chatInputHistory"), null);
+    assert.equal(storage.length, 1);
+  });
+});
+
+test("input history does not persist or recall without a stable authenticated owner", async () => {
+  await withInputHistory(async ({ render, current, storage, act }) => {
+    for (const owner of [null, { id: "missing-tenant" }, { id: "", tenant_id: "tenant" }]) {
+      await render(owner);
+      await act(async () => { current().pushHistory("unowned prompt"); });
+      assert.deepEqual(current().history, []);
+      assert.equal(current().navigateUp(""), null);
+      assert.equal(storage.length, 0);
+    }
+  });
+});
+
+
+test("input history validates persisted entries and reads only the exact stable owner key", async () => {
+  await withInputHistory(async ({ render, current, storage }) => {
+    const owner = { id: "persisted-user", tenant_id: "persisted-tenant" };
+    storage.setItem(`chatInputHistory:v2:${JSON.stringify([owner.tenant_id, owner.id])}`,
+      JSON.stringify(["saved prompt", null, 17, { unexpected: true }]));
+    storage.setItem('chatInputHistory:v2:["another-tenant","persisted-user"]',
+      JSON.stringify(["other tenant prompt"]));
+    await render(owner);
+    assert.deepEqual(current().history, ["saved prompt"]);
+    assert.equal(current().navigateUp("draft"), "saved prompt");
+  });
 });

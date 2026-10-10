@@ -78,6 +78,17 @@ def test_parse_skill_package_zip_can_infer_skill_name():
     assert [item["relative_path"] for item in parsed.files] == ["SKILL.md", "references/guide.md"]
 
 
+def test_parse_skill_package_zip_preserves_inline_front_matter_delimiters():
+    markdown = skill_md(name="valid---skill", description="before---after")
+    parsed = parse_skill_package_zip(
+        package_zip({"SKILL.md": markdown}), expected_skill_id="valid---skill"
+    )
+
+    assert parsed.skill_id == "valid---skill"
+    assert parsed.description == "before---after"
+    assert base64.b64decode(parsed.files[0]["content_base64"]) == markdown.encode("utf-8")
+
+
 def test_parse_skill_package_zip_accepts_one_wrapped_skill_directory():
     content = package_zip(
         {

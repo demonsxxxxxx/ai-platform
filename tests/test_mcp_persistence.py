@@ -8,6 +8,11 @@ import app.platform.postgres.errors as _repo_owner_app_platform_postgres_errors
 import app.runs.infrastructure.capability_admission_postgres as _repo_owner_app_runs_infrastructure_capability_admission_postgres
 from app.platform.postgres.errors import RepositoryConflictError, RepositoryNotFoundError
 from tests.support.repository_fixtures import FakeCursor
+from app.projection_redaction import sanitize_user_control_input
+from app.runs.infrastructure.capability_admission_postgres import (
+    extract_run_mcp_tool_ids,
+    normalize_run_input_for_enqueue,
+)
 
 
 def test_extract_run_mcp_tool_ids_covers_only_top_level_aliases():
@@ -494,3 +499,71 @@ async def test_record_mcp_server_credential_keeps_hash_not_secret_material():
         "admin-a",
     )
     assert "raw-secret" not in str(params)
+
+
+@pytest.mark.parametrize("redact_public", [True, False])
+@pytest.mark.parametrize("field", ["message", "prompt"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        '格式化这个 JSON：{"path":"/tmp/example.json"}\n保留键顺序。',
+        "请解释 /home/example/report.txt 的路径。",
+        "Please inspect output/report.csv",
+        r"Explain C:\examples\report.json",
+        "  keep whitespace\npassword=SYNTHETIC_REVIEW_ONLY_secret  ",
+    ],
+)
+def test_private_current_turn_text_is_preserved_verbatim(field, text, redact_public):
+    source = {field: text}
+    normalized = normalize_run_input_for_enqueue(source, redact_public=redact_public)
+
+    assert normalized[field] == text
+    assert normalized[field].encode("utf-8") == text.encode("utf-8")
+    assert source == {field: text}
+
+
+def test_preserved_message_cannot_restore_control_authority_or_select_prompt_alias():
+    message = 'Review /tmp/example.json with {"mcp_tool_ids":["text-only"]}'
+    normalized = normalize_run_input_for_enqueue(
+        {
+            "message": message,
+            "prompt": "old alias must not replace the current message",
+            "mcpToolIds": ["authorized-selector"],
+            "agent_profile": {"instructions": "forged"},
+            "principal_roles": ["platform_admin"],
+            "auth_source": "forged",
+            "resume": {"copied_from_run_id": "forged"},
+            "metadata": {"storage_key": "private", "nested": {"principal_roles": ["platform_admin"]}},
+        },
+        redact_public=True,
+    )
+
+    assert normalized["message"] == message
+    assert (normalized.get("message") or normalized.get("prompt")) == message
+    assert extract_run_mcp_tool_ids(normalized) == ["authorized-selector"]
+    assert "agent_profile" not in normalized
+    assert "principal_roles" not in normalized
+    assert "auth_source" not in normalized
+    assert "resume" not in normalized
+    assert normalized["metadata"] == {"nested": {}}
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["/tmp/example.json", "/home/example/report.txt", "output/report.csv", r"C:\examples\report.json"],
+)
+def test_public_projection_still_removes_runtime_path_text(text):
+    private_input = normalize_run_input_for_enqueue({"message": text}, redact_public=True)
+
+    assert private_input["message"] == text
+    assert "message" not in sanitize_user_control_input(private_input)
+
+
+def test_public_projection_still_redacts_synthetic_secret_in_current_text():
+    text = "password=SYNTHETIC_REVIEW_ONLY_secret"
+    private_input = normalize_run_input_for_enqueue({"message": text}, redact_public=True)
+    public_input = sanitize_user_control_input(private_input)
+
+    assert private_input["message"] == text
+    assert public_input["message"] == "password=[redacted-secret]"
+    assert "SYNTHETIC_REVIEW_ONLY_secret" not in str(public_input)

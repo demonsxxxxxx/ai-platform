@@ -1623,8 +1623,15 @@ def _load_gate_evidence_summary(
         evidence_names = {
             key
             for key, value in evidence_payload.items()
-            if key in _LOAD_TEST_REQUIRED_EVIDENCE and _has_recorded_evidence_value(value)
+            if key in _LOAD_TEST_REQUIRED_EVIDENCE
+            and _safe_recorded_gate_evidence_value(key, value) is not None
         }
+        if (
+            _load_test_evidence_metadata_blocks_recording(load_test_evidence)
+            or _contains_diagnostic_release_evidence_marker(evidence)
+            or _contains_probe_only_evidence_marker(evidence)
+        ):
+            evidence_names = set()
 
         missing_required_evidence = [
             item for item in _LOAD_TEST_REQUIRED_EVIDENCE if item not in evidence_names
@@ -2024,6 +2031,15 @@ def _contains_probe_only_evidence_marker(value: object) -> bool:
     return False
 
 
+def _load_test_evidence_metadata_blocks_recording(source: dict[str, Any]) -> bool:
+    # Gate packets are checked separately so one rejected gate does not erase its siblings.
+    metadata = {key: value for key, value in source.items() if key != "gate_evidence"}
+    return (
+        _contains_diagnostic_release_evidence_marker(metadata)
+        or _contains_probe_only_evidence_marker(metadata)
+    )
+
+
 def _safe_recorded_gate_evidence_value(field: str, value: object) -> object | None:
     if (
         _contains_diagnostic_release_evidence_marker(value)
@@ -2152,6 +2168,11 @@ def _capacity_recorded_profile_evidence_packet(
 
 def _safe_recorded_load_test_gate_packet(value: object) -> dict[str, Any] | None:
     source = _dict(value)
+    if (
+        _contains_diagnostic_release_evidence_marker(source)
+        or _contains_probe_only_evidence_marker(source)
+    ):
+        return None
     source_evidence = _dict(source.get("evidence"))
     safe_evidence: dict[str, object] = {}
     for field in _LOAD_TEST_REQUIRED_EVIDENCE:
@@ -2185,7 +2206,11 @@ def _safe_load_test_evidence(value: object) -> dict[str, Any]:
     source_gate_evidence = _dict(source.get("gate_evidence"))
     recorded_gates: list[str] = []
     gate_evidence: dict[str, dict[str, Any]] = {}
-    if source.get("status") == "recorded" and isinstance(source_recorded_gates, list):
+    if (
+        source.get("status") == "recorded"
+        and isinstance(source_recorded_gates, list)
+        and not _load_test_evidence_metadata_blocks_recording(source)
+    ):
         for gate in LOAD_TEST_GATES:
             if gate not in source_recorded_gates:
                 continue

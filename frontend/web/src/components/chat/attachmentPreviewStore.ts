@@ -1,3 +1,4 @@
+import { registerAuthScopedCacheClearer } from "../../services/api/authCacheInvalidation";
 import type { MessageAttachment } from "../../types";
 import { createSingletonStore } from "./ChatMessage/items/createSingletonStore";
 import {
@@ -47,3 +48,5 @@ export function closeAttachmentPreview(): void {
 export function subscribeAttachmentPreview(listener: () => void): () => void {
   return store.subscribe(listener);
 }
+
+registerAuthScopedCacheClearer(closeAttachmentPreview);

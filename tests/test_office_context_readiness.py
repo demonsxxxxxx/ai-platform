@@ -603,6 +603,56 @@ def test_office_context_readiness_does_not_close_gaps_for_another_runtime_subjec
     assert readiness["runtime_acceptance_evidence"] == {}
 
 
+def test_office_context_readiness_image_tag_cannot_rebind_attested_runtime_subject(tmp_path):
+    attested_subject = _write_synthetic_valid_office_runtime_acceptance_entries(tmp_path)
+    other_subject = "abcdef1234567890abcdef1234567890abcdef12"
+    evidence_root = tmp_path / "docs" / "release-evidence" / "office-context-runtime"
+    for path in evidence_root.rglob("*.json"):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["source_ref"]["image"] = f"ai-platform:{other_subject}"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+    readiness = build_office_context_readiness(
+        repo_root=tmp_path, runtime_subject_sha=other_subject
+    )
+
+    assert readiness["closed_runtime_gaps"] == []
+    assert readiness["runtime_acceptance_evidence"] == {}
+    assert readiness["open_gaps"] == [
+        "executor_context_pack_runtime_acceptance",
+        "sandbox_cold_start_latency_split_runtime_acceptance",
+    ]
+
+    attested_readiness = build_office_context_readiness(
+        repo_root=tmp_path, runtime_subject_sha=attested_subject
+    )
+    assert attested_readiness["open_gaps"] == []
+    assert {
+        item["runtime_subject"]
+        for item in attested_readiness["runtime_acceptance_evidence"].values()
+    } == {attested_subject}
+
+
+def test_office_context_readiness_requires_full_attested_runtime_subject(tmp_path):
+    for index, invalid_subject in enumerate(("", "release-current", "a" * 39, 123)):
+        repo_root = tmp_path / str(index)
+        image_subject = _write_synthetic_valid_office_runtime_acceptance_entries(repo_root)
+        evidence_root = repo_root / "docs" / "release-evidence" / "office-context-runtime"
+        for path in evidence_root.rglob("*.json"):
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["runtime_subject_commit_sha"] = invalid_subject
+            payload["source_ref"]["runtime_source_marker"] = invalid_subject
+            payload["source_ref"]["source_snapshot"]["runtime_subject_commit_sha"] = invalid_subject
+            path.write_text(json.dumps(payload), encoding="utf-8")
+
+        readiness = build_office_context_readiness(
+            repo_root=repo_root, runtime_subject_sha=image_subject
+        )
+
+        assert readiness["closed_runtime_gaps"] == []
+        assert readiness["runtime_acceptance_evidence"] == {}
+
+
 def test_office_context_readiness_default_subject_requires_a_clean_git_tree(tmp_path):
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
     subprocess.run(

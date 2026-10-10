@@ -197,7 +197,8 @@ export function ToolSelector({
     onToggleTool(tool.name);
   };
 
-  const ModalContent = () => (
+  // Keep the modal subtree mounted when search or expansion state changes.
+  const modalContent = isOpen ? (
     <div
       ref={swipeRef as React.RefObject<HTMLDivElement>}
       className="w-full min-h-[40vh] max-h-[85vh] max-h-[85dvh] flex flex-col overflow-hidden rounded-t-lg border border-[var(--theme-border)] shadow-[0_8px_24px_rgba(18,38,63,0.12)] sm:w-[40%] sm:min-w-[600px] sm:max-h-[80vh] sm:rounded-lg"
@@ -540,7 +541,7 @@ export function ToolSelector({
         </button>
       </div>
     </div>
-  );
+  ) : null;
 
   // When controlled externally, only render the modal — no trigger button
   if (externalOnOpenChange) {
@@ -556,7 +557,7 @@ export function ToolSelector({
               className="fixed z-[301] sm:inset-0 sm:flex sm:items-center sm:justify-center sm:p-4 inset-x-0 bottom-0 animate-slide-up sm:animate-scale-in"
               onClick={() => setIsOpen(false)}
             >
-              <ModalContent />
+              {modalContent}
             </div>
           </>,
           document.body,
@@ -608,7 +609,7 @@ export function ToolSelector({
               className="fixed z-[301] sm:inset-0 sm:flex sm:items-center sm:justify-center sm:p-4 inset-x-0 bottom-0 animate-slide-up sm:animate-scale-in"
               onClick={() => setIsOpen(false)}
             >
-              <ModalContent />
+              {modalContent}
             </div>
           </>,
           document.body,

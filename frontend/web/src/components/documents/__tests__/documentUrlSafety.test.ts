@@ -145,3 +145,19 @@ test("authenticated artifact/file allowlist accepts only ai-platform artifact an
     });
   }
 });
+
+test("authenticated allowlist uses the parsed origin for normalized URLs", () => {
+  const currentOrigin = "https://app.example.test";
+  for (const prefix of ["\\\\outside.invalid", "/\\outside.invalid", "https:\t//outside.invalid", "//outside.invalid"]) {
+    const url = `${prefix}/api/ai/artifacts/synthetic/download`;
+    assert.equal(new URL(url, currentOrigin).origin, "https://outside.invalid");
+    assert.equal(isAllowedAuthenticatedArtifactFileUrl(url, { currentOrigin }), false, url);
+    assert.equal(isAllowedAuthenticatedArtifactFileUrl(url), false, url);
+  }
+  for (const url of ["/api/ai/files/file-1/preview", "api/ai/files/file-1/preview", `${currentOrigin}/api/ai/files/file-1/preview`, "//app.example.test/api/ai/files/file-1/preview"]) {
+    assert.equal(isAllowedAuthenticatedArtifactFileUrl(url, { currentOrigin }), true, url);
+  }
+  assert.equal(isAllowedAuthenticatedArtifactFileUrl("http://localhost/api/ai/files/file-1/preview"), false);
+  assert.equal(isAllowedAuthenticatedArtifactFileUrl("/api/ai/files/file-1/preview"), true);
+  assert.equal(isAllowedAuthenticatedArtifactFileUrl("http://app.example.test/api/ai/files/file-1/preview", { currentOrigin: "http://app.example.test" }), true);
+});

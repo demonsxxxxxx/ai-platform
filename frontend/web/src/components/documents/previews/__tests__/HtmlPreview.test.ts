@@ -71,3 +71,15 @@ test("html artifact preview keeps source viewing available as the safe fallback"
   assert.match(previewSource, /DeferredCodeMirrorViewer/);
   assert.match(previewSource, /language="html"/);
 });
+
+test("empty HTML renders the sandboxed document and keeps source controls available", async () => {
+  const React = await import("react");
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const { default: HtmlPreview } = await import("../HtmlPreview.tsx");
+  const html = renderToStaticMarkup(React.createElement(HtmlPreview, { content: "" }));
+  const preview = new DOMParser().parseFromString(html, "text/html");
+  assert.equal(preview.querySelectorAll("iframe").length, 1);
+  assert.equal(preview.querySelector("iframe")?.getAttribute("sandbox"), "");
+  assert.equal(preview.querySelectorAll("button").length, 2);
+  assert.doesNotMatch(html, /loadingFileContent|加载文件内容中/);
+});
