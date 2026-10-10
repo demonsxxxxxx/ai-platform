@@ -5,7 +5,7 @@ from pathlib import Path
 import sys
 from urllib.error import HTTPError
 from urllib.parse import urlencode, urlsplit, urlunsplit
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -15,7 +15,8 @@ from app.capacity_baseline import (
     build_capacity_evidence_snapshot,
     build_capacity_gate_readiness,
 )
-from capacity_cli_inputs import read_optional_host_sandbox_observation_json
+from tools.capacity_cli_inputs import read_optional_host_sandbox_observation_json
+from tools.verify_auth_rbac_smoke import AuthenticatedRedirectError, open_authenticated_request
 
 
 OVERVIEW_ROUTE = "/api/ai/admin/runtime/overview"
@@ -69,9 +70,11 @@ def _read_overview(
         method="GET",
     )
     try:
-        with urlopen(request, timeout=timeout_seconds) as response:
+        with open_authenticated_request(request, timeout_seconds=timeout_seconds) as response:
             status = int(response.status)
             payload = json.loads(response.read().decode("utf-8"))
+    except AuthenticatedRedirectError:
+        raise SystemExit("admin runtime overview request failed: authenticated_redirect_origin_mismatch") from None
     except HTTPError as exc:
         raise SystemExit(f"admin runtime overview request failed: HTTP {exc.code}") from exc
     if not isinstance(payload, dict):

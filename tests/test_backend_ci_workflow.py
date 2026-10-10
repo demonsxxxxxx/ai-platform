@@ -223,6 +223,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_packaging_publish_workflow.py",
         "tests/test_trivy_failure_evidence.py",
         "tests/test_release_image_manifest.py",
+        "tests/test_authenticated_smoke_redirects.py",
     ),
     "release-governance-authority": (
         "tests/test_governance_readiness.py",
