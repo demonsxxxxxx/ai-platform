@@ -57,6 +57,8 @@ _MESSAGE_EVENT_TYPES = frozenset(
     {
         "message.started",
         "message.delta",
+        "message.part.delta",
+        "message.part.classified",
         "message.completed",
         "thinking.started",
         "thinking.completed",
@@ -104,7 +106,7 @@ def _callback_capabilities(dsn: str, schema_name: str, *, bridge=None) -> Worker
     )
 
 
-def _answer_callback(run, attempt, batch_id):
+def _answer_callback(run, attempt, batch_id, *, use_parts=False):
     from app.execution.api import ClaudeSdkAgentEventAdapter
     from app.runtime.kernel_contracts import AgentEvent
 
@@ -115,7 +117,10 @@ def _answer_callback(run, attempt, batch_id):
             run_id=run, attempt_id=attempt, owner_generation=_CURRENT_OWNER_GENERATION,
         )), batch_id=batch_id,
         status="running", progress=20, new_message=None, state_patch={},
-        events=[AgentEvent(**event.as_agent_event_fields()) for event in adapter.accept_answer_text("answer")],
+        events=[AgentEvent(**event.as_agent_event_fields()) for event in (
+            adapter.accept_part_text(("provider-answer", None), "answer")
+            if use_parts else adapter.accept_answer_text("answer")
+        )],
     )
 
 
@@ -416,6 +421,116 @@ def _authority(tenant: str, run: str, attempt: str, *, incarnation: int = 2) -> 
     )
 
 
+@pytest.mark.asyncio
+async def test_part_append_incremental_queries_do_not_fetch_delta_payloads():
+    from app.streaming.infrastructure.event_ledger_postgres import LedgerEvent
+    from app.streaming.infrastructure.v4 import _validate_assistant_part_append
+
+    class Result:
+        def __init__(self, *, rows=(), one=None):
+            self.rows = list(rows)
+            self.one = one
+
+        async def fetchall(self):
+            return self.rows
+
+        async def fetchone(self):
+            return self.one
+
+    class Connection:
+        def __init__(self):
+            self.queries = []
+            self.existing_part = False
+
+        async def execute(self, query, _params):
+            normalized = " ".join(query.lower().split())
+            self.queries.append(normalized)
+            if normalized.startswith("select id from run_events"):
+                return Result()
+            event_type = _params[2]
+            if event_type == "message.started" or (event_type == "message.part.delta" and self.existing_part):
+                row_payload = dict(payload)
+                if event_type == "message.started":
+                    row_payload = {"__stream_v4": dict(payload["__stream_v4"])}
+                return Result(rows=[{
+                    "id": "evt4_started_test" if event_type == "message.started" else event_id,
+                    "tenant_id": tenant_id, "run_id": run_id,
+                    "sequence": 1 if event_type == "message.started" else 2,
+                    "event_type": event_type, "visible_to_user": True,
+                    "payload_json": row_payload, "created_at": "2026-01-01T00:00:00Z",
+                }])
+            return Result()
+            raise AssertionError(f"unexpected query: {normalized}")
+
+    tenant_id = "tenant_test"
+    run_id = "run_test"
+    attempt_id = "attempt_test"
+    event_id = "evt4_part_delta_test"
+    payload = {
+        "schema_version": "ai-platform.assistant-text-part.v1",
+        "part_id": "part_answer",
+        "delta": "hello",
+        "__stream_v4": {
+            "version": 1,
+            "callback_batch_id": "batch-part",
+            "callback_index": 0,
+            "batch_index": 0,
+            "attempt_id": attempt_id,
+            "stream_incarnation": 2,
+            "authorization_epoch": 4,
+            "execution_lease_id": "lease_test",
+            "message_id": "msg_part_test",
+            "trace_ref": None,
+            "causation_event_id": None,
+            "source_event_id": "source_answer",
+            "source_run_id": None,
+            "lease_fence": "active",
+            "cancellation_fence": "not_requested",
+        },
+    }
+    event = LedgerEvent(
+        event_type="message.part.delta",
+        stage="agent_kernel",
+        payload=payload,
+        visible_to_user=True,
+    )
+    connection = Connection()
+    await _validate_assistant_part_append(
+        connection,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        authority=_authority(tenant_id, run_id, attempt_id),
+        prepared=((event_id, event),),
+        existing_by_id={},
+    )
+
+    assert len(connection.queries) == 6
+    assert all("for update" not in query for query in connection.queries)
+    assert all("limit" in query for query in connection.queries)
+    assert all("count(" not in query and "group by" not in query for query in connection.queries)
+
+    replay_connection = Connection()
+    replay_connection.existing_part = True
+    await _validate_assistant_part_append(
+        replay_connection,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        authority=_authority(tenant_id, run_id, attempt_id),
+        prepared=((event_id, event),),
+        existing_by_id={
+            event_id: {
+                "id": event_id,
+                "event_type": event.event_type,
+                "payload_json": payload,
+                "visible_to_user": True,
+            }
+        },
+    )
+    assert len(replay_connection.queries) == 6
+    assert all("for update" not in query for query in replay_connection.queries)
+    assert all("limit" in query for query in replay_connection.queries)
+
+
 def _metadata(
     tenant: str,
     run: str,
@@ -706,6 +821,114 @@ async def test_real_callback_append_commits_facts_without_publication_state():
 
 
 @pytest.mark.asyncio
+async def test_real_callback_append_rejects_unowned_part_classification():
+    async with _schema() as (_dsn_value, _schema_name, (tenant, run, attempt)):
+        message_id = opaque_message_id(tenant, run)
+        item = V4CallbackItem(
+            callback_index=0,
+            batch_index=0,
+            event_type="message.part.classified",
+            payload={
+                "schema_version": "ai-platform.assistant-text-part.v1",
+                "part_id": "part_orphan_0123456789abcdef0123456789abcdef",
+                "role": "answer",
+            },
+            message_id=message_id,
+        )
+        async with _connection_factory(_dsn_value, _schema_name) as conn:
+            with pytest.raises(V4ProjectionError, match="v4_part_ledger_invalid"):
+                await append_callback_v4_rows(
+                    conn,
+                    tenant_id=tenant,
+                    run_id=run,
+                    attempt_id=attempt,
+                    batch_id="batch-orphan-part",
+                    items=(item,),
+                    authority=_authority(tenant, run, attempt),
+                    execution_lease_id="lease",
+                )
+
+
+@pytest.mark.asyncio
+async def test_real_callback_append_rejects_part_delta_after_message_completion():
+    async with _schema() as (_dsn_value, _schema_name, (tenant, run, attempt)):
+        message_id = opaque_message_id(tenant, run)
+        part_id = "part_answer_0123456789abcdef0123456789abcdef"
+        items = (
+            V4CallbackItem(
+                callback_index=0,
+                batch_index=0,
+                event_type="message.started",
+                payload={},
+                message_id=message_id,
+            ),
+            V4CallbackItem(
+                callback_index=0,
+                batch_index=1,
+                event_type="message.part.delta",
+                payload={
+                    "schema_version": "ai-platform.assistant-text-part.v1",
+                    "part_id": part_id,
+                    "delta": "answer",
+                },
+                message_id=message_id,
+                source_event_id="source_answer",
+            ),
+            V4CallbackItem(
+                callback_index=0,
+                batch_index=2,
+                event_type="message.part.classified",
+                payload={
+                    "schema_version": "ai-platform.assistant-text-part.v1",
+                    "part_id": part_id,
+                    "role": "answer",
+                },
+                message_id=message_id,
+            ),
+            V4CallbackItem(
+                callback_index=0,
+                batch_index=3,
+                event_type="message.completed",
+                payload={"delta_count": 1, "text_length": 6},
+                message_id=message_id,
+                causation_event_id="source_answer",
+            ),
+        )
+        authority = _authority(tenant, run, attempt)
+        async with _connection_factory(_dsn_value, _schema_name) as conn:
+            for ordinal, item in enumerate(items):
+                await append_callback_v4_rows(
+                    conn, tenant_id=tenant, run_id=run, attempt_id=attempt,
+                    batch_id=f"batch-complete-part-{ordinal}", items=(item,),
+                    authority=authority, execution_lease_id="lease",
+                )
+        late_delta = V4CallbackItem(
+            callback_index=1,
+            batch_index=0,
+            event_type="message.part.delta",
+            payload={
+                "schema_version": "ai-platform.assistant-text-part.v1",
+                "part_id": part_id,
+                "delta": "late",
+            },
+            message_id=message_id,
+            source_event_id="source_late",
+        )
+        async with _connection_factory(_dsn_value, _schema_name) as conn:
+            with pytest.raises(V4ProjectionError, match="v4_part_ledger_invalid"):
+                await append_callback_v4_rows(
+                    conn,
+                    tenant_id=tenant,
+                    run_id=run,
+                    attempt_id=attempt,
+                    batch_id="batch-late-part",
+                    items=(late_delta,),
+                    authority=authority,
+                    execution_lease_id="lease",
+                )
+
+
+@pytest.mark.asyncio
 async def test_real_callback_handler_rolls_back_receipt_and_v4_rows_together(monkeypatch):
     from fastapi import HTTPException
 
@@ -767,11 +990,12 @@ async def test_real_callback_handler_rolls_back_receipt_and_v4_rows_together(mon
 
 
 @pytest.mark.asyncio
-async def test_real_callback_handler_duplicate_reuses_facts_and_stream_receipt(monkeypatch):
+@pytest.mark.parametrize("use_parts", [False, True])
+async def test_real_callback_handler_duplicate_reuses_facts_and_stream_receipt(monkeypatch, use_parts):
     async with _schema(with_current_attempt=True) as (dsn, schema_name, (tenant, run, attempt)):
         client, key, bridge = await _redis_stream(tenant, run)
         try:
-            callback = _answer_callback(run, attempt, "batch-handler-duplicate")
+            callback = _answer_callback(run, attempt, "batch-handler-duplicate", use_parts=use_parts)
             monkeypatch.setattr(runtime_callbacks, "transaction", lambda: _connection_factory(dsn, schema_name))
             capabilities = _callback_capabilities(dsn, schema_name, bridge=bridge)
             first = await runtime_callbacks.record_executor_callback(callback, capabilities=capabilities)
@@ -788,7 +1012,7 @@ async def test_real_callback_handler_duplicate_reuses_facts_and_stream_receipt(m
             assert receipts["count"] == 1
             assert await client.xrange(key) == first_stream
             envelopes = [json.loads(fields["envelope"]) for _, fields in first_stream]
-            assert [event["event_type"] for event in envelopes] == ["stream.open", "message.started", "message.delta"]
+            assert [event["event_type"] for event in envelopes] == ["stream.open", "message.started", "message.part.delta" if use_parts else "message.delta"]
             assert envelopes[2]["payload"]["delta"] == "answer"
             assert [event["event_id"] for event in envelopes[1:]] == [row["id"] for row in rows if row["visible_to_user"] and "__stream_v4" in row["payload_json"]]
         finally:
@@ -1359,3 +1583,115 @@ async def test_real_answer_receipt_reconstructs_committed_facts_without_a_stream
         async with _connection_factory(dsn, schema) as conn:
             answer = await load_answer_by_receipt(conn, tenant_id=tenant, run_id=run, attempt_id=attempt, receipt=receipt)
             assert answer.text == "hello world"
+
+
+@pytest.mark.asyncio
+async def test_real_v2_answer_receipt_reconstructs_final_answer_parts_without_a_stream():
+    from app.streaming.infrastructure.v4 import load_answer_by_receipt
+    from tests.test_streaming_answer_receipt import _part_answer_fixture
+
+    async with _schema() as (dsn, schema, (tenant, run, attempt)):
+        rows, receipt = _part_answer_fixture()
+        message_id = opaque_message_id(tenant, run)
+        receipt["message_id"] = message_id
+        async with _connection_factory(dsn, schema) as conn:
+            for row in rows:
+                metadata = row["payload_json"]["__stream_v4"]
+                metadata.update(attempt_id=attempt, message_id=message_id)
+                await conn.execute(
+                    "insert into run_events(id, tenant_id, run_id, sequence, event_type, stage, visible_to_user, payload_json) values (%s, %s, %s, %s, %s, 'agent_kernel', true, %s::jsonb)",
+                    (
+                        row["id"], tenant, run, row["sequence"], row["event_type"],
+                        json.dumps(row["payload_json"]),
+                    ),
+                )
+        async with _connection_factory(dsn, schema) as conn:
+            answer = await load_answer_by_receipt(
+                conn,
+                tenant_id=tenant,
+                run_id=run,
+                attempt_id=attempt,
+                receipt=receipt,
+            )
+            assert answer.text == "hello world"
+
+
+@pytest.mark.asyncio
+async def test_real_admin_part_reader_uses_authorized_attempt_rows():
+    from app.runs.application.admin_run_monitor import build_admin_worker_execution
+    from app.runs.infrastructure.admin_queries_postgres import get_admin_run_detail
+    from tests.test_streaming_answer_receipt import _part_answer_fixture
+
+    async with _schema(with_current_attempt=True) as (dsn, schema, (tenant, run, attempt)):
+        rows, _receipt = _part_answer_fixture()
+        message_id = opaque_message_id(tenant, run)
+        async with _connection_factory(dsn, schema) as conn:
+            for row in rows:
+                row["payload_json"]["__stream_v4"].update(attempt_id=attempt, message_id=message_id)
+                await conn.execute(
+                    "insert into run_events(id, tenant_id, run_id, sequence, event_type, stage, visible_to_user, payload_json) values (%s, %s, %s, %s, %s, 'agent_kernel', true, %s::jsonb)",
+                    (row["id"], tenant, run, row["sequence"], row["event_type"], json.dumps(row["payload_json"])),
+                )
+        async with _connection_factory(dsn, schema) as conn:
+            detail = await get_admin_run_detail(conn, tenant_id=tenant, run_id=run)
+            assert detail is not None
+            messages = detail.pop("_assistant_text_messages")
+            assert len(messages) == 1
+            assert messages[0].status == "complete"
+            projected = build_admin_worker_execution(
+                detail["events"], part_messages=messages, sanitize_text=sanitize_public_text,
+            )
+            assert projected["response"] == "hello world"
+            assert [message["text"] for message in projected["messages"]] == ["hello world"]
+            assert projected["answer_projection"]["status"] == "available"
+
+
+@pytest.mark.asyncio
+async def test_real_long_part_append_uses_bounded_index_lookups():
+    async with _schema() as (dsn, schema_name, (tenant, run, attempt)):
+        authority = _authority(tenant, run, attempt)
+        message_id = opaque_message_id(tenant, run)
+        part_id = "part_long_safe"
+        def delta(index):
+            return V4CallbackItem(callback_index=index, batch_index=0,
+                event_type="message.part.delta", message_id=message_id,
+                source_event_id=f"source_long_{index}", payload={
+                    "schema_version": "ai-platform.assistant-text-part.v1",
+                    "part_id": part_id, "delta": "safe text ",
+                })
+        async with _connection_factory(dsn, schema_name) as conn:
+            await append_callback_v4_rows(conn, tenant_id=tenant, run_id=run, attempt_id=attempt,
+                batch_id="long-start", items=(V4CallbackItem(callback_index=0, batch_index=0,
+                event_type="message.started", payload={}, message_id=message_id),),
+                authority=authority, execution_lease_id="lease")
+            for start in range(0, 1000, 100):
+                await append_callback_v4_rows(conn, tenant_id=tenant, run_id=run, attempt_id=attempt,
+                    batch_id=f"long-delta-{start}", items=tuple(delta(index) for index in range(start, start+100)),
+                    authority=authority, execution_lease_id="lease")
+            await conn.execute("analyze run_events")
+            plans = []
+            class ObservedConnection:
+                def __getattr__(self, name):
+                    return getattr(conn, name)
+                async def execute(self, query, params=None):
+                    result = await conn.execute(query, params)
+                    normalized = " ".join(query.lower().split())
+                    if "from run_events" in normalized and "limit" in normalized:
+                        cursor = await conn.execute("explain (analyze, buffers, format json) " + query, params)
+                        plans.append((await cursor.fetchone())["QUERY PLAN"][0]["Plan"])
+                    return result
+            await append_callback_v4_rows(ObservedConnection(), tenant_id=tenant, run_id=run,
+                attempt_id=attempt, batch_id="long-observed", items=(delta(1000),),
+                authority=authority, execution_lease_id="lease")
+            def nodes(plan):
+                yield plan
+                for child in plan.get("Plans", []):
+                    yield from nodes(child)
+            assert len(plans) == 6
+            assert any(node.get("Index Name", "").startswith("idx_run_events_v4_") for plan in plans for node in nodes(plan))
+            for plan in plans:
+                assert plan["Actual Rows"] <= 2
+                assert plan.get("Shared Hit Blocks", 0) + plan.get("Shared Read Blocks", 0) <= 16
+                assert any(bool(node.get("Index Name")) for node in nodes(plan)), json.dumps(plan)
+                assert all(node.get("Node Type") not in {"Seq Scan", "Sort", "Aggregate"} for node in nodes(plan)), json.dumps(plan)
+                assert sum(node.get("Rows Removed by Filter", 0) for node in nodes(plan)) <= 2, plan

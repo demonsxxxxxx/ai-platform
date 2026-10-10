@@ -42,14 +42,19 @@ class UpstreamStream:
     def body(self) -> Iterator[bytes]:
         total = 0
         try:
-            while chunk := self.response.read(64 * 1024):
+            # read(size) waits for the requested amount or EOF, including across
+            # HTTP chunks. read1 preserves the upstream's incremental delivery
+            # without waiting for a small SSE event to fill our buffer.
+            while chunk := self.response.read1(64 * 1024):
                 total += len(chunk)
                 if total > self.max_response_bytes:
                     raise ModelUpstreamError("model_upstream_response_too_large")
                 yield chunk
         finally:
-            self.response.close()
-            self.connection.close()
+            try:
+                self.response.close()
+            finally:
+                self.connection.close()
 
 
 class _PinnedHTTPSConnection(http.client.HTTPSConnection):

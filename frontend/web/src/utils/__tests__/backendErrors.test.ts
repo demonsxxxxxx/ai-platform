@@ -284,3 +284,22 @@ test("safe error projection rejects private diagnostics and uses status-localize
     }
   }
 });
+
+test("admission and shared HTTP errors preserve actionable allowlisted causes", () => {
+  for (const [code, key] of [
+    ["agent_profile_revision_stale", "backendErrors.agentProfileRevisionStale"],
+    ["session_workspace_mismatch", "backendErrors.sessionWorkspaceMismatch"],
+    ["api_response_invalid", "backendErrors.apiResponseInvalid"],
+    ["required_capability_unavailable", "chat.runTerminal.requiredCapabilityUnavailable"],
+    ["context_file_storage_unavailable", "chat.runTerminal.contextFileStorageUnavailable"],
+    ["current_request_too_large", "chat.runTerminal.currentRequestTooLarge"],
+    ["input_context_too_large", "chat.runTerminal.inputContextTooLarge"],
+    ["input_image_invalid", "chat.runTerminal.inputImageInvalid"],
+  ]) {
+    const http = projectSafeBackendError({ code, message: "private-secret" }, 409, t);
+    const admission = projectChatAdmissionError({ status: 409, code, message: "private-secret", diagnosticId: "diag_0123456789abcdef" }, t);
+    assert.equal(http.message, `translated:${key}`);
+    assert.equal(admission.message, `translated:${key} [diag_0123456789abcdef]`);
+    assert.doesNotMatch(JSON.stringify([http, admission]), /private-secret/);
+  }
+});

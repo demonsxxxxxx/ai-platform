@@ -6,6 +6,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.identity.infrastructure import capability_distributions_postgres as identity_capability_distributions_postgres
+from app.bootstrap.identity import build_worker_distribution_authority
+from app.control_plane_contracts import sanitize_public_text
+from app.mcp import api as mcp_api
 from app.mcp.infrastructure import chat_access_postgres as mcp_chat_access_postgres
 
 from app.capability_distribution import (
@@ -22,6 +25,28 @@ from app.mcp.infrastructure import runtime as mcp_runtime
 from app.redis_client import get_redis_client
 from app.settings import get_settings
 from app.tool_policy import evaluate_tool_policy
+
+
+def worker_payload_with_authorized_mcp_registration(
+    payload, *, allowed_entries, tool_policy_subjects,
+):
+    return mcp_api.project_authorized_worker_mcp_payload(
+        payload, allowed_entries=allowed_entries,
+        tool_policy_subjects=tool_policy_subjects,
+        authorized_registration_input=mcp_api.authorized_mcp_registration_input,
+    )
+
+
+def build_worker_mcp_dispatch_service() -> mcp_api.WorkerMcpDispatchService:
+    return mcp_api.WorkerMcpDispatchService(
+        get_tool=mcp_api.get_mcp_tool_registry_entry,
+        identity_authority=build_worker_distribution_authority(),
+        lifecycle_status=mcp_api.mcp_tool_lifecycle_status,
+        capability_subject=mcp_api.mcp_capability_subject,
+        evaluate_tool_policy=evaluate_tool_policy,
+        sanitize_label=sanitize_public_text,
+        authorized_registration_input=mcp_api.authorized_mcp_registration_input,
+    )
 
 
 @dataclass(frozen=True)

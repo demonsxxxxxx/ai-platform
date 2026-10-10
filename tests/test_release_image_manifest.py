@@ -3,6 +3,7 @@ import base64
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -19,7 +20,7 @@ from tools.release_image_manifest import (
     validate_manifest,
 )
 from tools import release_compose_package, release_image_manifest
-from tools.release_compose_package import DATA_IMAGES, build_package
+from tools.release_compose_package import DATA_IMAGES, EVIDENCE_FILES, build_package
 from tools.oci_image_manifest import MAX_OCI_DOCUMENT_BYTES
 
 
@@ -127,23 +128,87 @@ def test_minio_release_input_preserves_runtime_compatibility():
     assert "quay.io/minio/minio" not in compose_text
 
 
-@pytest.mark.parametrize("profile", ["internal-test", "production"])
-def test_compose_package_contains_only_runtime_files_with_fixed_images(tmp_path, profile):
+@pytest.mark.skipif(sys.platform == "win32", reason="requires Linux Docker Compose")
+def test_profile_drive_ca_overlay_keeps_workspace_mount_in_rendered_compose(tmp_path):
+    base = tmp_path / "compose.yaml"
+    workspace = tmp_path / "workspaces"
+    public_ca = tmp_path / "public-ca.pem"
+    ca_target = "/etc/ssl/certs/profile-drive-ca.pem"
+    base.write_text(
+        "services:\n  api:\n    image: busybox:latest\n    volumes:\n"
+        f"      - {workspace}:/workspaces\n",
+        encoding="utf-8",
+    )
+    public_ca.write_text("synthetic CA path only", encoding="utf-8")
+    env = {
+        "PATH": os.environ["PATH"],
+        "HOME": str(tmp_path),
+        "PROFILE_DRIVE_TRANSFER_CA_CERT_HOST_FILE": str(public_ca),
+        "PROFILE_DRIVE_TRANSFER_CA_CERT_FILE": ca_target,
+    }
+
+    def render(*compose_files):
+        command = ["docker", "compose", "--project-name", "synthetic-ca-test"]
+        for path in compose_files:
+            command.extend(["-f", str(path)])
+        result = subprocess.run(
+            [*command, "config", "--format", "json"],
+            env=env, cwd=tmp_path, capture_output=True, text=True, timeout=30,
+        )
+        assert result.returncode == 0, "Docker Compose could not render the CA overlay"
+        return json.loads(result.stdout)["services"]["api"]["volumes"]
+
+    assert len(render(base)) == 1
+    mounts = render(base, ROOT / "deploy/ai-platform/docker-compose.profile-drive-ca.yml")
+    assert len(mounts) == 2
+    assert any(item["source"] == str(workspace) and item["target"] == "/workspaces" for item in mounts)
+    ca = next(item for item in mounts if item["target"] == ca_target)
+    assert ca["type"] == "bind" and ca["source"] == str(public_ca)
+    assert ca["read_only"]
+    # Compose omits the false create_host_path default in its rendered JSON.
+    assert ca.get("bind", {}).get("create_host_path", False) is False
+
+
+def test_compose_package_contains_one_runtime_archive_with_fixed_images(tmp_path):
     import tarfile
     import yaml
 
     manifest = _manifest()
+    _write_package_evidence(tmp_path, manifest)
     output = tmp_path / "deployment.tar.gz"
     data_images = {service: tag.rsplit(":", 1)[0] + "@sha256:" + "d" * 64 for service, tag in DATA_IMAGES.items()}
-    build_package(ROOT, manifest, profile, output, data_images)
+    build_package(ROOT, manifest, output, data_images, evidence_root=tmp_path)
     with tarfile.open(output) as archive:
         expected = {
-            "compose.yaml", "compose.override.yaml", ".env.example",
+            "compose.yaml", "compose.override.yaml", "compose.profile-drive-ca.yaml", ".env.example",
             "release-image-manifest.json", "deploy.py", "README.md",
             "opensandbox-egress-nginx.conf.template",
         }
+        expected.update(
+            "release-evidence/" + name.format(role=role)
+            for role in ("backend", "frontend") for name in EVIDENCE_FILES
+        )
         assert set(archive.getnames()) == expected
+        assert all(member.isfile() for member in archive.getmembers())
+        extracted_evidence = tmp_path / "extracted-evidence"
+        extracted_evidence.mkdir()
+        for name in expected:
+            if name.startswith("release-evidence/"):
+                payload = archive.extractfile(name).read()
+                assert payload == (tmp_path / Path(name).name).read_bytes()
+                (extracted_evidence / Path(name).name).write_bytes(payload)
+        validate_manifest(
+            json.load(archive.extractfile("release-image-manifest.json")),
+            expected_roles=("backend", "frontend"), evidence_root=extracted_evidence,
+        )
+        for role in ("backend", "frontend"):
+            inventory = json.load(archive.extractfile(f"release-evidence/trivy-inventory-{role}.json"))
+            assert inventory["Results"][0]["Vulnerabilities"][0]["Severity"] == "HIGH"
+            assert inventory["Results"][0]["Vulnerabilities"][0]["FixedVersion"] == ""
+            gate = json.load(archive.extractfile(f"release-evidence/trivy-{role}.json"))
+            assert gate["Results"] == []
         base = yaml.safe_load(archive.extractfile("compose.yaml").read())
+        ca_overlay = yaml.safe_load(archive.extractfile("compose.profile-drive-ca.yaml").read())
         # BaseLoader preserves scalars without interpreting Compose's !reset tag.
         overlay = yaml.load(archive.extractfile("compose.override.yaml").read(), Loader=yaml.BaseLoader)
         assert base["name"] == "ai-platform-internal"
@@ -151,6 +216,16 @@ def test_compose_package_contains_only_runtime_files_with_fixed_images(tmp_path,
         for service in ("api", "worker", "migrate", "workspace-init"):
             assert base["services"][service]["image"] == images["backend"]["immutable_ref"]
         assert base["services"]["frontend"]["image"] == images["frontend"]["immutable_ref"]
+        api = base["services"]["api"]
+        assert api["environment"]["PROFILE_DRIVE_TRANSFER_CA_CERT_FILE"] == "${PROFILE_DRIVE_TRANSFER_CA_CERT_FILE:-}"
+        assert len(api["volumes"]) == 1
+        assert ca_overlay["services"]["api"]["volumes"] == [{
+            "type": "bind",
+            "source": "${PROFILE_DRIVE_TRANSFER_CA_CERT_HOST_FILE:?set the host path to the public CA certificate}",
+            "target": "${PROFILE_DRIVE_TRANSFER_CA_CERT_FILE:?set the API container CA path}",
+            "read_only": True,
+            "bind": {"create_host_path": False},
+        }]
         for service, reference in data_images.items():
             assert base["services"][service]["image"] == reference
         minio = base["services"]["minio"]
@@ -172,35 +247,48 @@ def test_compose_package_contains_only_runtime_files_with_fixed_images(tmp_path,
         assert not env_keys.intersection({
             "AI_PLATFORM_IMAGE", "AI_PLATFORM_FRONTEND_IMAGE", "AI_PLATFORM_SOURCE_COMMIT",
             "OPENSANDBOX_EXECUTOR_IMAGE", "OPENSANDBOX_EXECUTOR_IMAGE_DIGEST",
-            "DEPLOYMENT_ENVIRONMENT", "SANDBOX_CONTAINER_PROVIDER", "SANDBOX_SECURITY_PROFILE",
+            "DEPLOYMENT_ENVIRONMENT", "SANDBOX_CONTAINER_PROVIDER",
             "SANDBOX_EGRESS_POLICY_ENABLED", "OPENSANDBOX_USE_SERVER_PROXY",
-            "OPENSANDBOX_EXPECTED_NETWORK_MODE", "DOCKER_SOCKET_GID",
+            "DOCKER_SOCKET_GID",
             "OPENSANDBOX_ALLOWED_EGRESS_HOSTS", "AI_PLATFORM_BUILD_COMMIT", "AI_PLATFORM_BUILD_DIRTY",
             "OPENAI_BASE_URL", "OPENAI_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN",
         })
         assert {"POSTGRES_PASSWORD", "MODEL_CONNECTION_ENCRYPTION_KEY", "OPENSANDBOX_API_KEY"} <= env_keys
-        expected_profile = "governed" if profile == "production" else "internal-test"
+        assert not env_keys.intersection({
+            "OPENSANDBOX_EXPECTED_NETWORK_MODE", "OPENSANDBOX_EGRESS_BRIDGE",
+            "OPENSANDBOX_EGRESS_SUBNET", "OPENSANDBOX_EGRESS_PROXY_IPV4",
+            "SANDBOX_SECURITY_PROFILE", "SANDBOX_EGRESS_PROOF_SIGNING_KEY",
+        })
+        assert {"OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS", "OPENSANDBOX_EGRESS_PROXY_URL"} <= env_keys
         for service in ("api", "worker"):
             env = {**base["services"][service]["environment"], **overlay["services"][service]["environment"]}
+            assert env["DEPLOYMENT_ENVIRONMENT"] == "test"
             assert env["SANDBOX_CONTAINER_PROVIDER"] == "opensandbox"
-            assert env["SANDBOX_SECURITY_PROFILE"] == expected_profile
-            assert env["SANDBOX_EGRESS_POLICY_ENABLED"] == ("true" if profile == "production" else "false")
+            assert env["SANDBOX_SECURITY_PROFILE"] == "internal-test"
+            assert env["SANDBOX_CALLBACK_BASE_URL"] == "${SANDBOX_CALLBACK_BASE_URL:?set SANDBOX_CALLBACK_BASE_URL}"
+            assert env["SANDBOX_EGRESS_POLICY_ENABLED"] == "false"
             assert env["OPENSANDBOX_USE_SERVER_PROXY"] == "true"
-            assert env["OPENSANDBOX_EXPECTED_NETWORK_MODE"] == ("ai-platform-opensandbox-egress-internal-v1" if profile == "production" else "bridge")
-        assert ("OPENSANDBOX_EGRESS_PROXY_URL" in env_keys) == (profile == "internal-test")
-        assert ("OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS" in env_keys) == (profile == "internal-test")
+            assert env["OPENSANDBOX_EXPECTED_NETWORK_MODE"] == "bridge"
+            assert env["OPENSANDBOX_EGRESS_PROXY_URL"] == "${OPENSANDBOX_EGRESS_PROXY_URL:?set OPENSANDBOX_EGRESS_PROXY_URL}"
+        assert "SANDBOX_WORKSPACE_ROOT=/data/opensandbox/workspaces/ai-platform-internal-test" in env_example.splitlines()
+        assert "SANDBOX_WORKSPACE_MIGRATION_SOURCE=/data/ai-platform/runtime-workspaces" in env_example.splitlines()
+        assert "OPENSANDBOX_BASE_URL=" in env_example.splitlines()
+        assert "SANDBOX_CALLBACK_BASE_URL=" in env_example.splitlines()
+        assert "networks" not in overlay
+        proxy = overlay["services"]["opensandbox-egress-proxy"]
+        assert proxy["ports"] == ["${OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS:?set OPENSANDBOX_EGRESS_PROXY_BIND_ADDRESS}:18043:8080"]
         source_env = (ROOT / "deploy/ai-platform/.env.example").read_text()
         for line in env_example.splitlines():
-            if line and not line.startswith("#"):
+            if line and not line.startswith(("#", "SANDBOX_WORKSPACE_ROOT=", "OPENSANDBOX_BASE_URL=", "SANDBOX_CALLBACK_BASE_URL=")):
                 assert line in source_env.splitlines()
     before = output.read_bytes()
     with pytest.raises(FileExistsError):
-        build_package(ROOT, manifest, profile, output, data_images)
+        build_package(ROOT, manifest, output, data_images, evidence_root=tmp_path)
     assert output.read_bytes() == before
     manifest["subjects"][0]["image"]["immutable_ref"] = "untrusted:latest"
     rejected = tmp_path / "rejected.tar.gz"
     with pytest.raises(ValueError):
-        build_package(ROOT, manifest, profile, rejected, data_images)
+        build_package(ROOT, manifest, rejected, data_images, evidence_root=tmp_path)
     assert not rejected.exists()
 
 
@@ -610,6 +698,125 @@ def _write_evidence(root: Path, manifest: dict[str, object]) -> None:
         provenance["reverification_sha256"] = hashlib.sha256(reverified.read_bytes()).hexdigest()
         subject["evidence"]["sbom"]["sha256"] = hashlib.sha256(sbom.read_bytes()).hexdigest()
         subject["evidence"]["scan"]["sha256"] = hashlib.sha256(scan.read_bytes()).hexdigest()
+
+
+def _write_package_evidence(root: Path, manifest: dict[str, object]) -> None:
+    _write_evidence(root, manifest)
+    for subject in manifest["subjects"]:
+        role = subject["role"]
+        record = copy.deepcopy(subject)
+        provenance = record["evidence"]["provenance"]
+        provenance.pop("reverification_ref")
+        provenance.pop("reverification_sha256")
+        (root / f"subject-{role}.json").write_text(json.dumps(record), encoding="utf-8")
+        (root / f"trivy-inventory-{role}.json").write_text(
+            json.dumps({
+                "SchemaVersion": 2,
+                "ArtifactName": subject["image"]["immutable_ref"],
+                "ArtifactType": "container_image",
+                "Metadata": {
+                    "RepoDigests": [subject["image"]["immutable_ref"]],
+                    "ImageConfig": {"os": "linux", "architecture": "amd64"},
+                },
+                "Results": [{
+                    "Target": "synthetic-package",
+                    "Vulnerabilities": [{
+                        "VulnerabilityID": "CVE-2099-0001", "Severity": "HIGH",
+                        "PkgName": "synthetic-package", "InstalledVersion": "1.0",
+                        "FixedVersion": "", "Status": "affected",
+                    }],
+                }],
+            }),
+            encoding="utf-8",
+        )
+        for name in ("cosign-signature", "cosign-sbom"):
+            (root / f"{name}-{role}.json").write_text(
+                json.dumps([{"fixture": "verified", "image": subject["image"]["immutable_ref"]}]),
+                encoding="utf-8",
+            )
+
+
+@pytest.mark.parametrize("failure", ["missing", "symlink", "empty", "scan_changed", "subject_changed"])
+def test_compose_package_rejects_missing_or_mismatched_evidence_before_writing(tmp_path, failure):
+    manifest = _manifest()
+    _write_package_evidence(tmp_path, manifest)
+    target = tmp_path / "cosign-signature-backend.json"
+    if failure == "missing":
+        target.unlink()
+    elif failure == "symlink":
+        target.unlink()
+        target.symlink_to(tmp_path / "cosign-signature-frontend.json")
+    elif failure == "empty":
+        target.write_bytes(b"")
+    elif failure == "scan_changed":
+        (tmp_path / "trivy-backend.json").write_text("{}")
+    elif failure == "subject_changed":
+        (tmp_path / "subject-backend.json").write_text("{}")
+    output = tmp_path / "rejected.tar.gz"
+    data_images = {service: tag.rsplit(":", 1)[0] + "@sha256:" + "d" * 64 for service, tag in DATA_IMAGES.items()}
+    with pytest.raises(ValueError):
+        build_package(ROOT, manifest, output, data_images, evidence_root=tmp_path)
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("failure", [
+    "missing", "symlink", "empty", "subject", "schema", "artifact_type", "metadata",
+    "repo_digest", "platform", "results", "vulnerabilities", "severity",
+])
+def test_compose_package_rejects_invalid_inventory_before_writing(tmp_path, failure):
+    manifest = _manifest()
+    _write_package_evidence(tmp_path, manifest)
+    target = tmp_path / "trivy-inventory-backend.json"
+    report = json.loads(target.read_bytes())
+    if failure == "missing":
+        target.unlink()
+    elif failure == "symlink":
+        target.unlink()
+        target.symlink_to(tmp_path / "trivy-inventory-frontend.json")
+    elif failure == "empty":
+        target.write_bytes(b"")
+    else:
+        if failure == "subject":
+            report["ArtifactName"] = manifest["subjects"][1]["image"]["immutable_ref"]
+        elif failure == "schema":
+            report["SchemaVersion"] = 1
+        elif failure == "artifact_type":
+            report["ArtifactType"] = "filesystem"
+        elif failure == "metadata":
+            report["Metadata"] = []
+        elif failure == "repo_digest":
+            report["Metadata"]["RepoDigests"] = ["example/image@sha256:" + "f" * 64]
+        elif failure == "platform":
+            report["Metadata"]["ImageConfig"]["architecture"] = "arm64"
+        elif failure == "results":
+            report["Results"] = {}
+        elif failure == "vulnerabilities":
+            report["Results"][0]["Vulnerabilities"] = {}
+        elif failure == "severity":
+            report["Results"][0]["Vulnerabilities"][0]["Severity"] = "unknown"
+        target.write_text(json.dumps(report), encoding="utf-8")
+    output = tmp_path / "rejected.tar.gz"
+    data_images = {service: tag.rsplit(":", 1)[0] + "@sha256:" + "d" * 64 for service, tag in DATA_IMAGES.items()}
+    with pytest.raises(ValueError):
+        build_package(ROOT, manifest, output, data_images, evidence_root=tmp_path)
+    assert not output.exists()
+
+
+def test_compose_package_does_not_include_unlisted_files(tmp_path):
+    import tarfile
+
+    manifest = _manifest()
+    _write_package_evidence(tmp_path, manifest)
+    # Synthetic sentinels: the source/evidence roots must never be globbed.
+    (tmp_path / ".env").write_text("SYNTHETIC_PRIVATE_CONFIGURATION=excluded")
+    (tmp_path / "unrelated.json").write_text("{}")
+    output = tmp_path / "deployment.tar.gz"
+    data_images = {service: tag.rsplit(":", 1)[0] + "@sha256:" + "d" * 64 for service, tag in DATA_IMAGES.items()}
+    build_package(ROOT, manifest, output, data_images, evidence_root=tmp_path)
+    with tarfile.open(output) as archive:
+        assert ".env" not in archive.getnames()
+        assert "release-evidence/.env" not in archive.getnames()
+        assert "release-evidence/unrelated.json" not in archive.getnames()
 
 
 def _schema() -> dict[str, object]:

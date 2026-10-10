@@ -22,7 +22,7 @@ contracts remain authoritative. This overview links rather than reproduces them.
 | Process/resource | Observed entry or boundary | Responsibility | Current limitation to verify |
 | --- | --- | --- | --- |
 | API | `app/main.py`, `app/routes/chat.py` | Authenticated admission, queries and public transport | Submission orchestration remains in route code |
-| Worker | `app/worker_main.py`, `app/worker.py` | Queue lease, reauthorization, execution preparation and dispatch | Single/pool supervisors remain separate; maintenance phases run independently |
+| Worker | `app/worker_main.py`, `app/worker.py` | Queue lease, reauthorization, execution preparation and dispatch | Single/pool entrypoints share fail-fast task supervision; maintenance phases run independently |
 | Sandbox controller | `app/runtime/sandbox/runtime.py` | Resource acquire, stage, validate, dispatch and cleanup | Provider calls also exist in routes/reconciler |
 | Executor | `app/runtime/sandbox/executor_app.py` | One scoped Engine execution and callback delivery | Callback admission and durable acknowledgement need clear internal semantics |
 | Engine | `app/executors/claude_agent_sdk_runner.py` | SDK-specific model/tool loop and event normalization | SDK types must not become public protocol authority |
@@ -33,6 +33,19 @@ contracts remain authoritative. This overview links rather than reproduces them.
 
 These are source entrypoints, not a claim that every target package or an
 independent maintenance service already exists in the deployed image.
+
+Worker supervision observes background-task failure or unexpected exit while a
+Run is still executing. Shutdown cancels and drains owned tasks before closing
+the stream runtime and shared clients, attempts both resource-close phases even
+if one fails, and preserves the original failure or cancellation. Repeated
+caller cancellation does not interrupt this cleanup. Resource-close phases have
+cooperative 30-second budgets; task draining remains cooperative so an active
+storage operation keeps its slot and clients until it actually finishes.
+Database pool initialization publishes only after successful opening. Failed or
+cancelled opening closes the provisional pool before another initializer can
+acquire the pool lock. Closing uses the configured worker-stop budget plus a
+one-second connection-drain grace; cleanup failure cannot replace the original
+initialization error.
 
 ## End-to-end lifecycle
 

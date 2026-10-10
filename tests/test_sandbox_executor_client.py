@@ -7,7 +7,8 @@ import pytest
 import app.runtime.sandbox.executor_client as executor_client_module
 from app.runtime.sandbox.contracts import ContainerLease, ExecutorCallbackEvent, ExecutorTaskRequest
 from app.runtime.sandbox.event_normalizer import callback_event_to_run_events, container_started_event
-from app.runtime.sandbox.executor_client import SandboxExecutorClient, SandboxExecutorHttpError
+from app.runtime.sandbox.executor_client import SandboxExecutorClient
+from app.sandbox.api import SandboxExecutorHttpError, normalize_executor_reported_failure
 from app.sandbox.domain.runtime_diagnostics import (
     SDK_RUNTIME_DIAGNOSTICS_MAX_BYTES,
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
@@ -664,7 +665,7 @@ async def test_executor_client_rejects_http_200_reported_failure_as_invalid_prot
 
 
 def test_executor_failure_normalizer_preserves_tool_evidence_code_without_private_detail():
-    normalized = executor_client_module.normalize_executor_reported_failure(
+    normalized = normalize_executor_reported_failure(
         {
             "status": "failed",
             "run_id": "run-a",
@@ -681,7 +682,7 @@ def test_executor_failure_normalizer_preserves_tool_evidence_code_without_privat
 
 
 def test_executor_failure_normalizer_preserves_required_tool_completion_error():
-    normalized = executor_client_module.normalize_executor_reported_failure(
+    normalized = normalize_executor_reported_failure(
         {
             "status": "failed",
             "run_id": "run-a",
@@ -718,7 +719,7 @@ def test_executor_failure_normalizer_preserves_private_runtime_diagnostics():
         ],
     }
 
-    normalized = executor_client_module.normalize_executor_reported_failure(
+    normalized = normalize_executor_reported_failure(
         {
             "status": "failed",
             "run_id": "run-a",
@@ -764,7 +765,7 @@ def test_executor_failure_normalizer_bounds_and_validates_runtime_diagnostics():
         ],
     }
 
-    normalized = executor_client_module.normalize_executor_reported_failure(
+    normalized = normalize_executor_reported_failure(
         {
             "status": "failed",
             "error_code": "claude_agent_sdk_tool_admission_failed",
@@ -786,7 +787,7 @@ def test_executor_failure_normalizer_bounds_and_validates_runtime_diagnostics():
         "retained": 8,
     } in bounded["normalization_losses"]
 
-    malformed = executor_client_module.normalize_executor_reported_failure(
+    malformed = normalize_executor_reported_failure(
         {
             "status": "failed",
             "error_code": "executor_failed",
@@ -806,7 +807,7 @@ def test_executor_failure_normalizer_bounds_and_validates_runtime_diagnostics():
 def test_executor_failure_normalizer_drops_unknown_private_fields():
     private = "https://executor.test/run?token=private-token"
 
-    normalized = executor_client_module.normalize_executor_reported_failure(
+    normalized = normalize_executor_reported_failure(
         {
             "status": "failed",
             "run_id": "run-a",

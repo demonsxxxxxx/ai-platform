@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.required_tool_contract import builtin_capability_subjects
 from app.skills.execution_profiles import (
     NATIVE_COMMAND_ISOLATION,
     SANDBOX_FULL_LOCAL,
@@ -16,7 +17,6 @@ from app.skills.pinning import (
     build_skill_version_manifest_pin,
     build_uploaded_skill_manifest_pin,
 )
-from app import worker
 
 
 def _skill_version(
@@ -50,11 +50,12 @@ def _skill_version(
 
 def _worker_subjects(manifest: dict[str, object]) -> dict[str, dict[str, object]]:
     skill_id = str(manifest["skill_id"])
-    subjects = worker._builtin_capability_subjects(
+    subjects = builtin_capability_subjects(
         payload=SimpleNamespace(skill_manifests=[manifest], input={}),
         run_identity={"skill_id": skill_id},
         skill={"skill_id": skill_id, "skill_status": "active"},
         skill_decision=SimpleNamespace(usable=True),
+        canonical_manifest=effective_skill_execution_profile,
     )
     return {str(subject["identity"]): subject for subject in subjects}
 

@@ -85,29 +85,6 @@ class CapabilityDistributionResponse(BaseModel):
     updated_at: Any | None = None
 
 
-class CapabilityDistributionUpdateRequest(BaseModel):
-    """Strict distribution configuration accepted from AI administrators."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    status: Literal["active", "disabled"] = "active"
-    visible_to_user: bool = True
-    scope_mode: Literal["allowlist"] = "allowlist"
-    department_ids: list[str] = Field(default_factory=list)
-    allowed_roles: list[str] = Field(default_factory=list)
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-    @field_validator("department_ids")
-    @classmethod
-    def normalize_department_ids(cls, value: list[str], info):
-        return _normalize_capability_department_ids(value, info.field_name)
-
-    @field_validator("allowed_roles")
-    @classmethod
-    def normalize_allowed_roles(cls, value: list[str], info):
-        return _normalize_capability_roles(value, info.field_name)
-
-
 class CapabilityDistributionAuthorityUpdateRequest(BaseModel):
     """Distribution update whose department labels require route-level directory proof."""
 
@@ -389,14 +366,6 @@ class AgentProfileAdminProjection(BaseModel):
     published_at: Any | None = None
 
 
-class AgentProfileAdminListResponse(BaseModel):
-    """Administrator response containing same-tenant profile revisions."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    agent_profiles: list[AgentProfileAdminProjection] = Field(default_factory=list)
-
-
 class AgentProfileMutationResponse(BaseModel):
     """Administrator draft-save or publish result with its audit identity."""
 
@@ -404,14 +373,6 @@ class AgentProfileMutationResponse(BaseModel):
 
     agent_profile: AgentProfileAdminProjection
     audit_id: str
-
-
-class AgentProfileHistoryResponse(BaseModel):
-    """Admin-only immutable revision history for one Agent Profile."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    agent_profiles: list[AgentProfileAdminProjection] = Field(default_factory=list)
 
 
 class AgentProfileValidationResponse(BaseModel):
@@ -583,27 +544,6 @@ class RunResponse(BaseModel):
     context_window: dict[str, Any] | None = None
 
 
-class RunEventResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    schema_version: str
-    event_id: str
-    sequence: int = 0
-    run_id: str
-    trace_id: str = ""
-    type: str
-    stage: str
-    message: str = ""
-    severity: Literal["info", "warning", "error"] = "info"
-    visible_to_user: bool = True
-    error_code: str | None = None
-    latency_ms: int | None = None
-    token_counts: dict[str, int] = Field(default_factory=dict)
-    cost: dict[str, Any] = Field(default_factory=dict)
-    payload: dict[str, Any] = Field(default_factory=dict)
-    created_at: Any | None = None
-
-
 class ContextSnapshotRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -734,22 +674,6 @@ class SandboxLeaseReleaseRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     reason: str = Field(default="released", max_length=200)
-
-
-class ArtifactCardResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    artifact_id: str
-    artifact_type: str
-    label: str
-    content_type: str
-    size_bytes: int
-    download_url: str
-    preview_url: str | None = None
-    status: Literal["available", "failed"] = "available"
-    lineage: dict[str, Any] = Field(default_factory=dict)
-    manifest: dict[str, Any] = Field(default_factory=dict)
-    created_at: Any | None = None
 
 
 class UploadFileResponse(BaseModel):
@@ -1602,16 +1526,6 @@ class WorkbenchGovernanceResponse(BaseModel):
     secret_material_projected: bool = False
 
 
-class WorkbenchAuditResponse(BaseModel):
-    """Safe audit reference for queued admin workbench operations."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    audit_id: str
-    action: str
-    status: str = "queued"
-
-
 class WorkbenchOperationResponse(BaseModel):
     """Audited admin workbench operation response."""
 
@@ -1993,12 +1907,6 @@ class AdminSkillListResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     items: list[AdminSkillSummaryResponse] = Field(default_factory=list)
-
-
-class AdminSkillSyncResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    synced: list[AdminSkillVersionResponse] = Field(default_factory=list)
 
 
 class AdminSkillUploadResponse(BaseModel):

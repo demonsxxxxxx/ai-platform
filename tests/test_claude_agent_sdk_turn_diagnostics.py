@@ -467,8 +467,8 @@ async def test_sdk_turn_limit_variants_share_one_actionable_public_diagnostic(
         "schema_version": "ai-platform.sdk-turn-diagnostics.v1",
         "terminal_class": "max_turn_exhausted",
         "error_code": "claude_agent_sdk_turn_limit_exceeded",
-        "action": "continue_or_narrow_request",
-        "retryable": True,
+        "action": "start_new_conversation",
+        "retryable": False,
         "counters": {
             "max_turns": 8,
             "turns_observed": 8,
@@ -529,6 +529,9 @@ async def test_sdk_timeout_and_missing_terminal_are_distinct(monkeypatch, tmp_pa
     assert timed_out.turn_diagnostics["terminal_class"] == "timeout"
     assert missing.error == "claude_agent_sdk_missing_structured_terminal"
     assert missing.turn_diagnostics["terminal_class"] == "missing_terminal"
+    for result in (timed_out, missing):
+        assert result.turn_diagnostics["action"] == "start_new_conversation"
+        assert result.turn_diagnostics["retryable"] is False
 
 
 @pytest.mark.asyncio
@@ -596,7 +599,7 @@ async def test_authorized_skill_is_optional_and_policy_admission_remains_distinc
 
 
 @pytest.mark.asyncio
-async def test_sdk_error_terminal_preserves_sdk_error_without_skill_invocation(
+async def test_unattributed_sdk_error_terminal_preserves_private_error_without_skill_invocation(
     monkeypatch,
     tmp_path: Path,
 ):
@@ -623,8 +626,8 @@ async def test_sdk_error_terminal_preserves_sdk_error_without_skill_invocation(
         skills=["review-skill"],
     )
 
-    assert result.error == "claude_agent_sdk_upstream_error"
-    assert result.turn_diagnostics["terminal_class"] == "upstream_error"
+    assert result.error == "claude_agent_sdk_execution_failed"
+    assert result.turn_diagnostics["terminal_class"] == "execution_failure"
     assert result.used_skills == []
     assert "private upstream detail" not in str(result.turn_diagnostics)
     assert result.runtime_diagnostics["error_code"] == result.error
@@ -635,7 +638,7 @@ async def test_sdk_error_terminal_preserves_sdk_error_without_skill_invocation(
 
 
 @pytest.mark.asyncio
-async def test_dependency_hook_failure_after_selected_success_is_safe_upstream_error(
+async def test_dependency_hook_failure_after_selected_success_is_neutral_execution_error(
     monkeypatch,
     tmp_path: Path,
 ):
@@ -688,14 +691,19 @@ async def test_dependency_hook_failure_after_selected_success_is_safe_upstream_e
         on_capability_evidence=acknowledge,
     )
 
-    assert result.error == "claude_agent_sdk_upstream_error"
+    assert result.error == "claude_agent_sdk_execution_failed"
     assert result.used_skills == ["review-skill"]
     assert result.used_skills_source == "executor_hook"
-    assert result.turn_diagnostics["terminal_class"] == "upstream_error"
+    assert result.turn_diagnostics["terminal_class"] == "execution_failure"
     assert result.turn_diagnostics["selected_skill"] == metadata["review-skill"]
     assert result.turn_diagnostics["used_skills"] == [metadata["review-skill"]]
     assert "minimax-docx" not in str(result.turn_diagnostics)
     assert "private dependency command failed" not in str(result.turn_diagnostics)
+    assert result.runtime_diagnostics["failure_source"] == "sdk_exception"
+    assert (
+        result.runtime_diagnostics["sdk"]["exception_message"]
+        == "private dependency command failed"
+    )
 
 
 @pytest.mark.parametrize(
@@ -734,7 +742,7 @@ def test_mcp_execution_receipt_errors_require_reconciliation_before_retry():
 
 
 @pytest.mark.asyncio
-async def test_generic_upstream_error_never_exposes_private_exception_text(
+async def test_local_execution_error_never_exposes_private_exception_text(
     monkeypatch,
     tmp_path: Path,
 ):
@@ -755,10 +763,15 @@ async def test_generic_upstream_error_never_exposes_private_exception_text(
         skill_id="general-chat",
     )
 
-    assert result.error == "claude_agent_sdk_upstream_error"
-    assert result.turn_diagnostics["terminal_class"] == "upstream_error"
+    assert result.error == "claude_agent_sdk_execution_failed"
+    assert result.turn_diagnostics["terminal_class"] == "execution_failure"
     assert "private-token" not in str(result.turn_diagnostics)
     assert "do-not-expose" not in str(result.turn_diagnostics)
+    assert result.runtime_diagnostics["failure_source"] == "sdk_exception"
+    assert (
+        result.runtime_diagnostics["sdk"]["exception_message"]
+        == "private-token=secret command=do-not-expose"
+    )
 
 
 @pytest.mark.asyncio

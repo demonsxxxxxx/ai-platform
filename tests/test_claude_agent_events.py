@@ -65,19 +65,31 @@ def _assert_sandbox_answer_receipt(result, candidates, answer):
         candidate
         for candidate in candidates
         if isinstance(candidate, ClaudeAgentEventCandidate)
-        and candidate.event_type == "message.delta"
+        and candidate.event_type == "message.part.delta"
+    ]
+    answer_parts = {
+        candidate.payload["part_id"]
+        for candidate in candidates
+        if isinstance(candidate, ClaudeAgentEventCandidate)
+        and candidate.event_type == "message.part.classified"
+        and candidate.payload["role"] == "answer"
+    }
+    selected_deltas = [
+        candidate
+        for candidate in delta_candidates
+        if candidate.payload["part_id"] in answer_parts
     ]
     assert result.message == ""
-    assert "".join(candidate.payload["delta"] for candidate in delta_candidates) == answer
+    assert "".join(candidate.payload["delta"] for candidate in selected_deltas) == answer
     assert result.answer_receipt == {
-        "schema_version": "ai-platform.assistant-answer-receipt.v1",
-        "message_id": delta_candidates[0].message_id,
-        "delta_count": len(delta_candidates),
+        "schema_version": "ai-platform.assistant-answer-receipt.v2",
+        "message_id": selected_deltas[0].message_id,
+        "delta_count": len(selected_deltas),
         "text_length": len(answer),
-        "last_delta_event_id": delta_candidates[-1].event_id,
+        "last_delta_event_id": selected_deltas[-1].event_id,
     }
-    assert delta_candidates
-    assert all(len(candidate.payload["delta"]) <= 8_192 for candidate in delta_candidates)
+    assert selected_deltas
+    assert all(len(candidate.payload["delta"]) <= 8_192 for candidate in selected_deltas)
 
 
 def _framed_sdk_answer_events(
@@ -315,6 +327,28 @@ def test_v4_candidate_validates_answer_shape_while_structured_fields_remain_sani
     assert partial_answer_candidate.payload["delta"] == "token-cou"
 
 
+def test_part_delta_trusts_the_stateful_public_gate_for_fragment_safety():
+    def fragment_sanitizer(value):
+        return value.replace("Raw ", "████")
+
+    candidate = ClaudeAgentEventCandidate(
+        run_id="run-1187",
+        event_id="event-gated-part",
+        event_type="message.part.delta",
+        message_id="message-1",
+        causation_event_id=None,
+        payload={
+            "schema_version": "ai-platform.assistant-text-part.v1",
+            "part_id": "part_" + "a" * 32,
+            "delta": "Raw ",
+        },
+        payload_sanitizer=sanitize_public_event_candidate,
+        text_sanitizer=fragment_sanitizer,
+    )
+
+    assert candidate.payload["delta"] == "Raw "
+
+
 def test_answer_candidates_follow_the_public_gate_and_have_one_stable_message_identity():
     adapter = _adapter()
 
@@ -335,6 +369,72 @@ def test_answer_candidates_follow_the_public_gate_and_have_one_stable_message_id
     assert events[-1].causation_event_id == delta_events[-1].event_id
 
 
+def test_text_parts_are_opaque_classified_and_receipt_selects_answers_only():
+    adapter = _adapter()
+    work_source = ("private-provider-work-message", "private-parent-id")
+    first_answer = ("private-provider-answer-one", None)
+    second_answer = ("private-provider-answer-two", None)
+
+    work_delta = adapter.accept_part_text(work_source, "Checking sources.")
+    work_role = adapter.classify_text_part(work_source, "work")
+    first_delta = adapter.accept_part_text(first_answer, "文" * 8_193)
+    first_role = adapter.classify_text_part(first_answer, "answer")
+    second_delta = adapter.accept_part_text(second_answer, "Final")
+    second_role = adapter.classify_text_part(second_answer, "answer")
+    completed = adapter.complete_answer(None)
+
+    part_events = [
+        *work_delta,
+        *work_role,
+        *first_delta,
+        *first_role,
+        *second_delta,
+        *second_role,
+    ]
+    answer_deltas = [
+        event for event in (*first_delta, *second_delta)
+        if event.event_type == "message.part.delta"
+    ]
+    assert adapter.part_id_for_source(first_answer) == first_delta[1].payload["part_id"]
+    assert all(
+        event.payload["schema_version"] == "ai-platform.assistant-text-part.v1"
+        for event in part_events
+        if event.event_type.startswith("message.part.")
+    )
+    assert all(len(event.payload["delta"]) <= 8_192 for event in answer_deltas)
+    assert "private-provider" not in str([event.as_dict() for event in part_events])
+    assert adapter.has_unclassified_text_parts is False
+    assert [event.event_type for event in completed] == ["message.completed"]
+    expected_answer = "文" * 8_193 + "\n\nFinal"
+    assert completed[0].payload == {
+        "delta_count": 3,
+        "text_length": len(expected_answer),
+    }
+    assert completed[0].causation_event_id == answer_deltas[-1].event_id
+    assert adapter.answer_receipt == {
+        "schema_version": "ai-platform.assistant-answer-receipt.v2",
+        "message_id": completed[0].message_id,
+        "delta_count": 3,
+        "text_length": len(expected_answer),
+        "last_delta_event_id": answer_deltas[-1].event_id,
+    }
+
+
+def test_successful_part_completion_rejects_unclassified_text():
+    adapter = _adapter()
+    source = ("provider-pending", None)
+    delta = adapter.accept_part_text(source, "Pending text")
+
+    assert [event.event_type for event in delta] == [
+        "message.started",
+        "message.part.delta",
+    ]
+    assert adapter.has_unclassified_text_parts is True
+    assert adapter.complete_answer(None) == ()
+    assert adapter.answer_receipt is None
+    assert adapter.public_projection_omissions == 1
+
+
 def test_commentary_candidates_are_separate_from_the_terminal_answer_receipt():
     adapter = _adapter()
 
@@ -352,6 +452,7 @@ def test_commentary_candidates_are_separate_from_the_terminal_answer_receipt():
         "commentary.delta",
     ]
     assert events[0].message_id == continued[0].message_id == adapter.message_id
+    assert events[0].payload["summary_id"].startswith("worktrace_")
     assert events[0].payload["summary_id"] == continued[0].payload["summary_id"]
     assert events[0].event_id != continued[0].event_id
     assert adapter.answer_receipt is None
@@ -381,6 +482,21 @@ def test_commentary_candidates_are_separate_from_the_terminal_answer_receipt():
         )
         == ()
     )
+
+
+def test_commentary_rejects_private_path_spanning_event_chunks():
+    adapter = _adapter()
+
+    assert adapter.accept_commentary_text(
+        "x" * 8_191 + "/tmp/private.txt", commentary_identity="tool-turn"
+    ) == ()
+    accepted = adapter.accept_commentary_text(
+        "Checking public sources.", commentary_identity="tool-turn"
+    )
+
+    assert [event.payload["delta"] for event in accepted] == ["Checking public sources."]
+    assert accepted[0].payload["summary_id"].startswith("worktrace_")
+    assert adapter.answer_receipt is None
 
 
 def test_answer_candidate_failure_does_not_advance_receipt_state():
@@ -1024,7 +1140,7 @@ def test_callback_projects_whole_summaries_with_server_owned_identity_and_chunks
 
 
 @pytest.mark.asyncio
-async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(monkeypatch):
+async def test_runner_tool_only_success_keeps_activity_without_public_answer(monkeypatch):
     import claude_agent_sdk as sdk
 
     monkeypatch.setattr(
@@ -1130,9 +1246,10 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
         execution_policy="sandbox_brokered",
     )
 
-    assert result.error == "claude_agent_sdk_output_validation_failed"
+    assert result.error is None
+    assert result.answer_receipt is None
     assert result.runtime_diagnostics["projection_failure"]["reason"] == (
-        "terminal_result_body_conflict"
+        "typed_text_source_missing"
     )
     assert result.message == ""
     candidate_types = [
@@ -1146,6 +1263,8 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
     assert "subagent.started" in candidate_types
     assert "subagent.completed" in candidate_types
     assert "message.delta" not in candidate_types
+    assert "message.part.delta" not in candidate_types
+    assert "message.completed" not in candidate_types
     assert tool_lifecycle == [("Read", "started"), ("Read", "completed")]
     assert all(isinstance(candidate, ClaudeAgentEventCandidate) for candidate in candidates)
     serialized = [candidate.as_dict() for candidate in candidates]
@@ -1154,7 +1273,7 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
 
 
 @pytest.mark.asyncio
-async def test_runner_streams_and_receipts_ordinary_result_text(
+async def test_runner_streams_and_receipts_ordinary_completed_text(
     monkeypatch,
 ):
     import claude_agent_sdk as sdk
@@ -1190,7 +1309,7 @@ async def test_runner_streams_and_receipts_ordinary_result_text(
             result_uuid="result-ordinary-observation",
             include_raw_delta=False,
             typed_before_raw_stop=True,
-            parent_tool_use_id="parent-ordinary-stream",
+            parent_tool_use_id=None,
         ):
             yield event
 
@@ -1216,18 +1335,23 @@ async def test_runner_streams_and_receipts_ordinary_result_text(
     delta_values = [
         candidate.payload["delta"]
         for candidate in candidates
-        if candidate.event_type == "message.delta"
+        if candidate.event_type == "message.part.delta"
     ]
     assert "".join(delta_values) == answer
     assert delta_values and all(len(delta) <= 8_192 for delta in delta_values)
     event_types = [candidate.event_type for candidate in candidates]
     assert event_types[0] == "message.started"
     assert event_types[-2:] == ["message.completed", "model.completed"]
-    assert event_types[1:-2] == ["message.delta"] * len(delta_values)
+    assert event_types.count("message.part.classified") == 1
+    assert event_types[1] == "message.part.delta"
+    assert all(
+        event_type in {"message.part.delta", "message.part.classified"}
+        for event_type in event_types[1:-2]
+    )
 
 
 @pytest.mark.asyncio
-async def test_runner_coalesces_fragmented_public_answer_before_receipt_identity(
+async def test_runner_reconciles_fragmented_public_answer_into_parts(
     monkeypatch,
 ):
     import claude_agent_sdk as sdk
@@ -1278,13 +1402,13 @@ async def test_runner_coalesces_fragmented_public_answer_before_receipt_identity
     deltas = [
         candidate
         for candidate in candidates
-        if candidate.event_type == "message.delta"
+        if candidate.event_type == "message.part.delta"
     ]
     assert result.error is None
     assert "".join(candidate.payload["delta"] for candidate in deltas) == answer
-    assert len(deltas) < len(answer) // 7
+    assert deltas and all(len(candidate.payload["delta"]) <= 8_192 for candidate in deltas)
     assert result.answer_receipt == {
-        "schema_version": "ai-platform.assistant-answer-receipt.v1",
+        "schema_version": "ai-platform.assistant-answer-receipt.v2",
         "message_id": deltas[0].message_id,
         "delta_count": len(deltas),
         "text_length": len(answer),
@@ -1322,6 +1446,13 @@ async def test_runner_keeps_legacy_inline_message_outside_sandbox(monkeypatch):
 
     async def query_fn(*, prompt, options):
         del prompt, options
+        yield sdk.AssistantMessage(
+            content=[sdk.TextBlock(text=answer)],
+            model="model-a",
+            message_id="provider-legacy-inline-message",
+            uuid="assistant-legacy-inline-observation",
+            parent_tool_use_id=None,
+        )
         yield sdk.ResultMessage(
             subtype="success",
             duration_ms=12,
@@ -1330,7 +1461,7 @@ async def test_runner_keeps_legacy_inline_message_outside_sandbox(monkeypatch):
             num_turns=1,
             session_id="sdk-session",
             stop_reason="end_turn",
-            result=answer,
+            result="PRIVATE_RESULT_HAS_NO_PUBLIC_AUTHORITY",
             uuid="result-legacy-inline-observation",
         )
 
@@ -1356,7 +1487,8 @@ async def test_runner_keeps_legacy_inline_message_outside_sandbox(monkeypatch):
     candidate_types = [candidate.event_type for candidate in candidates]
     assert candidate_types[0] == "message.started"
     assert candidate_types[-2:] == ["message.completed", "model.completed"]
-    assert candidate_types[1:-2] == ["message.delta"] * (len(candidate_types) - 3)
+    assert candidate_types[1:2] == ["message.part.delta"]
+    assert candidate_types[2] == "message.part.classified"
 
 
 @pytest.mark.asyncio
@@ -1420,7 +1552,7 @@ async def test_runner_seals_agent_candidates_when_callback_rejects(monkeypatch, 
     assert len(callback_batches) == 1
     assert [candidate.event_type for candidate in callback_batches[0]] == [
         "message.started",
-        "message.delta",
+        "message.part.delta",
     ]
 
 
@@ -1537,10 +1669,18 @@ async def test_timer_text_callback_failure_returns_structured_runner_error(monke
         execution_policy="sandbox_brokered",
     )
 
-    assert result.error == "claude_agent_sdk_upstream_error"
+    assert result.error == "claude_agent_sdk_execution_failed"
+    assert result.turn_diagnostics["terminal_class"] == "execution_failure"
+    assert "synthetic text callback failure" not in str(result.turn_diagnostics)
+    assert result.runtime_diagnostics["failure_source"] == "sdk_exception"
+    assert result.runtime_diagnostics["sdk"]["exception_type"] == "RuntimeError"
+    assert (
+        result.runtime_diagnostics["sdk"]["exception_message"]
+        == "synthetic text callback failure"
+    )
     assert result.message == ""
     assert result.answer_receipt is None
-    assert "message.delta" in [candidate.event_type for candidate in candidates]
+    assert "message.part.delta" in [candidate.event_type for candidate in candidates]
     assert "message.completed" not in [candidate.event_type for candidate in candidates]
 
 
@@ -1585,7 +1725,7 @@ async def test_timer_text_callback_failure_does_not_override_cancelled_result(
         for event in framed[:3]:
             yield event
         await asyncio.sleep(0.1)
-        yield sdk.ResultMessage(
+        terminal = sdk.ResultMessage(
             subtype="success",
             duration_ms=12,
             duration_api_ms=10,
@@ -1595,8 +1735,9 @@ async def test_timer_text_callback_failure_does_not_override_cancelled_result(
             stop_reason="aborted_streaming",
             result="",
             uuid="result-cancelled-observation",
-            terminal_reason="cancelled",
         )
+        terminal.terminal_reason = "cancelled"
+        yield terminal
 
     result = await run_claude_agent_sdk(
         prompt="answer",
@@ -1702,7 +1843,7 @@ async def test_terminal_answer_later_callback_failure_or_cancellation(
     assert result.error == "agent_event_callback_not_acknowledged"
     assert result.answer_receipt is None
     assert [candidate.event_type for candidate in callback_batches[-1]] == (
-        ["message.delta"]
+        ["message.part.delta"]
         if target_kind == "later_delta"
         else ["message.completed", "model.completed"]
     )
@@ -1803,9 +1944,9 @@ async def test_runner_frames_governed_completed_answer_for_ascii_and_multibyte_b
         candidate.payload["delta"]
         for candidate in candidates
         if isinstance(candidate, ClaudeAgentEventCandidate)
-        and candidate.event_type == "message.delta"
+        and candidate.event_type == "message.part.delta"
     ]
-    assert len(callback_batches) == len(deltas) + 1
+    assert len(callback_batches) >= len(deltas)
     assert len(deltas) >= delta_count
     assert all(len(batch) <= 100 for batch in callback_batches)
     assert callback_batches[0][0].event_type == "message.started"

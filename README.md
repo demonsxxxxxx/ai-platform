@@ -13,7 +13,7 @@ Thin platform service for the enterprise AI Agent platform.
 ## Deployment quick start
 
 Download the desired immutable Deployment Release's
-`ai-platform-internal-test.tar.gz` or `ai-platform-production.tar.gz` and extract
+`ai-platform-production.tar.gz` and extract
 it into a new directory. The package fixes the application version and image
 digests; no Git checkout, Actions query or host build is needed.
 

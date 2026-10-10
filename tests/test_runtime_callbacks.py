@@ -1412,6 +1412,132 @@ def test_executor_callback_uses_adapter_events_and_durable_rows(monkeypatch):
     assert adapter.message_id.startswith("msg_")
 
 
+def test_executor_callback_persists_sdk_text_checkpoint_privately_with_v4_receipt(monkeypatch):
+    from app.execution.api import ClaudeSdkAgentEventAdapter
+    from app.routes import runtime_callbacks
+    from app.routes.runs import event_visible_to_principal
+    from app.runtime.kernel_contracts import AgentEvent, CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE
+
+    patch_callback_settings(monkeypatch, callback_settings("secret"))
+    persisted, v4_rows, receipts = [], [], set()
+
+    class FakeTransaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+    async def fake_get_run_identity(conn, *, run_id, for_update=False):
+        return {"tenant_id": "tenant-a", "id": run_id, "session_id": "session-a", "status": "running"}
+
+    async def fake_append_batch(conn, **receipt):
+        if receipt["batch_id"] in receipts:
+            assert receipt["events"] == persisted
+            return {"duplicate": True}
+        receipts.add(receipt["batch_id"])
+        persisted.extend(receipt["events"])
+        return {"duplicate": False}
+
+    async def fake_append_v4_rows(conn, **kwargs):
+        v4_rows.append(kwargs)
+        return ()
+
+    async def fake_get_authority(conn, *, tenant_id, run_id, for_update=False):
+        return SimpleNamespace(attempt_id="attempt-a", state="confirmed")
+
+    adapter = ClaudeSdkAgentEventAdapter(
+        run_id="run-a", attempt_id="attempt-a", sanitizer=sanitize_public_text,
+        payload_sanitizer=sanitize_public_payload,
+    )
+    events = [AgentEvent(**item.as_agent_event_fields()).model_dump() for item in adapter.accept_answer_text("answer")]
+    checkpoint = AgentEvent(
+        type=CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE, message="", admin_only=True,
+        payload={"call_ref": "a" * 32, "events": 1, "chars": 6, "sha256": hashlib.sha256(b"answer").hexdigest(),
+                 "final": True, "complete": True, "coverage": "text_delta"},
+    ).model_dump()
+    monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
+    monkeypatch.setattr(_owner_runs_infrastructure_postgres, "get_run_identity", fake_get_run_identity)
+    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, "append_event_batch", fake_append_batch)
+    monkeypatch.setattr(streaming_v4, "append_callback_v4_rows", fake_append_v4_rows)
+    monkeypatch.setattr(runtime_callbacks, "get_stream_authority", fake_get_authority)
+    patch_active_attempt(monkeypatch, runtime_callbacks)
+    client = TestClient(create_app())
+    for _ in range(2):
+        response = client.post(
+            "/api/ai/runtime/callbacks/executor",
+            headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
+            json=callback_payload(
+                batch_id="batch-sdk-checkpoint", new_message=None, state_patch={},
+                events=[events[0], checkpoint, events[1]],
+            ),
+        )
+        assert response.status_code == 200
+    assert response.json()["deduplicated"] is True
+    assert [event["event_type"] for event in persisted] == [
+        "executor_callback", "executor_private_event", "executor_sdk_text_checkpoint",
+        "executor_private_event",
+    ]
+    assert persisted[2]["visible_to_user"] is False
+    assert persisted[2]["payload"] == {**checkpoint["payload"], "visible_to_user": False}
+    assert event_visible_to_principal(
+        {"visible_to_user": False, "payload_json": persisted[2]["payload"]},
+        SimpleNamespace(roles=()),
+    ) is False
+    assert [item.callback_index for item in v4_rows[0]["items"]] == [0, 2]
+    assert all(item.event_type != CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE for item in v4_rows[0]["items"])
+
+
+@pytest.mark.parametrize("invalid", [
+    {"message": "raw answer"}, {"admin_only": False}, {"event_id": ""},
+    {"payload_patch": {"events": True}},
+    {"payload_patch": {"sha256": "not-a-digest"}},
+    {"payload_patch": {"raw": "secret"}},
+    {"payload_patch": {"call_ref": "private-message-id"}},
+    {"payload_patch": {"call_ref": None}},
+    {"payload_patch": {"final": False, "complete": True}},
+    {"payload_patch": {"final": True, "complete": True, "coverage": "partial_stream_end"}},
+    {"payload_patch": {"final": 1}},
+    {"payload_patch": {"complete": 1}},
+    {"payload_patch": {"coverage": "raw secret"}},
+    {"payload_patch": {"coverage": {"raw": "secret"}}},
+])
+def test_executor_callback_rejects_invalid_sdk_text_checkpoint(invalid):
+    from pydantic import ValidationError
+    from app.runtime.kernel_contracts import AgentEvent, CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE
+
+    fields = {
+        "type": CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE, "message": "", "admin_only": True,
+        "payload": {"call_ref": "a" * 32, "events": 1, "chars": 1, "sha256": hashlib.sha256(b"x").hexdigest(),
+                    "final": False, "complete": False, "coverage": "text_delta"},
+        **{key: value for key, value in invalid.items() if key != "payload_patch"},
+    }
+    fields["payload"].update(invalid.get("payload_patch", {}))
+    with pytest.raises(ValidationError, match="agent_event_text_checkpoint_invalid"):
+        AgentEvent(**fields)
+
+
+@pytest.mark.asyncio
+async def test_executor_callback_requires_batch_identity_for_text_checkpoint() -> None:
+    from app.routes import runtime_callbacks
+    from app.runtime.kernel_contracts import AgentEvent, CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE
+
+    checkpoint = AgentEvent(
+        type=CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE, admin_only=True,
+        payload={"call_ref": "a" * 32, "events": 1, "chars": 1, "sha256": hashlib.sha256(b"x").hexdigest(),
+                 "final": False, "complete": False, "coverage": "text_delta"},
+    )
+    callback = ExecutorCallbackEvent.model_validate(callback_payload(
+        new_message=None, state_patch={}, events=[checkpoint.model_dump()],
+    ))
+    with pytest.raises(HTTPException) as exc_info:
+        await runtime_callbacks.record_executor_callback(
+            callback, capabilities=callback_event_capabilities(),
+        )
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "callback_batch_id_required"
+
+
 @pytest.mark.parametrize("delta", ["", 7])
 def test_executor_callback_rejects_empty_or_non_string_assistant_delta(monkeypatch, delta):
     patch_callback_settings(monkeypatch, callback_settings("secret"))
@@ -1586,16 +1712,55 @@ def test_inactive_heartbeat_does_not_reconstruct_or_renew(monkeypatch):
 
 
 def test_opensandbox_callback_renews_without_business_lock_then_commits_fenced_receipt(monkeypatch):
-    patch_callback_settings(monkeypatch, callback_settings("secret", lease_ttl_seconds=731))
+    from app.runtime.sandbox.opensandbox_policy import internal_test_opensandbox_lease_labels
+    from app.routes.sandbox_runtime_cleanup import container_lease_from_persisted_row
+
+    settings = callback_settings("secret", lease_ttl_seconds=731)
+    settings.deployment_environment = "test"
+    settings.sandbox_container_provider = "opensandbox"
+    settings.sandbox_security_profile = "internal-test"
+    settings.sandbox_egress_policy_enabled = False
+    settings.opensandbox_expected_network_mode = "bridge"
+    settings.opensandbox_executor_image = "registry.example/ai-platform@sha256:" + "a" * 64
+    settings.opensandbox_executor_image_digest = "sha256:" + "a" * 64
+    settings.sandbox_runtime_subject = "direct-opensandbox"
+    patch_callback_settings(monkeypatch, settings)
+    monkeypatch.setattr("app.routes.sandbox_runtime_cleanup.get_settings", lambda: settings)
     order = []
     transaction_state = {"active": False}
+    labels = internal_test_opensandbox_lease_labels(
+        SimpleNamespace(tenant_id="tenant-a", workspace_id="workspace-a", user_id="user-a",
+                        session_id="session-a", run_id="run-a", attempt_id="attempt-a",
+                        sandbox_mode="ephemeral", browser_enabled=False),
+        settings,
+        executor_identity_labels={
+            "ai-platform.executor.user": "10001:10001",
+            "ai-platform.executor.uid": "10001",
+            "ai-platform.executor.gid": "10001",
+            "ai-platform.executor.identity_evidence": "authenticated-runtime-endpoint",
+        },
+        skill_mount_labels={},
+    )
     heartbeat_row = {
         "id": "lease-attempt-a",
         "provider": "opensandbox",
+        "tenant_id": "tenant-a", "workspace_id": "workspace-a", "user_id": "user-a",
+        "session_id": "session-a", "run_id": "run-a", "attempt_id": "attempt-a",
+        "sandbox_mode": "ephemeral", "browser_enabled": False,
+        "runtime_container_id": "osb-run-a",
+        "runtime_container_name": "opensandbox-run-a-attempt-a",
+        "runtime_executor_url": "http://executor.test:18000",
+        "runtime_workspace_container_path": "/workspace",
+        "runtime_handle_verified_at": "2026-10-08T00:00:00Z",
         "lease_payload_json": {
-            "attempt_id": "attempt-a",
-            "owner_generation": "7",
+            "attempt_id": "attempt-a", "owner_generation": "7",
             "callback_token_id": "cbt:run-a:attempt-a",
+            "security_profile": "internal-test", "internal_test_lease_version": "active-v1",
+            "container_id": "osb-run-a", "container_name": "opensandbox-run-a-attempt-a",
+            "executor_url": "http://executor.test:18000", "workspace_container_path": "/workspace",
+            "requested_image": settings.opensandbox_executor_image,
+            "requested_image_digest": settings.opensandbox_executor_image_digest,
+            "labels": labels,
         },
     }
 
@@ -1643,7 +1808,8 @@ def test_opensandbox_callback_renews_without_business_lock_then_commits_fenced_r
 
     from app.routes import runtime_callbacks
 
-    persisted_lease = SimpleNamespace(provider="opensandbox")
+    persisted_lease = container_lease_from_persisted_row(heartbeat_row)
+    assert persisted_lease is not None
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
     monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'get_run_identity', get_run_identity)
     monkeypatch.setattr(
@@ -1656,11 +1822,6 @@ def test_opensandbox_callback_renews_without_business_lock_then_commits_fenced_r
         runtime_callbacks.sandbox_lease_repository,
         "record_sandbox_executor_heartbeat",
         fake_heartbeat,
-    )
-    monkeypatch.setattr(
-        runtime_callbacks,
-        "container_lease_from_persisted_row",
-        lambda row: persisted_lease,
     )
     monkeypatch.setattr(runtime_callbacks, "create_container_provider", lambda _name: FakeProvider())
     monkeypatch.setattr(runtime_callbacks, "renew_opensandbox_lifetime", fake_renew)

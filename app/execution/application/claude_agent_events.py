@@ -18,7 +18,6 @@ from app.kernel.memory_redaction import (
     MEMORY_REDACTION_MODE_STRICT,
     redact_memory_text,
 )
-from app.sandbox.api import AssistantAnswerReceipt
 from app.streaming.domain.protocol_v4 import (
     PUBLIC_APPLICATION_EVENT_TYPES,
     PUBLIC_PAYLOAD_ENUMS,
@@ -289,11 +288,20 @@ class ClaudeAgentEventCandidate:
         _validate_payload(self.event_type, self.payload)
         if not callable(text_sanitizer):
             raise ValueError("text sanitizer must be callable")
-        if self.event_type not in {"message.delta", "thinking.delta"}:
+        text_event = self.event_type in {
+            "message.delta",
+            "message.part.delta",
+            "thinking.delta",
+        }
+        if not text_event:
             if payload_sanitizer(public_candidate) != _without_none_public_values(public_candidate):
                 raise ValueError("public event candidate contains private text")
         else:
             delta = self.payload.get("delta")
+            # Answer text was already released by PublicAnswerStreamGate. Its
+            # stateful suffix window can make a safe prefix fail a second
+            # per-fragment redaction check, so only thinking text is checked
+            # here. Structured fields still pass through payload_sanitizer.
             if self.event_type == "thinking.delta" and text_sanitizer(delta) != delta:
                 raise ValueError("public event candidate contains private text")
             structured_payload = {
@@ -408,6 +416,18 @@ class _TaskState:
     started_at: float = field(default_factory=time.monotonic)
 
 
+@dataclass
+class _AssistantTextPartState:
+    part_id: str
+    first_seen: int
+    delta_count: int = 0
+    text_length: int = 0
+    role: str | None = None
+    last_delta_identity: str | None = None
+    last_delta_event_id: str | None = None
+    last_delta_sequence: int = 0
+
+
 class ClaudeSdkAgentEventAdapter:
     """Correlate Claude SDK facts into safe, ordered v4 candidates."""
 
@@ -440,6 +460,13 @@ class ClaudeSdkAgentEventAdapter:
         self._last_delta_identity: str | None = None
         self._last_delta_event_id: str | None = None
         self._answer_completed = False
+        self._part_mode = False
+        self._legacy_answer_mode = False
+        self._part_source_ids: dict[str, str] = {}
+        self._text_parts: dict[str, _AssistantTextPartState] = {}
+        self._next_part_sequence = 0
+        self._next_part_delta_sequence = 0
+        self._part_answer_receipt: dict[str, object] | None = None
         self._commentary_delta_counts: dict[str, int] = {}
         self._public_projection_omissions = 0
         self._task_progress_seen: set[tuple[str, str]] = set()
@@ -464,19 +491,25 @@ class ClaudeSdkAgentEventAdapter:
 
     @property
     def answer_receipt(self) -> dict[str, object] | None:
+        if self._part_mode:
+            return dict(self._part_answer_receipt) if self._part_answer_receipt else None
         if not self._answer_completed or self._last_delta_event_id is None:
             return None
-        return AssistantAnswerReceipt(
-            schema_version="ai-platform.assistant-answer-receipt.v1",
-            message_id=self._message_id,
-            delta_count=self._answer_delta_count,
-            text_length=self._answer_text_length,
-            last_delta_event_id=self._last_delta_event_id,
-        ).model_dump(mode="json")
+        return {
+            "schema_version": "ai-platform.assistant-answer-receipt.v1",
+            "message_id": self._message_id,
+            "delta_count": self._answer_delta_count,
+            "text_length": self._answer_text_length,
+            "last_delta_event_id": self._last_delta_event_id,
+        }
 
     @property
     def public_projection_omissions(self) -> int:
         return self._public_projection_omissions
+
+    @property
+    def has_unclassified_text_parts(self) -> bool:
+        return any(part.role is None for part in self._text_parts.values())
 
     def has_tool_block_conflict(self, tool_call_ids: set[str]) -> bool:
         return not self._tool_block_conflicts.isdisjoint(tool_call_ids)
@@ -607,11 +640,220 @@ class ClaudeSdkAgentEventAdapter:
             self._commit_candidate(identity, candidate)
         return candidate
 
+    @staticmethod
+    def _source_digest(source_identity: object) -> str:
+        """Hash a verified provider-message key without retaining or exposing it."""
+
+        if (
+            not isinstance(source_identity, tuple)
+            or len(source_identity) != 2
+            or not isinstance(source_identity[0], str)
+            or not source_identity[0]
+            or len(source_identity[0]) > 512
+            or (
+                source_identity[1] is not None
+                and (
+                    not isinstance(source_identity[1], str)
+                    or not source_identity[1]
+                    or len(source_identity[1]) > 512
+                )
+            )
+        ):
+            raise ValueError("assistant_part_source_invalid")
+        message_id, parent_id = source_identity
+        fields = (message_id, parent_id or "")
+        material = "".join(f"{len(value)}:{value}" for value in fields)
+        return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+    def part_id_for_source(self, source_identity: object) -> str:
+        """Return the stable opaque part ID for one verified provider message."""
+
+        source_digest = self._source_digest(source_identity)
+        existing = self._part_source_ids.get(source_digest)
+        if existing is not None:
+            return existing
+        part_id = _opaque(
+            "part",
+            self.run_id,
+            "assistant-text-part",
+            f"{self.attempt_id}\x00{source_digest}",
+        )
+        self._part_source_ids[source_digest] = part_id
+        return part_id
+
+    def has_text_part(self, source_identity: object) -> bool:
+        try:
+            part_id = self.part_id_for_source(source_identity)
+        except ValueError:
+            return False
+        part = self._text_parts.get(part_id)
+        return part is not None and part.delta_count > 0
+
+    def accept_part_text(
+        self,
+        source_identity: object,
+        value: object,
+    ) -> tuple[ClaudeAgentEventCandidate, ...]:
+        """Build unique public text-part delta candidates for a gated suffix."""
+
+        if self._sealed or not isinstance(value, str) or not value:
+            return ()
+        if self._legacy_answer_mode or self._answer_completed:
+            self._omit_public_projection()
+            return ()
+        try:
+            part_id = self.part_id_for_source(source_identity)
+        except ValueError:
+            self._omit_public_projection()
+            return ()
+        self._part_mode = True
+        part = self._text_parts.get(part_id)
+        next_part_sequence = self._next_part_sequence
+        if part is None:
+            next_part_sequence += 1
+            part = _AssistantTextPartState(
+                part_id=part_id,
+                first_seen=next_part_sequence,
+            )
+
+        next_delta_count = part.delta_count
+        next_text_length = part.text_length
+        next_delta_sequence = self._next_part_delta_sequence
+        pending: list[tuple[str, ClaudeAgentEventCandidate]] = []
+        try:
+            if not self._answer_started:
+                pending.append(
+                    (
+                        "message",
+                        self._candidate(
+                            "message.started",
+                            {},
+                            identity="message",
+                            commit=False,
+                        ),
+                    )
+                )
+            for offset in range(0, len(value), _MAX_DELTA):
+                chunk = value[offset : offset + _MAX_DELTA]
+                next_delta_count += 1
+                next_delta_sequence += 1
+                next_text_length += len(chunk)
+                identity = f"part-delta:{part_id}:{next_delta_count}"
+                pending.append(
+                    (
+                        identity,
+                        self._candidate(
+                            "message.part.delta",
+                            {
+                                "schema_version": "ai-platform.assistant-text-part.v1",
+                                "part_id": part_id,
+                                "delta": chunk,
+                            },
+                            identity=identity,
+                            commit=False,
+                        ),
+                    )
+                )
+        except Exception:  # noqa: BLE001 - no candidate state has been committed.
+            self._omit_public_projection()
+            return ()
+
+        self._commit_candidates(pending)
+        if part_id not in self._text_parts:
+            self._text_parts[part_id] = part
+            self._next_part_sequence = next_part_sequence
+        part.delta_count = next_delta_count
+        part.text_length = next_text_length
+        part.last_delta_identity = pending[-1][0]
+        part.last_delta_event_id = pending[-1][1].event_id
+        part.last_delta_sequence = next_delta_sequence
+        self._next_part_delta_sequence = next_delta_sequence
+        self._answer_started = True
+        return tuple(candidate for _identity, candidate in pending)
+
+    def classify_text_part(
+        self,
+        source_identity: object,
+        role: object,
+    ) -> tuple[ClaudeAgentEventCandidate, ...]:
+        """Add an immutable role fact for an already observed public part."""
+
+        if self._sealed or role not in {"answer", "work"}:
+            return ()
+        if self._legacy_answer_mode or self._answer_completed:
+            raise ValueError("assistant_part_classification_after_completion")
+        part_id = self.part_id_for_source(source_identity)
+        part = self._text_parts.get(part_id)
+        if part is None or part.delta_count <= 0:
+            raise ValueError("assistant_part_classification_missing")
+        if part.role == role:
+            return ()
+        if part.role == "work" and role == "answer":
+            raise ValueError("assistant_part_role_conflict")
+        identity = f"part-classified:{part_id}:{role}"
+        candidate = self._candidate(
+            "message.part.classified",
+            {
+                "schema_version": "ai-platform.assistant-text-part.v1",
+                "part_id": part_id,
+                "role": role,
+            },
+            identity=identity,
+        )
+        part.role = role
+        return (candidate,)
+
+    def _complete_part_answer(
+        self,
+        *,
+        commit: bool,
+    ) -> tuple[ClaudeAgentEventCandidate, ...]:
+        if self._sealed or not self._answer_started or self._answer_completed:
+            return ()
+        if any(part.role is None for part in self._text_parts.values()):
+            raise ValueError("assistant_part_classification_pending")
+        answer_parts = sorted(
+            (part for part in self._text_parts.values() if part.role == "answer"),
+            key=lambda part: part.first_seen,
+        )
+        if not answer_parts:
+            if commit:
+                self._answer_completed = True
+            return ()
+        delta_count = sum(part.delta_count for part in answer_parts)
+        text_length = sum(part.text_length for part in answer_parts) + 2 * (
+            len(answer_parts) - 1
+        )
+        last_part = max(answer_parts, key=lambda part: part.last_delta_sequence)
+        if last_part.last_delta_identity is None or last_part.last_delta_event_id is None:
+            raise ValueError("assistant_part_receipt_invalid")
+        completed = self._candidate(
+            "message.completed",
+            {"delta_count": delta_count, "text_length": text_length},
+            identity="message.completed",
+            causation_identity=last_part.last_delta_identity,
+            commit=commit,
+        )
+        self._part_answer_receipt = {
+            "schema_version": "ai-platform.assistant-answer-receipt.v2",
+            "message_id": self._message_id,
+            "delta_count": delta_count,
+            "text_length": text_length,
+            "last_delta_event_id": last_part.last_delta_event_id,
+        }
+        if commit:
+            self._answer_completed = True
+        return (completed,)
+
     def accept_answer_text(self, value: object) -> tuple[ClaudeAgentEventCandidate, ...]:
         """Build answer candidates for chunks already emitted by the run gate."""
 
         if self._sealed or not isinstance(value, str) or not value:
             return ()
+        if self._part_mode:
+            self._omit_public_projection()
+            return ()
+        self._legacy_answer_mode = True
 
         next_delta_count = self._answer_delta_count
         next_text_length = self._answer_text_length
@@ -668,12 +910,16 @@ class ClaudeSdkAgentEventAdapter:
         identity = _safe_private_identity(commentary_identity)
         if identity is None:
             return ()
+        full_payload = {"delta": value}
         try:
-            if _safe_text(
-                value,
-                maximum=len(value),
-                sanitizer=self._sanitizer,
-            ) is None:
+            if (
+                _safe_text(
+                    value,
+                    maximum=len(value),
+                    sanitizer=self._sanitizer,
+                ) is None
+                or self._payload_sanitizer(full_payload) != full_payload
+            ):
                 self._omit_public_projection()
                 return ()
         except Exception:  # noqa: BLE001 - projection faults omit only this text.
@@ -681,7 +927,7 @@ class ClaudeSdkAgentEventAdapter:
             return ()
 
         summary_id = _opaque(
-            "summary",
+            "worktrace",
             self.run_id,
             "commentary",
             f"{self.attempt_id}:{identity}",
@@ -721,6 +967,12 @@ class ClaudeSdkAgentEventAdapter:
         commit: bool = True,
     ) -> tuple[ClaudeAgentEventCandidate, ...]:
         del value
+        if self._part_mode:
+            try:
+                return self._complete_part_answer(commit=commit)
+            except Exception:  # noqa: BLE001 - preserve delivered parts without a receipt.
+                self._omit_public_projection()
+                return ()
         if self._sealed or not self._answer_started or self._answer_completed:
             return ()
         try:
@@ -1001,6 +1253,9 @@ class ClaudeSdkAgentEventAdapter:
     def accept_result(self, result: object, *, final_content: object = None, sealed: bool = False) -> tuple[ClaudeAgentEventCandidate, ...]:
         if self._sealed:
             return ()
+        if self._part_mode and self.has_unclassified_text_parts:
+            self._omit_public_projection()
+            return ()
         if sealed:
             self.seal("terminal")
             return ()
@@ -1025,6 +1280,10 @@ class ClaudeSdkAgentEventAdapter:
         )
         self._commit_candidates(pending)
         if completed:
+            self._answer_completed = True
+        elif self._part_mode:
+            # A work-only completion has no message.completed or answer receipt,
+            # but the source-role set is terminal after model.completed.
             self._answer_completed = True
         return tuple(candidate for _identity, candidate in pending)
 

@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { DatabaseZap, RefreshCw, Save, Search } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { DatabaseZap, RefreshCw, Save, Search, PlugZap, RotateCcw } from "lucide-react";
 import {
   modelAdminApi,
   type AdminModelEntry,
@@ -16,8 +16,9 @@ const STATUS_FILTERS = [
 
 const MODEL_ADMIN_ERROR_MESSAGES: Record<string, string> = {
   model_connection_endpoint_invalid: "API 地址格式无效，请填写模型服务地址。",
-  model_connection_endpoint_must_be_origin: "API 地址只能包含协议、主机和端口。",
+  model_connection_endpoint_must_be_origin: "API 地址应为服务根地址或以 /v1 结尾，不能含其它路径。",
   model_connection_endpoint_forbidden: "该 API 地址未获平台网络策略授权。",
+  model_connection_dns_unavailable: "API 地址无法解析，请检查主机名和网络。",
   model_connection_https_required: "公网模型 API 必须使用 HTTPS。",
   model_connection_api_key_invalid: "API Key 格式无效，请重新检查。",
   model_connection_api_key_required: "请输入 API Key。",
@@ -47,6 +48,48 @@ function validTokenLimit(value: number | undefined): boolean {
     && Number.isInteger(value) && value >= 1 && value <= 10_000_000;
 }
 
+type ModelAdminOperation = "load" | "test" | "discover" | "publish";
+interface ModelAdminRequestOwner {
+  sequence: number;
+  connectionVersion: number;
+  controller: AbortController;
+  operation: ModelAdminOperation;
+}
+interface ModelCatalogReceipt {
+  connectionVersion: number;
+  revision: number | null;
+}
+
+function connectionOrigin(value: string): string {
+  const trimmed = value.trim();
+  try {
+    const url = new URL(trimmed);
+    if (["http:", "https:"].includes(url.protocol) && !url.username && !url.password
+      && !url.search && !url.hash && ["", "/v1"].includes(url.pathname.replace(/\/+$/, ""))) {
+      return url.origin;
+    }
+  } catch { /* The server owns endpoint validation. */ }
+  return trimmed;
+}
+
+function modelDraftSignature(models: AdminModelEntry[]): string {
+  return JSON.stringify(models.map((model) => [
+    model.id, model.value, model.label, model.enabled, model.is_default,
+    model.order, model.max_input_tokens ?? null, model.max_output_tokens ?? null,
+  ]));
+}
+
+function mergeModelCandidates(candidates: AdminModelEntry[], draft: AdminModelEntry[]): AdminModelEntry[] {
+  return candidates.map((candidate) => {
+    const previous = draft.find((model) => model.id === candidate.id && model.value === candidate.value);
+    return previous ? {
+      ...candidate,
+      label: previous.label, enabled: previous.enabled, is_default: previous.is_default,
+      max_input_tokens: previous.max_input_tokens, max_output_tokens: previous.max_output_tokens,
+    } : candidate;
+  });
+}
+
 export type ModelAdminControlState = "loading" | "ready" | "degraded";
 
 export function ModelAdminControl({
@@ -60,98 +103,198 @@ export function ModelAdminControl({
   const [baseUrl, setBaseUrl] = useState("");
   const [credential, setCredential] = useState("");
   const [draft, setDraft] = useState<AdminModelEntry[]>([]);
-  const [discoveredRevision, setDiscoveredRevision] = useState<number | null>(null);
-  const [discovered, setDiscovered] = useState(false);
-  const [busy, setBusy] = useState<string | null>(null);
+  const [catalogReceipt, setCatalogReceipt] = useState<ModelCatalogReceipt | null>(null);
+  const [testState, setTestState] = useState<"untested" | "testing" | "passed" | "failed">("untested");
+  const [busy, setBusy] = useState<ModelAdminOperation | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [publishError, setPublishError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const connectionVersion = useRef(0);
+  const requestSequence = useRef(0);
+  const activeRequest = useRef<ModelAdminRequestOwner | null>(null);
 
-  const applyState = (next: AdminModelState) => {
+  const abandonRequest = useCallback(() => {
+    requestSequence.current += 1;
+    activeRequest.current?.controller.abort();
+    activeRequest.current = null;
+  }, []);
+
+  const startRequest = useCallback((operation: ModelAdminOperation) => {
+    if (activeRequest.current) return null;
+    const owner: ModelAdminRequestOwner = {
+      sequence: ++requestSequence.current,
+      connectionVersion: connectionVersion.current,
+      controller: new AbortController(), operation,
+    };
+    activeRequest.current = owner;
+    setBusy(operation);
+    return owner;
+  }, []);
+
+  const ownsRequest = useCallback((owner: ModelAdminRequestOwner) =>
+    activeRequest.current === owner && owner.sequence === requestSequence.current
+      && owner.connectionVersion === connectionVersion.current && !owner.controller.signal.aborted, []);
+
+  const finishRequest = useCallback((owner: ModelAdminRequestOwner) => {
+    if (!ownsRequest(owner)) return;
+    activeRequest.current = null;
+    setBusy(null);
+  }, [ownsRequest]);
+
+  const applyState = useCallback((next: AdminModelState) => {
     setState(next);
     setBaseUrl(next.connection.base_url || "");
+    setCredential("");
     setDraft(next.models);
-  };
+    setCatalogReceipt(next.connection.configured ? {
+      connectionVersion: connectionVersion.current, revision: next.connection.revision,
+    } : null);
+  }, []);
+
+  const load = useCallback(async () => {
+    if (activeRequest.current?.operation === "publish") return;
+    abandonRequest();
+    connectionVersion.current += 1;
+    const owner = startRequest("load");
+    if (!owner) return;
+    setCredential("");
+    setCatalogReceipt(null);
+    setTestState("untested");
+    setError(null);
+    setPublishError(null);
+    setMessage(null);
+    onStateChange?.("loading");
+    try {
+      const next = await modelAdminApi.get({ signal: owner.controller.signal });
+      if (!ownsRequest(owner)) return;
+      applyState(next);
+      onStateChange?.("ready");
+    } catch (caught) {
+      if (!ownsRequest(owner)) return;
+      setError(errorMessage(caught));
+      onStateChange?.("degraded");
+    } finally { finishRequest(owner); }
+  }, [abandonRequest, startRequest, ownsRequest, applyState, onStateChange, finishRequest]);
 
   useEffect(() => {
-    if (!canManage) return undefined;
-    let current = true;
-    onStateChange?.("loading");
-    void modelAdminApi.get().then((next) => {
-      if (current) {
-        applyState(next);
-        setDiscoveredRevision(next.connection.revision);
-        setDiscovered(next.connection.configured && next.models.length > 0);
-        onStateChange?.("ready");
-      }
-    }).catch((caught) => {
-      if (current) {
-        setError(errorMessage(caught));
-        onStateChange?.("degraded");
-      }
-    });
-    return () => { current = false; };
-  }, [canManage, onStateChange]);
-
-  const discover = async () => {
-    setBusy("discover");
-    setDiscovered(false);
-    setDiscoveredRevision(null);
-    setError(null);
-    setMessage(null);
-    try {
-      const result = await modelAdminApi.discover(baseUrl.trim(), credential || undefined);
-      setBaseUrl(result.base_url);
-      setDraft(result.models);
-      setDiscoveredRevision(result.connection.revision);
-      setDiscovered(true);
-      setMessage(`已获取 ${result.models.length} 个模型；尚未发布给用户。`);
-    } catch (caught) {
-      setError(errorMessage(caught));
-    } finally {
-      setBusy(null);
+    if (canManage) void load();
+    else {
+      setState(null); setBaseUrl(""); setCredential(""); setDraft([]);
+      setCatalogReceipt(null); setTestState("untested"); setBusy(null);
     }
+    return () => { abandonRequest(); connectionVersion.current += 1; };
+  }, [canManage, load, abandonRequest]);
+
+  const invalidateConnection = () => {
+    if (activeRequest.current?.operation === "publish" || activeRequest.current?.operation === "load") return false;
+    abandonRequest();
+    connectionVersion.current += 1;
+    setBusy(null);
+    setCatalogReceipt(null);
+    setTestState("untested");
+    setError(null); setPublishError(null); setMessage(null);
+    return true;
+  };
+
+  const reuseSavedCredential = Boolean(state?.connection.configured
+    && connectionOrigin(baseUrl) === connectionOrigin(state.connection.base_url));
+  const connectionReady = Boolean(state && baseUrl.trim() && (credential.trim() || reuseSavedCredential));
+  const hasChanges = Boolean(state && (credential.trim()
+    || connectionOrigin(baseUrl) !== connectionOrigin(state.connection.base_url)
+    || modelDraftSignature(draft) !== modelDraftSignature(state.models)));
+  const canPublish = Boolean(state && hasChanges && catalogReceipt
+    && catalogReceipt.connectionVersion === connectionVersion.current);
+  const connectionLocked = busy === "load" || busy === "publish";
+
+  const discover = async (operation: "test" | "discover") => {
+    if (!connectionReady) return;
+    const owner = startRequest(operation);
+    if (!owner) return;
+    const requestedUrl = baseUrl.trim();
+    const requestedCredential = credential.trim() || undefined;
+    setTestState("testing");
+    setError(null); setPublishError(null); setMessage(null);
+    try {
+      const result = await modelAdminApi.discover(requestedUrl, requestedCredential, {
+        signal: owner.controller.signal,
+      });
+      if (!ownsRequest(owner)) return;
+      setTestState("passed");
+      // Discovery owns candidates, never the editable address or credential.
+      if (operation === "discover") {
+        setDraft(mergeModelCandidates(result.models, draft));
+        setCatalogReceipt({ connectionVersion: owner.connectionVersion, revision: result.connection.revision });
+        setMessage(`已获取 ${result.models.length} 个候选模型，已有编辑已保留；保存后生效。`);
+      } else {
+        setMessage(`连接测试通过，上游返回 ${result.models.length} 个模型；测试不会保存配置。`);
+      }
+    } catch (caught) {
+      if (!ownsRequest(owner)) return;
+      setTestState("failed");
+      setError(errorMessage(caught));
+    } finally { finishRequest(owner); }
   };
 
   const updateDraft = (id: string, change: Partial<AdminModelEntry>) => {
+    if (activeRequest.current) return;
     setDraft((current) => current.map((model) => model.id === id
       ? { ...model, ...change }
       : change.is_default ? { ...model, is_default: false } : model));
-    setMessage(null);
+    setMessage(null); setPublishError(null);
+  };
+
+  const cancelDraft = () => {
+    if (!state || connectionLocked) return;
+    abandonRequest();
+    connectionVersion.current += 1;
+    setBusy(null); applyState(state); setTestState("untested");
+    setError(null); setPublishError(null);
+    setMessage("已放弃未保存的修改，恢复已生效配置。");
   };
 
   const publish = async () => {
-    const enabled = draft.filter((model) => model.enabled);
-    if (!discovered) {
-      setError("请先获取当前上游模型，再发布配置。");
-      return;
+    if (activeRequest.current || !hasChanges) return;
+    const available = draft.filter((model) => model.available);
+    const enabled = available.filter((model) => model.enabled);
+    setPublishError(null);
+    if (!canPublish || !catalogReceipt) {
+      setPublishError("连接已修改，请先获取当前地址的模型，再保存配置。"); return;
     }
-    if (!enabled.length || enabled.filter((model) => model.is_default).length !== 1
-      || enabled.some((model) => !validTokenLimit(model.max_input_tokens)
-        || !validTokenLimit(model.max_output_tokens))) {
-      setError("请启用至少一个模型，为启用模型填写输入和输出 Token 上限，并指定唯一默认模型。");
-      return;
+    if (!enabled.length) { setPublishError("请至少启用一个模型。"); return; }
+    const invalid = enabled.find((model) => !validTokenLimit(model.max_input_tokens)
+      || !validTokenLimit(model.max_output_tokens));
+    if (invalid) {
+      setPublishError(`请填写 ${invalid.label} 的最大输入和输出 Token（1–10,000,000）。`); return;
     }
-    setBusy("publish");
-    setError(null);
+    if (enabled.filter((model) => model.is_default).length !== 1) {
+      setPublishError("请在已启用模型中指定唯一默认模型。"); return;
+    }
+    if (available.some((model) => !model.label.trim() || model.label.trim().length > 160)) {
+      setPublishError("模型显示名称需为 1–160 个字符。"); return;
+    }
+    const owner = startRequest("publish");
+    if (!owner) return;
+    setError(null); setMessage(null);
     try {
       const next = await modelAdminApi.publish(
-        baseUrl.trim(), credential || undefined, discoveredRevision,
-        draft.map((model) => ({ ...model, display_name: model.label.trim() })),
+        baseUrl.trim(), credential.trim() || undefined, catalogReceipt.revision,
+        available.map((model) => ({ ...model, display_name: model.label.trim() })),
+        { signal: owner.controller.signal },
       );
+      if (!ownsRequest(owner)) return;
       applyState(next);
-      setCredential("");
-      setDiscoveredRevision(null);
-      setDiscovered(false);
-      setMessage("已发布模型配置；用户重新加载聊天页面后获取最新列表。");
+      setTestState("passed");
+      setMessage("模型配置已保存并生效；用户重新加载聊天页面后获取最新列表。");
     } catch (caught) {
-      setError(errorMessage(caught));
-    } finally {
-      setBusy(null);
-    }
+      if (!ownsRequest(owner)) return;
+      if (caught instanceof ApiRequestError && caught.status === 409) setCatalogReceipt(null);
+      setPublishError(errorMessage(caught));
+    } finally { finishRequest(owner); }
   };
 
+  const enabledCount = draft.filter((model) => model.enabled).length;
   const visibleDraft = draft.filter((model) => {
     const normalizedQuery = query.trim().toLowerCase();
     const matchesQuery = !normalizedQuery
@@ -169,77 +312,103 @@ export function ModelAdminControl({
   return (
     <section
       aria-label="模型管理"
-      className="min-w-0 space-y-4 p-4"
+      className="flex min-h-full min-w-0 shrink-0 flex-col gap-4 p-4 lg:h-full lg:min-h-0 lg:shrink"
       data-model-admin-control
     >
-      <div className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-4">
-        <h2 className="mb-3 text-sm font-semibold">连接配置</h2>
-        <div className="grid min-w-0 gap-3 lg:grid-cols-[minmax(16rem,1fr)_minmax(14rem,1fr)_auto_auto]">
+      <div className="shrink-0 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-4">
+        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-semibold">连接信息</h2>
+            <p className="mt-1 text-xs text-[var(--theme-text-secondary)]">兼容模型网关 · 测试和获取候选不会修改已生效配置</p>
+          </div>
+          <button
+            className="inline-flex min-h-8 items-center gap-1.5 rounded-md px-2 text-xs text-[var(--theme-text-secondary)] hover:bg-[var(--theme-hover)] disabled:opacity-50"
+            data-model-admin-reload
+            disabled={connectionLocked}
+            onClick={() => void load()}
+            type="button"
+          ><RefreshCw size={14} aria-hidden="true" />重新加载已保存配置</button>
+        </div>
+        <div className="grid min-w-0 gap-3 md:grid-cols-2">
           <label className="flex min-w-0 flex-col gap-1.5 text-sm">
             <span className="font-medium">API 地址</span>
             <input
               aria-label="模型 API 地址"
-              className="h-10 min-w-0 rounded-md border border-[var(--theme-border)] bg-[var(--theme-background)] px-3 outline-none focus:border-[var(--theme-primary)]"
+              aria-describedby="model-address-help"
+              className="h-10 min-w-0 rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg)] px-3 outline-none focus:border-[var(--theme-primary)] disabled:opacity-60"
+              disabled={connectionLocked}
               onChange={(event) => {
+                if (!invalidateConnection()) return;
                 setBaseUrl(event.target.value);
-                setDiscoveredRevision(null);
-                setDiscovered(false);
+                setCredential("");
               }}
               placeholder="https://gateway.example.com"
               value={baseUrl}
             />
+            <span id="model-address-help" className="text-xs text-[var(--theme-text-secondary)]">支持服务根地址或 /v1；更换地址后需重新填写 Key。</span>
           </label>
           <label className="flex min-w-0 flex-col gap-1.5 text-sm">
             <span className="font-medium">API Key</span>
             <input
               aria-label="模型 API Key"
+              aria-describedby="model-key-help"
               autoComplete="new-password"
-              className="h-10 min-w-0 rounded-md border border-[var(--theme-border)] bg-[var(--theme-background)] px-3 outline-none focus:border-[var(--theme-primary)]"
+              className="h-10 min-w-0 rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg)] px-3 outline-none focus:border-[var(--theme-primary)] disabled:opacity-60"
+              disabled={connectionLocked}
               onChange={(event) => {
+                if (!invalidateConnection()) return;
                 setCredential(event.target.value);
-                setDiscoveredRevision(null);
-                setDiscovered(false);
               }}
-              placeholder={state?.connection.configured ? "留空则保持当前 Key" : "输入 API Key"}
+              placeholder={reuseSavedCredential ? "留空则保持已保存的 Key" : "输入当前地址对应的 API Key"}
               type="password"
               value={credential}
             />
+            <span id="model-key-help" className="text-xs text-[var(--theme-text-secondary)]">{reuseSavedCredential ? "已保存的 Key 不回显；填写后将替换。" : "新地址不会复用已保存的 Key。"}</span>
           </label>
-          <div className="flex items-end">
-            <span
-              className={`inline-flex h-8 items-center gap-2 rounded-md px-3 text-xs font-medium ${
-                discovered || state?.connection.configured
-                  ? "bg-[var(--theme-success-soft)] text-[var(--theme-success)]"
-                  : "bg-[var(--theme-background)] text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]"
-              }`}
-            >
-              <span className="h-1.5 w-1.5 rounded-full bg-current" aria-hidden="true" />
-              {discovered ? "连接正常" : state?.connection.configured ? "已配置" : "未配置"}
-            </span>
+        </div>
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+          <span className={`inline-flex items-center gap-2 rounded-md px-2 py-1 text-xs ${
+            testState === "passed" ? "bg-[var(--theme-success-soft)] text-[var(--theme-success)]"
+              : testState === "failed" ? "bg-[var(--theme-danger-soft)] text-[var(--theme-danger)]"
+                : "bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)]"
+          }`} role="status" data-model-admin-test-state={testState}>
+            {busy === "load" ? "正在加载配置" : testState === "testing" ? "正在测试当前连接"
+              : testState === "passed" ? "当前连接测试通过" : testState === "failed" ? "当前连接测试失败"
+                : state?.connection.configured && reuseSavedCredential && !credential ? "已配置 · 尚未测试" : "连接草稿 · 尚未测试"}
+          </span>
+          <div className="flex flex-wrap gap-2">
+            <button
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-[var(--theme-border)] px-3 text-sm hover:bg-[var(--theme-hover)] disabled:opacity-50"
+              data-model-admin-test
+              disabled={busy !== null || !connectionReady}
+              onClick={() => void discover("test")}
+              type="button"
+            ><PlugZap size={16} aria-hidden="true" />测试连接</button>
+            <button
+              className="btn-primary inline-flex h-10 items-center justify-center gap-2"
+              data-model-admin-discover
+              disabled={busy !== null || !connectionReady}
+              onClick={() => void discover("discover")}
+              type="button"
+            ><RefreshCw className={busy === "discover" ? "animate-spin" : ""} size={16} aria-hidden="true" />获取候选模型</button>
           </div>
-          <button
-            className="btn-primary mt-auto inline-flex h-10 items-center justify-center gap-2"
-            data-model-admin-discover
-            disabled={busy !== null || !baseUrl.trim()}
-            onClick={() => void discover()}
-            type="button"
-          >
-            <RefreshCw className={busy === "discover" ? "animate-spin" : ""} size={16} aria-hidden="true" />
-            同步模型
-          </button>
         </div>
         {error ? <p className="mt-3 text-sm text-[var(--theme-danger)]" role="alert">{error}</p> : null}
         {message ? <p className="mt-3 text-sm text-[var(--theme-text-secondary)]" role="status">{message}</p> : null}
       </div>
 
-      <div className="overflow-hidden rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)]">
-        <div className="flex flex-col gap-3 border-b border-[var(--theme-border)] p-3 md:flex-row md:items-center md:justify-between">
+      <div className="flex min-w-0 shrink-0 flex-col overflow-hidden rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] lg:min-h-0 lg:flex-1 lg:shrink">
+        <div className="shrink-0 border-b border-[var(--theme-border)] px-3 py-3">
+          <h2 className="text-sm font-semibold">模型与默认项</h2>
+          <p className="mt-1 text-xs text-[var(--theme-text-secondary)]">{catalogReceipt ? "编辑启用状态、默认模型和容量；获取候选会保留已有编辑。" : "连接已修改，请获取当前地址的候选模型后再保存。"}</p>
+        </div>
+        <div className="flex shrink-0 flex-col gap-3 border-b border-[var(--theme-border)] p-3 md:flex-row md:items-center md:justify-between">
           <div className="flex min-w-0 flex-1 flex-col gap-3 sm:flex-row">
             <label className="relative min-w-0 sm:max-w-sm sm:flex-1">
               <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--theme-text-secondary)]" size={16} aria-hidden="true" />
               <input
                 aria-label="搜索模型"
-                className="h-10 w-full rounded-md border border-[var(--theme-border)] bg-[var(--theme-background)] pl-9 pr-3 text-sm outline-none focus:border-[var(--theme-primary)]"
+                className="h-10 w-full rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg)] pl-9 pr-3 text-sm outline-none focus:border-[var(--theme-primary)]"
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="搜索模型名称或模型 ID"
                 value={query}
@@ -247,7 +416,7 @@ export function ModelAdminControl({
             </label>
             <select
               aria-label="筛选模型状态"
-              className="h-10 rounded-md border border-[var(--theme-border)] bg-[var(--theme-background)] px-3 text-sm outline-none focus:border-[var(--theme-primary)] sm:w-40"
+              className="h-10 rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg)] px-3 text-sm outline-none focus:border-[var(--theme-primary)] sm:w-40"
               onChange={(event) => setStatusFilter(event.target.value)}
               value={statusFilter}
             >
@@ -256,21 +425,14 @@ export function ModelAdminControl({
               ))}
             </select>
           </div>
-          <button
-            className="btn-primary inline-flex h-10 items-center justify-center gap-2"
-            data-model-admin-publish
-            disabled={busy !== null || !discovered}
-            onClick={() => void publish()}
-            type="button"
-          >
-            <Save size={16} aria-hidden="true" />
-            发布到全员
-          </button>
+          <span className="shrink-0 text-xs text-[var(--theme-text-secondary)]">
+            显示 {visibleDraft.length} / {draft.length} 个模型
+          </span>
         </div>
 
-        <div className="overflow-x-auto">
+        <div className="min-w-0 overflow-x-auto lg:min-h-0 lg:flex-1 lg:overflow-auto" data-model-admin-table-scroll>
           <table className="w-full min-w-[880px] table-fixed text-left text-sm">
-            <thead className="bg-[var(--theme-background)] text-xs text-[var(--theme-text-secondary)]">
+            <thead className="sticky top-0 z-10 bg-[var(--theme-workbench-panel)] text-xs text-[var(--theme-text-secondary)]">
               <tr>
                 <th className="w-24 px-4 py-3 font-medium">启用</th>
                 <th className="w-[28%] px-4 py-3 font-medium">显示名称 / 上游模型 ID</th>
@@ -309,6 +471,7 @@ export function ModelAdminControl({
                           aria-label={`${model.value} 显示名称`}
                           className="h-7 w-full truncate border-0 bg-transparent p-0 font-medium outline-none focus:text-[var(--theme-primary)]"
                           onChange={(event) => updateDraft(model.id, { label: event.target.value })}
+                          disabled={busy !== null}
                           value={model.label}
                         />
                         <p className="truncate text-xs text-[var(--theme-text-secondary)]">{model.value}</p>
@@ -318,12 +481,13 @@ export function ModelAdminControl({
                   <td className="px-4 py-3">
                     <input
                       aria-label={`${model.value} 最大输入 Token`}
-                      className="h-9 w-full rounded-md border border-[var(--theme-border)] bg-[var(--theme-background)] px-2 disabled:opacity-60"
+                      className="h-9 w-full rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg)] px-2 disabled:opacity-60"
                       disabled={!model.enabled || busy !== null}
                       min={1}
                       max={10000000}
                       onChange={(event) => updateDraft(model.id, { max_input_tokens: event.target.value ? Number(event.target.value) : undefined })}
-                      placeholder="—"
+                      placeholder={model.enabled ? "必填" : "—"}
+                      aria-required={model.enabled}
                       type="number"
                       value={model.max_input_tokens ?? ""}
                     />
@@ -331,12 +495,13 @@ export function ModelAdminControl({
                   <td className="px-4 py-3">
                     <input
                       aria-label={`${model.value} 最大输出 Token`}
-                      className="h-9 w-full rounded-md border border-[var(--theme-border)] bg-[var(--theme-background)] px-2 disabled:opacity-60"
+                      className="h-9 w-full rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg)] px-2 disabled:opacity-60"
                       disabled={!model.enabled || busy !== null}
                       min={1}
                       max={10000000}
                       onChange={(event) => updateDraft(model.id, { max_output_tokens: event.target.value ? Number(event.target.value) : undefined })}
-                      placeholder="—"
+                      placeholder={model.enabled ? "必填" : "—"}
+                      aria-required={model.enabled}
                       type="number"
                       value={model.max_output_tokens ?? ""}
                     />
@@ -366,12 +531,37 @@ export function ModelAdminControl({
               {!visibleDraft.length ? (
                 <tr>
                   <td className="px-4 py-12 text-center text-sm text-[var(--theme-text-secondary)]" colSpan={6}>
-                    {draft.length ? "没有匹配的模型" : "请先同步模型"}
+                    {draft.length ? "没有匹配的模型" : busy === "load" ? "正在加载模型配置" : "请先获取候选模型"}
                   </td>
                 </tr>
               ) : null}
             </tbody>
           </table>
+        </div>
+      </div>
+      <div className="sticky bottom-0 z-10 flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 py-2 lg:static" data-model-admin-action-bar>
+        {publishError ? (
+          <p className="text-xs text-[var(--theme-danger)]" role="alert">{publishError}</p>
+        ) : (
+          <p className="text-xs text-[var(--theme-text-secondary)]" aria-live="polite">
+            已启用 {enabledCount} / {draft.length} · {hasChanges ? "有未保存的修改，保存后生效" : "已生效配置"}
+          </p>
+        )}
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-[var(--theme-border)] px-3 text-sm hover:bg-[var(--theme-hover)] disabled:opacity-50"
+            data-model-admin-cancel
+            disabled={!state || connectionLocked || (!hasChanges && busy === null)}
+            onClick={cancelDraft}
+            type="button"
+          ><RotateCcw size={16} aria-hidden="true" />放弃修改</button>
+          <button
+            className="btn-primary inline-flex h-10 items-center justify-center gap-2"
+            data-model-admin-publish
+            disabled={busy !== null || !canPublish}
+            onClick={() => void publish()}
+            type="button"
+          ><Save size={16} aria-hidden="true" />{busy === "publish" ? "正在保存" : "保存并生效"}</button>
         </div>
       </div>
     </section>

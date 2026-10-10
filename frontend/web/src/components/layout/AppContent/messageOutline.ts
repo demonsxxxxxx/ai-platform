@@ -1,5 +1,9 @@
 import type { Message, MessagePart } from "../../../types";
 import type { ListRange } from "react-virtuoso";
+import {
+  hasMarkedAssistantTextParts,
+  isAssistantTextPartPreviewVisible,
+} from "../../../types/assistantTextParts";
 
 export type MessageOutlineItem =
   | {
@@ -231,12 +235,16 @@ function getAssistantTextBlocks(
 ): Array<{ content: string; partIndex: number }> {
   const textParts =
     message.parts?.flatMap((part, partIndex) =>
-      part.type === "text" ? [{ content: part.content, partIndex }] : [],
+      part.type === "text" && isAssistantTextPartPreviewVisible(part)
+        ? [{ content: part.content, partIndex }]
+        : [],
     ) ?? [];
 
   if (textParts.length > 0) {
     return textParts;
   }
+
+  if (hasMarkedAssistantTextParts(message.parts)) return [];
 
   return message.content ? [{ content: message.content, partIndex: 0 }] : [];
 }

@@ -29,7 +29,7 @@ from app.runtime.sandbox.contracts import (
     executor_terminal_receipt_payload,
     normalize_executor_terminal_status,
 )
-from app.runtime.sandbox.executor_client import SandboxExecutorClient, SandboxExecutorHttpError
+from app.runtime.sandbox.executor_client import SandboxExecutorClient
 from app.runtime.sandbox.executor_signals import (
     ExecutorReconciliationSignalCursor,
     ExecutorSignalUnavailable,
@@ -44,6 +44,7 @@ from app.runtime.sandbox.workspace_manager import SandboxWorkspaceManager
 from app.runs.api import RunAttemptLifecycleService, RunDiagnosticsService, RunLifecycleService
 from app.sandbox.api import (
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+    SandboxExecutorHttpError,
     exception_chain_from_error,
 )
 from app.settings import get_settings

@@ -268,7 +268,7 @@ async def test_sdk_runner_wires_scoped_context_retrieval_mcp_server(monkeypatch,
             self.content = content
             self.message_id = "provider-message-context-retrieval"
             self.uuid = "assistant-observation-context-retrieval"
-            self.parent_tool_use_id = "parent-tool-context-retrieval"
+            self.parent_tool_use_id = None
             self.stop_reason = None
 
     class ResultMessage:
@@ -301,6 +301,54 @@ async def test_sdk_runner_wires_scoped_context_retrieval_mcp_server(monkeypatch,
         return {"name": name, "version": version, "tools": tools or []}
 
     async def query(prompt, options):
+        server = options.kwargs["mcp_servers"].get("ai-platform-context")
+        if server is not None:
+            tools = {tool.name: tool for tool in server["tools"]}
+            if "stage_context_file_to_workspace" in tools:
+                stage_tool = tools["stage_context_file_to_workspace"]
+                stage_result = await stage_tool.handler({"file_id": "file-a"})
+                assert "context/file-a/source.txt" in stage_result["content"][0]["text"]
+                assert "workspace staged content" not in stage_result["content"][0]["text"]
+                assert "storage_key" not in stage_result["content"][0]["text"]
+                assert (tmp_path / "context" / "file-a" / "source.txt").read_text(encoding="utf-8") == "workspace staged content"
+                too_large_result = await stage_tool.handler({"file_id": "file-a", "max_bytes": 8})
+                assert too_large_result["is_error"] is True
+                assert "context_file_too_large" in too_large_result["content"][0]["text"]
+                assert "workspace staged content" not in too_large_result["content"][0]["text"]
+                too_large_payload = json.loads(too_large_result["content"][0]["text"])
+                assert too_large_payload["audit"] == {
+                    "action": "context_retrieval.stage_context_file_to_workspace",
+                    "result": "denied",
+                    "reason": "context_file_too_large",
+                }
+                assert too_large_payload["redaction"] == {"object_locator_refs_removed": True}
+                artifact_stage_tool = tools["stage_run_artifact_to_workspace"]
+                artifact_stage_result = await artifact_stage_tool.handler({"artifact_id": "artifact-a"})
+                assert "context/artifact-a/translated.docx" in artifact_stage_result["content"][0]["text"]
+                assert "artifact bytes" not in artifact_stage_result["content"][0]["text"]
+                assert (tmp_path / "context" / "artifact-a" / "translated.docx").read_text(encoding="utf-8") == "artifact bytes"
+                captured["active_context_checks"] = "staging"
+            else:
+                can_use_tool = options.kwargs["can_use_tool"]
+                assert (
+                    await can_use_tool(
+                        "mcp__ai-platform-context__read_run_artifact",
+                        {"artifact_id": "artifact-a"},
+                    )
+                ).behavior == "allow"
+                assert (
+                    await can_use_tool(
+                        "mcp__ai-platform-context__read_run_artifact",
+                        {"artifact_id": "artifact-a", "scope": "other"},
+                    )
+                ).behavior == "deny"
+                assert (
+                    await can_use_tool(
+                        "mcp__ai-platform-context__unknown",
+                        {"artifact_id": "artifact-a"},
+                    )
+                ).behavior == "deny"
+                captured["active_context_checks"] = "permissions"
         yield AssistantMessage([TextBlock("ok")])
         yield ResultMessage()
 
@@ -411,28 +459,13 @@ async def test_sdk_runner_wires_scoped_context_retrieval_mcp_server(monkeypatch,
     assert "stage_context_file_to_workspace" in captured["allowed_tools"]
     assert "stage_run_artifact_to_workspace" in captured["allowed_tools"]
     assert "stage_profile_drive_file_to_workspace" not in captured["allowed_tools"]
+    assert captured["active_context_checks"] == "staging"
     stage_tool = server["tools"][1]
-    stage_result = await stage_tool.handler({"file_id": "file-a"})
-    assert "context/file-a/source.txt" in stage_result["content"][0]["text"]
-    assert "workspace staged content" not in stage_result["content"][0]["text"]
-    assert "storage_key" not in stage_result["content"][0]["text"]
-    assert (tmp_path / "context" / "file-a" / "source.txt").read_text(encoding="utf-8") == "workspace staged content"
-    too_large_result = await stage_tool.handler({"file_id": "file-a", "max_bytes": 8})
-    assert too_large_result["is_error"] is True
-    assert "context_file_too_large" in too_large_result["content"][0]["text"]
-    assert "workspace staged content" not in too_large_result["content"][0]["text"]
-    too_large_payload = json.loads(too_large_result["content"][0]["text"])
-    assert too_large_payload["audit"] == {
-        "action": "context_retrieval.stage_context_file_to_workspace",
-        "result": "denied",
-        "reason": "context_file_too_large",
-    }
-    assert too_large_payload["redaction"] == {"object_locator_refs_removed": True}
+    with pytest.raises(RuntimeError, match="claude_callback_after_stream_closed"):
+        await stage_tool.handler({"file_id": "file-a"})
     artifact_stage_tool = server["tools"][2]
-    artifact_stage_result = await artifact_stage_tool.handler({"artifact_id": "artifact-a"})
-    assert "context/artifact-a/translated.docx" in artifact_stage_result["content"][0]["text"]
-    assert "artifact bytes" not in artifact_stage_result["content"][0]["text"]
-    assert (tmp_path / "context" / "artifact-a" / "translated.docx").read_text(encoding="utf-8") == "artifact bytes"
+    with pytest.raises(RuntimeError, match="claude_callback_after_stream_closed"):
+        await artifact_stage_tool.handler({"artifact_id": "artifact-a"})
 
     skill_subject = {
         "identity": "Skill",
@@ -496,25 +529,13 @@ async def test_sdk_runner_wires_scoped_context_retrieval_mcp_server(monkeypatch,
     ]
     assert "mcp__ai-platform-context__read_session_messages" not in captured["allowed_tools"]
     assert "mcp__ai-platform-context__read_run_artifact" in captured["allowed_tools"]
+    assert captured["active_context_checks"] == "permissions"
     can_use_tool = captured["can_use_tool"]
-    assert (
+    with pytest.raises(RuntimeError, match="claude_callback_after_stream_closed"):
         await can_use_tool(
             "mcp__ai-platform-context__read_run_artifact",
             {"artifact_id": "artifact-a"},
         )
-    ).behavior == "allow"
-    assert (
-        await can_use_tool(
-            "mcp__ai-platform-context__read_run_artifact",
-            {"artifact_id": "artifact-a", "scope": "other"},
-        )
-    ).behavior == "deny"
-    assert (
-        await can_use_tool(
-            "mcp__ai-platform-context__unknown",
-            {"artifact_id": "artifact-a"},
-        )
-    ).behavior == "deny"
 
 
 @pytest.mark.asyncio

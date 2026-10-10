@@ -6,6 +6,7 @@ from app.artifacts.infrastructure.records_postgres import list_run_artifacts
 from app.control_plane_contracts import ARTIFACT_MANIFEST_SCHEMA_VERSION
 from app.control_plane_contracts import AUDIT_EVENT_SCHEMA_VERSION
 from app.streaming.events import EVENT_ENVELOPE_SCHEMA_VERSION
+from app.streaming.api import project_persisted_assistant_text_messages
 from app.control_plane_contracts import EXECUTOR_RESULT_SCHEMA_VERSION
 from app.control_plane_contracts import RUN_CONTRACT_VERSION
 from app.control_plane_contracts import RUN_EXECUTION_KIND_SKILL
@@ -399,6 +400,9 @@ async def get_admin_run_detail(conn: AsyncConnection, *, tenant_id: str, run_id:
     if not isinstance(run_result, dict):
         run_result = {}
     return {
+        "_assistant_text_messages": project_persisted_assistant_text_messages(
+            events, tenant_id=tenant_id, run_id=run_id,
+        ),
         "run": {
             "run_id": run["id"],
             "session_id": run["session_id"],

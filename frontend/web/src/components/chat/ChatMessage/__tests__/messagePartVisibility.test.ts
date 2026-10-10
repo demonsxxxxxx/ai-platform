@@ -27,6 +27,8 @@ test("classifies every work activity without hiding answers, artifacts, or actio
   ] as const) {
     assert.equal(isWorkActivityPart({ type } as MessagePart), false, type);
   }
+  assert.equal(isWorkActivityPart({ type: "summary", content: "Old summary" }), false);
+  assert.equal(isWorkActivityPart({ type: "summary", content: "Checking", kind: "work_trace" }), true);
 });
 
 test("keeps only schema-shaped public tool lifecycle visible", () => {

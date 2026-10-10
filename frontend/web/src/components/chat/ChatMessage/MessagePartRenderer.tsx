@@ -156,6 +156,7 @@ export function MessagePartRenderer({
     return (
       <SummaryItem
         content={part.content}
+        workTrace={part.kind === "work_trace"}
         isStreaming={isStreaming && isLast && part.isStreaming}
       />
     );

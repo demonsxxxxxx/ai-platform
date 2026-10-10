@@ -16,6 +16,63 @@ OpenSandbox SDK directly; OpenSandbox Server owns sandbox lifecycle and runsc
 execution. The stateless model/callback proxy is an egress boundary only and
 is not a second application lifecycle.
 
+For current internal-test Releases, native OpenSandbox uses ordinary Docker
+`bridge` networking with `runsc` and no OpenSandbox NAT-redirect egress sidecar.
+There is no dedicated host guard: tasks may reach routable private, public,
+metadata, peer and host addresses. This profile admits only a test deployment
+with an explicit internal-test security profile and exact image, Attempt,
+callback, proxy and workspace bindings; it makes no production isolation claim.
+The production runtime contract still uses an operator-configured dedicated
+Docker bridge with host NAT and public Internet access. Its host guard denies
+private, link-local, metadata, host and peer destinations and new inbound
+connections; the existing model/callback proxy is the sole private task-network
+exception. The trusted OpenSandbox host control plane retains access to sandbox
+services. IPv6 is disabled on that task network and denied by bridge-scoped host
+rules. Both modes keep `network_policy=None`: OpenSandbox's egress sidecar
+depends on sandbox NAT support unavailable in gVisor. Signed proof fields record
+`network_internal=false`, `default_deny_outbound=false` and the
+`host-public-egress-v1` policy subject. This is an admission binding, not a
+substitute for observing host firewall enforcement. Previous internal-network
+leases remain readable as historical facts and eligible for exact-identity
+cleanup; they cannot be acquired, dispatched or renewed under the new policy.
+Provider-specific network and SDK details remain behind the existing port.
+
+The published package currently has one internal-test overlay; no new
+production package is emitted. Its workspace root and migration source remain
+operator values, and OpenSandbox still receives only one authoritative Attempt
+directory. The retained production source overlay and host configuration are
+not changed or published by this test-profile restoration.
+
+### Change Contract: internal-test bridge restoration
+
+Execution owns the explicit test-only profile admission, Run/Attempt lease
+persistence, current-identity dispatch/renewal and exact historical cleanup.
+Delivery owns the sole internal-test package, retaining digest-pinned images
+and the unchanged Compose project/data volumes. The earlier retirement of
+active bridge execution is reversed only for test OpenSandbox on ordinary
+`bridge` with `runsc`; no production package is emitted. Existing v0.1.1
+Releases and deployed hosts remain unchanged. Superseded tests asserting that
+internal-test is always rejected or that a new production archive is published
+are replaced with scoped acceptance and rejection tests. Both the current test
+and historical stop-only lease paths retain exact identity checks. Active
+internal-test leases carry `internal_test_lease_version=active-v1`; default
+heartbeat and terminal reconstruction accepts that marker only when the current
+test profile, image and runtime subject match. Old rows remain stop-only. No fallback
+from governed to test is permitted; invalid profiles fail closed.
+
+The package controller checks the host's actual Docker `bridge` gateway before
+pulling or stopping services. The internal-test model proxy must bind only
+that private IPv4 address on port 18043 and both API and Worker must point to
+it; the callback URL must match the same gateway with the API published on
+host port 8020. Lifecycle inputs must supply a valid private IPv4 base URL or
+a complete domain/protocol pair. This is a configuration drift gate, not a
+production network guard.
+
+Acceptance covers the test bridge and workspace end to end, rejects drift
+between host/application network and mounts, and preserves image digests,
+RunAttempt scope, model/callback authority, data identity and failure recovery.
+Source tests do not establish real Linux/gVisor enforcement or deployment.
+
 The platform owns these durable facts:
 
 - tenant, workspace, user, session, run, and attempt binding;
@@ -74,6 +131,10 @@ generation, timestamps, and reconciliation ownership in one migration.
    non-streaming bounded terminal messages use the same stable-source
    `assistant_delta` compatibility shape only when no streamed answer exists;
    obsolete `assistant_final` is retired.
+   The terminal callback may commit before the Worker records the asynchronous
+   dispatch acceptance. That later acceptance preserves the terminal executor
+   status and makes a `waiting_terminal` receipt `pending` once its reconciliation
+   context exists. It cannot reset an existing reconciliation claim or outcome.
    A first terminal callback fixes the protocol fields in `executor_terminal_json`
    and normally appends the bounded Runs-owned private diagnostic observation in
    the same PostgreSQL transaction. Diagnostic-only normalization, budget, lock
@@ -152,6 +213,40 @@ SDK to routes or workers:
 
 Renaming these methods is not a correctness requirement. Consolidating their
 invocation and durable receipts behind the application control authority is.
+
+### Docker asynchronous I/O boundary
+
+Docker's synchronous SDK lifecycle runs on provider-owned worker loops rather
+than the application event loop. The provider has eight lifecycle slots, eight
+probe slots, and two independently reserved cleanup slots; executor queues do
+not grow beyond those admissions. Request cancellation or an await deadline does
+not return a slot until the underlying thread has actually finished. Existing
+SDK and readiness-stage timeouts are retained, including the final bounded HTTP
+probe allowance; startup is not assigned a shorter aggregate timeout.
+
+Create, dispatch validation, stop, and orphan cleanup share a per-provider,
+in-process run claim. Orphan listings only nominate candidates: cleanup skips
+busy runs and holds the same atomic claim through fresh identity/status readback
+and removal. A native sidecar is rechecked against a fresh same-scope primary
+listing, and a bridge's current membership is reloaded under the claim. Therefore
+a startup that finishes after the initial orphan listing cannot turn that stale
+snapshot into deletion authority. Different runs retain independent cleanup
+capacity. A cancelled
+create checks cancellation after blocking mutation returns, before issuing the
+next mutation, and compensates only the exact owned attempt resources. The claim
+remains held through late worker completion and compensation, including a
+successful create whose result the caller never accepted. Cancellation waits at
+most the existing SDK timeout for compensation; a still-blocked worker retains
+its capacity and ownership until it can settle. Typed cleanup failure retains a
+tracked reconciliation obligation, while unrelated worker errors cannot replace
+caller cancellation. These process-local claims do not replace database attempt
+fences or establish ownership across controller processes.
+
+The legacy provider delegates this boundary and its existing tracked-lease and
+resource-cleanup helpers to `platform.sandbox.docker_operations`, the Docker SDK
+thread-isolation adapter. Docker's previous application-loop SDK calls and
+shared-default-executor probes are retired; OpenSandbox keeps its existing async
+SDK lifecycle. No provider ownership checks or durable release semantics change.
 
 ## Task workspace and Claude project instructions
 
@@ -273,7 +368,8 @@ The next correctness slices are:
    object-store orphan compensation.
 4. Schedule provider reconciliation and expose orphan, cleanup, capacity, and
    callback-delivery metrics.
-5. Add credential-vault provenance and keep default-deny egress. This must be
+5. Add credential-vault provenance and retain host, private-network and peer
+   isolation while permitting task Internet access. This must be
    designed with the selected provider topology rather than inferred from an SDK
    feature name.
 

@@ -1,9 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { ApiRequestError, authFetch } from "../fetch.ts";
+import { ApiProtocolError, ApiRequestError, authFetch } from "../fetch.ts";
 import { apiRequestErrorFromResponse } from "../fetch.ts";
 import { registerAuthScopedCacheClearer } from "../authCacheInvalidation.ts";
+import { parseSessionRunInputs, sessionApi } from "../session.ts";
 
 function installFetchAuthStubs({
   fetchImpl,
@@ -396,25 +397,147 @@ test("authFetch never projects raw response diagnostics into ApiRequestError mes
   }
 });
 
-test("authFetch does not log raw response bodies when JSON parsing fails", async () => {
+test("authFetch rejects malformed successful JSON without retaining or logging private diagnostics", async () => {
   const originalWarn = console.warn;
   const warnings: unknown[][] = [];
-  const stubs = installFetchAuthStubs({
-    fetchImpl: async () =>
-      new Response("secret=backend-cookie", {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      }),
-  });
   console.warn = (...args: unknown[]) => {
     warnings.push(args);
   };
 
   try {
-    await authFetch("/api/sessions");
-    assert.deepEqual(warnings, [["[authFetch] Failed to parse response as JSON"]]);
+    const cases = [
+      { status: 200, body: "secret=backend-cookie", contentType: "application/json" },
+      { status: 201, body: '{"private":"secret","ok":', contentType: "application/json" },
+      { status: 200, body: "<html>upstream token=secret</html>", contentType: "text/html" },
+      { status: 200, body: "", contentType: "application/json" },
+      { status: 200, body: " \n\t", contentType: "application/json" },
+    ];
+    for (const item of cases) {
+      let calls = 0;
+      const stubs = installFetchAuthStubs({
+        initialLocalStorage: { ai_platform_session_present: "session-marker" },
+        fetchImpl: async () => {
+          calls += 1;
+          return new Response(item.body, {
+            status: item.status,
+            statusText: "private upstream token=secret",
+            headers: {
+              "Content-Type": item.contentType,
+              "X-Request-ID": "/private?token=secret",
+            },
+          });
+        },
+      });
+      try {
+        await assert.rejects(
+          () => authFetch("/api/sessions?token=secret", { method: "POST" }),
+          (error: unknown) => {
+            assert.ok(error instanceof ApiProtocolError);
+            assert.ok(error instanceof ApiRequestError);
+            assert.equal(error.name, "ApiProtocolError");
+            assert.equal(error.status, item.status);
+            assert.equal(error.code, "api_response_invalid");
+            assert.equal(error.submissionDisposition, undefined);
+            assert.equal(error.diagnosticId, undefined);
+            assert.ok(error.message.length > 0);
+            assert.doesNotMatch(
+              `${error.message} ${JSON.stringify(error)}`,
+              /private|token|secret|cookie|html|upstream|\/api\//i,
+            );
+            assert.equal(Object.prototype.hasOwnProperty.call(error, "cause"), false);
+            return true;
+          },
+        );
+        assert.equal(calls, 1);
+        assert.deepEqual(stubs.events, []);
+        assert.deepEqual(stubs.removedKeys, []);
+        assert.equal(stubs.store.get("ai_platform_session_present"), "session-marker");
+      } finally {
+        stubs.restore();
+      }
+    }
+    assert.deepEqual(warnings, []);
   } finally {
     console.warn = originalWarn;
-    stubs.restore();
   }
+});
+
+test("authFetch preserves the null result only for HTTP bodyless success contracts", async () => {
+  for (const item of [
+    { status: 204, method: "POST" },
+    { status: 205, method: "POST" },
+    { status: 200, method: "HEAD" },
+    { status: 200, method: "head" },
+  ]) {
+    const response = new Response(null, { status: item.status });
+    response.text = async () => {
+      assert.fail("bodyless responses must not be consumed as JSON");
+    };
+    const stubs = installFetchAuthStubs({ fetchImpl: async () => response });
+    try {
+      assert.equal(await authFetch("/api/sessions", { method: item.method }), null);
+    } finally {
+      stubs.restore();
+    }
+  }
+});
+
+test("authFetch accepts valid JSON including explicit null without imposing a content-type migration", async () => {
+  for (const value of [null, false, 0, "", [], { ok: true }]) {
+    const stubs = installFetchAuthStubs({
+      fetchImpl: async () => new Response(JSON.stringify(value)),
+    });
+    try {
+      assert.deepEqual(await authFetch("/api/sessions"), value);
+    } finally {
+      stubs.restore();
+    }
+  }
+});
+
+test("authFetch preserves cancelled and failed body reads without wrapping or identity recovery", async () => {
+  for (const status of [200, 401, 403, 500]) {
+    for (const failure of [
+      new DOMException("aborted", "AbortError"),
+      new Error("custom abort reason"),
+      new TypeError("connection terminated"),
+    ]) {
+      const stubs = installFetchAuthStubs({
+        initialLocalStorage: { ai_platform_session_present: "session-marker" },
+        fetchImpl: async () => new Response(new ReadableStream({
+          start(controller) {
+            controller.error(failure);
+          },
+        }), { status }),
+      });
+      try {
+        await assert.rejects(
+          () => authFetch("/api/sessions"),
+          (error: unknown) => error === failure,
+        );
+        assert.deepEqual(stubs.events, []);
+      } finally {
+        stubs.restore();
+      }
+    }
+  }
+});
+
+test("session Run input history binds its envelope and encodes the pagination cursor", async () => {
+  const page = { session_id: "session/owned", runs: [{ run_id: "run-safe", state: "inactive", inputs: [], questions: [] }], has_more: true, next_before_run_id: "run-safe" };
+  const requests: Array<{ url: string; init?: RequestInit }> = [];
+  const env = installFetchAuthStubs({ fetchImpl: async (input, init) => {
+    requests.push({ url: String(input), init });
+    return new Response(JSON.stringify(page), { status: 200 });
+  } });
+  try {
+    const result = await sessionApi.getRunInputHistory("session/owned", { beforeRunId: "run/older?", limit: 20 });
+    assert.deepEqual(result, page);
+    assert.equal(requests[0].url, "/api/ai/sessions/session%2Fowned/run-inputs?limit=20&before_run_id=run%2Folder%3F");
+    assert.equal(requests[0].init?.cache, "no-store");
+    assert.throws(() => parseSessionRunInputs({ ...page, session_id: "session-foreign" }, "session/owned"), /invalid_session_run_inputs_projection/);
+    assert.throws(() => parseSessionRunInputs({ ...page, next_before_run_id: null }, "session/owned"), /invalid_session_run_inputs_projection/);
+    assert.throws(() => parseSessionRunInputs({ ...page, runs: [page.runs[0], page.runs[0]] }, "session/owned"), /invalid_session_run_inputs_projection/);
+    assert.throws(() => parseSessionRunInputs({ ...page, runs: [{ run_id: "run-safe", state: "bad", inputs: [], questions: [] }] }, "session/owned"), /invalid_run_inputs_projection/);
+  } finally { env.restore(); }
 });

@@ -1719,7 +1719,7 @@ test("v4 accepts correlated activity before message owner is declared", () => {
         eventType === "message.delta"
           ? { delta: "accepted" }
           : eventType === "commentary.delta"
-            ? { summary_id: "summary-1", delta: "正在检查授权输入。" }
+            ? { summary_id: "worktrace_1", delta: "正在检查授权输入。" }
             : eventType.startsWith("artifact.")
             ? {
                 artifact_id: "artifact-1",
@@ -1770,6 +1770,7 @@ test("v4 accepts correlated activity before message owner is declared", () => {
   assert.equal(ctx.messages()[0]?.content, "accepted");
   const summary = ctx.messages()[0]?.parts?.find((part) => part.type === "summary");
   assert.equal(summary?.type === "summary" ? summary.content : null, "正在检查授权输入。");
+  assert.equal(summary?.type === "summary" ? summary.kind : null, "work_trace");
 });
 
 test("v4 history-covered message.started restores ownership before live delta", () => {

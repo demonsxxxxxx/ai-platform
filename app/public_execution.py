@@ -198,13 +198,6 @@ class PersistablePublicExecutionStepV2:
         return payload
 
 
-def public_execution_event_type_for_lifecycle(value: object) -> str | None:
-    """Return the strict public event type for a supported private lifecycle."""
-
-    config = _V2_LIFECYCLE_CONFIG.get(value) if isinstance(value, str) else None
-    return config[0] if config else None
-
-
 def _safe_text(
     value: object,
     *,

@@ -4,6 +4,7 @@
 export type {
   Message,
   MessagePart,
+  AssistantTextRole,
   SandboxPart,
   TokenUsagePart,
   RunStatusPart,

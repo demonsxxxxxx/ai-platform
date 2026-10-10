@@ -47,6 +47,20 @@ export const PUBLIC_TERMINAL_PRESENTATION_DEFINITIONS = {
     "chat.runStatus.event.runBudgetExhausted",
     "已达到执行上限",
   ),
+  input_context_too_large: failed(
+    "chat.runTerminal.inputContextTooLarge",
+    "当前输入或会话上下文超过模型处理上限。请缩短或拆分请求、减少附件，或新建会话后重试。",
+    "chat.runStatus.event.inputContextTooLarge",
+    "输入上下文超过处理上限",
+    "input_validation",
+  ),
+  input_image_invalid: failed(
+    "chat.runTerminal.inputImageInvalid",
+    "输入图片无法处理或超过模型限制。请检查图片格式、尺寸和数量，调整后重试。",
+    "chat.runStatus.event.inputImageInvalid",
+    "输入图片无法处理",
+    "input_validation",
+  ),
   model_service_unavailable: failed(
     "chat.runTerminal.modelServiceUnavailable",
     "模型服务暂时不可用。请稍后重试；如问题持续，请联系管理员。",

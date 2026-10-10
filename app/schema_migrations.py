@@ -40,10 +40,13 @@ CLAUDE_CONTEXT_CUTOVER_SCHEMA_VERSION = "2026.09.15.2"
 SANDBOX_PROVIDER_RENEWAL_SCHEMA_VERSION = "2026.09.16.1"
 REPOSITORY_SKILL_RETIREMENT_SCHEMA_VERSION = "2026.09.22.1"
 HUMAN_APPROVAL_AND_LEGACY_MULTI_AGENT_RETIREMENT_SCHEMA_VERSION = "2026.09.26.1"
-TARGET_SCHEMA_VERSION = HUMAN_APPROVAL_AND_LEGACY_MULTI_AGENT_RETIREMENT_SCHEMA_VERSION
+RUN_INPUTS_SCHEMA_VERSION = "2026.10.07.1"
+ASSISTANT_TEXT_PART_INDEX_SCHEMA_VERSION = "2026.10.09.1"
+PROVIDER_TRANSCRIPT_REPRESENTATION_SCHEMA_VERSION = "2026.10.10.1"
+TARGET_SCHEMA_VERSION = PROVIDER_TRANSCRIPT_REPRESENTATION_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
 # The Stream-only cutover retires old index contracts and is not binary rollback-compatible.
-CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = STREAM_ONLY_SCHEMA_VERSION
+CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = ASSISTANT_TEXT_PART_INDEX_SCHEMA_VERSION
 RUN_ATTEMPT_FUTURE_HEARTBEAT_TOLERANCE_SECONDS = 5
 MIGRATION_LOCK_ID = 7_226_391_831_505_901_103
 INDEX_MIGRATION_LOCK_ID = 7_226_391_831_505_901_104
@@ -56,6 +59,9 @@ CRITICAL_RELATIONS = (
     "model_gateway_revisions",
     "model_catalog_entries",
     "run_attempts",
+    "run_input_sessions",
+    "run_input_questions",
+    "run_inputs",
     "run_skill_materializations",
     "run_events",
     "agent_profile_favorites",
@@ -148,6 +154,22 @@ CRITICAL_COLUMNS = (
     ("run_attempts", "error_code", "text", False),
     ("run_attempts", "created_at", "timestamptz", True),
     ("run_attempts", "updated_at", "timestamptz", True),
+    ("run_input_sessions", "tenant_id", "text", True),
+    ("run_input_sessions", "run_id", "text", True),
+    ("run_input_sessions", "attempt_id", "text", True),
+    ("run_input_sessions", "state", "text", True),
+    ("run_input_sessions", "sealed_at", "timestamptz", False),
+    ("run_input_questions", "attempt_id", "text", True),
+    ("run_input_questions", "question_id", "text", True),
+    ("run_input_questions", "questions", "jsonb", True),
+    ("run_input_questions", "status", "text", True),
+    ("run_inputs", "input_id", "uuid", True),
+    ("run_inputs", "attempt_id", "text", True),
+    ("run_inputs", "kind", "text", True),
+    ("run_inputs", "text", "text", False),
+    ("run_inputs", "question_id", "text", False),
+    ("run_inputs", "answers", "jsonb", True),
+    ("run_inputs", "status", "text", True),
     ("run_skill_materializations", "materialization_sha256", "text", True),
     ("run_skill_materializations", "manifest_json", "jsonb", True),
     ("messages", "content", "text", True),
@@ -245,6 +267,7 @@ CRITICAL_COLUMNS = (
     ("provider_session_entries", "sequence", "int8", True),
     ("provider_session_entries", "sdk_entry_uuid", "text", False),
     ("provider_session_entries", "entry_json", "jsonb", True),
+    ("provider_session_entries", "entry_canonical_json", "json", False),
     ("provider_session_entries", "created_at", "timestamptz", True),
     ("provider_session_append_receipts", "epoch_id", "text", True),
     ("provider_session_append_receipts", "expected_sequence", "int8", True),
@@ -290,6 +313,22 @@ CRITICAL_CONSTRAINTS = (
     ("run_attempts", "chk_run_attempts_terminal_time"),
     ("run_attempts", "run_attempts_tenant_id_run_id_ordinal_key"),
     ("run_attempts", "run_attempts_tenant_id_run_id_queue_attempt_id_key"),
+    ("run_input_sessions", "run_input_sessions_pkey"),
+    ("run_input_sessions", "fk_run_input_sessions_run"),
+    ("run_input_sessions", "chk_run_input_sessions_identity"),
+    ("run_input_sessions", "chk_run_input_sessions_state"),
+    ("run_input_sessions", "chk_run_input_sessions_sealed_time"),
+    ("run_input_questions", "run_input_questions_pkey"),
+    ("run_input_questions", "fk_run_input_questions_session"),
+    ("run_input_questions", "chk_run_input_questions_identity"),
+    ("run_input_questions", "chk_run_input_questions_payload"),
+    ("run_input_questions", "chk_run_input_questions_status"),
+    ("run_inputs", "run_inputs_pkey"),
+    ("run_inputs", "fk_run_inputs_session"),
+    ("run_inputs", "fk_run_inputs_question"),
+    ("run_inputs", "chk_run_inputs_kind"),
+    ("run_inputs", "chk_run_inputs_status"),
+    ("run_inputs", "chk_run_inputs_payload"),
     ("sse_stream_authorities", "chk_sse_stream_authority_open_format"),
     ("sse_stream_authorities", "chk_sse_stream_authority_pending_confirmation"),
     ("files", "chk_files_lifecycle_state"),
@@ -672,6 +711,7 @@ class ConcurrentIndexMigration:
     unique: bool = False
     access_method: str = "btree"
     opclass_names: tuple[str, ...] = ()
+    key_expressions: tuple[str, ...] = ()
 
     @property
     def checksum_sha256(self) -> str:
@@ -690,9 +730,34 @@ class StaticIndexDefinition:
     unique: bool = False
     access_method: str = "btree"
     opclass_names: tuple[str, ...] = ()
+    key_expressions: tuple[str, ...] = ()
 
 
 CONCURRENT_INDEX_MIGRATIONS = (
+    ConcurrentIndexMigration(
+        'idx_run_events_v4_message_facts',
+        "create index concurrently if not exists idx_run_events_v4_message_facts "
+        "on run_events(tenant_id, run_id, (payload_json -> '__stream_v4' ->> 'attempt_id'), (payload_json -> '__stream_v4' ->> 'stream_incarnation'), (payload_json -> '__stream_v4' ->> 'message_id'), event_type, sequence)",
+        "run_events", ("tenant_id", "run_id", "event_type", "sequence"),
+        (False, False, False, False, False, False, False),
+        key_expressions=('tenant_id', 'run_id', "payload_json -> '__stream_v4' ->> 'attempt_id'", "payload_json -> '__stream_v4' ->> 'stream_incarnation'", "payload_json -> '__stream_v4' ->> 'message_id'", 'event_type', 'sequence'),
+    ),
+    ConcurrentIndexMigration(
+        'idx_run_events_v4_part_facts',
+        "create index concurrently if not exists idx_run_events_v4_part_facts "
+        "on run_events(tenant_id, run_id, (payload_json -> '__stream_v4' ->> 'attempt_id'), (payload_json -> '__stream_v4' ->> 'stream_incarnation'), (payload_json ->> 'part_id'), event_type, sequence)",
+        "run_events", ("tenant_id", "run_id", "event_type", "sequence"),
+        (False, False, False, False, False, False, False),
+        key_expressions=('tenant_id', 'run_id', "payload_json -> '__stream_v4' ->> 'attempt_id'", "payload_json -> '__stream_v4' ->> 'stream_incarnation'", "payload_json ->> 'part_id'", 'event_type', 'sequence'),
+    ),
+    ConcurrentIndexMigration(
+        'idx_run_events_v4_source_facts',
+        "create index concurrently if not exists idx_run_events_v4_source_facts "
+        "on run_events(tenant_id, run_id, (payload_json -> '__stream_v4' ->> 'attempt_id'), (payload_json -> '__stream_v4' ->> 'stream_incarnation'), (payload_json -> '__stream_v4' ->> 'source_event_id'), event_type, sequence)",
+        "run_events", ("tenant_id", "run_id", "event_type", "sequence"),
+        (False, False, False, False, False, False, False),
+        key_expressions=('tenant_id', 'run_id', "payload_json -> '__stream_v4' ->> 'attempt_id'", "payload_json -> '__stream_v4' ->> 'stream_incarnation'", "payload_json -> '__stream_v4' ->> 'source_event_id'", 'event_type', 'sequence'),
+    ),
     ConcurrentIndexMigration(
         "idx_messages_tenant_session_created",
         "create index concurrently if not exists idx_messages_tenant_session_created "
@@ -895,6 +960,13 @@ STATIC_INDEX_DEFINITIONS = (
         (False, False, False, False, False),
         unique=True,
     ),
+    StaticIndexDefinition(
+        "idx_run_inputs_queued",
+        "run_inputs",
+        ("tenant_id", "run_id", "attempt_id", "kind", "created_at", "input_id"),
+        (False, False, False, False, False, False),
+        "status = 'queued'",
+    ),
 )
 CRITICAL_INDEXES = (
     ("uq_model_gateway_active", True),
@@ -1043,6 +1115,11 @@ async def _index_is_ready(
                  where classes.position <= indexes.indnkeyatts
                  order by classes.position
                ) as opclass_names,
+               array(
+                 select pg_get_indexdef(indexes.indexrelid, position, true)
+                 from generate_series(1, indexes.indnkeyatts) position
+                 order by position
+               ) as key_expressions,
                pg_get_expr(indexes.indpred, indexes.indrelid) as predicate
         from pg_index indexes
         join pg_class relations on relations.oid = indexes.indrelid
@@ -1065,6 +1142,13 @@ async def _index_is_ready(
         return False
     if migration.opclass_names and tuple(row.get("opclass_names") or ()) != migration.opclass_names:
         return False
+    if migration.key_expressions:
+        def normalize_key(value: str) -> str:
+            return " ".join(value.lower().replace("::text", "").replace("(", " ").replace(")", " ").split())
+        if tuple(normalize_key(value) for value in row.get("key_expressions") or ()) != tuple(
+            normalize_key(value) for value in migration.key_expressions
+        ):
+            return False
     predicate = " ".join(
         str(row.get("predicate") or "")
         .lower()

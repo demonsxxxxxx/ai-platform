@@ -15,15 +15,14 @@ from app.routes.runs import (
     retry_run,
     run_context_ref_from_snapshot_row,
 )
-from app.bootstrap.context import materialize_queued_worker_context_snapshot
-from app.worker import _context_snapshot_ref_from_row
+from app.bootstrap.context import materialize_queued_worker_context_snapshot, worker_context_snapshot_ref_from_row
 from app.worker_principal_authority import _payload_identity
 
 
 async def _materialize_scoped_worker_snapshot(conn, payload):
     context, error_code = await materialize_queued_worker_context_snapshot(
         conn, payload=payload, run_identity=_payload_identity(payload),
-        context_projector=_context_snapshot_ref_from_row,
+        context_projector=worker_context_snapshot_ref_from_row,
     )
     assert error_code is None
     return context

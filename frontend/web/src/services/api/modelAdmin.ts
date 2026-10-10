@@ -29,18 +29,26 @@ export interface AdminModelState {
   models: AdminModelEntry[];
 }
 
+interface ModelAdminRequestOptions {
+  signal?: AbortSignal;
+}
+
 export const modelAdminApi = {
-  get(): Promise<AdminModelState> {
-    return authFetch<AdminModelState>(`${API_BASE}/api/ai/admin/models`);
+  get(options: ModelAdminRequestOptions = {}): Promise<AdminModelState> {
+    return authFetch<AdminModelState>(`${API_BASE}/api/ai/admin/models`, {
+      signal: options.signal,
+      cache: "no-store",
+    });
   },
 
-  discover(baseUrl: string, credential?: string): Promise<{
+  discover(baseUrl: string, credential?: string, options: ModelAdminRequestOptions = {}): Promise<{
     connection: AdminModelConnection;
     base_url: string;
     models: AdminModelEntry[];
   }> {
     return authFetch(`${API_BASE}/api/ai/admin/models/discover`, {
       method: "POST",
+      signal: options.signal,
       body: JSON.stringify({
         base_url: baseUrl,
         ...(credential ? { credential } : {}),
@@ -53,9 +61,11 @@ export const modelAdminApi = {
     credential: string | undefined,
     expectedRevision: number | null,
     models: Array<AdminModelEntry & { display_name?: string }>,
+    options: ModelAdminRequestOptions = {},
   ): Promise<AdminModelState> {
     return authFetch(`${API_BASE}/api/ai/admin/models/publish`, {
       method: "POST",
+      signal: options.signal,
       body: JSON.stringify({
         base_url: baseUrl,
         ...(credential ? { credential } : {}),

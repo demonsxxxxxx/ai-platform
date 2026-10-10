@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import pytest
 from jsonschema import Draft202012Validator
 
 from tools import generate_sse_v4_contracts
@@ -118,6 +119,66 @@ def test_v4_rejects_unknown_events_and_payload_fields():
     assert list(validator.iter_errors(unknown_payload))
     unknown_event = {**valid, "event_type": "assistant_text_delta"}
     assert list(validator.iter_errors(unknown_event))
+
+
+def test_v4_part_events_are_closed_message_correlated_variants():
+    from app.streaming.domain.public_events_v4 import (
+        V4ProjectionError,
+        validate_internal_envelope_v4,
+        validate_public_application_payload_v4,
+    )
+    from app.streaming.domain.protocol_v4 import PUBLIC_MESSAGE_CORRELATED_EVENT_TYPES
+
+    validator = _validator("PublicRunStreamEventV4")
+    payloads = {
+        "message.part.delta": {
+            "schema_version": "ai-platform.assistant-text-part.v1",
+            "part_id": "part_0123456789abcdef0123456789abcdef",
+            "delta": "safe text",
+        },
+        "message.part.classified": {
+            "schema_version": "ai-platform.assistant-text-part.v1",
+            "part_id": "part_0123456789abcdef0123456789abcdef",
+            "role": "answer",
+        },
+    }
+    for event_type, payload in payloads.items():
+        assert event_type in PUBLIC_MESSAGE_CORRELATED_EVENT_TYPES
+        assert list(validator.iter_errors(_v4_event(event_type, payload))) == []
+        assert validate_public_application_payload_v4(event_type, payload) == payload
+        internal = _v4_internal_event(event_type, payload)
+        assert list(_validator("InternalStreamEnvelopeV4").iter_errors(internal)) == []
+        assert validate_internal_envelope_v4(internal) == internal
+        assert list(
+            validator.iter_errors(_v4_event(event_type, payload, message_id=None))
+        )
+
+    invalid_payloads = (
+        (
+            "message.part.delta",
+            {**payloads["message.part.delta"], "unexpected": True},
+        ),
+        (
+            "message.part.delta",
+            {**payloads["message.part.delta"], "delta": ""},
+        ),
+        (
+            "message.part.delta",
+            {**payloads["message.part.delta"], "delta": "x" * 8193},
+        ),
+        (
+            "message.part.classified",
+            {**payloads["message.part.classified"], "role": "pending"},
+        ),
+        (
+            "message.part.classified",
+            {**payloads["message.part.classified"], "schema_version": "v2"},
+        ),
+    )
+    for event_type, payload in invalid_payloads:
+        assert list(validator.iter_errors(_v4_event(event_type, payload)))
+        with pytest.raises(V4ProjectionError):
+            validate_public_application_payload_v4(event_type, payload)
 
 
 def test_v4_enforces_message_identity_and_transport_controls():

@@ -30,7 +30,11 @@ const WORK_ACTIVITY_TYPES: ReadonlySet<MessagePart["type"]> = new Set([
 ]);
 
 export function isWorkActivityPart(part: MessagePart): boolean {
-  return WORK_ACTIVITY_TYPES.has(part.type);
+  return (
+    (part.type === "text" && part.text_role === "work") ||
+    (part.type === "summary" && part.kind === "work_trace") ||
+    WORK_ACTIVITY_TYPES.has(part.type)
+  );
 }
 
 function hasControlCharacter(value: string): boolean {

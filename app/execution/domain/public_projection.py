@@ -32,6 +32,7 @@ _CLAUDE_SDK_ACTIONABLE_FAILURE_CODES = frozenset(
         "claude_agent_sdk_output_validation_failed",
         "claude_agent_sdk_turn_limit_exceeded",
         "claude_agent_sdk_timeout",
+        "claude_agent_sdk_provider_session_failed",
         "claude_agent_sdk_tool_admission_failed",
         "claude_agent_sdk_upstream_error",
         "capability_callback_not_acknowledged",
@@ -78,15 +79,20 @@ def claude_sdk_failure_message(sdk_result: object) -> str:
     messages = {
         "claude_agent_sdk_cancelled": "This run was cancelled before completion.",
         "claude_agent_sdk_turn_limit_exceeded": (
-            "This run reached its turn limit. Continue in the same session or narrow the request."
+            "This run reached its turn limit. Start a new conversation with a narrower request."
         ),
-        "claude_agent_sdk_timeout": "This run timed out. Retry or split the request.",
+        "claude_agent_sdk_timeout": (
+            "This run timed out. Start a new conversation and split the request."
+        ),
         "claude_agent_sdk_missing_structured_terminal": (
-            "The executor ended without an authoritative terminal result. Please retry."
+            "The executor ended without an authoritative terminal result. Start a new conversation."
+        ),
+        "claude_agent_sdk_provider_session_failed": (
+            "Conversation continuity could not be verified. Start a new conversation."
         ),
         "claude_agent_sdk_output_validation_failed": (
-            "This run's output could not be validated, so the result could not be "
-            "synchronized. Please refresh the session or contact an administrator."
+            "This run's output could not be validated. "
+            "Please contact an administrator and provide the run ID."
         ),
         "claude_agent_sdk_tool_admission_failed": (
             "The selected capability or tool was not admitted by platform policy."
