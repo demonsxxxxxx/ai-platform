@@ -52,7 +52,9 @@ from app.platform.postgres.errors import (
 )
 from app.product_events import initial_run_event_specs
 from app.projection_redaction import (
+    PUBLIC_RETIRED_AGENT_ID,
     capability_id_from_skill,
+    is_retired_agent_for_projection,
     public_agent_id_for_projection,
     public_execution_kind_for_projection,
     redact_raw_skill_references,
@@ -1969,9 +1971,15 @@ async def get_run(
     return RunResponse(
         run_id=run["id"],
         session_id=run["session_id"],
-        agent_id=raw_agent_id
-        if show_raw_skill
-        else public_agent_id_for_projection(raw_agent_id, raw_skill_id),
+        agent_id=(
+            raw_agent_id
+            if show_raw_skill
+            else (
+                PUBLIC_RETIRED_AGENT_ID
+                if is_retired_agent_for_projection(raw_agent_id, raw_skill_id)
+                else public_agent_id_for_projection(raw_agent_id, raw_skill_id)
+            )
+        ),
         execution_kind=projected_execution_kind,
         skill_id=(raw_skill_id or None) if show_raw_skill else None,
         capability_id=capability_id_from_skill(raw_skill_id, raw_agent_id),

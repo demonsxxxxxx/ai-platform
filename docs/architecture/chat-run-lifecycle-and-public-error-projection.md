@@ -29,6 +29,15 @@ into the Assistant body and keeps raw tool blocks, results and Thinking outside
 that source. The [streaming message design](../implementation/streaming-message-parts-design.md)
 owns the detailed adapter and compatibility rules.
 
+Retained Run details remain readable after the translation Agent or its Skill
+retires. The Run response reuses the Session `retired-agent` tombstone for an
+ordinary owner, preserving the non-null public `agent_id` contract without
+exposing the raw retired identity. Administrator diagnostics retain the original
+Agent and Skill IDs. This replaces only the nullable identity at the Run response
+seam: shared nested-payload redaction, ownership checks, and retired execution
+admission denial remain unchanged. There is no new compatibility endpoint,
+schema, or historical-data rewrite.
+
 ### Ordinary-user execution presentation
 
 Chat presents user-meaningful work state, not an executor transcript. The active
