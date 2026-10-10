@@ -59,6 +59,12 @@ server-side and appended to the executor system prompt.
    task for the currently selected Agent. Workspace controls still use task
    language: “start new task” and “task history”; they must not expose generic
    Chat creation or search.
+   Both history surfaces apply successful rename/delete receipts through the
+   workspace's shared mutation callbacks; their paginated and global reads remain
+   separate server projections, scoped to the current authenticated principal.
+   Selecting an Agent task commits its route immediately. The existing route
+   identity and history lifecycle owns recovery and supersession, including a
+   return to the previously open task while another identity read is pending.
 
 ### Agent Market and Workspace
 

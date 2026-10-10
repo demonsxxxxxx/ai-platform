@@ -1,5 +1,5 @@
 import { useRef, useEffect, useCallback, useLayoutEffect } from "react";
-import { useNavigate, useParams, useLocation } from "react-router-dom";
+import { useNavigate, useParams, useLocation, useNavigationType } from "react-router-dom";
 import type { TabType } from "./types.ts";
 import { shouldBlockSessionSelection } from "../../../utils/sessionSelectionGuard.ts";
 import type { SessionConfig } from "../../../hooks/useAgent/types.ts";
@@ -17,6 +17,8 @@ interface UseSessionSyncOptions {
   sessionRouteBasePath?: string;
   /** Defers URL-driven history loading until the caller authorizes the Session. */
   historyLoadEnabled?: boolean;
+  /** The caller commits sidebar selections to the router before loading. */
+  routeOwnsSelection?: boolean;
 }
 
 interface UseSessionSyncReturn {
@@ -231,10 +233,13 @@ export function useSessionSync({
   onConfigRestored,
   sessionRouteBasePath = "/chat",
   historyLoadEnabled = true,
+  routeOwnsSelection = false,
 }: UseSessionSyncOptions): UseSessionSyncReturn {
   const { sessionId: urlSessionId } = useParams<{ sessionId?: string }>();
   const location = useLocation();
+  const navigationType = useNavigationType();
   const navigate = useNavigate();
+  const previousRouteNavigationRef = useRef({ key: location.key, pathname: location.pathname });
 
   // Session sync state - controlled by single ref to prevent sync loops
   const isSyncingRef = useRef(false);
@@ -384,8 +389,22 @@ export function useSessionSync({
     urlSessionId,
   ]);
 
-  // Load session when URL changes (e.g., from toast click)
+  // URL navigation owns recovery, including explicit re-selection after a failed
+  // history read. Internal URL canonicalization uses REPLACE and must retain the
+  // live transcript and first-send authority.
   useEffect(() => {
+    const previousNavigation = previousRouteNavigationRef.current;
+    previousRouteNavigationRef.current = { key: location.key, pathname: location.pathname };
+    const reselectedCurrentRoute = routeOwnsSelection && historyLoadEnabled &&
+      navigationType === "PUSH" && previousNavigation.key !== location.key &&
+      previousNavigation.pathname === location.pathname;
+    if (reselectedCurrentRoute) {
+      retireHistoryLoad();
+      initialUrlSyncPendingRef.current = false;
+      isSyncingRef.current = false;
+      isInternalNavRef.current = false;
+      internalNavigationSourcePathRef.current = null;
+    }
     if (activeTab !== "chat") {
       selectSessionRequestIdRef.current += 1;
       if (activeHistoryLoadRef.current) {
@@ -415,7 +434,7 @@ export function useSessionSync({
 
     const activeHistoryLoad = activeHistoryLoadRef.current;
 
-    if (sessionId === urlSessionId) {
+    if (sessionId === urlSessionId && !reselectedCurrentRoute) {
       if (
         activeHistoryLoad &&
         activeHistoryLoad.sessionId !== urlSessionId
@@ -430,7 +449,7 @@ export function useSessionSync({
       return;
     }
 
-    if (activeHistoryLoad?.sessionId === urlSessionId) {
+    if (activeHistoryLoad?.sessionId === urlSessionId && !reselectedCurrentRoute) {
       return;
     }
 
@@ -453,7 +472,7 @@ export function useSessionSync({
     if (
       !shouldLoadSessionFromUrlChange({
         activeTab,
-        sessionId,
+        sessionId: reselectedCurrentRoute ? null : sessionId,
         urlSessionId,
         isLoading: false,
         isNewSession: isNewSessionRef.current,
@@ -497,6 +516,10 @@ export function useSessionSync({
     historyLoadEnabled,
     isCurrentHistoryLoad,
     retireHistoryLoad,
+    routeOwnsSelection,
+    location.key,
+    location.pathname,
+    navigationType,
     sessionId,
     urlSessionId,
   ]);

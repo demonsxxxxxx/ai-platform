@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
+import { useAuth } from "../../hooks/useAuth";
 import type { BackendSession } from "../../services/api";
 import { agentProfileApi } from "../../services/api/agentProfile";
 import type { AgentConversationSessionProjection } from "../../types/agentProfile";
@@ -51,6 +52,11 @@ export interface AgentConversationListController {
 export function useAgentConversationList(
   agentId: string | undefined,
 ): AgentConversationListController {
+  const { user } = useAuth();
+  const authScopeKey = JSON.stringify([user?.tenant_id, user?.id]);
+  const owner = useMemo(() => ({ agentId, authScopeKey }), [agentId, authScopeKey]);
+  const ownerRef = useRef<typeof owner | null>(owner);
+  ownerRef.current = owner;
   const [sessions, setSessions] = useState<BackendSession[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
@@ -63,7 +69,7 @@ export function useAgentConversationList(
 
   const loadPage = useCallback(
     async (reset: boolean): Promise<void> => {
-      if (!agentId) return;
+      if (!agentId || ownerRef.current !== owner) return;
       if (activeRequestRef.current !== null) return;
       const requestId = ++requestSequenceRef.current;
       const generation = generationRef.current;
@@ -79,7 +85,7 @@ export function useAgentConversationList(
             limit: AGENT_CONVERSATION_PAGE_SIZE,
           },
         );
-        if (generation !== generationRef.current) return;
+        if (ownerRef.current !== owner || generation !== generationRef.current) return;
         const projected = page.sessions.map(projectAgentConversationSidebarSession);
         setSessions((current) =>
           deduplicate(reset ? projected : [...current, ...projected]),
@@ -87,7 +93,7 @@ export function useAgentConversationList(
         nextCursorRef.current = page.next_cursor;
         setHasMore(page.next_cursor !== null);
       } catch (reason) {
-        if (generation !== generationRef.current) return;
+        if (ownerRef.current !== owner || generation !== generationRef.current) return;
         setError(
           reason instanceof Error
             ? reason.message
@@ -104,48 +110,62 @@ export function useAgentConversationList(
         }
       }
     },
-    [agentId],
+    [agentId, owner],
   );
 
   const refresh = useCallback(async () => {
+    if (ownerRef.current !== owner) return;
     generationRef.current += 1;
     activeRequestRef.current = null;
     nextCursorRef.current = null;
     await loadPage(true);
-  }, [loadPage]);
+  }, [loadPage, owner]);
 
   const loadMore = useCallback(async () => {
     if (!nextCursorRef.current) return;
     await loadPage(false);
   }, [loadPage]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    ownerRef.current = owner;
     generationRef.current += 1;
     activeRequestRef.current = null;
     nextCursorRef.current = null;
     setSessions([]);
     setHasMore(false);
     setError(null);
-    if (agentId) {
-      void loadPage(true);
-    }
+    setIsLoading(false);
+    setIsLoadingMore(false);
     return () => {
+      if (ownerRef.current === owner) ownerRef.current = null;
       generationRef.current += 1;
       activeRequestRef.current = null;
     };
-  }, [agentId, loadPage]);
+  }, [owner]);
 
+  useEffect(() => { void loadPage(true); }, [loadPage]);
+
+  const mutate = useCallback((apply: (current: BackendSession[]) => BackendSession[]) => {
+    if (!agentId || ownerRef.current !== owner) return;
+    const reload = activeRequestRef.current !== null;
+    generationRef.current += 1;
+    activeRequestRef.current = null;
+    setIsLoading(false);
+    setIsLoadingMore(false);
+    setSessions(apply);
+    if (reload) void loadPage(true);
+  }, [agentId, loadPage, owner]);
   const prependSession = useCallback((session: BackendSession) => {
-    setSessions((current) => deduplicate([session, ...current]));
-  }, []);
+    mutate((current) => deduplicate([session, ...current]));
+  }, [mutate]);
   const removeSession = useCallback((sessionId: string) => {
-    setSessions((current) => current.filter((session) => session.id !== sessionId));
-  }, []);
+    mutate((current) => current.filter((session) => session.id !== sessionId));
+  }, [mutate]);
   const updateSession = useCallback((session: BackendSession) => {
-    setSessions((current) =>
-      current.map((item) => (item.id === session.id ? session : item)),
-    );
-  }, []);
+    mutate((current) => current.map((item) => item.id === session.id
+      ? { ...item, ...session, agent_conversation: session.agent_conversation ?? item.agent_conversation }
+      : item));
+  }, [mutate]);
 
   return {
     sessions,

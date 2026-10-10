@@ -40,22 +40,12 @@ const safeWorkspace = {
   agent_id: safeIdentity.agent_id,
 } as const;
 
-test("Agent workspace history selection loads before changing its session route", () => {
+test("Agent workspace selection commits the route before identity or history recovery", () => {
   const source = readFileSync(new URL("../ChatAppContent.tsx", import.meta.url), "utf8");
-  const handlerStart = source.indexOf("const handleSelectSessionAndClose");
-  const handlerEnd = source.indexOf("const handleNewSessionAndClose", handlerStart);
-  assert.notEqual(handlerStart, -1);
-  assert.notEqual(handlerEnd, -1);
-
-  const handler = source.slice(handlerStart, handlerEnd);
-  assert.match(
-    handler,
-    /setAgentConversationState\(conversationState\("bound", id, identity\)\);\s*await handleSelectSession\(id\);/,
-  );
-  assert.doesNotMatch(
-    handler,
-    /navigate\(\s*`\$\{agentWorkspaceRouteBasePath\}\/\$\{encodeURIComponent\(id\)\}`/,
-  );
+  const handler = source.slice(source.indexOf("const handleSelectSessionAndClose"), source.indexOf("const handleNewSessionAndClose"));
+  assert.match(handler, /navigate\(buildAgentMarketWorkspacePath\(agentWorkspace, id\)\)/);
+  assert.doesNotMatch(handler.slice(0, handler.indexOf("} else {")), /recoverAgentConversationIdentity|clearMessages|setAgentConversationState/);
+  assert.doesNotMatch(source, /agentWorkspaceSelectionRequestIdRef/);
 });
 
 test("Agent first send leaves route mutation to the shared session synchronizer", () => {

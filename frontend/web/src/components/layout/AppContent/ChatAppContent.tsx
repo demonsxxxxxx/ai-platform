@@ -340,6 +340,7 @@ export interface ChatAppContentProps {
   agentWorkspaceStartProfile?: AgentProfilePublicProjection;
   agentWorkspaceReadOnly?: boolean;
   agentWorkspaceSessionSource?: SessionSidebarSessionSource;
+  globalHistorySource?: SessionSidebarSessionSource;
   agentWorkspaceHistoryError?: string | null;
   onAgentWorkspaceHistoryRetry?: () => void;
   onAgentWorkspaceSessionCreated?: (sessionId: string) => void;
@@ -354,6 +355,7 @@ export function ChatAppContent({
   agentWorkspaceStartProfile,
   agentWorkspaceReadOnly = false,
   agentWorkspaceSessionSource,
+  globalHistorySource,
   agentWorkspaceHistoryError = null,
   onAgentWorkspaceHistoryRetry,
   onAgentWorkspaceSessionCreated,
@@ -512,7 +514,6 @@ export function ChatAppContent({
   const conversationIdentityKey = agentWorkspace
     ? `${agentWorkspace.agent_id}:${routeSessionId ?? ""}`
     : `generic:${routeSessionId ?? ""}`;
-  const agentWorkspaceSelectionRequestIdRef = useRef(0);
 
   // Clear before paint whenever the rendered workspace/session identity changes.
   useConversationRouteIdentityReset({
@@ -521,7 +522,6 @@ export function ChatAppContent({
     routeSessionId,
     sessionId,
     onIdentityChange: () => {
-      agentWorkspaceSelectionRequestIdRef.current += 1;
       if (
         agentWorkspaceDraftHandoffIdentityRef.current !== conversationIdentityKey
       ) {
@@ -584,6 +584,7 @@ export function ChatAppContent({
         setAgentConversationState(
           conversationState("blocked", agentConversationTargetSessionId),
         );
+        if (agentWorkspace) toast.error("该历史对话暂时无法打开，请重新选择或重试。");
         navigate(agentWorkspaceDetailPath, { replace: true });
       });
     return () => {
@@ -1000,6 +1001,7 @@ export function ChatAppContent({
     onConfigRestored: handleConfigRestored,
     sessionRouteBasePath: agentWorkspaceRouteBasePath,
     historyLoadEnabled: agentWorkspaceHistoryLoadEnabled,
+    routeOwnsSelection: Boolean(agentWorkspace),
   });
 
   const handleNewSessionWithReset = useCallback(() => {
@@ -1185,50 +1187,19 @@ export function ChatAppContent({
   );
   const handleSelectSessionAndClose = useCallback(
     async (id: string) => {
-      const selectionRequestId = ++agentWorkspaceSelectionRequestIdRef.current;
-      invalidateAgentWorkspaceFirstSend();
-      setAgentConversationState(conversationState("loading", id));
-      clearMessages();
-      clearSelectedSkill();
       if (agentWorkspace) {
-        try {
-          const identity = await recoverAgentConversationIdentity(id);
-          if (selectionRequestId !== agentWorkspaceSelectionRequestIdRef.current) {
-            return;
-          }
-          if (
-            !identity ||
-            identity.agent_id !== agentWorkspace.agent_id
-          ) {
-            throw new Error("agent_workspace_identity_mismatch");
-          }
-          setAgentConversationState(conversationState("bound", id, identity));
-          await handleSelectSession(id);
-          setMobileSidebarOpen(false);
-          return;
-        } catch {
-          if (selectionRequestId !== agentWorkspaceSelectionRequestIdRef.current) {
-            return;
-          }
-          setAgentConversationState(conversationState("blocked", id));
-          navigate(agentWorkspaceDetailPath, { replace: true });
-          toast.error("该历史对话不属于当前专家，请从左侧选择其他对话。");
-          return;
-        }
+        // Commit the intent immediately. The route owns identity recovery and
+        // transcript loading, including a return to the previously open task.
+        navigate(buildAgentMarketWorkspacePath(agentWorkspace, id));
+      } else {
+        setAgentConversationState(conversationState("loading", id));
+        clearMessages();
+        clearSelectedSkill();
+        await handleSelectSession(id);
       }
-      await handleSelectSession(id);
       setMobileSidebarOpen(false);
     },
-    [
-      agentWorkspace,
-      agentWorkspaceDetailPath,
-      clearMessages,
-      clearSelectedSkill,
-      handleSelectSession,
-      invalidateAgentWorkspaceFirstSend,
-      navigate,
-      setMobileSidebarOpen,
-    ],
+    [agentWorkspace, clearMessages, clearSelectedSkill, handleSelectSession, navigate, setMobileSidebarOpen],
   );
   const handleNewSessionAndClose = useCallback(() => {
     handleNewSessionWithReset();
@@ -1299,6 +1270,7 @@ export function ChatAppContent({
               : undefined
           }
           sessionSource={agentWorkspaceSessionSource}
+          globalHistorySource={globalHistorySource}
           agentWorkspace={
             agentWorkspace
               ? {
