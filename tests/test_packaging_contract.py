@@ -61,6 +61,8 @@ def test_python_lock_is_the_install_authority_for_ci_and_the_backend_image():
         package["name"] == "claude-agent-sdk" and package["version"] == "0.2.130"
         for package in lock["package"]
     )
+    assert "xlrd>=2.0.2" in pyproject["project"]["dependencies"]
+    assert any(package["name"] == "xlrd" for package in lock["package"])
     assert "COPY pyproject.toml uv.lock /app/" in backend
     assert "uv sync --locked --no-dev --no-install-project" in backend
     assert "pip install" not in backend
