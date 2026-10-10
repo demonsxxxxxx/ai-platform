@@ -489,7 +489,7 @@ class SandboxRuntimeCleanup:
                         reason=reason,
                         lease_ids=lease_ids,
                         trace_id=trace_id,
-                        requested_by_role="admin" if requested_by_role == "admin" else None,
+                        **({"requested_by_role": "admin"} if requested_by_role == "admin" else {}),
                     )
                 outcome_leases = failure.failed_leases if failure is not None else stopped_leases
                 await self._outcomes.record_sandbox_runtime_cleanup_outcome(
