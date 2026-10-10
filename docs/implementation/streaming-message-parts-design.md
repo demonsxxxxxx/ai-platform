@@ -1,6 +1,6 @@
 # Agent 流式消息与最终交付架构
 
-状态：PR #1651 的源码合同。部署、真实 provider 时序、网络刷新和浏览器首字验收需要独立证据。
+状态：PR #1651 的公开片段合同及 issue #1657 的 completed-block 来源实现。部署、真实 provider 时序、网络刷新和浏览器首字验收需要独立证据。
 外层 SSE v4、授权、重放和 Run 终态继续由
 [wire contract](../architecture/redis-streams-sse-wire-protocol.md)、
 [execution control](../architecture/redis-streams-sse-execution-control.md) 和
@@ -8,7 +8,7 @@
 
 ## 产品合同
 
-安全 Assistant 文字按增量显示，首次显示无需等待工具或 Result。后续同一 provider
+已完成的安全 Assistant 文字块按片段增量显示，首次显示无需等待后续工具或 Result。后续同一 provider
 消息出现工具时，服务端按明确的片段身份把该消息文字分类为工作过程。前端移动展示归组，
 账本保留原始 delta 及后续分类事实。答案开始显示时收起此前工作，后续工作活动出现时展开；
 同一展示阶段的普通 token 更新保留用户手动选择。
@@ -45,7 +45,7 @@
 | `message.part.classified` | 相同 `schema_version`, `part_id`, `role="answer"或"work"` |
 
 `part_id` 是 adapter 生成的稳定 opaque SafeRef，绑定一个已验证 provider 消息。
-私有 provider ID 留在 adapter。split typed 文本和工具、raw/typed 重放共用正确的消息片段身份。
+私有 provider ID 留在 adapter。同一主消息的完成文字块与工具块共用消息片段身份。
 现有 `message_id`、Run/Attempt、incarnation、sequence、租约、授权和 callback ACK 没有替代者。
 
 首次 delta 引入 pending 片段，后续 delta 追加同一片段；分类只能引用已公开片段。
@@ -59,11 +59,17 @@
 
 ## SDK 来源、安全与顺序
 
-`ClaudeStreamProjector` 只接受完整 raw message/block framing。已通过索引和类型校验的空字符串 `text_delta` 是不发布文字的空操作；非字符串仍拒绝。typed `AssistantMessage`
-可以先于 raw block stop 到达，不能替代 framing 边界。`AssistantAnswerTimeline` 是
-raw/typed/Result 新增后缀的唯一对账来源，typed replay 不重新拼接全文。
-来源 router 只持有分类和有界身份窗口，不为分类扣留整段正文。
-空工具来源收尾时清除工具状态；raw-only 后续答案不依赖整轮是否见过 typed 文本。
+Claude adapter 使用锁定 SDK 的完成 `AssistantMessage` 块，关闭
+`include_partial_messages`。一个消息的文字块和工具块可以分别到达，使用相同 provider ID、
+不同观察 UUID；完成块不是累计正文快照，也不保证携带 `stop_reason`。
+主消息块是唯一公开文字来源；子 Agent 正文、Thinking、工具 JSON、raw `StreamEvent`
+及 Result 正文不进入答案。子 Agent 工具 ID 仍登记用于主文字脱敏。
+
+UUID、provider 来源归属与正文摘要留在本次 Attempt 的 adapter 身份表；精确重放不产生新
+公开事实，冲突观察和已退役消息的新观察不被用于公开。不能驱逐仍可能重放的身份后把重放
+当成新块，也不新增任意 128 块的 SDK 限额。来源 router 仅保留角色和文字存在标记，
+不保留正文、raw 索引或分隔符对账。与已接受事实一样，角色记录保留到 Attempt 收尾，
+合法多主消息续答按现有答案片段顺序保留。
 
 每个新增后缀在任何公开 callback 前经过同一个 `PublicAnswerStreamGate`。
 gate 保留必要的敏感短后缀及其来源跨度，后续释放仍属于原片段；已知 token 替换属于 token
@@ -72,15 +78,32 @@ gate 保留必要的敏感短后缀及其来源跨度，后续释放仍属于原
 动态工具身份注册继续检查已经发布的所有文字。单个公开 delta 至多 8192 code points，
 callback 至多 100 个事件，缺失 ACK 停止后续发布。
 
-工具 block/stop 标记只分类其明确绑定的来源，Thinking 和工具 JSON 不成为文字。
-Result 只补经过验证的同来源后缀。明确的 terminal-only 兼容来源仍有自己的身份；
-工具回合后的独立 Result 答案只在现有严格边界允许时产生新片段，不能把工具原文重新算作答案。
-非 Agent 的 `on_text` 兼容调用仍保留；Sandbox 在 part callback ACK 后抑制重复的
+工具块只分类其明确绑定的主消息来源；一个主消息可含多个工具 ID。
+Result 处理成功、错误、取消、用量和会话终态，不补文字后缀、不创建 terminal-only 答案。
+不因未收 raw block stop 而拒绝已完成 SDK 块，也不伪造 raw 结束帧。
+非 Agent 的 `on_text` 兼容调用仍保留，先暂存完成块并在成功终态安全校验后收敛；
+实时预览由 ACKed part callback 提供，不承诺 token-time 展示。Sandbox 在 part callback ACK 后抑制重复的
 `assistant_delta` compatibility callback。
 
 平台工具准入、生命周期回执、effectful outcome、文件校验和终态 fence 保持独立。
 已知证据拒绝关闭后续文字发布；已持久化安全预览不因未来工具失败而消失。
 SessionStore 最后刷新、消息读取关闭和工具控制回调收敛仍在业务完成之前；资源回收独立。
+
+私有 `ModelTextCheckpoint` 的真实模型代理 raw wire 消费者保留。SDK observer 只在实际收到
+raw 时据实记录；正常 partial 关闭路径不产生 SDK raw checkpoint。缺记录表示未采集，
+不能推断 SDK 没有文字，也不能用 typed 块伪造 raw framing 或完整覆盖。
+
+### #1657 来源退役清单
+
+| 精确来源 | 处置与替代 |
+| --- | --- |
+| `app/executors/claude_stream_projection.py` 全文件 | 删除；其 projector/timeline 没有其他生产调用者，完成 SDK 块由 adapter 直接公开，不保留第二套 raw/typed/Result 协议权威 |
+| `tests/test_claude_stream_projection.py` 全文件 | 随唯一生产实现退役；新 `tests/test_claude_typed_blocks.py` 验证完成块、多消息、作用域、重放、脱敏、终态及历史/管理页事实一致性 |
+| backend CI 的旧 projection 文件 selector 及 owning selector 断言 | 均改为 `tests/test_claude_typed_blocks.py`，不扩大为目录或全仓 pytest |
+| `AssistantTextSourceBuffer` 的 timeline owner/binding、分隔符删除、Result 专用入口、重复计数和角色窗口淘汰 | 删除；SDK 观察身份表拥有重放约束，router 保留 Attempt 角色元数据，公共 part reducer 拥有片段间分隔符 |
+| `test_exact_timeline_replay_does_not_reopen_or_change_owner` | 退役 timeline 约束；SDK UUID 精确重放、冲突和 129 块后重放由新 runner 用例验证 |
+| `test_separator_conflict_does_not_mutate_source_state` | 退役不再产生的 synthetic separator；实际前导换行和长正文保留、来源原子性用例继续保留 |
+| SDK 私有 raw checkpoint 与历史 runtime diagnostic schema/reader | 保留现有真实 wire 消费者及历史兼容；不把“无当前公开消费者”误当成“无历史数据消费者” |
 
 ## 最终答案与 receipt v2
 
@@ -89,7 +112,11 @@ SessionStore 最后刷新、消息读取关闭和工具控制回调收敛仍在�
 按首次观察顺序组合；不同 provider 片段间插入两个 LF，同一片段内不插入额外分隔符。
 `delta_count` 是选中 delta 事件数，`text_length` 包括片段间两个 LF，last delta 为账本顺序中
 最后一个选中 source event ID。`message.completed` 的计数、长度和 causation 必须一致。
-没有答案的 artifact-only 成功不伪造 receipt。成功流式 Sandbox 的 inline `message` 为空。
+SDK 成功与公开答案存在分开：缺正文、work-only、缺身份或局部投影异常不改写 SDK 成功，
+不生成假正文、假 receipt 或自动重试。真实 SDK 错误/取消、回调 ACK、权限、工具凭据冲突、
+会话 EOF/mirror/final_sequence 和文件校验失败继续拒绝业务成功。提供 receipt 时仍完整校验
+所有身份、长度和互斥字段。无答案的成功在管理端显示 unknown/incomplete；保留空 assistant
+provider-coverage 锚点但不发布“答案已就绪”。成功流式 Sandbox 的 inline `message` 为空。
 
 Worker 从当前授权 Attempt 的持久化 started/delta/classified/completed 事实重建，
 不信任执行器返回正文或自行声明的选择。普通 append 在上游 Run fence 下以索引查询
@@ -153,8 +180,70 @@ schema/index ledger 升级后，旧镜像的精确 readiness 检查会拒绝新�
 
 ## 验收边界
 
-受影响测试覆盖首次安全 prefix 在 message stop 前 ACK、typed/raw replay、空工具状态、
-raw-only 后续答案、split text/tool、Result suffix、跨来源脱敏、callback 拒绝、最终 receipt、
+受影响测试覆盖 completed-block 在后续工具/Result 前 ACK、typed UUID replay、合法多工具、
+raw overlap/缺 stop 不控制正文、空工具状态、text/tool 穿插、Result 私有正文不回填、
+跨来源脱敏、callback 拒绝、最终 receipt、空答 SDK 成功与真实安全失败分离、
 真实 PostgreSQL 分批写入和 Redis replay、front live/gap/terminal hydrate、复制与折叠阶段。
 测试须在锁定依赖下重新执行。隔离测试和源码审查不证明真实 provider、代理刷新或浏览器 paint；
 部署后的 External Acceptance 仍须按固定 commit/image 验收。
+
+### #1657 typed-only test retirement inventory
+
+以下旧 runner 用例声明第二套 raw/Result 文字权威，精确名称及替代验收如下。
+`tests/test_claude_typed_blocks.py` 和 completed-source routing 接管正文验收。权限、callback ACK、
+SessionStore、能力回执和晚到工具冲突保持独立。
+
+| Retired case in `tests/test_claude_agent_sdk_runner.py` | Replacement behavior |
+|---|---|
+| `test_sdk_reconciles_complete_assistant_suffix_once` | completed-block append and exact UUID replay |
+| `test_sdk_preserves_visible_delta_when_complete_assistant_body_differs` | raw prose has no public authority |
+| `test_sdk_complete_assistant_body_waits_for_terminal_suffix` | completed-block ACK before Result |
+| `test_sdk_nonstreaming_result_only_uses_explicit_result_source` | result-only SDK success has no public receipt |
+| `test_sdk_nonstreaming_accepts_installed_optional_message_identities` | missing typed identity withholds projection without changing SDK success |
+| `test_sdk_nonstreaming_reused_message_id_creates_new_observation_source` | same provider accepts distinct completed block UUIDs; exact replay is suppressed |
+| `test_sdk_nonstreaming_tool_only_assistant_uses_result_source` | work-only SDK success has no invented answer |
+| `test_sdk_sandbox_tool_only_assistant_rejects_result_without_raw_answer_source` | work-only SDK success has no invented answer |
+| `test_sdk_sandbox_tool_only_turn_retires_previous_answer_binding` | eligible main sources preserve all answer parts |
+| `test_sdk_sandbox_server_tool_only_turn_retires_previous_answer_binding` | SDK ServerToolUse does not invent a text owner or erase prior answer |
+| `test_sdk_sandbox_empty_typed_turn_retires_previous_answer_binding` | empty completed observation does not erase previous answer |
+| `test_sdk_sandbox_raw_suffix_after_typed_prefix_is_not_lost` | raw prose has no public authority |
+| `test_sdk_sandbox_typed_end_turn_conflicts_with_raw_tool_use_stop` | raw framing cannot poison typed answer |
+| `test_sdk_streamed_result_only_uses_explicit_result_source_without_raw_lifecycle` | result-only SDK success has no public receipt |
+| `test_sdk_streamed_terminal_only_accepts_missing_optional_result_uuid` | optional Result UUID has no public text authority |
+| `test_sdk_waits_to_classify_split_assistant_text_before_later_tool_block` | completed blocks share provider owner and later tool classifies work |
+| `test_sdk_tool_narration_terminal_fallback_keeps_only_answer` | Result body never fills answer or removes narration |
+| `test_sdk_raw_only_tool_turn_narration_uses_work_trace` | raw prose has no public authority |
+| `test_sdk_projects_answer_candidates_before_turn_boundary` | completed-block ACK before subsequent tool and Result |
+| `test_sdk_conflicting_result_keeps_terminal_body` | Result body has no public authority |
+| `test_sdk_raw_observation_identity_failure_is_validation_unless_upstream_fails` | raw framing cannot poison typed answer; actual SDK errors still fail |
+| `test_sdk_result_prefix_comparison_preserves_trailing_space` | completed typed text preserves whitespace without Result comparison |
+| `test_sdk_result_replaces_body_for_selected_empty_assistant` | empty SDK success has no fabricated answer |
+| `test_sandbox_stream_empty_text_deltas_preserve_success` | raw-only and empty SDK success has no fabricated answer |
+| `test_sdk_raw_frame_failure_retains_only_first_fixed_shape` | raw projector retired; historical diagnostics reader remains |
+| `test_sdk_overlapping_tool_starts_fail_closed_with_structural_history` | overlap/missing stop raw noise cannot poison typed answer |
+| `test_sandbox_publishes_closed_raw_source_before_result_without_terminal_replay` | completed-block ACK before Result |
+| `test_sandbox_stream_ignores_server_tool_result_before_public_text` | typed completed text alone is public input |
+| `test_sandbox_stream_ignores_complete_tool_use_block_before_safe_text` | legal multi-tool typed observations and text remain independent |
+| `test_sandbox_stream_duplicate_stop_preserves_visible_prefix` | raw duplicate stop cannot poison typed answer |
+| `test_sandbox_stream_duplicate_raw_observation_is_not_republished` | typed UUID exact replay cannot republish |
+| `test_sandbox_stream_failure_discards_pending_private_token_prefix` | sanitizer pending private prefix is never published on SDK error |
+| `test_sdk_keeps_visible_prefix_and_terminal_body_after_stream_failure` | raw noise cannot poison typed answer; no Result repair |
+| `test_stream_failure_before_publication_recovers_terminal_body` | raw noise cannot poison typed answer; no Result repair |
+
+routing owner 的 `test_raw_only_part_is_acknowledged_before_message_stop` 由完成块 ACK 顺序替代。
+空成功合同改为验证 SDK 成功且无公开 receipt；已提供的正文、receipt 和产物仍须通过完整校验。
+旧测试夹具不再从 raw stop/Result 正文创建 AssistantMessage，正常与安全用例使用明确完成块。
+历史 raw checkpoint/diagnostic readers 与完整原生会话生命周期继续保留。
+晚到私有标识与已经 ACK 的文字发生真实泄露时，安全失败独立于投影已关闭状态和首次诊断
+标签；关闭的 gate 继续检测已公开标识，不恢复或重发正文。
+
+`tests/test_sandbox_executor_app.py` 的 terminal-only batching 用例改为明确 completed-block
+来源；保留超过 100 项事件和 8192 字节分批验收。三种 tool checkpoint 结局（成功、上游错误、
+取消）继续逐项核对实际 raw 正文摘要与第 1/128/256/270 个 checkpoint；删除 raw checkpoint
+数量必须等于公开 ACK 数量的旧对账假设，公开 part 单独验证完成块来源及错误后的不可公开性。
+SDK worker 的正常消息夹具将误设的 child scope 改为主消息；独立子 Agent 私有正文排除用例
+保持有效。旧 on_text 回调在终态安全门后交付；live 预览继续通过已 ACK 的公开 part 事实验证。
+`test_claude_agent_events.py` 的 tool-only 用例改为 SDK 成功且无公开 receipt/正文，仍完整验证
+工具、子 Agent 活动与标识脱敏；普通 receipt 用例修正误设的 child scope，legacy inline
+用例明确提供完成块且 Result 为私有不同正文。`test_context_prompt_continuity.py` 的正常
+公开消息也改为 main scope，Context 工具权限、作用域、脱敏和关闭后 callback 拒绝断言保留。

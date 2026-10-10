@@ -219,6 +219,9 @@ async def test_stop_settles_pending_session_store_tail_before_terminal_result(
         path = str(tmp_path / "project" / "stable-provider-id.jsonl")
         yield {"type": "transcript_mirror", "filePath": path, "entries": [{"uuid": "initial"}]}
         if not forced_close:
+            yield {"type": "assistant", "uuid": "completed-before-stop", "session_id": "stable-provider-id",
+                "parent_tool_use_id": None, "message": {"id": "drained-model-response", "role": "assistant",
+                "model": "model-a", "content": [{"type": "text", "text": before_text}]}}
             for index, event in enumerate(events[:4]):
                 yield stream_event(index, event)
             receiving.set()

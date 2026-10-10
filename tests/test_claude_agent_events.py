@@ -1140,7 +1140,7 @@ def test_callback_projects_whole_summaries_with_server_owned_identity_and_chunks
 
 
 @pytest.mark.asyncio
-async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(monkeypatch):
+async def test_runner_tool_only_success_keeps_activity_without_public_answer(monkeypatch):
     import claude_agent_sdk as sdk
 
     monkeypatch.setattr(
@@ -1246,9 +1246,10 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
         execution_policy="sandbox_brokered",
     )
 
-    assert result.error == "claude_agent_sdk_output_validation_failed"
+    assert result.error is None
+    assert result.answer_receipt is None
     assert result.runtime_diagnostics["projection_failure"]["reason"] == (
-        "terminal_result_body_conflict"
+        "typed_text_source_missing"
     )
     assert result.message == ""
     candidate_types = [
@@ -1263,6 +1264,7 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
     assert "subagent.completed" in candidate_types
     assert "message.delta" not in candidate_types
     assert "message.part.delta" not in candidate_types
+    assert "message.completed" not in candidate_types
     assert tool_lifecycle == [("Read", "started"), ("Read", "completed")]
     assert all(isinstance(candidate, ClaudeAgentEventCandidate) for candidate in candidates)
     serialized = [candidate.as_dict() for candidate in candidates]
@@ -1271,7 +1273,7 @@ async def test_runner_assembles_sdk_text_tool_hooks_and_terminal_model_events(mo
 
 
 @pytest.mark.asyncio
-async def test_runner_streams_and_receipts_ordinary_result_text(
+async def test_runner_streams_and_receipts_ordinary_completed_text(
     monkeypatch,
 ):
     import claude_agent_sdk as sdk
@@ -1307,7 +1309,7 @@ async def test_runner_streams_and_receipts_ordinary_result_text(
             result_uuid="result-ordinary-observation",
             include_raw_delta=False,
             typed_before_raw_stop=True,
-            parent_tool_use_id="parent-ordinary-stream",
+            parent_tool_use_id=None,
         ):
             yield event
 
@@ -1444,6 +1446,13 @@ async def test_runner_keeps_legacy_inline_message_outside_sandbox(monkeypatch):
 
     async def query_fn(*, prompt, options):
         del prompt, options
+        yield sdk.AssistantMessage(
+            content=[sdk.TextBlock(text=answer)],
+            model="model-a",
+            message_id="provider-legacy-inline-message",
+            uuid="assistant-legacy-inline-observation",
+            parent_tool_use_id=None,
+        )
         yield sdk.ResultMessage(
             subtype="success",
             duration_ms=12,
@@ -1452,7 +1461,7 @@ async def test_runner_keeps_legacy_inline_message_outside_sandbox(monkeypatch):
             num_turns=1,
             session_id="sdk-session",
             stop_reason="end_turn",
-            result=answer,
+            result="PRIVATE_RESULT_HAS_NO_PUBLIC_AUTHORITY",
             uuid="result-legacy-inline-observation",
         )
 
