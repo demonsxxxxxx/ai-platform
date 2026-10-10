@@ -81,34 +81,10 @@ _V2_PUBLIC_TOOL_LABELS = {
     "Validate": "Checking result",
     "Adjust": "Adjusting result",
 }
-_PLATFORM_PHASE_CONFIG = {
-    "attachment_materialization": ("read", "file_read", "attachments"),
-    "skill_staging": ("skill", "capability", "skills"),
-    "sandbox_preparation": ("processing", "processing", "sandbox_preparation"),
-    "sandbox_submission": ("processing", "processing", "sandbox_submission"),
-    "model_wait": ("processing", "processing", "execution"),
-    "artifact_validation": ("verification", "verification", "artifact_validation"),
-    "artifact_recovery": ("artifact", "generation", "artifact_recovery"),
-}
-_PLATFORM_PHASE_LABELS = {
-    "attachment_materialization": "Preparing authorized attachments",
-    "skill_staging": "Loading authorized Skills",
-    "sandbox_preparation": "Preparing controlled execution",
-    "sandbox_submission": "Running controlled task",
-    "model_wait": "Waiting for the model response",
-    "artifact_validation": "Checking generated results",
-    "artifact_recovery": "Preparing result recovery",
-}
 _V2_STATIC_LABELS_BY_PRESENTATION = {
-    **{
-        config: _V2_PUBLIC_TOOL_LABELS[tool_name]
-        for tool_name, config in _V2_PUBLIC_TOOL_CONFIG.items()
-        if tool_name not in {"Skill", "MCP"}
-    },
-    **{
-        config: _PLATFORM_PHASE_LABELS[phase]
-        for phase, config in _PLATFORM_PHASE_CONFIG.items()
-    },
+    config: _V2_PUBLIC_TOOL_LABELS[tool_name]
+    for tool_name, config in _V2_PUBLIC_TOOL_CONFIG.items()
+    if tool_name not in {"Skill", "MCP"}
 }
 _PLATFORM_PHASE_PROGRESS_MESSAGES = {
     "attachment_materialization": {
@@ -407,7 +383,7 @@ def public_execution_phase_progress_payload(
         not isinstance(phase, str)
         or not isinstance(lifecycle, str)
         or step_id != f"phase_{phase}"
-        or phase not in _PLATFORM_PHASE_CONFIG
+        or phase not in _PLATFORM_PHASE_PROGRESS_MESSAGES
     ):
         return None
     message = _PLATFORM_PHASE_PROGRESS_MESSAGES.get(phase, {}).get(lifecycle)
@@ -545,48 +521,25 @@ class PublicExecutionV2Projector:
         return projected
 
 
-class PublicExecutionPhasePublisher:
-    """Publish only fixed platform-owned execution phases on the v2 wire."""
+class PublicAgentProgressPublisher:
+    """Own fixed platform-phase lifecycle facts independently of legacy steps."""
 
     def __init__(self) -> None:
         self._phases: dict[str, str | None] = {}
 
-    def project(
-        self,
-        *,
-        phase: object,
-        lifecycle: object,
-    ) -> PersistablePublicExecutionStepV2 | None:
-        if not isinstance(phase, str) or not isinstance(lifecycle, str):
+    def project(self, *, phase: object, lifecycle: object) -> dict[str, str] | None:
+        payload = public_execution_phase_progress_payload(
+            phase=phase, lifecycle=lifecycle, step_id=f"phase_{phase}",
+        )
+        if payload is None:
             return None
-        presentation_config = _PLATFORM_PHASE_CONFIG.get(phase)
-        lifecycle_config = _V2_LIFECYCLE_CONFIG.get(lifecycle)
-        if (
-            presentation_config is None
-            or presentation_config not in _V2_PUBLIC_PRESENTATION_CONFIGS
-            or lifecycle_config is None
-        ):
-            return None
-        terminal = self._phases.get(phase)
+        phase, lifecycle = payload["phase"], payload["lifecycle"]
         if lifecycle == "started":
             if phase in self._phases:
                 return None
             self._phases[phase] = None
-        elif phase not in self._phases or terminal is not None:
+        elif phase not in self._phases or self._phases[phase] is not None:
             return None
-        event_type, status, progress_current = lifecycle_config
-        presentation_kind, kind, stage = presentation_config
-        projected = _projected_public_execution_step_v2(
-            event_type=event_type,
-            step_id=f"phase_{phase}",
-            presentation_kind=presentation_kind,
-            kind=kind,
-            stage=stage,
-            status=status,
-            progress_current=progress_current,
-            progress_total=1,
-            safe_label=_PLATFORM_PHASE_LABELS[phase],
-        )
         if lifecycle in {"completed", "failed"}:
             self._phases[phase] = lifecycle
-        return projected
+        return payload
