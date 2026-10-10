@@ -55,7 +55,8 @@ async def test_timed_out_phase_remains_owned_until_cancelled_operation_finishes(
 
 
 @pytest.mark.asyncio
-async def test_cancelling_scheduler_closes_the_active_phase():
+@pytest.mark.parametrize("repeat_on_progress", [False, True])
+async def test_cancelling_scheduler_closes_the_active_phase(repeat_on_progress):
     started = asyncio.Event()
     closed = asyncio.Event()
 
@@ -68,6 +69,7 @@ async def test_cancelling_scheduler_closes_the_active_phase():
 
     task = asyncio.create_task(maintenance_phase_until_done(
         "cleanup", operation, 30, 30, logger=logging.getLogger(__name__),
+        repeat_on_progress=repeat_on_progress,
     ))
     try:
         await asyncio.wait_for(started.wait(), 1)
@@ -79,7 +81,8 @@ async def test_cancelling_scheduler_closes_the_active_phase():
 
 
 @pytest.mark.asyncio
-async def test_zero_repeat_interval_runs_initial_pass_and_stays_supervised():
+@pytest.mark.parametrize("repeat_on_progress", [False, True])
+async def test_zero_repeat_interval_runs_initial_pass_and_stays_supervised(repeat_on_progress):
     ran = asyncio.Event()
     calls = 0
 
@@ -87,9 +90,11 @@ async def test_zero_repeat_interval_runs_initial_pass_and_stays_supervised():
         nonlocal calls
         calls += 1
         ran.set()
+        return 1
 
     task = asyncio.create_task(maintenance_phase_until_done(
         "cleanup", operation, 0, 1, logger=logging.getLogger(__name__),
+        repeat_on_progress=repeat_on_progress,
     ))
     try:
         await asyncio.wait_for(ran.wait(), 1)
@@ -100,3 +105,98 @@ async def test_zero_repeat_interval_runs_initial_pass_and_stays_supervised():
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("repeat_on_progress", "results", "expected_delays"),
+    [
+        (True, [1, 1, 0], [0, 0, 30]),
+        (True, [1, RuntimeError("probe unavailable")], [0, 30]),
+        (False, [1], [30]),
+    ],
+)
+async def test_phase_drains_only_opted_in_progress_and_backs_off(
+    monkeypatch, repeat_on_progress, results, expected_delays,
+):
+    idle = asyncio.Event()
+    delays = []
+    calls = []
+    yielded = []
+    original_sleep = asyncio.sleep
+
+    async def observe_sleep(delay):
+        delays.append(delay)
+        if delay == 0:
+            await original_sleep(0)
+        else:
+            idle.set()
+            await asyncio.Event().wait()
+
+    async def operation():
+        # A ready callback must run between batches, even when the operation
+        # completes without performing any I/O.
+        assert yielded == calls
+        calls.append(len(calls) + 1)
+        asyncio.get_running_loop().call_soon(yielded.append, calls[-1])
+        result = results[len(calls) - 1]
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr("app.bootstrap.worker_maintenance.asyncio.sleep", observe_sleep)
+    task = asyncio.create_task(maintenance_phase_until_done(
+        "probe", operation, 30, 1, logger=logging.getLogger(__name__),
+        repeat_on_progress=repeat_on_progress,
+    ))
+    try:
+        await asyncio.wait_for(idle.wait(), 1)
+        assert len(calls) == len(results)
+        assert delays == expected_delays
+        assert not task.done()
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_timed_out_progress_backs_off_after_sole_attempt_finishes(monkeypatch):
+    cancelled = asyncio.Event()
+    release = asyncio.Event()
+    idle = asyncio.Event()
+    calls = 0
+    delays = []
+
+    async def operation():
+        nonlocal calls
+        calls += 1
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            await release.wait()
+            return 1
+
+    async def observe_sleep(delay):
+        delays.append(delay)
+        idle.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr("app.bootstrap.worker_maintenance.asyncio.sleep", observe_sleep)
+    task = asyncio.create_task(maintenance_phase_until_done(
+        "probe", operation, 30, 0.001, logger=logging.getLogger(__name__),
+        repeat_on_progress=True,
+    ))
+    try:
+        await asyncio.wait_for(cancelled.wait(), 1)
+        assert calls == 1
+        assert not idle.is_set()
+        assert not task.done()
+        release.set()
+        await asyncio.wait_for(idle.wait(), 1)
+        assert calls == 1
+        assert delays == [30]
+    finally:
+        release.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
