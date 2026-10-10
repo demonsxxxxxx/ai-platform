@@ -6,7 +6,8 @@ import { exportProjectZip } from "../../../utils/exportProjectZip";
 import { useAuth } from "../../../hooks/useAuth";
 import { useSkills } from "../../../hooks/useSkills";
 import type { AdminSkillCatalogItem } from "../../../services/api/skill";
-import { type SkillResponse, type SkillCreate } from "../../../types";
+import { type SkillResponse } from "../../../types";
+import type { SkillFormSubmission } from "../../skill/SkillForm.types";
 import { isAiAdminUser } from "../capabilityAdmin";
 import {
   adminReleaseActionForStatus,
@@ -175,31 +176,37 @@ export function useSkillsActions(options?: {
     }
   }, [canAdminUploadSkills, options?.loadAdminCatalog, refreshAdminSkillCatalog]);
 
+  const formGeneration = useRef(0);
+  useEffect(() => () => { formGeneration.current += 1; }, []);
+
   // CRUD handlers
   const handleEdit = async (skill: SkillResponse) => {
+    const owner = ++formGeneration.current;
+    setShowModal(false);
+    setEditingSkill(null);
     const fullSkill = await getSkill(skill.name);
-    setEditingSkill(fullSkill || skill);
+    if (owner !== formGeneration.current) return;
+    if (!fullSkill) {
+      toast.error(t("skills.loadFailed"));
+      return;
+    }
+    setEditingSkill(fullSkill);
     setShowModal(true);
   };
 
-  const handleSave = async (data: SkillCreate): Promise<boolean> => {
+  const handleSave = async (data: SkillFormSubmission): Promise<boolean> => {
+    const owner = formGeneration.current;
     let success = false;
     try {
       if (editingSkill) {
-        // Use filePaths (lazy-load mode) when available, fallback to files keys
-        const oldFiles = editingSkill.filePaths?.length
-          ? editingSkill.filePaths
-          : Object.keys(editingSkill.files);
-        const newFiles = data.files ? Object.keys(data.files) : [];
-        const deletedFiles = oldFiles.filter((f) => !newFiles.includes(f));
         success = await updateSkill(editingSkill.name, {
           description: data.description,
           content: data.content,
           files: data.files,
-          deletedFiles,
+          deletedFiles: data.deletedFiles ?? [],
         });
       }
-      if (success) {
+      if (success && owner === formGeneration.current) {
         setShowModal(false);
         setEditingSkill(null);
       }
@@ -210,6 +217,7 @@ export function useSkillsActions(options?: {
   };
 
   const handleCancel = () => {
+    formGeneration.current += 1;
     setShowModal(false);
     setEditingSkill(null);
   };

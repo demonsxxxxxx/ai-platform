@@ -10,6 +10,7 @@ import type { BinaryFileInfo } from "../../types/skill";
 import { skillApi } from "../../services/api/skill";
 import { SkillFormFullscreen } from "./SkillFormFullscreen";
 import { SkillFormNormal } from "./SkillFormNormal";
+import { initializeSkillFormFiles, buildSkillFormFileChanges } from "./skillFormFiles";
 
 export function SkillForm({
   skill,
@@ -35,10 +36,12 @@ export function SkillForm({
   >({});
   const [loadingFilePath, setLoadingFilePath] = useState<string | null>(null);
 
-  // Track which file indices have been loaded
-  const loadedIndices = useRef<Set<number>>(new Set());
-  // Track which file paths are currently being loaded (prevent concurrent loads of same file)
-  const loadingPaths = useRef<Set<string>>(new Set());
+  const generation = useRef(0);
+  const filesRef = useRef(files);
+  filesRef.current = files;
+  const loadingFiles = useRef<Set<FileEntry>>(new Set());
+  const originalPaths = useRef<string[]>([]);
+  const submitting = useRef(false);
 
   const toggleFullscreen = useCallback(
     (fs: boolean) => {
@@ -55,66 +58,23 @@ export function SkillForm({
     [onFullscreenChange, t],
   );
 
-  // Initialize files from skill prop
   useEffect(() => {
-    loadedIndices.current = new Set();
-    loadingPaths.current = new Set();
-    setBinaryFiles({});
-
-    if (skill?.filePaths && skill.filePaths.length > 0) {
-      // Lazy mode: only paths, content loaded on demand
-      const fileEntries = skill.filePaths.map((path) => ({
-        path,
-        content: "",
-      }));
-      fileEntries.sort((a, b) => {
-        if (a.path === "SKILL.md") return -1;
-        if (b.path === "SKILL.md") return 1;
-        return a.path.localeCompare(b.path);
-      });
-      setFiles(fileEntries);
-    } else if (skill?.files && Object.keys(skill.files).length > 0) {
-      // Legacy: all content already available
-      const fileEntries = Object.entries(skill.files).map(
-        ([path, content]) => ({ path, content }),
-      );
-      fileEntries.sort((a, b) => {
-        if (a.path === "SKILL.md") return -1;
-        if (b.path === "SKILL.md") return 1;
-        return a.path.localeCompare(b.path);
-      });
-      setFiles(fileEntries);
-      // Mark all as loaded
-      fileEntries.forEach((_, i) => loadedIndices.current.add(i));
-    } else if (skill?.content) {
-      setFiles([{ path: "SKILL.md", content: skill.content }]);
-      loadedIndices.current.add(0);
-    } else {
-      setFiles([{ path: "SKILL.md", content: DEFAULT_CONTENT }]);
-      loadedIndices.current.add(0);
-    }
-
-    if (skill?.binaryFiles) {
-      setBinaryFiles(skill.binaryFiles);
-    }
-  }, [skill]);
-
-  // Reset form fields when skill changes
-  useEffect(() => {
-    if (skill) {
-      setName(skill.name);
-      setDescription(skill.description);
-      setTagsInput((skill.tags ?? []).join(", "));
-      setEnabled(skill.enabled);
-    } else {
-      setName("");
-      setDescription("");
-      setTagsInput("");
-      setEnabled(true);
-      setFiles([{ path: "SKILL.md", content: DEFAULT_CONTENT }]);
-      loadedIndices.current = new Set([0]);
-    }
+    generation.current += 1;
+    loadingFiles.current.clear();
+    const entries = initializeSkillFormFiles(skill);
+    originalPaths.current = entries.map((file) => file.path);
+    filesRef.current = entries;
+    setFiles(entries);
+    setActiveFileIndex(0);
+    setBinaryFiles(skill?.binaryFiles ?? {});
+    setLoadingFilePath(null);
+    setName(skill?.name ?? "");
+    setDescription(skill?.description ?? "");
+    setTagsInput((skill?.tags ?? []).join(", "));
+    setEnabled(skill?.enabled ?? true);
     setErrors({});
+    submitting.current = false;
+    return () => { generation.current += 1; };
   }, [skill]);
 
   useEffect(() => {
@@ -125,79 +85,46 @@ export function SkillForm({
     return () => document.removeEventListener("keydown", handler);
   }, [isFullscreen, toggleFullscreen]);
 
-  // Load a single file's content on demand
+  // File object identity survives reordering, but not removal, replacement, or edits.
   const loadFileContent = useCallback(
     (index: number) => {
       if (!skill?.name) return;
       const file = files[index];
-      if (!file || loadedIndices.current.has(index)) return;
-
-      const filePath = file.path;
-      // Prevent duplicate concurrent loads of the same file
-      if (loadingPaths.current.has(filePath)) return;
-      loadingPaths.current.add(filePath);
-      setLoadingFilePath(filePath);
-
-      skillApi
-        .getFile(skill.name, filePath)
-        .then((fileResp) => {
-          if (fileResp.is_binary && fileResp.url) {
-            // Binary file: store metadata
-            setBinaryFiles((prev) => ({
-              ...prev,
-              [filePath]: {
-                url: fileResp.url!,
-                mime_type: fileResp.mime_type || "application/octet-stream",
-                size: fileResp.size || 0,
-              },
-            }));
-            setFiles((prev) =>
-              prev.map((f, i) =>
-                i === index
-                  ? {
-                      ...f,
-                      content: `[Binary: ${fileResp.mime_type}, ${(
-                        (fileResp.size ?? 0) / 1024
-                      ).toFixed(1)}KB]`,
-                    }
-                  : f,
-              ),
-            );
-          } else {
-            setFiles((prev) =>
-              prev.map((f, i) =>
-                i === index ? { ...f, content: fileResp.content } : f,
-              ),
-            );
+      if (!file || file.loaded || !filesRef.current.includes(file)) return;
+      if (loadingFiles.current.has(file)) return;
+      const owner = generation.current;
+      const ownsFile = () => owner === generation.current && filesRef.current.includes(file);
+      loadingFiles.current.add(file);
+      setLoadingFilePath(file.path);
+      skillApi.getFile(skill.name, file.originalPath ?? file.path)
+        .then((response) => {
+          if (!ownsFile()) return;
+          const binary = Boolean(response.is_binary);
+          if (binary && response.url) {
+            setBinaryFiles((current) => ({ ...current, [file.path]: {
+              url: response.url!, mime_type: response.mime_type || "application/octet-stream", size: response.size || 0,
+            } }));
           }
-          loadedIndices.current.add(index);
+          setFiles((current) => current.map((candidate) => candidate === file
+            ? { ...candidate, content: binary ? "" : response.content, loaded: true, binary } : candidate));
         })
         .catch(() => {
-          // Failed to load file content
+          if (ownsFile()) setErrors((current) => ({ ...current, files: t("skills.loadFailed") }));
         })
         .finally(() => {
-          loadingPaths.current.delete(filePath);
-          // Only clear loading state if this was the last loading file
-          if (loadingPaths.current.size === 0) {
-            setLoadingFilePath(null);
-          } else {
-            // Update to show whichever file is still loading
-            const remaining = Array.from(loadingPaths.current);
-            setLoadingFilePath(remaining[remaining.length - 1]);
-          }
+          if (owner !== generation.current) return;
+          loadingFiles.current.delete(file);
+          const pending = [...loadingFiles.current];
+          setLoadingFilePath(pending[pending.length - 1]?.path ?? null);
         });
     },
-    [skill?.name, files],
+    [skill?.name, files, t],
   );
 
-  // Auto-load SKILL.md on mount
   useEffect(() => {
-    if (!skill?.name || !skill?.filePaths) return;
-    const skillMdIndex = files.findIndex((f) => f.path === "SKILL.md");
-    if (skillMdIndex >= 0 && !loadedIndices.current.has(skillMdIndex)) {
-      loadFileContent(skillMdIndex);
-    }
-  }, [files, skill?.name, skill?.filePaths, loadFileContent]);
+    const index = files.findIndex((file) => file.path === "SKILL.md");
+    if (index >= 0 && !files[index].loaded) loadFileContent(index);
+  }, [files, loadFileContent]);
 
   const validate = (): boolean => {
     const newErrors: Record<string, string> = {};
@@ -215,11 +142,13 @@ export function SkillForm({
       newErrors.tags = t("skills.form.validation.tagTooLong");
     }
     const skillMd = files.find((f) => f.path === "SKILL.md");
-    if (!skillMd || !skillMd.content.trim()) {
+    if (!skillMd?.loaded || skillMd.binary || !skillMd.content.trim()) {
       newErrors.content = t("skills.form.validation.contentRequired");
     }
-    const paths = files.map((f) => f.path);
-    if (new Set(paths).size !== paths.length) {
+    const paths = files.map((f) => f.path.trim());
+    if (paths.some((path) => !path)) {
+      newErrors.files = t("backendErrors.invalidFilePath");
+    } else if (new Set(paths).size !== paths.length) {
       newErrors.files = t("skills.form.validation.duplicateFilePaths");
     }
 
@@ -229,67 +158,68 @@ export function SkillForm({
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (!validate()) return;
+    if (isLoading || submitting.current || !validate()) return;
 
     const tags = normalizeTags(tagsInput);
-    const filesDict: Record<string, string> = {};
-    const synced = syncSkillMarkdownMetadata(
-      files[activeFileIndex]?.path === "SKILL.md"
-        ? files[activeFileIndex]?.content || ""
-        : files.find((f) => f.path === "SKILL.md")?.content || DEFAULT_CONTENT,
-      name.trim(),
-      description.trim(),
-      tags,
-    );
-
-    for (const file of files) {
-      if (!file.path.trim()) continue;
-      filesDict[file.path.trim()] =
-        file.path.trim() === "SKILL.md" ? synced : file.content;
+    let synced: string;
+    try {
+      synced = syncSkillMarkdownMetadata(
+        files.find((file) => file.path === "SKILL.md")?.content || DEFAULT_CONTENT,
+        name.trim(),
+        description.trim(),
+        tags,
+      );
+    } catch {
+      setErrors((current) => ({ ...current, content: t("skills.form.validation.invalidFrontmatter") }));
+      return;
     }
-    if (!filesDict["SKILL.md"]) filesDict["SKILL.md"] = synced;
+
+    const changes = buildSkillFormFileChanges(files, originalPaths.current, synced);
 
     const data = {
       name: sanitizeSkillName(name.trim()),
       description: description.trim(),
       tags,
-      content: filesDict["SKILL.md"] || "",
+      content: synced,
       enabled,
-      files: filesDict,
+      ...changes,
     };
 
-    const success = await onSave(data);
-    if (success && !isEditing) {
-      setName("");
-      setDescription("");
-      setTagsInput("");
-      setEnabled(true);
-      setFiles([{ path: "SKILL.md", content: DEFAULT_CONTENT }]);
+    submitting.current = true;
+    const owner = generation.current;
+    try {
+      const success = await onSave(data);
+      if (success && !isEditing && owner === generation.current) {
+        setName(""); setDescription(""); setTagsInput(""); setEnabled(true);
+        setFiles(initializeSkillFormFiles());
+        setActiveFileIndex(0);
+      }
+    } finally {
+      if (owner === generation.current) submitting.current = false;
     }
   };
 
   const addFile = () => {
-    setFiles([...files, { path: "", content: "" }]);
+    setFiles([...files, { path: "", content: "", loaded: true, dirty: true }]);
     setActiveFileIndex(files.length);
   };
 
   const removeFile = (index: number) => {
     if (files.length <= 1) return;
     const next = files.filter((_, i) => i !== index);
+    filesRef.current = next;
     setFiles(next);
-    if (activeFileIndex >= next.length) setActiveFileIndex(next.length - 1);
+    setActiveFileIndex((active) => Math.max(0, Math.min(active > index ? active - 1 : active, next.length - 1)));
   };
 
   const updateFilePath = (index: number, path: string) => {
-    const next = [...files];
-    next[index] = { ...next[index], path };
-    setFiles(next);
+    if (!files[index]?.loaded || files[index]?.binary) return;
+    setFiles(files.map((file, i) => i === index ? { ...file, path } : file));
   };
 
   const updateFileContent = (index: number, content: string) => {
-    const next = [...files];
-    next[index] = { ...next[index], content };
-    setFiles(next);
+    if (!files[index]?.loaded || files[index]?.binary) return;
+    setFiles(files.map((file, i) => i === index ? { ...file, content, dirty: true } : file));
   };
 
   const removeTag = (targetTag: string) => {
@@ -304,11 +234,11 @@ export function SkillForm({
   const handleTabSelect = useCallback(
     (index: number) => {
       setActiveFileIndex(index);
-      if (!loadedIndices.current.has(index)) {
+      if (!files[index]?.loaded) {
         loadFileContent(index);
       }
     },
-    [loadFileContent],
+    [files, loadFileContent],
   );
 
   const formActions = {

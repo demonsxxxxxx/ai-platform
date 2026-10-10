@@ -1,3 +1,4 @@
+import YAML from "yaml";
 import { FileText, FileCode, File, Image, Film, Music } from "lucide-react";
 import type { FileEntry, TreeNode } from "./SkillForm.types";
 
@@ -68,42 +69,36 @@ export function normalizeTags(input: string): string[] {
   );
 }
 
-function escapeYamlString(value: string): string {
-  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-}
-
-function buildSkillFrontmatter(
-  name: string,
-  description: string,
-  tags: string[],
-): string {
-  const tagLines =
-    tags.length > 0
-      ? ["tags:", ...tags.map((tag) => `  - "${escapeYamlString(tag)}"`)]
-      : ["tags: []"];
-
-  return [
-    "---",
-    `name: "${escapeYamlString(name)}"`,
-    `description: "${escapeYamlString(description)}"`,
-    ...tagLines,
-    "---",
-  ].join("\n");
-}
-
 export function syncSkillMarkdownMetadata(
   content: string,
   name: string,
   description: string,
   tags: string[],
 ): string {
-  const normalizedContent = content.replace(/\r\n/g, "\n");
-  const body = normalizedContent
-    .replace(/^---\n[\s\S]*?\n---\n?/, "")
-    .trimStart();
-  const frontmatter = buildSkillFrontmatter(name, description, tags);
-
-  return body ? `${frontmatter}\n\n${body}` : `${frontmatter}\n`;
+  const bom = content.startsWith("\uFEFF") ? "\uFEFF" : "";
+  const source = content.slice(bom.length);
+  // Only fences are recognized here. YAML structure is parsed by the document parser.
+  const opening = /^---[ \t]*(\r\n|\n|\r|$)/.exec(source);
+  const newline = opening?.[1] || "\n";
+  let yaml = "";
+  let body = source;
+  if (opening) {
+    const remainder = source.slice(opening[0].length);
+    const closing = /^---[ \t]*(?:\r\n|\n|\r|$)/m.exec(remainder);
+    if (!closing) throw new Error("skill_frontmatter_invalid");
+    yaml = remainder.slice(0, closing.index);
+    body = remainder.slice(closing.index + closing[0].length);
+  }
+  const document = YAML.parseDocument(yaml);
+  if (document.errors.length || (document.contents && !["MAP", "FLOW_MAP"].includes(String(document.contents.type)))) {
+    throw new Error("skill_frontmatter_invalid");
+  }
+  if (!document.contents) document.contents = YAML.createNode({});
+  document.set("name", name);
+  document.set("description", description);
+  document.set("tags", tags);
+  const frontmatter = document.toString().replace(/\n/g, newline);
+  return `${bom}---${newline}${frontmatter}---${newline}${opening ? "" : newline}${body}`;
 }
 
 export function buildFileTree(files: FileEntry[]): TreeNode[] {

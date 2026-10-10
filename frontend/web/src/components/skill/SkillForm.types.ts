@@ -7,6 +7,10 @@ import type {
 export interface FileEntry {
   path: string;
   content: string;
+  loaded?: boolean;
+  dirty?: boolean;
+  binary?: boolean;
+  originalPath?: string;
 }
 
 export interface TreeNode {
@@ -16,9 +20,14 @@ export interface TreeNode {
   children: TreeNode[];
 }
 
+export interface SkillFormSubmission extends SkillCreate {
+  // Only explicit removals/renames become deletion tombstones. Omitted writes retain files.
+  deletedFiles?: string[];
+}
+
 export interface SkillFormProps {
   skill?: SkillResponse | null;
-  onSave: (data: SkillCreate) => Promise<boolean>;
+  onSave: (data: SkillFormSubmission) => Promise<boolean>;
   onCancel: () => void;
   isLoading?: boolean;
   onFullscreenChange?: (fullscreen: boolean) => void;
