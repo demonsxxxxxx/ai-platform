@@ -131,6 +131,10 @@ generation, timestamps, and reconciliation ownership in one migration.
    non-streaming bounded terminal messages use the same stable-source
    `assistant_delta` compatibility shape only when no streamed answer exists;
    obsolete `assistant_final` is retired.
+   The terminal callback may commit before the Worker records the asynchronous
+   dispatch acceptance. That later acceptance preserves the terminal executor
+   status and makes a `waiting_terminal` receipt `pending` once its reconciliation
+   context exists. It cannot reset an existing reconciliation claim or outcome.
    A first terminal callback fixes the protocol fields in `executor_terminal_json`
    and normally appends the bounded Runs-owned private diagnostic observation in
    the same PostgreSQL transaction. Diagnostic-only normalization, budget, lock
