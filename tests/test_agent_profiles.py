@@ -995,7 +995,19 @@ async def test_bound_profile_repository_uses_the_session_revision_and_hash_but_r
     assert "agent_profile_revisions.revision = %s" in sql
     assert "agent_profile_revisions.content_hash = %s" in sql
     assert "agent_profile_revisions.revision_status = 'published'" in sql
-    assert "current_revision.visibility as current_visibility" in sql
+    assert "join agent_profile_revisions current_revision" in sql
+    assert "current_revision.tenant_id = agent_profiles.tenant_id" in sql
+    assert "current_revision.agent_id = agent_profiles.agent_id" in sql
+    assert "current_revision.revision = agent_profiles.published_revision" in sql
+    assert "current_revision.content_hash = agent_profiles.published_hash" in sql
+    assert "current_revision.revision_status = 'published'" in sql
+    for unused_alias in (
+        "current_visibility",
+        "current_allowed_department_ids",
+        "current_allowed_roles",
+        "current_allowed_user_ids",
+    ):
+        assert unused_alias not in sql
     assert "agent_profiles.published_revision = %s" not in sql
     assert "for update of agent_profiles" in sql
     assert params == ("tenant-a", "agt_support", 4, "a" * 64)
