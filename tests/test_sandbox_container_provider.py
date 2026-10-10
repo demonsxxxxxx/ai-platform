@@ -7622,3 +7622,85 @@ async def test_docker_orphan_cleanup_refreshes_snapshot_after_create_finishes_be
         await asyncio.gather(create_task, *( [cleanup_task] if cleanup_task is not None else []), return_exceptions=True)
         for lane in (provider._operations, provider._cleanup_operations, provider._probes):
             lane.close()
+
+
+@requires_secure_opensandbox_transfer
+@pytest.mark.parametrize(
+    "outcome",
+    ["success", "root_metadata", "nested_metadata", "root_stat", "nested_stat", "file_stat"],
+)
+def test_host_bind_delivery_descriptor_ownership_on_every_exit(tmp_path, monkeypatch, outcome):
+    from app.sandbox.domain import host_bind
+
+    workspace = tmp_path / "workspace"
+    nested = workspace / "nested"
+    nested.mkdir(parents=True)
+    workspace.chmod(0o700)
+    nested.chmod(0o700)
+    artifact = nested / "answer.txt"
+    artifact.write_text("answer", encoding="utf-8")
+    artifact.chmod(0o600)
+    if outcome == "root_metadata":
+        workspace.chmod(0o777)
+    elif outcome == "nested_metadata":
+        nested.chmod(0o777)
+
+    # Track acquisition identities, since the OS can reuse a closed integer FD.
+    acquisitions = []
+    live = {}
+    closes = []
+
+    def track(descriptor, name):
+        assert descriptor not in live
+        live[descriptor] = len(acquisitions)
+        acquisitions.append(name)
+        return descriptor
+
+    def tracked_open(path, flags, *args, **kwargs):
+        return track(os.open(path, flags, *args, **kwargs), str(path))
+
+    def tracked_dup(descriptor):
+        return track(os.dup(descriptor), acquisitions[live[descriptor]])
+
+    def tracked_close(descriptor):
+        closes.append(live.pop(descriptor))
+        os.close(descriptor)
+
+    def tracked_stat(descriptor):
+        name = acquisitions[live[descriptor]]
+        if (
+            outcome == "root_stat" and name == str(workspace)
+            or outcome == "nested_stat" and name == "nested"
+            or outcome == "file_stat" and name == "answer.txt"
+        ):
+            raise OSError("injected descriptor stat failure")
+        return os.fstat(descriptor)
+
+    os_proxy = SimpleNamespace(**vars(os))
+    os_proxy.open = tracked_open
+    os_proxy.dup = tracked_dup
+    os_proxy.close = tracked_close
+    os_proxy.fstat = tracked_stat
+    os_proxy.supports_dir_fd = {*os.supports_dir_fd, tracked_open}
+    monkeypatch.setattr(host_bind, "os", os_proxy)
+    try:
+        if outcome == "success":
+            result = host_bind.validate_host_bind_delivery_files(
+                workspace, ["nested/answer.txt"],
+                max_files=1, max_file_bytes=64, max_total_bytes=64,
+            )
+            assert [(item.relative_path, item.size_bytes) for item in result] == [
+                ("nested/answer.txt", 6),
+            ]
+        else:
+            with pytest.raises(host_bind.OpenSandboxHostBindError):
+                host_bind.validate_host_bind_delivery_files(
+                    workspace, ["nested/answer.txt"],
+                    max_files=1, max_file_bytes=64, max_total_bytes=64,
+                )
+        assert not live
+        assert sorted(closes) == list(range(len(acquisitions)))
+    finally:
+        # Keep the regression self-cleaning if run against the defective source.
+        for descriptor in live:
+            os.close(descriptor)
