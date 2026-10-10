@@ -182,6 +182,14 @@ A mismatch reports `provider_session_integrity_mismatch`; absent complete
 append receipt coverage reports `provider_session_integrity_unavailable`.
 Neither condition silently resumes a prefix or fabricates replacement receipts.
 
+New appends also store their original canonical representation in the nullable
+`entry_canonical_json` JSON column, in the same transaction as JSONB and the
+existing receipt. Loading compares its PostgreSQL JSONB value with `entry_json`,
+then verifies and restores the original representation. JSONB alone changes
+scientific notation and negative zero, so reserializing it cannot always prove
+the original append digest or byte count. This preserves ACK retry identity and
+the existing transcript byte budget without a new digest format.
+
 Cancellation advances the Attempt owner generation and revokes ordinary
 runtime callbacks. Only provider `append` may drain the already-claimed writer
 through its original unexpired, unreleased active lease, while that exact
@@ -236,7 +244,18 @@ sequence/count and byte metadata since its first main implementation in
 `3199a8fd0938444cfdbcc62c3bab34fdfaf93918` (#1397). No supported main writer
 without those receipts was identified. Existing runtime results without a
 `final_sequence` retain their terminal-commit compatibility path; their native
-append receipts still validate normally. The unshipped experimental binding
+append receipts remain the verifier's authority. Schema version `2026.10.10.1`
+adds the nullable JSON representation without backfilling old rows or receipts.
+Legacy JSONB-only batches may resume when their original digest and byte count
+can still be verified. If that digest does not match and numeric representation
+is ambiguous (for example, original `1e21` or `-0.0`), the callback reports
+`provider_session_integrity_unavailable`, not proof of corruption. It still
+refuses to resume. Recovering such an old conversation requires a trusted
+original append payload or backup in a separately authorized migration;
+otherwise the user must start a new conversation. The verifier does not guess
+numeric combinations or accept a newly computed legacy digest. Old binaries
+can still append nullable representation rows, subject to this legacy limit.
+The unshipped experimental binding
 layout already requires explicit data disposition in `schema.sql`. A database
 with imported or missing receipts has unverified continuity and is rejected;
 this source inventory does not establish the contents of deployed databases.
@@ -253,3 +272,6 @@ candidate artifact and separate release evidence.
 Rollback means reverting the complete source change. It must not re-enable
 `platform_bootstrap`, checkpoint summarization, or prompt reconstruction as a
 runtime fallback, and it must not delete provider or checkpoint rows ad hoc.
+The additive nullable JSON column may remain during a binary rollback; reverting
+the readiness version does not authorize deleting it or overwriting migration
+ledger entries. Apply the schema migration before starting the new binary.

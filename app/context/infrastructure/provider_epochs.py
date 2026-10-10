@@ -439,14 +439,15 @@ async def callback_provider_epoch(
         or epoch["transcript_bytes"] + batch_bytes > MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES):
         raise ProviderSessionConflictError("provider_session_transcript_too_large")
     for offset, item in enumerate(batch):
+        canonical = _canonical(item.entry).decode("utf-8")
         await conn.execute(
             """
             insert into provider_session_entries (
               id, tenant_id, workspace_id, user_id, session_id, agent_id, engine,
-              epoch_id, subpath, sequence, sdk_entry_uuid, entry_json
-            ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+              epoch_id, subpath, sequence, sdk_entry_uuid, entry_json, entry_canonical_json
+            ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::json)
             """, (f"pse_{uuid.uuid4().hex}", *_scope_values(scope), epoch["id"], path,
-                  expected_sequence + offset, item.sdk_entry_uuid, _canonical(item.entry).decode("utf-8")),
+                  expected_sequence + offset, item.sdk_entry_uuid, canonical, canonical),
         )
     last = expected_sequence + len(batch) - 1
     await conn.execute(
@@ -479,7 +480,9 @@ async def _verified_provider_entries(
     receipt is invented from potentially incomplete history.
     """
     cursor = await conn.execute(
-        "select sequence, subpath, entry_json from provider_session_entries "
+        "select sequence, subpath, entry_json, entry_canonical_json::text as entry_canonical_json, "
+        "(entry_canonical_json is null or entry_canonical_json::jsonb = entry_json) as canonical_matches "
+        "from provider_session_entries "
         "where epoch_id = %s order by sequence asc limit %s",
         (epoch["id"], MAX_PROVIDER_SESSION_ENTRIES + 1),
     )
@@ -518,11 +521,30 @@ async def _verified_provider_entries(
                 or (normalize_provider_subpath(path) or "") != path
                 or any(row.get("subpath") != path for row in batch_rows)):
                 raise ProviderSessionConflictError("provider_session_integrity_mismatch")
-            entries = [row["entry_json"] for row in batch_rows]
+            entries = []
+            ambiguous_legacy = False
+            for row in batch_rows:
+                original = row.get("entry_canonical_json")
+                if original is None:
+                    entry = row["entry_json"]
+                    ambiguous_legacy |= _has_ambiguous_legacy_number(entry)
+                else:
+                    entry = json.loads(original)
+                    if (row.get("canonical_matches") is not True
+                        or _canonical(entry).decode("utf-8") != original):
+                        raise ProviderSessionConflictError("provider_session_integrity_mismatch")
+                entries.append(entry)
             batch, batch_bytes = normalize_provider_entry_batch(entries, subpath=path)
-            if (batch_digest(path, [item.entry for item in batch]) != receipt.get("batch_sha256")
-                or any(item.entry != original for item, original in zip(batch, entries))):
+            if any(item.entry != original for item, original in zip(batch, entries)):
                 raise ProviderSessionConflictError("provider_session_integrity_mismatch")
+            if batch_digest(path, [item.entry for item in batch]) != receipt.get("batch_sha256"):
+                # JSONB cannot prove whether a legacy large integer was a float
+                # or whether zero was negative. Never authenticate guessed bytes.
+                code = ("provider_session_integrity_unavailable" if ambiguous_legacy
+                        else "provider_session_integrity_mismatch")
+                raise ProviderSessionConflictError(code)
+            for row, item in zip(batch_rows, batch):
+                row["entry_json"] = item.entry
             total_bytes += batch_bytes
             expected += count
     except ProviderSessionConflictError:
@@ -534,6 +556,16 @@ async def _verified_provider_entries(
     if type(epoch.get("transcript_bytes")) is not int or total_bytes != epoch["transcript_bytes"]:
         raise ProviderSessionConflictError("provider_session_integrity_mismatch")
     return rows
+
+
+def _has_ambiguous_legacy_number(value: object) -> bool:
+    """Classify unprovable legacy bytes without accepting or enumerating variants."""
+    if isinstance(value, dict):
+        return any(_has_ambiguous_legacy_number(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_has_ambiguous_legacy_number(item) for item in value)
+    return ((type(value) is float and value == 0.0)
+            or (type(value) is int and abs(value) >= 10**16))
 
 
 async def prepare_provider_epoch(

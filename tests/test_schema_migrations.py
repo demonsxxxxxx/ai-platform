@@ -509,10 +509,10 @@ def test_stream_only_schema_change_advances_schema_version():
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert schema_migrations.RUN_INPUTS_SCHEMA_VERSION == "2026.10.07.1"
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.10.09.1"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.10.10.1"
     assert (
         schema_migrations.TARGET_SCHEMA_VERSION
-        == schema_migrations.ASSISTANT_TEXT_PART_INDEX_SCHEMA_VERSION
+        == schema_migrations.PROVIDER_TRANSCRIPT_REPRESENTATION_SCHEMA_VERSION
     )
     assert schema_migrations.CLAUDE_CONTEXT_CUTOVER_SCHEMA_VERSION == "2026.09.15.2"
     assert schema_migrations.CLAUDE_PROVIDER_SESSION_SCHEMA_VERSION == "2026.09.04.1"
@@ -578,7 +578,8 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
                                    ("active_run_id", "text", False)),
         "provider_session_epochs": (("provider_session_id", "uuid", True), ("next_sequence", "int8", True),
                                     ("coverage_source_sha256", "text", False)),
-        "provider_session_entries": (("epoch_id", "text", True), ("sequence", "int8", True)),
+        "provider_session_entries": (("epoch_id", "text", True), ("sequence", "int8", True),
+                                     ("entry_canonical_json", "json", False)),
         "provider_session_append_receipts": (("expected_sequence", "int8", True),
                                              ("batch_sha256", "text", True)),
         "provider_turn_receipts": (("committed_coverage_sha256", "text", False),),

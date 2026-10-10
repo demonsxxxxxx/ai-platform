@@ -1,6 +1,8 @@
 """Native transcript integrity and cancellation drain with real PostgreSQL."""
 
 import asyncio
+import json
+import math
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -183,6 +185,94 @@ async def test_native_history_and_child_paths_have_complete_receipt_coverage(
         assert (await operation(conn, "load", subpath="subagents/agent-a"))[
             "entries"
         ] == child
+
+
+@pytest.mark.parametrize("value", [-0.0, 0.0, 1.0, 1e-7, 1e16, -1e21, 1e308, 5e-324])
+async def test_original_numeric_representation_survives_jsonb_and_ack_retry(recovery_db, value):
+    entries = [{"type": "assistant", "uuid": "numeric", "message": {
+        "role": "assistant", "content": [{"type": "tool_use", "id": "tool", "name": "synthetic",
+            "input": {"numbers": [value, 1000000000000000000001], "flag": True}}],
+    }}]
+    async with recovery_db() as conn:
+        await operation(conn, "append", entries=entries, expected_sequence=3)
+        retry = await operation(conn, "append", entries=entries, expected_sequence=3)
+        assert retry["next_sequence"] == 4
+        restored = (await operation(conn, "load"))["entries"][-1]
+        assert json.dumps(restored, sort_keys=True) == json.dumps(entries[0], sort_keys=True)
+        recovered = restored["message"]["content"][0]["input"]["numbers"][0]
+        assert type(recovered) is float and math.copysign(1, recovered) == math.copysign(1, value)
+        assert (await operation(conn, "list_subkeys"))["next_sequence"] == 4
+
+
+@pytest.mark.parametrize("value,unavailable", [
+    (-0.0, True), (1e16, True), (-1e21, True), (1e308, True),
+    (0.0, False), (1.0, False), (1e-7, False), (5e-324, False),
+    (1000000000000000000001, False),
+])
+async def test_legacy_numeric_bytes_are_verified_or_explicitly_unavailable(recovery_db, value, unavailable):
+    entry = {"type": "assistant", "uuid": "legacy-numeric", "value": value}
+    async with recovery_db() as conn:
+        await operation(conn, "append", entries=[entry], expected_sequence=3)
+        # An old writer stored only JSONB and the original append receipt.
+        await conn.execute("update provider_session_entries set entry_canonical_json=null")
+        for action in ("load", "list_subkeys"):
+            if unavailable:
+                with pytest.raises(ProviderSessionConflictError, match="provider_session_integrity_unavailable"):
+                    await operation(conn, action)
+            else:
+                result = await operation(conn, action)
+                assert result["next_sequence"] == 4
+                if action == "load":
+                    assert result["entries"][-1] == entry
+
+
+@pytest.mark.parametrize("change", [
+    "update provider_session_entries set entry_canonical_json='{}'::json where sequence=2",
+    "update provider_session_entries set entry_canonical_json='[]'::json where sequence=2",
+    "update provider_session_entries set entry_canonical_json='null'::json where sequence=2",
+    "update provider_session_entries set entry_canonical_json=' {\"type\":\"assistant\"} '::json where sequence=2",
+    "update provider_session_entries set entry_canonical_json=jsonb_set(entry_json,'{message,content}','\"CHANGED\"')::json, entry_json=jsonb_set(entry_json,'{message,content}','\"CHANGED\"') where sequence=2",
+])
+async def test_canonical_original_must_match_jsonb_shape_and_receipt(recovery_db, change):
+    async with recovery_db() as conn:
+        await conn.execute(change)
+        for action in ("load", "list_subkeys"):
+            with pytest.raises(ProviderSessionConflictError, match="provider_session_integrity_mismatch"):
+                await operation(conn, action)
+
+
+async def test_consistently_changed_original_and_jsonb_still_fail_receipt(recovery_db):
+    changed = json.dumps({**INITIAL[1], "message": {"role": "assistant", "content": "CHANGED"}},
+                         ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    async with recovery_db() as conn:
+        await conn.execute("update provider_session_entries set entry_canonical_json=%s::json, "
+                           "entry_json=%s::jsonb where sequence=2", (changed, changed))
+        with pytest.raises(ProviderSessionConflictError, match="provider_session_integrity_mismatch"):
+            await operation(conn, "load")
+
+
+async def test_invalid_original_json_is_rejected_without_poisoning_valid_history(recovery_db):
+    async with recovery_db() as conn:
+        with pytest.raises(psycopg.errors.InvalidTextRepresentation):
+            async with conn.transaction():
+                await conn.execute("update provider_session_entries set entry_canonical_json='invalid'::json")
+        assert (await operation(conn, "load"))["entries"] == INITIAL
+
+
+async def test_representation_migration_preserves_legacy_rows_without_backfill(recovery_db):
+    async with recovery_db() as conn:
+        await conn.execute("alter table provider_session_entries drop column entry_canonical_json")
+        source = (Path(__file__).resolve().parents[1] / "app/schema.sql").read_text()
+        migration = next(line for line in source.splitlines() if line.startswith(
+            "alter table provider_session_entries add column if not exists entry_canonical_json"))
+        await conn.execute(migration)
+        await conn.execute(migration)
+        rows = await (await conn.execute(
+            "select entry_canonical_json from provider_session_entries order by sequence"
+        )).fetchall()
+        assert rows == [{"entry_canonical_json": None}, {"entry_canonical_json": None}]
+        assert (await operation(conn, "load"))["entries"] == INITIAL
+        assert (await operation(conn, "list_subkeys"))["next_sequence"] == 3
 
 
 @pytest.mark.parametrize(
