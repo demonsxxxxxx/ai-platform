@@ -2171,7 +2171,19 @@ async def test_agent_run_prefers_worker_context_pack_over_snapshot_reparse(monke
 
 
 @pytest.mark.asyncio
-async def test_general_chat_routes_heavy_sandbox_runs_to_sandbox_runtime(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "current_message",
+    [
+        "run a shell command in sandbox",
+        '格式化 JSON：{"path":"/tmp/example.json"}',
+        "Review /home/example/report.txt",
+        "Review output/report.csv",
+        r"Review C:\examples\report.json",
+    ],
+)
+async def test_general_chat_routes_heavy_sandbox_runs_to_sandbox_runtime(monkeypatch, tmp_path, current_message):
+    from app.runs.infrastructure.capability_admission_postgres import normalize_run_input_for_enqueue
+
     current_settings = type(
         "S",
         (),
@@ -2249,7 +2261,7 @@ async def test_general_chat_routes_heavy_sandbox_runs_to_sandbox_runtime(monkeyp
             skill_id="general-chat",
             file_ids=[],
             input={
-                "message": "run a shell command in sandbox",
+                **normalize_run_input_for_enqueue({"message": current_message}, redact_public=True),
                 "sandbox_mode": "ephemeral",
                 "_thinking_effort": "high",
             },
@@ -2288,6 +2300,7 @@ async def test_general_chat_routes_heavy_sandbox_runs_to_sandbox_runtime(monkeyp
 
     assert result.status == "succeeded"
     assert runtime_calls
+    assert runtime_calls[0].input_message == current_message
     assert runtime_calls[0].skill_ids == ["general-chat"]
     assert runtime_calls[0].callback_token_id == "cbt:run_1:qat-test-attempt"
     assert runtime_calls[0].sandbox_mode == "ephemeral"
