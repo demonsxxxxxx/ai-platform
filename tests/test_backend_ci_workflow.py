@@ -213,6 +213,7 @@ BACKEND_TEST_SHARDS = {
     ),
     "release-governance-policy": (
         "tests/test_architecture_governance.py",
+        "tests/test_capacity_recorded_gate_values_from_live_run.py",
         "tests/test_backend_ci_workflow.py",
         "tests/test_trusted_governance.py",
         "tests/test_code_governance.py",

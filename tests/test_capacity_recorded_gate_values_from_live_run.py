@@ -3,12 +3,30 @@ import subprocess
 import sys
 from pathlib import Path
 
-from app.capacity_baseline import build_capacity_baseline, build_capacity_evidence_snapshot
+import pytest
+
+from app.capacity_baseline import (
+    LOAD_TEST_GATES,
+    build_capacity_baseline,
+    build_capacity_evidence_snapshot,
+    build_capacity_recorded_gate_batch_snapshot,
+    build_capacity_recorded_gate_evidence_packet_result,
+)
 from app.foundation_runtime_concurrency import FOUNDATION_RUNTIME_CONCURRENCY_SCHEMA
-from tools.capacity_recorded_gate_values_from_live_run import build_recorded_gate_values_from_live_run
+from tools import verify_multiuser_poc
+from tools.capacity_recorded_gate_values_from_live_run import (
+    build_recorded_gate_values_from_live_run,
+    write_operator_value_files,
+)
 
 
 COMMIT_SHA = "39aa862b0c6139bcc80578dd51ef5de898ea92cc"
+ZERO_CLEANUP_COUNTS = {
+    "remaining_tenant_count": 0,
+    "remaining_run_count": 0,
+    "remaining_artifact_count": 0,
+    "remaining_queue_count": 0,
+}
 
 
 class Settings:
@@ -377,3 +395,105 @@ def test_capacity_recorded_gate_values_fails_closed_for_partial_runtime_snapshot
     assert result["status"] == "blocked_incomplete_inputs"
     assert "runtime_evidence_field_database_pool_settings_missing" in result["input_errors"]
     assert result["recorded_gates"] == []
+
+
+def _assemble_converted_values(result):
+    packets = [
+        build_capacity_recorded_gate_evidence_packet_result(
+            gate, result["values_by_gate"].get(gate, {}),
+            cleanup_proof_status="verified", stop_condition_status="passed",
+        )
+        for gate in LOAD_TEST_GATES
+    ]
+    return build_capacity_recorded_gate_batch_snapshot(
+        _runtime_evidence(), packets, profile_evidence=_profile_values()
+    )
+
+
+@pytest.mark.parametrize("wrapped", (False, True))
+def test_capacity_converter_accepts_actual_cleanup_producer_schema(monkeypatch, wrapped):
+    calls = []
+
+    def synthetic_psql_rows(**kwargs):
+        calls.append(kwargs["sql"])
+        return [{
+            "remaining_tenant_count": 0, "remaining_run_count": 0,
+            "remaining_artifact_count": 0,
+        }]
+
+    monkeypatch.setattr(verify_multiuser_poc, "psql_json_rows", synthetic_psql_rows)
+    monkeypatch.setattr(
+        verify_multiuser_poc, "cleanup_foundation_runtime_queue_residue",
+        lambda *_args, **_kwargs: {
+            "status": "verified", "remaining_counts": {"remaining_queue_count": 0},
+        },
+    )
+    proof = verify_multiuser_poc.build_foundation_runtime_cleanup_proof(
+        ["frc-test-synthetic"], postgres_container="synthetic-pg",
+        postgres_user="synthetic-user", postgres_db="synthetic-db",
+    )
+    assert len(calls) == 2
+    assert proof["schema_version"] == "ai-platform.foundation-runtime-cleanup-proof.v1"
+    assert proof["remaining_counts"] == ZERO_CLEANUP_COUNTS
+
+    result = build_recorded_gate_values_from_live_run(
+        runtime_evidence=_runtime_evidence(),
+        foundation_runtime_evidence=_foundation_runtime_evidence(
+            cleanup_proof={"after": proof} if wrapped else proof
+        ),
+        evidence_ref_prefix="capacity-evidence/synthetic-cleanup",
+    )
+
+    assert result["status"] == "operator_value_files_ready"
+    assert _assemble_converted_values(result)["status"] == "recorded_gate_batch_input_accepted"
+    assert result["does_not_raise_defaults"] is True
+    assert result["does_not_close_b3_gate"] is True
+
+
+@pytest.mark.parametrize("remaining", [
+    None, {}, [], "verified",
+    *({key: value for key, value in ZERO_CLEANUP_COUNTS.items() if key != missing}
+      for missing in ZERO_CLEANUP_COUNTS),
+    *({**ZERO_CLEANUP_COUNTS, key: value}
+      for key in ZERO_CLEANUP_COUNTS for value in (False, True, "0", "4", -1, 1, None, 0.0)),
+    {**ZERO_CLEANUP_COUNTS, "additional_remaining_count": "0"},
+])
+def test_capacity_converter_rejects_missing_or_malformed_cleanup_counts(tmp_path, remaining):
+    result = build_recorded_gate_values_from_live_run(
+        runtime_evidence=_runtime_evidence(),
+        foundation_runtime_evidence=_foundation_runtime_evidence(
+            cleanup_proof={"after": {"status": "verified", "remaining_counts": remaining}}
+        ),
+        evidence_ref_prefix="capacity-evidence/synthetic-cleanup",
+    )
+
+    assert result["status"] == "blocked_incomplete_inputs"
+    assert "foundation_runtime_cleanup_proof_not_verified" in result["input_errors"]
+    assert result["recorded_gates"] == []
+    assert result["values_by_gate"] == {}
+    assert result["does_not_close_b3_gate"] is True
+    output_dir = tmp_path / "operator-inputs"
+    assert write_operator_value_files(result, output_dir) == []
+    assert not output_dir.exists()
+    assembled = _assemble_converted_values(result)
+    assert assembled["status"] == "blocked_incomplete_inputs"
+    assert assembled["readiness"]["status"] != "ready_for_operator_review"
+
+
+@pytest.mark.parametrize("after", [
+    None, {},
+    {"status": "remaining_records_detected", "remaining_counts": ZERO_CLEANUP_COUNTS},
+    {"status": "verified", "remaining_counts": {**ZERO_CLEANUP_COUNTS, "remaining_run_count": 1}},
+])
+def test_capacity_converter_never_overrides_failed_after_with_verified_parent(after):
+    result = build_recorded_gate_values_from_live_run(
+        runtime_evidence=_runtime_evidence(),
+        foundation_runtime_evidence=_foundation_runtime_evidence(cleanup_proof={
+            "status": "verified", "remaining_counts": ZERO_CLEANUP_COUNTS, "after": after,
+        }),
+        evidence_ref_prefix="capacity-evidence/synthetic-cleanup",
+    )
+
+    assert result["status"] == "blocked_incomplete_inputs"
+    assert result["values_by_gate"] == {}
+    assert _assemble_converted_values(result)["status"] == "blocked_incomplete_inputs"
