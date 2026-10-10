@@ -198,6 +198,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_schema_migrations.py",
         "tests/test_schema_migrations_postgres.py",
         "tests/test_run_inputs_postgres.py",
+        "tests/test_provider_session_recovery_postgres.py",
         "tests/test_schema.py::test_schema_declares_attempt_identity_state_and_fences",
     ),
     "v4-durable-streaming": (

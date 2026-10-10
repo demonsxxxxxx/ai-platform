@@ -42,7 +42,8 @@ REPOSITORY_SKILL_RETIREMENT_SCHEMA_VERSION = "2026.09.22.1"
 HUMAN_APPROVAL_AND_LEGACY_MULTI_AGENT_RETIREMENT_SCHEMA_VERSION = "2026.09.26.1"
 RUN_INPUTS_SCHEMA_VERSION = "2026.10.07.1"
 ASSISTANT_TEXT_PART_INDEX_SCHEMA_VERSION = "2026.10.09.1"
-TARGET_SCHEMA_VERSION = ASSISTANT_TEXT_PART_INDEX_SCHEMA_VERSION
+PROVIDER_TRANSCRIPT_REPRESENTATION_SCHEMA_VERSION = "2026.10.10.1"
+TARGET_SCHEMA_VERSION = PROVIDER_TRANSCRIPT_REPRESENTATION_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
 # The Stream-only cutover retires old index contracts and is not binary rollback-compatible.
 CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = ASSISTANT_TEXT_PART_INDEX_SCHEMA_VERSION
@@ -266,6 +267,7 @@ CRITICAL_COLUMNS = (
     ("provider_session_entries", "sequence", "int8", True),
     ("provider_session_entries", "sdk_entry_uuid", "text", False),
     ("provider_session_entries", "entry_json", "jsonb", True),
+    ("provider_session_entries", "entry_canonical_json", "json", False),
     ("provider_session_entries", "created_at", "timestamptz", True),
     ("provider_session_append_receipts", "epoch_id", "text", True),
     ("provider_session_append_receipts", "expected_sequence", "int8", True),

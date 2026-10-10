@@ -2,7 +2,7 @@
 
 Status: source candidate; deployment and external acceptance are separate
 Owner: Context + Execution + Runs
-Last updated: 2026-09-28
+Last updated: 2026-10-09
 
 ## Decision
 
@@ -53,10 +53,14 @@ This change is limited to:
 - Claude prompt/adapter composition;
 - Worker pre-dispatch and maintenance composition;
 - Runs terminal composition previously coupled to checkpoint usage;
+- the additive nullable JSON transcript representation migration and readiness
+  check described below;
 - owning tests and these architecture documents.
 
-No frontend, SSE wire, public message schema, authorization policy, provider
-callback protocol, database migration, or deployment change is in scope.
+No frontend, SSE wire, public message schema, provider callback request/response
+schema, or deployment change is in scope. The cancellation
+drain qualification is limited to native append persistence; current tool,
+input and history-load authorization remains unchanged.
 
 ### Preserved invariants
 
@@ -171,6 +175,36 @@ inconsistent receipt is a conflict; callbacks do not recreate it under an
 existing writer. Scoped locks, current Attempt/lease checks, owner generation,
 and frozen coverage checks apply to every callback.
 
+Before returning native entries or child paths, the callback verifies the
+whole bounded epoch against its existing entry count, contiguous global
+sequence, transcript byte count and append-batch digests. Child paths share
+that global sequence; a main-only scan cannot prove epoch completeness. This
+checks the native records already being restored, not platform message bodies.
+A mismatch reports `provider_session_integrity_mismatch`; absent complete
+append receipt coverage reports `provider_session_integrity_unavailable`.
+Neither condition silently resumes a prefix or fabricates replacement receipts.
+
+New appends also store their original canonical representation in the nullable
+`entry_canonical_json` JSON column, in the same transaction as JSONB and the
+existing receipt. Loading compares its PostgreSQL JSONB value with `entry_json`,
+then verifies and restores the original representation. JSONB alone changes
+scientific notation and negative zero, so reserializing it cannot always prove
+the original append digest or byte count. This preserves ACK retry identity and
+the existing transcript byte budget without a new digest format.
+
+Cancellation advances the Attempt owner generation and revokes ordinary
+runtime callbacks. Only provider `append` may drain the already-claimed writer
+through its original unexpired, unreleased active lease, while that exact
+queue-worker Attempt is `cancel_requested` and its Run remains running with a
+cancellation request. The generation must be exactly one ahead of that writer
+and lease. This exception cannot claim a writer, load history, invoke a tool,
+accept input, survive takeover, or persist after terminalization.
+
+Turn-limit, timeout, missing authoritative terminal and provider-persistence
+failures direct users to a new conversation and are not advertised as same-Run
+retries. Failed started turns may leave native state dirty or coverage incomplete;
+the public advice does not promise that the same Session can resume.
+
 Execution captures the final provider sequence after the SDK's closing mirror
 flush and after all message/control producers have stopped. The sandbox carries
 that sequence through its terminal result to the existing coverage transaction.
@@ -207,6 +241,27 @@ one exact usable native epoch: users must start a new conversation. There is no
 fallback owner and no planned removal date for the retained read-only data;
 future schema retirement requires a separate migration contract and inventory.
 
+The native epoch layout has written append receipts atomically with entries,
+sequence/count and byte metadata since its first main implementation in
+`3199a8fd0938444cfdbcc62c3bab34fdfaf93918` (#1397). No supported main writer
+without those receipts was identified. Existing runtime results without a
+`final_sequence` retain their terminal-commit compatibility path; their native
+append receipts remain the verifier's authority. Schema version `2026.10.10.1`
+adds the nullable JSON representation without backfilling old rows or receipts.
+Legacy JSONB-only batches may resume when their original digest and byte count
+can still be verified. If that digest does not match and numeric representation
+is ambiguous (for example, original `1e21` or `-0.0`), the callback reports
+`provider_session_integrity_unavailable`, not proof of corruption. It still
+refuses to resume. Recovering such an old conversation requires a trusted
+original append payload or backup in a separately authorized migration;
+otherwise the user must start a new conversation. The verifier does not guess
+numeric combinations or accept a newly computed legacy digest. Old binaries
+can still append nullable representation rows, subject to this legacy limit.
+The unshipped experimental binding
+layout already requires explicit data disposition in `schema.sql`. A database
+with imported or missing receipts has unverified continuity and is rejected;
+this source inventory does not establish the contents of deployed databases.
+
 ## Evidence Ceiling
 
 Local tests and static checks prove source behavior only. They do not prove a
@@ -219,3 +274,6 @@ candidate artifact and separate release evidence.
 Rollback means reverting the complete source change. It must not re-enable
 `platform_bootstrap`, checkpoint summarization, or prompt reconstruction as a
 runtime fallback, and it must not delete provider or checkpoint rows ad hoc.
+The additive nullable JSON column may remain during a binary rollback; reverting
+the readiness version does not authorize deleting it or overwriting migration
+ledger entries. Apply the schema migration before starting the new binary.

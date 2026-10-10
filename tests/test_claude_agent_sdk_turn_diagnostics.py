@@ -467,8 +467,8 @@ async def test_sdk_turn_limit_variants_share_one_actionable_public_diagnostic(
         "schema_version": "ai-platform.sdk-turn-diagnostics.v1",
         "terminal_class": "max_turn_exhausted",
         "error_code": "claude_agent_sdk_turn_limit_exceeded",
-        "action": "continue_or_narrow_request",
-        "retryable": True,
+        "action": "start_new_conversation",
+        "retryable": False,
         "counters": {
             "max_turns": 8,
             "turns_observed": 8,
@@ -529,6 +529,9 @@ async def test_sdk_timeout_and_missing_terminal_are_distinct(monkeypatch, tmp_pa
     assert timed_out.turn_diagnostics["terminal_class"] == "timeout"
     assert missing.error == "claude_agent_sdk_missing_structured_terminal"
     assert missing.turn_diagnostics["terminal_class"] == "missing_terminal"
+    for result in (timed_out, missing):
+        assert result.turn_diagnostics["action"] == "start_new_conversation"
+        assert result.turn_diagnostics["retryable"] is False
 
 
 @pytest.mark.asyncio

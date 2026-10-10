@@ -1959,8 +1959,8 @@ async def test_sdk_timeout_preserved_over_pending_tool_invocation_state(
             turn_diagnostics={
                 "terminal_class": "timeout",
                 "error_code": "claude_agent_sdk_timeout",
-                "action": "retry_or_split_request",
-                "retryable": True,
+                "action": "start_new_conversation",
+                "retryable": False,
                 "counters": {
                     "assistant_messages": 85,
                     "tool_policy_denials": 4,
@@ -1987,7 +1987,7 @@ async def test_sdk_timeout_preserved_over_pending_tool_invocation_state(
     message = body["error_message"]
     assert message.startswith("error=claude_agent_sdk_timeout")
     assert "terminal_class=timeout" in message
-    assert "action=retry_or_split_request" in message
+    assert "action=start_new_conversation" in message
     assert "assistant_messages=85" in message
     assert "tool_policy_denials=4" in message
     assert "denied_tools=Bash(parameter_not_authorized)" in message

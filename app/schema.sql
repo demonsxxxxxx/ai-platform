@@ -1808,6 +1808,11 @@ create unique index if not exists uq_provider_entry_sdk_uuid
 create index if not exists idx_provider_entry_view
   on provider_session_entries(epoch_id, subpath, sequence);
 
+-- JSON preserves the append representation used by existing receipts; JSONB
+-- alone loses scientific notation and the sign of zero. Legacy rows stay null:
+-- reconstructing original bytes from them would manufacture integrity evidence.
+alter table provider_session_entries add column if not exists entry_canonical_json json;
+
 create table if not exists provider_session_append_receipts (
   epoch_id text not null references provider_session_epochs(id) on delete cascade,
   expected_sequence bigint not null check (expected_sequence >= 1),

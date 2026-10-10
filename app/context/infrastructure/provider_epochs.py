@@ -262,7 +262,7 @@ async def release_provider_lineage(conn: AsyncConnection, *, tenant_id: str, run
 
 async def _locked_callback_epoch(
     conn: AsyncConnection, *, scope: ProviderSessionScope, run_id: str,
-    attempt_id: str, provider_session_id: str,
+    attempt_id: str, provider_session_id: str, allow_cancel_tail: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     try:
         provider_uuid = str(uuid.UUID(provider_session_id))
@@ -292,15 +292,25 @@ async def _locked_callback_epoch(
     cursor = await conn.execute(
         """
         select attempt.owner_generation, attempt.execution_spec_sha256,
+               attempt.status, attempt.owner_kind,
                attempt.execution_spec_json->'context_pack'->'conversation_context' as conversation_context
         from run_attempts attempt
+        join runs owning_run on owning_run.tenant_id = attempt.tenant_id
+          and owning_run.id = attempt.run_id and owning_run.status = 'running'
         join sandbox_leases lease on lease.tenant_id = attempt.tenant_id
           and lease.run_id = attempt.run_id and lease.attempt_id = attempt.id
         where attempt.tenant_id = %s and attempt.run_id = %s and attempt.id = %s
-          and attempt.status = 'running' and attempt.execution_spec_schema_version = 'ai-platform.execution-spec.v2'
+          and attempt.execution_spec_schema_version = 'ai-platform.execution-spec.v2'
+          and (
+            (attempt.status = 'running'
+             and lease.lease_payload_json->>'owner_generation' = attempt.owner_generation::text)
+            or (%s and attempt.status = 'cancel_requested' and attempt.owner_kind = 'queue_worker'
+                and owning_run.cancel_requested_at is not null
+                and lease.lease_payload_json->>'owner_generation' = (attempt.owner_generation - 1)::text)
+          )
           and lease.status = 'active' and lease.released_at is null
-          and (lease.expires_at is null or lease.expires_at > now())
-        """, (scope.tenant_id, run_id, attempt_id),
+          and lease.expires_at is not null and lease.expires_at > clock_timestamp()
+        """, (scope.tenant_id, run_id, attempt_id, allow_cancel_tail),
     )
     attempt = await cursor.fetchone()
     private = attempt.get("conversation_context") if isinstance(attempt, dict) else None
@@ -318,6 +328,16 @@ async def _locked_callback_epoch(
     generation = attempt.get("owner_generation")
     if type(generation) is not int or generation < 1:
         raise ProviderSessionConflictError("provider_session_owner_invalid")
+    if attempt.get("status") == "cancel_requested":
+        # Cancellation revokes tool/input authority and advances generation.
+        # Only the already-claimed writer may flush its bounded transcript
+        # until that original lease expires; this cannot start a new writer.
+        if (not allow_cancel_tail or epoch["active_attempt_id"] != attempt_id
+            or epoch["writer_run_id"] != run_id or epoch["writer_attempt_id"] != attempt_id
+            or epoch["writer_owner_generation"] != generation - 1):
+            raise ProviderSessionConflictError("provider_session_writer_conflict")
+        generation -= 1
+        attempt = {**attempt, "owner_generation": generation}
     if epoch["writer_run_id"] is not None and (
         epoch["writer_run_id"], epoch["writer_attempt_id"], epoch["writer_owner_generation"]
     ) != (run_id, attempt_id, generation):
@@ -383,27 +403,17 @@ async def callback_provider_epoch(
     scope = ProviderSessionScope(tenant_id, workspace_id, user_id, session_id, agent_id)
     epoch, attempt, private = await _locked_callback_epoch(
         conn, scope=scope, run_id=run_id, attempt_id=attempt_id,
-        provider_session_id=provider_session_id,
+        provider_session_id=provider_session_id, allow_cancel_tail=action == "append",
     )
     path = normalize_provider_subpath(subpath) or ""
-    if action == "list_subkeys":
-        cursor = await conn.execute(
-            "select distinct subpath from provider_session_entries where epoch_id = %s and subpath <> '' order by subpath asc limit %s",
-            (epoch["id"], MAX_PROVIDER_SESSION_ENTRIES + 1),
-        )
-        paths = [row["subpath"] for row in await cursor.fetchall()]
-        if len(paths) > MAX_PROVIDER_SESSION_ENTRIES:
-            raise ProviderSessionConflictError("provider_session_transcript_too_large")
-        return {"action": action, "subpaths": paths, "next_sequence": epoch["next_sequence"]}
-    if action == "load":
-        cursor = await conn.execute(
-            "select entry_json from provider_session_entries where epoch_id = %s and subpath = %s order by sequence asc limit %s",
-            (epoch["id"], path, MAX_PROVIDER_SESSION_ENTRIES + 1),
-        )
-        rows = list(await cursor.fetchall())
-        if len(rows) > MAX_PROVIDER_SESSION_ENTRIES:
-            raise ProviderSessionConflictError("provider_session_transcript_too_large")
-        return {"action": action, "entries": [row["entry_json"] for row in rows],
+    if action in {"load", "list_subkeys"}:
+        rows = await _verified_provider_entries(conn, epoch=epoch)
+        if action == "list_subkeys":
+            return {"action": action,
+                    "subpaths": sorted({row["subpath"] for row in rows if row["subpath"]}),
+                    "next_sequence": epoch["next_sequence"]}
+        return {"action": action,
+                "entries": [row["entry_json"] for row in rows if row["subpath"] == path],
                 "next_sequence": epoch["next_sequence"]}
     if action != "append" or type(expected_sequence) is not int or expected_sequence < 1:
         raise ProviderSessionConflictError("provider_session_append_sequence_invalid")
@@ -429,14 +439,15 @@ async def callback_provider_epoch(
         or epoch["transcript_bytes"] + batch_bytes > MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES):
         raise ProviderSessionConflictError("provider_session_transcript_too_large")
     for offset, item in enumerate(batch):
+        canonical = _canonical(item.entry).decode("utf-8")
         await conn.execute(
             """
             insert into provider_session_entries (
               id, tenant_id, workspace_id, user_id, session_id, agent_id, engine,
-              epoch_id, subpath, sequence, sdk_entry_uuid, entry_json
-            ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+              epoch_id, subpath, sequence, sdk_entry_uuid, entry_json, entry_canonical_json
+            ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::json)
             """, (f"pse_{uuid.uuid4().hex}", *_scope_values(scope), epoch["id"], path,
-                  expected_sequence + offset, item.sdk_entry_uuid, _canonical(item.entry).decode("utf-8")),
+                  expected_sequence + offset, item.sdk_entry_uuid, canonical, canonical),
         )
     last = expected_sequence + len(batch) - 1
     await conn.execute(
@@ -456,6 +467,105 @@ async def callback_provider_epoch(
     )
     return {"action": action, "entry_count": len(batch), "last_sequence": last,
             "next_sequence": last + 1}
+
+
+async def _verified_provider_entries(
+    conn: AsyncConnection, *, epoch: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Verify the native transcript being restored against existing append receipts.
+
+    Coverage digests describe business turns, not native bytes. Check all paths
+    together since their sequences share one epoch; never accept a nonempty
+    prefix merely because its coverage metadata still looks ready. No legacy
+    receipt is invented from potentially incomplete history.
+    """
+    cursor = await conn.execute(
+        "select sequence, subpath, entry_json, entry_canonical_json::text as entry_canonical_json, "
+        "(entry_canonical_json is null or entry_canonical_json::jsonb = entry_json) as canonical_matches "
+        "from provider_session_entries "
+        "where epoch_id = %s order by sequence asc limit %s",
+        (epoch["id"], MAX_PROVIDER_SESSION_ENTRIES + 1),
+    )
+    rows = list(await cursor.fetchall())
+    if len(rows) > MAX_PROVIDER_SESSION_ENTRIES:
+        raise ProviderSessionConflictError("provider_session_transcript_too_large")
+    if (type(epoch.get("entry_count")) is not int
+        or type(epoch.get("next_sequence")) is not int
+        or epoch["entry_count"] != len(rows)
+        or epoch["next_sequence"] != len(rows) + 1
+        or any(type(row.get("sequence")) is not int or row["sequence"] != i
+               for i, row in enumerate(rows, 1))):
+        raise ProviderSessionConflictError("provider_session_integrity_mismatch")
+    cursor = await conn.execute(
+        "select expected_sequence, entry_count, last_sequence, batch_sha256 "
+        "from provider_session_append_receipts where epoch_id = %s "
+        "order by expected_sequence asc limit %s",
+        (epoch["id"], MAX_PROVIDER_SESSION_ENTRIES + 1),
+    )
+    receipts = list(await cursor.fetchall())
+    expected = 1
+    total_bytes = 0
+    try:
+        for receipt in receipts:
+            count = receipt.get("entry_count")
+            if (type(count) is not int or count < 1
+                or type(receipt.get("expected_sequence")) is not int
+                or type(receipt.get("last_sequence")) is not int
+                or receipt["expected_sequence"] != expected
+                or receipt["last_sequence"] != expected + count - 1
+                or receipt["last_sequence"] >= epoch["next_sequence"]):
+                raise ProviderSessionConflictError("provider_session_integrity_mismatch")
+            batch_rows = rows[expected - 1:expected + count - 1]
+            path = batch_rows[0]["subpath"]
+            if (not isinstance(path, str)
+                or (normalize_provider_subpath(path) or "") != path
+                or any(row.get("subpath") != path for row in batch_rows)):
+                raise ProviderSessionConflictError("provider_session_integrity_mismatch")
+            entries = []
+            ambiguous_legacy = False
+            for row in batch_rows:
+                original = row.get("entry_canonical_json")
+                if original is None:
+                    entry = row["entry_json"]
+                    ambiguous_legacy |= _has_ambiguous_legacy_number(entry)
+                else:
+                    entry = json.loads(original)
+                    if (row.get("canonical_matches") is not True
+                        or _canonical(entry).decode("utf-8") != original):
+                        raise ProviderSessionConflictError("provider_session_integrity_mismatch")
+                entries.append(entry)
+            batch, batch_bytes = normalize_provider_entry_batch(entries, subpath=path)
+            if any(item.entry != original for item, original in zip(batch, entries)):
+                raise ProviderSessionConflictError("provider_session_integrity_mismatch")
+            if batch_digest(path, [item.entry for item in batch]) != receipt.get("batch_sha256"):
+                # JSONB cannot prove whether a legacy large integer was a float
+                # or whether zero was negative. Never authenticate guessed bytes.
+                code = ("provider_session_integrity_unavailable" if ambiguous_legacy
+                        else "provider_session_integrity_mismatch")
+                raise ProviderSessionConflictError(code)
+            for row, item in zip(batch_rows, batch):
+                row["entry_json"] = item.entry
+            total_bytes += batch_bytes
+            expected += count
+    except ProviderSessionConflictError:
+        raise
+    except (ValueError, KeyError, TypeError) as exc:
+        raise ProviderSessionConflictError("provider_session_integrity_mismatch") from exc
+    if expected != epoch["next_sequence"]:
+        raise ProviderSessionConflictError("provider_session_integrity_unavailable")
+    if type(epoch.get("transcript_bytes")) is not int or total_bytes != epoch["transcript_bytes"]:
+        raise ProviderSessionConflictError("provider_session_integrity_mismatch")
+    return rows
+
+
+def _has_ambiguous_legacy_number(value: object) -> bool:
+    """Classify unprovable legacy bytes without accepting or enumerating variants."""
+    if isinstance(value, dict):
+        return any(_has_ambiguous_legacy_number(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_has_ambiguous_legacy_number(item) for item in value)
+    return ((type(value) is float and value == 0.0)
+            or (type(value) is int and abs(value) >= 10**16))
 
 
 async def prepare_provider_epoch(

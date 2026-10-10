@@ -7,6 +7,7 @@ from app.execution.domain.public_projection import (
     claude_sdk_failure_code,
     claude_sdk_failure_message,
 )
+from app.executors.claude_agent_sdk_runner import project_sdk_turn_diagnostics
 from app.runs.domain.public_terminal import public_terminal_projection
 from app.sandbox import api as sandbox_api
 from app.sandbox.domain import runtime_diagnostics as runtime_diagnostics_contract
@@ -207,3 +208,21 @@ def test_sdk_output_validation_failure_keeps_fixed_code_and_public_taxonomy():
     assert public_terminal_projection(
         "failed", "terminal_reconciliation_failed"
     )["detail_code"] == "terminal_reconciliation_failed"
+
+
+@pytest.mark.parametrize("code", [
+    "claude_agent_sdk_turn_limit_exceeded",
+    "claude_agent_sdk_timeout",
+    "claude_agent_sdk_missing_structured_terminal",
+    "claude_agent_sdk_provider_session_failed",
+])
+def test_native_continuity_failure_guidance_does_not_offer_same_session_retry(code):
+    diagnostics = project_sdk_turn_diagnostics({}, error_code=code)
+    result = SimpleNamespace(error=code, used_sdk=True, turn_diagnostics=diagnostics)
+
+    assert claude_sdk_failure_code(result) == code
+    assert diagnostics["action"] == "start_new_conversation"
+    assert diagnostics["retryable"] is False
+    message = claude_sdk_failure_message(result)
+    assert "Start a new conversation" in message
+    assert "same session" not in message and "Please retry" not in message
