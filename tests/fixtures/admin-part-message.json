@@ -1,0 +1,208 @@
+{
+  "rows": [
+    {
+      "id": "evt4_fixture_1",
+      "tenant_id": "default",
+      "run_id": "run_parts",
+      "schema_version": "ai-platform.event-envelope.v1",
+      "sequence": 1,
+      "event_type": "message.started",
+      "stage": "agent_kernel",
+      "visible_to_user": true,
+      "v4_attempt_authorized": true,
+      "payload_json": {
+        "__stream_v4": {
+          "version": 1,
+          "attempt_id": "attempt_a",
+          "message_id": "msg_a",
+          "stream_incarnation": 1,
+          "authorization_epoch": 1,
+          "trace_ref": null,
+          "causation_event_id": null,
+          "source_event_id": "source_1"
+        }
+      },
+      "created_at": "2026-10-09T08:00:00Z"
+    },
+    {
+      "id": "evt4_fixture_2",
+      "tenant_id": "default",
+      "run_id": "run_parts",
+      "schema_version": "ai-platform.event-envelope.v1",
+      "sequence": 2,
+      "event_type": "message.part.delta",
+      "stage": "agent_kernel",
+      "visible_to_user": true,
+      "v4_attempt_authorized": true,
+      "payload_json": {
+        "schema_version": "ai-platform.assistant-text-part.v1",
+        "part_id": "part_work",
+        "delta": "WORK_TEXT_MUST_NOT_BE_ANSWER",
+        "__stream_v4": {
+          "version": 1,
+          "attempt_id": "attempt_a",
+          "message_id": "msg_a",
+          "stream_incarnation": 1,
+          "authorization_epoch": 1,
+          "trace_ref": null,
+          "causation_event_id": null,
+          "source_event_id": "source_2"
+        }
+      },
+      "created_at": "2026-10-09T08:00:00Z"
+    },
+    {
+      "id": "evt4_fixture_3",
+      "tenant_id": "default",
+      "run_id": "run_parts",
+      "schema_version": "ai-platform.event-envelope.v1",
+      "sequence": 3,
+      "event_type": "message.part.classified",
+      "stage": "agent_kernel",
+      "visible_to_user": true,
+      "v4_attempt_authorized": true,
+      "payload_json": {
+        "schema_version": "ai-platform.assistant-text-part.v1",
+        "part_id": "part_work",
+        "role": "work",
+        "__stream_v4": {
+          "version": 1,
+          "attempt_id": "attempt_a",
+          "message_id": "msg_a",
+          "stream_incarnation": 1,
+          "authorization_epoch": 1,
+          "trace_ref": null,
+          "causation_event_id": null,
+          "source_event_id": "source_3"
+        }
+      },
+      "created_at": "2026-10-09T08:00:00Z"
+    },
+    {
+      "id": "evt4_fixture_4",
+      "tenant_id": "default",
+      "run_id": "run_parts",
+      "schema_version": "ai-platform.event-envelope.v1",
+      "sequence": 4,
+      "event_type": "message.part.delta",
+      "stage": "agent_kernel",
+      "visible_to_user": true,
+      "v4_attempt_authorized": true,
+      "payload_json": {
+        "schema_version": "ai-platform.assistant-text-part.v1",
+        "part_id": "part_answer",
+        "delta": "正常公开",
+        "__stream_v4": {
+          "version": 1,
+          "attempt_id": "attempt_a",
+          "message_id": "msg_a",
+          "stream_incarnation": 1,
+          "authorization_epoch": 1,
+          "trace_ref": null,
+          "causation_event_id": null,
+          "source_event_id": "source_4"
+        }
+      },
+      "created_at": "2026-10-09T08:00:00Z"
+    },
+    {
+      "id": "evt4_fixture_5",
+      "tenant_id": "default",
+      "run_id": "run_parts",
+      "schema_version": "ai-platform.event-envelope.v1",
+      "sequence": 5,
+      "event_type": "message.part.classified",
+      "stage": "agent_kernel",
+      "visible_to_user": true,
+      "v4_attempt_authorized": true,
+      "payload_json": {
+        "schema_version": "ai-platform.assistant-text-part.v1",
+        "part_id": "part_answer",
+        "role": "answer",
+        "__stream_v4": {
+          "version": 1,
+          "attempt_id": "attempt_a",
+          "message_id": "msg_a",
+          "stream_incarnation": 1,
+          "authorization_epoch": 1,
+          "trace_ref": null,
+          "causation_event_id": null,
+          "source_event_id": "source_5"
+        }
+      },
+      "created_at": "2026-10-09T08:00:00Z"
+    },
+    {
+      "id": "evt4_fixture_6",
+      "tenant_id": "default",
+      "run_id": "run_parts",
+      "schema_version": "ai-platform.event-envelope.v1",
+      "sequence": 6,
+      "event_type": "message.part.delta",
+      "stage": "agent_kernel",
+      "visible_to_user": true,
+      "v4_attempt_authorized": true,
+      "payload_json": {
+        "schema_version": "ai-platform.assistant-text-part.v1",
+        "part_id": "part_answer",
+        "delta": "回答",
+        "__stream_v4": {
+          "version": 1,
+          "attempt_id": "attempt_a",
+          "message_id": "msg_a",
+          "stream_incarnation": 1,
+          "authorization_epoch": 1,
+          "trace_ref": null,
+          "causation_event_id": null,
+          "source_event_id": "source_6"
+        }
+      },
+      "created_at": "2026-10-09T08:00:00Z"
+    },
+    {
+      "id": "evt4_fixture_7",
+      "tenant_id": "default",
+      "run_id": "run_parts",
+      "schema_version": "ai-platform.event-envelope.v1",
+      "sequence": 7,
+      "event_type": "message.completed",
+      "stage": "agent_kernel",
+      "visible_to_user": true,
+      "v4_attempt_authorized": true,
+      "payload_json": {
+        "delta_count": 2,
+        "text_length": 6,
+        "__stream_v4": {
+          "version": 1,
+          "attempt_id": "attempt_a",
+          "message_id": "msg_a",
+          "stream_incarnation": 1,
+          "authorization_epoch": 1,
+          "trace_ref": null,
+          "causation_event_id": "source_6",
+          "source_event_id": "source_7"
+        }
+      },
+      "created_at": "2026-10-09T08:00:00Z"
+    }
+  ],
+  "worker_execution": {
+    "response": "正常公开回答",
+    "messages": [
+      {
+        "ordinal": 1,
+        "kind": "answer",
+        "text": "正常公开回答",
+        "sequence": 7,
+        "created_at": "2026-10-09T08:00:00Z"
+      }
+    ],
+    "answer_projection": {
+      "status": "available",
+      "incomplete_messages": 0,
+      "invalid_messages": 0
+    },
+    "actions": [],
+    "model": {}
+  }
+}

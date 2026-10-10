@@ -1,4 +1,4 @@
-import type { AdminRunDiagnosticsResponse } from "../../services/api/adminRuns";
+import type { AdminRunDiagnosticLoss, AdminRunDiagnosticsResponse } from "../../services/api/adminRuns";
 
 
 const COVERAGE_LABELS: Record<string, string> = {
@@ -10,6 +10,27 @@ const COVERAGE_LABELS: Record<string, string> = {
   transport_unavailable: "传输不可用",
 };
 
+function lossCategory(item: AdminRunDiagnosticLoss): string {
+  if (item.reason === "redacted") return "脱敏";
+  if (item.reason === "run_budget_truncated") return "预算截断";
+  if (["truncated", "observation_limit_truncated"].includes(item.reason)) {
+    const bytes = item.original_bytes != null || item.retained_bytes != null;
+    const count = item.original != null || item.retained != null || item.reason === "observation_limit_truncated";
+    return bytes && count ? "长度与数量截断" : bytes ? "长度截断" : count ? "数量截断" : "截断";
+  }
+  if (["invalid_field", "invalid_payload", "unsupported_schema", "cycle", "unknown_fields_dropped"].includes(item.reason)) return "投影拒绝";
+  if (item.reason === "not_collected") return "未采集";
+  return "类别未知";
+}
+
+function lossMeasurements(item: AdminRunDiagnosticLoss): string {
+  const measured = (value: number | null | undefined) => value == null ? "未知（未采集）" : String(value);
+  return [
+    `count ${measured(item.count)}`,
+    `原始 ${measured(item.original)} / 保留 ${measured(item.retained)}`,
+    `原始字节 ${measured(item.original_bytes)} / 保留字节 ${measured(item.retained_bytes)}`,
+  ].join(" · ");
+}
 function diagnosticValue(value: unknown): string {
   if (typeof value === "string") return value;
   if (value === null || value === undefined) return "";
@@ -340,10 +361,13 @@ export function RunDiagnosticsSection({
           ) : null}
           {diagnostics.losses.length ? (
             <div className="rounded-md bg-[var(--theme-warning-soft)] p-3 text-[11px] text-[var(--theme-warning)]">
-              <p className="font-medium">有 {diagnostics.losses.length} 项内容经过裁剪或拒绝</p>
+              <p className="font-medium">诊断损失记录：{diagnostics.losses.length} 项</p>
               <ul className="mt-1 space-y-0.5 font-mono">
                 {diagnostics.losses.map((item, index) => (
-                  <li key={`${item.field}-${item.reason}-${index}`}>{item.field} · {item.reason}</li>
+                  <li key={`${item.field}-${item.reason}-${index}`} data-run-diagnostic-loss>
+                    <p>{lossCategory(item)} · {item.field} · {item.reason}</p>
+                    <p>{lossMeasurements(item)}</p>
+                  </li>
                 ))}
               </ul>
             </div>

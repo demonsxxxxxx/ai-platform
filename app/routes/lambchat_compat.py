@@ -58,8 +58,8 @@ from app.streaming.api import (
     V4ProjectionError,
     V4StreamEntry,
     live_redis_id_is_after,
+    project_persisted_assistant_message_v4,
     project_persisted_message_delta_v4,
-    project_persisted_message_lifecycle_v4,
     project_persisted_message_part_v4,
     validate_public_application_payload_v4,
     _project_validated_internal_envelope_v4,
@@ -1253,7 +1253,7 @@ def _compatibility_events_for_run_page(
             if lifecycle and event.get("v4_attempt_authorized") is not True:
                 continue  # Unmarked legacy lifecycle rows were never public history.
             message_event = (
-                project_persisted_message_lifecycle_v4(
+                project_persisted_assistant_message_v4(
                     event, tenant_id=str(run.get("tenant_id") or ""), run_id=run_id,
                 )
                 if lifecycle

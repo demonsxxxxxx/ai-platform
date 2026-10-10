@@ -887,6 +887,19 @@ function RunDetail({
             <p className="mt-2 text-[11px] text-[var(--theme-text-tertiary)]">
               {workerExecution.messages?.length ?? 0} 条公开 Agent 输出 · {workerExecution.actions.length} 次工具调用。工具仅显示脱敏后的执行概要。
             </p>
+            {workerExecution.answer_projection ? (
+              <p className="mt-2 text-[11px] text-[var(--theme-text-tertiary)]" data-run-answer-projection>
+                {{
+                  available: "已有可展示的公开回答。",
+                  incomplete: "公开回答账本尚不完整，未确认最终答案。",
+                  invalid: "公开回答账本校验未通过，未确认最终答案。",
+                  unknown: "公开回答证据未采集或不足，原因未知。",
+                }[workerExecution.answer_projection.status]}
+                {workerExecution.answer_projection.incomplete_messages || workerExecution.answer_projection.invalid_messages
+                  ? ` 未完成 ${workerExecution.answer_projection.incomplete_messages} 条 · 校验未通过 ${workerExecution.answer_projection.invalid_messages} 条。`
+                  : null}
+              </p>
+            ) : null}
             {journal.length ? (
               <ol className="mt-3 space-y-2" data-run-execution-journal>
                 {journal.map((entry) => entry.kind === "message" ? (

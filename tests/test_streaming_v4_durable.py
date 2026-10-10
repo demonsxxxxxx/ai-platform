@@ -22,8 +22,8 @@ from app.streaming.api import (
     V4ProjectionError,
     build_v4_control,
     opaque_message_id,
+    project_persisted_assistant_message_v4,
     project_persisted_message_delta_v4,
-    project_persisted_message_lifecycle_v4,
     project_public_envelope_v4,
     project_public_v4,
     validate_public_application_payload_v4,
@@ -607,7 +607,7 @@ def test_persisted_message_lifecycle_projection_requires_managed_attempt_authori
         ("message.completed", {"delta_count": 1, "text_length": 1}),
     ):
         row = _row(payload, v4_attempt_authorized=True, event_type=event_type)
-        projected = project_persisted_message_lifecycle_v4(
+        projected = project_persisted_assistant_message_v4(
             row, tenant_id="tenant-a", run_id="run-a"
         )
         assert projected is not None
@@ -624,7 +624,7 @@ def test_persisted_message_lifecycle_projection_requires_managed_attempt_authori
             {"event_type": "message.part.delta"},
             {"payload_json": {**row["payload_json"], "private_payload": "hidden"}},
         ):
-            assert project_persisted_message_lifecycle_v4(
+            assert project_persisted_assistant_message_v4(
                 {**row, **change}, tenant_id="tenant-a", run_id="run-a"
             ) is None
 

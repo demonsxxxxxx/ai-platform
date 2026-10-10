@@ -192,8 +192,8 @@ async def test_empty_tool_turn_cannot_classify_the_next_answer_as_commentary(sou
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("typed_answer", [False, True])
-async def test_tool_narration_then_final_raw_source_keeps_the_answer(source_routing_settings, typed_answer):
+@pytest.mark.parametrize("partial", [False, True])
+async def test_tool_narration_then_completed_source_keeps_the_answer(source_routing_settings, partial):
     import claude_agent_sdk as sdk
 
     async def source(*, prompt, options):
@@ -201,11 +201,11 @@ async def test_tool_narration_then_final_raw_source_keeps_the_answer(source_rout
         for event in text_source(sdk, "provider-work", "Checking sources.", stop="tool_use", tool=True):
             yield event
         await finish_read(options)
-        for event in text_source(sdk, "provider-answer", "Final answer.", typed=typed_answer):
+        for event in text_source(sdk, "provider-answer", "Final answer."):
             yield event
         yield terminal(sdk, "Final answer.")
 
-    result, events, _ = await execute(source_routing_settings, source, partial=True)
+    result, events, _ = await execute(source_routing_settings, source, partial=partial)
     assert_answer(result, events, "Final answer.")
     assert commentary(events) == "Checking sources."
 
@@ -256,48 +256,8 @@ async def test_split_typed_text_and_tool_share_the_same_classification(source_ro
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("stop", ["end_turn", "stop_sequence"])
-async def test_raw_only_part_is_acknowledged_before_message_stop(source_routing_settings, stop):
-    import claude_agent_sdk as sdk
-
-    # This proves classification-boundary delivery only. It deliberately does
-    # not claim token-time or browser first-paint latency acceptance.
-    observed_before_stop = False
-
-    async def source(*, prompt, options):
-        nonlocal observed_before_stop
-        del prompt
-        assert options.include_partial_messages is True
-        for event in text_source(sdk, "provider-answer", "Raw answer.", typed=False, stop=stop):
-            if (
-                type(event).__name__ == "StreamEvent"
-                and event.event.get("type") == "message_stop"
-            ):
-                assert observed_before_stop is True
-            yield event
-        yield terminal(sdk, "Raw answer.", stop=stop)
-
-    events = []
-
-    async def acknowledge(batch):
-        nonlocal observed_before_stop
-        events.extend(batch)
-        if any(event.event_type == "message.part.delta" for event in batch):
-            observed_before_stop = True
-        return True
-
-    result = await run_claude_agent_sdk(
-        prompt="Answer.", cwd=source_routing_settings, skill_id=None,
-        client_fn=native_client_factory(source),
-        on_agent_event=acknowledge,
-        run_id="run-1651", attempt_id="attempt-1651", execution_policy="sandbox_brokered",
-    )
-    assert_answer(result, events, "Raw answer.")
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("raw", [False, True])
-async def test_whitespace_source_and_empty_result_cannot_complete_successfully(source_routing_settings, raw):
+async def test_whitespace_or_raw_only_source_has_no_answer_but_preserves_sdk_success(source_routing_settings, raw):
     import claude_agent_sdk as sdk
 
     async def source(*, prompt, options):
@@ -313,14 +273,16 @@ async def test_whitespace_source_and_empty_result_cannot_complete_successfully(s
         yield terminal(sdk, "")
 
     result, events, _ = await execute(source_routing_settings, source, partial=raw)
-    assert result.error == "claude_agent_sdk_missing_structured_terminal"
+    assert result.error is None
+    assert result.received_structured_terminal is True
+    assert result.runtime_diagnostics["failure_source"] == "public_projection"
     assert result.answer_receipt is None
     assert not any(event.event_type == "message.completed" for event in events)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("first,second", [("Prior private-", "value after."), ("private-", "value")])
-async def test_cross_source_gate_failure_rejects_successful_sdk_result(
+async def test_cross_source_gate_failure_withholds_answer_without_overriding_sdk_success(
     source_routing_settings, monkeypatch, first, second,
 ):
     import claude_agent_sdk as sdk
@@ -332,14 +294,15 @@ async def test_cross_source_gate_failure_rejects_successful_sdk_result(
 
     async def source(*, prompt, options):
         del prompt, options
-        for event in text_source(sdk, "provider-first", first, typed=False):
+        for event in text_source(sdk, "provider-first", first):
             yield event
-        for event in text_source(sdk, "provider-second", second, typed=False):
+        for event in text_source(sdk, "provider-second", second):
             yield event
         yield terminal(sdk, first + "\n\n" + second)
 
     result, events, _ = await execute(source_routing_settings, source, partial=True)
-    assert result.error == "claude_agent_sdk_output_validation_failed"
+    assert result.error is None
+    assert result.runtime_diagnostics["failure_source"] == "public_projection"
     assert result.answer_receipt is None
     assert not any(event.event_type == "message.completed" for event in events)
     preview = "".join(event.payload["delta"] for event in events if event.event_type == "message.part.delta")

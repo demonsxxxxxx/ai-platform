@@ -30,6 +30,7 @@ files are intentionally excluded from the repository import.
 ```powershell
 pnpm install --frozen-lockfile
 pnpm run projection:audit
+pnpm run test:model-admin
 pnpm run lint
 pnpm run build
 ```
@@ -43,6 +44,11 @@ follow-up. The audit also emits an active-browser route
 inventory so ordinary-user review can distinguish live legacy routes from
 inactive imported source. This status lets `ci:verify` continue to lint,
 type-check, and build, but it does not close the Agent Frontend V1 rollout gate.
+
+`pnpm run test:model-admin` runs the mounted model administration and catalog
+context regressions, including stale probes, credential reuse, cancellation and
+successive publication revisions. It is included in `pnpm run ci:verify` and uses
+synthetic endpoints and credentials without contacting a model provider.
 
 From the repository root, `python tools/frontend_release_traceability.py
 --format json` records the frontend package hashes, workflow contract, static

@@ -54,6 +54,8 @@ AGENT_SKILL_CONTRACT_TESTS = (
     "tests/test_skill_worker_dispatch_catalog.py",
     "tests/test_skill_worker_dispatch_authorization.py",
     "tests/test_skill_release_policy.py",
+    "tests/test_admin_skills.py",
+    "tests/test_skill_run_admission.py",
     "tests/test_chat_routes.py",
     "tests/test_skills_marketplace_routes.py",
 )
@@ -61,7 +63,7 @@ BACKEND_TEST_SHARDS = {
     "sandbox-runtime": (
         "tests/test_claude_agent_sdk_installed_contract.py",
         "tests/test_claude_agent_sdk_runner.py",
-        "tests/test_claude_stream_projection.py",
+        "tests/test_claude_typed_blocks.py",
         "tests/test_claude_assistant_text_sources.py",
         "tests/test_claude_assistant_source_routing.py",
         "tests/test_claude_agent_sdk_turn_diagnostics.py",
@@ -165,6 +167,7 @@ BACKEND_TEST_SHARDS = {
     ),
     "run-control-contracts": (
         "tests/test_admin_run_detail.py",
+        "tests/test_admin_part_messages.py",
         "tests/test_admin_runtime_routes.py",
         "tests/test_chat_selected_skill_routing.py",
         "tests/test_claude_agent_events.py",
@@ -195,6 +198,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_schema_migrations.py",
         "tests/test_schema_migrations_postgres.py",
         "tests/test_run_inputs_postgres.py",
+        "tests/test_provider_session_recovery_postgres.py",
         "tests/test_schema.py::test_schema_declares_attempt_identity_state_and_fences",
     ),
     "v4-durable-streaming": (
@@ -222,6 +226,7 @@ BACKEND_TEST_SHARDS = {
     ),
     "release-governance-authority": (
         "tests/test_governance_readiness.py",
+        "tests/test_foundation_alpha_readiness.py",
         "tests/test_compose_package_deploy.py",
         "tests/test_production_bootstrap.py",
         "tests/test_release_authority.py",

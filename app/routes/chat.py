@@ -809,31 +809,13 @@ async def _admit_chat_submission(
             }
         )
         if str(submission.get("state")) != "queued":
-            await streaming_run_events.append_event(
+            await _persist_chat_queue_success(
                 conn,
-                tenant_id=principal.tenant_id,
+                principal=principal,
                 run_id=run_id,
-                event_type="queued",
-                stage="queue",
-                message="任务队列接纳完成",
-                payload={
-                    "visible_to_user": False,
-                    "source": "admin_runtime_queue",
-                    "queue_position": int(queue_admission.queue_position) or None,
-                    "queue_admission_ordinal": int(queue_admission.queue_admission_ordinal) or None,
-                    "queue_probe_source": str(queue_admission.source),
-                },
-            )
-            await persistence_chat_submissions.finalize_chat_submission(
-                conn,
-                tenant_id=principal.tenant_id,
-                user_id=principal.user_id,
+                queue_admission=queue_admission,
+                outcome=queued_outcome,
                 submission_id=submission_id,
-                state="queued",
-                outcome_json=queued_outcome.model_dump(mode="json"),
-                queue_position=int(queue_admission.queue_position) or None,
-                queue_admission_ordinal=int(queue_admission.queue_admission_ordinal) or None,
-                queue_message_id=queue_admission.message_id,
             )
             submission["state"] = "queued"
             submission["outcome_json"] = queued_outcome.model_dump(mode="json")

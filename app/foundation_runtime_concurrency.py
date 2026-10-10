@@ -6,8 +6,6 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from app.public_context_keys import CONTEXT_FORBIDDEN_PROJECTION_MARKERS
-
 
 FOUNDATION_RUNTIME_CONCURRENCY_SCHEMA = "ai-platform.foundation-runtime-concurrency.v1"
 
@@ -426,9 +424,3 @@ def render_foundation_runtime_concurrency_markdown(readiness: dict[str, Any]) ->
             failure_lines,
         ]
     )
-
-
-def output_contains_forbidden_terms(payload: dict[str, Any]) -> bool:
-    """Return whether a readiness payload contains terms blocked from public evidence."""
-    serialized = json.dumps(payload, ensure_ascii=False).lower()
-    return any(term in serialized for term in CONTEXT_FORBIDDEN_PROJECTION_MARKERS)

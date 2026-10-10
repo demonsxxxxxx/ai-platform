@@ -89,6 +89,7 @@ def test_worker_execution_projects_only_safe_effective_information():
 
     assert projected == {
         "response": "有效返回 [redacted]",
+        "answer_projection": {"status": "available", "incomplete_messages": 0, "invalid_messages": 0},
         "messages": [
             {
                 "ordinal": 1,

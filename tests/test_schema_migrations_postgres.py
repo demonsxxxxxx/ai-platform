@@ -1338,6 +1338,8 @@ async def test_real_postgres_upgrade_namespaces_every_legacy_file_outbox_state()
         "alter table object_deletion_outbox drop constraint chk_object_deletion_outbox_target_state",
         "alter table object_deletion_outbox drop column lease_generation",
         "alter table run_attempts drop column lease_expires_at",
+        "alter table provider_session_entries drop column entry_canonical_json",
+        "alter table provider_session_entries alter column entry_canonical_json type jsonb using entry_canonical_json::jsonb",
         "alter table run_attempts drop constraint run_attempts_tenant_id_run_id_ordinal_key",
         "alter table run_attempts drop constraint run_attempts_tenant_id_run_id_queue_attempt_id_key",
         "drop index idx_messages_tenant_session_created",

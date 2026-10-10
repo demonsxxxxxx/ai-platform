@@ -219,6 +219,9 @@ async def test_stop_settles_pending_session_store_tail_before_terminal_result(
         path = str(tmp_path / "project" / "stable-provider-id.jsonl")
         yield {"type": "transcript_mirror", "filePath": path, "entries": [{"uuid": "initial"}]}
         if not forced_close:
+            yield {"type": "assistant", "uuid": "completed-before-stop", "session_id": "stable-provider-id",
+                "parent_tool_use_id": None, "message": {"id": "drained-model-response", "role": "assistant",
+                "model": "model-a", "content": [{"type": "text", "text": before_text}]}}
             for index, event in enumerate(events[:4]):
                 yield stream_event(index, event)
             receiving.set()
@@ -340,6 +343,7 @@ async def test_runner_completes_after_final_mirror_before_slow_teardown(
     written, input_ended = asyncio.Event(), asyncio.Event()
     tail_started, release_tail = asyncio.Event(), asyncio.Event()
     cleanup_tasks = set()
+    public_text = []
 
     async def write(_data):
         written.set()
@@ -351,6 +355,12 @@ async def test_runner_completes_after_final_mirror_before_slow_teardown(
         await written.wait()
         path = str(tmp_path / "project" / "stable-provider-id.jsonl")
         yield {"type": "transcript_mirror", "filePath": path, "entries": [{"uuid": "initial"}]}
+        yield {"type": "assistant", "uuid": "typed-answer", "session_id": "stable-provider-id",
+            "parent_tool_use_id": None, "message": {"id": "typed-response", "role": "assistant",
+            "model": "synthetic", "content": [{"type": "text", "text": "done"}]}}
+        yield {"type": "stream_event", "uuid": "ignored-raw", "session_id": "stable-provider-id",
+            "parent_tool_use_id": None, "event": {"type": "content_block_delta", "index": 0,
+            "delta": {"type": "text_delta", "text": "IGNORED_RAW"}}}
         yield {
             "type": "result", "subtype": "success", "is_error": False,
             "duration_ms": 1, "duration_api_ms": 1, "num_turns": 1,
@@ -400,7 +410,7 @@ async def test_runner_completes_after_final_mirror_before_slow_teardown(
     task = asyncio.create_task(run_claude_agent_sdk(
         prompt="hello", cwd=tmp_path, skill_id=None, session_id="stable-provider-id",
         session_store=Store(), provider_session_resume_required=False,
-        cleanup_tasks=cleanup_tasks,
+        cleanup_tasks=cleanup_tasks, on_text=public_text.append,
     ))
     try:
         await asyncio.wait_for(tail_started.wait(), 2)
@@ -409,6 +419,9 @@ async def test_runner_completes_after_final_mirror_before_slow_teardown(
         result = await asyncio.wait_for(task, 2)
         assert result.error == ("claude_agent_sdk_provider_session_failed" if tail_failure else None)
         assert result.provider_final_sequence == (None if tail_failure else 2)
+        assert "IGNORED_RAW" not in "".join(public_text)
+        if not tail_failure:
+            assert result.message == "done" and "".join(public_text) == "done"
         assert not transport.closed.is_set() and len(cleanup_tasks) == 1
     finally:
         release_tail.set()

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
 // jsdom 26 ships no declarations; this test uses only its runtime constructor.
 // @ts-expect-error jsdom is the pinned mounted-test runtime.
 import { JSDOM } from "jsdom";
@@ -402,12 +403,18 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
         error_code: "required_tool_completion_evidence_mismatch",
       },
     ],
-    losses: Array.from({ length: 9 }, (_, index) => ({
+    losses: [
+      { field: "sdk.errors", reason: "redacted", count: 0 },
+      { field: "sdk.stack", reason: "truncated", original_bytes: 8192, retained_bytes: 4096 },
+      { field: "runtime_diagnostics", reason: "invalid_payload", count: 1 },
+      { field: "sdk.future", reason: "future_reason" },
+      ...Array.from({ length: 9 }, (_, index) => ({
       field: `sdk.exception_chain[${index}]`,
       reason: "truncated",
       original: 9,
       retained: 8,
     })),
+    ],
     attempts: [
       {
         attempt_id: "attempt-a",
@@ -716,6 +723,17 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
     assert.match(container.textContent ?? "", /已识别 2 个问题/);
     assert.match(container.textContent ?? "", /步骤返回摘要/);
     assert.match(container.textContent ?? "", /审核结果\.docx/);
+    const lossEntries = Array.from(container.querySelectorAll("[data-run-diagnostic-loss]")) as HTMLElement[];
+    assert.match(lossEntries[0].textContent ?? "", /脱敏.*redacted/);
+    assert.match(lossEntries[0].textContent ?? "", /count 0/);
+    assert.match(lossEntries[1].textContent ?? "", /长度截断/);
+    assert.match(lossEntries[1].textContent ?? "", /原始字节 8192 \/ 保留字节 4096/);
+    assert.match(lossEntries[2].textContent ?? "", /投影拒绝/);
+    assert.match(lossEntries[3].textContent ?? "", /类别未知/);
+    assert.match(lossEntries[3].textContent ?? "", /未知（未采集）/);
+    assert.match(lossEntries[4].textContent ?? "", /数量截断/);
+    assert.match(lossEntries[4].textContent ?? "", /原始 9 \/ 保留 8/);
+    assert.doesNotMatch(container.textContent ?? "", /裁剪或拒绝/);
     assert.match(container.textContent ?? "", /执行诊断/);
     assert.match(container.textContent ?? "", /ACTUAL_SDK_FAILURE_MARKER/);
     assert.match(container.textContent ?? "", /ACTUAL_STACK_TAIL_MARKER/);
@@ -836,6 +854,36 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
     });
     assert.match(container.textContent ?? "", /run_failed/);
     assert.doesNotMatch(container.textContent ?? "", /chat_2026_04/);
+
+    const partFixture = JSON.parse(readFileSync(
+      new URL("../../../../../../tests/fixtures/admin-part-message.json", import.meta.url), "utf8",
+    )) as { worker_execution: AdminRunDetailResponse["worker_execution"] };
+    const partOpen = container.querySelector('button[aria-label="查看 run_failed"]') as HTMLButtonElement;
+    for (const status of ["available", "incomplete", "invalid", "unknown"] as const) {
+      adminRunsApi.detail = async () => ({
+        ...detail, run: { ...detail.run, ...runs[1], status: "succeeded" },
+        worker_execution: status === "available" ? partFixture.worker_execution : {
+          ...partFixture.worker_execution, response: "", messages: [],
+          answer_projection: { status, incomplete_messages: status === "incomplete" ? 1 : 0, invalid_messages: status === "invalid" ? 1 : 0 },
+        },
+      });
+      await act(async () => { partOpen.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
+      await waitFor(() => container.querySelector("[data-run-answer-projection]") !== null);
+      assert.match(container.querySelector("[data-run-answer-projection]")?.textContent ?? "", {
+        available: /已有可展示的公开回答/, incomplete: /账本尚不完整/, invalid: /账本校验未通过/, unknown: /原因未知/,
+      }[status]);
+      if (status === "available") {
+        assert.match(container.querySelector("[data-run-agent-output]")?.textContent ?? "", /正常公开回答/);
+        assert.match(container.querySelector("[data-worker-execution-content]")?.textContent ?? "", /1 条公开 Agent 输出/);
+      } else {
+        assert.equal(container.querySelectorAll("[data-run-agent-output]").length, 0);
+      }
+      assert.doesNotMatch(container.querySelector("[data-worker-execution-content]")?.textContent ?? "", /WORK_TEXT_MUST_NOT_BE_ANSWER|PRIVATE_RESULT_MARKER/);
+      await act(async () => {
+        (container.querySelector("button[data-run-monitor-backdrop]") as HTMLButtonElement).dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+      });
+      await waitFor(() => container.querySelector('[role="dialog"]') === null);
+    }
 
     let resolvePendingDetail:
       | ((value: AdminRunDetailResponse) => void)
