@@ -293,7 +293,10 @@ path.
 
 The host-bind path resolution, sentinel read, and selected-file snapshot routines
 are owned by `app.sandbox.domain.host_bind` and exposed through `app.sandbox.api`.
-The provider calls this boundary directly. The previous recursive workspace
+The provider calls this boundary directly. Every opened traversal descriptor is
+owned immediately and closed exactly once on success, metadata rejection, or
+filesystem inspection failure, including rejected roots and nested directories.
+The previous recursive workspace
 manifest and file-upload helpers have been removed from both modules.
 
 ## Native local tool admission
