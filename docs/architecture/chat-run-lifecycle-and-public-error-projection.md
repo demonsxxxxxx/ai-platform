@@ -104,8 +104,11 @@ supplies those approved replacements separately from independent private values;
 the stream gate preserves their characters and applies each replacement idempotently
 through chunk boundaries, source routing and terminal release. This does not exempt
 credentials, private MCP identities, runtime paths or dynamically registered tool-call
-IDs from redaction. The former fullwidth conversion and its test expectations are
-retired; already committed historical text is not rewritten. Other private capability
+IDs from redaction. All hook and lifecycle call-ID entries use the same dynamic
+classification; a public identity later claimed as a private call ID fails closed
+and records disclosure when it already appeared in accepted text. The former
+fullwidth conversion and its test expectations are retired; already committed
+historical text is not rewritten. Other private capability
 identifiers remain redacted. Other Tool `display_name` values
 and all subagent `display_name` values remain protocol facts but are not
 presentation authority in compatibility-shaped parts; ordinary chat derives their

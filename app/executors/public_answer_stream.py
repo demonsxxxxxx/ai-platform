@@ -603,8 +603,15 @@ class PublicAnswerStreamGate:
         if self._finished:
             return
         previous_tokens = set(self._tokens)
+        reclassified_public_tokens = {
+            token
+            for token, replacement in self._public_replacements.items()
+            if isinstance(private_replacements, Mapping)
+            and token in private_replacements
+            and private_replacements[token] != replacement
+        }
         self._add_replacements(private_replacements)
-        added_tokens = set(self._tokens) - previous_tokens
+        added_tokens = (set(self._tokens) - previous_tokens) | reclassified_public_tokens
         if added_tokens:
             published_text = self._published_text()
             if any(token in published_text for token in added_tokens):

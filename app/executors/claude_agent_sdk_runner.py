@@ -2494,6 +2494,7 @@ async def run_claude_agent_sdk(
             answer_stream_gate.fail_closed()
             return reject_capability_evidence()
         if lifecycle_phase == "invocation_requested":
+            register_dynamic_tool_call_id(tool_call_id)
             lifecycle_replacements = {
                 tool_call_id: replacement_for_private_token(tool_call_id)
             }
@@ -2623,6 +2624,8 @@ async def run_claude_agent_sdk(
                 return reject_governed_lifecycle()
             record_read_only_lifecycle_denial()
             return False
+        if lifecycle == "started":
+            register_dynamic_tool_call_id(call_id)
         if lifecycle_observed and lifecycle == "started":
             answer_stream_gate.seal(
                 {call_id: replacement_for_private_token(call_id)},

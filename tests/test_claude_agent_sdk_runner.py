@@ -4296,6 +4296,48 @@ async def test_sdk_preserves_public_optional_skill_text_before_failed_receipt(
 
 
 @pytest.mark.asyncio
+async def test_sdk_hook_only_call_id_cannot_reuse_an_authorized_public_skill_identity(
+    monkeypatch, tmp_path
+):
+    identity = "reference-search"
+    hook_input = {
+        "tool_name": "Skill",
+        "tool_use_id": identity,
+        "tool_input": {"skill": identity},
+    }
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            {},
+            [
+                *_completed_text_steps(f"Using {identity}. "),
+                ("hook", ("PreToolUse", hook_input, identity)),
+                ("hook", ("PostToolUseFailure", hook_input, identity)),
+            ],
+            result_text="",
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings", _sandbox_brokered_settings
+    )
+    result = await run_claude_agent_sdk(
+        prompt="find the relevant reference",
+        cwd=tmp_path,
+        skill_id=identity,
+        skills=[identity],
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[_skill_subject(identity)],
+        on_capability_evidence=_acknowledge_capability_evidence,
+        public_skill_metadata={
+            identity: {"name": f"{identity} V8", "version": "1.0.0", "availability": "available"}
+        },
+    )
+    assert result.error == "claude_agent_sdk_output_validation_failed"
+    assert result.answer_receipt is None
+
+
+@pytest.mark.asyncio
 async def test_sdk_selected_skill_streams_after_completed_evidence_before_terminal(
     monkeypatch,
     tmp_path,

@@ -167,6 +167,21 @@ def test_dynamic_private_token_in_published_public_name_still_fails_closed():
     assert gate.finish(final_text="", release=True).final_text == ""
 
 
+def test_public_identity_reclassified_as_private_marks_prior_disclosure():
+    identity = "reference-search"
+    public_name = "【技能：reference-search V8】"
+    gate = PublicAnswerStreamGate(
+        private_replacements={identity: public_name},
+        public_replacements={identity: public_name},
+        sanitizer=_sanitize,
+    )
+    assert gate.accept(f"Using {identity}. ") == (f"Using {public_name}. ",)
+    gate.register_private_replacements({identity: "█"})
+    assert gate.failed
+    assert gate.private_token_exposed
+    assert gate.finish(final_text="", release=True).final_text == ""
+
+
 @pytest.mark.parametrize("release_tool", [False, True])
 def test_assistant_text_is_preserved_independently_of_tool_completion(release_tool):
     gate = _gate()
