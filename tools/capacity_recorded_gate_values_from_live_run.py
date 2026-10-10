@@ -19,6 +19,12 @@ SCHEMA_VERSION = "ai-platform.capacity-recorded-gate-values-from-live-run.v1"
 _RUNTIME_EVIDENCE_SCHEMA = "ai-platform.capacity-runtime-evidence.v1"
 _SNAPSHOT_SCHEMA = "ai-platform.capacity-evidence-snapshot.v1"
 _BOUNDED_PROBE_SCHEMA = "ai-platform.capacity-bounded-load-harness.v1"
+_REQUIRED_CLEANUP_COUNTS = {
+    "remaining_tenant_count",
+    "remaining_run_count",
+    "remaining_artifact_count",
+    "remaining_queue_count",
+}
 _REQUIRED_EVIDENCE_FIELDS = [
     "commit_sha",
     "api_worker_image_labels",
@@ -136,17 +142,15 @@ def _latency_summary(snapshot: dict[str, Any], evidence: dict[str, Any]) -> dict
 
 def _cleanup_proof_verified(evidence: dict[str, Any]) -> bool:
     cleanup = _dict(evidence.get("cleanup_proof"))
-    if not cleanup:
+    proof = _dict(cleanup.get("after")) if "after" in cleanup else cleanup
+    if proof.get("status") != "verified":
         return False
-    candidates = [_dict(cleanup.get("after")), cleanup]
-    for item in candidates:
-        if item.get("status") != "verified":
-            continue
-        remaining = _dict(item.get("remaining_counts"))
-        if remaining and any(_safe_int(value) != 0 for value in remaining.values()):
-            continue
-        return True
-    return False
+    remaining = proof.get("remaining_counts")
+    return (
+        isinstance(remaining, dict)
+        and _REQUIRED_CLEANUP_COUNTS.issubset(remaining)
+        and all(type(value) is int and value == 0 for value in remaining.values())
+    )
 
 
 def _load_values(
