@@ -3,6 +3,7 @@ import {
   cookieSessionFetch,
   notifyForcedRelogin,
 } from "./fetch";
+import { getAccessToken } from "./token";
 
 export async function createAuthHeaders(
   headers: HeadersInit = {},
@@ -21,6 +22,7 @@ export async function authenticatedRequest(
   input: RequestInfo | URL,
   init: RequestInit = {},
 ): Promise<Response> {
+  const requestAuthMarker = getAccessToken();
   const { headers = {}, ...rest } = init;
   const finalHeaders = await createAuthHeaders(headers);
   const response = await cookieSessionFetch(input, {
@@ -30,7 +32,8 @@ export async function authenticatedRequest(
 
   if (response.headers.get("X-Force-Relogin") === "true") {
     const error = await apiRequestErrorFromResponse(response, 401);
-    notifyForcedRelogin();
+    // The response and its body may both arrive after another identity signs in.
+    if (requestAuthMarker === getAccessToken()) notifyForcedRelogin();
     throw error;
   }
   if (response.status === 401 || response.status === 403) {

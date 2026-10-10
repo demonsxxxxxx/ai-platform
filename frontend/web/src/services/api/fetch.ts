@@ -166,7 +166,9 @@ export async function authFetch<T>(
     (forceReloginHeader && authMarkerIsCurrent)
   ) {
     const error = await apiRequestErrorFromResponse(response, 401);
-    notifyForcedRelogin();
+    // Body consumption is asynchronous too; the original response-arrival
+    // fence cannot authorize invalidating a later browser identity.
+    if (requestAuthMarker === getAccessToken()) notifyForcedRelogin();
     throw error;
   }
 
