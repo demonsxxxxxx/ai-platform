@@ -13,6 +13,7 @@ from app.executors.claude_agent_sdk_runner import (
     ScopedContextRetrievalIdentity,
     _canonical_sdk_error,
     _diagnostic_terminal_class,
+    _public_skill_replacement,
     _sdk_autocompact_window,
     _sdk_run_timeout_seconds,
     run_claude_agent_sdk,
@@ -4097,6 +4098,16 @@ async def test_sdk_agent_skill_set_records_exact_evidence_for_second_skill(
 
 
 
+@pytest.mark.parametrize(
+    "public_name",
+    ["Reference Search", "input-tax-reconciliation", "进项税核对 V8"],
+)
+def test_public_skill_replacement_preserves_name_characters(public_name):
+    assert _public_skill_replacement(
+        "qa-review", {"qa-review": {"name": public_name}}
+    ) == f"【技能：{public_name}】"
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     (
@@ -4106,6 +4117,7 @@ async def test_sdk_agent_skill_set_records_exact_evidence_for_second_skill(
         "call_id",
         "public_name",
         "expected_replacement",
+        "private_token",
     ),
     [
         (
@@ -4114,7 +4126,8 @@ async def test_sdk_agent_skill_set_records_exact_evidence_for_second_skill(
             False,
             "skill-call-reference",
             "Reference Search",
-            "【技能：Ｒｅｆｅｒｅｎｃｅ　Ｓｅａｒｃｈ】",
+            "【技能：Reference Search】",
+            "",
         ),
         (
             "capability",
@@ -4122,7 +4135,8 @@ async def test_sdk_agent_skill_set_records_exact_evidence_for_second_skill(
             False,
             "capability",
             "Reference Search",
-            "【技能：Ｒｅｆｅｒｅｎｃｅ　Ｓｅａｒｃｈ】",
+            "【技能：Reference Search】",
+            "",
         ),
         (
             "tool",
@@ -4130,7 +4144,8 @@ async def test_sdk_agent_skill_set_records_exact_evidence_for_second_skill(
             False,
             "tool",
             "Reference Search",
-            "【技能：Ｒｅｆｅｒｅｎｃｅ　Ｓｅａｒｃｈ】",
+            "【技能：Reference Search】",
+            "",
         ),
         (
             "mcp__tenant-server__search",
@@ -4138,7 +4153,8 @@ async def test_sdk_agent_skill_set_records_exact_evidence_for_second_skill(
             True,
             "mcp__tenant-server__search",
             "Reference Search",
-            "【技能：Ｒｅｆｅｒｅｎｃｅ　Ｓｅａｒｃｈ】",
+            "【技能：Reference Search】",
+            "",
         ),
         (
             "internal-reference-helper",
@@ -4147,6 +4163,52 @@ async def test_sdk_agent_skill_set_records_exact_evidence_for_second_skill(
             "skill-call-private",
             None,
             "【技能】",
+            "",
+        ),
+        (
+            "input-tax-reconciliation",
+            ("Using input-tax-", "reconciliation. "),
+            False,
+            "skill-call-reference",
+            "input-tax-reconciliation",
+            "【技能：input-tax-reconciliation】",
+            "",
+        ),
+        (
+            "reference-search",
+            ("Using reference-", "search. "),
+            False,
+            "skill-call-reference",
+            "reference-search V8",
+            "【技能：reference-search V8】",
+            "",
+        ),
+        (
+            "reference-search",
+            ("Using reference-", "search. "),
+            False,
+            "skill-call-reference",
+            "进项税核对 V8",
+            "【技能：进项税核对 V8】",
+            "",
+        ),
+        (
+            "input-tax-reconciliation",
+            ("Using input-tax-", "reconciliation. "),
+            False,
+            "skill-call-reference",
+            "input-tax-reconciliation",
+            "█",
+            "input-tax-reconciliation",
+        ),
+        (
+            "input-tax-reconciliation",
+            ("Using input-tax-", "reconciliation. "),
+            False,
+            "skill-call-reference",
+            "input-tax-reconciliation",
+            "█",
+            "tax",
         ),
     ],
 )
@@ -4159,6 +4221,7 @@ async def test_sdk_preserves_public_optional_skill_text_before_failed_receipt(
     call_id,
     public_name,
     expected_replacement,
+    private_token,
 ):
     captured, deltas = {}, []
     skill_input = {
@@ -4182,9 +4245,10 @@ async def test_sdk_preserves_public_optional_skill_text_before_failed_receipt(
             result_text="",
         ),
     )
+    settings = _sandbox_brokered_settings()
+    settings.anthropic_auth_token = private_token
     monkeypatch.setattr(
-        "app.executors.claude_agent_sdk_runner.get_settings",
-        _sandbox_brokered_settings,
+        "app.executors.claude_agent_sdk_runner.get_settings", lambda: settings
     )
 
     skill_subject = {
@@ -4229,6 +4293,48 @@ async def test_sdk_preserves_public_optional_skill_text_before_failed_receipt(
 
 
 
+
+
+@pytest.mark.asyncio
+async def test_sdk_hook_only_call_id_cannot_reuse_an_authorized_public_skill_identity(
+    monkeypatch, tmp_path
+):
+    identity = "reference-search"
+    hook_input = {
+        "tool_name": "Skill",
+        "tool_use_id": identity,
+        "tool_input": {"skill": identity},
+    }
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        _scripted_sdk(
+            {},
+            [
+                *_completed_text_steps(f"Using {identity}. "),
+                ("hook", ("PreToolUse", hook_input, identity)),
+                ("hook", ("PostToolUseFailure", hook_input, identity)),
+            ],
+            result_text="",
+        ),
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner.get_settings", _sandbox_brokered_settings
+    )
+    result = await run_claude_agent_sdk(
+        prompt="find the relevant reference",
+        cwd=tmp_path,
+        skill_id=identity,
+        skills=[identity],
+        execution_policy="sandbox_brokered",
+        tool_policy_subjects=[_skill_subject(identity)],
+        on_capability_evidence=_acknowledge_capability_evidence,
+        public_skill_metadata={
+            identity: {"name": f"{identity} V8", "version": "1.0.0", "availability": "available"}
+        },
+    )
+    assert result.error == "claude_agent_sdk_output_validation_failed"
+    assert result.answer_receipt is None
 
 
 @pytest.mark.asyncio
