@@ -35,7 +35,6 @@ from app.executors.claude.capability_policy import (
     _canonical_tool_policy_subjects,
     sandbox_runtime_tool_policy_subjects,
 )
-from app.platform.tracing import TerminalStageTiming
 from app.executors.base import (
     ArtifactManifest,
     ExecutorDispatchAccepted,
@@ -1191,20 +1190,16 @@ class ClaudeAgentWorkerAdapter:
                 },
             )
 
-        with TerminalStageTiming(
-            "artifact_storage_upload", run_id=payload.run_id,
-            attempt_id=payload.attempt_id, terminal_status=runtime_status,
-        ):
-            artifacts = self._collect_workspace_artifacts(
-                payload,
-                Path(str(getattr(runtime_result, "artifact_workspace_path", "") or prepared.workspace)),
-                response_files=executor_response.get("response_files", []),
-                response_file_descriptors=executor_response.get("response_file_descriptors"),
-                allowed_skill_names=prepared.staged_skill_names,
-                storage_scope=storage_scope,
-                abandoned=abandoned,
-                reserve_storage=reserve_storage,
-            )
+        artifacts = self._collect_workspace_artifacts(
+            payload,
+            Path(str(getattr(runtime_result, "artifact_workspace_path", "") or prepared.workspace)),
+            response_files=executor_response.get("response_files", []),
+            response_file_descriptors=executor_response.get("response_file_descriptors"),
+            allowed_skill_names=prepared.staged_skill_names,
+            storage_scope=storage_scope,
+            abandoned=abandoned,
+            reserve_storage=reserve_storage,
+        )
         turn_diagnostics = _public_sdk_turn_diagnostics(
             payload,
             executor_response.get("sdk_turn_diagnostics"),

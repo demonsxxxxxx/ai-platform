@@ -634,15 +634,19 @@ async def _collect_workspace_and_convert_result(
     adapter_context["_artifact_collection_abandoned"] = abandoned
     adapter_context["_reserve_artifact_storage"] = reserve_artifact_storage
     try:
-        result = await run_storage_io(
-            adapter.reconcile_sandbox_terminal,
-            payload=run_payload,
-            terminal_result=terminal_result,
-            adapter_context=adapter_context,
-            provider=str(lease_row.get("provider") or ""),
-            timings=context.get("dispatch_timings") or {},
-            on_abandoned=abandoned.set,
-        )
+        with TerminalStageTiming(
+            "reconciler_result_conversion", run_id=str(lease_row["run_id"]),
+            attempt_id=run_payload.attempt_id, terminal_status=terminal_result.get("status"),
+        ):
+            result = await run_storage_io(
+                adapter.reconcile_sandbox_terminal,
+                payload=run_payload,
+                terminal_result=terminal_result,
+                adapter_context=adapter_context,
+                provider=str(lease_row.get("provider") or ""),
+                timings=context.get("dispatch_timings") or {},
+                on_abandoned=abandoned.set,
+            )
     except (KeyError, TypeError, ValueError) as exc:
         abandoned.set()
         raise _permanent_reconciliation_error(

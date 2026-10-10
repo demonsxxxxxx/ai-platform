@@ -5747,11 +5747,13 @@ async def test_sdk_runner_propagates_cancelled_error_from_stream_callback(monkey
 # ruff: noqa: RUF012
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize("fail_upload", [False, True])
 @pytest.mark.usefixtures("terminal_stage_logs")
-def test_terminal_artifact_storage_timing_keeps_selected_file_semantics(
+async def test_reconciler_conversion_timing_keeps_actual_selected_file_storage_semantics(
     monkeypatch, tmp_path, caplog, fail_upload,
 ):
+    from app import executor_reconciler
     from app.platform import tracing
     now = [10.0]
     monkeypatch.setattr(tracing, "monotonic", lambda: now[0])
@@ -5769,36 +5771,51 @@ def test_terminal_artifact_storage_timing_keeps_selected_file_semantics(
             stored.append(content)
             return StoredObject(storage_key=storage_key, sha256="hash", size_bytes=len(content))
 
+    class Lease:
+        def model_copy(self, *, update):
+            return self
+
+    class Provider:
+        async def collect_workspace(self, _lease, _request, _workspace, response_files):
+            assert response_files == [selected.name]
+            return tmp_path
+
+    async def reserve_cleanup(**kwargs):
+        return "cleanup-a"
+
     monkeypatch.setattr(claude_agent_worker, "ObjectStorage", Storage)
-    adapter = ClaudeAgentWorkerAdapter()
-    prepared = PreparedSdkRun(
-        workspace=tmp_path, file_names=[], selected_skills=[], pinned_manifests={},
-        allowed_skill_names=["general-chat"], staged_skill_names=["general-chat"],
-        prompt="private prompt",
-    )
     current = sandbox_writing_payload(agent_id="general-agent", skill_id="general-chat", file_ids=[])
-    runtime_result = types.SimpleNamespace(
-        status="completed", provider="docker", timings={},
-        executor_response={"status": "completed", "message": "private answer",
-                           "response_files": [selected.name], "sdk_used": True,
-                           TOOL_INVOCATION_EVIDENCE_KEY: []},
-    )
+    terminal = {"status": "completed", "message": "private answer", "response_files": [selected.name],
+                "sdk_used": True, TOOL_INVOCATION_EVIDENCE_KEY: []}
+    context = {"adapter_name": "claude-agent-worker", "adapter_context": {
+        "schema_version": "ai-platform.claude-agent-reconciliation-context.v1",
+        "workspace": str(tmp_path), "allowed_skill_names": ["general-chat"],
+        "staged_skill_names": ["general-chat"], "skill_manifests": [],
+    }}
+    monkeypatch.setattr(executor_reconciler, "_context_and_payload", lambda _row: (context, terminal, current))
+    monkeypatch.setattr(executor_reconciler, "_reconciliation_request", lambda *_args: object())
+    monkeypatch.setattr(executor_reconciler, "SandboxWorkspaceManager", lambda: types.SimpleNamespace(
+        prepare=lambda _request: types.SimpleNamespace(workspace_host_path=str(tmp_path))))
+    monkeypatch.setattr(executor_reconciler, "container_lease_from_persisted_row", lambda _row: Lease())
+    monkeypatch.setattr(executor_reconciler, "_container_provider_for_lease", lambda _lease: Provider())
+    monkeypatch.setattr(executor_reconciler, "_reserve_reconciliation_artifact_cleanup", reserve_cleanup)
+    registry = AdapterRegistry({"claude-agent-worker": ClaudeAgentWorkerAdapter()})
+    row = {"id": "lease-a", "tenant_id": current.tenant_id, "run_id": current.run_id, "provider": "docker"}
     if fail_upload:
         with pytest.raises(RuntimeError) as caught:
-            adapter._executor_result_from_sandbox_runtime(current, prepared, runtime_result)
+            await executor_reconciler._collect_workspace_and_convert_result(row, registry=registry, claim_token="claim-a")
         assert caught.value is failure
         assert stored == []
     else:
-        result = adapter._executor_result_from_sandbox_runtime(current, prepared, runtime_result)
+        result, _provider, _lease = await executor_reconciler._collect_workspace_and_convert_result(
+            row, registry=registry, claim_token="claim-a")
         assert result.status == "succeeded", result.result
         assert result.result["message"] == "private answer"
         assert result.result["artifact_count"] == 1
         assert stored == [b"private output body"]
     records = [record for record in caplog.records if record.msg == "run_terminal_stage"]
-    assert len(records) == 1
-    assert records[0].terminal_phase == "artifact_storage_upload"
-    assert records[0].terminal_phase_duration_ms == 3000
-    assert records[0].terminal_phase_outcome == ("error" if fail_upload else "ok")
-    assert records[0].run_id == current.run_id
-    assert records[0].attempt_id == current.attempt_id
-    assert "private" not in repr(vars(records[0]))
+    assert [record.terminal_phase for record in records] == ["reconciler_workspace_snapshot", "reconciler_result_conversion"]
+    assert [record.terminal_phase_duration_ms for record in records] == [0, 3000]
+    assert records[-1].terminal_phase_outcome == ("error" if fail_upload else "ok")
+    assert all(record.run_id == current.run_id and record.attempt_id == current.attempt_id for record in records)
+    assert "private" not in repr([vars(record) for record in records])

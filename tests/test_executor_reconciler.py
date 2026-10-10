@@ -460,6 +460,7 @@ async def test_terminal_artifact_conversion_uses_storage_bridge(monkeypatch, cap
     terminal_results = []
     abandonment_callbacks = []
     reserved = []
+    bridge_failure = [None]
 
     async def reserve_cleanup(**kwargs):
         reserved.append(kwargs)
@@ -475,6 +476,9 @@ async def test_terminal_artifact_conversion_uses_storage_bridge(monkeypatch, cap
             "private/reconciliations/claim-a/result.txt",
         )
         assert receipt_id == "art_cleanup_a"
+        now[0] += 0.75
+        if bridge_failure[0] is not None:
+            raise bridge_failure[0]
         return _result()
 
     monkeypatch.setattr(
@@ -566,13 +570,33 @@ async def test_terminal_artifact_conversion_uses_storage_bridge(monkeypatch, cap
         item["type"] for item in collection_diagnostics["sdk"]["exception_chain"]
     ] == ["RuntimeError"]
 
+    provider.fail_collection = False
+    for failure in (RuntimeError("private upload error"), asyncio.CancelledError("private cancel"), ValueError("private conversion error")):
+        bridge_failure[0] = failure
+        expected = PermanentExecutorReconciliationError if isinstance(failure, ValueError) else type(failure)
+        with pytest.raises(expected) as caught:
+            await executor_reconciler._collect_workspace_and_convert_result(
+                {"id": "lease-a", "tenant_id": "tenant-a", "run_id": "run-a", "provider": "docker"},
+                registry=Registry(), claim_token="claim-a",
+            )
+        if isinstance(failure, ValueError):
+            assert caught.value.__cause__ is failure
+        else:
+            assert caught.value is failure
+        assert adapter_contexts[-1]["_artifact_collection_abandoned"].is_set()
+
     records = [record for record in caplog.records if record.msg == "run_terminal_stage"]
-    assert [record.terminal_phase for record in records] == ["reconciler_workspace_snapshot"] * 2
-    assert [record.terminal_phase_duration_ms for record in records] == [2250, 2250]
-    assert [record.terminal_phase_outcome for record in records] == ["ok", "error"]
+    assert [record.terminal_phase for record in records] == [
+        "reconciler_workspace_snapshot", "reconciler_result_conversion",
+    ] * 5
+    assert [record.terminal_phase_duration_ms for record in records] == [2250, 750] * 5
+    assert [record.terminal_phase_outcome for record in records] == [
+        "ok", "ok", "error", "ok", "ok", "error", "ok", "cancelled", "ok", "error",
+    ]
     assert all(record.run_id == "run-a" and record.attempt_id == "attempt-a" for record in records)
     assert "final.txt" not in repr([vars(record) for record in records])
     assert "workspace collection failed" not in repr([vars(record) for record in records])
+    assert "private" not in repr([vars(record) for record in records])
 
 
 def test_reconciler_classifies_invalid_persisted_run_payload_as_permanent(monkeypatch):

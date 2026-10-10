@@ -232,9 +232,12 @@ The barriers remain separate:
   reconciliation wake and callback-row publication. Receipt commit does not mean
   the final assistant, artifact records, or Run result have committed.
 - `reconciler_workspace_snapshot`: selected-file immutable snapshot collection;
-  `artifact_storage_upload`: aggregate selected-file validation, read/hash,
-  provisional cleanup reservation, and object-storage writes. Neither is the
-  artifact-record database commit. The existing executor
+  `reconciler_result_conversion`: the existing storage bridge await, including
+  thread admission/queueing, selected-file validation/read/hash, provisional
+  cleanup reservation, object-storage writes and adapter result projection.
+  Failed-result conversion may write no files. This aggregate is not a pure
+  object-store upload measurement, and neither span is the artifact-record
+  database commit. The existing executor
   `artifact_upload_latency_ms` may measure an `artifact_created` callback, so it
   is not evidence of object-storage upload time.
 - `result_business_commit`: the Runs infrastructure timing decorator observes
