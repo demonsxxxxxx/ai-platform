@@ -416,8 +416,25 @@ class StreamableHttpMcpToolDiscoveryAdapter:
         static_headers: Mapping[str, str] | None = None,
         jwt_authorization: str,
     ) -> tuple[dict[str, Any], ...]:
-        """Return bounded user-effective definitions without persisting a catalog."""
+        """Bound the complete discovery, including DNS, handshake, and every page."""
 
+        try:
+            async with asyncio.timeout(self._timeout_seconds):
+                return await self._discover_definitions(
+                    endpoint,
+                    static_headers=static_headers,
+                    jwt_authorization=jwt_authorization,
+                )
+        except TimeoutError:
+            raise McpToolDiscoveryError("transport_failure") from None
+
+    async def _discover_definitions(
+        self,
+        endpoint: str,
+        *,
+        static_headers: Mapping[str, str] | None,
+        jwt_authorization: str,
+    ) -> tuple[dict[str, Any], ...]:
         target = await _validated_discovery_target(endpoint)
         async with httpx.AsyncClient(timeout=self._timeout_seconds, follow_redirects=False, trust_env=False) as client:
             initialize, session_id = await self._request(
