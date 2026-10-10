@@ -19,6 +19,16 @@ from tests.support.claude_sdk import native_client_factory
 from app.execution.api import ClaudeAgentEventCandidate, ModelTextCheckpoint
 from app.executors.claude_agent_sdk_runner import ClaudeAgentSdkNotAvailable
 from app.public_execution import PUBLIC_EXECUTION_V2_STEP_PAYLOAD_FIELDS
+from app.public_execution import (
+    PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
+    PublicAgentProgressPublisher,
+    validate_versioned_public_execution_step_payload,
+)
+from app.runtime.event_bridge import agent_event_to_executor_event
+from app.runtime.sandbox.event_normalizer import callback_event_to_run_events
+from app.runtime.sandbox.executor_app import _PlatformExecutionPhaseFact
+from app.streaming.application.callback_events_v4 import callback_item_to_v4
+
 from app.platform.public_payload import sanitize_public_payload
 from app.required_tool_contract import (
     REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY,
@@ -155,6 +165,15 @@ def public_execution_events(callbacks):
     return [event for callback in callbacks for event in callback.get("events", []) if event["type"].startswith("execution_")]
 
 
+def non_phase_callbacks(callbacks):
+    """Select supervisor/runner callbacks; phase delivery has separate assertions."""
+    return [callback for callback in callbacks if not (
+        callback.get("events") and all(
+            event["type"] == "agent_public_progress" for event in callback["events"]
+        )
+    )]
+
+
 def _synchronous_executor_endpoint(app):
     app.state.dispatch_in_background = False
     return next(route.endpoint for route in app.routes if route.path == "/v2/tasks")
@@ -289,7 +308,7 @@ def test_executor_lifespan_shutdown_drains_in_flight_callback_before_terminal(
     assert len(terminal_callbacks) == 1
     assert terminal_callbacks[0]["status"] == "cancelled"
     assert terminal_callbacks[0]["terminal_result"]["status"] == "cancelled"
-    runner_event_callbacks = [callback for callback in callbacks if callback.get("events")]
+    runner_event_callbacks = [callback for callback in non_phase_callbacks(callbacks) if callback.get("events")]
     assert [
         event["event_id"]
         for callback in runner_event_callbacks
@@ -1772,10 +1791,10 @@ def test_executor_execute_posts_only_non_terminal_execution_callbacks(tmp_path, 
     assert body["run_id"] == "run-a"
     assert isinstance(body["executor_model_latency_ms"], int)
     assert isinstance(body["document_processing_latency_ms"], int)
-    assert [item[1]["status"] for item in callbacks] == ["running"]
+    assert [item["status"] for item in non_phase_callbacks([entry[1] for entry in callbacks])] == ["running"]
     assert {item[2] for item in callbacks} == {"secret"}
     assert {item[1]["callback_token_id"] for item in callbacks} == {"cbt_run-a"}
-    assert callbacks[0][1]["progress"] == 5
+    assert non_phase_callbacks([entry[1] for entry in callbacks])[0]["progress"] == 5
     assert all(item[1]["progress"] != 99 for item in callbacks)
     assert all(item[1]["state_patch"].get("stage") != "executor_finished" for item in callbacks)
 
@@ -2207,7 +2226,14 @@ def test_executor_callback_persists_only_strict_public_execution_event_shape(tmp
 
     assert response.status_code == 200
     emitted = [event for callback in callbacks for event in callback.get("events", [])]
-    assert emitted == []
+    assert [(event["type"], event["payload"]["phase"], event["payload"]["lifecycle"])
+            for event in emitted] == [
+        ("agent_public_progress", "sandbox_preparation", "started"),
+        ("agent_public_progress", "sandbox_preparation", "completed"),
+        ("agent_public_progress", "sandbox_submission", "started"),
+        ("agent_public_progress", "sandbox_submission", "completed"),
+    ]
+    assert "private-token" not in json.dumps(callbacks)
 
 
 def test_executor_active_progress_is_bounded_rate_limited_and_invocation_scoped(tmp_path, monkeypatch):
@@ -2465,6 +2491,7 @@ def test_executor_capability_rejection_seals_public_events_without_local_claim(
 ):
     acknowledgements = []
     persisted_events = []
+    persisted_before_rejection = []
     capability_attempts = 0
     reopen_results = []
     callback_started = asyncio.Event()
@@ -2514,6 +2541,7 @@ def test_executor_capability_rejection_seals_public_events_without_local_claim(
             if capability_attempts > 1:
                 persisted_events.extend(events)
                 return callback_ack(payload)
+            persisted_before_rejection.extend(persisted_events)
             callback_started.set()
             await asyncio.wait_for(release_callback.wait(), timeout=2.0)
             if receipt_mode == "exception":
@@ -2569,7 +2597,13 @@ def test_executor_capability_rejection_seals_public_events_without_local_claim(
     assert body["capability_evidence"] == []
     assert body["callback_errors"] == ["running"]
     assert [result is False for result in reopen_results] == [True, True]
-    assert persisted_events == []
+    assert persisted_events == persisted_before_rejection
+    assert [(event["payload"]["phase"], event["payload"]["lifecycle"])
+            for event in persisted_events if event["type"] == "agent_public_progress"] == [
+        ("sandbox_preparation", "started"), ("sandbox_preparation", "completed"),
+        ("sandbox_submission", "started"), ("model_wait", "started"),
+    ]
+    assert all(event["type"] == "agent_public_progress" for event in persisted_events)
     assert capability_attempts == 1
 
 
@@ -2768,7 +2802,15 @@ def test_executor_capability_callback_cancellation_poison_seals_run(
         "execution_step_completed",
     ]
     assert capability_attempts == 2
-    assert all(not callback.get("events") for callback in terminal_callbacks)
+    assert all(not callback.get("events") for callback in non_phase_callbacks(terminal_callbacks))
+    phase_lifecycles = [
+        (event["payload"]["phase"], event["payload"]["lifecycle"])
+        for callback in terminal_callbacks for event in callback.get("events", [])
+    ]
+    assert phase_lifecycles == [
+        ("sandbox_preparation", "started"), ("sandbox_preparation", "completed"),
+        ("sandbox_submission", "started"), ("model_wait", "started"),
+    ]
     assert all(
         callback.get("state_patch", {}).get("stage") != "executor_finished"
         for callback in terminal_callbacks
@@ -2892,7 +2934,7 @@ def test_executor_execute_fails_closed_after_final_delta_without_structured_term
     assert response.status_code == 200
     assert response.json()["status"] == "failed"
     assert response.json()["error_code"] == "claude_agent_sdk_missing_structured_terminal"
-    assert [item["status"] for item in callbacks] == ["running", "running"]
+    assert [item["status"] for item in non_phase_callbacks(callbacks)] == ["running", "running"]
     assert all(item["progress"] != 99 for item in callbacks)
     assert all(item["state_patch"].get("stage") != "executor_finished" for item in callbacks)
 
@@ -3050,15 +3092,16 @@ def test_executor_execute_streams_runner_events_and_phase_timings(tmp_path):
     assert isinstance(body["executor_first_token_latency_ms"], int)
     assert isinstance(body["executor_tool_call_latency_ms"], int)
     assert isinstance(body["artifact_upload_latency_ms"], int)
-    assert [item[1]["status"] for item in callbacks] == [
+    assert [item["status"] for item in non_phase_callbacks([entry[1] for entry in callbacks])] == [
         "running",
         "running",
         "running",
         "running",
     ]
-    assert callbacks[1][1]["events"][0]["type"] == "assistant_delta"
-    assert callbacks[2][1]["events"][0]["type"] == "tool_call_started"
-    assert callbacks[3][1]["events"][0]["type"] == "artifact_created"
+    runner_callbacks = non_phase_callbacks([entry[1] for entry in callbacks])
+    assert runner_callbacks[1]["events"][0]["type"] == "assistant_delta"
+    assert runner_callbacks[2]["events"][0]["type"] == "tool_call_started"
+    assert runner_callbacks[3]["events"][0]["type"] == "artifact_created"
     assert callbacks[-1][1]["sdk_session_id"] is None
 
 
@@ -3689,7 +3732,7 @@ def test_executor_execute_reports_platform_timeout_probe_as_nonterminal_observat
     assert body["error_message"] == "Executor health timeout"
     assert body["requested_max_seconds"] == 0
     assert isinstance(body["timeout_elapsed_ms"], int)
-    assert [item[1]["status"] for item in callbacks] == ["running"]
+    assert [item["status"] for item in non_phase_callbacks([entry[1] for entry in callbacks])] == ["running"]
     assert all(item[1]["progress"] != 99 for item in callbacks)
     assert all(item[1]["state_patch"].get("stage") != "executor_finished" for item in callbacks)
     assert str(tmp_path) not in str(body)
@@ -3736,7 +3779,7 @@ def test_executor_execute_enforces_fractional_positive_timeout_and_cancels_runne
     assert runner_cancelled.wait(timeout=0.1)
     time.sleep(0.1)
     assert not late_side_effect.is_set()
-    assert [item[1]["status"] for item in callbacks] == ["running"]
+    assert [item["status"] for item in non_phase_callbacks([entry[1] for entry in callbacks])] == ["running"]
     assert all(item[1]["progress"] != 99 for item in callbacks)
     assert all(item[1]["state_patch"].get("stage") != "executor_finished" for item in callbacks)
     assert str(tmp_path) not in str(body)
@@ -3869,7 +3912,7 @@ async def test_executor_deadline_waits_for_runner_cleanup_before_terminal_respon
         await asyncio.sleep(0)
 
         assert late_event_attempted.is_set()
-        assert [callback["status"] for callback in callbacks] == ["running"]
+        assert [callback["status"] for callback in non_phase_callbacks(callbacks)] == ["running"]
         assert all(
             callback.get("state_patch", {}).get("stage") != "executor_finished"
             for callback in callbacks
@@ -3963,7 +4006,7 @@ def test_executor_execute_allows_runner_with_larger_fractional_deadline(tmp_path
 
     assert response.status_code == 200
     assert response.json()["status"] == "completed"
-    assert [item["status"] for item in callbacks] == ["running"]
+    assert [item["status"] for item in non_phase_callbacks(callbacks)] == ["running"]
     assert all(item["state_patch"].get("stage") != "executor_finished" for item in callbacks)
 
 
@@ -4397,7 +4440,7 @@ def test_executor_marker_redacts_unapproved_config_and_tokens(tmp_path):
     assert "secret" not in content
 
 
-def test_executor_execute_fails_when_callback_is_rejected(tmp_path, monkeypatch):
+def test_executor_acknowledges_phases_without_redundant_finished_callback(tmp_path, monkeypatch):
     callbacks = []
 
     class StubSettings:
@@ -4407,7 +4450,7 @@ def test_executor_execute_fails_when_callback_is_rejected(tmp_path, monkeypatch)
         return sdk_result("sdk final", usage={"input_tokens": 1, "output_tokens": 1})
 
     def callback_sender(url, payload, token):
-        callbacks.append((payload["status"], payload.get("state_patch", {}).get("stage")))
+        callbacks.append(payload)
         return callback_ack(payload)
 
     monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
@@ -4423,7 +4466,12 @@ def test_executor_execute_fails_when_callback_is_rejected(tmp_path, monkeypatch)
     assert "callback_errors" not in body
     assert isinstance(body["executor_model_latency_ms"], int)
     assert isinstance(body["document_processing_latency_ms"], int)
-    assert callbacks == [("running", "accepted")]
+    assert [(item["status"], item["state_patch"]["stage"])
+            for item in non_phase_callbacks(callbacks)] == [("running", "accepted")]
+    assert [event["payload"]["lifecycle"] for callback in callbacks
+            for event in callback["events"]] == [
+        "started", "completed", "started", "started", "completed", "completed",
+    ]
 
 
 def test_callback_batch_freezes_content_and_tracks_lifecycle():
@@ -4877,7 +4925,12 @@ async def test_executor_consumes_next_delta_while_callback_is_in_flight(tmp_path
         for index, callback in enumerate(callbacks)
         if any(event.get("type") == "message.delta" for event in callback.get("events", []))
     )
-    assert last_delta == len(callbacks) - 1
+    assert last_delta == len(callbacks) - 2
+    terminal_phase = callbacks[-1]["events"]
+    assert len(terminal_phase) == 1
+    assert terminal_phase[0]["type"] == "agent_public_progress"
+    assert terminal_phase[0]["payload"]["phase"] == "sandbox_submission"
+    assert terminal_phase[0]["payload"]["lifecycle"] == "completed"
     assert all(
         callback.get("state_patch", {}).get("stage") != "executor_finished"
         for callback in callbacks
@@ -5393,7 +5446,7 @@ def test_executor_does_not_emit_redundant_finished_progress_callback(tmp_path, m
     response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
 
     assert response.status_code == 200
-    assert [callback["progress"] for callback in callbacks] == [5]
+    assert [callback["progress"] for callback in non_phase_callbacks(callbacks)] == [5]
     assert all(callback["progress"] != 99 for callback in callbacks)
     assert all(callback["state_patch"].get("stage") != "executor_finished" for callback in callbacks)
 
@@ -5542,3 +5595,115 @@ def test_executor_execute_rejects_wrong_executor_scope(tmp_path):
 
     assert response.status_code == 401
     assert response.json() == {"detail": "invalid_executor_scope"}
+
+
+PHASES = (
+    "attachment_materialization", "skill_staging", "sandbox_preparation",
+    "sandbox_submission", "model_wait", "artifact_validation", "artifact_recovery",
+)
+
+
+@pytest.mark.parametrize("phase", PHASES)
+@pytest.mark.parametrize("terminal", ["completed", "failed"])
+def test_platform_phase_lifecycle_is_public_progress_only(phase, terminal):
+    publisher = PublicAgentProgressPublisher()
+    assert _PlatformExecutionPhaseFact(phase, "progress").public_events(publisher) == []
+    assert _PlatformExecutionPhaseFact(phase, terminal).public_events(publisher) == []
+    for lifecycle in ("started", "progress", terminal):
+        events = _PlatformExecutionPhaseFact(phase, lifecycle).public_events(publisher)
+        assert len(events) == 1
+        event = events[0]
+        assert event.type == PUBLIC_AGENT_PROGRESS_EVENT_TYPE
+        assert event.payload["phase"] == phase
+        assert event.payload["lifecycle"] == lifecycle
+        assert event.payload["step_id"] == f"phase_{phase}"
+        assert validate_versioned_public_execution_step_payload(
+            event.payload, expected_kind="execution_step",
+        ) is None
+        if lifecycle == "started":
+            assert _PlatformExecutionPhaseFact(phase, "started").public_events(publisher) == []
+    for lifecycle in ("started", "progress", "completed", "failed"):
+        assert _PlatformExecutionPhaseFact(phase, lifecycle).public_events(publisher) == []
+
+
+@pytest.mark.parametrize("phase,lifecycle", [("private/path", "started"), ("model_wait", "unknown")])
+def test_platform_phase_rejects_unknown_values(phase, lifecycle):
+    assert PublicAgentProgressPublisher().project(phase=phase, lifecycle=lifecycle) is None
+
+
+def test_platform_phase_callback_reaches_v4_with_stable_retry_identity():
+    request = task_payload()
+    event = _PlatformExecutionPhaseFact("model_wait", "started").public_events(
+        PublicAgentProgressPublisher(),
+    )[0]
+    callback = ExecutorCallbackEvent(
+        session_id=request["session_id"], run_id=request["run_id"],
+        attempt_id=request["attempt_id"], callback_token_id=request["callback_token_id"],
+        batch_id="callback_phase_1", status="running", progress=20, events=[event],
+    )
+    normalized = callback_event_to_run_events(callback)
+    retry = callback_event_to_run_events(callback)
+    assert normalized == retry
+    bridged = agent_event_to_executor_event(normalized[0])
+    projected = callback_item_to_v4(bridged, callback_index=0, batch_index=0)
+    assert projected is not None
+    assert projected.event_type == "agent.progress"
+    assert projected.source_event_id == normalized[0].event_id
+    assert projected.source_run_id == "run-a"
+    assert projected.message_id is None
+    assert projected.payload == event.payload
+
+
+def test_executor_publishes_phase_progress_and_stops_its_heartbeat(tmp_path, monkeypatch):
+    callbacks = []
+    monkeypatch.setattr("app.runtime.sandbox.executor_app._ACTIVE_PROGRESS_INTERVAL_SECONDS", 0.001)
+
+    async def runner(request, workspace_root, emit_event):
+        assert await emit_event(_PlatformExecutionPhaseFact("model_wait", "started"))
+        await asyncio.sleep(0.015)
+        assert await emit_event(_PlatformExecutionPhaseFact("model_wait", "completed"))
+        await asyncio.sleep(0.005)
+        return {"status": "completed", "message": "done"}
+
+    def sender(url, payload, token):
+        callbacks.append(payload)
+        return callback_ack(payload)
+
+    client = create_test_client(tmp_path, callback_sender=sender, executor_runner=runner)
+    response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed"
+    events = [event for callback in callbacks for event in callback["events"]]
+    assert events
+    assert {event["type"] for event in events} == {PUBLIC_AGENT_PROGRESS_EVENT_TYPE}
+    phases = [event["payload"] for event in events]
+    assert [(item["phase"], item["lifecycle"]) for item in phases[:3]] == [
+        ("sandbox_preparation", "started"), ("sandbox_preparation", "completed"),
+        ("sandbox_submission", "started"),
+    ]
+    model = [item["lifecycle"] for item in phases if item["phase"] == "model_wait"]
+    assert model[0] == "started" and model[-1] == "completed"
+    assert "progress" in model
+    assert set(model[1:-1]) == {"progress"}
+    assert (phases[-1]["phase"], phases[-1]["lifecycle"]) == ("sandbox_submission", "completed")
+    assert len({callback["batch_id"] for callback in callbacks}) == len(callbacks)
+
+
+def test_rejected_phase_receipt_prevents_success(tmp_path):
+    callbacks = []
+
+    async def runner(request, workspace_root, emit_event):
+        return {"status": "completed", "message": "done"}
+
+    def sender(url, payload, token):
+        callbacks.append(payload)
+        if any(event["type"] == PUBLIC_AGENT_PROGRESS_EVENT_TYPE for event in payload["events"]):
+            return {"accepted": False}
+        return callback_ack(payload)
+
+    client = create_test_client(tmp_path, callback_sender=sender, executor_runner=runner)
+    response = client.post("/v2/tasks", json=task_payload(), headers=auth_headers())
+    assert response.status_code == 200
+    assert response.json()["status"] == "failed"
+    assert response.json()["error_code"] == "stream_delivery_rejected"
+    assert len(callbacks) == 1

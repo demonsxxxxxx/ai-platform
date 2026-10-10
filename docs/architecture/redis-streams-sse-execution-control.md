@@ -12,6 +12,25 @@ authorization leases and revocation, missing-stream gaps, and terminal
 convergence. [ADR 0013](../adr/0013-redis-stream-only-sse.md) owns the hard-cut
 decision and supersession.
 
+## Platform phase progress producer
+
+The executor's existing phase lifecycle owner emits fixed `agent.progress`
+through the ordinary serialized callback/receipt path. It does not depend on
+legacy public execution-step presentation tuples. A phase must start before
+progress or terminal observations, may terminate only once, and never restarts
+inside the same executor task. Rejected or uncertain callback delivery keeps the
+existing fail-closed execution semantics.
+
+The replaced phase-only legacy step publisher and its unused presentation
+configuration are retired. Tool-step compatibility and persisted phase readers
+remain unchanged. The orphan attachment-materialization completion is removed:
+materialization already finished before executor admission, so this producer
+cannot fabricate a start observation for it. Unused artifact phases remain
+read-compatible wire values; no new preparation, validation or recovery work is
+introduced. Callback identity, schema, Redis ordering, Run outcome authority and
+provider ownership are unchanged. Local synthetic tests establish source
+behavior only, not deployment or real provider acceptance.
+
 ## Change Contract: Agent first-send stream ownership
 
 - **Owner:** Agent Workspace composer coordination and the existing frontend
