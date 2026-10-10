@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from app.artifacts.infrastructure.records_postgres import list_run_artifacts
 from app.control_plane_contracts import ARTIFACT_MANIFEST_SCHEMA_VERSION
 from app.control_plane_contracts import AUDIT_EVENT_SCHEMA_VERSION
@@ -18,7 +20,8 @@ from app.platform.postgres.values import _coerce_int
 from app.platform.public_payload import sanitize_public_payload
 from app.platform.public_payload import sanitize_public_text
 from app.runs.infrastructure.creation_postgres import ACTIVE_RUN_STATUSES
-from app.runs.infrastructure.postgres import get_run
+from app.runs.application.admin_run_monitor import build_admin_runtime_health
+from app.runs.infrastructure.postgres import get_latest_run_attempt, get_run
 from app.runs.infrastructure.steps_postgres import list_run_steps
 from app.sandbox.infrastructure.leases_postgres import list_sandbox_leases_for_run
 from app.skills.infrastructure.run_snapshots_postgres import _attach_skill_usage
@@ -374,6 +377,14 @@ async def get_admin_run_detail(conn: AsyncConnection, *, tenant_id: str, run_id:
     steps = await list_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
     artifacts = await list_run_artifacts(conn, tenant_id=tenant_id, run_id=run_id)
     sandbox_leases = await list_sandbox_leases_for_run(conn, tenant_id=tenant_id, run_id=run_id)
+    latest_attempt = (
+        await get_latest_run_attempt(conn, tenant_id=tenant_id, run_id=run_id)
+        if run["status"] == "running" else None
+    )
+    runtime_health = build_admin_runtime_health(
+        str(run["status"]), tenant_id=tenant_id, run_id=run_id,
+        attempt=latest_attempt, leases=sandbox_leases, observed_at=datetime.now(timezone.utc),
+    )
     skill_snapshots = _attach_skill_usage(
         await list_run_skill_snapshots(conn, tenant_id=tenant_id, run_id=run_id),
         events,
@@ -400,6 +411,7 @@ async def get_admin_run_detail(conn: AsyncConnection, *, tenant_id: str, run_id:
     if not isinstance(run_result, dict):
         run_result = {}
     return {
+        "runtime_health": runtime_health,
         "_assistant_text_messages": project_persisted_assistant_text_messages(
             events, tenant_id=tenant_id, run_id=run_id,
         ),

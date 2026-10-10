@@ -1,7 +1,10 @@
 """Framework-neutral projection helpers for the admin Run Monitor."""
 
 from collections.abc import Callable, Mapping, Sequence
+from datetime import datetime
 from typing import Any
+
+from app.runs.domain.admin_projection import AdminRunRuntimeHealth
 
 from app.streaming.api import AssistantTextMessageProjection, V4_METADATA_KEY
 
@@ -14,6 +17,82 @@ _TOOL_SUCCESS_TYPES = frozenset({"mcp_tool_call_completed", "tool_call_completed
 _TOOL_FAILURE_TYPES = frozenset({"mcp_tool_call_failed", "tool_call_failed", "tool.failed"})
 _TOOL_DENIAL_TYPES = frozenset({"mcp_tool_denied", "tool_denied", "tool.denied", "tool_permission_denied"})
 _TOOL_TYPES = _TOOL_START_TYPES | _TOOL_SUCCESS_TYPES | _TOOL_FAILURE_TYPES | _TOOL_DENIAL_TYPES
+
+
+def _monitor_timestamp(value: object) -> datetime | None:
+    return value if isinstance(value, datetime) and value.utcoffset() is not None else None
+
+
+def build_admin_runtime_health(
+    run_status: str,
+    *,
+    tenant_id: str,
+    run_id: str,
+    attempt: Mapping[str, Any] | None,
+    leases: Sequence[Mapping[str, Any]],
+    observed_at: datetime,
+) -> AdminRunRuntimeHealth:
+    """Separate historical queue ownership from current execution health."""
+    health: AdminRunRuntimeHealth = {
+        "state": "unknown", "observed_at": observed_at, "attempt_id": None,
+        "async_dispatch_accepted": False, "queue_last_heartbeat_at": None,
+        "queue_lease_expires_at": None, "heartbeat_source": None, "heartbeat_at": None,
+    }
+    if run_status in {"succeeded", "failed", "cancelled"}:
+        health["state"] = "terminal"
+        return health
+    if run_status == "queued":
+        health["state"] = "queued"
+        return health
+    if (
+        run_status != "running" or not attempt or not attempt.get("id")
+        or attempt.get("tenant_id") != tenant_id or attempt.get("run_id") != run_id
+        or attempt.get("status") not in {"running", "cancel_requested"}
+    ):
+        return health
+    health["attempt_id"] = str(attempt["id"])
+    health["queue_last_heartbeat_at"] = _monitor_timestamp(attempt.get("last_heartbeat_at"))
+    health["queue_lease_expires_at"] = _monitor_timestamp(attempt.get("lease_expires_at"))
+    owner_generation = attempt.get("owner_generation")
+    if type(owner_generation) is not int or owner_generation < 1:
+        return health
+    current = [
+        lease for lease in leases
+        if lease.get("tenant_id") == tenant_id and lease.get("run_id") == run_id
+        and lease.get("attempt_id") == attempt["id"] and lease.get("status") == "active"
+        and lease.get("provider") in {"docker", "opensandbox"}
+        and lease.get("current_attempt_owner") is True
+        # READ COMMITTED queries can straddle an owner transfer. Compare the
+        # lease binding itself with the latest Attempt, not only the earlier join.
+        and lease.get("lease_owner_generation") == str(owner_generation)
+    ]
+    # Multiple live environments are ambiguous; never choose an arbitrary one.
+    if len(current) != 1:
+        return health
+    lease = current[0]
+    executor_status = lease.get("executor_status")
+    health["async_dispatch_accepted"] = executor_status in {
+        "accepted", "running", "completed", "failed", "cancelled",
+    }
+    terminal_received_at = _monitor_timestamp(lease.get("executor_terminal_received_at"))
+    if executor_status in {"completed", "failed", "cancelled"}:
+        if terminal_received_at is not None and terminal_received_at <= observed_at:
+            health["state"] = "awaiting_reconciliation"
+        return health
+    source = "executor" if health["async_dispatch_accepted"] else "sandbox"
+    heartbeat_key = "executor_heartbeat_at" if source == "executor" else "heartbeat_at"
+    heartbeat = _monitor_timestamp(lease.get(heartbeat_key))
+    expires_at = _monitor_timestamp(lease.get("expires_at"))
+    if heartbeat is None or heartbeat > observed_at or expires_at is None:
+        return health
+    health["heartbeat_source"] = source
+    health["heartbeat_at"] = heartbeat
+    # Same 45-second freshness window used by the executor suspect probe.
+    health["state"] = (
+        "stale" if expires_at <= observed_at or (observed_at - heartbeat).total_seconds() > 45
+        else "healthy"
+    )
+    return health
 
 
 def _sequence(event: Mapping[str, Any], index: int) -> tuple[int, int]:
@@ -308,4 +387,4 @@ def build_admin_worker_execution(
     }
 
 
-__all__ = ["build_admin_worker_execution"]
+__all__ = ["build_admin_worker_execution", "build_admin_runtime_health"]

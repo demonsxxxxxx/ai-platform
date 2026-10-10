@@ -348,8 +348,20 @@ export interface AdminRunListResponse {
   limit: number;
 }
 
+export interface AdminRunRuntimeHealth {
+  state: "queued" | "terminal" | "healthy" | "stale" | "unknown" | "awaiting_reconciliation";
+  observed_at: string;
+  attempt_id: string | null;
+  async_dispatch_accepted: boolean;
+  queue_last_heartbeat_at: string | null;
+  queue_lease_expires_at: string | null;
+  heartbeat_source: "executor" | "sandbox" | null;
+  heartbeat_at: string | null;
+}
+
 export interface AdminRunDetailResponse {
   run: AdminRunSummary;
+  runtime_health?: AdminRunRuntimeHealth;
   worker_execution: AdminWorkerExecution;
   events: AdminRunEvent[];
   steps: AdminRunStep[];

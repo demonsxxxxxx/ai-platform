@@ -31,6 +31,7 @@ from app.execution.api import (
     executor_exception_failure as _executor_exception_failure,
     enforce_required_artifact_types,
     project_worker_terminal_result,
+    run_elapsed_ms,
     normalize_sandbox_reported_failure,
     restored_executor_reconciliation_queue_payload as _restored_executor_reconciliation_queue_payload,
     time,
@@ -276,7 +277,6 @@ async def process_run_payload(
                 raise RuntimeError("executor_adapter_not_resolved")
 
             if reconciliation is not None:
-                started_at = time.monotonic()
                 result: ExecutorResult | ExecutorDispatchAccepted = reconciliation.result
             else:
                 await admit_v4_stream(
@@ -306,7 +306,7 @@ async def process_run_payload(
                     raise ValueError("executor_dispatch_acceptance_lease_missing")
                 runtime_sandbox_execution_detached = True
                 return WorkerOutcome(status="running", run_id=run_payload.run_id)
-            latency_ms = max(int((time.monotonic() - started_at) * 1000), 0)
+            latency_ms = run_elapsed_ms(locked.get("started_at")) if reconciliation is not None else max(int((time.monotonic() - started_at) * 1000), 0)
             result.validate()
             result = normalize_sandbox_reported_failure(result)
             if capability_authorization is None:

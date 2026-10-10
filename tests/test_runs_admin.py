@@ -1099,3 +1099,168 @@ async def test_get_admin_runtime_observability_summary_uses_run_totals_for_termi
     assert summary["latency_ms"] == {"avg": 250, "max": 300, "p50": 240, "p95": 295, "p99": 299}
     assert summary["token_counts"] == {"input": 10, "output": 20, "total": 30}
     assert summary["estimated_cost_minor"] == 7
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scenario, expected", [
+    ("fresh", "healthy"), ("stale", "stale"),
+    ("expired", "stale"), ("future", "unknown"),
+    ("missing", "unknown"), ("old_attempt", "unknown"),
+    ("other_tenant", "unknown"), ("other_run", "unknown"),
+    ("released", "unknown"), ("duplicate", "unknown"),
+    ("terminal_pending", "awaiting_reconciliation"),
+    ("terminal_run", "terminal"), ("queued", "queued"),
+    ("old_generation", "unknown"), ("missing_owner", "unknown"),
+    ("missing_attempt", "unknown"), ("wrong_attempt_tenant", "unknown"),
+    ("closed_attempt", "unknown"), ("fake_provider", "unknown"),
+    ("naive_heartbeat", "unknown"), ("sandbox", "healthy"),
+    ("terminal_missing_receipt", "unknown"),
+    ("owner_transfer_between_reads", "unknown"),
+    ("terminal_owner_transfer_between_reads", "unknown"),
+    ("missing_generation", "unknown"), ("invalid_generation", "unknown"),
+    ("invalid_attempt_generation", "unknown"),
+])
+async def test_admin_runtime_health_uses_current_attempt_execution_heartbeat(
+    monkeypatch, scenario, expected,
+):
+    from datetime import datetime, timedelta, timezone
+    from types import SimpleNamespace
+
+    observed_at = datetime(2026, 10, 10, 3, 15, tzinfo=timezone.utc)
+    run = {
+        "id": "run-a", "tenant_id": "tenant-a", "session_id": "ses-a",
+        "user_id": "user-a", "workspace_id": "workspace-a", "agent_id": "agent-a",
+        "skill_id": None, "created_at": observed_at - timedelta(hours=1),
+        "status": "running", "schema_version": "ai-platform.run.v1",
+        "executor_schema_version": "ai-platform.executor-result.v1",
+    }
+    attempt = {
+        "id": "attempt-current", "tenant_id": "tenant-a", "run_id": "run-a",
+        "ordinal": 2, "status": "running", "owner_kind": "queue_worker",
+        "owner_generation": 1,
+        "last_heartbeat_at": observed_at - timedelta(hours=1),
+        "lease_expires_at": observed_at - timedelta(minutes=45),
+    }
+    lease = {
+        "id": "lease-current", "tenant_id": "tenant-a", "run_id": "run-a",
+        "attempt_id": "attempt-current", "workspace_id": "workspace-a",
+        "user_id": "user-a", "session_id": "ses-a", "sandbox_mode": "ephemeral",
+        "provider": "opensandbox", "status": "active", "executor_status": "running",
+        "current_attempt_owner": True, "lease_owner_generation": "1",
+        "heartbeat_at": observed_at, "executor_heartbeat_at": observed_at - timedelta(seconds=2),
+        "expires_at": observed_at + timedelta(minutes=30),
+        "runtime_container_id": "PRIVATE_RUNTIME_HANDLE",
+        "executor_reconciliation_context_json": {"private_prompt": "PRIVATE_PROMPT"},
+    }
+    if scenario == "stale":
+        lease["executor_heartbeat_at"] = observed_at - timedelta(seconds=46)
+    elif scenario == "expired":
+        lease["expires_at"] = observed_at - timedelta(seconds=1)
+    elif scenario == "future":
+        lease["executor_heartbeat_at"] = observed_at + timedelta(seconds=1)
+    elif scenario == "missing":
+        lease["executor_heartbeat_at"] = None
+    elif scenario == "old_attempt":
+        lease["attempt_id"] = "attempt-old"
+    elif scenario == "other_tenant":
+        lease["tenant_id"] = "tenant-other"
+    elif scenario == "other_run":
+        lease["run_id"] = "run-other"
+    elif scenario == "released":
+        lease["status"] = "released"
+    elif scenario == "terminal_pending":
+        lease["executor_status"] = "completed"
+        lease["executor_terminal_received_at"] = observed_at - timedelta(seconds=1)
+    elif scenario == "terminal_run":
+        run["status"] = "succeeded"
+    elif scenario == "queued":
+        run["status"] = "queued"
+    elif scenario == "old_generation":
+        lease["current_attempt_owner"] = False
+    elif scenario == "missing_owner":
+        lease.pop("current_attempt_owner")
+    elif scenario == "wrong_attempt_tenant":
+        attempt["tenant_id"] = "tenant-other"
+    elif scenario == "closed_attempt":
+        attempt["status"] = "succeeded"
+    elif scenario == "fake_provider":
+        lease["provider"] = "fake"
+    elif scenario == "naive_heartbeat":
+        lease["executor_heartbeat_at"] = observed_at.replace(tzinfo=None)
+    elif scenario == "sandbox":
+        lease["executor_status"] = None
+    elif scenario == "terminal_missing_receipt":
+        lease["executor_status"] = "completed"
+    elif scenario == "terminal_owner_transfer_between_reads":
+        lease["executor_status"] = "completed"
+        lease["executor_terminal_received_at"] = observed_at - timedelta(seconds=1)
+    elif scenario == "missing_generation":
+        lease.pop("lease_owner_generation")
+    elif scenario == "invalid_generation":
+        lease["lease_owner_generation"] = "01"
+    elif scenario == "invalid_attempt_generation":
+        attempt["owner_generation"] = True
+    leases = [dict(lease)]
+    if scenario == "duplicate":
+        leases.append({**lease, "id": "lease-duplicate"})
+    # A fresh old-Attempt lease must never mask current-Attempt staleness.
+    leases.append({**lease, "id": "lease-old", "attempt_id": "attempt-old", "executor_heartbeat_at": observed_at})
+
+    class Cursor:
+        def __init__(self, row=None, rows=()):
+            self.row, self.rows = row, rows
+
+        async def fetchone(self):
+            return self.row
+
+        async def fetchall(self):
+            return list(self.rows)
+
+    class Connection:
+        async def execute(self, sql, params):
+            compact = " ".join(sql.split())
+            if "from run_attempts" in compact:
+                assert params == ("tenant-a", "run-a")
+                assert "order by ordinal desc" in compact
+                return Cursor(row=None if scenario == "missing_attempt" else attempt)
+            if "from sandbox_leases" in compact:
+                assert params == ("tenant-a", "run-a")
+                assert "attempt.tenant_id = lease.tenant_id" in compact
+                assert "attempt.run_id = lease.run_id" in compact
+                assert "'owner_generation' = attempt.owner_generation::text" in compact
+                assert "lease.lease_payload_json ->> 'owner_generation' as lease_owner_generation" in compact
+                if scenario in {"owner_transfer_between_reads", "terminal_owner_transfer_between_reads"}:
+                    # This SELECT returned True against generation 1; the next
+                    # READ COMMITTED SELECT observes the same Attempt at 2.
+                    assert attempt["owner_generation"] == 1
+                    attempt["owner_generation"] = 2
+                return Cursor(rows=leases)
+            assert "from audit_logs" in compact
+            return Cursor()
+
+    async def get_run(_conn, **kwargs):
+        assert kwargs == {"tenant_id": "tenant-a", "run_id": "run-a"}
+        return run
+
+    async def empty_list(_conn, **kwargs):
+        assert kwargs == {"tenant_id": "tenant-a", "run_id": "run-a"}
+        return []
+
+    monkeypatch.setattr(run_queries_persistence, "get_run", get_run)
+    monkeypatch.setattr(run_queries_persistence, "datetime", SimpleNamespace(now=lambda _tz: observed_at), raising=False)
+    for name in ("list_run_events", "list_run_steps", "list_run_artifacts", "list_run_skill_snapshots"):
+        monkeypatch.setattr(run_queries_persistence, name, empty_list)
+
+    detail = await get_admin_run_detail(Connection(), tenant_id="tenant-a", run_id="run-a")
+    health = detail["runtime_health"]
+    assert health["state"] == expected
+    assert "PRIVATE" not in json.dumps(health, default=str)
+    assert "lease_owner_generation" not in health
+    assert "lease_owner_generation" not in detail["sandbox_leases"][0]
+    if expected == "healthy":
+        assert health["attempt_id"] == "attempt-current"
+        assert health["async_dispatch_accepted"] is (scenario != "sandbox")
+        assert health["heartbeat_source"] == ("sandbox" if scenario == "sandbox" else "executor")
+        assert health["heartbeat_at"] == lease["heartbeat_at" if scenario == "sandbox" else "executor_heartbeat_at"]
+        assert health["queue_last_heartbeat_at"] == attempt["last_heartbeat_at"]
+        assert health["queue_lease_expires_at"] < observed_at

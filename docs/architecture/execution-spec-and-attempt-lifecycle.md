@@ -178,6 +178,18 @@ PostgreSQL write, and transaction commit rather than only the interval between
 heartbeat cycles. If no durable attempt exists by that deadline, the worker stops
 renewing and cancels local execution. Redis and PostgreSQL share the exact
 heartbeat value returned by the Redis authority.
+
+That queue heartbeat is maintained only while the worker owns and processes the
+queue item. After an asynchronous dispatch is accepted and the item is
+acknowledged, the Attempt's queue heartbeat/expiry remain historical queue
+ownership facts; Sandbox and Executor continue their own heartbeats. A stale
+queue timestamp alone cannot establish loss of current execution ownership.
+Admin runtime health uses the latest durable Attempt, an active same-tenant/Run/
+Attempt Sandbox lease, and its current owner-generation binding. It never
+refreshes the queue lease to make monitoring appear healthy. Missing or
+ambiguous current-runtime evidence remains unknown; an executor terminal receipt
+while the Run is still running is shown as awaiting platform reconciliation.
+
 Lease acquisition, heartbeat refresh, and the final reclaim decision use Redis
 server time. A heartbeat normalizes future-skewed Redis lease and worker activity
 timestamps. Reclaim independently normalizes an abandoned future-dated lease in

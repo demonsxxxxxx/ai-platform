@@ -11,6 +11,7 @@ from typing import Any
 
 from app.runs.infrastructure import postgres as runs_postgres
 
+from app.bootstrap.worker_maintenance import maintenance_phase_until_done
 from app.context.api import ProviderSessionConflictError, ProviderSessionContinuityError
 from app.db import transaction
 from app.execution.api import restored_sandbox_run_payload
@@ -1054,80 +1055,108 @@ async def run_executor_terminal_reconciler(
     run_diagnostics: RunDiagnosticsService | None = None,
 ) -> None:
     signal_cursor: ExecutorReconciliationSignalCursor | None = None
-    while not stop_event.is_set():
-        if signal_cursor is None:
-            try:
-                # Capture the tail before PostgreSQL scan so an interleaved
-                # signal remains visible to the following explicit XREAD.
-                signal_cursor = await asyncio.wait_for(
-                    initialize_executor_reconciliation_signal_cursor(),
-                    timeout=_RECONCILIATION_SIGNAL_INIT_TIMEOUT_SECONDS,
-                )
-            except (ExecutorSignalUnavailable, TimeoutError):
-                signal_cursor = None
-        reconciled = 0
-        try:
-            reconciled = await reconcile_pending_executor_terminals_once(
-                registry=registry,
-                worker_id=worker_id,
-                v4_capabilities=v4_capabilities,
-                attempt_lifecycle=attempt_lifecycle,
-                lifecycle=lifecycle,
-                run_diagnostics=run_diagnostics,
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001 - one failed scan must not stop recovery.
-            _logger.exception("executor_terminal_reconciliation_scan_failed")
-        if stop_event.is_set():
-            break
-        if reconciled:
-            continue
-        try:
-            await cleanup_failed_sandbox_executor_reconciliation_leases(
-                provider_factory=create_container_provider,
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001 - cleanup failures must not stop terminal recovery.
-            _logger.exception("executor_terminal_reconciliation_cleanup_failed")
-        probed = 0
-        try:
-            probe_kwargs = (
-                {"run_diagnostics": run_diagnostics}
-                if run_diagnostics is not None
-                else {}
-            )
-            probed = await probe_suspect_executor_tasks_once(**probe_kwargs)
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001 - polling failures must not stop terminal recovery.
-            _logger.exception("executor_suspect_probe_failed")
+    probe_progress = asyncio.Event()
+    maintenance_tasks: list[asyncio.Task[None]] = []
+
+    async def probe() -> int:
+        probe_kwargs = (
+            {"run_diagnostics": run_diagnostics}
+            if run_diagnostics is not None
+            else {}
+        )
+        probed = await probe_suspect_executor_tasks_once(**probe_kwargs)
         if probed:
-            continue
-        if signal_cursor is None:
+            probe_progress.set()
+        return probed
+
+    try:
+        while not stop_event.is_set():
+            # Clear before scanning: progress arriving during the scan or wait
+            # remains visible, including when Redis is unavailable.
+            probe_progress.clear()
+            if signal_cursor is None:
+                try:
+                    # Capture the tail before PostgreSQL scan so an interleaved
+                    # signal remains visible to the following explicit XREAD.
+                    signal_cursor = await asyncio.wait_for(
+                        initialize_executor_reconciliation_signal_cursor(),
+                        timeout=_RECONCILIATION_SIGNAL_INIT_TIMEOUT_SECONDS,
+                    )
+                except (ExecutorSignalUnavailable, TimeoutError):
+                    signal_cursor = None
+            reconciled = 0
             try:
-                await asyncio.wait_for(
-                    stop_event.wait(), timeout=_RECONCILIATION_IDLE_SECONDS
+                reconciled = await reconcile_pending_executor_terminals_once(
+                    registry=registry,
+                    worker_id=worker_id,
+                    v4_capabilities=v4_capabilities,
+                    attempt_lifecycle=attempt_lifecycle,
+                    lifecycle=lifecycle,
+                    run_diagnostics=run_diagnostics,
                 )
-            except TimeoutError:
-                pass
-            continue
-        try:
-            await asyncio.wait_for(
-                wait_for_executor_reconciliation_signal(
-                    block_ms=int(_RECONCILIATION_IDLE_SECONDS * 1000),
-                    cursor=signal_cursor,
-                ),
-                timeout=_RECONCILIATION_IDLE_SECONDS + 5.0,
-            )
-        except ExecutorSignalUnavailable:
-            signal_cursor = None
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - one failed scan must not stop recovery.
+                _logger.exception("executor_terminal_reconciliation_scan_failed")
+            if stop_event.is_set():
+                break
+            if reconciled:
+                continue
+            if not maintenance_tasks:
+                # Each phase retains sole ownership until its operation really
+                # ends. Slow cleanup/probes must not block terminal consumption.
+                for name, operation in (
+                    (
+                        "executor-reconciliation-cleanup",
+                        lambda: cleanup_failed_sandbox_executor_reconciliation_leases(
+                            provider_factory=create_container_provider,
+                        ),
+                    ),
+                    ("executor-suspect-probe", probe),
+                ):
+                    maintenance_tasks.append(asyncio.create_task(
+                        maintenance_phase_until_done(
+                            name, operation, _RECONCILIATION_IDLE_SECONDS,
+                            _RECONCILIATION_WORK_TIMEOUT_SECONDS, logger=_logger,
+                        ),
+                        name=name,
+                    ))
+            waiters = {
+                asyncio.create_task(stop_event.wait()),
+                asyncio.create_task(probe_progress.wait()),
+            }
+            signal_task = None
+            if signal_cursor is not None:
+                signal_task = asyncio.create_task(
+                    wait_for_executor_reconciliation_signal(
+                        block_ms=int(_RECONCILIATION_IDLE_SECONDS * 1000),
+                        cursor=signal_cursor,
+                    ),
+                )
+                waiters.add(signal_task)
             try:
-                await asyncio.wait_for(
-                    stop_event.wait(), timeout=_RECONCILIATION_IDLE_SECONDS
+                done, _pending = await asyncio.wait(
+                    waiters,
+                    timeout=_RECONCILIATION_IDLE_SECONDS + (5.0 if signal_task else 0.0),
+                    return_when=asyncio.FIRST_COMPLETED,
                 )
-            except TimeoutError:
-                pass
-        except TimeoutError:
-            pass
+                if signal_task in done:
+                    try:
+                        signal_task.result()
+                    except ExecutorSignalUnavailable:
+                        signal_cursor = None
+                        # Preserve the bounded polling fallback even when cursor
+                        # initialization works but XREAD repeatedly fails.
+                        await asyncio.wait(
+                            waiters - {signal_task}, timeout=_RECONCILIATION_IDLE_SECONDS,
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+            finally:
+                for task in waiters:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*waiters, return_exceptions=True)
+    finally:
+        for task in maintenance_tasks:
+            task.cancel()
+        await asyncio.gather(*maintenance_tasks, return_exceptions=True)

@@ -2,6 +2,7 @@
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from typing import Any, Protocol
 
 from app.execution.application.worker_answer_persistence import (
@@ -12,7 +13,13 @@ from app.execution.application.worker_skill_evidence import skill_snapshot_from_
 from app.execution.domain.worker_observability import (
     event_observability_kwargs,
     executor_observability,
+    run_elapsed_ms as _run_elapsed_ms,
 )
+
+
+def run_elapsed_ms(started_at: object) -> int | None:
+    """Observe elapsed Run time at the application terminal projection boundary."""
+    return _run_elapsed_ms(started_at, observed_at=datetime.now(timezone.utc))
 
 
 class WorkerExecutorResult(Protocol):
@@ -108,7 +115,7 @@ def project_worker_terminal_result(
     artifact_records: list[dict[str, Any]],
     *,
     trace_id: str,
-    latency_ms: int,
+    latency_ms: int | None,
     invoked_skill_ids: Callable[[dict[str, Any]], set[str]],
 ) -> WorkerTerminalProjection:
     observability = executor_observability(result.executor_payload, latency_ms=latency_ms)

@@ -1,5 +1,6 @@
 """Execution result metrics projected for Run persistence and public events."""
 
+from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 
@@ -70,10 +71,22 @@ def _has_sdk_observability(executor_payload: dict[str, Any]) -> bool:
     )
 
 
+def run_elapsed_ms(started_at: object, *, observed_at: datetime) -> int | None:
+    """Measure persisted Run elapsed time; invalid clocks remain unknown."""
+    if (
+        not isinstance(started_at, datetime)
+        or started_at.utcoffset() is None
+        or observed_at.utcoffset() is None
+        or started_at > observed_at
+    ):
+        return None
+    return int((observed_at - started_at).total_seconds() * 1000)
+
+
 def executor_observability(
     executor_payload: dict[str, Any],
     *,
-    latency_ms: int,
+    latency_ms: int | None,
 ) -> dict[str, Any]:
     sdk_observability = _sdk_usage_observability(executor_payload)
     sdk_token_counts = sdk_observability["token_counts"]
