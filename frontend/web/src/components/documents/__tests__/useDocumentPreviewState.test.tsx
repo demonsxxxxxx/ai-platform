@@ -314,3 +314,217 @@ test("mounted XLSX preview keeps B after deferred A resolves, retries safely, an
     globalThis.fetch = originalFetch;
   }
 });
+
+type PreviewProps = import("../useDocumentPreviewState.ts").DocumentPreviewProps;
+type PreviewState = ReturnType<typeof import("../useDocumentPreviewState.ts").useDocumentPreviewState>;
+
+async function mountPreviewHook() {
+  const React = await import("react");
+  const { createRoot } = await import("react-dom/client");
+  const { useDocumentPreviewState } = await import("../useDocumentPreviewState.ts");
+  const root = createRoot(document.createElement("div") as never);
+  let snapshot: PreviewState | undefined;
+  function Probe({ props }: { props: PreviewProps }) {
+    snapshot = useDocumentPreviewState(props);
+    return null;
+  }
+  return {
+    async render(props: PreviewProps) {
+      await React.act(async () => root.render(React.createElement(Probe, { props })));
+    },
+    async flush() {
+      await React.act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+    },
+    state(): PreviewState {
+      assert.ok(snapshot);
+      return snapshot;
+    },
+    async unmount() {
+      await React.act(async () => root.unmount());
+    },
+  };
+}
+
+const previewCases = [
+  { extension: "png", mimeType: "image/png", field: "imageUrl" },
+  { extension: "pdf", mimeType: "application/pdf", field: "pdfUrl" },
+  { extension: "mp4", mimeType: "video/mp4", field: "videoUrl" },
+  { extension: "mp3", mimeType: "audio/mpeg", field: "audioUrl" },
+  { extension: "dxf", mimeType: "application/dxf", field: "cadUrl" },
+  { extension: "dot", mimeType: "application/msword", field: "docUrl" },
+  { extension: "pptx", mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation", field: "pptxBuffer" },
+  { extension: "docx", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", field: "arrayBuffer" },
+  { extension: "html", mimeType: "text/html", field: "htmlContent" },
+  { extension: "excalidraw", mimeType: "application/json", field: "excalidrawData" },
+  { extension: "txt", mimeType: "text/plain", field: "data" },
+] as const;
+
+for (const previewCase of previewCases) {
+  test(`mounted ${previewCase.extension} preview owns responses and object URLs across replacement and unmount`, async () => {
+    const hook = await mountPreviewHook();
+    const originalFetch = globalThis.fetch;
+    const originalCreate = URL.createObjectURL;
+    const originalRevoke = URL.revokeObjectURL;
+    const blobs = new Map<string, Blob>();
+    const revocations: string[] = [];
+    const requests = new Map<string, ReturnType<typeof deferred<Response>>>();
+    globalThis.fetch = (async (input) => {
+      const pending = requests.get(String(input));
+      assert.ok(pending, `Unexpected request ${String(input)}`);
+      return pending.promise;
+    }) as typeof fetch;
+    URL.createObjectURL = (blob) => {
+      assert.ok(blob instanceof Blob);
+      const url = `blob:owned-${blobs.size}`;
+      blobs.set(url, blob);
+      return url;
+    };
+    URL.revokeObjectURL = (url) => revocations.push(url);
+    const propsFor = (id: string): PreviewProps => {
+      const previewUrl = `/api/ai/artifacts/${previewCase.extension}-${id}/preview`;
+      requests.set(previewUrl, deferred<Response>());
+      return { path: `${id}.${previewCase.extension}`, previewUrl, mimeType: previewCase.mimeType, onClose() {} };
+    };
+    const settle = async (props: PreviewProps, text: string) => {
+      requests.get(props.previewUrl!)!.resolve(new Response(text));
+      await hook.flush();
+    };
+    async function visibleBytes(): Promise<string> {
+      const value = hook.state()[previewCase.field];
+      if (previewCase.field === "data") return hook.state().data?.content ?? "";
+      if (value instanceof ArrayBuffer) return new TextDecoder().decode(value);
+      assert.equal(typeof value, "string");
+      if (typeof value !== "string") throw new Error("Missing preview value");
+      return blobs.has(value) ? await blobs.get(value)!.text() : value;
+    }
+    let unmounted = false;
+    try {
+      const a = propsFor("a");
+      const b = propsFor("b");
+      await hook.render(a);
+      await hook.render(b);
+      await settle(b, "B");
+      assert.equal(await visibleBytes(), "B");
+      const activeUrl = hook.state()[previewCase.field];
+      await settle(a, "A");
+      assert.equal(await visibleBytes(), "B");
+      assert.equal(hook.state().data?.path, b.path);
+      assert.equal(hook.state().loading, false);
+      if (typeof activeUrl === "string" && activeUrl.startsWith("blob:")) {
+        assert.equal(revocations.includes(activeUrl), false, "B must remain live");
+      }
+
+      // An older completion must not dismiss a newer request's spinner.
+      const c = propsFor("c");
+      const d = propsFor("d");
+      await hook.render(c);
+      await hook.render(d);
+      await settle(c, "C");
+      assert.equal(hook.state().loading, true);
+      assert.equal(hook.state().data, null);
+      await settle(d, "D");
+      assert.equal(await visibleBytes(), "D");
+
+      const closing = propsFor("closing");
+      await hook.render(closing);
+      await hook.unmount();
+      unmounted = true;
+      await settle(closing, "after-unmount");
+      for (const url of blobs.keys()) {
+        assert.equal(revocations.filter((value) => value === url).length, 1, `${url} must be revoked exactly once`);
+      }
+    } finally {
+      if (!unmounted) await hook.unmount();
+      globalThis.fetch = originalFetch;
+      URL.createObjectURL = originalCreate;
+      URL.revokeObjectURL = originalRevoke;
+    }
+  });
+}
+
+test("HTML errors surface, empty HTML completes, and preview interaction state resets", async () => {
+  const hook = await mountPreviewHook();
+  const React = await import("react");
+  const originalFetch = globalThis.fetch;
+  const originalConsoleError = console.error;
+  console.error = () => {};
+  try {
+    globalThis.fetch = async () => new Response("failed", { status: 500 });
+    await hook.render({ path: "failed.html", previewUrl: "/api/ai/artifacts/failed-html/preview", onClose() {} });
+    await hook.flush();
+    assert.notEqual(hook.state().error, null);
+    assert.equal(hook.state().loading, false);
+    assert.equal(hook.state().htmlUrl, null);
+
+    await React.act(async () => {
+      hook.state().setViewSource(true);
+      hook.state().setShowImageViewer(true);
+    });
+    await hook.render({ path: "empty.html", content: "", onClose() {} });
+    assert.equal(hook.state().loading, false);
+    assert.equal(hook.state().error, null);
+    assert.equal(hook.state().htmlContent, "");
+    assert.ok(hook.state().htmlUrl);
+    assert.equal(hook.state().viewSource, false);
+    assert.equal(hook.state().showImageViewer, false);
+    const emptyIdentity = hook.state().previewIdentity;
+    await hook.render({ path: "empty.html", onClose() {} });
+    assert.notEqual(hook.state().previewIdentity, emptyIdentity);
+    assert.notEqual(hook.state().error, null);
+    assert.equal(hook.state().htmlUrl, null);
+  } finally {
+    await hook.unmount();
+    globalThis.fetch = originalFetch;
+    console.error = originalConsoleError;
+  }
+});
+
+test("explicit text MIME disambiguates TypeScript while MPEG transport streams stay video", async () => {
+  const hook = await mountPreviewHook();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response("export const value = 1;");
+  try {
+    for (const mimeType of ["text/typescript", "application/typescript", "text/plain; charset=utf-8"]) {
+      await hook.render({ path: "source.ts", mimeType, previewUrl: "/api/ai/artifacts/source/preview", onClose() {} });
+      await hook.flush();
+      assert.equal(hook.state().resolvedVideoFile, false, mimeType);
+      assert.equal(hook.state().resolvedBinaryFile, false, mimeType);
+      assert.equal(hook.state().videoUrl, null);
+      assert.equal(hook.state().data?.content, "export const value = 1;");
+    }
+    await hook.render({ path: "recording.ts", mimeType: "video/mp2t", previewUrl: "/api/ai/artifacts/recording/preview", onClose() {} });
+    await hook.flush();
+    assert.equal(hook.state().resolvedVideoFile, true);
+    assert.ok(hook.state().videoUrl);
+    assert.equal(hook.state().data?.content, "");
+  } finally {
+    await hook.unmount();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("an older clipboard completion cannot mark the replacement preview as copied", async () => {
+  const hook = await mountPreviewHook();
+  const pending = deferred<void>();
+  const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: () => pending.promise },
+  });
+  try {
+    await hook.render({ path: "a.txt", content: "A", onClose() {} });
+    const copied = hook.state().handleCopy();
+    await hook.render({ path: "b.txt", content: "B", onClose() {} });
+    pending.resolve();
+    await copied;
+    await hook.flush();
+    assert.equal(hook.state().copied, false);
+  } finally {
+    await hook.unmount();
+    if (originalClipboard) Object.defineProperty(navigator, "clipboard", originalClipboard);
+    else Reflect.deleteProperty(navigator, "clipboard");
+  }
+});

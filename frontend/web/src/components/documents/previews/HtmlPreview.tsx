@@ -1,6 +1,5 @@
-import { memo, useState, useEffect, useMemo } from "react";
+import { memo, useState, useMemo } from "react";
 import { Code, Eye } from "lucide-react";
-import { LoadingSpinner } from "../../common/LoadingSpinner";
 import { DeferredCodeMirrorViewer } from "../../common/DeferredCodeMirrorViewer";
 import { prepareHtmlPreviewContent } from "./htmlPreviewContent";
 import { useTranslation } from "react-i18next";
@@ -11,31 +10,11 @@ interface HtmlPreviewProps {
 
 const HtmlPreview = memo(function HtmlPreview({ content }: HtmlPreviewProps) {
   const { t } = useTranslation();
-  const [loading, setLoading] = useState(true);
   const [showSource, setShowSource] = useState(false);
   const previewContent = useMemo(
     () => prepareHtmlPreviewContent(content),
     [content],
   );
-
-  useEffect(() => {
-    if (content) {
-      setLoading(false);
-    }
-  }, [content]);
-
-  if (loading) {
-    return (
-      <div className="h-full w-full flex flex-col bg-white dark:bg-stone-900">
-        <div className="flex-1 flex items-center justify-center">
-          <LoadingSpinner size="lg" className="text-blue-500" />
-          <span className="ml-2 text-stone-500 dark:text-stone-400">
-            {t("documents.loadingFileContent")}
-          </span>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="h-full w-full flex flex-col bg-white dark:bg-stone-900">
