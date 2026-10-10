@@ -169,6 +169,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_admin_run_detail.py",
         "tests/test_admin_part_messages.py",
         "tests/test_admin_runtime_routes.py",
+        "tests/test_auth_principal.py",
         "tests/test_chat_selected_skill_routing.py",
         "tests/test_claude_agent_events.py",
         "tests/test_lambchat_frontend_compat.py::test_lambchat_history_restores_strict_v4_commentary_as_work_summary",
