@@ -26,6 +26,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from app.sandbox_hardening_contract import SANDBOX_HARDENING_ACCEPTANCE_BLOCKER  # noqa: E402
+
+
 SENSITIVE_PATTERNS = [
     re.compile(r"/var/run/docker\.sock", re.IGNORECASE),
     re.compile(r"%2Fvar%2Frun%2Fdocker\.sock", re.IGNORECASE),
@@ -734,7 +737,7 @@ def _resource_limits_hardening_error(section: dict[str, Any], *, run_id: str) ->
     ):
         if section.get(field) is not True:
             return f"hardening evidence missing: resource_limits.{field}"
-    return "hardening evidence blocked: resource_limits.bounded_error_projection_observer"
+    return SANDBOX_HARDENING_ACCEPTANCE_BLOCKER
 
 
 def _egress_policy_hardening_error(section: dict[str, Any]) -> str | None:

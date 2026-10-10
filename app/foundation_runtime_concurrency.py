@@ -34,12 +34,31 @@ _DEFAULT_INVARIANTS = {
 }
 _DENIED_HTTP_STATUSES = {401, 403, 404}
 _SUCCESS_HTTP_STATUSES = {200, 202, 204, 409}
-_CANCEL_EFFECT_STATUSES = {"cancel_requested", "cancelled", "canceled"}
 _CONCURRENCY_PROBE_SOURCES = {"client_case_timestamps"}
 _QUEUE_PROBE_SOURCES = {"redis_metadata", "admin_runtime_queue"}
 _SANDBOX_LEASE_PROBE_SOURCES = {"runtime_run_detail"}
 _REVISION_REF_RE = re.compile(r"^[0-9a-f]{40}(?:[-A-Za-z0-9_.:]*)?$")
 _TERMINAL_FAILURE_LIMIT = 20
+_CHECK_COUNT_FIELDS = {
+    "queue_admission": (
+        "admission_limit_violations", "cross_tenant_queue_leaks", "stale_queue_entries",
+        "queue_position_sample_count", "queue_probe_sample_count", "queue_position_duplicate_count",
+        "cancel_effect_run_count", "retry_created_run_count",
+    ),
+    "sandbox_workspace": (
+        "workspace_scope_sample_count", "sandbox_lease_sample_count", "active_lease_count",
+        "cross_scope_lease_leaks", "workspace_scope_collisions",
+    ),
+    "memory_context": (
+        "context_snapshot_count", "context_snapshot_public_projection_count",
+        "context_pack_version_sample_count", "missing_context_pack_version_count",
+        "unsafe_context_pack_version_count", "context_scope_probe_count", "cross_scope_context_leaks",
+    ),
+    "skill_snapshots": (
+        "run_skill_snapshot_count", "snapshot_binding_sample_count", "run_sample_count", "used_count",
+    ),
+    "run_playback": ("event_order_violations", "private_payload_leak_count"),
+}
 
 
 def _requirements() -> dict[str, Any]:
@@ -78,20 +97,16 @@ def _safe_list(value: Any) -> list[Any]:
 
 
 def _all_denied(values: Any) -> bool:
-    statuses = [item for item in _safe_list(values) if type(item) is int]
-    return bool(statuses) and all(status in _DENIED_HTTP_STATUSES for status in statuses)
+    return _all_http_statuses(values, _DENIED_HTTP_STATUSES)
 
 
 def _has_success_sample(values: Any) -> bool:
-    statuses = [item for item in _safe_list(values) if type(item) is int]
-    return bool(statuses) and all(status in _SUCCESS_HTTP_STATUSES for status in statuses)
+    return _all_http_statuses(values, _SUCCESS_HTTP_STATUSES)
 
 
-def _cancel_effect_sample_count(values: Any) -> int:
-    return sum(
-        1
-        for item in _safe_list(values)
-        if isinstance(item, str) and item.strip().lower() in _CANCEL_EFFECT_STATUSES
+def _all_http_statuses(values: Any, allowed: set[int]) -> bool:
+    return isinstance(values, list) and bool(values) and all(
+        type(value) is int and value in allowed for value in values
     )
 
 
@@ -201,7 +216,9 @@ def _validate_evidence(evidence: dict[str, Any] | None) -> tuple[list[str], dict
         if scenario_counts[name] <= 0:
             failures.append(f"scenario_{name}_missing")
 
-    if _safe_int(evidence.get("failed_case_count")) > 0 or _safe_list(evidence.get("failed_cases")):
+    if type(evidence.get("failed_case_count")) is not int or evidence["failed_case_count"] < 0:
+        failures.append("invalid_count_failed_case_count")
+    if _safe_int(evidence.get("failed_case_count")) > 0 or evidence.get("failed_cases") != []:
         failures.append("foundation_runtime_case_failures")
     terminal_run_failures = _terminal_run_failures(evidence)
     if terminal_run_failures:
@@ -211,6 +228,10 @@ def _validate_evidence(evidence: dict[str, Any] | None) -> tuple[list[str], dict
     for name, check in checks.items():
         if check.get("status") != "passed":
             failures.append(f"check_{name}_not_passed")
+        for field in _CHECK_COUNT_FIELDS.get(name, ()):
+            value = check.get(field)
+            if type(value) is not int or value < 0:
+                failures.append(f"invalid_count_{name}_{field}")
 
     queue_admission = checks["queue_admission"]
     if _safe_int(queue_admission.get("admission_limit_violations")) > 0:
@@ -225,13 +246,11 @@ def _validate_evidence(evidence: dict[str, Any] | None) -> tuple[list[str], dict
         failures.append("queue_admission_probe_samples_missing")
     if _safe_int(queue_admission.get("queue_position_duplicate_count")) > 0:
         failures.append("queue_admission_position_duplicate")
-    if queue_admission.get("queue_probe_source") not in _QUEUE_PROBE_SOURCES:
+    if queue_admission.get("queue_probe_source") not in tuple(_QUEUE_PROBE_SOURCES):
         failures.append("queue_admission_probe_source_missing")
     if not _has_success_sample(queue_admission.get("cancel_action_statuses")):
         failures.append("run_control_cancel_samples_missing")
     cancel_effect_run_count = _safe_int(queue_admission.get("cancel_effect_run_count"))
-    if cancel_effect_run_count == 0:
-        cancel_effect_run_count = _cancel_effect_sample_count(queue_admission.get("cancel_effect_statuses"))
     if cancel_effect_run_count < max(1, scenario_counts["cancel"]):
         failures.append("run_control_cancel_effect_missing")
     if not _has_success_sample(queue_admission.get("retry_action_statuses")):
@@ -244,7 +263,7 @@ def _validate_evidence(evidence: dict[str, Any] | None) -> tuple[list[str], dict
         failures.append("sandbox_workspace_samples_missing")
     if _safe_int(sandbox.get("sandbox_lease_sample_count")) < summary["run_count"]:
         failures.append("sandbox_lease_samples_missing")
-    if sandbox.get("lease_probe_source") not in _SANDBOX_LEASE_PROBE_SOURCES:
+    if sandbox.get("lease_probe_source") not in tuple(_SANDBOX_LEASE_PROBE_SOURCES):
         failures.append("sandbox_lease_probe_source_missing")
     if _safe_int(sandbox.get("cross_scope_lease_leaks")) > 0:
         failures.append("sandbox_lease_cross_scope_leak")
@@ -262,7 +281,7 @@ def _validate_evidence(evidence: dict[str, Any] | None) -> tuple[list[str], dict
         failures.append("memory_context_pack_version_missing")
     if _safe_int(memory_context.get("unsafe_context_pack_version_count")) > 0:
         failures.append("memory_context_pack_version_unsafe")
-    if _safe_list(memory_context.get("missing_public_summary_fields")):
+    if memory_context.get("missing_public_summary_fields") != []:
         failures.append("memory_context_public_summary_fields_missing")
     if _safe_int(memory_context.get("context_scope_probe_count")) < summary["run_count"]:
         failures.append("memory_context_scope_probe_missing")
@@ -272,6 +291,16 @@ def _validate_evidence(evidence: dict[str, Any] | None) -> tuple[list[str], dict
         failures.append("long_term_cross_session_memory_not_fail_closed")
 
     artifact_acl = checks["artifact_acl"]
+    if not _all_http_statuses(artifact_acl.get("owner_statuses"), {200}):
+        failures.append("artifact_owner_download_not_successful")
+    owner_bytes = artifact_acl.get("owner_bytes")
+    if (
+        not isinstance(owner_bytes, list)
+        or not owner_bytes
+        or len(owner_bytes) != len(_safe_list(artifact_acl.get("owner_statuses")))
+        or any(type(value) is not int or value <= 0 for value in owner_bytes)
+    ):
+        failures.append("artifact_owner_download_bytes_missing_or_invalid")
     if (
         not _safe_list(artifact_acl.get("owner_statuses"))
         or not _safe_list(artifact_acl.get("cross_user_statuses"))
@@ -290,18 +319,31 @@ def _validate_evidence(evidence: dict[str, Any] | None) -> tuple[list[str], dict
         failures.append("artifact_preview_cross_tenant_not_denied")
 
     skill_snapshots = checks["skill_snapshots"]
+    if _safe_int(skill_snapshots.get("run_sample_count")) < summary["run_count"]:
+        failures.append("skill_snapshot_run_samples_missing")
     if _safe_int(skill_snapshots.get("run_skill_snapshot_count")) < summary["run_count"]:
         failures.append("skill_snapshots_missing_for_runs")
     if _safe_int(skill_snapshots.get("snapshot_binding_sample_count")) < summary["run_count"]:
         failures.append("skill_snapshot_binding_samples_missing")
-    if _safe_list(skill_snapshots.get("missing_pinned_snapshots")):
+    if skill_snapshots.get("missing_pinned_snapshots") != []:
         failures.append("skill_snapshots_missing_pinned_snapshot")
-    if _safe_list(skill_snapshots.get("mismatched_pinned_snapshots")):
+    if skill_snapshots.get("mismatched_pinned_snapshots") != []:
         failures.append("skill_snapshots_mismatched_pinned_snapshot")
     if skill_snapshots.get("global_mutable_skill_lookup_used") is not False:
         failures.append("skill_snapshots_used_global_mutable_lookup")
+    if (
+        _safe_int(skill_snapshots.get("used_count")) > _safe_int(skill_snapshots.get("run_skill_snapshot_count"))
+        or _safe_int(skill_snapshots.get("snapshot_binding_sample_count"))
+        != _safe_int(skill_snapshots.get("run_skill_snapshot_count"))
+    ):
+        failures.append("skill_snapshot_counts_inconsistent")
 
     playback = checks["run_playback"]
+    if (
+        not _all_http_statuses(playback.get("http_statuses"), {200})
+        or len(_safe_list(playback.get("http_statuses"))) < summary["run_count"]
+    ):
+        failures.append("run_playback_http_samples_missing_or_failed")
     if _safe_int(playback.get("event_order_violations")) > 0:
         failures.append("run_playback_event_order_violation")
     if _safe_int(playback.get("private_payload_leak_count")) > 0:
@@ -325,10 +367,10 @@ def _validate_evidence(evidence: dict[str, Any] | None) -> tuple[list[str], dict
             failures.append("ordinary_user_multi_agent_opened")
         if role_provenance.get("public_probe_role") != "user":
             failures.append("public_probe_role_not_user")
-        if role_provenance.get("run_creation_role") not in {"user", "developer"}:
+        if role_provenance.get("run_creation_role") not in ("user", "developer"):
             failures.append("invalid_run_creation_role")
         admin_probe_role = role_provenance.get("admin_probe_role")
-        if admin_probe_role not in {None, "developer"}:
+        if admin_probe_role not in (None, "developer"):
             failures.append("invalid_admin_probe_role")
 
     return failures, {

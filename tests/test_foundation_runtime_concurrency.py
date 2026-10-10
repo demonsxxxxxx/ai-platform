@@ -1,3 +1,5 @@
+import pytest
+
 import ast
 import json
 from pathlib import Path
@@ -17,6 +19,8 @@ def complete_evidence(**overrides):
     payload = {
         "schema_version": FOUNDATION_RUNTIME_CONCURRENCY_SCHEMA,
         "artifact_kind": "foundation_runtime_concurrency",
+        "failed_case_count": 0,
+        "failed_cases": [],
         "commit_sha": "3843395b180324b165cbca7c59b6d7e1a934e290",
         "runtime_subject_commit_sha": "ac9a86bbea14a28748867cade8d80b2f9ff420ec",
         "source_tree_commit_sha": "3843395b180324b165cbca7c59b6d7e1a934e290",
@@ -76,6 +80,7 @@ def complete_evidence(**overrides):
             "artifact_acl": {
                 "status": "passed",
                 "owner_statuses": [200, 200, 200],
+                "owner_bytes": [8, 8, 8],
                 "cross_user_statuses": [404, 404],
                 "cross_tenant_statuses": [404, 404],
                 "preview_cross_user_statuses": [404],
@@ -84,6 +89,7 @@ def complete_evidence(**overrides):
             "skill_snapshots": {
                 "status": "passed",
                 "run_skill_snapshot_count": 12,
+                "run_sample_count": 12,
                 "used_count": 12,
                 "missing_pinned_snapshots": [],
                 "mismatched_pinned_snapshots": [],
@@ -92,6 +98,7 @@ def complete_evidence(**overrides):
             },
             "run_playback": {
                 "status": "passed",
+                "http_statuses": [200] * 12,
                 "event_order_violations": 0,
                 "private_payload_leak_count": 0,
             },
@@ -375,3 +382,79 @@ def test_foundation_runtime_concurrency_markdown_names_blocked_expansions():
     assert "broaden ordinary-user platform-level multi-run orchestration exposure" in markdown
     assert "open ordinary-user multi-agent" not in markdown
     assert "verified_foundation_runtime_concurrency" in markdown
+
+
+@pytest.mark.parametrize("value", [None, -1, True, False, "0", 0.0])
+@pytest.mark.parametrize("section,field", [
+    ("queue_admission", "admission_limit_violations"),
+    ("queue_admission", "cancel_effect_run_count"),
+    ("sandbox_workspace", "cross_scope_lease_leaks"),
+    ("memory_context", "unsafe_context_pack_version_count"),
+    ("skill_snapshots", "used_count"),
+    ("run_playback", "event_order_violations"),
+    ("run_playback", "private_payload_leak_count"),
+])
+def test_foundation_runtime_concurrency_rejects_missing_or_malformed_counts(section, field, value):
+    evidence = complete_evidence()
+    if value is None:
+        evidence["checks"][section].pop(field)
+    else:
+        evidence["checks"][section][field] = value
+
+    readiness = build_foundation_runtime_concurrency_readiness(evidence)
+
+    assert readiness["verified"] is False
+    assert f"invalid_count_{section}_{field}" in readiness["failures"]
+
+
+@pytest.mark.parametrize("value", [None, -1, True, "0", 0.0])
+def test_foundation_runtime_concurrency_requires_explicit_failed_case_count(value):
+    evidence = complete_evidence()
+    if value is None:
+        evidence.pop("failed_case_count")
+    else:
+        evidence["failed_case_count"] = value
+
+    readiness = build_foundation_runtime_concurrency_readiness(evidence)
+
+    assert readiness["verified"] is False
+    assert "invalid_count_failed_case_count" in readiness["failures"]
+
+
+@pytest.mark.parametrize("section,field,value,failure", [
+    ("artifact_acl", "owner_statuses", [500], "artifact_owner_download_not_successful"),
+    ("artifact_acl", "owner_statuses", [200, "200"], "artifact_owner_download_not_successful"),
+    ("artifact_acl", "owner_bytes", [8, 0, 8], "artifact_owner_download_bytes_missing_or_invalid"),
+    ("artifact_acl", "owner_bytes", [8, -1, 8], "artifact_owner_download_bytes_missing_or_invalid"),
+    ("artifact_acl", "owner_bytes", [8, True, 8], "artifact_owner_download_bytes_missing_or_invalid"),
+    ("artifact_acl", "owner_bytes", None, "artifact_owner_download_bytes_missing_or_invalid"),
+    ("artifact_acl", "cross_user_statuses", [404, "404"], "artifact_acl_cross_user_not_denied"),
+    ("artifact_acl", "cross_tenant_statuses", [404, None], "artifact_acl_cross_tenant_not_denied"),
+    ("queue_admission", "cancel_action_statuses", [200, True], "run_control_cancel_samples_missing"),
+    ("queue_admission", "retry_action_statuses", [200, "200"], "run_control_retry_samples_missing"),
+    ("run_playback", "http_statuses", [200] * 11 + [503], "run_playback_http_samples_missing_or_failed"),
+    ("run_playback", "http_statuses", [200] * 11 + [True], "run_playback_http_samples_missing_or_failed"),
+    ("run_playback", "http_statuses", [200] * 11, "run_playback_http_samples_missing_or_failed"),
+    ("run_playback", "http_statuses", None, "run_playback_http_samples_missing_or_failed"),
+    ("skill_snapshots", "run_sample_count", 11, "skill_snapshot_run_samples_missing"),
+    ("skill_snapshots", "missing_pinned_snapshots", None, "skill_snapshots_missing_pinned_snapshot"),
+    ("skill_snapshots", "mismatched_pinned_snapshots", False, "skill_snapshots_mismatched_pinned_snapshot"),
+])
+def test_foundation_runtime_concurrency_does_not_trust_passed_summary(section, field, value, failure):
+    evidence = complete_evidence()
+    if value is None:
+        evidence["checks"][section].pop(field)
+    else:
+        evidence["checks"][section][field] = value
+
+    readiness = build_foundation_runtime_concurrency_readiness(evidence)
+
+    assert readiness["verified"] is False
+    assert failure in readiness["failures"]
+
+
+def test_foundation_runtime_concurrency_accepts_pinned_skills_without_fabricating_usage():
+    evidence = complete_evidence()
+    evidence["checks"]["skill_snapshots"]["used_count"] = 0
+
+    assert build_foundation_runtime_concurrency_readiness(evidence)["verified"] is True
