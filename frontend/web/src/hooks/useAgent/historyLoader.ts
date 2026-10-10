@@ -960,8 +960,13 @@ export function mergeHydratedRunSegment(
           part.type === "artifact" &&
           !authoritativeArtifactIds.has(part.artifact_id),
       );
-      const recoveredOtherParts = (recovered.parts || []).filter(
-        (part) => part.type !== "text" && part.type !== "artifact",
+      // Preserve the authoritative sequence, including delivered artifacts and
+      // interleaved work/status parts. Only absent safe live sources are added
+      // below; grouping text separately would discard files or reorder history.
+      const authoritativeParts = (recovered.parts || []).filter(
+        (part) =>
+          part.type !== "text" ||
+          (Boolean(part.content) && assistantTextPartRole(part) !== null),
       );
       const recoveredHasTerminalDetail = (recovered.parts || []).some(
         (part) =>
@@ -971,10 +976,9 @@ export function mergeHydratedRunSegment(
       const recoveredHasLegacyAnswer =
         Boolean(recovered.content.trim()) && !recoveredHasTerminalDetail;
       const parts = [
-        ...authoritativeTextParts,
+        ...authoritativeParts,
         ...missingPreviousTextParts,
         ...missingPreviousArtifacts,
-        ...recoveredOtherParts,
       ];
       const attachments = [...(recovered.attachments || [])];
       const attachmentIds = new Set(attachments.map((attachment) => attachment.id));
