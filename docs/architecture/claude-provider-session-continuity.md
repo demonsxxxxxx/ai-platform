@@ -53,10 +53,12 @@ This change is limited to:
 - Claude prompt/adapter composition;
 - Worker pre-dispatch and maintenance composition;
 - Runs terminal composition previously coupled to checkpoint usage;
+- the additive nullable JSON transcript representation migration and readiness
+  check described below;
 - owning tests and these architecture documents.
 
 No frontend, SSE wire, public message schema, provider callback request/response
-schema, database migration, or deployment change is in scope. The cancellation
+schema, or deployment change is in scope. The cancellation
 drain qualification is limited to native append persistence; current tool,
 input and history-load authorization remains unchanged.
 
