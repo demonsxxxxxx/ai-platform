@@ -59,6 +59,7 @@ from app.streaming.api import (
     V4StreamEntry,
     live_redis_id_is_after,
     project_persisted_message_delta_v4,
+    project_persisted_message_lifecycle_v4,
     project_persisted_message_part_v4,
     validate_public_application_payload_v4,
     _project_validated_internal_envelope_v4,
@@ -1244,24 +1245,35 @@ def _compatibility_events_for_run_page(
             else:
                 emit_answer_event(event, answer_event)
             continue
-        if raw_event_type in {"message.part.delta", "message.part.classified"}:
-            part_event = _persisted_v4_message_part_event(run, event)
-            if part_event is None:
+        if raw_event_type in {
+            "message.started", "message.completed",
+            "message.part.delta", "message.part.classified",
+        }:
+            lifecycle = raw_event_type in {"message.started", "message.completed"}
+            if lifecycle and event.get("v4_attempt_authorized") is not True:
+                continue  # Unmarked legacy lifecycle rows were never public history.
+            message_event = (
+                project_persisted_message_lifecycle_v4(
+                    event, tenant_id=str(run.get("tenant_id") or ""), run_id=run_id,
+                )
+                if lifecycle
+                else _persisted_v4_message_part_event(run, event)
+            )
+            if message_event is None or not isinstance(message_event.get("payload"), dict):
                 raise HTTPException(
-                    status_code=500, detail="history_part_event_invalid"
+                    status_code=500,
+                    detail=(
+                        "history_message_lifecycle_invalid"
+                        if lifecycle else "history_part_event_invalid"
+                    ),
                 )
             flush_pending_answer_events()
-            part_payload = part_event.get("payload")
-            if not isinstance(part_payload, dict):
-                raise HTTPException(
-                    status_code=500, detail="history_part_event_invalid"
-                )
-            event_type = str(part_event["event_type"])
+            event_type = str(message_event["event_type"])
             compatibility_events.append(
                 _CompatibilityWireEvent(
-                    id=str(part_event["event_id"]),
+                    id=str(message_event["event_id"]),
                     stream_event_type=event_type,
-                    stream_data=part_event,
+                    stream_data=message_event,
                     history_event={
                         "id": event["id"],
                         "schema_version": EVENT_ENVELOPE_SCHEMA_VERSION,
@@ -1271,9 +1283,9 @@ def _compatibility_events_for_run_page(
                         "stage": "answer",
                         "severity": "info",
                         "visible_to_user": True,
-                        "payload": part_payload,
-                        "sequence": part_event["seq"],
-                        "data": part_event,
+                        "payload": message_event["payload"],
+                        "sequence": message_event["seq"],
+                        "data": message_event,
                         "timestamp": event.get("created_at"),
                         "run_id": run_id,
                     },

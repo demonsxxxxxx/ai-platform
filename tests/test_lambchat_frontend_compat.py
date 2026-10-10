@@ -3859,14 +3859,15 @@ def test_frontend_public_terminal_catalog_matches_backend_allowlist():
     assert "getPublicTerminalPresentationDefinition" in renderer_source
 
 
-def test_session_event_pages_project_authorized_run_columns_on_every_page(monkeypatch):
+@pytest.mark.parametrize("status", ["succeeded", "failed"])
+def test_session_event_pages_project_authorized_run_columns_on_every_page(monkeypatch, status):
     from app.streaming.api import opaque_message_id
 
     run = {
         "id": "run-parts", "tenant_id": "default", "workspace_id": "workspace-a",
         "user_id": "user-a", "session_id": "ses_a", "agent_id": "general-agent",
         "trace_id": "trace-parts", "schema_version": "v1", "execution_kind": "harness_chat",
-        "skill_id": None, "status": "succeeded", "error_code": None,
+        "skill_id": None, "status": status, "error_code": None,
         "error_message": None, "created_at": "2026-10-08T00:00:00Z",
         "queued_at": None, "started_at": None, "finished_at": "2026-10-08T00:01:00Z",
         "result_json": {}, "session_generation": 1,
@@ -3887,14 +3888,28 @@ def test_session_event_pages_project_authorized_run_columns_on_every_page(monkey
                 },
             },
         }
-        for sequence in range(1, 102)
+        for sequence in range(2, 103)
     ]
+    events.insert(0, {
+        **events[0], "id": "evt4_part_started", "sequence": 1,
+        "event_type": "message.started",
+        "payload_json": {"__stream_v4": events[0]["payload_json"]["__stream_v4"]},
+    })
     events.append({
-        **events[-1], "id": "evt4_part_classified", "sequence": 102,
+        **events[-1], "id": "evt4_part_classified", "sequence": 103,
         "event_type": "message.part.classified",
         "payload_json": {**events[-1]["payload_json"], "role": "answer"},
     })
     del events[-1]["payload_json"]["delta"]
+    if status == "succeeded":
+        events.append({
+            **events[-1], "id": "evt4_part_completed", "sequence": 104,
+            "event_type": "message.completed",
+            "payload_json": {
+                "delta_count": 101, "text_length": 101,
+                "__stream_v4": events[-1]["payload_json"]["__stream_v4"],
+            },
+        })
 
     class ProjectedCursor:
         def __init__(self, rows):
@@ -3941,10 +3956,12 @@ def test_session_event_pages_project_authorized_run_columns_on_every_page(monkey
 
     async def sequence_bounds(_conn, *, tenant_id, run_ids):
         assert (tenant_id, run_ids) == ("default", [run["id"]])
-        return {run["id"]: 102}
+        return {run["id"]: events[-1]["sequence"]}
 
     async def run_events(_conn, *, tenant_id, run_id, after_sequence, limit, through_sequence):
-        assert (tenant_id, run_id, through_sequence) == ("default", run["id"], 102)
+        assert (tenant_id, run_id, through_sequence) == (
+            "default", run["id"], events[-1]["sequence"],
+        )
         return [event for event in events if event["sequence"] > after_sequence][:limit]
 
     async def no_artifacts(_conn, *, tenant_id, run_id):
@@ -3972,13 +3989,43 @@ def test_session_event_pages_project_authorized_run_columns_on_every_page(monkey
         pages = fetch_session_event_pages(client, params=params)
         assert len(pages) == 2
         assert pages[0]["next_cursor"] and pages[1]["next_cursor"] is None
-        assert pages[1]["terminal_run_statuses"] == {run["id"]: "succeeded"}
+        assert pages[1]["terminal_run_statuses"] == {run["id"]: status}
         projected = [event for page in pages for event in page["events"]]
-        assert [event["event_type"] for event in projected if event["event_type"].startswith("message.part.")] == [
-            *["message.part.delta"] * 101, "message.part.classified",
+        assert [
+            event["event_type"] for event in projected
+            if event["event_type"] in {
+                "message.started", "message.part.delta",
+                "message.part.classified", "message.completed",
+            }
+        ] == [
+            "message.started", *["message.part.delta"] * 101,
+            "message.part.classified",
+            *(["message.completed"] if status == "succeeded" else []),
         ]
+        assert [
+            event["sequence"] for event in projected
+            if event["event_type"].startswith("message.")
+        ] == list(range(1, events[-1]["sequence"] + 1))
+        started = next(event for event in projected if event["event_type"] == "message.started")
+        assert started["data"]["message_id"] == opaque_message_id("default", run["id"])
+        assert started["data"]["payload"] == {}
+        assert "__stream_v4" not in str(projected)
+        assert "attempt_id" not in str(projected)
         assert "tenant_id" not in str(projected)
     assert len(conn.queries) == 3
+
+    events[0] = {
+        **events[0],
+        "payload_json": {**events[0]["payload_json"], "private_payload": "hidden"},
+    }
+    invalid = client.get(
+        "/api/sessions/ses_a/events",
+        params={"run_id": run["id"]},
+        headers=auth_headers(),
+    )
+    assert invalid.status_code == 500
+    assert invalid.json()["detail"] == "history_message_lifecycle_invalid"
+    assert "hidden" not in invalid.text
 
 
 def test_lambchat_session_event_pages_preserve_large_v4_history_and_compaction(

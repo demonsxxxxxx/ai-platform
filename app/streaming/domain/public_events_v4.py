@@ -702,20 +702,19 @@ def project_public_envelope_v4(
     return _project_validated_internal_envelope_v4(internal)
 
 
-def project_persisted_message_delta_v4(
+def _project_persisted_message_v4(
     row: Mapping[str, object],
     *,
     tenant_id: str,
     run_id: str,
+    event_types: frozenset[str],
 ) -> dict[str, object] | None:
-    """Authorize one managed historical row and return its public delta envelope."""
-
     try:
         if (
             row.get("tenant_id") != tenant_id
             or row.get("run_id") != run_id
             or row.get("v4_attempt_authorized") is not True
-            or row.get("event_type") != "message.delta"
+            or row.get("event_type") not in event_types
         ):
             return None
         metadata = _metadata(row)
@@ -741,13 +740,23 @@ def project_persisted_message_delta_v4(
             if projected is not None
             else None
         )
-        return (
-            public
-            if public is not None and public.get("event_type") == "message.delta"
-            else None
-        )
+        return public if public is not None and public.get("event_type") in event_types else None
     except V4ProjectionError:
         return None
+
+
+def project_persisted_message_delta_v4(
+    row: Mapping[str, object],
+    *,
+    tenant_id: str,
+    run_id: str,
+) -> dict[str, object] | None:
+    """Authorize one managed historical row and return its public delta envelope."""
+
+    return _project_persisted_message_v4(
+        row, tenant_id=tenant_id, run_id=run_id,
+        event_types=frozenset({"message.delta"}),
+    )
 
 
 def project_persisted_message_part_v4(
@@ -758,47 +767,24 @@ def project_persisted_message_part_v4(
 ) -> dict[str, object] | None:
     """Authorize and project one persisted assistant text-part fact for history."""
 
-    try:
-        if (
-            row.get("tenant_id") != tenant_id
-            or row.get("run_id") != run_id
-            or row.get("v4_attempt_authorized") is not True
-            or row.get("event_type")
-            not in {"message.part.delta", "message.part.classified"}
-        ):
-            return None
-        metadata = _metadata(row)
-        if metadata is None:
-            return None
-        attempt_id = _safe_ref(metadata.get("attempt_id"), name="attempt_id")
-        stream_incarnation = _positive_int(
-            metadata.get("stream_incarnation"), name="stream_incarnation"
-        )
-        authorization_epoch = _positive_int(
-            metadata.get("authorization_epoch"), name="authorization_epoch"
-        )
-        authority = _PersistedHistoryAuthority(
-            tenant_id=tenant_id,
-            run_id=run_id,
-            attempt_id=attempt_id,
-            stream_incarnation=stream_incarnation,
-            authorization_epoch=authorization_epoch,
-        )
-        projected = project_public_v4(row, authority=authority)
-        public = (
-            _project_validated_internal_envelope_v4(projected)
-            if projected is not None
-            else None
-        )
-        return (
-            public
-            if public is not None
-            and public.get("event_type")
-            in {"message.part.delta", "message.part.classified"}
-            else None
-        )
-    except V4ProjectionError:
-        return None
+    return _project_persisted_message_v4(
+        row, tenant_id=tenant_id, run_id=run_id,
+        event_types=frozenset({"message.part.delta", "message.part.classified"}),
+    )
+
+
+def project_persisted_message_lifecycle_v4(
+    row: Mapping[str, object],
+    *,
+    tenant_id: str,
+    run_id: str,
+) -> dict[str, object] | None:
+    """Authorize and project the public start/completion of a persisted message."""
+
+    return _project_persisted_message_v4(
+        row, tenant_id=tenant_id, run_id=run_id,
+        event_types=frozenset({"message.started", "message.completed"}),
+    )
 
 
 __all__ = [
@@ -808,6 +794,7 @@ __all__ = [
     "build_v4_control",
     "opaque_message_id",
     "project_persisted_message_delta_v4",
+    "project_persisted_message_lifecycle_v4",
     "project_persisted_message_part_v4",
     "project_public_envelope_v4",
     "project_public_v4",
