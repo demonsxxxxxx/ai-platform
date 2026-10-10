@@ -5796,7 +5796,7 @@ async def test_reconciler_conversion_timing_keeps_actual_selected_file_storage_s
     monkeypatch.setattr(executor_reconciler, "_reconciliation_request", lambda *_args: object())
     monkeypatch.setattr(executor_reconciler, "SandboxWorkspaceManager", lambda: types.SimpleNamespace(
         prepare=lambda _request: types.SimpleNamespace(workspace_host_path=str(tmp_path))))
-    monkeypatch.setattr(executor_reconciler, "container_lease_from_persisted_row", lambda _row: Lease())
+    monkeypatch.setattr(executor_reconciler._sandbox_cleanup, "container_lease_from_persisted_row", lambda _row: Lease())
     monkeypatch.setattr(executor_reconciler, "_container_provider_for_lease", lambda _lease: Provider())
     monkeypatch.setattr(executor_reconciler, "_reserve_reconciliation_artifact_cleanup", reserve_cleanup)
     registry = AdapterRegistry({"claude-agent-worker": ClaudeAgentWorkerAdapter()})
