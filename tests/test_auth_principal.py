@@ -397,3 +397,109 @@ def test_require_principal_accepts_frontend_poc_principal_only_when_enabled(monk
 
     assert response.status_code == 200
     assert response.json() == {"user_id": "poc-user", "source": "frontend-poc"}
+
+
+async def _raw_header_auth_response(headers: list[tuple[bytes, bytes]]) -> tuple[int, dict]:
+    """Exercise ASGI's Latin-1 header decoding without an ASCII-only HTTP client."""
+    events = []
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(event):
+        events.append(event)
+
+    await _browser_authority_app()(
+        {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": "http",
+            "path": "/auth/me",
+            "raw_path": b"/auth/me",
+            "query_string": b"",
+            "root_path": "",
+            "headers": headers,
+            "client": ("127.0.0.1", 12345),
+            "server": ("testserver", 80),
+        },
+        receive,
+        send,
+    )
+    status_code = next(event["status"] for event in events if event["type"] == "http.response.start")
+    body = b"".join(event.get("body", b"") for event in events if event["type"] == "http.response.body")
+    return status_code, json.loads(body)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "authorization",
+    [
+        b"Bearer a.b.c",
+        b"Bearer a.b",
+        b"Bearer \xe9.b.c",
+        b"Bearer a.\xe9.c",
+        b"Bearer \xe9.c",
+        b"Bearer a.b.\xe9",
+        b"Bearer a.\xe9",
+        b"Bearer a.b.%",
+    ],
+)
+async def test_raw_asgi_malformed_bearer_is_unauthorized(monkeypatch, authorization):
+    monkeypatch.setattr(auth_module, "get_settings", session_settings)
+
+    status_code, body = await _raw_header_auth_response([(b"authorization", authorization)])
+
+    assert status_code == 401
+    assert body == {"detail": "invalid_session"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("gateway_secret", [b"wrong", b"\xe9", b"secret\xff"])
+async def test_raw_asgi_malformed_gateway_secret_is_forbidden(monkeypatch, gateway_secret):
+    monkeypatch.setattr(auth_module, "get_settings", session_settings)
+
+    status_code, body = await _raw_header_auth_response(
+        [(b"x-ai-user-id", b"synthetic-user"), (b"x-ai-gateway-secret", gateway_secret)]
+    )
+
+    assert status_code == 403
+    assert body == {"detail": "invalid_gateway_principal_secret"}
+
+
+@pytest.mark.asyncio
+async def test_raw_asgi_gateway_secret_comparison_handles_nonascii_configuration(monkeypatch):
+    configured = session_settings()
+    configured.trusted_principal_secret = "synthetic-\u00e9-secret"
+    monkeypatch.setattr(auth_module, "get_settings", lambda: configured)
+
+    status_code, body = await _raw_header_auth_response(
+        [(b"x-ai-user-id", b"synthetic-user"), (b"x-ai-gateway-secret", b"wrong")]
+    )
+
+    assert status_code == 403
+    assert body == {"detail": "invalid_gateway_principal_secret"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_two_part", [False, True])
+async def test_raw_asgi_valid_signed_session_keeps_both_supported_shapes(monkeypatch, legacy_two_part):
+    monkeypatch.setattr(auth_module, "get_settings", session_settings)
+    principal = AuthPrincipal("synthetic-user", "Synthetic User", "default")
+    token = sign_principal_session(principal)
+    if legacy_two_part:
+        payload_part = token.split(".")[1]
+        signature = hmac.new(
+            session_settings().ai_session_secret.encode("utf-8"),
+            payload_part.encode("ascii"),
+            hashlib.sha256,
+        ).digest()
+        token = f"{payload_part}.{auth_module._b64url_encode(signature)}"
+
+    status_code, body = await _raw_header_auth_response(
+        [(b"authorization", f"Bearer {token}".encode("ascii"))]
+    )
+
+    assert status_code == 200
+    assert body["user_id"] == principal.user_id
