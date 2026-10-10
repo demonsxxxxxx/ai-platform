@@ -113,8 +113,7 @@ def _safe_negative_or_redacted_value(value: Any) -> bool:
     if value is False or value is None:
         return True
     if isinstance(value, str):
-        lowered = value.lower()
-        return any(marker in lowered for marker in _ALLOWED_REDACTED_MARKERS)
+        return value.strip().lower() in _ALLOWED_REDACTED_MARKERS
     return False
 
 
@@ -239,7 +238,7 @@ def build_release_evidence_export_acceptance(
         blocker_codes.append("evidence_root_missing")
     elif blockers:
         status = "blocked_forbidden_evidence" if "forbidden_marker_detected" in blocker_codes else "blocked_invalid_evidence"
-    elif entry_count == 0:
+    elif not entries:
         status = "blocked_no_evidence_entries"
         blocker_codes.append("no_evidence_entries")
 
