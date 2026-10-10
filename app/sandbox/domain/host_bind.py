@@ -249,11 +249,15 @@ def _open_delivery_file(
     try:
         for part in parts[:-1]:
             next_fd = os.open(part, _directory_flags(), dir_fd=parent_fd)
-            _assert_delivery_directory(
-                os.fstat(next_fd),
-                expected_uid=expected_uid,
-                expected_gid=expected_gid,
-            )
+            try:
+                _assert_delivery_directory(
+                    os.fstat(next_fd),
+                    expected_uid=expected_uid,
+                    expected_gid=expected_gid,
+                )
+            except BaseException:
+                os.close(next_fd)
+                raise
             os.close(parent_fd)
             parent_fd = next_fd
         file_fd = os.open(parts[-1], _file_flags(), dir_fd=parent_fd)
@@ -661,16 +665,6 @@ def validate_host_bind_delivery_files(
 
     try:
         root_fd = os.open(workspace_path, _directory_flags())
-        root_node = os.fstat(root_fd)
-        if expected_uid is None:
-            expected_uid = int(root_node.st_uid)
-        if expected_gid is None:
-            expected_gid = int(root_node.st_gid)
-        _assert_delivery_directory(
-            root_node,
-            expected_uid=expected_uid,
-            expected_gid=expected_gid,
-        )
     except OSError as exc:
         raise OpenSandboxHostBindError("leased workspace is unavailable") from exc
 
@@ -678,6 +672,19 @@ def validate_host_bind_delivery_files(
     total_bytes = 0
     seen: set[str] = set()
     try:
+        try:
+            root_node = os.fstat(root_fd)
+            if expected_uid is None:
+                expected_uid = int(root_node.st_uid)
+            if expected_gid is None:
+                expected_gid = int(root_node.st_gid)
+            _assert_delivery_directory(
+                root_node,
+                expected_uid=expected_uid,
+                expected_gid=expected_gid,
+            )
+        except OSError as exc:
+            raise OpenSandboxHostBindError("leased workspace is unavailable") from exc
         for raw_path in response_files:
             relative_path = normalize_host_bind_relative_path(raw_path)
             if relative_path in seen:

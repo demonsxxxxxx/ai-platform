@@ -70,6 +70,50 @@ def test_parse_skill_front_matter_quoted_description_with_colon():
     assert metadata["description"] == "Review: Word documents"
 
 
+@pytest.mark.parametrize("newline", ["\n", "\r\n", "\r"])
+def test_parse_skill_front_matter_preserves_inline_delimiters(newline):
+    content = newline.join([
+        "---", "name: valid---skill", "description: before---after", "---", "# Body",
+    ])
+
+    assert parse_skill_markdown_front_matter(content) == {
+        "name": "valid---skill", "description": "before---after",
+    }
+
+
+@pytest.mark.parametrize("closing", ["---", "---\n", "--- \t\n"])
+def test_parse_skill_front_matter_accepts_closing_delimiter_line(closing):
+    assert parse_skill_markdown_front_matter(
+        "---\nname: valid-skill\n" + closing
+    ) == {"name": "valid-skill"}
+
+
+def test_parse_skill_front_matter_preserves_indented_delimiter_in_block_scalar():
+    assert parse_skill_markdown_front_matter(
+        "---\nname: valid-skill\ndescription: |\n  before\n  ---\n  after\n---\n"
+    )["description"] == "before\n---\nafter"
+
+
+@pytest.mark.parametrize("content", [
+    "---",
+    "---\n---\n",
+    "name: valid-skill\n---\n",
+    "prefix---\nname: valid-skill\n---\n",
+    "---inline\nname: valid-skill\n---\n",
+    "---\nname: valid---skill\n",
+    "---\nname: valid-skill\n---suffix\n",
+    "---\nname: valid-skill\n  ---\n",
+])
+def test_parse_skill_front_matter_requires_complete_delimiter_lines(content):
+    assert parse_skill_markdown_front_matter(content) == {}
+
+
+def test_parse_skill_front_matter_does_not_parse_markdown_after_closing_delimiter():
+    assert parse_skill_markdown_front_matter(
+        "---\nname: valid-skill\n---\ndescription: [invalid\n---\n"
+    ) == {"name": "valid-skill"}
+
+
 def test_parse_skill_front_matter_rejects_invalid_yaml():
     with pytest.raises(ValueError, match="skill_front_matter_invalid_yaml"):
         parse_skill_markdown_front_matter("---\nname: ctd-review\ndescription: [invalid\n---\n")

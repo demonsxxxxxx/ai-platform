@@ -69,6 +69,10 @@ by replacing characters outside `[a-zA-Z0-9_-]` with `_`.
 4. Support Streamable HTTP and legacy SSE explicitly in discovery and execution.
    Preserve endpoint validation, DNS pinning, same-origin SSE message endpoints,
    redirect rejection, reserved-header protection, and bounded responses.
+   HTTP discovery applies one total deadline across DNS resolution, initialization,
+   and all catalog pages, in addition to per-request, response-size and page limits.
+   Deadline expiry retains the safe transport-failure category; caller cancellation
+   still propagates and closes the owned client/response.
    New or updated `sandbox`/command Server configurations are rejected: the
    platform has no governed stdio implementation. Existing registry rows remain
    readable/deletable and can be migrated to HTTP/SSE with an explicit endpoint;

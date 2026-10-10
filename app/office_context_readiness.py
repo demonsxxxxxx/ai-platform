@@ -287,19 +287,15 @@ def _verifier_checks_passed(payload: dict[str, Any], required_checks: list[str])
 
 
 def _runtime_subject(payload: dict[str, Any]) -> str:
-    source_ref = payload.get("source_ref")
-    if not isinstance(source_ref, dict):
-        return ""
-    image = str(source_ref.get("image") or "")
-    marker = str(source_ref.get("runtime_source_marker") or "")
-    if image.startswith("ai-platform:"):
-        return image.removeprefix("ai-platform:")
-    return marker
+    runtime_subject = payload.get("runtime_subject_commit_sha")
+    if isinstance(runtime_subject, str) and _COMMIT_SHA_PATTERN.fullmatch(runtime_subject):
+        return runtime_subject
+    return ""
 
 
 def _entry_has_runtime_subject_binding(payload: dict[str, Any]) -> bool:
-    runtime_subject = payload.get("runtime_subject_commit_sha")
-    if not isinstance(runtime_subject, str) or not runtime_subject:
+    runtime_subject = _runtime_subject(payload)
+    if not runtime_subject:
         return False
     source_ref = payload.get("source_ref")
     if not isinstance(source_ref, dict):

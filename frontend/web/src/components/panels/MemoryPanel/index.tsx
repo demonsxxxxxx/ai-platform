@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Brain,
@@ -21,6 +21,8 @@ import {
 import { resolveGroupAvailability } from "../../governance/groupAvailability";
 import { WorkbenchStateSurface } from "../../workbench/WorkbenchStateSurface";
 import { workbenchSurface } from "../../workbench/workbenchSurface";
+import i18n from "../../../i18n";
+import { ApiRequestError } from "../../../services/api/fetch";
 import { useAuth } from "../../../hooks/useAuth";
 import { formatDateTimeShort } from "../../../utils/datetime";
 import {
@@ -54,7 +56,7 @@ function normalizedOptionalId(value: string): string | undefined {
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return error instanceof ApiRequestError ? error.message : i18n.t("memory.workbench.requestFailed");
 }
 
 function FieldLabel({
@@ -78,16 +80,19 @@ function TextInput({
   value,
   onChange,
   placeholder,
+  disabled,
 }: {
   value: string;
   onChange: (value: string) => void;
   placeholder?: string;
+  disabled?: boolean;
 }) {
   return (
     <input
       value={value}
       onChange={(event) => onChange(event.target.value)}
       placeholder={placeholder}
+      disabled={disabled}
       className="enterprise-form-input"
     />
   );
@@ -254,6 +259,14 @@ export function MemoryPanel() {
   const [recordsError, setRecordsError] = useState<string | null>(null);
   const [adminError, setAdminError] = useState<string | null>(null);
   const recordsRequestSeq = useRef(0);
+  const policyRequestSeq = useRef(0);
+  const adminRequestSeq = useRef(0);
+  const generation = useRef(0);
+  const mounted = useRef(false);
+  const policyWrite = useRef<object | null>(null);
+  const cleanupWrite = useRef<object | null>(null);
+  const deletingRecords = useRef(new Set<string>());
+  const sessionGeneration = useRef(0);
 
   const canUseAdminMemory = useMemo(
     () => roleCanUseAdminMemory(user?.roles),
@@ -262,6 +275,49 @@ export function MemoryPanel() {
   const normalizedWorkspaceId = normalizedOptionalId(workspaceId) ?? "default";
   const normalizedAgentId = normalizedOptionalId(agentId);
   const normalizedSessionId = normalizedOptionalId(sessionId);
+  const ownerKey = JSON.stringify([
+    user?.tenant_id, user?.id, isAuthenticated, authLoading,
+    normalizedWorkspaceId, normalizedAgentId, canUseAdminMemory,
+  ]);
+  const ownerKeyRef = useRef(ownerKey);
+  useLayoutEffect(() => {
+    mounted.current = true;
+    ownerKeyRef.current = ownerKey;
+    generation.current += 1;
+    policyRequestSeq.current += 1;
+    recordsRequestSeq.current += 1;
+    adminRequestSeq.current += 1;
+    policyWrite.current = null;
+    cleanupWrite.current = null;
+    deletingRecords.current.clear();
+    setPolicy(null);
+    setMemoryEnabled(true);
+    setRetentionDays(90);
+    setReason("");
+    setRecords([]);
+    setAdminPolicies([]);
+    setAdminRecords([]);
+    setPolicyError(null);
+    setRecordsError(null);
+    setAdminError(null);
+    setPolicyLoading(false);
+    setRecordsLoading(false);
+    setAdminLoading(false);
+    setCleanupLoading(false);
+    return () => {
+      mounted.current = false;
+      generation.current += 1;
+    };
+  }, [ownerKey]);
+
+  useLayoutEffect(() => {
+    sessionGeneration.current += 1;
+    recordsRequestSeq.current += 1;
+    setRecords([]);
+    setRecordsError(null);
+    setRecordsLoading(false);
+  }, [normalizedSessionId]);
+
   const topLevelProjectionError =
     policyError || (canUseAdminMemory ? adminError : null);
   const governanceState = resolveFrontendGovernanceState({
@@ -288,6 +344,10 @@ export function MemoryPanel() {
   });
 
   const loadPolicy = useCallback(async () => {
+    const request = ++policyRequestSeq.current;
+    const owner = generation.current;
+    const ownsRequest = () => mounted.current && ownerKeyRef.current === ownerKey && generation.current === owner && policyRequestSeq.current === request;
+    if (!isAuthenticated || authLoading) return;
     setPolicyLoading(true);
     setPolicyError(null);
     try {
@@ -295,25 +355,29 @@ export function MemoryPanel() {
         workspace_id: normalizedWorkspaceId,
         agent_id: normalizedAgentId,
       });
+      if (!ownsRequest()) return;
       setPolicy(response.memory_policy);
       setMemoryEnabled(response.memory_policy.memory_enabled);
       setRetentionDays(response.memory_policy.retention_days);
     } catch (error) {
+      if (!ownsRequest()) return;
       const message = errorMessage(error);
       setPolicyError(message);
       toast.error(message);
       setPolicy(null);
     } finally {
-      setPolicyLoading(false);
+      if (ownsRequest()) setPolicyLoading(false);
     }
-  }, [normalizedAgentId, normalizedWorkspaceId]);
+  }, [normalizedAgentId, normalizedWorkspaceId, isAuthenticated, authLoading, ownerKey]);
 
   const loadRecords = useCallback(async () => {
-    const requestSeq = recordsRequestSeq.current + 1;
-    recordsRequestSeq.current = requestSeq;
-    if (!normalizedSessionId) {
+    const requestSeq = ++recordsRequestSeq.current;
+    const owner = generation.current;
+    const ownsRequest = () => mounted.current && ownerKeyRef.current === ownerKey && generation.current === owner && recordsRequestSeq.current === requestSeq;
+    if (!isAuthenticated || authLoading || !normalizedSessionId) {
       setRecords([]);
       setRecordsError(null);
+      setRecordsLoading(false);
       return;
     }
     setRecordsLoading(true);
@@ -325,28 +389,27 @@ export function MemoryPanel() {
         session_id: normalizedSessionId,
         limit: 50,
       });
-      if (recordsRequestSeq.current === requestSeq) {
-        setRecords(response.memory_records);
-      }
+      if (ownsRequest()) setRecords(response.memory_records);
     } catch (error) {
-      if (recordsRequestSeq.current === requestSeq) {
-        const message = errorMessage(error);
-        setRecordsError(message);
-        toast.error(message);
-        setRecords([]);
-      }
+      if (!ownsRequest()) return;
+      const message = errorMessage(error);
+      setRecordsError(message);
+      toast.error(message);
+      setRecords([]);
     } finally {
-      if (recordsRequestSeq.current === requestSeq) {
-        setRecordsLoading(false);
-      }
+      if (ownsRequest()) setRecordsLoading(false);
     }
-  }, [normalizedAgentId, normalizedSessionId, normalizedWorkspaceId]);
+  }, [normalizedAgentId, normalizedSessionId, normalizedWorkspaceId, isAuthenticated, authLoading, ownerKey]);
 
   const loadAdminProjection = useCallback(async () => {
-    if (!canUseAdminMemory) {
+    const request = ++adminRequestSeq.current;
+    const owner = generation.current;
+    const ownsRequest = () => mounted.current && ownerKeyRef.current === ownerKey && generation.current === owner && adminRequestSeq.current === request;
+    if (!canUseAdminMemory || !isAuthenticated || authLoading) {
       setAdminPolicies([]);
       setAdminRecords([]);
       setAdminError(null);
+      setAdminLoading(false);
       return;
     }
     setAdminLoading(true);
@@ -364,34 +427,36 @@ export function MemoryPanel() {
           limit: 25,
         }),
       ]);
+      if (!ownsRequest()) return;
       setAdminPolicies(policyResponse.memory_policies);
       setAdminRecords(recordResponse.memory_records);
     } catch (error) {
+      if (!ownsRequest()) return;
       setAdminError(errorMessage(error));
       setAdminPolicies([]);
       setAdminRecords([]);
     } finally {
-      setAdminLoading(false);
+      if (ownsRequest()) setAdminLoading(false);
     }
-  }, [canUseAdminMemory, normalizedAgentId, normalizedWorkspaceId]);
+  }, [canUseAdminMemory, normalizedAgentId, normalizedWorkspaceId, isAuthenticated, authLoading, ownerKey]);
 
-  useEffect(() => {
-    loadPolicy();
-  }, [loadPolicy]);
-
-  useEffect(() => {
-    loadRecords();
-  }, [loadRecords]);
-
-  useEffect(() => {
-    loadAdminProjection();
-  }, [loadAdminProjection]);
+  useEffect(() => { void loadPolicy(); }, [loadPolicy]);
+  useEffect(() => { void loadRecords(); }, [loadRecords]);
+  useEffect(() => { void loadAdminProjection(); }, [loadAdminProjection]);
 
   const refreshAll = async () => {
+    if (policyWrite.current) return;
     await Promise.all([loadPolicy(), loadRecords(), loadAdminProjection()]);
   };
 
   const savePolicy = async () => {
+    if (!mounted.current || !isAuthenticated || authLoading || policyLoading || !policy || policyWrite.current) return;
+    const write = {};
+    policyWrite.current = write;
+    const owner = generation.current;
+    const request = ++policyRequestSeq.current;
+    const sessionOwner = sessionGeneration.current;
+    const ownsWrite = () => mounted.current && generation.current === owner && policyWrite.current === write && policyRequestSeq.current === request;
     setPolicyLoading(true);
     setPolicyError(null);
     try {
@@ -403,21 +468,37 @@ export function MemoryPanel() {
         retention_days: retentionDays,
         reason,
       });
+      if (!ownsWrite()) return;
       setPolicy(response.memory_policy);
+      setMemoryEnabled(response.memory_policy.memory_enabled);
+      setRetentionDays(response.memory_policy.retention_days);
       toast.success(t("memory.workbench.policyUpdated"));
-      await Promise.all([loadRecords(), loadAdminProjection()]);
+      // A session switch does not invalidate the policy receipt, but must not
+      // restart a records read for the session that the user has left.
+      await Promise.all([
+        sessionGeneration.current === sessionOwner ? loadRecords() : Promise.resolve(),
+        loadAdminProjection(),
+      ]);
     } catch (error) {
+      if (!ownsWrite()) return;
       const message = errorMessage(error);
       setPolicyError(message);
       toast.error(message);
     } finally {
-      setPolicyLoading(false);
+      if (ownsWrite()) {
+        policyWrite.current = null;
+        setPolicyLoading(false);
+      }
     }
   };
 
   const removeRecord = async (recordId: string) => {
-    if (!normalizedSessionId) return;
+    if (!mounted.current || !normalizedSessionId || deletingRecords.current.has(recordId)) return;
     if (!window.confirm(t("memory.workbench.deleteRecordConfirm"))) return;
+    const owner = generation.current;
+    const sessionOwner = sessionGeneration.current;
+    const ownsWrite = () => mounted.current && generation.current === owner && sessionGeneration.current === sessionOwner;
+    deletingRecords.current.add(recordId);
     try {
       await deleteMemoryRecord(recordId, {
         workspace_id: normalizedWorkspaceId,
@@ -425,30 +506,38 @@ export function MemoryPanel() {
         session_id: normalizedSessionId,
         reason: "user deleted from Memory panel",
       });
+      if (!ownsWrite()) return;
       toast.success(t("memory.workbench.recordDeleted"));
       await Promise.all([loadRecords(), loadAdminProjection()]);
     } catch (error) {
-      toast.error(errorMessage(error));
+      if (ownsWrite()) toast.error(errorMessage(error));
+    } finally {
+      if (generation.current === owner) deletingRecords.current.delete(recordId);
     }
   };
 
   const runRetentionCleanup = async () => {
+    if (!mounted.current || !canUseAdminMemory || cleanupWrite.current) return;
+    const write = {};
+    cleanupWrite.current = write;
+    const owner = generation.current;
+    const ownsWrite = () => mounted.current && generation.current === owner && cleanupWrite.current === write;
     setCleanupLoading(true);
     try {
       const response = await cleanupExpiredMemoryRecords({
         workspace_id: normalizedWorkspaceId,
         limit: 200,
       });
-      toast.success(
-        t("memory.workbench.cleanupDeleted", {
-          count: response.deleted_count,
-        }),
-      );
+      if (!ownsWrite()) return;
+      toast.success(t("memory.workbench.cleanupDeleted", { count: response.deleted_count }));
       await loadAdminProjection();
     } catch (error) {
-      toast.error(errorMessage(error));
+      if (ownsWrite()) toast.error(errorMessage(error));
     } finally {
-      setCleanupLoading(false);
+      if (ownsWrite()) {
+        cleanupWrite.current = null;
+        setCleanupLoading(false);
+      }
     }
   };
 
@@ -470,7 +559,7 @@ export function MemoryPanel() {
   );
 
   const blockingGovernanceState =
-    governanceState === "loading" ||
+    (governanceState === "loading" && authLoading) ||
     governanceState === "logged-out" ||
     governanceState === "no-workspace" ||
     governanceState === "forbidden";
@@ -652,6 +741,7 @@ export function MemoryPanel() {
                 <input
                   type="checkbox"
                   checked={memoryEnabled}
+                  disabled={policyLoading || !policy}
                   onChange={(event) => setMemoryEnabled(event.target.checked)}
                   className="h-5 w-5 accent-[var(--theme-primary)]"
                 />
@@ -660,6 +750,7 @@ export function MemoryPanel() {
               <FieldLabel label={t("memory.workbench.retentionDays")}>
                 <input
                   type="number"
+                  disabled={policyLoading || !policy}
                   min={1}
                   max={3650}
                   value={retentionDays}
@@ -676,6 +767,7 @@ export function MemoryPanel() {
               <FieldLabel label={t("memory.workbench.reason")}>
                 <TextInput
                   value={reason}
+                  disabled={policyLoading || !policy}
                   onChange={setReason}
                   placeholder={t("memory.workbench.reasonPlaceholder")}
                 />
@@ -685,7 +777,7 @@ export function MemoryPanel() {
                 type="button"
                 className="btn-primary justify-center"
                 onClick={savePolicy}
-                disabled={policyLoading}
+                disabled={policyLoading || !policy}
               >
                 <Save size={15} />
                 {t("memory.workbench.savePolicy")}
@@ -693,7 +785,7 @@ export function MemoryPanel() {
             </div>
 
             <div className="mt-4 border-t border-[var(--theme-border)] pt-4">
-              <PolicySummary policy={policy} />
+              {policyLoading ? <EmptyState>{t("memory.workbench.loadingPolicy")}</EmptyState> : <PolicySummary policy={policy} />}
             </div>
           </section>
 

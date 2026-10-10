@@ -87,3 +87,8 @@ class InMemoryContextRetrievalRepository:
         if max_bytes is not None and len(raw) > max_bytes:
             raise ObjectStorageSizeLimitError('object_size_limit_exceeded')
         return raw
+
+    def read_storage_prefix(self, row: dict[str, Any], *, max_bytes: int) -> bytes:
+        content = row.get('content', b'')
+        raw = content if isinstance(content, bytes) else str(content).encode('utf-8')
+        return raw[:max_bytes]

@@ -4,6 +4,7 @@ import {
   useCallback,
   useState,
   useEffect,
+  useLayoutEffect,
   useRef,
   useContext,
   type ComponentType,
@@ -97,7 +98,10 @@ import {
   subscribeActiveRevealPreviewState,
   updateActiveRevealPreviewState,
 } from "../../chat/ChatMessage/items/activeRevealPreviewStore";
-import { clearSidebarHistory } from "../../chat/ChatMessage/items/sidebarHistoryStore";
+import {
+  claimChatPreviewSession,
+  isCurrentChatPreviewSession,
+} from "../../chat/chatPreviewSession";
 import type { ExternalNavigationTargetFile } from "./externalNavigationState";
 import { isFileLink } from "../../documents/utils";
 import { sessionApi, uploadApi, type SessionInputFile } from "../../../services/api";
@@ -662,12 +666,24 @@ export function ChatView({
     return () => container.removeEventListener("click", handleClick, true);
   }, [messagesContainerRef]);
 
+  const previewOwnerKey = JSON.stringify([
+    user?.tenant_id ?? null,
+    user?.id ?? null,
+    conversationIdentityKey,
+    sessionId,
+  ]);
+  const previewOwnerChangedRef = useRef(false);
+  useLayoutEffect(() => {
+    previewOwnerChangedRef.current = claimChatPreviewSession(previewOwnerKey);
+  }, [previewOwnerKey]);
   useEffect(() => {
+    if (!previewOwnerChangedRef.current || !isCurrentChatPreviewSession(previewOwnerKey)) return;
+    previewOwnerChangedRef.current = false;
     dismissedPreviewKeysRef.current.clear();
-    clearSidebarHistory();
+    // Keep these existing resets after their effect-based subscriptions mount.
     setActiveRevealPreviewState(null);
     closePersistentToolPanel();
-  }, [sessionId]);
+  }, [previewOwnerKey]);
 
   const isMobileViewport =
     typeof window !== "undefined" ? window.innerWidth < 640 : false;

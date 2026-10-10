@@ -3,7 +3,11 @@
 import { CacheableResponsePlugin } from "workbox-cacheable-response";
 import { clientsClaim } from "workbox-core";
 import { ExpirationPlugin } from "workbox-expiration";
-import { cleanupOutdatedCaches, precacheAndRoute } from "workbox-precaching";
+import {
+  cleanupOutdatedCaches,
+  matchPrecache,
+  precacheAndRoute,
+} from "workbox-precaching";
 import { registerRoute } from "workbox-routing";
 import { NetworkFirst, StaleWhileRevalidate } from "workbox-strategies";
 import { isPwaSkipWaitingMessage } from "./pwaGuards";
@@ -86,7 +90,7 @@ const navigationStrategy = new NetworkFirst({
 
 async function getOfflineFallback(): Promise<Response> {
   const cachedFallback =
-    (await caches.match(OFFLINE_URL)) || (await caches.match("/index.html"));
+    (await matchPrecache(OFFLINE_URL)) || (await matchPrecache("/index.html"));
 
   return (
     cachedFallback ||

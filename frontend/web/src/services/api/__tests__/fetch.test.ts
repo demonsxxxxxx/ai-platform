@@ -1,10 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { ApiProtocolError, ApiRequestError, authFetch } from "../fetch.ts";
+import { ApiProtocolError, ApiRequestError, authFetch, FORCE_RELOGIN_EVENT } from "../fetch.ts";
 import { apiRequestErrorFromResponse } from "../fetch.ts";
 import { registerAuthScopedCacheClearer } from "../authCacheInvalidation.ts";
 import { parseSessionRunInputs, sessionApi } from "../session.ts";
+
+import { AUTH_SESSION_MARKER_KEY } from "../token.ts";
+import { authenticatedRequest } from "../authenticatedRequest.ts";
 
 function installFetchAuthStubs({
   fetchImpl,
@@ -539,5 +542,107 @@ test("session Run input history binds its envelope and encodes the pagination cu
     assert.throws(() => parseSessionRunInputs({ ...page, next_before_run_id: null }, "session/owned"), /invalid_session_run_inputs_projection/);
     assert.throws(() => parseSessionRunInputs({ ...page, runs: [page.runs[0], page.runs[0]] }, "session/owned"), /invalid_session_run_inputs_projection/);
     assert.throws(() => parseSessionRunInputs({ ...page, runs: [{ run_id: "run-safe", state: "bad", inputs: [], questions: [] }] }, "session/owned"), /invalid_run_inputs_projection/);
+  } finally { env.restore(); }
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+function environment(fetchImpl: typeof fetch) {
+  const original = new Map(["fetch", "localStorage", "window"].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+  let marker = "owner-a";
+  const events: string[] = [];
+  Object.defineProperty(globalThis, "fetch", { configurable: true, value: fetchImpl });
+  Object.defineProperty(globalThis, "localStorage", { configurable: true, value: { getItem: (key: string) => key === AUTH_SESSION_MARKER_KEY ? marker : null } });
+  Object.defineProperty(globalThis, "window", { configurable: true, value: { dispatchEvent: (event: Event) => { events.push(event.type); return true; } } });
+  return {
+    events,
+    replaceOwner() { marker = "owner-b"; },
+    restore() {
+      for (const [key, descriptor] of original) {
+        if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+        else Reflect.deleteProperty(globalThis, key);
+      }
+    },
+  };
+}
+
+const errorBody = JSON.stringify({ detail: { message: "private credential=synthetic-secret" } });
+function forceReloginResponse(): Response {
+  return new Response(errorBody, { status: 401, headers: { "X-Force-Relogin": "true" } });
+}
+function assertSafeError(error: unknown) {
+  assert.ok(error instanceof ApiRequestError);
+  assert.equal(error.status, 401);
+  assert.doesNotMatch(error.message, /private|credential|synthetic-secret/);
+}
+
+for (const [name, request] of [
+  ["authFetch", authFetch], ["authenticatedRequest", authenticatedRequest],
+] as const) {
+  test(`${name} rejects stale force-relogin responses without invalidating the replacement owner`, async () => {
+    const response = deferred<Response>();
+    const started = deferred<void>();
+    let calls = 0;
+    const env = environment(async () => { calls += 1; started.resolve(); return response.promise; });
+    try {
+      const pending = request("/api/synthetic", { method: "POST", body: "synthetic" }).catch((error: unknown) => error);
+      await started.promise;
+      env.replaceOwner();
+      response.resolve(forceReloginResponse());
+      assertSafeError(await pending);
+      assert.deepEqual(env.events, []);
+      assert.equal(calls, 1);
+    } finally { env.restore(); }
+  });
+
+  test(`${name} rechecks owner after a pending error-body read`, async () => {
+    const body = deferred<string>();
+    const reading = deferred<void>();
+    let calls = 0;
+    const env = environment(async () => {
+      calls += 1;
+      const response = forceReloginResponse();
+      response.text = () => { reading.resolve(); return body.promise; };
+      return response;
+    });
+    try {
+      const pending = request("/api/synthetic").catch((error: unknown) => error);
+      await reading.promise;
+      env.replaceOwner();
+      body.resolve(errorBody);
+      assertSafeError(await pending);
+      assert.deepEqual(env.events, []);
+      assert.equal(calls, 1);
+    } finally { env.restore(); }
+  });
+
+  test(`${name} still signals force-relogin for its current owner`, async () => {
+    const env = environment(async () => forceReloginResponse());
+    try {
+      assertSafeError(await request("/api/synthetic").catch((error: unknown) => error));
+      assert.deepEqual(env.events, [FORCE_RELOGIN_EVENT]);
+    } finally { env.restore(); }
+  });
+}
+
+test("authFetch rechecks owner after an ordinary 401 error-body read", async () => {
+  const body = deferred<string>();
+  const reading = deferred<void>();
+  const env = environment(async () => {
+    const response = new Response("", { status: 401 });
+    response.text = () => { reading.resolve(); return body.promise; };
+    return response;
+  });
+  try {
+    const pending = authFetch("/api/synthetic").catch((error: unknown) => error);
+    await reading.promise;
+    env.replaceOwner();
+    body.resolve(errorBody);
+    assertSafeError(await pending);
+    assert.deepEqual(env.events, []);
   } finally { env.restore(); }
 });

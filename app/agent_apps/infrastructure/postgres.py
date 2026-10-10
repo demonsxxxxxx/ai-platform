@@ -423,11 +423,7 @@ async def get_bound_published_agent_profile(
 
     cursor = await conn.execute(
         f"""
-        select {_PROFILE_REVISION_COLUMNS},
-               current_revision.visibility as current_visibility,
-               current_revision.allowed_department_ids as current_allowed_department_ids,
-               current_revision.allowed_roles as current_allowed_roles,
-               current_revision.allowed_user_ids as current_allowed_user_ids
+        select {_PROFILE_REVISION_COLUMNS}
         from agent_profiles
         join agent_profile_revisions
          on agent_profile_revisions.tenant_id = agent_profiles.tenant_id

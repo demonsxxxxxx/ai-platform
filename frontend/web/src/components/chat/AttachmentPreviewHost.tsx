@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useSyncExternalStore } from "react";
 import { DelayedUnmount } from "../common/DelayedUnmount";
 import { useSafeAttachmentImageSrc } from "../common/attachmentImageSafety";
 import { isAllowedAuthenticatedArtifactFileUrl } from "../documents/documentUrlSafety";
@@ -10,19 +10,11 @@ import {
 } from "./attachmentPreviewStore";
 
 export function AttachmentPreviewHost() {
-  const [, forceRender] = useState(0);
-  const previewStateRef = useRef(getAttachmentPreviewState());
-
-  useEffect(() => {
-    const syncPreviewState = () => {
-      previewStateRef.current = getAttachmentPreviewState();
-      forceRender((count) => count + 1);
-    };
-
-    return subscribeAttachmentPreview(syncPreviewState);
-  }, []);
-
-  const previewState = previewStateRef.current;
+  const previewState = useSyncExternalStore(
+    subscribeAttachmentPreview,
+    getAttachmentPreviewState,
+    () => null,
+  );
   const attachment = previewState?.attachment ?? null;
   const authenticatedUrl =
     attachment?.url && isAllowedAuthenticatedArtifactFileUrl(attachment.url)

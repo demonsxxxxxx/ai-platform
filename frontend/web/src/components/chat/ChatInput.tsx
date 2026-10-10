@@ -236,7 +236,7 @@ export const ChatInput = memo(function ChatInput({
   const containerRef = useRef<HTMLDivElement>(null);
   const openFileCommandRef = useRef<(() => void) | null>(null);
   const isSubmittingRef = useRef<symbol | null>(null);
-  const { hasPermission } = useAuth();
+  const { hasPermission, user } = useAuth();
 
   const runInputScopeKey =
     runInputs?.sessionId && runInputs.runId
@@ -310,7 +310,7 @@ export const ChatInput = memo(function ChatInput({
     clearUploads();
   }, [attachmentScopeKey, clearUploads]);
 
-  const { history, pushHistory, navigateUp, navigateDown } = useInputHistory();
+  const { history, pushHistory, navigateUp, navigateDown } = useInputHistory(user);
 
   const { scheduleTextareaResize } = useTextareaResize(textareaRef, input);
 
