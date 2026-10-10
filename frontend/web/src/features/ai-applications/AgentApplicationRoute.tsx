@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import toast from "react-hot-toast";
 import {
@@ -26,6 +26,7 @@ import {
 import type { Message } from "../../types";
 import { APP_ROUTE_PATHS } from "../../appRouteManifest";
 import { useAuth } from "../../hooks/useAuth";
+import { readWordReviewStream } from "./wordReviewStream";
 import { resolveInternalAiApplication } from "./aiApplicationCatalog";
 import "./wordReviewApplication.css";
 
@@ -482,7 +483,7 @@ function KnowledgeBaseApplication() {
 }
 
 const WORD_REVIEW_API_BASE = (
-  import.meta.env.VITE_WORD_REVIEW_API_TARGET?.trim() || "http://10.56.0.211:8014"
+  import.meta.env?.VITE_WORD_REVIEW_API_TARGET?.trim() || "http://10.56.0.211:8014"
 ).replace(/\/+$/, "");
 const WORD_REVIEW_SKILL_ID = "qa-file-reviewer";
 const WORD_REVIEW_AGENT_ID = "qa-word-review";
@@ -555,13 +556,6 @@ interface WordReviewStats {
   daily: Array<{ date: string; count: number }>;
 }
 
-interface WordReviewStreamEvent {
-  done: boolean;
-  delta: string;
-  taskId: string;
-  files: unknown[];
-}
-
 function getStoredWordReviewValue(key: string, fallback: string): string {
   if (typeof window === "undefined") return fallback;
   try {
@@ -587,17 +581,19 @@ function asWordReviewRecord(value: unknown): Record<string, unknown> {
     : {};
 }
 
-function wordReviewErrorDetail(value: unknown): string {
+function wordReviewErrorDetail(value: unknown, depth = 0): string {
+  if (depth > 8 || value === null || value === undefined) return "";
   if (typeof value === "string") return value.trim();
   if (Array.isArray(value)) {
     return value
-      .map((item) => wordReviewErrorDetail(item))
+      .map((item) => wordReviewErrorDetail(item, depth + 1))
       .filter(Boolean)
       .join("; ");
   }
+  if (typeof value !== "object") return "";
   const record = asWordReviewRecord(value);
   for (const key of ["error_detail", "errorDetail", "error_text", "errorText", "detail", "message", "error"]) {
-    const detail = wordReviewErrorDetail(record[key]);
+    const detail = wordReviewErrorDetail(record[key], depth + 1);
     if (detail) return detail;
   }
   return "";
@@ -716,64 +712,6 @@ async function validateWordReviewFile(file: File): Promise<void> {
   }
 }
 
-function parseWordReviewSseBlock(block: string): WordReviewStreamEvent | null {
-  const data = block
-    .split("\n")
-    .filter((line) => line.startsWith("data:"))
-    .map((line) => line.slice(5).trim())
-    .join("\n")
-    .trim();
-  if (!data) return null;
-  if (data === "[DONE]") return { done: true, delta: "", taskId: "", files: [] };
-  try {
-    const record = asWordReviewRecord(JSON.parse(data));
-    const delta = [record.delta, record.content, record.text, record.message].find(
-      (value): value is string => typeof value === "string",
-    ) || "";
-    return {
-      done: false,
-      delta,
-      taskId: String(record.task_id || record.taskId || ""),
-      files: Array.isArray(record.files) ? record.files : Array.isArray(record.result_files) ? record.result_files : [],
-    };
-  } catch {
-    return { done: false, delta: data, taskId: "", files: [] };
-  }
-}
-
-async function readWordReviewStream(
-  body: ReadableStream<Uint8Array>,
-  onEvent: (event: WordReviewStreamEvent) => Promise<void> | void,
-): Promise<void> {
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  const consume = async (block: string): Promise<boolean> => {
-    const event = parseWordReviewSseBlock(block.trim());
-    if (!event) return false;
-    await onEvent(event);
-    return event.done;
-  };
-
-  while (true) {
-    const result = await reader.read();
-    if (result.done) break;
-    buffer += decoder.decode(result.value, { stream: true }).replace(/\r\n/g, "\n");
-    let boundary = buffer.indexOf("\n\n");
-    while (boundary !== -1) {
-      const block = buffer.slice(0, boundary);
-      buffer = buffer.slice(boundary + 2);
-      if (await consume(block)) {
-        await reader.cancel();
-        return;
-      }
-      boundary = buffer.indexOf("\n\n");
-    }
-  }
-  buffer += decoder.decode();
-  if (buffer.trim()) await consume(buffer);
-}
-
 function progressFromReviewText(text: string): number {
   if (/输出结果|执行完成/.test(text)) return 92;
   if (/任务执行中/.test(text)) return 72;
@@ -884,10 +822,10 @@ function normalizeWordReviewHistoryItem(value: unknown, index: number): WordRevi
   };
 }
 
-function readLocalWordReviewHistory(workId: string): WordReviewHistoryItem[] {
+function readLocalWordReviewHistory(storageKey: string): WordReviewHistoryItem[] {
   if (typeof window === "undefined") return [];
   try {
-    const raw = window.localStorage.getItem(`${WORD_REVIEW_HISTORY_KEY}:${workId}`);
+    const raw = window.localStorage.getItem(storageKey);
     if (!raw || raw.length > 1024 * 1024) return [];
     const parsed: unknown = JSON.parse(raw);
     return Array.isArray(parsed)
@@ -962,6 +900,9 @@ function isWordReviewAbortError(error: unknown): boolean {
 }
 
 function useWordReviewController(workId: string, tenantId: string) {
+  const workspaceId = getStoredWordReviewValue("workspace_id", "default");
+  const scopeKey = JSON.stringify([tenantId, workspaceId, workId]);
+  const historyStorageKey = `${WORD_REVIEW_HISTORY_KEY}:v2:${scopeKey}`;
   const [tasks, setTasks] = useState<WordReviewTask[]>([]);
   const [history, setHistory] = useState<WordReviewHistoryItem[]>([]);
   const [stats, setStats] = useState<WordReviewStats>({ total: 0, todayCount: 0, daily: [] });
@@ -977,22 +918,67 @@ function useWordReviewController(workId: string, tenantId: string) {
   const cancelledTaskIdsRef = useRef<Set<string>>(new Set());
   const cancelRequestedRef = useRef<Set<string>>(new Set());
   const cancelSubmittedRef = useRef<Set<string>>(new Set());
-  const mountedRef = useRef(true);
+  const mountedRef = useRef(false);
+  const scopeGeneration = useRef(0);
+  const scopeKeyRef = useRef(scopeKey);
+  const taskOwnersRef = useRef(new Map<string, number>());
+  const runningTaskOwnersRef = useRef(new Map<string, object>());
+  const cancelConfirmedRef = useRef(new Set<string>());
+  const historyRequestSeq = useRef(0);
+  const statsRequestSeq = useRef(0);
+  const ownsScope = (generation: number) => mountedRef.current && scopeGeneration.current === generation && scopeKeyRef.current === scopeKey;
+  const ownsTask = (localId: string) => ownsScope(taskOwnersRef.current.get(localId) ?? -1);
+
+  useLayoutEffect(() => {
+    mountedRef.current = true;
+    scopeKeyRef.current = scopeKey;
+    scopeGeneration.current += 1;
+    setTasks([]);
+    setHistory([]);
+    setStats({ total: 0, todayCount: 0, daily: [] });
+    setHistoryError("");
+    setSelectedHistoryIds([]);
+    setHistoryPage(1);
+    setServiceFailed(false);
+    setServiceLoading(Boolean(workId));
+    setHistoryLoading(Boolean(workId));
+    setStatsLoading(Boolean(workId));
+    const abortRequests = requestAbortRef.current;
+    const taskOwners = taskOwnersRef.current;
+    const runningTasks = runningTaskOwnersRef.current;
+    const cancelled = cancelledTaskIdsRef.current;
+    const requested = cancelRequestedRef.current;
+    const submitted = cancelSubmittedRef.current;
+    const confirmed = cancelConfirmedRef.current;
+    return () => {
+      mountedRef.current = false;
+      scopeGeneration.current += 1;
+      for (const abort of abortRequests.values()) abort();
+      abortRequests.clear();
+      taskOwners.clear();
+      runningTasks.clear();
+      cancelled.clear();
+      requested.clear();
+      submitted.clear();
+      confirmed.clear();
+    };
+  }, [scopeKey, workId]);
 
   const updateTask = (localId: string, patch: Partial<WordReviewTask>) => {
-    if (!mountedRef.current) return;
-    setTasks((current) => current.map((task) => (task.localId === localId ? { ...task, ...patch } : task)));
+    if (!ownsTask(localId)) return;
+    setTasks((current) => ownsTask(localId) ? current.map((task) => (task.localId === localId ? { ...task, ...patch } : task)) : current);
   };
 
   const persistHistory = (items: WordReviewHistoryItem[]) => {
     try {
-      window.localStorage.setItem(`${WORD_REVIEW_HISTORY_KEY}:${workId}`, JSON.stringify(items.slice(0, WORD_REVIEW_HISTORY_LIMIT)));
+      window.localStorage.setItem(historyStorageKey, JSON.stringify(items.slice(0, WORD_REVIEW_HISTORY_LIMIT)));
     } catch {
       // The service remains the source of truth when browser storage is unavailable.
     }
   };
 
   const recordLocalHistory = (task: WordReviewTask, patch: Partial<WordReviewTask>) => {
+    if (!ownsTask(task.localId)) return;
     const finalTask = { ...task, ...patch };
     const item: WordReviewHistoryItem = {
       id: finalTask.taskId || finalTask.localId,
@@ -1006,6 +992,7 @@ function useWordReviewController(workId: string, tenantId: string) {
       files: finalTask.files,
     };
     setHistory((current) => {
+      if (!ownsTask(task.localId)) return current;
       const next = [item, ...current.filter((entry) => entry.id !== item.id && (!item.taskId || entry.taskId !== item.taskId))].slice(0, WORD_REVIEW_HISTORY_LIMIT);
       persistHistory(next);
       return next;
@@ -1013,72 +1000,82 @@ function useWordReviewController(workId: string, tenantId: string) {
   };
 
   const refreshHistory = async () => {
+    const owner = scopeGeneration.current;
+    const request = ++historyRequestSeq.current;
+    const ownsRequest = () => ownsScope(owner) && request === historyRequestSeq.current;
+    if (!ownsRequest() || !workId) return false;
     setHistoryLoading(true);
     setHistoryError("");
     try {
       const remote = await fetchWordReviewHistory(workId);
-      if (mountedRef.current) {
-        setHistory((current) => mergeWordReviewHistory(remote, current));
+      if (ownsRequest()) {
+        setHistory((current) => ownsRequest() ? mergeWordReviewHistory(remote, current) : current);
         setServiceFailed(false);
       }
       return true;
     } catch {
-      if (mountedRef.current) {
+      if (ownsRequest()) {
         setHistoryError("服务端历史记录暂时无法获取，当前显示本地记录。");
         setServiceFailed(true);
       }
       return false;
     } finally {
-      if (mountedRef.current) setHistoryLoading(false);
+      if (ownsRequest()) setHistoryLoading(false);
     }
   };
 
   const refreshStats = async () => {
+    const owner = scopeGeneration.current;
+    const request = ++statsRequestSeq.current;
+    const ownsRequest = () => ownsScope(owner) && request === statsRequestSeq.current;
+    if (!ownsRequest() || !workId) return false;
     setStatsLoading(true);
     try {
       const value = await fetchWordReviewStats();
-      if (mountedRef.current) {
+      if (ownsRequest()) {
         setStats(value);
         setServiceFailed(false);
       }
       return true;
     } catch {
-      if (mountedRef.current) setServiceFailed(true);
+      if (ownsRequest()) setServiceFailed(true);
       return false;
     } finally {
-      if (mountedRef.current) setStatsLoading(false);
+      if (ownsRequest()) setStatsLoading(false);
     }
   };
 
   useEffect(() => {
     let active = true;
-    mountedRef.current = true;
-    setHistory(readLocalWordReviewHistory(workId));
+    if (!workId) return;
+    const historyRequest = ++historyRequestSeq.current;
+    const statsRequest = ++statsRequestSeq.current;
+    setHistory(readLocalWordReviewHistory(historyStorageKey));
     void (async () => {
       const [statsResult, historyResult] = await Promise.allSettled([
         fetchWordReviewStats(),
         fetchWordReviewHistory(workId),
       ]);
       if (!active) return;
-      if (statsResult.status === "fulfilled") setStats(statsResult.value);
-      if (historyResult.status === "fulfilled") {
-        setHistory((current) => mergeWordReviewHistory(historyResult.value, current));
-      } else {
-        setHistoryError("服务端历史记录暂时无法获取，当前显示本地记录。");
+      if (statsRequest === statsRequestSeq.current) {
+        if (statsResult.status === "fulfilled") setStats(statsResult.value);
+        setStatsLoading(false);
       }
-      setServiceFailed(statsResult.status === "rejected" && historyResult.status === "rejected");
-      setStatsLoading(false);
-      setHistoryLoading(false);
+      if (historyRequest === historyRequestSeq.current) {
+        if (historyResult.status === "fulfilled") {
+          setHistory((current) => active ? mergeWordReviewHistory(historyResult.value, current) : current);
+        } else {
+          setHistoryError("服务端历史记录暂时无法获取，当前显示本地记录。");
+        }
+        setHistoryLoading(false);
+      }
+      if (statsRequest === statsRequestSeq.current && historyRequest === historyRequestSeq.current) {
+        setServiceFailed(statsResult.status === "rejected" && historyResult.status === "rejected");
+      }
       setServiceLoading(false);
     })();
-    const abortRequests = requestAbortRef.current;
-    return () => {
-      active = false;
-      mountedRef.current = false;
-      for (const abort of abortRequests.values()) abort();
-      abortRequests.clear();
-    };
-  }, [workId]);
+    return () => { active = false; };
+  }, [workId, historyStorageKey]);
 
   useEffect(() => {
     const pageCount = Math.max(1, Math.ceil(history.length / WORD_REVIEW_HISTORY_PAGE_SIZE));
@@ -1091,7 +1088,8 @@ function useWordReviewController(workId: string, tenantId: string) {
     taskSeqRef.current += 1;
     const localId = `${WORD_REVIEW_SKILL_ID}-task-${Date.now()}-${taskSeqRef.current}`;
     const sessionId = `wr-session-${Date.now()}-${taskSeqRef.current}-${Math.random().toString(36).slice(2, 8)}`;
-    const context = getWordReviewContext(sessionId, workId, tenantId);
+    const context = { ...getWordReviewContext(sessionId, workId, tenantId), workspaceId };
+    taskOwnersRef.current.set(localId, scopeGeneration.current);
     return {
       localId,
       taskId: "",
@@ -1117,9 +1115,10 @@ function useWordReviewController(workId: string, tenantId: string) {
   };
 
   const uploadTask = async (task: WordReviewTask, file: File) => {
+    if (!ownsTask(task.localId)) return;
     try {
       await validateWordReviewFile(file);
-      if (cancelledTaskIdsRef.current.has(task.localId)) return;
+      if (!ownsTask(task.localId) || cancelledTaskIdsRef.current.has(task.localId)) return;
       const handle = uploadWordReviewFile(
         file,
         {
@@ -1134,7 +1133,7 @@ function useWordReviewController(workId: string, tenantId: string) {
       requestAbortRef.current.set(task.localId, handle.abort);
       const result = await handle.promise;
       requestAbortRef.current.delete(task.localId);
-      if (cancelledTaskIdsRef.current.has(task.localId)) return;
+      if (!ownsTask(task.localId) || cancelledTaskIdsRef.current.has(task.localId)) return;
       updateTask(task.localId, {
         fileId: result.fileId,
         name: result.name || task.name,
@@ -1145,7 +1144,7 @@ function useWordReviewController(workId: string, tenantId: string) {
       setServiceFailed(false);
     } catch (error) {
       requestAbortRef.current.delete(task.localId);
-      if (isWordReviewAbortError(error) || cancelledTaskIdsRef.current.has(task.localId)) return;
+      if (!ownsTask(task.localId) || isWordReviewAbortError(error) || cancelledTaskIdsRef.current.has(task.localId)) return;
       const message = error instanceof Error ? error.message : "上传失败，请检查审核服务连接。";
       const patch: Partial<WordReviewTask> = {
         status: "failed",
@@ -1160,6 +1159,7 @@ function useWordReviewController(workId: string, tenantId: string) {
   };
 
   const selectFiles = (files: FileList | File[]) => {
+    if (!mountedRef.current || scopeKeyRef.current !== scopeKey || !workId) return;
     const selected = Array.from(files);
     if (selected.length === 0) return;
     for (const file of selected) {
@@ -1170,6 +1170,7 @@ function useWordReviewController(workId: string, tenantId: string) {
   };
 
   const finalizeTask = (task: WordReviewTask, patch: Partial<WordReviewTask>) => {
+    if (!ownsTask(task.localId)) return;
     const finishedAt = Date.now();
     const finalPatch: Partial<WordReviewTask> = {
       ...patch,
@@ -1194,23 +1195,30 @@ function useWordReviewController(workId: string, tenantId: string) {
   };
 
   const submitCancellation = async (localId: string, taskId: string) => {
-    if (!taskId || cancelSubmittedRef.current.has(localId)) return;
+    if (!ownsTask(localId) || !runningTaskOwnersRef.current.has(localId) || !taskId || cancelSubmittedRef.current.has(localId)) return;
+    const runOwner = runningTaskOwnersRef.current.get(localId);
     cancelSubmittedRef.current.add(localId);
     try {
       const response = await requestWordReview(`/api/review/history/${encodeURIComponent(taskId)}/cancel`, { method: "POST" });
       const record = asWordReviewRecord(await response.json().catch(() => ({})));
+      if (!ownsTask(localId) || runningTaskOwnersRef.current.get(localId) !== runOwner) return;
       const status = String(record.status || "").toLowerCase();
-      if (status && status !== "cancelled" && status !== "canceled") throw new Error(String(record.message || "任务已结束，无法中断。"));
+      if (status !== "cancelled" && status !== "canceled") throw new Error("未收到服务端取消确认，请到历史记录核实任务状态。");
+      cancelConfirmedRef.current.add(localId);
       markTaskCancelled(localId, String(record.message || "用户已中断任务。"));
       requestAbortRef.current.get(localId)?.();
     } catch (error) {
+      if (!ownsTask(localId) || runningTaskOwnersRef.current.get(localId) !== runOwner) return;
       cancelSubmittedRef.current.delete(localId);
       throw error;
     }
   };
 
   const runReview = async (task: WordReviewTask) => {
-    if (!task.fileId || !["ready", "failed", "timeout"].includes(task.status)) return;
+    if (!ownsTask(task.localId) || runningTaskOwnersRef.current.has(task.localId) || !task.fileId || !["ready", "failed", "timeout"].includes(task.status)) return;
+    const runOwner = {};
+    runningTaskOwnersRef.current.set(task.localId, runOwner);
+    cancelConfirmedRef.current.delete(task.localId);
     cancelledTaskIdsRef.current.delete(task.localId);
     cancelRequestedRef.current.delete(task.localId);
     cancelSubmittedRef.current.delete(task.localId);
@@ -1270,11 +1278,16 @@ function useWordReviewController(workId: string, tenantId: string) {
           delivery_mode: "word",
         }),
       });
+      if (!ownsTask(task.localId)) {
+        await response.body?.cancel().catch(() => undefined);
+        return;
+      }
       if (!response.ok) throw await wordReviewResponseError(response);
       if (!response.body) throw new Error("审核服务没有返回流式结果。");
       setServiceFailed(false);
 
       await readWordReviewStream(response.body, async (event) => {
+        if (!ownsTask(task.localId)) return;
         if (event.taskId) {
           serverTaskId = event.taskId;
           updateTask(task.localId, { taskId: event.taskId });
@@ -1282,6 +1295,7 @@ function useWordReviewController(workId: string, tenantId: string) {
             try {
               await submitCancellation(task.localId, event.taskId);
             } catch (error) {
+              if (!ownsTask(task.localId)) return;
               cancelRequestedRef.current.delete(task.localId);
               updateTask(task.localId, { latestProgress: error instanceof Error ? error.message : "中断任务失败，请稍后重试。" });
             }
@@ -1298,9 +1312,10 @@ function useWordReviewController(workId: string, tenantId: string) {
             progress: Math.min(99, Math.max(24, progressFromReviewText(latestProgress))),
           });
         }
-      });
+      }, controller.signal);
 
-      if (cancelRequestedRef.current.has(task.localId) || /用户已中断任务|任务已取消|任务已取消处理/.test(rawText)) {
+      if (!ownsTask(task.localId)) return;
+      if (cancelConfirmedRef.current.has(task.localId) || /用户已中断任务|任务已取消|任务已取消处理/.test(rawText)) {
         finalizeTask(runningTask, {
           taskId: serverTaskId,
           status: "cancelled",
@@ -1312,15 +1327,17 @@ function useWordReviewController(workId: string, tenantId: string) {
         return;
       }
       addResultFiles(filesFromWordReviewText(rawText));
+      if (resultFiles.length === 0) throw new Error("审核结束但未返回结果文件，请到历史记录核实服务端状态。");
       finalizeTask(runningTask, {
         taskId: serverTaskId,
         status: "completed",
         progress: 100,
-        latestProgress: resultFiles.length > 0 ? "审核完成" : "审核完成，但未识别到下载文件",
+        latestProgress: "审核完成",
         resultText: cleanWordReviewText(rawText) || "审核已完成，请下载结果文件。",
         files: resultFiles,
       });
     } catch (error) {
+      if (!ownsTask(task.localId)) return;
       if (timedOut) {
         const message = "审核任务超时，请到历史记录查看服务端状态。";
         finalizeTask(runningTask, {
@@ -1332,7 +1349,7 @@ function useWordReviewController(workId: string, tenantId: string) {
           resultText: "",
           files: resultFiles,
         });
-      } else if (cancelRequestedRef.current.has(task.localId) || isWordReviewAbortError(error)) {
+      } else if (cancelConfirmedRef.current.has(task.localId)) {
         finalizeTask(runningTask, {
           taskId: serverTaskId,
           status: "cancelled",
@@ -1355,13 +1372,16 @@ function useWordReviewController(workId: string, tenantId: string) {
       }
     } finally {
       globalThis.clearTimeout(streamTimer);
-      requestAbortRef.current.delete(task.localId);
-      cancelSubmittedRef.current.delete(task.localId);
+      if (runningTaskOwnersRef.current.get(task.localId) === runOwner) {
+        runningTaskOwnersRef.current.delete(task.localId);
+        requestAbortRef.current.delete(task.localId);
+        cancelSubmittedRef.current.delete(task.localId);
+      }
     }
   };
 
   const cancelTask = async (task: WordReviewTask) => {
-    if (!task || !["queued", "running"].includes(task.status)) return;
+    if (!task || !ownsTask(task.localId) || !["queued", "running"].includes(task.status)) return;
     if (!window.confirm("确认中断该任务？已进入执行中的任务会在服务端可中断点停止。")) return;
     cancelRequestedRef.current.add(task.localId);
     updateTask(task.localId, { latestProgress: task.taskId ? "正在中断任务…" : "等待服务端任务编号，随后中断任务" });
@@ -1369,6 +1389,7 @@ function useWordReviewController(workId: string, tenantId: string) {
     try {
       await submitCancellation(task.localId, task.taskId);
     } catch (error) {
+      if (!ownsTask(task.localId)) return;
       cancelRequestedRef.current.delete(task.localId);
       updateTask(task.localId, { latestProgress: error instanceof Error ? error.message : "中断任务失败，请稍后重试。" });
     }
@@ -1377,6 +1398,7 @@ function useWordReviewController(workId: string, tenantId: string) {
   const removeTask = (task: WordReviewTask) => {
     if (["queued", "running"].includes(task.status)) return;
     cancelledTaskIdsRef.current.add(task.localId);
+    taskOwnersRef.current.delete(task.localId);
     requestAbortRef.current.get(task.localId)?.();
     requestAbortRef.current.delete(task.localId);
     setTasks((current) => current.filter((item) => item.localId !== task.localId));
@@ -1386,6 +1408,7 @@ function useWordReviewController(workId: string, tenantId: string) {
     if (tasks.some((task) => ["uploading", "queued", "running"].includes(task.status))) return;
     for (const task of tasks) {
       cancelledTaskIdsRef.current.add(task.localId);
+      taskOwnersRef.current.delete(task.localId);
       requestAbortRef.current.get(task.localId)?.();
     }
     requestAbortRef.current.clear();

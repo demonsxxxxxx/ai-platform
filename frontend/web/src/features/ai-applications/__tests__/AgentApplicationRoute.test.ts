@@ -59,7 +59,9 @@ test("application routes render task-specific surfaces and use the independent W
   assert.match(routeSource, /const tenantId = user\?\.tenant_id\?\.trim\(\) \|\| "default"/);
   assert.match(routeSource, /useWordReviewController\(workId, tenantId\)/);
   assert.match(routeSource, /fetchWordReviewHistory\(workId\)/);
-  assert.match(routeSource, /`\$\{WORD_REVIEW_HISTORY_KEY\}:\$\{workId\}`/);
+  assert.match(routeSource, /`\$\{WORD_REVIEW_HISTORY_KEY\}:v2:\$\{scopeKey\}`/);
+  assert.match(routeSource, /JSON\.stringify\(\[tenantId, workspaceId, workId\]\)/);
+  assert.doesNotMatch(routeSource, /`\$\{WORD_REVIEW_HISTORY_KEY\}:\$\{workId\}`/);
   assert.doesNotMatch(routeSource, /WORD_REVIEW_WORK_ID_KEY|localStorage\.getItem\("workid"\)/);
   assert.match(routeSource, /form\.append\("file", file\)/);
   assert.match(routeSource, /form\.append\("workspace_id", context\.workspaceId\)/);
