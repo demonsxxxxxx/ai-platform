@@ -174,7 +174,9 @@ stop/finalize fences remain in their owning paths.
 
 For an asynchronously dispatched result, `latency_ms` measures elapsed time
 from the persisted, timezone-aware `runs.started_at` to terminal result
-projection. Reconciliation does not start a fresh execution stopwatch. Missing,
+projection. Execution's application projection samples the UTC observation time;
+the Worker supplies the persisted start and does not own a new clock.
+Reconciliation does not start a fresh execution stopwatch. Missing,
 invalid, naive or future start timestamps yield `null`, rather than a fabricated
 zero. Synchronous adapter timing retains its existing monotonic stopwatch.
 SDK `model.completed.duration_ms` and private SDK-stage timings remain separate

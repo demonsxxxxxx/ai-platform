@@ -17,12 +17,12 @@ from app.execution.application.worker_terminal_projection import (
     enforce_required_artifact_types as enforce_required_artifact_types,
     enforce_worker_required_tool_completion as enforce_worker_required_tool_completion,
     project_worker_terminal_result as project_worker_terminal_result,
+    run_elapsed_ms as run_elapsed_ms,
     worker_assistant_metadata as worker_assistant_metadata,
 )
 from app.execution.domain.worker_observability import (
     event_observability_kwargs as event_observability_kwargs,
     executor_observability as executor_observability,
-    run_elapsed_ms as run_elapsed_ms,
 )
 from app.execution.application.artifact_persistence import (
     build_artifact_execution_owner,

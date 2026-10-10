@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from app.agent_apps.capability_state import exact_invoked_skills
@@ -5,8 +6,22 @@ from app.execution.api import (
     enforce_required_artifact_types,
     enforce_worker_required_tool_completion,
     project_worker_terminal_result,
+    run_elapsed_ms,
 )
+from app.execution.application import worker_terminal_projection
 from app.executors.base import ExecutorResult
+
+
+def test_run_elapsed_ms_samples_utc_at_the_application_boundary(monkeypatch):
+    observed_at = datetime(2026, 10, 10, 3, 15, 0, tzinfo=timezone.utc)
+
+    def now(clock_timezone):
+        assert clock_timezone is timezone.utc
+        return observed_at
+
+    monkeypatch.setattr(worker_terminal_projection, "datetime", SimpleNamespace(now=now))
+
+    assert run_elapsed_ms(observed_at - timedelta(minutes=5)) == 300_000
 
 
 def test_required_tool_completion_fail_closes_success_without_evidence():

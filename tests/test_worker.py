@@ -2057,6 +2057,8 @@ async def test_bound_agent_executor_reconciliation_uses_session_pins_and_termina
 ):
     from datetime import datetime, timedelta, timezone
 
+    from app.execution.application import worker_terminal_projection
+
     observed_at = datetime(2026, 10, 10, 3, 15, 0, tzinfo=timezone.utc)
     started_at = {
         "valid": observed_at - timedelta(minutes=5),
@@ -2067,8 +2069,8 @@ async def test_bound_agent_executor_reconciliation_uses_session_pins_and_termina
     }[run_start]
     expected_latency = 300_000 if run_start == "valid" else None
     monkeypatch.setattr(
-        worker_module, "datetime", types.SimpleNamespace(now=lambda _timezone: observed_at),
-        raising=False,
+        worker_terminal_projection, "datetime",
+        types.SimpleNamespace(now=lambda _timezone: observed_at),
     )
     profile = {
         "agent_id": "agt_support",

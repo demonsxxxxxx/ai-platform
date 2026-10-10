@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Any
 
 from pydantic import ValidationError
@@ -307,11 +306,7 @@ async def process_run_payload(
                     raise ValueError("executor_dispatch_acceptance_lease_missing")
                 runtime_sandbox_execution_detached = True
                 return WorkerOutcome(status="running", run_id=run_payload.run_id)
-            latency_ms = (
-                run_elapsed_ms(locked.get("started_at"), observed_at=datetime.now(timezone.utc))
-                if reconciliation is not None
-                else max(int((time.monotonic() - started_at) * 1000), 0)
-            )
+            latency_ms = run_elapsed_ms(locked.get("started_at")) if reconciliation is not None else max(int((time.monotonic() - started_at) * 1000), 0)
             result.validate()
             result = normalize_sandbox_reported_failure(result)
             if capability_authorization is None:
