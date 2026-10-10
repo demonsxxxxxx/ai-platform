@@ -72,6 +72,11 @@ name components must fit within 255 UTF-8 bytes; non-ASCII ZIP names without
 a UTF-8 flag or a verified Unicode Path (0x7075) extra field are rejected rather than
 guessed or silently renamed. ASCII names need no encoding flag. The admin
 Skill package preview and upload follow the same package-shape validation.
+`SKILL.md` YAML frontmatter starts at the beginning of the file (an optional UTF-8
+BOM is accepted) and ends on an unindented `---` delimiter line. LF, CRLF, and CR
+line endings are accepted. Inline `---` text and indented block-scalar content
+remain metadata, not delimiters; a missing delimiter yields no metadata and
+malformed enclosed YAML retains the existing validation error.
 
 `POST /api/skills/upload` accepts the same package shape for an existing public
 Skill and persists the package files as tenant/user-scoped public Skill file
