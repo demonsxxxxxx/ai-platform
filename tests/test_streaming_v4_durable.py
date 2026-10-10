@@ -22,6 +22,7 @@ from app.streaming.api import (
     V4ProjectionError,
     build_v4_control,
     opaque_message_id,
+    project_persisted_assistant_message_v4,
     project_persisted_message_delta_v4,
     project_public_envelope_v4,
     project_public_v4,
@@ -598,6 +599,34 @@ def test_persisted_message_delta_projection_requires_managed_attempt_authority()
         project_persisted_message_delta_v4(row, tenant_id="tenant-b", run_id="run-a")
         is None
     )
+
+
+def test_persisted_message_lifecycle_projection_requires_managed_attempt_authority() -> None:
+    for event_type, payload in (
+        ("message.started", {}),
+        ("message.completed", {"delta_count": 1, "text_length": 1}),
+    ):
+        row = _row(payload, v4_attempt_authorized=True, event_type=event_type)
+        projected = project_persisted_assistant_message_v4(
+            row, tenant_id="tenant-a", run_id="run-a"
+        )
+        assert projected is not None
+        assert projected["event_type"] == event_type
+        assert projected["payload"] == payload
+        assert "__stream_v4" not in projected["payload"]
+        assert "attempt_id" not in projected
+        assert "tenant_scope" not in projected
+        for change in (
+            {"v4_attempt_authorized": False},
+            {"visible_to_user": False},
+            {"tenant_id": "tenant-b"},
+            {"run_id": "run-b"},
+            {"event_type": "message.part.delta"},
+            {"payload_json": {**row["payload_json"], "private_payload": "hidden"}},
+        ):
+            assert project_persisted_assistant_message_v4(
+                {**row, **change}, tenant_id="tenant-a", run_id="run-a"
+            ) is None
 
 
 def test_v4_projection_is_internal_and_public_projection_strips_authority_fields() -> (
