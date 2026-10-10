@@ -666,7 +666,7 @@ def test_executor_callback_persists_terminal_receipt_without_public_terminal_eve
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
     monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'get_run_identity', fake_get_run_identity)
     monkeypatch.setattr(
-        runtime_callbacks,
+        runtime_callbacks._sandbox_cleanup,
         "container_lease_from_persisted_row",
         lambda _row: pytest.fail("terminal callback must not reconstruct a lease"),
     )
@@ -1635,7 +1635,7 @@ def test_heartbeat_callback_renews_lease_with_settings_ttl(monkeypatch):
         fake_heartbeat,
     )
     monkeypatch.setattr(
-        runtime_callbacks,
+        runtime_callbacks._sandbox_cleanup,
         "container_lease_from_persisted_row",
         lambda _row: pytest.fail("ordinary callback must not renew the OpenSandbox lifetime"),
     )
@@ -1699,7 +1699,7 @@ def test_inactive_heartbeat_does_not_reconstruct_or_renew(monkeypatch):
         "record_sandbox_executor_heartbeat",
         fake_heartbeat,
     )
-    monkeypatch.setattr(runtime_callbacks, "container_lease_from_persisted_row", unexpected_reconstruction)
+    monkeypatch.setattr(runtime_callbacks._sandbox_cleanup, "container_lease_from_persisted_row", unexpected_reconstruction)
     monkeypatch.setattr(runtime_callbacks, "create_container_provider", unexpected_provider)
 
     response = TestClient(create_app()).post(
@@ -1914,7 +1914,7 @@ def test_opensandbox_callback_renewal_failure_leaves_callback_unpersisted(monkey
         fake_heartbeat,
     )
     monkeypatch.setattr(
-        runtime_callbacks,
+        runtime_callbacks._sandbox_cleanup,
         "container_lease_from_persisted_row",
         lambda row: SimpleNamespace(provider="opensandbox"),
     )
@@ -2003,7 +2003,7 @@ async def test_opensandbox_old_renewal_receipt_is_rejected_after_owner_or_termin
         "list_current_sandbox_runtime_leases_for_attempt",
         exact_lease,
     )
-    monkeypatch.setattr(runtime_callbacks, "container_lease_from_persisted_row", lambda _row: SimpleNamespace(provider="opensandbox"))
+    monkeypatch.setattr(runtime_callbacks._sandbox_cleanup, "container_lease_from_persisted_row", lambda _row: SimpleNamespace(provider="opensandbox"))
     monkeypatch.setattr(runtime_callbacks, "create_container_provider", lambda _name: object())
     monkeypatch.setattr(runtime_callbacks, "renew_opensandbox_lifetime", fake_renew)
     monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, "append_event", unexpected_write)
