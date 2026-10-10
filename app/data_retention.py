@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import time
 
 from app.identity.infrastructure import audit_postgres as identity_audit_postgres
@@ -13,7 +12,7 @@ from app.persistence import retention as persistence_retention
 from app.control_plane_contracts import standard_trace_id
 from app.db import transaction
 from app.settings import get_settings
-from app.storage import ObjectStorage
+from app.storage import ObjectStorage, run_storage_io
 
 
 _next_cleanup_at = 0.0
@@ -168,7 +167,7 @@ async def run_data_retention_maintenance(
     for item in claimed:
         try:
             assert object_storage is not None
-            await asyncio.to_thread(
+            await run_storage_io(
                 object_storage.delete_object, storage_key=str(item["storage_key"])
             )
         except Exception as exc:
