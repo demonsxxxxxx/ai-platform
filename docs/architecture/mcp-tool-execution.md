@@ -52,7 +52,11 @@ by replacing characters outside `[a-zA-Z0-9_-]` with `_`.
    `PreToolUse` may arrive before the corresponding assistant `ToolUseBlock`; the
    hook's validated call ID, tool name and private input seed the same per-call
    state so event publication order cannot turn an authorized call into a false
-   denial. Known failed calls to platform-authorized read-only tools may recover.
+   denial. Platform-owned response and context Tool subjects supply fixed safe
+   `public_tool_label` metadata so their policy and lifecycle events can be
+   acknowledged before dispatch. These labels exclude private identities,
+   arguments, runtime paths and results; the existing event acknowledgement and
+   execution-evidence checks remain required. Known failed calls to platform-authorized read-only tools may recover.
    For write-capable calls after admission, a missing terminal hook is
    `mcp_execution_outcome_unknown`; a completed hook whose durable callback or
    public receipt is incomplete is `mcp_execution_succeeded_receipt_incomplete`.
@@ -161,6 +165,8 @@ and absence of secrets in public events. That stage remains unclaimed until run.
   remain compatible and no parallel retry path remains. The installed CLI MCP
   regression now runs in the Sandbox CI shard; its selected catalog also
   includes the platform-owned `attach_file` tool.
+- Platform-owned response/context public labels complete existing Tool subjects;
+  no production path, canonical identity or wire schema is superseded.
 - Update the owning MCP section in `docs/frontend/skills-marketplace-public-api.md`
   and link this execution contract there. Inventory affected selectors and
   configuration references with targeted searches before completion.

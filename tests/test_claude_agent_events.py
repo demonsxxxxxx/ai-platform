@@ -11,6 +11,10 @@ from app.execution.api import (
     ClaudeSdkAgentEventAdapter,
 )
 from app.executors.claude_agent_sdk_runner import run_claude_agent_sdk
+from app.executors.claude.capability_policy import (
+    _SDK_INTERNAL_CONTEXT_TOOLS,
+    internal_context_tool_policy_subjects,
+)
 from app.executors.public_answer_stream import PublicAnswerStreamGate
 from app.platform.public_payload import (
     sanitize_public_answer_text,
@@ -633,6 +637,37 @@ def test_tool_hook_can_precede_tool_use_block_without_exposing_sdk_payload():
     ]
     assert "file_path" not in repr(started + completed)
     assert "C:\\private\\x" not in repr(started + completed)
+
+
+@pytest.mark.parametrize("tool_name", _SDK_INTERNAL_CONTEXT_TOOLS)
+def test_internal_context_tool_hooks_publish_safe_lifecycle(tool_name):
+    subject = internal_context_tool_policy_subjects([tool_name])[0]
+    adapter = ClaudeSdkAgentEventAdapter(
+        run_id="run-context-tools", attempt_id="attempt-context-tools",
+        tool_policy_subjects=[subject],
+        sanitizer=sanitize_public_answer_text,
+        payload_sanitizer=sanitize_public_event_candidate,
+    )
+    hook = {
+        "tool_name": subject["identity"],
+        "tool_use_id": "sdk-context-call",
+        "tool_input": {"private_argument": "private-context-input"},
+    }
+    policy = adapter.accept_policy_decision(
+        tool_name=hook["tool_name"], tool_input=hook["tool_input"],
+        allowed=True, tool_use_id=hook["tool_use_id"],
+    )
+    started = adapter.accept_hook("PreToolUse", hook, tool_use_id=hook["tool_use_id"])
+    completed = adapter.accept_hook("PostToolUse", hook, tool_use_id=hook["tool_use_id"])
+
+    assert [event.event_type for event in policy + started + completed] == [
+        "policy.checking", "policy.allowed", "tool.started", "tool.completed",
+    ]
+    assert all(event.payload["display_name"] for event in started + completed)
+    serialized = repr([event.as_dict() for event in policy + started + completed])
+    assert all(value not in serialized for value in (
+        subject["identity"], tool_name, "sdk-context-call", "private-context-input",
+    ))
 
 
 def test_hook_seed_rejects_conflicting_late_tool_block_without_private_payload():

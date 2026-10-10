@@ -83,6 +83,13 @@ _SDK_INTERNAL_CONTEXT_PARAMETER_KEYS = {
     PROFILE_DRIVE_STAGE_TOOL: ("path",),
     "search_memory": ("query", "limit", "max_tokens"),
 }
+_SDK_INTERNAL_CONTEXT_PUBLIC_LABELS = {
+    "read_run_artifact": "读取任务文件",
+    "stage_context_file_to_workspace": "准备上下文文件",
+    "stage_run_artifact_to_workspace": "准备任务文件",
+    PROFILE_DRIVE_STAGE_TOOL: "准备共享文件",
+    "search_memory": "检索记忆",
+}
 _SDK_INTERNAL_CONTEXT_REQUIRED_PARAMETER_KEYS = {
     "read_run_artifact": ("artifact_id",),
     "stage_context_file_to_workspace": ("file_id",),
@@ -236,6 +243,7 @@ def internal_context_tool_policy_subjects(tool_names: object) -> list[dict[str, 
             {
                 "identity": identity,
                 "mcp_server": "ai-platform-context",
+                "public_tool_label": _SDK_INTERNAL_CONTEXT_PUBLIC_LABELS[tool_name],
                 "registered": True,
                 "declared": True,
                 "active": True,
@@ -263,6 +271,7 @@ def internal_response_tool_policy_subjects() -> list[dict[str, Any]]:
         {
             "identity": f"{_SDK_INTERNAL_RESPONSE_IDENTITY_PREFIX}attach_file",
             "mcp_server": "ai-platform-response",
+            "public_tool_label": "交付文件",
             "registered": True,
             "declared": True,
             "active": True,
