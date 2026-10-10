@@ -822,10 +822,10 @@ function normalizeWordReviewHistoryItem(value: unknown, index: number): WordRevi
   };
 }
 
-function readLocalWordReviewHistory(storageKey: string): WordReviewHistoryItem[] {
+function readLocalWordReviewHistory(historyCacheKey: string): WordReviewHistoryItem[] {
   if (typeof window === "undefined") return [];
   try {
-    const raw = window.localStorage.getItem(storageKey);
+    const raw = window.localStorage.getItem(historyCacheKey);
     if (!raw || raw.length > 1024 * 1024) return [];
     const parsed: unknown = JSON.parse(raw);
     return Array.isArray(parsed)
