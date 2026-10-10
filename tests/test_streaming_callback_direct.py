@@ -52,6 +52,7 @@ async def test_committed_callback_batch_uses_direct_transport_without_claims():
 @pytest.mark.parametrize("failure", [None, "commit", "redis", "predecessor", "expired_predecessor"])
 async def test_callback_acknowledges_only_after_commit_and_stream_write(monkeypatch, failure):
     from app.routes import runtime_callbacks as route
+    from app.runtime.kernel_contracts import AgentEvent
     from app.runtime.sandbox.contracts import ExecutorCallbackEvent
     from app.streaming.application.durable_v4 import V4PublicationStreamExpired, V4PublicationTransportUnavailable
     from tests.test_runtime_callbacks import callback_payload
@@ -97,7 +98,7 @@ async def test_callback_acknowledges_only_after_commit_and_stream_write(monkeypa
     monkeypatch.setattr(route, "_require_current_runtime_attempt", AsyncMock())
     monkeypatch.setattr(route, "get_stream_authority", AsyncMock(return_value=authority))
     monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event_batch', AsyncMock(return_value={"duplicate": False}))
-    monkeypatch.setattr(route, "callback_event_to_run_events", lambda _: [SimpleNamespace(model_dump=lambda **_: {})])
+    monkeypatch.setattr(route, "callback_event_to_run_events", lambda _: [AgentEvent(type="message.delta")])
     monkeypatch.setattr(route, "callback_thinking_summary_to_v4", lambda *_, **__: ())
     monkeypatch.setattr(route, "agent_event_to_executor_event", lambda _: {})
     monkeypatch.setattr(route, "callback_item_to_v4", lambda *_, **__: SimpleNamespace(source_run_id="run-a", event_type="message.delta"))

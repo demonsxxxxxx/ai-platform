@@ -9,7 +9,15 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from app.settings import get_settings
+from app.settings import (
+    DIRECT_OPENSANDBOX_NETWORK_NAME,
+    DIRECT_OPENSANDBOX_POLICY_SUBJECT,
+    DIRECT_OPENSANDBOX_PROFILE_ID,
+    LEGACY_DIRECT_OPENSANDBOX_NETWORK_NAME,
+    LEGACY_DIRECT_OPENSANDBOX_POLICY_SUBJECT,
+    get_settings,
+    is_valid_opensandbox_network_name,
+)
 
 CLAUDE_WORKER_EXECUTOR = "claude-agent-worker"
 REAL_SANDBOX_PROVIDERS = frozenset({"docker", "opensandbox"})
@@ -321,6 +329,7 @@ def build_governed_egress_proof(
     authorized_skill_scope: object,
     authorized_native_tool_scope: object,
     lease_identity: object,
+    default_deny_outbound: object = True,
     key_id: object = GOVERNED_EGRESS_PROOF_DEFAULT_KEY_ID,
     issued_at: datetime | None = None,
     expires_at: datetime | None = None,
@@ -333,6 +342,7 @@ def build_governed_egress_proof(
         or key is None
         or normalized_key_id is None
         or not isinstance(network_internal, bool)
+        or not isinstance(default_deny_outbound, bool)
     ):
         raise ValueError("governed_egress_proof_invalid")
     issued = (issued_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
@@ -366,7 +376,7 @@ def build_governed_egress_proof(
         "evidence_class": REAL_SANDBOX_EVIDENCE_CLASS,
         "issued_at": _format_timestamp(issued),
         "expires_at": _format_timestamp(expiry),
-        "default_deny_outbound": True,
+        "default_deny_outbound": default_deny_outbound,
         "governed_callback_exception": True,
         "policy_bound_enforcement": True,
         "network_internal": network_internal,
@@ -400,6 +410,7 @@ def is_governed_egress_proof(
     expected_binding: Mapping[str, object] | None = None,
     now: datetime | None = None,
     require_fresh: bool = True,
+    allow_legacy_opensandbox: bool = False,
 ) -> bool:
     """Verify a sealed proof, optionally requiring it remains admissible now.
 
@@ -420,11 +431,45 @@ def is_governed_egress_proof(
         or proof.get("provider") != provider
         or proof.get("source") != REAL_SANDBOX_EVIDENCE_SOURCE
         or proof.get("evidence_class") != REAL_SANDBOX_EVIDENCE_CLASS
-        or proof.get("default_deny_outbound") is not True
         or proof.get("governed_callback_exception") is not True
         or proof.get("policy_bound_enforcement") is not True
-        or proof.get("network_internal") is not True
     ):
+        return False
+    default_deny_outbound = proof.get("default_deny_outbound")
+    network_internal = proof.get("network_internal")
+    if provider == "opensandbox":
+        expected_network_name = (
+            expected_binding.get("network_name", DIRECT_OPENSANDBOX_NETWORK_NAME)
+            if isinstance(expected_binding, Mapping)
+            else DIRECT_OPENSANDBOX_NETWORK_NAME
+        )
+        public_opensandbox_binding = {
+            "network_id": DIRECT_OPENSANDBOX_PROFILE_ID,
+            "network_name": expected_network_name,
+            "policy_subject": DIRECT_OPENSANDBOX_POLICY_SUBJECT,
+        }
+        legacy_opensandbox_binding = {
+            "network_id": DIRECT_OPENSANDBOX_PROFILE_ID,
+            "network_name": LEGACY_DIRECT_OPENSANDBOX_NETWORK_NAME,
+            "policy_subject": LEGACY_DIRECT_OPENSANDBOX_POLICY_SUBJECT,
+        }
+        if default_deny_outbound is False and network_internal is False:
+            if (
+                not is_valid_opensandbox_network_name(expected_network_name)
+                or not _proof_matches_expected_binding(proof, public_opensandbox_binding)
+            ):
+                return False
+        elif (
+            default_deny_outbound is True
+            and network_internal is True
+            and allow_legacy_opensandbox
+            and not require_fresh
+        ):
+            if not _proof_matches_expected_binding(proof, legacy_opensandbox_binding):
+                return False
+        else:
+            return False
+    elif default_deny_outbound is not True or network_internal is not True:
         return False
     issued_at = _parse_timestamp(proof.get("issued_at"))
     expires_at = _parse_timestamp(proof.get("expires_at"))
@@ -478,6 +523,7 @@ def is_governed_egress_identity_proof(
         expected_binding=expected_binding,
         now=now,
         require_fresh=False,
+        allow_legacy_opensandbox=False,
     )
 
 
@@ -591,6 +637,8 @@ def is_accepted_runtime_lease(
     if not isinstance(payload, dict):
         payload = row.get("lease_payload")
     expected_binding = _runtime_lease_expected_binding(row, payload) if isinstance(payload, dict) else None
+    if expected_binding is None:
+        return False
     settings = get_settings()
     key = signing_key if signing_key is not None else settings.sandbox_egress_proof_signing_key
     current_key_id = (
@@ -606,12 +654,26 @@ def is_accepted_runtime_lease(
         )
     )
     proof = payload.get("governed_egress_proof") if isinstance(payload, dict) else None
+    if provider == "opensandbox" and isinstance(payload, dict):
+        if verification_mode == "active":
+            expected_binding = {
+                **expected_binding,
+                "network_name": getattr(
+                    settings,
+                    "opensandbox_expected_network_mode",
+                    DIRECT_OPENSANDBOX_NETWORK_NAME,
+                ),
+            }
+        elif "governed_egress_network_name" in payload:
+            expected_binding = {
+                **expected_binding,
+                "network_name": payload.get("governed_egress_network_name"),
+            }
     return (
         isinstance(payload, dict)
         and provider in REAL_SANDBOX_PROVIDERS
         and str(payload.get("source") or "") == REAL_SANDBOX_EVIDENCE_SOURCE
         and str(payload.get("evidence_class") or "") == REAL_SANDBOX_EVIDENCE_CLASS
-        and expected_binding is not None
         and is_governed_egress_proof(
             proof,
             provider=provider,
@@ -622,6 +684,7 @@ def is_accepted_runtime_lease(
             expected_binding=expected_binding,
             now=now,
             require_fresh=verification_mode == "active",
+            allow_legacy_opensandbox=verification_mode == "historical",
         )
         and isinstance(proof, dict)
         and _payload_matches_signed_projection(payload, proof)

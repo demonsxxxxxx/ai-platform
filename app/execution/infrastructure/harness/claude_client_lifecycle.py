@@ -1,78 +1,104 @@
-"""The protocol/transport shutdown seam of the pinned Claude SDK 0.2.130.
+"""Public client shutdown and injected-callback lifecycle support."""
 
-Keep the SDK-created client and transport: supplying a custom transport at
-construction would bypass native SessionStore resume materialization.
-"""
+from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from typing import Any
+from functools import wraps
+from typing import Any, TypeVar
+
+
+Callback = TypeVar("Callback", bound=Callable[..., Awaitable[Any]])
+
+
+class ClaudeInjectedCallbackTracker:
+    """Track only callbacks the platform injects into the SDK."""
+
+    def __init__(self) -> None:
+        self._active = 0
+        self._idle = asyncio.Event()
+        self._idle.set()
+        self._sealed = False
+        self._tasks: dict[asyncio.Task[Any], int] = {}
+
+    @property
+    def active_calls(self) -> int:
+        return self._active
+
+    def wrap(self, callback: Callback) -> Callback:
+        @wraps(callback)
+        async def tracked(*args: Any, **kwargs: Any) -> Any:
+            if self._sealed:
+                raise RuntimeError("claude_callback_after_stream_closed")
+            task = asyncio.current_task()
+            self._active += 1
+            self._idle.clear()
+            if task is not None:
+                self._tasks[task] = self._tasks.get(task, 0) + 1
+            try:
+                return await callback(*args, **kwargs)
+            finally:
+                self._active -= 1
+                if task is not None:
+                    depth = self._tasks[task] - 1
+                    if depth:
+                        self._tasks[task] = depth
+                    else:
+                        del self._tasks[task]
+                if self._active == 0:
+                    self._idle.set()
+
+        return tracked  # type: ignore[return-value]
+
+    async def wait_idle(self) -> None:
+        await self._idle.wait()
+
+    async def seal_and_wait(self) -> None:
+        # EOF prevents further protocol work. Reject callbacks that the SDK
+        # scheduled but has not entered, and join our active cancellation
+        # finalizers before publishing a stable Run result.
+        if not self._sealed:
+            self._sealed = True
+            current = asyncio.current_task()
+            for task in tuple(self._tasks):
+                if task is not current:
+                    task.cancel()
+        # An interrupted waiter may enter this barrier again. Only the first
+        # seal sends cancellation; finalizers retain their single cancellation.
+        await self.wait_idle()
 
 
 class ClaudeClientCloseBoundary:
-    def __init__(self, client: Any, on_protocol_closed: Callable[[bool], Awaitable[None]]):
+    """Observe SessionStore mirror errors and delegate physical close publicly.
+
+    The pinned SDK has no public mirror-error callback. Keep this single
+    version-sensitive observer isolated here; the public receive iterator EOF
+    and the platform callback trackers define protocol completion.
+    """
+
+    def __init__(self, client: Any) -> None:
         self.client = client
-        self.on_protocol_closed = on_protocol_closed
         self.mirror_failed = False
-        self._query = None
-        self._transport = None
-        self._children = ()
-        self._transport_close_started = False
+        self._bound = False
 
     def bind(self) -> None:
-        # A failed connection (and injected test clients) may have no Query.
-        self._query = getattr(self.client, "_query", None)
-        if self._query is None:
+        if self._bound:
             return
-        self._transport = self._query.transport
-        batcher = self._query._transcript_mirror_batcher
-        if batcher is not None:
-            report_error = batcher.on_error
+        self._bound = True
+        query = getattr(self.client, "_query", None)
+        batcher = getattr(query, "_transcript_mirror_batcher", None)
+        if batcher is None:
+            return
+        report_error = batcher.on_error
 
-            async def on_mirror_error(key, error):
-                self.mirror_failed = True
-                await report_error(key, error)
+        async def on_mirror_error(key: Any, error: str) -> None:
+            self.mirror_failed = True
+            await report_error(key, error)
 
-            batcher.on_error = on_mirror_error
-        self._query.transport = _ClosingTransport(self)
+        batcher.on_error = on_mirror_error
+
+    async def interrupt(self) -> None:
+        await self.client.interrupt()
 
     async def disconnect(self) -> None:
-        if self._query is not None:
-            # Query.close cancels these handles but does not join them. Keep
-            # the handles even when their done callbacks remove them from Query.
-            self._children = tuple(self._query._child_tasks)
-        try:
-            await self.client.disconnect()
-            if self._query is None:
-                await self.on_protocol_closed(self.mirror_failed)
-        finally:
-            if self._transport is not None and not self._transport_close_started:
-                # Failure in protocol shutdown still owns physical cleanup;
-                # it must never announce a successful protocol barrier.
-                await self._transport.close()
-
-    async def close_transport(self) -> None:
-        self._transport_close_started = True
-        try:
-            # Query has now flushed the mirror, stopped/joined its reader, and
-            # closed its message producer. Join cancelled control callbacks too.
-            outcomes = await asyncio.gather(
-                *(child.wait() for child in self._children), return_exceptions=True
-            )
-            for outcome in outcomes:
-                if isinstance(outcome, BaseException):
-                    raise outcome
-            await self.on_protocol_closed(self.mirror_failed)
-        finally:
-            await self._transport.close()
-
-
-class _ClosingTransport:
-    def __init__(self, boundary: ClaudeClientCloseBoundary):
-        self._boundary = boundary
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._boundary._transport, name)
-
-    async def close(self) -> None:
-        await self._boundary.close_transport()
+        await self.client.disconnect()

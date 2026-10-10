@@ -800,3 +800,27 @@ def test_successful_terminal_does_not_fabricate_an_answer_or_error():
     )
 
     assert projection is None
+
+
+@pytest.mark.parametrize(
+    ("error_code", "detail_code"),
+    [
+        ("claude_agent_sdk_input_context_too_large", "input_context_too_large"),
+        ("claude_agent_sdk_input_image_invalid", "input_image_invalid"),
+        ("claude_agent_sdk_upstream_error", "model_service_unavailable"),
+        ("claude_agent_sdk_execution_failed", "run_failed"),
+        ("private-secret-exception", "run_failed"),
+    ],
+)
+def test_sdk_error_attribution_is_safe_and_stable_after_reprojection(error_code, detail_code):
+    projection = public_terminal_projection("failed", error_code, {"exception": "private-secret"})
+    assert projection["detail_code"] == detail_code
+    assert public_terminal_projection("failed", projection["error_code"]) == projection
+    assert "private-secret" not in str(projection)
+    assert projection["event_payload"] == {}
+
+
+@pytest.mark.parametrize("detail_code", sorted(PUBLIC_TERMINAL_DETAIL_MESSAGES))
+def test_public_failed_terminal_taxonomy_is_idempotent_and_kind_fenced(detail_code):
+    projection = public_terminal_projection("failed", detail_code)
+    assert projection["detail_code"] == ("run_failed" if detail_code == "run_cancelled" else detail_code)

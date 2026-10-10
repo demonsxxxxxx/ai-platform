@@ -485,7 +485,7 @@ Evidence: Settings/contract plus real reference-integrity tests for later cleanu
 
 Boundary: `Effective Compose, image and migration authority`.
 
-**Given:** Exact code/image/config subjects, governed and internal-test profiles, predecessor schema and rollback candidate.
+**Given:** Exact code/image/config subjects, the unified configured sandbox topology, predecessor schema and rollback candidate.
 
 **When:** Inspect merged configuration; run approved package/deploy/rollback acceptance.
 

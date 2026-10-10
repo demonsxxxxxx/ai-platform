@@ -44,6 +44,13 @@ class WorkerQueuePayload(Protocol):
     input: dict[str, Any]
 
 
+class WorkerBoundRunPayload(WorkerQueuePayload, Protocol):
+    """Execution data bound to one durable Attempt and owner generation."""
+
+    attempt_id: str
+    owner_generation: int
+
+
 @dataclass(frozen=True, slots=True)
 class WorkerAttemptLifecyclePorts:
     """Concrete runtime capabilities supplied by the worker composition root."""

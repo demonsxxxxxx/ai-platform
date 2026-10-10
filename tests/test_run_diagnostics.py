@@ -1,11 +1,16 @@
 import asyncio
+import io
+import json
+import zipfile
 from copy import deepcopy
 from datetime import datetime, timezone
 
 import pytest
 
 from app.platform.postgres.limits import json_size_bytes
+from app.runs.application.diagnostic_export import build_admin_diagnostic_export
 from app.runs.application.diagnostics import RunDiagnosticsService
+from app.runs.domain import diagnostics as runs_diagnostics_contract
 from app.runs.domain.diagnostics import (
     RUN_DIAGNOSTICS_MAX_BYTES,
     RUN_DIAGNOSTICS_SCHEMA_VERSION,
@@ -19,6 +24,7 @@ from app.sandbox.api import (
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
     normalize_sdk_runtime_diagnostics,
 )
+from app.sandbox.domain import runtime_diagnostics as sandbox_diagnostics_contract
 
 
 NOW = datetime(2026, 9, 13, 8, 0, tzinfo=timezone.utc)
@@ -184,6 +190,70 @@ async def test_capture_moves_private_diagnostics_out_of_terminal_result_and_is_i
     assert persistence.payload["observations"][0]["attempt_id"] == "attempt-a"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("private_diagnostics", [None, {}])
+async def test_successful_terminal_without_diagnostics_does_not_create_failure(
+    private_diagnostics,
+):
+    persistence = InMemoryDiagnostics()
+    service = RunDiagnosticsService(
+        persistence=persistence,
+        normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
+        runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+        clock=lambda: NOW,
+    )
+
+    public_result = await service.capture_failure_result(
+        object(),
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        source="executor_callback",
+        stage="terminal_receipt",
+        error_code="completed",
+        result_json={"status": "completed", "runtime_diagnostics": private_diagnostics},
+    )
+
+    assert public_result == {"status": "completed"}
+    assert persistence.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("private_diagnostics", "expected_code"),
+    [
+        (runtime_diagnostics(), "provider_timeout"),
+        *[(value, "runtime_diagnostics_rejected")
+          for value in ({"sdk": {}}, {"schema_version": "future"}, [], "", False)],
+    ],
+)
+async def test_successful_terminal_retains_diagnostic_evidence(
+    private_diagnostics, expected_code,
+):
+    persistence = InMemoryDiagnostics()
+    service = RunDiagnosticsService(
+        persistence=persistence,
+        normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
+        runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+        clock=lambda: NOW,
+    )
+
+    public_result = await service.capture_failure_result(
+        object(),
+        tenant_id="tenant-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        source="executor_callback",
+        stage="terminal_receipt",
+        error_code="completed",
+        result_json={"status": "completed", "runtime_diagnostics": private_diagnostics},
+    )
+
+    assert public_result == {"status": "completed"}
+    assert len(persistence.calls) == 1
+    assert persistence.payload["observations"][0]["runtime_diagnostics"]["error_code"] == expected_code
+
+
 def test_run_sanitizer_preserves_bounded_source_and_stage_labels():
     projected = sanitize_runtime_diagnostics(
         runtime_diagnostics(
@@ -232,6 +302,53 @@ def test_projection_failure_survives_sandbox_and_runs_diagnostic_boundaries():
     assert sandbox_projection["projection_failure"] == expected
     assert observation["runtime_diagnostics"]["projection_failure"] == expected
     assert repeated_sandbox_projection["projection_failure"] == expected
+
+
+def test_raw_frame_shape_label_contracts_match_across_boundaries():
+    assert runs_diagnostics_contract._RUN_RAW_FRAME_LABELS == (
+        sandbox_diagnostics_contract._RAW_FRAME_SHAPE_LABELS
+    )
+    assert runs_diagnostics_contract._RUN_RAW_FRAME_OBSERVATION_LABELS == (
+        sandbox_diagnostics_contract._RAW_FRAME_OBSERVATION_LABELS
+    )
+
+
+def test_raw_frame_shape_survives_sandbox_runs_and_rejects_untrusted_values():
+    shape = {
+        "event_type": "content_block_delta", "block_type": "other",
+        "delta_type": "text_delta", "message_state": "open",
+        "open_block_type": "tool_use", "index_state": "ignored",
+        "guard": "block_delta_type",
+    }
+    preceding = {
+        "event_type": "content_block_start", "block_type": "tool_use",
+        "delta_type": "other", "message_state": "open",
+        "open_block_type": "none", "index_state": "other",
+    }
+    failure = {
+        "reason": "raw_frame_invalid", "stage": "message",
+        "location": "raw_stream_frame", "frame_shape": shape,
+        "preceding_frames": [preceding],
+    }
+    projected = normalize_sdk_runtime_diagnostics(
+        runtime_diagnostics(projection_failure=failure)
+    )
+    observation = build_failure_observation(
+        attempt_id="attempt-a", source="worker_executor", stage="terminalization",
+        error_code="claude_agent_sdk_output_validation_failed",
+        runtime_diagnostics=sanitize_runtime_diagnostics(projected), received_at=NOW,
+    )
+    assert observation["runtime_diagnostics"]["projection_failure"] == failure
+    assert normalize_sdk_runtime_diagnostics(
+        observation["runtime_diagnostics"]
+    )["projection_failure"] == failure
+    assert "frame_shape" not in sanitize_runtime_diagnostics({
+        "projection_failure": {**failure, "frame_shape": {**shape, "guard": "private_token"}},
+    })["projection_failure"]
+    for invalid in ([preceding] * 5, [{**preceding, "index": "private_token"}]):
+        assert "preceding_frames" not in sanitize_runtime_diagnostics({
+            "projection_failure": {**failure, "preceding_frames": invalid},
+        })["projection_failure"]
 
 
 @pytest.mark.asyncio
@@ -782,7 +899,23 @@ def test_protocol_diagnostics_drops_unrecognized_status_values():
 
 @pytest.mark.asyncio
 async def test_admin_projection_returns_structured_root_attempts_and_losses():
-    normalized = normalize_sdk_runtime_diagnostics(runtime_diagnostics())
+    projection_failure = {
+        "reason": "raw_frame_invalid", "stage": "message", "location": "raw_stream_frame",
+        "frame_shape": {
+            "event_type": "content_block_delta", "block_type": "other",
+            "delta_type": "text_delta", "message_state": "open",
+            "open_block_type": "tool_use", "index_state": "ignored",
+            "guard": "block_delta_type",
+        },
+        "preceding_frames": [{
+            "event_type": "content_block_start", "block_type": "tool_use",
+            "delta_type": "other", "message_state": "open",
+            "open_block_type": "none", "index_state": "other",
+        }],
+    }
+    normalized = normalize_sdk_runtime_diagnostics(runtime_diagnostics(
+        projection_failure={**projection_failure, "body": "PRIVATE_PAYLOAD_MARKER"},
+    ))
     observation = build_failure_observation(
         attempt_id="attempt-a",
         source="worker_executor",
@@ -834,12 +967,25 @@ async def test_admin_projection_returns_structured_root_attempts_and_losses():
 
     response = await service.read_admin(object(), tenant_id="tenant-a", run_id="run-a")
 
-    assert response["coverage"] == "full"
+    assert response["coverage"] == "partial"
+    assert {"field": "projection_failure", "reason": "unknown_fields_dropped", "count": 1} in response["losses"]
     assert response["root"]["stage"] == "model_wait"
     assert response["root"]["exception_type"] == "TimeoutError"
     assert response["root"]["stack"].endswith("TimeoutError: model wait expired")
     assert response["attempts"][0]["attempt_id"] == "attempt-a"
     assert response["details"]["sdk"]["exception_message"] == "model wait expired"
+    assert response["details"]["projection_failure"] == projection_failure
+    assert response["details"]["observations"][0]["projection_failure"] == projection_failure
+    assert "PRIVATE_PAYLOAD_MARKER" not in str(response)
+
+    package = build_admin_diagnostic_export(
+        diagnostics=response, export_id="export-a", generated_at=NOW,
+    )
+    with zipfile.ZipFile(io.BytesIO(package)) as archive:
+        exported = json.loads(archive.read("diagnostics.json"))
+    assert exported["details"]["projection_failure"] == projection_failure
+    assert exported["details"]["observations"][0]["projection_failure"] == projection_failure
+    assert "PRIVATE_PAYLOAD_MARKER" not in str(exported)
 
 
 @pytest.mark.asyncio
@@ -888,12 +1034,13 @@ async def test_admin_projection_marks_legacy_and_absent_records_explicitly():
         "tool_calls": [],
         "tool_policy_denials": [],
         "executor_protocol": None,
+        "projection_failure": None,
         "observations": [],
     }
 
 
 @pytest.mark.asyncio
-async def test_admin_projection_marks_empty_legacy_carrier_as_legacy_record():
+async def test_admin_projection_marks_empty_legacy_carrier_as_not_collected():
     snapshot = {
         "run": {
             "run_id": "run-a",
@@ -920,5 +1067,5 @@ async def test_admin_projection_marks_empty_legacy_carrier_as_legacy_record():
 
     response = await service.read_admin(object(), tenant_id="tenant-a", run_id="run-a")
 
-    assert response["coverage"] == "legacy_record"
-    assert response["root"]["error_code"] == "runtime_diagnostics_rejected"
+    assert response["coverage"] == "not_collected"
+    assert response["root"] is None

@@ -98,6 +98,7 @@ import {
 } from "./useAgent/sseConnection";
 import { createOptimisticMessagesForSend } from "./useAgent/optimisticMessages";
 import {
+  projectChatAdmissionError,
   safeDiagnosticCode,
   translateBackendError,
   translateChatAdmissionError,
@@ -115,6 +116,7 @@ import {
   type RunControlOwner,
   type RunControlParentIdentity,
 } from "./useAgent/runControlLifecycle";
+import { useRunInputs } from "./useAgent/runInputs";
 import type { FailureGuidance } from "../types/failureGuidance";
 
 function getSelectedSkillRecoverableCode(
@@ -229,28 +231,46 @@ export function buildChatSubmissionFailureGuidance({
   persistedRunPossible: boolean;
 }): FailureGuidance {
   const apiError = error instanceof ApiRequestError ? error : null;
-  const code = apiError?.code ?? "";
+  const projection = projectChatAdmissionError(apiError ?? {}, i18n.t.bind(i18n));
+  const code = projection.code ?? "";
   const permissionCodes = new Set([
     "capability_not_authorized",
-    "mcp_tool_not_available",
     "tool_permission_denied",
-    "required_capability_unavailable",
   ]);
-  const permissionFailure =
-    apiError?.status === 401 ||
-    apiError?.status === 403 ||
-    permissionCodes.has(code);
+  let nextAction = "请稍后重试；如问题持续，请联系管理员并提供问题编号。";
+  if (apiError?.status === 401 || code === "unauthorized" || code === "auth_context_stale") {
+    nextAction = "请重新登录后再试；仍无法登录时，请联系管理员并提供问题编号。";
+  } else if (code === "required_capability_unavailable" || code === "mcp_tool_not_available") {
+    nextAction = "请检查所选专家或工具配置；如仍不可用，请联系管理员并提供问题编号。";
+  } else if (apiError?.status === 403 || permissionCodes.has(code)) {
+    nextAction = "请重新选择有权使用的专家或工具；如需开通权限，请联系管理员并提供问题编号。";
+  } else if (code === "agent_profile_revision_stale") {
+    nextAction = "请刷新专家配置并重新选择最新版本后重试。";
+  } else if (code === "session_workspace_mismatch") {
+    nextAction = "请切换回此会话所属的工作区，或在当前工作区新建会话。";
+  } else if (code === "user_active_run_limit_exceeded") {
+    nextAction = "请等待运行中的任务结束或取消旧任务后再发送。";
+  } else if (code === "current_request_too_large") {
+    nextAction = "请缩短或拆分当前请求后重试。";
+  } else if (code === "input_context_too_large") {
+    nextAction = "请缩短或拆分请求、减少附件，或新建会话后重试。";
+  } else if (code === "input_image_invalid") {
+    nextAction = "请检查图片格式、尺寸和数量，调整后重试。";
+  } else if (code === "context_file_too_large") {
+    nextAction = "请选择更小的文件或减少文件数量后重试。";
+  } else if (apiError?.status === 422) {
+    nextAction = "请检查请求中的必填项和格式后重试。";
+  }
+  const outcomeUnknown = persistedRunPossible || code === "api_response_invalid";
   return {
     whatHappened: message,
-    retained: persistedRunPossible
+    retained: outcomeUnknown
       ? "当前连接无法确认任务终态；任务可能已经创建，后台也可能仍在继续。"
       : "任务未创建，也未进入执行队列；没有消耗一次完整运行。",
-    nextAction: persistedRunPossible
+    nextAction: outcomeUnknown
       ? "请先刷新历史或重新连接，确认状态前不要重复提交。"
-      : permissionFailure
-        ? "请重新登录后再试；仍无权限时，请联系管理员并提供问题编号。"
-        : "请按提示修正输入后重试；如问题持续，请联系管理员并提供问题编号。",
-    problemNumber: apiError?.diagnosticId ?? problemNumber,
+      : nextAction,
+    problemNumber: projection.diagnosticId ?? problemNumber,
   };
 }
 
@@ -748,6 +768,14 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatus>("disconnected");
   const [currentRunId, setCurrentRunId] = useState<string | null>(null);
+  const [runInputsRunId, setRunInputsRunId] = useState<string | null>(null);
+  const runInputs = useRunInputs({
+    sessionId,
+    identityKey: runControlAuthIdentity,
+    runId: runInputsRunId,
+    isRunActive: Boolean(currentRunId && currentRunId === runInputsRunId),
+  });
+  const retireRunInputs = runInputs.retire;
   const [canStopGeneration, setCanStopGeneration] = useState(false);
   const [newlyCreatedSession, setNewlyCreatedSession] =
     useState<BackendSession | null>(null);
@@ -1052,6 +1080,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       lastHistoryTimestampRef.current = null;
       currentRunIdRef.current = null;
       setCurrentRunId(null);
+      retireRunInputs();
+      setRunInputsRunId(null);
       setIsLoading(false);
       setConnectionStatus("disconnected");
       setIsInitializingSandbox(false);
@@ -1072,6 +1102,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     clearReconcileOwners,
     handoffActivePreAdmissionSubmission,
     invalidateRunControl,
+    retireRunInputs,
   ]);
 
   const convergeRunLifecycle = useCallback(
@@ -1836,6 +1867,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       sessionAgentAuthorityRef.current = null;
       sessionIdRef.current = targetSessionId;
       setSessionId(targetSessionId);
+      setRunInputsRunId(null);
       sessionAgentIdRef.current = DEFAULT_CHAT_AGENT_ID;
       setSessionAgentId(DEFAULT_CHAT_AGENT_ID);
       sessionGenerationRef.current += 1;
@@ -1948,33 +1980,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             sessionData,
             eventsData,
           });
-          const historySequence = maxAcceptedRunEventSequence(
-            eventsData.events,
-            historyCurrentRunId,
-          );
-          const acceptedProgress = acceptedRunEventSequenceRef.current;
-          if (
-            historyCurrentRunId &&
-            acceptedProgress.sessionId === targetSessionId &&
-            acceptedProgress.runId === historyCurrentRunId
-          ) {
-            if (
-              historySequence !== null &&
-              (acceptedProgress.sequence === null ||
-                historySequence > acceptedProgress.sequence)
-            ) {
-              acceptedRunEventSequenceRef.current = {
-                ...acceptedProgress,
-                sequence: historySequence,
-              };
-            }
-          } else {
-            acceptedRunEventSequenceRef.current = {
-              sessionId: historyCurrentRunId ? targetSessionId : null,
-              runId: historyCurrentRunId,
-              sequence: historySequence,
-            };
-          }
+          setRunInputsRunId(historyCurrentRunId);
           if (
             previousSessionId === targetSessionId &&
             previousRunId !== historyCurrentRunId
@@ -2028,6 +2034,35 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
                 { activeSubagentStack: activeSubagentStackRef.current },
               )
             : [];
+          // Only accepted history may advance the local sequence watermark.
+          // Versioned text-part projection failures throw during reconstruction.
+          const historySequence = maxAcceptedRunEventSequence(
+            eventsData.events,
+            historyCurrentRunId,
+          );
+          const acceptedProgress = acceptedRunEventSequenceRef.current;
+          if (
+            historyCurrentRunId &&
+            acceptedProgress.sessionId === targetSessionId &&
+            acceptedProgress.runId === historyCurrentRunId
+          ) {
+            if (
+              historySequence !== null &&
+              (acceptedProgress.sequence === null ||
+                historySequence > acceptedProgress.sequence)
+            ) {
+              acceptedRunEventSequenceRef.current = {
+                ...acceptedProgress,
+                sequence: historySequence,
+              };
+            }
+          } else {
+            acceptedRunEventSequenceRef.current = {
+              sessionId: historyCurrentRunId ? targetSessionId : null,
+              runId: historyCurrentRunId,
+              sequence: historySequence,
+            };
+          }
           if (targetRunId) {
             reconstructedMessages = mergeHydratedRunSegment(
               [],
@@ -2771,6 +2806,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           );
           setCurrentRunId(newRunId);
           currentRunIdRef.current = newRunId;
+          setRunInputsRunId(newRunId);
           const runControlSessionId = newSessionId || requestSessionId;
           if (runControlSessionId) {
             bindRunControlParent(runControlSessionId, newRunId);
@@ -3010,6 +3046,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     setError(null);
     setFailureGuidance(null);
     setCurrentRunId(null);
+    setRunInputsRunId(null);
     setNewlyCreatedSession(null);
     setIsLoading(false);
     setIsLoadingHistory(false);
@@ -3524,6 +3561,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     failureGuidance,
     sessionId,
     currentRunId,
+    runInputsRunId,
+    runInputs,
     canStopGeneration,
     isReconnecting:
       connectionStatus === "reconnecting" ||

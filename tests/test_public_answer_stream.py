@@ -284,6 +284,317 @@ def test_private_token_learned_across_published_boundary_is_not_reconstructed():
     assert gate.failed is False
 
 
+def test_withheld_private_suffix_keeps_its_provider_part_owner_across_source_switch():
+    first_source = ("provider-a", None)
+    second_source = ("provider-b", None)
+    gate = PublicAnswerStreamGate(
+        private_replacements={"call/id": "tool invocation"},
+        sanitizer=_sanitize,
+        max_private_token_chars=64,
+    )
+
+    before = gate.accept_routed("Before call/", source_identity=first_source)
+    after = gate.accept_routed("id after", source_identity=second_source)
+    finished, terminal = gate.finish_routed(
+        final_text="", release=True, fallback_source_identity=second_source,
+    )
+
+    routed = (*before, *after, *terminal)
+    by_source = {
+        first_source: "".join(text for owner, text in routed if owner == first_source),
+        second_source: "".join(text for owner, text in routed if owner == second_source),
+    }
+    assert by_source == {
+        first_source: "Before tool invocation",
+        second_source: " after",
+    }
+    assert "".join(text for _owner, text in routed) == "Before tool invocation after"
+    assert "call/id" not in "".join(text for _owner, text in routed)
+    assert finished.final_text == "Before tool invocation after"
+    assert gate.failed is False
+
+
+def test_routed_source_switch_preserves_safe_suffix_spans_and_terminal_tail():
+    work_source = ("provider-a", "work-message")
+    answer_source = ("provider-b", "answer-message")
+    gate = PublicAnswerStreamGate(
+        private_replacements={},
+        sanitizer=_sanitize,
+        max_private_token_chars=64,
+    )
+
+    work = gate.accept_routed("Checking sources.", source_identity=work_source)
+    answer = gate.accept_routed("Final answer.", source_identity=answer_source)
+    finished, terminal = gate.finish_routed(
+        final_text="", release=True, fallback_source_identity=answer_source,
+    )
+    routed = (*work, *answer, *terminal)
+    by_source = {
+        work_source: "".join(text for owner, text in routed if owner == work_source),
+        answer_source: "".join(text for owner, text in routed if owner == answer_source),
+    }
+
+    assert work == ((work_source, "Checking "),)
+    assert by_source == {
+        work_source: "Checking sources.",
+        answer_source: "Final answer.",
+    }
+    assert finished.final_text == "Checking sources.Final answer."
+    assert gate.failed is False
+
+
+def test_source_switch_sanitizes_with_following_text_context():
+    work_source = ("provider-a", "work-message")
+    answer_source = ("provider-b", "answer-message")
+    safe_token = "x" * 80
+    gate = PublicAnswerStreamGate(
+        private_replacements={},
+        sanitizer=_sanitize,
+        max_private_token_chars=64,
+    )
+
+    work = gate.accept_routed("Checking", source_identity=work_source)
+    answer = gate.accept_routed(
+        safe_token + " before the next step.",
+        source_identity=answer_source,
+    )
+    finished, terminal = gate.finish_routed(
+        final_text="", release=True, fallback_source_identity=answer_source,
+    )
+    routed = (*work, *answer, *terminal)
+
+    assert "".join(text for owner, text in routed if owner == work_source) == "Checking"
+    assert "".join(text for owner, text in routed if owner == answer_source) == (
+        safe_token + " before the next step."
+    )
+    assert finished.final_text == "Checking" + safe_token + " before the next step."
+    assert gate.failed is False
+
+
+def test_routed_suffix_can_span_multiple_provider_sources():
+    first = ("provider-a", "message-1")
+    second = ("provider-b", "message-2")
+    third = ("provider-c", "message-3")
+    gate = PublicAnswerStreamGate(
+        private_replacements={},
+        sanitizer=_sanitize,
+        max_private_token_chars=64,
+    )
+
+    routed = [
+        *gate.accept_routed("Checking sources.", source_identity=first),
+        *gate.accept_routed("Final", source_identity=second),
+        *gate.accept_routed(" answer.", source_identity=third),
+    ]
+    finished, terminal = gate.finish_routed(
+        final_text="", release=True, fallback_source_identity=third,
+    )
+    routed.extend(terminal)
+
+    by_source = {
+        source: "".join(text for owner, text in routed if owner == source)
+        for source in (first, second, third)
+    }
+    assert by_source == {
+        first: "Checking sources.",
+        second: "Final",
+        third: " answer.",
+    }
+    assert finished.final_text == "Checking sources.Final answer."
+
+
+def test_routed_full_short_suffix_is_released_to_its_source():
+    source = ("provider-a", "short-answer")
+    gate = PublicAnswerStreamGate(
+        private_replacements={},
+        sanitizer=_sanitize,
+        max_private_token_chars=64,
+    )
+
+    published = gate.accept_routed("Answer.", source_identity=source)
+    finished, terminal = gate.finish_routed(
+        final_text="", release=True, fallback_source_identity=("fallback", None),
+    )
+
+    assert not published
+    assert terminal == ((source, "Answer."),)
+    assert finished.final_text == "Answer."
+
+
+def test_variable_length_private_replacement_stays_with_token_start_source():
+    work_source = ("provider-a", "work-message")
+    answer_source = ("provider-b", "answer-message")
+    replacement = "private invocation identity"
+    gate = PublicAnswerStreamGate(
+        private_replacements={"call/id": replacement},
+        sanitizer=_sanitize,
+        max_private_token_chars=64,
+    )
+
+    routed = [
+        *gate.accept_routed("Before call/", source_identity=work_source),
+        *gate.accept_routed("id after", source_identity=answer_source),
+    ]
+    finished, terminal = gate.finish_routed(
+        final_text="", release=True, fallback_source_identity=answer_source,
+    )
+    routed.extend(terminal)
+
+    by_source = {
+        work_source: "".join(text for owner, text in routed if owner == work_source),
+        answer_source: "".join(text for owner, text in routed if owner == answer_source),
+    }
+    assert by_source == {
+        work_source: "Before " + replacement,
+        answer_source: " after",
+    }
+    assert "call/id" not in "".join(text for _owner, text in routed)
+    assert finished.final_text == "Before " + replacement + " after"
+    assert gate.failed is False
+
+
+def test_dynamic_private_replacement_keeps_cross_source_pending_owner():
+    first_source = ("provider-a", "work-message")
+    second_source = ("provider-b", "tool-message")
+    third_source = ("provider-c", "answer-message")
+    gate = PublicAnswerStreamGate(
+        private_replacements={},
+        sanitizer=_sanitize,
+        max_private_token_chars=64,
+    )
+
+    before = gate.accept_routed("Before toolu_", source_identity=first_source)
+    split = gate.accept_routed("private", source_identity=second_source)
+    gate.register_private_replacements({"toolu_private": "private invocation"})
+    after = gate.accept_routed(" after.", source_identity=third_source)
+    finished, terminal = gate.finish_routed(
+        final_text="", release=True, fallback_source_identity=third_source,
+    )
+    routed = (*before, *split, *after, *terminal)
+
+    assert "toolu_private" not in "".join(text for _owner, text in routed)
+    assert "".join(text for owner, text in routed if owner == first_source) == (
+        "Before private invocation"
+    )
+    assert "".join(text for owner, text in routed if owner == third_source) == " after."
+    assert finished.final_text == "Before private invocation after."
+    assert gate.failed is False
+
+
+def test_cross_source_generic_sanitizer_length_change_fails_closed():
+    first_source = ("provider-a", "work-message")
+    second_source = ("provider-b", "answer-message")
+
+    def redact_private_value(value):
+        return value.replace("private-value", "[redacted]")
+
+    gate = PublicAnswerStreamGate(
+        private_replacements={},
+        sanitizer=redact_private_value,
+        max_private_token_chars=64,
+    )
+
+    before = gate.accept_routed("Prior private-", source_identity=first_source)
+    ambiguous = gate.accept_routed("value after.", source_identity=second_source)
+    finished, terminal = gate.finish_routed(
+        final_text="", release=True, fallback_source_identity=second_source,
+    )
+    routed = (*before, *ambiguous, *terminal)
+
+    assert "private-value" not in "".join(text for _owner, text in routed)
+    assert not ambiguous and not terminal
+    assert gate.failed is True
+    assert gate.failure_reason == "upstream_projection_failed"
+    assert finished.final_text == "Prior "
+
+
+def test_terminal_generic_sanitizer_length_change_across_sources_fails_closed():
+    first_source = ("provider-a", "work-message")
+    second_source = ("provider-b", "answer-message")
+
+    def redact_private_value(value):
+        return value.replace("private-value", "[redacted]")
+
+    gate = PublicAnswerStreamGate(
+        private_replacements={},
+        sanitizer=redact_private_value,
+        max_private_token_chars=64,
+    )
+
+    assert not gate.accept_routed("private-", source_identity=first_source)
+    assert not gate.accept_routed("value", source_identity=second_source)
+    finished, terminal = gate.finish_routed(
+        final_text="", release=True, fallback_source_identity=second_source,
+    )
+
+    assert not terminal
+    assert finished.final_text == ""
+    assert gate.failed is True
+    assert gate.failure_reason == "upstream_projection_failed"
+
+
+def test_routed_private_token_split_within_one_source_never_leaks():
+    source = ("provider-a", "answer-message")
+    gate = PublicAnswerStreamGate(
+        private_replacements={"call/id": "private invocation"},
+        sanitizer=_sanitize,
+        max_private_token_chars=64,
+    )
+
+    routed = [
+        *gate.accept_routed("Before call/", source_identity=source),
+        *gate.accept_routed("id after", source_identity=source),
+    ]
+    finished, terminal = gate.finish_routed(
+        final_text="", release=True, fallback_source_identity=("fallback", None),
+    )
+    routed.extend(terminal)
+
+    assert "".join(text for owner, text in routed if owner == source) == (
+        "Before private invocation after"
+    )
+    assert "call/id" not in "".join(text for _owner, text in routed)
+    assert all(owner == source for owner, _text in routed)
+    assert finished.final_text == "Before private invocation after"
+
+
+def test_dynamic_private_identity_registration_checks_all_routed_public_parts():
+    gate = _gate()
+    source = ("provider-a", None)
+
+    published = gate.accept_routed("Publicly visible call/id. ", source_identity=source)
+    gate.register_private_replacements({"call/id": "tool invocation"})
+    later = gate.accept_routed("id after", source_identity=("provider-b", None))
+    finished, terminal = gate.finish_routed(
+        final_text="", release=True, fallback_source_identity=source,
+    )
+
+    assert "call/id" in "".join(text for _owner, text in published)
+    assert gate.failed is True
+    assert gate.failure_reason == "private_token_already_published"
+    assert not later and not terminal
+    assert finished.chunks == ()
+
+
+def test_dynamic_private_identity_detection_survives_a_projection_failure():
+    gate = _gate()
+    source = ("provider-a", None)
+    published = gate.accept_routed("Publicly visible call/id. ", source_identity=source)
+    assert "call/id" in "".join(text for _owner, text in published)
+
+    gate.fail_closed()
+    gate.register_private_replacements({"call/id": "tool invocation"})
+
+    assert gate.failed is True
+    assert gate.failure_reason == "upstream_projection_failed"
+    assert gate.private_token_exposed is True
+    assert gate.accept("must stay closed") == ()
+    finished, terminal = gate.finish_routed(
+        final_text="", release=True, fallback_source_identity=source,
+    )
+    assert not terminal and not finished.chunks and not finished.final_text
+
+
 def test_unrelated_dynamic_token_prefix_does_not_fail_publication():
     gate = _gate()
 
@@ -807,3 +1118,12 @@ async def test_public_answer_coalescer_reports_cancelled_inflight_emission():
     assert not await asyncio.wait_for(coalescer.close(flush=True), timeout=1)
     assert emitted == []
     assert not await coalescer.push("late", source_identity="source")
+
+
+def test_terminal_safe_suffix_matching_only_private_prefix_is_preserved():
+    gate = PublicAnswerStreamGate(private_replacements={"report-private": "private value"}, sanitizer=_sanitize)
+    source = ("answer", None)
+    chunks = gate.accept_routed("Final user answer", source_identity=source)
+    finish, tail = gate.finish_routed(final_text="", release=True)
+    assert "".join(text for _owner, text in (*chunks, *tail)) == "Final user answer"
+    assert finish.final_text == "Final user answer"

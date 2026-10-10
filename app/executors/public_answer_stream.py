@@ -145,12 +145,14 @@ class PublicAnswerStreamGate:
         self._replacements: dict[str, str] = {}
         self._tokens: tuple[str, ...] = ()
         self._pending = ""
+        self._pending_source_spans: list[tuple[object, int]] = []
         self._published_suffix = ""
         self._public_answer_chunks: list[str] = []
         self._accepted_text = False
         self._active_capability_invocations: set[tuple[str, str, str]] = set()
         self._failed = False
         self._failure_reason: str | None = None
+        self._private_token_exposed = False
         self._projection_omissions = 0
         self._finished = False
         if (
@@ -174,6 +176,12 @@ class PublicAnswerStreamGate:
         """Return the first public-safe projection fault reason."""
 
         return self._failure_reason
+
+    @property
+    def private_token_exposed(self) -> bool:
+        """Retain actual disclosure independently of the first projection fault."""
+
+        return self._private_token_exposed
 
     @property
     def projection_omissions(self) -> int:
@@ -233,6 +241,315 @@ class PublicAnswerStreamGate:
             emitted = _RECOVERED_TEXT
         return self._emit(emitted)
 
+    def accept_routed(
+        self,
+        text: object,
+        *,
+        source_identity: object,
+    ) -> tuple[tuple[object, str], ...]:
+        """Accept gated text while retaining source spans for the bounded suffix."""
+
+        if not isinstance(text, str):
+            chunks = self.accept(text)
+            self._pending_source_spans.clear()
+            return tuple((source_identity, chunk) for chunk in chunks if chunk)
+        if not text:
+            return ()
+
+        if self._pending and not self._pending_source_spans:
+            # Preserve the historical mixed accept/accept_routed behavior by
+            # assigning untagged retained text to the current source.
+            self._pending_source_spans = [(source_identity, len(self._pending))]
+        elif sum(length for _owner, length in self._pending_source_spans) != len(
+            self._pending
+        ):
+            self._fail("upstream_projection_failed")
+            return ()
+
+        if not self._pending or all(
+            owner == source_identity
+            for owner, _length in self._pending_source_spans
+        ):
+            chunks = self.accept(text)
+            self._pending_source_spans = (
+                [(source_identity, len(self._pending))] if self._pending else []
+            )
+            return tuple((source_identity, chunk) for chunk in chunks if chunk)
+
+        prior_pending = self._pending
+        combined_spans = list(self._pending_source_spans)
+        self._append_span(combined_spans, source_identity, len(text))
+        expected_segments, matched_private_token = self._known_token_segments(
+            prior_pending + text,
+            combined_spans,
+        )
+        published_count = len(self._public_answer_chunks)
+        published_suffix = self._published_suffix
+        chunks = self.accept(text)
+        emitted = "".join(chunks)
+        pending = self._pending
+
+        if self._failed:
+            self._pending_source_spans = []
+            return ()
+
+        if matched_private_token:
+            projected_candidate = "".join(value for _owner, value in expected_segments)
+            emitted_count = len(projected_candidate) - len(pending)
+            if (
+                emitted_count >= 0
+                and emitted == projected_candidate[:emitted_count]
+                and pending == projected_candidate[emitted_count:]
+            ):
+                emitted_segments, pending_segments = self._split_source_text(
+                    expected_segments,
+                    emitted_count,
+                )
+                self._pending_source_spans = self._span_lengths(pending_segments)
+                return tuple(self._route_segments(emitted, emitted_segments))
+
+        consumed = len(prior_pending) + len(text) - len(pending)
+        if (
+            not matched_private_token
+            and consumed >= 0
+            and len(emitted) == consumed
+            and emitted + pending == prior_pending + text
+        ):
+            emitted_spans, pending_spans = self._split_spans(
+                combined_spans,
+                consumed,
+            )
+            self._pending_source_spans = pending_spans
+            return tuple(self._route_spans(emitted, emitted_spans))
+
+        owners = {owner for owner, _length in combined_spans}
+        if len(owners) == 1:
+            owner = next(iter(owners))
+            self._pending_source_spans = [(owner, len(pending))] if pending else []
+            return ((owner, emitted),) if emitted else ()
+
+        # The sanitizer changed a projection spanning several sources, so its
+        # output cannot be assigned to a provider part with known ownership.
+        del self._public_answer_chunks[published_count:]
+        self._published_suffix = published_suffix
+        self._fail("upstream_projection_failed")
+        return ()
+
+    def finish_routed(
+        self,
+        *,
+        final_text: object,
+        release: bool,
+        fallback_source_identity: object = None,
+    ) -> tuple[PublicAnswerFinish, tuple[tuple[object, str], ...]]:
+        """Finish the gate and bind any withheld suffix to its original source."""
+
+        spans = list(self._pending_source_spans)
+        pending = self._pending
+        effective_final_text = final_text
+        published_count = len(self._public_answer_chunks)
+        published_suffix = self._published_suffix
+        published_text = self._published_text()
+        if release is True and final_text == "" and self._accepted_text:
+            effective_final_text = self._published_text() + pending
+
+        finished = self.finish(final_text=effective_final_text, release=release)
+        if effective_final_text != final_text:
+            routed = self._route_finish_chunks(
+                finished.chunks,
+                spans,
+                fallback_source_identity,
+                expected_text=pending,
+            )
+            if routed is None:
+                del self._public_answer_chunks[published_count:]
+                self._published_suffix = published_suffix
+                self._fail("upstream_projection_failed")
+                finished = PublicAnswerFinish((), published_text)
+                routed = ()
+        else:
+            routed = tuple(
+                (fallback_source_identity, chunk)
+                for chunk in finished.chunks
+                if chunk
+            )
+        self._pending_source_spans = []
+        return finished, routed
+
+    @staticmethod
+    def _append_span(
+        spans: list[tuple[object, int]],
+        owner: object,
+        length: int,
+    ) -> list[tuple[object, int]]:
+        if length <= 0:
+            return spans
+        if spans and spans[-1][0] == owner:
+            spans[-1] = (owner, spans[-1][1] + length)
+        else:
+            spans.append((owner, length))
+        return spans
+
+    def _known_token_segments(
+        self,
+        text: str,
+        spans: list[tuple[object, int]],
+    ) -> tuple[list[tuple[object, str]], bool]:
+        """Replace exact known tokens while carrying each token's start owner."""
+
+        if not self._tokens or sum(length for _owner, length in spans) != len(text):
+            return [], False
+
+        def owner_at(position: int) -> object:
+            remaining = position
+            for owner, length in spans:
+                if remaining < length:
+                    return owner
+                remaining -= length
+            return self._first_owner(spans, None)
+
+        result: list[tuple[object, str]] = []
+        matched = False
+        index = 0
+        while index < len(text):
+            token = next(
+                (candidate for candidate in self._tokens if text.startswith(candidate, index)),
+                None,
+            )
+            if token is not None:
+                matched = True
+                self._append_text_segment(
+                    result,
+                    owner_at(index),
+                    self._replacements[token],
+                )
+                index += len(token)
+            else:
+                self._append_text_segment(result, owner_at(index), text[index])
+                index += 1
+        return result, matched
+
+    @staticmethod
+    def _append_text_segment(
+        segments: list[tuple[object, str]],
+        owner: object,
+        text: str,
+    ) -> None:
+        if not text:
+            return
+        if segments and segments[-1][0] == owner:
+            segments[-1] = (owner, segments[-1][1] + text)
+        else:
+            segments.append((owner, text))
+
+    @staticmethod
+    def _split_spans(
+        spans: list[tuple[object, int]],
+        prefix_length: int,
+    ) -> tuple[list[tuple[object, int]], list[tuple[object, int]]]:
+        prefix: list[tuple[object, int]] = []
+        tail: list[tuple[object, int]] = []
+        remaining = max(0, prefix_length)
+        for owner, length in spans:
+            taken = min(length, remaining)
+            PublicAnswerStreamGate._append_span(prefix, owner, taken)
+            PublicAnswerStreamGate._append_span(tail, owner, length - taken)
+            remaining -= taken
+        return prefix, tail
+
+    @staticmethod
+    def _prefix_spans(
+        spans: list[tuple[object, int]],
+        prefix_length: int,
+    ) -> list[tuple[object, int]]:
+        prefix, _tail = PublicAnswerStreamGate._split_spans(spans, prefix_length)
+        return prefix
+
+    @staticmethod
+    def _span_lengths(segments: list[tuple[object, str]]) -> list[tuple[object, int]]:
+        spans: list[tuple[object, int]] = []
+        for owner, value in segments:
+            PublicAnswerStreamGate._append_span(spans, owner, len(value))
+        return spans
+
+    @staticmethod
+    def _split_source_text(
+        segments: list[tuple[object, str]],
+        prefix_length: int,
+    ) -> tuple[list[tuple[object, str]], list[tuple[object, str]]]:
+        prefix: list[tuple[object, str]] = []
+        tail: list[tuple[object, str]] = []
+        remaining = max(0, prefix_length)
+        for owner, value in segments:
+            taken = min(len(value), remaining)
+            PublicAnswerStreamGate._append_text_segment(prefix, owner, value[:taken])
+            PublicAnswerStreamGate._append_text_segment(tail, owner, value[taken:])
+            remaining -= taken
+        return prefix, tail
+
+    @staticmethod
+    def _route_spans(
+        text: str,
+        spans: list[tuple[object, int]],
+    ) -> list[tuple[object, str]]:
+        result: list[tuple[object, str]] = []
+        offset = 0
+        for owner, length in spans:
+            PublicAnswerStreamGate._append_text_segment(
+                result,
+                owner,
+                text[offset : offset + length],
+            )
+            offset += length
+        return result
+
+    @staticmethod
+    def _route_segments(
+        text: str,
+        segments: list[tuple[object, str]],
+    ) -> list[tuple[object, str]]:
+        result: list[tuple[object, str]] = []
+        offset = 0
+        for owner, value in segments:
+            piece = text[offset : offset + len(value)]
+            PublicAnswerStreamGate._append_text_segment(result, owner, piece)
+            offset += len(value)
+        return result
+
+    @staticmethod
+    def _first_owner(
+        spans: list[tuple[object, int]],
+        fallback: object,
+    ) -> object:
+        return spans[0][0] if spans else fallback
+
+    @classmethod
+    def _route_finish_chunks(
+        cls,
+        chunks: tuple[str, ...],
+        spans: list[tuple[object, int]],
+        fallback_owner: object,
+        *,
+        expected_text: str,
+    ) -> tuple[tuple[object, str], ...] | None:
+        text = "".join(chunks)
+        if not text:
+            return ()
+        owners = {owner for owner, _length in spans}
+        if text != expected_text:
+            if len(owners) == 1:
+                return ((next(iter(owners)), text),)
+            if not owners:
+                return ((fallback_owner, text),)
+            return None
+        if sum(length for _owner, length in spans) == len(text):
+            return tuple(cls._route_spans(text, spans))
+        if len(owners) == 1:
+            return ((next(iter(owners)), text),)
+        if not owners:
+            return ((fallback_owner, text),)
+        return None
+
     def seal(
         self,
         private_replacements: Mapping[str, str] | None = None,
@@ -263,22 +580,49 @@ class PublicAnswerStreamGate:
     ) -> None:
         """Learn executor-private tokens before later answer text can expose them."""
 
-        if self._failed or self._finished:
+        if self._finished:
             return
         previous_tokens = set(self._tokens)
         self._add_replacements(private_replacements)
-        if self._failed:
-            return
         added_tokens = set(self._tokens) - previous_tokens
         if added_tokens:
             published_text = self._published_text()
             if any(token in published_text for token in added_tokens):
                 self._fail("private_token_already_published")
                 return
+        if self._failed:
+            return
+        prior_pending = self._pending
+        prior_spans = list(self._pending_source_spans)
+        if prior_spans and sum(length for _owner, length in prior_spans) != len(
+            prior_pending
+        ):
+            self._fail("upstream_projection_failed")
+            return
         pending = self._project(self._pending, recoverable=True)
         if pending is None:
             self._pending = ""
+            self._pending_source_spans = []
             return
+        if prior_spans and all(
+            owner == prior_spans[0][0] for owner, _ in prior_spans
+        ):
+            self._pending_source_spans = [(prior_spans[0][0], len(pending))]
+        elif len(pending) == len(prior_pending) and pending == prior_pending:
+            self._pending_source_spans = prior_spans
+        else:
+            routed_pending, matched = self._known_token_segments(
+                prior_pending,
+                prior_spans,
+            )
+            routed_text = "".join(value for _owner, value in routed_pending)
+            if matched and routed_text == pending:
+                self._pending_source_spans = self._span_lengths(routed_pending)
+            elif prior_spans:
+                self._fail("upstream_projection_failed")
+                return
+            else:
+                self._pending_source_spans = []
         self._pending = pending
 
     def release_after_verified_capability(
@@ -304,8 +648,11 @@ class PublicAnswerStreamGate:
             return PublicAnswerFinish((), "")
         if release is not True:
             return self._discard()
+        if self._private_token_exposed:
+            return self._discard()
         published_text = self._published_text()
         if self._failed:
+            self._pending_source_spans = []
             self._finished = True
             return PublicAnswerFinish((), published_text)
         if not isinstance(final_text, str):
@@ -315,6 +662,7 @@ class PublicAnswerStreamGate:
         safe_final = self._project(final_text, recoverable=True)
         if safe_final is None:
             self._pending = ""
+            self._pending_source_spans = []
             emitted = (
                 self._project_across_publication_boundary(
                     pending, recoverable=True
@@ -340,6 +688,7 @@ class PublicAnswerStreamGate:
             emitted = _RECOVERED_TEXT
         chunks = self._emit(emitted)
         self._pending = ""
+        self._pending_source_spans = []
         self._finished = True
         return PublicAnswerFinish(chunks, self._published_text())
 
@@ -466,16 +815,21 @@ class PublicAnswerStreamGate:
             )
         self._projection_omissions += 1
         self._pending = ""
+        self._pending_source_spans = []
 
     def _fail(self, reason: str) -> None:
+        if reason == "private_token_already_published":
+            self._private_token_exposed = True
         if self._failure_reason is None:
             self._failure_reason = (
                 public_answer_failure_reason(reason) or "upstream_projection_failed"
             )
         self._failed = True
         self._pending = ""
+        self._pending_source_spans = []
 
     def _discard(self) -> PublicAnswerFinish:
         self._pending = ""
+        self._pending_source_spans = []
         self._finished = True
         return PublicAnswerFinish((), "")

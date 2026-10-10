@@ -1,4 +1,5 @@
 from functools import lru_cache
+import re
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -6,7 +7,25 @@ from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-DIRECT_OPENSANDBOX_NETWORK_NAME = "ai-platform-opensandbox-egress-internal-v1"
+DIRECT_OPENSANDBOX_PROFILE_ID = "direct-opensandbox"
+DIRECT_OPENSANDBOX_NETWORK_NAME = "ai-platform-opensandbox-egress-v2"
+DIRECT_OPENSANDBOX_POLICY_SUBJECT = "host-public-egress-v1"
+LEGACY_DIRECT_OPENSANDBOX_NETWORK_NAME = "ai-platform-opensandbox-egress-internal-v1"
+LEGACY_DIRECT_OPENSANDBOX_POLICY_SUBJECT = "stateless-nginx-egress"
+_OPENSANDBOX_NETWORK_NAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,61}[A-Za-z0-9])?\Z", re.ASCII)
+
+
+def is_valid_opensandbox_network_name(value: object) -> bool:
+    """Return whether a network name selects an explicit named network."""
+
+    if not isinstance(value, str) or _OPENSANDBOX_NETWORK_NAME.fullmatch(value) is None:
+        return False
+    return value.casefold() not in {
+        "host",
+        "bridge",
+        "none",
+        LEGACY_DIRECT_OPENSANDBOX_NETWORK_NAME.casefold(),
+    }
 
 
 class Settings(BaseSettings):
@@ -33,11 +52,7 @@ class Settings(BaseSettings):
 
     sandbox_workspace_root: str = Field(default="/tmp/ai-platform-sandbox-workspaces")
     sandbox_container_provider: str = Field(default="fake")
-    # Production remains governed. The explicit internal-test profile exists
-    # only for bounded functional acceptance against the official service.
-    sandbox_security_profile: Literal["governed", "internal-test"] = Field(
-        default="governed"
-    )
+    sandbox_security_profile: Literal["governed", "internal-test"] = Field(default="governed")
     sandbox_executor_image: str = Field(default="ai-platform-executor:dev")
     sandbox_executor_published_host: str = Field(default="127.0.0.1")
     sandbox_callback_base_url: str = Field(default="http://127.0.0.1:8000")
@@ -67,9 +82,7 @@ class Settings(BaseSettings):
     opensandbox_egress_proxy_url: str = Field(default="http://host.docker.internal:18043")
     sandbox_runtime_subject: str = Field(default="")
     opensandbox_executor_image_digest: str = Field(default="")
-    opensandbox_expected_network_mode: Literal[
-        "none", "bridge", "ai-platform-opensandbox-egress-internal-v1"
-    ] = Field(default="bridge")
+    opensandbox_expected_network_mode: str = Field(default=DIRECT_OPENSANDBOX_NETWORK_NAME)
     max_active_runs_per_user: int = Field(default=3)
     max_active_worker_runs: int = Field(default=10)
     queue_tenant_processing_limit: int = Field(default=0)
@@ -246,6 +259,16 @@ class Settings(BaseSettings):
             raise ValueError("profile_drive_transfer_https_required")
         return value
 
+    @field_validator("opensandbox_expected_network_mode", mode="before")
+    @classmethod
+    def validate_opensandbox_expected_network_mode(cls, value: object) -> str:
+        if not isinstance(value, str):
+            raise ValueError("opensandbox_expected_network_mode_invalid")
+        candidate = value.strip()
+        if candidate != "bridge" and not is_valid_opensandbox_network_name(candidate):
+            raise ValueError("opensandbox_expected_network_mode_invalid")
+        return candidate
+
     @model_validator(mode="after")
     def validate_single_enterprise_identity_boundary(self) -> "Settings":
         if self.default_tenant_id != "default":
@@ -258,11 +281,11 @@ class Settings(BaseSettings):
             and self.opensandbox_expected_network_mode == "bridge"
         ):
             raise ValueError("internal_test_opensandbox_profile_invalid")
+        if self.opensandbox_expected_network_mode == "bridge" and self.sandbox_security_profile != "internal-test":
+            raise ValueError("opensandbox_expected_network_mode_invalid")
         if self.deployment_environment == "production" and self.sandbox_container_provider == "opensandbox":
             if self.sandbox_security_profile != "governed":
                 raise ValueError("production_opensandbox_profile_invalid")
-            if self.opensandbox_expected_network_mode != DIRECT_OPENSANDBOX_NETWORK_NAME:
-                raise ValueError("production_opensandbox_network_mode_invalid")
             if not self.opensandbox_use_server_proxy:
                 raise ValueError("production_opensandbox_server_proxy_required")
             if not self.sandbox_egress_policy_enabled:
@@ -276,8 +299,16 @@ class Settings(BaseSettings):
         if self.deployment_environment == "production":
             if self.frontend_poc_auth_enabled:
                 raise ValueError("frontend_poc_auth_forbidden_in_production")
-            if not self.trusted_principal_secret.strip():
-                raise ValueError("trusted_principal_secret_required_in_production")
+            for field_name in ("trusted_principal_secret", "ai_session_secret"):
+                candidate = getattr(self, field_name).strip()
+                if not candidate:
+                    raise ValueError(f"{field_name}_required_in_production")
+                if len(candidate) < 32:
+                    raise ValueError(f"{field_name}_too_short_in_production")
+                if candidate.casefold().startswith(
+                    ("change_me", "changeme", "example", "replace")
+                ):
+                    raise ValueError(f"{field_name}_placeholder_forbidden_in_production")
             unsupported_retention = {
                 "run_events": self.run_event_retention_days,
                 "context_snapshots": self.context_snapshot_retention_days,

@@ -690,6 +690,7 @@ def _authoritative_inspection_catalog(profile: str) -> dict[str, Any]:
     from app.required_tool_contract import (
         CANONICAL_REQUIRED_TOOL_IDENTITY,
         SANDBOX_LOCAL_TOOL_IDENTITIES,
+        builtin_capability_subjects,
         with_boundary_sandbox_local_tool_subjects,
     )
     from app.skills.execution_profiles import (
@@ -700,7 +701,6 @@ def _authoritative_inspection_catalog(profile: str) -> dict[str, Any]:
     )
     from app.skills.pinning import build_skill_manifest_ref
     from app.skills.release_policy import RELEASE_DECISION_SCHEMA_VERSION
-    from app.worker import _builtin_capability_subjects
 
     authorized_skill = INSPECTION_AUTHORIZED_SKILLS.get(profile)
     if not authorized_skill:
@@ -736,11 +736,12 @@ def _authoritative_inspection_catalog(profile: str) -> dict[str, Any]:
         admin_bypass=False,
         decision_reason="deterministic_verifier_fixture",
     )
-    subjects = _builtin_capability_subjects(
+    subjects = builtin_capability_subjects(
         payload=payload,
         run_identity={"skill_id": authorized_skill},
         skill={"skill_id": authorized_skill, "skill_status": "active"},
         skill_decision=decision,
+        canonical_manifest=effective_skill_execution_profile,
         authorized_skill_manifests=[authorized_manifest],
         authorized_skill_names=[authorized_skill],
     )

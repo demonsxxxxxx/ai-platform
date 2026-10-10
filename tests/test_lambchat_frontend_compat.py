@@ -1483,6 +1483,17 @@ def test_lambchat_history_restores_strict_v4_commentary_as_work_summary() -> Non
                 "__stream_v4": stream_receipt,
             },
         },
+        {
+            **base,
+            "id": "evt4-work-trace",
+            "sequence": 3,
+            "event_type": "commentary.delta",
+            "payload_json": {
+                "summary_id": "worktrace_public_1",
+                "delta": "Checking sources.",
+                "__stream_v4": stream_receipt,
+            },
+        },
     ]
 
     history = [
@@ -1501,12 +1512,16 @@ def test_lambchat_history_restores_strict_v4_commentary_as_work_summary() -> Non
     ]
 
     summaries = [event for event in history if event["event_type"] == "summary"]
-    assert len(summaries) == 1
+    assert len(summaries) == 2
     assert summaries[0]["data"]["summary_id"] == "summary-public-1"
     assert summaries[0]["data"]["content"] == "正在检查授权输入。"
     assert summaries[0]["data"]["payload"] == {
         "summary_id": "summary-public-1",
         "delta": "正在检查授权输入。",
+    }
+    assert summaries[1]["data"]["payload"] == {
+        "summary_id": "worktrace_public_1",
+        "delta": "Checking sources.",
     }
     assert "__stream_v4" not in str(history)
     assert "tool_input" not in str(history)
@@ -3842,6 +3857,128 @@ def test_frontend_public_terminal_catalog_matches_backend_allowlist():
     assert "  terminal_reconciliation_failed:" in presentation_source
     assert 'from "./publicTerminalPresentation"' in event_processor_source
     assert "getPublicTerminalPresentationDefinition" in renderer_source
+
+
+def test_session_event_pages_project_authorized_run_columns_on_every_page(monkeypatch):
+    from app.streaming.api import opaque_message_id
+
+    run = {
+        "id": "run-parts", "tenant_id": "default", "workspace_id": "workspace-a",
+        "user_id": "user-a", "session_id": "ses_a", "agent_id": "general-agent",
+        "trace_id": "trace-parts", "schema_version": "v1", "execution_kind": "harness_chat",
+        "skill_id": None, "status": "succeeded", "error_code": None,
+        "error_message": None, "created_at": "2026-10-08T00:00:00Z",
+        "queued_at": None, "started_at": None, "finished_at": "2026-10-08T00:01:00Z",
+        "result_json": {}, "session_generation": 1,
+    }
+    events = [
+        {
+            "id": f"evt4_part_{sequence}", "tenant_id": "default", "run_id": run["id"],
+            "sequence": sequence, "event_type": "message.part.delta",
+            "visible_to_user": True, "v4_attempt_authorized": True,
+            "created_at": "2026-10-08T00:00:00Z",
+            "payload_json": {
+                "schema_version": "ai-platform.assistant-text-part.v1",
+                "part_id": "part_answer_0123456789abcdef0123456789abcdef",
+                "delta": "a",
+                "__stream_v4": {
+                    "version": 1, "attempt_id": "attempt-parts", "stream_incarnation": 1,
+                    "authorization_epoch": 1, "message_id": opaque_message_id("default", run["id"]),
+                },
+            },
+        }
+        for sequence in range(1, 102)
+    ]
+    events.append({
+        **events[-1], "id": "evt4_part_classified", "sequence": 102,
+        "event_type": "message.part.classified",
+        "payload_json": {**events[-1]["payload_json"], "role": "answer"},
+    })
+    del events[-1]["payload_json"]["delta"]
+
+    class ProjectedCursor:
+        def __init__(self, rows):
+            self.rows = rows
+
+        async def fetchall(self):
+            return self.rows
+
+    class ProjectedConnection:
+        def __init__(self):
+            self.queries = []
+
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            self.queries.append(normalized)
+            by_ids = "from unnest(" in normalized
+            select_columns = normalized.split("from unnest(" if by_ids else "from runs", 1)[0]
+            columns = re.findall(r"runs\.([a-z_]+)\b", select_columns)
+            assert "runs.tenant_id = %s" in normalized
+            assert "runs.user_id = %s" in normalized
+            assert "runs.session_id = %s" in normalized
+            if by_ids:
+                assert "sessions.tenant_id = runs.tenant_id" in normalized
+                assert params == ([run["id"]], "default", "user-a", "ses_a")
+            else:
+                assert params == ("default", "user-a", "ses_a", 50)
+            return ProjectedCursor([{key: run[key] for key in columns}])
+
+    conn = ProjectedConnection()
+
+    @asynccontextmanager
+    async def projected_transaction():
+        yield conn
+
+    async def authorized_session(_conn, *, tenant_id, user_id, session_id):
+        return {"id": session_id} if (tenant_id, user_id, session_id) == (
+            "default", "user-a", "ses_a"
+        ) else None
+
+    async def exact_run(_conn, *, tenant_id, user_id, run_id):
+        return run if (tenant_id, user_id, run_id) == (
+            "default", "user-a", run["id"]
+        ) else None
+
+    async def sequence_bounds(_conn, *, tenant_id, run_ids):
+        assert (tenant_id, run_ids) == ("default", [run["id"]])
+        return {run["id"]: 102}
+
+    async def run_events(_conn, *, tenant_id, run_id, after_sequence, limit, through_sequence):
+        assert (tenant_id, run_id, through_sequence) == ("default", run["id"], 102)
+        return [event for event in events if event["sequence"] > after_sequence][:limit]
+
+    async def no_artifacts(_conn, *, tenant_id, run_id):
+        assert (tenant_id, run_id) == ("default", run["id"])
+        return []
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", projected_transaction)
+    monkeypatch.setattr(
+        "app.conversations.infrastructure.postgres.get_authorized_lambchat_session",
+        authorized_session,
+    )
+    monkeypatch.setattr("app.runs.infrastructure.creation_postgres.get_authorized_run", exact_run)
+    monkeypatch.setattr(
+        "app.streaming.infrastructure.run_events_postgres.list_run_event_sequence_bounds",
+        sequence_bounds,
+    )
+    monkeypatch.setattr("app.streaming.infrastructure.run_events_postgres.list_run_events", run_events)
+    monkeypatch.setattr("app.artifacts.infrastructure.records_postgres.list_run_artifacts", no_artifacts)
+    client = TestClient(create_app())
+
+    for params in ({"compact_message_chunks": True}, {
+        "run_id": run["id"], "compact_message_chunks": True,
+    }):
+        pages = fetch_session_event_pages(client, params=params)
+        assert len(pages) == 2
+        assert pages[0]["next_cursor"] and pages[1]["next_cursor"] is None
+        assert pages[1]["terminal_run_statuses"] == {run["id"]: "succeeded"}
+        projected = [event for page in pages for event in page["events"]]
+        assert [event["event_type"] for event in projected if event["event_type"].startswith("message.part.")] == [
+            *["message.part.delta"] * 101, "message.part.classified",
+        ]
+        assert "tenant_id" not in str(projected)
+    assert len(conn.queries) == 3
 
 
 def test_lambchat_session_event_pages_preserve_large_v4_history_and_compaction(

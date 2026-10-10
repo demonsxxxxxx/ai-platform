@@ -1,6 +1,29 @@
 import pytest
 
-from app.skills.registry import BuiltinSkillRegistry, parse_skill_markdown_front_matter
+from app.bootstrap.skills import configure_skill_markdown
+from app.skills.application import skill_markdown
+from app.skills.application.skill_markdown import parse_skill_markdown_front_matter
+from app.skills.infrastructure.skill_markdown_yaml import load_skill_markdown_metadata
+from app.skills.registry import BuiltinSkillRegistry
+
+
+@pytest.fixture(autouse=True)
+def configured_skill_markdown_loader(monkeypatch):
+    monkeypatch.setattr(skill_markdown, "_yaml_metadata_loader", load_skill_markdown_metadata)
+
+
+def test_parse_skill_front_matter_requires_loader(monkeypatch):
+    monkeypatch.setattr(skill_markdown, "_yaml_metadata_loader", None)
+    with pytest.raises(RuntimeError, match="skill_markdown_loader_not_configured"):
+        parse_skill_markdown_front_matter("---\nname: qa-file-reviewer\n---\n")
+
+
+def test_skill_markdown_loader_bootstrap(monkeypatch):
+    monkeypatch.setattr(skill_markdown, "_yaml_metadata_loader", None)
+    configure_skill_markdown()
+    assert parse_skill_markdown_front_matter(
+        "---\nname: qa-file-reviewer\ndescription: >-\n  Review files.\n---\n"
+    )["description"] == "Review files."
 
 
 def test_parse_skill_front_matter_description():
@@ -25,6 +48,31 @@ def test_parse_skill_front_matter_handles_bom_and_crlf():
 
     assert metadata["name"] == "minimax-docx"
     assert metadata["description"] == "Word document generation."
+
+
+@pytest.mark.parametrize(
+    ("indicator", "expected"),
+    [(">-", "First line second line"), ("|", "First line\nsecond line")],
+)
+def test_parse_skill_front_matter_multiline_description(indicator, expected):
+    metadata = parse_skill_markdown_front_matter(
+        f"---\nname: ctd-review\ndescription: {indicator}\n  First line\n  second line\n---\n"
+    )
+
+    assert metadata["description"] == expected
+
+
+def test_parse_skill_front_matter_quoted_description_with_colon():
+    metadata = parse_skill_markdown_front_matter(
+        '---\nname: ctd-review\ndescription: "Review: Word documents"\n---\n'
+    )
+
+    assert metadata["description"] == "Review: Word documents"
+
+
+def test_parse_skill_front_matter_rejects_invalid_yaml():
+    with pytest.raises(ValueError, match="skill_front_matter_invalid_yaml"):
+        parse_skill_markdown_front_matter("---\nname: ctd-review\ndescription: [invalid\n---\n")
 
 
 def test_builtin_registry_discovers_skill_from_platform_root(tmp_path):

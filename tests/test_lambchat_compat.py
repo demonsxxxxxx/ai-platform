@@ -310,3 +310,159 @@ def test_lambchat_compat_keeps_lowest_public_lifecycle_projection_per_run():
             (record.history_event["event_type"], record.id, record.history_event["sequence"])
             for record in records
         ] == expected
+
+
+def test_history_preserves_ordered_message_part_events_and_role_boundaries():
+    principal = AuthPrincipal(
+        user_id="user-a",
+        display_name="User A",
+        tenant_id="tenant-a",
+        roles=["user"],
+    )
+    run = {
+        "id": "run-parts",
+        "tenant_id": "tenant-a",
+        "trace_id": "trace-parts",
+        "status": "failed",
+        "result_json": {},
+    }
+    message_id = "msg_parts"
+
+    def row(sequence, event_type, payload, *, source_event_id):
+        return {
+            "id": f"evt4_part_{sequence}",
+            "tenant_id": "tenant-a",
+            "run_id": "run-parts",
+            "trace_id": "trace-parts",
+            "sequence": sequence,
+            "event_type": event_type,
+            "visible_to_user": True,
+            "created_at": "2026-10-08T00:00:00Z",
+            "v4_attempt_authorized": True,
+            "payload_json": {
+                **payload,
+                "__stream_v4": {
+                    "version": 1,
+                    "attempt_id": "attempt-parts",
+                    "stream_incarnation": 1,
+                    "authorization_epoch": 1,
+                    "message_id": message_id,
+                    "source_event_id": source_event_id,
+                },
+            },
+        }
+
+    events = [
+        row(
+            1,
+            "message.part.delta",
+            {
+                "schema_version": "ai-platform.assistant-text-part.v1",
+                "part_id": "part_answer_0123456789abcdef0123456789abcdef",
+                "delta": "answer preview",
+            },
+            source_event_id="provider_answer_delta",
+        ),
+        row(
+            2,
+            "message.part.classified",
+            {
+                "schema_version": "ai-platform.assistant-text-part.v1",
+                "part_id": "part_answer_0123456789abcdef0123456789abcdef",
+                "role": "answer",
+            },
+            source_event_id="provider_answer_classification",
+        ),
+        row(
+            3,
+            "message.part.delta",
+            {
+                "schema_version": "ai-platform.assistant-text-part.v1",
+                "part_id": "part_work_0123456789abcdef0123456789abcdef",
+                "delta": "work preview",
+            },
+            source_event_id="provider_work_delta",
+        ),
+        row(
+            4,
+            "message.part.classified",
+            {
+                "schema_version": "ai-platform.assistant-text-part.v1",
+                "part_id": "part_work_0123456789abcdef0123456789abcdef",
+                "role": "work",
+            },
+            source_event_id="provider_work_classification",
+        ),
+    ]
+
+    records = lambchat_compat._compatibility_events_for_run(
+        run,
+        events,
+        [],
+        principal,
+        include_terminal=False,
+        compact_answer_deltas=True,
+    )
+
+    assert [record.stream_event_type for record in records] == [
+        "message.part.delta",
+        "message.part.classified",
+        "message.part.delta",
+        "message.part.classified",
+    ]
+    for record, source in zip(records, events, strict=True):
+        public_payload = {
+            key: value
+            for key, value in source["payload_json"].items()
+            if key != "__stream_v4"
+        }
+        assert record.id == source["id"]
+        assert record.stream_data["event_id"] == source["id"]
+        assert record.stream_data["seq"] == source["sequence"]
+        assert record.stream_data["message_id"] == message_id
+        assert record.stream_data["stream_incarnation"] == 1
+        assert record.history_event["data"] == record.stream_data
+        assert record.history_event["payload"] == public_payload
+        assert "__stream_v4" not in json.dumps(record.history_event)
+        assert "provider_" not in json.dumps(record.history_event)
+
+
+def test_malformed_message_part_history_fails_before_cursor_page_is_returned():
+    principal = AuthPrincipal(
+        user_id="user-a",
+        display_name="User A",
+        tenant_id="tenant-a",
+        roles=["user"],
+    )
+    run = {"id": "run-parts", "tenant_id": "tenant-a", "status": "running"}
+    event = {
+        "id": "evt4_part_bad",
+        "tenant_id": "tenant-a",
+        "run_id": "run-parts",
+        "sequence": 1,
+        "event_type": "message.part.delta",
+        "visible_to_user": True,
+        "v4_attempt_authorized": True,
+        "created_at": "2026-10-08T00:00:00Z",
+        "payload_json": {
+            "schema_version": "ai-platform.assistant-text-part.v1",
+            "part_id": "part_bad",
+            "delta": "preview",
+            "unexpected": True,
+            "__stream_v4": {
+                "version": 1,
+                "attempt_id": "attempt-parts",
+                "stream_incarnation": 1,
+                "authorization_epoch": 1,
+                "message_id": "msg_parts",
+            },
+        },
+    }
+
+    with pytest.raises(lambchat_compat.HTTPException) as caught:
+        lambchat_compat._compatibility_events_for_run(
+            run, [event], [], principal, include_terminal=False
+        )
+
+    assert caught.value.status_code == 500
+    assert caught.value.detail == "history_part_event_invalid"

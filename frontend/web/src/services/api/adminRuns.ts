@@ -148,6 +148,21 @@ export interface AdminRunDiagnosticProtocolField {
   items?: number | null;
 }
 
+export interface AdminRunDiagnosticProjectionFailure {
+  reason: string;
+  stage: string;
+  location: string;
+  frame_shape?: {
+    event_type: string;
+    block_type: string;
+    delta_type: string;
+    message_state: string;
+    open_block_type: string;
+    index_state: string;
+    guard: string;
+  };
+}
+
 export interface AdminRunDiagnosticExecutorProtocol {
   reported: {
     task_status?: string | null;
@@ -215,12 +230,14 @@ export interface AdminRunDiagnosticsResponse {
       tool_calls: AdminRunDiagnosticToolEvidence[];
       tool_policy_denials: AdminRunDiagnosticToolEvidence[];
       executor_protocol?: AdminRunDiagnosticExecutorProtocol | null;
+      projection_failure?: AdminRunDiagnosticProjectionFailure | null;
       normalization_losses?: AdminRunDiagnosticLoss[];
     }>;
     tool_lifecycles: AdminRunDiagnosticToolEvidence[];
     tool_calls: AdminRunDiagnosticToolEvidence[];
     tool_policy_denials: AdminRunDiagnosticToolEvidence[];
     executor_protocol?: AdminRunDiagnosticExecutorProtocol | null;
+    projection_failure?: AdminRunDiagnosticProjectionFailure | null;
   };
   versions: Record<string, string | null>;
   counts: {
@@ -300,6 +317,11 @@ export interface AdminWorkerExecutionMessage {
 export interface AdminWorkerExecution {
   response: string;
   messages?: AdminWorkerExecutionMessage[];
+  answer_projection?: {
+    status: "available" | "incomplete" | "invalid" | "unknown";
+    incomplete_messages: number;
+    invalid_messages: number;
+  };
   actions: AdminWorkerExecutionAction[];
   model: {
     turn_count?: number | null;

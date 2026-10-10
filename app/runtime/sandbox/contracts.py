@@ -637,10 +637,6 @@ class ExecutorTerminalResult(BaseModel):
     @model_validator(mode="after")
     def validate_terminal_payload(self) -> "ExecutorTerminalResult":
         if self.status in {"completed", "succeeded"}:
-            if self.answer_receipt is None and not self.message.strip():
-                raise ValueError(
-                    "successful terminal result requires a non-empty message or answer receipt"
-                )
             if self.answer_receipt is not None and self.message != "":
                 raise ValueError(
                     "successful terminal result must contain either a message or answer receipt"

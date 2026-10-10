@@ -53,9 +53,9 @@ types used by this adapter.
 | `query` | Keyword `prompt`, `options`, and optional `transport` remain available | The async iterator stays inside the runner adapter |
 | `ClaudeAgentOptions` | Existing model, system prompt, tools, hooks, session, limits, and stream fields remain available | Constructed only after platform admission and Skill-name validation |
 | `HookMatcher` | `matcher`, `hooks`, and `timeout` remain available | Exact `PostToolUse` evidence remains the only Skill-success authority |
-| Messages | `AssistantMessage`, `TextBlock`, `ThinkingBlock`, and `StreamEvent` remain adapter inputs; a typed Assistant fragment need not close a whole turn | Raw text deltas stream into the public Assistant body; typed text reconciles missing suffixes; Thinking and non-text deltas are excluded |
-| Terminal result | `ResultMessage` adds `terminal_reason` while retaining result/error/session/usage fields | Ordinary `result` text is executor completion input; committed public text and its receipt own streamed content; Runs owns business outcome; files are selected separately |
-| Partial streaming | `include_partial_messages=True` remains supported | Raw text feeds the public answer gate immediately; later tool use does not reclassify or withdraw accepted Assistant text |
+| Messages | `AssistantMessage` carries independently completed blocks; several observations may share a provider message; child scope uses `parent_tool_use_id` | Only eligible main `TextBlock` content enters the public gate; Thinking, child text, raw prose and private errors are excluded; exact UUID replay is suppressed |
+| Terminal result | `ResultMessage` adds `terminal_reason` while retaining result/error/session/usage fields | Result controls SDK completion, error, session and usage, never public body repair; committed public text and receipt own the answer; Runs owns business outcome; files are selected separately |
+| Partial streaming | SDK supports `include_partial_messages=True`; the Claude adapter selects `False` | Completed main `AssistantMessage` blocks feed the existing public gate; raw/Result bodies have no public text authority. Provider-bound classification groups work without rewriting accepted rows |
 | Settings | `setting_sources` remains supported | Only explicit project settings are loaded after platform-controlled scrubbing |
 | Permissions | `permission_mode`, allowed tools, disallowed tools, and `can_use_tool` remain supported | Platform authorization, admission, sandbox, and context remain authoritative |
 | Limits | `max_turns`, `effort`, and `max_thinking_tokens` remain supported | Max-turn termination maps to a stable public platform error |
@@ -159,16 +159,18 @@ output-capacity validation, and their existing errors are unchanged.
   unchanged.
 - **Behavior:** every level uses adaptive thinking with `display=omitted`, so the
   model may reason internally without returning Thinking text. The runner does
-  not publish returned `ThinkingBlock` text. Ordinary Assistant text feeds the
-  public `message.delta` projection regardless of later tool use. Explicit
-  platform-authored public summaries may still use `commentary.delta`. Ordinary chat consumes `ResultMessage.result`, while
-  persisted streamed content is governed by the acknowledged-text/receipt
-  contract above. Optional `attach_file` selections are independent. Neither
-  ordinary text nor commentary requires structured output. Both frontend
-  rendering paths exclude legacy thinking parts.
-- **Compatibility and retirement:** no new wire or schema field is added. The
-  misleading `public summarized-thinking text` prompt instruction is retired;
-  it has no persisted or client compatibility surface. `claude_sdk_thinking_summary`
+  not publish returned `ThinkingBlock` text. Safe Assistant suffixes now use
+  versioned part deltas and explicit answer/work classification; existing
+  commentary/worktrace and v1 answer history remain readable. Completed main SDK
+  text is the sole public text source, with persisted facts and receipt v2 governing
+  final selection. SDK success may have no public answer; no Result body is used to
+  fill that gap. Optional files remain independent.
+- **Compatibility and retirement:** the current
+  [streaming message design](../implementation/streaming-message-parts-design.md)
+  replaces classification-time buffering and worktrace production and specifies
+  the coordinated schema, receipt and reader release. Historical rows remain
+  immutable. The Thinking prompt and effort/display exclusions remain unchanged.
+  `claude_sdk_thinking_summary`
   remains an authenticated legacy callback write path, and `thinking.*` readers
   remain for those callbacks and retained persisted history; the current Runner
   does not produce either event family, and the current Chat UI displays neither
@@ -183,6 +185,25 @@ output-capacity validation, and their existing errors are unchanged.
 - **Stop conditions:** any need to expose model Thinking text again, alter effort
   semantics, infer Thinking from ordinary answer text, or change SSE/Run terminal
   authority requires a revised contract.
+
+## Raw Stream Failure Diagnostics
+
+Sandbox-brokered SDK runs with an `on_text` callback validate raw `StreamEvent`
+framing before public answer projection. On the first `raw_frame_invalid` rejection,
+private `projection_failure.frame_shape` records only allowlisted event, block,
+and delta type labels, the message/open-block/index state, and the failed
+validator guard. `preceding_frames` contains at most four accepted frames in
+arrival order, with those same structural labels except the guard; the rejected
+frame is never in that list. Unknown types map to `other`; no raw frame, payload,
+text, identifier, index value, or tool input is persisted. Sandbox normalization
+and Runs admin diagnostics independently enforce the bounded closed shapes. An
+older record without `preceding_frames` remains readable. This evidence locates
+the first SDK-delivered protocol conflict, but cannot prove whether the model,
+bundled CLI, SDK transport, or a replay produced it; compare the affected
+release's actual SDK/CLI versions and approved upstream evidence before changing
+the framing validator. This adds no ordinary-user field and changes neither the
+fail-closed decision nor text publication. No superseded production path,
+assertion, or selector is in scope.
 
 ## Redis Lifecycle Authority
 

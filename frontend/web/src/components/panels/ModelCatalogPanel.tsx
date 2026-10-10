@@ -156,7 +156,7 @@ export function ModelCatalogPanel() {
       <div
         data-model-catalog-shell
         data-frontend-governance-state={adminState}
-        className={workbenchSurface.page}
+        className={`${workbenchSurface.page} overflow-y-auto lg:overflow-hidden`}
       >
         <ModelAdminControl onStateChange={setAdminState} />
       </div>

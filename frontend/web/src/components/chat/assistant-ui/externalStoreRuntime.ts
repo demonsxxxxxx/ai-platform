@@ -7,6 +7,11 @@ import {
 } from "@assistant-ui/react";
 import type { Message, MessagePart } from "../../../types";
 import {
+  assistantTextPartRole,
+  composeAssistantPreviewText,
+  hasMarkedAssistantTextParts,
+} from "../../../types/assistantTextParts";
+import {
   getPublicToolDisplayName,
   isPublicSubagentPart,
   isPublicToolPresentation,
@@ -35,10 +40,16 @@ function definedData(values: Record<string, unknown>): Record<string, unknown> |
 
 type AssistantUiContentPart = Exclude<ThreadMessageLike["content"], string>[number];
 
-function convertPart(part: MessagePart): AssistantUiContentPart | null {
+function convertPart(
+  part: MessagePart,
+  textPrefix = "",
+): AssistantUiContentPart | null {
   switch (part.type) {
-    case "text":
-      return { type: "text", text: part.content };
+    case "text": {
+      const role = assistantTextPartRole(part);
+      if (role === null || role === "work") return null;
+      return { type: "text", text: `${textPrefix}${part.content}` };
+    }
     case "thinking":
       return null;
     case "tool": {
@@ -96,13 +107,29 @@ function convertPart(part: MessagePart): AssistantUiContentPart | null {
 }
 
 export function toAssistantUiMessage(message: Message): ThreadMessageLike {
-  const content = (message.parts || [])
-    .map((part) => convertPart(part))
-    .filter((part): part is AssistantUiContentPart => part !== null);
+  let lastPublicPartId: string | null = null;
+  const content = (message.parts || []).flatMap((part) => {
+    let prefix = "";
+    if (part.type === "text") {
+      const role = assistantTextPartRole(part);
+      if (role !== "legacy" && role !== null && role !== "work") {
+        prefix =
+          lastPublicPartId !== null && lastPublicPartId !== part.public_part_id
+            ? "\n\n"
+            : "";
+        lastPublicPartId = part.public_part_id || null;
+      }
+    }
+    const converted = convertPart(part, prefix);
+    return converted ? [converted] : [];
+  });
+  const fallbackContent = hasMarkedAssistantTextParts(message.parts)
+    ? composeAssistantPreviewText(message.parts)
+    : message.content;
   return {
     id: message.id,
     role: message.role,
-    content: content.length ? content : message.content,
+    content: content.length ? content : fallbackContent,
     createdAt: message.timestamp,
     ...(message.role === "assistant"
       ? {

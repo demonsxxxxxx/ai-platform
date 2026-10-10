@@ -15,10 +15,46 @@ import {
   type PublicRunStreamEventV4,
 } from "../../../generated/publicRunStreamV4";
 import { isPublicAgentProgressPayload } from "../../../hooks/useAgent/types";
+import {
+  ASSISTANT_TEXT_PART_SCHEMA_VERSION,
+  isAssistantTextPartEventType,
+  isValidAssistantTextPartPayload,
+  type AssistantTextPartEventType,
+} from "../../../types/assistantTextParts";
 
 export type V4ApplicationEventType = (typeof PUBLIC_APPLICATION_EVENT_TYPES)[number];
 export type V4ControlEventType = (typeof PUBLIC_CONTROL_EVENT_TYPES)[number];
-export type V4EventType = V4ApplicationEventType | V4ControlEventType;
+export type V4EventType =
+  | V4ApplicationEventType
+  | V4ControlEventType
+  | AssistantTextPartEventType;
+
+type V4AssistantTextPartPayload =
+  | {
+      schema_version: typeof ASSISTANT_TEXT_PART_SCHEMA_VERSION;
+      part_id: string;
+      delta: string;
+    }
+  | {
+      schema_version: typeof ASSISTANT_TEXT_PART_SCHEMA_VERSION;
+      part_id: string;
+      role: "answer" | "work";
+    };
+
+interface V4AssistantTextPartEvent {
+  schema: "ai-platform.public-run-stream-event.v4";
+  event_id: string;
+  run_id: string;
+  message_id: string;
+  seq: number;
+  event_type: AssistantTextPartEventType;
+  stream_incarnation: number;
+  replayable: true;
+  trace_ref: string | null;
+  causation_event_id: string | null;
+  emitted_at: string;
+  payload: V4AssistantTextPartPayload;
+}
 
 export interface V4SseFrame {
   eventHeader: string;
@@ -28,7 +64,7 @@ export interface V4SseFrame {
 }
 
 export interface V4PublicEvent {
-  readonly event: PublicRunStreamEventV4;
+  readonly event: PublicRunStreamEventV4 | V4AssistantTextPartEvent;
   readonly eventId: string;
   readonly transportCursor: string;
   readonly runId: string;
@@ -56,9 +92,10 @@ const CONTROL_EVENT_TYPES = new Set<V4ControlEventType>(PUBLIC_CONTROL_EVENT_TYP
 
 export function isV4MessageCorrelatedEventType(
   eventType: V4EventType,
-): eventType is V4ApplicationEventType {
-  return MESSAGE_CORRELATED_EVENT_TYPES.has(
-    eventType as V4ApplicationEventType,
+): eventType is V4ApplicationEventType | AssistantTextPartEventType {
+  return (
+    isAssistantTextPartEventType(eventType) ||
+    MESSAGE_CORRELATED_EVENT_TYPES.has(eventType as V4ApplicationEventType)
   );
 }
 
@@ -189,6 +226,9 @@ function isRfc3339DateTime(value: unknown): value is string {
 
 function payloadIsValid(eventType: string, payload: unknown, _runId: string, incarnation: number): payload is Record<string, unknown> {
   if (!isRecord(payload) || Object.keys(payload).length > 64) return false;
+  if (isAssistantTextPartEventType(eventType)) {
+    return isValidAssistantTextPartPayload(eventType, payload);
+  }
   const allowed = PUBLIC_PAYLOAD_FIELDS[eventType as keyof typeof PUBLIC_PAYLOAD_FIELDS];
   if (!allowed || !hasOnlyKeys(payload, allowed)) return false;
   for (const key of PUBLIC_REQUIRED_PAYLOAD_FIELDS[eventType as keyof typeof PUBLIC_REQUIRED_PAYLOAD_FIELDS] || []) {
@@ -290,7 +330,11 @@ export function adaptPublicRunStreamEventV4(
   if (!isRecord(frame.value)) return null;
   const eventType = frame.value.event_type;
   if (typeof eventType !== "string") return null;
-  if (!APPLICATION_EVENT_TYPES.has(eventType) && !CONTROL_EVENT_TYPES.has(eventType as V4ControlEventType)) return null;
+  if (
+    !APPLICATION_EVENT_TYPES.has(eventType) &&
+    !isAssistantTextPartEventType(eventType) &&
+    !CONTROL_EVENT_TYPES.has(eventType as V4ControlEventType)
+  ) return null;
   if (!eventShapeIsValid(frame.value, eventType as V4EventType)) return null;
   if (frame.eventHeader !== eventType || frame.value.run_id !== binding.runId) return null;
   const incarnation = frame.value.stream_incarnation as number;

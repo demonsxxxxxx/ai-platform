@@ -48,17 +48,19 @@ they are not interchangeable:
 | SDK `ThinkingBlock` | Provider model-reasoning content | The current runner discards it and `thinking.display` is `omitted` |
 | `ResultMessage.result` | Ordinary-text SDK terminal observation | It cannot overwrite acknowledged public text, validate an artifact, or declare Run success; streamed persistence uses committed rows and an exact receipt |
 | `attach_file` | Optional platform-owned response-file selection action | It publishes zero or more validated deliverables independently of terminal answer text |
-| `message.delta` | V4 incremental Assistant body chunk, included in the answer receipt | Every accepted Claude Assistant text fragment uses this body; later Tool use does not reclassify or withdraw it |
-| `commentary.delta` | Explicit disclosure-safe public summary from an authorized producer | It renders inline and remains excluded from the answer receipt; it is not inferred from a tool-using Claude turn |
+| `message.delta` | Legacy v4 answer delta / receipt v1 | Retained producers and historical rows keep their original semantics |
+| `message.part.delta` / `message.part.classified` | Versioned Assistant text parts and immutable classification facts | Safe pending previews stream before classification; answer/work selection owns receipt v2 |
+| `commentary.delta` | Disclosure-safe public summary or marked Claude work narration | Existing summaries remain inline; work narration uses a server-owned `worktrace_` summary ID and folds with work activity. Neither enters the answer receipt |
 | `thinking.*` | Legacy public-reasoning compatibility events | The current runner does not emit them; retained readers do not make hidden model reasoning public |
 | `model.completed` | Model completion duration, turn-count, and stop-category metadata | It is neither answer content nor Run terminal authority |
 
-The Chat history API has a separate compatibility projection: strict persisted
-`message.delta` and `commentary.delta` rows leave that API as `message:chunk`
-and `summary`. This does not create another event authority; the frontend maps
-both live v4 and compatibility-history shapes into the same `text` and `summary`
-message parts. The ordinary-user display matrix and legacy raw-tool retirement
-are owned by
+The Chat history API retains the legacy `message:chunk` and `summary` projections.
+New part events retain their public v4 envelope, IDs, sequence, message ownership,
+incarnation and closed part payload. Live and history reduce the same part facts.
+Old commentary/worktrace rows retain their presentation; new Claude work text is
+identified by its explicit part classification. Unknown new events fail closed
+in older clients, so schema, producer, Worker, history and frontend release together.
+The ordinary-user display matrix is owned by
 [Chat Run lifecycle and public error projection](chat-run-lifecycle-and-public-error-projection.md#ordinary-user-execution-presentation).
 
 ## Executor callback boundary
@@ -73,22 +75,36 @@ after the PostgreSQL commit and direct Redis batch append. Redis failure leaves
 the committed facts intact and returns a callback transport error. The existing
 executor buffer owns exact callback retry; no publication queue or terminal
 wakeup is involved. Callback transport fields and engine SDK objects are never
-browser wire fields.
+browser wire fields. The additive, admin-only
+`claude_sdk_text_checkpoint` callback item carries only an opaque Run/Attempt
+scoped `call_ref`, per-response text-delta count, character count, SHA-256 of
+raw UTF-8 SDK text, and `final`/`complete`/`coverage` diagnostic flags. Both
+proxy and SDK retain exact event 1/128/256/... samples and a final observation;
+answer coalescing changes delivery time, not the sampled prefix. The callback
+contains no provider message ID, text, reasoning or tool inputs. It requires a batch ID,
+shares the Run/Attempt/lease receipt with adjacent answer events, and persists
+as a private `executor_sdk_text_checkpoint` Run event; it creates no v4 row or
+ordinary-user projection. Older API images reject this newly whitelisted
+callback type, so roll out the API before the updated Sandbox executor. No
+prior event or selector is replaced; existing callback replay and public SSE
+schemas remain unchanged.
 
-Streaming body contract is explicit: each public `message.delta` frame is at
+Streaming body contract is explicit: each public `message.delta` or `message.part.delta` frame is at
 most 8,192 code points, and this per-frame bound never becomes a cumulative
 answer cutoff. `message.completed` is metadata-only with
 `{delta_count,text_length}`; its `causation_event_id` identifies the last delta
 and the completion never carries full text. `commentary.delta` is separately
-bounded to 8,192 code points and carries a stable `summary_id`; it is an explicit
-public summary, not answer content or capability evidence. The SDK terminal result closes ordinary assistant text;
+bounded to 8,192 code points and carries a stable `summary_id`; neither a public
+summary nor SDK work narration contributes to answer content or capability evidence.
+Every new Claude part suffix passes the stateful safety gate before callback.
+Classification later selects answer/work; batches contain at most 100 events. The SDK terminal result closes ordinary assistant text;
 optional final files are selected separately through `attach_file` and projected
 as ordered artifact parts after storage succeeds. Worker, API, and frontend
 support for this closed event is deployed release-atomically because older v4
 clients reject unknown events.
 
 The Sandbox may enqueue only single-item callbacks containing one adjacent,
-already-projected `message.delta` event before this boundary. The worker batches
+already-projected `message.delta` or `message.part.delta` event before this boundary. The worker batches
 those callback items without concatenating or rewriting their events: each
 keeps its event identity and becomes its own durable row and SSE sequence. It
 uses a configured 50-millisecond aggregation delay measured from the first
@@ -169,9 +185,10 @@ not persisted publication state, and is stripped at the public boundary.
 
 The closed Agent-kernel application registry is:
 
-- `message.started`, `message.delta`, `message.completed`;
-- `commentary.delta` for an explicit sanitized public summary rendered inline,
-  never terminal answer content;
+- `message.started`, legacy `message.delta`, `message.completed`;
+- `message.part.delta`, `message.part.classified` with closed `ai-platform.assistant-text-part.v1` payloads;
+- `commentary.delta` for a sanitized public summary or Claude tool-turn work
+  narration; `worktrace_` summary IDs fold as work activity, never answer text;
 - `thinking.started`, `thinking.delta`, `thinking.completed`, `model.completed`;
 - `agent.progress` for fixed, server-owned execution-phase lifecycle;
 - `tool.started`, `tool.completed`, `tool.failed`, `tool.denied`;
@@ -422,130 +439,54 @@ timer clears its own reference before starting the connection attempt.
   only after reducer acceptance, matching `stream.end` fence,
   incarnation rejection, and terminal-hydrate reconciliation;
 
-## Change Contract: progressive public Run timeline
+## Change Contract: incremental Assistant parts and final selection
 
-### Current v4 implementation
+- **Owner:** Execution owns SDK source reconciliation and pre-publication safety;
+  Streaming owns closed part facts, ordering and receipt reconstruction; Chat
+  owns consistent live/history rendering, copying and disclosure phases.
+- **Scope:** generated schema/types, Claude adapter/gate/router, callback and
+  persisted ledger, Worker receipt v2, history decoder and frontend consumers.
+  Outer v4 envelope, Redis keys/cursors, authorization, Attempt/lease fences,
+  callback ACK, Tool evidence and Run terminal authority remain unchanged.
+- **Projection:** `message.part.delta` introduces a pending visible preview.
+  `message.part.classified` references an existing part in the same message.
+  Pending/answer may become work before completion; work cannot become answer.
+  Safe text remains in the ledger; classification changes its presentation and
+  final selection. Thinking, raw Tool payloads and executor-private values remain
+  excluded. Generic sanitizer output with ambiguous cross-source ownership fails closed.
+- **Receipt:** v2 keeps the five v1 fields but counts only final answer-part
+  deltas. First-observed answer parts join with two LF; length includes those
+  separators, and last source delta follows ledger order. Completion carries
+  these counts and causation only. Worker reconstructs current authorized facts,
+  rejecting orphan/mixed/foreign/after-completion/unclassified facts or mismatches.
+  Failed/cancelled terminals never carry an answer receipt. Streamed Sandbox
+  terminal inline text remains empty; legacy v1 rows and receipts remain readable.
+- **Ordering and recovery:** existing Tool and terminal receipt barriers remain.
+  Live, replay, gap and terminal history apply exact part identities. Invalid
+  history cannot advance accepted watermarks or make the Run complete. Hydration
+  preserves authoritative roles and newer suffixes within the same Run.
+- **Bounds:** 8192 code points per delta and 100 events per callback remain.
+  Normal part append uses bounded indexed lifecycle/owner/role/source lookups
+  under the Run fence; completion and receipt validate the full persisted ledger.
+  Schema `2026.10.09.1` installs exact message/part/source index contracts.
+- **UI:** pending/answer appear outside work details; work appears inside.
+  First safe preview collapses earlier work; later work opens it. Ordinary token
+  updates preserve manual choices within the same phase. Final copy, outline and
+  notification answer consumers filter roles consistently.
+- **Retirement and compatibility:** Claude's source-complete buffering and new
+  worktrace production are replaced. Retained old delta/v1 receipt/commentary
+  consumers are owned by Streaming, Worker and Chat. Legacy `assistant_delta`
+  public-history fallback and `assistant_final` remain retired. No historical
+  row rewrite, second stream, hidden fields or runtime negotiation is introduced.
+- **Release/rollback:** deploy all new consumers with producer. Old clients reject
+  new events. Retain updated readers and current schema/index readiness while
+  new facts/v2 receipts exist; a producer rollback must preserve those contracts.
+  Reverting an old incompatible image is not a valid reader rollback.
+- **Acceptance:** locked SDK synthetic source/replay/safety/receipt tests, real
+  PostgreSQL split callbacks and Redis transport, mounted front live/gap/hydrate,
+  copy/folding, generated contracts, typecheck and build. Exact image, real
+  provider pacing, network flushing, browser paint and controlled-host restart
+  acceptance require separate runtime evidence.
 
-V4 uses one incremental Assistant body and has no independent final-part
-selection event. Every disclosure-safe Claude text block streams into
-`message.delta`; a later Tool block does not move the text into commentary or
-remove it from the answer receipt. `AssistantMessage` is a typed block
-observation and can precede its raw block-stop event, so only raw events own
-stream framing. Typed text and `ResultMessage.result` reconcile missing suffixes
-without replacing acknowledged public text.
-
-The [streaming message design](../implementation/streaming-message-parts-design.md)
-defines source exclusions, frontend presentation and file delivery. A future
-requirement for independently selectable final parts would need a coordinated
-schema and receipt version; it is not part of this v4 repair.
-
-### Existing v4 constraints and acceptance targets
-
-- **Owner:** Streaming owns committed public-event order; the Engine adapter owns
-  SDK normalization; Execution owns capability evidence; Runs owns business Run
-  success; the frontend reducer owns applied sequence and cursor acceptance.
-- **Bounded paths:** `app/executors/claude_agent_sdk_runner.py`,
-  `app/executors/public_answer_stream.py`, the existing Claude public-event
-  adapter, the durable Chat history projector, `frontend/web/src/hooks/useAgent/`,
-  this document, ADR 0012, and their focused tests. The Redis envelope, key,
-  cursor, authorization and Run terminal authorities remain unchanged.
-  Publication now follows ADR 0013 and the Stream-only execution contract.
-- **Public timeline invariant:** a disclosure-safe Assistant text prefix becomes
-  a durable `message.delta` without waiting for an `AssistantMessage`, tool
-  completion, or `ResultMessage`. Tool authorization and active lifecycle do not
-  disable the SDK stream projector; raw Tool input/result blocks are excluded by
-  source instead of by withholding all contemporaneous Assistant text. A terminal
-  receipt closes only the exact matching capability kind, canonical identity,
-  and invocation ID; unrelated or duplicate
-  terminal receipts fail closed. A failed Assistant-body projection remains
-  permanently closed, but does not invalidate that exact receipt or suppress the
-  corresponding public Tool terminal event. An exact producer-attributed policy
-  rejection commits `tool.denied` and projects as a denied Tool with
-  blocked/permission semantics; aggregate admission failures never synthesize
-  Tool identity. `message.delta` is provisional user-visible narration; it is
-  never evidence that a capability ran or that a Run succeeded.
-- **Safety invariant:** hidden reasoning, raw tool input or output, execution commands,
-  private runtime paths, credentials, storage keys, private Tool, Skill, MCP, task, Attempt, and
-  stream identities remain prohibited. A private Skill identity may project only
-  to its catalog-authorized public name, with ASCII characters converted to
-  non-colliding full-width forms; opaque and dynamic identities use a generic
-  non-ASCII marker. Intentional Assistant code and non-sensitive task references
-  follow the Chat content policy. `message.delta`
-  uses stateful cross-chunk sanitization and bounded
-  per-frame validation; it has no cumulative answer shutdown. Strict callback
-  validation, tool admission, capability receipts, and platform-owned
-  terminalization remain fail closed.
-- **Ordering invariant:** public Tool lifecycle events bracket the actual
-  invocation. A start commits before execution; a completion or failure commits
-  only after its verified receipt. Assistant text may appear before, between, or
-  after those lifecycle events and never serves as execution evidence. Every
-  event commits in the same PostgreSQL Run-local sequence. The frontend may coalesce only
-  adjacent text and may advance sequence or cursor only after reducer or
-  terminal-hydration acceptance.
-- **Gap recovery invariant:** active same-incarnation
-  `retained_history_unavailable` and `stream_continuity_unproven` gaps resume
-  only after PostgreSQL V4 hydration has applied and only from the
-  server-provided latest retained cursor. Durable history owns state through
-  that anchor; Redis replay/live owns later events. `stream_missing`,
-  and cross-incarnation recovery without a validated current anchor require
-  durable hydration without stream reconstruction. The frontend never invents
-  a cursor, message identity, or successor incarnation. If the message owner is
-  unavailable, it preserves the Run and converges through status/terminal history.
-- **Single-body invariant:** v4 `message.delta` is the public incremental body
-  authority and accepted deltas remain the durable source for streamed answers.
-  `message.completed` closes the sequence with counts only and carries no answer
-  text. Terminal-only answers are split into per-frame deltas and may span
-  multiple callback batches; each batch respects the callback event-count bound,
-  and the receipt exists only after every delta batch and the final completion
-  batch are acknowledged. A successful streamed Sandbox terminal carries
-  only a versioned `AssistantAnswerReceipt` containing `schema_version`,
-  `message_id`, `delta_count`, `text_length`, and `last_delta_event_id`; its
-  legacy `message` field is exactly empty, and failed or cancelled terminals
-  cannot carry an answer receipt. The Worker
-  accepts only committed, visible, current-Attempt v4 rows matching the exact
-  receipt, message identity, order, counts and lengths. Redis delivery and retired
-  publication metadata are not answer authority. Invalid or unauthorized rows
-  fail closed. For streamed answers,
-  short compatibility content remains inline when persistence limits allow,
-  otherwise history stores a bounded `run_events_v4` reference, without
-  truncating the answer. Historical `assistant_delta`, successful terminal-body
-  fallback, and obsolete `assistant_final` are retired. Terminal hydrate uses the
-  same Run segment and source-local reconciliation, preserving unrelated accepted
-sources and actionable parts.
-- **Acceptance:** focused tests prove text-only, read-only Tool, effectful local
-  Tool, Skill, MCP, sequential capability, denial/failure, terminal race,
-  reconnect, and failed-history behavior. Tests delay both animation-frame and
-  React functional-updater execution where ordering depends on application.
-  Serialized ordinary-user responses contain no internal marker or identity.
-- **Falsifiable v4 regression target:** an effectful local Tool Run emits a safe
-  `message.delta` before `ResultMessage`; a higher-sequence Tool or terminal
-  event cannot erase an earlier received delta; and refreshing a failed V4-only
-  Run preserves that delta exactly once. Raw/typed ordering tests additionally
-  prove visible text before the typed block boundary without duplicate replay.
-- **Evidence ceiling:** source and local/CI tests cannot prove real SDK timing,
-  proxy flushing, Redis delivery, browser paint, or restart recovery. Those claims
-  require an immutable candidate image on the controlled Linux environment and
-  the applicable External Acceptance matrix.
-- **Rollback:** the original progressive-projection repair introduced no schema
-  migration. After the Stream-only cutover, recovery follows the release runbook;
-  an older backend image is not compatible with the migrated schema.
-- **Stop conditions:** stop before code expands the public schema beyond the
-  separately contracted `commentary.delta`, weakens sanitizer or admission
-  controls, treats narration as capability evidence,
-  trusts callback-owned publication metadata, creates a second body or terminal
-  authority, requires same-incarnation Redis reconstruction, or depends on a
-  product choice not fixed above. Active successor-incarnation recovery is a
-  stop condition for this Change Contract.
-
-## Retirement and compatibility disposition
-
-Removed from the active streaming path: punctuation-based withholding; the
-4,096 and 262,144 cumulative answer shutdowns; aggregate
-`message.completed.content`; the streamed Sandbox terminal full-body path;
-obsolete `assistant_final`; and obsolete frontend final-text replacement.
-Retained: bounded per-frame and queue limits and the current authorized v4
-history projection into UI message parts. The legacy `assistant_delta` reader
-and terminal-body fallback are removed. Run/Attempt,
-lease and callback-receipt authorities remain; publication claims and Pub/Sub
-are retired by ADR 0013. This source disposition is not deployment or latency
-evidence.
+Detailed source and selection rules are in the
+[streaming message design](../implementation/streaming-message-parts-design.md).

@@ -35,6 +35,7 @@ from app.streaming.domain.public_events_v4 import (
     _APPLICATION_EVENT_TYPES,
     _MESSAGE_EVENT_TYPES,
     _RUN_DOMAIN_EVENT_TYPES,
+    _metadata,
     _nonempty,
     _safe_ref,
     _stable_event_id,
@@ -48,6 +49,13 @@ from app.streaming.domain.public_events_v4 import (
     project_public_v4,
     stream_end_event_id,
     validate_internal_envelope_v4 as _validate_internal_envelope,
+)
+from app.streaming.domain.assistant_text_parts import (
+    ASSISTANT_TEXT_PART_EVENT_TYPES,
+    AssistantTextPartAppendState,
+    AssistantTextPartLedgerError,
+    apply_assistant_text_part_append_fact,
+    reduce_assistant_text_part_message,
 )
 from app.streaming.domain.transport import (
     ResumeDecision,
@@ -225,6 +233,7 @@ async def _append_prepared_application_v4_rows(
     tenant_id: str,
     run_id: str,
     prepared: Sequence[tuple[str, postgres.LedgerEvent]],
+    authority: StreamAuthority,
 ) -> tuple[Mapping[str, object], ...]:
     """Resolve existing identities once, then insert all missing rows together."""
 
@@ -265,6 +274,15 @@ async def _append_prepared_application_v4_rows(
         ):
             raise V4ProjectionError("v4_callback_existing_row_conflict")
 
+    await _validate_assistant_part_append(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        authority=authority,
+        prepared=prepared,
+        existing_by_id=existing_by_id,
+    )
+
     missing_ids = tuple(event_id for event_id in unique if event_id not in existing_by_id)
     if missing_ids:
         receipts = await postgres.append_events(
@@ -288,6 +306,293 @@ async def _append_prepared_application_v4_rows(
                 "created_at": receipt.created_at,
             }
     return tuple(existing_by_id[event_id] for event_id, _event in prepared)
+
+
+_ASSISTANT_ANSWER_FACT_TYPES = frozenset(
+    {
+        "message.started",
+        "message.delta",
+        *ASSISTANT_TEXT_PART_EVENT_TYPES,
+        "message.completed",
+    }
+)
+
+
+async def _validate_assistant_part_append(
+    conn: Any,
+    *,
+    tenant_id: str,
+    run_id: str,
+    authority: StreamAuthority,
+    prepared: Sequence[tuple[str, postgres.LedgerEvent]],
+    existing_by_id: Mapping[str, Mapping[str, object]],
+) -> None:
+    """Validate new facts under the caller's Run fence with indexed lookups.
+
+    Previously committed facts were admitted by this same transition boundary.
+    Completion and receipt selection independently validate the entire ledger,
+    including historical corruption; ordinary deltas do not rescan its text.
+    """
+    incoming = dict(
+        (event_id, event) for event_id, event in prepared
+        if event.event_type in _ASSISTANT_ANSWER_FACT_TYPES
+    )
+    if not incoming:
+        return
+    new = [(event_id, event) for event_id, event in incoming.items()
+           if event_id not in existing_by_id]
+    contains_parts = any(event.event_type in ASSISTANT_TEXT_PART_EVENT_TYPES
+                         for event in incoming.values())
+    if not contains_parts:
+        if not new:
+            return
+        cursor = await conn.execute(
+            """select id from run_events
+            where tenant_id = %s and run_id = %s
+              and event_type = 'message.part.delta'
+              and payload_json -> '__stream_v4' ->> 'attempt_id' = %s
+              and payload_json -> '__stream_v4' ->> 'stream_incarnation' = %s
+            limit 1""",
+            (tenant_id, run_id, authority.attempt_id, str(authority.stream_incarnation)),
+        )
+        if await cursor.fetchone() is None:
+            return
+    if not contains_parts or any(event.event_type == "message.completed" for _, event in new):
+        await _validate_assistant_part_append_full(
+            conn, tenant_id=tenant_id, run_id=run_id, authority=authority,
+            incoming=tuple(incoming.items()), existing_by_id=existing_by_id,
+        )
+        return
+
+    async def lookup(event_type: str, key: str, value: str, *, latest: bool = False,
+                     limit: int = 1) -> list[Mapping[str, object]]:
+        # Only adapter-owned SQL identifiers are interpolated; all values bind.
+        expressions = {
+            "message": "payload_json -> '__stream_v4' ->> 'message_id'",
+            "part": "payload_json ->> 'part_id'",
+        }
+        expression = expressions[key]
+        direction = "desc" if latest else "asc"
+        cursor = await conn.execute(
+            f"""select id, tenant_id, run_id, sequence, event_type,
+                       visible_to_user, payload_json, created_at
+            from run_events
+            where tenant_id = %s and run_id = %s and event_type = %s
+              and payload_json -> '__stream_v4' ->> 'attempt_id' = %s
+              and payload_json -> '__stream_v4' ->> 'stream_incarnation' = %s
+              and {expression} = %s
+            order by sequence {direction}
+            limit %s""",
+            (tenant_id, run_id, event_type, authority.attempt_id,
+             str(authority.stream_incarnation), value, limit),
+        )
+        rows = await cursor.fetchall()
+        for row in rows:
+            if not isinstance(row, Mapping) or project_public_v4(row, authority=authority) is None:
+                raise V4ProjectionError("v4_part_ledger_invalid")
+        return rows
+
+    message_ids: dict[str, str] = {}
+    for event_id, event in incoming.items():
+        metadata = _metadata({"payload_json": event.payload})
+        if metadata is None:
+            raise V4ProjectionError("v4_part_ledger_invalid")
+        message_ids[event_id] = _safe_ref(metadata.get("message_id"), name="message_id")
+
+    for message_id in set(message_ids.values()):
+        starts = await lookup("message.started", "message", message_id, limit=2)
+        completed = await lookup("message.completed", "message", message_id)
+        legacy = await lookup("message.delta", "message", message_id)
+        if len(starts) > 1 or legacy:
+            raise V4ProjectionError("v4_part_ledger_invalid")
+        started = bool(starts)
+        actions = [(event_id, event) for event_id, event in new
+                   if message_ids[event_id] == message_id]
+        if completed and actions:
+            raise V4ProjectionError("v4_part_ledger_invalid")
+        for _event_id, event in actions:
+            if event.event_type == "message.started":
+                if started:
+                    raise V4ProjectionError("v4_part_ledger_invalid")
+                started = True
+            elif not started or event.event_type == "message.delta":
+                raise V4ProjectionError("v4_part_ledger_invalid")
+
+    part_states: dict[str, AssistantTextPartAppendState] = {}
+    source_ids: dict[str, str] = {}
+    for event_id, event in incoming.items():
+        if event.event_type not in ASSISTANT_TEXT_PART_EVENT_TYPES:
+            continue
+        payload = {key: value for key, value in event.payload.items() if key != V4_METADATA_KEY}
+        part_id = _safe_ref(payload.get("part_id"), name="part_id")
+        if part_id not in part_states:
+            first = await lookup("message.part.delta", "part", part_id)
+            classified = await lookup("message.part.classified", "part", part_id, latest=True)
+            owner = _metadata(first[0]).get("message_id") if first else None
+            latest_role = classified[0]["payload_json"].get("role") if classified else None
+            if classified and (not first or _metadata(classified[0]).get("message_id") != owner):
+                raise V4ProjectionError("v4_part_ledger_invalid")
+            part_states[part_id] = AssistantTextPartAppendState(
+                owner_message_id=owner, has_delta=bool(first), latest_role=latest_role,
+            )
+        metadata = _metadata({"payload_json": event.payload})
+        if event.event_type == "message.part.delta":
+            source_id = _safe_ref(metadata.get("source_event_id"), name="source_event_id")
+            if source_id in source_ids:
+                raise V4ProjectionError("v4_part_ledger_invalid")
+            source_ids[source_id] = event_id
+        if event_id not in existing_by_id:
+            try:
+                _, part_states[part_id] = apply_assistant_text_part_append_fact(
+                    part_states[part_id], message_id=message_ids[event_id],
+                    event_type=event.event_type, payload=payload,
+                    source_event_id=metadata.get("source_event_id"),
+                )
+            except AssistantTextPartLedgerError as exc:
+                raise V4ProjectionError("v4_part_ledger_invalid") from exc
+        elif part_states[part_id].owner_message_id != message_ids[event_id]:
+            raise V4ProjectionError("v4_part_ledger_invalid")
+
+    for source_id, event_id in source_ids.items():
+        cursor = await conn.execute(
+            """select id from run_events
+            where tenant_id = %s and run_id = %s
+              and event_type = 'message.part.delta'
+              and payload_json -> '__stream_v4' ->> 'attempt_id' = %s
+              and payload_json -> '__stream_v4' ->> 'stream_incarnation' = %s
+              and payload_json -> '__stream_v4' ->> 'source_event_id' = %s
+              and id <> %s limit 1""",
+            (tenant_id, run_id, authority.attempt_id, str(authority.stream_incarnation),
+             source_id, event_id),
+        )
+        if await cursor.fetchone() is not None:
+            raise V4ProjectionError("v4_part_ledger_invalid")
+
+
+async def _validate_assistant_part_append_full(
+    conn: Any,
+    *,
+    tenant_id: str,
+    run_id: str,
+    authority: StreamAuthority,
+    incoming: Sequence[tuple[str, postgres.LedgerEvent]],
+    existing_by_id: Mapping[str, Mapping[str, object]],
+) -> None:
+    """Run the complete text projection and reducer at terminal selection."""
+
+    cursor = await conn.execute(
+        """
+        select id, tenant_id, run_id, sequence, event_type, visible_to_user,
+               payload_json, created_at
+        from run_events
+        where tenant_id = %s and run_id = %s
+          and event_type = any(%s::text[])
+          and payload_json -> '__stream_v4' ->> 'attempt_id' = %s
+          and payload_json -> '__stream_v4' ->> 'stream_incarnation' = %s
+        order by sequence asc, id asc
+        for update
+        """,
+        (
+            tenant_id,
+            run_id,
+            list(_ASSISTANT_ANSWER_FACT_TYPES),
+            authority.attempt_id,
+            str(authority.stream_incarnation),
+        ),
+    )
+    ledger_rows = list(await cursor.fetchall())
+    known_ids = {
+        str(row.get("id"))
+        for row in ledger_rows
+        if isinstance(row, Mapping) and isinstance(row.get("id"), str)
+    }
+    for row in existing_by_id.values():
+        if (
+            isinstance(row, Mapping)
+            and row.get("event_type") in _ASSISTANT_ANSWER_FACT_TYPES
+            and row.get("id") not in known_ids
+        ):
+            ledger_rows.append(row)
+            known_ids.add(str(row.get("id")))
+
+    next_sequence = max(
+        (
+            value
+            for row in ledger_rows
+            if isinstance(row, Mapping)
+            and isinstance(value := row.get("sequence"), int)
+            and not isinstance(value, bool)
+        ),
+        default=0,
+    )
+    for event_id, event in incoming:
+        if event_id in known_ids:
+            continue
+        next_sequence += 1
+        ledger_rows.append(
+            {
+                "id": event_id,
+                "tenant_id": tenant_id,
+                "run_id": run_id,
+                "sequence": next_sequence,
+                "event_type": event.event_type,
+                "visible_to_user": True,
+                "payload_json": dict(event.payload),
+                "created_at": "2026-01-01T00:00:00Z",
+            }
+        )
+        known_ids.add(event_id)
+
+    projected_by_message: dict[str, list[dict[str, object]]] = {}
+    part_owner_by_id: dict[str, str] = {}
+    source_ids: set[str] = set()
+    for row in sorted(
+        ledger_rows,
+        key=lambda item: (
+            int(item.get("sequence") or 0) if isinstance(item, Mapping) else 0,
+            str(item.get("id") or "") if isinstance(item, Mapping) else "",
+        ),
+    ):
+        if not isinstance(row, Mapping):
+            raise V4ProjectionError("v4_part_ledger_invalid")
+        projected = project_public_v4(row, authority=authority)
+        if projected is None:
+            raise V4ProjectionError("v4_part_ledger_invalid")
+        message_id = projected.get("message_id")
+        if not isinstance(message_id, str):
+            raise V4ProjectionError("v4_part_ledger_invalid")
+        metadata = _metadata(row)
+        if metadata is None:
+            raise V4ProjectionError("v4_part_ledger_invalid")
+        fact = {
+            **projected,
+            "source_event_id": metadata.get("source_event_id"),
+        }
+        projected_by_message.setdefault(message_id, []).append(fact)
+        if projected.get("event_type") in ASSISTANT_TEXT_PART_EVENT_TYPES:
+            payload = projected.get("payload")
+            if not isinstance(payload, Mapping):
+                raise V4ProjectionError("v4_part_ledger_invalid")
+            part_id = payload.get("part_id")
+            if isinstance(part_id, str):
+                prior_owner = part_owner_by_id.setdefault(part_id, message_id)
+                if prior_owner != message_id:
+                    raise V4ProjectionError("v4_part_ledger_invalid")
+            if projected.get("event_type") == "message.part.delta":
+                source_event_id = metadata.get("source_event_id")
+                if not isinstance(source_event_id, str) or source_event_id in source_ids:
+                    raise V4ProjectionError("v4_part_ledger_invalid")
+                source_ids.add(source_event_id)
+
+    try:
+        for facts in projected_by_message.values():
+            if any(
+                fact.get("event_type") in ASSISTANT_TEXT_PART_EVENT_TYPES
+                for fact in facts
+            ):
+                reduce_assistant_text_part_message(facts)
+    except AssistantTextPartLedgerError as exc:
+        raise V4ProjectionError("v4_part_ledger_invalid") from exc
 
 
 async def append_application_v4_row(
@@ -332,7 +637,11 @@ async def append_application_v4_row(
     )
     return (
         await _append_prepared_application_v4_rows(
-            conn, tenant_id=tenant_id, run_id=run_id, prepared=(prepared,)
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            prepared=(prepared,),
+            authority=authority,
         )
     )[0]
 
@@ -507,7 +816,11 @@ async def append_callback_v4_rows(
             )
         )
     return await _append_prepared_application_v4_rows(
-        conn, tenant_id=tenant_id, run_id=run_id, prepared=prepared
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        prepared=prepared,
+        authority=authority,
     )
 
 
@@ -524,8 +837,20 @@ async def load_answer_by_receipt(
     try:
         if not isinstance(receipt, Mapping):
             raise V4ProjectionError("receipt")
-        if receipt.get("schema_version") != "ai-platform.assistant-answer-receipt.v1":
+        receipt_version = receipt.get("schema_version")
+        if receipt_version not in (
+            "ai-platform.assistant-answer-receipt.v1",
+            "ai-platform.assistant-answer-receipt.v2",
+        ):
             raise V4ProjectionError("receipt_schema_version")
+        if set(receipt) != {
+            "schema_version",
+            "message_id",
+            "delta_count",
+            "text_length",
+            "last_delta_event_id",
+        }:
+            raise V4ProjectionError("receipt_fields")
         message_id = _safe_ref(receipt.get("message_id"), name="message_id")
         last_delta_event_id = _safe_ref(
             receipt.get("last_delta_event_id"), name="last_delta_event_id"
@@ -553,22 +878,46 @@ async def load_answer_by_receipt(
     if authority is None or authority.attempt_id != attempt_id:
         raise AssistantAnswerReceiptError()
 
-    cursor = await conn.execute(
-        """
-        select id, tenant_id, run_id, sequence, event_type, visible_to_user,
-               payload_json, created_at
-        from run_events
-        where tenant_id = %s
-          and run_id = %s
-          and event_type in ('message.started', 'message.delta', 'message.completed')
-          and visible_to_user = true
-          and payload_json ? '__stream_v4'
-          and payload_json -> '__stream_v4' ->> 'attempt_id' = %s
-        order by sequence asc, id asc
-        for update
-        """,
-        (tenant_id, run_id, attempt_id),
-    )
+    if receipt_version == "ai-platform.assistant-answer-receipt.v2":
+        cursor = await conn.execute(
+            """
+            select id, tenant_id, run_id, sequence, event_type, visible_to_user,
+                   payload_json, created_at
+            from run_events
+            where tenant_id = %s
+              and run_id = %s
+              and event_type in (
+                  'message.started', 'message.delta', 'message.part.delta',
+                  'message.part.classified', 'message.completed'
+              )
+              and visible_to_user = true
+              and payload_json ? '__stream_v4'
+              and payload_json -> '__stream_v4' ->> 'attempt_id' = %s
+            order by sequence asc, id asc
+            for update
+            """,
+            (tenant_id, run_id, attempt_id),
+        )
+    else:
+        cursor = await conn.execute(
+            """
+            select id, tenant_id, run_id, sequence, event_type, visible_to_user,
+                   payload_json, created_at
+            from run_events
+            where tenant_id = %s
+              and run_id = %s
+              and event_type in (
+                  'message.started', 'message.delta', 'message.part.delta',
+                  'message.part.classified', 'message.completed'
+              )
+              and visible_to_user = true
+              and payload_json ? '__stream_v4'
+              and payload_json -> '__stream_v4' ->> 'attempt_id' = %s
+            order by sequence asc, id asc
+            for update
+            """,
+            (tenant_id, run_id, attempt_id),
+        )
     rows = await cursor.fetchall()
     if not rows:
         raise AssistantAnswerReceiptError()
@@ -591,59 +940,89 @@ async def load_answer_by_receipt(
 
         if any(item.get("message_id") != message_id for item in projected_rows):
             raise V4ProjectionError("message_id")
-        event_types = [str(item.get("event_type") or "") for item in projected_rows]
-        if (
-            event_types[0] != "message.started"
-            or event_types[-1] != "message.completed"
-            or event_types.count("message.started") != 1
-            or event_types.count("message.completed") != 1
-            or any(event_type != "message.delta" for event_type in event_types[1:-1])
-        ):
-            raise V4ProjectionError("event_order")
-        sequences = [item.get("seq") for item in projected_rows]
-        if any(
-            isinstance(sequence, bool)
-            or not isinstance(sequence, int)
-            or next_sequence <= sequence
-            for sequence, next_sequence in zip(sequences, sequences[1:])
-        ):
-            raise V4ProjectionError("sequence")
-        deltas = projected_rows[1:-1]
-        delta_metadata = row_metadata[1:-1]
-        if len(deltas) != delta_count:
-            raise V4ProjectionError("delta_count")
-        delta_source_ids = []
-        for metadata in delta_metadata:
-            source_event_id = metadata.get("source_event_id")
-            delta_source_ids.append(_safe_ref(source_event_id, name="source_event_id"))
-        if (
-            not delta_source_ids
-            or len(set(delta_source_ids)) != len(delta_source_ids)
-            or delta_source_ids[-1] != last_delta_event_id
-        ):
-            raise V4ProjectionError("last_delta_event_id")
-        completed = projected_rows[-1]
-        completed_metadata = row_metadata[-1]
-        if completed.get("causation_event_id") != last_delta_event_id:
-            raise V4ProjectionError("causation_event_id")
-        if completed_metadata.get("causation_event_id") != last_delta_event_id:
-            raise V4ProjectionError("causation_event_id")
-        completed_payload = completed.get("payload")
-        if not isinstance(completed_payload, Mapping):
-            raise V4ProjectionError("completed_payload")
-        if (
-            completed_payload.get("delta_count") != delta_count
-            or completed_payload.get("text_length") != text_length
-        ):
-            raise V4ProjectionError("completed_receipt")
-        text = "".join(
-            str(item["payload"]["delta"])
-            for item in deltas
-            if isinstance(item.get("payload"), Mapping)
-            and isinstance(item["payload"].get("delta"), str)
-        )
-        if len(text) != text_length:
-            raise V4ProjectionError("text_length")
+        if receipt_version == "ai-platform.assistant-answer-receipt.v2":
+            facts = [
+                {
+                    **projected,
+                    "source_event_id": metadata.get("source_event_id"),
+                }
+                for projected, metadata in zip(
+                    projected_rows, row_metadata, strict=True
+                )
+            ]
+            try:
+                state = reduce_assistant_text_part_message(
+                    facts, expected_message_id=message_id
+                )
+            except AssistantTextPartLedgerError as exc:
+                raise V4ProjectionError("part_receipt_invalid") from exc
+            if not state.has_parts or not state.completed or state.answer is None:
+                raise V4ProjectionError("part_answer_incomplete")
+            answer = state.answer
+            if (
+                answer.delta_count != delta_count
+                or answer.text_length != text_length
+                or answer.last_delta_event_id != last_delta_event_id
+            ):
+                raise V4ProjectionError("part_receipt_mismatch")
+            completed_metadata = row_metadata[-1]
+            if completed_metadata.get("causation_event_id") != last_delta_event_id:
+                raise V4ProjectionError("causation_event_id")
+            text = answer.text
+        else:
+            event_types = [str(item.get("event_type") or "") for item in projected_rows]
+            if (
+                event_types[0] != "message.started"
+                or event_types[-1] != "message.completed"
+                or event_types.count("message.started") != 1
+                or event_types.count("message.completed") != 1
+                or any(event_type != "message.delta" for event_type in event_types[1:-1])
+            ):
+                raise V4ProjectionError("event_order")
+            sequences = [item.get("seq") for item in projected_rows]
+            if any(
+                isinstance(sequence, bool)
+                or not isinstance(sequence, int)
+                or next_sequence <= sequence
+                for sequence, next_sequence in zip(sequences, sequences[1:])
+            ):
+                raise V4ProjectionError("sequence")
+            deltas = projected_rows[1:-1]
+            delta_metadata = row_metadata[1:-1]
+            if len(deltas) != delta_count:
+                raise V4ProjectionError("delta_count")
+            delta_source_ids = []
+            for metadata in delta_metadata:
+                source_event_id = metadata.get("source_event_id")
+                delta_source_ids.append(_safe_ref(source_event_id, name="source_event_id"))
+            if (
+                not delta_source_ids
+                or len(set(delta_source_ids)) != len(delta_source_ids)
+                or delta_source_ids[-1] != last_delta_event_id
+            ):
+                raise V4ProjectionError("last_delta_event_id")
+            completed = projected_rows[-1]
+            completed_metadata = row_metadata[-1]
+            if completed.get("causation_event_id") != last_delta_event_id:
+                raise V4ProjectionError("causation_event_id")
+            if completed_metadata.get("causation_event_id") != last_delta_event_id:
+                raise V4ProjectionError("causation_event_id")
+            completed_payload = completed.get("payload")
+            if not isinstance(completed_payload, Mapping):
+                raise V4ProjectionError("completed_payload")
+            if (
+                completed_payload.get("delta_count") != delta_count
+                or completed_payload.get("text_length") != text_length
+            ):
+                raise V4ProjectionError("completed_receipt")
+            text = "".join(
+                str(item["payload"]["delta"])
+                for item in deltas
+                if isinstance(item.get("payload"), Mapping)
+                and isinstance(item["payload"].get("delta"), str)
+            )
+            if len(text) != text_length:
+                raise V4ProjectionError("text_length")
     except (KeyError, TypeError, V4ProjectionError) as exc:
         raise AssistantAnswerReceiptError() from exc
     return ReconstructedAssistantAnswer(text=text)

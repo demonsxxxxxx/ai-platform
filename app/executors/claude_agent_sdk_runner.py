@@ -29,6 +29,7 @@ from app.control_plane_contracts import (
 )
 from app.platform.public_payload import (
     sanitize_public_answer_text,
+    sanitize_public_text,
     sanitize_public_event_candidate,
 )
 from app.executors.claude.capability_policy import (
@@ -41,7 +42,6 @@ from app.executors.claude.capability_policy import (
     _extract_skill_names_from_tool_input,
     _mcp_server_options,
     _parameters_match_subject,
-    claude_context_retrieval_tools,
     internal_context_tool_policy_subjects,
     internal_response_tool_policy_subjects,
 )
@@ -50,15 +50,19 @@ from app.executors.claude.prompts import (
     context_pack_prompt_section as _prompt_context_pack_prompt_section,
     translation_target_language as _prompt_translation_target_language,
 )
-from app.bootstrap.claude_client import prepare_claude_client_close
-from app.execution.api import ClaudeSdkAgentEventAdapter
-from app.executors.claude_stream_projection import (
-    AssistantAnswerTimeline,
-    ClaudeStreamProjector,
-    provider_message_identity,
+from app.bootstrap.claude_client import (
+    prepare_claude_client_close,
+    prepare_claude_callback_tracker,
+    prepare_claude_run_interaction,
+    prepare_claude_text_sources,
+    prepare_claude_typed_observations,
+)
+from app.execution.api import (
+    ClaudeSdkAgentEventAdapter,
+    ModelTextCheckpoint,
+    RunInteractionProtocol,
 )
 from app.executors.public_answer_stream import (
-    PublicAnswerCoalescer,
     PublicAnswerStreamGate,
 )
 from app.required_tool_contract import (
@@ -72,14 +76,9 @@ from app.required_tool_contract import (
     RequiredCapabilityEvidence,
     RequiredToolContractError,
     canonical_tool_call_id,
-    declaration_from_input,
     declaration_from_payload,
-    with_sandbox_local_tool_capability_subjects,
 )
-from app.runtime.sandbox.contracts import (
-    PROFILE_DRIVE_READ_TEXT_IDENTITY,
-    PROFILE_DRIVE_STAGE_TOOL,
-)
+from app.runtime.sandbox.contracts import PROFILE_DRIVE_STAGE_TOOL
 from app.sandbox.api import (
     SDK_RUNTIME_DIAGNOSTIC_DETAIL_LIMIT as _MAX_RUNTIME_DIAGNOSTIC_DETAIL_ENTRIES,
     SDK_RUNTIME_DIAGNOSTIC_IDENTITY_MAX_BYTES as _MAX_RUNTIME_DIAGNOSTIC_IDENTITY_BYTES,
@@ -103,55 +102,6 @@ from app.tool_policy import evaluate_tool_policy
 
 _context_pack_prompt_section = _prompt_context_pack_prompt_section
 _translation_target_language = _prompt_translation_target_language
-
-
-def runtime_tool_policy_subjects(
-    payload: Any,
-    context_manifest: dict[str, Any] | None = None,
-) -> list[dict[str, Any]]:
-    value = payload.input.get("_runtime_tool_policy_subjects")
-    internal_prefixes = (
-        _SDK_INTERNAL_CONTEXT_IDENTITY_PREFIX,
-        _SDK_INTERNAL_RESPONSE_IDENTITY_PREFIX,
-    )
-    subjects = (
-        [
-            dict(item)
-            for item in value
-            if isinstance(item, dict)
-            and not str(item.get("identity") or "").startswith(internal_prefixes)
-        ]
-        if isinstance(value, list)
-        else []
-    )
-    subjects.extend(
-        internal_context_tool_policy_subjects(
-            claude_context_retrieval_tools(context_manifest)
-        )
-    )
-    subjects.extend(internal_response_tool_policy_subjects())
-    return subjects
-
-
-def sandbox_runtime_tool_policy_subjects(
-    payload: Any,
-    context_manifest: dict[str, Any] | None = None,
-    *,
-    sandbox_provider: str,
-) -> list[dict[str, Any]]:
-    subjects = runtime_tool_policy_subjects(payload, context_manifest)
-    if PROFILE_DRIVE_READ_TEXT_IDENTITY in _canonical_tool_policy_subjects(subjects):
-        subjects = [
-            subject
-            for subject in subjects
-            if subject.get("identity") != PROFILE_DRIVE_READ_TEXT_IDENTITY
-        ]
-        subjects.extend(internal_context_tool_policy_subjects([PROFILE_DRIVE_STAGE_TOOL]))
-    return with_sandbox_local_tool_capability_subjects(
-        subjects,
-        sandbox_provider=sandbox_provider,
-        required_declaration=declaration_from_input(payload.input),
-    )
 
 
 _SDK_ENV_ALLOWLIST = {
@@ -192,6 +142,9 @@ _MAX_PUBLIC_DELTA_CHARS = 8_192
 _SDK_TOOL_ADMISSION_FAILED = "claude_agent_sdk_tool_admission_failed"
 _SDK_EXECUTION_RECEIPT_INCOMPLETE = "claude_agent_sdk_execution_receipt_incomplete"
 _SDK_UPSTREAM_ERROR = "claude_agent_sdk_upstream_error"
+_SDK_INPUT_CONTEXT_TOO_LARGE = "claude_agent_sdk_input_context_too_large"
+_SDK_INPUT_IMAGE_INVALID = "claude_agent_sdk_input_image_invalid"
+_SDK_EXECUTION_FAILED = "claude_agent_sdk_execution_failed"
 _SDK_OUTPUT_VALIDATION_FAILED = "claude_agent_sdk_output_validation_failed"
 _SDK_PROVIDER_SESSION_FAILED = "claude_agent_sdk_provider_session_failed"
 _SDK_AUTOCOMPACT_MIN_TOKENS = 100_000
@@ -225,7 +178,17 @@ _TURN_LIMIT_ERROR_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _CONTEXT_LIMIT_ERROR_PATTERN = re.compile(
-    r"prompt\s+is\s+too\s+long|request\s+too\s+large|max\s+32mb",
+    r"prompt(?:\s+is)?\s+too\s+long|prompt_too_long|"
+    r"request\s+too\s+large|max\s+32mb|context[_ ](?:length|window)[_ ]exceeded",
+    re.IGNORECASE,
+)
+_SDK_UPSTREAM_REASONS = frozenset(
+    {"server_error", "rate_limit", "rate_limit_error", "overloaded_error", "api_error"}
+)
+_UPSTREAM_ERROR_PATTERN = re.compile(
+    r"\b(?:rate[_ -]limit(?:_error)?|overloaded_error|server_error|api_error)\b|"
+    r"\bupstream\s+(?:unavailable|service\s+unavailable)\b|"
+    r"\bAPI\s+Error:\s*(?:429|5\d\d)\b",
     re.IGNORECASE,
 )
 _SDK_PROJECT_SETTING_FILES = (".claude/settings.json", ".claude/settings.local.json")
@@ -290,12 +253,13 @@ class _ProjectionFailure:
     stage: str
     location: str
 
-    def as_dict(self) -> dict[str, str]:
-        return {
+    def as_dict(self) -> dict[str, Any]:
+        result = {
             "reason": self.reason,
             "stage": self.stage,
             "location": self.location,
         }
+        return result
 
 
 class _SessionStoreAppendTracker:
@@ -303,12 +267,43 @@ class _SessionStoreAppendTracker:
         self._store = store
         self.main_append_acknowledged = False
         self.final_sequence: int | None = None
+        self._failed_calls: list[tuple[str, tuple[Any, ...]]] = []
+        self.active_calls = 0
+        self._idle = asyncio.Event()
+        self._idle.set()
+
+    async def _call(self, operation: Callable[..., Awaitable[Any]], *args: Any) -> Any:
+        self.active_calls += 1
+        self._idle.clear()
+        try:
+            result = await operation(*args)
+        except BaseException:
+            failure = (operation.__name__, args)
+            if failure not in self._failed_calls:
+                self._failed_calls.append(failure)
+            raise
+        else:
+            # The SDK retries an identical mirror batch. A confirmed receipt
+            # resolves that failure; unrelated successful writes do not.
+            self._failed_calls = [item for item in self._failed_calls if item != (operation.__name__, args)]
+            return result
+        finally:
+            self.active_calls -= 1
+            if self.active_calls == 0:
+                self._idle.set()
+
+    @property
+    def failed(self) -> bool:
+        return bool(self._failed_calls)
+
+    async def wait_idle(self) -> None:
+        await self._idle.wait()
 
     async def load(self, key: Any) -> Any:
-        return await self._store.load(key)
+        return await self._call(self._store.load, key)
 
     async def append(self, key: Any, entries: Any) -> None:
-        await self._store.append(key, entries)
+        await self._call(self._store.append, key, entries)
         sequence = getattr(self._store, "accepted_final_sequence", None)
         if type(sequence) is int and sequence >= 1:
             self.final_sequence = sequence
@@ -317,7 +312,7 @@ class _SessionStoreAppendTracker:
             self.main_append_acknowledged = True
 
     async def list_subkeys(self, key: Any = None) -> Any:
-        return await self._store.list_subkeys(key)
+        return await self._call(self._store.list_subkeys, key)
 
 
 class ClaudeAgentSdkNotAvailable(RuntimeError):
@@ -328,6 +323,19 @@ def _bounded_diagnostic_counter(value: object) -> int:
     if not isinstance(value, int) or isinstance(value, bool):
         return 0
     return max(0, min(value, _MAX_TURN_DIAGNOSTIC_COUNTER))
+
+
+def _merge_sdk_usage(previous: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(previous)
+    for key, value in current.items():
+        old = merged.get(key)
+        if isinstance(value, dict) and isinstance(old, dict):
+            merged[key] = _merge_sdk_usage(old, value)
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            merged[key] = value + (old if isinstance(old, (int, float)) else 0)
+        else:
+            merged[key] = value
+    return merged
 
 
 def _diagnostic_terminal_class(
@@ -341,11 +349,11 @@ def _diagnostic_terminal_class(
         return (
             "max_turn_exhausted",
             _SDK_TURN_LIMIT_EXCEEDED,
-            "continue_or_narrow_request",
-            True,
+            "start_new_conversation",
+            False,
         )
     if error_code == _SDK_TIMEOUT:
-        return "timeout", _SDK_TIMEOUT, "retry_or_split_request", True
+        return "timeout", _SDK_TIMEOUT, "start_new_conversation", False
     if error_code in {
         _SDK_MISSING_STRUCTURED_TERMINAL,
         "executor_missing_structured_terminal",
@@ -353,9 +361,11 @@ def _diagnostic_terminal_class(
         return (
             "missing_terminal",
             _SDK_MISSING_STRUCTURED_TERMINAL,
-            "retry_request",
-            True,
+            "start_new_conversation",
+            False,
         )
+    if error_code == _SDK_PROVIDER_SESSION_FAILED:
+        return "provider_session_failure", error_code, "start_new_conversation", False
     if error_code in {
         MCP_EXECUTION_SUCCEEDED_RECEIPT_INCOMPLETE,
         MCP_EXECUTION_OUTCOME_UNKNOWN,
@@ -391,7 +401,13 @@ def _diagnostic_terminal_class(
             "refresh_or_contact_admin",
             False,
         )
-    return "upstream_error", _SDK_UPSTREAM_ERROR, "retry_later", True
+    if error_code == _SDK_INPUT_CONTEXT_TOO_LARGE:
+        return "input_limit_exceeded", error_code, "shorten_or_split_request", False
+    if error_code == _SDK_INPUT_IMAGE_INVALID:
+        return "input_image_invalid", error_code, "review_input_image", False
+    if error_code == _SDK_UPSTREAM_ERROR:
+        return "upstream_error", error_code, "retry_later", True
+    return "execution_failure", _SDK_EXECUTION_FAILED, "retry_request", True
 
 
 def _public_tool_policy_denials(raw: object) -> list[dict[str, str]]:
@@ -538,6 +554,8 @@ def _canonical_sdk_error(
     result_subtype: object = "",
     stop_reason: object = "",
     terminal_reason: object = "",
+    assistant_error: object = "",
+    sdk_error_evidence: bool = True,
     tool_admission_denials: int = 0,
 ) -> str:
     error_text = str(raw_error or "").strip()
@@ -548,7 +566,7 @@ def _canonical_sdk_error(
         subtype in {"error_max_turns", "max_turns", "max_turns_exceeded"}
         or stop in {"max_turns", "max_turns_exceeded"}
         or terminal in {"max_turns", "max_turns_exceeded"}
-        or _TURN_LIMIT_ERROR_PATTERN.search(error_text)
+        or (sdk_error_evidence and _TURN_LIMIT_ERROR_PATTERN.search(error_text))
     ):
         return _SDK_TURN_LIMIT_EXCEEDED
     if terminal in {"aborted_streaming", "aborted_tools", "cancelled", "canceled"}:
@@ -557,9 +575,19 @@ def _canonical_sdk_error(
         return _SDK_TIMEOUT
     if error_text == _SDK_MISSING_STRUCTURED_TERMINAL:
         return _SDK_MISSING_STRUCTURED_TERMINAL
+    reasons = {subtype, stop, terminal, str(assistant_error or "").casefold()}
+    if sdk_error_evidence:
+        reasons.add(error_text.casefold())
+    if "image_error" in reasons:
+        return _SDK_INPUT_IMAGE_INVALID
+    if "prompt_too_long" in reasons or (
+        sdk_error_evidence and _CONTEXT_LIMIT_ERROR_PATTERN.search(error_text)
+    ):
+        return _SDK_INPUT_CONTEXT_TOO_LARGE
     if (
-        terminal in {"image_error", "prompt_too_long"}
-        or _CONTEXT_LIMIT_ERROR_PATTERN.search(error_text)
+        error_text == _SDK_UPSTREAM_ERROR
+        or reasons & _SDK_UPSTREAM_REASONS
+        or (sdk_error_evidence and _UPSTREAM_ERROR_PATTERN.search(error_text))
     ):
         return _SDK_UPSTREAM_ERROR
     if tool_admission_denials > 0:
@@ -571,7 +599,7 @@ def _canonical_sdk_error(
         "context_retrieval_registration_unavailable",
     } or error_text.startswith("project_settings_scrub_failed"):
         return error_text
-    return _SDK_UPSTREAM_ERROR
+    return _SDK_EXECUTION_FAILED
 
 
 ScopedContextRetrievalIdentity = ContextRetrievalIdentity
@@ -668,10 +696,12 @@ def _sdk_permission_type(sdk: object, name: str):
             behavior: str = default_behavior,
             message: str = "",
             interrupt: bool = False,
+            updated_input: dict[str, Any] | None = None,
         ):
             self.behavior = behavior
             self.message = message
             self.interrupt = interrupt
+            self.updated_input = updated_input
 
     return PermissionResult
 
@@ -799,12 +829,29 @@ def _context_retrieval_tool_error(
     }
 
 
+def _track_sdk_mcp_handler(
+    tool: Any,
+    *,
+    callback_wrapper: Callable[[Any], Any] | None,
+) -> Any:
+    if callback_wrapper is None:
+        return tool
+    handler = getattr(tool, "handler", None)
+    if callable(handler):
+        tool.handler = callback_wrapper(handler)
+        return tool
+    if callable(tool):
+        return callback_wrapper(tool)
+    return tool
+
+
 def _build_context_retrieval_mcp_server(
     sdk: object,
     *,
     retrieval: ContextRetrievalAuthority | None,
     identity: ScopedContextRetrievalIdentity | None,
     tool_names: list[str] | None = None,
+    callback_wrapper: Callable[[Any], Any] | None = None,
 ):
     if retrieval is None or identity is None:
         return None
@@ -899,18 +946,19 @@ def _build_context_retrieval_mcp_server(
     async def search_memory(args):
         return await _run("search_memory", args)
 
+    tools = [
+        read_run_artifact,
+        stage_context_file_to_workspace,
+        stage_run_artifact_to_workspace,
+        stage_profile_drive_file_to_workspace,
+        search_memory,
+    ]
     return create_server(
         "ai-platform-context",
         version="1.0.0",
         tools=[
-            tool
-            for tool in (
-                read_run_artifact,
-                stage_context_file_to_workspace,
-                stage_run_artifact_to_workspace,
-                stage_profile_drive_file_to_workspace,
-                search_memory,
-            )
+            _track_sdk_mcp_handler(tool, callback_wrapper=callback_wrapper)
+            for tool in tools
             if tool.name in selected_tool_names
         ],
     )
@@ -1022,6 +1070,7 @@ def _build_response_mcp_server(
     allowed_skill_names: set[str] | frozenset[str],
     attached_files: list[dict[str, str]],
     diagnostic_counters: dict[str, Any],
+    callback_wrapper: Callable[[Any], Any] | None = None,
 ):
     sdk_tool = getattr(sdk, "tool", None)
     create_server = getattr(sdk, "create_sdk_mcp_server", None)
@@ -1106,7 +1155,7 @@ def _build_response_mcp_server(
     return create_server(
         "ai-platform-response",
         version="1.0.0",
-        tools=[attach_file],
+        tools=[_track_sdk_mcp_handler(attach_file, callback_wrapper=callback_wrapper)],
     )
 
 
@@ -1603,6 +1652,7 @@ async def run_claude_agent_sdk(
     skills: list[str] | None = None,
     client_fn: Callable[..., Any] | None = None,
     on_text: Callable[[str], Awaitable[None]] | None = None,
+    on_sdk_text: Callable[[dict[str, object]], None] | None = None,
     on_skill_use: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     on_capability_evidence: Callable[[dict[str, str]], Awaitable[bool]] | None = None,
     on_tool_lifecycle: Callable[[dict[str, str]], Awaitable[bool]] | None = None,
@@ -1612,6 +1662,7 @@ async def run_claude_agent_sdk(
     | None = None,
     run_id: str | None = None,
     attempt_id: str | None = None,
+    interaction_client: RunInteractionProtocol | None = None,
     tool_policy_subjects: list[dict[str, Any]] | None = None,
     execution_policy: str = "worker_local_legacy",
     public_skill_metadata: dict[str, dict[str, str]] | None = None,
@@ -1619,6 +1670,10 @@ async def run_claude_agent_sdk(
     cleanup_tasks: set[asyncio.Task[Any]] | None = None,
 ) -> ClaudeAgentSdkRunResult:
     thinking_effort = normalize_thinking_effort(thinking_effort)
+    callback_tracker = prepare_claude_callback_tracker()
+    interaction_actor = None
+    if interaction_client is not None and not (run_id and attempt_id):
+        raise ValueError("run_interaction_identity_invalid")
     if (model_max_input_tokens is None) != (model_max_output_tokens is None) or any(
         value is not None and (type(value) is not int or not 1 <= value <= 10_000_000)
         for value in (model_max_input_tokens, model_max_output_tokens)
@@ -1933,9 +1988,6 @@ async def run_claude_agent_sdk(
         and skill_id in configured_skills
         else None
     )
-    sandbox_partial_streaming = (
-        on_text is not None and execution_policy == "sandbox_brokered"
-    )
     sandbox_brokered = execution_policy == "sandbox_brokered"
     authorized_subjects = _canonical_tool_policy_subjects(tool_policy_subjects)
     if (
@@ -2049,6 +2101,7 @@ async def run_claude_agent_sdk(
             sdk,
             retrieval=context_retrieval,
             identity=context_retrieval_identity,
+            callback_wrapper=callback_tracker.wrap,
             tool_names=(
                 requested_internal_context_tools
                 if tool_policy_subjects is not None
@@ -2106,6 +2159,7 @@ async def run_claude_agent_sdk(
             allowed_skill_names=allowed_skill_names,
             attached_files=response_file_descriptors,
             diagnostic_counters=diagnostic_counters,
+            callback_wrapper=callback_tracker.wrap,
         )
     except Exception:  # noqa: BLE001 - optional response attachments stay unavailable.
         response_server = None
@@ -2157,7 +2211,7 @@ async def run_claude_agent_sdk(
             _mcp_server_options(authorized_subjects) if sandbox_brokered else {}
         )
         mcp_registration = prepare_claude_mcp(
-            authorized_subjects if sandbox_brokered else {}, mcp_servers
+            authorized_subjects if sandbox_brokered else {}, mcp_servers, callback_tracker.wrap
         )
         allowed_tools = [
             mcp_registration.sdk_names.get(name, name) for name in allowed_tools
@@ -2279,6 +2333,9 @@ async def run_claude_agent_sdk(
     private_replacements = {
         token: private_replacement for token in private_capability_tokens
     }
+    workspace_token = str(cwd)
+    if cwd.is_absolute() and workspace_token and len(workspace_token) <= 512:
+        private_replacements[workspace_token] = private_replacement
     for kind, identity in capability_plan.available:
         if kind != "skill":
             continue
@@ -2294,6 +2351,18 @@ async def run_claude_agent_sdk(
         private_replacements=private_replacements,
         sanitizer=sanitize_public_answer_text,
     )
+
+    def sanitize_question_text(value: object) -> str:
+        text = str(value)
+        for token, replacement in private_replacements.items():
+            text = text.replace(token, replacement)
+        return sanitize_public_text(text)
+
+    if interaction_client is not None:
+        interaction_actor = prepare_claude_run_interaction(
+            interaction_client, run_id=run_id, attempt_id=attempt_id,
+            sanitize_text=sanitize_question_text,
+        )
 
     def replacement_for_private_token(token: str) -> str:
         return private_replacements.get(token, private_replacement)
@@ -2330,7 +2399,6 @@ async def run_claude_agent_sdk(
 
     agent_public_answer_chunks: list[str] = []
     agent_event_callback_failed = False
-    answer_coalescer: PublicAnswerCoalescer | None = None
 
     async def publish_agent_candidates(candidates: tuple[Any, ...]) -> bool:
         nonlocal agent_event_callback_failed
@@ -2376,6 +2444,7 @@ async def run_claude_agent_sdk(
         nonlocal capability_evidence_rejected
         if not capability_evidence_rejected:
             capability_evidence_rejected = True
+            answer_stream_gate.fail_closed()
             capability_evidence.clear()
             used_skill_names.clear()
         return False
@@ -2760,7 +2829,6 @@ async def run_claude_agent_sdk(
                 invocation_id=context_tool_use_id,
             )
             if agent_event_adapter is not None:
-                await flush_answer_candidates()
                 await publish_agent_candidates(
                     agent_event_adapter.accept_policy_decision(
                         tool_name=tool_name,
@@ -2790,6 +2858,35 @@ async def run_claude_agent_sdk(
         hook_input_is_mapping = isinstance(hook_input, dict)
         hook_input = hook_input if hook_input_is_mapping else {}
         tool_name = ""
+        if (
+            interaction_actor is not None
+            and hook_input_is_mapping
+            and str(hook_input.get("tool_name") or "") == "AskUserQuestion"
+        ):
+            call_id = exact_hook_tool_call_id(hook_input, tool_use_id)
+            try:
+                updated_input = await interaction_actor.resolve_native_question(
+                    tool_call_id=call_id,
+                    tool_input=hook_input.get("tool_input"),
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - fail closed without exposing input.
+                return {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": "run_question_unavailable",
+                    }
+                }
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                    "permissionDecisionReason": "run_question_answered",
+                    "updatedInput": updated_input,
+                }
+            }
         if not hook_input_is_mapping:
             decision = evaluate_tool_policy(tool={})
         else:
@@ -2867,7 +2964,6 @@ async def run_claude_agent_sdk(
         )
         public_policy_acknowledged = True
         if agent_event_adapter is not None:
-            await flush_answer_candidates()
             public_policy_acknowledged = await publish_agent_candidates(
                 agent_event_adapter.accept_policy_decision(
                     tool_name=tool_name,
@@ -2928,7 +3024,6 @@ async def run_claude_agent_sdk(
                 capability_evidence_acknowledged is True
                 and agent_event_adapter is not None
             ):
-                await flush_answer_candidates()
                 candidates = agent_event_adapter.accept_hook(
                     "PreToolUse", hook_input, tool_use_id=resolved_tool_call_id
                 )
@@ -2994,7 +3089,6 @@ async def run_claude_agent_sdk(
                 if evidence_acknowledged is not True:
                     break
             if agent_event_adapter is not None and evidence_acknowledged is True:
-                await flush_answer_candidates()
                 await publish_agent_candidates(
                     agent_event_adapter.accept_hook(
                         "PostToolUseFailure"
@@ -3042,7 +3136,6 @@ async def run_claude_agent_sdk(
                     lifecycle_phase=lifecycle_phase,
                 )
             if agent_event_adapter is not None and evidence_acknowledged is True:
-                await flush_answer_candidates()
                 candidates = agent_event_adapter.accept_hook(
                     "PostToolUseFailure"
                     if lifecycle_phase == "failed"
@@ -3105,6 +3198,12 @@ async def run_claude_agent_sdk(
             hook_input = hook_input if isinstance(hook_input, dict) else {}
             tool_name = str(hook_input.get("tool_name") or "")
             identity = adapter_identity(tool_name)
+            if tool_name == "AskUserQuestion" and interaction_actor is not None:
+                if lifecycle == "completed":
+                    await interaction_actor.acknowledge_native_question(
+                        exact_hook_tool_call_id(hook_input, tool_use_id)
+                    )
+                return {}
             if (
                 tool_name.lower() == "skill"
                 or identity.startswith("mcp__")
@@ -3123,7 +3222,6 @@ async def run_claude_agent_sdk(
                 lifecycle=lifecycle,
             )
             if agent_event_adapter is not None and lifecycle_acknowledged is True:
-                await flush_answer_candidates()
                 await publish_agent_candidates(
                     agent_event_adapter.accept_hook(
                         "PostToolUseFailure"
@@ -3258,6 +3356,15 @@ async def run_claude_agent_sdk(
             include_skill=bool(allowed_skill_names),
         )
     )
+    if interaction_actor is not None:
+        sdk_tools.append("AskUserQuestion")
+    if hooks is not None:
+        for matchers in hooks.values():
+            for matcher in matchers:
+                matcher.hooks = [callback_tracker.wrap(hook) for hook in matcher.hooks]
+        if interaction_actor is not None:
+            # A question may remain pending for the Run's execution deadline.
+            hooks["PreToolUse"][0].timeout = timeout_seconds or 86_400.0
     # The installed SDK's SystemPromptPreset preserves Claude Code's default
     # system prompt while adding only server-owned profile instructions.
     sdk_system_prompt: dict[str, str] = {"type": "preset", "preset": "claude_code"}
@@ -3289,9 +3396,9 @@ async def run_claude_agent_sdk(
         ),
         skills=configured_skills,
         max_turns=max_turns,
-        can_use_tool=can_use_tool,
+        can_use_tool=callback_tracker.wrap(can_use_tool),
         hooks=hooks,
-        include_partial_messages=sandbox_partial_streaming,
+        include_partial_messages=False,
         setting_sources=["project"],
         **provider_session_options,
         **thinking_options,
@@ -3300,13 +3407,13 @@ async def run_claude_agent_sdk(
     result_session_id: str | None = None
     usage: dict[str, Any] = {}
     terminal_reason: str | None = None
+    last_assistant_error: str | None = None
+    last_assistant_error_text = ""
+    terminal_stream_error: Exception | None = None
     terminal_result_message: object | None = None
     received_structured_terminal = False
-    stream_projector = (
-        ClaudeStreamProjector()
-        if sandbox_partial_streaming
-        else None
-    )
+    continuation_usage: dict[str, Any] = {}
+    continuation_turns = 0
 
     def mcp_execution_conflict_observed() -> bool:
         return mcp_execution_conflicted or bool(
@@ -3434,73 +3541,54 @@ async def run_claude_agent_sdk(
             return "required_tool_completion_evidence_mismatch"
         return None
 
-    async def emit_coalesced_answer_text(value: str) -> bool:
-        nonlocal agent_event_callback_failed
-        if agent_event_adapter is None:
-            return True
-        accepted_chunks: list[str] = []
-        for offset in range(0, len(value), 8_192):
-            chunk = value[offset : offset + 8_192]
-            candidates = agent_event_adapter.accept_answer_text(
-                chunk,
-            )
-            if not candidates:
-                agent_event_callback_failed = True
-                return False
-            if not await publish_agent_candidates(candidates):
-                return False
-            accepted_chunks.append(chunk)
-        projected_value = "".join(accepted_chunks)
-        if not projected_value:
-            return True
-        if on_text is not None:
-            callback_result = on_text(projected_value)
-            if isawaitable(callback_result):
-                await callback_result
-        agent_public_answer_chunks.append(projected_value)
-        return True
-
-    answer_coalescer = (
-        PublicAnswerCoalescer(emit_coalesced_answer_text)
-        if agent_event_adapter is not None
-        else None
-    )
-
-    async def flush_answer_candidates() -> bool:
-        return answer_coalescer is None or await answer_coalescer.flush()
-
-    async def close_answer_candidates(*, flush: bool = True) -> bool:
-        return answer_coalescer is None or await answer_coalescer.close(flush=flush)
-
-    async def close_answer_candidates_after_failure() -> bool:
-        try:
-            return await close_answer_candidates(flush=True)
-        except (Exception, asyncio.CancelledError):
-            return False
-
-    async def publish_terminal_text(
-        value: str,
-        *,
-        source_identity: object = None,
-        project_agent: bool = True,
-    ) -> bool:
-        if not value:
-            return True
-        if project_agent and answer_coalescer is not None:
-            return await answer_coalescer.push(
-                value,
-                source_identity=source_identity,
-            )
-        if on_text is not None:
-            callback_result = on_text(value)
-            if isawaitable(callback_result):
-                await callback_result
-        return True
+    receive_stream_closed = False
+    receiving_started = False
+    stop_requested = False
 
     async def _client_messages(client: Any) -> AsyncIterator[Any]:
+        nonlocal continuation_usage, continuation_turns, terminal_stream_error, receive_stream_closed
         pending_tasks: set[str] = set()
-        async with aclosing(client.receive_messages()) as responses:
+        final_result = None
+        mirror_error = None
+
+        async def receive_until_closed() -> AsyncIterator[Any]:
+            nonlocal terminal_stream_error
+            try:
+                async with aclosing(client.receive_messages()) as responses:
+                    async for message in responses:
+                        yield message
+            except Exception as exc:
+                if (
+                    not stop_requested and (
+                        final_result is None
+                        or not final_result.is_error
+                        or not str(exc).startswith("Claude Code returned an error result: ")
+                    )
+                ):
+                    raise
+                # SDK 0.2.130 reports the CLI's intentional nonzero exit as an
+                # error frame before final flush/EOF. Retain the error Result
+                # and drain the public stream's remainder to that same EOF.
+                terminal_stream_error = exc
+                async with aclosing(client.receive_messages()) as responses:
+                    async for message in responses:
+                        yield message
+
+        async with (
+            aclosing(receive_until_closed()) as raw_responses,
+            aclosing(observed_model_messages(raw_responses)) as responses,
+        ):
             async for message in responses:
+                if stop_requested:
+                    # Drain the public stream through its final mirror flush,
+                    # without processing more output or supplementary inputs.
+                    continue
+                if isinstance(message, ResultMessage):
+                    permission_denials = getattr(message, "permission_denials", None)
+                    if isinstance(permission_denials, list):
+                        diagnostic_counters["tool_admission_denials"] += len(permission_denials)
+                        for denial in permission_denials:
+                            await reconcile_sdk_permission_denial(denial)
                 if isinstance(message, TaskStartedMessage):
                     if message.task_type in {"local_agent", "local_workflow"}:
                         pending_tasks.add(message.task_id)
@@ -3513,17 +3601,259 @@ async def run_claude_agent_sdk(
                     # A background agent may wake a follow-up turn. Its first
                     # Result is not the completion of the platform Run.
                     continue
-                yield message
+                if isinstance(message, MirrorErrorMessage):
+                    mirror_error = message
+                    if interaction_actor is not None:
+                        await interaction_actor.cancel()
+                    continue
                 if isinstance(message, ResultMessage):
-                    return
+                    if interaction_actor is not None and not message.is_error and mirror_error is None:
+                        command = await interaction_actor.settle_at_result()
+                        if command is not None:
+                            continuation_usage = _merge_sdk_usage(
+                                continuation_usage, message.usage or message.model_usage or {}
+                            )
+                            continuation_turns += _bounded_diagnostic_counter(message.num_turns)
+                            diagnostic_counters["result_messages"] += 1
+                            await interaction_actor.apply_text_at_result(
+                                client, command, session_id=message.session_id
+                            )
+                            continue
+                    elif interaction_actor is not None:
+                        await interaction_actor.cancel()
+                    final_result = message
+                    continue
+                yield message
+        receive_stream_closed = True
+        # The public EOF follows the SDK reader's final transcript flush. Stop
+        # our injected callbacks and join their finalizers before consuming the
+        # terminal result; physical SDK teardown is a separate phase.
+        if interaction_actor is not None:
+            await interaction_actor.close()
+        await callback_tracker.seal_and_wait()
+        if provider_session_store is not None:
+            await provider_session_store.wait_idle()
+        if mirror_error is not None:
+            yield mirror_error
+        elif final_result is not None and not stop_requested:
+            yield final_result
+
+    async def observed_model_messages(messages: AsyncIterator[Any]) -> AsyncIterator[Any]:
+        if on_sdk_text is None:
+            async for message in messages:
+                yield message
+            return
+        observers: dict[str | None, ModelTextCheckpoint] = {}
+
+        async def observed_messages() -> AsyncIterator[Any]:
+            try:
+                async for message in messages:
+                    if isinstance(message, StreamEvent):
+                        scope = getattr(message, "parent_tool_use_id", None)
+                        event = message.event
+                        if (
+                            (scope is None or isinstance(scope, str) and len(scope) <= 1024)
+                            and isinstance(event, dict)
+                        ):
+                            if event.get("type") == "message_start":
+                                previous = observers.pop(scope, None)
+                                if previous is not None:
+                                    previous.finish()
+                            observer = observers.get(scope)
+                            if observer is None and len(observers) < 64:
+                                observer = observers[scope] = ModelTextCheckpoint(
+                                    run_id=run_id or "", attempt_id=attempt_id or "",
+                                    record=on_sdk_text,
+                                )
+                            if observer is not None:
+                                observer.accept(event)
+                                if observer.finished:
+                                    observers.pop(scope, None)
+                    yield message
+            finally:
+                for observer in observers.values():
+                    observer.finish()
+
+        async with aclosing(observed_messages()) as observed:
+            async for message in observed:
+                yield message
 
     async def consume(messages: AsyncIterator[Any]) -> ClaudeAgentSdkRunResult:
         nonlocal result_session_id, usage, terminal_reason, received_structured_terminal
-        nonlocal last_public_stage, terminal_result_message
-        answer_timeline = AssistantAnswerTimeline()
-        terminal_answer_empty = False
+        nonlocal last_public_stage, terminal_result_message, last_assistant_error
+        nonlocal last_assistant_error_text, first_projection_failure
+        typed_observations = prepare_claude_typed_observations()
+        source_router = prepare_claude_text_sources()
+        pending_callback_text: dict[tuple[object, ...], list[str]] = {}
+        last_callback_answer_source: tuple[object, ...] | None = None
+
+        async def deliver_answer_text(
+            source_key: tuple[object, ...],
+            chunk: str,
+        ) -> None:
+            nonlocal last_callback_answer_source
+            if (
+                last_callback_answer_source is not None
+                and last_callback_answer_source != source_key
+            ):
+                if on_text is not None:
+                    callback_result = on_text("\n\n")
+                    if isawaitable(callback_result):
+                        await callback_result
+                agent_public_answer_chunks.append("\n\n")
+            if on_text is not None:
+                callback_result = on_text(chunk)
+                if isawaitable(callback_result):
+                    await callback_result
+            agent_public_answer_chunks.append(chunk)
+            last_callback_answer_source = source_key
+
+        async def flush_classified_callback_text(
+            source_key: tuple[object, ...],
+            role: str,
+        ) -> None:
+            pending = pending_callback_text.get(source_key)
+            if role != "answer":
+                pending_callback_text.pop(source_key, None)
+                return
+            for chunk in tuple(pending or ()):
+                await deliver_answer_text(source_key, chunk)
+            pending_callback_text.pop(source_key, None)
+
+        async def publish_part_text(
+            source_key: tuple[object, ...],
+            value: str,
+        ) -> bool:
+            if not value:
+                return True
+            for offset in range(0, len(value), 8_192):
+                chunk = value[offset : offset + 8_192]
+                if agent_event_adapter is not None:
+                    candidates = agent_event_adapter.accept_part_text(source_key, chunk)
+                    if not candidates or not await publish_agent_candidates(candidates):
+                        fail_stream_projection(
+                            reason="agent_event_callback_not_acknowledged",
+                            stage="message",
+                            location="part_delta_ack",
+                        )
+                        return False
+                role = source_router.role_for(source_key)
+                if role == "work":
+                    pending_callback_text.pop(source_key, None)
+                else:
+                    pending_callback_text.setdefault(source_key, []).append(chunk)
+                if agent_event_adapter is not None and role is not None:
+                    try:
+                        candidates = agent_event_adapter.classify_text_part(
+                            source_key, role,
+                        )
+                    except ValueError:
+                        fail_stream_projection(
+                            reason="assistant_part_classification_invalid",
+                            stage="message",
+                            location="part_classification",
+                        )
+                        return False
+                    if candidates and not await publish_agent_candidates(candidates):
+                        fail_stream_projection(
+                            reason="agent_event_callback_not_acknowledged",
+                            stage="message",
+                            location="part_classification_ack",
+                        )
+                        return False
+            return True
+
+        async def publish_source_text(
+            source_key: tuple[object, ...],
+            delta: str,
+        ) -> bool:
+            required_identities = {identity for _kind, identity in required_builtin_declarations}
+            required_failure = any(
+                state == "failed" and identity in required_identities
+                for (identity, _call_id), state in governed_builtin_invocation_states.items()
+            )
+            if capability_evidence_rejected or governed_builtin_lifecycle_rejected or required_failure:
+                answer_stream_gate.fail_closed()
+                return True
+            for offset in range(0, len(delta), 8_192):
+                suffix = delta[offset : offset + 8_192]
+                for owner, public_text in answer_stream_gate.accept_routed(
+                    suffix,
+                    source_identity=source_key,
+                ):
+                    if not await publish_part_text(owner, public_text):
+                        return False
+                if answer_stream_gate.failed:
+                    fail_stream_projection(
+                        reason=answer_stream_gate.failure_reason or "upstream_projection_failed",
+                        stage="message",
+                        location="part_text_gate",
+                    )
+                    return False
+            return True
+
+        async def classify_source(
+            source_key: tuple[object, ...],
+            role: str,
+        ) -> bool:
+            try:
+                if role == "work":
+                    source_router.mark_tool(source_key)
+                elif source_router.has_meaningful_text_for(source_key):
+                    source_router.mark_answer(source_key)
+                else:
+                    role = "work"
+                    source_router.mark_tool(source_key)
+            except (TypeError, ValueError):
+                fail_stream_projection(
+                    reason="assistant_part_classification_invalid",
+                    stage="message",
+                    location="part_classification",
+                )
+                return False
+            if (
+                agent_event_adapter is not None
+                and agent_event_adapter.has_text_part(source_key)
+            ):
+                try:
+                    candidates = agent_event_adapter.classify_text_part(source_key, role)
+                except ValueError:
+                    fail_stream_projection(
+                        reason="assistant_part_classification_invalid",
+                        stage="message",
+                        location="part_classification",
+                    )
+                    return False
+                if candidates and not await publish_agent_candidates(candidates):
+                    fail_stream_projection(
+                        reason="agent_event_callback_not_acknowledged",
+                        stage="message",
+                        location="part_classification_ack",
+                    )
+                    return False
+            if role == "work":
+                await flush_classified_callback_text(source_key, role)
+            return True
+
+        async def retire_source(source_key: tuple[object, ...]) -> bool:
+            metadata = source_router.take(source_key)
+            if metadata is None:
+                return True
+            if metadata.has_text and metadata.role is None:
+                return await classify_source(source_key, "answer")
+            return True
+
+        async def select_source(source_key: tuple[object, ...]) -> bool:
+            previous = source_router.message_key
+            if previous is not None and previous != source_key:
+                if not await retire_source(previous):
+                    return False
+                if source_router.message_key == previous:
+                    source_router.take(previous)
+            source_router.begin(source_key)
+            return True
+
         stream_projection_failed = False
-        assistant_observation_scope = 0
 
         def fail_stream_projection(
             *,
@@ -3534,13 +3864,12 @@ async def run_claude_agent_sdk(
             nonlocal stream_projection_failed, first_projection_failure
             if first_projection_failure is None:
                 first_projection_failure = _ProjectionFailure(
-                    reason=reason,
+                    reason=(reason if reason in {"assistant_observation_invalid", "typed_text_block_invalid"} else "assistant_text_conflict"),
                     stage=stage,
-                    location=location,
+                    location=(location if location == "assistant_observation" else "typed_answer"),
                 )
             stream_projection_failed = True
             answer_stream_gate.fail_closed()
-            answer_timeline.fail_closed(first_projection_failure.reason)
 
         async for message in messages:
             mcp_registration.check_message(message)
@@ -3562,361 +3891,107 @@ async def run_claude_agent_sdk(
                     TaskUpdatedMessage,
                 ),
             ):
-                await flush_answer_candidates()
                 await publish_agent_candidates(
                     agent_event_adapter.accept_task_message(message)
                 )
                 continue
             if isinstance(message, StreamEvent):
-                raw_stream_event = message.event
-                if not (
-                    isinstance(raw_stream_event, dict)
-                    and raw_stream_event.get("type") == "content_block_delta"
-                    and isinstance(raw_stream_event.get("delta"), dict)
-                    and raw_stream_event["delta"].get("type") == "text_delta"
-                ):
-                    await flush_answer_candidates()
-                if (
-                    isinstance(raw_stream_event, dict)
-                    and raw_stream_event.get("type") == "content_block_start"
-                    and isinstance(raw_stream_event.get("content_block"), dict)
-                    and raw_stream_event["content_block"].get("type")
-                    in {"tool_use", "server_tool_use"}
-                ):
-                    register_dynamic_tool_call_id(
-                        raw_stream_event["content_block"].get("id")
-                    )
-                if stream_projector is not None:
-                    raw_observation_identity = getattr(message, "uuid", None)
-                    if (
-                        not isinstance(raw_observation_identity, str)
-                        or not raw_observation_identity
-                    ):
-                        fail_stream_projection(
-                            reason="raw_observation_identity_invalid",
-                            stage="message",
-                            location="stream_observation_identity",
-                        )
-                        continue
-                    fragments = stream_projector.accept(
-                        raw_stream_event,
-                        parent_tool_use_id=getattr(message, "parent_tool_use_id", None),
-                    )
-                    if stream_projector.disabled:
-                        fail_stream_projection(
-                            reason=(
-                                stream_projector.failure_reason
-                                or "raw_frame_invalid"
-                            ),
-                            stage="message",
-                            location="raw_stream_frame",
-                        )
-                    else:
-                        if (
-                            isinstance(raw_stream_event, dict)
-                            and raw_stream_event.get("type") == "content_block_start"
-                            and isinstance(raw_stream_event.get("content_block"), dict)
-                            and raw_stream_event["content_block"].get("type") == "text"
-                        ):
-                            if not answer_timeline.establish_raw_source(
-                                stream_projector.text_source_identity,
-                                message_identity=(
-                                    stream_projector.message_id,
-                                    stream_projector.parent_tool_use_id,
-                                ),
-                                parent_tool_use_id=stream_projector.parent_tool_use_id,
-                            ):
-                                fail_stream_projection(
-                                    reason=(
-                                        answer_timeline.failure_reason
-                                        or "raw_text_source_invalid"
-                                    ),
-                                    stage="message",
-                                    location="raw_text_source",
-                                )
-                                continue
-                        for fragment in fragments:
-                            last_public_stage = "message"
-                            delta_text = answer_timeline.accept_delta(
-                                fragment,
-                                source_identity=stream_projector.text_source_identity,
-                                message_identity=(
-                                    stream_projector.message_id,
-                                    stream_projector.parent_tool_use_id,
-                                )
-                                if stream_projector.message_id is not None
-                                else None,
-                                parent_tool_use_id=stream_projector.parent_tool_use_id,
-                                observed_identity=raw_observation_identity,
-                            )
-                            if answer_timeline.disabled:
-                                fail_stream_projection(
-                                    reason=(
-                                        answer_timeline.failure_reason
-                                        or "raw_delta_conflict"
-                                    ),
-                                    stage="message",
-                                    location="answer_delta",
-                                )
-                                break
-                            for public_text in answer_stream_gate.accept(delta_text):
-                                await publish_terminal_text(
-                                    public_text,
-                                    source_identity=stream_projector.text_source_identity,
-                                )
-                        if stream_projection_failed:
-                            continue
-                        completed_source = stream_projector.take_completed_text_source_identity()
-                        if completed_source is not None:
-                            await flush_answer_candidates()
-                            answer_timeline.close_raw_source(completed_source)
-                            if answer_timeline.disabled:
-                                fail_stream_projection(
-                                    reason=(
-                                        answer_timeline.failure_reason
-                                        or "raw_source_close_conflict"
-                                    ),
-                                    stage="message",
-                                    location="raw_source_close",
-                                )
+                # Completed SDK blocks are the sole public text input. Raw
+                # noise cannot publish prose or control answer completion.
                 continue
             if isinstance(message, AssistantMessage):
-                await flush_answer_candidates()
-                assistant_observation_scope += 1
-                diagnostic_counters["assistant_messages"] += 1
-                message_id_value = getattr(message, "message_id", None)
-                uuid_value = getattr(message, "uuid", None)
-                assistant_message_id = provider_message_identity(message_id_value)
-                assistant_observation_id = (
-                    uuid_value
-                    if isinstance(uuid_value, str) and uuid_value
-                    else None
-                )
-                parent_tool_use_id = getattr(message, "parent_tool_use_id", None)
-                typed_stop_reason = getattr(message, "stop_reason", None)
                 content = getattr(message, "content", None)
-                if (
-                    not isinstance(content, list)
-                    or (
-                        message_id_value is not None
-                        and assistant_message_id is None
-                    )
-                    or (
-                        uuid_value is not None
-                        and assistant_observation_id is None
-                    )
-                    or (
-                        stream_projector is not None
-                        and (
-                            assistant_message_id is None
-                            or assistant_observation_id is None
+                for block in content if isinstance(content, list) else ():
+                    if type(block).__name__ in {"ToolUseBlock", "ServerToolUseBlock"}:
+                        register_dynamic_tool_call_id(getattr(block, "id", None))
+                if getattr(message, "parent_tool_use_id", None) is not None:
+                    continue
+                # Tool evidence has its own authority. Even rejected text or
+                # replay identity must not hide a late tool-input conflict.
+                if agent_event_adapter is not None and isinstance(content, list):
+                    for block_index, block in enumerate(content):
+                        if not isinstance(block, TextBlock):
+                            await publish_agent_candidates(agent_event_adapter.accept_content_block(
+                                block, block_index=block_index,
+                                message_identity=getattr(message, "message_id", None),
+                            ))
+                diagnostic_counters["assistant_messages"] += 1
+                assistant_error = getattr(message, "error", None)
+                if assistant_error is not None:
+                    last_assistant_error = str(assistant_error)
+                    if isinstance(content, list):
+                        last_assistant_error_text = _runtime_diagnostic_text(
+                            "\n".join(
+                                str(getattr(block, "text", ""))
+                                for block in content if isinstance(block, TextBlock)
+                            ),
+                            max_bytes=4096,
                         )
-                    )
-                    or (
-                        parent_tool_use_id is not None
-                        and (
-                            not isinstance(parent_tool_use_id, str)
-                            or not parent_tool_use_id
-                        )
-                    )
-                ):
+                    continue
+                last_assistant_error = None
+                last_assistant_error_text = ""
+                typed_stop_reason = getattr(message, "stop_reason", None)
+                if not isinstance(content, list):
                     fail_stream_projection(
                         reason="assistant_observation_invalid",
                         stage="message",
                         location="assistant_observation",
                     )
                     continue
-                if any(
-                    type(block).__name__ == "ToolUseBlock"
-                    for block in content
-                ) and typed_stop_reason is None:
-                    typed_stop_reason = "tool_use"
-                if stream_projector is not None and not stream_projector.observe_typed(
-                    message_id=message_id_value,
-                    uuid=uuid_value,
-                    parent_tool_use_id=parent_tool_use_id,
-                    stop_reason=typed_stop_reason,
-                ):
+                source_key = (getattr(message, "message_id", None), None)
+                try:
+                    observed = typed_observations.accept(
+                        message_id=source_key[0],
+                        uuid=getattr(message, "uuid", None),
+                        stop_reason=typed_stop_reason,
+                        blocks=[(type(block).__name__, getattr(block, "id", None), getattr(block, "name", None),
+                            getattr(block, "text", None) if isinstance(block, TextBlock) else
+                            json.dumps(getattr(block, "input", None), sort_keys=True) if type(block).__name__ in {"ToolUseBlock", "ServerToolUseBlock"} else None)
+                            for block in content],
+                    )
+                except (TypeError, ValueError) as exc:
                     fail_stream_projection(
-                        reason=(
-                            stream_projector.failure_reason
-                            or "assistant_observation_invalid"
-                        ),
+                        reason=str(exc) if str(exc) in {
+                            "typed_text_block_invalid", "assistant_observation_invalid",
+                        } else "assistant_observation_invalid",
                         stage="message",
                         location="assistant_observation",
                     )
                     continue
-                if stream_projector is not None:
-                    assistant_message_identity = assistant_message_id
-                    message_identity = (assistant_message_id, parent_tool_use_id)
-                else:
-                    compatibility_generation: object = (
-                        assistant_observation_id
-                        if assistant_observation_id is not None
-                        else ("assistant", assistant_observation_scope)
-                    )
-                    assistant_message_identity = (
-                        assistant_message_id or assistant_observation_id
-                    )
-                    message_identity = (
-                        "typed-only",
-                        assistant_message_id,
-                        parent_tool_use_id,
-                        compatibility_generation,
-                    )
-                text_blocks = [
-                    block for block in content if isinstance(block, TextBlock)
-                ]
-                typed_text_blocks = list(enumerate(text_blocks))
-                text_values: dict[int, str] = {}
-                for text_source_ordinal, block in typed_text_blocks:
-                    text = getattr(block, "text", None)
-                    if not isinstance(text, str):
-                        fail_stream_projection(
-                            reason="typed_text_block_invalid",
-                            stage="message",
-                            location="typed_text_block",
-                        )
-                        continue
-                    text_values[text_source_ordinal] = text
-                if (
-                    stream_projector is not None
-                    and typed_text_blocks
-                    and not stream_projector.validate_typed_text_source_count(
-                        len(typed_text_blocks)
-                    )
-                ):
-                    fail_stream_projection(
-                        reason=(
-                            stream_projector.failure_reason
-                            or "typed_text_source_count_mismatch"
-                        ),
-                        stage="message",
-                        location="typed_text_source_count",
-                    )
-                if stream_projection_failed:
+                if not observed or stream_projection_failed:
                     continue
-                if not text_blocks:
-                    if stream_projector is not None:
-                        stream_projector.retire_text_source()
-                    answer_timeline.retire_answer_binding()
-                typed_source_identities: dict[int, tuple[object, ...]] = {}
-                if stream_projector is not None:
-                    for (
-                        text_source_ordinal,
-                        _block,
-                    ) in typed_text_blocks:
-                        source_identity = stream_projector.typed_text_source_identity(
-                            text_source_ordinal=text_source_ordinal,
-                            text_source_count=len(typed_text_blocks),
-                        )
-                        if source_identity is None:
+                if not await select_source(source_key):
+                    continue
+                has_tool = typed_stop_reason == "tool_use" or any(
+                    type(block).__name__ == "ToolUseBlock" for block in content
+                )
+                if has_tool and not await classify_source(source_key, "work"):
+                    continue
+                for block_index, block in enumerate(content):
+                    if isinstance(block, TextBlock):
+                        text = block.text
+                        diagnostic_counters["text_blocks"] += 1
+                        last_public_stage = "message"
+                        try:
+                            text = source_router.append_text(source_key, text)
+                        except (TypeError, ValueError):
                             fail_stream_projection(
-                                reason=(
-                                    stream_projector.failure_reason
-                                    or "typed_text_source_missing"
-                                ),
+                                reason="assistant_text_conflict",
                                 stage="message",
-                                location="typed_text_source",
+                                location="typed_answer",
                             )
                             break
-                        typed_source_identities[text_source_ordinal] = source_identity
-                    if not stream_projection_failed:
-                        if not answer_timeline.validate_assistant_observations(
-                            [
-                                (
-                                    text_values[text_source_ordinal],
-                                    typed_source_identities[text_source_ordinal],
-                                    message_identity,
-                                    parent_tool_use_id,
-                                )
-                                for text_source_ordinal, _block in typed_text_blocks
-                            ]
-                        ):
-                            fail_stream_projection(
-                                reason=(
-                                    answer_timeline.failure_reason
-                                    or "assistant_text_coverage_conflict"
-                                ),
-                                stage="message",
-                                location="typed_answer_coverage",
-                            )
-                if stream_projection_failed:
-                    continue
-                for block in content:
-                    if type(block).__name__ in {"ToolUseBlock", "ServerToolUseBlock"}:
-                        register_dynamic_tool_call_id(getattr(block, "id", None))
-                for block_index, block in enumerate(content):
-                    if agent_event_adapter is not None:
-                        await publish_agent_candidates(
-                            agent_event_adapter.accept_content_block(
-                                block,
-                                block_index=block_index,
-                                message_identity=assistant_message_identity,
-                            )
-                        )
-                for text_source_ordinal, _block in typed_text_blocks:
-                    diagnostic_counters["text_blocks"] += 1
-                    text = text_values.get(text_source_ordinal)
-                    if text is None:
-                        continue
-                    source_identity = typed_source_identities.get(text_source_ordinal)
-                    if source_identity is None:
-                        source_identity = (
-                            message_identity,
-                            text_source_ordinal,
-                        )
-                    last_public_stage = "message"
-                    for public_text in answer_stream_gate.accept(
-                        answer_timeline.accept_assistant(
-                            text,
-                            source_identity=source_identity,
-                            message_identity=message_identity,
-                            parent_tool_use_id=parent_tool_use_id,
-                            observed_identity=assistant_observation_id,
-                            observation_scope=assistant_observation_scope,
-                        )
-                    ):
-                        await publish_terminal_text(
-                            public_text,
-                            source_identity=source_identity,
-                        )
-                if answer_timeline.disabled:
-                    fail_stream_projection(
-                        reason=(
-                            answer_timeline.failure_reason
-                            or "assistant_text_conflict"
-                        ),
-                        stage="message",
-                        location="typed_answer",
-                    )
-                await flush_answer_candidates()
+                        if not await publish_source_text(source_key, text):
+                            break
             elif isinstance(message, ResultMessage):
                 terminal_result_message = message
-                if stream_projector is not None:
-                    stream_projector.close_unfinished()
-                    if stream_projector.disabled:
-                        fail_stream_projection(
-                            reason=(
-                                stream_projector.failure_reason
-                                or "unfinished_raw_stream"
-                            ),
-                            stage="message",
-                            location="result_unfinished_stream",
-                        )
                 diagnostic_counters["result_messages"] += 1
                 diagnostic_counters["turns_observed"] = _bounded_diagnostic_counter(
-                    getattr(message, "num_turns", 0)
+                    continuation_turns + getattr(message, "num_turns", 0)
                 )
-                permission_denials = getattr(message, "permission_denials", None)
-                if isinstance(permission_denials, list):
-                    diagnostic_counters["tool_admission_denials"] += len(
-                        permission_denials
-                    )
-                    for denial in permission_denials:
-                        await reconcile_sdk_permission_denial(denial)
                 result_session_id = message.session_id
-                usage = message.usage or message.model_usage or {}
+                permission_denials = getattr(message, "permission_denials", None)
+                usage = _merge_sdk_usage(continuation_usage, message.usage or message.model_usage or {})
                 sdk_terminal_reason = getattr(message, "terminal_reason", None)
                 resolved_terminal_reason = (
                     str(sdk_terminal_reason).strip()
@@ -3925,36 +4000,6 @@ async def run_claude_agent_sdk(
                     else None
                 )
                 stop_reason = getattr(message, "stop_reason", None)
-                result_identity_value = getattr(message, "uuid", None)
-                if result_identity_value is None:
-                    result_identity = (
-                        "result-without-sdk-identity"
-                        if stream_projector is None
-                        or (
-                            not stream_projector.raw_lifecycle_observed
-                            and not stream_projector.typed_lifecycle_observed
-                        )
-                        else None
-                    )
-                else:
-                    result_identity = (
-                        result_identity_value
-                        if isinstance(result_identity_value, str)
-                        and result_identity_value
-                        else None
-                    )
-                if not answer_timeline.validate_result_identity(
-                    result_identity,
-                    stop_reason,
-                ):
-                    fail_stream_projection(
-                        reason=(
-                            answer_timeline.failure_reason
-                            or "terminal_result_identity_invalid"
-                        ),
-                        stage="message",
-                        location="result_identity",
-                    )
                 if message.is_error:
                     close_failed_terminal("result_error")
                     raw_error = (
@@ -3964,10 +4009,11 @@ async def run_claude_agent_sdk(
                         or "claude_agent_sdk_error"
                     )
                     error_code = mcp_execution_receipt_error() or _canonical_sdk_error(
-                        raw_error,
+                        f"{raw_error}\n{last_assistant_error_text}",
                         result_subtype=getattr(message, "subtype", ""),
                         stop_reason=getattr(message, "stop_reason", ""),
                         terminal_reason=resolved_terminal_reason,
+                        assistant_error=last_assistant_error,
                         tool_admission_denials=diagnostic_counters[
                             "tool_admission_denials"
                         ],
@@ -3980,11 +4026,20 @@ async def run_claude_agent_sdk(
                             runtime_diagnostics(
                                 error_code,
                                 failure_source="sdk_result_error",
-                                sdk_errors=message.errors,
+                                sdk_errors=(
+                                    {
+                                        "result_errors": message.errors,
+                                        "assistant_error": last_assistant_error,
+                                        "assistant_error_text": last_assistant_error_text,
+                                    }
+                                    if last_assistant_error is not None
+                                    else message.errors
+                                ),
                                 result_subtype=getattr(message, "subtype", None),
                                 stop_reason=getattr(message, "stop_reason", None),
                                 terminal_reason=resolved_terminal_reason,
                                 permission_denials=permission_denials,
+                                exception=terminal_stream_error,
                             )
                         ),
                     )
@@ -4001,6 +4056,9 @@ async def run_claude_agent_sdk(
                         "aborted_tools",
                         "cancelled",
                         "canceled",
+                        "prompt_too_long",
+                        "image_error",
+                        *_SDK_UPSTREAM_REASONS,
                     }
                     else None
                 )
@@ -4025,8 +4083,6 @@ async def run_claude_agent_sdk(
                             )
                         ),
                     )
-                final_answer = str(message.result or "")
-                terminal_answer_empty = not final_answer.strip()
                 try:
                     response_file_descriptors[:] = [
                         _response_file_descriptor(
@@ -4067,134 +4123,82 @@ async def run_claude_agent_sdk(
                 response_files[:] = [
                     item["source_path"] for item in response_file_descriptors
                 ]
-                await flush_answer_candidates()
                 received_structured_terminal = True
-                if final_answer.strip() and not stream_projection_failed:
-                    result_binding = answer_timeline.latest_binding
-                    if (
-                        result_binding is None
-                        and not answer_timeline.has_answer_source
-                        and (
-                            stream_projector is None
-                            or (
-                                not stream_projector.raw_lifecycle_observed
-                                and not stream_projector.typed_lifecycle_observed
-                            )
-                        )
-                    ):
-                        result_suffix = answer_timeline.accept_result_only(
-                            final_answer,
-                            result_identity=result_identity,
-                            terminal_reason=stop_reason,
-                        )
-                    else:
-                        result_suffix = answer_timeline.accept_result(
-                            final_answer,
-                            source_identity=(
-                                result_binding[0] if result_binding is not None else None
-                            ),
-                            message_identity=(
-                                result_binding[1] if result_binding is not None else None
-                            ),
-                            parent_tool_use_id=(
-                                result_binding[2] if result_binding is not None else None
-                            ),
-                            result_identity=result_identity,
-                            terminal_reason=stop_reason,
-                        )
-                    if answer_timeline.disabled:
-                        fail_stream_projection(
-                            reason=(
-                                answer_timeline.failure_reason
-                                or "terminal_result_body_conflict"
-                            ),
-                            stage="message",
-                            location="result_body",
-                        )
-                    else:
-                        result_source_identity = (
-                            result_binding[0]
-                            if result_binding is not None
-                            else ("result", result_identity)
-                        )
-                        for public_text in answer_stream_gate.accept(result_suffix):
-                            await publish_terminal_text(
-                                public_text,
-                                source_identity=result_source_identity,
-                            )
+                if not stream_projection_failed:
+                    active_source = source_router.message_key
+                    if active_source is not None:
+                        if source_router.role_for(active_source) is None:
+                            await classify_source(active_source, "answer")
+                        source_router.take(active_source)
                 terminal_reason = resolved_terminal_reason or (
                     str(stop_reason).strip()
                     if isinstance(stop_reason, str) and stop_reason.strip()
                     else None
                 )
                 break
-        if stream_projector is not None:
-            stream_projector.close_unfinished()
-            if stream_projector.disabled:
-                fail_stream_projection(
-                    reason=(
-                        stream_projector.failure_reason
-                        or "unfinished_raw_stream"
-                    ),
-                    stage="message",
-                    location="stream_finalization",
-                )
         terminal_error = (
             _SDK_MISSING_STRUCTURED_TERMINAL
             if not received_structured_terminal
             else None
         )
-        if terminal_error is None and stream_projection_failed:
-            terminal_error = _SDK_OUTPUT_VALIDATION_FAILED
         if (
-            terminal_error is None and terminal_answer_empty
-            and not answer_timeline.text.strip() and not response_files
+            terminal_error is None
+            and agent_event_adapter is not None
+            and agent_event_adapter.has_unclassified_text_parts
         ):
-            terminal_error = _SDK_MISSING_STRUCTURED_TERMINAL
-        finished_answer = answer_stream_gate.finish(
-            final_text=answer_timeline.text,
+            fail_stream_projection(
+                reason="assistant_part_classification_pending",
+                stage="message",
+                location="terminal_part_classification",
+            )
+        _finished_answer, routed_final_chunks = answer_stream_gate.finish_routed(
+            # Completed blocks already supplied all text; only the gate's
+            # bounded sanitizer tail may remain.
+            final_text="",
             release=True,
+            fallback_source_identity=source_router.message_key,
         )
-        terminal_source_identity = (
-            answer_timeline.latest_binding[0]
-            if answer_timeline.latest_binding is not None
-            else None
-        )
+        if answer_stream_gate.failed:
+            fail_stream_projection(
+                reason=answer_stream_gate.failure_reason or "upstream_projection_failed",
+                stage="message",
+                location="terminal_part_gate",
+            )
+            if answer_stream_gate.private_token_exposed:
+                terminal_error = terminal_error or _SDK_OUTPUT_VALIDATION_FAILED
         terminal_text_acknowledged = True
         if not answer_stream_gate.failed and isinstance(
             terminal_result_message, ResultMessage
         ):
-            for public_text in finished_answer.chunks:
-                if not await publish_terminal_text(
-                    public_text,
-                    source_identity=terminal_source_identity,
+            for source_key, public_text in routed_final_chunks:
+                if not isinstance(source_key, tuple) or not await publish_part_text(
+                    source_key, public_text,
                 ):
                     terminal_text_acknowledged = False
-                    terminal_error = (
-                        mcp_execution_receipt_error()
-                        or terminal_error
-                        or "agent_event_callback_not_acknowledged"
+                    fail_stream_projection(
+                        reason="assistant_part_source_unbound",
+                        stage="message",
+                        location="terminal_part_suffix",
                     )
                     break
-        coalescer_closed = (
-            await close_answer_candidates(flush=True)
-            if terminal_error is None
-            else await close_answer_candidates_after_failure()
+        public_terminal_allowed = (
+            terminal_error is None
+            and not answer_stream_gate.failed
+            and capability_completion_error() is None
+            and not mcp_execution_conflict_observed()
+            and not agent_event_callback_failed
+            and not read_only_lifecycle_rejected
+            and "started" not in observed_read_only_invocation_states.values()
         )
-        if not coalescer_closed:
-            terminal_text_acknowledged = False
-            terminal_error = (
-                mcp_execution_receipt_error()
-                or terminal_error
-                or "agent_event_callback_not_acknowledged"
-            )
-        delivered_final_text = (
-            "".join(agent_public_answer_chunks)
-            if agent_event_adapter is not None
-            else finished_answer.final_text
-        )
+        if public_terminal_allowed:
+            for source_key in tuple(pending_callback_text):
+                await flush_classified_callback_text(
+                    source_key, source_router.role_for(source_key) or "pending",
+                )
+        delivered_final_text = "".join(agent_public_answer_chunks)
         if (
-            terminal_text_acknowledged
+            public_terminal_allowed
+            and terminal_text_acknowledged
             and not answer_stream_gate.failed
             and isinstance(terminal_result_message, ResultMessage)
             and agent_event_adapter is not None
@@ -4223,8 +4227,15 @@ async def run_claude_agent_sdk(
             if terminal_error == "agent_event_callback_not_acknowledged"
             else delivered_final_text if not answer_stream_gate.failed else ""
         )
+        if (
+            terminal_error is None and not delivered_final_text
+            and not response_files and first_projection_failure is None
+        ):
+            first_projection_failure = _ProjectionFailure(
+                reason="typed_text_source_missing", stage="message", location="typed_text_source",
+            )
         return assemble_run_result(
-            message="" if answer_receipt is not None else public_final_result_text,
+            message="" if sandbox_brokered and agent_event_adapter is not None else public_final_result_text,
             answer_receipt=answer_receipt,
             error=terminal_error,
             terminal_reason=terminal_reason,
@@ -4241,7 +4252,13 @@ async def run_claude_agent_sdk(
                     ),
                 )
                 if terminal_error is not None
-                else {}
+                else {
+                    "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+                    "error_code": _SDK_OUTPUT_VALIDATION_FAILED,
+                    "failure_source": "public_projection",
+                    "failure_stage": first_projection_failure.stage,
+                    "projection_failure": first_projection_failure.as_dict(),
+                } if first_projection_failure is not None else {}
             ),
             include_terminal_files=True,
         )
@@ -4249,17 +4266,29 @@ async def run_claude_agent_sdk(
     consume_cancellation: asyncio.CancelledError | None = None
     pending_result: ClaudeAgentSdkRunResult | None = None
     result_ready: asyncio.Future[ClaudeAgentSdkRunResult] = asyncio.get_running_loop().create_future()
+    protocol_settled: asyncio.Future[None] = asyncio.get_running_loop().create_future()
     cleanup_deadline: asyncio.TimerHandle | None = None
+    active_client: Any | None = None
+
+    async def interrupt_execution() -> None:
+        if interaction_actor is not None:
+            await interaction_actor.cancel()
+        if active_client is not None:
+            try:
+                await asyncio.wait_for(active_client.interrupt(), timeout=1.0)
+            except Exception:  # noqa: BLE001 - cancellation still closes the client.
+                pass
 
     async def protocol_closed(mirror_failed: bool) -> None:
         nonlocal cleanup_deadline
         if pending_result is None or result_ready.done():
             return
-        # All SDK producers have stopped. Validate mutable callback/store
+        # The SDK receive stream is closed. Validate mutable callback/store
         # observations once here, not against an earlier Result snapshot.
         error = None if pending_result.received_structured_terminal else pending_result.error
         if error is None and provider_session_store is not None and (
             mirror_failed
+            or provider_session_store.failed
             or not provider_session_store.main_append_acknowledged
             or provider_session_store.final_sequence is None
             or result_session_id != session_id
@@ -4308,22 +4337,57 @@ async def run_claude_agent_sdk(
         )
 
     async def consume_with_cancellation_identity() -> ClaudeAgentSdkRunResult:
-        nonlocal consume_cancellation, pending_result
+        nonlocal consume_cancellation, pending_result, active_client, receiving_started
         try:
             async with mcp_registration.activate(options):
                 client = client_factory(options)
-                close_boundary = prepare_claude_client_close(client, protocol_closed)
+                active_client = client
+                close_boundary = prepare_claude_client_close(client)
+                disconnected = False
                 try:
-                    await client.connect()
+                    if interaction_actor is not None:
+                        await interaction_actor.open()
+                        initial_prompt = interaction_actor.initial_prompt_stream({
+                            "type": "user",
+                            "message": {"role": "user", "content": sdk_prompt},
+                            "parent_tool_use_id": None,
+                            "session_id": session_id or "default",
+                        })
+                    else:
+                        initial_prompt = _sdk_user_prompt_stream(sdk_prompt, session_id=session_id)
+                    # connect(stream) owns the SDK input producer and closes
+                    # stdin when the stream ends. query(stream) alone does not.
+                    await client.connect(initial_prompt)
                     close_boundary.bind()
-                    await client.query(
-                        _sdk_user_prompt_stream(sdk_prompt, session_id=session_id),
-                        session_id=session_id or "default",
-                    )
+                    receiving_started = True
                     async with aclosing(_client_messages(client)) as messages:
                         pending_result = await consume(messages)
+                    if provider_session_store is not None and not receive_stream_closed:
+                        # An early processor exit did not consume public EOF.
+                        # Public disconnect is then the only supported final
+                        # mirror flush, and must finish before Run terminality.
+                        await close_boundary.disconnect()
+                        disconnected = True
+                        await provider_session_store.wait_idle()
+                    await protocol_closed(close_boundary.mirror_failed)
+                except asyncio.CancelledError as exc:
+                    consume_cancellation = exc
+                    raise
                 finally:
-                    await close_boundary.disconnect()
+                    if interaction_actor is not None:
+                        await interaction_actor.cancel()
+                    await callback_tracker.seal_and_wait()
+                    if provider_session_store is not None and not receive_stream_closed and not disconnected:
+                        # Forced cancellation cannot leave pending mirror
+                        # batches behind the terminal callback. In this fallback
+                        # the SDK only exposes the combined public disconnect.
+                        await close_boundary.disconnect()
+                        disconnected = True
+                        await provider_session_store.wait_idle()
+                    if not protocol_settled.done():
+                        protocol_settled.set_result(None)
+                    if not disconnected:
+                        await close_boundary.disconnect()
             return pending_result
         except asyncio.CancelledError as exc:
             consume_cancellation = exc
@@ -4332,6 +4396,8 @@ async def run_claude_agent_sdk(
     consume_task = asyncio.create_task(consume_with_cancellation_identity())
 
     def lifecycle_done(task: asyncio.Task[Any]) -> None:
+        if not protocol_settled.done():
+            protocol_settled.set_result(None)
         if cleanup_deadline is not None:
             cleanup_deadline.cancel()
         if cleanup_tasks is not None:
@@ -4341,7 +4407,7 @@ async def run_claude_agent_sdk(
         except BaseException as exc:
             if not result_ready.done():
                 result_ready.set_exception(exc)
-            else:
+            elif not isinstance(exc, asyncio.CancelledError):
                 # Only resource teardown remains after result_ready. Never
                 # turn its failure into a second, contradictory Run result.
                 _logger.warning("Claude SDK resource cleanup failed: %s", type(exc).__name__)
@@ -4352,6 +4418,34 @@ async def run_claude_agent_sdk(
     consume_task.add_done_callback(lifecycle_done)
     if cleanup_tasks is not None:
         cleanup_tasks.add(consume_task)
+
+    async def stop_execution() -> None:
+        nonlocal cleanup_deadline, stop_requested
+        stop_requested = True
+        await interrupt_execution()
+        await callback_tracker.seal_and_wait()
+        if provider_session_store is not None and receiving_started:
+            # Let interrupt and input-stream closure produce public EOF, whose
+            # reader flush includes batches not yet handed to SessionStore.
+            # A stalled protocol uses public disconnect in the finally fallback.
+            done, _pending = await asyncio.wait(
+                {protocol_settled}, timeout=_SDK_CLEANUP_TIMEOUT_SECONDS
+            )
+            if not done:
+                consume_task.cancel()
+        else:
+            consume_task.cancel()
+        if cleanup_tasks is not None:
+            # Only cleanup after confirmed EOF/store settlement may continue
+            # under the existing lifespan owner.
+            await asyncio.shield(protocol_settled)
+            if cleanup_deadline is None and not consume_task.done():
+                cleanup_deadline = asyncio.get_running_loop().call_later(
+                    _SDK_CLEANUP_TIMEOUT_SECONDS, consume_task.cancel
+                )
+        else:
+            await asyncio.wait({consume_task})
+
     try:
         result = await asyncio.wait_for(
             asyncio.shield(result_ready), timeout=timeout_seconds
@@ -4363,14 +4457,7 @@ async def run_claude_agent_sdk(
         return result
     except asyncio.CancelledError:
         result_ready.cancel()
-        consume_task.cancel()
-        try:
-            await consume_task
-        except asyncio.CancelledError:
-            pass
-        except Exception:  # noqa: BLE001
-            pass
-        await close_answer_candidates_after_failure()
+        await stop_execution()
         seal_agent_candidates("cancelled")
         if (
             consume_cancellation is not None
@@ -4380,13 +4467,7 @@ async def run_claude_agent_sdk(
         raise
     except TimeoutError:
         result_ready.cancel()
-        consume_task.cancel()
-        try:
-            await consume_task
-        except asyncio.CancelledError:
-            pass
-        except Exception:  # noqa: BLE001
-            pass
+        await stop_execution()
         error_code = mcp_execution_receipt_error() or _SDK_TIMEOUT
         return assemble_run_result(
             message="",
@@ -4400,10 +4481,11 @@ async def run_claude_agent_sdk(
             ),
         )
     except Exception as exc:  # noqa: BLE001
-        await close_answer_candidates_after_failure()
         seal_agent_candidates("exception")
         error_code = mcp_execution_receipt_error() or _canonical_sdk_error(
-            exc,
+            last_assistant_error_text if last_assistant_error is not None else exc,
+            assistant_error=last_assistant_error,
+            sdk_error_evidence=last_assistant_error is not None,
             tool_admission_denials=diagnostic_counters["tool_admission_denials"],
         )
         return assemble_run_result(
@@ -4414,6 +4496,11 @@ async def run_claude_agent_sdk(
                     error_code,
                     failure_source="sdk_exception",
                     terminal_reason=terminal_reason,
+                    sdk_errors=(
+                        {"assistant_error": last_assistant_error, "assistant_error_text": last_assistant_error_text}
+                        if last_assistant_error is not None
+                        else None
+                    ),
                     exception=exc,
                 )
             ),

@@ -129,6 +129,11 @@ def test_governed_egress_native_tool_scope_hashes_authorized_large_policy_and_re
     provider,
 ):
     module = _module()
+    from app.settings import (
+        DIRECT_OPENSANDBOX_NETWORK_NAME,
+        DIRECT_OPENSANDBOX_POLICY_SUBJECT,
+        DIRECT_OPENSANDBOX_PROFILE_ID,
+    )
     authorized_policy = [
         {
             "identity": "Skill",
@@ -151,16 +156,26 @@ def test_governed_egress_native_tool_scope_hashes_authorized_large_policy_and_re
     assert scope.startswith("sha256:")
     assert len(scope) < 4096
     assert changed_scope != scope
+    is_opensandbox = provider == "opensandbox"
     proof = module.build_governed_egress_proof(
         signing_key=PROOF_KEY,
         provider=provider,
-        runtime_subject="docker-internal-bridge",
-        policy_subject="network-id:network-name:internal",
+        runtime_subject="runsc" if is_opensandbox else "docker-internal-bridge",
+        policy_subject=(
+            DIRECT_OPENSANDBOX_POLICY_SUBJECT
+            if is_opensandbox
+            else "network-id:network-name:internal"
+        ),
         callback_subject="http://api.sandbox.internal:8020",
         denial_subject="network-id:internal-default-deny",
-        network_id="network-id",
-        network_name="ai-platform-sandbox-egress-internal-v1",
-        network_internal=True,
+        network_id=DIRECT_OPENSANDBOX_PROFILE_ID if is_opensandbox else "network-id",
+        network_name=(
+            DIRECT_OPENSANDBOX_NETWORK_NAME
+            if is_opensandbox
+            else "ai-platform-sandbox-egress-internal-v1"
+        ),
+        network_internal=not is_opensandbox,
+        default_deny_outbound=not is_opensandbox,
         tenant_id="tenant-a",
         workspace_id="workspace-a",
         user_id="user-a",
@@ -249,10 +264,228 @@ def _real_runtime_lease(module, *, signing_key=PROOF_KEY, key_id="current", **ov
     return row
 
 
+def _opensandbox_runtime_lease(
+    module,
+    *,
+    legacy_internal=False,
+    network_name=None,
+):
+    from app.settings import (
+        DIRECT_OPENSANDBOX_NETWORK_NAME,
+        DIRECT_OPENSANDBOX_POLICY_SUBJECT,
+        DIRECT_OPENSANDBOX_PROFILE_ID,
+        LEGACY_DIRECT_OPENSANDBOX_NETWORK_NAME,
+        LEGACY_DIRECT_OPENSANDBOX_POLICY_SUBJECT,
+    )
+
+    scope = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "run_id": "run-a",
+        "attempt_id": "qat-attempt-a",
+        "image_subject": "registry.test/executor@sha256:" + "a" * 64,
+        "image_digest": "sha256:" + "a" * 64,
+        "authorized_skill_scope": module.governed_egress_authorized_skill_scope(
+            skill_ids=["general-chat"], mcp_tool_ids=["knowledge.search"]
+        ),
+        "authorized_native_tool_scope": module.governed_egress_authorized_native_tool_scope([]),
+        "lease_identity": "opensandbox:opensandbox-run-a:osb-run-a",
+    }
+    network_name = network_name or (
+        LEGACY_DIRECT_OPENSANDBOX_NETWORK_NAME
+        if legacy_internal
+        else DIRECT_OPENSANDBOX_NETWORK_NAME
+    )
+    proof = module.build_governed_egress_proof(
+        signing_key=PROOF_KEY,
+        provider="opensandbox",
+        runtime_subject="runsc",
+        policy_subject=(
+            LEGACY_DIRECT_OPENSANDBOX_POLICY_SUBJECT
+            if legacy_internal
+            else DIRECT_OPENSANDBOX_POLICY_SUBJECT
+        ),
+        callback_subject="callback-boundary-a",
+        denial_subject="deny-a",
+        network_id=DIRECT_OPENSANDBOX_PROFILE_ID,
+        network_name=network_name,
+        network_internal=legacy_internal,
+        default_deny_outbound=legacy_internal,
+        **scope,
+    )
+    row = {
+        "provider": "opensandbox",
+        **{key: scope[key] for key in ("tenant_id", "workspace_id", "user_id", "session_id", "run_id")},
+        "status": "active",
+        "lease_payload_json": {
+            "source": "sandbox_runtime",
+            "evidence_class": "runtime_lease_projection",
+            "container_id": "osb-run-a",
+            "container_name": "opensandbox-run-a",
+            "labels": {"ai-platform.attempt_id": scope["attempt_id"]},
+            "governed_egress_network_name": network_name,
+            **{
+                f"governed_egress_{field}": proof[field]
+                for field in (
+                    "image_subject_sha256",
+                    "image_digest_sha256",
+                    "authorized_skill_scope_sha256",
+                    "authorized_native_tool_scope_sha256",
+                )
+            },
+            "governed_egress_proof": proof,
+        },
+    }
+    return row
+
+
+def test_opensandbox_public_proof_is_exact_and_legacy_is_history_only():
+    module = _module()
+    current = _opensandbox_runtime_lease(module)
+    legacy = _opensandbox_runtime_lease(module, legacy_internal=True)
+
+    assert module.is_accepted_runtime_lease(current, signing_key=PROOF_KEY) is True
+    assert module.is_accepted_runtime_lease(legacy, signing_key=PROOF_KEY) is False
+    assert module.is_governed_egress_proof(
+        legacy["lease_payload_json"]["governed_egress_proof"],
+        provider="opensandbox", signing_key=PROOF_KEY,
+        allow_legacy_opensandbox=True,
+    ) is False
+    legacy["status"] = "released"
+    assert module.is_accepted_runtime_lease(
+        legacy,
+        signing_key=PROOF_KEY,
+        verification_mode="historical",
+    ) is True
+
+    public_proof = current["lease_payload_json"]["governed_egress_proof"]
+    assert public_proof["network_internal"] is False
+    assert public_proof["default_deny_outbound"] is False
+    assert public_proof["policy_bound_enforcement"] is True
+    assert public_proof["governed_callback_exception"] is True
+
+
+@pytest.mark.parametrize(
+    ("network_name", "policy_subject", "network_internal", "default_deny_outbound"),
+    [
+        ("ai-platform-opensandbox-egress-v2", "host-public-egress-v1", False, True),
+        ("ai-platform-opensandbox-egress-v2", "host-public-egress-v1", True, False),
+        ("unknown-network", "host-public-egress-v1", False, False),
+        ("ai-platform-opensandbox-egress-v2", "unknown-policy", False, False),
+    ],
+)
+def test_opensandbox_proof_rejects_posture_drift_and_unknown_networks(
+    network_name,
+    policy_subject,
+    network_internal,
+    default_deny_outbound,
+):
+    module = _module()
+    proof = module.build_governed_egress_proof(
+        signing_key=PROOF_KEY,
+        provider="opensandbox",
+        runtime_subject="runsc",
+        policy_subject=policy_subject,
+        callback_subject="callback-boundary-a",
+        denial_subject="deny-a",
+        network_id="direct-opensandbox",
+        network_name=network_name,
+        network_internal=network_internal,
+        default_deny_outbound=default_deny_outbound,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-a",
+        attempt_id="attempt-a",
+        image_subject="registry.test/executor@sha256:" + "a" * 64,
+        image_digest="sha256:" + "a" * 64,
+        authorized_skill_scope=module.governed_egress_authorized_skill_scope(
+            skill_ids=[], mcp_tool_ids=[]
+        ),
+        authorized_native_tool_scope=module.governed_egress_authorized_native_tool_scope([]),
+        lease_identity="opensandbox:opensandbox-run-a:osb-run-a",
+    )
+
+    assert module.is_governed_egress_proof(
+        proof,
+        provider="opensandbox",
+        signing_key=PROOF_KEY,
+    ) is False
+
+
+def test_opensandbox_public_proof_signature_tampering_is_rejected():
+    module = _module()
+    proof = _opensandbox_runtime_lease(module)["lease_payload_json"]["governed_egress_proof"]
+    proof["signature"] = "0" * 64
+
+    assert module.is_governed_egress_proof(
+        proof,
+        provider="opensandbox",
+        signing_key=PROOF_KEY,
+    ) is False
+
+
+def test_opensandbox_named_network_proof_requires_the_expected_network(monkeypatch):
+    from types import SimpleNamespace
+
+    module = _module()
+    network_name = "customer-egress-2026"
+    current = _opensandbox_runtime_lease(module, network_name=network_name)
+    monkeypatch.setattr(
+        module,
+        "get_settings",
+        lambda: SimpleNamespace(
+            opensandbox_expected_network_mode=network_name,
+            sandbox_egress_proof_key_id="current",
+            sandbox_egress_proof_previous_keys_json="",
+        ),
+    )
+
+    assert module.is_accepted_runtime_lease(current, signing_key=PROOF_KEY) is True
+    current["status"] = "released"
+    monkeypatch.setattr(
+        module,
+        "get_settings",
+        lambda: SimpleNamespace(
+            opensandbox_expected_network_mode="another-egress-network",
+            sandbox_egress_proof_key_id="current",
+            sandbox_egress_proof_previous_keys_json="",
+        ),
+    )
+    assert module.is_accepted_runtime_lease(current, signing_key=PROOF_KEY) is False
+    assert module.is_accepted_runtime_lease(
+        current,
+        signing_key=PROOF_KEY,
+        verification_mode="historical",
+    ) is True
+
+
+@pytest.mark.parametrize("mode", ["active", "historical"])
+@pytest.mark.parametrize("missing", ["container_id", "container_name", "labels"])
+@pytest.mark.parametrize("run_id", ["run-a", "run-b"])
+def test_opensandbox_network_binding_cannot_repair_an_incomplete_scope(mode, missing, run_id):
+    module = _module()
+    row = _opensandbox_runtime_lease(module)
+    row["run_id"] = run_id
+    if mode == "historical":
+        row["status"] = "released"
+    row["lease_payload_json"].pop(missing)
+
+    assert module.is_accepted_runtime_lease(
+        row, signing_key=PROOF_KEY, verification_mode=mode,
+    ) is False
+
+
 def test_real_runtime_lease_requires_canonical_signed_governed_egress_proof():
     module = _module()
     real = _real_runtime_lease(module)
+    proof = real["lease_payload_json"]["governed_egress_proof"]
 
+    assert proof["network_internal"] is True
+    assert proof["default_deny_outbound"] is True
     assert module.is_accepted_runtime_lease(real, signing_key=PROOF_KEY) is True
     assert module.is_accepted_runtime_lease({**real, "provider": "fake"}, signing_key=PROOF_KEY) is False
     assert module.is_accepted_runtime_lease(

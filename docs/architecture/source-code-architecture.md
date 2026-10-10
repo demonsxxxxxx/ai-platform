@@ -109,6 +109,50 @@ expose concrete infrastructure adapters.
 | `execution` | queue/worker orchestration, Harness adapter ports, model/executor selection, admitted capability execution | profile/Skill authorization, durable run authority, Sandbox lifecycle |
 | `sandbox` | Sandbox Runtime lifecycle, attempt binding, callback-batch receipt, provider port, staging/recovery fences | provider SDK state as business truth, run admission |
 
+Execution selects staged Skill names from already-admitted IDs and pinned
+manifests in `execution.application.pinned_skill_materialization`. Skills owns
+the catalog binding, pinned snapshot path, byte-limit and hash checks, staging,
+mismatch projection, and manifest evidence through `skills.api` with legacy
+staging/catalog dependencies assembled by `bootstrap.skills`. The Claude
+adapter translates already-authorized Skills and Context material into SDK and
+Sandbox Runtime requests; selection never grants access beyond Skills-owned
+admission. MCP owns authorized tool registration and runtime subject projection
+in `mcp.domain`; Identity owns distribution decisions and capability audits.
+Agent Apps owns locked Profile reauthorization and snapshot comparison. Context
+owns scoped Worker snapshot/attachment projections and file materialization,
+composed by `bootstrap.context`. Artifacts owns public manifest/download
+projections; Sandbox owns executor failure classification; Execution owns Worker
+failure, usage, required-tool, and Skill evidence projection through its public
+API. Runs owns locked Worker admission, snapshot validation, dispatch binding,
+result commit, and exception/cancellation terminal transactions in
+`runs.application.worker_dispatch_admission`, `worker_locked_authorization`,
+`worker_locked_snapshot`, `worker_dispatch_binding`, `worker_result_commit`, and
+`worker_execution_terminal`. Bootstrap binds concrete repositories and other
+context services, including the complete dispatch admission and binding graphs.
+Worker supplies per-Run authority and transaction scope to those assembled
+operations; it does not choose Context projectors, specification compilers,
+placeholder lease writers, or early-failure collaborators.
+Worker orchestrates dispatch and publishes committed events
+only after each transaction exits; the former Worker capability/early-failure
+helpers and `Locked*Ports` callback bags have no compatibility owner.
+Result persistence rolls back artifacts, Skill snapshots, messages, and events
+when any terminal CAS loses authority. Worker interruption cleanup covers only
+its SDK placeholder lease, marks release after transaction commit, and leaves
+detached provider resources with the Sandbox reconciler.
+The four former `execution.api` imports `build_artifact_records`,
+`promote_artifact_reservations`, `PinnedSkillMismatch`, and
+`validate_pinned_skill_relative_path` remain identity-only compatibility exports
+for prior in-process import consumers; their implementations belong to
+`artifacts.api` and `skills.api`. Internal Worker callers have moved. Remove
+these exports only after a PR inventories external/runtime imports and verifies
+zero remaining use under the import-facade deletion proof.
+
+Skill `SKILL.md` front matter is parsed through `skills.application` using a
+YAML loader in `skills.infrastructure`, wired by `bootstrap.skills`. The existing
+`skills.registry` retains built-in filesystem discovery and content hashing;
+upload parsing calls the Skills API rather than treating the registry as a
+metadata-parser owner.
+
 Admin and Workbench views are projections of the owning contexts. They MUST NOT
 become a second write authority or a generic `admin` domain. Compatible-endpoint
 connection revisions, the shared model catalog, model-selection policy, and the

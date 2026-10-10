@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import re
+from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 
 from app.runs.api import sanitize_runtime_diagnostics
@@ -9,9 +12,66 @@ from app.sandbox.api import (
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
     SandboxExecutorHttpFailure,
     SandboxRuntimeFailure,
+    canonical_executor_reported_failure_code,
     exception_chain_from_error,
+    executor_reported_failure_message,
+    normalize_executor_reported_failure,
     normalize_sdk_runtime_diagnostics,
 )
+
+
+_EXECUTOR_ERROR_REQUEST_ID_RE = re.compile(
+    r"\brequest[_ -]?id\s*[:=]\s*[A-Za-z0-9._~+/=-]+\b",
+    re.IGNORECASE,
+)
+
+
+def public_executor_failure_message(result: Any, *, sanitize_text: Callable[[str], str]) -> str:
+    generic_message = "Executor reported failure"
+    if result.executor_payload.get("sandbox_runtime_used") is True:
+        safe_code = canonical_executor_reported_failure_code(result.result.get("error_code"))
+        return executor_reported_failure_message(safe_code)
+    for candidate in (
+        result.result.get("message"),
+        result.result.get("sdk_error"),
+        result.executor_payload.get("sdk_error"),
+    ):
+        raw_text = _EXECUTOR_ERROR_REQUEST_ID_RE.sub(
+            "request id: [redacted-id]",
+            str(candidate or ""),
+        )
+        safe_text = sanitize_text(raw_text)
+        if safe_text and safe_text != generic_message:
+            return safe_text
+    return generic_message
+
+
+def sandbox_failure_prefers_cancelled(result: Any) -> bool:
+    sandbox_provider = str(result.executor_payload.get("sandbox_provider") or "").strip()
+    runtime_status = str(result.executor_payload.get("runtime_terminal_status") or "").strip().lower()
+    return sandbox_provider in {"docker", "opensandbox"} and runtime_status in {"cancelled", "canceled"}
+
+
+def normalize_sandbox_reported_failure(result: Any) -> Any:
+    if (
+        result.status != "failed"
+        or result.executor_payload.get("sandbox_runtime_used") is not True
+    ):
+        return result
+    safe_code = canonical_executor_reported_failure_code(result.result.get("error_code"))
+    safe_result = normalize_executor_reported_failure(
+        {**result.result, "status": "failed", "error_code": safe_code}
+    )
+    safe_result.pop("status", None)
+    safe_result.pop("error_message", None)
+    safe_executor_payload = dict(result.executor_payload)
+    if "sdk_error" in safe_executor_payload:
+        safe_executor_payload["sdk_error"] = safe_code
+    return replace(
+        result,
+        result=safe_result,
+        executor_payload=safe_executor_payload,
+    )
 
 
 def normalized_runtime_diagnostics_payload(value: object) -> dict[str, Any]:

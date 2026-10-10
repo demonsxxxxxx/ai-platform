@@ -13,7 +13,7 @@ from app.context.api import ContextFileContentError
 
 MAX_CONTEXT_FILE_STAGE_BYTES = 128 * 1024 * 1024
 MAX_OPC_ARCHIVE_ENTRIES = 2_000
-MAX_XLSX_ARCHIVE_ENTRY_BYTES = 8 * 1024 * 1024
+MAX_XLSX_ARCHIVE_COMPRESSED_ENTRY_BYTES = 8 * 1024 * 1024
 MAX_XLSX_ARCHIVE_TOTAL_BYTES = 32 * 1024 * 1024
 MAX_OPC_ARCHIVE_COMPRESSION_RATIO = 100
 _FORBIDDEN_XML_DECLARATIONS = (b"<!DOCTYPE", b"<!ENTITY")
@@ -99,7 +99,7 @@ def _validated_archive_entries(
     encrypted_code: str,
     size_code: str,
     max_entries: int,
-    max_entry_bytes: int,
+    max_compressed_entry_bytes: int,
     max_total_bytes: int,
 ) -> tuple[list[ZipInfo], int]:
     entries = archive.infolist()
@@ -125,7 +125,11 @@ def _validated_archive_entries(
         seen.add(normalized)
         if entry.flag_bits & 0x1:
             raise ContextFileContentError(encrypted_code)
-        if entry.file_size < 0 or entry.file_size > max_entry_bytes:
+        if (
+            entry.file_size < 0
+            or entry.compress_size < 0
+            or entry.compress_size > max_compressed_entry_bytes
+        ):
             raise ContextFileContentError(size_code)
         total_bytes += entry.file_size
         if total_bytes > max_total_bytes:
@@ -203,7 +207,7 @@ def _validate_xlsx_archive_security(raw: bytes) -> None:
             encrypted_code="context_file_xlsx_archive_invalid",
             size_code="context_file_xlsx_archive_invalid",
             max_entries=MAX_OPC_ARCHIVE_ENTRIES,
-            max_entry_bytes=MAX_XLSX_ARCHIVE_ENTRY_BYTES,
+            max_compressed_entry_bytes=MAX_XLSX_ARCHIVE_COMPRESSED_ENTRY_BYTES,
             max_total_bytes=MAX_XLSX_ARCHIVE_TOTAL_BYTES,
         )
         seen = {entry.filename.replace("\\", "/").casefold() for entry in entries}

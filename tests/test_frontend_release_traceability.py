@@ -27,6 +27,7 @@ EXPECTED_CI_VERIFY = (
     "&& corepack pnpm run test:run-monitor "
     "&& corepack pnpm run test:profile-drive "
     "&& corepack pnpm run test:control-plane-ui "
+    "&& corepack pnpm run test:model-admin "
     "&& corepack pnpm run test:sse "
     "&& eslint . && tsc -b && vite build "
     "&& node scripts/write-build-provenance.mjs"
@@ -606,7 +607,7 @@ def test_frontend_packaged_image_files_define_static_proxy_contract():
     assert "apk add" not in dockerfile
     security_upgrade = (
         "RUN apk update \\\n"
-        "    && apk upgrade --no-cache libcrypto3 libexpat libssl3 libuuid pcre2 \\\n"
+        "    && apk upgrade --no-cache libcrypto3 libexpat libssl3 libuuid pcre2 tiff \\\n"
         '    && installed="$(apk list --installed libexpat)" \\\n'
         '    && installed="${installed%% *}" \\\n'
         '    && installed="${installed#libexpat-}" \\\n'

@@ -37,11 +37,8 @@ _FILE_DETAIL_CODES = frozenset(
         "context_file_identity_mismatch",
         "context_file_unavailable",
         "context_file_name_conflict",
-        "context_file_storage_unavailable",
-        "context_file_staging_unavailable",
         "context_file_parser_contract_invalid",
         "context_file_preprocessing_failed",
-        "current_request_too_large",
     }
 )
 
@@ -73,9 +70,19 @@ def _next_action(*, detail_code: str, artifact_count: int) -> str:
             return "可先查看或下载已保留文件，再刷新会话；如正文仍缺失，请联系管理员并提供问题编号。"
         return "请刷新会话；如结果仍未出现，请联系管理员并提供问题编号。"
     if detail_code in _PERMISSION_DETAIL_CODES:
-        return "请重新登录后再试；仍无权限时，请联系管理员并提供问题编号。"
+        return "请重新选择有权使用的专家或工具；如需开通权限，请联系管理员并提供问题编号。"
     if detail_code in _CAPABILITY_CONFIGURATION_DETAIL_CODES:
         return "请检查所选专家或工具配置；如仍不可用，请联系管理员并提供问题编号。"
+    if detail_code in {"context_file_storage_unavailable", "context_file_staging_unavailable"}:
+        return "请稍后重试；如文件服务仍不可用，请联系管理员并提供问题编号。"
+    if detail_code == "current_request_too_large":
+        return "请缩短或拆分当前请求后重试。"
+    if detail_code == "input_context_too_large":
+        return "请缩短或拆分请求、减少附件，或新建会话后重试。"
+    if detail_code == "input_image_invalid":
+        return "请检查图片格式、尺寸和数量，调整后重试。"
+    if detail_code == "model_proxy_configuration_invalid":
+        return "请联系管理员检查模型运行配置，并提供问题编号。"
     if detail_code in _FILE_DETAIL_CODES:
         return "请按提示调整或重新上传输入文件后再试。"
     if artifact_count:

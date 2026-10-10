@@ -6,6 +6,11 @@ from pydantic import ValidationError
 from app.settings import Settings
 
 
+# Stable synthetic keys, never production credentials.
+_TEST_TRUSTED_PRINCIPAL_SECRET = "0123456789abcdef" * 4
+_TEST_AI_SESSION_SECRET = "abcdef0123456789" * 4
+
+
 def test_claude_agent_sdk_timeout_defaults_to_unbounded(monkeypatch):
     monkeypatch.delenv("CLAUDE_AGENT_SDK_TIMEOUT_SECONDS", raising=False)
 
@@ -147,44 +152,37 @@ def test_stale_run_reconciliation_settings_reject_unsafe_bounds(field, value):
         Settings(_env_file=None, **{field: value})
 
 
-def test_sandbox_security_profile_defaults_governed_and_rejects_retired_profile(
-    monkeypatch,
-):
-    assert Settings(_env_file=None).sandbox_security_profile == "governed"
-
-    monkeypatch.setenv("SANDBOX_SECURITY_PROFILE", "trusted_internal")
-    monkeypatch.setenv("SANDBOX_CONTAINER_PROVIDER", "opensandbox")
-
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None)
-
-
-def test_sandbox_security_profile_rejects_unknown_values():
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None, sandbox_security_profile="permissive")
-
-
-def test_internal_test_opensandbox_profile_requires_explicit_test_bridge_selection():
-    settings = Settings(
-        _env_file=None,
-        deployment_environment="test",
-        sandbox_container_provider="opensandbox",
-        sandbox_security_profile="internal-test",
-        opensandbox_expected_network_mode="bridge",
-    )
-
+def test_internal_test_bridge_profile_is_scoped_to_test_opensandbox():
+    values = {
+        "deployment_environment": "test",
+        "sandbox_container_provider": "opensandbox",
+        "sandbox_security_profile": "internal-test",
+        "opensandbox_expected_network_mode": "bridge",
+    }
+    settings = Settings(_env_file=None, **values)
     assert settings.sandbox_security_profile == "internal-test"
+    assert settings.opensandbox_expected_network_mode == "bridge"
+
+    for field, value, error in (
+        ("deployment_environment", "production", "internal_test_opensandbox_profile_invalid"),
+        ("sandbox_container_provider", "docker", "internal_test_opensandbox_profile_invalid"),
+        ("opensandbox_expected_network_mode", "host", "opensandbox_expected_network_mode_invalid"),
+    ):
+        with pytest.raises(ValidationError, match=error):
+            Settings(_env_file=None, **{**values, field: value})
+    with pytest.raises(ValidationError, match="opensandbox_expected_network_mode_invalid"):
+        Settings(_env_file=None, deployment_environment="production", opensandbox_expected_network_mode="bridge")
 
 
-def test_production_opensandbox_requires_the_isolated_network():
+def test_production_opensandbox_accepts_a_configured_named_egress_network():
     values = {
         "deployment_environment": "production",
-        "trusted_principal_secret": "gateway-secret",
+        "trusted_principal_secret": _TEST_TRUSTED_PRINCIPAL_SECRET,
+        "ai_session_secret": _TEST_AI_SESSION_SECRET,
         "existing_auth_base_url": "https://auth.internal.example",
         "existing_user_info_base_url": "https://directory.internal.example",
         "sandbox_container_provider": "opensandbox",
-        "sandbox_security_profile": "governed",
-        "opensandbox_expected_network_mode": "ai-platform-opensandbox-egress-internal-v1",
+        "opensandbox_expected_network_mode": "customer-public-egress-2026",
         "opensandbox_use_server_proxy": True,
         "sandbox_egress_policy_enabled": True,
         "opensandbox_api_key": "opensandbox-secret",
@@ -193,44 +191,37 @@ def test_production_opensandbox_requires_the_isolated_network():
     }
 
     assert Settings(_env_file=None, **values).opensandbox_expected_network_mode == (
-        "ai-platform-opensandbox-egress-internal-v1"
+        "customer-public-egress-2026"
     )
 
-    values["opensandbox_expected_network_mode"] = "bridge"
-    with pytest.raises(ValidationError, match="production_opensandbox_network_mode_invalid"):
-        Settings(_env_file=None, **values)
-
-
-@pytest.mark.parametrize(
-    "overrides",
-    [
-        {"deployment_environment": "production"},
-        {"deployment_environment": "development"},
-        {"sandbox_container_provider": "fake"},
-        {"sandbox_container_provider": "docker"},
-        {"opensandbox_expected_network_mode": "none"},
-    ],
-)
-def test_internal_test_opensandbox_profile_rejects_single_sided_or_non_test_selection(
-    overrides,
-):
-    values = {
-        "deployment_environment": "test",
-        "sandbox_container_provider": "opensandbox",
-        "sandbox_security_profile": "internal-test",
-        "opensandbox_expected_network_mode": "bridge",
-        **overrides,
-    }
-    if values["deployment_environment"] == "production":
-        values["trusted_principal_secret"] = "test-only-principal-secret"
-    with pytest.raises(
-        ValidationError, match="internal_test_opensandbox_profile_invalid"
+    for network_name in (
+        "none",
+        "bridge",
+        "host",
+        "ai-platform-opensandbox-egress-internal-v1",
+        "bad network name",
+        "customer-egress-",
+        "customer-egress.",
+        "customer-egress_",
+        "n" * 64,
     ):
-        Settings(_env_file=None, **values)
+        values["opensandbox_expected_network_mode"] = network_name
+        with pytest.raises(ValidationError, match="opensandbox_expected_network_mode_invalid"):
+            Settings(_env_file=None, **values)
+
+
+@pytest.mark.parametrize("name", ["n", "n" * 63, "customer-egress_2026"])
+def test_configured_network_name_is_preserved_by_remote_metadata(name):
+    from app.settings import is_valid_opensandbox_network_name
+    from app.runtime.sandbox.providers.opensandbox.metadata import normalize_opensandbox_metadata
+
+    assert is_valid_opensandbox_network_name(name)
+    labels = {"ai-platform.external_egress.network_mode": name}
+    assert normalize_opensandbox_metadata(labels) == labels
 
 
 @pytest.mark.parametrize("provider", ["fake", "docker", "opensandbox"])
-def test_retired_security_profile_is_rejected_for_every_provider(provider):
+def test_unknown_security_profile_fails_closed(provider):
     with pytest.raises(ValidationError):
         Settings(
             _env_file=None,
@@ -310,15 +301,88 @@ def test_queue_lease_visibility_timeout_rejects_non_positive_values():
 
 
 def test_production_identity_boundary_requires_gateway_secret_and_forbids_poc():
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None, deployment_environment="production")
-    with pytest.raises(ValidationError):
+    with pytest.raises(
+        ValidationError, match="trusted_principal_secret_required_in_production"
+    ):
         Settings(
             _env_file=None,
             deployment_environment="production",
-            trusted_principal_secret="secret",
+            trusted_principal_secret="",
+        )
+    with pytest.raises(ValidationError, match="frontend_poc_auth_forbidden_in_production"):
+        Settings(
+            _env_file=None,
+            deployment_environment="production",
+            trusted_principal_secret=_TEST_TRUSTED_PRINCIPAL_SECRET,
+            ai_session_secret=_TEST_AI_SESSION_SECRET,
             frontend_poc_auth_enabled=True,
         )
+
+
+@pytest.mark.parametrize("field", ["trusted_principal_secret", "ai_session_secret"])
+@pytest.mark.parametrize(
+    ("value", "error"),
+    [
+        ("", "required"),
+        (" \t\n", "required"),
+        ("a" * 31, "too_short"),
+        (" " + "a" * 31 + " ", "too_short"),
+        ("change_me" + "a" * 32, "placeholder_forbidden"),
+        ("changeme" + "a" * 32, "placeholder_forbidden"),
+        ("example" + "a" * 32, "placeholder_forbidden"),
+        ("replace" + "a" * 32, "placeholder_forbidden"),
+        ("  ChAnGe_Me" + "a" * 32 + "  ", "placeholder_forbidden"),
+        ("  ChAnGeMe" + "a" * 32 + "  ", "placeholder_forbidden"),
+        ("  ExAmPlE" + "a" * 32 + "  ", "placeholder_forbidden"),
+        ("  RePlAcE" + "a" * 32 + "  ", "placeholder_forbidden"),
+    ],
+)
+def test_production_rejects_missing_weak_or_placeholder_auth_secrets(field, value, error):
+    values = {
+        "deployment_environment": "production",
+        "trusted_principal_secret": _TEST_TRUSTED_PRINCIPAL_SECRET,
+        "ai_session_secret": _TEST_AI_SESSION_SECRET,
+        "existing_auth_base_url": "http://auth.internal.example",
+        "existing_user_info_base_url": "http://directory.internal.example",
+        field: value,
+    }
+
+    with pytest.raises(ValidationError, match=f"{field}_{error}_in_production"):
+        Settings(_env_file=None, **values)
+
+
+def test_production_accepts_32_character_auth_secrets_and_intranet_http():
+    trusted_secret = _TEST_TRUSTED_PRINCIPAL_SECRET[:32]
+    session_secret = _TEST_AI_SESSION_SECRET[:32]
+    settings = Settings(
+        _env_file=None,
+        deployment_environment="production",
+        trusted_principal_secret=trusted_secret,
+        ai_session_secret=session_secret,
+        existing_auth_base_url="http://auth.internal.example",
+        existing_user_info_base_url="http://directory.internal.example",
+        ai_session_cookie_secure=False,
+    )
+
+    assert settings.trusted_principal_secret == trusted_secret
+    assert settings.ai_session_secret == session_secret
+    assert settings.existing_auth_base_url == "http://auth.internal.example"
+    assert settings.existing_user_info_base_url == "http://directory.internal.example"
+    assert settings.ai_session_cookie_secure is False
+
+
+@pytest.mark.parametrize("environment", ["development", "test"])
+@pytest.mark.parametrize("value", ["", "short", "change_me" + "a" * 32])
+def test_nonproduction_auth_secret_configuration_remains_compatible(environment, value):
+    settings = Settings(
+        _env_file=None,
+        deployment_environment=environment,
+        trusted_principal_secret=value,
+        ai_session_secret=value,
+    )
+
+    assert settings.trusted_principal_secret == value
+    assert settings.ai_session_secret == value
 
 
 def test_production_requires_explicit_private_upstream_urls():
@@ -328,13 +392,15 @@ def test_production_requires_explicit_private_upstream_urls():
         Settings(
             _env_file=None,
             deployment_environment="production",
-            trusted_principal_secret="gateway-secret",
+            trusted_principal_secret=_TEST_TRUSTED_PRINCIPAL_SECRET,
+            ai_session_secret=_TEST_AI_SESSION_SECRET,
         )
 
     settings = Settings(
         _env_file=None,
         deployment_environment="production",
-        trusted_principal_secret="gateway-secret",
+        trusted_principal_secret=_TEST_TRUSTED_PRINCIPAL_SECRET,
+        ai_session_secret=_TEST_AI_SESSION_SECRET,
         existing_auth_base_url="https://auth.internal.example",
         existing_user_info_base_url="https://directory.internal.example",
     )
@@ -443,7 +509,8 @@ def test_production_rejects_unimplemented_nonzero_retention_policies(field):
         Settings(
             _env_file=None,
             deployment_environment="production",
-            trusted_principal_secret="gateway-secret",
+            trusted_principal_secret=_TEST_TRUSTED_PRINCIPAL_SECRET,
+            ai_session_secret=_TEST_AI_SESSION_SECRET,
             **{field: 7},
         )
 

@@ -3,10 +3,10 @@ import os
 import shutil
 import stat
 from pathlib import Path
+from typing import Any
 
 from app.path_safety import ensure_creatable_inside
-from app.skills.registry import BuiltinSkill
-from app.skills.registry import iter_skill_files
+from app.skills.registry import BuiltinSkill, iter_skill_files, skill_content_hash
 
 
 _SKILL_DIRECTORY_MODE = 0o755
@@ -88,6 +88,44 @@ def harden_skill_staging_tree(root: Path) -> None:
                 raise ValueError("skill staging tree is invalid")
             mode = 0o755 if node.st_mode & 0o111 else _SKILL_FILE_MODE
             _harden_skill_node(child, mode)
+
+
+def materialize_worker_pinned_skill(
+    skill_name: str, pin: dict[str, Any], snapshot_root: Path,
+    *, max_file_bytes: int, max_total_bytes: int,
+) -> BuiltinSkill:
+    def prepare_target(workspace_root: Path, target: Path) -> None:
+        ensure_creatable_inside(workspace_root, target, "pinned skill path must stay inside the run workspace")
+        if target.exists():
+            shutil.rmtree(target)
+        ensure_skill_staging_directory(workspace_root, target)
+        ensure_creatable_inside(workspace_root, target, "pinned skill path must stay inside the run workspace")
+
+    def write_file(target: Path, output: Path, content: bytes, name: str) -> None:
+        ensure_creatable_inside(target, output, f"invalid pinned skill file path: {name}")
+        ensure_skill_staging_directory(target, output.parent)
+        write_skill_staging_file(output, content)
+
+    from app.skills.api import stage_pinned_skill_snapshot
+
+    target, expected_hash = stage_pinned_skill_snapshot(
+        skill_name, pin, snapshot_root,
+        prepare_target=prepare_target,
+        write_file=write_file,
+        has_skill_markdown=lambda path: (path / "SKILL.md").is_file(),
+        content_hash=skill_content_hash,
+        remove_invalid_target=lambda path: shutil.rmtree(path, ignore_errors=True),
+        max_file_bytes=max_file_bytes,
+        max_total_bytes=max_total_bytes,
+    )
+    return BuiltinSkill(
+        name=skill_name,
+        description=str(pin.get("description") or ""),
+        path=target,
+        version=expected_hash,
+        source=pin.get("source") if isinstance(pin.get("source"), dict) else {},
+        entry={"kind": "run-snapshot", "path": str(target)},
+    )
 
 
 class SkillStager:

@@ -27,7 +27,6 @@ services:
       ANTHROPIC_AUTH_TOKEN: ""
       SANDBOX_CONTAINER_PROVIDER: opensandbox
       SANDBOX_WORKSPACE_ROOT: ${SANDBOX_WORKSPACE_ROOT:?set SANDBOX_WORKSPACE_ROOT}
-      SANDBOX_SECURITY_PROFILE: governed
       SANDBOX_EGRESS_POLICY_ENABLED: "true"
       SANDBOX_EGRESS_PROOF_SIGNING_KEY: ${SANDBOX_EGRESS_PROOF_SIGNING_KEY:?set SANDBOX_EGRESS_PROOF_SIGNING_KEY}
       SANDBOX_RUNTIME_SUBJECT: ${SANDBOX_RUNTIME_SUBJECT:-direct-opensandbox}
@@ -38,7 +37,7 @@ services:
       OPENSANDBOX_USE_SERVER_PROXY: "true"
       OPENSANDBOX_EXECUTOR_IMAGE: ${OPENSANDBOX_EXECUTOR_IMAGE:?set OPENSANDBOX_EXECUTOR_IMAGE}
       OPENSANDBOX_EXECUTOR_IMAGE_DIGEST: ${OPENSANDBOX_EXECUTOR_IMAGE_DIGEST:?set OPENSANDBOX_EXECUTOR_IMAGE_DIGEST}
-      OPENSANDBOX_EXPECTED_NETWORK_MODE: ai-platform-opensandbox-egress-internal-v1
+      OPENSANDBOX_EXPECTED_NETWORK_MODE: ${OPENSANDBOX_EXPECTED_NETWORK_MODE:?required}
       OPENSANDBOX_EGRESS_PROXY_URL: http://egress.opensandbox.internal:8080
     networks:
       - default
@@ -59,7 +58,6 @@ services:
       CLAUDE_AGENT_DISALLOWED_TOOLS: ${CLAUDE_AGENT_DISALLOWED_TOOLS:?set CLAUDE_AGENT_DISALLOWED_TOOLS}
       SANDBOX_CONTAINER_PROVIDER: opensandbox
       SANDBOX_WORKSPACE_ROOT: ${SANDBOX_WORKSPACE_ROOT:?set SANDBOX_WORKSPACE_ROOT}
-      SANDBOX_SECURITY_PROFILE: governed
       SANDBOX_EGRESS_POLICY_ENABLED: "true"
       SANDBOX_EGRESS_PROOF_SIGNING_KEY: ${SANDBOX_EGRESS_PROOF_SIGNING_KEY:?set SANDBOX_EGRESS_PROOF_SIGNING_KEY}
       SANDBOX_RUNTIME_SUBJECT: ${SANDBOX_RUNTIME_SUBJECT:-direct-opensandbox}
@@ -70,7 +68,7 @@ services:
       OPENSANDBOX_USE_SERVER_PROXY: "true"
       OPENSANDBOX_EXECUTOR_IMAGE: ${OPENSANDBOX_EXECUTOR_IMAGE:?set OPENSANDBOX_EXECUTOR_IMAGE}
       OPENSANDBOX_EXECUTOR_IMAGE_DIGEST: ${OPENSANDBOX_EXECUTOR_IMAGE_DIGEST:?set OPENSANDBOX_EXECUTOR_IMAGE_DIGEST}
-      OPENSANDBOX_EXPECTED_NETWORK_MODE: ai-platform-opensandbox-egress-internal-v1
+      OPENSANDBOX_EXPECTED_NETWORK_MODE: ${OPENSANDBOX_EXPECTED_NETWORK_MODE:?required}
       OPENSANDBOX_EGRESS_PROXY_URL: http://egress.opensandbox.internal:8080
     networks:
       - default
@@ -99,10 +97,10 @@ services:
       MODEL_PROXY_INTERNAL_TOKEN: ${MODEL_PROXY_INTERNAL_TOKEN:?set MODEL_PROXY_INTERNAL_TOKEN}
     networks:
       default:
-      opensandbox_egress_internal_v1:
+      opensandbox_egress_v2:
         aliases:
           - egress.opensandbox.internal
-        ipv4_address: 172.31.75.2
+        ipv4_address: ${OPENSANDBOX_EGRESS_PROXY_IPV4:?required}
     volumes:
       - ./opensandbox-egress-nginx.conf.template:/etc/nginx/templates-opensandbox/default.conf.template:ro
     tmpfs:
@@ -119,14 +117,15 @@ services:
         condition: service_started
 
 networks:
-  opensandbox_egress_internal_v1:
-    name: ai-platform-opensandbox-egress-internal-v1
+  opensandbox_egress_v2:
+    name: ${OPENSANDBOX_EXPECTED_NETWORK_MODE:?required}
     driver: bridge
-    internal: true
+    internal: false
+    enable_ipv6: false
     driver_opts:
-      com.docker.network.bridge.name: br-osb-egress
-      com.docker.network.bridge.enable_ip_masquerade: "false"
+      com.docker.network.bridge.name: ${OPENSANDBOX_EGRESS_BRIDGE:?required}
+      com.docker.network.bridge.enable_ip_masquerade: "true"
       com.docker.network.bridge.enable_icc: "false"
     ipam:
       config:
-        - subnet: 172.31.75.0/24
+        - subnet: ${OPENSANDBOX_EGRESS_SUBNET:?required}

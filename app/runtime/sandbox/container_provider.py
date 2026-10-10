@@ -124,25 +124,37 @@ from app.runtime.sandbox.providers.opensandbox.startup import (
     unhealthy_readiness_fields,
 )
 from app.runtime.sandbox.providers.opensandbox import metadata as opensandbox_metadata
+from app.platform.sandbox.docker_operations import (
+    DockerOperationLane,
+    DockerLeaseRegistry,
+    DockerOperationUnavailable,
+    docker_operation_checkpoint,
+    docker_async_lifecycle,
+    cleanup_docker_orphan_resources,
+    DockerOwnedResourceScope as _DockerOwnedResourceScope,
+    stop_and_remove_docker_container as _stop_and_remove_container,
+)
 from app.runtime.sandbox.opensandbox_policy import (
     DIRECT_OPENSANDBOX_CALLBACK_SUBJECT,
     DIRECT_OPENSANDBOX_DENIAL_SUBJECT,
-    DIRECT_OPENSANDBOX_NETWORK_NAME,
     DIRECT_OPENSANDBOX_POLICY_SUBJECT,
     DIRECT_OPENSANDBOX_PROFILE_ID,
     SANDBOX_SECURITY_PROFILE_GOVERNED,
     SANDBOX_SECURITY_PROFILE_INTERNAL_TEST,
     SANDBOX_SECURITY_PROFILE_LABEL,
     ExecutorEgressBases as _ExecutorEgressBases,
+    active_internal_test_identity_is_authorized,
     governed_opensandbox_egress_bases,
-    internal_test_orphan_cleanup_expected_labels,
-    internal_test_orphan_cleanup_metadata_filter,
+    governed_opensandbox_lease_labels,
+    internal_test_executor_egress_bases,
+    internal_test_opensandbox_enabled,
     internal_test_opensandbox_lease_labels,
     opensandbox_cleanup_identity_is_authorized,
     opensandbox_container_name as _opensandbox_container_name,
     opensandbox_status_from_info as _opensandbox_status_from_info,
     requested_opensandbox_image,
-    runtime_scope_labels,
+    require_opensandbox_profile_settings,
+    selected_opensandbox_profile,
 )
 from app.runtime.sandbox import readiness_evidence
 from app.runtime.sandbox.workspace_permissions import RUNTIME_GID, RUNTIME_UID
@@ -448,11 +460,18 @@ def _governed_egress_labels_match(
     signing_key_id: object = GOVERNED_EGRESS_PROOF_DEFAULT_KEY_ID,
     now: datetime | None = None,
 ) -> bool:
+    expected_binding = None
+    if provider == "opensandbox":
+        expected_network_name = expected_labels.get("ai-platform.external_egress.network_mode")
+        if not isinstance(expected_network_name, str):
+            return False
+        expected_binding = {"network_name": expected_network_name}
     stored = governed_egress_proof_from_labels(
         provider,
         stored_labels,
         signing_key=signing_key,
         signing_key_id=signing_key_id,
+        expected_binding=expected_binding,
         now=now,
     )
     expected = governed_egress_proof_from_labels(
@@ -460,6 +479,7 @@ def _governed_egress_labels_match(
         expected_labels,
         signing_key=signing_key,
         signing_key_id=signing_key_id,
+        expected_binding=expected_binding,
         now=now,
     )
     if stored is None or expected is None:
@@ -926,12 +946,12 @@ def _provider_lease_labels(labels: dict[str, str]) -> dict[str, str]:
         "ai-platform.executor.requested_image",
         "ai-platform.executor.requested_image_digest",
     }
+    if labels.get(SANDBOX_SECURITY_PROFILE_LABEL) == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST:
+        public_executor_labels.update(_executor_identity_labels())
     return {
         str(key): str(value)
         for key, value in labels.items()
-        if (
-            (not str(key).startswith("ai-platform.executor.") or str(key) in public_executor_labels)
-        )
+        if not str(key).startswith("ai-platform.executor.") or str(key) in public_executor_labels
     }
 
 
@@ -963,28 +983,11 @@ def _trusted_callback_target(settings: Any, *, allow_host_gateway: bool = True):
 OPENSANDBOX_UPSTREAM_BRIDGE_VERSION = "v1"
 
 
-def _require_governed_security_profile(settings: Any) -> None:
-    """Reject stale callers that bypass the typed Settings boundary."""
-
-    profile = str(
-        getattr(settings, "sandbox_security_profile", SANDBOX_SECURITY_PROFILE_GOVERNED)
-        or SANDBOX_SECURITY_PROFILE_GOVERNED
-    )
-    if profile != SANDBOX_SECURITY_PROFILE_GOVERNED:
-        raise OpenSandboxCapabilityAdmissionError("sandbox security profile is not governed")
-
-
 def _opensandbox_security_profile(settings: Any) -> str:
-    profile = str(getattr(settings, "sandbox_security_profile", SANDBOX_SECURITY_PROFILE_GOVERNED) or "")
-    if profile == SANDBOX_SECURITY_PROFILE_GOVERNED:
-        return profile
-    if profile == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST and (
-        str(getattr(settings, "deployment_environment", "") or "") == "test"
-        and str(getattr(settings, "sandbox_container_provider", "") or "").strip().lower() == "opensandbox"
-        and str(getattr(settings, "opensandbox_expected_network_mode", "") or "") == "bridge"
-    ):
-        return profile
-    raise OpenSandboxCapabilityAdmissionError("OpenSandbox security profile selection is invalid")
+    try:
+        return selected_opensandbox_profile(settings)
+    except ValueError as exc:
+        raise OpenSandboxCapabilityAdmissionError(str(exc)) from None
 
 
 def _is_internal_test_opensandbox(settings: Any) -> bool:
@@ -1093,18 +1096,11 @@ def _opensandbox_entrypoint(settings: Any) -> list[str]:
         raise ContainerStartFailedError("OpenSandbox executor entrypoint is invalid") from exc
 
 
-def _opensandbox_requested_image(
-    settings: Any,
-    *,
-    allow_local_image_id: bool | None = None,
-) -> tuple[str, str]:
+def _opensandbox_requested_image(settings: Any) -> tuple[str, str]:
     """Return the immutable image request and its digest, never an observed runtime subject."""
 
     try:
-        return requested_opensandbox_image(
-            settings,
-            allow_local_image_id=allow_local_image_id,
-        )
+        return requested_opensandbox_image(settings)
     except ValueError as exc:
         raise OpenSandboxCapabilityAdmissionError(str(exc)) from None
 
@@ -1168,18 +1164,10 @@ def _opensandbox_governed_denial_subject(deny_audit_subject: str, deny_counter_s
 
 
 def _require_direct_opensandbox_settings(settings: Any) -> None:
-    if not bool(getattr(settings, "opensandbox_use_server_proxy", False)):
-        raise OpenSandboxCapabilityAdmissionError("OpenSandbox server proxy is required")
-    if (
-        str(getattr(settings, "opensandbox_expected_network_mode", "") or "")
-        != DIRECT_OPENSANDBOX_NETWORK_NAME
-    ):
-        raise OpenSandboxCapabilityAdmissionError("OpenSandbox isolated network is required")
-    if getattr(settings, "sandbox_egress_policy_enabled", False) is not True:
-        raise OpenSandboxCapabilityAdmissionError("OpenSandbox egress policy is required")
-    for name in ("opensandbox_base_url", "opensandbox_api_key", "opensandbox_egress_proxy_url"):
-        if not str(getattr(settings, name, "") or "").strip():
-            raise OpenSandboxCapabilityAdmissionError(f"OpenSandbox {name} is required")
+    try:
+        require_opensandbox_profile_settings(settings)
+    except ValueError as exc:
+        raise OpenSandboxCapabilityAdmissionError(str(exc)) from None
 
 
 def _direct_opensandbox_egress_configuration(
@@ -1265,7 +1253,8 @@ def _direct_opensandbox_egress_proof(
     return build_governed_egress_proof(
         signing_key=getattr(settings, "sandbox_egress_proof_signing_key", ""),
         provider="opensandbox",
-        network_internal=True,
+        network_internal=False,
+        default_deny_outbound=False,
         key_id=_governed_egress_proof_key_id(settings),
         issued_at=issued_at,
         expires_at=issued_at + timedelta(seconds=GOVERNED_EGRESS_PROOF_MAX_TTL_SECONDS),
@@ -1278,57 +1267,6 @@ def _requested_executor_image_digest(settings: Any) -> str:
 
 
 
-def _opensandbox_labels(
-    settings: Any,
-    request: SandboxRuntimeRequest,
-    configuration: dict[str, str],
-    skill_mount: _TrustedSkillMount | None,
-    *,
-    lease_identity: str | None = None,
-) -> dict[str, str]:
-    labels = runtime_scope_labels(request)
-    labels.update(
-        {
-            "ai-platform.provider_backend": "opensandbox",
-            "ai-platform.security_profile": SANDBOX_SECURITY_PROFILE_GOVERNED,
-            "ai-platform.external_egress.profile_version": "v1",
-            "ai-platform.external_egress.profile_id": configuration["profile_id"],
-            "ai-platform.external_egress.endpoint_sha256": hashlib.sha256(
-                configuration["endpoint"].encode("utf-8")
-            ).hexdigest(),
-            "ai-platform.external_egress.runtime_identity": configuration["runtime_identity"],
-            "ai-platform.external_egress.network_mode": configuration["network_mode"],
-            "ai-platform.external_egress.gateway_policy_subject": configuration["gateway_policy_subject"],
-            "ai-platform.external_egress.callback_boundary_subject": configuration["callback_boundary_subject"],
-            "ai-platform.external_egress.deny_audit_subject": configuration["deny_audit_subject"],
-            "ai-platform.external_egress.deny_counter_subject": configuration["deny_counter_subject"],
-            "ai-platform.external_egress.executor_image": configuration["requested_image"],
-            "ai-platform.external_egress.executor_image_digest": configuration["requested_image_digest"],
-            "ai-platform.external_egress.upstream_bridge_version": configuration["upstream_bridge_version"],
-            "ai-platform.external_egress.callback_base_url_sha256": hashlib.sha256(
-                configuration["callback_base_url"].encode("utf-8")
-            ).hexdigest(),
-            "ai-platform.external_egress.openai_base_url_sha256": hashlib.sha256(
-                configuration["openai_base_url"].encode("utf-8")
-            ).hexdigest(),
-            "ai-platform.external_egress.anthropic_base_url_sha256": hashlib.sha256(
-                configuration["anthropic_base_url"].encode("utf-8")
-            ).hexdigest(),
-            "ai-platform.runtime_subject": configuration["runtime_subject"],
-            **_executor_identity_labels(),
-            **_skill_mount_labels(skill_mount),
-        }
-    )
-    if lease_identity is not None:
-        labels[GOVERNED_EGRESS_PROOF_LABEL] = governed_egress_proof_label(
-            _direct_opensandbox_egress_proof(configuration, settings, request, lease_identity)
-        )
-    return labels
-
-
-_platform_metadata = runtime_scope_labels
-
-
 def _opensandbox_lease_labels(
     settings: Any,
     request: SandboxRuntimeRequest,
@@ -1338,20 +1276,26 @@ def _opensandbox_lease_labels(
     lease_identity: str | None = None,
 ) -> dict[str, str]:
     if _is_internal_test_opensandbox(settings):
-        return internal_test_opensandbox_lease_labels(
-            request,
-            settings,
-            executor_identity_labels=_executor_identity_labels(),
-            skill_mount_labels=_skill_mount_labels(skill_mount),
-        )
+        try:
+            return internal_test_opensandbox_lease_labels(
+                request, settings,
+                executor_identity_labels=_executor_identity_labels(),
+                skill_mount_labels=_skill_mount_labels(skill_mount),
+            )
+        except ValueError as exc:
+            raise OpenSandboxCapabilityAdmissionError(str(exc)) from None
     if configuration is None:
-        configuration = _direct_opensandbox_egress_configuration(settings, request)
-    return _opensandbox_labels(
-        settings,
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox governed configuration is unavailable")
+    return governed_opensandbox_lease_labels(
         request,
         configuration,
-        skill_mount,
-        lease_identity=lease_identity,
+        executor_identity_labels=_executor_identity_labels(),
+        skill_mount_labels=_skill_mount_labels(skill_mount),
+        proof_label=(
+            governed_egress_proof_label(
+                _direct_opensandbox_egress_proof(configuration, settings, request, lease_identity)
+            ) if lease_identity is not None else None
+        ),
     )
 
 
@@ -1360,17 +1304,10 @@ def _opensandbox_runtime_egress_bases(
     request: SandboxRuntimeRequest,
 ) -> _ExecutorEgressBases:
     if _is_internal_test_opensandbox(settings):
-        callback = _trusted_callback_target(settings)
-        proxy = _opensandbox_egress_bases(settings)
-        return _ExecutorEgressBases(
-            callback_base_url=callback.base_url,
-            openai_base_url=(
-                f"{proxy.callback_base_url}/openai/{request.run_id}/{request.attempt_id}/v1"
-            ),
-            anthropic_base_url=(
-                f"{proxy.callback_base_url}/anthropic/{request.run_id}/{request.attempt_id}"
-            ),
-        )
+        try:
+            return internal_test_executor_egress_bases(settings, request)
+        except ValueError as exc:
+            raise OpenSandboxCapabilityAdmissionError(str(exc)) from None
     configuration = _direct_opensandbox_egress_configuration(settings, request)
     return _ExecutorEgressBases(
         callback_base_url=configuration["callback_base_url"],
@@ -1399,22 +1336,10 @@ def _assert_no_raw_model_credentials_in_environment(
 
 
 def _ensure_opensandbox_configuration_still_valid(settings: Any) -> None:
-    if not _is_internal_test_opensandbox(settings):
-        _require_direct_opensandbox_settings(settings)
+    _require_direct_opensandbox_settings(settings)
     _requested_executor_image_digest(settings)
     if not str(getattr(settings, "sandbox_runtime_subject", "") or "").strip():
         raise OpenSandboxCapabilityAdmissionError("OpenSandbox runtime subject is unavailable")
-
-
-def _opensandbox_network_policy(
-    settings: Any,
-    network_policy_class: Any,
-    network_rule_class: Any,
-) -> None:
-    """The governed OpenSandbox contour enforces egress at its Docker network boundary."""
-
-    del settings, network_policy_class, network_rule_class
-    return None
 
 
 def _opensandbox_volumes(
@@ -1816,30 +1741,16 @@ def _call_executor_health_probe(
     return health_probe(executor_url, timeout_seconds)
 
 
-def _stop_and_remove_container(container: Any) -> bool:
-    stop_succeeded = not hasattr(container, "stop")
-    if hasattr(container, "stop"):
-        try:
-            container.stop()
-            stop_succeeded = True
-        except Exception:
-            pass
-    remove_succeeded = not hasattr(container, "remove")
-    if hasattr(container, "remove"):
-        try:
-            container.remove(force=True)
-            remove_succeeded = True
-        except Exception:
-            pass
-    return remove_succeeded or (stop_succeeded and not hasattr(container, "remove"))
-
-
 def _generate_executor_auth_token() -> str:
     return secrets.token_urlsafe(32)
 
 
 def _executor_auth_token_for_request(request: SandboxRuntimeRequest, settings: Any) -> str:
     signing_key = str(getattr(settings, "sandbox_egress_proof_signing_key", "") or "").strip()
+    if internal_test_opensandbox_enabled(settings):
+        signing_key = str(getattr(settings, "sandbox_callback_token", "") or "").strip()
+        if len(signing_key) < 32:
+            raise OpenSandboxCapabilityAdmissionError("OpenSandbox internal-test callback credential is unavailable")
     if not signing_key:
         return _generate_executor_auth_token()
     scope = "\0".join(
@@ -1971,27 +1882,7 @@ class FakeContainerProvider:
         return []
 
 
-@dataclass
-class _DockerOwnedResourceScope:
-    """One cleanup owner for the exact per-lease bridge and its runtime pair."""
-
-    provider: "DockerContainerProvider"
-    lease: ContainerLease
-    primary: Any | None = None
-    native: Any | None = None
-    native_socket_owned: bool = False
-
-    def abort(self) -> None:
-        """Stop tracked owned containers, then detach and remove only the owned bridge."""
-        self.provider._cleanup_runtime_pair_or_track(
-            self.primary,
-            self.native,
-            self.lease,
-            remove_native_socket=self.native_socket_owned,
-        )
-
-
-class DockerContainerProvider:
+class DockerContainerProvider(DockerLeaseRegistry):
     provider_name = "docker"
 
     def __init__(
@@ -2013,63 +1904,75 @@ class DockerContainerProvider:
         self._native_tool_probe = native_tool_probe or _default_native_tool_probe
         self._monotonic = monotonic or time.monotonic
         self._client: Any | None = None
+        self._client_lock = threading.Lock()
+        self._operations = DockerOperationLane(capacity=8, name="docker-lifecycle")
+        self._cleanup_operations = DockerOperationLane(
+            capacity=2, name="docker-cleanup", claims=self._operations,
+        )
+        self._probes = DockerOperationLane(capacity=8, name="docker-probe")
+
+    _operation_unavailable = DockerUnavailableError
+    _cleanup_failure = ContainerCleanupFailedError
 
     @staticmethod
-    def _same_tracked_lease(
-        tracked: ContainerLease,
-        expected: ContainerLease,
-    ) -> bool:
-        return (
-            tracked.container_id == expected.container_id
-            and tracked.tenant_id == expected.tenant_id
-            and tracked.workspace_id == expected.workspace_id
-            and tracked.user_id == expected.user_id
-            and tracked.session_id == expected.session_id
-            and tracked.run_id == expected.run_id
-            and tracked.labels.get("ai-platform.attempt_id")
-            == expected.labels.get("ai-platform.attempt_id")
-        )
+    def _sdk_timeout() -> float:
+        return max(float(get_settings().sandbox_container_start_timeout_seconds), 1.0)
 
-    def _remember_lease(self, lease: ContainerLease) -> None:
-        with self._leases_lock:
-            self._leases[lease.container_id] = lease
+    async def _run_probe(self, operation: Callable[..., Any], *args: Any) -> Any:
+        settings = get_settings()
+        timeout = max(self._sdk_timeout(), float(settings.sandbox_executor_health_timeout_seconds), 1.0)
+        # Existing probes may perform their final bounded HTTP request at the
+        # stage deadline. Preserve that allowance rather than shortening it.
+        return await self._probes.run(lambda: operation(*args), timeout=timeout + 2.0)
 
-    def _remember_lease_if_absent(self, lease: ContainerLease) -> None:
-        with self._leases_lock:
-            self._leases.setdefault(lease.container_id, lease)
-
-    def _forget_lease(self, lease: ContainerLease) -> None:
-        with self._leases_lock:
-            tracked = self._leases.get(lease.container_id)
-            if tracked is not None and self._same_tracked_lease(tracked, lease):
-                self._leases.pop(lease.container_id, None)
+    def _compensate_cancelled_create(
+        self, request: SandboxRuntimeRequest, workspace: WorkspaceLease,
+    ) -> None:
+        lease = _lease_from_request("docker", request, workspace, executor_url=_executor_url())
+        cached = self._cached_lease_for_run(request.run_id)
+        if cached is not None and _lease_matches_request_workspace(cached, request, workspace):
+            lease = cached
+        lease.labels["ai-platform.native_tool_required"] = _env_bool(_native_tool_required(request))
+        try:
+            primary = self._owned_primary_container(
+                lease, require_lease_identity=cached is lease,
+            )
+            native = self._owned_native_tool_container(lease)
+            if primary is not None:
+                lease.container_id = str(primary.id)
+            self._cleanup_runtime_pair_or_track(primary, native, lease)
+        except ContainerCleanupFailedError:
+            self._remember_lease_if_absent(lease)
+            raise
+        self._forget_lease(lease)
 
     def assert_available(self) -> None:
         if self._docker_client_factory is None and docker is None:
             raise DockerUnavailableError("Docker SDK for Python is not installed")
 
     def _get_client(self) -> Any:
-        if self._client is not None:
-            return self._client
-        self.assert_available()
-        if self._docker_client_factory is not None:
-            self._client = self._docker_client_factory()
-            return self._client
-        settings = get_settings()
-        self._client = docker.from_env(
-            timeout=max(
-                float(
-                    getattr(
-                        settings,
-                        "sandbox_container_start_timeout_seconds",
-                        30,
-                    )
-                    or 30
-                ),
-                1.0,
+        with self._client_lock:
+            if self._client is not None:
+                return self._client
+            self.assert_available()
+            if self._docker_client_factory is not None:
+                self._client = self._docker_client_factory()
+                return self._client
+            settings = get_settings()
+            self._client = docker.from_env(
+                timeout=max(
+                    float(
+                        getattr(
+                            settings,
+                            "sandbox_container_start_timeout_seconds",
+                            30,
+                        )
+                        or 30
+                    ),
+                    1.0,
+                )
             )
-        )
-        return self._client
+            return self._client
 
     async def _wait_for_executor_url(
         self,
@@ -2249,7 +2152,7 @@ class DockerContainerProvider:
             # not cooperatively cancellable, so it may finish after this await.
             return bool(
                 await asyncio.wait_for(
-                    asyncio.to_thread(self._native_tool_probe, container),
+                    self._run_probe(self._native_tool_probe, container),
                     timeout=remaining,
                 )
             )
@@ -2450,6 +2353,7 @@ class DockerContainerProvider:
             )
             socket_prepared = True
             create_attempted = True
+            docker_operation_checkpoint()
             container = client.containers.create(
                 image=get_settings().sandbox_executor_image,
                 name=_native_tool_container_name(request.run_id, request.attempt_id),
@@ -2469,7 +2373,9 @@ class DockerContainerProvider:
                 network_mode="none",
                 **_docker_resource_kwargs(request.resource_limits),
             )
+            docker_operation_checkpoint()
             container.start()
+            docker_operation_checkpoint()
             await self._wait_for_native_tool_socket(container, timeout_seconds)
             return container
         except asyncio.CancelledError:
@@ -2555,7 +2461,7 @@ class DockerContainerProvider:
                 connect_base_url=_executor_connect_base_url(executor_url, endpoint),
             )
             probe_url, probe_headers = prepare_executor_http_request(executor_url, executor_headers)
-            healthy = await asyncio.to_thread(
+            healthy = await self._run_probe(
                 _call_executor_health_probe,
                 self._health_probe,
                 probe_url,
@@ -2564,7 +2470,7 @@ class DockerContainerProvider:
             )
             if not healthy:
                 raise ExecutorHealthTimeoutError()
-            identity = await asyncio.to_thread(
+            identity = await self._run_probe(
                 self._identity_probe,
                 probe_url,
                 timeout_seconds,
@@ -2573,7 +2479,7 @@ class DockerContainerProvider:
             _require_expected_executor_identity(identity)
             current_settings = get_settings()
             callback = _docker_governed_callback_target(current_settings)
-            if not await asyncio.to_thread(
+            if not await self._run_probe(
                 self._callback_reachability_probe,
                 container,
                 callback.base_url,
@@ -2656,14 +2562,6 @@ class DockerContainerProvider:
         signing_key: object,
     ) -> bool:
         return _governed_egress_labels_match("docker", lease.labels, expected_labels, signing_key)
-
-    def _cached_lease_for_run(self, run_id: str) -> ContainerLease | None:
-        """Return the sole tracked Docker lease for a run, keyed by real container ID."""
-        with self._leases_lock:
-            return next(
-                (lease for lease in self._leases.values() if lease.run_id == run_id),
-                None,
-            )
 
     @staticmethod
     def _is_exact_owned_remote_container(
@@ -2773,6 +2671,7 @@ class DockerContainerProvider:
             return None
         return recovered
 
+    @docker_async_lifecycle(keyed=True, compensate="_compensate_cancelled_create")
     async def create_or_reuse(
         self,
         request: SandboxRuntimeRequest,
@@ -2783,6 +2682,7 @@ class DockerContainerProvider:
         client = self._get_client()
         try:
             client.ping()
+            docker_operation_checkpoint()
         except Exception as exc:  # pragma: no cover - branch shape varies by docker SDK/runtime
             normalized_exc = _normalize_docker_availability_error(exc)
             if normalized_exc is not None:
@@ -2859,6 +2759,7 @@ class DockerContainerProvider:
                 self._remember_lease_if_absent(cleanup_lease)
                 raise ContainerCleanupFailedError("governed network cleanup could not be confirmed") from None
             raise
+        docker_operation_checkpoint()
         owned_resources = _DockerOwnedResourceScope(self, bootstrap_lease)
         try:
             skill_mount = _prepare_trusted_skill_mount(request, workspace)
@@ -2999,6 +2900,7 @@ class DockerContainerProvider:
                 self._remember_lease_if_absent(bootstrap_lease)
                 raise ContainerCleanupFailedError("governed network cleanup could not be confirmed") from None
             raise
+        docker_operation_checkpoint()
         cold_start_started_at = self._monotonic()
         executor_auth_token = _executor_auth_token_for_request(request, settings)
         native_tool_token = _generate_executor_auth_token() if native_tool_required else ""
@@ -3034,6 +2936,7 @@ class DockerContainerProvider:
                 owned_resources.native = native_tool_container
                 owned_resources.native_socket_owned = True
             primary_create_attempted = True
+            docker_operation_checkpoint()
             container = client.containers.create(
                 image=settings.sandbox_executor_image,
                 name=bootstrap_lease.container_name,
@@ -3089,6 +2992,7 @@ class DockerContainerProvider:
                 **_docker_resource_kwargs(request.resource_limits),
             )
             owned_resources.primary = container
+            docker_operation_checkpoint()
         except CallbackTargetValidationError as exc:
             try:
                 submitted_primary = resolve_submitted_primary_container()
@@ -3140,8 +3044,10 @@ class DockerContainerProvider:
         if observed_container_id:
             bootstrap_lease.container_id = observed_container_id
         try:
+            docker_operation_checkpoint()
             if hasattr(container, "start"):
                 container.start()
+            docker_operation_checkpoint()
         except Exception as exc:
             normalized_exc = _normalize_docker_availability_error(exc)
             self._cleanup_runtime_pair_for_error(container, native_tool_container, bootstrap_lease, exc)
@@ -3165,7 +3071,7 @@ class DockerContainerProvider:
             raise
 
         try:
-            if not await asyncio.to_thread(
+            if not await self._run_probe(
                 self._callback_reachability_probe, container,
                 egress_admission.callback_base_url, egress_admission.runtime_commit,
             ):
@@ -3206,7 +3112,7 @@ class DockerContainerProvider:
         )
         probe_url, probe_headers = prepare_executor_http_request(executor_url, executor_headers)
         try:
-            healthy = await asyncio.to_thread(
+            healthy = await self._run_probe(
                 _call_executor_health_probe,
                 self._health_probe,
                 probe_url,
@@ -3233,7 +3139,7 @@ class DockerContainerProvider:
             self._cleanup_runtime_pair_or_track(container, native_tool_container, bootstrap_lease)
             raise ContainerStartFailedError("executor Config.User mismatch")
         try:
-            identity = await asyncio.to_thread(
+            identity = await self._run_probe(
                 self._identity_probe,
                 probe_url,
                 settings.sandbox_executor_health_timeout_seconds,
@@ -3263,9 +3169,11 @@ class DockerContainerProvider:
         )
         lease.container_id = bootstrap_lease.container_id
         lease.labels.update(bootstrap_lease.labels)
+        docker_operation_checkpoint()
         self._remember_lease(lease)
         return lease
 
+    @docker_async_lifecycle(keyed=True)
     async def validate_for_dispatch(
         self,
         lease: ContainerLease,
@@ -3339,7 +3247,7 @@ class DockerContainerProvider:
             )
             if proof is None:
                 raise GovernedEgressAdmissionError()
-            if not await asyncio.to_thread(
+            if not await self._run_probe(
                 self._callback_reachability_probe,
                 primary,
                 callback.base_url,
@@ -3390,6 +3298,7 @@ class DockerContainerProvider:
         del response_files
         return None
 
+    @docker_async_lifecycle()
     async def executor_control_endpoint(
         self,
         lease: ContainerLease,
@@ -3414,7 +3323,7 @@ class DockerContainerProvider:
                 connect_base_url=_executor_connect_base_url(executor_url, endpoint),
             )
 
-        return await asyncio.to_thread(resolve)
+        return resolve()
 
     def _stop_sync(self, lease: ContainerLease, reason: str) -> StopResult:
         primary_status = "not_found"
@@ -3452,8 +3361,16 @@ class DockerContainerProvider:
         return StopResult(container_id=lease.container_id, status=primary_status, message=reason)
 
     async def stop(self, lease: ContainerLease, *, reason: str) -> StopResult:
-        return await asyncio.to_thread(self._stop_sync, lease, reason)
+        try:
+            return await self._cleanup_operations.run(
+                lambda: self._stop_sync(lease, reason), timeout=self._sdk_timeout() * 8,
+                key=str(getattr(lease, "run_id", lease.container_id)),
+            )
+        except DockerOperationUnavailable:
+            self._remember_lease_if_absent(lease)
+            return StopResult(container_id=lease.container_id, status="failed", message="Container stop failed")
 
+    @docker_async_lifecycle()
     async def list_runtime_containers(self, filters: dict[str, str]) -> list[ContainerStatus]:
         try:
             containers = self._get_client().containers.list(
@@ -3472,67 +3389,16 @@ class DockerContainerProvider:
                 statuses.append(status)
         return [status for status in statuses if _matches_filters(status, filters)]
 
+    @docker_async_lifecycle(cleanup=True)
     async def cleanup_orphan_containers(self, filters: dict[str, str], *, reason: str) -> list[StopResult]:
-        try:
-            containers = self._get_client().containers.list(
-                all=True,
-                filters={"label": ["ai-platform.owner"]},
-            )
-        except Exception as exc:
-            normalized_exc = _normalize_docker_availability_error(exc)
-            if normalized_exc is not None:
-                raise normalized_exc from exc
-            raise
-        owned: list[tuple[Any, ContainerStatus]] = []
-        for container in containers:
-            status = _container_status_from_labels(container)
-            if status is None or not _matches_filters(status, filters):
-                continue
-            owned.append((container, status))
-        live_primary_scopes = {
-            _container_scope_key(status)
-            for _container, status in owned
-            if status.detail.get("labels", {}).get("ai-platform.owner") == "sandbox-runtime"
-            and status.status in {"created", "running", "restarting"}
-        }
-        results: list[StopResult] = []
-        for container, status in owned:
-            labels = status.detail.get("labels")
-            owner = labels.get("ai-platform.owner") if isinstance(labels, dict) else ""
-            if owner == _NATIVE_TOOL_OWNER:
-                if (
-                    status.status in {"created", "running", "restarting"}
-                    and _container_scope_key(status) in live_primary_scopes
-                ):
-                    continue
-            elif status.status == "running":
-                continue
-            elif status.status not in {"exited", "dead", "removing", "removed"}:
-                continue
-            try:
-                if hasattr(container, "remove"):
-                    container.remove(force=True)
-            except Exception:
-                results.append(StopResult(container_id=status.container_id, status="failed", message="Container cleanup failed"))
-                continue
-            results.append(StopResult(container_id=status.container_id, status="stopped", message=reason))
-        try:
-            networks = self._get_client().networks.list()
-        except Exception:
-            return results
-        for network in networks:
-            lease = _lease_from_owned_governed_network(network)
-            if lease is None or not _matches_filters(_status_from_lease(lease, status="removed"), filters):
-                continue
-            if self._remove_owned_governed_network(lease):
-                results.append(
-                    StopResult(
-                        container_id=f"network:{_governed_docker_network_name(lease)}",
-                        status="stopped",
-                        message=reason,
-                    )
-                )
-        return results
+        return cleanup_docker_orphan_resources(
+            self, filters, reason,
+            container_status=_container_status_from_labels,
+            matches_filters=_matches_filters, scope_key=_container_scope_key,
+            network_lease=_lease_from_owned_governed_network, lease_status=_status_from_lease,
+            network_name=_governed_docker_network_name, stop_result=StopResult,
+            normalize_error=_normalize_docker_availability_error,
+        )
 
 
 def _load_opensandbox_symbols() -> dict[str, Any]:
@@ -3800,19 +3666,14 @@ class OpenSandboxContainerProvider:
         settings = get_settings()
         cleanup_key = _opensandbox_cache_key(request.run_id, request.attempt_id)
         security_profile = _opensandbox_security_profile(settings)
-        _logger.info(
-            "OpenSandbox security profile selected: %s (network_mode=%s)",
-            security_profile,
-            getattr(settings, "opensandbox_expected_network_mode", ""),
-        )
+        _require_direct_opensandbox_settings(settings)
         if security_profile == SANDBOX_SECURITY_PROFILE_GOVERNED and not has_governed_egress_signing_key(
             getattr(settings, "sandbox_egress_proof_signing_key", "")
         ):
             raise OpenSandboxCapabilityAdmissionError("OpenSandbox governed-egress proof key is unavailable") from None
         self._ensure_symbols()
         configuration = (
-            None
-            if security_profile == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST
+            None if security_profile == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST
             else _direct_opensandbox_egress_configuration(settings, request)
         )
         skill_mount = _prepare_trusted_skill_mount(request, workspace)
@@ -3882,7 +3743,7 @@ class OpenSandboxContainerProvider:
                     raise ContainerStartFailedError("cached sandbox metadata mismatch")
                 labels_match = (
                     opensandbox_metadata.opensandbox_metadata_matches(
-                        cached.labels,
+                        opensandbox_metadata.normalize_opensandbox_metadata(cached.labels),
                         _provider_lease_labels(sealed_labels),
                     )
                     if security_profile == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST
@@ -4062,11 +3923,7 @@ class OpenSandboxContainerProvider:
             "env": environment,
             "metadata": provider_metadata,
             "resource": _opensandbox_resource_limits(request.resource_limits),
-            "network_policy": _opensandbox_network_policy(
-                settings,
-                self._network_policy_class,
-                self._network_rule_class,
-            ),
+            "network_policy": None,
             "entrypoint": _opensandbox_entrypoint(settings),
             "volumes": _opensandbox_volumes(
                 settings,
@@ -4250,33 +4107,17 @@ class OpenSandboxContainerProvider:
                 raise OpenSandboxCapabilityAdmissionError(
                     "OpenSandbox dispatch metadata mismatch"
                 )
+            _ensure_opensandbox_configuration_still_valid(settings)
             if security_profile == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST:
-                _ensure_opensandbox_configuration_still_valid(settings)
-                expected_labels = internal_test_orphan_cleanup_expected_labels(
-                    {
-                        "tenant_id": request.tenant_id,
-                        "workspace_id": request.workspace_id,
-                        "user_id": request.user_id,
-                        "session_id": request.session_id,
-                        "run_id": request.run_id,
-                        "attempt_id": request.attempt_id,
-                        "sandbox_mode": request.sandbox_mode,
-                        "security_profile": SANDBOX_SECURITY_PROFILE_INTERNAL_TEST,
-                    },
-                    settings,
-                )
-                if expected_labels is None or any(
-                    str(lease.labels.get(key) or "") != value for key, value in expected_labels.items()
-                ):
+                if not active_internal_test_identity_is_authorized(remote_status, lease, settings):
                     raise OpenSandboxCapabilityAdmissionError("OpenSandbox internal-test dispatch profile drift")
                 executor_url, endpoint_headers = await resolve_executor_endpoint(
                     sandbox, settings, error_factory=OpenSandboxCapabilityAdmissionError
                 )
                 executor_headers = _executor_auth_headers(
-                    str(lease.executor_headers.get(EXECUTOR_AUTH_HEADER) or ""),
-                    endpoint_headers,
+                    str(lease.executor_headers.get(EXECUTOR_AUTH_HEADER) or ""), endpoint_headers
                 )
-                if not await asyncio.to_thread(
+                if not executor_headers.get(EXECUTOR_AUTH_HEADER) or not await asyncio.to_thread(
                     _call_executor_health_probe,
                     self._health_probe,
                     executor_url,
@@ -4292,7 +4133,6 @@ class OpenSandboxContainerProvider:
                 )
                 _require_expected_executor_identity(identity)
                 return
-            _ensure_opensandbox_configuration_still_valid(settings)
             configuration = _direct_opensandbox_egress_configuration(settings, request)
             expected_binding = _opensandbox_governed_egress_binding(
                 configuration,
@@ -4542,6 +4382,7 @@ class OpenSandboxContainerProvider:
                     lease,
                     settings,
                     now=datetime.now(timezone.utc),
+                    allow_legacy_internal_identity=True,
                 )
             ):
                 self._leases.setdefault(cache_key, lease)
@@ -4613,54 +4454,8 @@ class OpenSandboxContainerProvider:
             raise ContainerStartFailedError("OpenSandbox inventory failed") from exc
 
     async def cleanup_orphan_containers(self, filters: dict[str, str], *, reason: str) -> list[StopResult]:
-        settings = get_settings()
-        if filters.get("security_profile") == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST:
-            if _opensandbox_security_profile(settings) != SANDBOX_SECURITY_PROFILE_INTERNAL_TEST:
-                return []
-            raw_metadata_filter = internal_test_orphan_cleanup_metadata_filter(filters)
-            raw_expected_labels = internal_test_orphan_cleanup_expected_labels(filters, settings)
-            if raw_metadata_filter is None or raw_expected_labels is None:
-                return []
-            try:
-                metadata_filter = opensandbox_metadata.normalize_opensandbox_metadata(raw_metadata_filter)
-                expected_labels = opensandbox_metadata.normalize_opensandbox_metadata(raw_expected_labels)
-            except opensandbox_metadata.OpenSandboxMetadataError:
-                return []
-
-            def identity_is_authorized(labels: dict[str, str]) -> bool:
-                return all(str(labels.get(key) or "") == value for key, value in expected_labels.items())
-
-        else:
-            # Direct OpenSandbox cleanup is lease-authorized; an orphan without
-            # its persisted proof must remain for explicit reconciliation.
-            return []
-        manager = await self._manager(self._connection_config(settings))
-        try:
-            infos = await self._list_all_sandbox_infos(manager, metadata_filter)
-            results: list[StopResult] = []
-            for info in infos or []:
-                status = _opensandbox_status_from_info(info)
-                if status is None or not identity_is_authorized(status.detail.get("labels", {})):
-                    continue
-                if status.status == "running":
-                    continue
-                if status.status not in {"exited", "removed", "paused"}:
-                    continue
-                try:
-                    await _maybe_await(manager.kill_sandbox(status.container_id))
-                except Exception:
-                    results.append(
-                        StopResult(
-                            container_id=status.container_id,
-                            status="failed",
-                            message="OpenSandbox cleanup failed",
-                        )
-                    )
-                    continue
-                results.append(StopResult(container_id=status.container_id, status="stopped", message=reason))
-            return results
-        finally:
-            await self._close_manager(manager)
+        del filters, reason
+        return []
 
 
 _PROVIDER_CACHE: dict[str, ContainerProvider] = {}
@@ -4673,10 +4468,7 @@ def reset_container_provider_cache() -> None:
 def create_container_provider(provider_name: str | None = None) -> ContainerProvider:
     settings = get_settings()
     selected = str(provider_name or settings.sandbox_container_provider or "").strip().lower()
-    if selected == "opensandbox":
-        _opensandbox_security_profile(settings)
-    else:
-        _require_governed_security_profile(settings)
+    _opensandbox_security_profile(settings)
     cached = _PROVIDER_CACHE.get(selected)
     if cached is not None:
         return cached

@@ -321,7 +321,78 @@ def _structured_value(value: object) -> str:
     return text if _STRUCTURED_VALUE_PATTERN.fullmatch(text) else ""
 
 
-def _normalize_sdk_projection_failure(value: object) -> dict[str, str] | None:
+_RAW_FRAME_SHAPE_LABELS = {
+    "event_type": frozenset({
+        "ping", "message_start", "message_delta", "message_stop",
+        "content_block_start", "content_block_stop", "content_block_delta", "other",
+    }),
+    "block_type": frozenset({
+        "text", "thinking", "redacted_thinking", "tool_use", "server_tool_use",
+        "mcp_tool_use", "tool_result", "server_tool_result", "advisor_tool_result",
+        "mcp_tool_result", "tool_search_tool_result", "web_search_tool_result",
+        "web_fetch_tool_result", "code_execution_tool_result",
+        "bash_code_execution_tool_result", "text_editor_code_execution_tool_result",
+        "other",
+    }),
+    "delta_type": frozenset({
+        "text_delta", "thinking_delta", "signature_delta", "input_json_delta", "other",
+    }),
+    "message_state": frozenset({"open", "closed"}),
+    "open_block_type": frozenset({
+        "none", "text", "thinking", "redacted_thinking", "tool_use",
+        "server_tool_use", "mcp_tool_use", "tool_result", "server_tool_result",
+        "advisor_tool_result", "mcp_tool_result", "tool_search_tool_result",
+        "web_search_tool_result", "web_fetch_tool_result", "code_execution_tool_result",
+        "bash_code_execution_tool_result", "text_editor_code_execution_tool_result",
+    }),
+    "index_state": frozenset({"invalid", "active", "ignored", "completed", "other"}),
+    "guard": frozenset({
+        "parent_binding", "event_object", "event_type", "message_start",
+        "message_delta_state", "message_delta_object", "message_delta_stop_reason",
+        "message_delta_stop_sequence", "message_delta_conflict", "message_stop",
+        "block_start_state", "block_start_index", "block_start_type",
+        "block_start_limit", "block_stop_index", "block_delta_index",
+        "block_delta_object", "block_delta_type", "block_delta_text",
+    }),
+}
+
+
+_RAW_FRAME_OBSERVATION_LABELS = {
+    key: allowed for key, allowed in _RAW_FRAME_SHAPE_LABELS.items()
+    if key != "guard"
+}
+
+
+def _normalize_raw_frame_labels(
+    value: object, labels: dict[str, frozenset[str]]
+) -> dict[str, str] | None:
+    if not isinstance(value, dict) or set(value) != set(labels):
+        return None
+    if any(
+        not isinstance(value[key], str) or value[key] not in allowed
+        for key, allowed in labels.items()
+    ):
+        return None
+    return {key: value[key] for key in labels}
+
+
+def normalize_sdk_raw_frame_shape(value: object) -> dict[str, str] | None:
+    return _normalize_raw_frame_labels(value, _RAW_FRAME_SHAPE_LABELS)
+
+
+def normalize_sdk_raw_frame_history(value: object) -> list[dict[str, str]] | None:
+    if not isinstance(value, list) or not 1 <= len(value) <= 4:
+        return None
+    normalized = []
+    for frame in value:
+        shape = _normalize_raw_frame_labels(frame, _RAW_FRAME_OBSERVATION_LABELS)
+        if shape is None:
+            return None
+        normalized.append(shape)
+    return normalized
+
+
+def _normalize_sdk_projection_failure(value: object) -> dict[str, Any] | None:
     """Return only the fixed, value-free SDK output validation taxonomy."""
 
     if not isinstance(value, dict):
@@ -338,7 +409,16 @@ def _normalize_sdk_projection_failure(value: object) -> dict[str, str] | None:
         or location not in _SDK_PROJECTION_FAILURE_LOCATIONS
     ):
         return None
-    return {"reason": reason, "stage": stage, "location": location}
+    projected = {"reason": reason, "stage": stage, "location": location}
+    if "frame_shape" in value and reason == "raw_frame_invalid" and location == "raw_stream_frame":
+        frame_shape = normalize_sdk_raw_frame_shape(value["frame_shape"])
+        if frame_shape is not None:
+            projected["frame_shape"] = frame_shape
+    if "preceding_frames" in value and reason == "raw_frame_invalid" and location == "raw_stream_frame":
+        preceding_frames = normalize_sdk_raw_frame_history(value["preceding_frames"])
+        if preceding_frames is not None:
+            projected["preceding_frames"] = preceding_frames
+    return projected
 
 
 def _text_field(
@@ -778,7 +858,7 @@ def _project_list(
 def normalize_sdk_runtime_diagnostics(value: object) -> dict[str, Any]:
     """Validate and bound private SDK diagnostics at every sandbox boundary."""
 
-    if value is None:
+    if value is None or (isinstance(value, dict) and not value):
         return {}
     if not isinstance(value, dict):
         return runtime_diagnostics_rejection(reason="invalid_payload")
@@ -901,8 +981,17 @@ def normalize_sdk_runtime_diagnostics(value: object) -> dict[str, Any]:
             normalized["projection_failure"] = projection_failure
             if isinstance(raw_projection_failure, dict):
                 extra_count = len(
-                    set(raw_projection_failure) - {"reason", "stage", "location"}
+                    set(raw_projection_failure)
+                    - {"reason", "stage", "location", "frame_shape", "preceding_frames"}
                 )
+                if "frame_shape" in raw_projection_failure and "frame_shape" not in projection_failure:
+                    _append_loss(
+                        losses, field="projection_failure.frame_shape", reason="invalid_field"
+                    )
+                if "preceding_frames" in raw_projection_failure and "preceding_frames" not in projection_failure:
+                    _append_loss(
+                        losses, field="projection_failure.preceding_frames", reason="invalid_field"
+                    )
                 if extra_count:
                     _append_loss(
                         losses,

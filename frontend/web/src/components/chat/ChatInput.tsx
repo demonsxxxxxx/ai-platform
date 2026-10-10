@@ -10,7 +10,7 @@ import {
   type SetStateAction,
 } from "react";
 import toast from "react-hot-toast";
-import { Ban } from "lucide-react";
+import { ArrowUp, Ban } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { ImageViewer } from "../common";
 import { ConfirmDialog } from "../common/ConfirmDialog";
@@ -122,6 +122,7 @@ export const ChatInput = memo(function ChatInput({
   onProfileDriveFileDrop,
   pendingInput,
   onPendingInputConsumed,
+  runInputs,
   className,
 }: ChatInputProps) {
   const { t } = useTranslation();
@@ -138,6 +139,10 @@ export const ChatInput = memo(function ChatInput({
     draftSnapshotRef?.current ?? localDraftSnapshotRef.current;
   const inputRef = useRef(draftSnapshot.value);
   const [input, setLocalInput] = useState(inputRef.current);
+  const [runInputDraft, setRunInputDraft] = useState("");
+  const runInputDraftRef = useRef("");
+  const runInputDraftScopeRef = useRef<string | null>(null);
+  const awaitingRunInputDraftRef = useRef<string | null>(null);
   if (draftSnapshot.selectedSkillState !== selectedSkillState) {
     draftSnapshot.selectedSkillState = selectedSkillState;
     draftSnapshot.selectedSkillRevision += 1;
@@ -227,10 +232,48 @@ export const ChatInput = memo(function ChatInput({
   );
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const runInputTextareaRef = useRef<HTMLTextAreaElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const openFileCommandRef = useRef<(() => void) | null>(null);
   const isSubmittingRef = useRef<symbol | null>(null);
   const { hasPermission } = useAuth();
+
+  const runInputScopeKey =
+    runInputs?.sessionId && runInputs.runId
+      ? `${runInputs.sessionId}:${runInputs.runId}`
+      : null;
+
+  useEffect(() => {
+    if (runInputDraftScopeRef.current === runInputScopeKey) return;
+    runInputDraftScopeRef.current = runInputScopeKey;
+    runInputDraftRef.current = "";
+    awaitingRunInputDraftRef.current = null;
+    setRunInputDraft("");
+  }, [runInputScopeKey]);
+
+  useEffect(() => {
+    const accepted = runInputs?.lastAcceptedSubmission;
+    const awaiting = awaitingRunInputDraftRef.current;
+    if (
+      !accepted ||
+      accepted.kind !== "text" ||
+      !accepted.text ||
+      awaiting === null ||
+      accepted.text !== awaiting
+    ) {
+      return;
+    }
+    awaitingRunInputDraftRef.current = null;
+    if (runInputDraftRef.current.trim() === accepted.text) {
+      runInputDraftRef.current = "";
+      setRunInputDraft("");
+    }
+  }, [runInputs?.lastAcceptedSubmission]);
+
+  const updateRunInputDraft = useCallback((value: string) => {
+    runInputDraftRef.current = value;
+    setRunInputDraft(value);
+  }, []);
 
   useEffect(() => {
     reconcileChatInputSubmissionLock(isSubmittingRef, isLoading);
@@ -369,6 +412,43 @@ export const ChatInput = memo(function ChatInput({
       } finally {
         releaseChatInputSubmissionLock(isSubmittingRef, submissionToken);
       }
+    }
+  };
+
+  const handleRunInputSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!canSend || !runInputs || runInputs.isClosed || !runInputDraft.trim()) return;
+    const submittedDraft = runInputDraft;
+    const submittedText = submittedDraft.trim();
+    awaitingRunInputDraftRef.current = submittedText;
+    const accepted = await runInputs.submitText(submittedDraft);
+    if (!accepted) return;
+    awaitingRunInputDraftRef.current = null;
+    if (runInputDraftRef.current === submittedDraft) {
+      updateRunInputDraft("");
+      requestAnimationFrame(() => {
+        if (runInputTextareaRef.current) {
+          runInputTextareaRef.current.style.height = "auto";
+        }
+      });
+    }
+  };
+
+  const handleRetryRunInput = async () => {
+    const pending = runInputs?.pendingSubmission;
+    if (!canSend || !runInputs || !pending) return;
+    if (pending.kind === "text" && pending.text) {
+      awaitingRunInputDraftRef.current = pending.text;
+    }
+    const accepted = await runInputs.retryPendingSubmission();
+    if (
+      accepted &&
+      pending.kind === "text" &&
+      pending.text &&
+      runInputDraftRef.current.trim() === pending.text
+    ) {
+      awaitingRunInputDraftRef.current = null;
+      updateRunInputDraft("");
     }
   };
 
@@ -1010,6 +1090,100 @@ export const ChatInput = memo(function ChatInput({
           </LibreChatComposerBox>
         </div>
       </form>
+
+      {runInputs?.runId && (isLoading || runInputDraft || runInputs.pendingSubmission) ? (
+        <section
+          className="mx-auto mt-2 w-full max-w-[68rem] px-2"
+          data-run-input-composer
+          aria-label={t("chat.runInputs.title", "补充当前任务")}
+        >
+          {runInputs.isLoading && !runInputs.projection ? (
+            <p className="rounded-xl border border-[var(--theme-border)] px-3 py-2 text-xs text-[var(--theme-text-secondary)]" role="status">
+              {t("chat.runInputs.loading", "正在恢复当前任务的补充输入…")}
+            </p>
+          ) : null}
+          {runInputs.projection ? (
+            <>
+              <p className="mb-1 px-1 text-xs text-[var(--theme-text-secondary)]">
+                {t("chat.runInputs.explanation", "补充文本会在当前轮次结束后处理。")}
+              </p>
+              {runInputs.pendingSubmission?.state === "uncertain" ? (
+                <div className="mb-2 flex items-center justify-between gap-3 rounded-xl border border-[var(--theme-warning-ring)] bg-[var(--theme-warning-soft)] px-3 py-2 text-xs text-[var(--theme-warning)]" role="status">
+                  <span>{t("chat.runInputs.uncertain", "提交结果未确认，草稿仍保留。")}</span>
+                  <button
+                    className="shrink-0 underline"
+                    onClick={() => void handleRetryRunInput()}
+                    disabled={!canSend}
+                    type="button"
+                  >
+                    {t("chat.runInputs.retry", "重试上次提交")}
+                  </button>
+                </div>
+              ) : null}
+              {runInputs.submissionError === "network" && !runInputs.pendingSubmission ? (
+                <p className="mb-2 text-xs text-[var(--theme-danger)]" role="alert">
+                  {t("chat.runInputs.networkError", "网络异常，草稿已保留，请重试。")}
+                </p>
+              ) : null}
+              {runInputs.submissionError === "rejected" ? (
+                <p className="mb-2 text-xs text-[var(--theme-danger)]" role="alert">
+                  {t("chat.runInputs.rejected", "补充内容未被接受，草稿已保留。")}
+                </p>
+              ) : null}
+              {runInputs.submissionError === "too_long" ? (
+                <p className="mb-2 text-xs text-[var(--theme-danger)]" role="alert">
+                  {t("chat.runInputs.tooLong", "补充内容不能超过 16,000 个字符。")}
+                </p>
+              ) : null}
+              {runInputs.submissionError === "closed" || runInputs.isClosed ? (
+                <p className="mb-2 text-xs text-[var(--theme-warning)]" role="status">
+                  {t("chat.runInputs.closed", "当前任务暂不接收补充文本，草稿仍保留。")}
+                </p>
+              ) : null}
+              <form
+                onSubmit={(event) => void handleRunInputSubmit(event)}
+                className="flex items-end gap-2 rounded-2xl border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-2 shadow-sm"
+                data-run-input-form
+              >
+                <textarea
+                  ref={runInputTextareaRef}
+                  aria-label={t("chat.runInputs.placeholder", "补充当前任务的文字")}
+                  className="max-h-32 min-h-10 min-w-0 flex-1 resize-y rounded-xl bg-transparent px-2 py-2 text-sm text-[var(--theme-text)] outline-none placeholder:text-[var(--theme-text-secondary)]"
+                  maxLength={16_000}
+                  onChange={(event) => updateRunInputDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+                    if (event.key === "Enter" && !event.shiftKey) {
+                      event.preventDefault();
+                      event.currentTarget.form?.requestSubmit();
+                    }
+                  }}
+                  placeholder={t("chat.runInputs.placeholder", "补充当前任务的文字")}
+                  readOnly={!canSend || runInputs.isClosed || runInputs.projection.state !== "open"}
+                  rows={1}
+                  value={runInputDraft}
+                />
+                <button
+                  aria-label={t("chat.runInputs.submit", "补充本轮")}
+                  className="inline-flex h-9 shrink-0 items-center gap-1 rounded-full bg-[var(--theme-primary)] px-3 text-xs font-medium text-white disabled:cursor-not-allowed disabled:opacity-45"
+                  disabled={
+                    !canSend ||
+                    runInputs.isClosed ||
+                    runInputs.projection.state !== "open" ||
+                    Boolean(runInputs.pendingSubmission) ||
+                    !runInputDraft.trim()
+                  }
+                  title={t("chat.runInputs.submit", "补充本轮")}
+                  type="submit"
+                >
+                  <ArrowUp size={15} aria-hidden="true" />
+                  <span>{t("chat.runInputs.submit", "补充本轮")}</span>
+                </button>
+              </form>
+            </>
+          ) : null}
+        </section>
+      ) : null}
 
       <ChatInputSelectors
         activePanel={activePanel}

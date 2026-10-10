@@ -7,6 +7,7 @@ from app.execution.domain.public_projection import (
     claude_sdk_failure_code,
     claude_sdk_failure_message,
 )
+from app.executors.claude_agent_sdk_runner import project_sdk_turn_diagnostics
 from app.runs.domain.public_terminal import public_terminal_projection
 from app.sandbox import api as sandbox_api
 from app.sandbox.domain import runtime_diagnostics as runtime_diagnostics_contract
@@ -16,6 +17,17 @@ _EXPECTED = {
     "reason": "raw_delta_conflict",
     "stage": "message",
     "location": "answer_delta",
+}
+
+
+_FRAME_SHAPE = {
+    "event_type": "content_block_delta",
+    "block_type": "other",
+    "delta_type": "text_delta",
+    "message_state": "open",
+    "open_block_type": "tool_use",
+    "index_state": "ignored",
+    "guard": "block_delta_type",
 }
 
 
@@ -80,6 +92,60 @@ def test_projection_failure_drops_payload_and_identifier_extras():
     } in normalized["normalization_losses"]
 
 
+def test_raw_frame_shape_rejects_private_values_at_sandbox_boundary():
+    expected = {
+        "reason": "raw_frame_invalid", "stage": "message", "location": "raw_stream_frame",
+    }
+    for shape in (
+        {**_FRAME_SHAPE, "event_type": "private-token"},
+        {**_FRAME_SHAPE, "payload": "private-token"},
+        {**_FRAME_SHAPE, "guard": ["private-token"]},
+    ):
+        normalized = sandbox_api.normalize_sdk_runtime_diagnostics(
+            _runtime_diagnostics(projection_failure={**expected, "frame_shape": shape})
+        )
+        assert normalized["projection_failure"] == expected
+        assert "private-token" not in str(normalized)
+    normalized = sandbox_api.normalize_sdk_runtime_diagnostics(
+        _runtime_diagnostics(projection_failure={**expected, "frame_shape": _FRAME_SHAPE})
+    )
+    assert normalized["projection_failure"] == {**expected, "frame_shape": _FRAME_SHAPE}
+
+
+def test_preceding_frames_keep_only_bounded_structural_labels():
+    expected = {
+        "reason": "raw_frame_invalid", "stage": "message", "location": "raw_stream_frame",
+        "frame_shape": _FRAME_SHAPE,
+    }
+    frame = {
+        "event_type": "content_block_start", "block_type": "tool_use",
+        "delta_type": "other", "message_state": "open",
+        "open_block_type": "none", "index_state": "other",
+    }
+    valid = sandbox_api.normalize_sdk_runtime_diagnostics(
+        _runtime_diagnostics(projection_failure={**expected, "preceding_frames": [frame]})
+    )
+    assert valid["projection_failure"]["preceding_frames"] == [frame]
+    assert sandbox_api.normalize_sdk_runtime_diagnostics(valid)["projection_failure"] == (
+        valid["projection_failure"]
+    )
+
+    for invalid in (
+        [], [frame] * 5, (frame,),
+        [{**frame, "index": 1}],
+        [{**frame, "block_type": "private-token"}],
+        [{**frame, "guard": "block_start_state"}],
+    ):
+        normalized = sandbox_api.normalize_sdk_runtime_diagnostics(
+            _runtime_diagnostics(projection_failure={**expected, "preceding_frames": invalid})
+        )
+        assert normalized["projection_failure"] == expected
+        assert {
+            "field": "projection_failure.preceding_frames", "reason": "invalid_field"
+        } in normalized["normalization_losses"]
+        assert "private-token" not in str(normalized)
+
+
 def test_projection_failure_survives_diagnostic_byte_budget(monkeypatch):
     max_bytes = 4_096
     monkeypatch.setattr(
@@ -90,7 +156,13 @@ def test_projection_failure_survives_diagnostic_byte_budget(monkeypatch):
 
     normalized = sandbox_api.normalize_sdk_runtime_diagnostics(
         _runtime_diagnostics(
-            projection_failure=_EXPECTED,
+            projection_failure={
+                "reason": "raw_frame_invalid", "stage": "message",
+                "location": "raw_stream_frame", "frame_shape": _FRAME_SHAPE,
+                "preceding_frames": [
+                    {key: value for key, value in _FRAME_SHAPE.items() if key != "guard"}
+                ] * 4,
+            },
             sdk={
                 "exception_message": "x" * 8_192,
                 "exception_traceback": "y" * 8_192,
@@ -104,7 +176,8 @@ def test_projection_failure_survives_diagnostic_byte_budget(monkeypatch):
         allow_nan=False,
     ).encode("utf-8")
 
-    assert normalized["projection_failure"] == _EXPECTED
+    assert normalized["projection_failure"]["frame_shape"] == _FRAME_SHAPE
+    assert len(normalized["projection_failure"]["preceding_frames"]) == 4
     assert len(encoded) <= max_bytes
 
 
@@ -126,9 +199,30 @@ def test_sdk_output_validation_failure_keeps_fixed_code_and_public_taxonomy():
         "claude_agent_sdk_output_validation_failed"
     )
     assert claude_sdk_failure_message(output_validation) == (
-        "This run's output could not be validated, so the result could not be "
-        "synchronized. Please refresh the session or contact an administrator."
+        "This run's output could not be validated. "
+        "Please contact an administrator and provide the run ID."
     )
     assert public_terminal_projection(
         "failed", "claude_agent_sdk_output_validation_failed"
+    )["detail_code"] == "run_failed"
+    assert public_terminal_projection(
+        "failed", "terminal_reconciliation_failed"
     )["detail_code"] == "terminal_reconciliation_failed"
+
+
+@pytest.mark.parametrize("code", [
+    "claude_agent_sdk_turn_limit_exceeded",
+    "claude_agent_sdk_timeout",
+    "claude_agent_sdk_missing_structured_terminal",
+    "claude_agent_sdk_provider_session_failed",
+])
+def test_native_continuity_failure_guidance_does_not_offer_same_session_retry(code):
+    diagnostics = project_sdk_turn_diagnostics({}, error_code=code)
+    result = SimpleNamespace(error=code, used_sdk=True, turn_diagnostics=diagnostics)
+
+    assert claude_sdk_failure_code(result) == code
+    assert diagnostics["action"] == "start_new_conversation"
+    assert diagnostics["retryable"] is False
+    message = claude_sdk_failure_message(result)
+    assert "Start a new conversation" in message
+    assert "same session" not in message and "Please retry" not in message

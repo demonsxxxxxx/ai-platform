@@ -1,5 +1,9 @@
-import re
+import json
+import os
 from pathlib import Path
+import re
+import subprocess
+import sys
 
 import pytest
 import yaml
@@ -45,11 +49,17 @@ def test_publish_is_reachable_only_from_trusted_main_events():
 
     assert set(triggers) == {"push", "workflow_dispatch"}
     assert triggers["push"] == {"branches": ["main"]}
-    assert set(triggers["workflow_dispatch"]["inputs"]) == {"confirm_release"}
+    assert set(triggers["workflow_dispatch"]["inputs"]) == {
+        "confirm_release", "release_version"
+    }
     confirm = triggers["workflow_dispatch"]["inputs"]["confirm_release"]
     assert confirm["required"] == "true"
     assert confirm["type"] == "choice"
     assert confirm["options"] == ["PUBLISH_MAIN"]
+    version = triggers["workflow_dispatch"]["inputs"]["release_version"]
+    assert version["required"] == "false"
+    assert version["type"] == "string"
+    assert "default" not in version
 
     text = _workflow_text()
     assert "pull_request:" not in text
@@ -115,6 +125,210 @@ def test_publish_build_uses_role_scoped_non_authoritative_gha_cache():
     assert build["with"]["cache-to"] == (
         "type=gha,mode=max,scope=packaging-${{ matrix.role }},ignore-error=true"
     )
+    assert build["with"]["no-cache-filters"] == "runtime"
+    for dockerfile in (ROOT / "Dockerfile", ROOT / "frontend/web/Dockerfile"):
+        text = dockerfile.read_text(encoding="utf-8")
+        runtime = text.split(" AS runtime\n", 1)[1]
+        assert "apt-get upgrade" in runtime or "apk upgrade" in runtime
+
+
+@pytest.mark.parametrize(
+    "version,valid",
+    [
+        ("", True), ("v0.1.0", True), ("v12.30.456", True),
+        ("0.1.0", False), ("v01.1.0", False), ("v1.01.0", False),
+        ("v1.0.01", False), ("v1.0.0-rc.1", False), ("v1.0.0+build", False),
+        ("v1.0.0\n", False), (" v1.0.0", False), ("v1.0.0; exit 0", False),
+        ("$(exit 0)", False),
+    ],
+)
+def test_requested_release_version_is_strict_literal_input(version, valid):
+    steps = _workflow()["jobs"]["publish"]["steps"]
+    validate = next(
+        step for step in steps if step.get("name") == "Validate requested release version"
+    )
+    names = [step.get("name") for step in steps]
+    assert names.index(validate["name"]) < names.index("Build and push immutable image")
+    assert validate["env"] == {"REQUESTED_RELEASE_VERSION": "${{ inputs.release_version }}"}
+    assert "${{" not in validate["run"]
+    result = subprocess.run(
+        ["bash", "-c", validate["run"]],
+        env={**os.environ, "REQUESTED_RELEASE_VERSION": version},
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert (result.returncode == 0) is valid
+
+
+@pytest.mark.parametrize(
+    "version,failure,expected_calls,success",
+    [
+        ("v0.1.0", "", ["main", "tag", "create", "view"], True),
+        ("", "", [], False),
+        ("v0.1.0", "main_moved", ["main"], False),
+        ("v0.1.0", "main_unavailable", ["main"], False),
+        ("v01.0.0", "", [], False),
+        ("v0.1.0", "tag_exists", ["main", "tag"], False),
+        ("v0.1.0", "create", ["main", "tag", "create"], False),
+        ("v0.1.0", "mutable", ["main", "tag", "create", "view"], False),
+        ("v0.1.0", "view_unavailable", ["main", "tag", "create", "view"], False),
+    ],
+)
+def test_release_publication_fails_closed_without_reusing_version(
+    tmp_path, version, failure, expected_calls, success
+):
+    steps = _workflow()["jobs"]["release-manifest"]["steps"]
+    publish = next(
+        step for step in steps if step.get("name") == "Publish explicit versioned Release"
+    )
+    gh = tmp_path / "gh"
+    log = tmp_path / "calls.jsonl"
+    gh.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys\n"
+        "args = sys.argv[1:]\n"
+        "if args[:2] == ['api', '--method']:\n"
+        "    kind = 'tag'\n"
+        "elif args[0] == 'api':\n"
+        "    kind = 'main'\n"
+        "else:\n"
+        "    kind = args[1]\n"
+        "with open(os.environ['GH_TEST_LOG'], 'a') as log:\n"
+        "    log.write(json.dumps({'kind': kind, 'args': args}) + '\\n')\n"
+        "failure = os.environ['GH_TEST_FAILURE']\n"
+        "if kind == 'main':\n"
+        "    if failure == 'main_unavailable': sys.exit(1)\n"
+        "    print('b' * 40 if failure == 'main_moved' else os.environ['GITHUB_SHA'])\n"
+        "elif kind == 'tag':\n"
+        "    if failure == 'tag_exists': sys.exit(1)\n"
+        "elif kind == 'create':\n"
+        "    if failure == 'create': sys.exit(1)\n"
+        "elif kind == 'view':\n"
+        "    if failure == 'view_unavailable': sys.exit(1)\n"
+        "    print('false' if failure == 'mutable' else 'true')\n"
+        "else:\n"
+        "    sys.exit(2)\n",
+        encoding="utf-8",
+    )
+    gh.chmod(0o755)
+    source = "a" * 40
+    result = subprocess.run(
+        ["bash", "-c", publish["run"]],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "GH_CLI_BIN": str(gh), "GH_TEST_LOG": str(log),
+            "GH_TEST_FAILURE": failure, "GITHUB_REPOSITORY": "example/repository",
+            "GITHUB_SHA": source, "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1",
+            "REQUESTED_RELEASE_VERSION": version,
+            "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF": "refs/heads/main",
+            "CONFIRM_RELEASE": "PUBLISH_MAIN",
+        },
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+    assert (result.returncode == 0) is success, result.stderr
+    assert [call["kind"] for call in calls] == expected_calls
+    for call in calls:
+        args = call["args"]
+        if call["kind"] == "tag":
+            assert args == [
+                "api", "--method", "POST", "repos/example/repository/git/refs",
+                "-f", f"ref=refs/tags/{version}", "-f", f"sha={source}", "--silent",
+            ]
+        elif call["kind"] == "create":
+            assert args[:3] == ["release", "create", version]
+            assert args[3:5] == ["ai-platform-internal-test.tar.gz", "--repo"]
+
+            assert args[args.index("--title") + 1] == version
+            assert "--verify-tag" in args
+            assert "--target" not in args
+
+
+@pytest.mark.parametrize(
+    "event_name,ref,confirmation",
+    [
+        ("push", "refs/heads/main", "PUBLISH_MAIN"),
+        ("pull_request", "refs/heads/main", "PUBLISH_MAIN"),
+        ("workflow_dispatch", "refs/heads/feature", "PUBLISH_MAIN"),
+        ("workflow_dispatch", "refs/tags/v0.1.0", "PUBLISH_MAIN"),
+        ("workflow_dispatch", "refs/heads/main", ""),
+        ("workflow_dispatch", "refs/heads/main", "publish_main"),
+    ],
+)
+def test_release_shell_rejects_unconfirmed_or_non_manual_main_before_github(
+    tmp_path, event_name, ref, confirmation
+):
+    steps = _workflow()["jobs"]["release-manifest"]["steps"]
+    publish = next(
+        step for step in steps if step.get("name") == "Publish explicit versioned Release"
+    )
+    gh = tmp_path / "gh"
+    log = tmp_path / "unexpected-github-call"
+    gh.write_text(
+        f"#!{sys.executable}\n"
+        "import os\n"
+        "from pathlib import Path\n"
+        "Path(os.environ['GH_TEST_LOG']).touch()\n",
+        encoding="utf-8",
+    )
+    gh.chmod(0o755)
+    result = subprocess.run(
+        ["bash", "-c", publish["run"]],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "GH_CLI_BIN": str(gh), "GH_TEST_LOG": str(log),
+            "GITHUB_REPOSITORY": "example/repository", "GITHUB_SHA": "a" * 40,
+            "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1",
+            "REQUESTED_RELEASE_VERSION": "v0.1.0",
+            "GITHUB_EVENT_NAME": event_name, "GITHUB_REF": ref,
+            "CONFIRM_RELEASE": confirmation,
+        },
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode != 0
+    assert not log.exists(), "rejected publication must not call GitHub"
+
+
+def test_temporary_internal_test_package_is_run_bound_and_short_lived():
+    steps = _workflow()["jobs"]["release-manifest"]["steps"]
+    upload = next(
+        step for step in steps if step.get("name") == "Upload temporary internal-test package"
+    )
+    evidence = next(
+        step for step in steps if step.get("name") == "Upload ready release image evidence"
+    )
+    package = next(
+        step for step in steps if "tools/release_compose_package.py" in step.get("run", "")
+    )
+    verify = next(
+        step for step in steps if "tools/release_image_manifest.py verify" in step.get("run", "")
+    )
+    release = next(
+        step for step in steps if step.get("name") == "Publish explicit versioned Release"
+    )
+    assert upload["if"] == (
+        "github.event_name == 'push' || "
+        "(github.event_name == 'workflow_dispatch' && inputs.release_version == '')"
+    )
+    assert upload["uses"] == evidence["uses"]
+    assert upload["with"] == {
+        "name": "ai-platform-internal-test-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}",
+        "if-no-files-found": "error",
+        "retention-days": "7",
+        "path": "ai-platform-internal-test.tar.gz",
+    }
+    assert "continue-on-error" not in upload
+    assert evidence["with"]["retention-days"] == "30"
+    assert steps.index(verify) < steps.index(package) < steps.index(upload) < steps.index(release)
+    assert "deployment-" not in str(release)
+    assert _workflow_text().count('release create "$RELEASE_TAG"') == 1
 
 
 def test_publish_permissions_are_job_scoped_and_environment_protected():
@@ -511,6 +725,11 @@ def test_trivy_inventory_and_fixable_failure_reports_are_run_bound_and_untrusted
     }
     assert "github.token" not in str(inventory) + str(inventory_upload) + str(capture) + str(upload)
     assert "GH_TOKEN" not in str(inventory) + str(inventory_upload) + str(capture) + str(upload)
+    subject_upload = next(step for step in steps if step.get("name") == "Upload subject evidence")
+    # A qualified package retains the full inventory even after diagnostics expire.
+    assert "trivy-inventory-${{ matrix.role }}.json" in subject_upload["with"]["path"].splitlines()
+    assert "trivy-${{ matrix.role }}.json" in subject_upload["with"]["path"].splitlines()
+    assert "if" not in subject_upload
     manifest = workflow["jobs"]["release-manifest"]
     assert "release-image-trivy-inventory" not in str(manifest)
     assert "trivy-inventory" not in str(manifest)
@@ -577,22 +796,23 @@ def test_release_manifest_reverifies_exact_downloaded_bundles_with_pinned_gh():
     public = next(
         step
         for step in steps
-        if step.get("name") == "Publish immutable deployment Release"
+        if step.get("name") == "Publish explicit versioned Release"
     )
-    assert public["if"] == "github.event_name == 'push'"
+    assert public["if"] == (
+        "github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && "
+        "inputs.confirm_release == 'PUBLISH_MAIN' && inputs.release_version != ''"
+    )
     assert public["env"]["GH_TOKEN"] == "${{ github.token }}"
     assert public["env"]["GH_CLI_BIN"] == "${{ env.GH_CLI_BIN }}"
-    assert public["env"]["RELEASE_TAG"] == (
-        "deployment-${{ github.sha }}-${{ github.run_id }}-"
-        "${{ github.run_attempt }}"
-    )
-    assert public["env"]["ASSET_PATH"] == "release-image-manifest.json"
-    assert public["env"]["ASSET_LABEL"] == (
-        "release-image-manifest-${{ github.sha }}-${{ github.run_id }}-"
-        "${{ github.run_attempt }}"
-    )
+    assert public["env"]["REQUESTED_RELEASE_VERSION"] == "${{ inputs.release_version }}"
+    assert public["env"]["CONFIRM_RELEASE"] == "${{ inputs.confirm_release }}"
+    assert "RELEASE_TAG" not in public["env"]
+    assert "ASSET_PATH" not in public["env"]
+    assert "ASSET_LABEL" not in public["env"]
     assert 'release create "$RELEASE_TAG"' in public["run"]
-    assert '"$ASSET_PATH#$ASSET_LABEL"' in public["run"]
+    assert '"ai-platform-internal-test.tar.gz"' in public["run"]
+    assert "release-image-manifest.json" not in public["run"]
+    assert "ai-platform-production.tar.gz" not in public["run"]
     assert "release upload" not in public["run"]
     assert "release edit" not in public["run"]
     assert "--draft" not in public["run"]
@@ -664,7 +884,7 @@ def test_release_manifest_authenticates_private_ghcr_before_local_bundle_verific
     public = next(
         step
         for step in steps
-        if step.get("name") == "Publish immutable deployment Release"
+        if step.get("name") == "Publish explicit versioned Release"
     )
     for step in steps:
         if step is verify or step is public:
@@ -838,33 +1058,44 @@ def test_deployment_release_is_immutable_minimal_and_fresh_main_bound():
     release = next(
         step
         for step in steps
-        if step.get("name") == "Publish immutable deployment Release"
+        if step.get("name") == "Publish explicit versioned Release"
     )
 
     assert not any(
         step.get("name") == "Create public ready evidence archive"
         for step in steps
     )
-    assert release["if"] == "github.event_name == 'push'"
-    assert release["env"]["ASSET_PATH"] == "release-image-manifest.json"
-    assert release["env"]["RELEASE_TAG"].startswith("deployment-${{ github.sha }}-")
+    assert release["if"] == (
+        "github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && "
+        "inputs.confirm_release == 'PUBLISH_MAIN' && inputs.release_version != ''"
+    )
+    assert "ASSET_PATH" not in release["env"]
+    assert "RELEASE_TAG" not in release["env"]
+    assert 'RELEASE_TAG="$REQUESTED_RELEASE_VERSION"' in release["run"]
     assert "release-image-evidence.zip" not in release["run"]
     assert "zipfile" not in release["run"]
     assert "--prerelease" not in release["run"]
     assert "--clobber" not in release["run"]
-    assert '--target "$GITHUB_SHA"' in release["run"]
+    assert "--target" not in release["run"]
+    assert "--verify-tag" in release["run"]
     assert "/immutable-releases" not in release["run"]
     assert 'api "repos/$GITHUB_REPOSITORY/git/ref/heads/main"' in release["run"]
     assert 'test "$current_main" = "$GITHUB_SHA"' in release["run"]
     assert 'release create "$RELEASE_TAG"' in release["run"]
-    assert '"$ASSET_PATH#$ASSET_LABEL"' in release["run"]
+    assert '"ai-platform-internal-test.tar.gz"' in release["run"]
     package = next(step for step in steps if "tools/release_compose_package.py" in step.get("run", ""))
     verification = next(step for step in steps if "tools/release_image_manifest.py verify" in step.get("run", ""))
     assert steps.index(verification) < steps.index(package) < steps.index(release)
-    assert "for profile in internal-test production" in package["run"]
+    assert "--profile" not in package["run"]
+    assert "for profile" not in package["run"]
+    assert package["run"].count("python tools/release_compose_package.py") == 1
+    assert "--output ai-platform-internal-test.tar.gz" in package["run"]
+    assert "ai-platform-production.tar.gz" not in package["run"]
     assert "--manifest release-image-manifest.json" in package["run"]
-    for profile in ("internal-test", "production"):
-        assert f'"ai-platform-{profile}.tar.gz"' in release["run"]
+    assert "--evidence-root ." in package["run"]
+    assert "ai-platform-production.tar.gz" not in release["run"]
+    assert "release-image-manifest.json" not in release["run"]
+    assert not any("production.tar.gz" in str(step) for step in steps)
     assert "release upload" not in release["run"]
     assert "release edit" not in release["run"]
     assert "--latest=false" in release["run"]
@@ -884,7 +1115,7 @@ def test_ready_manifest_requires_both_subject_records_and_is_uploaded_as_run_evi
     assert "python tools/release_image_manifest.py verify" in text
     assert "--expected-role backend" in text
     assert "--expected-role frontend" in text
-    assert text.count("--evidence-root .") == 2
+    assert text.count("--evidence-root .") == 3
     assert "--provenance-bundle \"provenance-${{ matrix.role }}.bundle.json\"" in text
     assert "--provenance-verification \"provenance-${{ matrix.role }}.verified.json\"" in text
     assert "release-image-manifest.json" in text

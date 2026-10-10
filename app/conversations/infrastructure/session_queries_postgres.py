@@ -7,6 +7,15 @@ from psycopg import AsyncConnection
 from typing import Any
 
 
+_AUTHORIZED_SESSION_RUN_COLUMNS = """
+    runs.id, runs.tenant_id, runs.trace_id, runs.schema_version, runs.agent_id,
+    runs.execution_kind, runs.skill_id,
+    runs.status, runs.error_code, runs.error_message, runs.created_at, runs.queued_at,
+    runs.started_at, runs.finished_at, runs.result_json,
+    runs.session_generation
+""".strip()
+
+
 async def ensure_workspace(conn: AsyncConnection, *, tenant_id: str, workspace_id: str) -> None:
     cursor = await conn.execute(
         """
@@ -116,11 +125,8 @@ async def list_authorized_session_runs(
     params.append(limit)
     cursor = await conn.execute(
         f"""
-        select runs.id, runs.trace_id, runs.schema_version, runs.agent_id,
-               runs.execution_kind, runs.skill_id,
-               runs.status, runs.error_code, runs.error_message, runs.created_at, runs.queued_at,
-               runs.started_at, runs.finished_at, runs.result_json,
-               runs.session_generation, queue_admission.queue_admission_ordinal
+        select {_AUTHORIZED_SESSION_RUN_COLUMNS},
+               queue_admission.queue_admission_ordinal
         from runs
         left join lateral (
           select case
@@ -171,11 +177,8 @@ async def list_authorized_session_runs_by_ids(
     if not target_run_ids:
         return []
     cursor = await conn.execute(
-        """
-        select runs.id, runs.trace_id, runs.schema_version, runs.agent_id,
-               runs.execution_kind, runs.skill_id, runs.status, runs.error_code,
-               runs.error_message, runs.created_at, runs.queued_at, runs.started_at,
-               runs.finished_at, runs.result_json, runs.session_generation
+        f"""
+        select {_AUTHORIZED_SESSION_RUN_COLUMNS}
         from unnest(%s::text[]) with ordinality as requested(run_id, ordinal)
         join runs on runs.id = requested.run_id
         join sessions on sessions.id = runs.session_id

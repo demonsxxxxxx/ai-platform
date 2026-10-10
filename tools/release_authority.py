@@ -94,13 +94,23 @@ MANAGED_RELEASE_DIRECTORY_NAME = "releases"
 DIRECT_OPENSANDBOX_COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.opensandbox.yml"
 SANDBOX_COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.sandbox.yml"
 PACKAGED_BACKEND_IMAGE_SUBJECT = "ghcr.io/demonsxxxxxx/ai-platform-backend"
-DIRECT_OPENSANDBOX_NETWORK_KEY = "opensandbox_egress_internal_v1"
-DIRECT_OPENSANDBOX_NETWORK_NAME = "ai-platform-opensandbox-egress-internal-v1"
-DIRECT_OPENSANDBOX_BRIDGE_NAME = "br-osb-egress"
-DIRECT_OPENSANDBOX_SUBNET = "172.31.75.0/24"
-DIRECT_OPENSANDBOX_PROXY_IPV4 = "172.31.75.2"
+DIRECT_OPENSANDBOX_NETWORK_KEY = "opensandbox_egress_v2"
+DIRECT_OPENSANDBOX_NETWORK_NAME = "ai-platform-opensandbox-egress-v2"
+DIRECT_OPENSANDBOX_BRIDGE_NAME = "br-osb-egress2"
+DIRECT_OPENSANDBOX_SUBNET = "172.31.76.0/24"
+DIRECT_OPENSANDBOX_PROXY_IPV4 = "172.31.76.2"
 DIRECT_OPENSANDBOX_PROXY_PORT = 8080
 DIRECT_OPENSANDBOX_PROXY_ALIAS = "egress.opensandbox.internal"
+DIRECT_OPENSANDBOX_LEGACY_NETWORK_NAME = "ai-platform-opensandbox-egress-internal-v1"
+DIRECT_OPENSANDBOX_NETWORK_NAME_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,61}[A-Za-z0-9])?\Z", re.ASCII)
+DIRECT_OPENSANDBOX_BRIDGE_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,14}\Z", re.ASCII)
+DIRECT_OPENSANDBOX_RESERVED_NETWORK_NAMES = frozenset(
+    {"bridge", "host", "none", DIRECT_OPENSANDBOX_LEGACY_NETWORK_NAME}
+)
+RFC1918_NETWORKS = tuple(
+    ipaddress.ip_network(value)
+    for value in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+)
 DIRECT_OPENSANDBOX_PROXY_URL = (
     f"http://{DIRECT_OPENSANDBOX_PROXY_ALIAS}:{DIRECT_OPENSANDBOX_PROXY_PORT}"
 )
@@ -149,6 +159,64 @@ BUILD_DIAGNOSTIC_SCAN_OVERLAP_BYTES = 4096
 
 class ReleaseAuthorityError(RuntimeError):
     """Raised when a release-authority invariant is not satisfied."""
+
+
+@dataclass(frozen=True)
+class DirectOpenSandboxTopology:
+    network_name: str
+    bridge_name: str
+    subnet: str
+    proxy_ipv4: str
+
+
+def validate_direct_opensandbox_topology(
+    network_name: object,
+    bridge_name: object,
+    subnet: object,
+    proxy_ipv4: object,
+) -> DirectOpenSandboxTopology:
+    """Validate the operator-selected Docker bridge topology used by OpenSandbox."""
+    if (
+        not isinstance(network_name, str)
+        or DIRECT_OPENSANDBOX_NETWORK_NAME_RE.fullmatch(network_name) is None
+        or network_name.casefold() in DIRECT_OPENSANDBOX_RESERVED_NETWORK_NAMES
+        or not isinstance(bridge_name, str)
+        or DIRECT_OPENSANDBOX_BRIDGE_NAME_RE.fullmatch(bridge_name) is None
+        or bridge_name.casefold() in DIRECT_OPENSANDBOX_RESERVED_NETWORK_NAMES
+        or not isinstance(subnet, str)
+        or not isinstance(proxy_ipv4, str)
+    ):
+        raise ReleaseAuthorityError("OpenSandbox egress topology is invalid")
+    try:
+        network = ipaddress.ip_network(subnet, strict=True)
+        proxy = ipaddress.ip_address(proxy_ipv4)
+    except ValueError as exc:
+        raise ReleaseAuthorityError("OpenSandbox egress topology is invalid") from exc
+    if (
+        not isinstance(network, ipaddress.IPv4Network)
+        or not isinstance(proxy, ipaddress.IPv4Address)
+        or str(network) != subnet
+        or str(proxy) != proxy_ipv4
+        or not any(network.subnet_of(private) for private in RFC1918_NETWORKS)
+        or proxy <= network.network_address
+        or proxy >= network.broadcast_address
+        or proxy == network.network_address + 1
+    ):
+        raise ReleaseAuthorityError("OpenSandbox egress topology is invalid")
+    return DirectOpenSandboxTopology(
+        network_name=network_name,
+        bridge_name=bridge_name,
+        subnet=str(network),
+        proxy_ipv4=str(proxy),
+    )
+
+
+DIRECT_OPENSANDBOX_DEFAULT_TOPOLOGY = validate_direct_opensandbox_topology(
+    DIRECT_OPENSANDBOX_NETWORK_NAME,
+    DIRECT_OPENSANDBOX_BRIDGE_NAME,
+    DIRECT_OPENSANDBOX_SUBNET,
+    DIRECT_OPENSANDBOX_PROXY_IPV4,
+)
 
 
 def _valid_opensandbox_server_network_topology(container: object) -> bool:
@@ -1865,11 +1933,8 @@ def _validate_direct_opensandbox_config(rendered: str | bytes) -> None:
         worker_environment = services["worker"]["environment"]
         invalid_sandbox = any(
             environment.get("SANDBOX_CONTAINER_PROVIDER") != "opensandbox"
-            or environment.get("SANDBOX_SECURITY_PROFILE") != "governed"
             or environment.get("SANDBOX_EGRESS_POLICY_ENABLED") != "true"
             or environment.get("OPENSANDBOX_USE_SERVER_PROXY") != "true"
-            or environment.get("OPENSANDBOX_EXPECTED_NETWORK_MODE")
-            != DIRECT_OPENSANDBOX_NETWORK_NAME
             or environment.get("OPENSANDBOX_EGRESS_PROXY_URL")
             != DIRECT_OPENSANDBOX_PROXY_URL
             for environment in (api_environment, worker_environment)
@@ -1899,20 +1964,8 @@ def _validate_direct_opensandbox_config(rendered: str | bytes) -> None:
                 break
         network = networks.get(DIRECT_OPENSANDBOX_NETWORK_KEY, {})
         driver_options = network.get("driver_opts") or {}
-        expected_driver_options = {
-            "com.docker.network.bridge.name": DIRECT_OPENSANDBOX_BRIDGE_NAME,
-            "com.docker.network.bridge.enable_ip_masquerade": "false",
-            "com.docker.network.bridge.enable_icc": "false",
-        }
         ipam = network.get("ipam")
         ipam_config = ipam.get("config") if isinstance(ipam, dict) else None
-        invalid_network = (
-            network.get("name") != DIRECT_OPENSANDBOX_NETWORK_NAME
-            or network.get("driver") != "bridge"
-            or network.get("internal") is not True
-            or driver_options != expected_driver_options
-            or ipam_config != [{"subnet": DIRECT_OPENSANDBOX_SUBNET}]
-        )
         proxy = services.get("opensandbox-egress-proxy", {})
         proxy_networks = proxy.get("networks") or {}
         isolated_attachment = (
@@ -1925,6 +1978,33 @@ def _validate_direct_opensandbox_config(rendered: str | bytes) -> None:
             if isinstance(isolated_attachment, dict)
             else None
         )
+        subnet_value = (
+            ipam_config[0].get("subnet")
+            if isinstance(ipam_config, list)
+            and len(ipam_config) == 1
+            and isinstance(ipam_config[0], dict)
+            else None
+        )
+        topology = validate_direct_opensandbox_topology(
+            network.get("name"),
+            driver_options.get("com.docker.network.bridge.name"),
+            subnet_value,
+            isolated_attachment.get("ipv4_address")
+            if isinstance(isolated_attachment, dict)
+            else None,
+        )
+        expected_driver_options = {
+            "com.docker.network.bridge.name": topology.bridge_name,
+            "com.docker.network.bridge.enable_ip_masquerade": "true",
+            "com.docker.network.bridge.enable_icc": "false",
+        }
+        invalid_network = (
+            network.get("driver") != "bridge"
+            or network.get("internal") is not False
+            or network.get("enable_ipv6") is not False
+            or driver_options != expected_driver_options
+            or ipam_config != [{"subnet": topology.subnet}]
+        )
         invalid_proxy = (
             proxy.get("labels", {}).get("ai-platform.release-role")
             != "opensandbox-egress-proxy"
@@ -1933,15 +2013,18 @@ def _validate_direct_opensandbox_config(rendered: str | bytes) -> None:
             or set(proxy_networks) != {"default", DIRECT_OPENSANDBOX_NETWORK_KEY}
             or not isinstance(aliases, list)
             or DIRECT_OPENSANDBOX_PROXY_ALIAS not in aliases
-            or isolated_attachment.get("ipv4_address")
-            != DIRECT_OPENSANDBOX_PROXY_IPV4
+        )
+        invalid_sandbox = invalid_sandbox or any(
+            environment.get("OPENSANDBOX_EXPECTED_NETWORK_MODE")
+            != topology.network_name
+            for environment in (api_environment, worker_environment)
         )
         invalid_membership = any(
             DIRECT_OPENSANDBOX_NETWORK_KEY in (service.get("networks") or {})
             for name, service in services.items()
             if name != "opensandbox-egress-proxy"
         )
-    except (AttributeError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+    except (AttributeError, json.JSONDecodeError, KeyError, TypeError, ValueError, ReleaseAuthorityError):
         raise _compose_config_preflight_error("invalid-direct-opensandbox-config") from None
     if (
         invalid_sandbox

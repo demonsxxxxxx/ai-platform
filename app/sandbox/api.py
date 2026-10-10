@@ -4,6 +4,12 @@ from dataclasses import asdict, dataclass
 from re import fullmatch
 from typing import Literal, Mapping
 
+from app.sandbox.domain.executor_failure import (
+    SandboxExecutorHttpError as SandboxExecutorHttpError,
+    canonical_executor_reported_failure_code as canonical_executor_reported_failure_code,
+    executor_reported_failure_message as executor_reported_failure_message,
+    normalize_executor_reported_failure as normalize_executor_reported_failure,
+)
 from app.sandbox.domain.runtime_diagnostics import (
     SDK_RUNTIME_DIAGNOSTIC_DETAIL_LIMIT as SDK_RUNTIME_DIAGNOSTIC_DETAIL_LIMIT,
 )
@@ -74,18 +80,32 @@ from app.sandbox.domain.host_bind import (
 class AssistantAnswerReceipt:
     """Bounded receipt for a persisted assistant delta sequence."""
 
-    schema_version: Literal["ai-platform.assistant-answer-receipt.v1"]
+    schema_version: Literal[
+        "ai-platform.assistant-answer-receipt.v1",
+        "ai-platform.assistant-answer-receipt.v2",
+    ]
     message_id: str
     delta_count: int
     text_length: int
     last_delta_event_id: str
 
     def __post_init__(self) -> None:
-        if self.schema_version != "ai-platform.assistant-answer-receipt.v1":
+        if self.schema_version not in (
+            "ai-platform.assistant-answer-receipt.v1",
+            "ai-platform.assistant-answer-receipt.v2",
+        ):
             raise ValueError("assistant answer receipt schema version is invalid")
-        if not isinstance(self.delta_count, int) or isinstance(self.delta_count, bool) or self.delta_count <= 0:
+        if (
+            not isinstance(self.delta_count, int)
+            or isinstance(self.delta_count, bool)
+            or self.delta_count <= 0
+        ):
             raise ValueError("delta_count must be a positive integer")
-        if not isinstance(self.text_length, int) or isinstance(self.text_length, bool) or self.text_length <= 0:
+        if (
+            not isinstance(self.text_length, int)
+            or isinstance(self.text_length, bool)
+            or self.text_length <= 0
+        ):
             raise ValueError("text_length must be a positive integer")
         for field_name in ("message_id", "last_delta_event_id"):
             value = getattr(self, field_name)

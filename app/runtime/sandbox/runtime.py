@@ -48,10 +48,8 @@ from app.runtime.sandbox.callback_tokens import (
     derive_callback_token,
 )
 from app.runtime.sandbox.event_normalizer import container_started_event
-from app.runtime.sandbox.executor_client import (
-    SandboxExecutorClient,
-    normalize_executor_reported_failure,
-)
+from app.runtime.sandbox.executor_client import SandboxExecutorClient
+from app.sandbox.api import normalize_executor_reported_failure
 from app.runtime.sandbox.readiness_evidence import (
     ExecutorReadinessEvidence,
     safe_readiness_evidence_payload,
@@ -60,11 +58,10 @@ from app.runtime.sandbox.opensandbox_policy import (
     SANDBOX_SECURITY_PROFILE_GOVERNED,
     SANDBOX_SECURITY_PROFILE_INTERNAL_TEST,
     SANDBOX_SECURITY_PROFILE_LABEL,
-    OpenSandboxProfileConfigurationError,
-    internal_test_orphan_cleanup_expected_labels,
+    active_internal_test_lease_is_authorized,
 )
 from app.runtime.sandbox.workspace_manager import SandboxWorkspaceManager
-from app.settings import get_settings
+from app.settings import DIRECT_OPENSANDBOX_NETWORK_NAME, get_settings
 
 
 EventSink = Callable[[AgentEvent], Awaitable[None] | None]
@@ -211,62 +208,45 @@ class SandboxRuntime:
         lease_security_profile = str(
             lease.labels.get(SANDBOX_SECURITY_PROFILE_LABEL) or SANDBOX_SECURITY_PROFILE_GOVERNED
         )
-        if lease_security_profile not in {
-            SANDBOX_SECURITY_PROFILE_GOVERNED,
-            SANDBOX_SECURITY_PROFILE_INTERNAL_TEST,
-        }:
-            raise ValueError("sandbox_security_profile_invalid")
-        if lease_security_profile == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST and not (
-            lease.provider == "opensandbox"
-            and getattr(settings, "sandbox_security_profile", "") == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST
-            and getattr(settings, "deployment_environment", "") == "test"
-            and getattr(settings, "opensandbox_expected_network_mode", "") == "bridge"
-        ):
-            raise ValueError("sandbox_security_profile_invalid")
-        direct_requested_image = ""
-        direct_requested_image_digest = ""
         if lease_security_profile == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST:
-            cleanup_scope = {
-                "tenant_id": lease.tenant_id,
-                "workspace_id": lease.workspace_id,
-                "user_id": lease.user_id,
-                "session_id": lease.session_id,
-                "run_id": lease.run_id,
-                "attempt_id": request.attempt_id,
-                "sandbox_mode": lease.sandbox_mode,
-                "security_profile": SANDBOX_SECURITY_PROFILE_INTERNAL_TEST,
-            }
-            try:
-                raw_expected_labels = internal_test_orphan_cleanup_expected_labels(cleanup_scope, settings) or {}
-            except OpenSandboxProfileConfigurationError:
-                raise ValueError("sandbox_security_profile_invalid") from None
-            if any(str(lease.labels.get(key) or "") != value for key, value in raw_expected_labels.items()):
+            if (
+                lease.provider != "opensandbox"
+                or lease.labels.get("ai-platform.attempt_id") != request.attempt_id
+                or not active_internal_test_lease_is_authorized(lease, settings)
+            ):
                 raise ValueError("sandbox_security_profile_invalid")
-            direct_requested_image = raw_expected_labels["ai-platform.executor.requested_image"]
-            direct_requested_image_digest = raw_expected_labels["ai-platform.executor.requested_image_digest"]
+        elif lease_security_profile != SANDBOX_SECURITY_PROFILE_GOVERNED:
+            raise ValueError("sandbox_security_profile_invalid")
         authorized_skill_scope = governed_egress_authorized_skill_scope(
             skill_ids=request.skill_ids,
             mcp_tool_ids=request.mcp_tool_ids,
         )
         authorized_native_tool_scope = governed_egress_authorized_native_tool_scope(request.tool_policy_subjects)
+        expected_binding: dict[str, object] = {
+            "tenant_id": lease.tenant_id,
+            "workspace_id": lease.workspace_id,
+            "user_id": lease.user_id,
+            "session_id": lease.session_id,
+            "run_id": lease.run_id,
+            "attempt_id": request.attempt_id,
+            "image_subject": image_subject,
+            "image_digest": image_digest,
+            "authorized_skill_scope": authorized_skill_scope,
+            "authorized_native_tool_scope": authorized_native_tool_scope,
+            "lease_identity": f"{lease.provider}:{lease.container_name}:{lease.container_id}",
+        }
+        if lease.provider == "opensandbox":
+            expected_binding["network_name"] = getattr(
+                settings,
+                "opensandbox_expected_network_mode",
+                DIRECT_OPENSANDBOX_NETWORK_NAME,
+            )
         governed_egress_proof = governed_egress_proof_from_labels(
             lease.provider,
             lease.labels,
             signing_key=getattr(settings, "sandbox_egress_proof_signing_key", ""),
             signing_key_id=getattr(settings, "sandbox_egress_proof_key_id", "current"),
-            expected_binding={
-                "tenant_id": lease.tenant_id,
-                "workspace_id": lease.workspace_id,
-                "user_id": lease.user_id,
-                "session_id": lease.session_id,
-                "run_id": lease.run_id,
-                "attempt_id": request.attempt_id,
-                "image_subject": image_subject,
-                "image_digest": image_digest,
-                "authorized_skill_scope": authorized_skill_scope,
-                "authorized_native_tool_scope": authorized_native_tool_scope,
-                "lease_identity": f"{lease.provider}:{lease.container_name}:{lease.container_id}",
-            },
+            expected_binding=expected_binding,
         )
         if (
             lease.provider in REAL_SANDBOX_PROVIDERS
@@ -286,16 +266,17 @@ class SandboxRuntime:
             )
         }
         if lease_security_profile == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST:
-            persisted_labels.update(
-                {
-                    key: str(lease.labels[key])
-                    for key in (
-                        "ai-platform.executor.requested_image",
-                        "ai-platform.executor.requested_image_digest",
-                    )
-                    if key in lease.labels
-                }
-            )
+            persisted_labels.update({
+                key: lease.labels[key]
+                for key in (
+                    "ai-platform.executor.requested_image",
+                    "ai-platform.executor.requested_image_digest",
+                    "ai-platform.executor.user",
+                    "ai-platform.executor.uid",
+                    "ai-platform.executor.gid",
+                    "ai-platform.executor.identity_evidence",
+                )
+            })
         lease_payload = {
             "source": "sandbox_runtime",
             "evidence_class": "runtime_lease_projection",
@@ -334,10 +315,15 @@ class SandboxRuntime:
         ):
             lease_payload[PROFILE_DRIVE_STAGE_LEASE_FLAG] = True
         if lease_security_profile == SANDBOX_SECURITY_PROFILE_INTERNAL_TEST:
-            lease_payload["requested_image"] = direct_requested_image
-            lease_payload["requested_image_digest"] = direct_requested_image_digest
+            lease_payload["internal_test_lease_version"] = "active-v1"
+            lease_payload["requested_image"] = image_subject
+            lease_payload["requested_image_digest"] = image_digest
         if governed_egress_proof is not None:
             lease_payload["governed_egress_proof"] = governed_egress_proof
+            if lease.provider == "opensandbox":
+                lease_payload["governed_egress_network_name"] = str(
+                    expected_binding["network_name"]
+                )
             for proof_field in (
                 "image_subject_sha256",
                 "image_digest_sha256",

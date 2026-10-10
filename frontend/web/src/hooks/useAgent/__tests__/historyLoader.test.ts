@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { getVisibleMessageParts } from "../../../components/chat/ChatMessage/messagePartVisibility.ts";
-import type { MessagePart } from "../../../types";
+import type { Message, MessagePart } from "../../../types";
 import {
   hasDisplayableRunAnswer,
   mergeHydratedRunSegment,
@@ -283,6 +283,33 @@ test("production compatibility history reconstructs each persisted user turn bef
       ["assistant", "run-new", "第二轮回答"],
     ],
   );
+});
+
+test("reconstructs marked work traces as collapsible parts without changing old summaries", () => {
+  const events: HistoryEvent[] = [
+    ...["worktrace_1", "summary_2"].map((summaryId, index) => ({
+      id: `commentary-${index}`,
+      type: "summary",
+      event_type: "summary",
+      run_id: "run-v4-trace",
+      sequence: index + 1,
+      timestamp: "2026-09-20T00:00:00Z",
+      data: {
+        projection_version: "ai-platform.chat-public-projection.v1",
+        event_id: `commentary-${index}`,
+        run_id: "run-v4-trace",
+        event_type: "summary",
+        summary_id: summaryId,
+        content: `Public text ${index}`,
+        payload: { summary_id: summaryId, delta: `Public text ${index}` },
+      },
+    })),
+  ];
+  const messages = reconstructMessagesFromEvents(events, new Set<string>(), { activeSubagentStack: [] });
+  const parts = getVisibleMessageParts(messages[0]?.parts || []);
+  assert.equal(parts.length, 2);
+  assert.equal(parts[0]?.type === "summary" && parts[0].kind, "work_trace");
+  assert.equal(parts[1]?.type === "summary" && parts[1].kind, undefined);
 });
 
 test("reconstructs compact v4 compatibility history as commentary plus answer", () => {
@@ -1473,4 +1500,92 @@ test("retired permission history adds no cards or empty messages beside normal c
     ),
     false,
   );
+});
+
+const runId = "run-hydration";
+const timestamp = new Date("2026-10-10T00:00:00Z");
+function assistant(parts: MessagePart[], content = ""): Message {
+  return { id: runId, runId, role: "assistant", content, timestamp, parts };
+}
+function artifact(id: string, label = `${id}.txt`): Extract<MessagePart, { type: "artifact" }> {
+  return {
+    type: "artifact", artifact_id: id, artifact_type: "document", label, content_type: "text/plain", size_bytes: 12,
+    status: "ready", download_url: `/api/ai/artifacts/${id}/download`,
+  };
+}
+function work(id: string): MessagePart {
+  return { type: "text", content: `Working on ${id}`, logical_id: id,
+    public_part_id: id, text_role: "work" };
+}
+function terminal(eventType: "run_failed" | "run_cancelled"): MessagePart {
+  return { type: "run_status", event_id: `terminal-${eventType}`, event_type: eventType,
+    stage: "terminal", message: "Fixed public terminal copy", severity: "error" };
+}
+
+for (const scenario of [
+  { name: "artifact-only successful result", parts: [artifact("first")] },
+  { name: "work-only text and an artifact", parts: [work("work-1"), artifact("first")] },
+  { name: "failed result with an artifact", parts: [artifact("first"), terminal("run_failed")] },
+  { name: "cancelled result with an artifact", parts: [artifact("first"), terminal("run_cancelled")] },
+]) {
+  test(`terminal hydration retains ${scenario.name}`, () => {
+    const recovered = assistant(scenario.parts);
+    const result = mergeHydratedRunSegment([assistant([])], [recovered], runId);
+    assert.deepEqual(result[0].parts, scenario.parts);
+    assert.equal(hasDisplayableRunAnswer(result, runId), true);
+    assert.deepEqual(mergeHydratedRunSegment(result, [recovered], runId), result);
+  });
+}
+
+test("partial hydration keeps authoritative artifact updates and original part order", () => {
+  const oldArtifact = artifact("same", "old.txt");
+  const newArtifact = artifact("same", "current.txt");
+  const process: MessagePart = { type: "execution_process", steps: [] };
+  const parts = [process, artifact("first"), newArtifact, terminal("run_failed")];
+  const result = mergeHydratedRunSegment([assistant([oldArtifact])], [assistant(parts)], runId);
+  assert.deepEqual(result[0].parts, parts);
+  assert.equal(result[0].parts?.filter((part) => part.type === "artifact" && part.artifact_id === "same").length, 1);
+});
+
+test("partial hydration retains missing safe live parts without duplicating authoritative parts", () => {
+  const live = assistant([work("retained"), artifact("retained-file"), artifact("same", "old.txt")]);
+  const authoritative = [artifact("same", "new.txt"), terminal("run_failed")];
+  const result = mergeHydratedRunSegment([live], [assistant(authoritative)], runId);
+  assert.deepEqual(result[0].parts, [...authoritative, work("retained"), artifact("retained-file")]);
+  assert.deepEqual(mergeHydratedRunSegment(result, [assistant(authoritative)], runId), result);
+});
+
+test("artifact hydration preserves unrelated Runs and filters foreign hydrated messages", () => {
+  const previousRun = { ...assistant([artifact("older")]), id: "older", runId: "older" };
+  const nextRun = { ...assistant([artifact("newer")]), id: "newer", runId: "newer" };
+  const foreign = { ...assistant([artifact("foreign")]), id: "foreign", runId: "foreign" };
+  const recovered = assistant([artifact("current")]);
+  const result = mergeHydratedRunSegment([previousRun, assistant([]), nextRun], [foreign, recovered], runId);
+  assert.deepEqual(result, [previousRun, { ...recovered, attachments: [] }, nextRun]);
+  assert.equal(result[0], previousRun);
+  assert.equal(result[2], nextRun);
+});
+
+test("answer and artifact hydration follows the complete authoritative segment", () => {
+  const answer: MessagePart = { type: "text", content: "Ready", logical_id: "answer", public_part_id: "answer", text_role: "answer" };
+  const recovered = assistant([artifact("first"), answer, artifact("second")], "Ready");
+  const result = mergeHydratedRunSegment([assistant([artifact("obsolete")])], [recovered], runId);
+  assert.deepEqual(result, [recovered]);
+});
+
+
+test("partial hydration does not move interleaved work before authoritative process parts", () => {
+  const pendingArtifact = { ...artifact("pending"), status: "failed" as const };
+  const parts: MessagePart[] = [
+    { type: "execution_process", steps: [] }, pendingArtifact,
+    work("work-1"), terminal("run_failed"),
+  ];
+  const result = mergeHydratedRunSegment([assistant([])], [assistant(parts)], runId);
+  assert.deepEqual(result[0].parts, parts);
+});
+
+test("partial hydration still excludes malformed marked text", () => {
+  const invalid: MessagePart = { type: "text", content: "Invalid", public_part_id: "part", text_role: "answer", logical_id: "different" };
+  const result = mergeHydratedRunSegment([assistant([])], [assistant([invalid, artifact("safe")])], runId);
+  assert.deepEqual(result[0].parts, [artifact("safe")]);
 });

@@ -11,11 +11,17 @@ import type {
   ChatStreamResponse,
   ChatSubmissionResolution,
 } from "../../../services/api/session.ts";
+import { selectAssistantCopyText } from "../../../types/assistantTextParts.ts";
 import { installBrowserAuthTestDb } from "../../__tests__/browserAuthTestDb.ts";
 import { installTestDom } from "./testDom.ts";
 
 const dom = installTestDom();
 installBrowserAuthTestDb();
+
+let productionRunInputReads: Pick<
+  typeof import("../../../services/api/session.ts").sessionApi,
+  "getRunInputs" | "getRunInputHistory"
+> | null = null;
 
 function clearPersistedSubmissionReferences() {
   for (let index = dom.window.localStorage.length - 1; index >= 0; index -= 1) {
@@ -45,6 +51,7 @@ async function loadReactHarness({
   sessionRouteLifecycle = false,
   sessionRouteBasePath,
   initialRoute = "/chat",
+  realRunInputReads = false,
 }: {
   agentOptions?: UseAgentOptions;
   strict?: boolean;
@@ -53,6 +60,7 @@ async function loadReactHarness({
   sessionRouteLifecycle?: boolean;
   sessionRouteBasePath?: string;
   initialRoute?: string;
+  realRunInputReads?: boolean;
 } = {}) {
   if (!preserveSubmissionReferences) {
     clearPersistedSubmissionReferences();
@@ -91,6 +99,11 @@ async function loadReactHarness({
   const originalGetCurrentUser = authApi.getCurrentUser;
   const originalBootstrapAuthContext = authApi.bootstrapAuthContext;
   const originalGetAuthoritative = sessionApi.getAuthoritative;
+  const originalGetRunInputs = sessionApi.getRunInputs;
+  const originalGetRunInputHistory = sessionApi.getRunInputHistory;
+  // Nested harnesses can retire in either order. Capture the real transport
+  // once so the auth-fencing regression never inherits another harness's mock.
+  productionRunInputReads ??= { getRunInputs: originalGetRunInputs, getRunInputHistory: originalGetRunInputHistory };
   let currentAuthUser = {
     id: "user-a",
     tenant_id: "tenant-a",
@@ -121,8 +134,18 @@ async function loadReactHarness({
     purpose: "conversation",
     agent_conversation: null,
   });
+  // Run input persistence has its own mounted suite. Keep these read owners
+  // explicit so a playback transport stub only observes playback requests.
+  if (realRunInputReads) {
+    Object.assign(sessionApi, productionRunInputReads);
+  } else {
+    sessionApi.getRunInputs = async (runId) => ({ run_id: runId, state: "inactive", inputs: [], questions: [] });
+    sessionApi.getRunInputHistory = async (sessionId) => ({ session_id: sessionId, runs: [], has_more: false, next_before_run_id: null });
+  }
   const restoreSessionApi = () => {
     sessionApi.getAuthoritative = originalGetAuthoritative;
+    sessionApi.getRunInputs = originalGetRunInputs;
+    sessionApi.getRunInputHistory = originalGetRunInputHistory;
   };
 
   function Probe() {
@@ -4061,6 +4084,268 @@ test("useAgent retains final answer and artifact frames that precede a succeeded
   }
 });
 
+test("mounted SSE reclassifies answer text as work and isolates delayed failed hydration from the next Run", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalSubmitChat = sessionApi.submitChat;
+  const originalMarkRead = sessionApi.markRead;
+  const originalGenerateTitle = sessionApi.generateTitle;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalFetch = dom.window.fetch;
+  const firstRunId = "run-part-failed";
+  const secondRunId = "run-part-next";
+  const firstMessageId = "protocol-part-failed";
+  const secondMessageId = "protocol-part-next";
+  const partId = "part_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const secondPartId = "part_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  const firstRunFrames: string[] = [];
+  const secondRunFrames: string[] = [];
+  let resolveFailedHistory:
+    | ((value: Awaited<ReturnType<typeof sessionApi.getEvents>>) => void)
+    | null = null;
+  let secondStream:
+    | ReturnType<typeof controlledNonClosingSseResponse>
+    | undefined;
+  let streamRequestCount = 0;
+
+  const frame = (
+    runId: string,
+    messageId: string | null,
+    cursor: number,
+    eventType: string,
+    eventId: string,
+    sequence: number | null,
+    payload: Record<string, unknown>,
+  ) => {
+    const controlEvent = eventType.startsWith("stream.");
+    const envelope = {
+      schema: controlEvent
+        ? "ai-platform.public-run-stream-control.v4"
+        : PUBLIC_RUN_STREAM_SCHEMA,
+      event_id: eventId,
+      run_id: runId,
+      message_id: messageId,
+      seq: sequence,
+      event_type: eventType,
+      stream_incarnation: 1,
+      replayable: true,
+      trace_ref: null,
+      causation_event_id: null,
+      emitted_at: `2026-10-09T00:00:0${cursor}Z`,
+      payload,
+    };
+    return `id: ${runId}:1:${cursor}-0\nevent: ${eventType}\ndata: ${JSON.stringify(envelope)}\n\n`;
+  };
+  const openedRun = (
+    runId: string,
+    messageId: string,
+    textPartId: string,
+    text: string,
+    finalRole: "answer" | "work",
+  ) =>
+    frame(runId, null, 1, "stream.open", `open-${runId}`, null, {
+      design_id: STREAM_DESIGN_ID,
+    }) +
+    frame(runId, messageId, 2, "message.started", `started-${runId}`, 1, {}) +
+    frame(runId, messageId, 3, "message.part.delta", `delta-${runId}`, 2, {
+      schema_version: "ai-platform.assistant-text-part.v1",
+      part_id: textPartId,
+      delta: text,
+    }) +
+    frame(runId, messageId, 4, "message.part.classified", `answer-${runId}`, 3, {
+      schema_version: "ai-platform.assistant-text-part.v1",
+      part_id: textPartId,
+      role: "answer",
+    }) +
+    (finalRole === "work"
+      ? frame(runId, messageId, 5, "message.part.classified", `work-${runId}`, 4, {
+          schema_version: "ai-platform.assistant-text-part.v1",
+          part_id: textPartId,
+          role: "work",
+        })
+      : "");
+
+  firstRunFrames.push(
+    openedRun(firstRunId, firstMessageId, partId, "Tool preamble", "work"),
+    frame(firstRunId, null, 6, "run.failed", `failed-${firstRunId}`, 5, {
+      terminal_event_id: `failed-${firstRunId}`,
+      hydrate_required: true,
+      projection_version: "ai-platform.chat-public-projection.v1",
+      code: "run_failed",
+      default_message: "任务未能完成。请稍后重试；如问题持续，请联系管理员。",
+      detail: null,
+    }),
+    frame(firstRunId, null, 7, "stream.end", `end-${firstRunId}`, null, {
+      terminal_event_id: `failed-${firstRunId}`,
+    }),
+  );
+  secondRunFrames.push(
+    openedRun(secondRunId, secondMessageId, secondPartId, "New answer", "answer"),
+  );
+
+  sessionApi.markRead = async () => {};
+  sessionApi.generateTitle = async () => ({
+    title: "Assistant text parts",
+    session_id: "session-part-hydration",
+  });
+  sessionApi.submitChat = (async () => {
+    const runId = submitCount++ === 0 ? firstRunId : secondRunId;
+    return {
+      session_id: "session-part-hydration",
+      run_id: runId,
+      trace_id: `trace-${runId}`,
+      status: "queued",
+    };
+  }) as typeof sessionApi.submitChat;
+  let submitCount = 0;
+  sessionApi.getEvents = (async (_sessionId, options) => {
+    assert.equal(options?.run_id, firstRunId);
+    return new Promise((resolve) => {
+      resolveFailedHistory = resolve;
+    });
+  }) as typeof sessionApi.getEvents;
+  dom.window.fetch = async () => {
+    if (streamRequestCount++ === 0) {
+      return new Response(firstRunFrames.join(""), {
+        headers: { "content-type": "text/event-stream" },
+      });
+    }
+    if (!secondStream) {
+      secondStream = controlledNonClosingSseResponse(
+        secondRunFrames.join(""),
+      );
+    }
+    return secondStream.response;
+  };
+
+  try {
+    await settle(harness.act);
+    await harness.act(async () => {
+      await harness.hook.sendMessage("失败前公开的工具前缀");
+    });
+    await settle(harness.act);
+
+    const failedLive = harness.hook.messages.find(
+      (message) => message.role === "assistant" && message.runId === firstRunId,
+    );
+    assert.equal(harness.hook.currentRunId, null);
+    assert.equal(failedLive?.content, "");
+    const livePart = failedLive?.parts?.find(
+      (part) => part.type === "text" && part.public_part_id === partId,
+    );
+    assert.equal(livePart?.type === "text" ? livePart.text_role : null, "work");
+    assert.equal(selectAssistantCopyText(failedLive?.parts), "");
+    assert.ok(resolveFailedHistory, "failed Run history hydration should be pending");
+
+    await harness.act(async () => {
+      await harness.hook.sendMessage("启动新的Run");
+    });
+    await settle(harness.act);
+    const nextBeforeHydration = harness.hook.messages.find(
+      (message) => message.role === "assistant" && message.runId === secondRunId,
+    );
+    assert.equal(harness.hook.currentRunId, secondRunId);
+    assert.equal(nextBeforeHydration?.content, "New answer");
+
+    await harness.act(async () => {
+      resolveFailedHistory?.({
+        events: [
+          {
+            id: "history-part-started",
+            event_type: "message.started",
+            run_id: firstRunId,
+            sequence: 1,
+            timestamp: "2026-10-09T00:00:01Z",
+            data: {
+              event_id: "history-part-started",
+              run_id: firstRunId,
+              message_id: firstMessageId,
+              sequence: 1,
+              stream_incarnation: 1,
+              event_type: "message.started",
+              payload: {},
+            },
+          },
+          {
+            id: "history-part-delta",
+            event_type: "message.part.delta",
+            run_id: firstRunId,
+            sequence: 2,
+            timestamp: "2026-10-09T00:00:02Z",
+            data: {
+              event_id: "history-part-delta",
+              run_id: firstRunId,
+              message_id: firstMessageId,
+              sequence: 2,
+              stream_incarnation: 1,
+              event_type: "message.part.delta",
+              payload: {
+                schema_version: "ai-platform.assistant-text-part.v1",
+                part_id: partId,
+                delta: "Tool preamble with suffix",
+              },
+            },
+          },
+          {
+            id: "history-part-work",
+            event_type: "message.part.classified",
+            run_id: firstRunId,
+            sequence: 3,
+            timestamp: "2026-10-09T00:00:03Z",
+            data: {
+              event_id: "history-part-work",
+              run_id: firstRunId,
+              message_id: firstMessageId,
+              sequence: 3,
+              stream_incarnation: 1,
+              event_type: "message.part.classified",
+              payload: {
+                schema_version: "ai-platform.assistant-text-part.v1",
+                part_id: partId,
+                role: "work",
+              },
+            },
+          },
+        ],
+      });
+    });
+    await settle(harness.act);
+
+    const failedHydrated = harness.hook.messages.find(
+      (message) => message.role === "assistant" && message.runId === firstRunId,
+    );
+    const hydratedWorkPart = failedHydrated?.parts?.find(
+      (part) => part.type === "text" && part.public_part_id === partId,
+    );
+    assert.equal(
+      hydratedWorkPart?.type === "text" ? hydratedWorkPart.content : null,
+      "Tool preamble with suffix",
+    );
+    assert.equal(
+      hydratedWorkPart?.type === "text" ? hydratedWorkPart.text_role : null,
+      "work",
+    );
+    assert.equal(selectAssistantCopyText(failedHydrated?.parts), "");
+    const nextAfterHydration = harness.hook.messages.find(
+      (message) => message.role === "assistant" && message.runId === secondRunId,
+    );
+    assert.equal(harness.hook.currentRunId, secondRunId);
+    assert.equal(nextAfterHydration?.content, "New answer");
+    const nextPart = nextAfterHydration?.parts?.find(
+      (part) => part.type === "text" && part.public_part_id === secondPartId,
+    );
+    assert.equal(nextPart?.type === "text" ? nextPart.text_role : null, "answer");
+  } finally {
+    secondStream?.close();
+    sessionApi.submitChat = originalSubmitChat;
+    sessionApi.markRead = originalMarkRead;
+    sessionApi.generateTitle = originalGenerateTitle;
+    sessionApi.getEvents = originalGetEvents;
+    dom.window.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+
 for (const admissionOutcome of ["accepted", "rejected", "unknown"] as const) {
 test(`useAgent preserves terminal backfill during next admission: ${admissionOutcome}`, async () => {
   const harness = await loadReactHarness();
@@ -5894,6 +6179,318 @@ test(`useAgent hydrates an active same-incarnation gap ${recovery === "timeout" 
 
 }
 
+test("useAgent rejects an invalid assistant text-part history during gap hydration without resuming past it", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalMarkRead = sessionApi.markRead;
+  const originalFetch = dom.window.fetch;
+  const runId = "run-invalid-part-gap";
+  const messageId = "protocol-invalid-part-gap";
+  const requestCursors: Array<string | null> = [];
+  let exactHistoryReads = 0;
+  let statusReads = 0;
+
+  const eventFrame = (
+    cursor: string,
+    eventType: string,
+    eventId: string,
+    sequence: number | null,
+    messageEvent: boolean,
+    payload: Record<string, unknown>,
+  ) => {
+    const controlEvent = eventType.startsWith("stream.");
+    const envelope = {
+      schema: controlEvent
+        ? "ai-platform.public-run-stream-control.v4"
+        : PUBLIC_RUN_STREAM_SCHEMA,
+      event_id: eventId,
+      run_id: runId,
+      message_id: messageEvent ? messageId : null,
+      seq: sequence,
+      event_type: eventType,
+      stream_incarnation: 1,
+      replayable: eventType !== "stream.gap",
+      trace_ref: null,
+      causation_event_id: null,
+      emitted_at: "2026-10-09T00:00:01Z",
+      payload,
+    };
+    return `id: ${runId}:1:${cursor}\nevent: ${eventType}\ndata: ${JSON.stringify(envelope)}\n\n`;
+  };
+
+  sessionApi.markRead = async () => {};
+  sessionApi.get = async () => ({
+    id: "session-invalid-part-gap",
+    agent_id: "general-agent",
+    created_at: "2026-10-09T00:00:00Z",
+    updated_at: "2026-10-09T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  });
+  sessionApi.getEvents = (async (_sessionId, options) => {
+    if (!options?.run_id) {
+      return {
+        current_run_id: runId,
+        events: [{
+          id: "invalid-gap:user",
+          event_type: "user:message",
+          run_id: runId,
+          timestamp: "2026-10-09T00:00:00Z",
+          data: { content: "恢复一段损坏的流" },
+        }],
+      };
+    }
+    exactHistoryReads += 1;
+    return {
+      current_run_id: runId,
+      events: [
+        {
+          id: "invalid-gap:history-started",
+          event_type: "message.started",
+          run_id: runId,
+          sequence: 20,
+          timestamp: "2026-10-09T00:00:01Z",
+          data: {
+            event_id: "invalid-gap:history-started",
+            run_id: runId,
+            message_id: messageId,
+            sequence: 20,
+            stream_incarnation: 1,
+            event_type: "message.started",
+            payload: {},
+          },
+        },
+        {
+          id: "invalid-gap:history-part",
+          event_type: "message.part.delta",
+          run_id: runId,
+          sequence: 21,
+          timestamp: "2026-10-09T00:00:02Z",
+          data: {
+            event_id: "invalid-gap:history-part",
+            run_id: runId,
+            message_id: messageId,
+            sequence: 21,
+            stream_incarnation: 1,
+            event_type: "message.part.delta",
+            payload: {
+              schema_version: "ai-platform.assistant-text-part.v1",
+              part_id: "part_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              delta: "Must not be committed",
+            },
+          },
+        },
+        {
+          id: "invalid-gap:orphan-classification",
+          event_type: "message.part.classified",
+          run_id: runId,
+          sequence: 100,
+          timestamp: "2026-10-09T00:00:03Z",
+          data: {
+            event_id: "invalid-gap:orphan-classification",
+            run_id: runId,
+            message_id: messageId,
+            sequence: 100,
+            stream_incarnation: 1,
+            event_type: "message.part.classified",
+            payload: {
+              schema_version: "ai-platform.assistant-text-part.v1",
+              part_id: "part_missing_from_history",
+              role: "answer",
+            },
+          },
+        },
+      ],
+    };
+  }) as typeof sessionApi.getEvents;
+  sessionApi.getStatus = (async () => {
+    statusReads += 1;
+    return {
+      session_id: "session-invalid-part-gap",
+      run_id: runId,
+      status: "running",
+      raw_status: "running",
+    };
+  }) as typeof sessionApi.getStatus;
+  dom.window.fetch = async (_input, init) => {
+    requestCursors.push(new Headers(init?.headers).get("Last-Event-ID"));
+    const body = [
+      eventFrame("1-0", "stream.open", "invalid-gap-open", null, false, {
+        design_id: STREAM_DESIGN_ID,
+      }),
+      eventFrame("2-0", "message.started", "invalid-gap-started", 1, true, {}),
+      eventFrame("3-0", "stream.gap", "invalid-gap-gap", null, false, {
+        reason: "retained_history_unavailable",
+        recovery: "reload_durable_state",
+        requested_event_id: "2-0",
+        requested_stream_incarnation: 1,
+        current_stream_incarnation: 1,
+        earliest_available_event_id: "3-0",
+        latest_available_event_id: "9-0",
+      }),
+    ].join("");
+    return new Response(body, {
+      headers: { "content-type": "text/event-stream" },
+    });
+  };
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-invalid-part-gap");
+    });
+    await settle(harness.act);
+    await harness.act(
+      () => new Promise<void>((resolve) => setTimeout(resolve, 50)),
+    );
+
+    const assistant = harness.hook.messages.find(
+      (message) => message.role === "assistant" && message.runId === runId,
+    );
+    assert.equal(exactHistoryReads, 1);
+    assert.equal(statusReads, 2);
+    assert.deepEqual(requestCursors, [null]);
+    assert.equal(harness.hook.currentRunId, runId);
+    assert.equal(harness.hook.connectionStatus, "disconnected");
+    assert.equal(assistant?.parts?.some(
+      (part) => part.type === "text" && part.content === "Must not be committed",
+    ), false);
+  } finally {
+    sessionApi.get = originalGet;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.getStatus = originalGetStatus;
+    sessionApi.markRead = originalMarkRead;
+    dom.window.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+
+test("useAgent does not complete terminal history from a raw answer before a bad text-part row", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalMarkRead = sessionApi.markRead;
+  const runId = "run-terminal-invalid-part";
+  const messageId = "protocol-terminal-invalid-part";
+  let eventReads = 0;
+  let statusReads = 0;
+
+  sessionApi.markRead = async () => {};
+  sessionApi.get = async () => ({
+    id: "session-terminal-invalid-part",
+    agent_id: "general-agent",
+    created_at: "2026-10-09T00:00:00Z",
+    updated_at: "2026-10-09T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  });
+  sessionApi.getEvents = (async () => {
+    eventReads += 1;
+    return {
+      current_run_id: runId,
+      terminal_run_statuses: { [runId]: "succeeded" },
+      events: [
+        {
+          id: "terminal-invalid-user",
+          event_type: "user:message",
+          run_id: runId,
+          timestamp: "2026-10-09T00:00:00Z",
+          data: { content: "检查终态投影" },
+        },
+        {
+          id: "terminal-invalid-started",
+          event_type: "message.started",
+          run_id: runId,
+          sequence: 1,
+          timestamp: "2026-10-09T00:00:01Z",
+          data: {
+            event_id: "terminal-invalid-started",
+            run_id: runId,
+            message_id: messageId,
+            sequence: 1,
+            stream_incarnation: 1,
+            event_type: "message.started",
+            payload: {},
+          },
+        },
+        {
+          id: "terminal-invalid-answer",
+          event_type: "message.part.delta",
+          run_id: runId,
+          sequence: 2,
+          timestamp: "2026-10-09T00:00:02Z",
+          data: {
+            event_id: "terminal-invalid-answer",
+            run_id: runId,
+            message_id: messageId,
+            sequence: 2,
+            stream_incarnation: 1,
+            event_type: "message.part.delta",
+            payload: {
+              schema_version: "ai-platform.assistant-text-part.v1",
+              part_id: "part_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              delta: "Raw answer must not complete history",
+            },
+          },
+        },
+        {
+          id: "terminal-invalid-classification",
+          event_type: "message.part.classified",
+          run_id: runId,
+          sequence: 100,
+          timestamp: "2026-10-09T00:00:03Z",
+          data: {
+            event_id: "terminal-invalid-classification",
+            run_id: runId,
+            message_id: messageId,
+            sequence: 100,
+            stream_incarnation: 1,
+            event_type: "message.part.classified",
+            payload: {
+              schema_version: "ai-platform.assistant-text-part.v1",
+              part_id: "part_missing_from_terminal_history",
+              role: "answer",
+            },
+          },
+        },
+      ],
+    };
+  }) as typeof sessionApi.getEvents;
+  sessionApi.getStatus = (async (sessionId, requestedRunId) => {
+    statusReads += 1;
+    return {
+      session_id: sessionId,
+      run_id: requestedRunId,
+      status: "completed",
+      raw_status: "succeeded",
+    };
+  }) as typeof sessionApi.getStatus;
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-terminal-invalid-part");
+    });
+    await settle(harness.act);
+
+    assert.equal(eventReads, 1);
+    assert.equal(statusReads, 1);
+    assert.equal(harness.hook.currentRunId, null);
+    assert.equal(harness.hook.isLoading, false);
+    assert.equal(harness.hook.messages.some((message) => message.role === "assistant"), false);
+    assert.ok(harness.hook.error, "invalid history should surface the load failure");
+  } finally {
+    sessionApi.get = originalGet;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.getStatus = originalGetStatus;
+    sessionApi.markRead = originalMarkRead;
+    await harness.cleanup();
+  }
+});
+
 test("useAgent preserves accepted body and tool state through terminal-only stream-missing convergence", async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
@@ -6525,6 +7122,13 @@ test("useAgent paginates backend-shaped history and merges an older successful R
   })) as typeof sessionApi.getStatus;
   globalThis.fetch = (async (input) => {
     const url = new URL(String(input), "http://test.local");
+    const inputRunId = url.pathname.match(/\/runs\/([^/]+)\/inputs$/)?.[1];
+    if (inputRunId) {
+      return historyJsonResponse({
+        run_id: decodeURIComponent(inputRunId), state: "inactive", inputs: [], questions: [],
+      });
+    }
+    assert.ok(url.pathname.endsWith("/events"), "only history requests belong to pagination");
     requests.push(url);
     const runId = url.searchParams.get("run_id");
     const cursor = url.searchParams.get("cursor");
@@ -6765,6 +7369,13 @@ test(`useAgent preserves the visible answer when ${terminalStatus} exact history
   })) as typeof sessionApi.getStatus;
   globalThis.fetch = (async (input) => {
     const url = new URL(String(input), "http://test.local");
+    const inputRunId = url.pathname.match(/\/runs\/([^/]+)\/inputs$/)?.[1];
+    if (inputRunId) {
+      return historyJsonResponse({
+        run_id: decodeURIComponent(inputRunId), state: "inactive", inputs: [], questions: [],
+      });
+    }
+    assert.ok(url.pathname.endsWith("/events"), "only history requests belong to pagination");
     requests.push(url);
     if (url.searchParams.get("run_id") === "run-empty-successful-shell") {
       return historyJsonResponse({
@@ -8291,7 +8902,7 @@ test("useAgent synchronously aborts a deferred run-control GET from the producti
 
 test("useAgent synchronously retires an active Chat SSE from the production auth-incarnation event", async () => {
   let restoreToastDismiss: (() => void) | null = null;
-  const harness = await loadReactHarness();
+  const harness = await loadReactHarness({ realRunInputReads: true });
   const { BROWSER_AUTH_INCARCINATION_EVENT } = await import(
     "../../browserAuthCoordinator.ts"
   );
@@ -8303,6 +8914,8 @@ test("useAgent synchronously retires an active Chat SSE from the production auth
   const originalGlobalFetch = globalThis.fetch;
   const originalWindowFetch = dom.window.fetch;
   let streamSignal: AbortSignal | null = null;
+  let inputsSignal: AbortSignal | null = null;
+  let historySignal: AbortSignal | null = null;
   let rejectStream!: (reason?: unknown) => void;
   let statusCalls = 0;
   let streamCalls = 0;
@@ -8325,7 +8938,25 @@ test("useAgent synchronously retires an active Chat SSE from the production auth
       status: "running",
     };
   }) as typeof sessionApi.getStatus;
-  const nonClosingStream = ((_input: RequestInfo | URL, init?: RequestInit) => {
+  const nonClosingStream = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input), "http://test.local");
+    if (/\/runs\/[^/]+\/inputs$/.test(url.pathname)) {
+      inputsSignal = init?.signal as AbortSignal;
+      return new Promise<Response>((_resolve, reject) => {
+        inputsSignal?.addEventListener("abort", () => {
+          reject(Object.assign(new Error("old inputs request retired"), { name: "AbortError" }));
+        }, { once: true });
+      });
+    }
+    if (/\/sessions\/[^/]+\/run-inputs$/.test(url.pathname)) {
+      historySignal = init?.signal as AbortSignal;
+      return new Promise<Response>((_resolve, reject) => {
+        historySignal?.addEventListener("abort", () => {
+          reject(Object.assign(new Error("old history request retired"), { name: "AbortError" }));
+        }, { once: true });
+      });
+    }
+    assert.equal(url.pathname, "/api/chat/sessions/session-auth-event-stream/stream");
     streamCalls += 1;
     streamSignal = init?.signal as AbortSignal;
     return new Promise<Response>((_resolve, reject) => {
@@ -8340,7 +8971,11 @@ test("useAgent synchronously retires an active Chat SSE from the production auth
       await Promise.resolve();
     });
     const activeStreamSignal = streamSignal as AbortSignal | null;
+    const activeInputsSignal = inputsSignal as AbortSignal | null;
+    const activeHistorySignal = historySignal as AbortSignal | null;
     assert.ok(activeStreamSignal, "the Chat SSE should be active before auth turnover");
+    assert.ok(activeInputsSignal, "the Run inputs read should be active before auth turnover");
+    assert.ok(activeHistorySignal, "the session Run input history read should be active before auth turnover");
     assert.equal(activeStreamSignal.aborted, false);
     const toast = (await import("react-hot-toast")).default, originalDismiss = toast.dismiss;
     const dismissedToastIds: Array<string | undefined> = [];
@@ -8358,6 +8993,10 @@ test("useAgent synchronously retires an active Chat SSE from the production auth
         true,
         "the event must synchronously abort the old Chat SSE before returning",
       );
+      assert.equal(activeInputsSignal.aborted, true,
+        "the event must synchronously retire the old Run inputs before returning");
+      assert.equal(activeHistorySignal.aborted, true,
+        "the event must synchronously retire old session Run input history before returning");
       assert.deepEqual(dismissedToastIds, ["chat-queue"]);
     });
     assert.equal(harness.hook.currentRunId, null);

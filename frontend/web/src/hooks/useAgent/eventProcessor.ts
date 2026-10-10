@@ -54,6 +54,10 @@ import {
 } from "./messageParts";
 import type { ThinkingPart } from "../../types";
 import type { V4PublicEvent } from "../../components/chat/assistant-ui/publicEventAdapter";
+import {
+  hasMarkedAssistantTextParts,
+  reduceAssistantTextPartEvent,
+} from "../../types/assistantTextParts";
 
 function normalizeV4Event(event: V4PublicEvent): {
   eventType: string;
@@ -66,6 +70,7 @@ function normalizeV4Event(event: V4PublicEvent): {
     message_id: event.messageId ?? undefined,
     run_id: event.runId,
     sequence: event.sequence ?? undefined,
+    stream_incarnation: event.streamIncarnation,
     timestamp: event.emittedAt,
     trace_ref: event.event.trace_ref,
     causation_event_id: event.causationEventId,
@@ -247,6 +252,8 @@ export interface ProcessMessageEventResult {
   tokenUsage?: TokenUsagePart;
   duration?: number;
   cancelled?: boolean;
+  /** False only when a versioned message mutation fails its source contract. */
+  accepted?: boolean;
 }
 
 function safeEventError(error: unknown): string | undefined {
@@ -362,6 +369,42 @@ export function processMessageEvent(
   const agentId = data.agent_id;
 
   switch (eventName) {
+    case "message.started":
+    case "message.completed": {
+      const eventId = typeof data.event_id === "string" ? data.event_id : "";
+      if (!eventId || typeof data.message_id !== "string" || !data.message_id) {
+        result.accepted = false;
+        break;
+      }
+      const started = eventName === "message.started";
+      result.parts = upsertRunStatusPart(parts, {
+        type: "run_status",
+        event_id: eventId,
+        event_type: "public_activity",
+        stage: started ? "message_started" : "message_completed",
+        message: started
+          ? "Assistant response started"
+          : "Assistant response complete",
+        severity: "info",
+        sequence: typeof data.sequence === "number" ? data.sequence : undefined,
+        created_at: data.timestamp,
+      });
+      break;
+    }
+
+    case "message.part.delta":
+    case "message.part.classified": {
+      const reduction = reduceAssistantTextPartEvent(
+        eventName,
+        data as Record<string, unknown>,
+        parts,
+      );
+      result.accepted = reduction.accepted;
+      result.parts = reduction.parts;
+      result.content = reduction.content;
+      break;
+    }
+
     // ---- Agent events ----
 
     case "agent:call": {
@@ -457,6 +500,10 @@ export function processMessageEvent(
     case "message:chunk": {
       const assistantProjection = isAssistantTextProjection(data);
       if (data.projection_version && !assistantProjection) break;
+      if (hasMarkedAssistantTextParts(parts)) {
+        result.accepted = false;
+        break;
+      }
       const chunkContent = data.content || "";
       if (!chunkContent) break;
 
@@ -718,6 +765,7 @@ export function processMessageEvent(
         type: "summary",
         content: summaryContent,
         summary_id: data.summary_id,
+        kind: data.summary_id?.startsWith("worktrace_") ? "work_trace" : undefined,
         depth,
         agent_id: agentId,
         isStreaming,

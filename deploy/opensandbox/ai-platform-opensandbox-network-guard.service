@@ -1,24 +1,78 @@
 [Unit]
-Description=AI Platform OpenSandbox host-input guard
+Description=AI Platform OpenSandbox host and network guard
 Before=docker.service opensandbox.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+EnvironmentFile=/etc/ai-platform/opensandbox/server.env
 ExecStart=-/usr/sbin/iptables -w 30 -N AI_PLATFORM_OPENSANDBOX
+ExecStart=-/usr/sbin/iptables -w 30 -N AI_PLATFORM_OSB_FORWARD
+ExecStart=-/usr/sbin/iptables -w 30 -N DOCKER-USER
+# Keep the bridge closed while existing chains and jumps are refreshed.
+ExecStart=/usr/sbin/iptables -w 30 -I INPUT 1 -i ${OPENSANDBOX_EGRESS_BRIDGE} -j DROP
+ExecStart=/usr/sbin/iptables -w 30 -I DOCKER-USER 1 -i ${OPENSANDBOX_EGRESS_BRIDGE} -j DROP
+ExecStart=/usr/sbin/iptables -w 30 -I DOCKER-USER 1 -o ${OPENSANDBOX_EGRESS_BRIDGE} -j DROP
+ExecStart=/usr/sbin/ip6tables -w 30 -I INPUT 1 -i ${OPENSANDBOX_EGRESS_BRIDGE} -j DROP
+ExecStart=/usr/sbin/ip6tables -w 30 -I FORWARD 1 -i ${OPENSANDBOX_EGRESS_BRIDGE} -j DROP
+ExecStart=/usr/sbin/ip6tables -w 30 -I FORWARD 1 -o ${OPENSANDBOX_EGRESS_BRIDGE} -j DROP
 ExecStart=/usr/sbin/iptables -w 30 -F AI_PLATFORM_OPENSANDBOX
+ExecStart=/usr/sbin/iptables -w 30 -F AI_PLATFORM_OSB_FORWARD
 ExecStart=/usr/sbin/iptables -w 30 -A AI_PLATFORM_OPENSANDBOX -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 ExecStart=/usr/sbin/iptables -w 30 -A AI_PLATFORM_OPENSANDBOX -j DROP
+ExecStart=/usr/sbin/iptables -w 30 -A AI_PLATFORM_OSB_FORWARD -i ${OPENSANDBOX_EGRESS_BRIDGE} ! -s ${OPENSANDBOX_EGRESS_SUBNET} -j DROP
+ExecStart=/usr/sbin/iptables -w 30 -A AI_PLATFORM_OSB_FORWARD -i ${OPENSANDBOX_EGRESS_BRIDGE} -o ${OPENSANDBOX_EGRESS_BRIDGE} -s ${OPENSANDBOX_EGRESS_PROXY_IPV4}/32 -p tcp -m tcp --sport 8080 -m conntrack --ctstate ESTABLISHED -j ACCEPT
+ExecStart=/usr/sbin/iptables -w 30 -A AI_PLATFORM_OSB_FORWARD -i ${OPENSANDBOX_EGRESS_BRIDGE} -o ${OPENSANDBOX_EGRESS_BRIDGE} -d ${OPENSANDBOX_EGRESS_PROXY_IPV4}/32 -p tcp -m tcp --dport 8080 -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
+ExecStart=/usr/sbin/iptables -w 30 -A AI_PLATFORM_OSB_FORWARD -i ${OPENSANDBOX_EGRESS_BRIDGE} -o ${OPENSANDBOX_EGRESS_BRIDGE} -j DROP
+ExecStart=/usr/sbin/iptables -w 30 -A AI_PLATFORM_OSB_FORWARD -i ${OPENSANDBOX_EGRESS_BRIDGE} -d 0.0.0.0/8 -j DROP
+ExecStart=/usr/sbin/iptables -w 30 -A AI_PLATFORM_OSB_FORWARD -i ${OPENSANDBOX_EGRESS_BRIDGE} -d 10.0.0.0/8 -j DROP
+ExecStart=/usr/sbin/iptables -w 30 -A AI_PLATFORM_OSB_FORWARD -i ${OPENSANDBOX_EGRESS_BRIDGE} -d 100.64.0.0/10 -j DROP
+ExecStart=/usr/sbin/iptables -w 30 -A AI_PLATFORM_OSB_FORWARD -i ${OPENSANDBOX_EGRESS_BRIDGE} -d 127.0.0.0/8 -j DROP
+ExecStart=/usr/sbin/iptables -w 30 -A AI_PLATFORM_OSB_FORWARD -i ${OPENSANDBOX_EGRESS_BRIDGE} -d 169.254.0.0/16 -j DROP
+ExecStart=/usr/sbin/iptables -w 30 -A AI_PLATFORM_OSB_FORWARD -i ${OPENSANDBOX_EGRESS_BRIDGE} -d 172.16.0.0/12 -j DROP
+ExecStart=/usr/sbin/iptables -w 30 -A AI_PLATFORM_OSB_FORWARD -i ${OPENSANDBOX_EGRESS_BRIDGE} -d 192.0.0.0/24 -j DROP
+ExecStart=/usr/sbin/iptables -w 30 -A AI_PLATFORM_OSB_FORWARD -i ${OPENSANDBOX_EGRESS_BRIDGE} -d 192.0.2.0/24 -j DROP
+ExecStart=/usr/sbin/iptables -w 30 -A AI_PLATFORM_OSB_FORWARD -i ${OPENSANDBOX_EGRESS_BRIDGE} -d 192.88.99.0/24 -j DROP
+ExecStart=/usr/sbin/iptables -w 30 -A AI_PLATFORM_OSB_FORWARD -i ${OPENSANDBOX_EGRESS_BRIDGE} -d 192.168.0.0/16 -j DROP
+ExecStart=/usr/sbin/iptables -w 30 -A AI_PLATFORM_OSB_FORWARD -i ${OPENSANDBOX_EGRESS_BRIDGE} -d 198.18.0.0/15 -j DROP
+ExecStart=/usr/sbin/iptables -w 30 -A AI_PLATFORM_OSB_FORWARD -i ${OPENSANDBOX_EGRESS_BRIDGE} -d 198.51.100.0/24 -j DROP
+ExecStart=/usr/sbin/iptables -w 30 -A AI_PLATFORM_OSB_FORWARD -i ${OPENSANDBOX_EGRESS_BRIDGE} -d 203.0.113.0/24 -j DROP
+ExecStart=/usr/sbin/iptables -w 30 -A AI_PLATFORM_OSB_FORWARD -i ${OPENSANDBOX_EGRESS_BRIDGE} -d 224.0.0.0/4 -j DROP
+ExecStart=/usr/sbin/iptables -w 30 -A AI_PLATFORM_OSB_FORWARD -i ${OPENSANDBOX_EGRESS_BRIDGE} -d 240.0.0.0/4 -j DROP
+ExecStart=/usr/sbin/iptables -w 30 -A AI_PLATFORM_OSB_FORWARD -o ${OPENSANDBOX_EGRESS_BRIDGE} -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+ExecStart=/usr/sbin/iptables -w 30 -A AI_PLATFORM_OSB_FORWARD -o ${OPENSANDBOX_EGRESS_BRIDGE} -j DROP
+ExecStart=/usr/sbin/iptables -w 30 -A AI_PLATFORM_OSB_FORWARD -i ${OPENSANDBOX_EGRESS_BRIDGE} -j RETURN
 ExecStart=-/usr/sbin/iptables -w 30 -D INPUT -i br-osb-egress -j AI_PLATFORM_OPENSANDBOX
-ExecStart=/usr/sbin/iptables -w 30 -I INPUT 1 -i br-osb-egress -j AI_PLATFORM_OPENSANDBOX
-ExecStart=-/usr/sbin/iptables -w 30 -N DOCKER-USER
-ExecStart=-/usr/sbin/iptables -w 30 -N AI_PLATFORM_OSB_FORWARD
-ExecStart=/usr/sbin/iptables -w 30 -F AI_PLATFORM_OSB_FORWARD
-ExecStart=/usr/sbin/iptables -w 30 -A AI_PLATFORM_OSB_FORWARD -d 172.31.75.2/32 -p tcp -m tcp --dport 8080 -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
-ExecStart=/usr/sbin/iptables -w 30 -A AI_PLATFORM_OSB_FORWARD -s 172.31.75.2/32 -p tcp -m tcp --sport 8080 -m conntrack --ctstate ESTABLISHED -j ACCEPT
-ExecStart=/usr/sbin/iptables -w 30 -A AI_PLATFORM_OSB_FORWARD -j DROP
 ExecStart=-/usr/sbin/iptables -w 30 -D DOCKER-USER -i br-osb-egress -o br-osb-egress -j AI_PLATFORM_OSB_FORWARD
-ExecStart=/usr/sbin/iptables -w 30 -I DOCKER-USER 1 -i br-osb-egress -o br-osb-egress -j AI_PLATFORM_OSB_FORWARD
+ExecStart=-/usr/sbin/iptables -w 30 -D INPUT -i ${OPENSANDBOX_EGRESS_BRIDGE} -j AI_PLATFORM_OPENSANDBOX
+ExecStart=-/usr/sbin/iptables -w 30 -D DOCKER-USER -i ${OPENSANDBOX_EGRESS_BRIDGE} -j AI_PLATFORM_OSB_FORWARD
+ExecStart=-/usr/sbin/iptables -w 30 -D DOCKER-USER -o ${OPENSANDBOX_EGRESS_BRIDGE} -j AI_PLATFORM_OSB_FORWARD
+ExecStart=/usr/sbin/iptables -w 30 -I INPUT 1 -i ${OPENSANDBOX_EGRESS_BRIDGE} -j AI_PLATFORM_OPENSANDBOX
+ExecStart=/usr/sbin/iptables -w 30 -I DOCKER-USER 1 -o ${OPENSANDBOX_EGRESS_BRIDGE} -j AI_PLATFORM_OSB_FORWARD
+ExecStart=/usr/sbin/iptables -w 30 -I DOCKER-USER 1 -i ${OPENSANDBOX_EGRESS_BRIDGE} -j AI_PLATFORM_OSB_FORWARD
+ExecStart=-/usr/sbin/ip6tables -w 30 -N AI_PLATFORM_OSB_IPV6
+ExecStart=-/usr/sbin/ip6tables -w 30 -N DOCKER-USER
+ExecStart=/usr/sbin/ip6tables -w 30 -F AI_PLATFORM_OSB_IPV6
+ExecStart=/usr/sbin/ip6tables -w 30 -A AI_PLATFORM_OSB_IPV6 -j DROP
+ExecStart=-/usr/sbin/ip6tables -w 30 -D INPUT -i ${OPENSANDBOX_EGRESS_BRIDGE} -j AI_PLATFORM_OSB_IPV6
+ExecStart=-/usr/sbin/ip6tables -w 30 -D OUTPUT -o ${OPENSANDBOX_EGRESS_BRIDGE} -j AI_PLATFORM_OSB_IPV6
+ExecStart=-/usr/sbin/ip6tables -w 30 -D FORWARD -i ${OPENSANDBOX_EGRESS_BRIDGE} -j AI_PLATFORM_OSB_IPV6
+ExecStart=-/usr/sbin/ip6tables -w 30 -D FORWARD -o ${OPENSANDBOX_EGRESS_BRIDGE} -j AI_PLATFORM_OSB_IPV6
+ExecStart=-/usr/sbin/ip6tables -w 30 -D DOCKER-USER -i ${OPENSANDBOX_EGRESS_BRIDGE} -j AI_PLATFORM_OSB_IPV6
+ExecStart=-/usr/sbin/ip6tables -w 30 -D DOCKER-USER -o ${OPENSANDBOX_EGRESS_BRIDGE} -j AI_PLATFORM_OSB_IPV6
+ExecStart=/usr/sbin/ip6tables -w 30 -I INPUT 1 -i ${OPENSANDBOX_EGRESS_BRIDGE} -j AI_PLATFORM_OSB_IPV6
+ExecStart=/usr/sbin/ip6tables -w 30 -I OUTPUT 1 -o ${OPENSANDBOX_EGRESS_BRIDGE} -j AI_PLATFORM_OSB_IPV6
+ExecStart=/usr/sbin/ip6tables -w 30 -I FORWARD 1 -o ${OPENSANDBOX_EGRESS_BRIDGE} -j AI_PLATFORM_OSB_IPV6
+ExecStart=/usr/sbin/ip6tables -w 30 -I FORWARD 1 -i ${OPENSANDBOX_EGRESS_BRIDGE} -j AI_PLATFORM_OSB_IPV6
+ExecStart=/usr/sbin/ip6tables -w 30 -I DOCKER-USER 1 -o ${OPENSANDBOX_EGRESS_BRIDGE} -j AI_PLATFORM_OSB_IPV6
+ExecStart=/usr/sbin/ip6tables -w 30 -I DOCKER-USER 1 -i ${OPENSANDBOX_EGRESS_BRIDGE} -j AI_PLATFORM_OSB_IPV6
+# A failed refresh can leave holds behind. Remove every copy after both guards are complete.
+ExecStart=/bin/sh -ec '/usr/sbin/ip6tables -w 30 -D INPUT -i "$$1" -j DROP; while /usr/sbin/ip6tables -w 30 -C INPUT -i "$$1" -j DROP; do /usr/sbin/ip6tables -w 30 -D INPUT -i "$$1" -j DROP; done' sh ${OPENSANDBOX_EGRESS_BRIDGE}
+ExecStart=/bin/sh -ec '/usr/sbin/ip6tables -w 30 -D FORWARD -i "$$1" -j DROP; while /usr/sbin/ip6tables -w 30 -C FORWARD -i "$$1" -j DROP; do /usr/sbin/ip6tables -w 30 -D FORWARD -i "$$1" -j DROP; done' sh ${OPENSANDBOX_EGRESS_BRIDGE}
+ExecStart=/bin/sh -ec '/usr/sbin/ip6tables -w 30 -D FORWARD -o "$$1" -j DROP; while /usr/sbin/ip6tables -w 30 -C FORWARD -o "$$1" -j DROP; do /usr/sbin/ip6tables -w 30 -D FORWARD -o "$$1" -j DROP; done' sh ${OPENSANDBOX_EGRESS_BRIDGE}
+ExecStart=/bin/sh -ec '/usr/sbin/iptables -w 30 -D INPUT -i "$$1" -j DROP; while /usr/sbin/iptables -w 30 -C INPUT -i "$$1" -j DROP; do /usr/sbin/iptables -w 30 -D INPUT -i "$$1" -j DROP; done' sh ${OPENSANDBOX_EGRESS_BRIDGE}
+ExecStart=/bin/sh -ec '/usr/sbin/iptables -w 30 -D DOCKER-USER -o "$$1" -j DROP; while /usr/sbin/iptables -w 30 -C DOCKER-USER -o "$$1" -j DROP; do /usr/sbin/iptables -w 30 -D DOCKER-USER -o "$$1" -j DROP; done' sh ${OPENSANDBOX_EGRESS_BRIDGE}
+ExecStart=/bin/sh -ec '/usr/sbin/iptables -w 30 -D DOCKER-USER -i "$$1" -j DROP; while /usr/sbin/iptables -w 30 -C DOCKER-USER -i "$$1" -j DROP; do /usr/sbin/iptables -w 30 -D DOCKER-USER -i "$$1" -j DROP; done' sh ${OPENSANDBOX_EGRESS_BRIDGE}
 
 [Install]
 WantedBy=multi-user.target

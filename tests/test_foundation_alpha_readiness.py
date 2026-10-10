@@ -1644,6 +1644,19 @@ def test_foundation_alpha_readiness_accepts_governance_runtime_smoke_for_same_ru
         raising=False,
     )
 
+    # This scenario owns the governance gap; it must not depend on an
+    # external Skill inventory being installed in the test environment.
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_build_governance_summary",
+        lambda _settings: {
+            "governance_readiness_status": "partial_blocked",
+            "open_gap_count": 1,
+            "open_gaps": ["signed_skill_package_or_sbom_release_gate"],
+            "memory_context_controls": dict(VERIFIED_MEMORY_CONTEXT_CONTROL_FLAGS),
+        },
+    )
+
     readiness = build_foundation_alpha_readiness(SecretBearingSettings())
 
     assert (
@@ -3261,6 +3274,14 @@ def test_foundation_alpha_readiness_prefers_latest_runtime_relevant_evidence_ove
         "_resolve_runtime_affecting_changes_between",
         lambda base, target: [] if base == runtime_commit and target == source_commit else ["app/worker.py"],
         raising=False,
+    )
+
+    # Exercise comparison against the explicit source revision, independently
+    # of whether the local checkout contains the historical runtime commit.
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_runtime_affecting_changes_since",
+        lambda _runtime: ["app/worker.py"],
     )
 
     readiness = build_foundation_alpha_readiness(SecretBearingSettings())

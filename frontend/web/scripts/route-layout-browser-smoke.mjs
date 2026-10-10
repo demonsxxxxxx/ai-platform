@@ -86,7 +86,7 @@ function bootstrapSource() {
       if (url.pathname.startsWith('/api/')) state.requests.push({ path: url.pathname, method });
       if (url.pathname === '/api/ai/auth/me') return json({
         user_id: 'layout-admin', user_name: 'layout-admin', display_name: 'Layout Admin', tenant_id: 'tenant-layout',
-        roles: ['admin'], permissions: ['chat:read','chat:write','session:read','session:write','skill:admin','skill:read','skill:write','skill:delete','agent_profile:admin'],
+        roles: ['admin'], permissions: ['chat:read','chat:write','session:read','session:write','skill:admin','skill:read','skill:write','skill:delete','agent_profile:admin','model:admin'],
         is_admin: true, source: 'cookie_session'
       });
       if (url.pathname === '/api/ai/auth/bootstrap' && method === 'POST') return json({
@@ -124,6 +124,18 @@ function bootstrapSource() {
       if (url.pathname === '/api/ai/admin/agent-profiles') return json({ agent_profiles: [adminProfile] });
       if (url.pathname === '/api/ai/admin/agent-profiles/agt_support/history') return json({ agent_profiles: [adminProfile] });
       if (url.pathname === '/api/mcp/chat-tools') return json({ tools: [], count: 0, unavailable: [] });
+      if (url.pathname === '/api/ai/admin/models') return json({
+        connection: { configured: true, revision: 7, base_url: 'https://gateway.example.invalid', key_fingerprint: 'synthetic' },
+        models: Array.from({ length: 29 }, (_, index) => ({
+          id: 'mdl-' + index,
+          value: index === 18 ? 'deepseek-v4-flash-cc' : 'demo/model-' + index,
+          label: index === 18 ? 'deepseek-v4-flash-cc' : 'Model ' + index,
+          provider: 'compatible', enabled: index < 2, available: true, is_default: index === 0,
+          order: index + 1, last_seen_revision: 7, last_seen_at: '2026-01-01T00:00:00Z',
+          max_input_tokens: index < 2 ? 32000 : undefined,
+          max_output_tokens: index < 2 ? 2048 : undefined
+        }))
+      });
       if (url.pathname === '/api/agent/models/available') return json({
         models: [{ id: 'model-enterprise', value: 'model-enterprise', label: 'Enterprise Claude', provider: 'anthropic' }],
         count: 1, enabled_count: 1, default_model_id: 'model-enterprise'
@@ -221,8 +233,17 @@ const cases = [
     ],
     requiredRequests: ["/api/ai/admin/agent-profiles", "/api/skills/"],
   },
+  {
+    path: "/models",
+    selector: "[data-model-admin-control]",
+    name: "models",
+    scroller: (viewport) => viewport.width >= 1024 ? "[data-model-admin-table-scroll]" : "[data-model-catalog-shell]",
+    requiredSelectors: ["[data-model-admin-table-scroll]", "[data-model-admin-action-bar]", "[data-model-admin-publish]"],
+    requiredRequests: ["/api/ai/admin/models"],
+  },
 ];
 const viewports = [
+  { name: "wide", width: 1920, height: 900, mobile: false },
   { name: "desktop", width: 1440, height: 900, mobile: false },
   { name: "tablet", width: 768, height: 900, mobile: false },
   { name: "mobile", width: 390, height: 844, mobile: true },
@@ -268,8 +289,21 @@ async function runCase(viewport, scenario) {
       })`,
       `${viewport.name}:${scenario.name}:required-controls`,
     );
+    if (scenario.name === "models") {
+      await browser.client.evaluate(`(() => {
+        const input = document.querySelector('[aria-label="启用 deepseek-v4-flash-cc"]');
+        if (!input) throw new Error('synthetic_deepseek_missing');
+        input.focus();
+        input.click();
+      })()`);
+      await browser.client.waitFor(
+        `document.querySelectorAll('[data-model-admin-table-scroll] tbody input[type=checkbox]:checked').length === 3`,
+        `${viewport.name}:models:enabled-toggle`,
+      );
+    }
+    const scrollerSelector = typeof scenario.scroller === "function" ? scenario.scroller(viewport) : scenario.scroller;
     const layout = await browser.client.evaluate(`(() => {
-      const target = ${scenario.scroller ? `document.querySelector(${JSON.stringify(scenario.scroller)})` : "document.scrollingElement"};
+      const target = ${scrollerSelector ? `document.querySelector(${JSON.stringify(scrollerSelector)})` : "document.scrollingElement"};
       if (target) target.scrollTop = target.scrollHeight;
       const rect = target?.getBoundingClientRect();
       const requestedPaths = new Set(window.__routeLayoutSmoke.requests.map((request) => request.path));
@@ -284,6 +318,13 @@ async function runCase(viewport, scenario) {
         requests: [...requestedPaths],
       };
     })()`);
+    if (scenario.name === "models") {
+      await browser.client.evaluate(`document.querySelector('[data-model-admin-publish]').click()`);
+      await browser.client.waitFor(
+        `Boolean(document.querySelector('[data-model-admin-action-bar] [role="alert"]'))`,
+        `${viewport.name}:models:missing-limits`,
+      );
+    }
     const missingRequests = (scenario.requiredRequests ?? []).filter(
       (path) => !layout.requests.includes(path),
     );
@@ -295,6 +336,38 @@ async function runCase(viewport, scenario) {
       missingRequests.length
     ) {
       throw new Error(`layout_failed:${viewport.name}:${scenario.name}:${JSON.stringify({ layout, reachable, missingRequests })}`);
+    }
+    let modelLayout = null;
+    if (scenario.name === "models") {
+      modelLayout = await browser.client.evaluate(`(() => {
+        const table = document.querySelector('[data-model-admin-table-scroll]');
+        const header = table.querySelector('thead').getBoundingClientRect();
+        const tableRect = table.getBoundingClientRect();
+        const bar = document.querySelector('[data-model-admin-action-bar]').getBoundingClientRect();
+        const config = document.querySelector('[data-model-admin-control] > div:first-child').getBoundingClientRect();
+        const shell = document.querySelector('[data-model-catalog-shell]');
+        return {
+          rows: table.querySelectorAll('tbody tr').length,
+          enabledCount: table.querySelectorAll('tbody input[type=checkbox]:checked').length,
+          missingLimitHintVisible: document.querySelector('[aria-label="deepseek-v4-flash-cc 最大输入 Token"]')?.getAttribute('placeholder') === '必填',
+          shellScrollTop: shell.scrollTop,
+          configVisible: config.top >= -1 && config.bottom <= innerHeight,
+          actionBottomGap: Math.round(innerHeight - bar.bottom),
+          publishErrorVisible: document.querySelector('[data-model-admin-action-bar] [role="alert"]')?.textContent.includes('deepseek-v4-flash-cc') ?? false,
+          publishRequestCount: window.__routeLayoutSmoke.requests.filter((request) => request.path === '/api/ai/admin/models/publish').length,
+          tableScrollable: table.scrollHeight > table.clientHeight,
+          headerPinned: Math.abs(header.top - tableRect.top) < 3 && header.bottom <= tableRect.bottom,
+          headerOpaque: getComputedStyle(table.querySelector('thead')).backgroundColor !== 'rgba(0, 0, 0, 0)',
+          actionVisible: bar.top >= 0 && bar.bottom <= innerHeight + 1,
+          actionBelowTable: bar.top >= tableRect.bottom - 2,
+        };
+      })()`);
+      if (modelLayout.rows !== 29 || modelLayout.enabledCount !== 3 || !modelLayout.missingLimitHintVisible || !modelLayout.publishErrorVisible || modelLayout.publishRequestCount !== 0 || !modelLayout.actionVisible || !modelLayout.headerOpaque ||
+        (viewport.width >= 1024 && (!modelLayout.tableScrollable || !modelLayout.headerPinned || !modelLayout.actionBelowTable || !modelLayout.configVisible || modelLayout.actionBottomGap > 48 || modelLayout.shellScrollTop !== 0)) ||
+        (viewport.width < 1024 && layout.scrollHeight <= layout.clientHeight + 1)
+      ) {
+        throw new Error(`model_layout_failed:${viewport.name}:${JSON.stringify(modelLayout)}`);
+      }
     }
     let overlay = null;
     if (scenario.popover) {
@@ -311,7 +384,7 @@ async function runCase(viewport, scenario) {
       );
     }
     const screenshot = await captureScreenshot(browser.client, evidenceDir, `${viewport.name}-${scenario.name}`);
-    return { viewport: viewport.name, route: scenario.path, layout, reachable, overlay, screenshot };
+    return { viewport: viewport.name, route: scenario.path, layout, reachable, modelLayout, overlay, screenshot };
   } finally {
     await browser.close();
   }
