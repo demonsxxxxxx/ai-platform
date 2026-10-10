@@ -11,12 +11,12 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.capacity_baseline import (
+from app.capacity_baseline import (  # noqa: E402 - direct CLI bootstraps repository imports above
     build_capacity_evidence_snapshot,
     build_capacity_gate_readiness,
 )
-from tools.capacity_cli_inputs import read_optional_host_sandbox_observation_json
-from tools.verify_auth_rbac_smoke import AuthenticatedRedirectError, open_authenticated_request
+from tools.capacity_cli_inputs import read_optional_host_sandbox_observation_json  # noqa: E402
+from tools.verify_auth_rbac_smoke import AuthenticatedRedirectError, open_authenticated_request  # noqa: E402
 
 
 OVERVIEW_ROUTE = "/api/ai/admin/runtime/overview"
