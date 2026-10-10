@@ -82,6 +82,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_context_worker_snapshot_projection.py",
         "tests/test_context_worker_attachment_projection.py",
         "tests/test_context_retrieval_callback.py",
+        "tests/test_context_retrieval.py",
         "tests/test_sandbox_document_capability.py",
         "tests/test_required_tool_contract.py",
         "tests/test_intent_router.py",
@@ -237,6 +238,9 @@ BACKEND_TEST_SHARDS = {
     "release-governance-authority": (
         "tests/test_governance_readiness.py",
         "tests/test_foundation_alpha_readiness.py",
+        "tests/test_capacity_baseline.py",
+        "tests/test_office_context_readiness.py",
+        "tests/test_release_evidence_export_acceptance.py",
         "tests/test_wrap_foundation_alpha_evidence.py",
         "tests/test_compose_package_deploy.py",
         "tests/test_production_bootstrap.py",

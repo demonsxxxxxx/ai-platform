@@ -660,7 +660,7 @@ test("preview session transition clears state even when the host is subscribing 
 test("preview session transition clears attachment state without restoring an old host snapshot", async () => {
   await withPreviewOwnerDom(async ({ render, body }) => {
     claimChatPreviewSession("owner-a:session-a");
-    openAttachmentPreview({ id: "old", key: "old", name: "previous-session.png", type: "image" }, "user-message");
+    openAttachmentPreview({ id: "old", key: "old", name: "previous-session.png", type: "image", mimeType: "image/png", size: 1 }, "user-message");
     await render("owner-a:session-b", true);
     assert.equal(getAttachmentPreviewState(), null);
     assert.doesNotMatch(body(), /previous-session\.png/);
