@@ -968,6 +968,9 @@ async def test_context_artifact_prefix_abandonment_holds_capacity_until_body_clo
 
 
 def test_context_retrieval_callback_returns_large_artifact_as_truncated_preview(monkeypatch):
+    from fastapi import FastAPI
+    from app.routes.runtime_callbacks import router
+
     body = _ArtifactPrefixBody(b"x" * 1048576)
     authority, _, storage_calls = _artifact_prefix_authority(monkeypatch, body)
     calls = _patch_route(monkeypatch)
@@ -977,7 +980,17 @@ def test_context_retrieval_callback_returns_large_artifact_as_truncated_preview(
         staticmethod(lambda conn, storage, *, storage_io: authority),
     )
 
-    with TestClient(create_app()) as client:
+    # Exercise the real callback router without starting unrelated SSE workers.
+    app = FastAPI()
+    app.include_router(router, prefix="/api/ai")
+    with TestClient(app) as client:
+        denied = client.post(
+            "/api/ai/runtime/callbacks/context-retrieval",
+            headers={"X-AI-Platform-Callback-Token": "invalid-token"},
+            json=_payload(arguments={"artifact_id": "artifact-a", "max_bytes": 1}),
+        )
+        assert denied.status_code == 401
+        assert storage_calls == []
         response = client.post(
             "/api/ai/runtime/callbacks/context-retrieval",
             headers={"X-AI-Platform-Callback-Token": _token("secret")},
