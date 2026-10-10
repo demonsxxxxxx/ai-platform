@@ -1,3 +1,4 @@
+from tests.support.terminal_timing import terminal_stage_logs as terminal_stage_logs
 import app.runs.infrastructure.postgres as _owner_runs_infrastructure_postgres
 import asyncio
 import logging
@@ -417,7 +418,12 @@ async def test_terminal_reconciler_shutdown_joins_cancellation_resistant_mainten
 
 
 @pytest.mark.asyncio
-async def test_terminal_artifact_conversion_uses_storage_bridge(monkeypatch):
+@pytest.mark.usefixtures("terminal_stage_logs")
+async def test_terminal_artifact_conversion_uses_storage_bridge(monkeypatch, caplog):
+    from app.platform import tracing
+    now = [10.0]
+    monkeypatch.setattr(tracing, "monotonic", lambda: now[0])
+    caplog.set_level(logging.INFO)
     from app import executor_reconciler
 
     class Lease:
@@ -432,6 +438,8 @@ async def test_terminal_artifact_conversion_uses_storage_bridge(monkeypatch):
             self, _lease, _request, _workspace, response_files=()
         ):
             assert list(response_files) == ["output/final.txt"]
+            now[0] += 2.25
+            await asyncio.sleep(0)
             if self.fail_collection:
                 raise RuntimeError("workspace collection failed")
             return Path("/private/artifact-snapshot")
@@ -557,6 +565,14 @@ async def test_terminal_artifact_conversion_uses_storage_bridge(monkeypatch):
     assert [
         item["type"] for item in collection_diagnostics["sdk"]["exception_chain"]
     ] == ["RuntimeError"]
+
+    records = [record for record in caplog.records if record.msg == "run_terminal_stage"]
+    assert [record.terminal_phase for record in records] == ["reconciler_workspace_snapshot"] * 2
+    assert [record.terminal_phase_duration_ms for record in records] == [2250, 2250]
+    assert [record.terminal_phase_outcome for record in records] == ["ok", "error"]
+    assert all(record.run_id == "run-a" and record.attempt_id == "attempt-a" for record in records)
+    assert "final.txt" not in repr([vars(record) for record in records])
+    assert "workspace collection failed" not in repr([vars(record) for record in records])
 
 
 def test_reconciler_classifies_invalid_persisted_run_payload_as_permanent(monkeypatch):

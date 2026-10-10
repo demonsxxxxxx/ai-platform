@@ -35,6 +35,7 @@ from app.executors.claude_agent_sdk_runner import (
     ScopedContextRetrievalIdentity,
     run_claude_agent_sdk,
 )
+from app.platform.tracing import TerminalStageTiming, configure_terminal_stage_logging
 from app.public_execution import (
     PUBLIC_AGENT_PROGRESS_EVENT_TYPE,
     PublicAgentProgressPublisher,
@@ -2023,6 +2024,7 @@ def create_executor_app(
     nonterminal_callback_retry_policy: _CallbackRetryPolicy | None = None,
     callback_retry_sleep: CallbackRetrySleep | None = None,
 ) -> FastAPI:
+    configure_terminal_stage_logging()
     resolved_callback_sender: CallbackSender = callback_sender or _default_callback_sender
     task_state: dict[str, Any] = {
         "status": "idle",
@@ -2800,11 +2802,15 @@ def create_executor_app(
             await cancel_message_delta_callbacks()
             raise
         finally:
-            if heartbeat_task is not None:
-                heartbeat_stop.set()
-                await await_shutdown_task(heartbeat_task)
-            progress_cleanup = asyncio.create_task(drain_active_progress())
-            await await_shutdown_task(progress_cleanup)
+            with TerminalStageTiming(
+                "executor_heartbeat_drain", run_id=request.run_id,
+                attempt_id=request.attempt_id, terminal_status=runner_result.get("status"),
+            ):
+                if heartbeat_task is not None:
+                    heartbeat_stop.set()
+                    await await_shutdown_task(heartbeat_task)
+                progress_cleanup = asyncio.create_task(drain_active_progress())
+                await await_shutdown_task(progress_cleanup)
 
         if capability_callback_failed["value"]:
             runner_error_code = str(runner_result.get("error_code") or "")
@@ -2894,7 +2900,11 @@ def create_executor_app(
             if timed_out
             else {}
         )
-        await await_with_callback_buffer_cleanup(message_delta_callbacks.close())
+        with TerminalStageTiming(
+            "executor_public_stream_drain", run_id=request.run_id,
+            attempt_id=request.attempt_id, terminal_status=runner_result.get("status"),
+        ):
+            await await_with_callback_buffer_cleanup(message_delta_callbacks.close())
         if apply_stream_delivery_failure(runner_result):
             runner_status = "failed"
             failed = True
@@ -3067,7 +3077,11 @@ def create_executor_app(
             task_state["status"] = "callback_failed"
             return
         try:
-            await deliver_terminal_callback(request, result)
+            with TerminalStageTiming(
+                "executor_terminal_callback_ack", run_id=request.run_id,
+                attempt_id=request.attempt_id, terminal_status=result.get("status"),
+            ):
+                await deliver_terminal_callback(request, result)
         except _ShutdownDeadlineExceeded:
             task_state["status"] = "callback_failed"
         except asyncio.CancelledError:

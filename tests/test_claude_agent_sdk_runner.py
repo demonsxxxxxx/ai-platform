@@ -1,3 +1,4 @@
+from tests.support.terminal_timing import terminal_stage_logs as terminal_stage_logs
 import asyncio
 import json
 import sys
@@ -6923,3 +6924,43 @@ async def test_sdk_unknown_local_exceptions_do_not_claim_provider_or_input_failu
     assert result.turn_diagnostics["terminal_class"] == "execution_failure"
     assert result.runtime_diagnostics["failure_source"] == "sdk_exception"
     assert exception_text in str(result.runtime_diagnostics)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ending", ["success", "failure", "cancel"])
+@pytest.mark.usefixtures("terminal_stage_logs")
+async def test_terminal_timing_covers_sdk_result_to_final_eof(monkeypatch, tmp_path, caplog, ending):
+    from app.platform import tracing
+    now = [10.0]
+    monkeypatch.setattr(tracing, "monotonic", lambda: now[0])
+    caplog.set_level("INFO")
+    sdk = _fake_sdk({}, hook_invocations=[])
+    original_query = sdk.query
+    failure = asyncio.CancelledError() if ending == "cancel" else RuntimeError("private flush failure /path token")
+
+    async def delayed_query(**kwargs):
+        async for message in original_query(**kwargs):
+            yield message
+            if isinstance(message, sdk.ResultMessage):
+                now[0] += 1.75
+                await asyncio.sleep(0)
+                if ending != "success":
+                    raise failure
+
+    sdk.query = delayed_query
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+    if ending == "cancel":
+        with pytest.raises(asyncio.CancelledError):
+            await run_claude_agent_sdk(prompt="private prompt", cwd=tmp_path, skill_id=None,
+                                      run_id="run-a", attempt_id="attempt-a")
+    else:
+        result = await run_claude_agent_sdk(prompt="private prompt", cwd=tmp_path, skill_id=None,
+                                           run_id="run-a", attempt_id="attempt-a")
+        assert (result.error is None) == (ending == "success")
+    records = [record for record in caplog.records if record.msg == "run_terminal_stage"]
+    assert len(records) == 1
+    assert records[0].terminal_phase == "sdk_final_flush"
+    assert records[0].terminal_phase_duration_ms == 1750
+    assert records[0].terminal_phase_outcome == {"success": "ok", "failure": "error", "cancel": "cancelled"}[ending]
+    assert "private" not in repr(vars(records[0]))

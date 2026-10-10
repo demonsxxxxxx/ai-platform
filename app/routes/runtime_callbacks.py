@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import logging
+from contextlib import nullcontext
 from types import SimpleNamespace
 from typing import Any
 
@@ -24,6 +25,7 @@ from app.files.api import (
 )
 from app.mcp.api import McpRuntimeContextError, get_mcp_principal_jwt_store
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
+from app.platform.tracing import TerminalStageTiming
 from app.platform.public_payload import sanitize_public_reasoning_text
 from app.public_execution import PUBLIC_AGENT_PROGRESS_EVENT_TYPE
 from app.bootstrap.sandbox_cleanup import build_sandbox_runtime_cleanup
@@ -531,20 +533,32 @@ async def record_executor_callback(
                 provider_expires_at=provider_expires_at,
             )
     elif not heartbeat_requested:
-        async with transaction() as conn:
-            run_identity, lease = await _lock_current_runtime_attempt_then_run(
-                conn,
-                run_id=callback.run_id,
-                attempt_id=callback.attempt_id,
-                callback_token_id=callback.callback_token_id,
-                session_id=callback.session_id,
+        with (
+            TerminalStageTiming(
+                "terminal_receipt_commit", run_id=callback.run_id,
+                attempt_id=callback.attempt_id, terminal_status=callback.status,
             )
-            committed_rows, authority, callback_deduplicated = await persist_callback(
-                conn, run_identity, lease
-            )
+            if callback.status in _TERMINAL_EXECUTOR_CALLBACK_STATUSES
+            else nullcontext()
+        ):
+            async with transaction() as conn:
+                run_identity, lease = await _lock_current_runtime_attempt_then_run(
+                    conn,
+                    run_id=callback.run_id,
+                    attempt_id=callback.attempt_id,
+                    callback_token_id=callback.callback_token_id,
+                    session_id=callback.session_id,
+                )
+                committed_rows, authority, callback_deduplicated = await persist_callback(
+                    conn, run_identity, lease
+                )
     if callback.status in _TERMINAL_EXECUTOR_CALLBACK_STATUSES:
         try:
-            await publish_executor_terminal_signal()
+            with TerminalStageTiming(
+                "terminal_receipt_signal", run_id=callback.run_id,
+                attempt_id=callback.attempt_id, terminal_status=callback.status,
+            ):
+                await publish_executor_terminal_signal()
         except ExecutorSignalUnavailable:
             logger.warning(
                 "executor_terminal_reconciliation_signal_unavailable",
@@ -554,7 +568,15 @@ async def record_executor_callback(
                 },
             )
     try:
-        await publish_callback_rows(capabilities, committed_rows, authority=authority)
+        with (
+            TerminalStageTiming(
+                "terminal_receipt_publication", run_id=callback.run_id,
+                attempt_id=callback.attempt_id, terminal_status=callback.status,
+            )
+            if callback.status in _TERMINAL_EXECUTOR_CALLBACK_STATUSES
+            else nullcontext()
+        ):
+            await publish_callback_rows(capabilities, committed_rows, authority=authority)
     except V4PublicationTransportUnavailable as exc:
         raise HTTPException(
             status_code=503, detail="callback_stream_unavailable"

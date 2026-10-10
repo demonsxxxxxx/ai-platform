@@ -66,6 +66,7 @@ from app.sandbox.api import (
     exception_chain_from_error,
 )
 from app.schema_migrations import require_schema_current
+from app.platform.tracing import configure_terminal_stage_logging
 from app.settings import get_settings
 from app.runs.api import cancel_run_with_v4, fail_run_with_v4, finish_run_terminalization
 from app.worker import WorkerOutcome, parse_leased_queue_envelope, process_run_payload
@@ -1284,6 +1285,7 @@ async def run_once_and_close(timeout_seconds: int) -> WorkerOutcome:
 
 
 def main() -> None:
+    configure_terminal_stage_logging()
     parser = argparse.ArgumentParser(description="AI Platform worker")
     parser.add_argument("--once", action="store_true", help="Process a single leased run then exit")
     parser.add_argument("--timeout", type=int, default=5, help="Queue lease timeout in seconds")

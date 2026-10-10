@@ -201,6 +201,57 @@ records. Remove that compatibility protection only after proving no retained
 record or supported input can contain them, under the
 [public-projection contract](chat-run-lifecycle-and-public-error-projection.md).
 
+### 4.3 Terminal-tail stage observations
+
+API, Worker, and sandbox-executor entrypoints configure one dedicated standard
+INFO logger, `app.platform.terminal_timing`, with an idempotent stderr handler and
+no ancestor propagation. The handler renders safe fields explicitly; ordinary
+application logger levels remain unchanged. Private standard logs emit
+`run_terminal_stage` once per measured operation,
+with Run/Attempt IDs, a fixed `terminal_phase`, monotonic
+`terminal_phase_duration_ms`, and `terminal_phase_outcome` (`ok`, `error`, or
+`cancelled`). `terminal_status` is the normalized result classification observed
+at that stage, or `unknown`; it is not another durable Run authority. An `ok`
+operation returned normally, including a normal failed/cancelled terminal result.
+Exceptions and cancellation propagate unchanged; logging failure cannot replace
+an operation's result. No prompt, answer, selected path, storage key, credential,
+callback payload, or exception text is included. There are no per-token/file
+observations, new schema fields, public payload fields, or new telemetry backend.
+
+The barriers remain separate:
+
+- `sdk_final_flush`: accepted final SDK Result through public EOF and callback /
+  provider-store settlement. Intermediate/background Results are excluded.
+  `sdk_disconnect_flush` measures the existing combined disconnect/store fallback
+  on early exit or cancellation. Neither measures post-settlement resource teardown.
+- `executor_heartbeat_drain`: join the supervisor heartbeat and active progress;
+  `executor_public_stream_drain`: close the buffered public callback stream;
+  `executor_terminal_callback_ack`: the complete terminal-callback retry/ack wait.
+- `terminal_receipt_commit`: the callback receipt transaction through its exit;
+  `terminal_receipt_signal` and `terminal_receipt_publication`: the subsequent
+  reconciliation wake and callback-row publication. Receipt commit does not mean
+  the final assistant, artifact records, or Run result have committed.
+- `reconciler_workspace_snapshot`: selected-file immutable snapshot collection;
+  `artifact_storage_upload`: aggregate selected-file validation, read/hash,
+  provisional cleanup reservation, and object-storage writes. Neither is the
+  artifact-record database commit. The existing executor
+  `artifact_upload_latency_ms` may measure an `artifact_created` callback, so it
+  is not evidence of object-storage upload time.
+- `result_business_commit`: the Worker result commit service through transaction
+  exit, including any existing stale/CAS classification; a `skipped` status is
+  not a newly written result. `result_publication` measures its subsequent public
+  event publication. Existing SDK-placeholder lease bookkeeping remains inside
+  the commit; later physical reconciler sandbox stop/release is outside both.
+
+These spans may overlap across processes (especially callback ack versus receipt
+commit/publication), and retries produce another operation observation. Do not
+sum them into an end-to-end duration or treat a stage's `ok` as a later-stage
+receipt. They preserve all existing completion/durability barriers and do not
+measure receipt queue residence or browser rendering. Deployed latency attribution
+requires correlated logs from the exact release, a known status and attachment
+case, and real PostgreSQL/Redis/provider/storage observations. Synthetic-delay
+source tests prove attribution and ordering only.
+
 ## 5. Composition and call rules
 
 ### API process

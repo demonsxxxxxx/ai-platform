@@ -1,5 +1,6 @@
 from app.bootstrap.sandbox_cleanup import build_sandbox_runtime_cleanup
 
+from tests.support.terminal_timing import terminal_stage_logs as terminal_stage_logs
 import app.runs.infrastructure.postgres as _owner_runs_infrastructure_postgres
 import app.sandbox.infrastructure.leases_postgres as _owner_sandbox_infrastructure_leases_postgres
 import app.streaming.infrastructure.run_events_postgres as _owner_streaming_infrastructure_run_events_postgres
@@ -624,7 +625,12 @@ def test_executor_callback_accepts_valid_event_and_records_callback(monkeypatch)
     assert recorded[0].callback_token_id == "cbt:run-a:attempt-a"
 
 
-def test_executor_callback_persists_terminal_receipt_without_public_terminal_event(monkeypatch):
+@pytest.mark.usefixtures("terminal_stage_logs")
+def test_executor_callback_persists_terminal_receipt_without_public_terminal_event(monkeypatch, caplog):
+    from app.platform import tracing
+    now = [10.0]
+    monkeypatch.setattr(tracing, "monotonic", lambda: now[0])
+    caplog.set_level("INFO")
     patch_callback_settings(monkeypatch, callback_settings("secret"))
     calls = []
 
@@ -634,6 +640,7 @@ def test_executor_callback_persists_terminal_receipt_without_public_terminal_eve
             return object()
 
         async def __aexit__(self, exc_type, exc, traceback):
+            now[0] += 1.25
             calls.append("transaction_exit")
             return None
 
@@ -652,6 +659,7 @@ def test_executor_callback_persists_terminal_receipt_without_public_terminal_eve
     signal_calls = []
 
     async def fake_publish_executor_terminal_signal():
+        now[0] += 0.25
         signal_calls.append("wake")
         calls.append("signal")
 
@@ -704,6 +712,14 @@ def test_executor_callback_persists_terminal_receipt_without_public_terminal_eve
     assert signal_calls == ["wake"]
     assert calls.index("transaction_exit") < calls.index("signal")
 
+    records = [record for record in caplog.records if record.msg == "run_terminal_stage"]
+    assert [record.terminal_phase for record in records] == [
+        "terminal_receipt_commit", "terminal_receipt_signal", "terminal_receipt_publication",
+    ]
+    assert [record.terminal_phase_duration_ms for record in records] == [1250, 250, 0]
+    assert all(record.terminal_phase_outcome == "ok" for record in records)
+    caplog.clear()
+
     async def unavailable_signal():
         raise runtime_callbacks.ExecutorSignalUnavailable("redis unavailable")
 
@@ -723,6 +739,10 @@ def test_executor_callback_persists_terminal_receipt_without_public_terminal_eve
         ),
     )
     assert retry.status_code == 200
+
+    retry_records = [record for record in caplog.records if record.msg == "run_terminal_stage"]
+    assert [record.terminal_phase_outcome for record in retry_records] == ["ok", "error", "ok"]
+    assert "redis unavailable" not in repr([vars(record) for record in retry_records])
 
 
 def test_failed_executor_callback_persists_receipt_for_reconciliation(monkeypatch):

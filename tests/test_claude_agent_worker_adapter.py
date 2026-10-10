@@ -1,3 +1,4 @@
+from tests.support.terminal_timing import terminal_stage_logs as terminal_stage_logs
 import asyncio
 import base64
 import hashlib
@@ -5744,3 +5745,60 @@ async def test_sdk_runner_propagates_cancelled_error_from_stream_callback(monkey
         )
 
 # ruff: noqa: RUF012
+
+
+@pytest.mark.parametrize("fail_upload", [False, True])
+@pytest.mark.usefixtures("terminal_stage_logs")
+def test_terminal_artifact_storage_timing_keeps_selected_file_semantics(
+    monkeypatch, tmp_path, caplog, fail_upload,
+):
+    from app.platform import tracing
+    now = [10.0]
+    monkeypatch.setattr(tracing, "monotonic", lambda: now[0])
+    caplog.set_level("INFO")
+    selected = tmp_path / "private-result.txt"
+    selected.write_text("private output body", encoding="utf-8")
+    failure = RuntimeError("private storage key and credential")
+    stored = []
+
+    class Storage:
+        def put_bytes(self, *, storage_key, content, content_type):
+            now[0] += 3.0
+            if fail_upload:
+                raise failure
+            stored.append(content)
+            return StoredObject(storage_key=storage_key, sha256="hash", size_bytes=len(content))
+
+    monkeypatch.setattr(claude_agent_worker, "ObjectStorage", Storage)
+    adapter = ClaudeAgentWorkerAdapter()
+    prepared = PreparedSdkRun(
+        workspace=tmp_path, file_names=[], selected_skills=[], pinned_manifests={},
+        allowed_skill_names=["general-chat"], staged_skill_names=["general-chat"],
+        prompt="private prompt",
+    )
+    current = sandbox_writing_payload(agent_id="general-agent", skill_id="general-chat", file_ids=[])
+    runtime_result = types.SimpleNamespace(
+        status="completed", provider="docker", timings={},
+        executor_response={"status": "completed", "message": "private answer",
+                           "response_files": [selected.name], "sdk_used": True,
+                           TOOL_INVOCATION_EVIDENCE_KEY: []},
+    )
+    if fail_upload:
+        with pytest.raises(RuntimeError) as caught:
+            adapter._executor_result_from_sandbox_runtime(current, prepared, runtime_result)
+        assert caught.value is failure
+        assert stored == []
+    else:
+        result = adapter._executor_result_from_sandbox_runtime(current, prepared, runtime_result)
+        assert result.status == "succeeded", result.result
+        assert result.result["message"] == "private answer"
+        assert result.result["artifact_count"] == 1
+        assert stored == [b"private output body"]
+    records = [record for record in caplog.records if record.msg == "run_terminal_stage"]
+    assert len(records) == 1
+    assert records[0].terminal_phase == "artifact_storage_upload"
+    assert records[0].terminal_phase_duration_ms == 3000
+    assert records[0].terminal_phase_outcome == ("error" if fail_upload else "ok")
+    assert records[0].run_id == current.run_id
+    assert records[0].attempt_id == current.attempt_id
+    assert "private" not in repr(vars(records[0]))

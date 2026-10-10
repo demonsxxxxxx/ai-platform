@@ -18,6 +18,7 @@ from app.execution.api import restored_sandbox_run_payload
 from app.executors.base import ExecutorResult, RunPayload
 from app.executors.registry import AdapterRegistry
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
+from app.platform.tracing import TerminalStageTiming
 from app.persistence.artifacts import reserve_provisional_artifact_cleanup
 from app.bootstrap.sandbox_cleanup import build_sandbox_runtime_cleanup
 from app.runtime.sandbox.container_provider import create_container_provider
@@ -573,12 +574,16 @@ async def _collect_workspace_and_convert_result(
             isinstance(path, str) for path in raw_response_files
         ):
             raise ValueError("executor response file selection is invalid")
-        artifact_workspace = await provider.collect_workspace(
-            lease,
-            request,
-            workspace,
-            raw_response_files,
-        )
+        with TerminalStageTiming(
+            "reconciler_workspace_snapshot", run_id=str(lease_row["run_id"]),
+            attempt_id=run_payload.attempt_id, terminal_status=terminal_result.get("status"),
+        ):
+            artifact_workspace = await provider.collect_workspace(
+                lease,
+                request,
+                workspace,
+                raw_response_files,
+            )
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # noqa: BLE001 - converted into a controlled terminal result.
