@@ -2,6 +2,7 @@ import type {
   AgentProfilePublicProjection,
   SelectedAgentProfileRequest,
 } from "../../types";
+import type { AgentConversationIdentity } from "../../types/agentProfile";
 
 /** Resolve a route selection only when the catalog still exposes that Agent. */
 export function selectPublishedMarketProfile(
@@ -28,6 +29,16 @@ export function buildAgentMarketWorkspacePath(
 ): string {
   const base = `${buildAgentMarketDetailPath(profile)}/chat`;
   return sessionId ? `${base}/${encodeURIComponent(sessionId)}` : base;
+}
+
+/** Keep history navigation bound to the conversation's original owner. */
+export function buildSessionHistoryPath(
+  sessionId: string,
+  identity?: Pick<AgentConversationIdentity, "agent_id"> | null,
+): string {
+  return identity
+    ? buildAgentMarketWorkspacePath(identity, sessionId)
+    : `/chat/${encodeURIComponent(sessionId)}`;
 }
 
 export function marketTagsForProfile(

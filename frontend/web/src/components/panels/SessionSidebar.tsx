@@ -42,6 +42,7 @@ import { LIBRECHAT_SHELL_GEOMETRY } from "../../librechat-ui/surface";
 interface SessionSidebarProps {
   currentSessionId: string | null;
   onSelectSession: (sessionId: string) => void;
+  onSelectGlobalHistorySession?: (session: BackendSession) => void;
   onNewSession: () => void;
   refreshKey?: number;
   newSession?: BackendSession | null;
@@ -93,6 +94,7 @@ export const SessionSidebar = forwardRef<
   {
     currentSessionId,
     onSelectSession,
+    onSelectGlobalHistorySession,
     onNewSession,
     newSession,
     mobileOpen = false,
@@ -157,7 +159,17 @@ export const SessionSidebar = forwardRef<
     sessionSource === undefined &&
       (!navigationOnly || showSessionHistory),
   );
+  const hasSeparateGlobalHistory = Boolean(
+    sessionSource && agentWorkspace && agentHistoryInMainPanel,
+  );
+  const separateGlobalSessionList = useSessionList(
+    scrollEl,
+    hasSeparateGlobalHistory,
+  );
   const sessionList = sessionSource ?? defaultSessionList;
+  const globalHistoryList = hasSeparateGlobalHistory
+    ? separateGlobalSessionList
+    : sessionList;
   const { ref: agentLoadMoreRef, inView: agentLoadMoreVisible } = useInView({
     threshold: 0.1,
     root: scrollEl ?? undefined,
@@ -226,6 +238,9 @@ export const SessionSidebar = forwardRef<
     try {
       await sessionApi.delete(sessionId);
       sessionList.removeSession(sessionId);
+      if (hasSeparateGlobalHistory) {
+        separateGlobalSessionList.removeSession(sessionId);
+      }
       if (currentSessionId === sessionId) onNewSession();
       toast.success(t("sidebar.sessionDeleted"));
     } catch (err) {
@@ -257,9 +272,18 @@ export const SessionSidebar = forwardRef<
       if (lastAppliedNewSessionKeyRef.current === sessionKey) return;
       sessionList.prependSession(newSession);
       sessionList.updateSession(newSession);
+      if (hasSeparateGlobalHistory) {
+        separateGlobalSessionList.prependSession(newSession);
+        separateGlobalSessionList.updateSession(newSession);
+      }
       lastAppliedNewSessionKeyRef.current = sessionKey;
     }
-  }, [newSession, sessionList]);
+  }, [
+    newSession,
+    sessionList,
+    hasSeparateGlobalHistory,
+    separateGlobalSessionList,
+  ]);
 
   // ─── Keyboard shortcuts ──────────────────────────────────────────
 
@@ -309,6 +333,34 @@ export const SessionSidebar = forwardRef<
     [handleSessionUnread, onSelectSession, onMobileClose],
   );
 
+  const updateGlobalHistorySession = useCallback(
+    (session: BackendSession) => {
+      globalHistoryList.updateSession(session);
+      if (hasSeparateGlobalHistory) sessionList.updateSession(session);
+    },
+    [globalHistoryList, hasSeparateGlobalHistory, sessionList],
+  );
+
+  const selectGlobalHistorySession = useCallback(
+    (session: BackendSession) => {
+      handleSessionUnread(session.id, 0);
+      updateGlobalHistorySession({ ...session, unread_count: 0 });
+      if (onSelectGlobalHistorySession) {
+        onSelectGlobalHistorySession(session);
+      } else {
+        onSelectSession(session.id);
+      }
+      onMobileClose?.();
+    },
+    [
+      handleSessionUnread,
+      onMobileClose,
+      onSelectGlobalHistorySession,
+      onSelectSession,
+      updateGlobalHistorySession,
+    ],
+  );
+
   // ─── Aggregated action objects for SessionListContent ────────────
 
   const sessionActions: SessionActions = useMemo(
@@ -356,6 +408,8 @@ export const SessionSidebar = forwardRef<
             onOpenSearch={() => setIsSearchOpen(true)}
             onSetScrollEl={setScrollEl}
             sessions={visibleSessions}
+            globalSessions={globalHistoryList.sessions}
+            globalIsLoading={globalHistoryList.isLoading}
             isLoading={sessionList.isLoading}
             hasMore={sessionList.hasMore}
             isLoadingMore={sessionList.isLoadingMore}
@@ -364,6 +418,8 @@ export const SessionSidebar = forwardRef<
             currentSessionId={currentSessionId}
             unreadBySession={unreadBySession}
             sessionActions={sessionActions}
+            onSelectGlobalSession={selectGlobalHistorySession}
+            onUpdateGlobalSession={updateGlobalHistorySession}
             isChatsCollapsed={isChatsCollapsed}
             onToggleChatsCollapsed={() => setIsChatsCollapsed((v) => !v)}
             agentWorkspace={agentWorkspace}
@@ -400,6 +456,8 @@ export const SessionSidebar = forwardRef<
               onOpenSearch={() => setIsSearchOpen(true)}
               onSetScrollEl={setScrollEl}
               sessions={visibleSessions}
+              globalSessions={globalHistoryList.sessions}
+              globalIsLoading={globalHistoryList.isLoading}
               isLoading={sessionList.isLoading}
               hasMore={sessionList.hasMore}
               isLoadingMore={sessionList.isLoadingMore}
@@ -408,6 +466,8 @@ export const SessionSidebar = forwardRef<
               currentSessionId={currentSessionId}
               unreadBySession={unreadBySession}
               sessionActions={sessionActions}
+              onSelectGlobalSession={selectGlobalHistorySession}
+              onUpdateGlobalSession={updateGlobalHistorySession}
               isChatsCollapsed={isChatsCollapsed}
               onToggleChatsCollapsed={() => setIsChatsCollapsed((v) => !v)}
               agentWorkspace={agentWorkspace}
