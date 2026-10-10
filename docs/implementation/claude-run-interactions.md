@@ -61,9 +61,10 @@ again from the fresh first-page cursor and inserts gap pages in Run order while
 deduplicating cached records. Current pending questions appear above older history;
 a newly pending batch resets the history scroll position. Colliding public option
 labels use safe ordinal numbering in both cards and accepted-answer history.
-Chat displays queued
-text separately from persisted conversation Messages and shows pending questions
-as answerable cards. Text and answers are Run input facts; the existing provider
+Previously accepted text inputs remain visible as read-only Run history entries;
+the web chat no longer offers a text-entry control for appending to an active Run.
+Question batches remain answerable in chat. The HTTP and callback input protocol
+remains unchanged. Text and answers are Run input facts; the existing provider
 coverage continues to count the original conversation user message and final
 assistant message. SDK SessionStore persists all native continuation/tool entries.
 
