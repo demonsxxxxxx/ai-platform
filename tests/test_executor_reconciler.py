@@ -273,6 +273,151 @@ async def test_reconciler_drains_backlog_before_cleanup_or_probe(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_reconciler_signal_failure_retains_bounded_polling_fallback(monkeypatch):
+    from time import monotonic
+    from app import executor_reconciler
+
+    stop_event = asyncio.Event()
+    scans = 0
+    failed_at = None
+    rescanned_at = None
+
+    async def reconcile(**_kwargs):
+        nonlocal scans, rescanned_at
+        scans += 1
+        if scans == 2:
+            rescanned_at = monotonic()
+            stop_event.set()
+        return 0
+
+    async def no_work(**_kwargs):
+        return 0
+
+    async def unavailable(**_kwargs):
+        nonlocal failed_at
+        failed_at = monotonic()
+        raise ExecutorSignalUnavailable("redis unavailable")
+
+    monkeypatch.setattr(executor_reconciler, "_RECONCILIATION_IDLE_SECONDS", 0.05)
+    monkeypatch.setattr(executor_reconciler, "reconcile_pending_executor_terminals_once", reconcile)
+    monkeypatch.setattr(executor_reconciler, "cleanup_failed_sandbox_executor_reconciliation_leases", no_work)
+    monkeypatch.setattr(executor_reconciler, "probe_suspect_executor_tasks_once", no_work)
+    monkeypatch.setattr(executor_reconciler, "wait_for_executor_reconciliation_signal", unavailable)
+    await asyncio.wait_for(run_executor_terminal_reconciler(stop_event), timeout=1)
+    assert scans == 2
+    assert failed_at is not None and rescanned_at is not None
+    assert rescanned_at - failed_at >= 0.045
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("slow_phase", ["cleanup", "probe"])
+async def test_terminal_signal_is_consumed_while_maintenance_is_blocked(
+    monkeypatch, slow_phase,
+):
+    from app import executor_reconciler
+
+    stop_event = asyncio.Event()
+    maintenance_started = asyncio.Event()
+    maintenance_finished = asyncio.Event()
+    terminal_scanned = asyncio.Event()
+    scans = 0
+    phase_calls = 0
+
+    async def reconcile(**_kwargs):
+        nonlocal scans
+        scans += 1
+        if scans == 2:
+            assert maintenance_started.is_set()
+            assert not maintenance_finished.is_set()
+            terminal_scanned.set()
+            stop_event.set()
+        return 0
+
+    async def blocked(**_kwargs):
+        nonlocal phase_calls
+        phase_calls += 1
+        maintenance_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            maintenance_finished.set()
+
+    async def no_work(**_kwargs):
+        return 0
+
+    async def signal(**_kwargs):
+        await maintenance_started.wait()
+
+    monkeypatch.setattr(executor_reconciler, "reconcile_pending_executor_terminals_once", reconcile)
+    monkeypatch.setattr(
+        executor_reconciler, "cleanup_failed_sandbox_executor_reconciliation_leases",
+        blocked if slow_phase == "cleanup" else no_work,
+    )
+    monkeypatch.setattr(
+        executor_reconciler, "probe_suspect_executor_tasks_once",
+        blocked if slow_phase == "probe" else no_work,
+    )
+    monkeypatch.setattr(executor_reconciler, "wait_for_executor_reconciliation_signal", signal)
+    task = asyncio.create_task(run_executor_terminal_reconciler(stop_event))
+    try:
+        await asyncio.wait_for(terminal_scanned.wait(), timeout=1)
+        await asyncio.wait_for(task, timeout=1)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    assert phase_calls == 1
+    assert maintenance_finished.is_set()
+
+
+@pytest.mark.asyncio
+async def test_terminal_reconciler_shutdown_joins_cancellation_resistant_maintenance(monkeypatch):
+    from app import executor_reconciler
+
+    stop_event = asyncio.Event()
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    release = asyncio.Event()
+    finished = asyncio.Event()
+
+    async def reconcile(**_kwargs):
+        return 0
+
+    async def cleanup(**_kwargs):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            await release.wait()
+        finally:
+            finished.set()
+
+    async def no_probe(**_kwargs):
+        return 0
+
+    async def signal(**_kwargs):
+        await started.wait()
+        stop_event.set()
+
+    monkeypatch.setattr(executor_reconciler, "reconcile_pending_executor_terminals_once", reconcile)
+    monkeypatch.setattr(executor_reconciler, "cleanup_failed_sandbox_executor_reconciliation_leases", cleanup)
+    monkeypatch.setattr(executor_reconciler, "probe_suspect_executor_tasks_once", no_probe)
+    monkeypatch.setattr(executor_reconciler, "wait_for_executor_reconciliation_signal", signal)
+    task = asyncio.create_task(run_executor_terminal_reconciler(stop_event))
+    try:
+        await asyncio.wait_for(cancelled.wait(), timeout=1)
+        assert not task.done()
+        assert not finished.is_set()
+        release.set()
+        await asyncio.wait_for(task, timeout=1)
+    finally:
+        release.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    assert finished.is_set()
+
+
+@pytest.mark.asyncio
 async def test_terminal_artifact_conversion_uses_storage_bridge(monkeypatch):
     from app import executor_reconciler
 
@@ -1519,7 +1664,8 @@ async def test_reconciler_waits_when_no_terminal_or_probe_progress(monkeypatch):
 
     await run_executor_terminal_reconciler(stop_event, worker_id="worker-a")
 
-    assert calls == ["reconcile", "cleanup", "probe", "wait"]
+    assert calls[0] == "reconcile"
+    assert sorted(calls[1:]) == ["cleanup", "probe", "wait"]
 
 
 @pytest.mark.asyncio
@@ -1613,7 +1759,8 @@ async def test_reconciler_observes_signal_written_during_empty_database_scan(mon
 
 
 @pytest.mark.asyncio
-async def test_reconciler_immediately_processes_terminal_persisted_by_probe(monkeypatch):
+@pytest.mark.parametrize("redis_available", [True, False])
+async def test_reconciler_immediately_processes_terminal_persisted_by_probe(monkeypatch, redis_available):
     from app import executor_reconciler
 
     stop_event = asyncio.Event()
@@ -1633,8 +1780,17 @@ async def test_reconciler_immediately_processes_terminal_persisted_by_probe(monk
         calls.append("probe")
         return 1
 
-    async def unexpected_wait(**_kwargs):
-        pytest.fail("a persisted probe terminal must be reconciled before idle wait")
+    async def idle_signal(**_kwargs):
+        await asyncio.Event().wait()
+
+    async def unavailable_cursor():
+        raise ExecutorSignalUnavailable("redis unavailable")
+
+    if not redis_available:
+        monkeypatch.setattr(
+            executor_reconciler, "initialize_executor_reconciliation_signal_cursor",
+            unavailable_cursor,
+        )
 
     monkeypatch.setattr(
         executor_reconciler,
@@ -1654,10 +1810,12 @@ async def test_reconciler_immediately_processes_terminal_persisted_by_probe(monk
     monkeypatch.setattr(
         executor_reconciler,
         "wait_for_executor_reconciliation_signal",
-        unexpected_wait,
+        idle_signal,
     )
 
-    await run_executor_terminal_reconciler(stop_event, worker_id="worker-a")
+    await asyncio.wait_for(
+        run_executor_terminal_reconciler(stop_event, worker_id="worker-a"), timeout=1,
+    )
 
     assert calls == ["reconcile", "cleanup", "probe", "reconcile"]
 

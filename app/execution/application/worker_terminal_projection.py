@@ -108,7 +108,7 @@ def project_worker_terminal_result(
     artifact_records: list[dict[str, Any]],
     *,
     trace_id: str,
-    latency_ms: int,
+    latency_ms: int | None,
     invoked_skill_ids: Callable[[dict[str, Any]], set[str]],
 ) -> WorkerTerminalProjection:
     observability = executor_observability(result.executor_payload, latency_ms=latency_ms)

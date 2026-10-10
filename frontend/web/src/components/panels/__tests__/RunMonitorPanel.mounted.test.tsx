@@ -368,6 +368,12 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
         },
       },
     ],
+    runtime_health: {
+      state: "healthy", observed_at: "2026-04-01T10:00:04Z", attempt_id: "attempt-b",
+      async_dispatch_accepted: true, queue_last_heartbeat_at: "2026-04-01T09:00:04Z",
+      queue_lease_expires_at: "2026-04-01T09:15:04Z", heartbeat_source: "executor",
+      heartbeat_at: "2026-04-01T10:00:02Z",
+    },
     audit: [{ payload: { credential: "PRIVATE_AUDIT_PAYLOAD_MARKER" } }],
     skill_snapshots: [],
   } as AdminRunDetailResponse;
@@ -425,6 +431,10 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
         finished_at: "2026-04-01T09:00:04Z",
         terminal_reason: "run_failed",
         error_code: "claude_agent_sdk_tool_admission_failed",
+      },
+      {
+        attempt_id: "attempt-b", ordinal: 2, status: "running", owner_kind: "queue_worker",
+        started_at: "2026-04-01T09:00:04Z", finished_at: null,
       },
     ],
     details: {
@@ -688,6 +698,14 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
     assert.match(container.textContent ?? "", /Agent 与工具记录/);
     assert.match(container.textContent ?? "", /处理时间线/);
     assert.match(container.textContent ?? "", /执行尝试/);
+    const runtimeHealth = container.querySelector("[data-run-runtime-health]");
+    assert.ok(runtimeHealth);
+    assert.match(runtimeHealth.textContent ?? "", /Executor 心跳正常/);
+    assert.match(runtimeHealth.textContent ?? "", /异步派发已接纳/);
+    assert.match(runtimeHealth.textContent ?? "", /队列 Worker 心跳（历史）/);
+    assert.match(runtimeHealth.textContent ?? "", /队列租约（历史）/);
+    assert.match(container.querySelector("[data-run-attempts]")?.textContent ?? "", /派发责任：队列 Worker/);
+    assert.doesNotMatch(container.querySelector("[data-run-attempts]")?.textContent ?? "", /耗时未知/);
     assert.match(container.textContent ?? "", /138/);
     assert.match(container.textContent ?? "", /下载脱敏诊断包/);
     const exportButton = (
@@ -797,12 +815,15 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
 
     adminRunsApi.detail = async () => ({
       ...detail,
+      runtime_health: undefined,
       worker_execution: { ...detail.worker_execution, messages: undefined },
     });
     await act(async () => {
       openButtons[0].dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
     });
     await waitFor(() => container.querySelector('[role="dialog"]') !== null);
+    assert.match(container.querySelector("[data-run-runtime-health]")?.textContent ?? "", /未知/);
+    assert.doesNotMatch(container.querySelector("[data-run-runtime-health]")?.textContent ?? "", /心跳正常/);
     assert.match(container.textContent ?? "", /Worker 返回/);
     assert.match(container.textContent ?? "", /WORKER_EFFECTIVE_RESPONSE/);
     assert.match(container.textContent ?? "", /工具调用 1/);

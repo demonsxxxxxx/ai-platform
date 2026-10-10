@@ -22,6 +22,7 @@ from app.execution.application.worker_terminal_projection import (
 from app.execution.domain.worker_observability import (
     event_observability_kwargs as event_observability_kwargs,
     executor_observability as executor_observability,
+    run_elapsed_ms as run_elapsed_ms,
 )
 from app.execution.application.artifact_persistence import (
     build_artifact_execution_owner,
@@ -164,6 +165,7 @@ __all__ = [
     "fail_run_for_worker",
     "executor_exception_failure",
     "executor_observability",
+    "run_elapsed_ms",
     "event_observability_kwargs",
     "native_used_skills_from_result",
     "skill_manifests_for_persistence",

@@ -161,6 +161,26 @@ The migration MUST preserve these observable semantics:
 10. **Rollback is atomic.** Any exception before transaction completion rolls
     back the state transition and its event/audit facts together.
 
+### 4.1 Asynchronous terminal consumption and elapsed metrics
+
+The terminal reconciler drains ready PostgreSQL receipts before starting idle
+maintenance. Failed-environment cleanup and suspect-executor probing each run
+as a separately supervised, non-overlapping phase; neither is awaited on the
+terminal scan/signal path. Probe progress also wakes the consumer locally when
+Redis is unavailable. Redis errors retain bounded PostgreSQL polling. Shutdown
+cancels and joins signal waiters and maintenance operations, including an
+operation that has not yet finished after cancellation; claim/release and
+stop/finalize fences remain in their owning paths.
+
+For an asynchronously dispatched result, `latency_ms` measures elapsed time
+from the persisted, timezone-aware `runs.started_at` to terminal result
+projection. Reconciliation does not start a fresh execution stopwatch. Missing,
+invalid, naive or future start timestamps yield `null`, rather than a fabricated
+zero. Synchronous adapter timing retains its existing monotonic stopwatch.
+SDK `model.completed.duration_ms` and private SDK-stage timings remain separate
+metrics. This change does not rewrite historical terminal results or alter token
+and cache counters.
+
 ## 5. Composition and call rules
 
 ### API process

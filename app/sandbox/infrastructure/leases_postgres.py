@@ -145,14 +145,23 @@ async def list_sandbox_leases_for_run(
     tenant_id: str,
     run_id: str,
 ) -> list[dict[str, Any]]:
-    """Return same-run sandbox lease rows for admin runtime provenance."""
+    """Return same-run leases with a read-only current Attempt-owner projection."""
     cursor = await conn.execute(
         """
-        select *
-        from sandbox_leases
-        where tenant_id = %s
-          and run_id = %s
-        order by created_at asc
+        select lease.*,
+          lease.lease_payload_json ->> 'owner_generation' as lease_owner_generation,
+          (
+            lease.lease_payload_json ->> 'attempt_id' = lease.attempt_id
+            and lease.lease_payload_json ->> 'owner_generation' = attempt.owner_generation::text
+          ) as current_attempt_owner
+        from sandbox_leases lease
+        left join run_attempts attempt
+          on attempt.tenant_id = lease.tenant_id
+         and attempt.run_id = lease.run_id
+         and attempt.id = lease.attempt_id
+        where lease.tenant_id = %s
+          and lease.run_id = %s
+        order by lease.created_at asc
         """,
         (tenant_id, run_id),
     )

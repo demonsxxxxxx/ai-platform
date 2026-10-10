@@ -523,7 +523,49 @@ function executionJournal(execution: AdminWorkerExecution): ExecutionJournalEntr
   );
 }
 
-function AttemptSection({ diagnostics }: { diagnostics: AdminRunDiagnosticsResponse | null }) {
+function RuntimeHealth({ detail }: { detail: AdminRunDetailResponse }) {
+  const health = detail.runtime_health;
+  const state = detail.run.status === "queued" ? "queued"
+    : ["succeeded", "failed", "cancelled"].includes(detail.run.status) ? "terminal"
+    : health?.state ?? "unknown";
+  const labels = {
+    queued: "尚未开始执行",
+    terminal: "运行已结束",
+    healthy: `${health?.heartbeat_source === "executor" ? "Executor" : "Sandbox"} 心跳正常`,
+    stale: "执行心跳或运行租约已过期；不等于 Run 已失败",
+    unknown: "未知（缺少当前执行证据）",
+    awaiting_reconciliation: "执行器终态已留存，等待平台收尾",
+  };
+  return (
+    <section className="mt-3 rounded-md bg-[var(--theme-bg-sidebar)] p-3 text-xs" data-run-runtime-health>
+      <h4 className="font-semibold text-[var(--theme-text)]">执行健康（本次观测）</h4>
+      <p className="mt-1 text-[var(--theme-text)]">{labels[state]}</p>
+      {health?.async_dispatch_accepted && detail.run.status === "running" ? (
+        <p className="mt-1 text-[var(--theme-text-secondary)]">
+          异步派发已接纳；队列 Worker 心跳仅记录交接前的队列持有状态。
+        </p>
+      ) : null}
+      {health?.queue_last_heartbeat_at ? (
+        <p className="mt-1 text-[var(--theme-text-tertiary)]">
+          队列 Worker 心跳（历史）：{dateTime(health.queue_last_heartbeat_at)} · 队列租约（历史）：{dateTime(health.queue_lease_expires_at)}
+        </p>
+      ) : null}
+      {health?.heartbeat_at && (state === "healthy" || state === "stale") ? (
+        <p className="mt-1 text-[var(--theme-text-tertiary)]">
+          {health.heartbeat_source === "executor" ? "Executor" : "Sandbox"} 最近心跳：{dateTime(health.heartbeat_at)}
+        </p>
+      ) : null}
+      {health?.observed_at ? (
+        <p className="mt-1 text-[var(--theme-text-tertiary)]">观测时间：{dateTime(health.observed_at)}</p>
+      ) : null}
+    </section>
+  );
+}
+
+function AttemptSection({ diagnostics, health }: {
+  diagnostics: AdminRunDiagnosticsResponse | null;
+  health: AdminRunDetailResponse["runtime_health"];
+}) {
   const attempts = diagnostics?.attempts ?? [];
   if (!attempts.length) return null;
   const currentAttempt = attempts.at(-1)?.attempt_id;
@@ -544,9 +586,17 @@ function AttemptSection({ diagnostics }: { diagnostics: AdminRunDiagnosticsRespo
               <StatusBadge status={attempt.status} />
             </div>
             <p className="mt-1 text-[11px] text-[var(--theme-text-secondary)]">
-              {[attempt.owner_kind, elapsedBetween(attempt.started_at, attempt.finished_at), attempt.terminal_reason]
-                .filter(Boolean)
-                .join(" · ")}
+              {[
+                attempt.owner_kind === "queue_worker" ? "派发责任：队列 Worker" : attempt.owner_kind,
+                elapsedBetween(
+                  attempt.started_at,
+                  attempt.finished_at ?? (
+                    attempt.attempt_id === health?.attempt_id && ["running", "cancel_requested"].includes(attempt.status)
+                      ? health?.observed_at : undefined
+                  ),
+                ),
+                attempt.terminal_reason,
+              ].filter(Boolean).join(" · ")}
             </p>
             {attempt.error_code ? (
               <p className="mt-1 break-words font-mono text-[11px] text-[var(--theme-danger)]">{attempt.error_code}</p>
@@ -825,6 +875,7 @@ function RunDetail({
                 <p className="mt-1 text-[var(--theme-text)]">{estimatedCostLabel(detail.run.estimated_cost_minor)}</p>
               </div>
             </div>
+            <RuntimeHealth detail={detail} />
             {detail.run.status === "failed" || diagnostics?.root ? (
               <FailureTraceOverview
                 run={detail.run}
@@ -867,7 +918,7 @@ function RunDetail({
             </details>
           </section>
 
-          <AttemptSection diagnostics={diagnostics} />
+          <AttemptSection diagnostics={diagnostics} health={detail.runtime_health} />
 
           <section className="p-4" data-worker-execution-content>
             <div className="flex flex-wrap items-baseline justify-between gap-2">

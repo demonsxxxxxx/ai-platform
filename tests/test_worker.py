@@ -2051,9 +2051,25 @@ async def test_reconcile_executor_terminal_result_normalizes_only_empty_agent_pr
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("run_start", ["valid", "missing", "invalid", "naive", "future"])
 async def test_bound_agent_executor_reconciliation_uses_session_pins_and_terminalizes(
-    monkeypatch,
+    monkeypatch, run_start,
 ):
+    from datetime import datetime, timedelta, timezone
+
+    observed_at = datetime(2026, 10, 10, 3, 15, 0, tzinfo=timezone.utc)
+    started_at = {
+        "valid": observed_at - timedelta(minutes=5),
+        "missing": None,
+        "invalid": "invalid timestamp",
+        "naive": observed_at.replace(tzinfo=None),
+        "future": observed_at + timedelta(seconds=1),
+    }[run_start]
+    expected_latency = 300_000 if run_start == "valid" else None
+    monkeypatch.setattr(
+        worker_module, "datetime", types.SimpleNamespace(now=lambda _timezone: observed_at),
+        raising=False,
+    )
     profile = {
         "agent_id": "agt_support",
         "revision": 7,
@@ -2079,6 +2095,7 @@ async def test_bound_agent_executor_reconciliation_uses_session_pins_and_termina
     )
     locked_run = locked_run_from_payload(persisted)
     locked_run["status"] = "running"
+    locked_run["started_at"] = started_at
     get_run_calls = []
     terminal_calls = []
     profile_reauthorization_calls = []
@@ -2099,6 +2116,7 @@ async def test_bound_agent_executor_reconciliation_uses_session_pins_and_termina
         return "evt-a"
 
     async def complete_run(_conn, **kwargs):
+        assert kwargs["result_json"]["latency_ms"] == expected_latency
         terminal_calls.append(("complete", kwargs["run_id"]))
         return True
 

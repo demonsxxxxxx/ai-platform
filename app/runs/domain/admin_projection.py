@@ -42,8 +42,20 @@ class AdminRunListResponse(TypedDict):
     limit: int
 
 
+class AdminRunRuntimeHealth(TypedDict):
+    state: Literal["queued", "terminal", "healthy", "stale", "unknown", "awaiting_reconciliation"]
+    observed_at: Any
+    attempt_id: str | None
+    async_dispatch_accepted: bool
+    queue_last_heartbeat_at: Any | None
+    queue_lease_expires_at: Any | None
+    heartbeat_source: Literal["executor", "sandbox"] | None
+    heartbeat_at: Any | None
+
+
 class AdminRunDetailResponse(TypedDict):
     run: dict[str, Any]
+    runtime_health: NotRequired[AdminRunRuntimeHealth]
     worker_execution: dict[str, Any]
     events: list[dict[str, Any]]
     steps: list[dict[str, Any]]
