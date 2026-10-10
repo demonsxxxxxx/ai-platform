@@ -1,3 +1,4 @@
+import { registerAuthScopedCacheClearer } from "../../../../services/api/authCacheInvalidation";
 import { createSingletonStore } from "./createSingletonStore";
 import { clearToolPanelRegistry } from "./toolPanelRegistry";
 
@@ -61,3 +62,5 @@ export function clearSidebarHistory(): void {
 export function subscribeSidebarHistory(listener: () => void): () => void {
   return countStore.subscribe(listener);
 }
+
+registerAuthScopedCacheClearer(clearSidebarHistory);

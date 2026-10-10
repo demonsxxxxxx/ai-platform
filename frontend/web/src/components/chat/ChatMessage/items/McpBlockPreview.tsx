@@ -6,7 +6,7 @@ import {
   Image as ImageIcon,
   File,
 } from "lucide-react";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 import { createPortal } from "react-dom";
 import { MarkdownContent } from "../MarkdownContent";
@@ -31,12 +31,8 @@ import {
 import { isSensitiveInternalPath } from "../../../documents/documentUrlSafety";
 
 function useBlockPreview() {
-  const [, setCount] = useState(0);
-  useEffect(() => {
-    const fn = () => setCount((c) => c + 1);
-    return subscribeBlockPreview(fn);
-  }, []);
-  return { preview: getBlockPreview(), close: closeBlockPreview };
+  const preview = useSyncExternalStore(subscribeBlockPreview, getBlockPreview, () => null);
+  return { preview, close: closeBlockPreview };
 }
 
 function normalizePreviewUrl(url: string | undefined | null): string {
