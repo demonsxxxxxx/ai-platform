@@ -68,7 +68,7 @@ def test_logging_failure_never_replaces_operation_result_or_exception(monkeypatc
             raise RuntimeError("logging unavailable")
     monkeypatch.setattr(tracing, "_terminal_stage_logger", BrokenLogger())
     try:
-        with TerminalStageTiming("result_publication", run_id="run-a", attempt_id="attempt-a"):
+        with TerminalStageTiming("terminal_receipt_publication", run_id="run-a", attempt_id="attempt-a"):
             if failure is not None:
                 raise failure
     except BaseException as caught:

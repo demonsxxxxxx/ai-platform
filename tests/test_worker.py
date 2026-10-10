@@ -2241,7 +2241,13 @@ async def test_v2_reconciliation_snapshot_terminalizes_and_persists_assistant_me
         yield object()
         now[0] += 1.25
 
+    publication_observations = []
+
     async def delayed_publication(*args, **kwargs):
+        publication_observations.append([
+            (record.terminal_phase, record.terminal_phase_duration_ms)
+            for record in caplog.records if record.msg == "run_terminal_stage"
+        ])
         now[0] += 0.5
 
     monkeypatch.setattr(worker_module, "publish_run_event", delayed_publication)
@@ -2413,8 +2419,9 @@ async def test_v2_reconciliation_snapshot_terminalizes_and_persists_assistant_me
     assert calls.index(promote_call) < calls.index(create_call) < calls.index(("complete", "run-a"))
 
     records = [record for record in caplog.records if record.msg == "run_terminal_stage"]
-    assert [record.terminal_phase for record in records] == ["result_business_commit", "result_publication"]
-    assert [record.terminal_phase_duration_ms for record in records] == [1250, 500]
+    assert [record.terminal_phase for record in records] == ["result_business_commit"]
+    assert [record.terminal_phase_duration_ms for record in records] == [1250]
+    assert publication_observations == [[("result_business_commit", 1250)]]
     assert all(record.terminal_phase_outcome == "ok" and record.terminal_status == "succeeded" for record in records)
     assert "result.txt" not in repr([vars(record) for record in records])
 

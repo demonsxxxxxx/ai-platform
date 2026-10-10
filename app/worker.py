@@ -60,7 +60,6 @@ from app.streaming.api import (
     persist_worker_event,
     publish_run_event,
 )
-from app.platform.tracing import TerminalStageTiming
 from app.validation import assert_safe_id
 from app.worker_principal_authority import _payload_identity
 
@@ -370,24 +369,15 @@ async def process_run_payload(
             ),
             reconciliation_claim_token=(reconciliation.claim_token if reconciliation is not None else None),
         )
-        with TerminalStageTiming(
-            "result_business_commit", run_id=payload.run_id,
-            attempt_id=attempt_id, terminal_status=result.status,
-        ) as timing:
-            committed = await result_commit.commit(
-                commit_command,
-                attempt_authority=attempt_lifecycle,
-                capabilities=v4_capabilities,
-                release_runtime_lease=release_runtime_sandbox_lease,
-            )
-            timing.terminal_status = committed.status
+        committed = await result_commit.commit(
+            commit_command,
+            attempt_authority=attempt_lifecycle,
+            capabilities=v4_capabilities,
+            release_runtime_lease=release_runtime_sandbox_lease,
+        )
         runtime_sandbox_lease_released = committed.status in {"succeeded", "failed", "cancelled"}
         if committed.publish_run_event:
-            with TerminalStageTiming(
-                "result_publication", run_id=payload.run_id,
-                attempt_id=attempt_id, terminal_status=committed.status,
-            ):
-                await publish_run_event(v4_capabilities, tenant_id=payload.tenant_id, run_id=payload.run_id)
+            await publish_run_event(v4_capabilities, tenant_id=payload.tenant_id, run_id=payload.run_id)
         return WorkerOutcome(committed.status, payload.run_id, committed.error_code, committed.error_message)
     finally:
         await cleanup_runtime_sandbox_lease_after_interruption()

@@ -237,11 +237,17 @@ The barriers remain separate:
   artifact-record database commit. The existing executor
   `artifact_upload_latency_ms` may measure an `artifact_created` callback, so it
   is not evidence of object-storage upload time.
-- `result_business_commit`: the Worker result commit service through transaction
-  exit, including any existing stale/CAS classification; a `skipped` status is
-  not a newly written result. `result_publication` measures its subsequent public
-  event publication. Existing SDK-placeholder lease bookkeeping remains inside
-  the commit; later physical reconciler sandbox stop/release is outside both.
+- `result_business_commit`: the Runs infrastructure timing decorator observes
+  the unchanged application commit service through transaction exit, including
+  existing stale/CAS classification; bootstrap selects the decorator without
+  changing its public constructor or contract. A `skipped` status is not a newly
+  written result. Existing SDK-placeholder lease bookkeeping remains inside the
+  commit; later physical reconciler sandbox stop/release is outside it.
+
+Worker post-commit publication remains unmeasured in this slice. The separate
+`terminal_receipt_publication` span observes callback-row publication only;
+its timing cannot stand in for Worker publication. The frozen Worker coordinator
+and its release-flag / post-commit publication order remain unchanged.
 
 These spans may overlap across processes (especially callback ack versus receipt
 commit/publication), and retries produce another operation observation. Do not
