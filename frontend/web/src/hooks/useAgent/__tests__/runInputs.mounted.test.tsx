@@ -15,7 +15,6 @@ import type {
   SessionRunInputsResponse,
 } from "../../../services/api/session.ts";
 import { sessionApi } from "../../../services/api/session.ts";
-import { installBrowserAuthTestDb } from "../../__tests__/browserAuthTestDb.ts";
 import { useRunInputs } from "../runInputs.ts";
 import type { RunInputsController } from "../types.ts";
 
@@ -233,10 +232,9 @@ test("restores Run questions after remount and submits multi-select answers to t
   }
 });
 
-test("keeps text draft on an uncertain result and retries the same input ID to the same Run", async () => {
+test("retries uncertain text submissions with the same input ID to the same Run", async () => {
   const env = installDom();
   const { createRoot } = await import("react-dom/client");
-  installBrowserAuthTestDb();
   const container = env.dom.window.document.getElementById("root");
   assert.ok(container);
   const root = createRoot(container);
@@ -265,78 +263,20 @@ test("keeps text draft on an uncertain result and retries the same input ID to t
     });
     return { input_id: body.input_id, status: "queued" };
   };
-  const [{ ChatInput }, { AuthProvider }, { authApi }, { MemoryRouter }] = await Promise.all([
-    import("../../../components/chat/ChatInput.tsx"),
-    import("../../useAuth.tsx"),
-    import("../../../services/api/auth.ts"),
-    import("react-router-dom"),
-  ]);
-  const originalGetCurrentUser = authApi.getCurrentUser;
-  const originalBootstrapAuthContext = authApi.bootstrapAuthContext;
-  authApi.getCurrentUser = async () => {
-    throw Object.assign(new Error("unauthenticated"), { status: 401 });
-  };
-  authApi.bootstrapAuthContext = async (request) => ({
-    status: "ready",
-    protocol_version: 2,
-    generation: request.generation,
-  });
 
-  let sendCalls = 0;
-  let canSend = false;
-  const emptySelections: never[] = [];
-  const optionValues = {};
+  let latest: RunInputsController | null = null;
   function Probe() {
-    const runInputs = useRunInputs({
+    latest = useRunInputs({
       sessionId: "session-text",
       runId: "run-text",
       isRunActive: true,
     });
-    return createElement(
-      MemoryRouter,
-      null,
-      createElement(
-        AuthProvider,
-        null,
-        createElement(ChatInput, {
-          onSend: async () => {
-            sendCalls += 1;
-            return { status: "accepted" as const };
-          },
-          onStop: async () => "unavailable" as const,
-          isLoading: true,
-          acceptedFileTypes: emptySelections,
-          tools: emptySelections,
-          skills: emptySelections,
-          availableModels: emptySelections,
-          agentOptionValues: optionValues,
-          disableSlashCommands: true,
-          canSend,
-          runInputs,
-        }),
-      ),
-    );
+    return null;
   }
-  const typeText = async (value: string) => {
-    await act(async () => {
-      const textarea = container.querySelector<HTMLTextAreaElement>("[data-run-input-form] textarea");
-      assert.ok(textarea);
-      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
-      assert.ok(setter);
-      setter.call(textarea, value);
-      textarea.dispatchEvent(new env.dom.window.InputEvent("input", {
-        bubbles: true,
-        data: value,
-        inputType: "insertText",
-      }));
-      textarea.dispatchEvent(new env.dom.window.Event("change", { bubbles: true }));
-    });
-  };
+  const controls = () => latest as RunInputsController;
   const restore = () => {
     sessionApi.getRunInputs = originalGet;
     sessionApi.submitRunInput = originalSubmit;
-    authApi.getCurrentUser = originalGetCurrentUser;
-    authApi.bootstrapAuthContext = originalBootstrapAuthContext;
   };
 
   try {
@@ -344,51 +284,29 @@ test("keeps text draft on an uncertain result and retries the same input ID to t
       root.render(createElement(Probe));
       await flush();
     });
-    await typeText("please add one example");
-    assert.ok(container.querySelector<HTMLTextAreaElement>("[data-run-input-form] textarea")?.readOnly);
+    assert.equal(controls().projection?.run_id, "run-text");
+    let accepted = true;
     await act(async () => {
-      container.querySelector("[data-run-input-form]")?.dispatchEvent(
-        new env.dom.window.Event("submit", { bubbles: true, cancelable: true }),
-      );
+      accepted = await controls().submitText("please add one example");
       await flush();
     });
-    assert.equal(submissions.length, 0);
-    canSend = true;
-    await act(async () => root.render(createElement(Probe)));
-    await act(async () => {
-      container.querySelector("[data-run-input-form] textarea")?.dispatchEvent(
-        new env.dom.window.KeyboardEvent("keydown", {
-          key: "Enter", isComposing: true, bubbles: true, cancelable: true,
-        }),
-      );
-      await flush();
-    });
-    assert.equal(submissions.length, 0);
-    await act(async () => {
-      const form = container.querySelector("[data-run-input-form]");
-      assert.ok(form);
-      form.dispatchEvent(new env.dom.window.Event("submit", { bubbles: true, cancelable: true }));
-      await flush();
-    });
+    assert.equal(accepted, false);
+    assert.equal(controls().pendingSubmission?.state, "uncertain");
     assert.equal(submissions.length, 1);
-    assert.equal(container.querySelector<HTMLTextAreaElement>("[data-run-input-form] textarea")?.value,
-      "please add one example");
-    assert.ok(container.querySelector("[data-run-input-composer] [role='status'] button"));
 
     await act(async () => {
-      const retry = container.querySelector<HTMLButtonElement>("[data-run-input-composer] [role='status'] button");
-      assert.ok(retry);
-      retry.click();
+      accepted = await controls().retryPendingSubmission();
       await flush();
     });
+    assert.equal(accepted, true);
     assert.equal(submissions.length, 2);
     assert.equal(submissions[0].runId, "run-text");
     assert.equal(submissions[1].runId, "run-text");
     assert.deepEqual(submissions[1].body, submissions[0].body);
     assert.ok("text" in submissions[1].body);
     assert.equal(submissions[1].body.text, "please add one example");
-    assert.equal(container.querySelector<HTMLTextAreaElement>("[data-run-input-form] textarea")?.value, "");
-    assert.equal(sendCalls, 0);
+    assert.equal(persisted.inputs[0]?.input_id, submissions[0].body.input_id);
+    assert.equal(controls().pendingSubmission, null);
   } finally {
     await act(async () => root.unmount());
     restore();

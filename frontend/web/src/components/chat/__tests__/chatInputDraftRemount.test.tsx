@@ -193,6 +193,7 @@ test("keeps drafts local across remounts, submissions, and session scopes", asyn
 
   try {
     await render(false, null);
+    assert.equal(rootNode.querySelector("[data-run-input-composer]"), null);
     await typeDraft("external navigation task");
     await submit();
     await typeDraft("must not cross sessions");

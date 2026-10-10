@@ -945,7 +945,6 @@ export function ChatView({
     onAttachmentsChange,
     onProfileDriveFileDrop: handleProfileDriveFileDrop,
     uploadControls,
-    runInputs,
   };
 
   const assistantUiActions = useMemo(
