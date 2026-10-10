@@ -2462,11 +2462,19 @@ def test_admin_promote_rejects_builtin_version_that_cannot_be_materialized(monke
     assert response.json()["detail"] == "skill_version_not_materializable"
 
 
-def test_admin_promote_accepts_uploaded_version_with_snapshot_files(monkeypatch):
+@pytest.mark.parametrize("dependency_snapshot", ["present", "absent", "stale"])
+def test_admin_promote_accepts_root_files_without_requiring_dependency_snapshots(
+    monkeypatch, dependency_snapshot
+):
     calls = []
 
     async def fake_get_version(conn, *, skill_id, version):
-        return materializable_uploaded_qa_version(version)
+        row = materializable_uploaded_qa_version(version)
+        if dependency_snapshot == "absent":
+            row["source"].pop("dependency_manifests")
+        elif dependency_snapshot == "stale":
+            row["source"]["dependency_manifests"] = [minimax_dependency_manifest("hash-minimax-old")]
+        return row
 
     async def fake_get_policy(conn, *, tenant_id, skill_id, channel="stable"):
         return {
@@ -2491,6 +2499,10 @@ def test_admin_promote_accepts_uploaded_version_with_snapshot_files(monkeypatch)
         calls.append(("audit", kwargs))
         return "aud-uploaded-promote"
 
+    async def record_status(conn, **kwargs):
+        calls.append(("status", kwargs))
+        return await fake_update_skill_version_status(conn, **kwargs)
+
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
@@ -2500,7 +2512,7 @@ def test_admin_promote_accepts_uploaded_version_with_snapshot_files(monkeypatch)
         "app.skills.infrastructure.catalog_postgres.set_uploaded_workbench_skill_status",
         fake_set_uploaded_visibility,
     )
-    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.update_skill_version_status", fake_update_skill_version_status)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.update_skill_version_status", record_status)
     monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_audit)
     monkeypatch.setattr("app.routes.admin_skills._build_skill_version_admin_review", reviewed_skill_version_release)
     client = TestClient(create_app())
@@ -2514,6 +2526,23 @@ def test_admin_promote_accepts_uploaded_version_with_snapshot_files(monkeypatch)
     assert response.status_code == 200
     assert response.json()["current_version"] == "hash-uploaded"
     assert [item for item in calls if item[0] == "set_policy"][0][1]["version"] == "hash-uploaded"
+
+    policy = [item[1] for item in calls if item[0] == "set_policy"]
+    assert policy == [{
+        "tenant_id": "default", "skill_id": "qa-file-reviewer",
+        "version": "hash-uploaded", "previous_version": "hash-a",
+        "promoted_by": "dev-admin", "channel": "stable", "rollout_percent": 100,
+    }]
+    assert [item[1] for item in calls if item[0] == "status"] == [
+        {"skill_id": "qa-file-reviewer", "version": "hash-uploaded", "status": "released"},
+        {"skill_id": "qa-file-reviewer", "version": "hash-a", "status": "deprecated"},
+    ]
+    audit = [item[1] for item in calls if item[0] == "audit"]
+    assert len(audit) == 1
+    assert audit[0]["action"] == "skill_version_promoted"
+    assert audit[0]["tenant_id"] == "default"
+    assert audit[0]["target_id"] == "qa-file-reviewer"
+    assert audit[0]["payload_json"]["to_version"] == "hash-uploaded"
 
 
 def test_admin_promote_rejects_uploaded_version_without_snapshot_files(monkeypatch):
@@ -2549,7 +2578,10 @@ def test_admin_promote_rejects_uploaded_version_without_snapshot_files(monkeypat
     assert response.json()["detail"] == "skill_version_not_materializable"
 
 
-def test_admin_promote_rejects_uploaded_version_with_missing_dependency_snapshots(monkeypatch):
+@pytest.mark.parametrize("dependency_ids", [["../invalid"], ["qa-file-reviewer"], ["minimax-docx", "minimax-docx"]])
+def test_admin_promote_rejects_invalid_dependency_declarations_before_policy(
+    monkeypatch, dependency_ids
+):
     async def fake_get_version(conn, *, skill_id, version):
         return {
             "skill_id": skill_id,
@@ -2561,14 +2593,14 @@ def test_admin_promote_rejects_uploaded_version_with_missing_dependency_snapshot
                 "storage_key": "tenants/default/skills/qa-file-reviewer/versions/hash-uploaded/package.zip",
                 "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
             },
-            "dependency_ids": ["minimax-docx"],
+            "dependency_ids": dependency_ids,
             "status": "active",
             "created_by": "dev-admin",
             "created_at": None,
         }
 
     async def fail_get_policy(*args, **kwargs):
-        raise AssertionError("unmaterializable dependency snapshots must reject before policy lookup")
+        raise AssertionError("invalid dependency declarations must reject before policy lookup")
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
@@ -2793,11 +2825,19 @@ def test_admin_rollback_rejects_builtin_version_that_cannot_be_materialized(monk
     assert response.json()["detail"] == "skill_version_not_materializable"
 
 
-def test_admin_rollback_accepts_uploaded_version_with_snapshot_files(monkeypatch):
+@pytest.mark.parametrize("dependency_snapshot", ["present", "absent", "stale"])
+def test_admin_rollback_accepts_root_files_without_requiring_dependency_snapshots(
+    monkeypatch, dependency_snapshot
+):
     calls = []
 
     async def fake_get_version(conn, *, skill_id, version):
-        return materializable_uploaded_qa_version(version)
+        row = materializable_uploaded_qa_version(version)
+        if dependency_snapshot == "absent":
+            row["source"].pop("dependency_manifests")
+        elif dependency_snapshot == "stale":
+            row["source"]["dependency_manifests"] = [minimax_dependency_manifest("hash-minimax-old")]
+        return row
 
     async def fake_get_policy(conn, *, tenant_id, skill_id, channel="stable"):
         return {
@@ -2818,12 +2858,16 @@ def test_admin_rollback_accepts_uploaded_version_with_snapshot_files(monkeypatch
         calls.append(("audit", kwargs))
         return "aud-uploaded-rollback"
 
+    async def record_status(conn, **kwargs):
+        calls.append(("status", kwargs))
+        return await fake_update_skill_version_status(conn, **kwargs)
+
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.skills.infrastructure.versions_postgres.get_skill_release_policy", fake_get_policy)
     monkeypatch.setattr("app.skills.infrastructure.versions_postgres.set_skill_release_policy", fake_set_policy)
-    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.update_skill_version_status", fake_update_skill_version_status)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.update_skill_version_status", record_status)
     monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_audit)
     client = TestClient(create_app())
 
@@ -2836,6 +2880,23 @@ def test_admin_rollback_accepts_uploaded_version_with_snapshot_files(monkeypatch
     assert response.status_code == 200
     assert response.json()["current_version"] == "hash-uploaded"
     assert [item for item in calls if item[0] == "set_policy"][0][1]["version"] == "hash-uploaded"
+
+    policy = [item[1] for item in calls if item[0] == "set_policy"]
+    assert policy == [{
+        "tenant_id": "default", "skill_id": "qa-file-reviewer",
+        "version": "hash-uploaded", "previous_version": "hash-current",
+        "promoted_by": "dev-admin", "channel": "stable", "rollout_percent": 100,
+    }]
+    assert [item[1] for item in calls if item[0] == "status"] == [
+        {"skill_id": "qa-file-reviewer", "version": "hash-uploaded", "status": "released"},
+        {"skill_id": "qa-file-reviewer", "version": "hash-current", "status": "deprecated"},
+    ]
+    audit = [item[1] for item in calls if item[0] == "audit"]
+    assert len(audit) == 1
+    assert audit[0]["action"] == "skill_version_rolled_back"
+    assert audit[0]["tenant_id"] == "default"
+    assert audit[0]["target_id"] == "qa-file-reviewer"
+    assert audit[0]["payload_json"]["to_version"] == "hash-uploaded"
 
 
 def test_admin_rollback_rejects_uploaded_version_without_snapshot_files(monkeypatch):
@@ -2871,7 +2932,10 @@ def test_admin_rollback_rejects_uploaded_version_without_snapshot_files(monkeypa
     assert response.json()["detail"] == "skill_version_not_materializable"
 
 
-def test_admin_rollback_rejects_uploaded_version_with_missing_dependency_snapshots(monkeypatch):
+@pytest.mark.parametrize("dependency_ids", [["../invalid"], ["qa-file-reviewer"], ["minimax-docx", "minimax-docx"]])
+def test_admin_rollback_rejects_invalid_dependency_declarations_before_policy(
+    monkeypatch, dependency_ids
+):
     async def fake_get_version(conn, *, skill_id, version):
         return {
             "skill_id": skill_id,
@@ -2883,14 +2947,14 @@ def test_admin_rollback_rejects_uploaded_version_with_missing_dependency_snapsho
                 "storage_key": "tenants/default/skills/qa-file-reviewer/versions/hash-uploaded/package.zip",
                 "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
             },
-            "dependency_ids": ["minimax-docx"],
+            "dependency_ids": dependency_ids,
             "status": "active",
             "created_by": "dev-admin",
             "created_at": None,
         }
 
     async def fail_get_policy(*args, **kwargs):
-        raise AssertionError("unmaterializable dependency snapshots must reject before policy lookup")
+        raise AssertionError("invalid dependency declarations must reject before policy lookup")
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
