@@ -27,6 +27,7 @@ EXPECTED_CI_VERIFY = (
     "&& corepack pnpm run test:run-monitor "
     "&& corepack pnpm run test:profile-drive "
     "&& corepack pnpm run test:control-plane-ui "
+    "&& corepack pnpm run test:model-admin "
     "&& corepack pnpm run test:sse "
     "&& eslint . && tsc -b && vite build "
     "&& node scripts/write-build-provenance.mjs"
