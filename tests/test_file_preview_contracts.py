@@ -394,8 +394,13 @@ def test_xlsx_staging_uses_the_fixed_path_with_windows_semantics(monkeypatch):
     assert not root.exists()
 
 
-def test_xlsx_child_uses_stdlib_xml_and_reports_memory_failure_without_source_data(
-    monkeypatch,
+@pytest.mark.parametrize("failure_phase", ["child_parse", "child_images"])
+@pytest.mark.parametrize(
+    "error_type,reason",
+    [(MemoryError, "memory_limit"), (RuntimeError, "child_exception")],
+)
+def test_xlsx_child_uses_stdlib_xml_and_reports_failure_phase_without_source_data(
+    monkeypatch, failure_phase, error_type, reason, caplog,
 ):
     spec = parser_spec_for_attachment(
         file_name="preview.xlsx",
@@ -420,8 +425,8 @@ def test_xlsx_child_uses_stdlib_xml_and_reports_memory_failure_without_source_da
         def close(self):
             return None
 
-    def fail_with_memory_error(**kwargs):
-        raise MemoryError
+    def fail_with_private_error(*args, **kwargs):
+        raise error_type("private-workbook-content-must-not-be-logged")
 
     inherited_thread_counts = {
         "OPENBLAS_NUM_THREADS": "32",
@@ -447,18 +452,21 @@ def test_xlsx_child_uses_stdlib_xml_and_reports_memory_failure_without_source_da
         "_apply_child_resource_limits",
         observe_resource_limit_application,
     )
-    monkeypatch.setattr(
-        file_preview_contracts,
-        "parse_xlsx_preview_attachment",
-        fail_with_memory_error,
-    )
+    if failure_phase == "child_parse":
+        monkeypatch.setattr(
+            file_preview_contracts,
+            "parse_xlsx_preview_attachment",
+            fail_with_private_error,
+        )
 
     file_preview_contracts._parse_xlsx_preview_child(
         Connection(),
-        b"sanitized",
+        _workbook_bytes(),
         requirement.model_dump(mode="json"),
         5.0,
-        file_preview_contracts.xlsx_preview_image_extractor(),
+        fail_with_private_error
+        if failure_phase == "child_images"
+        else file_preview_contracts.xlsx_preview_image_extractor(),
     )
 
     assert file_preview_contracts.os.environ["OPENPYXL_LXML"] == "False"
@@ -475,10 +483,17 @@ def test_xlsx_child_uses_stdlib_xml_and_reports_memory_failure_without_source_da
         {
             "status": "failed",
             "code": "xlsx_preview_unavailable",
-            "diagnostic": {"phase": "child_parse", "reason": "memory_limit"},
+            "diagnostic": {"phase": failure_phase, "reason": reason},
         }
     ]
     assert "sanitized-fixture" not in str(sent)
+    file_preview_contracts._log_isolated_xlsx_result(sent[0])
+    assert caplog.records[-1].xlsx_preview_phase == failure_phase
+    assert caplog.records[-1].xlsx_preview_reason == reason
+    assert "private-workbook-content" not in caplog.text
+    assert file_preview_contracts._strip_isolated_xlsx_diagnostic(sent[0]) == {
+        "status": "failed", "code": "xlsx_preview_unavailable",
+    }
 
 
 @pytest.mark.parametrize(
