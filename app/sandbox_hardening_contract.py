@@ -3,6 +3,13 @@ from __future__ import annotations
 from typing import Any
 
 
+# No live observer currently establishes this proof. Verifiers and readiness
+# consumers must retain the same blocker until an authoritative observer exists.
+SANDBOX_HARDENING_ACCEPTANCE_BLOCKER = (
+    "hardening evidence blocked: resource_limits.bounded_error_projection_observer"
+)
+
+
 BOUNDED_ERROR_PROJECTION_ALLOWED_KEYS = {
     "source",
     "run_id",

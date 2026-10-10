@@ -285,6 +285,8 @@ def _minimal_foundation_runtime_concurrency_payload(revision_ref: str) -> dict:
     return {
         "schema_version": "ai-platform.foundation-runtime-concurrency.v1",
         "artifact_kind": "foundation_runtime_concurrency",
+        "failed_case_count": 0,
+        "failed_cases": [],
         "commit_sha": revision_ref,
         "source_tree_commit_sha": revision_ref,
         "runtime_subject_commit_sha": revision_ref,
@@ -344,6 +346,7 @@ def _minimal_foundation_runtime_concurrency_payload(revision_ref: str) -> dict:
             "artifact_acl": {
                 "status": "passed",
                 "owner_statuses": [200],
+                "owner_bytes": [8],
                 "cross_user_statuses": [404],
                 "cross_tenant_statuses": [404],
                 "preview_cross_user_statuses": [404],
@@ -362,6 +365,7 @@ def _minimal_foundation_runtime_concurrency_payload(revision_ref: str) -> dict:
             "skill_snapshots": {
                 "status": "passed",
                 "run_skill_snapshot_count": 12,
+                "run_sample_count": 12,
                 "used_count": 6,
                 "missing_pinned_snapshots": [],
                 "mismatched_pinned_snapshots": [],
@@ -370,6 +374,7 @@ def _minimal_foundation_runtime_concurrency_payload(revision_ref: str) -> dict:
             },
             "run_playback": {
                 "status": "passed",
+                "http_statuses": [200] * 12,
                 "event_order_violations": 0,
                 "private_payload_leak_count": 0,
             },
