@@ -416,6 +416,7 @@ jobs:
               tests/test_skill_dependencies.py \
               tests/test_skill_lifecycle.py \
               tests/test_skill_registry.py \
+              tests/test_skill_packages.py \
               tests/test_skill_stager.py \
               tests/test_skill_pinned_snapshot_stage.py \
               tests/test_skill_worker_snapshot_persistence.py \
