@@ -263,6 +263,7 @@ export function DepartmentDirectorySelector({
               return (
                 <button
                   aria-disabled={unavailable}
+                  disabled={disabled}
                   aria-label={
                     unavailableReason
                       ? `${option.path}，${unavailableReason}`
@@ -272,7 +273,7 @@ export function DepartmentDirectorySelector({
                   className="department-selector__option"
                   key={option.directoryId}
                   onClick={() => {
-                    if (!unavailable) toggle(option.authorityId);
+                    if (!disabled && !unavailable) toggle(option.authorityId);
                   }}
                   onKeyDown={(event) => onOptionKeyDown(event, index)}
                   ref={(element) => {
