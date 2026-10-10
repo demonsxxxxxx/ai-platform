@@ -135,6 +135,10 @@ generation, timestamps, and reconciliation ownership in one migration.
    dispatch acceptance. That later acceptance preserves the terminal executor
    status and makes a `waiting_terminal` receipt `pending` once its reconciliation
    context exists. It cannot reset an existing reconciliation claim or outcome.
+   `record_sandbox_executor_accepted` owns that context write. The uncalled
+   standalone `record_sandbox_executor_reconciliation_context` helper is removed;
+   it had no production, test, or lazy-export consumer. The context column,
+   accepted writer, claim fencing, and terminal reconciliation readers remain.
    A first terminal callback fixes the protocol fields in `executor_terminal_json`
    and normally appends the bounded Runs-owned private diagnostic observation in
    the same PostgreSQL transaction. Diagnostic-only normalization, budget, lock

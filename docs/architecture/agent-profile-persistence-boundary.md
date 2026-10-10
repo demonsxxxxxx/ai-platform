@@ -115,6 +115,11 @@ Every new Run resolves the current published profile by `agent_id`. A Session
 retains expert identity and native history; its creation revision is provenance.
 Accepted Runs resolve their exact `(agent_id, revision, content_hash)` and package
 pins for dispatch, retry and resume. Current access still applies.
+The pinned-row query retains its `current_revision` publication integrity join,
+but returns only the pinned revision fields. Current ACL authority is the separate
+full current-profile read passed to `_admission_from_row`; the unused
+`current_visibility` and `current_allowed_*` result aliases are removed. No public
+DTO, durable column, revision hash, or authorization consumer changes.
 Replay accepts only the current `skill_set` snapshot shape. The retired
 `required_skill_id`/`required_skill_version` conversion is removed; old-shaped
 snapshots are rejected without rewriting their stored data.
