@@ -18,8 +18,7 @@ from app.capability_distribution import (
 from app.db import transaction
 from app.mcp.api import configure_mcp_runtime_services
 from app.mcp.application.live_catalog import LiveMcpCatalogService
-from app.mcp.infrastructure import catalog as mcp_catalog
-from app.mcp.infrastructure.client import SseMcpToolDiscoveryAdapter
+from app.mcp.infrastructure.client import McpToolDiscoveryAdapter
 from app.mcp.infrastructure import postgres as mcp_postgres
 from app.mcp.infrastructure import runtime as mcp_runtime
 from app.redis_client import get_redis_client
@@ -65,8 +64,8 @@ class _McpRuntimeServices:
         self.principal_jwt_store = mcp_runtime.get_mcp_principal_jwt_store()
         self.live_catalog = LiveMcpCatalogService(
             target_resolver=self._resolve_live_target,
-            discovery=mcp_catalog.StreamableHttpMcpToolDiscoveryAdapter(),
-            sse_discovery=SseMcpToolDiscoveryAdapter(),
+            discovery=McpToolDiscoveryAdapter(),
+            sse_discovery=McpToolDiscoveryAdapter(transport="sse"),
         )
 
     @staticmethod

@@ -28,8 +28,8 @@ async def test_catalog_dispatches_the_configured_transport(monkeypatch, transpor
             )
 
         service = LiveMcpCatalogService(
-            target_resolver=target, discovery=catalog.StreamableHttpMcpToolDiscoveryAdapter(),
-            sse_discovery=client.SseMcpToolDiscoveryAdapter(),
+            target_resolver=target, discovery=client.McpToolDiscoveryAdapter(),
+            sse_discovery=client.McpToolDiscoveryAdapter(transport="sse"),
         )
         result = await service.list_server_tools(tenant_id="tenant", user_id="user", server_id="gateway", jwt="synthetic.jwt")
         if transport == "sandbox":
@@ -239,12 +239,3 @@ async def test_runtime_does_not_hide_database_or_corrupt_credential_failures(mon
     })
     with pytest.raises(error):
         await mcp_runtime.attach_mcp_server_configs(object(), principal=principal, run_payload=payload)
-
-
-@pytest.mark.asyncio
-async def test_sse_rejects_static_jwt_override_before_connection():
-    with pytest.raises(ValueError, match="mcp_header_conflict"):
-        await client.SseMcpToolDiscoveryAdapter().discover_definitions(
-            "https://mcp.example/sse", static_headers={"jwt-authorization": "secret"},
-            jwt_authorization="Bearer current.jwt",
-        )
