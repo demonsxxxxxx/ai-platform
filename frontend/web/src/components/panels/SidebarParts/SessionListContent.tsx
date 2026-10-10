@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ChevronDown,
   Search,
@@ -54,11 +54,15 @@ interface SessionListContentProps {
   onOpenSearch: () => void;
   onSetScrollEl: (el: HTMLDivElement | null) => void;
   sessions: BackendSession[];
+  globalSessions: BackendSession[];
   isLoading: boolean;
+  globalIsLoading: boolean;
   hasMore: boolean;
   isLoadingMore: boolean;
   loadMoreRef: React.RefCallback<HTMLElement>;
   onUpdateSession: (s: BackendSession) => void;
+  onSelectGlobalSession: (session: BackendSession) => void;
+  onUpdateGlobalSession: (session: BackendSession) => void;
   currentSessionId: string | null;
   unreadBySession: UnreadBySession;
   sessionActions: SessionActions;
@@ -84,11 +88,15 @@ export function SessionListContent({
   onOpenSearch,
   onSetScrollEl,
   sessions,
+  globalSessions,
   isLoading,
+  globalIsLoading,
   hasMore,
   isLoadingMore,
   loadMoreRef,
   onUpdateSession,
+  onSelectGlobalSession,
+  onUpdateGlobalSession,
   currentSessionId,
   unreadBySession,
   sessionActions,
@@ -115,15 +123,21 @@ export function SessionListContent({
     loadedSessions: sessions,
     unreadBySession,
   });
+  const globalChatsUnreadCount = getUnreadCount({
+    loadedSessions: globalSessions,
+    unreadBySession,
+  });
   const groupedSessions = groupSessionsByTime(sessions, t);
   const groupedAgentSessions = useMemo(
-    () => groupSessionsByAgent(sessions),
-    [sessions],
+    () => groupSessionsByAgent(globalSessions),
+    [globalSessions],
   );
   const [expandedAgentGroups, setExpandedAgentGroups] = useState<Set<string>>(
     () => new Set(),
   );
+  const [mobileHistoryView, setMobileHistoryView] = useState<"tasks" | "all">("tasks");
   const autoExpandedSessionRef = useRef<string | null>(null);
+  const autoExpandedAgentGroupsRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (agentWorkspace || !currentSessionId) {
@@ -143,6 +157,19 @@ export function SessionListContent({
     );
   }, [agentWorkspace, currentSessionId, groupedAgentSessions]);
 
+  useEffect(() => {
+    const agentId = agentWorkspace?.agent_id;
+    if (
+      !agentId ||
+      !agentHistoryInMainPanel ||
+      globalIsLoading ||
+      groupedAgentSessions.length === 0 ||
+      autoExpandedAgentGroupsRef.current === agentId
+    ) return;
+    autoExpandedAgentGroupsRef.current = agentId;
+    setExpandedAgentGroups(new Set(groupedAgentSessions.map((group) => group.key)));
+  }, [agentHistoryInMainPanel, agentWorkspace?.agent_id, globalIsLoading, groupedAgentSessions]);
+
   const toggleAgentGroup = (key: string) => {
     setExpandedAgentGroups((previous) => {
       const next = new Set(previous);
@@ -151,23 +178,150 @@ export function SessionListContent({
       return next;
     });
   };
-  const showSessionRegion = !navigationOnly || showSessionHistory;
-  const hasHistory = agentWorkspace
-    ? groupedSessions.length > 0
-    : groupedAgentSessions.length > 0;
-  const renderSession = (session: BackendSession) => {
+  const renderSession = (
+    session: BackendSession,
+    onSelect: () => void = () => sessionActions.onSelectSession(session.id),
+    onUpdate: (session: BackendSession) => void = onUpdateSession,
+  ) => {
     if (!session.id) return null;
     return (
       <SessionItem
         key={session.id}
         session={session}
         isActive={currentSessionId === session.id}
-        onSelect={() => sessionActions.onSelectSession(session.id)}
+        onSelect={onSelect}
         onDelete={() => sessionActions.onDeleteSession(session.id)}
-        onSessionUpdate={onUpdateSession}
+        onSessionUpdate={onUpdate}
       />
     );
   };
+  const renderGlobalSessionGroups = () =>
+    groupedAgentSessions.map((group) => {
+      const isExpanded = expandedAgentGroups.has(group.key);
+      return (
+        <div key={group.key} data-agent-history-group>
+          <button
+            type="button"
+            aria-expanded={isExpanded}
+            onClick={() => toggleAgentGroup(group.key)}
+            className="group flex h-10 w-full items-center gap-2 rounded-lg px-[9px] text-left transition-colors hover:bg-[var(--theme-sidebar-panel-muted)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)]"
+          >
+            <AgentIdentityAvatar
+              agentId={group.identity?.agent_id ?? group.key}
+              avatarRef={group.identity?.avatar_ref}
+              avatarSeed={group.identity?.avatar_seed}
+              name={group.name}
+              size="sm"
+            />
+            <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-[var(--theme-text-secondary)] group-hover:text-[var(--theme-text)]">
+              {group.name}
+            </span>
+            <span className="shrink-0 text-[11px] text-[var(--theme-text-tertiary)]">
+              {group.sessions.length}
+            </span>
+            <ChevronDown
+              size={14}
+              aria-hidden="true"
+              className={`shrink-0 text-[var(--theme-text-tertiary)] transition-transform duration-200 ${
+                isExpanded ? "" : "-rotate-90"
+              }`}
+            />
+          </button>
+          {isExpanded ? (
+            <div className="ml-3 border-l border-[var(--theme-border)]/70 pl-1">
+              {group.sessions.map((session) =>
+                renderSession(
+                  session,
+                  () => onSelectGlobalSession(session),
+                  onUpdateGlobalSession,
+                ),
+              )}
+            </div>
+          ) : null}
+        </div>
+      );
+    });
+  const renderTaskSessionGroups = () =>
+    groupedSessions.map((group) => (
+      <div key={group.label}>
+        <div className="flex h-7 select-none items-center px-[9px] text-[13px] font-medium text-[var(--theme-text-tertiary)]">
+          {group.label}
+        </div>
+        <div className="flex flex-col gap-px">
+          {group.sessions.map((session) => renderSession(session))}
+        </div>
+      </div>
+    ));
+  const renderLoadingSessions = () => (
+    <div className="space-y-px px-0">
+      {Array.from({ length: 5 }).map((_, i) => (
+        <div
+          key={i}
+          className="flex h-10 items-center gap-2 rounded-lg px-[9px]"
+        >
+          <div
+            className="skeleton-line h-[13px] flex-1 rounded-md"
+            style={{
+              width: i === 0 ? "70%" : i === 1 ? "85%" : i === 2 ? "55%" : "65%",
+            }}
+          />
+        </div>
+      ))}
+    </div>
+  );
+  const renderTaskHistory = () => (
+    <>
+      {renderTaskSessionGroups()}
+      {hasMore ? (
+        <div ref={loadMoreRef} className="flex justify-center py-2">
+          {isLoadingMore ? (
+            <div className="flex items-center gap-2 text-[var(--theme-text-tertiary)]">
+              <LoadingSpinner size="xs" />
+              <span className="text-xs">{t("common.loading")}</span>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </>
+  );
+  const renderHistoryCatalog = (
+    label: string,
+    loading: boolean,
+    hasHistory: boolean,
+    unreadCount: number,
+    content: ReactNode,
+  ) => {
+    if (!hasHistory && !loading) return null;
+    return (
+      <>
+        <div
+          onClick={onToggleChatsCollapsed}
+          className="group/section flex h-8 cursor-pointer select-none items-center justify-between px-[9px]"
+        >
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)] transition-colors group-hover/section:text-[var(--theme-text-secondary)]">
+              {label}
+            </span>
+            {unreadCount > 0 ? (
+              <span className="inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-[var(--theme-danger)] px-1 text-[10px] font-medium leading-none text-[var(--theme-primary-foreground)]">
+                {formatUnreadCount(unreadCount)}
+              </span>
+            ) : null}
+          </div>
+          <ChevronDown
+            size={14}
+            className={`text-[var(--theme-text-tertiary)] transition-transform duration-200 ${
+              isChatsCollapsed ? "-rotate-90" : ""
+            }`}
+          />
+        </div>
+        {!isChatsCollapsed ? (
+          loading ? renderLoadingSessions() : content
+        ) : null}
+      </>
+    );
+  };
+  const showSessionRegion = !navigationOnly || showSessionHistory;
   const taskNavItems: Array<{
     key: WorkbenchNavItem;
     icon: React.ComponentType<{ size?: number }>;
@@ -372,126 +526,77 @@ export function SessionListContent({
         ref={onSetScrollEl}
         data-workbench-session-region
         data-sidebar-scroll
-        className={`flex-1 overflow-y-auto border-t border-[var(--theme-border)]/70 px-2 pt-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${
-          agentWorkspace && agentHistoryInMainPanel ? "xl:hidden" : ""
-        }`}
+        className="flex-1 overflow-y-auto border-t border-[var(--theme-border)]/70 px-2 pt-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
       >
         <div className="flex flex-col gap-px">
-          {hasHistory || isLoading ? (
+          {agentWorkspace && agentHistoryInMainPanel ? (
             <>
-              <div
-                onClick={onToggleChatsCollapsed}
-                className="group/section flex h-8 cursor-pointer select-none items-center justify-between px-[9px]"
-              >
-                <div className="flex min-w-0 items-center gap-2">
-                  <span className="text-[11px] font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)] transition-colors group-hover/section:text-[var(--theme-text-secondary)]">
-                    {agentWorkspace ? "任务历史" : t("sidebar.chats")}
-                  </span>
-                  {chatsUnreadCount > 0 && (
-                    <span className="inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-[var(--theme-danger)] px-1 text-[10px] font-medium leading-none text-[var(--theme-primary-foreground)]">
-                      {formatUnreadCount(chatsUnreadCount)}
-                    </span>
-                  )}
-                </div>
-                <ChevronDown
-                  size={14}
-                  className={`text-[var(--theme-text-tertiary)] transition-transform duration-200 ${
-                    isChatsCollapsed ? "-rotate-90" : ""
-                  }`}
-                />
+              <div className="hidden xl:block" data-workbench-global-history>
+                {renderHistoryCatalog(
+                  t("sidebar.chats"),
+                  globalIsLoading,
+                  groupedAgentSessions.length > 0,
+                  globalChatsUnreadCount,
+                  renderGlobalSessionGroups(),
+                )}
               </div>
-
-              {!isChatsCollapsed && (
-                <>
-                  {isLoading ? (
-                    <div className="space-y-px px-0">
-                      {Array.from({ length: 5 }).map((_, i) => (
-                        <div
-                          key={i}
-                          className="flex items-center gap-2 px-[9px] h-10 rounded-lg"
-                        >
-                          <div
-                            className="skeleton-line h-[13px] rounded-md flex-1"
-                            style={{
-                              width:
-                                i === 0
-                                  ? "70%"
-                                  : i === 1
-                                    ? "85%"
-                                    : i === 2
-                                      ? "55%"
-                                      : "65%",
-                            }}
-                          />
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    agentWorkspace
-                      ? groupedSessions.map((group) => (
-                          <div key={group.label}>
-                            <div className="flex h-7 select-none items-center px-[9px] text-[13px] font-medium text-[var(--theme-text-tertiary)]">
-                              {group.label}
-                            </div>
-                            <div className="flex flex-col gap-px">
-                              {group.sessions.map(renderSession)}
-                            </div>
-                          </div>
-                        ))
-                      : groupedAgentSessions.map((group) => {
-                          const isExpanded = expandedAgentGroups.has(group.key);
-                          return (
-                            <div key={group.key} data-agent-history-group>
-                              <button
-                                type="button"
-                                aria-expanded={isExpanded}
-                                onClick={() => toggleAgentGroup(group.key)}
-                                className="group flex h-10 w-full items-center gap-2 rounded-lg px-[9px] text-left transition-colors hover:bg-[var(--theme-sidebar-panel-muted)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)]"
-                              >
-                                <AgentIdentityAvatar
-                                  agentId={group.identity?.agent_id ?? "assistant"}
-                                  avatarRef={group.identity?.avatar_ref}
-                                  avatarSeed={group.identity?.avatar_seed}
-                                  name={group.name}
-                                  size="sm"
-                                />
-                                <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-[var(--theme-text-secondary)] group-hover:text-[var(--theme-text)]">
-                                  {group.name}
-                                </span>
-                                <span className="shrink-0 text-[11px] text-[var(--theme-text-tertiary)]">
-                                  {group.sessions.length}
-                                </span>
-                                <ChevronDown
-                                  size={14}
-                                  aria-hidden="true"
-                                  className={`shrink-0 text-[var(--theme-text-tertiary)] transition-transform duration-200 ${
-                                    isExpanded ? "" : "-rotate-90"
-                                  }`}
-                                />
-                              </button>
-                              {isExpanded ? (
-                                <div className="ml-3 border-l border-[var(--theme-border)]/70 pl-1">
-                                  {group.sessions.map(renderSession)}
-                                </div>
-                              ) : null}
-                            </div>
-                          );
-                        })
-                  )}
-                  {hasMore && (
-                    <div ref={loadMoreRef} className="flex justify-center py-2">
-                      {isLoadingMore && (
-                        <div className="flex items-center gap-2 text-[var(--theme-text-tertiary)]">
-                          <LoadingSpinner size="xs" />
-                          <span className="text-xs">{t("common.loading")}</span>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </>
-              )}
+              <div className="xl:hidden" data-workbench-mobile-history>
+                <div
+                  aria-label="历史范围"
+                  className="mb-2 grid grid-cols-2 rounded-md bg-[var(--theme-sidebar-panel-muted)] p-0.5"
+                  role="group"
+                >
+                  <button
+                    aria-pressed={mobileHistoryView === "tasks"}
+                    className={`rounded px-2 py-1.5 text-xs font-medium transition-colors ${
+                      mobileHistoryView === "tasks"
+                        ? "bg-[var(--theme-workbench-panel)] text-[var(--theme-text)] shadow-sm"
+                        : "text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)]"
+                    }`}
+                    onClick={() => setMobileHistoryView("tasks")}
+                    type="button"
+                  >
+                    任务历史
+                  </button>
+                  <button
+                    aria-pressed={mobileHistoryView === "all"}
+                    className={`rounded px-2 py-1.5 text-xs font-medium transition-colors ${
+                      mobileHistoryView === "all"
+                        ? "bg-[var(--theme-workbench-panel)] text-[var(--theme-text)] shadow-sm"
+                        : "text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)]"
+                    }`}
+                    onClick={() => setMobileHistoryView("all")}
+                    type="button"
+                  >
+                    全部对话
+                  </button>
+                </div>
+                {mobileHistoryView === "tasks"
+                  ? renderHistoryCatalog(
+                      "任务历史",
+                      isLoading,
+                      groupedSessions.length > 0,
+                      chatsUnreadCount,
+                      renderTaskHistory(),
+                    )
+                  : renderHistoryCatalog(
+                      t("sidebar.chats"),
+                      globalIsLoading,
+                      groupedAgentSessions.length > 0,
+                      globalChatsUnreadCount,
+                      renderGlobalSessionGroups(),
+                    )}
+              </div>
             </>
-          ) : null}
+          ) : renderHistoryCatalog(
+            agentWorkspace ? "任务历史" : t("sidebar.chats"),
+            agentWorkspace ? isLoading : globalIsLoading,
+            agentWorkspace
+              ? groupedSessions.length > 0
+              : groupedAgentSessions.length > 0,
+            agentWorkspace ? chatsUnreadCount : globalChatsUnreadCount,
+            agentWorkspace ? renderTaskHistory() : renderGlobalSessionGroups(),
+          )}
         </div>
       </div> : <div className="flex-1" data-workbench-navigation-spacer />}
 

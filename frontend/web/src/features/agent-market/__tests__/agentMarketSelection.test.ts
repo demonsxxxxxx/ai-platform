@@ -6,6 +6,7 @@ import type { AgentProfilePublicProjection } from "../../../types";
 import {
   buildAgentMarketDetailPath,
   buildAgentMarketWorkspacePath,
+  buildSessionHistoryPath,
   filterPublishedMarketProfiles,
   filterPublishedMarketProfilesByTags,
   selectPublishedMarketProfile,
@@ -44,6 +45,17 @@ test("market workspace deep links use only Agent and Session ids", () => {
   assert.equal(
     buildAgentMarketWorkspacePath(profile, "session/42"),
     "/agent-market/agt_support/chat/session%2F42",
+  );
+});
+
+test("global history routes Agent conversations to their owner and generic sessions to Chat", () => {
+  assert.equal(
+    buildSessionHistoryPath("agent/session", { agent_id: "agt_finance" }),
+    "/agent-market/agt_finance/chat/agent%2Fsession",
+  );
+  assert.equal(
+    buildSessionHistoryPath("generic/session", null),
+    "/chat/generic%2Fsession",
   );
 });
 
