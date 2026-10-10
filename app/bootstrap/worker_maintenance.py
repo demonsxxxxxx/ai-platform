@@ -33,8 +33,9 @@ async def maintenance_phase_until_done(
     *,
     logger: logging.Logger,
     run_immediately: bool = True,
+    repeat_on_progress: bool = False,
 ) -> None:
-    """Run one maintenance phase at a time and supervise slow attempts."""
+    """Supervise one attempt at a time; optionally drain truthy progress results."""
 
     if not run_immediately:
         if interval_seconds <= 0:
@@ -61,6 +62,13 @@ async def maintenance_phase_until_done(
                     raise result
             elif isinstance(result, BaseException):
                 raise result
+            elif done and repeat_on_progress and result and interval_seconds > 0:
+                # Only successful, in-budget progress may skip the idle delay.
+                # Yield between batches so draining cannot starve other phases
+                # or defer shutdown. A timed-out attempt still backs off even if
+                # it suppresses cancellation and eventually reports progress.
+                await asyncio.sleep(0)
+                continue
         except asyncio.CancelledError:
             if not phase_task.done():
                 phase_task.cancel()

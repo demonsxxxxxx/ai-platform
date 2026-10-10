@@ -164,6 +164,14 @@ generation, timestamps, and reconciliation ownership in one migration.
    follows the public delivery drain.
    The external renewal and PostgreSQL commit are not atomic: a failed commit
    can leave the provider alive longer than the platform lease.
+   Receipt-less suspect probes and failed-lease cleanup run independently of
+   terminal consumption, with one supervised attempt per maintenance phase.
+   A probe batch that persists terminal receipts yields to the event loop and
+   immediately claims the next batch; it also wakes terminal consumption without
+   requiring Redis. Empty or retry-only batches, failures, and timed-out attempts
+   retain the idle backoff. Cleanup retains its periodic schedule. Cancellation
+   joins an active attempt before that phase may be restarted; claim fencing and
+   current Run/Attempt/lease authority remain unchanged.
 4. A real-provider release takes the scoped lease row lock, calls provider stop,
    and marks released in that transaction. Concurrent release waits and then
    observes the terminal row instead of issuing a duplicate stop. Stop failure

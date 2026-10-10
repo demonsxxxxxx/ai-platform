@@ -1105,19 +1105,21 @@ async def run_executor_terminal_reconciler(
             if not maintenance_tasks:
                 # Each phase retains sole ownership until its operation really
                 # ends. Slow cleanup/probes must not block terminal consumption.
-                for name, operation in (
+                for name, operation, repeat_on_progress in (
                     (
                         "executor-reconciliation-cleanup",
                         lambda: cleanup_failed_sandbox_executor_reconciliation_leases(
                             provider_factory=create_container_provider,
                         ),
+                        False,
                     ),
-                    ("executor-suspect-probe", probe),
+                    ("executor-suspect-probe", probe, True),
                 ):
                     maintenance_tasks.append(asyncio.create_task(
                         maintenance_phase_until_done(
                             name, operation, _RECONCILIATION_IDLE_SECONDS,
                             _RECONCILIATION_WORK_TIMEOUT_SECONDS, logger=_logger,
+                            repeat_on_progress=repeat_on_progress,
                         ),
                         name=name,
                     ))
