@@ -129,10 +129,6 @@ def _path_for_output(path: Path) -> str:
         return path.as_posix()
 
 
-def _status_from_gaps(gaps: list[str]) -> str:
-    return "partial_followups_open" if gaps else "poc_verified_keep_under_regression"
-
-
 def _string_list(value: Any) -> list[str] | None:
     if not isinstance(value, list):
         return None
