@@ -115,6 +115,58 @@ def _gate(**kwargs):
     )
 
 
+def test_authorized_public_skill_name_is_idempotent_across_sources_and_finish():
+    identity = "reference-search"
+    public_name = "【技能：reference-search V8】"
+    for raw_name in (identity, public_name):
+        for split in range(1, len(raw_name)):
+            gate = PublicAnswerStreamGate(
+                private_replacements={identity: public_name, "raw-secret": "█"},
+                public_replacements={identity: public_name},
+                sanitizer=_sanitize,
+            )
+            routed = [
+                *gate.accept_routed(f"Using {raw_name[:split]}", source_identity="first"),
+                *gate.accept_routed(f"{raw_name[split:]}. ", source_identity="second"),
+            ]
+            finished, tail = gate.finish_routed(final_text="", release=True)
+            visible = "".join(text for _owner, text in (*routed, *tail))
+            assert visible == f"Using {public_name}. "
+            assert finished.final_text == visible
+            if raw_name == identity:
+                assert ("first", public_name) in routed
+            assert not gate.failed
+
+
+@pytest.mark.parametrize("private_token", ["reference-search", "search", "V8"])
+def test_authorized_public_name_cannot_contain_an_independent_private_token(private_token):
+    identity = "reference-search"
+    public_name = "【技能：reference-search V8】"
+    gate = PublicAnswerStreamGate(
+        private_replacements={identity: public_name, private_token: "█"},
+        public_replacements={identity: public_name},
+        sanitizer=_sanitize,
+    )
+    assert gate.failed
+    assert gate.accept(identity) == ()
+
+
+def test_dynamic_private_token_in_published_public_name_still_fails_closed():
+    identity = "reference-search"
+    public_name = "【技能：reference-search V8】"
+    gate = PublicAnswerStreamGate(
+        private_replacements={identity: public_name},
+        public_replacements={identity: public_name},
+        sanitizer=_sanitize,
+    )
+    assert gate.accept(f"Using {identity}. ") == (f"Using {public_name}. ",)
+    gate.register_private_replacements({"V8": "█"})
+    assert gate.failed
+    assert gate.private_token_exposed
+    assert gate.accept("later text") == ()
+    assert gate.finish(final_text="", release=True).final_text == ""
+
+
 @pytest.mark.parametrize("release_tool", [False, True])
 def test_assistant_text_is_preserved_independently_of_tool_completion(release_tool):
     gate = _gate()
