@@ -4,10 +4,12 @@ import app.persistence.object_deletions as _owner_persistence_object_deletions
 import app.persistence.retention as _owner_persistence_retention
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+import asyncio
+import threading
 
 import pytest
 
-from app import data_retention
+from app import data_retention, storage as storage_module
 
 
 @asynccontextmanager
@@ -336,3 +338,124 @@ async def test_nonzero_unimplemented_retention_is_reported_and_never_runs_cleanu
         "unsupported_retention_classes": ["run_events"],
         "deleted_objects": 0,
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("interruption", ["cancel", "timeout"])
+async def test_retention_abandoned_delete_keeps_capacity_and_cannot_receipt_new_claim(
+    monkeypatch, interruption
+):
+    """A maintenance deadline cannot free a live thread or receipt its late result."""
+    loop = asyncio.get_running_loop()
+    initial_tasks = asyncio.all_tasks()
+    started = asyncio.Event()
+    finished = asyncio.Event()
+    release = threading.Event()
+    slots = asyncio.Semaphore(1)
+    admissions = asyncio.BoundedSemaphore(1)
+    generation = 7
+    completed = []
+    failures = []
+    storage_calls = []
+
+    async def empty(*_args, **_kwargs):
+        return []
+
+    async def claim(_conn, **_kwargs):
+        return [{
+            "id": "out-a",
+            "tenant_id": "default",
+            "storage_key": "synthetic/object",
+            "lease_generation": generation,
+        }]
+
+    async def complete(_conn, **kwargs):
+        completed.append(kwargs)
+        return True
+
+    async def fail(_conn, **kwargs):
+        failures.append(kwargs)
+        return "failed"
+
+    class BlockingStorage:
+        def delete_object(self, *, storage_key):
+            storage_calls.append(storage_key)
+            loop.call_soon_threadsafe(started.set)
+            try:
+                if not release.wait(timeout=5):
+                    raise RuntimeError("synthetic storage release deadline")
+            finally:
+                loop.call_soon_threadsafe(finished.set)
+
+    async def short_budget_storage(operation, /, *args, **kwargs):
+        return await storage_module.run_storage_io(
+            operation, *args, timeout_seconds=0.02, **kwargs
+        )
+
+    async def wait_for_capacity():
+        while slots.locked() or admissions.locked():
+            await asyncio.sleep(0)
+
+    monkeypatch.setattr(data_retention, "_next_cleanup_at", 0)
+    monkeypatch.setattr(data_retention, "transaction", fake_transaction)
+    monkeypatch.setattr(_owner_persistence_artifacts, "queue_expired_artifacts_for_deletion", empty)
+    monkeypatch.setattr(_owner_persistence_retention, "purge_deleted_memory_records", empty)
+    monkeypatch.setattr(_owner_persistence_object_deletions, "claim_object_deletions", claim)
+    monkeypatch.setattr(_owner_persistence_object_deletions, "complete_object_deletion", complete)
+    monkeypatch.setattr(_owner_persistence_object_deletions, "fail_object_deletion", fail)
+    monkeypatch.setattr(storage_module, "_STORAGE_IO_SLOTS", slots)
+    monkeypatch.setattr(storage_module, "_STORAGE_IO_ADMISSIONS", admissions)
+    if interruption == "timeout":
+        monkeypatch.setattr(data_retention, "run_storage_io", short_budget_storage)
+
+    first = asyncio.create_task(data_retention.run_data_retention_maintenance(
+        settings(), now=10, storage=BlockingStorage()
+    ))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=1)
+        if interruption == "cancel":
+            first.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await first
+            assert failures == []
+        else:
+            result = await asyncio.wait_for(first, timeout=1)
+            assert result["failed_objects"] == 1
+            assert failures[-1]["lease_generation"] == 7
+            assert failures[-1]["error_code"] == "object_delete_storageiotimeouterror"
+
+        assert slots.locked() and admissions.locked()
+        assert completed == []
+        generation = 8
+        result = await data_retention.run_data_retention_maintenance(
+            settings(), now=400, storage=BlockingStorage()
+        )
+        assert result["failed_objects"] == 1
+        assert failures[-1]["lease_generation"] == 8
+        assert failures[-1]["error_code"] == "object_delete_storageiobusyerror"
+        assert storage_calls == ["synthetic/object"]
+
+        release.set()
+        await asyncio.wait_for(finished.wait(), timeout=1)
+        await asyncio.wait_for(wait_for_capacity(), timeout=1)
+        assert completed == []
+        assert not (asyncio.all_tasks() - initial_tasks)
+
+        generation = 9
+        result = await data_retention.run_data_retention_maintenance(
+            settings(), now=800, storage=RecordingStorage()
+        )
+        assert result["deleted_objects"] == 1
+        assert completed == [{
+            "outbox_id": "out-a",
+            "tenant_id": "default",
+            "lease_generation": 9,
+        }]
+    finally:
+        release.set()
+        if not first.done():
+            first.cancel()
+        await asyncio.gather(first, return_exceptions=True)
+        if started.is_set():
+            await asyncio.wait_for(finished.wait(), timeout=1)
+            await asyncio.wait_for(wait_for_capacity(), timeout=1)
