@@ -46,3 +46,10 @@ test("creation retains template and new empty files", () => {
 test("missing existing detail never becomes a default template", () => {
   assert.deepEqual(initializeSkillFormFiles({ ...makeSkill(), filePaths: [], files: {} }), []);
 });
+
+
+test("file patches never both write and delete the main markdown", () => {
+  const update = buildSkillFormFileChanges([], ["SKILL.md"], "authoritative main");
+  assert.deepEqual(update.deletedFiles, []);
+  assert.deepEqual(update.files, { "SKILL.md": "authoritative main" });
+});

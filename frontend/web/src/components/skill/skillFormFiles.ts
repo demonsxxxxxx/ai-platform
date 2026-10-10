@@ -28,5 +28,5 @@ export function buildSkillFormFileChanges(files: FileEntry[], originalPaths: rea
       writes[path] = file.content;
     }
   }
-  return { files: writes, deletedFiles: originalPaths.filter((path) => !retainedPaths.has(path)) };
+  return { files: writes, deletedFiles: originalPaths.filter((path) => !retainedPaths.has(path) && !Object.prototype.hasOwnProperty.call(writes, path)) };
 }

@@ -147,7 +147,7 @@ export function SkillForm({
     }
     const paths = files.map((f) => f.path.trim());
     if (paths.some((path) => !path)) {
-      newErrors.files = t("common.invalidFilePath");
+      newErrors.files = t("backendErrors.invalidFilePath");
     } else if (new Set(paths).size !== paths.length) {
       newErrors.files = t("skills.form.validation.duplicateFilePaths");
     }
@@ -161,14 +161,18 @@ export function SkillForm({
     if (isLoading || submitting.current || !validate()) return;
 
     const tags = normalizeTags(tagsInput);
-    const synced = syncSkillMarkdownMetadata(
-      files[activeFileIndex]?.path === "SKILL.md"
-        ? files[activeFileIndex]?.content || ""
-        : files.find((f) => f.path === "SKILL.md")?.content || DEFAULT_CONTENT,
-      name.trim(),
-      description.trim(),
-      tags,
-    );
+    let synced: string;
+    try {
+      synced = syncSkillMarkdownMetadata(
+        files.find((file) => file.path === "SKILL.md")?.content || DEFAULT_CONTENT,
+        name.trim(),
+        description.trim(),
+        tags,
+      );
+    } catch {
+      setErrors((current) => ({ ...current, content: t("skills.form.validation.invalidFrontmatter") }));
+      return;
+    }
 
     const changes = buildSkillFormFileChanges(files, originalPaths.current, synced);
 

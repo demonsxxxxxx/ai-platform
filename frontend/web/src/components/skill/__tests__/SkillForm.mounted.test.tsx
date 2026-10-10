@@ -108,3 +108,27 @@ test("removing a pending file does not copy its text onto the next file", async 
     assert.deepEqual(Object.keys(view.saves[0].files!), ["SKILL.md"]);
   } finally { await view.close(); skillApi.getFile = original; }
 });
+
+test("malformed frontmatter blocks metadata-only save", async () => {
+  const original = skillApi.getFile;
+  skillApi.getFile = async () => ({ content: "---\nname: [broken\n---\n# Body" });
+  const view = await harness(skill("one"));
+  try { await view.submit(); assert.equal(view.saves.length, 0); assert.match(view.container.textContent || "", /YAML/); }
+  finally { await view.close(); skillApi.getFile = original; }
+});
+
+
+test("renaming SKILL.md or removing its exact path cannot reach save", async () => {
+  const original = skillApi.getFile;
+  skillApi.getFile = async () => ({ content: "# Main" });
+  const view = await harness(skill("one"));
+  try {
+    const input = view.container.querySelector<HTMLInputElement>(".skill-file-path input")!;
+    const setValue = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, "value")!.set!;
+    for (const path of ["renamed.md", " SKILL.md ", ""]) {
+      await act(async () => { setValue.call(input, path); input.dispatchEvent(new dom.window.Event("input", { bubbles: true })); });
+      await view.submit();
+      assert.equal(view.saves.length, 0, `Must reject ${JSON.stringify(path)}`);
+    }
+  } finally { await view.close(); skillApi.getFile = original; }
+});
