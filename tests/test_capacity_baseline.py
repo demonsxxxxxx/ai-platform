@@ -1656,6 +1656,84 @@ def test_capacity_gate_readiness_rejects_placeholder_load_test_evidence():
     assert first_invalid["missing_required_evidence"] == required_evidence
 
 
+def test_capacity_gate_readiness_rejects_scalar_only_fake_recorded_evidence():
+    for value in (False, True, 0, 1):
+        snapshot = _snapshot_with_complete_recorded_gates()
+        for gate in LOAD_TEST_GATES:
+            snapshot["load_test_evidence"]["gate_evidence"][gate]["evidence"] = {
+                field: value for field in LOAD_TEST_REQUIRED_EVIDENCE_FOR_TEST
+            }
+
+        readiness = build_capacity_gate_readiness(snapshot)
+
+        assert readiness["status"] == "blocked_incomplete_load_test_evidence"
+        assert readiness["missing_load_test_gates"] == LOAD_TEST_GATES
+        assert readiness["invalid_load_test_evidence"][0]["missing_required_evidence"] == (
+            LOAD_TEST_REQUIRED_EVIDENCE_FOR_TEST
+        )
+        assert readiness["production_default_decision"] == "do_not_raise_without_recorded_load_test_evidence"
+
+
+def test_capacity_gate_readiness_rejects_diagnostic_and_probe_markers_before_projection():
+    markers = [
+        {"schema_version": "ai-platform.release-evidence-diagnostic-entry.v1"},
+        {"diagnostic_only": True},
+        {"review_status": "diagnostic_only_not_reviewed_release_evidence"},
+        {"does_not_mark_b3_recorded_evidence": True},
+        {"schema_version": "ai-platform.capacity-bounded-load-harness.v1"},
+        {"load_test_evidence_status": "probe_only_not_recorded"},
+        {"does_not_mark_gate_recorded": True},
+    ]
+    for marker in markers:
+        for scope in ("load", "gate", "evidence", "nested_evidence"):
+            snapshot = _snapshot_with_complete_recorded_gates()
+            load_evidence = snapshot["load_test_evidence"]
+            gate_evidence = load_evidence["gate_evidence"][LOAD_TEST_GATES[0]]
+            target = {
+                "load": load_evidence,
+                "gate": gate_evidence,
+                "evidence": gate_evidence["evidence"],
+                "nested_evidence": gate_evidence["evidence"],
+            }[scope]
+            if scope == "nested_evidence":
+                target["dead_letter_counts"] = {"observed": 0, "provenance": marker}
+            else:
+                target.update(marker)
+
+            readiness = build_capacity_gate_readiness(snapshot)
+
+            assert readiness["status"] == "blocked_incomplete_load_test_evidence"
+            assert LOAD_TEST_GATES[0] in readiness["missing_load_test_gates"]
+            assert readiness["production_default_decision"] == "do_not_raise_without_recorded_load_test_evidence"
+            if scope != "load":
+                assert readiness["missing_load_test_gates"] == [LOAD_TEST_GATES[0]]
+
+
+def test_capacity_gate_readiness_accepts_packet_producer_numeric_and_boolean_measurements():
+    snapshot = build_capacity_evidence_snapshot(
+        _admin_runtime_overview(), commit_sha="abc123", runtime_profile="211-current"
+    )
+    packets = []
+    for gate in LOAD_TEST_GATES:
+        values = _recorded_gate_evidence_values(gate)
+        values["dead_letter_counts"] = {"observed": 0, "increased": False}
+        values["latency_p50_p95_p99"] = [12, 25, 37]
+        packet = build_capacity_recorded_gate_evidence_packet_result(
+            gate, values, cleanup_proof_status="verified", stop_condition_status="passed"
+        )
+        assert packet["status"] == "recorded_gate_evidence_packet_ready"
+        packets.append(packet)
+
+    assembled = build_capacity_recorded_gate_batch_snapshot(
+        snapshot, packets, profile_evidence=_b3_profile_evidence_packet()
+    )
+    readiness = build_capacity_gate_readiness(assembled["snapshot"])
+
+    assert assembled["status"] == "recorded_gate_batch_input_accepted"
+    assert readiness["status"] == "ready_for_operator_review"
+    assert readiness["invalid_load_test_evidence"] == []
+
+
 def test_capacity_gate_readiness_rejects_embedded_placeholder_load_test_evidence():
     snapshot = build_capacity_evidence_snapshot(
         {
@@ -2366,6 +2444,35 @@ def test_render_capacity_gate_readiness_markdown_lists_incomplete_recorded_evide
     assert "`api_read_write_burst` missing `commit_sha`" in markdown
     assert "cleanup=`missing`" in markdown
     assert "stop_conditions=`missing`" in markdown
+
+
+def test_capacity_gate_readiness_cli_rejects_unrecorded_or_scalar_only_evidence(tmp_path):
+    for case in ("false_evidence", "diagnostic", "probe"):
+        snapshot = _snapshot_with_complete_recorded_gates()
+        for gate_evidence in snapshot["load_test_evidence"]["gate_evidence"].values():
+            if case == "false_evidence":
+                gate_evidence["evidence"] = {
+                    field: False for field in LOAD_TEST_REQUIRED_EVIDENCE_FOR_TEST
+                }
+            elif case == "diagnostic":
+                gate_evidence["diagnostic_only"] = True
+            else:
+                gate_evidence["does_not_mark_gate_recorded"] = True
+        snapshot_path = tmp_path / f"{case}.json"
+        snapshot_path.write_text(json.dumps(snapshot), encoding="utf-8")
+
+        result = subprocess.run(
+            [
+                sys.executable, "tools/capacity_gate_readiness.py",
+                "--snapshot-json", str(snapshot_path), "--format", "json",
+            ],
+            check=True, capture_output=True, text=True,
+        )
+        readiness = json.loads(result.stdout)
+
+        assert readiness["status"] == "blocked_incomplete_load_test_evidence"
+        assert readiness["missing_load_test_gates"] == LOAD_TEST_GATES
+        assert readiness["production_default_decision"] == "do_not_raise_without_recorded_load_test_evidence"
 
 
 def test_capacity_gate_readiness_cli_outputs_json_from_snapshot_file(tmp_path):
@@ -3809,6 +3916,32 @@ def test_capacity_recorded_gate_snapshot_preserves_existing_recorded_gates():
     assert set(result["snapshot"]["load_test_evidence"]["gate_evidence"]) == set(LOAD_TEST_GATES)
     assert result["readiness"]["status"] == "ready_for_operator_review"
     assert result["production_default_decision"] == "operator_review_required_before_default_change"
+
+
+def test_capacity_recorded_gate_snapshot_does_not_launder_existing_non_recorded_markers():
+    for marker in ({"diagnostic_only": True}, {"does_not_mark_gate_recorded": True}):
+        for scope in ("load", "gate", "evidence"):
+            snapshot = _snapshot_with_complete_recorded_gates()
+            rejected_gate = LOAD_TEST_GATES[-1]
+            load_evidence = snapshot["load_test_evidence"]
+            gate_evidence = load_evidence["gate_evidence"][rejected_gate]
+            target = {
+                "load": load_evidence,
+                "gate": gate_evidence,
+                "evidence": gate_evidence["evidence"],
+            }[scope]
+            target.update(marker)
+
+            result = build_capacity_recorded_gate_snapshot(
+                snapshot, _recorded_gate_packet(LOAD_TEST_GATES[0])
+            )
+
+            assert result["status"] == "recorded_gate_input_accepted"
+            assert rejected_gate not in result["snapshot"]["load_test_evidence"]["recorded_gates"]
+            assert result["readiness"]["status"] == "blocked_missing_load_test_evidence"
+            assert rejected_gate in result["readiness"]["missing_load_test_gates"]
+            if scope != "load":
+                assert result["readiness"]["missing_load_test_gates"] == [rejected_gate]
 
 
 def test_capacity_recorded_gate_snapshot_preserves_b3_profile_evidence_when_adding_gate():
