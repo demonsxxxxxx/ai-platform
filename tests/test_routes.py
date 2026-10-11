@@ -5808,6 +5808,7 @@ async def test_create_run_reuses_snapshot_authorized_session_file_without_rebind
         "workspace_id": "default",
         "user_id": "user-a",
         "session_id": "ses-existing",
+        "input_modes": ["docx"],
     }
     assert calls["run_file_ids"] == ["file-prior"]
     assert calls["queue_file_ids"] == ["file-prior"]

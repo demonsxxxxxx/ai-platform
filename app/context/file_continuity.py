@@ -17,6 +17,7 @@ from app.path_safety import ensure_creatable_inside
 
 _FILE_INPUT_MODES = frozenset({"csv", "docx", "json", "markdown", "md", "pdf", "text", "txt", "xlsx"})
 MAX_PRIMARY_FILE_IDS = 8
+_SESSION_FILE_SELECTION_PAGE_LIMIT = 128
 _MAX_CONTEXT_FILE_STAGE_TOTAL_BYTES = 256 * 1024 * 1024
 
 
@@ -195,10 +196,30 @@ async def select_authorized_run_file_snapshot(
     """Load history only when it can participate in the immutable run snapshot."""
 
     rows: list[dict[str, Any]] = []
+    current_ids = list(dict.fromkeys(str(file_id) for file_id in requested_file_ids if file_id))
+    history_limit = (
+        max(0, MAX_PRIMARY_FILE_IDS - len(current_ids))
+        if preserve_agent_history else MAX_PRIMARY_FILE_IDS
+    )
     should_load = session_id and (
         preserve_agent_history or (not requested_file_ids and has_file_input_mode(input_modes))
     )
-    if should_load:
+    if should_load and preserve_agent_history and current_ids:
+        # Preserve the existing reusable classification for explicitly selected
+        # historical IDs without scanning all history to discover membership.
+        rows.extend(
+            dict(row)
+            for row in await load_session_files(
+                conn,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                user_id=user_id,
+                session_id=session_id,
+                limit=len(current_ids),
+                file_ids=current_ids,
+            )
+        )
+    if should_load and history_limit:
         rows = [
             dict(row)
             for row in await load_session_files(
@@ -207,8 +228,11 @@ async def select_authorized_run_file_snapshot(
                 workspace_id=workspace_id,
                 user_id=user_id,
                 session_id=session_id,
+                limit=history_limit,
+                excluded_file_ids=current_ids,
+                input_modes=None if preserve_agent_history else input_modes,
             )
-        ]
+        ] + rows
     return select_run_file_snapshot(
         requested_file_ids=requested_file_ids,
         reusable_rows=rows,
@@ -224,44 +248,95 @@ async def list_authorized_session_input_files(
     workspace_id: str,
     user_id: str,
     session_id: str,
+    limit: int = MAX_PRIMARY_FILE_IDS,
+    file_ids: list[str] | None = None,
+    excluded_file_ids: list[str] | None = None,
+    input_modes: list[object] | None = None,
 ) -> list[dict[str, Any]]:
-    """Return files authorized by each source run's immutable snapshot."""
+    """Select a recent authorized tail with bounded keyset pages.
 
-    cursor = await conn.execute(
-        """
-        select files.id, files.run_id, files.original_name, files.content_type,
-               files.size_bytes, files.created_at
-        from files
-        join sessions on sessions.id = files.session_id
-          and sessions.tenant_id = files.tenant_id
-          and sessions.workspace_id = files.workspace_id
-          and sessions.user_id = files.user_id
-          and sessions.status = 'active'
-        join runs on runs.id = files.run_id
-          and runs.tenant_id = files.tenant_id
-          and runs.workspace_id = files.workspace_id
-          and runs.user_id = files.user_id
-          and runs.session_id = files.session_id
-          and runs.input_json->>'context_snapshot_id' = runs.context_snapshot_id
-          and runs.input_json->'context_snapshot'->>'context_snapshot_id' = runs.context_snapshot_id
-        join run_context_snapshots authorized_snapshot
-          on authorized_snapshot.id = runs.context_snapshot_id
-          and authorized_snapshot.tenant_id = files.tenant_id
-          and authorized_snapshot.workspace_id = files.workspace_id
-          and authorized_snapshot.user_id = files.user_id
-          and authorized_snapshot.session_id = files.session_id
-          and authorized_snapshot.run_id = files.run_id
-          and authorized_snapshot.context_kind = 'executor'
-          and authorized_snapshot.included_file_ids ? files.id
-        where files.tenant_id = %s
-          and files.workspace_id = %s
-          and files.user_id = %s
-          and files.session_id = %s
-        order by files.created_at asc, files.id asc
-        """,
-        (tenant_id, workspace_id, user_id, session_id),
-    )
-    return list(await cursor.fetchall())
+    Keep Python's existing type and Unicode casefold/basename semantics. A raw
+    page limit must not let incompatible files or repeated names consume the
+    requested selection slots. The caller retains its transaction; no second
+    connection or snapshot is opened here. Return selected rows oldest-first,
+    matching the selection helpers' existing input contract.
+    """
+    limit = max(0, int(limit))
+    if file_ids is not None:
+        file_ids = list(dict.fromkeys(str(file_id) for file_id in file_ids if file_id))
+        limit = min(limit, len(file_ids))
+    if not limit or (input_modes is not None and not has_file_input_mode(input_modes)):
+        return []
+    excluded_ids = list(dict.fromkeys(str(file_id) for file_id in excluded_file_ids or [] if file_id))
+    selected: list[dict[str, Any]] = []
+    selected_ids = set(excluded_ids)
+    selected_names: set[str] = set()
+    before_created_at = None
+    before_id = None
+    while len(selected) < limit:
+        cursor = await conn.execute(
+            """
+            select files.id, files.run_id, files.original_name, files.content_type,
+                   files.size_bytes, files.created_at
+            from files
+            join sessions on sessions.id = files.session_id
+              and sessions.tenant_id = files.tenant_id
+              and sessions.workspace_id = files.workspace_id
+              and sessions.user_id = files.user_id
+              and sessions.status = 'active'
+            join runs on runs.id = files.run_id
+              and runs.tenant_id = files.tenant_id
+              and runs.workspace_id = files.workspace_id
+              and runs.user_id = files.user_id
+              and runs.session_id = files.session_id
+              and runs.input_json->>'context_snapshot_id' = runs.context_snapshot_id
+              and runs.input_json->'context_snapshot'->>'context_snapshot_id' = runs.context_snapshot_id
+            join run_context_snapshots authorized_snapshot
+              on authorized_snapshot.id = runs.context_snapshot_id
+              and authorized_snapshot.tenant_id = files.tenant_id
+              and authorized_snapshot.workspace_id = files.workspace_id
+              and authorized_snapshot.user_id = files.user_id
+              and authorized_snapshot.session_id = files.session_id
+              and authorized_snapshot.run_id = files.run_id
+              and authorized_snapshot.context_kind = 'executor'
+              and authorized_snapshot.included_file_ids ? files.id
+            where files.tenant_id = %s
+              and files.workspace_id = %s
+              and files.user_id = %s
+              and files.session_id = %s
+              and (%s::text[] is null or files.id = any(%s::text[]))
+              and not (files.id = any(%s::text[]))
+              and (%s::timestamptz is null
+                or (files.created_at, files.id) < (%s::timestamptz, %s::text))
+            order by files.created_at desc, files.id desc
+            limit %s
+            """,
+            (tenant_id, workspace_id, user_id, session_id, file_ids, file_ids, excluded_ids,
+             before_created_at, before_created_at, before_id,
+             _SESSION_FILE_SELECTION_PAGE_LIMIT),
+        )
+        page = list(await cursor.fetchall())
+        compatible_ids = (
+            set(compatible_reusable_file_ids(page, input_modes=input_modes))
+            if input_modes is not None else None
+        )
+        for row in page:
+            file_id = str(row.get("id") or "")
+            if not file_id or file_id in selected_ids:
+                continue
+            if compatible_ids is not None:
+                basename = str(row.get("original_name") or "").replace("\\", "/").casefold().rsplit("/", 1)[-1]
+                if file_id not in compatible_ids or basename in selected_names:
+                    continue
+                selected_names.add(basename)
+            selected_ids.add(file_id)
+            selected.append(dict(row))
+            if len(selected) == limit:
+                break
+        if len(page) < _SESSION_FILE_SELECTION_PAGE_LIMIT:
+            break
+        before_created_at, before_id = page[-1]["created_at"], page[-1]["id"]
+    return list(reversed(selected))
 
 
 async def materialize_run_context_files(

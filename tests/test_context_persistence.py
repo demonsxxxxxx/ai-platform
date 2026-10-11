@@ -27,7 +27,7 @@ class TwoSnapshotFileMembershipConnection:
     async def execute(self, sql, params):
         normalized = " ".join(sql.split())
         self.calls.append((normalized, params))
-        is_projection = len(params) == 4
+        is_projection = "authorized_snapshot.id = runs.context_snapshot_id" in normalized
         exact_snapshot_join = (
             "authorized_snapshot.id = runs.context_snapshot_id"
             if is_projection
@@ -346,9 +346,10 @@ async def test_session_context_files_and_artifacts_bind_owner_scope():
     assert "runs.session_generation <" in files_sql
     assert "order by runs.session_generation desc" in files_sql
     assert "order by session_generation asc" in files_sql
+    assert "not (files.id = any(%s::text[]))" in files_sql
     assert files_params == (
         "tenant-a", "workspace-a", "user-a", "session-a", "run-current",
-        "tenant-a", "workspace-a", "user-a", "session-a", 8,
+        "tenant-a", "workspace-a", "user-a", "session-a", [], 8,
     )
 
     await _repo_owner_app_context_file_continuity.list_authorized_session_input_files(
@@ -368,7 +369,11 @@ async def test_session_context_files_and_artifacts_bind_owner_scope():
     assert "sessions.workspace_id = files.workspace_id" in projection_sql
     assert "sessions.user_id = files.user_id" in projection_sql
     assert "runs.session_id = files.session_id" in projection_sql
-    assert projection_params == ("tenant-a", "workspace-a", "user-a", "session-a")
+    assert "order by files.created_at desc, files.id desc limit %s" in projection_sql
+    assert projection_params == (
+        "tenant-a", "workspace-a", "user-a", "session-a",
+        None, None, [], None, None, None, 128,
+    )
 
     await _repo_owner_app_context_infrastructure_sources_postgres.list_session_context_artifacts(
         conn,
@@ -398,6 +403,27 @@ async def test_session_context_files_and_artifacts_bind_owner_scope():
         "tenant-a",
         8,
     )
+
+
+@pytest.mark.asyncio
+async def test_session_context_file_tail_excludes_current_ids_before_sql_limit_and_skips_zero():
+    conn = RecordingConnection()
+    await _repo_owner_app_context_infrastructure_sources_postgres.list_session_context_files(
+        conn, tenant_id="tenant-a", workspace_id="workspace-a", user_id="user-a",
+        session_id="session-a", run_id="run-current", limit=2,
+        excluded_file_ids=["file-current", "file-already-selected"],
+    )
+    sql, params = conn.calls[-1]
+    assert sql.index("not (files.id = any(%s::text[]))") < sql.index("limit %s")
+    assert "order by runs.session_generation desc, files.created_at desc, files.id desc" in sql
+    assert "order by session_generation asc, created_at asc, id asc" in sql
+    assert params[-2:] == (["file-current", "file-already-selected"], 2)
+
+    assert await _repo_owner_app_context_infrastructure_sources_postgres.list_session_context_files(
+        conn, tenant_id="tenant-a", workspace_id="workspace-a", user_id="user-a",
+        session_id="session-a", run_id="run-current", limit=0,
+    ) == []
+    assert len(conn.calls) == 1
 
 
 @pytest.mark.asyncio
