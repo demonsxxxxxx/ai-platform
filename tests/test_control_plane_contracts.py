@@ -514,3 +514,25 @@ def test_raw_skill_redaction_can_preserve_empty_camel_case_skill_ids_for_compat(
     payload = redact_raw_skill_references({"stepKey": "review", "skillIds": ["qa-file-reviewer"]}, preserve_empty_skill_ids=True)
 
     assert payload == {"stepKey": "review", "skillIds": []}
+
+
+@pytest.mark.parametrize("mode", ["standard", "strict"])
+@pytest.mark.parametrize(
+    "body",
+    [
+        'Before password="alpha bravo charlie',
+        "Before api_key -> 'alpha bravo,charlie",
+        '{"outer":{"client_secret":"alpha\nbravo;charlie',
+        'Before auth_header => "alpha \\"bravo\\" charlie\\',
+    ],
+)
+def test_unfinished_quoted_secret_is_redacted_through_eof_by_shared_wrappers(mode, body):
+    from app.kernel.memory_redaction import redact_memory_metadata, redact_memory_text
+
+    expected = redact_memory_text(body, mode=mode)
+    assert all(word not in expected for word in ("alpha", "bravo", "charlie"))
+    assert "[redacted-secret]" in expected
+    assert redact_memory_text(expected, mode=mode) == expected
+    assert redact_memory_metadata({"note": [body]}, mode=mode) == {"note": [expected]}
+    assert sanitize_public_text(body) == expected
+    assert sanitize_public_payload({"outer": [{"note": body}]}) == {"outer": [{"note": expected}]}
