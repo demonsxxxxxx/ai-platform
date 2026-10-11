@@ -462,7 +462,9 @@ RBAC and ordinary-result absence are the owning regression requirements.
 ## Safe operational failure evidence
 
 Chat submission and Runs diagnostic capture retain their existing logger owners.
-They use the platform tracing projection only for structural exception evidence:
+Composition injects the platform tracing projection through explicit application
+callables (Runs service and Chat submission logger), with no application import
+of a concrete platform adapter. The projection supplies structural evidence:
 at most eight exception nodes, explicit cause before unsuppressed context, and
 at most eight app-module/function/line labels from 128 inspected traceback frames
 per node. Cycle, chain limit and frame limit are reported without rendering
@@ -476,7 +478,9 @@ Runs capture warnings add the fixed factory/normalize/sanitize/build/persist
 phase and existing owner-supplied Run/Attempt IDs when they match the internal
 ID formats. An observation ID is included only after the observation was built.
 These values never come from a private diagnostic carrier. A capture failure
-logs locally without another database operation; logging failure cannot replace
+logs locally without another database operation. A fixed suppressed exception
+context isolates default logging-handler stderr from the original private chain;
+no global logging setting or handler is changed. Logging failure cannot replace
 the original submission failure or public terminal result. No diagnostic field
 changes retry eligibility, authorization, terminal state or ordinary API text.
 

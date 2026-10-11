@@ -9,7 +9,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Protocol
 
-from app.platform.tracing import safe_exception_log_fields
 from app.runs.domain.diagnostics import (
     RUN_DIAGNOSTICS_SCHEMA_VERSION,
     build_executor_protocol_diagnostics,
@@ -56,6 +55,7 @@ class RunDiagnosticsService:
     persistence: RunDiagnosticsPersistence
     normalize_runtime_diagnostics: Callable[[object], dict[str, Any]]
     runtime_diagnostics_schema_version: str
+    exception_log_fields: Callable[[BaseException], dict[str, Any]]
     tool_operation_id: Callable[[object, object], str | None] | None = None
     clock: Callable[[], datetime] = field(
         default=lambda: datetime.now(timezone.utc),
@@ -151,7 +151,7 @@ class RunDiagnosticsService:
             raise
         except Exception as exc:  # noqa: BLE001 - diagnostics cannot veto the business result.
             try:
-                evidence = safe_exception_log_fields(exc)
+                evidence = self.exception_log_fields(exc)
                 # These values come from owner arguments, never the private carrier.
                 correlations = {
                     key: value for key, value in {
@@ -168,16 +168,20 @@ class RunDiagnosticsService:
                     key: value if type(value) is str and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", value) else "unknown"
                     for key, value in {"diagnostic_source": source, "diagnostic_stage": stage}.items()
                 }
-                logger.warning(
-                    "Run diagnostic capture degraded capture_phase=%s correlations=%s "
-                    "exception_chain=%s exception_chain_end=%s",
-                    capture_phase, correlations, evidence["exception_chain"], evidence["exception_chain_end"],
-                    extra={
-                        **labels, **correlations, **evidence,
-                        "capture_phase": capture_phase,
-                        "diagnostic_reason": evidence["exception_chain"][0]["exception_type"],
-                    },
-                )
+                try:
+                    # Isolate default handler stderr from the active private cause.
+                    raise RuntimeError("safe failure logging context") from None
+                except RuntimeError:
+                    logger.warning(
+                        "Run diagnostic capture degraded capture_phase=%s correlations=%s "
+                        "exception_chain=%s exception_chain_end=%s",
+                        capture_phase, correlations, evidence["exception_chain"], evidence["exception_chain_end"],
+                        extra={
+                            **labels, **correlations, **evidence,
+                            "capture_phase": capture_phase,
+                            "diagnostic_reason": evidence["exception_chain"][0]["exception_type"],
+                        },
+                    )
             except Exception:
                 pass  # Failure reporting cannot veto or replace the business result.
 

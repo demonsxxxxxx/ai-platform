@@ -20,6 +20,7 @@ from app.agent_apps.infrastructure import catalog_postgres as agent_apps_catalog
 from app.agent_apps.infrastructure import (
     principal_catalog_postgres as agent_apps_principal_catalog,
 )
+from app.bootstrap.submission_diagnostics import log_safe_submission_exception as _log_safe_submission_exception
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.capability_distribution import (
     CapabilityAccessDecision,
@@ -42,7 +43,6 @@ from app.control_plane_contracts import (
 from app.conversations.api import (
     safe_submission_code as _safe_submission_code,
     new_submission_diagnostic_id as _new_submission_diagnostic_id,
-    log_safe_submission_exception as _log_safe_submission_exception,
     submission_error_detail as _submission_error_detail,
     submission_error_code as _submission_code,
     attempt_chat_queue_admission,

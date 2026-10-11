@@ -4,8 +4,8 @@ import re
 
 import pytest
 
+from app.bootstrap.submission_diagnostics import log_safe_submission_exception
 from app.conversations.api import (
-    log_safe_submission_exception,
     new_submission_diagnostic_id,
     safe_submission_code,
     submission_error_code,
@@ -194,3 +194,38 @@ def test_submission_logger_rejects_malicious_frame_and_type_metadata(caplog):
     assert "exception_type=Exception" in caplog.text
     assert "frames=none" in caplog.text
     assert "private" not in caplog.text
+
+
+@pytest.mark.parametrize("failure", ["write", "format"])
+def test_submission_sink_failure_stderr_cannot_render_active_private_exception(failure, monkeypatch, capsys):
+    import logging
+    from app.conversations.application import submission_failures
+
+    class BrokenStream:
+        def write(self, _value):
+            raise OSError("synthetic sink unavailable")
+        def flush(self):
+            pass
+
+    class BrokenFormatter(logging.Formatter):
+        def format(self, _record):
+            raise ValueError("synthetic formatter unavailable")
+
+    handler = logging.StreamHandler(BrokenStream())
+    if failure == "format":
+        handler.setFormatter(BrokenFormatter())
+    monkeypatch.setattr(submission_failures.logger, "handlers", [handler])
+    monkeypatch.setattr(submission_failures.logger, "propagate", False)
+    monkeypatch.setattr(logging, "raiseExceptions", True)
+    original = RuntimeError("SYNTHETIC_SECRET_MARKER")
+    with pytest.raises(RuntimeError) as caught:
+        try:
+            raise original
+        except RuntimeError as exc:
+            log_safe_submission_exception(phase="resolver", diagnostic_id="diag_0123456789abcdef", exc=exc)
+            raise
+    stderr = capsys.readouterr().err
+    assert "--- Logging error ---" in stderr
+    assert "SYNTHETIC_SECRET_MARKER" not in stderr
+    assert caught.value is original
+    assert original.__cause__ is None and original.__context__ is None

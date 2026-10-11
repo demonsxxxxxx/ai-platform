@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 
 import pytest
 
+from app.platform.tracing import safe_exception_log_fields
+
 from app.platform.postgres.limits import json_size_bytes
 from app.runs.application.diagnostic_export import build_admin_diagnostic_export
 from app.runs.application.diagnostics import RunDiagnosticsService
@@ -72,7 +74,7 @@ async def test_admin_monitor_metadata_read_is_deduplicated_and_bounded():
             return {"run-0": {"session_title": "Readable task"}}
 
     persistence = MetadataPersistence()
-    service = RunDiagnosticsService(
+    service = RunDiagnosticsService(exception_log_fields=safe_exception_log_fields,
         persistence=persistence,
         normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
         runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
@@ -146,7 +148,7 @@ async def test_postgres_admin_monitor_metadata_is_tenant_scoped_and_batched():
 @pytest.mark.asyncio
 async def test_capture_moves_private_diagnostics_out_of_terminal_result_and_is_idempotent():
     persistence = InMemoryDiagnostics()
-    service = RunDiagnosticsService(
+    service = RunDiagnosticsService(exception_log_fields=safe_exception_log_fields,
         persistence=persistence,
         normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
         runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
@@ -198,7 +200,7 @@ async def test_successful_terminal_without_diagnostics_does_not_create_failure(
     private_diagnostics,
 ):
     persistence = InMemoryDiagnostics()
-    service = RunDiagnosticsService(
+    service = RunDiagnosticsService(exception_log_fields=safe_exception_log_fields,
         persistence=persistence,
         normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
         runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
@@ -233,7 +235,7 @@ async def test_successful_terminal_retains_diagnostic_evidence(
     private_diagnostics, expected_code,
 ):
     persistence = InMemoryDiagnostics()
-    service = RunDiagnosticsService(
+    service = RunDiagnosticsService(exception_log_fields=safe_exception_log_fields,
         persistence=persistence,
         normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
         runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
@@ -359,7 +361,7 @@ async def test_capture_diagnostic_failure_does_not_veto_public_terminal_result()
         async def append_observation(self, _conn, **_kwargs):
             raise RuntimeError("diagnostic database is unavailable")
 
-    service = RunDiagnosticsService(
+    service = RunDiagnosticsService(exception_log_fields=safe_exception_log_fields,
         persistence=FailingPersistence(),
         normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
         runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
@@ -399,7 +401,7 @@ async def test_capture_diagnostic_normalizer_failure_still_strips_private_carrie
     def fail_normalization(_value):
         raise ValueError("normalization failed")
 
-    service = RunDiagnosticsService(
+    service = RunDiagnosticsService(exception_log_fields=safe_exception_log_fields,
         persistence=InMemoryDiagnostics(),
         normalize_runtime_diagnostics=fail_normalization,
         runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
@@ -433,7 +435,7 @@ async def test_capture_treats_callable_private_carrier_as_data():
         return runtime_diagnostics()
 
     persistence = InMemoryDiagnostics()
-    service = RunDiagnosticsService(
+    service = RunDiagnosticsService(exception_log_fields=safe_exception_log_fields,
         persistence=persistence,
         normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
         runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
@@ -466,7 +468,7 @@ async def test_capture_does_not_swallow_cancellation():
         async def append_observation(self, _conn, **_kwargs):
             raise asyncio.CancelledError
 
-    service = RunDiagnosticsService(
+    service = RunDiagnosticsService(exception_log_fields=safe_exception_log_fields,
         persistence=CancelledPersistence(),
         normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
         runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
@@ -488,7 +490,7 @@ async def test_capture_does_not_swallow_cancellation():
 @pytest.mark.asyncio
 async def test_reconciliation_keeps_original_failure_and_appends_classified_handling():
     persistence = InMemoryDiagnostics()
-    service = RunDiagnosticsService(
+    service = RunDiagnosticsService(exception_log_fields=safe_exception_log_fields,
         persistence=persistence,
         normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
         runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
@@ -662,7 +664,7 @@ def test_non_finite_diagnostic_values_degrade_before_run_observation_hashing():
 @pytest.mark.asyncio
 async def test_capture_redacts_private_tool_values_before_storage_and_admin_projection():
     persistence = InMemoryDiagnostics()
-    service = RunDiagnosticsService(
+    service = RunDiagnosticsService(exception_log_fields=safe_exception_log_fields,
         persistence=persistence,
         normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
         runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
@@ -762,7 +764,7 @@ async def test_capture_redacts_private_tool_values_before_storage_and_admin_proj
 @pytest.mark.asyncio
 async def test_protocol_failure_capture_keeps_structure_and_drops_reported_values():
     persistence = InMemoryDiagnostics()
-    service = RunDiagnosticsService(
+    service = RunDiagnosticsService(exception_log_fields=safe_exception_log_fields,
         persistence=persistence,
         normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
         runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
@@ -964,7 +966,7 @@ async def test_admin_projection_returns_structured_root_attempts_and_losses():
             }
         ],
     }
-    service = RunDiagnosticsService(
+    service = RunDiagnosticsService(exception_log_fields=safe_exception_log_fields,
         persistence=InMemoryDiagnostics(snapshot),
         normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
         runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
@@ -1012,7 +1014,7 @@ async def test_admin_projection_marks_legacy_and_absent_records_explicitly():
         "diagnostic": None,
         "attempts": [],
     }
-    service = RunDiagnosticsService(
+    service = RunDiagnosticsService(exception_log_fields=safe_exception_log_fields,
         persistence=InMemoryDiagnostics(
             {**base, "result_json": {"runtime_diagnostics": runtime_diagnostics()}},
         ),
@@ -1021,7 +1023,7 @@ async def test_admin_projection_marks_legacy_and_absent_records_explicitly():
     )
     legacy = await service.read_admin(object(), tenant_id="tenant-a", run_id="run-a")
 
-    service = RunDiagnosticsService(
+    service = RunDiagnosticsService(exception_log_fields=safe_exception_log_fields,
         persistence=InMemoryDiagnostics({**base, "result_json": {}}),
         normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
         runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
@@ -1064,7 +1066,7 @@ async def test_admin_projection_marks_empty_legacy_carrier_as_not_collected():
         "diagnostic": None,
         "attempts": [],
     }
-    service = RunDiagnosticsService(
+    service = RunDiagnosticsService(exception_log_fields=safe_exception_log_fields,
         persistence=InMemoryDiagnostics(snapshot),
         normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
         runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
@@ -1100,7 +1102,7 @@ async def test_admin_tool_correlation_matches_native_public_projection_without_s
     }])
     snapshot = {"run": {"run_id": run_id}, "result_json": {"runtime_diagnostics": raw}, "attempts": []}
     before = deepcopy(snapshot)
-    service = RunDiagnosticsService(
+    service = RunDiagnosticsService(exception_log_fields=safe_exception_log_fields,
         persistence=InMemoryDiagnostics(snapshot), normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
         runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
         tool_operation_id=public_tool_operation_id,
@@ -1125,7 +1127,7 @@ async def test_admin_tool_correlation_omits_ambiguous_or_missing_native_identity
         tool_calls=[{"tool_name": name, "invocation_id": "duplicate"} for name in ("Read", "Write")],
         tool_policy_denials=[{"tool_name": "Read", "reason": "denied"}],
     )}, "attempts": []}
-    service = RunDiagnosticsService(
+    service = RunDiagnosticsService(exception_log_fields=safe_exception_log_fields,
         persistence=InMemoryDiagnostics(snapshot), normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
         runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
         tool_operation_id=public_tool_operation_id,
@@ -1176,7 +1178,7 @@ async def test_capture_failure_logs_phase_correlations_and_safe_cause(phase, mon
         monkeypatch.setattr(application, "sanitize_runtime_diagnostics", fail)
     if phase == "build":
         monkeypatch.setattr(application, "build_failure_observation", fail)
-    service = RunDiagnosticsService(
+    service = RunDiagnosticsService(exception_log_fields=safe_exception_log_fields,
         persistence=persistence, normalize_runtime_diagnostics=normalizer,
         runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION, clock=lambda: NOW,
     )
@@ -1213,7 +1215,7 @@ async def test_protocol_factory_failure_logs_exact_phase_without_database(monkey
         raise ValueError("private-prompt")
     monkeypatch.setattr(application, "build_executor_protocol_diagnostics", fail)
     persistence = InMemoryDiagnostics()
-    service = RunDiagnosticsService(
+    service = RunDiagnosticsService(exception_log_fields=safe_exception_log_fields,
         persistence=persistence, normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
         runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
     )
@@ -1236,7 +1238,7 @@ async def test_capture_rejects_private_metadata_and_logger_failure_is_nonfatal(m
             raise AssertionError("metadata must not render")
     def fail(*_args, **_kwargs):
         raise RuntimeError("private-token")
-    service = RunDiagnosticsService(
+    service = RunDiagnosticsService(exception_log_fields=safe_exception_log_fields,
         persistence=InMemoryDiagnostics(), normalize_runtime_diagnostics=fail,
         runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
     )
@@ -1252,3 +1254,48 @@ async def test_capture_rejects_private_metadata_and_logger_failure_is_nonfatal(m
     assert "private" not in repr(record.__dict__)
     monkeypatch.setattr(application.logger, "warning", fail)
     assert await service.capture_failure_result(object(), **kwargs) == {"status": "failed"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["write", "format"])
+async def test_capture_sink_failure_stderr_cannot_render_private_chain(failure, monkeypatch, capsys):
+    import logging
+    from app.runs.application import diagnostics as application
+
+    class BrokenStream:
+        def write(self, _value):
+            raise OSError("synthetic sink unavailable")
+        def flush(self):
+            pass
+
+    class BrokenFormatter(logging.Formatter):
+        def format(self, _record):
+            raise ValueError("synthetic formatter unavailable")
+
+    handler = logging.StreamHandler(BrokenStream())
+    if failure == "format":
+        handler.setFormatter(BrokenFormatter())
+    monkeypatch.setattr(application.logger, "handlers", [handler])
+    monkeypatch.setattr(application.logger, "propagate", False)
+    monkeypatch.setattr(logging, "raiseExceptions", True)
+    cause = ValueError("SYNTHETIC_SECRET_CAUSE")
+    original = RuntimeError("SYNTHETIC_SECRET_MARKER")
+    original.__cause__ = cause
+    def fail(_value):
+        raise original
+    service = RunDiagnosticsService(
+        exception_log_fields=safe_exception_log_fields,
+        persistence=InMemoryDiagnostics(), normalize_runtime_diagnostics=fail,
+        runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+    )
+    result = await service.capture_failure_result(
+        object(), tenant_id="tenant", run_id="run_" + "a" * 32, attempt_id=None,
+        source="worker_executor", stage="terminalization", error_code="executor_failure",
+        result_json={"status": "failed", "runtime_diagnostics": runtime_diagnostics()},
+    )
+    stderr = capsys.readouterr().err
+    assert "--- Logging error ---" in stderr
+    assert "SYNTHETIC_SECRET_MARKER" not in stderr
+    assert "SYNTHETIC_SECRET_CAUSE" not in stderr
+    assert original.__cause__ is cause
+    assert result == {"status": "failed"}
