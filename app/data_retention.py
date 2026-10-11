@@ -154,17 +154,25 @@ async def run_data_retention_maintenance(
                 },
             )
 
-    async with transaction() as conn:
-        claimed = await persistence_object_deletions.claim_object_deletions(
-            conn,
-            limit=object_delete_batch_limit,
-            max_attempts=object_delete_max_attempts,
-        )
-
-    object_storage = storage or (ObjectStorage() if claimed else None)
+    object_storage = storage
+    claimed_objects = 0
     deleted_objects = 0
     failed_objects = 0
-    for item in claimed:
+    # Claim only the object about to enter I/O. Preclaiming the full batch burns
+    # retries for untouched tail items when the maintenance budget cancels us.
+    for _ in range(max(1, min(object_delete_batch_limit, 200))):
+        async with transaction() as conn:
+            claimed = await persistence_object_deletions.claim_object_deletions(
+                conn,
+                limit=1,
+                max_attempts=object_delete_max_attempts,
+            )
+        if not claimed:
+            break
+        item = claimed[0]
+        claimed_objects += 1
+        if object_storage is None:
+            object_storage = ObjectStorage()
         try:
             assert object_storage is not None
             await run_storage_io(
@@ -212,7 +220,7 @@ async def run_data_retention_maintenance(
         "status": "completed",
         "queued_artifacts": len(queued),
         "purged_memory": len(purged_memory),
-        "claimed_objects": len(claimed),
+        "claimed_objects": claimed_objects,
         "deleted_objects": deleted_objects,
         "failed_objects": failed_objects,
     }

@@ -659,9 +659,27 @@ async def test_object_delete_outbox_dead_letter_backoff_and_unknown_outcome_reco
         async with conn.transaction():
             claimed = await _owner_persistence_object_deletions.claim_object_deletions(
                 conn,
-                limit=10,
+                limit=1,
                 max_attempts=3,
             )
+            assert [row["id"] for row in claimed] == ["out-bad"]
+            untouched = await (await conn.execute(
+                "select state, attempts from object_deletion_outbox where id in ('out-good', 'out-retry')"
+            )).fetchall()
+            assert untouched == [{"state": "pending", "attempts": 0}] * 2
+            # A concurrent worker must skip the first worker's uncommitted claim
+            # and take only the next oldest eligible row, without a shared lock.
+            async with await _scoped_connection(dsn, schema_name) as contender:
+                async with contender.transaction():
+                    second = await _owner_persistence_object_deletions.claim_object_deletions(
+                        contender, limit=1, max_attempts=3,
+                    )
+                    assert [row["id"] for row in second] == ["out-good"]
+            claimed.extend(second)
+        async with conn.transaction():
+            claimed.extend(await _owner_persistence_object_deletions.claim_object_deletions(
+                conn, limit=1, max_attempts=3,
+            ))
         assert {row["id"] for row in claimed} == {"out-bad", "out-good", "out-retry"}
         claims = {row["id"]: row for row in claimed}
 
@@ -793,4 +811,86 @@ async def test_object_delete_outbox_dead_letter_backoff_and_unknown_outcome_reco
         if conn is not None:
             await conn.close()
         await admin.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
+        await admin.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target_type", ["artifact", "file"])
+async def test_single_object_claim_filters_invalid_targets_beyond_quarantine_limit(target_type):
+    """A bounded quarantine pass never makes an unchecked object deletable."""
+    dsn = _postgres_dsn()
+    schema_name = f"retention_claim_{uuid.uuid4().hex}"
+    admin = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
+    conn = None
+    try:
+        await admin.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
+        await admin.execute(sql.SQL("set search_path to {}").format(sql.Identifier(schema_name)))
+        await admin.execute(Path("app/schema.sql").read_text(encoding="utf-8"))
+        await admin.execute("insert into tenants(id, name) values ('tenant-a', 'A')")
+        await admin.execute("insert into workspaces(id, tenant_id, name) values ('workspace-a', 'tenant-a', 'A')")
+        await admin.execute("insert into users(id, tenant_id, display_name) values ('user-a', 'tenant-a', 'A')")
+        for index in range(3):
+            target_id = f"target-{index}"
+            if target_type == "artifact":
+                await admin.execute(
+                    """
+                    insert into artifacts(
+                      id, tenant_id, artifact_type, label, content_type, storage_key,
+                      size_bytes, lifecycle_state, manifest_json
+                    ) values (%s, 'tenant-a', 'text', 'A', 'text/plain', %s, 1,
+                      'delete_pending', '{"provisional_reconciliation_cleanup":true,"expected_run_id":"synthetic-run"}'::jsonb)
+                    """,
+                    (target_id, f"objects/{index}"),
+                )
+            else:
+                await admin.execute(
+                    """
+                    insert into files(
+                      id, tenant_id, workspace_id, user_id, original_name, content_type,
+                      size_bytes, storage_key, sha256, lifecycle_state
+                    ) values (%s, 'tenant-a', 'workspace-a', 'user-a', 'A', 'text/plain',
+                      1, %s, 'synthetic', 'delete_pending')
+                    """,
+                    (target_id, f"objects/{index}"),
+                )
+            await admin.execute(
+                """
+                insert into object_deletion_outbox(
+                  id, tenant_id, target_type, artifact_id, file_id, storage_key, state,
+                  available_at, created_at
+                ) values (%s, 'tenant-a', %s, %s, %s, %s, %s,
+                  now() - interval '1 minute', now() - (%s * interval '1 minute'))
+                """,
+                (f"out-{index}", target_type,
+                 target_id if target_type == "artifact" else None,
+                 target_id if target_type == "file" else None,
+                 f"mismatched/{index}" if index < 2 else f"objects/{index}",
+                 "pending" if target_type == "artifact" else "file_pending", 3 - index),
+            )
+        conn = await _scoped_connection(dsn, schema_name)
+        async with conn.transaction():
+            claimed = await _owner_persistence_object_deletions.claim_object_deletions(conn, limit=1)
+        # Row zero was quarantined; row one must be excluded by candidate safety,
+        # not by that first bounded pass. Only these returned keys may reach I/O.
+        assert [row["storage_key"] for row in claimed] == ["objects/2"]
+        rows = await (await conn.execute(
+            "select id, state, attempts from object_deletion_outbox order by id"
+        )).fetchall()
+        prefix = "file_" if target_type == "file" else ""
+        assert rows == [
+            {"id": "out-0", "state": f"{prefix}dead_letter", "attempts": 0},
+            {"id": "out-1", "state": f"{prefix}pending", "attempts": 0},
+            {"id": "out-2", "state": f"{prefix}processing", "attempts": 1},
+        ]
+        await conn.commit()
+        async with conn.transaction():
+            assert await _owner_persistence_object_deletions.claim_object_deletions(conn, limit=1) == []
+        row = await (await conn.execute(
+            "select state, attempts from object_deletion_outbox where id = 'out-1'"
+        )).fetchone()
+        assert row == {"state": f"{prefix}dead_letter", "attempts": 0}
+    finally:
+        if conn is not None:
+            await conn.close()
+        await admin.execute(sql.SQL("drop schema {} cascade").format(sql.Identifier(schema_name)))
         await admin.close()

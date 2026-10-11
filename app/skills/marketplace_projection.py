@@ -69,8 +69,8 @@ def project_skill_files(row: dict[str, Any]) -> list[SkillFileProjection]:
             relative_path = normalize_skill_file_path(
                 str(item.get("relative_path") or item.get("path") or "")
             )
-            encoded = str(item.get("content_base64") or "")
-            if not encoded:
+            encoded = item.get("content_base64")
+            if not isinstance(encoded, str):
                 continue
             content = _decode_skill_file_content(encoded, invalid_detail="skill_file_snapshot_invalid")
             projected.append(

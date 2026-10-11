@@ -305,6 +305,11 @@ export function RunDiagnosticsSection({
                         item.reason ?? item.last_stage ?? item.state,
                       ) || "未提供结果摘要"}
                     </p>
+                    {item.last_stage === "failed" ? (
+                      <p data-sdk-tool-abort className="mt-0.5 text-[var(--theme-text-secondary)]">
+                        SDK 报告工具 abort：{typeof item.is_interrupt === "boolean" ? (item.is_interrupt ? "是" : "否") : "未知（未采集）"}；不代表用户取消或 Run 取消状态。
+                      </p>
+                    ) : null}
                     {item.invocation_id ? (
                       <details className="mt-1 text-[var(--theme-text-tertiary)]">
                         <summary className="cursor-pointer">调用编号</summary>
