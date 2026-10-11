@@ -162,6 +162,8 @@ class Settings(BaseSettings):
     # this upstream nor the user's company JWT.
     profile_drive_transfer_upstream: str = Field(default="")
     profile_drive_transfer_ca_cert_file: str = Field(default="")
+    profile_drive_transfer_read_timeout_seconds: float = Field(default=60.0, gt=0, le=3600)
+    profile_drive_transfer_total_timeout_seconds: float = Field(default=1800.0, gt=0, le=10800)
 
     llm_gateway_provider: str = Field(default="openai_compatible")
     openai_base_url: str = Field(default="")
