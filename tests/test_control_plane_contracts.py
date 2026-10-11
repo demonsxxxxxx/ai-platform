@@ -795,6 +795,7 @@ def test_kernel_lexical_redaction_has_linear_scan_work(monkeypatch, unit):
         "x " * 409600 + "x",
         "a." * 2048,
     ],
+    ids=["plain-small", "plain-large", "dotted-marker-free"],
 )
 def test_kernel_lexical_absence_checks_skip_per_word_scans(monkeypatch, text):
     from app.kernel import memory_redaction as kernel
