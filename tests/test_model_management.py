@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from pydantic import ValidationError
 from fastapi import FastAPI, HTTPException
@@ -935,36 +936,27 @@ def test_runtime_proxy_streams_incrementally_and_replaces_untrusted_credentials(
     )()
     observed = {}
 
-    class Response:
-        status = 200
-
-        def __init__(self):
-            self.chunks = iter((b"first", b"second", b""))
-            self.closed = False
-
-        def getheader(self, _name):
-            return "text/event-stream"
-
-        def read1(self, _size):
-            return next(self.chunks)
-
-        def close(self):
-            self.closed = True
-
-    response = Response()
-
-    class Connection:
-        def request(self, method, path, *, body, headers):
-            observed.update(method=method, path=path, body=body, headers=headers)
-
-        def getresponse(self):
-            return response
+    class Body(httpx.SyncByteStream):
+        def __iter__(self):
+            yield b"first"
+            yield b"second"
 
         def close(self):
             observed["closed"] = True
 
+    response = httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=Body())
+
+    def send(request):
+        observed.update(
+            method=request.method, path=request.url.raw_path,
+            body=request.content, headers=request.headers,
+        )
+        return response
+
     monkeypatch.setattr(client, "validate_endpoint", lambda *_args, **_kwargs: endpoint)
-    monkeypatch.setattr(client, "_connection", lambda *_args, **_kwargs: Connection())
+    monkeypatch.setattr(client, "_new_client", lambda *_args: httpx.Client(
+        transport=httpx.MockTransport(send), trust_env=False,
+    ))
 
     stream = open_upstream_stream(
         base_url=endpoint.base_url,
@@ -984,7 +976,7 @@ def test_runtime_proxy_streams_incrementally_and_replaces_untrusted_credentials(
     assert next(body) == b"second"
     with pytest.raises(StopIteration):
         next(body)
-    assert response.closed and observed["closed"]
+    assert response.is_closed and stream.client.is_closed and observed["closed"]
 
 
 def test_runtime_proxy_rejects_redirect_without_following(monkeypatch) -> None:
@@ -1000,25 +992,16 @@ def test_runtime_proxy_rejects_redirect_without_following(monkeypatch) -> None:
         },
     )()
 
-    class Response:
-        status = 307
+    requests = []
 
-        @staticmethod
-        def close():
-            return None
-
-    class Connection:
-        def request(self, *_args, **_kwargs):
-            return None
-
-        def getresponse(self):
-            return Response()
-
-        def close(self):
-            return None
+    def send(request):
+        requests.append(request)
+        return httpx.Response(307, headers={"location": "https://forbidden.example/"})
 
     monkeypatch.setattr(client, "validate_endpoint", lambda *_args, **_kwargs: endpoint)
-    monkeypatch.setattr(client, "_connection", lambda *_args, **_kwargs: Connection())
+    monkeypatch.setattr(client, "_new_client", lambda *_args: httpx.Client(
+        transport=httpx.MockTransport(send), trust_env=False, follow_redirects=False,
+    ))
 
     with pytest.raises(ModelUpstreamError, match="model_upstream_redirect_rejected"):
         open_upstream_stream(
@@ -1029,6 +1012,8 @@ def test_runtime_proxy_rejects_redirect_without_following(monkeypatch) -> None:
             path="/v1/chat/completions",
             provider="openai",
         )
+
+    assert len(requests) == 1
 
 
 def test_model_proxy_observes_text_without_rewriting_or_logging_content(caplog) -> None:
@@ -1559,7 +1544,7 @@ async def test_internal_runtime_proxy_resolves_run_revision_and_streams_response
         endpoint=type(
             "Endpoint",
             (),
-            {"hostname": "gateway.example", "port": 443},
+            {"base_url": "https://gateway.example", "hostname": "gateway.example", "port": 443},
         )(),
         provider="openai",
         api_key=captured["api_key"],
