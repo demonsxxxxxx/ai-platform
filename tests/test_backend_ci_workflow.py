@@ -38,6 +38,7 @@ TRUSTED_WORKFLOW_IMPORTS = (
 )
 AGENT_SKILL_CONTRACT_TESTS = (
     "tests/test_agent_profile_authority.py",
+    "tests/test_agent_profile_unpinned_admission.py",
     "tests/test_agent_apps_worker_profile_snapshot.py",
     "tests/test_agent_profile_lifecycle.py",
     "tests/test_agent_profile_routes.py",

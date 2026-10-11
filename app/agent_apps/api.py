@@ -7,6 +7,7 @@ from app.agent_apps.application.worker_profile_snapshot import (
 )
 from app.agent_apps.application.skill_set_pinning import pin_agent_skill_set
 from app.agent_apps.domain.profile_definition import (
+    agent_type_requires_profile_admission as agent_type_requires_profile_admission,
     locked_agent_profile_identity_valid as locked_agent_profile_identity_valid,
     normalize_agent_avatar_seed,
     normalize_agent_profile_display_items,
@@ -137,6 +138,7 @@ __all__ = [
     "AgentProfilePublicProjection",
     "AgentProfileSkillReference",
     "agent_profile_repository",
+    "agent_type_requires_profile_admission",
     "configure_agent_profile_authority",
     "configure_agent_profile_persistence",
     "normalize_agent_avatar_seed",

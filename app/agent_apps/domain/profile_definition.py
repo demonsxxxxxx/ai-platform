@@ -86,11 +86,22 @@ def normalize_agent_profile_display_items(
     return normalized
 
 
+def agent_type_requires_profile_admission(agent_type: object) -> bool:
+    """Profile identity can execute only through its owning admission contract."""
+
+    return agent_type == "profile"
+
+
 def locked_agent_profile_identity_valid(
     agent_profile: dict[str, object],
     locked_run: object,
 ) -> bool:
     if not isinstance(locked_run, dict):
+        return False
+    agent_type = locked_run.get("agent_type")
+    if not isinstance(agent_type, str) or not agent_type:
+        return False
+    if agent_type_requires_profile_admission(agent_type) != bool(agent_profile):
         return False
     pin_fields = (
         "admitted_agent_profile_revision",

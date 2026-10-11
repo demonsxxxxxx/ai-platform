@@ -23,6 +23,7 @@ async def resolve_skill_identity(
         """
         select
           agents.id as agent_id,
+          agents.agent_type,
           agents.status as agent_status,
           agents.default_skill_id,
           skills.id as skill_id,

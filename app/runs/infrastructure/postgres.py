@@ -296,7 +296,7 @@ async def lock_queued_run_for_attempt(
         """
         select runs.id, runs.tenant_id, runs.workspace_id, runs.user_id,
                runs.session_id, runs.agent_id, runs.execution_kind,
-               runs.skill_id, runs.trace_id,
+               runs.skill_id, runs.trace_id, agents.agent_type,
                runs.principal_roles, runs.principal_department_id, runs.auth_source,
                runs.admitted_agent_profile_revision,
                runs.admitted_agent_profile_hash,
@@ -306,6 +306,7 @@ async def lock_queued_run_for_attempt(
                  as session_admitted_agent_profile_hash,
                runs.input_json
         from runs
+        join agents on agents.id = runs.agent_id and agents.tenant_id = runs.tenant_id
         join sessions
           on sessions.id = runs.session_id
          and sessions.tenant_id = runs.tenant_id
@@ -1079,12 +1080,13 @@ async def get_run(
     lock_clause = "for update of runs" if for_update else ""
     cursor = await conn.execute(
         f"""
-        select runs.*,
+        select runs.*, agents.agent_type,
                sessions.admitted_agent_profile_revision
                  as session_admitted_agent_profile_revision,
                sessions.admitted_agent_profile_hash
                  as session_admitted_agent_profile_hash
         from runs
+        left join agents on agents.id = runs.agent_id and agents.tenant_id = runs.tenant_id
         left join sessions
           on sessions.tenant_id = runs.tenant_id
          and sessions.id = runs.session_id

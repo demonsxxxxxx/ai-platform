@@ -2767,6 +2767,7 @@ def locked_run_from_payload(payload):
         "user_id": validated["user_id"],
         "session_id": validated["session_id"],
         "agent_id": validated["agent_id"],
+        "agent_type": "profile" if agent_profile else "chat",
         "execution_kind": validated["execution_kind"],
         "skill_id": validated["skill_id"],
         "model_id": validated.get("model_id"),
@@ -2830,6 +2831,7 @@ def test_locked_agent_profile_identity_requires_exact_physical_pin(
     }
     locked_run = {
         "agent_id": "agt_support",
+        "agent_type": "profile",
         "admitted_agent_profile_revision": 7,
         "admitted_agent_profile_hash": "a" * 64,
         "session_admitted_agent_profile_revision": 7,
@@ -2880,6 +2882,7 @@ def test_locked_agent_profile_identity_requires_exact_physical_pin(
 def test_locked_generic_agent_requires_explicit_null_physical_pins(pin_change, expected):
     locked_run = {
         "agent_id": "general-agent",
+        "agent_type": "chat",
         "admitted_agent_profile_revision": None,
         "admitted_agent_profile_hash": None,
         "session_admitted_agent_profile_revision": None,
@@ -6233,6 +6236,7 @@ async def test_worker_uses_db_run_input_and_snapshot_files_when_queue_fields_are
             "user_id": "user-a",
             "session_id": "session-a",
             "agent_id": "general-agent",
+            "agent_type": "chat",
             "admitted_agent_profile_revision": None,
             "admitted_agent_profile_hash": None,
             "session_admitted_agent_profile_revision": None,
@@ -8592,6 +8596,7 @@ def _install_task6_worker_fakes(
         "user_id": "user-a",
         "session_id": "session-a",
         "agent_id": agent_id,
+        "agent_type": "file",
         "admitted_agent_profile_revision": None,
         "admitted_agent_profile_hash": None,
         "session_admitted_agent_profile_revision": None,

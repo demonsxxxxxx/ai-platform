@@ -17,7 +17,9 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
 from starlette.responses import JSONResponse
 
-from app.agent_apps.api import AgentProfileAuthority, pin_agent_skill_set
+from app.agent_apps.api import (
+    AgentProfileAuthority, agent_type_requires_profile_admission, pin_agent_skill_set,
+)
 from app.agent_apps.infrastructure import catalog_postgres as agent_apps_catalog
 from app.agent_apps.infrastructure import (
     principal_catalog_postgres as agent_apps_principal_catalog,
@@ -1159,6 +1161,8 @@ async def create_chat_session(
         )
         if agent is None:
             raise HTTPException(status_code=409, detail="agent_inactive")
+        if agent_type_requires_profile_admission(agent.get("agent_type")):
+            raise HTTPException(status_code=409, detail="agent_profile_admission_required")
         await conversations_session_queries.ensure_workspace(conn, tenant_id=principal.tenant_id, workspace_id=request.workspace_id)
         await identity_postgres.ensure_user(conn, tenant_id=principal.tenant_id, user_id=principal.user_id, display_name=principal.display_name)
         session_id = await conversations_postgres.create_session(
@@ -1758,6 +1762,8 @@ async def chat_stream(
                     **authorization_kwargs,
                 )
             if execution_kind == RUN_EXECUTION_KIND_SKILL:
+                if admitted_agent_profile is None and agent_type_requires_profile_admission(skill.get("agent_type")):
+                    raise HTTPException(status_code=409, detail="agent_profile_admission_required")
                 executor_type = str(skill.get("executor_type") or "")
                 input_modes = list(skill.get("input_modes") or [])
             if (
