@@ -1,6 +1,8 @@
 from contextlib import asynccontextmanager
 
 import pytest
+
+from app.platform.tracing import safe_exception_log_fields
 from fastapi.testclient import TestClient
 
 from app.main import create_app
@@ -147,7 +149,7 @@ def test_admin_run_diagnostics_keeps_not_found_tenant_scoped(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
     app = create_app()
-    app.state.run_diagnostics_service = RunDiagnosticsService(
+    app.state.run_diagnostics_service = RunDiagnosticsService(exception_log_fields=safe_exception_log_fields,
         persistence=MissingDiagnosticsPersistence(),
         normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
         runtime_diagnostics_schema_version="ai-platform.sdk-runtime-diagnostics.v1",
@@ -221,6 +223,7 @@ def test_admin_run_diagnostics_preserves_projection_failure_over_http(
     monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
     app = create_app()
     app.state.run_diagnostics_service = RunDiagnosticsService(
+        exception_log_fields=safe_exception_log_fields,
         persistence=StoredDiagnosticsPersistence(),
         normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
         runtime_diagnostics_schema_version="ai-platform.sdk-runtime-diagnostics.v1",
@@ -646,7 +649,7 @@ def test_admin_run_diagnostics_reads_legacy_without_mutating_detail(monkeypatch)
         forbidden_get_run,
     )
     app = create_app()
-    app.state.run_diagnostics_service = RunDiagnosticsService(
+    app.state.run_diagnostics_service = RunDiagnosticsService(exception_log_fields=safe_exception_log_fields,
         persistence=LegacyDiagnosticsPersistence(),
         tool_operation_id=public_tool_operation_id,
         normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,

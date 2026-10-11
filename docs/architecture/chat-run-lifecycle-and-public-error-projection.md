@@ -476,6 +476,37 @@ RBAC and ordinary-result absence are the owning regression requirements.
   Runtime GET maintenance, build-version projection and exports remain outside
   this batch and associated Issue #1485 stays open.
 
+## Safe operational failure evidence
+
+Chat submission and Runs diagnostic capture retain their existing logger owners.
+Composition injects the platform tracing projection through explicit application
+callables (Runs service and Chat submission logger), with no application import
+of a concrete platform adapter. The projection supplies structural evidence:
+at most eight exception nodes, explicit cause before unsuppressed context, and
+at most eight app-module/function/line labels from 128 inspected traceback frames
+per node. Cycle, chain limit and frame limit are reported without rendering
+exception messages, source lines, locals, SQL, parameters, DSNs or private paths.
+SQLSTATE is accepted only from the exact registered psycopg error class and a
+five-character uppercase ASCII/digit code; arbitrary exception attributes and
+lookalike subclasses are not trusted.
+
+Chat keeps its existing generated diagnostic ID and fixed submission phase.
+Runs capture warnings add the fixed factory/normalize/sanitize/build/persist
+phase and existing owner-supplied Run/Attempt IDs when they match the internal
+ID formats. An observation ID is included only after the observation was built.
+These values never come from a private diagnostic carrier. A capture failure
+logs locally without another database operation. A fixed suppressed exception
+context isolates default logging-handler stderr from the original private chain;
+no global logging setting or handler is changed. Logging failure cannot replace
+the original submission failure or public terminal result. No diagnostic field
+changes retry eligibility, authorization, terminal state or ordinary API text.
+
+This replaces Chat's outer-only exception projection and Runs' uncorrelated
+capture warning in place. Existing Chat outer-type/frame labels and Runs
+source/stage/reason log fields remain; no parallel logger, persistence schema,
+state field or fallback store is introduced. Historical logs cannot be enriched
+retroactively. Operator logs remain separate from the admin Run diagnostic API.
+
 ## Private diagnostics and reconciliation
 
 ### Administrator trajectory replay

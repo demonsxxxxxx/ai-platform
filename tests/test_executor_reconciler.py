@@ -8,6 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.platform.tracing import safe_exception_log_fields
+
 from app.context.api import ProviderSessionConflictError
 from app.executor_reconciler import (
     PermanentExecutorReconciliationError,
@@ -972,7 +974,7 @@ async def test_probe_keeps_terminal_receipt_when_protocol_diagnostics_fail(
             calls.append(("protocol", conn))
             raise RuntimeError("diagnostic storage unavailable")
 
-    run_diagnostics = RunDiagnosticsService(
+    run_diagnostics = RunDiagnosticsService(exception_log_fields=safe_exception_log_fields,
         persistence=FailingPersistence(),
         normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
         runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
