@@ -203,7 +203,17 @@ Artifact and file lifecycle callers use the owning persistence modules directly.
 Some cross-domain adapter calls remain and are tracked as future architecture
 debt; removing this facade does not claim complete layer separation.
 
-Cleanup runs in small worker batches and is retryable:
+Cleanup runs in small worker batches and is retryable. The object-deletion worker
+claims one object immediately before processing it, up to `OBJECT_DELETE_BATCH_LIMIT`
+objects per maintenance round. The existing phase deadline is unchanged: cancelled
+or unknown started work retains its generation and retry accounting, while untouched
+objects are not preclaimed and do not consume attempts. Each claim retains the
+existing oldest-eligible ordering, `SKIP LOCKED`, and stale-lease rules; no existing
+dead-letter rows are automatically requeued.
+Candidate selection independently checks the exact target identity, storage key,
+and `delete_pending` lifecycle, so a bounded quarantine pass cannot expose an
+uninspected invalid target to physical deletion.
+
 
 - Expired artifacts are selected with `FOR UPDATE SKIP LOCKED` only when no
   active run/session, context snapshot, or audit target still references them.
