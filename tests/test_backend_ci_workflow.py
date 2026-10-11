@@ -79,6 +79,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_context_file_content.py",
         "tests/test_file_parser_contracts.py",
         "tests/test_file_preview_contracts.py",
+        "tests/contract/files/test_xlsx_preview_identity.py",
         "tests/test_context_prompt_continuity.py",
         "tests/test_context_worker_snapshot_projection.py",
         "tests/test_context_worker_attachment_projection.py",
