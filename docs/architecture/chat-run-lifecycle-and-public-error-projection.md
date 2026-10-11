@@ -534,6 +534,22 @@ cleanup. Those remain under [SSE acceptance](../operations/redis-streams-sse-cut
 and the release runbook. No source cleanup authorizes a weaker public projection.
 
 
+## Private SDK tool-abort observation
+
+`tool_calls[].is_interrupt` is an optional strict boolean copied only from a
+native `PostToolUseFailure` hook before large failure/input values are truncated.
+Both diagnostic boundaries retain it only for the current failed tool stage.
+It means the SDK reported an abort, not that the user cancelled the Run. Missing
+values remain unknown; false means only that the received hook reported false.
+The SDK documents that interrupting a running tool does not fire this hook.
+
+This field is administrator-only diagnostic evidence. It does not change public
+failure categories, tool authorization, retries, or the Runs cancellation
+request/terminal authority. Raw tool inputs and failure text remain excluded
+from persisted Runs diagnostics. Existing whole-tool-record count/byte trimming
+still applies; an omitted record does not imply a non-abort. No new unbounded
+history or public field is introduced.
+
 ## Administrator tool-diagnostic correlation
 
 Public tool events retain opaque `operation_id` values owned by Execution. The

@@ -72,6 +72,7 @@ class AdminRunDiagnosticToolEvidence(TypedDict):
     operation_id: NotRequired[str]
     state: NotRequired[str]
     last_stage: NotRequired[str]
+    is_interrupt: NotRequired[bool]
     capability_kind: NotRequired[str]
     reason: NotRequired[str]
 
