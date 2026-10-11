@@ -30,6 +30,17 @@ schema-equivalence coverage until generated or consolidated; semantic identity,
 owner and cross-field checks remain explicit. This is an implementation gap
 to close, not a reason to bypass validation.
 
+Runtime enum checks must preserve JSON type identity: a boolean constant such as
+`hydrate_required: true` does not accept Python-equal numbers `1` or `1.0`.
+Candidate and Streaming boundaries independently enforce this rule, including
+revalidation after callback/deserialization or mutation. Enum mismatches retain
+the existing bounded validation errors without echoing input. Counter limits,
+reference grammar, redaction, fixed-copy and authority checks are unchanged.
+This correction replaces only Python-equality enum membership; consolidation of
+the remaining handwritten payload-shape algorithms is still pending. A future
+shared runtime engine must respect the source architecture's dependency rules;
+this change introduces no third-party domain dependency or compatibility path.
+
 The internal envelope contains tenant scope, current Attempt identity,
 projection version, and strict source metadata required for trusted validation.
 The browser projection excludes tenant, Attempt, source, and every other
