@@ -1825,7 +1825,9 @@ async def run_claude_agent_sdk(
             },
         )
         entry["last_stage"] = stage
-        entry.pop("is_interrupt", None)
+        # A repeated lifecycle fact carries no new failure observation.
+        if stage != "failed" or failure is not None:
+            entry.pop("is_interrupt", None)
         if (
             stage == "failed"
             and isinstance(failure, dict)
