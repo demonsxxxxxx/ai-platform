@@ -305,7 +305,7 @@ export async function startBrowser({
       mobile: viewport.mobile,
     });
     reportRedacted("browser_ready", { port });
-    return { client, close, endpoint };
+    return { client, close };
   } catch (error) {
     try {
       await close();

@@ -44,21 +44,18 @@ LINUX_FRONTEND_PYTEST_COMMAND = (
     "python -m pytest tests/test_frontend_linux_contracts.py -q --basetemp .pytest-tmp"
 )
 WORKFLOW_STEP_COMMANDS = {
-    "Verify isolated Word preview in existing Chrome": "corepack pnpm run test:word-preview-browser",
     "Verify static frontend Python contracts": STATIC_FRONTEND_PYTEST_COMMAND,
     "Verify static frontend deploy helper": "python tools/deploy_frontend_static.py --help",
     "Install Linux contract test dependencies": "python -m pip install pytest",
     "Verify Linux frontend healthcheck contract": LINUX_FRONTEND_PYTEST_COMMAND,
 }
 WORKFLOW_STEP_JOBS = {
-    "Verify isolated Word preview in existing Chrome": "frontend",
     "Verify static frontend Python contracts": "frontend",
     "Verify static frontend deploy helper": "frontend",
     "Install Linux contract test dependencies": "frontend-image",
     "Verify Linux frontend healthcheck contract": "frontend-image",
 }
 WORKFLOW_COMMANDS = [
-    "corepack pnpm run test:word-preview-browser",
     "corepack pnpm install --frozen-lockfile",
     "python -m pip install pytest pyyaml",
     STATIC_FRONTEND_PYTEST_COMMAND,
@@ -76,7 +73,6 @@ WORKFLOW_COMMANDS = [
     "ai-platform-build-provenance.json",
 ]
 WORKFLOW_COMMAND_JOBS = {
-    "corepack pnpm run test:word-preview-browser": "frontend",
     "corepack pnpm install --frozen-lockfile": "frontend",
     "python -m pip install pytest pyyaml": "frontend",
     STATIC_FRONTEND_PYTEST_COMMAND: "frontend",

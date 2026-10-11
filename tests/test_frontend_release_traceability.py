@@ -120,7 +120,6 @@ def test_frontend_release_traceability_records_ci_contract_without_local_paths()
     assert "python tools/frontend_release_traceability.py --format json" in trace["workflow"]["enforced_commands"]
     assert "python tools/frontend_packaged_runtime_smoke.py --format json" in trace["workflow"]["enforced_commands"]
     assert trace["workflow"]["enforced_step_commands"] == {
-        "Verify isolated Word preview in existing Chrome": "corepack pnpm run test:word-preview-browser",
         "Verify static frontend Python contracts": EXPECTED_WORKFLOW_PYTEST,
         "Verify static frontend deploy helper": "python tools/deploy_frontend_static.py --help",
         "Install Linux contract test dependencies": "python -m pip install pytest",
@@ -481,7 +480,6 @@ def test_frontend_release_traceability_flags_workflow_missing_enforced_commands(
         "frontend_workflow_step_contract_missing",
     ]
     assert trace["workflow"]["missing_commands"] == [
-        "corepack pnpm run test:word-preview-browser",
         "corepack pnpm install --frozen-lockfile",
         EXPECTED_PYTHON_DEPENDENCIES,
         EXPECTED_WORKFLOW_PYTEST,
@@ -499,7 +497,6 @@ def test_frontend_release_traceability_flags_workflow_missing_enforced_commands(
         "ai-platform-build-provenance.json",
     ]
     assert trace["workflow"]["missing_step_commands"] == [
-        "Verify isolated Word preview in existing Chrome",
         "Verify static frontend Python contracts",
         "Verify static frontend deploy helper",
         "Install Linux contract test dependencies",

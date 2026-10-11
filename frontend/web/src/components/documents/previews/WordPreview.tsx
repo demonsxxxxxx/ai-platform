@@ -1,13 +1,15 @@
-import { memo, useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { FileText, AlertCircle } from "lucide-react";
-import { prepareWordPreviewDocument } from "./wordHtmlPreview";
+import DOMPurify from "dompurify";
 import {
   docxTextToHtml,
   extractDocxTextFallback,
   isDocxSafeForMammoth,
 } from "./wordPreviewUtils";
 import {
+  measureDocxPreview,
   renderDocxPreviewHtml,
+  type DocxPreviewSize,
 } from "./wordPreviewRenderer";
 import {
   extractLegacyDocText,
@@ -55,7 +57,7 @@ const wordContentStyles = `
     padding-bottom: 0.5rem;
     border-bottom: 2px solid #e5e7eb;
   }
-  .word-preview-content.dark h1 {
+  .dark .word-preview-content h1 {
     border-bottom-color: #374151;
   }
   .word-preview-content h2 {
@@ -65,7 +67,7 @@ const wordContentStyles = `
     padding-bottom: 0.25rem;
     border-bottom: 1px solid #e5e7eb;
   }
-  .word-preview-content.dark h2 {
+  .dark .word-preview-content h2 {
     border-bottom-color: #374151;
   }
   .word-preview-content h3 {
@@ -101,7 +103,7 @@ const wordContentStyles = `
     background: #fffbeb;
     border-radius: 0 0.5rem 0.5rem 0;
   }
-  .word-preview-content.dark blockquote {
+  .dark .word-preview-content blockquote {
     background: rgba(245, 158, 11, 0.1);
     border-left-color: #fbbf24;
   }
@@ -122,7 +124,7 @@ const wordContentStyles = `
     border: 1px solid #d1d5db;
     color: #374151;
   }
-  .word-preview-content.dark th {
+  .dark .word-preview-content th {
     background: #1f2937;
     border-color: #374151;
     color: #9ca3af;
@@ -132,20 +134,20 @@ const wordContentStyles = `
     border: 1px solid #e5e7eb;
     color: #1f2937;
   }
-  .word-preview-content.dark td {
+  .dark .word-preview-content td {
     border-color: #374151;
     color: #d1d5db;
   }
   .word-preview-content tr:nth-child(even) td {
     background: #f9fafb;
   }
-  .word-preview-content.dark tr:nth-child(even) td {
+  .dark .word-preview-content tr:nth-child(even) td {
     background: rgba(31, 41, 55, 0.5);
   }
   .word-preview-content tr:hover td {
     background: #f5f5f4;
   }
-  .word-preview-content.dark tr:hover td {
+  .dark .word-preview-content tr:hover td {
     background: rgba(120, 113, 108, 0.08);
   }
   .word-preview-content img {
@@ -159,13 +161,13 @@ const wordContentStyles = `
     color: #2563eb;
     text-decoration: underline;
   }
-  .word-preview-content.dark a {
+  .dark .word-preview-content a {
     color: #60a5fa;
   }
   .word-preview-content a:hover {
     color: #1d4ed8;
   }
-  .word-preview-content.dark a:hover {
+  .dark .word-preview-content a:hover {
     color: #93c5fd;
   }
   .word-preview-content code {
@@ -176,7 +178,7 @@ const wordContentStyles = `
     border-radius: 0.25rem;
     color: #be185d;
   }
-  .word-preview-content.dark code {
+  .dark .word-preview-content code {
     background: #374151;
     color: #f472b6;
   }
@@ -199,12 +201,12 @@ const wordContentStyles = `
     background: linear-gradient(to right, transparent, #e5e7eb, transparent);
     margin: 1.5rem 0;
   }
-  .word-preview-content.dark hr {
+  .dark .word-preview-content hr {
     background: linear-gradient(to right, transparent, #374151, transparent);
   }
 `;
 
-const DEFAULT_DOCX_SIZE = {
+const DEFAULT_DOCX_SIZE: DocxPreviewSize = {
   width: 816,
   height: 1056,
 };
@@ -217,6 +219,8 @@ const WordPreview = memo(function WordPreview({
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [renderedWithDocxPreview, setRenderedWithDocxPreview] = useState(false);
+  const [docxSize, setDocxSize] = useState<DocxPreviewSize>(DEFAULT_DOCX_SIZE);
+  const contentRef = useRef<HTMLDivElement | null>(null);
 
   // Detect dark mode
   const [isDark, setIsDark] = useState(() =>
@@ -234,6 +238,17 @@ const WordPreview = memo(function WordPreview({
       attributeFilter: ["class"],
     });
     return () => observer.disconnect();
+  }, []);
+
+  // Add custom styles
+  useEffect(() => {
+    const styleId = "word-preview-styles";
+    if (!document.getElementById(styleId)) {
+      const style = document.createElement("style");
+      style.id = styleId;
+      style.textContent = wordContentStyles;
+      document.head.appendChild(style);
+    }
   }, []);
 
   useEffect(() => {
@@ -260,6 +275,10 @@ const WordPreview = memo(function WordPreview({
         setError(null);
         setHtml("");
         setRenderedWithDocxPreview(false);
+        setDocxSize(DEFAULT_DOCX_SIZE);
+        if (contentRef.current) {
+          contentRef.current.innerHTML = "";
+        }
 
         if (isLegacyDocArrayBuffer(arrayBuffer)) {
           const legacyText = await extractLegacyDocText(arrayBuffer);
@@ -269,12 +288,17 @@ const WordPreview = memo(function WordPreview({
           return;
         }
 
+        const container = contentRef.current;
+        if (!container) return;
+
         const [{ renderAsync }, mammoth] = await Promise.all([
           import("docx-preview"),
           import("mammoth"),
         ]);
         const renderResult = await renderDocxPreviewHtml({
           arrayBuffer,
+          container,
+          styleContainer: container,
           renderAsync,
           convertToHtml: async (input, options) => {
             if (await isDocxSafeForMammoth(input.arrayBuffer)) {
@@ -292,8 +316,13 @@ const WordPreview = memo(function WordPreview({
         });
         if (cancelled) return;
 
-        setHtml(renderResult.html);
-        setRenderedWithDocxPreview(renderResult.kind === "docx-preview");
+        if (renderResult.kind === "html") {
+          setHtml(renderResult.html);
+        } else {
+          const measuredSize = measureDocxPreview(container);
+          if (measuredSize) setDocxSize(measuredSize);
+          setRenderedWithDocxPreview(true);
+        }
         setError(null);
       } catch (err) {
         try {
@@ -318,14 +347,54 @@ const WordPreview = memo(function WordPreview({
     };
   }, [arrayBuffer, t]);
 
-  const previewDocument = useMemo(() => prepareWordPreviewDocument({
-    html,
-    styles: wordContentStyles,
-    dark: isDark && !renderedWithDocxPreview,
-    className: renderedWithDocxPreview
-      ? "docx-preview-content"
-      : `word-preview-content${isDark ? " dark" : ""}`,
-  }), [html, isDark, renderedWithDocxPreview]);
+  const processedHtml = useMemo(() => {
+    if (!html) return "";
+    // Sanitize HTML to prevent XSS attacks
+    return DOMPurify.sanitize(html, {
+      ALLOWED_TAGS: [
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "p",
+        "br",
+        "hr",
+        "ul",
+        "ol",
+        "li",
+        "blockquote",
+        "pre",
+        "code",
+        "table",
+        "thead",
+        "tbody",
+        "tr",
+        "th",
+        "td",
+        "a",
+        "img",
+        "strong",
+        "em",
+        "u",
+        "s",
+        "span",
+        "div",
+      ],
+      ALLOWED_ATTR: [
+        "href",
+        "src",
+        "alt",
+        "class",
+        "id",
+        "style",
+        "colspan",
+        "rowspan",
+      ],
+      ALLOW_DATA_ATTR: false,
+    });
+  }, [html]);
 
   if (error) {
     return (
@@ -356,29 +425,37 @@ const WordPreview = memo(function WordPreview({
     );
   }
 
-  return (
-    <DocumentViewerFrame
-      key={loading || renderedWithDocxPreview ? "docx" : "fallback"}
-      naturalWidth={DEFAULT_DOCX_SIZE.width}
-      loading={loading}
-      ariaLabel={t("documents.wordPreviewTitle") || "Word preview"}
-    >
-      {(displayScale) => loading ? null : (
-        <ScaledDocumentContent
-          naturalWidth={DEFAULT_DOCX_SIZE.width}
-          naturalHeight={DEFAULT_DOCX_SIZE.height}
-          displayScale={displayScale}
-        >
-          <iframe
-            srcDoc={previewDocument}
-            sandbox=""
-            referrerPolicy="no-referrer"
-            title={t("documents.wordPreviewTitle") || "Word preview"}
-            className="h-full w-full border-0 bg-white"
+  if (loading || renderedWithDocxPreview) {
+    return (
+      <DocumentViewerFrame
+        naturalWidth={docxSize.width}
+        loading={loading}
+        ariaLabel={t("documents.wordPreviewTitle") || "Word preview"}
+      >
+        {(displayScale) => (
+          <ScaledDocumentContent
+            naturalWidth={docxSize.width}
+            naturalHeight={docxSize.height}
+            displayScale={displayScale}
+            contentRef={contentRef}
+            className="docx-preview-content"
           />
-        </ScaledDocumentContent>
-      )}
-    </DocumentViewerFrame>
+        )}
+      </DocumentViewerFrame>
+    );
+  }
+
+  return (
+    <div className="h-full overflow-auto bg-stone-200 px-3 py-4 dark:bg-stone-950 sm:px-5 sm:py-5">
+      <div className="mx-auto min-h-full max-w-3xl rounded-sm border border-stone-300/60 bg-white px-4 py-6 shadow-lg dark:border-stone-700/60 dark:bg-stone-900 sm:px-8 sm:py-10">
+        {processedHtml && (
+          <div
+            className={`word-preview-content ${isDark ? "dark" : ""}`}
+            dangerouslySetInnerHTML={{ __html: processedHtml }}
+          />
+        )}
+      </div>
+    </div>
   );
 });
 

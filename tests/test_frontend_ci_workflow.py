@@ -379,18 +379,3 @@ def test_frontend_required_contract_accepts_only_all_success() -> None:
     assert callable(require_successful_results)
 
     require_successful_results({"frontend": "success", "frontend-image": "success"})
-
-
-def test_word_preview_browser_acceptance_is_required_in_frontend_lane():
-    workflow = _workflow_contract()
-    frontend = workflow["jobs"]["frontend"]
-    steps = frontend["steps"]
-    smoke = next(step for step in steps if step.get("name") == "Verify isolated Word preview in existing Chrome")
-    assert smoke["run"] == "corepack pnpm run test:word-preview-browser"
-    assert smoke["working-directory"] == "frontend/web"
-    assert "if" not in smoke
-    assert "continue-on-error" not in smoke
-    package = json.loads(PACKAGE.read_text(encoding="utf-8"))
-    assert package["scripts"]["test:word-preview-browser"] == "node scripts/word-preview-browser-smoke.mjs"
-    assert "node --test scripts/word-preview-request-policy.test.mjs" in package["scripts"]["test:document-previews"]
-    assert "corepack pnpm run test:document-previews" in package["scripts"]["ci:verify"]

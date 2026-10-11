@@ -196,19 +196,6 @@ jobs:
         working-directory: frontend/web
         run: corepack pnpm run ci:verify
 
-      - name: Verify isolated Word preview in existing Chrome
-        working-directory: frontend/web
-        timeout-minutes: 3
-        run: corepack pnpm run test:word-preview-browser
-
-      - name: Upload synthetic Word browser evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: word-preview-browser-${{ github.event.pull_request.head.sha || github.sha }}
-          path: .codex-tmp/word-preview-browser-smoke/
-          if-no-files-found: error
-
       - name: Record frontend release traceability
         run: python tools/frontend_release_traceability.py --format json
 

@@ -1,10 +1,12 @@
 import DOMPurify from "dompurify";
-import { buildStaticDocumentFrame } from "./staticDocumentFrame";
 
 const IMAGE_DATA_URI_RE =
   /data:image\/(?:png|jpe?g|gif|webp);base64,([A-Za-z0-9+/=]+)/gi;
 const SAFE_EMBEDDED_IMAGE_RE =
   /^data:image\/(?:png|jpe?g|gif|webp|bmp|svg\+xml);base64,/i;
+const PPT_IFRAME_CSP =
+  "default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; font-src data:";
+
 function decodeBase64Header(value: string): string {
   try {
     return globalThis.atob(value.slice(0, 256));
@@ -65,8 +67,5 @@ export function sanitizePptxRenderedHtml(html: string): string {
 
 export function preparePptxSlideDocument(html: string): string {
   const content = sanitizePptxRenderedHtml(html);
-  return buildStaticDocumentFrame({
-    content,
-    styles: "html,body{margin:0;width:100%;height:100%;overflow:hidden;background:white}body{position:relative}",
-  });
+  return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${PPT_IFRAME_CSP}"><meta name="referrer" content="no-referrer"><style>html,body{margin:0;width:100%;height:100%;overflow:hidden;background:white}body{position:relative}</style></head><body>${content}</body></html>`;
 }
