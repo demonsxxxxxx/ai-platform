@@ -27,6 +27,8 @@ files are intentionally excluded from the repository import.
 
 ## Development
 
+Run from `frontend/web`:
+
 ```powershell
 pnpm install --frozen-lockfile
 pnpm run projection:audit
@@ -35,15 +37,14 @@ pnpm run lint
 pnpm run build
 ```
 
-`pnpm run ci:verify` starts with `pnpm run projection:audit` and is the release
-gate. The current audit status is `pass_with_policy_gaps`: active browser
-entry files are blocked if they consume executor-private or secret-like
-projection terms. The current production scan has no forbidden or quarantined
-source violations, while remaining route-policy gaps stay visible for G6/G9
-follow-up. The audit also emits an active-browser route
-inventory so ordinary-user review can distinguish live legacy routes from
-inactive imported source. This status lets `ci:verify` continue to lint,
-type-check, and build, but it does not close the Agent Frontend V1 rollout gate.
+`pnpm run ci:verify` starts with `pnpm run projection:audit` and is the frontend
+CI gate. Read the current audit output for source violations and route-policy
+gaps; this README does not establish a current passing result. The audit emits
+an active-browser route inventory so ordinary-user review can distinguish live
+legacy routes from inactive imported source. A `pass_with_policy_gaps` result
+allows the remaining CI checks to continue while preserving the reported
+G6/G9 rollout gaps. Neither that status nor a passing frontend CI run closes the
+full Agent Frontend V1 rollout gate.
 
 `pnpm run test:model-admin` runs the mounted model administration and catalog
 context regressions, including stale probes, credential reuse, cancellation and
@@ -55,11 +56,12 @@ From the repository root, `python tools/frontend_release_traceability.py
 `dist/` manifest, and packaged frontend image status. The packaged image status
 is expected to be `configured` only when `frontend/web/Dockerfile`,
 `frontend/web/nginx.conf.template`, and
-`deploy/ai-platform/docker-compose.frontend.yml` are present, pass the
+`deploy/ai-platform/docker-compose.yml` are present, pass the
 secret/private-payload denylist scan, and keep the required build provenance,
-upload, proxy-timeout, and compose argument contract. Static `dist/` is
-same-commit evidence only when provenance records a known commit, clean dirty
-state, and matching frontend source hashes. Local Windows development does not
+upload, proxy-timeout, and compose argument contract. `configured` describes
+source configuration only, not an image build, deployment, or runtime acceptance.
+Static `dist/` is same-commit evidence only when provenance records a known
+commit, clean dirty state, and matching frontend source hashes. Local Windows development does not
 build Docker images. GitHub Actions performs a non-push packaged-image
 build/provenance check for relevant frontend changes, but release acceptance
 still requires image smoke on the exact controlled Docker-capable host.
@@ -94,12 +96,13 @@ Current platform-facing contract areas:
 
 ## Migration Boundaries
 
-This import is intentionally source-first:
+The 2026-06-06 import was source-first; its provenance hashes above are a
+historical snapshot. Current delivery uses the packaged frontend described below:
 
 - Backend scheduling, sandbox, auth/session, DB schema, and compose behavior
   are unchanged by the frontend import.
-- The current configured frontend deployment remains the active runtime entry
-  until a frontend image is explicitly added and verified.
+- The frontend image is now configured in the main Compose file; actual
+  deployment and acceptance still require exact-package evidence.
 - Historical admin/model/MCP/persona/sandbox source remains under ai-platform
   projection and policy audit before ordinary-user rollout.
 - `pnpm run projection:audit` runs the repository-owned static projection audit
@@ -111,24 +114,27 @@ This import is intentionally source-first:
 - G8 platform-level multi-run orchestration and G10 workflow-owner rollout work
   are not implemented by this migration.
 
-## Future Multi-Image Direction
+## Packaged Delivery
 
-Later packaged delivery should use three project-owned images:
+The main [Compose file](../../deploy/ai-platform/docker-compose.yml) defines
+separate backend and frontend application images:
 
-- `ai-platform-api` for FastAPI control-plane routes.
-- `ai-platform-worker` for queue, sandbox cleanup, memory cleanup, and
-  dispatcher maintenance.
-- `ai-platform-frontend` for static files built from `frontend/web/dist`,
-  served by nginx or an equivalent static server with `/api/*` proxying.
+- `AI_PLATFORM_IMAGE` supplies API, Worker, migration, and backend utility roles.
+- `AI_PLATFORM_FRONTEND_IMAGE` is required for the `frontend` service, serving
+  static files with same-origin `/api/*` proxying.
 
-The optional `deploy/ai-platform/docker-compose.frontend.yml` overlay now
-defines the frontend image boundary for Docker-capable validation. It is not a
-compose one-command acceptance gate and does not pass backend, model-gateway, or
-sandbox secrets into the frontend service. The CI image gate validates the
-image can be built and that `ai-platform-build-provenance.json` inside the image
-matches the workflow commit; runtime proxy smoke remains a separate release
-gate.
+There is no separate frontend Compose overlay. The frontend service does not
+receive backend, model-gateway, or sandbox secrets. Postgres, Redis, MinIO, and
+sandbox executor images remain separate infrastructure services.
 
-Postgres, Redis, MinIO, and sandbox executor images remain separate
-infrastructure services. Docker compose one-command startup is not a current
-acceptance gate for this migration.
+Use the immutable package and exact-image procedure in the
+[release runbook](../../docs/operations/release-operations-runbook.md).
+From the extracted, verified package, its supported deployment entry is
+`python3 deploy.py --env-file /absolute/path/to/.env`; run it only with deployment
+authorization and the runbook's preflight and migration requirements satisfied.
+Do not substitute a source-checkout Compose invocation for that procedure.
+
+The CI image gate validates the image can be built and that
+`ai-platform-build-provenance.json` inside the image matches the workflow commit;
+runtime proxy smoke remains a separate release gate. Compose configuration or
+one-command startup alone does not establish release acceptance.

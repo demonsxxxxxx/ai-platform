@@ -1,7 +1,10 @@
 # ADR 0009: Redis Streams SSE v3 Process-Local Live Fan-Out
 
-Status: accepted; implementation included in the v3 hard-cutover change; External
-Acceptance pending
+Status: historical accepted v3 decision; active wire/event-set decisions superseded
+by [ADR 0012](0012-recoverable-agent-kernel-event-stream-v4.md), live fan-out
+architecture superseded by [ADR 0013](0013-redis-stream-only-sse.md).
+The original status recorded implementation in the v3 hard-cutover change with
+External Acceptance pending; it is not evidence of current release acceptance.
 
 Date: 2026-08-17
 
@@ -149,6 +152,16 @@ corruption must fall back to Stream replay or authorized PostgreSQL hydrate and
 cannot change Run truth.
 
 ## Release and rollback
+
+The following v3 rollback decision is retained as history, not a current
+operating procedure. After schema `2026.09.12.1`, restoring an older backend
+image is incompatible. Current cutover and compatibility requirements are in
+[Redis Streams SSE v4 Cutover and Acceptance](../operations/redis-streams-sse-cutover-acceptance.md#release-atomic-rule);
+application recovery is owned by the
+[release runbook](../operations/release-operations-runbook.md#failure-and-recovery).
+Use a schema-compatible corrected package; database restore requires separate
+operator authorization and failure classification. The historical drain and
+previous-image steps below do not authorize binary or database rollback.
 
 Dormant schema, hub, and reducer foundations may be reviewed separately, but no
 intermediate image may select them in production. Producer, reader, terminal,
