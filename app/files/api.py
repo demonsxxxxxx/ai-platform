@@ -16,6 +16,7 @@ from app.files.application.upload_sessions import (
     file_upload_persistence,
 )
 from app.files.application.profile_drive import (
+    ProfileDriveFile,
     ProfileDriveFileImportRequest,
     ProfileDriveTransferError,
     configure_profile_drive_streaming_response,
@@ -179,6 +180,7 @@ async def abort_file_upload_session(conn: Any, **kwargs: Any) -> None:
 __all__ = [
     "MAX_UPLOAD_BYTES",
     "FileUploadPersistence",
+    "ProfileDriveFile",
     "ProfileDriveFileImportRequest",
     "ProfileDriveTransferError",
     "MultipartUploadCompleteRequest",

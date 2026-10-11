@@ -12,9 +12,25 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
 from app.execution.application.model_control_plane import configured_model_control_plane
+from app.execution.application.model_stream_ownership import close_model_stream
 
 
 _logger = logging.getLogger(__name__)
+
+
+class _OwnedModelStreamingResponse(StreamingResponse):
+    def __init__(self, *args, close: Callable[[], None] | None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._close_model_stream = close
+
+    async def __call__(self, scope, receive, send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            if self._close_model_stream is not None:
+                # Synchronous cleanup has no cancellation checkpoint and does
+                # not queue behind AnyIO's possibly occupied reader threads.
+                close_model_stream(self._close_model_stream)
 
 
 PrincipalDependency = Callable[..., Any]
@@ -216,12 +232,18 @@ async def proxy_model_request(
             status_code=503 if str(exc) == "model_proxy_count_tokens_unavailable" else 502,
             detail=str(exc),
         ) from exc
-    return StreamingResponse(
-        upstream.body,
-        status_code=upstream.status,
-        media_type=upstream.content_type.split(";", 1)[0],
-        headers={"cache-control": "no-store"},
-    )
+    try:
+        return _OwnedModelStreamingResponse(
+            upstream.body,
+            close=upstream.close,
+            status_code=upstream.status,
+            media_type=upstream.content_type.split(";", 1)[0],
+            headers={"cache-control": "no-store"},
+        )
+    except BaseException:
+        if upstream.close is not None:
+            close_model_stream(upstream.close)
+        raise
 
 
 def build_model_management_router(

@@ -119,11 +119,14 @@ jobs:
               tests/test_context_worker_snapshot_projection.py
               tests/test_context_worker_attachment_projection.py
               tests/test_context_retrieval_callback.py
+              tests/test_profile_drive_contracts.py
+              tests/test_profile_drive_transfer_lifecycle.py
               tests/test_context_retrieval.py
               tests/test_sandbox_document_capability.py
               tests/test_required_tool_contract.py
               tests/test_intent_router.py
               tests/test_public_answer_stream.py
+              tests/test_control_plane_contracts.py
               tests/test_sandbox_executor_app.py
               tests/test_sandbox_executor_async_dispatch.py
               tests/test_settings.py
@@ -134,6 +137,7 @@ jobs:
               tests/test_opensandbox_live_credential_isolation.py
               tests/test_opensandbox_client_ca.py
               tests/test_runtime_workspace_permissions.py
+              tests/test_workspace_storage_migration.py
               tests/test_sandbox_workspace_manager.py
               tests/test_sandbox_runtime.py
               tests/test_sandbox_runtime_cleanup.py
@@ -159,8 +163,10 @@ jobs:
               tests/test_identity_worker_capability_audit.py
               tests/test_identity_worker_distribution.py
               tests/test_mcp_persistence.py
+              tests/test_mcp_selection_authorization.py
               tests/test_mcp_tool_catalog.py
               tests/test_mcp_client.py
+              tests/test_mcp_routes.py
               tests/test_mcp_authorization_projection.py
               tests/test_mcp_worker_dispatch_authorization.py
               tests/test_runs_admin.py
@@ -183,13 +189,16 @@ jobs:
               tests/test_run_attempt_application.py
               tests/test_run_attempt_repository.py
               tests/test_worker_main.py
+              tests/test_worker_principal_authority.py
               tests/test_db_pool.py
               tests/test_redis_client.py
               tests/test_worker_maintenance.py
               tests/test_data_retention.py
+              tests/test_data_retention_postgres.py
               tests/test_storage.py
               tests/test_sandbox_cleanup_postgres.py
               tests/test_provider_empty_start_postgres.py
+              tests/test_chat_admission_postgres.py
               tests/test_s0a_schema_postgres.py::test_expired_terminal_receipt_survives_cleanup_and_historical_release
               tests/test_worker_heartbeat_postgres_redis_integration.py
               tests/test_sse_runtime_cutover.py
@@ -216,6 +225,8 @@ jobs:
             test_files: >-
               tests/test_model_management.py
               tests/test_model_upstream_stream.py
+              tests/test_model_stream_ownership.py
+              tests/test_model_discovery_security.py
               tests/test_lambchat_frontend_compat.py::test_lambchat_model_catalog_is_empty_without_governed_connection
               tests/test_lambchat_frontend_compat.py::test_lambchat_governed_model_catalog_preserves_raw_ids
               tests/test_execution_spec.py::test_execution_spec_preserves_raw_upstream_model_identity
@@ -233,6 +244,10 @@ jobs:
               tests/test_auth_principal.py
               tests/test_artifact_permissions.py
               tests/test_two_user_artifact_isolation.py
+              tests/test_auth_routes.py
+              tests/test_auth_session_operations.py
+              tests/test_principal_authority.py
+              tests/test_principal_routes.py
               tests/test_chat_selected_skill_routing.py
               tests/test_claude_agent_events.py
               tests/test_public_event_enum_types.py
@@ -454,6 +469,7 @@ jobs:
               tests/test_admin_skills.py \
               tests/test_skill_run_admission.py \
               tests/test_chat_routes.py \
+              tests/test_chat_submission_failures.py \
               tests/test_skills_marketplace_routes.py \
               -vv \
               --tb=short \

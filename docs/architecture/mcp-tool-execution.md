@@ -22,6 +22,17 @@ Mandatory per-call checks stay in PreToolUse, including when can_use_tool is
 skipped by SDK approval rules. The installed CLI normalizes server/tool names
 by replacing characters outside `[a-zA-Z0-9_-]` with `_`.
 
+## Principal credential lifetime
+
+The principal JWT store holds one encrypted company credential per tenant/user;
+its key and authenticated envelope preserve that binding. `put` sets Redis TTL
+from the credential expiration. `get` validates the captured credential and
+returns the existing expired-credential error when its deadline has passed.
+Redis TTL owns reclamation: an expired read must not delete the shared key,
+because a concurrent login may already have replaced it with a valid credential.
+This does not change browser authentication lifetime, logout, or the existing
+last-write-wins credential replacement policy.
+
 ## Implementation
 
 1. Keep `server::raw_tool` references and canonical platform subject identities
@@ -194,3 +205,26 @@ and absence of secrets in public events. That stage remains unclaimed until run.
 - Update the owning MCP section in `docs/frontend/skills-marketplace-public-api.md`
   and link this execution contract there. Inventory affected selectors and
   configuration references with targeted searches before completion.
+
+
+## Selection policy ownership
+
+Chat selected/available admission and source-identity replay share the MCP
+application selection use case. Bootstrap only composes the PostgreSQL registry
+lookup and Identity distribution adapters. Runs consumers use MCP's public API;
+the Server-qualified lookup SQL has one owner in `infrastructure/postgres.py`.
+The retired legacy catalog list and duplicate Chat access repository policy are
+not alternative admission paths. Retained builtin tool-policy SQL remains used
+by its existing persistence adapter.
+
+Replay still checks source-persisted roles/department with empty permissions,
+then queue preparation checks the current effective principal; Worker dispatch
+still independently checks its current authority. These boundaries must not be
+collapsed. Selection normalizes roles as before, preserves explicit `is_admin`
+and permissions, and never recomputes admin status from roles.
+
+Compatibility wrappers preserve existing errors: corrupt distribution scope
+remains a conflict for Chat selected/available (409) and an authorization denial
+for source replay (403). Available mode filters ordinary unavailable tools, but
+does not swallow corrupt authority. Duplicate-selection audit identity remains
+`mcp_tool` for Chat and the duplicated tool reference for source replay.
