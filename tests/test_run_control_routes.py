@@ -1,3 +1,5 @@
+from app.bootstrap.sandbox_cleanup import build_sandbox_runtime_cleanup
+
 import app.identity.infrastructure.audit_postgres as _owner_identity_infrastructure_audit_postgres
 import app.runs.infrastructure.control_operations_postgres as _owner_runs_infrastructure_control_operations_postgres
 import app.runs.infrastructure.creation_postgres as _owner_runs_infrastructure_creation_postgres
@@ -19,12 +21,13 @@ import app.runs.infrastructure.replay_postgres as replay_persistence
 from app.main import create_app
 from app.queue import QueueAdmissionMetadata
 from app.platform.postgres.errors import RepositoryAuthorizationError, RepositoryConflictError
-from app.routes import sandbox_runtime_cleanup
 from app.runs.api import RunAttemptLifecycleService
 from app.runs.infrastructure import postgres as run_attempt_persistence
 from app.runs.application.cancellation import RunCancellationUseCase
 from app.runs.infrastructure.postgres import PostgresRunCancellationPersistence
 from app.skills.pinning import build_skill_manifest_ref
+
+sandbox_runtime_cleanup = build_sandbox_runtime_cleanup()
 
 
 class _RouteCancellationReceipt:
@@ -4643,7 +4646,7 @@ def test_cancel_run_stops_active_sandbox_runtime_before_db_release(monkeypatch):
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr(route_cancellation_handlers, "owner", fake_request_run_cancel)
     monkeypatch.setattr(
-        "app.routes.runs.release_stopped_sandbox_leases_for_cancel",
+        "app.routes.runs._sandbox_cleanup.release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
         raising=False,
     )
@@ -4721,7 +4724,7 @@ def test_cancel_run_ignores_user_controlled_sandbox_container_payload(monkeypatc
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr(route_cancellation_handlers, "owner", fake_request_run_cancel)
     monkeypatch.setattr(
-        "app.routes.runs.release_stopped_sandbox_leases_for_cancel",
+        "app.routes.runs._sandbox_cleanup.release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
         raising=False,
     )
@@ -4772,7 +4775,7 @@ def test_cancel_run_uses_platform_verified_runtime_handle_not_user_payload(monke
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr(route_cancellation_handlers, "owner", fake_request_run_cancel)
     monkeypatch.setattr(
-        "app.routes.runs.release_stopped_sandbox_leases_for_cancel",
+        "app.routes.runs._sandbox_cleanup.release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
         raising=False,
     )
@@ -4827,7 +4830,7 @@ def test_cancel_run_rejects_active_lease_without_platform_verified_runtime_handl
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr(route_cancellation_handlers, "owner", fake_request_run_cancel)
     monkeypatch.setattr(
-        "app.routes.runs.release_stopped_sandbox_leases_for_cancel",
+        "app.routes.runs._sandbox_cleanup.release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
         raising=False,
     )
@@ -4878,7 +4881,7 @@ def test_cancel_run_surfaces_sandbox_runtime_stop_failure(monkeypatch):
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr(route_cancellation_handlers, "owner", fake_request_run_cancel)
     monkeypatch.setattr(
-        "app.routes.runs.release_stopped_sandbox_leases_for_cancel",
+        "app.routes.runs._sandbox_cleanup.release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
         raising=False,
     )
@@ -4910,7 +4913,7 @@ def test_cancel_run_surfaces_unsupported_sandbox_provider_without_db_release(mon
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr(route_cancellation_handlers, "owner", fake_request_run_cancel)
     monkeypatch.setattr(
-        "app.routes.runs.release_stopped_sandbox_leases_for_cancel",
+        "app.routes.runs._sandbox_cleanup.release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
         raising=False,
     )
@@ -4950,7 +4953,7 @@ def test_cancel_run_releases_successfully_stopped_leases_before_reporting_mixed_
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr(route_cancellation_handlers, "owner", fake_request_run_cancel)
     monkeypatch.setattr(
-        "app.routes.runs.release_stopped_sandbox_leases_for_cancel",
+        "app.routes.runs._sandbox_cleanup.release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
         raising=False,
     )
@@ -5040,7 +5043,7 @@ def test_admin_cancel_run_stops_active_sandbox_runtime_before_db_release(monkeyp
     monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
     monkeypatch.setattr(route_cancellation_handlers, "admin", fake_request_admin_run_cancel)
     monkeypatch.setattr(
-        "app.routes.admin_runs.release_stopped_sandbox_leases_for_cancel",
+        "app.routes.admin_runs._sandbox_cleanup.release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
         raising=False,
     )
@@ -5095,7 +5098,7 @@ def test_admin_cancel_run_surfaces_sandbox_runtime_stop_failure(monkeypatch):
     monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
     monkeypatch.setattr(route_cancellation_handlers, "admin", fake_request_admin_run_cancel)
     monkeypatch.setattr(
-        "app.routes.admin_runs.release_stopped_sandbox_leases_for_cancel",
+        "app.routes.admin_runs._sandbox_cleanup.release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
         raising=False,
     )
@@ -5135,7 +5138,7 @@ def test_admin_cancel_run_surfaces_cleanup_persistence_outage(monkeypatch):
     monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
     monkeypatch.setattr(route_cancellation_handlers, "admin", fake_request_admin_run_cancel)
     monkeypatch.setattr(
-        "app.routes.admin_runs.release_stopped_sandbox_leases_for_cancel",
+        "app.routes.admin_runs._sandbox_cleanup.release_stopped_sandbox_leases_for_cancel",
         lambda *args, **kwargs: None,
         raising=False,
     )
@@ -5181,7 +5184,7 @@ def test_admin_cancel_run_releases_successfully_stopped_leases_before_reporting_
     monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
     monkeypatch.setattr(route_cancellation_handlers, "admin", fake_request_admin_run_cancel)
     monkeypatch.setattr(
-        "app.routes.admin_runs.release_stopped_sandbox_leases_for_cancel",
+        "app.routes.admin_runs._sandbox_cleanup.release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
         raising=False,
     )

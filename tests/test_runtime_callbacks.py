@@ -1,3 +1,6 @@
+from app.bootstrap.sandbox_cleanup import build_sandbox_runtime_cleanup
+
+from tests.support.terminal_timing import terminal_stage_logs as terminal_stage_logs
 import app.runs.infrastructure.postgres as _owner_runs_infrastructure_postgres
 import app.sandbox.infrastructure.leases_postgres as _owner_sandbox_infrastructure_leases_postgres
 import app.streaming.infrastructure.run_events_postgres as _owner_streaming_infrastructure_run_events_postgres
@@ -22,6 +25,8 @@ from app.runtime.sandbox.contracts import (
     ExecutorCallbackEvent,
 )
 from app.streaming.infrastructure import v4 as streaming_v4
+
+sandbox_runtime_cleanup = build_sandbox_runtime_cleanup()
 
 
 class CallbackEventPersistence:
@@ -620,7 +625,12 @@ def test_executor_callback_accepts_valid_event_and_records_callback(monkeypatch)
     assert recorded[0].callback_token_id == "cbt:run-a:attempt-a"
 
 
-def test_executor_callback_persists_terminal_receipt_without_public_terminal_event(monkeypatch):
+@pytest.mark.usefixtures("terminal_stage_logs")
+def test_executor_callback_persists_terminal_receipt_without_public_terminal_event(monkeypatch, caplog):
+    from app.platform import tracing
+    now = [10.0]
+    monkeypatch.setattr(tracing, "monotonic", lambda: now[0])
+    caplog.set_level("INFO")
     patch_callback_settings(monkeypatch, callback_settings("secret"))
     calls = []
 
@@ -630,6 +640,7 @@ def test_executor_callback_persists_terminal_receipt_without_public_terminal_eve
             return object()
 
         async def __aexit__(self, exc_type, exc, traceback):
+            now[0] += 1.25
             calls.append("transaction_exit")
             return None
 
@@ -648,6 +659,7 @@ def test_executor_callback_persists_terminal_receipt_without_public_terminal_eve
     signal_calls = []
 
     async def fake_publish_executor_terminal_signal():
+        now[0] += 0.25
         signal_calls.append("wake")
         calls.append("signal")
 
@@ -662,7 +674,7 @@ def test_executor_callback_persists_terminal_receipt_without_public_terminal_eve
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
     monkeypatch.setattr(_owner_runs_infrastructure_postgres, 'get_run_identity', fake_get_run_identity)
     monkeypatch.setattr(
-        runtime_callbacks,
+        runtime_callbacks._sandbox_cleanup,
         "container_lease_from_persisted_row",
         lambda _row: pytest.fail("terminal callback must not reconstruct a lease"),
     )
@@ -700,6 +712,14 @@ def test_executor_callback_persists_terminal_receipt_without_public_terminal_eve
     assert signal_calls == ["wake"]
     assert calls.index("transaction_exit") < calls.index("signal")
 
+    records = [record for record in caplog.records if record.msg == "run_terminal_stage"]
+    assert [record.terminal_phase for record in records] == [
+        "terminal_receipt_commit", "terminal_receipt_signal", "terminal_receipt_publication",
+    ]
+    assert [record.terminal_phase_duration_ms for record in records] == [1250, 250, 0]
+    assert all(record.terminal_phase_outcome == "ok" for record in records)
+    caplog.clear()
+
     async def unavailable_signal():
         raise runtime_callbacks.ExecutorSignalUnavailable("redis unavailable")
 
@@ -719,6 +739,10 @@ def test_executor_callback_persists_terminal_receipt_without_public_terminal_eve
         ),
     )
     assert retry.status_code == 200
+
+    retry_records = [record for record in caplog.records if record.msg == "run_terminal_stage"]
+    assert [record.terminal_phase_outcome for record in retry_records] == ["ok", "error", "ok"]
+    assert "redis unavailable" not in repr([vars(record) for record in retry_records])
 
 
 def test_failed_executor_callback_persists_receipt_for_reconciliation(monkeypatch):
@@ -1631,7 +1655,7 @@ def test_heartbeat_callback_renews_lease_with_settings_ttl(monkeypatch):
         fake_heartbeat,
     )
     monkeypatch.setattr(
-        runtime_callbacks,
+        runtime_callbacks._sandbox_cleanup,
         "container_lease_from_persisted_row",
         lambda _row: pytest.fail("ordinary callback must not renew the OpenSandbox lifetime"),
     )
@@ -1695,7 +1719,7 @@ def test_inactive_heartbeat_does_not_reconstruct_or_renew(monkeypatch):
         "record_sandbox_executor_heartbeat",
         fake_heartbeat,
     )
-    monkeypatch.setattr(runtime_callbacks, "container_lease_from_persisted_row", unexpected_reconstruction)
+    monkeypatch.setattr(runtime_callbacks._sandbox_cleanup, "container_lease_from_persisted_row", unexpected_reconstruction)
     monkeypatch.setattr(runtime_callbacks, "create_container_provider", unexpected_provider)
 
     response = TestClient(create_app()).post(
@@ -1713,7 +1737,7 @@ def test_inactive_heartbeat_does_not_reconstruct_or_renew(monkeypatch):
 
 def test_opensandbox_callback_renews_without_business_lock_then_commits_fenced_receipt(monkeypatch):
     from app.runtime.sandbox.opensandbox_policy import internal_test_opensandbox_lease_labels
-    from app.routes.sandbox_runtime_cleanup import container_lease_from_persisted_row
+    container_lease_from_persisted_row = sandbox_runtime_cleanup.container_lease_from_persisted_row
 
     settings = callback_settings("secret", lease_ttl_seconds=731)
     settings.deployment_environment = "test"
@@ -1725,7 +1749,7 @@ def test_opensandbox_callback_renews_without_business_lock_then_commits_fenced_r
     settings.opensandbox_executor_image_digest = "sha256:" + "a" * 64
     settings.sandbox_runtime_subject = "direct-opensandbox"
     patch_callback_settings(monkeypatch, settings)
-    monkeypatch.setattr("app.routes.sandbox_runtime_cleanup.get_settings", lambda: settings)
+    monkeypatch.setattr("app.bootstrap.sandbox_cleanup.get_settings", lambda: settings)
     order = []
     transaction_state = {"active": False}
     labels = internal_test_opensandbox_lease_labels(
@@ -1910,7 +1934,7 @@ def test_opensandbox_callback_renewal_failure_leaves_callback_unpersisted(monkey
         fake_heartbeat,
     )
     monkeypatch.setattr(
-        runtime_callbacks,
+        runtime_callbacks._sandbox_cleanup,
         "container_lease_from_persisted_row",
         lambda row: SimpleNamespace(provider="opensandbox"),
     )
@@ -1999,7 +2023,7 @@ async def test_opensandbox_old_renewal_receipt_is_rejected_after_owner_or_termin
         "list_current_sandbox_runtime_leases_for_attempt",
         exact_lease,
     )
-    monkeypatch.setattr(runtime_callbacks, "container_lease_from_persisted_row", lambda _row: SimpleNamespace(provider="opensandbox"))
+    monkeypatch.setattr(runtime_callbacks._sandbox_cleanup, "container_lease_from_persisted_row", lambda _row: SimpleNamespace(provider="opensandbox"))
     monkeypatch.setattr(runtime_callbacks, "create_container_provider", lambda _name: object())
     monkeypatch.setattr(runtime_callbacks, "renew_opensandbox_lifetime", fake_renew)
     monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, "append_event", unexpected_write)

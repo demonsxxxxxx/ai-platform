@@ -1,3 +1,5 @@
+from app.bootstrap.sandbox_cleanup import build_sandbox_runtime_cleanup
+
 import asyncio
 import hashlib
 import hmac
@@ -26,6 +28,8 @@ from app.validation import (
     MAX_COMPOSED_EXECUTOR_SYSTEM_PROMPT_CHARS,
     MAX_SERVER_OWNED_SYSTEM_PROMPT_CHARS,
 )
+
+sandbox_runtime_cleanup = build_sandbox_runtime_cleanup()
 
 
 def derived_callback_token(secret: str, token_id: str = "cbt_run-a") -> str:
@@ -1642,7 +1646,7 @@ async def test_runtime_default_db_record_persists_trusted_opensandbox_runtime_ha
 
 @pytest.mark.asyncio
 async def test_internal_test_bridge_lease_persists_exact_cleanup_identity(tmp_path, monkeypatch):
-    from app.routes.sandbox_runtime_cleanup import container_lease_from_persisted_row
+    container_lease_from_persisted_row = sandbox_runtime_cleanup.container_lease_from_persisted_row
     from app.runtime.sandbox.opensandbox_policy import internal_test_opensandbox_lease_labels
 
     runtime_request = request(sandbox_mode="ephemeral", browser_enabled=False)
@@ -1708,7 +1712,7 @@ async def test_internal_test_bridge_lease_persists_exact_cleanup_identity(tmp_pa
     row = {**calls[0], "id": "bridge-lease-a", "runtime_handle_verified_at": "2026-10-08T00:00:00Z", "lease_payload_json": payload}
     restored = container_lease_from_persisted_row(row, allow_historical_internal_test_cleanup=True)
     assert restored is not None and restored.labels["ai-platform.security_profile"] == "internal-test"
-    monkeypatch.setattr("app.routes.sandbox_runtime_cleanup.get_settings", lambda: settings)
+    monkeypatch.setattr("app.bootstrap.sandbox_cleanup.get_settings", lambda: settings)
     assert container_lease_from_persisted_row(row) is not None
     settings.sandbox_runtime_subject = "changed-runtime"
     assert container_lease_from_persisted_row(row) is None

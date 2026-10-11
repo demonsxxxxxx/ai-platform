@@ -32,8 +32,6 @@ def allow_local_peer(monkeypatch, url):
         assert endpoint in {url + "/mcp", url + "/sse"}
         return _ValidatedDiscoveryTarget(endpoint, endpoint, urlsplit(url).netloc, "127.0.0.1")
     monkeypatch.setattr(mcp_client, "_validated_discovery_target", target)
-    from app.mcp.infrastructure import catalog
-    monkeypatch.setattr(catalog, "_validated_discovery_target", target)
 
 
 @pytest.mark.parametrize("pairs", [

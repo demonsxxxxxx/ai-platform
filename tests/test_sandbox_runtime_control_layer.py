@@ -1,3 +1,5 @@
+from app.bootstrap.sandbox_cleanup import build_sandbox_runtime_cleanup
+
 import app.identity.infrastructure.audit_postgres as _owner_identity_infrastructure_audit_postgres
 import app.runs.infrastructure.postgres as _owner_runs_infrastructure_postgres
 import app.sandbox.infrastructure.leases_postgres as _owner_sandbox_infrastructure_leases_postgres
@@ -10,14 +12,14 @@ from fastapi import HTTPException
 from app.auth import AuthPrincipal
 from app.models import SandboxLeaseReleaseRequest
 from app.routes import admin_runtime, runtime_callbacks, sandbox_leases
-from app.routes.sandbox_runtime_cleanup import (
-    SandboxRuntimeCleanupError,
-    stop_sandbox_leases,
-)
+from app.sandbox.api import SandboxRuntimeCleanupError
 from app.runtime.kernel_contracts import AgentEvent
 from app.runtime.sandbox import executor_app
 from app.runtime.sandbox.contracts import ExecutorCallbackEvent, StopResult
 from app.runtime.sandbox.executor_app import _CallbackBatchIdFactory
+
+sandbox_runtime_cleanup = build_sandbox_runtime_cleanup()
+stop_sandbox_leases = sandbox_runtime_cleanup.stop_sandbox_leases
 
 
 class _FakeTransaction:
@@ -256,7 +258,7 @@ async def test_explicit_release_binds_failure_to_lease_and_surfaces_audit_outage
 
     monkeypatch.setattr(sandbox_leases, "transaction", _FakeTransaction)
     monkeypatch.setattr(_owner_sandbox_infrastructure_leases_postgres, 'get_sandbox_lease', get_lease)
-    monkeypatch.setattr(sandbox_leases, "stop_sandbox_leases", fail_stop)
+    monkeypatch.setattr(sandbox_leases._sandbox_cleanup, "stop_sandbox_leases", fail_stop)
     monkeypatch.setattr(
         _owner_sandbox_infrastructure_leases_postgres,
         'record_sandbox_runtime_cleanup_outcome',

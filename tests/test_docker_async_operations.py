@@ -202,15 +202,34 @@ async def test_cancellation_between_result_delivery_and_acceptance_retains_clean
     loop = asyncio.get_running_loop()
     cleanup_started, cleanup_release, cleanup_finished = threading.Event(), threading.Event(), threading.Event()
     tracked = []
+    result_waiters, observed_delivery = [], []
+    wrap_future = asyncio.wrap_future
+
+    def cancel_after_delivery():
+        waiter = result_waiters[0]
+        observed_delivery.append((
+            waiter.done(), waiter.result() if waiter.done() else None, task.cancel(),
+        ))
 
     class CancelOnDelivery(operations.Future):
         def set_result(self, value):
-            super().set_result(value)
-            # The asyncio result propagation callback is queued, but the
-            # waiting caller cannot accept it before this queued cancellation.
-            loop.call_soon_threadsafe(task.cancel)
+            def deliver():
+                super(CancelOnDelivery, self).set_result(value)
+                # Queue both from the caller loop: result propagation runs
+                # before cancellation, while the shielded caller cannot yet
+                # accept it. The worker cannot race those two queue writes.
+                loop.call_soon(cancel_after_delivery)
+
+            loop.call_soon_threadsafe(deliver)
+
+    def capture_result_waiter(future, *args, **kwargs):
+        waiter = wrap_future(future, *args, **kwargs)
+        if isinstance(future, CancelOnDelivery):
+            result_waiters.append(waiter)
+        return waiter
 
     monkeypatch.setattr(operations, "Future", CancelOnDelivery)
+    monkeypatch.setattr(operations.asyncio, "wrap_future", capture_result_waiter)
 
     async def create():
         tracked.append("lease")
@@ -228,6 +247,7 @@ async def test_cancellation_between_result_delivery_and_acceptance_retains_clean
     try:
         with pytest.raises(asyncio.CancelledError):
             await task
+        assert observed_delivery == [(True, "lease", True)]
         assert cleanup_started.is_set()
         assert tracked == ["lease"]
         with pytest.raises(DockerOperationUnavailable, match="already in progress"):

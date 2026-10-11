@@ -52,6 +52,7 @@ from app.routes.runs import router as runs_router
 from app.routes.sandbox_leases import router as sandbox_leases_router
 from app.routes.skills_marketplace import router as skills_marketplace_router
 from app.routes.workbench_projections import router as workbench_projections_router
+from app.platform.tracing import configure_terminal_stage_logging
 from app.settings import get_settings
 
 
@@ -89,6 +90,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 def create_app() -> FastAPI:
+    configure_terminal_stage_logging()
     configure_file_upload_services()
     configure_file_preview_services()
     configure_context_services()

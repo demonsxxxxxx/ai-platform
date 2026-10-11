@@ -1,3 +1,4 @@
+from tests.support.terminal_timing import terminal_stage_logs as terminal_stage_logs
 import asyncio
 import functools
 import gc
@@ -4699,7 +4700,12 @@ async def test_message_delta_buffer_cancel_is_bounded(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_supervisor_heartbeat_does_not_block_deltas_and_drains_before_terminal(tmp_path):
+@pytest.mark.usefixtures("terminal_stage_logs")
+async def test_supervisor_heartbeat_does_not_block_deltas_and_drains_before_terminal(tmp_path, monkeypatch, caplog):
+    from app.platform import tracing
+    now = [10.0]
+    monkeypatch.setattr(tracing, "monotonic", lambda: now[0])
+    caplog.set_level(logging.INFO)
     heartbeat_started = asyncio.Event()
     heartbeat_release = asyncio.Event()
     heartbeat_acknowledged = asyncio.Event()
@@ -4717,12 +4723,14 @@ async def test_supervisor_heartbeat_does_not_block_deltas_and_drains_before_term
         if isinstance(state_patch, dict) and state_patch.get("executor_heartbeat") is True:
             heartbeat_started.set()
             await heartbeat_release.wait()
+            now[0] += 2.0
             heartbeat_acknowledged.set()
         if any(event.get("type") == "message.delta" for event in payload.get("events", [])):
             delta_delivered.set()
         if payload.get("terminal_result"):
             terminal_started.set()
             terminal_after_heartbeat_ack.append(heartbeat_acknowledged.is_set())
+            now[0] += 0.5
         return callback_ack(payload)
 
     app = create_executor_app(
@@ -4751,9 +4759,27 @@ async def test_supervisor_heartbeat_does_not_block_deltas_and_drains_before_term
         heartbeat_release.set()
         await asyncio.wait_for(terminal_started.wait(), timeout=1)
         assert terminal_after_heartbeat_ack == [True]
+        # Sender entry precedes the owned callback task's acknowledgement.
+        # Join its observation before lifespan shutdown can cancel that wait.
+        async with asyncio.timeout(1):
+            while not any(
+                getattr(record, "terminal_phase", None) == "executor_terminal_callback_ack"
+                for record in caplog.records
+            ):
+                await asyncio.sleep(0)
     finally:
         heartbeat_release.set()
         await asyncio.wait_for(lifespan.__aexit__(None, None, None), timeout=1)
+
+    records = [record for record in caplog.records if record.msg == "run_terminal_stage"]
+    assert [record.terminal_phase for record in records] == [
+        "executor_heartbeat_drain", "executor_public_stream_drain", "executor_terminal_callback_ack",
+    ]
+    assert [record.terminal_phase_duration_ms for record in records] == [2000, 0, 500]
+    assert all(record.terminal_phase_outcome == "ok" for record in records)
+    assert all(record.terminal_status == "succeeded" for record in records)
+    assert all(record.run_id == "run-a" and record.attempt_id == "qat-attempt-a" for record in records)
+    assert "after heartbeat" not in repr([vars(record) for record in records])
 
 
 

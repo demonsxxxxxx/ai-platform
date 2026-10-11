@@ -54,11 +54,8 @@ from app.executors.registry import AdapterRegistry
 from app.executor_reconciler import run_executor_terminal_reconciler
 from app.runtime.sandbox.container_provider import create_container_provider
 from app.storage import ObjectStorage, run_storage_io
-from app.routes.sandbox_runtime_cleanup import (
-    SandboxRuntimeCleanupError,
-    cleanup_expired_sandbox_leases as _cleanup_expired_sandbox_lease_records,
-    cleanup_expired_sandbox_runtime_leases,
-)
+from app.bootstrap.sandbox_cleanup import build_sandbox_runtime_cleanup
+from app.sandbox.api import SandboxRuntimeCleanupError
 from app.runs.api import (
     RunAttemptLifecycleService,
     RunLifecycleService,
@@ -69,6 +66,7 @@ from app.sandbox.api import (
     exception_chain_from_error,
 )
 from app.schema_migrations import require_schema_current
+from app.platform.tracing import configure_terminal_stage_logging
 from app.settings import get_settings
 from app.runs.api import cancel_run_with_v4, fail_run_with_v4, finish_run_terminalization
 from app.worker import WorkerOutcome, parse_leased_queue_envelope, process_run_payload
@@ -76,6 +74,8 @@ from app.streaming.api import (
     WorkerV4Capabilities,
     publish_run_event,
 )
+
+_sandbox_cleanup = build_sandbox_runtime_cleanup()
 
 
 _next_memory_cleanup_at = 0.0
@@ -316,13 +316,13 @@ def _durable_queue_lease(
 
 async def cleanup_expired_sandbox_leases() -> None:
     try:
-        await cleanup_expired_sandbox_runtime_leases(
+        await _sandbox_cleanup.cleanup_expired_sandbox_runtime_leases(
             provider_factory=create_container_provider,
         )
     except SandboxRuntimeCleanupError:
         logger.exception("Sandbox runtime cleanup maintenance failed")
     async with transaction() as conn:
-        await _cleanup_expired_sandbox_lease_records(conn)
+        await _sandbox_cleanup.cleanup_expired_sandbox_leases(conn)
 
 
 async def cleanup_expired_memory_records_for_worker(settings: object | None = None, *, now: float | None = None) -> list[dict]:
@@ -1285,6 +1285,7 @@ async def run_once_and_close(timeout_seconds: int) -> WorkerOutcome:
 
 
 def main() -> None:
+    configure_terminal_stage_logging()
     parser = argparse.ArgumentParser(description="AI Platform worker")
     parser.add_argument("--once", action="store_true", help="Process a single leased run then exit")
     parser.add_argument("--timeout", type=int, default=5, help="Queue lease timeout in seconds")

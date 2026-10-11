@@ -73,8 +73,24 @@ by replacing characters outside `[a-zA-Z0-9_-]` with `_`.
 4. Support Streamable HTTP and legacy SSE explicitly in discovery and execution.
    Preserve endpoint validation, DNS pinning, same-origin SSE message endpoints,
    redirect rejection, reserved-header protection, and bounded responses.
-   HTTP discovery applies one total deadline across DNS resolution, initialization,
-   and all catalog pages, in addition to per-request, response-size and page limits.
+   Both discovery transports and selected execution use the installed official
+   MCP `ClientSession` through `mcp.infrastructure.client`; the platform does not
+   implement a second JSON-RPC handshake, response parser or session protocol.
+   SDK-supported protocol negotiation, request IDs and SSE framing stay SDK-owned.
+   Platform-owned strict result validation rejects coercible annotation values
+   (for example a string or number standing in for `readOnlyHint`), while valid
+   optional and extension annotations remain supported. SDK wire errors and
+   response guard failures fail closed, including errors on optional background
+   streams; they cannot authorize a retry to another destination or accept a
+   later catalog result after malformed input.
+   Discovery applies one total deadline across DNS resolution, initialization,
+   all catalog pages and local cleanup, in addition to per-request and page limits.
+   HTTP discovery retains the whole-response byte limit, including SSE responses;
+   long-lived SSE sessions retain per-event limits. The injected HTTP client pins
+   every SDK request, including optional Streamable HTTP GETs, to the validated
+   address and original Host/SNI. A server may reject the optional GET with 405.
+   Discovery closes local resources without sending remote session DELETE;
+   selected execution retains its existing SDK session-termination behavior.
    Deadline expiry retains the safe transport-failure category; caller cancellation
    still propagates and closes the owned client/response.
    New or updated `sandbox`/command Server configurations are rejected: the
@@ -91,6 +107,7 @@ by replacing characters outside `[a-zA-Z0-9_-]` with `_`.
 Run these from the repository root through the governed local stage runner:
 
 ```text
+python tools/run_test_stage.py --stage mcp-discovery-regression --timeout-seconds 60 -- tests/test_mcp_tool_catalog.py tests/test_mcp_client.py
 python tools/run_test_stage.py --stage mcp-boundary-acceptance --timeout-seconds 60 -- tests/test_mcp_client.py tests/test_claude_mcp_registration.py tests/test_claude_agent_events.py tests/test_claude_agent_sdk_installed_contract.py
 python tools/run_test_stage.py --stage mcp-runner-regression --timeout-seconds 60 -- tests/test_claude_agent_sdk_runner.py
 python tools/run_test_stage.py --stage mcp-owner-regression --timeout-seconds 60 -- tests/test_claude_agent_worker_adapter.py::test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_subjects tests/test_claude_agent_worker_adapter.py::test_external_mcp_available_or_exactly_invoked_succeeds_in_sandbox tests/test_sandbox_executor_app.py::test_executor_binds_sdk_mcp_evidence_and_emits_only_safe_capability_event tests/test_sandbox_executor_app.py::test_executor_rejects_unknown_capability_identity_without_inference
@@ -155,6 +172,13 @@ and absence of secrets in public events. That stage remains unclaimed until run.
   incoming SDK boundary. Canonical persisted/public identities remain compatible.
 - Replace HTTP-only discovery dispatch with explicit transport dispatch; keep
   supported Streamable HTTP behavior and its endpoint controls.
+- Retire manual HTTP discovery initialization, JSON-RPC extraction, SSE `data:`
+  parsing and separate page walker. Both bootstrap discovery entries now use the
+  client-owned adapter and the same guarded SDK transport as execution. Remove
+  the unused hash-only discovery projection and endpoint-only wrapper; no
+  compatibility aliases remain. Synthetic wire tests exercise the real SDK
+  initialize/list-tools path, strict annotations, byte limits, credentials,
+  pagination and cancellation instead of accepting incomplete RPC envelopes.
 - Reject unsupported command/Sandbox writes and remove command-entry UI. Retain
   existing rows for administrative inspection and explicit transport migration.
 - Replace tests that assume selected tools are raw remote SDK configs with

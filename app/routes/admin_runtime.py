@@ -10,11 +10,8 @@ from app.identity.infrastructure import audit_postgres as identity_audit
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 from app.queue import get_queue_insight, get_queue_status
 from app.routes.sandbox_leases import lease_response
-from app.routes.sandbox_runtime_cleanup import (
-    SandboxRuntimeCleanupError,
-    cleanup_expired_sandbox_leases,
-    cleanup_expired_sandbox_runtime_leases,
-)
+from app.bootstrap.sandbox_cleanup import build_sandbox_runtime_cleanup
+from app.sandbox.api import SandboxRuntimeCleanupError
 from app.runs.infrastructure import admin_queries_postgres as runs_admin_queries
 from app.runtime.sandbox.container_provider import (
     DockerPermissionDeniedError,
@@ -23,6 +20,8 @@ from app.runtime.sandbox.container_provider import (
 )
 from app.sandbox.infrastructure import leases_postgres as sandbox_leases
 from app.settings import get_settings
+
+_sandbox_cleanup = build_sandbox_runtime_cleanup()
 
 router = APIRouter()
 
@@ -589,7 +588,7 @@ async def admin_runtime_containers(
     provider = create_container_provider()
     await _cleanup_provider_orphans(provider, principal)
     try:
-        await cleanup_expired_sandbox_runtime_leases(
+        await _sandbox_cleanup.cleanup_expired_sandbox_runtime_leases(
             tenant_id=principal.tenant_id,
             provider_factory=create_container_provider,
         )
@@ -597,7 +596,7 @@ async def admin_runtime_containers(
         if not _only_placeholder_cleanup_failures(exc):
             raise HTTPException(status_code=500, detail="sandbox_runtime_cleanup_failed") from exc
     async with transaction() as conn:
-        await cleanup_expired_sandbox_leases(conn, tenant_id=principal.tenant_id)
+        await _sandbox_cleanup.cleanup_expired_sandbox_leases(conn, tenant_id=principal.tenant_id)
         leases = await sandbox_leases.list_sandbox_leases(conn, tenant_id=principal.tenant_id, status="active")
         lease_history = (
             await sandbox_leases.list_sandbox_leases(conn, tenant_id=principal.tenant_id, status=None)
@@ -645,7 +644,7 @@ async def admin_runtime_overview(
     if include_maintenance_cleanup:
         await _cleanup_provider_orphans(provider, principal)
         try:
-            await cleanup_expired_sandbox_runtime_leases(
+            await _sandbox_cleanup.cleanup_expired_sandbox_runtime_leases(
                 tenant_id=principal.tenant_id,
                 provider_factory=create_container_provider,
             )
@@ -655,7 +654,7 @@ async def admin_runtime_overview(
 
     async with transaction() as conn:
         if include_maintenance_cleanup:
-            await cleanup_expired_sandbox_leases(conn, tenant_id=principal.tenant_id)
+            await _sandbox_cleanup.cleanup_expired_sandbox_leases(conn, tenant_id=principal.tenant_id)
         leases = await sandbox_leases.list_sandbox_leases(conn, tenant_id=principal.tenant_id, status="active")
         lease_history = await sandbox_leases.list_sandbox_leases(conn, tenant_id=principal.tenant_id, status=None)
 

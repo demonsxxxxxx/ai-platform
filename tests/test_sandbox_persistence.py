@@ -1,3 +1,5 @@
+from app.bootstrap.sandbox_cleanup import build_sandbox_runtime_cleanup
+
 import asyncio
 from datetime import datetime, timedelta, timezone
 import uuid
@@ -6,10 +8,11 @@ from psycopg import sql as psycopg_sql
 from psycopg.rows import dict_row
 import pytest
 import app.streaming.infrastructure.run_events_postgres as _repo_owner_app_streaming_infrastructure_run_events_postgres
-from app.routes import sandbox_runtime_cleanup
 from app.platform.postgres.sandbox_leases import SandboxExecutorTerminalConflictError, SandboxLeaseReleaseScopeMismatchError, create_sandbox_lease, fence_sandbox_lease_release, list_expired_active_sandbox_leases, record_opensandbox_renewal_receipt, record_sandbox_executor_heartbeat, record_sandbox_executor_terminal
 from app.sandbox.infrastructure.leases_postgres import renew_sandbox_lease
 from tests.support.repository_fixtures import RecordingConnection, SingleRowConnection, SingleRowCursor, _run_control_postgres_dsn
+
+sandbox_runtime_cleanup = build_sandbox_runtime_cleanup()
 
 
 @pytest.mark.asyncio

@@ -71,11 +71,8 @@ from app.queue import (
     remove_queued_run,
 )
 from app.queue_payload_validation import queue_payload_invalid_detail
-from app.routes.sandbox_runtime_cleanup import (
-    SandboxRuntimeCleanupError,
-    release_stopped_sandbox_leases_for_cancel,
-    stop_sandbox_leases,
-)
+from app.bootstrap.sandbox_cleanup import build_sandbox_runtime_cleanup
+from app.sandbox.api import SandboxRuntimeCleanupError, SandboxCleanupPersistenceError
 from app.run_admission_policy import (
     PLATFORM_MULTI_AGENT_NOT_SUPPORTED,
     contains_persisted_platform_multi_agent_control,
@@ -129,7 +126,6 @@ from app.runs.infrastructure import postgres as runs_postgres
 from app.runs.infrastructure import replay_postgres as runs_replay
 from app.runs.infrastructure import steps_postgres as runs_steps
 from app.runtime.sandbox.container_provider import create_container_provider
-from app.sandbox.infrastructure import leases_postgres as sandbox_leases
 from app.settings import get_settings
 from app.skills.api import admit_skill_run, pin_skill_run_mcp_tools
 from app.skills.infrastructure import run_snapshots_postgres as skills_run_snapshots
@@ -142,6 +138,8 @@ from app.streaming.api import (
 )
 from app.streaming.infrastructure import run_events_postgres as streaming_run_events
 from app.validation import assert_safe_principal_user_id
+
+_sandbox_cleanup = build_sandbox_runtime_cleanup()
 
 router = APIRouter()
 _agent_profile_authority = AgentProfileAuthority()
@@ -206,36 +204,6 @@ async def _audit_wrapped_capability_denial(
     cause = error.__cause__
     if isinstance(cause, platform_errors.RepositoryAuthorizationError):
         await _audit_capability_denial(principal, cause, source=source)
-
-
-def _lease_ids_by_run_id(leases: list[dict[str, Any]]) -> dict[str, list[str]]:
-    grouped: dict[str, list[str]] = {}
-    for lease in leases:
-        run_id = str(lease.get("run_id") or "").strip()
-        lease_id = str(lease.get("id") or "").strip()
-        if not run_id or not lease_id:
-            continue
-        grouped.setdefault(run_id, []).append(lease_id)
-    return grouped
-
-
-async def _release_stopped_cancel_leases(
-    conn,
-    *,
-    tenant_id: str,
-    leases: list[dict[str, Any]],
-    reason: str,
-    trace_id: str | None,
-) -> None:
-    for lease_run_id, lease_ids in _lease_ids_by_run_id(leases).items():
-        await release_stopped_sandbox_leases_for_cancel(
-            conn,
-            tenant_id=tenant_id,
-            run_id=lease_run_id,
-            reason=reason,
-            lease_ids=lease_ids,
-            trace_id=trace_id,
-        )
 
 
 async def _remove_cancelled_queue_payloads(
@@ -1808,63 +1776,21 @@ async def cancel_run(
         result=result,
     )
     try:
-        stopped_sandbox_leases = await stop_sandbox_leases(
+        await _sandbox_cleanup.cleanup_cancelled_run_leases(
             result.get("active_sandbox_leases"),
+            tenant_id=principal.tenant_id,
+            run_id=str(result["run_id"]),
+            user_id=principal.user_id,
+            requested_by_role="owner",
             reason="cancel_requested",
+            trace_id=result.get("trace_id"),
             provider_factory=create_container_provider,
+            transaction_factory=transaction,
         )
+    except SandboxCleanupPersistenceError as exc:
+        raise HTTPException(status_code=503, detail="sandbox_cleanup_persistence_unavailable") from exc
     except SandboxRuntimeCleanupError as exc:
-        failed_lease_ids = [str(lease["id"]) for lease in exc.failed_leases if lease.get("id")]
-        try:
-            async with transaction() as conn:
-                if exc.stopped_leases:
-                    await _release_stopped_cancel_leases(
-                        conn,
-                        tenant_id=principal.tenant_id,
-                        reason="cancel_requested",
-                        leases=exc.stopped_leases,
-                        trace_id=result.get("trace_id"),
-                    )
-                await sandbox_leases.record_sandbox_runtime_cleanup_outcome(
-                    conn,
-                    tenant_id=principal.tenant_id,
-                    run_id=str(result["run_id"]),
-                    trace_id=result.get("trace_id"),
-                    user_id=principal.user_id,
-                    requested_by_role="owner",
-                    reason="cancel_requested",
-                    status="failed",
-                    lease_ids=failed_lease_ids,
-                    failures=exc.failures,
-                )
-        except Exception as persistence_exc:
-            raise HTTPException(status_code=503, detail="sandbox_cleanup_persistence_unavailable") from persistence_exc
         raise HTTPException(status_code=502, detail="sandbox_runtime_cleanup_failed") from exc
-    if stopped_sandbox_leases:
-        stopped_lease_ids = [str(lease["id"]) for lease in stopped_sandbox_leases if lease.get("id")]
-        try:
-            async with transaction() as conn:
-                await _release_stopped_cancel_leases(
-                    conn,
-                    tenant_id=principal.tenant_id,
-                    reason="cancel_requested",
-                    leases=stopped_sandbox_leases,
-                    trace_id=result.get("trace_id"),
-                )
-                await sandbox_leases.record_sandbox_runtime_cleanup_outcome(
-                    conn,
-                    tenant_id=principal.tenant_id,
-                    run_id=str(result["run_id"]),
-                    trace_id=result.get("trace_id"),
-                    user_id=principal.user_id,
-                    requested_by_role="owner",
-                    reason="cancel_requested",
-                    status="succeeded",
-                    lease_ids=stopped_lease_ids,
-                    failures=[],
-                )
-        except Exception as persistence_exc:
-            raise HTTPException(status_code=503, detail="sandbox_cleanup_persistence_unavailable") from persistence_exc
     if queue_cleanup_failures:
         raise HTTPException(status_code=502, detail="queue_cleanup_failed") from queue_cleanup_failures[0]
     return RunControlResponse(run_id=result["run_id"], status=result["status"])

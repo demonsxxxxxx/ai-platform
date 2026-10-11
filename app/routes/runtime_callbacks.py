@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import logging
+from contextlib import nullcontext
 from types import SimpleNamespace
 from typing import Any
 
@@ -24,9 +25,10 @@ from app.files.api import (
 )
 from app.mcp.api import McpRuntimeContextError, get_mcp_principal_jwt_store
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
+from app.platform.tracing import TerminalStageTiming
 from app.platform.public_payload import sanitize_public_reasoning_text
 from app.public_execution import PUBLIC_AGENT_PROGRESS_EVENT_TYPE
-from app.routes.sandbox_runtime_cleanup import container_lease_from_persisted_row
+from app.bootstrap.sandbox_cleanup import build_sandbox_runtime_cleanup
 from app.runs.api import (
     RunInputClosed,
     RunInputConflict,
@@ -76,6 +78,8 @@ from app.streaming.api import (
 )
 from app.streaming.infrastructure import run_events_postgres as streaming_run_events
 from app.streaming.redis import get_stream_authority
+
+_sandbox_cleanup = build_sandbox_runtime_cleanup()
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -484,7 +488,7 @@ async def record_executor_callback(
 
     if renewal_fence is not None:
         try:
-            persisted_lease = container_lease_from_persisted_row(renewal_row or {})
+            persisted_lease = _sandbox_cleanup.container_lease_from_persisted_row(renewal_row or {})
             if persisted_lease is None or persisted_lease.provider != "opensandbox":
                 raise ValueError("sandbox_runtime_renewal_lease_unavailable")
             provider = create_container_provider(persisted_lease.provider)
@@ -529,20 +533,32 @@ async def record_executor_callback(
                 provider_expires_at=provider_expires_at,
             )
     elif not heartbeat_requested:
-        async with transaction() as conn:
-            run_identity, lease = await _lock_current_runtime_attempt_then_run(
-                conn,
-                run_id=callback.run_id,
-                attempt_id=callback.attempt_id,
-                callback_token_id=callback.callback_token_id,
-                session_id=callback.session_id,
+        with (
+            TerminalStageTiming(
+                "terminal_receipt_commit", run_id=callback.run_id,
+                attempt_id=callback.attempt_id, terminal_status=callback.status,
             )
-            committed_rows, authority, callback_deduplicated = await persist_callback(
-                conn, run_identity, lease
-            )
+            if callback.status in _TERMINAL_EXECUTOR_CALLBACK_STATUSES
+            else nullcontext()
+        ):
+            async with transaction() as conn:
+                run_identity, lease = await _lock_current_runtime_attempt_then_run(
+                    conn,
+                    run_id=callback.run_id,
+                    attempt_id=callback.attempt_id,
+                    callback_token_id=callback.callback_token_id,
+                    session_id=callback.session_id,
+                )
+                committed_rows, authority, callback_deduplicated = await persist_callback(
+                    conn, run_identity, lease
+                )
     if callback.status in _TERMINAL_EXECUTOR_CALLBACK_STATUSES:
         try:
-            await publish_executor_terminal_signal()
+            with TerminalStageTiming(
+                "terminal_receipt_signal", run_id=callback.run_id,
+                attempt_id=callback.attempt_id, terminal_status=callback.status,
+            ):
+                await publish_executor_terminal_signal()
         except ExecutorSignalUnavailable:
             logger.warning(
                 "executor_terminal_reconciliation_signal_unavailable",
@@ -552,7 +568,15 @@ async def record_executor_callback(
                 },
             )
     try:
-        await publish_callback_rows(capabilities, committed_rows, authority=authority)
+        with (
+            TerminalStageTiming(
+                "terminal_receipt_publication", run_id=callback.run_id,
+                attempt_id=callback.attempt_id, terminal_status=callback.status,
+            )
+            if callback.status in _TERMINAL_EXECUTOR_CALLBACK_STATUSES
+            else nullcontext()
+        ):
+            await publish_callback_rows(capabilities, committed_rows, authority=authority)
     except V4PublicationTransportUnavailable as exc:
         raise HTTPException(
             status_code=503, detail="callback_stream_unavailable"

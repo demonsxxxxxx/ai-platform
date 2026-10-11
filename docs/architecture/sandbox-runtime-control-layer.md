@@ -172,7 +172,29 @@ generation, timestamps, and reconciliation ownership in one migration.
    retain the idle backoff. Cleanup retains its periodic schedule. Cancellation
    joins an active attempt before that phase may be restarted; claim fencing and
    current Run/Attempt/lease authority remain unchanged.
-4. A real-provider release takes the scoped lease row lock, calls provider stop,
+4. Cleanup application ownership is `sandbox.api.SandboxRuntimeCleanup`,
+   implemented in `sandbox.application.runtime_cleanup` and assembled by
+   `bootstrap.sandbox_cleanup`. Its verified handle reconstruction policy lives
+   in `sandbox.application.runtime_handle`; composition supplies the existing
+   lease type, signed-proof checks, settings, repositories and event writer.
+   Application code does not import HTTP routes, concrete providers or database
+   adapters. Worker maintenance, executor reconciliation, callbacks and HTTP
+   entrypoints all consume this Sandbox operation boundary. The former
+   `routes/sandbox_runtime_cleanup.py` implementation is retired, with no import
+   compatibility alias or external wire contract.
+   Owner and administrator Run cancellation share one stop/release settlement:
+   stop outside the settlement transaction, release successful leases grouped
+   by their own Run, record the actor-scoped outcome in the same transaction,
+   then report a partial stop failure after commit. Routes retain authorization,
+   Run cancellation, queue/publication ordering and the existing 502/503 mapping.
+   The owner release event still omits the administrator role field. Persistence
+   failure takes precedence over the provider failure.
+   The following concurrency mechanisms are intentionally distinct: single-lease
+   release and expiry cleanup retain stop-under-lock; failed reconciliation keeps
+   its claim, unlocked bounded stop and fenced receipt transactions. Sharing the
+   cancellation settlement does not replace these mechanisms or their retry,
+   timeout, signed-handle and historical stop-only compatibility rules.
+5. A real-provider release takes the scoped lease row lock, calls provider stop,
    and marks released in that transaction. Concurrent release waits and then
    observes the terminal row instead of issuing a duplicate stop. Stop failure
    leaves the lease non-terminal and records a cleanup failure for retry or
@@ -194,11 +216,11 @@ generation, timestamps, and reconciliation ownership in one migration.
    Conflicting attempt projections fail closed. Cleanup uses only verified
    runtime handle fields and derived owned-resource identities, never a
    payload-supplied container or host path.
-5. Tenant/run authorization is resolved before any provider call. Provider
+6. Tenant/run authorization is resolved before any provider call. Provider
    handles are never returned in public payloads.
-6. Provider-internal recovery state is observed and reconciled; it is never
+7. Provider-internal recovery state is observed and reconciled; it is never
    copied into an independently writable business state.
-7. Provider stop exceptions are normalized without leaking provider details.
+8. Provider stop exceptions are normalized without leaking provider details.
    Expiry compensation and admin orphan-cleanup failures write tenant-scoped
    audit outcomes while the failed lease remains a reconciliation subject.
    A lost executor probe keeps the public `sandbox_executor_lost` receipt and

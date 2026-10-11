@@ -17,6 +17,7 @@ from app.platform.public_payload import sanitize_public_text
 from app.platform.postgres import values as platform_values
 from app.runs import api as runs_api
 from app.runs.infrastructure import postgres as runs_postgres
+from app.runs.infrastructure.worker_result_commit_timing import TimedWorkerResultCommitService
 from app.skills import api as skills_api
 from app.skills.infrastructure import postgres as skills_postgres
 from app.skills.infrastructure import run_snapshots_postgres as skills_run_snapshots_postgres
@@ -88,7 +89,7 @@ def build_worker_result_commit_service(transaction_factory: Any) -> runs_api.Wor
             provider_final_sequence=result.executor_payload.get("provider_session_final_sequence"),
         )
 
-    return runs_api.WorkerResultCommitService(
+    return TimedWorkerResultCommitService(
         transaction_factory=transaction_factory,
         lock_run=runs_postgres.get_run,
         reconciliation_claim_current=(

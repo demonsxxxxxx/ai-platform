@@ -1,3 +1,4 @@
+from tests.support.terminal_timing import terminal_stage_logs as terminal_stage_logs
 import app.runs.infrastructure.postgres as _owner_runs_infrastructure_postgres
 import app.skills.infrastructure.run_snapshots_postgres as _owner_skills_infrastructure_run_snapshots_postgres
 import app.runs.infrastructure.capability_admission_postgres as _owner_runs_infrastructure_capability_admission_postgres
@@ -2226,9 +2227,30 @@ async def test_bound_agent_executor_reconciliation_uses_session_pins_and_termina
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("terminal_stage_logs")
 async def test_v2_reconciliation_snapshot_terminalizes_and_persists_assistant_message(
-    monkeypatch,
+    monkeypatch, caplog,
 ):
+    from app.platform import tracing
+    now = [10.0]
+    monkeypatch.setattr(tracing, "monotonic", lambda: now[0])
+    caplog.set_level("INFO")
+
+    @asynccontextmanager
+    async def delayed_transaction():
+        yield object()
+        now[0] += 1.25
+
+    publication_observations = []
+
+    async def delayed_publication(*args, **kwargs):
+        publication_observations.append([
+            (record.terminal_phase, record.terminal_phase_duration_ms)
+            for record in caplog.records if record.msg == "run_terminal_stage"
+        ])
+        now[0] += 0.5
+
+    monkeypatch.setattr(worker_module, "publish_run_event", delayed_publication)
     persisted = base_payload(
         _leased=False,
         agent_id="general-agent",
@@ -2296,7 +2318,7 @@ async def test_v2_reconciliation_snapshot_terminalizes_and_persists_assistant_me
         calls.append(("create_artifact", kwargs["storage_key"]))
         return kwargs["artifact_id"]
 
-    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.transaction", delayed_transaction)
     monkeypatch.setattr('app.runs.infrastructure.postgres.get_run', get_run)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', append_message)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
@@ -2395,6 +2417,13 @@ async def test_v2_reconciliation_snapshot_terminalizes_and_persists_assistant_me
     )
     create_call = ("create_artifact", "private/reconciliations/claim-a/result.txt")
     assert calls.index(promote_call) < calls.index(create_call) < calls.index(("complete", "run-a"))
+
+    records = [record for record in caplog.records if record.msg == "run_terminal_stage"]
+    assert [record.terminal_phase for record in records] == ["result_business_commit"]
+    assert [record.terminal_phase_duration_ms for record in records] == [1250]
+    assert publication_observations == [[("result_business_commit", 1250)]]
+    assert all(record.terminal_phase_outcome == "ok" and record.terminal_status == "succeeded" for record in records)
+    assert "result.txt" not in repr([vars(record) for record in records])
 
 
 def test_run_payload_accepts_only_complete_pinned_harness_profile():

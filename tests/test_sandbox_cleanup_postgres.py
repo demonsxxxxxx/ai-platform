@@ -1,4 +1,9 @@
 """Real transaction/lock coverage for expired provider-resource cleanup."""
+
+from app.bootstrap.sandbox_cleanup import build_sandbox_runtime_cleanup
+from app.sandbox.api import SandboxRuntimeCleanupError
+
+
 import app.sandbox.infrastructure.leases_postgres as _owner_sandbox_infrastructure_leases_postgres
 
 import asyncio
@@ -13,8 +18,10 @@ from psycopg import sql
 from psycopg.rows import dict_row
 import pytest
 
-from app.routes import sandbox_runtime_cleanup as cleanup
 from app.runtime.sandbox.contracts import StopResult
+
+sandbox_runtime_cleanup = build_sandbox_runtime_cleanup()
+cleanup = sandbox_runtime_cleanup
 
 
 @pytest.fixture
@@ -100,7 +107,7 @@ async def test_expiry_partial_failure_commits_locked_rows_and_audit_before_raisi
                 message=reason,
             )
 
-    with pytest.raises(cleanup.SandboxRuntimeCleanupError):
+    with pytest.raises(SandboxRuntimeCleanupError):
         await cleanup.cleanup_expired_sandbox_runtime_leases(
             provider_factory=lambda _provider: Provider(), transaction_factory=transaction,
         )

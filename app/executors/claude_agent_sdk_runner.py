@@ -27,6 +27,7 @@ from app.control_plane_contracts import (
     normalize_thinking_effort,
     sanitize_public_payload,
 )
+from app.platform.tracing import TerminalStageTiming
 from app.platform.public_payload import (
     sanitize_public_answer_text,
     sanitize_public_text,
@@ -3562,6 +3563,7 @@ async def run_claude_agent_sdk(
         pending_tasks: set[str] = set()
         final_result = None
         mirror_error = None
+        final_flush_timing: TerminalStageTiming | None = None
 
         async def receive_until_closed() -> AsyncIterator[Any]:
             nonlocal terminal_stream_error
@@ -3586,65 +3588,75 @@ async def run_claude_agent_sdk(
                     async for message in responses:
                         yield message
 
-        async with (
-            aclosing(receive_until_closed()) as raw_responses,
-            aclosing(observed_model_messages(raw_responses)) as responses,
-        ):
-            async for message in responses:
-                if stop_requested:
-                    # Drain the public stream through its final mirror flush,
-                    # without processing more output or supplementary inputs.
-                    continue
-                if isinstance(message, ResultMessage):
-                    permission_denials = getattr(message, "permission_denials", None)
-                    if isinstance(permission_denials, list):
-                        diagnostic_counters["tool_admission_denials"] += len(permission_denials)
-                        for denial in permission_denials:
-                            await reconcile_sdk_permission_denial(denial)
-                if isinstance(message, TaskStartedMessage):
-                    if message.task_type in {"local_agent", "local_workflow"}:
-                        pending_tasks.add(message.task_id)
-                elif isinstance(message, TaskNotificationMessage):
-                    pending_tasks.discard(message.task_id)
-                elif isinstance(message, TaskUpdatedMessage):
-                    if message.patch.get("status") in {"completed", "failed", "stopped", "killed"}:
+        try:
+            async with (
+                aclosing(receive_until_closed()) as raw_responses,
+                aclosing(observed_model_messages(raw_responses)) as responses,
+            ):
+                async for message in responses:
+                    if stop_requested:
+                        # Drain the public stream through its final mirror flush,
+                        # without processing more output or supplementary inputs.
+                        continue
+                    if isinstance(message, ResultMessage):
+                        permission_denials = getattr(message, "permission_denials", None)
+                        if isinstance(permission_denials, list):
+                            diagnostic_counters["tool_admission_denials"] += len(permission_denials)
+                            for denial in permission_denials:
+                                await reconcile_sdk_permission_denial(denial)
+                    if isinstance(message, TaskStartedMessage):
+                        if message.task_type in {"local_agent", "local_workflow"}:
+                            pending_tasks.add(message.task_id)
+                    elif isinstance(message, TaskNotificationMessage):
                         pending_tasks.discard(message.task_id)
-                elif isinstance(message, ResultMessage) and pending_tasks and not message.is_error:
-                    # A background agent may wake a follow-up turn. Its first
-                    # Result is not the completion of the platform Run.
-                    continue
-                if isinstance(message, MirrorErrorMessage):
-                    mirror_error = message
-                    if interaction_actor is not None:
-                        await interaction_actor.cancel()
-                    continue
-                if isinstance(message, ResultMessage):
-                    if interaction_actor is not None and not message.is_error and mirror_error is None:
-                        command = await interaction_actor.settle_at_result()
-                        if command is not None:
-                            continuation_usage = _merge_sdk_usage(
-                                continuation_usage, message.usage or message.model_usage or {}
+                    elif isinstance(message, TaskUpdatedMessage):
+                        if message.patch.get("status") in {"completed", "failed", "stopped", "killed"}:
+                            pending_tasks.discard(message.task_id)
+                    elif isinstance(message, ResultMessage) and pending_tasks and not message.is_error:
+                        # A background agent may wake a follow-up turn. Its first
+                        # Result is not the completion of the platform Run.
+                        continue
+                    if isinstance(message, MirrorErrorMessage):
+                        mirror_error = message
+                        if interaction_actor is not None:
+                            await interaction_actor.cancel()
+                        continue
+                    if isinstance(message, ResultMessage):
+                        if interaction_actor is not None and not message.is_error and mirror_error is None:
+                            command = await interaction_actor.settle_at_result()
+                            if command is not None:
+                                continuation_usage = _merge_sdk_usage(
+                                    continuation_usage, message.usage or message.model_usage or {}
+                                )
+                                continuation_turns += _bounded_diagnostic_counter(message.num_turns)
+                                diagnostic_counters["result_messages"] += 1
+                                await interaction_actor.apply_text_at_result(
+                                    client, command, session_id=message.session_id
+                                )
+                                continue
+                        elif interaction_actor is not None:
+                            await interaction_actor.cancel()
+                        final_result = message
+                        if final_flush_timing is None:
+                            final_flush_timing = TerminalStageTiming(
+                                "sdk_final_flush", run_id=run_id or "",
+                                attempt_id=attempt_id or "",
+                                terminal_status="failed" if message.is_error else "succeeded",
                             )
-                            continuation_turns += _bounded_diagnostic_counter(message.num_turns)
-                            diagnostic_counters["result_messages"] += 1
-                            await interaction_actor.apply_text_at_result(
-                                client, command, session_id=message.session_id
-                            )
-                            continue
-                    elif interaction_actor is not None:
-                        await interaction_actor.cancel()
-                    final_result = message
-                    continue
-                yield message
-        receive_stream_closed = True
-        # The public EOF follows the SDK reader's final transcript flush. Stop
-        # our injected callbacks and join their finalizers before consuming the
-        # terminal result; physical SDK teardown is a separate phase.
-        if interaction_actor is not None:
-            await interaction_actor.close()
-        await callback_tracker.seal_and_wait()
-        if provider_session_store is not None:
-            await provider_session_store.wait_idle()
+                        continue
+                    yield message
+            receive_stream_closed = True
+            # The public EOF follows the SDK reader's final transcript flush. Stop
+            # our injected callbacks and join their finalizers before consuming the
+            # terminal result; physical SDK teardown is a separate phase.
+            if interaction_actor is not None:
+                await interaction_actor.close()
+            await callback_tracker.seal_and_wait()
+            if provider_session_store is not None:
+                await provider_session_store.wait_idle()
+        finally:
+            if final_flush_timing is not None:
+                final_flush_timing.finish(sys.exception())
         if mirror_error is not None:
             yield mirror_error
         elif final_result is not None and not stop_requested:
@@ -4378,9 +4390,14 @@ async def run_claude_agent_sdk(
                         # An early processor exit did not consume public EOF.
                         # Public disconnect is then the only supported final
                         # mirror flush, and must finish before Run terminality.
-                        await close_boundary.disconnect()
-                        disconnected = True
-                        await provider_session_store.wait_idle()
+                        with TerminalStageTiming(
+                            "sdk_disconnect_flush", run_id=run_id or "",
+                            attempt_id=attempt_id or "",
+                            terminal_status="cancelled" if consume_cancellation is not None else None,
+                        ):
+                            await close_boundary.disconnect()
+                            disconnected = True
+                            await provider_session_store.wait_idle()
                     await protocol_closed(close_boundary.mirror_failed)
                 except asyncio.CancelledError as exc:
                     consume_cancellation = exc
@@ -4393,9 +4410,14 @@ async def run_claude_agent_sdk(
                         # Forced cancellation cannot leave pending mirror
                         # batches behind the terminal callback. In this fallback
                         # the SDK only exposes the combined public disconnect.
-                        await close_boundary.disconnect()
-                        disconnected = True
-                        await provider_session_store.wait_idle()
+                        with TerminalStageTiming(
+                            "sdk_disconnect_flush", run_id=run_id or "",
+                            attempt_id=attempt_id or "",
+                            terminal_status="cancelled" if consume_cancellation is not None else None,
+                        ):
+                            await close_boundary.disconnect()
+                            disconnected = True
+                            await provider_session_store.wait_idle()
                     if not protocol_settled.done():
                         protocol_settled.set_result(None)
                     if not disconnected:

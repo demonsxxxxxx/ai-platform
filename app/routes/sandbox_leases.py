@@ -12,14 +12,14 @@ from app.models import (
 )
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 from app.platform.postgres.errors import RepositoryNotFoundError
-from app.routes.sandbox_runtime_cleanup import (
-    SandboxRuntimeCleanupError,
-    stop_sandbox_leases,
-)
+from app.bootstrap.sandbox_cleanup import build_sandbox_runtime_cleanup
+from app.sandbox.api import SandboxRuntimeCleanupError
 from app.runs.infrastructure import creation_postgres as runs_creation
 from app.runtime.sandbox.container_provider import create_container_provider
 from app.sandbox.infrastructure import leases_postgres as sandbox_leases
 from app.streaming.infrastructure import run_events_postgres as streaming_run_events
+
+_sandbox_cleanup = build_sandbox_runtime_cleanup()
 
 router = APIRouter()
 
@@ -189,7 +189,7 @@ async def release_sandbox_lease(
                 raise HTTPException(status_code=409, detail="sandbox_lease_not_active")
 
             if str(existing.get("provider") or "fake") != "fake":
-                await stop_sandbox_leases(
+                await _sandbox_cleanup.stop_sandbox_leases(
                     [existing],
                     reason=request.reason,
                     provider_factory=create_container_provider,
