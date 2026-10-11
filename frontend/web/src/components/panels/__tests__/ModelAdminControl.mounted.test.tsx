@@ -156,7 +156,7 @@ test("Model admin discovery is a draft and only publication changes the active c
     return {
       connection: {
         configured: true,
-        revision: 3,
+        revision: 4,
         base_url: "https://gateway.example",
         key_fingerprint: "fedcba9876543210",
       },
@@ -318,7 +318,7 @@ test("Model admin discovery is a draft and only publication changes the active c
       () => calls.publish.length === 2 && inputByLabel(container, "模型 API Key").value === "",
       "publication should apply the whole draft and clear the write-only key",
     );
-    assert.equal(calls.publish[1].expectedRevision, 3);
+    assert.equal(calls.publish[1].expectedRevision, 4);
     assert.equal(calls.publish[1].models[0].enabled, true);
     assert.equal(calls.publish[1].models[0].is_default, true);
     assert.equal(calls.publish[1].models[0].max_input_tokens, 32000);

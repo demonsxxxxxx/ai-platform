@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import os
 import tempfile
+import threading
 from dataclasses import dataclass
 from functools import partial
 from typing import Callable, TypeVar
@@ -10,6 +11,8 @@ import boto3
 from botocore.client import Config
 
 from app.settings import get_settings
+from app.platform.storage_io_completion import StorageIOCompletion
+from app.platform.object_storage_errors import is_missing_object_storage_bucket
 
 
 @dataclass(frozen=True)
@@ -51,12 +54,15 @@ async def run_storage_io(
     operation: Callable[..., _StorageResult],
     /,
     *args: object,
-    timeout_seconds: float = _STORAGE_IO_TIMEOUT_SECONDS,
+    timeout_seconds: float | None = _STORAGE_IO_TIMEOUT_SECONDS,
+    completion: StorageIOCompletion | None = None,
     on_abandoned: Callable[[], None] | None = None,
     **kwargs: object,
 ) -> _StorageResult:
     """Run blocking storage work without releasing its slot before it stops."""
 
+    if completion is not None:
+        completion.claim()
     admissions = _STORAGE_IO_ADMISSIONS
     if admissions.locked():
         raise StorageIOBusyError("storage_io_busy")
@@ -72,21 +78,38 @@ async def run_storage_io(
         except TimeoutError as exc:
             raise StorageIOBusyError("storage_io_busy") from exc
 
-        task = asyncio.create_task(asyncio.to_thread(partial(operation, *args, **kwargs)))
+        try:
+            call = partial(operation, *args, **kwargs)
+            task = (completion.submit(call) if completion is not None
+                    else asyncio.create_task(asyncio.to_thread(call)))
+        except BaseException:
+            if completion is not None and completion.submitted and not completion.finished:
+                def release_failed_submission(_outcome: object) -> None:
+                    slots.release()
+                    admissions.release()
+
+                release_admission = False
+                completion.add_done_callback(release_failed_submission)
+            else:
+                slots.release()
+            raise
+
+        def physically_finished() -> bool:
+            return completion.finished if completion is not None else task.done()
         try:
             return await asyncio.wait_for(asyncio.shield(task), timeout=timeout_seconds)
         except TimeoutError as exc:
-            if task.done():
-                return task.result()
+            if physically_finished():
+                return completion.result() if completion is not None else task.result()
             if on_abandoned is not None:
                 on_abandoned()
             raise StorageIOTimeoutError("storage_io_timeout") from exc
         except BaseException:
-            if not task.done() and on_abandoned is not None:
+            if not physically_finished() and on_abandoned is not None:
                 on_abandoned()
             raise
         finally:
-            if task.done():
+            if physically_finished():
                 slots.release()
             else:
                 def release_capacity(_task: object) -> None:
@@ -94,7 +117,10 @@ async def run_storage_io(
                     admissions.release()
 
                 release_admission = False
-                task.add_done_callback(release_capacity)
+                if completion is not None:
+                    completion.add_done_callback(release_capacity)
+                else:
+                    task.add_done_callback(release_capacity)
             # A timed-out or cancelled thread keeps its capacity until it really stops.
     finally:
         if release_admission:
@@ -105,6 +131,8 @@ class ObjectStorage:
     def __init__(self) -> None:
         settings = get_settings()
         self.bucket = settings.s3_bucket
+        self._bucket_ready = False
+        self._bucket_ready_lock = threading.Lock()
         self.client = boto3.client(
             "s3",
             endpoint_url=settings.s3_endpoint_url,
@@ -115,14 +143,36 @@ class ObjectStorage:
         )
 
     def ensure_bucket(self) -> None:
-        existing = self.client.list_buckets()
-        names = {item["Name"] for item in existing.get("Buckets", [])}
-        if self.bucket not in names:
-            self.client.create_bucket(Bucket=self.bucket)
+        # This client/configuration lives for one storage instance. Cache only a
+        # successful confirmation, never permission errors or creation conflicts.
+        with self._bucket_ready_lock:
+            if self._bucket_ready:
+                return
+            existing = self.client.list_buckets()
+            names = {item["Name"] for item in existing.get("Buckets", [])}
+            if self.bucket not in names:
+                self.client.create_bucket(Bucket=self.bucket)
+            self._bucket_ready = True
+
+    def _bucket_operation(
+        self, operation: Callable[..., _StorageResult], /,
+        *args: object, **kwargs: object,
+    ) -> _StorageResult:
+        self.ensure_bucket()
+        try:
+            return operation(*args, **kwargs)
+        except Exception as exc:
+            self._invalidate_missing_bucket(exc)
+            raise
+
+    def _invalidate_missing_bucket(self, exc: Exception) -> None:
+        if is_missing_object_storage_bucket(exc):
+            with self._bucket_ready_lock:
+                self._bucket_ready = False
 
     def put_bytes(self, *, storage_key: str, content: bytes, content_type: str) -> StoredObject:
-        self.ensure_bucket()
-        self.client.put_object(
+        self._bucket_operation(
+            self.client.put_object,
             Bucket=self.bucket,
             Key=storage_key,
             Body=content,
@@ -143,8 +193,8 @@ class ObjectStorage:
             while chunk := source.read(1024 * 1024):
                 digest.update(chunk)
                 size_bytes += len(chunk)
-        self.ensure_bucket()
-        self.client.upload_file(
+        self._bucket_operation(
+            self.client.upload_file,
             source_path,
             self.bucket,
             storage_key,
@@ -208,8 +258,8 @@ class ObjectStorage:
             body.close()
 
     def create_multipart_upload(self, *, storage_key: str, content_type: str) -> str:
-        self.ensure_bucket()
-        response = self.client.create_multipart_upload(
+        response = self._bucket_operation(
+            self.client.create_multipart_upload,
             Bucket=self.bucket,
             Key=storage_key,
             ContentType=content_type,
@@ -248,11 +298,15 @@ class ObjectStorage:
         )
 
     def abort_multipart_upload(self, *, storage_key: str, upload_id: str) -> None:
-        self.client.abort_multipart_upload(
-            Bucket=self.bucket,
-            Key=storage_key,
-            UploadId=upload_id,
-        )
+        try:
+            self.client.abort_multipart_upload(
+                Bucket=self.bucket,
+                Key=storage_key,
+                UploadId=upload_id,
+            )
+        except Exception as exc:
+            self._invalidate_missing_bucket(exc)
+            raise
 
     def cleanup_multipart_upload(self, *, storage_key: str, upload_id: str) -> None:
         abort_error: Exception | None = None
@@ -274,11 +328,10 @@ class ObjectStorage:
             raise delete_error
 
     def abort_multipart_uploads_for_key(self, *, storage_key: str) -> int:
-        self.ensure_bucket()
         request: dict[str, object] = {"Bucket": self.bucket, "Prefix": storage_key}
         aborted = 0
         while True:
-            response = self.client.list_multipart_uploads(**request)
+            response = self._bucket_operation(self.client.list_multipart_uploads, **request)
             for upload in response.get("Uploads") or []:
                 if str(upload.get("Key") or "") != storage_key:
                     continue

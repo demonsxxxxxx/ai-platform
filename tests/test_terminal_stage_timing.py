@@ -88,7 +88,7 @@ import io
 import logging
 import sys
 import tempfile
-from app.platform.tracing import TerminalStageTiming, configure_terminal_stage_logging
+from app.platform.tracing import TerminalStageTiming, configure_terminal_stage_logging, log_session_store_append_summary
 assert logging.getLogger().getEffectiveLevel() == logging.WARNING
 entrypoint = sys.argv[1]
 if entrypoint == "api":
@@ -110,15 +110,18 @@ configure_terminal_stage_logging()
 logging.getLogger("app.worker").info("unrelated private prompt")
 with TerminalStageTiming("result_business_commit", run_id="run-a", attempt_id="attempt-a", terminal_status="succeeded"):
     pass
+log_session_store_append_summary(run_id="run-a", attempt_id="attempt-a", calls=2,
+    failed_calls=1, total_ms=250, max_ms=125, active_calls=0)
 assert logging.getLogger().getEffectiveLevel() == logging.WARNING
 '''
     result = subprocess.run([sys.executable, "-c", script, entrypoint], capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
     lines = result.stderr.splitlines()
-    assert len(lines) == 1, result.stderr
+    assert len(lines) == 2, result.stderr
     assert "run_terminal_stage run_id='run-a' attempt_id='attempt-a'" in lines[0]
     assert "phase='result_business_commit' duration_ms=" in lines[0]
     assert "outcome='ok' terminal_status='succeeded'" in lines[0]
+    assert "calls=2 failed_calls=1 total_duration_ms=250 max_duration_ms=125 store_active_calls=0" in lines[1]
     assert "private" not in result.stderr
 
 
@@ -141,3 +144,123 @@ def test_broken_timing_stream_does_not_print_chained_private_exception(monkeypat
             raise failure
     assert caught.value is failure
     assert capsys.readouterr().err == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("terminal_stage_logs")
+async def test_real_sdk_pre_result_flush_is_visible_in_append_summary(monkeypatch, caplog):
+    from claude_agent_sdk._internal.query import Query
+    from claude_agent_sdk._internal.transcript_mirror_batcher import TranscriptMirrorBatcher
+    from app.execution.infrastructure.harness.claude import session_store_tracking
+
+    now = [10.0]
+    monkeypatch.setattr(session_store_tracking, "monotonic", lambda: now[0])
+    monkeypatch.setattr(tracing, "monotonic", lambda: now[0])
+    raw_result_at = []
+
+    class Transport:
+        async def read_messages(self):
+            yield {"type": "transcript_mirror",
+                   "filePath": "/private/projects/project/session.jsonl",
+                   "entries": [{"uuid": "entry", "text": "private prompt secret-token"}]}
+            raw_result_at.append(now[0])
+            yield {"type": "result", "is_error": False}
+
+    class Store:
+        accepted_final_sequence = 1
+
+        async def append(self, _key, _entries):
+            now[0] += 0.25
+            await asyncio.sleep(0)
+
+    async def on_error(*_args):
+        raise AssertionError("unexpected mirror error")
+
+    tracker = session_store_tracking.SessionStoreAppendTracker(Store())
+    query = Query(Transport(), is_streaming_mode=True)
+    query.set_transcript_mirror_batcher(TranscriptMirrorBatcher(
+        tracker, "/private/projects", on_error, max_pending_entries=0, max_pending_bytes=0,
+    ))
+    reader = asyncio.create_task(query._read_messages())
+    public_result_at = None
+    post_result_timer = None
+    try:
+        async for message in query.receive_messages():
+            if message["type"] == "result":
+                public_result_at = now[0]
+                post_result_timer = TerminalStageTiming(
+                    "sdk_final_flush", run_id="run-a", attempt_id="attempt-a",
+                )
+        await reader
+        await tracker.wait_idle()
+        assert post_result_timer is not None
+        post_result_timer.finish()
+        tracker.log_append_summary(run_id="run-a", attempt_id="attempt-a")
+        tracker.log_append_summary(run_id="run-a", attempt_id="attempt-a")
+    finally:
+        if not reader.done():
+            reader.cancel()
+        await asyncio.gather(reader, return_exceptions=True)
+    assert public_result_at - raw_result_at[0] == 0.25
+    stage = [r for r in caplog.records if r.msg == "run_terminal_stage"]
+    assert stage[0].terminal_phase_duration_ms == 0
+    summary = [r for r in caplog.records if r.msg == "run_session_store_append_summary"]
+    assert len(summary) == 1
+    record = summary[0]
+    assert (record.append_calls, record.append_failed_calls, record.store_active_calls) == (1, 0, 0)
+    assert record.append_total_duration_ms == record.append_max_duration_ms == 250
+    assert tracker.main_append_acknowledged and tracker.final_sequence == 1
+    assert not tracker.failed
+    assert "private" not in repr(vars(record)) and "secret-token" not in repr(vars(record))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [RuntimeError("private payload"), asyncio.CancelledError("secret-token")])
+@pytest.mark.usefixtures("terminal_stage_logs")
+async def test_append_observation_preserves_failure_identity_retry_and_receipt(monkeypatch, caplog, failure):
+    from app.execution.infrastructure.harness.claude import session_store_tracking
+    now = [1.0]
+    monkeypatch.setattr(session_store_tracking, "monotonic", lambda: now[0])
+
+    class Store:
+        accepted_final_sequence = 3
+        attempts = 0
+
+        async def append(self, _key, _entries):
+            self.attempts += 1
+            now[0] += 0.125
+            if self.attempts == 1:
+                raise failure
+
+    tracker = session_store_tracking.SessionStoreAppendTracker(Store())
+    key, entries = {"session_id": "private"}, [{"text": "private payload"}]
+    with pytest.raises(type(failure)) as caught:
+        await tracker.append(key, entries)
+    assert caught.value is failure
+    assert tracker.failed and tracker.active_calls == 0
+    assert not tracker.main_append_acknowledged
+    await tracker.append(key, entries)
+    assert not tracker.failed and tracker.final_sequence == 3
+    tracker.log_append_summary(run_id="run-a", attempt_id="attempt-a")
+    record = caplog.records[-1]
+    assert (record.append_calls, record.append_failed_calls) == (2, 1)
+    assert (record.append_total_duration_ms, record.append_max_duration_ms) == (250, 125)
+    assert record.exc_info is None
+    assert "private" not in repr(vars(record)) and "secret-token" not in repr(vars(record))
+
+
+def test_append_summary_logging_failure_and_counter_bounds(monkeypatch):
+    from app.execution.infrastructure.harness.claude import session_store_tracking
+    tracker = session_store_tracking.SessionStoreAppendTracker(object())
+    tracker._append_total_seconds = tracker._append_max_seconds = 1_000_000_000
+    observations = []
+    monkeypatch.setattr(session_store_tracking, "log_session_store_append_summary", lambda **kw: observations.append(kw))
+    tracker.log_append_summary(run_id="run-a", attempt_id="attempt-a")
+    assert observations[0]["total_ms"] == observations[0]["max_ms"] == 1_000_000_000
+
+    class BrokenLogger:
+        def info(self, *_args, **_kwargs):
+            raise RuntimeError("private logging destination")
+    monkeypatch.setattr(tracing, "_terminal_stage_logger", BrokenLogger())
+    tracing.log_session_store_append_summary(run_id="run-a", attempt_id="attempt-a", calls=0,
+        failed_calls=0, total_ms=0, max_ms=0, active_calls=0)
