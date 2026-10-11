@@ -659,9 +659,27 @@ async def test_object_delete_outbox_dead_letter_backoff_and_unknown_outcome_reco
         async with conn.transaction():
             claimed = await _owner_persistence_object_deletions.claim_object_deletions(
                 conn,
-                limit=10,
+                limit=1,
                 max_attempts=3,
             )
+            assert [row["id"] for row in claimed] == ["out-bad"]
+            untouched = await (await conn.execute(
+                "select state, attempts from object_deletion_outbox where id in ('out-good', 'out-retry')"
+            )).fetchall()
+            assert untouched == [{"state": "pending", "attempts": 0}] * 2
+            # A concurrent worker must skip the first worker's uncommitted claim
+            # and take only the next oldest eligible row, without a shared lock.
+            async with await _scoped_connection(dsn, schema_name) as contender:
+                async with contender.transaction():
+                    second = await _owner_persistence_object_deletions.claim_object_deletions(
+                        contender, limit=1, max_attempts=3,
+                    )
+                    assert [row["id"] for row in second] == ["out-good"]
+            claimed.extend(second)
+        async with conn.transaction():
+            claimed.extend(await _owner_persistence_object_deletions.claim_object_deletions(
+                conn, limit=1, max_attempts=3,
+            ))
         assert {row["id"] for row in claimed} == {"out-bad", "out-good", "out-retry"}
         claims = {row["id"]: row for row in claimed}
 
