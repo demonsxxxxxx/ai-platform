@@ -459,7 +459,11 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
             ],
           },
           tool_lifecycles: [],
-          tool_calls: [],
+          tool_calls: [
+            { tool_name: "Read", invocation_id: "abort-true", last_stage: "failed", is_interrupt: true },
+            { tool_name: "Read", invocation_id: "abort-false", last_stage: "failed", is_interrupt: false },
+            { tool_name: "Read", invocation_id: "abort-unknown", last_stage: "failed" },
+          ],
           tool_policy_denials: [
             {
               tool_name: "Bash",
@@ -736,6 +740,12 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
     assert.match(failureTrace.textContent ?? "", /claude_agent_sdk_tool_admission_failed/);
     assert.match(failureTrace.textContent ?? "", /同一观察中的工具证据/);
     assert.match(failureTrace.textContent ?? "", /留存异常摘要：ACTUAL_SDK_FAILURE_MARKER/);
+    const abortLabels = Array.from(container.querySelectorAll("[data-sdk-tool-abort]")).map((item) => item.textContent);
+    assert.deepEqual(abortLabels, [
+      "SDK 报告工具 abort：是；不代表用户取消或 Run 取消状态。",
+      "SDK 报告工具 abort：否；不代表用户取消或 Run 取消状态。",
+      "SDK 报告工具 abort：未知（未采集）；不代表用户取消或 Run 取消状态。",
+    ]);
     assert.match(journalEntries[1].textContent ?? "", /关联诊断：tool_parameters_not_authorized/);
     assert.match(journalEntries[1].textContent ?? "", /调用编号/);
     assert.match(container.textContent ?? "", /读取 3 个文件/);

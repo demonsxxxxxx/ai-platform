@@ -492,6 +492,8 @@ def test_admin_run_diagnostics_reads_legacy_without_mutating_detail(monkeypatch)
             {
                 "tool_name": "Bash",
                 "invocation_id": "tool-1",
+                "last_stage": "failed",
+                "is_interrupt": True,
                 "tool_input": {
                     "command": "cat /private/file",
                     "token": "private-token",
@@ -590,6 +592,8 @@ def test_admin_run_diagnostics_reads_legacy_without_mutating_detail(monkeypatch)
     assert "api_error_status" not in str(detail_response.json())
     assert projected["coverage"] == "legacy_record"
     assert projected["root"]["error_code"] == diagnostics["error_code"]
+    assert projected["details"]["tool_calls"][0]["is_interrupt"] is True
+    assert "is_interrupt" not in str(detail_response.json())
     assert "tool_input" not in str(projected)
     assert "private-token" not in str(projected)
 

@@ -742,6 +742,12 @@ def _sanitize_tool_observation(
     for key in ("state", "last_stage", "capability_kind"):
         if identity := _identity(value.get(key)):
             projected[key] = identity
+    if (
+        kind == "call"
+        and value.get("last_stage") == "failed"
+        and type(value.get("is_interrupt")) is bool
+    ):
+        projected["is_interrupt"] = value["is_interrupt"]
     if kind == "denial" and isinstance(value.get("reason"), str):
         projected["reason"] = _bounded_utf8(
             _redact_diagnostic_text(value["reason"]),
