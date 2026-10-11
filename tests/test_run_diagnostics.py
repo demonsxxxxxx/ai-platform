@@ -1151,3 +1151,104 @@ def test_run_diagnostic_minimization_preserves_api_status(severe):
     observation = {"runtime_diagnostics": sanitize_runtime_diagnostics(runtime_diagnostics(sdk={"api_error_status": 500}))}
     runs_diagnostics_contract._minimize_observation(observation, severe=severe)
     assert observation["runtime_diagnostics"]["sdk"] == {"api_error_status": 500}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["normalize", "sanitize", "build", "persist"])
+async def test_capture_failure_logs_phase_correlations_and_safe_cause(phase, monkeypatch, caplog):
+    from psycopg.errors import SerializationFailure
+    from app.runs.application import diagnostics as application
+
+    original = SerializationFailure("SQL SELECT private-prompt password=private-token")
+    wrapper = RuntimeError("postgresql://private-user:private-password@private-host/db")
+    wrapper.__cause__ = original
+    def fail(*_args, **_kwargs):
+        raise wrapper
+
+    class Persistence(InMemoryDiagnostics):
+        async def append_observation(self, conn, **kwargs):
+            self.calls.append((conn, kwargs))
+            fail()
+
+    persistence = Persistence()
+    normalizer = fail if phase == "normalize" else normalize_sdk_runtime_diagnostics
+    if phase == "sanitize":
+        monkeypatch.setattr(application, "sanitize_runtime_diagnostics", fail)
+    if phase == "build":
+        monkeypatch.setattr(application, "build_failure_observation", fail)
+    service = RunDiagnosticsService(
+        persistence=persistence, normalize_runtime_diagnostics=normalizer,
+        runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION, clock=lambda: NOW,
+    )
+    public = {"status": "failed", "error_code": "mcp_execution_outcome_unknown", "message": "safe"}
+    result = await service.capture_failure_result(
+        object(), tenant_id="tenant-private", run_id="run_" + "a" * 32,
+        attempt_id="rat_" + "b" * 64, source="worker_executor", stage="terminalization",
+        error_code=public["error_code"], result_json={**public, "runtime_diagnostics": runtime_diagnostics()},
+    )
+    assert result == public
+    assert wrapper.__cause__ is original
+    record = caplog.records[-1]
+    assert record.capture_phase == phase
+    assert record.run_id == "run_" + "a" * 32
+    assert record.attempt_id == "rat_" + "b" * 64
+    assert record.exception_chain[1]["sqlstate"] == "40001"
+    assert record.exception_chain[1]["relation"] == "cause"
+    assert record.exc_info is None
+    assert len(persistence.calls) == (1 if phase == "persist" else 0)
+    if phase == "persist":
+        assert record.observation_id == persistence.calls[0][1]["observation"]["observation_id"]
+    else:
+        assert not hasattr(record, "observation_id")
+    for secret in ("SELECT", "private-prompt", "private-token", "private-password", "tenant-private", "postgresql://"):
+        assert secret not in caplog.text
+        assert secret not in repr(record.__dict__)
+
+
+@pytest.mark.asyncio
+async def test_protocol_factory_failure_logs_exact_phase_without_database(monkeypatch, caplog):
+    from app.runs.application import diagnostics as application
+
+    def fail(**_kwargs):
+        raise ValueError("private-prompt")
+    monkeypatch.setattr(application, "build_executor_protocol_diagnostics", fail)
+    persistence = InMemoryDiagnostics()
+    service = RunDiagnosticsService(
+        persistence=persistence, normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
+        runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+    )
+    await service.capture_executor_protocol_failure(
+        object(), tenant_id="tenant", run_id="run_" + "a" * 32, attempt_id=None,
+        lease_id=None, task_status="failed", terminal_result={}, validation_errors=[],
+    )
+    assert caplog.records[-1].capture_phase == "factory"
+    assert not hasattr(caplog.records[-1], "attempt_id")
+    assert not persistence.calls
+    assert "private-prompt" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_capture_rejects_private_metadata_and_logger_failure_is_nonfatal(monkeypatch, caplog):
+    from app.runs.application import diagnostics as application
+
+    class Hostile(str):
+        def __str__(self):
+            raise AssertionError("metadata must not render")
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("private-token")
+    service = RunDiagnosticsService(
+        persistence=InMemoryDiagnostics(), normalize_runtime_diagnostics=fail,
+        runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+    )
+    kwargs = dict(
+        tenant_id="tenant", run_id="private-prompt", attempt_id=Hostile("private-token"),
+        source=Hostile("private-source"), stage="/private/path", error_code="executor_failure",
+        result_json={"status": "failed", "runtime_diagnostics": runtime_diagnostics()},
+    )
+    assert await service.capture_failure_result(object(), **kwargs) == {"status": "failed"}
+    record = caplog.records[-1]
+    assert not hasattr(record, "run_id") and not hasattr(record, "attempt_id")
+    assert record.diagnostic_source == record.diagnostic_stage == "unknown"
+    assert "private" not in repr(record.__dict__)
+    monkeypatch.setattr(application.logger, "warning", fail)
+    assert await service.capture_failure_result(object(), **kwargs) == {"status": "failed"}

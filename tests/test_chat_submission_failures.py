@@ -60,3 +60,137 @@ def test_submission_diagnostics_never_log_exception_content_or_private_paths(cap
     assert "private-token" not in caplog.text
     assert "/private/runtime/path" not in caplog.text
     assert "Traceback" not in caplog.text
+
+
+def test_submission_logger_keeps_wrapped_database_cause_without_rendering_it(caplog):
+    from psycopg.errors import UniqueViolation
+
+    original = UniqueViolation("SELECT private-prompt FROM secrets password=private-token")
+    wrapper = RuntimeError("postgresql://private-user:private-password@private-host/db")
+    wrapper.__cause__ = original
+    log_safe_submission_exception(
+        phase="admission_transaction", diagnostic_id="diag_0123456789abcdef", exc=wrapper,
+    )
+    assert "'relation': 'cause'" in caplog.text
+    assert "UniqueViolation" in caplog.text
+    assert "23505" in caplog.text
+    assert "exception_chain_end=complete" in caplog.text
+    assert wrapper.__cause__ is original
+    for secret in ("SELECT", "private-prompt", "private-token", "postgresql://", "private-password"):
+        assert secret not in caplog.text
+    assert caplog.records[-1].exc_info is None
+
+
+def test_submission_chain_honors_context_suppression_precedence_and_cycles(caplog):
+    from app.platform.tracing import safe_exception_log_fields
+
+    outer, cause, context = RuntimeError(), ValueError(), KeyError()
+    outer.__context__ = context
+    assert safe_exception_log_fields(outer)["exception_chain"][1]["relation"] == "context"
+    outer.__suppress_context__ = True
+    assert len(safe_exception_log_fields(outer)["exception_chain"]) == 1
+    outer.__cause__ = cause
+    cause.__cause__ = outer
+    log_safe_submission_exception(phase="resolver", diagnostic_id="diag_0123456789abcdef", exc=outer)
+    assert "ValueError" in caplog.text
+    assert "KeyError" not in caplog.text
+    assert "exception_chain_end=cycle" in caplog.text
+    assert outer.__cause__ is cause and cause.__cause__ is outer
+
+
+def test_submission_chain_limits_depth_and_rejects_hostile_metadata(caplog):
+    class Hostile(RuntimeError):
+        def __str__(self):
+            raise AssertionError("must not render")
+
+        def __repr__(self):
+            raise AssertionError("must not render")
+
+        @property
+        def sqlstate(self):
+            raise AssertionError("must not read arbitrary metadata")
+
+        @property
+        def __traceback__(self):
+            raise AssertionError("must use builtin descriptor")
+
+        @property
+        def __cause__(self):
+            raise AssertionError("must use builtin descriptor")
+
+    root = Hostile("private-prompt")
+    cursor = root
+    for _ in range(1000):
+        following = RuntimeError("private-token")
+        BaseException.__cause__.__set__(cursor, following)
+        cursor = following
+    log_safe_submission_exception(phase="private/path", diagnostic_id="private-token", exc=root)
+    assert "diagnostic_id=unknown phase=unknown" in caplog.text
+    assert caplog.text.count("'exception_type'") == 8
+    assert "exception_chain_end=limit" in caplog.text
+    assert "private" not in caplog.text
+
+
+@pytest.mark.parametrize("code", ["23505", "23505\nSELECT secret", "ABCDE", "x" * 10000])
+def test_submission_logger_ignores_untrusted_sqlstate(code, caplog):
+    class Impostor(RuntimeError):
+        sqlstate = code
+
+    log_safe_submission_exception(phase="resolver", diagnostic_id="diag_0123456789abcdef", exc=Impostor())
+    assert "sqlstate" not in caplog.text
+
+
+def test_submission_logger_bounds_app_frames_and_omits_paths(caplog):
+    namespace = {"__name__": "app.synthetic_test"}
+    exec(compile("def recurse(n):\n if n: return recurse(n-1)\n raise ValueError('private-prompt')", "/private/path/file.py", "exec"), namespace)
+    try:
+        namespace["recurse"](150)
+    except ValueError as exc:
+        log_safe_submission_exception(phase="resolver", diagnostic_id="diag_0123456789abcdef", exc=exc)
+    # Eight frames in the legacy outer summary and eight in the structural node.
+    assert caplog.text.count("app.synthetic_test:") == 16
+    assert "'frames_limited': True" in caplog.text
+    assert "/private/path" not in caplog.text
+    assert "private-prompt" not in caplog.text
+    assert "test_chat_submission_failures" not in caplog.text
+
+
+def test_submission_logging_failure_does_not_replace_original_exception(monkeypatch):
+    from app.conversations.application import submission_failures
+
+    original = RuntimeError("original")
+    def fail_log(*_args, **_kwargs):
+        raise ValueError("logger unavailable")
+    monkeypatch.setattr(submission_failures.logger, "error", fail_log)
+    with pytest.raises(RuntimeError) as caught:
+        try:
+            raise original
+        except RuntimeError as exc:
+            log_safe_submission_exception(phase="resolver", diagnostic_id="diag_0123456789abcdef", exc=exc)
+            raise
+    assert caught.value is original
+
+
+def test_submission_logger_rejects_malicious_frame_and_type_metadata(caplog):
+    class Hostile(str):
+        def __str__(self):
+            raise AssertionError("must not render metadata")
+
+    class Meta(type):
+        def __getattribute__(self, name):
+            if name in {"__name__", "sqlstate"}:
+                raise AssertionError("must not execute metadata")
+            return super().__getattribute__(name)
+
+    class Error(RuntimeError, metaclass=Meta):
+        pass
+
+    namespace = {"__name__": Hostile("app.private_token"), "Error": Error}
+    exec(compile("def fail():\n raise Error('private-prompt')", "/private/path/file.py", "exec"), namespace)
+    try:
+        namespace["fail"]()
+    except Error as exc:
+        log_safe_submission_exception(phase="resolver", diagnostic_id="diag_0123456789abcdef", exc=exc)
+    assert "exception_type=Exception" in caplog.text
+    assert "frames=none" in caplog.text
+    assert "private" not in caplog.text

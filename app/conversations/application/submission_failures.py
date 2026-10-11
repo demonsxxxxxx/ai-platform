@@ -4,6 +4,8 @@ import logging
 import re
 from uuid import uuid4
 
+from app.platform.tracing import safe_exception_log_fields
+
 
 # Preserve the existing operator log category while moving its safe projection.
 logger = logging.getLogger("app.routes.chat")
@@ -25,17 +27,25 @@ def log_safe_submission_exception(
     diagnostic_id: str,
     exc: BaseException,
 ) -> None:
-    frames: list[str] = []
-    traceback_cursor = exc.__traceback__
-    while traceback_cursor is not None:
-        module_name = str(traceback_cursor.tb_frame.f_globals.get("__name__") or "unknown")
-        if module_name == "app" or module_name.startswith("app."):
-            frames.append(f"{module_name}:{traceback_cursor.tb_lineno}:{traceback_cursor.tb_frame.f_code.co_name}")
-        traceback_cursor = traceback_cursor.tb_next
-    logger.error(
-        "chat submission failure diagnostic_id=%s phase=%s exception_type=%s frames=%s",
-        diagnostic_id, phase, type(exc).__name__, ",".join(frames[-8:]) or "none",
-    )
+    try:
+        fields = safe_exception_log_fields(exc)
+        chain = fields["exception_chain"]
+        safe_phase = phase if type(phase) is str and phase in {
+            "resolver", "rejection_ledger", "admission_transaction",
+        } else "unknown"
+        safe_id = diagnostic_id if type(diagnostic_id) is str and re.fullmatch(
+            r"diag_[0-9a-f]{16}", diagnostic_id,
+        ) else "unknown"
+        logger.error(
+            "chat submission failure diagnostic_id=%s phase=%s exception_type=%s frames=%s "
+            "exception_chain=%s exception_chain_end=%s",
+            safe_id, safe_phase, chain[0]["exception_type"],
+            ",".join(chain[0]["frames"]) or "none",
+            chain, fields["exception_chain_end"],
+        )
+    except Exception:
+        # Logging cannot replace the submission's original failure.
+        pass
 
 
 def submission_error_detail(
