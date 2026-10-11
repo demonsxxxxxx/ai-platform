@@ -283,3 +283,29 @@ runtime fallback, and it must not delete provider or checkpoint rows ad hoc.
 The additive nullable JSON column may remain during a binary rollback; reverting
 the readiness version does not authorize deleting it or overwriting migration
 ledger entries. Apply the schema migration before starting the new binary.
+
+### SDK mirror batch sizing and retry boundary
+
+The Claude SDK eager mirror may coalesce many buffered frames into one
+`SessionStore.append`. The adapter deterministically splits that one call into
+host callbacks bounded by the existing 128-entry, 256-KiB single-entry and 2-MiB
+request-envelope limits. It validates the complete input before sending any
+chunk. A single oversize JSON entry is rejected without splitting or truncating
+its opaque SDK data; that is a platform resource limit, not an SDK guarantee.
+
+The adapter freezes the original key/entries and chunk payloads, retains its
+confirmed-chunk offset, and retries an uncertain ACK with exactly the same
+`expected_sequence`. Already acknowledged chunks are not resent when the SDK
+retries its whole append call. Another batch, load or subkey enumeration cannot
+advance a pending failed append. Same-process concurrent append calls serialize
+across subpaths, which share the host epoch sequence. The public accepted final
+sequence advances only when the complete SDK append succeeds; the runner's
+existing mirror-error/tracker fences still reject partial success.
+
+Chunk progress is transient transport state, not another durable authority.
+Host append receipts and existing scope/Attempt/generation/cancellation fences
+remain authoritative. Restart does not adopt a disappeared writer's partial
+batch: host dirty-epoch/recovery policy applies. This change does not alter UUID
+uniqueness, entry normalization, schema, resource caps or retention. It retires
+the assumption that one SDK append must equal one host callback; old single-
+chunk callbacks keep the same request/receipt shape.

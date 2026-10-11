@@ -9,6 +9,7 @@
 
 import { useState, useCallback, useEffect, useRef } from "react";
 import i18n from "../i18n";
+import { skillExportContent } from "../components/skill/skillExport";
 import { ApiRequestError } from "../services/api/fetch";
 import { skillApi } from "../services/api/skill";
 import type { SkillListParams } from "../services/api/skill";
@@ -18,7 +19,6 @@ import type {
   SkillSource,
   UserSkill,
   UserSkillDetail,
-  BinaryFileInfo,
 } from "../types/skill";
 
 // Map installed_from to SkillSource
@@ -37,7 +37,6 @@ function composeSkillResponse(
   userSkill: UserSkill,
   detail?: UserSkillDetail,
   filesContent?: Record<string, string>,
-  binaryFiles?: Record<string, BinaryFileInfo>,
 ): PublicSkillResponse {
   // Use description from API directly (extracted from SKILL.md by backend)
   const description =
@@ -61,7 +60,6 @@ function composeSkillResponse(
     source: mapInstalledToSource(userSkill.installed_from),
     content: files["SKILL.md"] || "",
     files,
-    binaryFiles: binaryFiles || {},
     file_count: userSkill.file_count,
     installed_from: userSkill.installed_from,
     published_marketplace_name: userSkill.published_marketplace_name,
@@ -319,91 +317,34 @@ export function useSkills(options?: {
     [enabled, skills],
   );
 
-  // Fetch single skill with ALL file contents (for export etc.)
-  const getFullSkill = useCallback(
-    async (name: string): Promise<SkillResponse | null> => {
+  // A complete export has no editor/catalog metadata and cannot succeed partially.
+  const getSkillExportFiles = useCallback(
+    async (
+      name: string,
+      isCurrent: () => boolean = () => true,
+    ): Promise<Record<string, string | Uint8Array> | null> => {
       if (!enabled) return null;
+      const assertCurrent = () => {
+        if (!isCurrent()) throw new DOMException("Export cancelled", "AbortError");
+      };
       try {
-        // Use cached skills list first
-        const cached = skills.find((s) => s.name === name);
+        assertCurrent();
         const detail = await skillApi.get(name);
-
-        let userSkill: UserSkill | null = null;
-        if (cached) {
-          userSkill = {
-            skill_name: cached.name,
-            expected_version: cached.expected_version,
-            input_modes: cached.input_modes,
-            requires_file: cached.requires_file,
-            description: cached.description,
-            tags: cached.tags,
-            files: cached.filePaths || [],
-            enabled: cached.enabled,
-            file_count: cached.file_count,
-            installed_from: cached.installed_from,
-            published_marketplace_name: cached.published_marketplace_name,
-            created_at: cached.created_at,
-            updated_at: cached.updated_at,
-            is_published: cached.is_published,
-            marketplace_is_active: cached.marketplace_is_active,
-          };
-        } else {
-          userSkill = {
-            skill_name: detail.skill_name || name,
-            expected_version: detail.expected_version || "",
-            input_modes: detail.input_modes || [],
-            requires_file: detail.requires_file ?? false,
-            description: detail.description || name,
-            tags: detail.tags || [],
-            files: detail.files || [],
-            enabled: detail.enabled ?? true,
-            file_count: detail.files?.length || 0,
-            installed_from: "manual",
-            created_at: undefined,
-            updated_at: undefined,
-            is_published: detail.is_published || false,
-            marketplace_is_active: detail.marketplace_is_active ?? true,
-          };
-        }
-
-        const filesContent: Record<string, string> = {};
-        const binaryFiles: Record<string, BinaryFileInfo> = {};
-        if (detail.files) {
-          await Promise.all(
-            detail.files.map(async (filePath) => {
-              try {
-                const fileResp = await skillApi.getFile(name, filePath);
-                if (fileResp.is_binary && fileResp.url) {
-                  filesContent[filePath] = `[Binary: ${fileResp.mime_type}, ${(
-                    (fileResp.size ?? 0) / 1024
-                  ).toFixed(1)}KB]`;
-                  binaryFiles[filePath] = {
-                    url: fileResp.url,
-                    mime_type: fileResp.mime_type || "application/octet-stream",
-                    size: fileResp.size || 0,
-                  };
-                } else {
-                  filesContent[filePath] = fileResp.content;
-                }
-              } catch {
-                // File might not be readable
-              }
-            }),
-          );
-        }
-
-        return composeSkillResponse(
-          userSkill,
-          detail,
-          filesContent,
-          binaryFiles,
-        );
+        assertCurrent();
+        const entries = await Promise.all((detail.files || []).map(async (path) => {
+          assertCurrent();
+          const file = await skillApi.getFile(name, path);
+          assertCurrent();
+          return [path, skillExportContent(file)] as const;
+        }));
+        assertCurrent();
+        return Object.fromEntries(entries);
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to fetch skill");
+        if (isCurrent()) setError(err instanceof Error ? err.message : "Failed to fetch skill");
         return null;
       }
     },
-    [enabled, skills],
+    [enabled],
   );
 
   // Update skill
@@ -845,7 +786,7 @@ export function useSkills(options?: {
     listError,
     fetchSkills,
     getSkill,
-    getFullSkill,
+    getSkillExportFiles,
     updateSkill,
     deleteSkill,
     batchDeleteSkills,
