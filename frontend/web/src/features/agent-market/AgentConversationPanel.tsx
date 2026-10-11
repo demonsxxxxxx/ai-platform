@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, MessageSquare, MessageSquarePlus } from "lucide-react";
 import toast from "react-hot-toast";
 import { useTranslation } from "react-i18next";
@@ -37,18 +37,27 @@ export function AgentConversationPanel({
     [source.sessions, t],
   );
 
+  const deleteOwnerRef = useRef<{ source: SessionSidebarSessionSource; currentSessionId: string | null; onNewSession: () => void } | null>(null);
+  useLayoutEffect(() => {
+    deleteOwnerRef.current = { source, currentSessionId, onNewSession };
+    return () => { deleteOwnerRef.current = null; };
+  }, [source, currentSessionId, onNewSession]);
+
   const handleDelete = async () => {
     if (!deleteSessionId) return;
     try {
       await sessionApi.delete(deleteSessionId);
-      source.removeSession(deleteSessionId);
-      if (deleteSessionId === currentSessionId) onNewSession();
+      const owner = deleteOwnerRef.current;
+      if (!owner || owner.source.removeSession !== source.removeSession) return;
+      owner.source.removeSession(deleteSessionId);
+      if (deleteSessionId === owner.currentSessionId) owner.onNewSession();
       toast.success(t("sidebar.sessionDeleted"));
     } catch (error) {
+      if (deleteOwnerRef.current?.source.removeSession !== source.removeSession) return;
       console.error("Failed to delete Agent conversation:", error);
       toast.error(t("sidebar.deleteFailed"));
     } finally {
-      setDeleteSessionId(null);
+      if (deleteOwnerRef.current?.source.removeSession === source.removeSession) setDeleteSessionId(null);
     }
   };
 

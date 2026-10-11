@@ -13,7 +13,7 @@ test("AgentWorkspaceRoute restores current and historical Agent Conversations by
   assert.doesNotMatch(source, /revision/);
   assert.match(source, /agentProfileApi\.getPublished\(agentId\)/);
   assert.match(source, /historyScopeAuthorized/);
-  assert.match(source, /useAgentConversationList\([\s\S]*historyScopeAuthorized \? agentId : undefined/);
+  assert.match(source, /useAgentWorkspaceHistory\([\s\S]*historyScopeAuthorized \? agentId : undefined/);
   assert.match(source, /sessionApi\.getAuthoritative\(routeSessionId\)/);
   assert.match(source, /selectPublishedMarketProfile/);
   assert.match(source, /profile: historicalProfile\(identity\)/);
