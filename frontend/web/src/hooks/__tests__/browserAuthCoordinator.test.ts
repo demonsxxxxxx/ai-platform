@@ -85,6 +85,7 @@ function installTransactionalIndexedDb(options: {
   const requests: Array<Record<string, unknown>> = [];
   const databases = new Set<FakeDatabase>();
   const getStarted = deferred<void>();
+  const transactionQueue: FakeTransaction[] = [];
   let schemaCreated = false;
   let abortedTransactions = 0;
   let closedDatabases = 0;
@@ -107,9 +108,29 @@ function installTransactionalIndexedDb(options: {
     private pending = 0;
     private completed = false;
     aborted = false;
+    private queuedRequests: Array<() => void> = [];
+    private writes = new Map<string, unknown>();
+
+    // IDB readwrite transactions on the same store run in creation order.
+    // Pending writes become visible only after a successful commit.
+    private enqueue(request: () => void) {
+      if (transactionQueue[0] === this) queueMicrotask(request);
+      else this.queuedRequests.push(request);
+    }
+
+    private release() {
+      transactions.delete(this);
+      const index = transactionQueue.indexOf(this);
+      if (index >= 0) transactionQueue.splice(index, 1);
+      if (index === 0) {
+        const next = transactionQueue[0];
+        for (const request of next?.queuedRequests.splice(0) ?? []) queueMicrotask(request);
+      }
+    }
 
     constructor(readonly database: FakeDatabase) {
       transactions.add(this);
+      transactionQueue.push(this);
     }
 
     objectStore() {
@@ -125,16 +146,16 @@ function installTransactionalIndexedDb(options: {
             this.finishIfIdle();
           };
           getStarted.resolve();
-          if (options.holdGets) heldGets.push(deliver);
-          else queueMicrotask(deliver);
+          if (options.holdGets) heldGets.push(() => this.enqueue(deliver));
+          else this.enqueue(deliver);
           return request as unknown as IDBRequest<unknown>;
         },
         put: (value: { id: string }) => {
           const request = new FakeRequest<IDBValidKey>();
           this.pending += 1;
-          queueMicrotask(() => {
+          this.enqueue(() => {
             if (this.aborted) return;
-            records.set(value.id, clone(value));
+            this.writes.set(value.id, clone(value));
             request.result = value.id;
             request.onsuccess?.(new Event("success"));
             this.pending -= 1;
@@ -149,7 +170,10 @@ function installTransactionalIndexedDb(options: {
       if (this.aborted || this.completed) return;
       this.aborted = true;
       abortedTransactions += 1;
-      queueMicrotask(() => this.onabort?.(new Event("abort")));
+      queueMicrotask(() => {
+        this.onabort?.(new Event("abort"));
+        this.release();
+      });
     }
 
     private finishIfIdle() {
@@ -157,8 +181,9 @@ function installTransactionalIndexedDb(options: {
       queueMicrotask(() => {
         if (this.aborted || this.completed || this.pending !== 0) return;
         this.completed = true;
-        transactions.delete(this);
+        for (const [key, value] of this.writes) records.set(key, value);
         this.oncomplete?.(new Event("complete"));
+        this.release();
       });
     }
   }
