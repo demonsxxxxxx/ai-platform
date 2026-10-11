@@ -130,9 +130,14 @@ promotion of the current version (including a rollout-percentage update) preserv
 the previous track and rollback target. Global deprecation or disabling is an
 explicit version-status action and is blocked while any active tenant policy
 selects that version, including its previous track below 100% rollout, or while
-the global catalog fallback pointer still references it. These writes and version
-uploads serialize on the same Skill lifecycle row lock. A disabled historical pin
-still fails replay authorization; ordinary deprecation retains replay semantics.
+the global catalog fallback pointer still references it. The current management
+API does not move that pointer, so its initial version stays protected as a
+compatibility owner for policy-free tenant selection. Retiring that version needs
+a separately governed catalog migration or replacement of the fallback authority,
+with reference-exit evidence; this change adds no force-retirement mechanism.
+These writes and version uploads serialize on the same Skill lifecycle row lock.
+A disabled historical pin still fails replay authorization; ordinary deprecation
+retains replay semantics.
 
 `GET /api/ai/admin/skills` and its detail route expose the current management
 catalog only. Every returned aggregate has `lifecycle_status: "active"`;
