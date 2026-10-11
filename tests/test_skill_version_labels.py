@@ -44,7 +44,7 @@ class _Connection:
 async def test_display_version_adapter_locks_skill_before_ordered_history_read():
     conn = _Connection(lock_row={"id": "review"})
 
-    await skill_postgres.lock_skill_for_version_upload(conn, skill_id="review")
+    await skill_postgres.lock_skill_version_lifecycle(conn, skill_id="review")
     rows = await skill_postgres.list_uploaded_skill_display_version_rows(
         conn,
         skill_ids=["review"],
@@ -64,7 +64,7 @@ async def test_display_version_adapter_locks_skill_before_ordered_history_read()
 @pytest.mark.asyncio
 async def test_display_version_adapter_rejects_a_missing_skill_lock_target():
     with pytest.raises(RepositoryConflictError, match="skill_not_found"):
-        await skill_postgres.lock_skill_for_version_upload(
+        await skill_postgres.lock_skill_version_lifecycle(
             _Connection(),
             skill_id="missing",
         )

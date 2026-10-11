@@ -49,6 +49,9 @@ from app.skills.domain.snapshot_paths import (
 from app.skills.domain.executable_names import (
     is_valid_executable_skill_name as is_valid_executable_skill_name,
 )
+from app.skills.domain.release_transition import (
+    previous_skill_version_for_promotion as previous_skill_version_for_promotion,
+)
 from app.skills.domain.version_labels import (
     next_uploaded_skill_display_version,
     resolve_uploaded_skill_display_versions,
@@ -83,24 +86,24 @@ class AdminSkillListResponse(TypedDict):
     items: list[AdminSkillSummaryResponse]
 
 
-_skill_display_version_persistence: Any | None = None
+_skill_version_persistence: Any | None = None
 _skill_run_admission_service: SkillRunAdmissionService | None = None
 _skill_mcp_pinner: Callable[..., list[dict[str, Any]]] | None = None
 
 
-def configure_skill_display_version_persistence(persistence: Any) -> None:
-    global _skill_display_version_persistence
-    _skill_display_version_persistence = persistence
+def configure_skill_version_persistence(persistence: Any) -> None:
+    global _skill_version_persistence
+    _skill_version_persistence = persistence
 
 
-def _display_version_persistence() -> Any:
-    if _skill_display_version_persistence is None:
-        raise RuntimeError("skill_display_version_persistence_not_configured")
-    return _skill_display_version_persistence
+def _version_persistence() -> Any:
+    if _skill_version_persistence is None:
+        raise RuntimeError("skill_version_persistence_not_configured")
+    return _skill_version_persistence
 
 
-async def lock_skill_for_version_upload(conn: Any, *, skill_id: str) -> None:
-    await _display_version_persistence().lock_skill_for_version_upload(
+async def lock_skill_version_lifecycle(conn: Any, *, skill_id: str) -> None:
+    await _version_persistence().lock_skill_version_lifecycle(
         conn,
         skill_id=skill_id,
     )
@@ -111,7 +114,7 @@ async def list_uploaded_skill_display_version_rows(
     *,
     skill_ids: list[str],
 ) -> list[dict[str, Any]]:
-    return await _display_version_persistence().list_uploaded_skill_display_version_rows(
+    return await _version_persistence().list_uploaded_skill_display_version_rows(
         conn,
         skill_ids=skill_ids,
     )
@@ -276,9 +279,10 @@ __all__ = [
     "admit_skill_run",
     "admit_skill_set",
     "configure_skill_run_admission",
-    "configure_skill_display_version_persistence",
+    "configure_skill_version_persistence",
     "list_uploaded_skill_display_version_rows",
-    "lock_skill_for_version_upload",
+    "lock_skill_version_lifecycle",
+    "previous_skill_version_for_promotion",
     "is_valid_executable_skill_name",
     "next_uploaded_skill_display_version",
     "pin_skill_run_mcp_tools",
