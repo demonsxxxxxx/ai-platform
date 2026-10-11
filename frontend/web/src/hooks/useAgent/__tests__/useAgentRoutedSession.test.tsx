@@ -1677,6 +1677,10 @@ test("useAgent retains an unknown submission and blocks an automatic duplicate",
   const unknownFailures: Array<{ name: string; error: Error }> = [
     { name: "network loss", error: new Error("response lost after acceptance") },
     {
+      name: "committed queue payload validation failure",
+      error: new ApiRequestError("invalid queue payload", 500, "queue_payload_invalid"),
+    },
+    {
       name: "database commit outcome unknown",
       error: new ApiRequestError(
         "safe internal projection",
@@ -1873,6 +1877,18 @@ test("useAgent clears a stale pre-ledger fence through explicit retry only after
 
 test("useAgent keeps generic, network, malformed, legacy, mismatched-ID, and unknown-version GET/retry results fenced", async () => {
   const ambiguousResolvers = [
+    {
+      name: "committed queue payload validation failure",
+      resolve: async (_submissionId: string) => {
+        throw new ApiRequestError("invalid queue payload", 500, "queue_payload_invalid");
+      },
+    },
+    {
+      name: "legacy queue payload rejection cannot clear explicit retry fence",
+      resolve: async (_submissionId: string) => {
+        throw new ApiRequestError("invalid queue payload", 500, "queue_payload_invalid", "rejected_before_persist");
+      },
+    },
     {
       name: "network failure",
       resolve: async (_submissionId: string) => {

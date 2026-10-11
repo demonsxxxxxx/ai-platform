@@ -229,3 +229,27 @@ def test_submission_sink_failure_stderr_cannot_render_active_private_exception(f
     assert "SYNTHETIC_SECRET_MARKER" not in stderr
     assert caught.value is original
     assert original.__cause__ is None and original.__context__ is None
+
+
+@pytest.mark.parametrize(
+    ("message", "capability_kind", "expected"),
+    [
+        ("private token=secret /private/runtime/path", "mcp_tool", "mcp_tool_not_available"),
+        ("mcp_tool_not_available", None, "mcp_tool_not_available"),
+        ("private token=secret /private/runtime/path", "native_command", "capability_not_authorized"),
+        ("private token=secret /private/runtime/path", None, "capability_not_authorized"),
+    ],
+)
+def test_capability_authorization_projection_preserves_safe_mapping(message, capability_kind, expected):
+    from types import SimpleNamespace
+    from app.conversations.api import capability_authorization_error_code
+    from app.platform.postgres.errors import RepositoryAuthorizationError
+
+    denial = SimpleNamespace(capability_kind=capability_kind, private_payload="token=private") if capability_kind else None
+    error = RepositoryAuthorizationError(message, denial=denial)
+    code = capability_authorization_error_code(error)
+    assert code == expected
+    detail = submission_error_detail(code=code, rejected_before_persist=True)
+    assert detail == {"code": expected, "submission_disposition": "rejected_before_persist"}
+    assert "private" not in str(detail)
+    assert "secret" not in str(detail)

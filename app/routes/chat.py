@@ -41,6 +41,7 @@ from app.control_plane_contracts import (
     standard_trace_id,
 )
 from app.conversations.api import (
+    capability_authorization_error_code as _capability_authorization_error_code,
     safe_submission_code as _safe_submission_code,
     new_submission_diagnostic_id as _new_submission_diagnostic_id,
     submission_error_detail as _submission_error_detail,
@@ -146,18 +147,6 @@ _REQUIRED_CAPABILITY_UNAVAILABLE_CODE = "required_capability_unavailable"
 _CHAT_SUBMISSION_INTERNAL_ERROR_CODE = "chat_submission_internal_error"
 _QUEUE_PAYLOAD_INVALID_CODE = "queue_payload_invalid"
 _MESSAGE_CURSOR_VERSION = 1
-
-
-def _capability_authorization_error_code(
-    exc: platform_errors.RepositoryAuthorizationError,
-) -> str:
-    denial = getattr(exc, "denial", None)
-    if (
-        (denial is not None and denial.capability_kind == "mcp_tool")
-        or str(exc) == "mcp_tool_not_available"
-    ):
-        return "mcp_tool_not_available"
-    return "capability_not_authorized"
 
 
 def _encode_message_cursor(row: dict[str, Any], *, session_id: str) -> str:
@@ -2115,6 +2104,11 @@ async def chat_stream(
                 return recovered_response
         if submission_id is not None and rejected_before_persist:
             raise _chat_submission_http_error(status_code=exc.status_code, code=code) from exc
+        if code == _QUEUE_PAYLOAD_INVALID_CODE:
+            exc.detail = {
+                **queue_payload_invalid_detail(exc.__cause__),
+                **_submission_error_detail(code=code, rejected_before_persist=True),
+            }
         raise
     except platform_errors.RepositoryAuthorizationError as exc:
         await _audit_capability_denial(principal, exc, source="chat_stream")
