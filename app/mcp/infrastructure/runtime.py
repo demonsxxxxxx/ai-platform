@@ -136,7 +136,8 @@ class McpPrincipalJwtStore:
         record = _open_principal_jwt(value, binding)
         now = self._now()
         if record.jwt_exp <= now:
-            await self.delete(binding)
+            # Redis TTL owns expiry. This read may predate a concurrent put;
+            # deleting the shared user key here could erase a fresh credential.
             raise McpRuntimeContextError("mcp_principal_jwt_expired", status_code=401)
         try:
             payload = _jwt_payload(record.jwt, now=now)
@@ -149,16 +150,6 @@ class McpPrincipalJwtStore:
             raise McpRuntimeContextError("mcp_principal_jwt_corrupt", status_code=503)
         return record.jwt
 
-    async def delete(self, principal: McpPrincipal) -> None:
-        binding = McpContextPrincipal.from_principal(principal)
-        try:
-            client = get_redis_client()
-            await client.delete(_principal_jwt_key(binding))
-        except Exception:
-            return
-        finally:
-            if "client" in locals():
-                await client.aclose()
 
 
 _DEFAULT_PRINCIPAL_JWT_STORE: McpPrincipalJwtStore | None = None
