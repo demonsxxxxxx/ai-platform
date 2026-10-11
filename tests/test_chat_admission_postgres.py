@@ -9,6 +9,7 @@ import psycopg
 from psycopg import sql
 from psycopg.rows import dict_row
 import pytest
+from fastapi import HTTPException
 
 from app.auth import AuthPrincipal
 from app.models import ChatStreamRequest
@@ -124,8 +125,11 @@ async def test_chat_rejection_recovery_uses_committed_postgres_outcome(monkeypat
             "code": "chat_submission_internal_error",
         }
         if failure_mode == "rejection_commit_ack_lost":
-            with pytest.raises(RuntimeError, match="rejection COMMIT acknowledgement lost"):
+            with pytest.raises(HTTPException) as raised:
                 await _persist_pre_persistence_rejection(**recovery_kwargs)
+            assert raised.value.status_code == 500
+            assert raised.value.detail["code"] == "chat_submission_internal_error"
+            assert "submission_disposition" not in raised.value.detail
         else:
             response = await _persist_pre_persistence_rejection(**recovery_kwargs)
             if failure_mode == "admission_commit_ack_lost":

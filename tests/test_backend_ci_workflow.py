@@ -58,6 +58,7 @@ AGENT_SKILL_CONTRACT_TESTS = (
     "tests/test_admin_skills.py",
     "tests/test_skill_run_admission.py",
     "tests/test_chat_routes.py",
+    "tests/test_chat_submission_failures.py",
     "tests/test_skills_marketplace_routes.py",
 )
 BACKEND_TEST_SHARDS = {

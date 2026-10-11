@@ -1071,6 +1071,121 @@ async def test_unkeyed_chat_commit_uncertainty_never_claims_rejection(monkeypatc
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("entrypoint", ["prevalidation", "typed-handler"])
+@pytest.mark.parametrize("failure_stage", ["claim", "read", "write", "exit", "cancelled"])
+async def test_rejection_ledger_uncertainty_is_safe_at_every_caller(
+    monkeypatch, caplog, entrypoint, failure_stage,
+):
+    request = ChatStreamRequest(
+        message="synthetic-private-request",
+        session_id="session-owned",
+        skill_id="raw-skill" if entrypoint == "prevalidation" else None,
+        submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+    )
+    failure = RuntimeError("synthetic-private-ledger-failure")
+
+    @asynccontextmanager
+    async def tracked_transaction():
+        conn = SimpleNamespace(recovering=False)
+        yield conn
+        if conn.recovering and failure_stage == "exit":
+            raise failure
+
+    async def provision(conn, **_kwargs):
+        conn.recovering = True
+
+    async def read_session(_conn, **_kwargs):
+        if failure_stage == "read":
+            raise failure
+        return {"workspace_id": "workspace-owned"}
+
+    async def claim(_conn, **_kwargs):
+        if failure_stage == "claim":
+            raise failure
+        if failure_stage == "cancelled":
+            raise asyncio.CancelledError()
+        return {"state": "resolving"}, True
+
+    async def finalize(_conn, **_kwargs):
+        if failure_stage == "write":
+            raise failure
+
+    monkeypatch.setattr("app.routes.chat.transaction", tracked_transaction)
+    monkeypatch.setattr(_owner_identity_infrastructure_postgres, "ensure_submission_principal", provision)
+    monkeypatch.setattr(_owner_conversations_infrastructure_session_queries_postgres, "get_authorized_session", read_session)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, "claim_chat_submission", claim)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, "finalize_chat_submission", finalize)
+    monkeypatch.setattr(
+        _owner_runs_infrastructure_postgres, "acquire_user_active_run_admission_lock",
+        AsyncMock(side_effect=HTTPException(status_code=409, detail="user_active_run_limit_exceeded")),
+    )
+
+    with pytest.raises(asyncio.CancelledError if failure_stage == "cancelled" else HTTPException) as raised:
+        await chat_stream(request, principal=principal())
+
+    if failure_stage == "cancelled":
+        assert "phase=rejection_ledger" not in caplog.text
+        return
+    assert raised.value.status_code == 500
+    assert raised.value.detail["code"] == "chat_submission_internal_error"
+    assert "submission_disposition" not in raised.value.detail
+    diagnostic_id = raised.value.detail["diagnostic_id"]
+    assert diagnostic_id.startswith("diag_") and len(diagnostic_id) == 21
+    int(diagnostic_id[5:], 16)
+    assert diagnostic_id in caplog.text
+    assert "phase=rejection_ledger" in caplog.text
+    assert "synthetic-private" not in caplog.text
+    assert "synthetic-private" not in str(raised.value.detail)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("state", "outcome", "expected_status", "expected_detail"),
+    [
+        ("queued", {"status": "queued", "session_id": "session-a", "run_id": "run-a"}, None, None),
+        ("needs_confirmation", {"status": "needs_confirmation", "suggestions": []}, None, None),
+        ("enqueue_failed", {}, 503, "queue_enqueue_failed"),
+        ("accepted_pending_enqueue", {}, 409, "chat_submission_unresolved"),
+        ("unknown", {}, 409, "chat_submission_unresolved"),
+        ("admission_rejected", {}, 409, "platform_multi_agent_not_supported"),
+    ],
+)
+async def test_rejection_recovery_preserves_existing_public_outcome_mapping(
+    monkeypatch, state, outcome, expected_status, expected_detail,
+):
+    from app.routes.chat import _persist_pre_persistence_rejection
+
+    request = ChatStreamRequest(
+        message="same intent", submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+    )
+    row = {
+        "submission_id": str(request.submission_id), "state": state, "outcome_json": outcome,
+        "request_fingerprint_sha256": _canonical_pre_persistence_rejection_fingerprint(
+            request=request, principal=principal(), query_agent_id=None,
+        ),
+    }
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, "claim_chat_submission", AsyncMock(return_value=(row, False)))
+    finalize = AsyncMock(side_effect=AssertionError("durable outcome must not be replaced"))
+    monkeypatch.setattr(_owner_persistence_chat_submissions, "finalize_chat_submission", finalize)
+    kwargs = dict(
+        request=request, principal=principal(), submission_id=str(request.submission_id),
+        query_agent_id=None, workspace_id="default", session_id=None, code="chat_submission_internal_error",
+    )
+
+    if expected_status is None:
+        response = await _persist_pre_persistence_rejection(**kwargs)
+        assert response.status == state
+        assert response.run_id == outcome.get("run_id")
+    else:
+        with pytest.raises(HTTPException) as raised:
+            await _persist_pre_persistence_rejection(**kwargs)
+        assert raised.value.status_code == expected_status
+        assert raised.value.detail == expected_detail
+    finalize.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_keyed_continuation_provisions_principal_and_claims_saved_workspace(monkeypatch):
     request = ChatStreamRequest(
         message="resume durable submission",
@@ -5193,6 +5308,11 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         assert "submission_disposition" not in exc_info.value.detail
         assert exc_info.value.detail["diagnostic_id"].startswith("diag_")
         assert "private-commit-detail" not in caplog.text
+        failure_records = [record.getMessage() for record in caplog.records if "chat submission failure" in record.getMessage()]
+        assert len(failure_records) == 2
+        assert all(exc_info.value.detail["diagnostic_id"] in message for message in failure_records)
+        assert "phase=admission_transaction" in failure_records[0]
+        assert "phase=rejection_ledger" in failure_records[1]
         assert "enqueue" not in calls
         if creation_failure.startswith("readback"):
             assert committed_submission["state"] == "accepted_pending_enqueue"

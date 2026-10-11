@@ -2,8 +2,6 @@ import base64
 import binascii
 import hashlib
 import json
-import logging
-import re
 from datetime import datetime
 from typing import Annotated, Any
 from uuid import UUID, uuid4
@@ -42,6 +40,11 @@ from app.control_plane_contracts import (
     standard_trace_id,
 )
 from app.conversations.api import (
+    safe_submission_code as _safe_submission_code,
+    new_submission_diagnostic_id as _new_submission_diagnostic_id,
+    log_safe_submission_exception as _log_safe_submission_exception,
+    submission_error_detail as _submission_error_detail,
+    submission_error_code as _submission_code,
     attempt_chat_queue_admission,
     resolve_chat_submission,
     submission_resolution_projection,
@@ -136,20 +139,13 @@ from app.validation import assert_safe_principal_user_id
 router = APIRouter()
 _agent_profile_authority = AgentProfileAuthority()
 
-logger = logging.getLogger(__name__)
 _MISSING = object()
 _CHAT_SUBMISSION_RESOLUTION_CACHE_CONTROL = "private, no-store"
 _PRELEDGER_RECOVERY_REJECTION_CODE = "chat_submission_retired_before_ledger"
 _REQUIRED_CAPABILITY_UNAVAILABLE_CODE = "required_capability_unavailable"
 _CHAT_SUBMISSION_INTERNAL_ERROR_CODE = "chat_submission_internal_error"
 _QUEUE_PAYLOAD_INVALID_CODE = "queue_payload_invalid"
-_SAFE_SUBMISSION_DETAIL_CODES = frozenset({_REQUIRED_CAPABILITY_UNAVAILABLE_CODE})
-_SAFE_SUBMISSION_CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _MESSAGE_CURSOR_VERSION = 1
-
-
-def _safe_submission_code(value: object, fallback: str = "chat_submission_rejected") -> str:
-    return value if isinstance(value, str) and _SAFE_SUBMISSION_CODE_PATTERN.fullmatch(value) else fallback
 
 
 def _capability_authorization_error_code(
@@ -162,43 +158,6 @@ def _capability_authorization_error_code(
     ):
         return "mcp_tool_not_available"
     return "capability_not_authorized"
-
-
-def _new_submission_diagnostic_id() -> str:
-    return f"diag_{uuid4().hex[:16]}"
-
-
-def _log_safe_submission_exception(
-    *,
-    phase: str,
-    diagnostic_id: str,
-    exc: BaseException,
-) -> None:
-    frames: list[str] = []
-    traceback_cursor = exc.__traceback__
-    while traceback_cursor is not None:
-        module_name = str(traceback_cursor.tb_frame.f_globals.get("__name__") or "unknown")
-        if module_name == "app" or module_name.startswith("app."):
-            frames.append(f"{module_name}:{traceback_cursor.tb_lineno}:{traceback_cursor.tb_frame.f_code.co_name}")
-        traceback_cursor = traceback_cursor.tb_next
-    logger.error(
-        "chat submission failure diagnostic_id=%s phase=%s exception_type=%s frames=%s",
-        diagnostic_id, phase, type(exc).__name__, ",".join(frames[-8:]) or "none",
-    )
-
-
-def _submission_error_detail(
-    *,
-    code: str,
-    rejected_before_persist: bool,
-    diagnostic_id: str | None = None,
-) -> dict[str, str]:
-    detail = {"code": _safe_submission_code(code)}
-    if rejected_before_persist:
-        detail["submission_disposition"] = "rejected_before_persist"
-    if diagnostic_id is not None:
-        detail["diagnostic_id"] = diagnostic_id
-    return detail
 
 
 def _encode_message_cursor(row: dict[str, Any], *, session_id: str) -> str:
@@ -290,16 +249,6 @@ def _chat_submission_http_error(
         status_code=status_code,
         detail=detail,
     )
-
-
-def _submission_code(detail: object, fallback: str = "chat_submission_rejected") -> str:
-    if isinstance(detail, dict) and isinstance(detail.get("code"), str):
-        return _safe_submission_code(detail["code"], fallback)
-    if isinstance(detail, dict) and detail.get("detail_code") in _SAFE_SUBMISSION_DETAIL_CODES:
-        return _safe_submission_code(detail["detail_code"], fallback)
-    if isinstance(detail, str):
-        return _safe_submission_code(detail, fallback)
-    return fallback
 
 
 def _canonical_pre_persistence_rejection_fingerprint(
@@ -486,6 +435,7 @@ async def _persist_pre_persistence_rejection(
     workspace_id: str | None,
     session_id: str | None,
     code: str,
+    diagnostic_id: str | None = None,
 ) -> ChatStreamResponse | None:
     """Commit a rejection or replay the outcome that won the durable claim.
 
@@ -496,73 +446,90 @@ async def _persist_pre_persistence_rejection(
 
     if submission_id is None:
         return
-    request_fingerprint = _canonical_pre_persistence_rejection_fingerprint(
-        request=request,
-        principal=principal,
-        query_agent_id=query_agent_id,
-    )
-    async with transaction() as conn:
-        await identity_postgres.ensure_submission_principal(
-            conn,
-            tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
-            display_name=principal.display_name,
+    try:
+        request_fingerprint = _canonical_pre_persistence_rejection_fingerprint(
+            request=request,
+            principal=principal,
+            query_agent_id=query_agent_id,
         )
-        effective_workspace_id = workspace_id
-        if session_id:
-            continuation_session = await conversations_session_queries.get_authorized_session(
+        async with transaction() as conn:
+            await identity_postgres.ensure_submission_principal(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
-                session_id=session_id,
+                display_name=principal.display_name,
             )
-            saved_workspace_id = continuation_session.get("workspace_id") if continuation_session else None
-            if isinstance(saved_workspace_id, str) and saved_workspace_id:
-                effective_workspace_id = saved_workspace_id
-        row, created = await persistence_chat_submissions.claim_chat_submission(
-            conn,
-            tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
-            submission_id=submission_id,
-            workspace_id=effective_workspace_id,
-            request_fingerprint_sha256=request_fingerprint,
-        )
-        if not created and _is_preledger_recovery_tombstone(row, principal=principal):
-            raise _chat_submission_http_error(
-                status_code=409,
-                code=_PRELEDGER_RECOVERY_REJECTION_CODE,
-            )
-        if not created and row.get("request_fingerprint_sha256") != request_fingerprint:
-            raise HTTPException(status_code=409, detail="submission_payload_mismatch")
-        if not created and row.get("state") == "rejected_before_persist":
-            if (
-                code == _REQUIRED_CAPABILITY_UNAVAILABLE_CODE
-                and row.get("rejection_code") == code
-            ):
-                return
-            raise _chat_submission_http_error(
-                status_code=409,
-                code=str(row.get("rejection_code") or "chat_submission_rejected"),
-            )
-        if not created and row.get("state") != "resolving":
-            return _existing_chat_submission_response(
-                row,
-                request=request,
-                principal=principal,
-                query_agent_id=query_agent_id,
-                request_fingerprint=request_fingerprint,
-            )
-        if created or row.get("state") == "resolving":
-            await persistence_chat_submissions.finalize_chat_submission(
+            effective_workspace_id = workspace_id
+            if session_id:
+                continuation_session = await conversations_session_queries.get_authorized_session(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    user_id=principal.user_id,
+                    session_id=session_id,
+                )
+                saved_workspace_id = continuation_session.get("workspace_id") if continuation_session else None
+                if isinstance(saved_workspace_id, str) and saved_workspace_id:
+                    effective_workspace_id = saved_workspace_id
+            row, created = await persistence_chat_submissions.claim_chat_submission(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
                 submission_id=submission_id,
-                state="rejected_before_persist",
                 workspace_id=effective_workspace_id,
-                submission_disposition="rejected_before_persist",
-                rejection_code=code,
+                request_fingerprint_sha256=request_fingerprint,
             )
+            if not created and _is_preledger_recovery_tombstone(row, principal=principal):
+                raise _chat_submission_http_error(
+                    status_code=409,
+                    code=_PRELEDGER_RECOVERY_REJECTION_CODE,
+                )
+            if not created and row.get("request_fingerprint_sha256") != request_fingerprint:
+                raise HTTPException(status_code=409, detail="submission_payload_mismatch")
+            if not created and row.get("state") == "rejected_before_persist":
+                if (
+                    code == _REQUIRED_CAPABILITY_UNAVAILABLE_CODE
+                    and row.get("rejection_code") == code
+                ):
+                    return
+                raise _chat_submission_http_error(
+                    status_code=409,
+                    code=str(row.get("rejection_code") or "chat_submission_rejected"),
+                )
+            if not created and row.get("state") != "resolving":
+                return _existing_chat_submission_response(
+                    row,
+                    request=request,
+                    principal=principal,
+                    query_agent_id=query_agent_id,
+                    request_fingerprint=request_fingerprint,
+                )
+            if created or row.get("state") == "resolving":
+                await persistence_chat_submissions.finalize_chat_submission(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    user_id=principal.user_id,
+                    submission_id=submission_id,
+                    state="rejected_before_persist",
+                    workspace_id=effective_workspace_id,
+                    submission_disposition="rejected_before_persist",
+                    rejection_code=code,
+                )
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        diagnostic_id = diagnostic_id or _new_submission_diagnostic_id()
+        _log_safe_submission_exception(
+            phase="rejection_ledger", diagnostic_id=diagnostic_id, exc=exc,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=_submission_error_detail(
+                code=_CHAT_SUBMISSION_INTERNAL_ERROR_CODE,
+                rejected_before_persist=False,
+                diagnostic_id=diagnostic_id,
+            ),
+        ) from None
 
 
 async def _admit_chat_submission(
@@ -2221,35 +2188,23 @@ async def chat_stream(
             diagnostic_id=diagnostic_id,
             exc=exc,
         )
-        rejection_persisted = False
-        try:
-            recovered_response = await _persist_pre_persistence_rejection(
-                principal=principal,
-                submission_id=submission_id,
-                request=request,
-                query_agent_id=query_agent_id,
-                workspace_id=effective_workspace_id,
-                session_id=request.session_id,
-                code=_CHAT_SUBMISSION_INTERNAL_ERROR_CODE,
-            )
-            if recovered_response is not None:
-                return recovered_response
-            rejection_persisted = submission_id is not None
-        except HTTPException:
-            # Existing durable rejection/conflict retains its established replay
-            # semantics; it is not a failure to read or commit the ledger.
-            raise
-        except Exception as persistence_exc:
-            _log_safe_submission_exception(
-                phase="rejection_ledger",
-                diagnostic_id=diagnostic_id,
-                exc=persistence_exc,
-            )
+        recovered_response = await _persist_pre_persistence_rejection(
+            principal=principal,
+            submission_id=submission_id,
+            request=request,
+            query_agent_id=query_agent_id,
+            workspace_id=effective_workspace_id,
+            session_id=request.session_id,
+            code=_CHAT_SUBMISSION_INTERNAL_ERROR_CODE,
+            diagnostic_id=diagnostic_id,
+        )
+        if recovered_response is not None:
+            return recovered_response
         raise HTTPException(
             status_code=500,
             detail=_submission_error_detail(
                 code=_CHAT_SUBMISSION_INTERNAL_ERROR_CODE,
-                rejected_before_persist=rejection_persisted,
+                rejected_before_persist=submission_id is not None,
                 diagnostic_id=diagnostic_id,
             ),
         ) from None

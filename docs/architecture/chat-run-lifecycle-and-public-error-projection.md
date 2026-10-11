@@ -314,6 +314,12 @@ rejection may emit `rejected_before_persist`. If the claim/readback or rejection
 commit cannot establish the outcome, the sanitized internal error omits that
 disposition and the client retains its existing submission recovery fence.
 Unkeyed transaction failures likewise cannot claim absence without durable proof.
+The same safe internal-error projection applies when prevalidation or a typed
+admission rejection cannot commit its rejection ledger. HTTP outcome mappings
+and cancellation retain their existing semantics. Conversations application
+owns bounded error codes, public detail and redacted correlated diagnostics in
+`submission_failures`, exposed through `conversations.api`; the route retains
+HTTP translation and shares one diagnostic ID across admission and recovery.
 This retires the unconditional internal-error rejection projection; the existing
 ledger, idempotency and explicit reconciliation remain its sole compatibility
 owners. No new recovery or retry authority is introduced.
