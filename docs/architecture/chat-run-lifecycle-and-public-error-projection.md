@@ -168,6 +168,26 @@ intervening narration, Tool/process parts, artifacts, Todo state, permission
 requests, and other actionable statuses. The hydrated fold includes accepted
 narration and final answer, not only the last successful fragment.
 
+### Kernel lexical redaction
+
+`app/kernel/memory_redaction.py` owns the secret-like token and email passes
+shared by memory and public-payload projections. Token matching scans maximal
+Unicode word/dot/hyphen runs and classifies their segment chains and safe
+followers once. Email matching scans unconditional local-part runs and anchors
+the existing domain grammar after `@`. Both preserve the original match spans,
+Unicode word boundaries, case-insensitive ASCII extensions, `.lower()` safety
+classification, partial bracket matches, assignment exclusions, minimum-length
+lookahead, replacement order, and standard/strict mode behavior.
+
+These two lexical passes take bounded linear work in their input length; token
+classification uses memory bounded by the largest token run. This is not a
+linearity guarantee for assignment, bearer, provider/JWT rules or the complete
+sanitizer pipeline. The previous restart-at-each-boundary token/email regex
+substitutions and repeated full-token safety callback are retired without a
+production compatibility path. Short synthetic oracle cases and deterministic
+scan-work checks in `tests/test_control_plane_contracts.py` preserve their
+lexical policy; stream/assignment ownership and boundary rechecks stay unchanged.
+
 ## Queue-to-processing presentation
 
 A truthful submission/status response may show `queued` and `queue_position`.
