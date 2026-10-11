@@ -14,11 +14,15 @@ def headers(user_id: str) -> dict[str, str]:
         "x-ai-user-id": user_id,
         "x-ai-user-name": user_id,
         "x-ai-tenant-id": "default",
+        "x-ai-roles": "user",
+        "x-ai-permissions": "artifact:download",
         "x-ai-gateway-secret": "test-secret",
     }
 
 
 def test_artifact_download_rejects_different_user(monkeypatch):
+    lookups = []
+
     @asynccontextmanager
     async def fake_transaction():
         yield object()
@@ -27,7 +31,11 @@ def test_artifact_download_rejects_different_user(monkeypatch):
         assert tenant_id == "default"
         assert user_id == "user-b"
         assert artifact_id == "art_sample"
+        lookups.append((tenant_id, user_id, artifact_id))
         return None
+
+    async def forbidden_admin_fallback(*args, **kwargs):
+        raise AssertionError("ordinary users must not use admin artifact fallback")
 
     class ForbiddenStorage:
         def get_bytes(self, *, storage_key):
@@ -35,10 +43,13 @@ def test_artifact_download_rejects_different_user(monkeypatch):
 
     monkeypatch.setattr("app.routes.files.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.files.get_authorized_artifact", fake_get_authorized_artifact)
+    monkeypatch.setattr("app.routes.files.get_admin_artifact", forbidden_admin_fallback)
     monkeypatch.setattr("app.routes.files.ObjectStorage", ForbiddenStorage)
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
 
     client = TestClient(create_app())
     response = client.get("/api/ai/artifacts/art_sample/download", headers=headers("user-b"))
 
-    assert response.status_code in {403, 404}
+    assert response.status_code == 404
+    assert response.json()["detail"] == "artifact_not_found"
+    assert lookups == [("default", "user-b", "art_sample")]

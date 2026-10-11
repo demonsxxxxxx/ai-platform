@@ -154,6 +154,7 @@ jobs:
               tests/test_conversations_persistence.py
               tests/test_files_artifacts_persistence.py
               tests/test_artifact_manifest_projection.py
+              tests/test_file_deletion_lifecycle.py
               tests/test_identity_capability_distribution.py
               tests/test_identity_worker_capability_audit.py
               tests/test_identity_worker_distribution.py
@@ -230,6 +231,8 @@ jobs:
               tests/test_admin_part_messages.py
               tests/test_admin_runtime_routes.py
               tests/test_auth_principal.py
+              tests/test_artifact_permissions.py
+              tests/test_two_user_artifact_isolation.py
               tests/test_chat_selected_skill_routing.py
               tests/test_claude_agent_events.py
               tests/test_public_event_enum_types.py
@@ -245,6 +248,7 @@ jobs:
               tests/test_run_admission_terminalization.py
               tests/test_run_cancellation_use_case.py
               tests/test_run_control_routes.py
+              tests/test_run_file_continuity_routes.py
               tests/test_run_diagnostics.py
               tests/test_run_persistence.py
               tests/test_run_projection.py
