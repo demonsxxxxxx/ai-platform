@@ -816,11 +816,11 @@ async def test_concurrent_subpath_appends_are_serialized_over_global_sequence(mo
 async def test_real_sdk_eager_read_loop_coalesced_batch_is_chunked(monkeypatch, tmp_path, count):
     from claude_agent_sdk._internal.query import Query
     from claude_agent_sdk._internal.session_resume import build_mirror_batcher
-    from app.executors.claude_agent_sdk_runner import _SessionStoreAppendTracker
+    from app.execution.infrastructure.harness.claude.session_store_tracking import SessionStoreAppendTracker
     _FakeClient.requests = []
     monkeypatch.setattr("app.execution.infrastructure.harness.claude.session_store.httpx.AsyncClient", _FakeClient)
     adapter = _chunk_adapter()
-    tracker = _SessionStoreAppendTracker(adapter)
+    tracker = SessionStoreAppendTracker(adapter)
     await tracker.load({"session_id": "provider-a"})
     errors = []
 
@@ -849,7 +849,7 @@ async def test_real_sdk_eager_read_loop_coalesced_batch_is_chunked(monkeypatch, 
 async def test_real_sdk_exhausted_chunk_retry_keeps_runner_failed_and_final_sequence_unadvanced(monkeypatch, tmp_path):
     from claude_agent_sdk._internal.query import Query
     from claude_agent_sdk._internal.session_resume import build_mirror_batcher
-    from app.executors.claude_agent_sdk_runner import _SessionStoreAppendTracker
+    from app.execution.infrastructure.harness.claude.session_store_tracking import SessionStoreAppendTracker
 
     class FailingChunkClient(_FakeClient):
         requests = []
@@ -863,7 +863,7 @@ async def test_real_sdk_exhausted_chunk_retry_keeps_runner_failed_and_final_sequ
 
     monkeypatch.setattr("app.execution.infrastructure.harness.claude.session_store.httpx.AsyncClient", FailingChunkClient)
     adapter = _chunk_adapter()
-    tracker = _SessionStoreAppendTracker(adapter)
+    tracker = SessionStoreAppendTracker(adapter)
     await tracker.load({"session_id": "provider-a"})
     errors = []
 
