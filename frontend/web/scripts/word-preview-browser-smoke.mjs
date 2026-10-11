@@ -7,6 +7,7 @@ import { createServer } from 'vite';
 import { chromium } from 'playwright-core';
 import { findChrome, startBrowser } from './browser-smoke-harness.mjs';
 import { isWordFixtureAsset } from './word-preview-request-policy.mjs';
+import { isPinnedPlaywrightSwError, verifyPinnedPlaywrightSwSource } from './word-preview-browser-errors.mjs';
 
 const evidenceDir=resolve(process.env.AI_PLATFORM_WORD_SMOKE_DIR||'../../.codex-tmp/word-preview-browser-smoke');
 mkdirSync(evidenceDir,{recursive:true});
@@ -45,13 +46,28 @@ try {
     }catch(error){routeErrors.push(String(error));await route.abort().catch(()=>{});}
   });
   // The isolated context is guarded BEFORE any page or renderer exists.
+  verifyPinnedPlaywrightSwSource();
   const page=await context.newPage();
   page.on('console',message=>{if(/Content Security Policy|violates.*directive/i.test(message.text()))evidence.csp.push(message.text());});
-  const pageErrors=[];page.on('pageerror',error=>pageErrors.push(String(error)));
+  const pageErrors=[];evidence.pageErrors=pageErrors;
+  page.on('pageerror',error=>pageErrors.push({name:error.name,message:error.message,stack:error.stack}));
+  // No application modules or scripts exist yet. Require the known upstream
+  // signature; never learn an allowlist from an arbitrary control exception.
+  await page.setContent('<!doctype html><iframe id="empty-sandbox" sandbox="" srcdoc="<!doctype html><p>Empty sandbox control</p>"></iframe>');
+  await page.frameLocator('#empty-sandbox').getByText('Empty sandbox control',{exact:true}).waitFor();
+  assert.equal(pageErrors.length,1,'empty opaque frame must reproduce exactly one upstream init error');
+  assert.ok(isPinnedPlaywrightSwError(pageErrors[0]),'unknown control error: inspect raw stack before changing classification');
+  evidence.sandboxControl=pageErrors[0];
+  await page.locator('#empty-sandbox').evaluate(node=>node.remove());
   const navigation=await page.goto(`${origin}/scripts/fixtures/word-preview/index.html`);
   assert.equal(navigation.headers()['content-security-policy'],undefined,'parent HTTP CSP must not mask isolation');
   await page.locator('#status').filter({hasText:'ready'}).waitFor();
   assert.equal(await page.locator('meta[http-equiv="Content-Security-Policy"]').count(),0,'parent CSP must not mask isolation');
+  const swControl=await page.evaluate(async()=>({result:await navigator.serviceWorker.register('/__word_probe__/worker.js'),registrations:(await navigator.serviceWorker.getRegistrations()).length}));
+  assert.equal(swControl.result,undefined);assert.equal(swControl.registrations,0);
+  assert.equal(context.serviceWorkers().length,0);
+  assert.deepEqual(requestLog,[],'SW registration must be blocked before any script request');
+  evidence.serviceWorkerControl={registrations:swControl.registrations,workers:context.serviceWorkers().length};
   // Real cross-site child and nested frames, plus same-origin sentinel controls.
   const controls=[
     'https://synthetic.invalid/top-control','https://synthetic.invalid/frame-control','https://synthetic.invalid/nested-control',
@@ -125,7 +141,11 @@ try {
   await page.screenshot({path:resolve(evidenceDir,'dark-fallback.png')});
   await page.locator('#close').click();assert.equal(await page.locator('#preview-host iframe').count(),0);
   evidence.requests=requestLog;assert.deepEqual(requestLog,[],'renderer attempted an untrusted request');
-  assert.deepEqual(routeErrors,[]);assert.deepEqual(pageErrors,[]);
+  assert.deepEqual(routeErrors,[]);
+  const unexpectedErrors=pageErrors.filter(error=>!isPinnedPlaywrightSwError(error));
+  evidence.pageErrorClassification={pinnedPlaywrightSwErrors:pageErrors.length-unexpectedErrors.length,unexpectedErrors};
+  assert.deepEqual(unexpectedErrors,[],'application errors or unknown injection signatures remain failures');
+  assert.equal(context.serviceWorkers().length,0);
   assert.ok(evidence.csp.some(text=>text.includes('synthetic.invalid/pixel')),'external CSS must be rejected by child CSP');
   assert.ok(evidence.csp.some(text=>text.includes('/__word_probe__/document')),'same-origin CSS must be rejected by child CSP');
   evidence.assertions.push('zero untrusted requests across real render/prepare/iframe/replacement/close');

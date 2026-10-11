@@ -42,3 +42,17 @@ test('test-only conversion gate preserves real result and rejection through sett
     }
   } finally { globalThis.window = previous; }
 });
+
+test('only the pinned SW-block getter error and exact upstream stack are classified', async () => {
+  const { PLAYWRIGHT_SW_ERROR, PLAYWRIGHT_SW_STACK, isPinnedPlaywrightSwError, verifyPinnedPlaywrightSwSource } = await import('./word-preview-browser-errors.mjs');
+  verifyPinnedPlaywrightSwSource();
+  const diagnostic = { ...PLAYWRIGHT_SW_ERROR, stack: PLAYWRIGHT_SW_STACK };
+  assert.equal(isPinnedPlaywrightSwError(diagnostic), true);
+  const applicationError = new DOMException(PLAYWRIGHT_SW_ERROR.message, PLAYWRIGHT_SW_ERROR.name);
+  assert.equal(applicationError.name, diagnostic.name); assert.equal(applicationError.message, diagnostic.message);
+  assert.equal(isPinnedPlaywrightSwError(applicationError), false);
+  assert.equal(isPinnedPlaywrightSwError({ ...diagnostic, stack: `${diagnostic.name}: ${diagnostic.message}\n    at applicationFixture (http://127.0.0.1/app.js:3:15)` }), false);
+  assert.equal(isPinnedPlaywrightSwError({ ...diagnostic, message: 'Other sandbox SecurityError' }), false);
+  assert.equal(isPinnedPlaywrightSwError({ ...diagnostic, name: 'Error' }), false);
+  assert.equal(isPinnedPlaywrightSwError({ ...diagnostic, stack: `${diagnostic.stack}\n    at unexpectedCaller (app.js:1:1)` }), false);
+});
