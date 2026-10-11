@@ -1480,3 +1480,40 @@ def test_unfinished_quote_is_safe_for_every_three_chunk_split_and_single_char_ch
         finished, tail = gate.finish_routed(final_text="", release=True)
         assert "".join(text for _owner, text in (*routed, *tail)) == finished.final_text == sanitize_public_text(body)
         assert not gate.failed
+
+
+def test_oversized_quote_prefix_and_omission_marker_are_projected_together():
+    private_token = "Before [content unavailable]"
+    gate = PublicAnswerStreamGate(
+        private_replacements={private_token: "private value"},
+        sanitizer=sanitize_public_text, max_private_token_chars=32,
+    )
+    chunks = list(gate.accept('Before password="' + "x" * 40))
+    assert chunks == ["private value"]
+    assert gate.accept(" hidden continuation") == ()
+    chunks.extend(gate.accept('" after'))
+    finished = gate.finish(final_text="", release=True)
+    visible = "".join((*chunks, *finished.chunks))
+    assert visible == finished.final_text == "private value after"
+    assert private_token not in visible
+    assert not gate.failed
+
+
+@pytest.mark.parametrize("reject_marker", [False, True])
+def test_oversized_quote_marker_projection_failure_keeps_discard_grammar(reject_marker):
+    def sanitizer(text):
+        if "[content unavailable]" in text:
+            if reject_marker:
+                return ""
+            raise RuntimeError("synthetic marker failure")
+        return sanitize_public_text(text)
+
+    gate = PublicAnswerStreamGate(private_replacements={}, sanitizer=sanitizer, max_private_token_chars=32)
+    assert gate.accept('Before password="' + "x" * 40) == ()
+    assert gate.accept(" hidden continuation") == ()
+    assert gate.accept('" safe after') == (" safe ",)
+    finished, tail = gate.finish_routed(final_text="", release=True)
+    assert tail == ((None, "after"),)
+    assert finished.final_text == " safe after"
+    assert gate.failure_reason == "sanitizer_bound_exceeded"
+    assert not gate.failed

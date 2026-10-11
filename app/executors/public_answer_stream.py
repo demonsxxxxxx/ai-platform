@@ -251,7 +251,10 @@ class PublicAnswerStreamGate:
                     prefix = self._project_across_publication_boundary(
                         raw_candidate[:start], recoverable=True
                     ) or ""
-                return self._emit(prefix + _RECOVERED_TEXT)
+                emitted = self._project_across_publication_boundary(
+                    prefix + _RECOVERED_TEXT, recoverable=True
+                )
+                return self._emit(emitted or "")
             stable_candidate = self._project(
                 raw_candidate[:-raw_hold], recoverable=True
             )
