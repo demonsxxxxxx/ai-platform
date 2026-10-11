@@ -6,7 +6,7 @@ import pytest
 from claude_agent_sdk._internal.query import Query
 
 from app.execution.infrastructure.harness.claude_client_lifecycle import ClaudeInjectedCallbackTracker
-from app.executors.claude_agent_sdk_runner import _SessionStoreAppendTracker
+from app.execution.infrastructure.harness.claude.session_store_tracking import SessionStoreAppendTracker
 
 
 async def test_public_eof_seals_platform_callbacks_and_joins_their_finalizers():
@@ -106,7 +106,7 @@ async def test_confirmed_retry_resolves_only_its_failed_session_store_batch():
                 raise RuntimeError("unconfirmed append")
 
     store = Store()
-    tracked = _SessionStoreAppendTracker(store)
+    tracked = SessionStoreAppendTracker(store)
     for identifier in ("retry", "other"):
         with pytest.raises(RuntimeError):
             await tracked.append("session", [{"uuid": identifier}])

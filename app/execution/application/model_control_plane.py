@@ -5,12 +5,16 @@ from __future__ import annotations
 import asyncio
 import hmac
 import json
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
+from functools import partial
 from typing import Any, Protocol
 
 from app.execution.application.model_response_evidence import observe_anthropic_text
+from app.execution.application.model_stream_ownership import (
+    ModelResponseStream, OwnedModelResponseBody, close_model_stream, open_owned_model_stream,
+)
 from app.execution.application.model_selection import (
     RunModelSelection,
     resolve_chat_model_selection,
@@ -108,7 +112,7 @@ class ModelUpstream(Protocol):
 
     def parse_model_ids(self, response_body: bytes) -> list[str]: ...
 
-    def open_stream(self, **kwargs: Any) -> Any: ...
+    def open_stream(self, **kwargs: Any) -> ModelResponseStream: ...
 
 
 @dataclass(frozen=True)
@@ -116,6 +120,7 @@ class RuntimeProxyResponse:
     status: int
     content_type: str
     body: Iterable[bytes]
+    close: Callable[[], None] | None = None
 
 
 _COUNT_TOKENS_FALLBACK_OVERHEAD = 4096
@@ -406,7 +411,7 @@ class ModelControlPlaneService:
                 content_type=getattr(count_response, "content_type", "application/json"),
                 body=(count_response.body,),
             )
-        upstream = await asyncio.to_thread(
+        upstream = await open_owned_model_stream(partial(
             self._upstream.open_stream,
             base_url=connection.base_url,
             allowed_internal_hosts=allowed_hosts,
@@ -417,22 +422,29 @@ class ModelControlPlaneService:
             body=body,
             headers=outbound_headers,
             query=query,
-        )
-        response_body = upstream.body()
-        if (
-            provider == "anthropic"
-            and upstream_path == "v1/messages"
-            and upstream.status == 200
-            and upstream.content_type.lower().startswith("text/event-stream")
-        ):
-            response_body = observe_anthropic_text(
-                response_body, run_id=run_id, attempt_id=attempt_id
+        ))
+        try:
+            response_body = upstream.body()
+            if (
+                provider == "anthropic"
+                and upstream_path == "v1/messages"
+                and upstream.status == 200
+                and upstream.content_type.lower().startswith("text/event-stream")
+            ):
+                response_body = observe_anthropic_text(
+                    response_body, run_id=run_id, attempt_id=attempt_id
+                )
+            owned_body = OwnedModelResponseBody(response_body, close=upstream.close)
+            return RuntimeProxyResponse(
+                status=upstream.status,
+                content_type=upstream.content_type,
+                body=owned_body,
+                close=owned_body.close,
             )
-        return RuntimeProxyResponse(
-            status=upstream.status,
-            content_type=upstream.content_type,
-            body=response_body,
-        )
+        except BaseException:
+            close_model_stream(upstream.close)
+            raise
+
 
 
 _service: ModelControlPlaneService | None = None

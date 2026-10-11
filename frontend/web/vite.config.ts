@@ -167,7 +167,6 @@ export default defineConfig({
             "rehype-katex",
             "rehype-highlight",
           ],
-          "vendor-sandpack": ["@codesandbox/sandpack-react"],
           "vendor-mermaid": ["mermaid"],
           "vendor-katex": ["katex"],
           "vendor-i18n": ["i18next", "react-i18next"],

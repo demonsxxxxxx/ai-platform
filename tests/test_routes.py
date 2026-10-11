@@ -16,7 +16,7 @@ import app.skills.infrastructure.run_snapshots_postgres as _owner_skills_infrast
 from app.skills.application.run_admission import SkillRunAdmissionService as _owner_skills_application_run_admission
 from app.bootstrap.skills import configure_skill_services
 import app.streaming.infrastructure.run_events_postgres as _owner_streaming_infrastructure_run_events_postgres
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 import asyncio
 import base64
 import hashlib
@@ -921,6 +921,29 @@ def test_run_playback_summary_projects_legacy_general_chat_as_harness_for_user()
     assert admin_summary["skill_id"] == "general-chat"
 
 
+class _FakeProfileDriveFile:
+    def __init__(self, content: bytes) -> None:
+        self.content = content
+        self.content_length = len(content)
+        self.content_type = "text/plain"
+        self.closed = False
+
+    def budget(self):
+        return nullcontext()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        await self.aclose()
+
+    async def aclose(self):
+        self.closed = True
+
+    async def iter_bytes(self):
+        yield self.content
+
+
 @pytest.mark.asyncio
 async def test_get_run_playback_includes_safe_context_provenance(monkeypatch):
     async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
@@ -1809,13 +1832,9 @@ async def test_profile_drive_import_creates_an_owned_previewable_file(
         assert (tenant_id, user_id) == ("tenant-a", "user-a")
         assert display_name
 
-    class Upstream:
-        async def aclose(self):
-            return None
-
     async def fake_open_profile_drive_file(**kwargs):
         assert kwargs["path"] == "reports/report.txt"
-        return Upstream(), Upstream(), len(raw), "text/plain"
+        return _FakeProfileDriveFile(raw)
 
     async def fake_download_profile_drive_file(**kwargs):
         return str(source), hashlib.sha256(raw).hexdigest(), len(raw)
@@ -1918,36 +1937,13 @@ async def test_profile_drive_import_creates_an_owned_previewable_file(
 async def test_profile_drive_download_streams_to_a_closed_verified_temp_file():
     configure_file_upload_services()
     raw = b"profile workspace preview"
-
-    class UpstreamResponse:
-        closed = False
-
-        async def aiter_raw(self):
-            yield raw[:8]
-            yield raw[8:]
-
-        async def aclose(self):
-            self.closed = True
-
-    class UpstreamClient:
-        closed = False
-
-        async def aclose(self):
-            self.closed = True
-
-    client = UpstreamClient()
-    response = UpstreamResponse()
-    temporary_path, sha256, size_bytes = await _download_profile_drive_file(
-        client=client,
-        response=response,
-        content_length=len(raw),
-    )
+    transfer = _FakeProfileDriveFile(raw)
+    temporary_path, sha256, size_bytes = await _download_profile_drive_file(transfer=transfer)
     try:
         assert Path(temporary_path).read_bytes() == raw
         assert sha256 == hashlib.sha256(raw).hexdigest()
         assert size_bytes == len(raw)
-        assert client.closed is True
-        assert response.closed is True
+        assert transfer.closed is True
     finally:
         Path(temporary_path).unlink(missing_ok=True)
 
@@ -2058,11 +2054,8 @@ def _configure_profile_drive_commit_failure(monkeypatch, tmp_path, outcome):
     async def fake_delete_expired(conn, *, upload_session_id):
         state["reservation"] = "deleted"
 
-    async def closeable():
-        return None
-
     async def fake_open_profile_drive_file(**kwargs):
-        return SimpleNamespace(aclose=closeable), SimpleNamespace(aclose=closeable), len(raw), "text/plain"
+        return _FakeProfileDriveFile(raw)
 
     async def fake_download(**kwargs):
         return str(source), hashlib.sha256(raw).hexdigest(), len(raw)
@@ -2180,7 +2173,7 @@ async def test_profile_drive_import_cancellation_retains_in_flight_cleanup(
         return {"id": session_id, "workspace_id": "workspace-a"}
 
     async def fake_open_profile_drive_file(**kwargs):
-        return SimpleNamespace(), SimpleNamespace(), len(raw), "text/plain"
+        return _FakeProfileDriveFile(raw)
 
     async def fake_download(**kwargs):
         return str(source), hashlib.sha256(raw).hexdigest(), len(raw)
