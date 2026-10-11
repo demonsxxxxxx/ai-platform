@@ -28,7 +28,7 @@ const MODEL_ADMIN_ERROR_MESSAGES: Record<string, string> = {
   model_connection_catalog_invalid: "上游 /v1/models 返回格式不符合兼容协议。",
   model_connection_catalog_empty: "上游 /v1/models 没有返回任何模型。",
   model_upstream_unavailable: "无法连接模型服务，请检查地址、网络和服务状态。",
-  model_catalog_revision_conflict: "模型配置已被更新，请重新获取后再发布。",
+  model_catalog_revision_conflict: "模型配置已被更新，请重新加载配置后再发布。",
   model_catalog_discovery_changed: "上游模型已变化，请重新获取后再发布。",
 };
 
@@ -224,8 +224,15 @@ export function ModelAdminControl({
       setTestState("passed");
       // Discovery owns candidates, never the editable address or credential.
       if (operation === "discover") {
+        // Only a loaded or published state owns the draft's compare-and-swap baseline.
+        // Discovery may refresh candidates, but cannot acknowledge another admin's edits.
+        if (!state || result.connection.revision !== state.connection.revision) {
+          setCatalogReceipt(null);
+          setPublishError("模型配置已被更新，未保存编辑已保留，请重新加载配置后再发布。");
+          return;
+        }
         setDraft(mergeModelCandidates(result.models, draft));
-        setCatalogReceipt({ connectionVersion: owner.connectionVersion, revision: result.connection.revision });
+        setCatalogReceipt({ connectionVersion: owner.connectionVersion, revision: state.connection.revision });
         setMessage(`已获取 ${result.models.length} 个候选模型，已有编辑已保留；保存后生效。`);
       } else {
         setMessage(`连接测试通过，上游返回 ${result.models.length} 个模型；测试不会保存配置。`);
