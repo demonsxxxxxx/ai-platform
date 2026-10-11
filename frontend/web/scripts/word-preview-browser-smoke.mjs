@@ -5,14 +5,14 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createServer } from 'vite';
 import { chromium } from 'playwright-core';
-import { findChrome, startBrowser } from './browser-smoke-harness.mjs';
+import { findChrome, startBrowser, withTimeout } from './browser-smoke-harness.mjs';
 import { isWordFixtureAsset } from './word-preview-request-policy.mjs';
 import { isPinnedPlaywrightSwError, verifyPinnedPlaywrightSwSource } from './word-preview-browser-errors.mjs';
 
 const evidenceDir=resolve(process.env.AI_PLATFORM_WORD_SMOKE_DIR||'../../.codex-tmp/word-preview-browser-smoke');
 mkdirSync(evidenceDir,{recursive:true});
 const evidence={sourceCommit:process.env.SOURCE_COMMIT||execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(),status:'running',requests:[],assertions:[],browserEvents:[],csp:[]};
-let server;let lifecycle;let browser;let context;
+let server;let lifecycle;let browser;let context;let page;
 try {
   const chrome=findChrome();
   if(!chrome) throw Error('chrome_not_found: no installation or skipped acceptance is allowed');
@@ -49,8 +49,9 @@ try {
   });
   // The isolated context is guarded BEFORE any page or renderer exists.
   verifyPinnedPlaywrightSwSource();
-  const page=await context.newPage();
-  page.on('console',message=>{if(/Content Security Policy|violates.*directive/i.test(message.text()))evidence.csp.push(message.text());});
+  page=await context.newPage();
+  evidence.console=[];
+  page.on('console',message=>{evidence.console.push({type:message.type(),text:message.text().slice(0,4000)});if(/Content Security Policy|violates.*directive/i.test(message.text()))evidence.csp.push(message.text());});
   const pageErrors=[];evidence.pageErrors=pageErrors;
   page.on('pageerror',error=>pageErrors.push({name:error.name,message:error.message,stack:error.stack}));
   // No application modules or scripts exist yet. Require the known upstream
@@ -186,8 +187,21 @@ try {
   assert.ok(evidence.csp.some(text=>text.includes('synthetic.invalid/pixel')),'external CSS must be rejected by child CSP');
   assert.ok(evidence.csp.some(text=>text.includes('/__word_probe__/document')),'same-origin CSS must be rejected by child CSP');
   evidence.assertions.push('zero untrusted requests across real render/prepare/iframe/replacement/close');
+  evidence.conversions=await page.evaluate(()=>window.__wordSmokeConversions);
   evidence.status='passed';console.log(JSON.stringify(evidence,null,2));
-}catch(error){evidence.status='failed';evidence.failure=String(error);throw error;}
+}catch(error){
+  evidence.status='failed';evidence.failure=String(error);
+  if(page){
+    try{
+      evidence.failureSnapshot=await withTimeout(page.evaluate(()=>{
+        const host=document.querySelector('#preview-host'),frame=host?.querySelector('iframe'),gate=window.__wordSmokeGate;
+        return {url:location.href,status:document.querySelector('#status')?.textContent,gate:gate?{armed:gate.armed,requested:gate.requested,settled:gate.settled,returned:gate.returned,hasRelease:typeof gate.release==='function'}:null,conversions:window.__wordSmokeConversions,hostHtml:host?.outerHTML.slice(0,60000),iframeCount:host?.querySelectorAll('iframe').length,srcdocLength:frame?.srcdoc.length,srcdoc:frame?.srcdoc.slice(0,50000)};
+      }),2000,'failure_snapshot');
+      await page.screenshot({path:resolve(evidenceDir,'failure.png'),timeout:2000});
+    }catch(diagnosticError){evidence.diagnosticError=String(diagnosticError);}
+  }
+  throw error;
+}
 finally {
   const cleanupErrors=[];
   for(const cleanup of [()=>context?.close(),()=>browser?.close(),()=>lifecycle?.close(),()=>server?.close()]){

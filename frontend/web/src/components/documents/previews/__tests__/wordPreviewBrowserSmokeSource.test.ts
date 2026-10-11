@@ -29,7 +29,8 @@ test('Word acceptance reuses lifecycle and official context routing before page 
 });
 test('controlled Close observes real converter settlement without altering outputs',()=>{
   const observer=readFileSync(resolve('scripts/fixtures/word-preview/conversion-observer.mjs'),'utf8');
-  assert.match(observer,/return await convert\(input\)/);
+  assert.match(observer,/const result = await convert\(input\)/);
+  assert.match(observer,/return result/);
   assert.match(observer,/finally/);
   assert.match(script,/gate|__wordSmokeGate/);
   assert.ok(script.indexOf("await page.locator('#close').click()")<script.indexOf('window.__wordSmokeGate.release()'));
