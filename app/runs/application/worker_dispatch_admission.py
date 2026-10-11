@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any, AsyncContextManager, Protocol
 
 from app.runs.application.worker_capability_admission import WorkerCapabilityAuthorization
+from app.runs.application.attempt_lifecycle import ReconciliationAuthorityError
 from app.runs.application.worker_queue_envelope import WorkerDispatchPayload
 
 AsyncPort = Callable[..., Awaitable[Any]]
@@ -111,6 +112,8 @@ class WorkerDispatchAdmissionService:
                     publish_after_commit=publish,
                 )
 
+            if reconciliation_attempt_id is not None and locked is None:
+                raise ReconciliationAuthorityError("run_attempt_reconciliation_scope_invalid")
             if reconciliation_attempt_id is not None and locked is not None:
                 if str(locked.get("status") or "") != "running":
                     return outcome("skipped", "stale_terminal_state", "Run already reached a terminal state")

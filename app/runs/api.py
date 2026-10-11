@@ -219,3 +219,7 @@ from app.runs.domain.inputs import (
     RunInputConflict as RunInputConflict,
     RunInputError as RunInputError,
 )
+
+from app.runs.application.attempt_lifecycle import (
+    ReconciliationAuthorityError as ReconciliationAuthorityError,
+)

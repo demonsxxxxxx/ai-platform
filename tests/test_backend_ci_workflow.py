@@ -204,6 +204,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_sse_v4_contract_generation.py",
         "tests/test_streaming_contracts.py",
         "tests/test_worker_attempt_lifecycle.py",
+        "tests/test_frozen_receipt_spec.py",
     ),
     "schema-migrations": (
         "tests/test_run_diagnostics_postgres.py",
@@ -211,6 +212,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_schema_migrations_postgres.py",
         "tests/test_run_inputs_postgres.py",
         "tests/test_provider_session_recovery_postgres.py",
+        "tests/test_frozen_receipt_spec_postgres.py",
         "tests/test_schema.py::test_schema_declares_attempt_identity_state_and_fences",
     ),
     "v4-durable-streaming": (

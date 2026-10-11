@@ -40,7 +40,9 @@ from app.runtime.sandbox.providers.opensandbox.startup import (
     opensandbox_probe_error_facts,
 )
 from app.runtime.sandbox.workspace_manager import SandboxWorkspaceManager
-from app.runs.api import RunAttemptLifecycleService, RunDiagnosticsService, RunLifecycleService
+from app.runs.api import (
+    ReconciliationAuthorityError, RunAttemptLifecycleService, RunDiagnosticsService, RunLifecycleService,
+)
 from app.sandbox.api import (
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
     SandboxExecutorHttpError,
@@ -161,7 +163,7 @@ def _permanent_reconciliation_error(
 def _reconciliation_error_code(exc: Exception) -> str:
     if isinstance(
         exc,
-        (PermanentExecutorReconciliationError, ProviderSessionContinuityError),
+        (PermanentExecutorReconciliationError, ProviderSessionContinuityError, ReconciliationAuthorityError),
     ):
         return exc.code
     return type(exc).__name__
@@ -180,15 +182,15 @@ def _context_payload(
 ) -> tuple[dict[str, Any], RunPayload]:
     context = lease_row.get("executor_reconciliation_context_json")
     if not isinstance(context, dict):
-        raise _permanent_reconciliation_error("executor_reconciliation_context_missing")
+        raise ReconciliationAuthorityError("executor_reconciliation_context_missing")
     adapter_context = context.get("adapter_context")
     if not isinstance(adapter_context, dict):
-        raise _permanent_reconciliation_error(
+        raise ReconciliationAuthorityError(
             "executor_reconciliation_adapter_context_missing"
         )
     run_payload_data = context.get("run_payload")
     if not isinstance(run_payload_data, dict):
-        raise _permanent_reconciliation_error(
+        raise ReconciliationAuthorityError(
             "executor_reconciliation_run_payload_missing"
         )
     try:
@@ -198,7 +200,7 @@ def _context_payload(
             terminal_result if terminal_result is not None else {},
         )
     except (KeyError, TypeError, ValueError) as exc:
-        raise _permanent_reconciliation_error(
+        raise ReconciliationAuthorityError(
             "executor_reconciliation_run_payload_invalid"
         ) from exc
     for field in (
@@ -210,7 +212,7 @@ def _context_payload(
         "attempt_id",
     ):
         if getattr(run_payload, field) != lease_row.get(field):
-            raise _permanent_reconciliation_error(
+            raise ReconciliationAuthorityError(
                 "executor_reconciliation_identity_mismatch"
             )
     return context, run_payload
@@ -320,6 +322,13 @@ async def _terminalize_reconciliation_failure(
     run_was_terminal = False
     attempt_id = str(lease_row.get("attempt_id") or "") or None
     async with transaction() as conn:
+        # All receipt settlement locks Run before Sandbox claim, then Attempt.
+        run = await runs_postgres.get_run(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            for_update=True,
+        )
         claimed = (
             await sandbox_lease_repository.has_sandbox_executor_reconciliation_claim(
                 conn,
@@ -329,12 +338,6 @@ async def _terminalize_reconciliation_failure(
         )
         if not claimed:
             raise RuntimeError("executor_reconciliation_claim_lost")
-        run = await runs_postgres.get_run(
-            conn,
-            tenant_id=tenant_id,
-            run_id=run_id,
-            for_update=True,
-        )
         if run is None:
             return
         if run_diagnostics is not None:
@@ -995,6 +998,11 @@ async def reconcile_pending_executor_terminals_once(
                     "terminal_failure": terminal_failure,
                 },
             )
+            if isinstance(exc, ReconciliationAuthorityError):
+                await _quarantine_failed_reconciliation(
+                    lease_row, claim_token=claim_token, error_code=exc.code,
+                )
+                continue
             if not terminal_failure:
                 async with transaction() as conn:
                     await (
