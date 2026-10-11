@@ -223,6 +223,7 @@ def test_admin_run_diagnostics_preserves_projection_failure_over_http(
     monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
     app = create_app()
     app.state.run_diagnostics_service = RunDiagnosticsService(
+        exception_log_fields=safe_exception_log_fields,
         persistence=StoredDiagnosticsPersistence(),
         normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
         runtime_diagnostics_schema_version="ai-platform.sdk-runtime-diagnostics.v1",

@@ -1,3 +1,5 @@
+from app.platform.tracing import safe_exception_log_fields
+
 from tests.support.terminal_timing import terminal_stage_logs as terminal_stage_logs
 import asyncio
 import json
@@ -6997,6 +6999,7 @@ async def _persist_sdk_failure_diagnostics(result):
         [], trace_id="synthetic-trace", latency_ms=None, invoked_skill_ids=lambda _: set(),
     )
     service = RunDiagnosticsService(
+        exception_log_fields=safe_exception_log_fields,
         persistence=types.SimpleNamespace(append_observation=append_observation),
         normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
         runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,

@@ -815,6 +815,7 @@ async def test_admin_read_redacts_stored_sdk_fallbacks_in_root_handling_and_expo
     }
     stored_snapshot = deepcopy(snapshot)
     service = RunDiagnosticsService(
+        exception_log_fields=safe_exception_log_fields,
         persistence=InMemoryDiagnostics(snapshot),
         normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
         runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
