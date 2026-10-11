@@ -324,3 +324,41 @@ def test_result_gap_without_preceding_message_is_absent(caplog, first_result):
     record = caplog.records[-1]
     assert record.latest_public_result_gap_ms is None
     assert record.append_await_in_latest_result_gap_ms is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [RuntimeError("private publication"), asyncio.CancelledError("private cancellation")])
+@pytest.mark.parametrize("broken_logging", [False, True])
+@pytest.mark.usefixtures("terminal_stage_logs")
+async def test_postcommit_publication_observation_preserves_failure(monkeypatch, caplog, failure, broken_logging):
+    from types import SimpleNamespace
+    from app.bootstrap.worker_result_commit import publish_worker_result_event
+    now = [1.0]
+    monkeypatch.setattr(tracing, "monotonic", lambda: now[0])
+    caplog.set_level(logging.INFO)
+    if broken_logging:
+        def fail_logging(*_args, **_kwargs):
+            raise RuntimeError("private logging failure")
+        monkeypatch.setattr(tracing._terminal_stage_logger, "info", fail_logging)
+    capabilities = object()
+    calls = []
+
+    async def publish(actual, **identity):
+        assert actual is capabilities
+        calls.append(identity)
+        now[0] += 0.25
+        raise failure
+
+    command = SimpleNamespace(payload=SimpleNamespace(run_id="run-a", tenant_id="tenant-a"), attempt_id="attempt-a")
+    outcome = SimpleNamespace(status="succeeded")
+    with pytest.raises(type(failure)) as caught:
+        await publish_worker_result_event(publish, capabilities, command, outcome)
+    assert caught.value is failure
+    assert outcome.status == "succeeded"  # Publication cannot undo committed facts.
+    assert calls == [{"tenant_id": "tenant-a", "run_id": "run-a"}]
+    if not broken_logging:
+        record = caplog.records[-1]
+        assert record.terminal_phase == "result_business_publication"
+        assert record.terminal_phase_duration_ms == 250
+        assert record.terminal_phase_outcome == ("cancelled" if isinstance(failure, asyncio.CancelledError) else "error")
+        assert "private" not in repr(vars(record))
