@@ -9252,3 +9252,91 @@ test("useAgent fences an A retry before pending B submission can issue its POST"
     await harness.cleanup();
   }
 });
+
+test("history read recovery preserves authority and cannot replace a sending or retired owner", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originals = { ...sessionApi };
+  let eventReads = 0;
+  let submissions = 0;
+  let rejectSubmission!: (error: Error) => void;
+  sessionApi.markRead = async () => {};
+  sessionApi.get = async (id) => ({
+    id, agent_id: "general-agent", is_active: true,
+    created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", metadata: {},
+  });
+  sessionApi.getEvents = async () => {
+    eventReads += 1;
+    throw new ApiRequestError("private history error", 503);
+  };
+  sessionApi.submitChat = () => {
+    submissions += 1;
+    return new Promise((_, reject) => { rejectSubmission = reject; });
+  };
+  try {
+    await harness.act(async () => { await harness.hook.loadHistory("session-a"); });
+    assert.equal(Boolean(harness.hook.historyReadError), true);
+    assert.equal(harness.hook.isLoadingHistory, false);
+    const retryA = harness.hook.retryHistoryLoad;
+    let pending!: ReturnType<UseAgentReturn["sendMessage"]>;
+    await harness.act(async () => { pending = harness.hook.sendMessage("explicit new task"); });
+    assert.equal(submissions, 1, "event-only failure must retain confirmed generic session authority");
+    assert.equal(Boolean(harness.hook.historyReadError), true, "sending does not prove the old transcript complete");
+    await harness.act(async () => { await retryA(); });
+    assert.equal(eventReads, 1, "read retry must not retire an in-flight submission");
+    await harness.act(async () => {
+      rejectSubmission(new ApiRequestError("rejected", 400, "invalid_request", "rejected_before_persist"));
+      await pending;
+    });
+    assert.equal(Boolean(harness.hook.historyReadError), true, "submission error cannot overwrite history incompleteness");
+    sessionApi.getEvents = async () => { eventReads += 1; return { events: [] }; };
+    await harness.act(async () => { await harness.hook.loadHistory("session-b"); });
+    assert.equal(Boolean(harness.hook.historyReadError), false);
+    await harness.act(async () => { await retryA(); });
+    assert.equal(eventReads, 2, "retired route's button cannot load A into B");
+    assert.equal(harness.hook.sessionId, "session-b");
+
+    sessionApi.getEvents = async () => { eventReads += 1; throw new ApiRequestError("private history error", 503); };
+    await harness.act(async () => { await harness.hook.loadHistory("session-a"); });
+    const beforeClear = harness.hook.retryHistoryLoad;
+    await harness.act(async () => { harness.hook.clearMessages(); await beforeClear(); });
+    assert.equal(Boolean(harness.hook.historyReadError), false);
+    assert.equal(eventReads, 3);
+    assert.equal(harness.hook.sessionId, null);
+
+    await harness.act(async () => { await harness.hook.loadHistory("session-a"); });
+    const beforeAuthChange = harness.hook.retryHistoryLoad;
+    await harness.rotateAuthScope("user-b", "tenant-b");
+    await harness.act(async () => { await beforeAuthChange(); });
+    assert.equal(Boolean(harness.hook.historyReadError), false);
+    assert.equal(eventReads, 4, "auth-retired retry has no read authority");
+    let rejectOldAuthRead!: (error: Error) => void;
+    sessionApi.getEvents = () => {
+      eventReads += 1;
+      return new Promise((_, reject) => { rejectOldAuthRead = reject; });
+    };
+    let oldAuthRead!: ReturnType<UseAgentReturn["loadHistory"]>;
+    await harness.act(async () => { oldAuthRead = harness.hook.loadHistory("session-a"); });
+    await harness.rotateAuthScope("user-c", "tenant-c");
+    await harness.act(async () => {
+      rejectOldAuthRead(new ApiRequestError("private late auth failure", 503));
+      await oldAuthRead;
+    });
+    assert.equal(Boolean(harness.hook.historyReadError), false, "late failure cannot adopt a new auth owner");
+    sessionApi.getEvents = async () => ({ events: [{ id: "readable-c", event_type: "user:message", timestamp: "2026-01-01T00:00:00Z", data: { content: "Readable C transcript" } }] });
+    await harness.act(async () => { await harness.hook.loadHistory("session-c"); });
+    assert.equal(harness.hook.messages[0]?.content, "Readable C transcript");
+    sessionApi.getEvents = async () => { throw new ApiRequestError("private refresh failure", 503); };
+    await harness.act(async () => { await harness.hook.loadHistory("session-c"); });
+    assert.equal(Boolean(harness.hook.historyReadError), true, "same-session refresh has an explicit failed outcome");
+    assert.equal(harness.hook.messages.length, 0, "clear-on-load remains canonical; no shadow snapshot");
+    sessionApi.getEvents = async () => ({ events: [] });
+    await harness.act(async () => { await harness.hook.retryHistoryLoad(); });
+    assert.equal(Boolean(harness.hook.historyReadError), false);
+    assert.equal(harness.hook.messages.length, 0);
+    assert.equal(submissions, 1, "history recovery never replays a task");
+  } finally {
+    Object.assign(sessionApi, originals);
+    await harness.cleanup();
+  }
+});
