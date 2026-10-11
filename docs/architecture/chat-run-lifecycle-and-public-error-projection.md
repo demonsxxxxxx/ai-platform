@@ -613,3 +613,24 @@ new correlation key. The Run Monitor indexes explicit public and legacy native
 aliases, excludes blank keys and conflicting tool identities, and performs no
 hash reconstruction. This repair neither restores raw tool input/failure text
 nor changes authorization, failure classification or retry behavior.
+
+## Workspace collection after an executor failure
+
+The reconciler preserves an existing failed or cancelled executor receipt as the
+primary terminal cause, including MCP outcome-uncertain codes used by Runs retry
+admission. Workspace collection is still attempted; a later collection failure
+cannot replace that status, code, or private diagnostic carrier. A successful
+executor receipt whose workspace collection fails remains a failed Run, never a
+successful publication of missing files.
+
+Secondary collection failures use the existing bounded Runs diagnostics owner:
+the observed receipt code (or its status when no code exists) precedes a separate
+`executor_reconciliation` / `workspace_collection` observation. Existing private
+root evidence remains first; observation IDs deduplicate repeated reconciliation.
+Collection evidence contains the fixed code and exception type, not exception
+text, prompts, credentials, or workspace paths. The correlated structured warning
+is the fallback when diagnostic capture is unavailable. Diagnostic persistence
+failures, including entry or commit failure of the diagnostic-only transaction,
+do not veto the original terminal outcome. Cancellation still propagates; the
+business-result transaction retains its existing authority and failure rules. No new diagnostic
+store, public field, schema migration, or retry policy is introduced.
