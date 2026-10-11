@@ -185,10 +185,18 @@ an entered credential; a saved credential can be reused only for the same origin
 Connection edits, cancellation, reload, permission loss and unmount abort owned
 requests and invalidate stale callbacks. Saving locks the draft until the atomic
 publication returns, then adopts the acknowledged revision and clears the entered
-credential. A revision conflict retains the draft and requires fresh discovery;
-other publication failures retain the draft for retry. Cancellation restores the
+credential. A revision conflict retains the draft and requires an explicit reload
+of the saved configuration; other publication failures retain the draft for retry. Cancellation restores the
 last saved baseline. Explicit reload clears entered credentials and replaces edits
 with the saved state when loading succeeds.
+
+The model editor's compare-and-swap baseline changes only after loading saved
+configuration or receiving a successful publication. Discovery cannot advance it:
+if another administrator has published since that baseline, discovery preserves
+all unsaved fields, reports the conflict, and disables publication until the user
+explicitly reloads. Same-revision discovery may refresh candidate membership while
+retaining edits. A connection test reports connectivity only and never acknowledges
+a newer catalog revision. Abandoned discovery responses cannot alter this state.
 
 Run admission pins the active connection revision, exact upstream model ID,
 and input/output capacities. Existing Runs and Attempts retain that immutable
