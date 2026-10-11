@@ -4,6 +4,8 @@ import logging
 import re
 from uuid import uuid4
 
+from app.platform.postgres import errors as platform_errors
+
 
 # Preserve the existing operator log category while moving its safe projection.
 logger = logging.getLogger("app.routes.chat")
@@ -60,3 +62,15 @@ def submission_error_code(detail: object, fallback: str = "chat_submission_rejec
     if isinstance(detail, str):
         return safe_submission_code(detail, fallback)
     return fallback
+
+
+def capability_authorization_error_code(
+    exc: platform_errors.RepositoryAuthorizationError,
+) -> str:
+    denial = getattr(exc, "denial", None)
+    if (
+        (denial is not None and denial.capability_kind == "mcp_tool")
+        or str(exc) == "mcp_tool_not_available"
+    ):
+        return "mcp_tool_not_available"
+    return "capability_not_authorized"

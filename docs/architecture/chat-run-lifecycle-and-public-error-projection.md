@@ -356,7 +356,10 @@ snapshot repair, state transition, or new retry authority is implied. The
 existing Conversations `submission_failures` projection supplies the explicit
 rejection signal. Legacy unkeyed Chat combines it with the validation cause's
 bounded DTO projection, never arbitrary HTTP detail fields. The route retains
-the creation validation boundary and HTTP translation.
+the creation validation boundary and HTTP translation. Capability authorization
+failures share that existing Conversations safe-code owner; the former route
+mapping is retired without changing denial decisions or exposing their private
+messages or capability payloads.
 
 This replaces blanket SDK-upstream attribution and blanket admission
 login/fix-input guidance. Historical `claude_agent_sdk_upstream_error` remains
