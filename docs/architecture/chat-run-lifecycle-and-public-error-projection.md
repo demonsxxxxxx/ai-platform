@@ -139,6 +139,14 @@ that material can produce public output. Pattern matching supplements known
 sensitive values; it cannot establish that arbitrary unlabelled text is safe.
 Sensitive values and the replacement registry never enter public events or logs.
 Cross-chunk matching retains only the undecided suffix needed for safe redaction.
+An opened quoted secret assignment stays private through its matching unescaped
+quote or end of input. Registry updates preserve the bounded raw suffix and its
+source spans; display replacements cannot alter that raw assignment grammar.
+If an unsafe suffix is omitted, only constant-size quote/escape state survives
+until the matching close, after which ordinary text can resume. A terminal value
+that merely repeats the public prefix is not closure evidence for a discarded
+quote. Completed provider blocks supply text through the source-owned stream;
+terminal completion releases only its retained safe tail.
 
 Non-sensitive narration, public Tool labels and authorized task-file references
 must survive redaction. They are not grounds for deleting an entire string.
@@ -532,3 +540,37 @@ client-state and fault-isolation scenarios. Source and local tests do not prove
 SDK timing, API replicas, proxy flushes, deployed browser behavior or provider
 cleanup. Those remain under [SSE acceptance](../operations/redis-streams-sse-cutover-acceptance.md)
 and the release runbook. No source cleanup authorizes a weaker public projection.
+
+
+## Private SDK tool-abort observation
+
+`tool_calls[].is_interrupt` is an optional strict boolean copied only from a
+native `PostToolUseFailure` hook before large failure/input values are truncated.
+Both diagnostic boundaries retain it only for the current failed tool stage.
+It means the SDK reported an abort, not that the user cancelled the Run. Missing
+values remain unknown; false means only that the received hook reported false.
+The SDK documents that interrupting a running tool does not fire this hook.
+
+This field is administrator-only diagnostic evidence. It does not change public
+failure categories, tool authorization, retries, or the Runs cancellation
+request/terminal authority. Raw tool inputs and failure text remain excluded
+from persisted Runs diagnostics. Existing whole-tool-record count/byte trimming
+still applies; an omitted record does not imply a non-abort. No new unbounded
+history or public field is introduced.
+
+## Administrator tool-diagnostic correlation
+
+Public tool events retain opaque `operation_id` values owned by Execution. The
+Execution public API `public_tool_operation_id` is the sole owner of deriving a
+tool operation from the Run and native SDK invocation identity; the event adapter
+and the bootstrap-injected diagnostic read projection use that same function.
+
+Runs adds optional `operation_id` only to sanitized administrator diagnostic
+responses. Persisted private evidence and its budgets remain unchanged, and
+historical native invocation records gain correlation at read time. Native IDs
+stay in the private administrator response, never the ordinary-user event.
+Different tool names sharing one invocation ID are ambiguous and receive no
+new correlation key. The Run Monitor indexes explicit public and legacy native
+aliases, excludes blank keys and conflicting tool identities, and performs no
+hash reconstruction. This repair neither restores raw tool input/failure text
+nor changes authorization, failure classification or retry behavior.

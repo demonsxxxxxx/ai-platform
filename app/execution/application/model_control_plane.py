@@ -5,12 +5,16 @@ from __future__ import annotations
 import asyncio
 import hmac
 import json
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
+from functools import partial
 from typing import Any, Protocol
 
 from app.execution.application.model_response_evidence import observe_anthropic_text
+from app.execution.application.model_stream_ownership import (
+    ModelResponseStream, OwnedModelResponseBody, close_model_stream, open_owned_model_stream,
+)
 from app.execution.application.model_selection import (
     RunModelSelection,
     resolve_chat_model_selection,
@@ -88,7 +92,7 @@ class ModelManagementRepository(Protocol):
 
 
 class ModelEndpointSecurity(Protocol):
-    def validate(self, base_url: str, *, allowed_internal_hosts: str) -> Any: ...
+    def normalize(self, base_url: str) -> str: ...
 
     def fingerprint(self, api_key: str) -> str: ...
 
@@ -108,7 +112,7 @@ class ModelUpstream(Protocol):
 
     def parse_model_ids(self, response_body: bytes) -> list[str]: ...
 
-    def open_stream(self, **kwargs: Any) -> Any: ...
+    def open_stream(self, **kwargs: Any) -> ModelResponseStream: ...
 
 
 @dataclass(frozen=True)
@@ -116,6 +120,7 @@ class RuntimeProxyResponse:
     status: int
     content_type: str
     body: Iterable[bytes]
+    close: Callable[[], None] | None = None
 
 
 _COUNT_TOKENS_FALLBACK_OVERHEAD = 4096
@@ -170,24 +175,20 @@ class ModelControlPlaneService:
             str(settings.model_connection_allowed_internal_hosts or ""),
         )
 
-    async def _discover_models(self, *, base_url: str, api_key: str) -> tuple[str, list[str]]:
+    async def _discover_models(self, *, base_url: str, api_key: str) -> list[str]:
         encryption_key, allowed_hosts = self._security_settings()
         if not encryption_key:
             raise ValueError("model_connection_encryption_key_invalid")
-        endpoint = self._security.validate(
-            base_url,
-            allowed_internal_hosts=allowed_hosts,
-        )
         response = await asyncio.to_thread(
             self._upstream.request,
-            base_url=endpoint.base_url,
+            base_url=base_url,
             allowed_internal_hosts=allowed_hosts,
             api_key=api_key,
             method="GET",
             path="/v1/models",
             provider="catalog",
         )
-        return endpoint.base_url, self._upstream.parse_model_ids(response)
+        return self._upstream.parse_model_ids(response)
 
     async def admin_projection(self) -> dict[str, Any]:
         async with self._transaction() as conn:
@@ -197,10 +198,8 @@ class ModelControlPlaneService:
             }
 
     async def discover(self, *, base_url: str, api_key: str | None) -> dict[str, Any]:
-        encryption_key, allowed_hosts = self._security_settings()
-        requested_url = self._security.validate(
-            base_url, allowed_internal_hosts=allowed_hosts
-        ).base_url
+        encryption_key, _allowed_hosts = self._security_settings()
+        requested_url = self._security.normalize(base_url)
         resolved_key = str(api_key or "").strip()
         async with self._transaction() as conn:
             current = await self._repository.active_connection(
@@ -212,13 +211,13 @@ class ModelControlPlaneService:
             if current is None or requested_url != current.base_url:
                 raise ValueError("model_connection_api_key_required")
             resolved_key = current.api_key
-        normalized_url, model_ids = await self._discover_models(
-            base_url=base_url, api_key=resolved_key
+        model_ids = await self._discover_models(
+            base_url=requested_url, api_key=resolved_key
         )
         by_value = {model["value"]: model for model in existing}
         return {
             "connection": connection,
-            "base_url": normalized_url,
+            "base_url": requested_url,
             "models": [
                 {
                     **(by_value.get(value) or {
@@ -246,10 +245,8 @@ class ModelControlPlaneService:
         models: list[dict[str, Any]],
         actor_user_id: str,
     ) -> dict[str, Any]:
-        encryption_key, allowed_hosts = self._security_settings()
-        requested_url = self._security.validate(
-            base_url, allowed_internal_hosts=allowed_hosts
-        ).base_url
+        encryption_key, _allowed_hosts = self._security_settings()
+        requested_url = self._security.normalize(base_url)
         resolved_key = str(api_key or "").strip()
         if not resolved_key:
             async with self._transaction() as conn:
@@ -259,8 +256,8 @@ class ModelControlPlaneService:
             if current is None or requested_url != current.base_url:
                 raise ValueError("model_connection_api_key_required")
             resolved_key = current.api_key
-        normalized_url, model_ids = await self._discover_models(
-            base_url=base_url, api_key=resolved_key
+        model_ids = await self._discover_models(
+            base_url=requested_url, api_key=resolved_key
         )
         discovered = set(model_ids)
         if not model_ids or len(models) != len(model_ids) or {
@@ -293,7 +290,7 @@ class ModelControlPlaneService:
         async with self._transaction() as conn:
             revision, published = await self._repository.publish_models(
                 conn,
-                base_url=normalized_url,
+                base_url=requested_url,
                 api_key=resolved_key,
                 key_fingerprint=self._security.fingerprint(resolved_key),
                 encryption_key=encryption_key,
@@ -414,7 +411,7 @@ class ModelControlPlaneService:
                 content_type=getattr(count_response, "content_type", "application/json"),
                 body=(count_response.body,),
             )
-        upstream = await asyncio.to_thread(
+        upstream = await open_owned_model_stream(partial(
             self._upstream.open_stream,
             base_url=connection.base_url,
             allowed_internal_hosts=allowed_hosts,
@@ -425,22 +422,29 @@ class ModelControlPlaneService:
             body=body,
             headers=outbound_headers,
             query=query,
-        )
-        response_body = upstream.body()
-        if (
-            provider == "anthropic"
-            and upstream_path == "v1/messages"
-            and upstream.status == 200
-            and upstream.content_type.lower().startswith("text/event-stream")
-        ):
-            response_body = observe_anthropic_text(
-                response_body, run_id=run_id, attempt_id=attempt_id
+        ))
+        try:
+            response_body = upstream.body()
+            if (
+                provider == "anthropic"
+                and upstream_path == "v1/messages"
+                and upstream.status == 200
+                and upstream.content_type.lower().startswith("text/event-stream")
+            ):
+                response_body = observe_anthropic_text(
+                    response_body, run_id=run_id, attempt_id=attempt_id
+                )
+            owned_body = OwnedModelResponseBody(response_body, close=upstream.close)
+            return RuntimeProxyResponse(
+                status=upstream.status,
+                content_type=upstream.content_type,
+                body=owned_body,
+                close=owned_body.close,
             )
-        return RuntimeProxyResponse(
-            status=upstream.status,
-            content_type=upstream.content_type,
-            body=response_body,
-        )
+        except BaseException:
+            close_model_stream(upstream.close)
+            raise
+
 
 
 _service: ModelControlPlaneService | None = None

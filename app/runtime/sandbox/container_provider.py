@@ -89,7 +89,6 @@ from app.sandbox.api import (
     opensandbox_delivery_files,
     read_host_bind_control_file,
     resolve_opensandbox_host_bind_source,
-    snapshot_host_bind_delivery_files,
 )
 from app.execution_boundary import (
     GOVERNED_EGRESS_PROOF_DEFAULT_KEY_ID,
@@ -103,6 +102,7 @@ from app.execution_boundary import (
     has_governed_egress_signing_key,
 )
 from app.settings import get_settings
+from app.bootstrap.sandbox_snapshot import collect_host_bind_snapshot
 from app.runtime.sandbox.executor_client import (
     EXECUTOR_CONNECT_BASE_URL_METADATA,
     prepare_executor_http_request,
@@ -4266,7 +4266,7 @@ class OpenSandboxContainerProvider:
             if not normalized_paths:
                 return None
             await self._workspace_transfer_sandbox(lease, request, workspace)
-            return snapshot_host_bind_delivery_files(
+            return await collect_host_bind_snapshot(
                 workspace_source,
                 workspace_source.parent,
                 normalized_paths,

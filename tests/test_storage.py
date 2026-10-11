@@ -311,3 +311,400 @@ def test_storage_io_cancellation_holds_permit_until_thread_finishes(monkeypatch)
         assert await second == "next"
 
     asyncio.run(scenario())
+
+
+@pytest.fixture
+def bucket_client_factory(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr(storage_module, "get_settings", lambda: SimpleNamespace(
+        s3_bucket="bucket", s3_endpoint_url="https://storage.invalid", s3_access_key_id="synthetic",
+        s3_secret_access_key="synthetic", s3_region="synthetic",
+    ))
+
+    class Client:
+        def __init__(self):
+            self.lists = self.creates = 0
+            self.puts = []
+            self.exists = True
+            self.list_error = self.create_error = self.put_error = None
+
+        def list_buckets(self):
+            self.lists += 1
+            if self.list_error:
+                raise self.list_error
+            return {"Buckets": [{"Name": "bucket"}] if self.exists else []}
+
+        def create_bucket(self, **kwargs):
+            self.creates += 1
+            assert isinstance(kwargs.get("Bucket"), str)
+            if self.create_error:
+                raise self.create_error
+            self.exists = True
+
+        def put_object(self, **kwargs):
+            self.puts.append(kwargs)
+            if self.put_error:
+                raise self.put_error
+
+    def create():
+        client = Client()
+        monkeypatch.setattr(storage_module.boto3, "client", lambda *_args, **_kwargs: client)
+        return ObjectStorage(), client
+    return create
+
+
+def _put_synthetic(storage, index=0):
+    return storage.put_bytes(storage_key=f"private/{index}", content=b"synthetic", content_type="text/plain")
+
+
+@pytest.mark.parametrize("count", [1, 16, 128])
+@pytest.mark.parametrize("exists", [True, False])
+def test_bucket_confirmation_is_once_per_instance_and_preserves_uploads(bucket_client_factory, count, exists):
+    import hashlib
+    storage, client = bucket_client_factory()
+    client.exists = exists
+    for index in range(count):
+        result = _put_synthetic(storage, index)
+        assert result == storage_module.StoredObject(f"private/{index}", hashlib.sha256(b"synthetic").hexdigest(), 9)
+        assert client.puts[index] == {"Bucket": "bucket", "Key": f"private/{index}", "Body": b"synthetic", "ContentType": "text/plain"}
+    assert client.lists == 1 and client.creates == int(not exists)
+    assert len(client.puts) == count
+
+
+@pytest.mark.parametrize("phase,code", [("list", "AccessDenied"), ("list", "RequestTimeout"),
+                                        ("create", "BucketAlreadyExists"), ("create", "BucketAlreadyOwnedByYou")])
+def test_bucket_confirmation_does_not_cache_or_swallow_failure(bucket_client_factory, phase, code):
+    from botocore.exceptions import ClientError
+    storage, client = bucket_client_factory()
+    client.exists = phase != "create"
+    failure = ClientError({"Error": {"Code": code}}, phase)
+    setattr(client, f"{phase}_error", failure)
+    with pytest.raises(ClientError) as caught:
+        _put_synthetic(storage)
+    assert caught.value is failure and client.puts == []
+    setattr(client, f"{phase}_error", None)
+    _put_synthetic(storage)
+    assert client.lists == 2 and len(client.puts) == 1
+
+
+@pytest.mark.parametrize("code", ["NoSuchBucket", "AccessDenied", "RequestTimeout"])
+def test_bucket_write_error_propagates_without_replay_and_missing_invalidates(bucket_client_factory, code):
+    from botocore.exceptions import ClientError
+    storage, client = bucket_client_factory()
+    _put_synthetic(storage)
+    failure = ClientError({"Error": {"Code": code}}, "PutObject")
+    client.put_error = failure
+    with pytest.raises(ClientError) as caught:
+        _put_synthetic(storage, 1)
+    assert caught.value is failure and len(client.puts) == 2
+    client.put_error = None
+    _put_synthetic(storage, 2)
+    assert len(client.puts) == 3
+    assert client.lists == (2 if code == "NoSuchBucket" else 1)
+
+
+def test_bucket_confirmation_is_single_flight_within_instance(bucket_client_factory):
+    from concurrent.futures import ThreadPoolExecutor
+    storage, client = bucket_client_factory()
+    original = client.list_buckets
+    started, release = threading.Event(), threading.Event()
+
+    def list_buckets():
+        started.set()
+        assert release.wait(2)
+        return original()
+
+    client.list_buckets = list_buckets
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [pool.submit(_put_synthetic, storage, i) for i in range(8)]
+        try:
+            assert started.wait(2)
+        finally:
+            release.set()
+        assert all(future.result(timeout=2).size_bytes == 9 for future in futures)
+    assert client.lists == 1 and len(client.puts) == 8
+
+
+def test_bucket_confirmation_does_not_cross_instance_configuration(bucket_client_factory):
+    first, first_client = bucket_client_factory()
+    second, second_client = bucket_client_factory()
+    second.bucket = "different-bucket"
+    first.ensure_bucket()
+    second.ensure_bucket()
+    assert first_client.lists == second_client.lists == 1
+    assert first_client.creates == 0 and second_client.creates == 1
+
+
+def test_wrapped_upload_file_missing_bucket_invalidates_without_replay(bucket_client_factory, tmp_path):
+    from botocore.exceptions import ClientError
+    storage, client = bucket_client_factory()
+    source = tmp_path / "synthetic.txt"
+    source.write_bytes(b"synthetic")
+    calls = []
+
+    def upload_file(*_args, **_kwargs):
+        calls.append(1)
+        try:
+            raise ClientError({"Error": {"Code": "NoSuchBucket"}}, "PutObject")
+        except ClientError as cause:
+            raise RuntimeError("synthetic wrapper") from cause
+
+    client.upload_file = upload_file
+    with pytest.raises(RuntimeError, match="synthetic wrapper"):
+        storage.put_file(storage_key="private/file", source_path=str(source), content_type="text/plain")
+    assert len(calls) == 1
+    _put_synthetic(storage)
+    assert client.lists == 2
+
+
+def test_artifact_batch_uses_one_confirmation_and_preserves_reservation_order(bucket_client_factory, tmp_path):
+    from app.execution.api import collect_workspace_artifacts
+    storage, client = bucket_client_factory()
+    output = tmp_path / "output"
+    output.mkdir()
+    for name in ["a.txt", "b.txt"]:
+        (output / name).write_bytes(b"synthetic")
+    operations = []
+    original_put = client.put_object
+
+    def put(**kwargs):
+        operations.append(("put", kwargs["Key"]))
+        original_put(**kwargs)
+
+    def reserve(key):
+        operations.append(("reserve", key))
+        return "synthetic-receipt"
+
+    client.put_object = put
+    artifacts = collect_workspace_artifacts(
+        tenant_id="synthetic", workspace_id="synthetic", session_id="synthetic", run_id="synthetic",
+        source_executor="synthetic", workspace=tmp_path, response_files=["output/a.txt", "output/b.txt"],
+        required_artifact_types=(), artifact_factory=lambda **kwargs: kwargs, storage_factory=lambda: storage,
+        ensure_inside=lambda root, path, _message: path.relative_to(root), reserve_storage=reserve,
+    )
+    assert [item[0] for item in operations] == ["reserve", "put", "reserve", "put"]
+    assert operations[0][1] == operations[1][1] and operations[2][1] == operations[3][1]
+    assert client.lists == 1 and len(client.puts) == 2
+    assert [artifact["manifest"]["delivery_position"] for artifact in artifacts] == [0, 1]
+    assert all(artifact["provisional_cleanup_id"] == "synthetic-receipt" for artifact in artifacts)
+
+
+def test_multipart_operations_reuse_bucket_confirmation_not_upload_state(bucket_client_factory):
+    storage, client = bucket_client_factory()
+    initialized = []
+    listed = []
+
+    def initialize(**kwargs):
+        initialized.append(kwargs["Key"])
+        return {"UploadId": f"upload-{len(initialized)}"}
+
+    def list_uploads(**kwargs):
+        listed.append(kwargs)
+        return {"Uploads": [], "IsTruncated": False}
+
+    client.create_multipart_upload, client.list_multipart_uploads = initialize, list_uploads
+    assert storage.create_multipart_upload(storage_key="a", content_type="text/plain") == "upload-1"
+    assert storage.create_multipart_upload(storage_key="b", content_type="text/plain") == "upload-2"
+    assert storage.abort_multipart_uploads_for_key(storage_key="a") == 0
+    assert initialized == ["a", "b"] and listed == [{"Bucket": "bucket", "Prefix": "a"}]
+    assert client.lists == 1
+
+
+def test_multipart_cleanup_abort_missing_bucket_invalidates_without_replay(bucket_client_factory):
+    from botocore.exceptions import ClientError
+    storage, client = bucket_client_factory()
+    aborts = []
+    failure = ClientError({"Error": {"Code": "NoSuchBucket"}}, "AbortMultipartUpload")
+    client.list_multipart_uploads = lambda **kwargs: {"Uploads": [{"Key": "a", "UploadId": "u"}]}
+
+    def abort(**kwargs):
+        aborts.append(kwargs)
+        raise failure
+
+    client.abort_multipart_upload = abort
+    with pytest.raises(ClientError) as caught:
+        storage.abort_multipart_uploads_for_key(storage_key="a")
+    assert caught.value is failure and len(aborts) == 1
+    _put_synthetic(storage)
+    assert client.lists == 2
+
+
+def test_storage_completion_survives_direct_waiter_cancel_and_preserves_context(monkeypatch):
+    import contextvars
+    from app.platform.storage_io_completion import StorageIOCompletion
+
+    async def scenario():
+        value = contextvars.ContextVar("storage-test", default="missing")
+        value.set("scoped")
+        started, release = threading.Event(), threading.Event()
+        completion = StorageIOCompletion()
+        completion.claim()
+
+        def operation():
+            started.set()
+            assert release.wait(5)
+            return value.get()
+
+        waiter = completion.submit(operation)
+        try:
+            assert await asyncio.to_thread(started.wait, 5)
+            waiter.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await waiter
+            assert completion.submitted and not completion.finished
+        finally:
+            release.set()
+            await completion.settle()
+        assert completion.result() == "scoped"
+        with pytest.raises(ValueError, match="already_used"):
+            completion.claim()
+
+    asyncio.run(scenario())
+
+
+def test_storage_completion_preserves_operation_timeout_identity(monkeypatch):
+    from app.platform.storage_io_completion import StorageIOCompletion
+
+    async def scenario():
+        monkeypatch.setattr(storage_module, "_STORAGE_IO_SLOTS", asyncio.Semaphore(1))
+        completion = StorageIOCompletion()
+        failure = TimeoutError("operation timeout")
+
+        def operation():
+            raise failure
+
+        with pytest.raises(TimeoutError) as caught:
+            await run_storage_io(operation, completion=completion)
+        assert caught.value is failure
+        await completion.settle()
+        assert storage_module._STORAGE_IO_SLOTS._value == 1
+
+    asyncio.run(scenario())
+
+
+def test_storage_completion_admission_failure_has_nothing_to_settle(monkeypatch):
+    from app.platform.storage_io_completion import StorageIOCompletion
+
+    async def scenario():
+        monkeypatch.setattr(storage_module, "_STORAGE_IO_ADMISSIONS", asyncio.BoundedSemaphore(0))
+        completion = StorageIOCompletion()
+        with pytest.raises(StorageIOBusyError):
+            await run_storage_io(lambda: pytest.fail("not admitted"), completion=completion)
+        assert not completion.submitted
+        await completion.settle()
+
+    asyncio.run(scenario())
+
+
+def test_storage_completion_pending_admission_cancel_restores_capacity(monkeypatch):
+    from app.platform.storage_io_completion import StorageIOCompletion
+
+    async def scenario():
+        slots = asyncio.Semaphore(0)
+        admissions = asyncio.BoundedSemaphore(1)
+        monkeypatch.setattr(storage_module, "_STORAGE_IO_SLOTS", slots)
+        monkeypatch.setattr(storage_module, "_STORAGE_IO_ADMISSIONS", admissions)
+        completion = StorageIOCompletion()
+        task = asyncio.create_task(run_storage_io(lambda: None, completion=completion))
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await completion.settle()
+        assert not completion.submitted
+        assert admissions._value == 1 and slots._value == 0
+
+    asyncio.run(scenario())
+
+
+def test_storage_completion_waiter_creation_failure_keeps_physical_capacity(monkeypatch):
+    import app.platform.storage_io_completion as completion_module
+
+    async def scenario():
+        slots, admissions = asyncio.Semaphore(1), asyncio.BoundedSemaphore(1)
+        monkeypatch.setattr(storage_module, "_STORAGE_IO_SLOTS", slots)
+        monkeypatch.setattr(storage_module, "_STORAGE_IO_ADMISSIONS", admissions)
+        started, release = threading.Event(), threading.Event()
+        completion = completion_module.StorageIOCompletion()
+        failure = RuntimeError("task factory unavailable")
+
+        def operation():
+            started.set()
+            assert release.wait(5)
+
+        def fail_task(_coroutine):
+            raise failure
+
+        try:
+            with monkeypatch.context() as patch:
+                patch.setattr(completion_module.asyncio, "create_task", fail_task)
+                with pytest.raises(RuntimeError) as caught:
+                    await run_storage_io(operation, completion=completion)
+                assert caught.value is failure
+            assert completion.submitted and not completion.finished
+            assert slots._value == 0 and admissions._value == 0
+        finally:
+            release.set()
+            await completion.settle()
+        assert slots._value == 1 and admissions._value == 1
+
+    asyncio.run(scenario())
+
+
+def test_storage_completion_queued_job_settles_after_repeated_cancel(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    import app.sandbox.infrastructure.host_bind_snapshot as snapshot_owner
+    from app.platform.storage_io_completion import StorageIOCompletion
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
+        blocked, release = threading.Event(), threading.Event()
+        ran = threading.Event()
+        physical_error = RuntimeError("physical failure after cancelled caller")
+        first_error = []
+        completion = StorageIOCompletion()
+
+        def occupy():
+            blocked.set()
+            assert release.wait(5)
+
+        def snapshot():
+            ran.set()
+            raise physical_error
+
+        async def tracked_io(*args, **kwargs):
+            try:
+                return await run_storage_io(*args, **kwargs)
+            except asyncio.CancelledError as error:
+                first_error.append(error)
+                raise
+
+        monkeypatch.setattr(snapshot_owner, "snapshot_host_bind_delivery_files", snapshot)
+        blocker = loop.run_in_executor(None, occupy)
+        while not blocked.is_set():
+            await asyncio.sleep(0)
+        owner = asyncio.create_task(snapshot_owner.snapshot_with_physical_owner(
+            storage_io=tracked_io, completion_factory=lambda: completion,
+        ))
+        try:
+            while not completion.submitted:
+                await asyncio.sleep(0)
+            assert not ran.is_set()
+            owner.cancel("original")
+            await asyncio.sleep(0)
+            owner.cancel("repeated")
+            await asyncio.sleep(0)
+            assert not owner.done() and not completion.finished
+        finally:
+            release.set()
+            await blocker
+            with pytest.raises(asyncio.CancelledError) as caught:
+                await owner
+        assert ran.is_set() and completion.finished
+        assert caught.value is first_error[0]
+        with pytest.raises(RuntimeError) as late:
+            completion.result()
+        assert late.value is physical_error
+
+    asyncio.run(scenario())
