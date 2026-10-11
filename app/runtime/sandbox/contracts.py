@@ -4,7 +4,14 @@ from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, Iterable, Literal
 from urllib.parse import urlsplit, urlunsplit
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from app.bootstrap.execution import ProviderSessionCallbackResponse as ProviderSessionCallbackResponse
+from app.context.api import (
+    MAX_PROVIDER_SESSION_CALLBACK_RESPONSE_BYTES as MAX_PROVIDER_SESSION_CALLBACK_RESPONSE_BYTES,
+    PROVIDER_SESSION_READ_VIEW_HEADER as PROVIDER_SESSION_READ_VIEW_HEADER,
+    PROVIDER_SESSION_CHILD_READ_VIEW as PROVIDER_SESSION_CHILD_READ_VIEW,
+)
 
 from app.control_plane_contracts import normalize_thinking_effort
 from app.mcp.api import assert_mcp_tool_reference
@@ -26,9 +33,6 @@ EXECUTOR_AUTH_HEADER = "X-AI-Platform-Executor-Credential"
 EXECUTOR_CALLBACK_PATH = "/api/ai/runtime/callbacks/executor"
 EXECUTOR_CONTEXT_RETRIEVAL_CALLBACK_PATH = "/api/ai/runtime/callbacks/context-retrieval"
 EXECUTOR_PROVIDER_SESSION_CALLBACK_PATH = "/api/ai/runtime/callbacks/provider-session"
-PROVIDER_SESSION_READ_VIEW_HEADER = "X-AI-Platform-Provider-Read-View"
-PROVIDER_SESSION_CHILD_READ_VIEW = "children-v1"
-MAX_PROVIDER_SESSION_CALLBACK_RESPONSE_BYTES = 8 * 1024 * 1024 + 64 * 1024
 PROFILE_DRIVE_STAGE_TOOL = "stage_profile_drive_file_to_workspace"
 PROFILE_DRIVE_STAGE_IDENTITY = f"mcp__ai-platform-context__{PROFILE_DRIVE_STAGE_TOOL}"
 PROFILE_DRIVE_READ_TEXT_IDENTITY = "mcp__ProfileDriveMCPServer__read_text_file"
@@ -216,29 +220,6 @@ class ProviderSessionCallbackRequest(BaseModel):
         if self.action != "append" and (self.entries or self.expected_sequence is not None):
             raise ValueError("provider_session_append_fields_forbidden")
         return self
-
-
-class ProviderSessionCallbackResponse(BaseModel):
-    """Private callback receipt carrying no platform scope claims."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    action: Literal["load", "append", "list_subkeys"]
-    entries: list[dict[str, Any]] = Field(default_factory=list)
-    subpaths: list[str] = Field(default_factory=list, max_length=4096)
-    accepted: bool = True
-    entry_count: int = Field(default=0, ge=0)
-    next_sequence: int = Field(ge=1)
-    last_sequence: int | None = Field(default=None, ge=1)
-    child_entries: dict[str, list[dict[str, Any]]] | None = Field(default=None, max_length=4096)
-
-    @model_serializer(mode="wrap")
-    def serialize_optional_child_entries(self, handler):
-        # Old clients retain the exact original fields, including other nulls.
-        body = handler(self)
-        if self.child_entries is None:
-            body.pop("child_entries", None)
-        return body
 
 
 class ContextRetrievalScope(BaseModel):

@@ -122,6 +122,18 @@ def test_session_store_response_bound_includes_transcript_envelope():
     assert MAX_PROVIDER_SESSION_RESPONSE_BYTES == 8 * 1024 * 1024 + 64 * 1024
 
 
+def test_provider_session_response_legacy_import_is_canonical_transport_contract():
+    from app.bootstrap.execution import ProviderSessionCallbackResponse as composed
+    from app.context.transport.provider_session_responses import ProviderSessionCallbackResponse as canonical
+    from app.runtime.sandbox.contracts import ProviderSessionCallbackResponse as legacy
+
+    assert legacy is composed is canonical
+    assert legacy(action="load", next_sequence=1).model_dump() == {
+        "action": "load", "entries": [], "subpaths": [], "accepted": True,
+        "entry_count": 0, "next_sequence": 1, "last_sequence": None,
+    }
+
+
 @pytest.mark.asyncio
 async def test_session_store_adapter_does_not_forward_project_key(monkeypatch):
     _FakeClient.requests = []
@@ -1156,11 +1168,12 @@ async def test_child_view_budget_uses_actual_encoded_response(child_view_callbac
     from fastapi.encoders import jsonable_encoder
     from fastapi.responses import JSONResponse
     from app.runtime.sandbox.contracts import ProviderSessionCallbackResponse
+    from app.context.transport import provider_session_responses
 
     callback, children, calls = child_view_callback
     model = ProviderSessionCallbackResponse(action="list_subkeys", subpaths=list(children), next_sequence=3, child_entries=children)
     expected = JSONResponse(content=jsonable_encoder(model)).body
-    monkeypatch.setattr(runtime_callbacks, "MAX_PROVIDER_SESSION_CALLBACK_RESPONSE_BYTES", len(expected) + allowance)
+    monkeypatch.setattr(provider_session_responses, "MAX_PROVIDER_SESSION_CALLBACK_RESPONSE_BYTES", len(expected) + allowance)
     response = await runtime_callbacks.provider_session_callback(callback, callback_token="test", provider_read_view="children-v1")
     assert calls[0]["include_child_entries"] is True
     if allowance >= 0:

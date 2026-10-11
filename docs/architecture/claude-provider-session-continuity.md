@@ -201,9 +201,16 @@ ordinary preload response. The response's existing `next_sequence` must match
 the adapter's main preload; the host still binds the exact provider UUID,
 epoch, frozen context, Run, Attempt, writer generation and live lease.
 
-The HTTP owner validates the existing response model, encodes it through the
-normal JSON encoder and measures the actual `JSONResponse` bytes that it
-returns. The existing 8 MiB + 64 KiB wire cap includes both subpaths and child
+Context's `transport/provider_session_responses.py` owns the response model,
+typed-result projection, normal JSON encoder and measurement of the actual
+`JSONResponse` bytes it returns. The existing `bootstrap/execution.py` composes
+that boundary alongside the SessionStore adapter; the legacy callback route
+delegates without assembling or encoding a second response. The old
+`runtime/sandbox/contracts.py` model import remains an alias to this same class
+for the identified router and contract-test consumers. The shared fixed header,
+read-view value and cap have one owner in Context's native-session contract and
+are exposed through its in-process API; it does not export transport internals.
+The existing 8 MiB + 64 KiB wire cap includes both subpaths and child
 entries. Transcript byte accounting alone excludes path/envelope overhead and
 cannot establish this bound. If the entire mapping does not fit, the host
 omits the whole optional field and returns the ordinary subpath response.

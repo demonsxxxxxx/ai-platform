@@ -7,10 +7,12 @@ from types import SimpleNamespace
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
-from fastapi.encoders import jsonable_encoder
-from fastapi.responses import JSONResponse
 
 from app.bootstrap.run_inputs import RunInputsCallbackRequest
+from app.bootstrap.execution import (
+    ProviderSessionCallbackWireResponse,
+    build_provider_session_callback_response,
+)
 from app.context import api as context_api
 from app.context.infrastructure import snapshot_postgres as context_snapshot
 from app.context.retrieval import (
@@ -59,7 +61,6 @@ from app.runtime.sandbox.contracts import (
     ProviderSessionCallbackResponse,
     PROVIDER_SESSION_READ_VIEW_HEADER,
     PROVIDER_SESSION_CHILD_READ_VIEW,
-    MAX_PROVIDER_SESSION_CALLBACK_RESPONSE_BYTES,
     executor_callback_receipt_event_count,
     executor_terminal_receipt_payload,
 )
@@ -686,7 +687,7 @@ async def provider_session_callback(
     callback: ProviderSessionCallbackRequest = Depends(_provider_session_callback_from_request),
     callback_token: str | None = Header(default=None, alias="X-AI-Platform-Callback-Token"),
     provider_read_view: str | None = Header(default=None, alias=PROVIDER_SESSION_READ_VIEW_HEADER),
-) -> ProviderSessionCallbackResponse | JSONResponse:
+) -> ProviderSessionCallbackWireResponse:
     """Broker one exact-run Claude SessionStore operation."""
 
     _require_valid_callback_token(
@@ -724,25 +725,9 @@ async def provider_session_callback(
                 expected_sequence=callback.expected_sequence,
                 **({"include_child_entries": True} if include_children else {}),
             )
-            response = ProviderSessionCallbackResponse(
-                action=result.action,
-                entries=list(result.entries),
-                subpaths=list(result.subpaths),
-                accepted=result.accepted,
-                entry_count=result.entry_count,
-                next_sequence=result.next_sequence,
-                last_sequence=result.last_sequence,
-                child_entries=result.child_entries if include_children else None,
+            return build_provider_session_callback_response(
+                result, include_child_entries=include_children,
             )
-            if not include_children:
-                return response
-            # Validate through the same response model before rendering. Return
-            # exactly the JSONResponse bytes measured here, not a second encoding.
-            wire_response = JSONResponse(content=jsonable_encoder(response))
-            if len(wire_response.body) > MAX_PROVIDER_SESSION_CALLBACK_RESPONSE_BYTES:
-                response.child_entries = None
-                wire_response = JSONResponse(content=jsonable_encoder(response))
-            return wire_response
     except HTTPException:
         raise
     except (context_api.ProviderSessionContinuityError, ValueError) as exc:

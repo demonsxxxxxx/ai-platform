@@ -10,6 +10,11 @@ from typing import Any
 
 import httpx
 
+from app.context.api import (
+    MAX_PROVIDER_SESSION_CALLBACK_RESPONSE_BYTES as MAX_PROVIDER_SESSION_RESPONSE_BYTES,
+    PROVIDER_SESSION_READ_VIEW_HEADER,
+    PROVIDER_SESSION_CHILD_READ_VIEW,
+)
 
 DEFAULT_PROVIDER_SESSION_TIMEOUT_SECONDS = 10.0
 MAX_PROVIDER_SESSION_TIMEOUT_SECONDS = 30.0
@@ -18,10 +23,6 @@ MAX_PROVIDER_SESSION_REQUEST_BYTES = 2 * 1024 * 1024
 # Existing host callback limits; adapter chunks SDK batches without widening them.
 MAX_PROVIDER_SESSION_APPEND_ENTRIES = 128
 MAX_PROVIDER_SESSION_APPEND_ENTRY_BYTES = 256 * 1024
-MAX_PROVIDER_SESSION_RESPONSE_BYTES = 8 * 1024 * 1024 + 64 * 1024
-# Fixed private wire extension; only list_subkeys opts in. Older hosts ignore it.
-PROVIDER_SESSION_READ_VIEW_HEADER = "X-AI-Platform-Provider-Read-View"
-PROVIDER_SESSION_CHILD_READ_VIEW = "children-v1"
 
 
 class ClaudeSessionStoreTransportError(RuntimeError):
