@@ -25,6 +25,8 @@ import {
   sessionApi,
 } from "../session.ts";
 
+import { ApiProtocolError, ApiRequestError, apiRequestErrorFromResponse } from "../fetch.ts";
+
 const defaultEnterpriseProjection = {
   starter_prompts: [] as string[],
   published_at: null,
@@ -163,6 +165,91 @@ test("preserves legacy session get while adding safe authoritative recovery", as
       "/api/sessions/session-agent",
       "/api/ai/chat/sessions/session-agent",
     ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("session get returns null for parsed HTTP 404 without relying on public copy", async () => {
+  const originalFetch = globalThis.fetch;
+  const controller = new AbortController();
+  const bodies = [JSON.stringify({ detail: "session_not_found" }), "not JSON"];
+  try {
+    for (const body of bodies) {
+      const response = new Response(body, { status: 404 });
+      const safeError = await apiRequestErrorFromResponse(response.clone());
+      assert.ok(safeError instanceof ApiRequestError);
+      assert.equal(safeError.status, 404);
+      assert.equal(safeError.message.includes("404"), false);
+      let calls = 0;
+      globalThis.fetch = (async (input, init) => {
+        calls += 1;
+        assert.equal(String(input), "/api/sessions/session-missing");
+        assert.equal(init?.signal, controller.signal);
+        return response;
+      }) as typeof fetch;
+      assert.equal(await sessionApi.get("session-missing", { signal: controller.signal }), null);
+      assert.equal(calls, 1);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("session get preserves safe auth and transient HTTP errors", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    for (const status of [401, 403, 429, 500, 503]) {
+      const response = new Response(JSON.stringify({ detail: "private-404-detail" }), { status });
+      const expected = await apiRequestErrorFromResponse(response.clone());
+      let calls = 0;
+      globalThis.fetch = (async () => {
+        calls += 1;
+        return response;
+      }) as typeof fetch;
+      await assert.rejects(sessionApi.get("session-a"), (error: unknown) => {
+        assert.ok(error instanceof ApiRequestError);
+        assert.equal(error.status, status);
+        assert.equal(error.code, expected.code);
+        assert.equal(error.message, expected.message);
+        assert.equal(error.message.includes("private-404-detail"), false);
+        return true;
+      });
+      assert.equal(calls, 1);
+    }
+    // Forced identity recovery remains owned by authFetch, even on HTTP 404.
+    globalThis.fetch = (async () => new Response("{}", {
+      status: 404, headers: { "X-Force-Relogin": "true" },
+    })) as typeof fetch;
+    await assert.rejects(sessionApi.get("session-a"), (error: unknown) =>
+      error instanceof ApiRequestError && error.status === 401);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("session get rethrows original errors and cancellation reasons, not message matches", async () => {
+  const originalFetch = globalThis.fetch;
+  const cause = new Error("synthetic transport cause");
+  const networkError = Object.assign(new Error("network failed near 404"), { cause });
+  const safeError = await apiRequestErrorFromResponse(new Response("{}", { status: 503 }));
+  try {
+    for (const reason of [networkError, safeError, new DOMException("404 cancelled", "AbortError"), { status: 404 }, null]) {
+      globalThis.fetch = (async () => { throw reason; }) as typeof fetch;
+      await assert.rejects(sessionApi.get("session-a"), (error: unknown) => {
+        assert.equal(error, reason);
+        return true;
+      });
+    }
+    assert.equal(networkError.cause, cause);
+    const bodyAbort = new DOMException("404 body cancelled", "AbortError");
+    const response = new Response("{}", { status: 404 });
+    response.text = async () => { throw bodyAbort; };
+    globalThis.fetch = (async () => response) as typeof fetch;
+    await assert.rejects(sessionApi.get("session-a"), (error: unknown) => error === bodyAbort);
+    globalThis.fetch = (async () => new Response("not JSON", { status: 200 })) as typeof fetch;
+    await assert.rejects(sessionApi.get("session-a"), (error: unknown) =>
+      error instanceof ApiProtocolError && error.status === 200);
   } finally {
     globalThis.fetch = originalFetch;
   }
