@@ -1,91 +1,23 @@
+"""Validate and summarize archived alert/trace evidence for Foundation readers.
+
+The live inventory producer is retired; these checks describe recorded subjects
+only and are not an observer of the current Admin Runtime endpoint.
+"""
+
 from __future__ import annotations
 
 from typing import Any
 
 
 SCHEMA_VERSION = "ai-platform.alert-trace-export-runtime-acceptance.v1"
-ADMIN_RUNTIME_ROUTE = "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false"
 OBSERVABILITY_SCHEMA_VERSION = "ai-platform.observability-readiness.v1"
 TRACE_EXPORT_CONTRACT_SCHEMA_VERSION = "ai-platform.trace-audit-export-contract.v1"
-PUBLIC_TRACE_EXPORT_SOURCES = {
-    "run_event_public_projection",
-    "audit_event_public_projection",
-    "admin_runtime_observability_summary",
-    "release_evidence_entry",
-}
-
-
 def _as_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def _as_list(value: Any) -> list[Any]:
-    return value if isinstance(value, list) else []
-
-
-def _has_implemented(domain: dict[str, Any], name: str) -> bool:
-    return name in {str(item) for item in _as_list(domain.get("implemented"))}
-
-
-def _alerts_and_exports_summary(
-    payload: Any,
-    *,
-    expected_tenant_id: str,
-    forbidden_projection_terms_present: bool,
-) -> dict[str, object]:
-    body = _as_dict(payload)
-    observability = _as_dict(body.get("observability_readiness"))
-    domains = _as_dict(observability.get("domains"))
-    alerts_domain = _as_dict(domains.get("alerts_and_exports"))
-    evidence = _as_dict(alerts_domain.get("evidence"))
-    alert_rules = _as_dict(evidence.get("alert_slo_rules"))
-    delivery_policy = _as_dict(alert_rules.get("delivery_channel_policy"))
-    alert_summary = _as_dict(alert_rules.get("summary"))
-    trace_export = _as_dict(evidence.get("trace_audit_export"))
-    trace_contract = _as_dict(trace_export.get("export_contract"))
-    trace_sources = {str(item) for item in _as_list(trace_contract.get("allowed_event_sources"))}
-    gaps = {str(item) for item in _as_list(alerts_domain.get("gaps"))}
-
-    return {
-        "route": ADMIN_RUNTIME_ROUTE,
-        "status": 200,
-        "expected_status": 200,
-        "tenant_id": str(body.get("tenant_id") or ""),
-        "tenant_matches_requested": str(body.get("tenant_id") or "") == expected_tenant_id,
-        "observability_schema_version": str(observability.get("schema_version") or ""),
-        "alerts_domain_status": str(alerts_domain.get("status") or ""),
-        "alert_rules_status": str(alert_rules.get("status") or ""),
-        "alert_rule_count": alert_summary.get("rule_count"),
-        "alert_delivery_policy_status": str(delivery_policy.get("status") or ""),
-        "alert_delivery_not_enabled": delivery_policy.get("does_not_enable_alert_delivery") is True,
-        "slo_threshold_runtime_calibration_gap_present": (
-            "slo_threshold_runtime_calibration" in gaps
-        ),
-        "trace_export_status": str(trace_export.get("status") or ""),
-        "trace_export_contract_schema_version": str(trace_contract.get("schema_version") or ""),
-        "trace_export_not_raw_runtime_payloads": (
-            trace_contract.get("does_not_export_raw_runtime_payloads") is True
-        ),
-        "trace_export_sources_public_only": bool(trace_sources)
-        and trace_sources.issubset(PUBLIC_TRACE_EXPORT_SOURCES),
-        "implemented_alert_template": _has_implemented(
-            alerts_domain,
-            "alert_slo_rule_template_evidence",
-        ),
-        "implemented_alert_delivery_policy": _has_implemented(
-            alerts_domain,
-            "alert_delivery_channel_policy_contract",
-        ),
-        "implemented_trace_export_contract": _has_implemented(
-            alerts_domain,
-            "trace_audit_export_contract",
-        ),
-        "forbidden_projection_terms_present": forbidden_projection_terms_present,
-    }
-
-
 def acceptance_is_valid(acceptance: dict[str, Any]) -> bool:
-    """Return whether a redacted controlled-host alert/trace summary satisfies S1."""
+    """Validate a recorded redacted alert/trace summary under its archived S1 contract."""
     checks = acceptance.get("checks")
     if not isinstance(checks, dict):
         return False

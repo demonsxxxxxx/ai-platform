@@ -126,7 +126,6 @@
     "app/governance_readiness.py",
     "app/intent_router.py",
     "app/main.py",
-    "app/memory_erasure_readiness.py",
     "app/models.py",
     "app/observability_readiness.py",
     "app/office_context_readiness.py",
