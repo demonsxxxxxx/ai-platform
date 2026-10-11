@@ -9,8 +9,8 @@ test("Agent workspaces load global history separately and open sessions in their
     "utf8",
   );
 
-  assert.match(source, /const hasSeparateGlobalHistory = Boolean\([\s\S]*agentHistoryInMainPanel/);
-  assert.match(source, /useSessionList\(\s*scrollEl,\s*hasSeparateGlobalHistory/);
+  assert.match(source, /const globalHistoryList = globalHistorySource \?\? sessionList/);
+  assert.doesNotMatch(source, /separateGlobalSessionList/);
   assert.match(source, /globalSessions=\{globalHistoryList\.sessions\}/);
   assert.match(source, /onSelectGlobalHistorySession\(session\)/);
   assert.match(source, /onSelectSession\(session\.id\)/);

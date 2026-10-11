@@ -5,7 +5,7 @@ import { ChatAppContent } from "../../components/layout/AppContent/ChatAppConten
 import { AppShell } from "../../components/layout/AppContent/AppShell";
 import { SessionSidebar } from "../../components/panels/SessionSidebar";
 import type { SessionSidebarSessionSource } from "../../components/panels/SessionSidebar";
-import { SIDEBAR_COLLAPSED_STORAGE_KEY } from "../../hooks/useAuth";
+import { SIDEBAR_COLLAPSED_STORAGE_KEY, useAuth } from "../../hooks/useAuth";
 import { authApi } from "../../services/api";
 import { agentProfileApi } from "../../services/api/agentProfile";
 import { sessionApi } from "../../services/api/session";
@@ -14,7 +14,7 @@ import type {
   AgentProfilePublicProjection,
 } from "../../types/agentProfile";
 import { selectPublishedMarketProfile } from "./agentMarketSelection";
-import { useAgentConversationList } from "./useAgentConversationList";
+import { useAgentWorkspaceHistory } from "./useAgentWorkspaceHistory";
 
 type WorkspacePhase = "loading" | "ready" | "unavailable" | "error";
 
@@ -32,6 +32,7 @@ const EMPTY_WORKSPACE_SESSION_SOURCE: SessionSidebarSessionSource = {
 
 interface LoadedAgentWorkspace {
   agentId: string;
+  authScopeKey: string;
   profile: AgentProfilePublicProjection;
   startProfile: AgentProfilePublicProjection | null;
   readOnly: boolean;
@@ -56,6 +57,8 @@ function historicalProfile(
 /** Recover the current Agent and verify its session before exposing canonical Chat. */
 export function AgentWorkspaceRoute() {
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const authScopeKey = JSON.stringify([user?.tenant_id, user?.id]);
   const { agentId, sessionId: routeSessionId } = useParams<{
     agentId?: string;
     sessionId?: string;
@@ -74,8 +77,9 @@ export function AgentWorkspaceRoute() {
   const historyScopeAuthorized =
     phase === "ready" &&
     loadedWorkspace !== null &&
-    loadedWorkspace.agentId === agentId;
-  const conversationList = useAgentConversationList(
+    loadedWorkspace.agentId === agentId &&
+    loadedWorkspace.authScopeKey === authScopeKey;
+  const { conversationList, globalHistoryList } = useAgentWorkspaceHistory(
     historyScopeAuthorized ? agentId : undefined,
   );
 
@@ -85,7 +89,8 @@ export function AgentWorkspaceRoute() {
     const retainsMountedWorkspace =
       currentView.phase === "ready" &&
       currentView.loadedWorkspace !== null &&
-      currentView.loadedWorkspace.agentId === agentId;
+      currentView.loadedWorkspace.agentId === agentId &&
+      currentView.loadedWorkspace.authScopeKey === authScopeKey;
     // A session-only route change keeps canonical Chat mounted while both the
     // route and Chat layers independently verify the pinned conversation.
     if (!retainsMountedWorkspace) {
@@ -134,6 +139,7 @@ export function AgentWorkspaceRoute() {
           }
           setLoadedWorkspace({
             agentId,
+            authScopeKey,
             profile: historicalProfile(identity),
             startProfile: currentProfile,
             readOnly: currentProfile === null,
@@ -152,6 +158,7 @@ export function AgentWorkspaceRoute() {
         }
         setLoadedWorkspace({
           agentId,
+          authScopeKey,
           profile: currentProfileForAgent,
           startProfile: currentProfile,
           readOnly: false,
@@ -170,7 +177,7 @@ export function AgentWorkspaceRoute() {
     return () => {
       active = false;
     };
-  }, [agentId, profileRetry, routeSessionId]);
+  }, [agentId, authScopeKey, profileRetry, routeSessionId]);
 
   useEffect(() => {
     if (phase === "unavailable") {
@@ -189,7 +196,8 @@ export function AgentWorkspaceRoute() {
   const resolvedWorkspace =
     phase === "ready" &&
     loadedWorkspace !== null &&
-    loadedWorkspace.agentId === agentId
+    loadedWorkspace.agentId === agentId &&
+    loadedWorkspace.authScopeKey === authScopeKey
       ? loadedWorkspace
       : null;
 
@@ -200,6 +208,7 @@ export function AgentWorkspaceRoute() {
         agentWorkspaceHistoryError={conversationList.error}
         agentWorkspaceReadOnly={resolvedWorkspace.readOnly}
         agentWorkspaceSessionSource={conversationList}
+        globalHistorySource={globalHistoryList}
         agentWorkspaceStartProfile={resolvedWorkspace.startProfile ?? undefined}
         mobileSidebarOpen={mobileSidebarOpen}
         onAgentWorkspaceHistoryRetry={conversationList.refresh}
