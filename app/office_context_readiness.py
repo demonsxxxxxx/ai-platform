@@ -8,6 +8,7 @@ import subprocess
 from typing import Any
 
 from app.public_context_keys import public_context_input_key_findings
+from app.sandbox_hardening_contract import SANDBOX_HARDENING_ACCEPTANCE_BLOCKER
 
 
 SCHEMA_VERSION = "ai-platform.office-context-pack-readiness.v1"
@@ -166,30 +167,6 @@ _SANDBOX_RUNTIME_SMOKE_CONTRACT = {
         "ordinary_user_multi_agent_allowed": False,
     },
     "acceptance_gap": "sandbox_cold_start_latency_split_runtime_acceptance",
-}
-
-_SANDBOX_HARDENING_EVIDENCE_CLASSES = {
-    "lease_isolation": "live_platform_probe",
-    "workspace_isolation": "live_platform_probe",
-    "cleanup": "live_platform_probe",
-    "resource_timeout": "source_regression_guard",
-    "failure_fallback": "source_regression_guard",
-    "cached_lease_revalidation": "source_regression_guard",
-}
-
-_SANDBOX_REQUIRED_SOURCE_REGRESSION_TESTS = {
-    "resource_timeout": {
-        "tests/test_sandbox_container_provider.py::test_docker_provider_maps_health_false_to_timeout",
-        "tests/test_sandbox_container_provider.py::test_docker_provider_removes_container_after_health_timeout",
-    },
-    "failure_fallback": {
-        "tests/test_sandbox_runtime.py::test_runtime_does_not_release_db_lease_when_completion_stop_fails",
-        "tests/test_sandbox_runtime.py::test_runtime_does_not_release_db_lease_when_dispatch_failure_stop_fails",
-        "tests/test_sandbox_runtime.py::test_runtime_stops_live_container_when_lease_recording_fails",
-    },
-    "cached_lease_revalidation": {
-        "tests/test_sandbox_container_provider.py::test_docker_provider_cached_lease_revalidates_container_scope_labels",
-    },
 }
 
 _EXECUTOR_CONTEXT_PACK_RUNTIME_ACCEPTANCE_CONTRACT = {
@@ -353,21 +330,6 @@ def _runtime_payload(payload: dict[str, Any], key: str) -> dict[str, Any] | None
     return runtime_payload if isinstance(runtime_payload, dict) else None
 
 
-def _sandbox_hardening_sections_are_complete(hardening: dict[str, Any]) -> bool:
-    for section_name, evidence_class in _SANDBOX_HARDENING_EVIDENCE_CLASSES.items():
-        section = hardening.get(section_name)
-        if not isinstance(section, dict) or section.get("evidence_class") != evidence_class:
-            return False
-        required_tests = _SANDBOX_REQUIRED_SOURCE_REGRESSION_TESTS.get(section_name)
-        if required_tests is not None:
-            source_tests = section.get("source_regression_tests")
-            if not isinstance(source_tests, list):
-                return False
-            if not required_tests.issubset({item for item in source_tests if isinstance(item, str)}):
-                return False
-    return True
-
-
 def _executor_context_evidence_summary(
     payload: dict[str, Any],
     *,
@@ -497,72 +459,6 @@ def _executor_context_evidence_summary(
     }
 
 
-def _sandbox_runtime_evidence_summary(
-    payload: dict[str, Any],
-    *,
-    path: Path,
-    repo_root: Path,
-) -> dict[str, Any] | None:
-    artifact_kind = "sandbox_cold_start_latency_split_runtime_acceptance"
-    verifier = _SANDBOX_RUNTIME_SMOKE_CONTRACT["verifier_script"]
-    if not _entry_is_reviewed(payload, artifact_kind, verifier):
-        return None
-    if not _verifier_checks_passed(payload, list(_SANDBOX_RUNTIME_SMOKE_CONTRACT["required_checks"])):
-        return None
-    evidence = _runtime_payload(payload, artifact_kind)
-    if evidence is None:
-        return None
-    if (
-        evidence.get("schema_version") != "ai-platform.sandbox-runtime.v2"
-        or evidence.get("runtime_mode") != _SANDBOX_RUNTIME_SMOKE_CONTRACT["runtime_mode"]
-        or evidence.get("sandbox_provider") != _SANDBOX_RUNTIME_SMOKE_CONTRACT["sandbox_provider"]
-        or evidence.get("executed_task") is not True
-    ):
-        return None
-    timings = evidence.get("timings")
-    if not isinstance(timings, dict) or timings.get("schema_version") != "ai-platform.sandbox-latency-split.v1":
-        return None
-    for field in [
-        "sandbox_lease_acquire_latency_ms",
-        "sandbox_container_cold_start_latency_ms",
-        "sandbox_healthcheck_latency_ms",
-        "sandbox_executor_dispatch_latency_ms",
-        "executor_model_latency_ms",
-        "document_processing_latency_ms",
-        "sandbox_cleanup_latency_ms",
-        "sandbox_total_latency_ms",
-    ]:
-        value = timings.get(field)
-        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-            return None
-    hardening = evidence.get("hardening")
-    if not isinstance(hardening, dict):
-        return None
-    if not _sandbox_hardening_sections_are_complete(hardening):
-        return None
-    invariants = evidence.get("non_expansion_invariants")
-    if invariants != _SANDBOX_RUNTIME_SMOKE_CONTRACT["non_expansion_invariants"]:
-        return None
-    return {
-        "status": "verified_runtime_acceptance",
-        "artifact_kind": "sandbox_cold_start_latency_split_runtime_acceptance",
-        "evidence_id": payload.get("evidence_id"),
-        "path": _path_for_output(path, repo_root),
-        "verifier": _SANDBOX_RUNTIME_SMOKE_CONTRACT["verifier_script"],
-        "runtime_subject": _runtime_subject(payload),
-        "run_id": evidence.get("run_id"),
-        "runtime_mode": evidence.get("runtime_mode"),
-        "sandbox_provider": evidence.get("sandbox_provider"),
-        "timings": {field: timings[field] for field in sorted(timings) if field.endswith("_ms")},
-        "hardening_evidence": {
-            section_name: hardening[section_name]["evidence_class"]
-            for section_name in sorted(_SANDBOX_HARDENING_EVIDENCE_CLASSES)
-        },
-        "non_expansion_invariants": dict(invariants),
-        "does_not_close_g6_g9": True,
-    }
-
-
 def _current_source_commit(repo_root: Path) -> str:
     try:
         status = subprocess.run(
@@ -628,15 +524,6 @@ def _runtime_acceptance_evidence(
             candidates.setdefault("executor_context_pack_runtime_acceptance", []).append(
                 (captured_at, path.as_posix(), executor_summary)
             )
-        sandbox_summary = _sandbox_runtime_evidence_summary(
-            payload,
-            path=path,
-            repo_root=repo_root,
-        )
-        if sandbox_summary is not None and sandbox_summary["runtime_subject"] == runtime_subject_sha:
-            candidates.setdefault("sandbox_cold_start_latency_split_runtime_acceptance", []).append(
-                (captured_at, path.as_posix(), sandbox_summary)
-            )
     return {
         artifact_kind: max(entries, key=lambda entry: (entry[0], entry[1]))[2]
         for artifact_kind, entries in candidates.items()
@@ -655,6 +542,11 @@ def build_office_context_readiness(
         root,
         runtime_subject_sha=expected_runtime_subject,
     )
+    # The current verifier cannot attest the bounded error projection observer.
+    # Historical nested payloads and wrapper booleans cannot supersede that gate.
+    runtime_acceptance_blockers = {
+        "sandbox_cold_start_latency_split_runtime_acceptance": [SANDBOX_HARDENING_ACCEPTANCE_BLOCKER],
+    }
     open_gaps = [gap for gap in _OPEN_GAPS if gap not in runtime_acceptance_evidence]
     closed_runtime_gaps = [gap for gap in _OPEN_GAPS if gap in runtime_acceptance_evidence]
     if "executor_context_pack_runtime_acceptance" in closed_runtime_gaps:
@@ -668,16 +560,11 @@ def build_office_context_readiness(
             "`executor_context_pack_runtime_acceptance`; fresh observed worker-dispatch evidence must prove "
             "positive source-run artifact scope and public input-key redaction"
         )
-    if "sandbox_cold_start_latency_split_runtime_acceptance" in closed_runtime_gaps:
-        sandbox_evidence_policy = (
-            "reviewed sandbox latency split runtime evidence closes only "
-            "`sandbox_cold_start_latency_split_runtime_acceptance`"
-        )
-    else:
-        sandbox_evidence_policy = (
-            "controlled-host sandbox latency split runtime evidence is still required for "
-            "`sandbox_cold_start_latency_split_runtime_acceptance`"
-        )
+    sandbox_evidence_policy = (
+        "controlled-host sandbox latency split runtime evidence remains blocked: "
+        f"{SANDBOX_HARDENING_ACCEPTANCE_BLOCKER}; historical nested evidence and "
+        "verifier pass flags cannot close `sandbox_cold_start_latency_split_runtime_acceptance`"
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "gate": GATE_NAME,
@@ -730,6 +617,7 @@ def build_office_context_readiness(
         "open_gaps": open_gaps,
         "closed_runtime_gaps": closed_runtime_gaps,
         "runtime_acceptance_evidence": runtime_acceptance_evidence,
+        "runtime_acceptance_blockers": runtime_acceptance_blockers,
         "does_not_close_g6_g9": True,
         "non_goals": list(_NON_GOALS),
         "evidence_policy": (

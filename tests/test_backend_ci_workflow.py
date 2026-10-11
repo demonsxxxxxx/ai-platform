@@ -238,6 +238,8 @@ BACKEND_TEST_SHARDS = {
     "release-governance-authority": (
         "tests/test_governance_readiness.py",
         "tests/test_foundation_alpha_readiness.py",
+        "tests/test_foundation_runtime_concurrency.py",
+        "tests/test_verify_multiuser_poc.py",
         "tests/test_capacity_baseline.py",
         "tests/test_office_context_readiness.py",
         "tests/test_release_evidence_export_acceptance.py",

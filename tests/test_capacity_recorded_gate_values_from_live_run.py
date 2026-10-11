@@ -116,6 +116,8 @@ def _foundation_runtime_evidence(**overrides: object) -> dict[str, object]:
     payload: dict[str, object] = {
         "schema_version": FOUNDATION_RUNTIME_CONCURRENCY_SCHEMA,
         "artifact_kind": "foundation_runtime_concurrency",
+        "failed_case_count": 0,
+        "failed_cases": [],
         "commit_sha": COMMIT_SHA,
         "source_tree_commit_sha": COMMIT_SHA,
         "runtime_subject_commit_sha": COMMIT_SHA,
@@ -175,6 +177,7 @@ def _foundation_runtime_evidence(**overrides: object) -> dict[str, object]:
             "artifact_acl": {
                 "status": "passed",
                 "owner_statuses": [200, 200],
+                "owner_bytes": [8, 8],
                 "cross_user_statuses": [404, 404],
                 "cross_tenant_statuses": [404, 404],
                 "preview_cross_user_statuses": [404],
@@ -193,6 +196,7 @@ def _foundation_runtime_evidence(**overrides: object) -> dict[str, object]:
             "skill_snapshots": {
                 "status": "passed",
                 "run_skill_snapshot_count": 12,
+                "run_sample_count": 12,
                 "used_count": 12,
                 "missing_pinned_snapshots": [],
                 "mismatched_pinned_snapshots": [],
@@ -201,6 +205,7 @@ def _foundation_runtime_evidence(**overrides: object) -> dict[str, object]:
             },
             "run_playback": {
                 "status": "passed",
+                "http_statuses": [200] * 12,
                 "event_order_violations": 0,
                 "private_payload_leak_count": 0,
             },
