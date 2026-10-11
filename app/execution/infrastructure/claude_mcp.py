@@ -10,7 +10,8 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any
 
 from mcp.server.lowlevel import Server
-from mcp.types import CallToolResult, TextContent
+from mcp.shared.exceptions import McpError, UrlElicitationRequiredError
+from mcp.types import CallToolResult, ErrorData, TextContent
 
 
 _BUILTIN_SERVERS = frozenset({"ai-platform-context", "ai-platform-response"})
@@ -82,7 +83,8 @@ def _stable_aliases(
 
 
 class ClaudeMcpRegistration:
-    def __init__(self, subjects, configs, *, session_factory, list_tools, callback_wrapper=None):
+    def __init__(self, subjects, configs, *, session_factory, list_tools, callback_wrapper=None, failure_observer=None):
+        self._failure_observer = failure_observer
         self.configs = configs
         self._session_factory = session_factory
         self._list_tools = list_tools
@@ -174,7 +176,30 @@ class ClaudeMcpRegistration:
                 )
             _tool, remote_name = selected[name]
             # Preserve the original remote name, structuredContent, content and isError.
-            result = await session.call_tool(remote_name, arguments)
+            try:
+                result = await session.call_tool(remote_name, arguments)
+            except UrlElicitationRequiredError:
+                # Keep the MCP server's special elicitation handling unchanged.
+                raise
+            except McpError as exc:
+                # Observe only typed client evidence, never text/data or HTTP status.
+                # No native tool_use_id crosses this boundary, so no call-level join.
+                if self._failure_observer is not None:
+                    try:
+                        observation = {
+                            "source": "mcp_session_call",
+                            "scope": "run_attempt",
+                            "exception_type": "McpError",
+                        }
+                        code = exc.error.code if isinstance(exc.error, ErrorData) else None
+                        # Preserve exact numbers through JSON and JavaScript consumers.
+                        if type(code) is int and -(2**53 - 1) <= code <= 2**53 - 1:
+                            observation["code"] = code
+                        self._failure_observer(observation)
+                    except Exception:
+                        # Diagnostics must never replace the model-facing exception.
+                        pass
+                raise
             # The installed Claude SDK bridge forwards MCP content and isError
             # but drops structuredContent. Keep that data available to the model
             # while retaining the original typed result for direct MCP callers.

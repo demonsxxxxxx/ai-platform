@@ -1650,6 +1650,18 @@ async def run_claude_agent_sdk(
     governed_builtin_invocation_states: dict[tuple[str, str], str] = {}
     observed_read_only_invocation_states: dict[tuple[str, str], str] = {}
     runtime_tool_calls: dict[tuple[str, str], dict[str, Any]] = {}
+    mcp_session_failures: list[dict[str, Any]] = []
+    mcp_session_failure_count = 0
+    mcp_session_invalid_code_count = 0
+
+    def observe_mcp_session_failure(observation: dict[str, Any]) -> None:
+        nonlocal mcp_session_failure_count, mcp_session_invalid_code_count
+        mcp_session_failure_count = min(mcp_session_failure_count + 1, 1_000_000_000)
+        if "code" not in observation:
+            mcp_session_invalid_code_count = min(mcp_session_invalid_code_count + 1, 1_000_000_000)
+        mcp_session_failures.append(dict(observation))
+        del mcp_session_failures[:-_MAX_RUNTIME_DIAGNOSTIC_DETAIL_ENTRIES]
+
     read_only_lifecycle_denials_finalized = False
     answer_stream_gate: PublicAnswerStreamGate | None = None
     agent_event_adapter: ClaudeSdkAgentEventAdapter | None = None
@@ -1714,6 +1726,23 @@ async def run_claude_agent_sdk(
         ):
             if value not in (None, "", []):
                 sdk[key] = _runtime_diagnostic_value(value)
+        if mcp_session_failures:
+            # Keep existing SDK errors alongside bounded, preprojected observations.
+            # This evidence belongs to this runner attempt, never a native invocation.
+            sdk["errors"] = {
+                **({"sdk_reported_errors": sdk["errors"]} if "errors" in sdk else {}),
+                "mcp_session_failures": list(mcp_session_failures),
+            }
+            if mcp_session_failure_count > len(mcp_session_failures):
+                normalization_losses.append({
+                    "field": "sdk.errors.mcp_session_failures", "reason": "truncated",
+                    "original": mcp_session_failure_count, "retained": len(mcp_session_failures),
+                })
+            if mcp_session_invalid_code_count:
+                normalization_losses.append({
+                    "field": "sdk.errors.mcp_session_failures.code", "reason": "invalid_field",
+                    "count": mcp_session_invalid_code_count,
+                })
         if exception is not None:
             sdk.update(
                 {
@@ -2162,7 +2191,8 @@ async def run_claude_agent_sdk(
             _mcp_server_options(authorized_subjects) if sandbox_brokered else {}
         )
         mcp_registration = prepare_claude_mcp(
-            authorized_subjects if sandbox_brokered else {}, mcp_servers, callback_tracker.wrap
+            authorized_subjects if sandbox_brokered else {}, mcp_servers, callback_tracker.wrap,
+            failure_observer=observe_mcp_session_failure,
         )
         allowed_tools = [
             mcp_registration.sdk_names.get(name, name) for name in allowed_tools
