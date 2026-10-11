@@ -27,7 +27,7 @@ try {
   await server.listen();
   const origin=new URL(server.resolvedUrls.local[0]).origin;
   const crossSiteOrigin=origin.replace('127.0.0.1','localhost');
-  lifecycle=await startBrowser({chromePath:chrome,viewport:{width:1280,height:1000},timeoutMs:30000,report:(event,details)=>evidence.browserEvents.push({event,details})});
+  lifecycle=await startBrowser({chromePath:chrome,viewport:{width:1280,height:1000,mobile:false},timeoutMs:30000,report:(event,details)=>evidence.browserEvents.push({event,details})});
   // Official CDP attachment has lower fidelity than Playwright's own protocol.
   // Controls below are mandatory; the existing harness still owns Chrome/profile cleanup.
   browser=await chromium.connectOverCDP(lifecycle.endpoint,{timeout:30000});

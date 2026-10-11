@@ -7,6 +7,7 @@ const fixture=readFileSync(resolve('scripts/fixtures/word-preview/main.tsx'),'ut
 test('Word acceptance reuses lifecycle and official context routing before page creation',()=>{
   assert.match(script,/from '\.\/browser-smoke-harness\.mjs'/);
   assert.match(script,/from 'playwright-core'/);
+  assert.match(script,/startBrowser\(\{chromePath:chrome,viewport:\{width:1280,height:1000,mobile:false\}/);
   assert.doesNotMatch(script,/class CdpClient|--no-sandbox|--disable-web-security|Target.setAutoAttach|Fetch.enable|for\(;;\)/);
   assert.ok(script.indexOf("await context.route('**/*'")<script.indexOf('await context.newPage()'));
   assert.match(script,/serviceWorkers:'block'/);
