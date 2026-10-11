@@ -1,3 +1,5 @@
+from app.platform.tracing import safe_exception_log_fields
+
 from tests.support.terminal_timing import terminal_stage_logs as terminal_stage_logs
 import asyncio
 import json
@@ -2859,13 +2861,13 @@ async def test_sdk_disconnects_before_selected_mcp_session_closes(
     async def list_tools(_session):
         return [types.SimpleNamespace(name="search")]
 
-    def prepare(subjects, configs, callback_wrapper=None):
+    def prepare(subjects, configs, callback_wrapper=None, *, failure_observer=None):
         return ClaudeMcpRegistration(
             subjects,
             configs,
             session_factory=session_factory,
             list_tools=list_tools,
-            callback_wrapper=callback_wrapper,
+            callback_wrapper=callback_wrapper, failure_observer=failure_observer,
         )
 
     monkeypatch.setitem(
@@ -6999,6 +7001,7 @@ async def _persist_sdk_failure_diagnostics(result):
         [], trace_id="synthetic-trace", latency_ms=None, invoked_skill_ids=lambda _: set(),
     )
     service = RunDiagnosticsService(
+        exception_log_fields=safe_exception_log_fields,
         persistence=types.SimpleNamespace(append_observation=append_observation),
         normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
         runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,

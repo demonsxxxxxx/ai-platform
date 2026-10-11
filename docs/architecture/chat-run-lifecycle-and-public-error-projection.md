@@ -416,6 +416,50 @@ reader. Existing records remain readable; rollback removes its capture/display.
 Repeated normalization, budget truncation, HTTP response projection, administrator
 RBAC and ordinary-result absence are the owning regression requirements.
 
+## Typed MCP client failure evidence
+
+The Execution MCP adapter observes typed `McpError.error.code` at
+`session.call_tool`, before the SDK can flatten that exception into text. The
+bootstrap-injected observer feeds the existing runner-owned private diagnostics;
+Runs remains the sole persistence and administrator-read owner. No new store,
+schema version, failure taxonomy, or terminal/retry authority is introduced.
+
+An observation contains only fixed `source=mcp_session_call`,
+`scope=run_attempt`, `exception_type=McpError`, and an optional strict integer
+`code`. `ErrorData` must be typed; booleans, strings and objects are not coerced.
+Codes outside `[-(2^53-1), 2^53-1]` are omitted so JSON/JavaScript consumers do not
+silently lose numeric precision. An omitted code contributes an `invalid_field`
+loss without echoing its value. Code 408 is an MCP-client observation, which can
+also represent a local client timeout; it does not establish an HTTP status or
+remote-provider cause. Ordinary exceptions, `CallToolResult.isError`, arbitrary
+structured content, and native hook error text supply no inferred code.
+
+Only an already-emitted failure diagnostic carrier is enriched. Without MCP
+observations, `sdk.errors` retains its previous shape. With observations it is an
+object containing `mcp_session_failures` and, when present, `sdk_reported_errors`
+for the existing SDK evidence. The Run Monitor keeps legacy error-array rendering
+and explicitly unwraps this envelope to show both sources. Unrelated legacy
+non-array values and budget-truncation markers are not treated as envelopes.
+Successful recovery does not create a failure carrier just to retain MCP evidence;
+this is not a complete tool log. No tool name or native invocation ID is added,
+and no join by ordering, arguments, or same-tool name is authorized.
+
+Each runner invocation retains at most its latest eight MCP observations; count
+truncation is reported in `normalization_losses`. Invalid-code and total counts
+saturate at one billion. The combined `sdk.errors` still has the existing 4 KiB
+value budget, and whole-payload budgets still apply: retaining eight records is
+not guaranteed when other SDK evidence fills the envelope. Budget reduction may
+replace the combined value with a truncation marker and records the existing
+normalization loss. New runs/attempts start with an empty observer collection.
+
+The observer never captures exception message/data/traceback, tool arguments,
+prompts, or results. Observation failures cannot replace the original ordinary
+MCP exception; it is re-raised unchanged. URL-elicitation errors retain their
+special propagation without capture, and cancellation, discovery deadlines and
+callback-completion ownership remain unchanged. The new envelope is private
+administrator evidence, excluded from ordinary-user results and events. Rollback
+removes the additive observer and display handling; no data migration is needed.
+
 ## Change Contract: executor terminal protocol evidence
 
 - **Owner:** Runs owns the bounded private diagnostic record and platform-admin
@@ -475,6 +519,37 @@ RBAC and ordinary-result absence are the owning regression requirements.
   duplicate same-identity handling is removed. No schema migration is required.
   Runtime GET maintenance, build-version projection and exports remain outside
   this batch and associated Issue #1485 stays open.
+
+## Safe operational failure evidence
+
+Chat submission and Runs diagnostic capture retain their existing logger owners.
+Composition injects the platform tracing projection through explicit application
+callables (Runs service and Chat submission logger), with no application import
+of a concrete platform adapter. The projection supplies structural evidence:
+at most eight exception nodes, explicit cause before unsuppressed context, and
+at most eight app-module/function/line labels from 128 inspected traceback frames
+per node. Cycle, chain limit and frame limit are reported without rendering
+exception messages, source lines, locals, SQL, parameters, DSNs or private paths.
+SQLSTATE is accepted only from the exact registered psycopg error class and a
+five-character uppercase ASCII/digit code; arbitrary exception attributes and
+lookalike subclasses are not trusted.
+
+Chat keeps its existing generated diagnostic ID and fixed submission phase.
+Runs capture warnings add the fixed factory/normalize/sanitize/build/persist
+phase and existing owner-supplied Run/Attempt IDs when they match the internal
+ID formats. An observation ID is included only after the observation was built.
+These values never come from a private diagnostic carrier. A capture failure
+logs locally without another database operation. A fixed suppressed exception
+context isolates default logging-handler stderr from the original private chain;
+no global logging setting or handler is changed. Logging failure cannot replace
+the original submission failure or public terminal result. No diagnostic field
+changes retry eligibility, authorization, terminal state or ordinary API text.
+
+This replaces Chat's outer-only exception projection and Runs' uncorrelated
+capture warning in place. Existing Chat outer-type/frame labels and Runs
+source/stage/reason log fields remain; no parallel logger, persistence schema,
+state field or fallback store is introduced. Historical logs cannot be enriched
+retroactively. Operator logs remain separate from the admin Run diagnostic API.
 
 ## Private diagnostics and reconciliation
 
