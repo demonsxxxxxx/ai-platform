@@ -851,3 +851,66 @@ async def test_success_diagnostics_include_only_public_skill_metadata_and_bounde
     }
     assert "internal-review-id" not in str(diagnostics)
     assert "tool-secret-id" not in str(diagnostics)
+
+
+@pytest.mark.parametrize("status", [100, 429, 500, 529, 599])
+def test_sdk_api_error_status_is_private_strict_and_idempotent(status):
+    raw = {"schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION, "error_code": "claude_agent_sdk_execution_failed", "sdk": {"api_error_status": status}}
+    normalized = normalize_sdk_runtime_diagnostics(raw)
+    assert normalized["sdk"]["api_error_status"] == status
+    assert normalize_sdk_runtime_diagnostics(normalized) == normalized
+    projected = sanitize_runtime_diagnostics(normalized)
+    assert projected["sdk"]["api_error_status"] == status
+    assert sanitize_runtime_diagnostics(projected) == projected
+
+
+@pytest.mark.parametrize("status", [True, False, "429", 429.0, 99, 600, [], {"token": "PRIVATE_STATUS_MARKER"}])
+def test_sdk_api_error_status_rejects_coercion_and_private_values(status):
+    raw = {"schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION, "error_code": "claude_agent_sdk_execution_failed", "sdk": {"api_error_status": status}}
+    for projected in (normalize_sdk_runtime_diagnostics(raw), sanitize_runtime_diagnostics(raw)):
+        assert "api_error_status" not in projected["sdk"]
+        assert {"field": "sdk.api_error_status", "reason": "invalid_field"} in projected["normalization_losses"]
+        assert "PRIVATE_STATUS_MARKER" not in json.dumps(projected)
+
+
+def test_sdk_api_error_status_none_remains_unknown():
+    raw = {"schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION, "sdk": {"api_error_status": None}}
+    for projected in (normalize_sdk_runtime_diagnostics(raw), sanitize_runtime_diagnostics(raw)):
+        assert "api_error_status" not in projected.get("sdk", {})
+        assert not any(loss["field"] == "sdk.api_error_status" for loss in projected.get("normalization_losses", []))
+
+
+def test_sdk_budget_preserves_content_free_api_status(monkeypatch):
+    from app.sandbox.domain import runtime_diagnostics as contract
+
+    monkeypatch.setattr(contract, "SDK_RUNTIME_DIAGNOSTICS_MAX_BYTES", 4_096)
+    projected = normalize_sdk_runtime_diagnostics({
+        "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+        "error_code": "claude_agent_sdk_execution_failed",
+        "sdk": {"api_error_status": 529, "exception_message": "x" * 8_192},
+    })
+    assert projected["sdk"] == {"api_error_status": 529}
+    assert len(json.dumps(projected, separators=(",", ":")).encode()) <= 4_096
+    assert any(loss["field"] == "sdk" and loss["retained_bytes"] > 2 for loss in projected["normalization_losses"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [429, 500, 529])
+async def test_native_error_result_keeps_status_without_changing_public_failure(monkeypatch, tmp_path, status):
+    from claude_agent_sdk import ResultMessage
+
+    async def error_query(prompt, options):
+        yield ResultMessage(
+            subtype="success", is_error=True, duration_ms=0, duration_api_ms=0,
+            num_turns=1, session_id="synthetic-session", api_error_status=status,
+            errors=["private upstream detail"],
+        )
+
+    sdk = _install_sdk(monkeypatch, error_query)
+    sdk.ResultMessage = ResultMessage
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+    result = await run_claude_agent_sdk(prompt="review", cwd=tmp_path, skill_id="review-skill", skills=["review-skill"])
+    assert result.error == "claude_agent_sdk_execution_failed"
+    assert result.runtime_diagnostics["sdk"]["api_error_status"] == status
+    assert "api_error_status" not in str(result.turn_diagnostics)
+    assert "private upstream detail" not in str(result.turn_diagnostics)

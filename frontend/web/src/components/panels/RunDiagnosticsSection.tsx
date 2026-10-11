@@ -41,6 +41,10 @@ function diagnosticValue(value: unknown): string {
   }
 }
 
+function sdkHttpStatus(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= 100 && value <= 599 ? value : null;
+}
+
 function diagnosticJson(value: unknown): string {
   try {
     return JSON.stringify(value, null, 2);
@@ -105,6 +109,7 @@ export function RunDiagnosticsSection({
       </section>
     );
   }
+  const apiErrorStatus = sdkHttpStatus(diagnostics.details.sdk.api_error_status);
   const sdkErrors = Array.isArray(diagnostics.details.sdk.errors)
     ? diagnostics.details.sdk.errors
     : [];
@@ -209,6 +214,11 @@ export function RunDiagnosticsSection({
                 {diagnostics.root.stack}
               </pre>
             </details>
+          ) : null}
+          {apiErrorStatus !== null ? (
+            <p className="text-xs text-[var(--theme-text-secondary)]" data-sdk-http-status>
+              上游 HTTP 状态：{apiErrorStatus}
+            </p>
           ) : null}
           {sdkErrors.length ? (
             <div className="rounded-md border border-[var(--theme-border)] p-3">
@@ -328,6 +338,7 @@ export function RunDiagnosticsSection({
                         request_id: observation.request_id,
                         callback_id: observation.callback_id,
                         received_at: observation.received_at,
+                        api_error_status: sdkHttpStatus(observation.sdk.api_error_status) ?? undefined,
                         exception_chain: observation.sdk.exception_chain,
                         sdk_errors: observation.sdk.errors,
                         tool_lifecycles: observation.tool_lifecycles,

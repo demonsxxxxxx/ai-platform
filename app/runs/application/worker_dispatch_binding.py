@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from app.execution.api import WorkerBoundRunPayload, WorkerRuntimeSandboxLease
 
 from app.runs.application.worker_dispatch_admission import WorkerAdmissionOutcome
+from app.runs.application.attempt_lifecycle import ReconciliationAuthorityError
 
 
 @dataclass(frozen=True)
@@ -75,6 +76,17 @@ class WorkerDispatchBindingService:
                 return WorkerDispatchBindingResult(
                     payload, outcome=WorkerAdmissionOutcome("skipped", "stale_terminal_state")
                 )
+            if reconciliation:
+                if fence != "ready":
+                    raise ReconciliationAuthorityError("run_attempt_reconciliation_scope_invalid")
+                # Admission has rechecked current capabilities. They may deny
+                # settlement, but must never rewrite the already executed spec.
+                execution_spec = await attempt_authority.restore_reconciliation_execution_spec(conn)
+                run_payload = self._execution.project_spec(execution_spec, attempt_id=attempt_id)
+                run_payload = replace(
+                    run_payload, owner_generation=attempt_authority.reconciliation_owner_generation,
+                )
+                return WorkerDispatchBindingResult(payload, run_payload)
             context_ref, context_error_code = (
                 await self._context.materialize(
                     conn, payload=payload, run_identity=run_identity,
