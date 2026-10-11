@@ -1,5 +1,9 @@
 """Public in-process contracts owned by the Sandbox bounded context."""
 
+from app.sandbox.application.reconciliation_receipt import (
+    SandboxReconciliationReceiptAuthority as SandboxReconciliationReceiptAuthority,
+)
+
 from app.sandbox.application.runtime_cleanup import (
     SandboxCleanupPersistenceError as SandboxCleanupPersistenceError,
     SandboxRuntimeCleanup as SandboxRuntimeCleanup,

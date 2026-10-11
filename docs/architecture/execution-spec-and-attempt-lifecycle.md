@@ -344,3 +344,48 @@ The attempt slice additionally requires:
 Focused tests and green CI do not prove schema deployment, provider cleanup,
 credential isolation, Redis convergence, or External Acceptance. Those evidence
 levels must remain separately labelled.
+
+### Frozen terminal receipt recovery
+
+A persisted terminal receipt settles the original Attempt; it is not another
+execution admission. Recovery retains current profile/Skill/capability
+reauthorization, which may reject settlement, but never uses that authorization
+to rewrite the frozen ExecutionSpec. The ready dispatch fence is still required;
+an invalid candidate/fence cannot restore a spec or terminalize a different Run.
+
+Runs restores the canonical JSON and digest from the exact Attempt, validates
+its JSONB projection and identity/context/model pins, and projects that original
+spec. It does not materialize Context again, compile a new spec, attach execution
+MCP configuration, start an Attempt/runtime or append another `worker_started`.
+The historical canonical codec remains the read owner; recovery never repairs
+or re-hashes old rows.
+
+Locks are acquired in the same transaction in Run, Sandbox receipt, Attempt
+order. The scoped Run and canonical Attempt are Runs-owned; the Sandbox public
+receipt authority locks and checks its exact scope, claim token, terminal receipt
+and captured lease generation. Runs does not interpret Sandbox claim state.
+The captured generation remains on worker authority through final result CAS.
+Only the original queue-worker Attempt at that generation, or its explicit
+`cancel_requested` state exactly one generation later with a Run cancellation,
+is eligible. A later owner/generation is never adopted by rereading current rows.
+Cancellation retains the existing terminal policy and native append-tail limits.
+
+The result-commit service still checks the claim before writing result facts,
+then rechecks Attempt authority at terminalization; a failed terminal CAS rolls
+back assistant, artifacts, coverage and terminal events. Publication remains
+after commit. Unknown scope, stale owner or invalid frozen authority quarantines
+the receipt without manufacturing a terminal fact for the referenced Run.
+
+Retirement disposition: the old reconciliation materialize/compile/bind branch
+and unused worker lifecycle read ports are removed. New Claude reconciliation
+contexts no longer write the redundant `adapter_context.run_payload`; the outer
+`run_payload` remains the actual recovery consumer. Historical inner keys remain
+ignored by finalization, with no data migration. Native transcripts, append/turn
+receipts, old snapshot readers and legacy canonical spec fields are preserved.
+
+Source regressions cover pure frozen restoration, invalid/stale fences, current
+revocation, exact scope/claim/owner, cancellation generation, canonical drift,
+transaction rollback and after-commit worker publication. Real PostgreSQL
+coverage is in `test_frozen_receipt_spec_postgres.py`, alongside the existing
+native transcript integrity/cancellation suite. Local skips are not database
+acceptance; the schema-migrations CI shard supplies real PostgreSQL.
