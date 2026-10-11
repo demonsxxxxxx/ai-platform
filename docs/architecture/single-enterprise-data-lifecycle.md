@@ -63,6 +63,23 @@ contracts. Arbitrary raw SDK transcripts, prompt/log dumps, file bytes and
 sandbox directories are not valid Run-event or public-manifest payloads. Keep
 message storage distinct from public projection and private operational logs.
 
+### Object-storage bucket confirmation
+
+An `ObjectStorage` instance owns one fixed client/configuration and caches only
+successful bucket confirmation behind an instance-local thread lock. It never
+shares this state across clients, credentials, endpoints or collections. A batch
+of generated artifacts reuses its existing client and confirms the bucket once;
+object writes, ordering and provisional cleanup reservations remain unchanged.
+First-use list/create errors (including access denial and concurrent-create
+conflicts) remain failures and are not cached. This does not add support for
+credentials lacking the existing bucket-list permission.
+
+An authoritative `NoSuchBucket` from an operation using that confirmation,
+including a wrapped upload error, invalidates it for the next caller. The failed
+operation still raises the original exception; no write is replayed here,
+including on ambiguous timeouts. Normal durable retry/cleanup retains ownership.
+No global client lifetime, upload parallelism or premature close is introduced.
+
 ### Change Contract: persisted user profile metadata
 
 - **Owner:** Identity owns authenticated user profile metadata; Company Navigation owns only its `company_navigation_favorite_ids` value.
