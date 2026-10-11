@@ -351,28 +351,44 @@ test("matches reveal_project targets after normalizing project paths", () => {
   );
 });
 
-test("retries anchor scrolling until the target element appears", async () => {
+test("retries anchor scrolling until the target element appears", () => {
   let attempts = 0;
   let scrolled = 0;
+  const scheduledCallbacks: (() => void)[] = [];
+  const cancelledHandles: number[] = [];
   const target = {
     scrollIntoView: () => {
       scrolled += 1;
     },
   };
 
-  scrollElementIntoViewWithRetries({
+  const cleanup = scrollElementIntoViewWithRetries({
     getElement: () => {
       attempts += 1;
       return attempts >= 3 ? target : null;
     },
-    schedule: (callback) => setTimeout(callback, 1) as unknown as number,
-    cancelSchedule: (handle) =>
-      clearTimeout(handle as unknown as NodeJS.Timeout),
+    schedule: (callback) => scheduledCallbacks.push(callback),
+    cancelSchedule: (handle) => cancelledHandles.push(handle),
     maxAttempts: 5,
   });
 
-  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(attempts, 1);
+  assert.equal(scrolled, 0);
+  assert.equal(scheduledCallbacks.length, 1);
 
+  scheduledCallbacks[0]();
+  assert.equal(attempts, 2);
+  assert.equal(scrolled, 0);
+  assert.equal(scheduledCallbacks.length, 2);
+
+  scheduledCallbacks[1]();
+  assert.equal(scrolled, 1);
+  assert.equal(attempts, 3);
+  assert.equal(scheduledCallbacks.length, 2);
+
+  cleanup();
+  assert.deepEqual(cancelledHandles, [2]);
+  scheduledCallbacks[1]();
   assert.equal(scrolled, 1);
   assert.equal(attempts, 3);
 });
