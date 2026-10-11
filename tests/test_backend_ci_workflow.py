@@ -121,6 +121,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_identity_worker_capability_audit.py",
         "tests/test_identity_worker_distribution.py",
         "tests/test_mcp_persistence.py",
+        "tests/test_mcp_selection_authorization.py",
         "tests/test_mcp_tool_catalog.py",
         "tests/test_mcp_client.py",
         "tests/test_mcp_authorization_projection.py",

@@ -19,7 +19,7 @@ connection or commit independently.
 | `execution` | `app/execution/api.py` | Provider session dispatch contract |
 | `files` | `app/files/infrastructure/run_bindings_postgres.py` | File records and scoped Run bindings |
 | `identity` | `app/identity/infrastructure/postgres.py`, `audit_postgres.py`, `capability_distributions_postgres.py` | User identity, audit records, and capability distribution persistence |
-| `mcp` | `app/mcp/infrastructure/postgres.py`, `registry_postgres.py`, `tool_policies_postgres.py`, `chat_access_postgres.py`; `app/mcp/repository.py` | Server CRUD delegates to the runtime registry implementation; tool policy and Chat access have separate adapters |
+| `mcp` | `app/mcp/infrastructure/postgres.py`, `registry_postgres.py`, `tool_policies_postgres.py`; `app/mcp/repository.py` (retained builtin authority SQL only) | Server-qualified lookup has one PostgreSQL owner; Chat/source-replay selection policy is in `application/selection_authorization.py` |
 | `platform` | `app/platform/postgres/errors.py`, `limits.py`, `values.py`; `app/kernel/memory_redaction.py` | Shared PostgreSQL errors, value encoding, payload bounds, and memory redaction rules |
 | `runs` | `app/runs/infrastructure/` adapters | Run creation, admission, control operations, lifecycle, steps, replay, and administrative queries |
 | `sandbox` | `app/sandbox/infrastructure/leases_postgres.py` | Sandbox lease persistence |

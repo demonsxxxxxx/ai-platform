@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from app.auth import normalize_roles
+from app.capability_distribution import CapabilityAccessContext, CapabilityDistributionSubject, resolve_capability_access
+
 from dataclasses import dataclass
 from typing import Any
 
@@ -9,12 +12,9 @@ from app.identity.infrastructure import capability_distributions_postgres as ide
 from app.bootstrap.identity import build_worker_distribution_authority
 from app.control_plane_contracts import sanitize_public_text
 from app.mcp import api as mcp_api
-from app.mcp.infrastructure import chat_access_postgres as mcp_chat_access_postgres
+from app.mcp.application.selection_authorization import McpSelectionAuthorization
+from app.platform.postgres.errors import RepositoryConflictError
 
-from app.capability_distribution import (
-    CapabilityDistributionSubject,
-    resolve_capability_access,
-)
 from app.db import transaction
 from app.mcp.api import configure_mcp_runtime_services
 from app.mcp.application.live_catalog import LiveMcpCatalogService
@@ -61,6 +61,15 @@ class _McpRuntimeServices:
             settings_provider=get_settings,
             redis_provider=get_redis_client,
         )
+        self.selection_authorization = McpSelectionAuthorization(
+            get_tool=mcp_postgres.get_mcp_tool_registry_entry,
+            get_distribution=identity_capability_distributions_postgres.get_capability_distribution_row,
+            authorization_error=identity_capability_distributions_postgres._capability_not_authorized,
+            conflict_error=RepositoryConflictError,
+            normalize_roles=normalize_roles, context_type=CapabilityAccessContext,
+            subject_type=CapabilityDistributionSubject, resolve_access=resolve_capability_access,
+            evaluate_policy=evaluate_tool_policy,
+        )
         self.principal_jwt_store = mcp_runtime.get_mcp_principal_jwt_store()
         self.live_catalog = LiveMcpCatalogService(
             target_resolver=self._resolve_live_target,
@@ -106,90 +115,13 @@ class _McpRuntimeServices:
     async def _get_tool(self, conn: Any, **kwargs: Any) -> dict[str, Any] | None:
         return await mcp_postgres.get_mcp_tool_registry_entry(conn, **kwargs)
 
-    async def _authorize_tools(self, conn: Any, *, available_only: bool = False, **kwargs: Any) -> list[dict[str, Any]]:
-        tenant_id = kwargs["tenant_id"]
-        tool_ids = kwargs["tool_ids"]
-        context = mcp_chat_access_postgres._chat_mcp_access_context(
-            tenant_id=tenant_id,
-            principal_department_id=kwargs["principal_department_id"],
-            principal_roles=kwargs["principal_roles"],
-            is_admin=kwargs["is_admin"],
-            permissions=kwargs["permissions"],
-        )
-        if len(tool_ids) != len(set(tool_ids)):
-            raise identity_capability_distributions_postgres._capability_not_authorized(
-                context=context,
-                capability_kind="mcp_tool",
-                capability_id="mcp_tool",
-            )
-        authorized: list[dict[str, Any]] = []
-        for tool_id in tool_ids:
-            tool = await self._get_tool(conn, tenant_id=tenant_id, tool_id=tool_id)
-            if tool is None or not mcp_postgres.mcp_runtime_metadata_usable(tool):
-                if available_only:
-                    continue
-                raise identity_capability_distributions_postgres._capability_not_authorized(
-                    context=context,
-                    capability_kind="mcp_tool",
-                    capability_id=tool_id,
-                )
-            server_id = str(tool.get("server_id") or "")
-            distribution = await identity_capability_distributions_postgres.get_capability_distribution_row(
-                conn,
-                tenant_id=tenant_id,
-                capability_kind="mcp_server",
-                capability_id=server_id,
-            )
-            lifecycle_status = (
-                "active"
-                if str(tool.get("effective_status") or "disabled") == "active"
-                and str(tool.get("server_status") or "disabled") == "active"
-                and bool(tool.get("visible_to_user"))
-                else "disabled"
-            )
-            decision = resolve_capability_access(
-                context,
-                CapabilityDistributionSubject(
-                    capability_kind="mcp_tool",
-                    capability_id=tool_id,
-                    lifecycle_status=lifecycle_status,
-                    distribution=distribution,
-                    inherited_distribution_source=f"mcp_server:{server_id}",
-                ),
-                intent="use",
-            )
-            policy = evaluate_tool_policy(
-                tool={
-                    "mcp_server": server_id,
-                    "mcp_tool": str((tool.get("allowed_tools") or [""])[0]),
-                    "registered": True,
-                    "declared": True,
-                    "active": lifecycle_status == "active",
-                    "distributed": decision.usable,
-                    "identity_authorized": True,
-                    "object_authorized": True,
-                    "parameters_authorized": True,
-                    "risk_level": str(tool.get("risk_level") or "low"),
-                    "write_capable": bool(tool.get("write_capable")),
-                }
-            )
-            if not decision.usable or not policy.allowed:
-                if available_only:
-                    continue
-                raise identity_capability_distributions_postgres._capability_not_authorized(
-                    context=context,
-                    capability_kind="mcp_tool",
-                    capability_id=tool_id,
-                    decision=decision,
-                )
-            authorized.append(tool)
-        return authorized
-
     async def repository_call(self, operation: str, conn: Any, **kwargs: Any) -> Any:
         if operation == "authorize_available_chat_mcp_tools":
-            return await self._authorize_tools(conn, available_only=True, **kwargs)
+            return await self.selection_authorization.authorize_available_chat(conn, **kwargs)
         if operation == "authorize_selected_chat_mcp_tools":
-            return await self._authorize_tools(conn, **kwargs)
+            return await self.selection_authorization.authorize_selected_chat(conn, **kwargs)
+        if operation == "authorize_selected_replay_mcp_tools":
+            return await self.selection_authorization.authorize_selected_replay(conn, **kwargs)
         if operation == "get_mcp_tool_registry_entry":
             return await self._get_tool(conn, **kwargs)
         operations = {

@@ -11,7 +11,7 @@ from app.capability_distribution import resolve_capability_access
 from app.identity.infrastructure.capability_distributions_postgres import _capability_not_authorized
 from app.identity.infrastructure.capability_distributions_postgres import get_capability_distribution_row
 from app.identity.infrastructure.capability_distributions_postgres import is_capability_distribution_archived
-from app.mcp.repository import get_mcp_tool_registry_entry
+from app.mcp.api import get_mcp_tool_registry_entry
 from app.platform.postgres.errors import RepositoryAuthorizationError
 from app.platform.postgres.errors import RepositoryConflictError
 from app.platform.postgres.errors import RepositoryNotFoundError
