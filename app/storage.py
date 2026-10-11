@@ -9,9 +9,9 @@ from typing import Callable, TypeVar
 
 import boto3
 from botocore.client import Config
-from botocore.exceptions import ClientError
 
 from app.settings import get_settings
+from app.platform.object_storage_errors import is_missing_object_storage_bucket
 
 
 @dataclass(frozen=True)
@@ -142,17 +142,9 @@ class ObjectStorage:
             raise
 
     def _invalidate_missing_bucket(self, exc: Exception) -> None:
-        # upload_file can wrap ClientError. Inspect only the bounded typed
-        # chain, not error text. An uncertain write is never replayed here.
-        error: BaseException | None = exc
-        for _ in range(8):
-            if error is None:
-                break
-            if isinstance(error, ClientError) and error.response.get("Error", {}).get("Code") == "NoSuchBucket":
-                with self._bucket_ready_lock:
-                    self._bucket_ready = False
-                break
-            error = error.__cause__ or error.__context__
+        if is_missing_object_storage_bucket(exc):
+            with self._bucket_ready_lock:
+                self._bucket_ready = False
 
     def put_bytes(self, *, storage_key: str, content: bytes, content_type: str) -> StoredObject:
         self._bucket_operation(
