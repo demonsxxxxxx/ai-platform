@@ -2230,10 +2230,8 @@ async def run_claude_agent_sdk(
     )
     if sandbox_brokered and internal_platform_subjects:
         strict_tool_lifecycle_names.add("MCP")
-    sandbox_bash_lifecycle_governed = "Bash" in strict_tool_lifecycle_names
     governed_builtin_lifecycle_rejected = False
     read_only_lifecycle_rejected = False
-    actual_sandbox_bash_invocation_observed = False
     private_capability_tokens = {
         identity
         for kind, identity in capability_plan.available
@@ -2530,7 +2528,6 @@ async def run_claude_agent_sdk(
     ) -> bool:
         """Report a private actual-tool fact and enforce strict evidence where needed."""
 
-        nonlocal actual_sandbox_bash_invocation_observed
         nonlocal governed_builtin_lifecycle_rejected
 
         name = str(tool_name or "").strip()
@@ -2545,9 +2542,6 @@ async def run_claude_agent_sdk(
         is_read_only_tool = name in read_only_tool_lifecycle_names
         lifecycle_required = is_required_builtin or name in strict_tool_lifecycle_names
         lifecycle_observed = lifecycle_required or is_read_only_tool
-        is_sandbox_bash = sandbox_bash_lifecycle_governed and name == "Bash"
-        if is_sandbox_bash:
-            actual_sandbox_bash_invocation_observed = True
         if (
             not name
             or not call_id
