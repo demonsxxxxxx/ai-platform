@@ -309,3 +309,26 @@ batch: host dirty-epoch/recovery policy applies. This change does not alter UUID
 uniqueness, entry normalization, schema, resource caps or retention. It retires
 the assumption that one SDK append must equal one host callback; old single-
 chunk callbacks keep the same request/receipt shape.
+
+### Private failure provenance
+
+Native SessionStore preload exceptions and SDK `MirrorErrorMessage.error` are
+captured in the existing bounded `runtime_diagnostics` carrier. Preload preserves
+the observed exception and standard cause/context chain; mirror capture reads
+only the SDK error string, never its SessionKey or transcript entries. Missing
+session identity, invalid frozen resume choice, and resume-state mismatch use
+fixed, value-free diagnostic sources. Public provider-session failure codes,
+new-conversation guidance, and the final mirror/receipt/sequence barriers do not
+change. Local callback rejection records the transport's observed fixed reason;
+it does not imply knowledge of an uncollected HTTP response body.
+
+The Sandbox diagnostic normalizer owns the existing size budgets; Runs owns
+private persistence and its existing credential/URL/path redaction. Arbitrary
+SDK exception strings remain administrator-private evidence under that contract:
+pattern redaction cannot guarantee removal of arbitrary business text or unknown
+secrets embedded by a provider. No prompt, callback configuration, SessionKey,
+transcript, or request payload is deliberately added to these observations.
+Oversized SDK error values retain the existing truncation summary rather than an
+unbounded copy. Required response attachment tool registration failures likewise
+retain the constructor exception through this same diagnostic path; optional
+registration failure still leaves attachments unavailable without failing a turn.
