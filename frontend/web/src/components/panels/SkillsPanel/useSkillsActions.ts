@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import toast from "react-hot-toast";
 import { useLocation, useNavigate } from "react-router-dom";
 import { exportProjectZip } from "../../../utils/exportProjectZip";
+import { getAccessToken } from "../../../services/api/token";
 import { useAuth } from "../../../hooks/useAuth";
 import { useSkills } from "../../../hooks/useSkills";
 import type { AdminSkillCatalogItem } from "../../../services/api/skill";
@@ -38,10 +39,20 @@ export function useSkillsActions(options?: {
   onSkillsArchived?: (skills: ArchivedSkillCatalogEntry[]) => void;
 }) {
   const { t } = useTranslation();
-  const { user } = useAuth();
+  const { user, isAuthenticated } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
   const enabled = options?.enabled !== false;
+  const exportScope = JSON.stringify([user?.tenant_id, user?.id, isAuthenticated, enabled]);
+  const exportOwner = useRef({ scope: exportScope, generation: 0 });
+  if (exportOwner.current.scope !== exportScope) {
+    exportOwner.current = { scope: exportScope, generation: exportOwner.current.generation + 1 };
+  }
+  const exportMounted = useRef(false);
+  useEffect(() => {
+    exportMounted.current = true;
+    return () => { exportMounted.current = false; exportOwner.current.generation += 1; };
+  }, []);
   // Search & filter
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
@@ -77,7 +88,7 @@ export function useSkillsActions(options?: {
     error,
     listError,
     getSkill,
-    getFullSkill,
+    getSkillExportFiles,
     updateSkill,
     deleteSkill,
     batchDeleteSkills,
@@ -223,16 +234,22 @@ export function useSkillsActions(options?: {
   };
 
   const handleExportZip = async (name: string) => {
-    const fullSkill = await getFullSkill(name);
-    if (!fullSkill) {
+    if (!enabled) return;
+    const generation = exportOwner.current.generation;
+    const marker = getAccessToken();
+    const isCurrent = () => exportMounted.current &&
+      exportOwner.current.generation === generation && getAccessToken() === marker;
+    const files = await getSkillExportFiles(name, isCurrent);
+    if (!isCurrent()) return;
+    if (!files) {
       toast.error(t("skills.exportFailed"));
       return;
     }
     try {
-      await exportProjectZip(fullSkill.files, name);
-      toast.success(t("skills.exportSuccess"));
+      await exportProjectZip(files, name, isCurrent);
+      if (isCurrent()) toast.success(t("skills.exportSuccess"));
     } catch {
-      toast.error(t("skills.exportFailed"));
+      if (isCurrent()) toast.error(t("skills.exportFailed"));
     }
   };
 
