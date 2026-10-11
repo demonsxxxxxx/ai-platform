@@ -245,6 +245,8 @@ GitHub checks bound to the actual base and head.
   public API. Existing Chat/Run transports apply it to their existing identity
   read; Skills identity resolution projects the durable type. Runs supplies that
   same-tenant type with the locked Worker snapshot.
+  Session-pin-to-Profile selection belongs to the same domain contract; Chat
+  retains request DTO construction and the existing HTTP 409 error mapping.
 - **Scope:** reject generic Session/Run creation for Profile identities unless
   the existing Profile admission path has supplied the Profile snapshot and
   pins; retain the ordinary non-Profile null-pin path and current Profile ACL,

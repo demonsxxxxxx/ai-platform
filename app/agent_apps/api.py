@@ -13,6 +13,7 @@ from app.agent_apps.domain.profile_definition import (
     normalize_agent_profile_display_items,
     normalize_agent_skill_reference,
     normalize_agent_skill_set as _normalize_agent_skill_set,
+    resolve_session_profile_admission_identity,
     safe_agent_avatar_seed,
 )
 
@@ -147,6 +148,7 @@ __all__ = [
     "normalize_agent_skill_set",
     "pin_agent_skill_set",
     "reauthorize_bound_profile_for_worker_dispatch",
+    "resolve_session_profile_admission_identity",
     "safe_agent_avatar_ref",
     "safe_agent_avatar_seed",
 ]

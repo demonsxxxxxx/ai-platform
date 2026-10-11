@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from app.agent_apps.api import (
     agent_type_requires_profile_admission,
     locked_agent_profile_identity_valid,
+    resolve_session_profile_admission_identity,
 )
 from app.auth import AuthPrincipal
 from app.models import ChatSessionRequest, ChatStreamRequest, CreateRunRequest
@@ -126,6 +127,53 @@ def test_missing_durable_type_cannot_be_inferred_from_queue_profile():
     locked = locked_identity("chat")
     locked.pop("agent_type")
     assert locked_agent_profile_identity_valid({}, locked) is False
+
+
+@pytest.mark.parametrize("session, session_id, selected_id, expected", [
+    (None, None, None, (None, None)),
+    (None, None, "profile-a", ("profile-a", None)),
+    ({}, "session-a", None, (None, None)),
+    ({"admitted_agent_profile_revision": None}, "session-a", None, (None, None)),
+    ({"admitted_agent_profile_revision": 0}, "session-a", None, (None, 0)),
+    ({"admitted_agent_profile_revision": "2"}, "session-a", None, (None, "2")),
+    ({"admitted_agent_profile_revision": 2}, None, "profile-a", ("profile-a", 2)),
+])
+def test_session_profile_selection_preserves_unbound_inputs(session, session_id, selected_id, expected):
+    assert resolve_session_profile_admission_identity(
+        session, session_id=session_id, selected_agent_id=selected_id,
+    ) == expected
+
+
+@pytest.mark.parametrize("purpose", ["conversation", "builder_test"])
+@pytest.mark.parametrize("selected_id", [None, "profile-a"])
+def test_session_profile_selection_restores_identity_without_advancing_revision(purpose, selected_id):
+    session = {
+        "agent_id": "profile-a", "purpose": purpose,
+        "admitted_agent_profile_revision": 2, "admitted_agent_profile_hash": "a" * 64,
+    }
+    assert resolve_session_profile_admission_identity(
+        session, session_id="session-a", selected_agent_id=selected_id,
+    ) == ("profile-a", 2)
+
+
+@pytest.mark.parametrize("revision, profile_hash, selected_id", [
+    (None, None, "profile-a"),
+    (0, "a" * 64, "profile-a"),
+    ("2", "a" * 64, "profile-a"),
+    (2, None, None),
+    (2, "", None),
+    (2, 3, "profile-a"),
+    (2, "a" * 64, "profile-b"),
+])
+def test_session_profile_selection_rejects_unbound_or_conflicting_identity(revision, profile_hash, selected_id):
+    session = {
+        "agent_id": "profile-a", "admitted_agent_profile_revision": revision,
+        "admitted_agent_profile_hash": profile_hash,
+    }
+    with pytest.raises(ValueError, match="^agent_profile_session_mismatch$"):
+        resolve_session_profile_admission_identity(
+            session, session_id="session-a", selected_agent_id=selected_id,
+        )
 
 
 def test_admitted_profile_keeps_independent_session_provenance():
