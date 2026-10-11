@@ -4,6 +4,7 @@ import { registerHooks } from "node:module";
 // @ts-expect-error jsdom runtime import.
 import { JSDOM } from "jsdom";
 import type { User } from "../../../types/auth";
+import { AUTH_SESSION_MARKER_KEY, getAccessToken } from "../../../services/api/token";
 import { authApi } from "../../../services/api/auth";
 import { installBrowserAuthTestDb } from "../../../hooks/__tests__/browserAuthTestDb";
 registerHooks({ load(url, context, nextLoad) { return url.endsWith(".css") ? { format: "module", source: "export {};", shortCircuit: true } : nextLoad(url, context); } });
@@ -110,5 +111,32 @@ test("SOP late HTTP failure cannot paint an error in the replacement scope", asy
     await view.setUser(principal("user-b", "tenant-b"));
     await act(async () => { pending.resolve(new Response("synthetic failure", { status: 503 })); });
     assert.doesNotMatch(view.container.textContent!, /503|超时|old question/);
+  } finally { await view.close(); }
+});
+
+
+test("SOP same-user session replacement fences late results without needing a prior render", async () => {
+  const pending = deferred<Response>();
+  const payloads: Record<string, unknown>[] = [];
+  const view = await harness(init => {
+    const body = JSON.parse(String(init.body));
+    payloads.push(body);
+    if (!body.session_id) return response({ session_id: "synthetic-session" });
+    return payloads.length === 2 ? pending.promise : response({ answer: "fresh answer" });
+  });
+  try {
+    await view.submit("old question");
+    const oldMarker = getAccessToken();
+    localStorage.setItem(AUTH_SESSION_MARKER_KEY, "synthetic-replacement-marker");
+    assert.notEqual(getAccessToken(), oldMarker);
+    // Do not rerender or refresh useAuth before the old completion arrives.
+    await act(async () => { pending.resolve(response({ answer: "STALE SESSION ANSWER", session_id: "stale-session" })); });
+    assert.doesNotMatch(view.container.textContent!, /STALE SESSION ANSWER/);
+    await view.setUser(principal());
+    await view.submit("fresh question");
+    assert.equal(payloads.length, 4);
+    assert.equal(payloads[2].question, "初始化会话");
+    assert.equal(payloads[3].session_id, "synthetic-session");
+    assert.match(view.container.textContent!, /fresh answer/);
   } finally { await view.close(); }
 });

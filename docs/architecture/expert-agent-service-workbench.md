@@ -276,7 +276,9 @@ The authenticated `/ai-apps/sop-assistant` page remains an independent RAGFlow
 application, not a platform Run or MCP invocation. Its `sopTransport` feature
 module owns initialization/answer stream readers, the shared request deadline,
 and local transport cleanup. The page owns cancellation and a request generation
-bound to the current authenticated tenant/user. Leaving the page or changing
+bound to the current authenticated tenant/user and non-secret browser session
+marker. Async completions recheck the current marker as well as the generation;
+the same user signing in again cannot inherit an earlier request/session. Leaving the page or changing
 that scope aborts its request and clears local conversation state; late progress,
 results, errors and completion cannot update the replacement scope.
 

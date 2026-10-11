@@ -26,6 +26,7 @@ import {
 import type { Message } from "../../types";
 import { APP_ROUTE_PATHS } from "../../appRouteManifest";
 import { useAuth } from "../../hooks/useAuth";
+import { getAccessToken } from "../../services/api/token";
 import { readWordReviewStream } from "./wordReviewStream";
 import { resolveInternalAiApplication } from "./aiApplicationCatalog";
 import { getSopRagflowConfig, streamSopAnswer, type SopRagflowConfig } from "./sopTransport";
@@ -145,8 +146,9 @@ function MessageBubble({ message }: { message: Message }) {
 }
 
 export function KnowledgeBaseApplication({ config = getSopRagflowConfig() }: { config?: SopRagflowConfig | null }) {
-  const { user } = useAuth();
-  const scope = JSON.stringify([user?.tenant_id ?? "", user?.id ?? ""]);
+  const { user, isAuthenticated } = useAuth();
+  const authMarker = getAccessToken();
+  const scope = JSON.stringify([user?.tenant_id ?? "", user?.id ?? "", isAuthenticated, authMarker]);
   const generation = useRef(0);
   const requestRef = useRef<AbortController | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -179,7 +181,7 @@ export function KnowledgeBaseApplication({ config = getSopRagflowConfig() }: { c
   const submit = async (event?: FormEvent) => {
     event?.preventDefault();
     const text = draft.trim();
-    if (!text || requestRef.current) return;
+    if (!text || requestRef.current || !isAuthenticated || !authMarker || getAccessToken() !== authMarker) return;
     if (!config) {
       setLocalError("公司知识库访问配置未提供。");
       return;
@@ -188,7 +190,12 @@ export function KnowledgeBaseApplication({ config = getSopRagflowConfig() }: { c
     const controller = new AbortController();
     requestRef.current = controller;
     const owner = generation.current;
-    const ownsRequest = () => generation.current === owner && requestRef.current === controller && !controller.signal.aborted;
+    const ownsRequest = () => {
+      const current = generation.current === owner && requestRef.current === controller &&
+        isAuthenticated && getAccessToken() === authMarker && !controller.signal.aborted;
+      if (!current) controller.abort();
+      return current;
+    };
     const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const userMessage: Message = {
       id: `sop-user-${requestId}`,
