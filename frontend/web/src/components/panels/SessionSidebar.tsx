@@ -5,6 +5,7 @@
 import {
   useState,
   useEffect,
+  useLayoutEffect,
   useRef,
   useCallback,
   useMemo,
@@ -53,6 +54,7 @@ interface SessionSidebarProps {
   onToggleCollapsed?: (collapsed: boolean) => void;
   sessionFilter?: (session: BackendSession) => boolean;
   sessionSource?: SessionSidebarSessionSource;
+  globalHistorySource?: SessionSidebarSessionSource;
   agentWorkspace?: {
     agent_id?: string;
     avatar_ref?: AgentProfileAvatarRef;
@@ -104,6 +106,7 @@ export const SessionSidebar = forwardRef<
     onToggleCollapsed,
     sessionFilter,
     sessionSource,
+    globalHistorySource,
     agentWorkspace,
     agentHistoryInMainPanel = false,
     navigationOnly = false,
@@ -159,17 +162,8 @@ export const SessionSidebar = forwardRef<
     sessionSource === undefined &&
       (!navigationOnly || showSessionHistory),
   );
-  const hasSeparateGlobalHistory = Boolean(
-    sessionSource && agentWorkspace && agentHistoryInMainPanel,
-  );
-  const separateGlobalSessionList = useSessionList(
-    scrollEl,
-    hasSeparateGlobalHistory,
-  );
   const sessionList = sessionSource ?? defaultSessionList;
-  const globalHistoryList = hasSeparateGlobalHistory
-    ? separateGlobalSessionList
-    : sessionList;
+  const globalHistoryList = globalHistorySource ?? sessionList;
   const { ref: agentLoadMoreRef, inView: agentLoadMoreVisible } = useInView({
     threshold: 0.1,
     root: scrollEl ?? undefined,
@@ -232,22 +226,30 @@ export const SessionSidebar = forwardRef<
     sessionId: string | null;
   }>({ isOpen: false, sessionId: null });
 
+  const deleteOwnerRef = useRef<{ removeSession: (id: string) => void; currentSessionId: string | null; onNewSession: () => void } | null>(null);
+  useLayoutEffect(() => {
+    deleteOwnerRef.current = { removeSession: sessionList.removeSession, currentSessionId, onNewSession };
+    return () => { deleteOwnerRef.current = null; };
+  }, [sessionList.removeSession, currentSessionId, onNewSession]);
+
   const confirmDeleteSession = async () => {
     const sessionId = deleteConfirm.sessionId;
     if (!sessionId) return;
     try {
       await sessionApi.delete(sessionId);
-      sessionList.removeSession(sessionId);
-      if (hasSeparateGlobalHistory) {
-        separateGlobalSessionList.removeSession(sessionId);
-      }
-      if (currentSessionId === sessionId) onNewSession();
+      const owner = deleteOwnerRef.current;
+      if (!owner || owner.removeSession !== sessionList.removeSession) return;
+      owner.removeSession(sessionId);
+      if (owner.currentSessionId === sessionId) owner.onNewSession();
       toast.success(t("sidebar.sessionDeleted"));
     } catch (err) {
+      if (deleteOwnerRef.current?.removeSession !== sessionList.removeSession) return;
       console.error("Failed to delete session:", err);
       toast.error(t("sidebar.deleteFailed"));
     } finally {
-      setDeleteConfirm({ isOpen: false, sessionId: null });
+      if (deleteOwnerRef.current?.removeSession === sessionList.removeSession) {
+        setDeleteConfirm({ isOpen: false, sessionId: null });
+      }
     }
   };
 
@@ -272,17 +274,11 @@ export const SessionSidebar = forwardRef<
       if (lastAppliedNewSessionKeyRef.current === sessionKey) return;
       sessionList.prependSession(newSession);
       sessionList.updateSession(newSession);
-      if (hasSeparateGlobalHistory) {
-        separateGlobalSessionList.prependSession(newSession);
-        separateGlobalSessionList.updateSession(newSession);
-      }
       lastAppliedNewSessionKeyRef.current = sessionKey;
     }
   }, [
     newSession,
     sessionList,
-    hasSeparateGlobalHistory,
-    separateGlobalSessionList,
   ]);
 
   // ─── Keyboard shortcuts ──────────────────────────────────────────
@@ -333,17 +329,11 @@ export const SessionSidebar = forwardRef<
     [handleSessionUnread, onSelectSession, onMobileClose],
   );
 
-  const updateGlobalHistorySession = useCallback(
-    (session: BackendSession) => {
-      globalHistoryList.updateSession(session);
-      if (hasSeparateGlobalHistory) sessionList.updateSession(session);
-    },
-    [globalHistoryList, hasSeparateGlobalHistory, sessionList],
-  );
+  const updateGlobalHistorySession = globalHistoryList.updateSession;
 
   const selectGlobalHistorySession = useCallback(
     (session: BackendSession) => {
-      handleSessionUnread(session.id, 0);
+      setUnreadBySession((previous) => mergeUnreadUpdate(previous, { sessionId: session.id, unreadCount: 0 }));
       updateGlobalHistorySession({ ...session, unread_count: 0 });
       if (onSelectGlobalHistorySession) {
         onSelectGlobalHistorySession(session);
@@ -353,7 +343,6 @@ export const SessionSidebar = forwardRef<
       onMobileClose?.();
     },
     [
-      handleSessionUnread,
       onMobileClose,
       onSelectGlobalHistorySession,
       onSelectSession,

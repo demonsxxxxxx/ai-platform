@@ -2360,12 +2360,14 @@ def _scenario_counts(results: list[dict[str, Any]]) -> dict[str, int]:
     return counts
 
 
-def _all_values(results: list[dict[str, Any]], key: str) -> list[int]:
-    values: list[int] = []
+def _all_values(results: list[dict[str, Any]], key: str) -> list[Any]:
+    values: list[Any] = []
     for item in results:
         source = item.get(key)
         if isinstance(source, list):
-            values.extend(value for value in source if type(value) is int)
+            values.extend(source)
+        else:
+            values.append(None)
     return values
 
 
@@ -2378,12 +2380,14 @@ def _all_strings(results: list[dict[str, Any]], key: str) -> list[str]:
     return values
 
 
-def _sum_nested_int(results: list[dict[str, Any]], key: str, nested_key: str) -> int:
+def _sum_nested_int(results: list[dict[str, Any]], key: str, nested_key: str) -> int | None:
     total = 0
     for item in results:
         nested = item.get(key)
-        if isinstance(nested, dict) and type(nested.get(nested_key)) is int:
-            total += nested[nested_key]
+        value = nested.get(nested_key) if isinstance(nested, dict) else None
+        if type(value) is not int or value < 0:
+            return None
+        total += value
     return total
 
 
@@ -2556,6 +2560,72 @@ def _has_cancel_effect(item: dict[str, Any]) -> bool:
     )
 
 
+def _skill_snapshot_sample_passed(value: Any) -> bool:
+    if not isinstance(value, dict) or value.get("status") != "passed":
+        return False
+    count = value.get("run_skill_snapshot_count")
+    used_count = value.get("used_count")
+    binding_count = value.get("snapshot_binding_sample_count")
+    return (
+        type(count) is int and count > 0
+        and type(used_count) is int and 0 <= used_count <= count
+        and type(binding_count) is int and binding_count == count
+        and value.get("missing_pinned_snapshots") == []
+        and value.get("mismatched_pinned_snapshots") == []
+        and value.get("global_mutable_skill_lookup_used") is False
+    )
+
+
+def _foundation_runtime_artifact_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
+    downloads: list[Any] = []
+    for item in results:
+        samples = item.get("downloads")
+        downloads.extend(samples if isinstance(samples, list) else [None])
+    owner_statuses = [item.get("owner_status") if isinstance(item, dict) else None for item in downloads]
+    owner_bytes = [item.get("owner_bytes") if isinstance(item, dict) else None for item in downloads]
+    cross_statuses = {
+        "cross_user_statuses": _all_values(results, "cross_user_download_statuses"),
+        "cross_tenant_statuses": _all_values(results, "cross_tenant_download_statuses"),
+        "preview_cross_user_statuses": _all_values(results, "cross_user_preview_statuses"),
+        "preview_cross_tenant_statuses": _all_values(results, "cross_tenant_preview_statuses"),
+    }
+    passed = (
+        bool(downloads)
+        and all(type(value) is int and value == 200 for value in owner_statuses)
+        and all(type(value) is int and value > 0 for value in owner_bytes)
+        and all(
+            bool(statuses) and all(type(value) is int and value in {401, 403, 404} for value in statuses)
+            for statuses in cross_statuses.values()
+        )
+    )
+    return {
+        "status": "passed" if passed else "failed",
+        "owner_statuses": owner_statuses,
+        "owner_bytes": owner_bytes,
+        **cross_statuses,
+    }
+
+
+def _foundation_runtime_playback_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
+    http_statuses = [
+        item["playback"].get("status") if isinstance(item.get("playback"), dict) else None
+        for item in results
+    ]
+    order_violations = _sum_nested_int(results, "playback", "event_order_violations")
+    payload_leaks = _sum_nested_int(results, "playback", "private_payload_leak_count")
+    passed = (
+        bool(http_statuses)
+        and all(type(value) is int and value == 200 for value in http_statuses)
+        and order_violations == 0 and payload_leaks == 0
+    )
+    return {
+        "status": "passed" if passed else "failed",
+        "http_statuses": http_statuses,
+        "event_order_violations": order_violations,
+        "private_payload_leak_count": payload_leaks,
+    }
+
+
 def build_foundation_runtime_concurrency_evidence(
     results: list[dict[str, Any]],
     *,
@@ -2584,6 +2654,7 @@ def build_foundation_runtime_concurrency_evidence(
         workspace_fingerprints=workspace_fingerprints,
     )
     skill_snapshots = {
+        "run_sample_count": sum(_skill_snapshot_sample_passed(item.get("skill_snapshot")) for item in results),
         "run_skill_snapshot_count": _sum_nested_int(results, "skill_snapshot", "run_skill_snapshot_count"),
         "used_count": _sum_nested_int(results, "skill_snapshot", "used_count"),
         "missing_pinned_snapshots": _merged_nested_lists(results, "skill_snapshot", "missing_pinned_snapshots"),
@@ -2592,8 +2663,8 @@ def build_foundation_runtime_concurrency_evidence(
         "snapshot_binding_sample_count": _sum_nested_int(results, "skill_snapshot", "snapshot_binding_sample_count"),
     }
     skill_snapshots["status"] = "failed" if (
-        skill_snapshots["run_skill_snapshot_count"] < len(results)
-        or skill_snapshots["snapshot_binding_sample_count"] < len(results)
+        not results
+        or skill_snapshots["run_sample_count"] != len(results)
         or bool(skill_snapshots["missing_pinned_snapshots"])
         or bool(skill_snapshots["mismatched_pinned_snapshots"])
         or skill_snapshots["global_mutable_skill_lookup_used"] is True
@@ -2621,6 +2692,8 @@ def build_foundation_runtime_concurrency_evidence(
             "ordinary_user_multi_agent_opened": False,
         },
         "scenario_counts": scenario_counts,
+        "failed_case_count": len(failed_cases or []),
+        "failed_cases": failed_cases if failed_cases is not None else [],
         "checks": {
             "queue_admission": {
                 **queue_admission,
@@ -2632,25 +2705,9 @@ def build_foundation_runtime_concurrency_evidence(
             },
             "sandbox_workspace": sandbox_workspace,
             "memory_context": memory_context,
-            "artifact_acl": {
-                "status": "passed",
-                "owner_statuses": [
-                    int(download["owner_status"])
-                    for item in results
-                    for download in item.get("downloads", [])
-                    if isinstance(download, dict) and type(download.get("owner_status")) is int
-                ],
-                "cross_user_statuses": _all_values(results, "cross_user_download_statuses"),
-                "cross_tenant_statuses": _all_values(results, "cross_tenant_download_statuses"),
-                "preview_cross_user_statuses": _all_values(results, "cross_user_preview_statuses"),
-                "preview_cross_tenant_statuses": _all_values(results, "cross_tenant_preview_statuses"),
-            },
+            "artifact_acl": _foundation_runtime_artifact_summary(results),
             "skill_snapshots": skill_snapshots,
-            "run_playback": {
-                "status": "passed",
-                "event_order_violations": _sum_nested_int(results, "playback", "event_order_violations"),
-                "private_payload_leak_count": _sum_nested_int(results, "playback", "private_payload_leak_count"),
-            },
+            "run_playback": _foundation_runtime_playback_summary(results),
         },
         "non_expansion_invariants": {
             "production_concurrency_increase_allowed": False,
@@ -2662,9 +2719,6 @@ def build_foundation_runtime_concurrency_evidence(
     }
     if terminal_run_failures:
         evidence["terminal_run_failures"] = terminal_run_failures
-    if failed_cases:
-        evidence["failed_case_count"] = len(failed_cases)
-        evidence["failed_cases"] = failed_cases
     if cleanup_proof is not None:
         evidence["cleanup_proof"] = cleanup_proof
     if fixture_proof is not None:

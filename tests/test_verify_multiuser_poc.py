@@ -1,3 +1,5 @@
+import pytest
+
 import importlib.util
 import hashlib
 import json
@@ -488,6 +490,7 @@ def complete_foundation_runtime_results(*, context_projection: bool = True):
                     "admission_limit_violation": False,
                 },
                 "skill_snapshot": {
+                    "status": "passed",
                     "run_skill_snapshot_count": 1,
                     "used_count": 1,
                     "missing_pinned_snapshots": [],
@@ -495,7 +498,7 @@ def complete_foundation_runtime_results(*, context_projection: bool = True):
                     "global_mutable_skill_lookup_used": False,
                     "snapshot_binding_sample_count": 1,
                 },
-                "playback": {"event_order_violations": 0, "private_payload_leak_count": 0},
+                "playback": {"status": 200, "event_order_violations": 0, "private_payload_leak_count": 0},
             }
         if context_projection:
             result["context_snapshot_public_projection"] = {
@@ -586,7 +589,7 @@ def test_foundation_runtime_evidence_from_results_fails_closed_without_probe_sou
     assert evidence["checks"]["memory_context"]["status"] == "failed"
     assert evidence["checks"]["memory_context"]["context_scope_probe_count"] == 0
     assert evidence["checks"]["skill_snapshots"]["status"] == "failed"
-    assert evidence["checks"]["skill_snapshots"]["snapshot_binding_sample_count"] == 0
+    assert evidence["checks"]["skill_snapshots"]["snapshot_binding_sample_count"] is None
     assert readiness["verified"] is False
     assert "check_queue_admission_not_passed" in readiness["failures"]
     assert "check_sandbox_workspace_not_passed" in readiness["failures"]
@@ -2020,3 +2023,112 @@ def test_foundation_runtime_cli_outputs_blocked_evidence_when_one_case_times_out
     serialized = json.dumps(payload, ensure_ascii=False).lower()
     assert "authorization" not in serialized
     assert "bearer " not in serialized
+
+
+@pytest.mark.parametrize("field,value", [
+    ("owner_status", 500), ("owner_status", "200"), ("owner_status", True),
+    ("owner_status", None), ("owner_bytes", 0), ("owner_bytes", -1),
+    ("owner_bytes", True), ("owner_bytes", "8"), ("owner_bytes", None),
+])
+def test_foundation_runtime_download_failures_survive_aggregation(field, value):
+    module = load_verify_multiuser_poc()
+    results = complete_foundation_runtime_results()
+    if value is None:
+        results[0]["downloads"][0].pop(field)
+    else:
+        results[0]["downloads"][0][field] = value
+
+    evidence = module.build_foundation_runtime_concurrency_evidence(
+        results, commit_sha="a" * 40, runtime_subject_commit_sha="a" * 40,
+    )
+    readiness = build_foundation_runtime_concurrency_readiness(evidence)
+
+    assert evidence["checks"]["artifact_acl"]["status"] == "failed"
+    assert readiness["verified"] is False
+    assert "check_artifact_acl_not_passed" in readiness["failures"]
+    output_field = "owner_statuses" if field == "owner_status" else field
+    assert evidence["checks"]["artifact_acl"][output_field][0] == value
+
+
+@pytest.mark.parametrize("field,value", [
+    ("status", 503), ("status", True), ("status", "200"), ("status", None),
+    ("event_order_violations", -1), ("event_order_violations", True),
+    ("event_order_violations", None), ("private_payload_leak_count", None),
+    ("private_payload_leak_count", "0"),
+])
+def test_foundation_runtime_playback_failures_survive_aggregation(field, value):
+    module = load_verify_multiuser_poc()
+    results = complete_foundation_runtime_results()
+    if value is None:
+        results[0]["playback"].pop(field)
+    else:
+        results[0]["playback"][field] = value
+
+    evidence = module.build_foundation_runtime_concurrency_evidence(
+        results, commit_sha="a" * 40, runtime_subject_commit_sha="a" * 40,
+    )
+    readiness = build_foundation_runtime_concurrency_readiness(evidence)
+
+    assert evidence["checks"]["run_playback"]["status"] == "failed"
+    assert readiness["verified"] is False
+    assert "check_run_playback_not_passed" in readiness["failures"]
+    if field == "status":
+        assert evidence["checks"]["run_playback"]["http_statuses"][0] == value
+    else:
+        assert evidence["checks"]["run_playback"][field] is None
+
+
+def test_foundation_runtime_skill_samples_cannot_be_borrowed_from_another_run():
+    module = load_verify_multiuser_poc()
+    results = complete_foundation_runtime_results()
+    results[0]["skill_snapshot"] = module._skill_snapshot_summary({"skill_snapshots": []})
+    results[1]["skill_snapshot"].update(run_skill_snapshot_count=2, snapshot_binding_sample_count=2)
+
+    evidence = module.build_foundation_runtime_concurrency_evidence(
+        results, commit_sha="a" * 40, runtime_subject_commit_sha="a" * 40,
+    )
+    readiness = build_foundation_runtime_concurrency_readiness(evidence)
+
+    assert evidence["checks"]["skill_snapshots"]["run_skill_snapshot_count"] == 12
+    assert evidence["checks"]["skill_snapshots"]["run_sample_count"] == 11
+    assert evidence["checks"]["skill_snapshots"]["status"] == "failed"
+    assert readiness["verified"] is False
+    assert "skill_snapshot_run_samples_missing" in readiness["failures"]
+
+
+@pytest.mark.parametrize("field,value", [
+    ("status", "failed"), ("status", "blocked"), ("status", None),
+    ("run_skill_snapshot_count", -1), ("run_skill_snapshot_count", True),
+    ("snapshot_binding_sample_count", None), ("used_count", "0"),
+    ("missing_pinned_snapshots", None), ("global_mutable_skill_lookup_used", None),
+])
+def test_foundation_runtime_skill_sample_failure_is_not_erased(field, value):
+    module = load_verify_multiuser_poc()
+    results = complete_foundation_runtime_results()
+    if value is None:
+        results[0]["skill_snapshot"].pop(field)
+    else:
+        results[0]["skill_snapshot"][field] = value
+
+    evidence = module.build_foundation_runtime_concurrency_evidence(
+        results, commit_sha="a" * 40, runtime_subject_commit_sha="a" * 40,
+    )
+
+    assert evidence["checks"]["skill_snapshots"]["run_sample_count"] == 11
+    assert evidence["checks"]["skill_snapshots"]["status"] == "failed"
+    assert build_foundation_runtime_concurrency_readiness(evidence)["verified"] is False
+
+
+def test_foundation_runtime_zero_skill_usage_preserves_legitimate_pinned_samples():
+    module = load_verify_multiuser_poc()
+    results = complete_foundation_runtime_results()
+    for item in results:
+        item["skill_snapshot"]["used_count"] = 0
+
+    evidence = module.build_foundation_runtime_concurrency_evidence(
+        results, commit_sha="a" * 40, runtime_subject_commit_sha="a" * 40,
+    )
+
+    assert evidence["checks"]["skill_snapshots"]["used_count"] == 0
+    assert evidence["checks"]["skill_snapshots"]["run_sample_count"] == 12
+    assert build_foundation_runtime_concurrency_readiness(evidence)["verified"] is True

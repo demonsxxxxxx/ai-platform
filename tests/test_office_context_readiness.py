@@ -1,3 +1,5 @@
+import pytest
+
 import json
 import os
 import subprocess
@@ -97,7 +99,7 @@ def _valid_executor_context_pack_evidence() -> dict:
     }
 
 
-def _valid_sandbox_runtime_evidence() -> dict:
+def _legacy_sandbox_runtime_evidence() -> dict:
     run_id = "sandbox-pr44-mcp-final-20260616083439"
     return {
         "schema_version": "ai-platform.sandbox-runtime.v2",
@@ -251,7 +253,7 @@ def _write_office_runtime_entry(
     (evidence_dir / f"{evidence_id}.json").write_text(json.dumps(payload), encoding="utf-8")
 
 
-def _write_synthetic_valid_office_runtime_acceptance_entries(repo_root) -> str:
+def _write_synthetic_office_runtime_acceptance_entries(repo_root) -> str:
     runtime_subject_sha = "1234567890abcdef1234567890abcdef12345678"
     _write_office_runtime_entry(
         repo_root,
@@ -287,7 +289,7 @@ def _write_synthetic_valid_office_runtime_acceptance_entries(repo_root) -> str:
         artifact_kind="sandbox_cold_start_latency_split_runtime_acceptance",
         verifier="scripts/verify_sandbox_runtime.py",
         runtime_key="sandbox_cold_start_latency_split_runtime_acceptance",
-        runtime_payload=_valid_sandbox_runtime_evidence(),
+        runtime_payload=_legacy_sandbox_runtime_evidence(),
         verifier_checks=[
             "check_docker_socket",
             "check_workspace_write",
@@ -523,20 +525,17 @@ def test_office_context_readiness_defines_safe_context_pack_contract_without_ena
     assert "callback-token" not in serialized
 
 
-def test_office_context_readiness_closes_runtime_gaps_with_synthetic_valid_reviewed_evidence(tmp_path):
-    runtime_subject_sha = _write_synthetic_valid_office_runtime_acceptance_entries(tmp_path)
+def test_office_context_readiness_only_closes_observed_executor_gap_while_sandbox_observer_is_blocked(tmp_path):
+    runtime_subject_sha = _write_synthetic_office_runtime_acceptance_entries(tmp_path)
 
     readiness = build_office_context_readiness(
         repo_root=tmp_path,
         runtime_subject_sha=runtime_subject_sha,
     )
 
-    assert readiness["status"] == "runtime_acceptance_recorded"
-    assert readiness["open_gaps"] == []
-    assert readiness["closed_runtime_gaps"] == [
-        "executor_context_pack_runtime_acceptance",
-        "sandbox_cold_start_latency_split_runtime_acceptance",
-    ]
+    assert readiness["status"] == "partial_blocked"
+    assert readiness["open_gaps"] == ["sandbox_cold_start_latency_split_runtime_acceptance"]
+    assert readiness["closed_runtime_gaps"] == ["executor_context_pack_runtime_acceptance"]
     assert readiness["does_not_close_g6_g9"] is True
     executor_evidence = readiness["runtime_acceptance_evidence"]["executor_context_pack_runtime_acceptance"]
     assert executor_evidence == {
@@ -554,39 +553,18 @@ def test_office_context_readiness_closes_runtime_gaps_with_synthetic_valid_revie
         "runtime_run_payload_verified": False,
         "does_not_close_g6_g9": True,
     }
-    sandbox_evidence = readiness["runtime_acceptance_evidence"][
-        "sandbox_cold_start_latency_split_runtime_acceptance"
-    ]
-    assert sandbox_evidence["status"] == "verified_runtime_acceptance"
-    assert sandbox_evidence["artifact_kind"] == "sandbox_cold_start_latency_split_runtime_acceptance"
-    assert sandbox_evidence["runtime_subject"] == "1234567890abcdef1234567890abcdef12345678"
-    assert sandbox_evidence["run_id"] == "sandbox-pr44-mcp-final-20260616083439"
-    assert sandbox_evidence["runtime_mode"] == "platform"
-    assert sandbox_evidence["sandbox_provider"] == "docker"
-    assert sandbox_evidence["timings"]["sandbox_container_cold_start_latency_ms"] == 1573
-    assert sandbox_evidence["timings"]["sandbox_healthcheck_latency_ms"] == 821
-    assert sandbox_evidence["timings"]["executor_model_latency_ms"] == 40
-    assert sandbox_evidence["hardening_evidence"] == {
-        "cached_lease_revalidation": "source_regression_guard",
-        "cleanup": "live_platform_probe",
-        "failure_fallback": "source_regression_guard",
-        "lease_isolation": "live_platform_probe",
-        "resource_timeout": "source_regression_guard",
-        "workspace_isolation": "live_platform_probe",
-    }
-    assert sandbox_evidence["non_expansion_invariants"] == {
-        "ordinary_user_high_risk_sandbox_allowed": False,
-        "admin_or_allowlist_only": True,
-        "production_concurrency_defaults_raised": False,
-        "docker_sandbox_production_hardening_claimed": False,
-        "ordinary_user_multi_agent_allowed": False,
+    assert "sandbox_cold_start_latency_split_runtime_acceptance" not in readiness["runtime_acceptance_evidence"]
+    assert readiness["runtime_acceptance_blockers"] == {
+        "sandbox_cold_start_latency_split_runtime_acceptance": [
+            "hardening evidence blocked: resource_limits.bounded_error_projection_observer",
+        ],
     }
     assert readiness["policy"]["lightweight_office_tasks_start_sandbox_by_default"] is False
     assert readiness["policy"]["does_not_expand_multi_agent_beta"] is True
 
 
 def test_office_context_readiness_does_not_close_gaps_for_another_runtime_subject(tmp_path):
-    _write_synthetic_valid_office_runtime_acceptance_entries(tmp_path)
+    _write_synthetic_office_runtime_acceptance_entries(tmp_path)
     current_subject = "abcdef1234567890abcdef1234567890abcdef12"
 
     readiness = build_office_context_readiness(
@@ -604,7 +582,7 @@ def test_office_context_readiness_does_not_close_gaps_for_another_runtime_subjec
 
 
 def test_office_context_readiness_image_tag_cannot_rebind_attested_runtime_subject(tmp_path):
-    attested_subject = _write_synthetic_valid_office_runtime_acceptance_entries(tmp_path)
+    attested_subject = _write_synthetic_office_runtime_acceptance_entries(tmp_path)
     other_subject = "abcdef1234567890abcdef1234567890abcdef12"
     evidence_root = tmp_path / "docs" / "release-evidence" / "office-context-runtime"
     for path in evidence_root.rglob("*.json"):
@@ -626,7 +604,7 @@ def test_office_context_readiness_image_tag_cannot_rebind_attested_runtime_subje
     attested_readiness = build_office_context_readiness(
         repo_root=tmp_path, runtime_subject_sha=attested_subject
     )
-    assert attested_readiness["open_gaps"] == []
+    assert attested_readiness["open_gaps"] == ["sandbox_cold_start_latency_split_runtime_acceptance"]
     assert {
         item["runtime_subject"]
         for item in attested_readiness["runtime_acceptance_evidence"].values()
@@ -636,7 +614,7 @@ def test_office_context_readiness_image_tag_cannot_rebind_attested_runtime_subje
 def test_office_context_readiness_requires_full_attested_runtime_subject(tmp_path):
     for index, invalid_subject in enumerate(("", "release-current", "a" * 39, 123)):
         repo_root = tmp_path / str(index)
-        image_subject = _write_synthetic_valid_office_runtime_acceptance_entries(repo_root)
+        image_subject = _write_synthetic_office_runtime_acceptance_entries(repo_root)
         evidence_root = repo_root / "docs" / "release-evidence" / "office-context-runtime"
         for path in evidence_root.rglob("*.json"):
             payload = json.loads(path.read_text(encoding="utf-8"))
@@ -703,7 +681,7 @@ def test_office_context_readiness_default_subject_fails_closed_when_git_is_unava
 
 
 def test_office_context_readiness_selects_latest_capture_for_exact_subject(tmp_path):
-    runtime_subject_sha = _write_synthetic_valid_office_runtime_acceptance_entries(tmp_path)
+    runtime_subject_sha = _write_synthetic_office_runtime_acceptance_entries(tmp_path)
     source_snapshot = {
         "schema_version": "ai-platform.source-snapshot.v1",
         "source_tree_commit_sha": runtime_subject_sha,
@@ -984,7 +962,7 @@ def test_office_context_readiness_rejects_executor_context_evidence_with_runtime
 
 
 def test_office_context_readiness_rejects_unreviewed_runtime_evidence(tmp_path):
-    runtime_subject_sha = _write_synthetic_valid_office_runtime_acceptance_entries(tmp_path)
+    runtime_subject_sha = _write_synthetic_office_runtime_acceptance_entries(tmp_path)
     evidence_path = (
         tmp_path
         / "docs/release-evidence/office-context-runtime/current/executor-live.json"
@@ -998,12 +976,15 @@ def test_office_context_readiness_rejects_unreviewed_runtime_evidence(tmp_path):
         runtime_subject_sha=runtime_subject_sha,
     )
 
-    assert readiness["open_gaps"] == ["executor_context_pack_runtime_acceptance"]
-    assert readiness["closed_runtime_gaps"] == ["sandbox_cold_start_latency_split_runtime_acceptance"]
+    assert readiness["open_gaps"] == [
+        "executor_context_pack_runtime_acceptance",
+        "sandbox_cold_start_latency_split_runtime_acceptance",
+    ]
+    assert readiness["closed_runtime_gaps"] == []
 
 
 def test_office_context_readiness_rejects_runtime_evidence_with_source_run_input_keys(tmp_path):
-    runtime_subject_sha = _write_synthetic_valid_office_runtime_acceptance_entries(tmp_path)
+    runtime_subject_sha = _write_synthetic_office_runtime_acceptance_entries(tmp_path)
     evidence_path = (
         tmp_path
         / "docs/release-evidence/office-context-runtime/current/executor-live.json"
@@ -1024,12 +1005,15 @@ def test_office_context_readiness_rejects_runtime_evidence_with_source_run_input
     )
 
     assert readiness["status"] == "partial_blocked"
-    assert readiness["open_gaps"] == ["executor_context_pack_runtime_acceptance"]
-    assert readiness["closed_runtime_gaps"] == ["sandbox_cold_start_latency_split_runtime_acceptance"]
+    assert readiness["open_gaps"] == [
+        "executor_context_pack_runtime_acceptance",
+        "sandbox_cold_start_latency_split_runtime_acceptance",
+    ]
+    assert readiness["closed_runtime_gaps"] == []
 
 
 def test_office_context_readiness_requires_current_runtime_evidence_binding(tmp_path):
-    runtime_subject_sha = _write_synthetic_valid_office_runtime_acceptance_entries(tmp_path)
+    runtime_subject_sha = _write_synthetic_office_runtime_acceptance_entries(tmp_path)
     evidence_root = tmp_path / "docs/release-evidence/office-context-runtime"
     for evidence_path in evidence_root.rglob("*.json"):
         payload = json.loads(evidence_path.read_text(encoding="utf-8"))
@@ -1048,29 +1032,6 @@ def test_office_context_readiness_requires_current_runtime_evidence_binding(tmp_
     ]
     assert readiness["closed_runtime_gaps"] == []
     assert readiness["runtime_acceptance_evidence"] == {}
-
-
-def test_office_context_readiness_rejects_incomplete_sandbox_hardening_evidence(tmp_path):
-    runtime_subject_sha = _write_synthetic_valid_office_runtime_acceptance_entries(tmp_path)
-    evidence_path = next(
-        (
-            tmp_path
-            / "docs/release-evidence/office-context-runtime/current-sandbox"
-        ).glob("*.json")
-    )
-    payload = json.loads(evidence_path.read_text(encoding="utf-8"))
-    runtime_checks = payload["evidence_ref"]["runtime_checks"]
-    sandbox_payload = runtime_checks["sandbox_cold_start_latency_split_runtime_acceptance"]
-    sandbox_payload["hardening"].pop("cached_lease_revalidation")
-    evidence_path.write_text(json.dumps(payload), encoding="utf-8")
-
-    readiness = build_office_context_readiness(
-        repo_root=tmp_path,
-        runtime_subject_sha=runtime_subject_sha,
-    )
-
-    assert readiness["open_gaps"] == ["sandbox_cold_start_latency_split_runtime_acceptance"]
-    assert readiness["closed_runtime_gaps"] == ["executor_context_pack_runtime_acceptance"]
 
 
 def test_office_context_readiness_markdown_is_gap_first_and_operator_readable(tmp_path):
@@ -1217,3 +1178,35 @@ def test_office_context_readiness_cli_outputs_json_without_secret_markers():
     assert payload["runtime_acceptance_evidence"] == {}
     assert "sk-secret" not in result.stdout
     assert "callback-token" not in result.stdout
+
+
+@pytest.mark.parametrize("nested_evidence", ["legacy", "cleanup_failed", "missing"])
+@pytest.mark.parametrize("wrapper_passed", [True, False])
+def test_office_sandbox_rejects_historical_wrappers_until_observer_exists(
+    tmp_path, nested_evidence, wrapper_passed,
+):
+    runtime_subject_sha = _write_synthetic_office_runtime_acceptance_entries(tmp_path)
+    evidence_path = tmp_path / "docs/release-evidence/office-context-runtime/current-sandbox/sandbox-live.json"
+    payload = json.loads(evidence_path.read_text(encoding="utf-8"))
+    runtime_checks = payload["evidence_ref"]["runtime_checks"]
+    sandbox = runtime_checks["sandbox_cold_start_latency_split_runtime_acceptance"]
+    if nested_evidence == "cleanup_failed":
+        sandbox["hardening"]["cleanup"]["ephemeral_container_removed"] = False
+    elif nested_evidence == "missing":
+        runtime_checks.pop("sandbox_cold_start_latency_split_runtime_acceptance")
+    payload["evidence_ref"]["result"] = "ok:true" if wrapper_passed else "ok:false"
+    for check in runtime_checks["verifier_checks"]:
+        check["passed"] = wrapper_passed
+    evidence_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    readiness = build_office_context_readiness(repo_root=tmp_path, runtime_subject_sha=runtime_subject_sha)
+
+    # This verifies the current acceptance blocker, not validation of old nested sections.
+    assert readiness["closed_runtime_gaps"] == ["executor_context_pack_runtime_acceptance"]
+    assert readiness["open_gaps"] == ["sandbox_cold_start_latency_split_runtime_acceptance"]
+    assert readiness["runtime_acceptance_blockers"] == {
+        "sandbox_cold_start_latency_split_runtime_acceptance": [
+            "hardening evidence blocked: resource_limits.bounded_error_projection_observer",
+        ],
+    }
+    assert "bounded_error_projection_observer" in render_office_context_readiness_markdown(readiness)

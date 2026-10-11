@@ -107,6 +107,46 @@ The following stay outside live request paths:
 Offline checks belong under `tools/` or `scripts/`. A runtime endpoint may link
 to an operator command but does not execute or project its historical output.
 
+### Offline acceptance summary contracts
+
+Foundation concurrency evidence is produced by
+`tools/verify_multiuser_poc.py` and accepted by
+`app/foundation_runtime_concurrency.py`. A section's `status: passed` does not
+replace its samples. All required counts must be explicit non-negative integers;
+booleans, strings, missing values, and negative counts cannot become zero proof.
+Owner downloads require HTTP 200 and aligned positive `owner_bytes` samples;
+playback requires HTTP 200 samples for all runs. Skill snapshot evidence includes
+`run_sample_count` so one run's extra snapshots cannot cover another run with no
+valid pinned snapshot. `used_count` may be zero: availability is not execution.
+The producer always emits `failed_case_count` and `failed_cases`, including zero
+and an empty list after a successful run.
+
+Historical concurrency summaries lacking these observations are retained as
+archives but cannot pass the current acceptance contract. Do not backfill success
+values into them; collect fresh evidence using the current producer. The owning
+regressions are `tests/test_foundation_runtime_concurrency.py` and
+`tests/test_verify_multiuser_poc.py`; Foundation Alpha and capacity consumers use
+the same validator rather than a compatibility bypass.
+
+Sandbox hardening acceptance belongs to `app/sandbox_hardening_contract.py` and
+`scripts/verify_sandbox_runtime.py`. Their shared
+`SANDBOX_HARDENING_ACCEPTANCE_BLOCKER` names the unavailable bounded-error
+projection observer. Office readiness projects this blocker and leaves
+`sandbox_cold_start_latency_split_runtime_acceptance` open. It no longer parses
+the historical nested sandbox contract or treats stored verifier pass flags as
+current proof. Observed executor context-pack acceptance remains independent.
+
+The Sandbox Runtime owner can restore sandbox acceptance only after a live,
+same-run, same-runtime-subject observer establishes the bounded-error projection
+and the current verifier validates it. The observable exit condition is fresh
+current-subject evidence passing the authoritative verifier plus an Office
+consumer regression proving both acceptance and rejection of failed, missing,
+and malformed observations. Wire Office to that shared current contract; do not
+restore its retired nested validator or remove the blocker based on a stored
+boolean. `tests/test_sandbox_runtime_evidence_script.py` owns nested verifier
+validation, while `tests/test_office_context_readiness.py` owns projection of the
+blocker and rejection of historical wrappers.
+
 ## 6. Retirement and ownership
 
 When deleting a test or readiness surface:

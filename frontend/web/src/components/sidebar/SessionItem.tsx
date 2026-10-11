@@ -2,7 +2,7 @@
  * Session item component with inline title editing.
  */
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useLayoutEffect, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { MoreHorizontal } from "lucide-react";
 import toast from "react-hot-toast";
@@ -64,6 +64,12 @@ export function SessionItem({
     }
   }, [isEditing]);
 
+  const updateOwnerRef = useRef<typeof onSessionUpdate | null>(onSessionUpdate);
+  useLayoutEffect(() => {
+    updateOwnerRef.current = onSessionUpdate;
+    return () => { updateOwnerRef.current = null; };
+  }, [onSessionUpdate]);
+
   // Save title
   const handleSaveTitle = async () => {
     const trimmedTitle = editTitle.trim();
@@ -80,15 +86,21 @@ export function SessionItem({
         name: trimmedTitle,
       });
       if (response.session) {
+        // The list owner survives collapsed/unmounted rows and fences account
+        // changes itself; only this row's local UI work depends on its mount.
         onSessionUpdate(response.session);
+        if (updateOwnerRef.current !== onSessionUpdate) return;
         toast.success(t("sidebar.renamed"));
       }
     } catch (error) {
+      if (updateOwnerRef.current !== onSessionUpdate) return;
       console.error("Failed to update session title:", error);
       toast.error(t("sidebar.renameFailed"));
     } finally {
-      setIsSaving(false);
-      setIsEditing(false);
+      if (updateOwnerRef.current === onSessionUpdate) {
+        setIsSaving(false);
+        setIsEditing(false);
+      }
     }
   };
 
