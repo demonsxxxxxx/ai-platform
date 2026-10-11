@@ -24,6 +24,7 @@ import {
   readAdminRunDeepLinkScope,
   type AdminQueueInsight,
   type AdminRunDiagnosticsResponse,
+  type AdminRunDiagnosticToolEvidence,
   type AdminRunDetailResponse,
   type AdminRunSummary,
   type AdminWorkerExecution,
@@ -38,6 +39,25 @@ import { RunDiagnosticsSection } from "./RunDiagnosticsSection";
 import { AdminRunTrajectoryReplay } from "./AdminRunTrajectoryReplay";
 import { FailureGuidanceCard } from "../common/FailureGuidanceCard";
 import { buildAdminFailureGuidance } from "./runFailureGuidance";
+
+export function indexToolDiagnosticEvidence(evidence: AdminRunDiagnosticToolEvidence[]) {
+  const indexed = new Map<string, AdminRunDiagnosticToolEvidence>();
+  const conflicts = new Set<string>();
+  for (const item of evidence) {
+    // Public operations and legacy native-ID actions remain separate aliases.
+    for (const key of new Set([item.operation_id, item.invocation_id])) {
+      if (!key || !key.trim() || conflicts.has(key)) continue;
+      const previous = indexed.get(key);
+      if (previous && previous.tool_name !== item.tool_name) {
+        indexed.delete(key);
+        conflicts.add(key);
+      } else {
+        indexed.set(key, item);
+      }
+    }
+  }
+  return indexed;
+}
 
 const RUN_LIMIT = 50;
 const PAGE_SIZE = 10;
@@ -766,15 +786,13 @@ function RunDetail({
     model: {},
   };
   const journal = executionJournal(workerExecution);
-  const toolEvidenceById = new Map(
+  const toolEvidenceById = indexToolDiagnosticEvidence(
     (diagnostics?.details.observations ?? [])
       .flatMap((observation) => [
         ...observation.tool_lifecycles,
         ...observation.tool_calls,
         ...observation.tool_policy_denials,
-      ])
-      .filter((evidence) => evidence.invocation_id)
-      .map((evidence) => [evidence.invocation_id, evidence] as const),
+      ]),
   );
   const artifacts = detail?.artifacts ?? [];
   const failureGuidance = detail ? buildAdminFailureGuidance(detail) : null;
