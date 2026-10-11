@@ -2,12 +2,14 @@ import asyncio
 import hashlib
 import os
 import tempfile
+import threading
 from dataclasses import dataclass
 from functools import partial
 from typing import Callable, TypeVar
 
 import boto3
 from botocore.client import Config
+from botocore.exceptions import ClientError
 
 from app.settings import get_settings
 
@@ -105,6 +107,8 @@ class ObjectStorage:
     def __init__(self) -> None:
         settings = get_settings()
         self.bucket = settings.s3_bucket
+        self._bucket_ready = False
+        self._bucket_ready_lock = threading.Lock()
         self.client = boto3.client(
             "s3",
             endpoint_url=settings.s3_endpoint_url,
@@ -115,14 +119,44 @@ class ObjectStorage:
         )
 
     def ensure_bucket(self) -> None:
-        existing = self.client.list_buckets()
-        names = {item["Name"] for item in existing.get("Buckets", [])}
-        if self.bucket not in names:
-            self.client.create_bucket(Bucket=self.bucket)
+        # This client/configuration lives for one storage instance. Cache only a
+        # successful confirmation, never permission errors or creation conflicts.
+        with self._bucket_ready_lock:
+            if self._bucket_ready:
+                return
+            existing = self.client.list_buckets()
+            names = {item["Name"] for item in existing.get("Buckets", [])}
+            if self.bucket not in names:
+                self.client.create_bucket(Bucket=self.bucket)
+            self._bucket_ready = True
+
+    def _bucket_operation(
+        self, operation: Callable[..., _StorageResult], /,
+        *args: object, **kwargs: object,
+    ) -> _StorageResult:
+        self.ensure_bucket()
+        try:
+            return operation(*args, **kwargs)
+        except Exception as exc:
+            self._invalidate_missing_bucket(exc)
+            raise
+
+    def _invalidate_missing_bucket(self, exc: Exception) -> None:
+        # upload_file can wrap ClientError. Inspect only the bounded typed
+        # chain, not error text. An uncertain write is never replayed here.
+        error: BaseException | None = exc
+        for _ in range(8):
+            if error is None:
+                break
+            if isinstance(error, ClientError) and error.response.get("Error", {}).get("Code") == "NoSuchBucket":
+                with self._bucket_ready_lock:
+                    self._bucket_ready = False
+                break
+            error = error.__cause__ or error.__context__
 
     def put_bytes(self, *, storage_key: str, content: bytes, content_type: str) -> StoredObject:
-        self.ensure_bucket()
-        self.client.put_object(
+        self._bucket_operation(
+            self.client.put_object,
             Bucket=self.bucket,
             Key=storage_key,
             Body=content,
@@ -143,8 +177,8 @@ class ObjectStorage:
             while chunk := source.read(1024 * 1024):
                 digest.update(chunk)
                 size_bytes += len(chunk)
-        self.ensure_bucket()
-        self.client.upload_file(
+        self._bucket_operation(
+            self.client.upload_file,
             source_path,
             self.bucket,
             storage_key,
@@ -208,8 +242,8 @@ class ObjectStorage:
             body.close()
 
     def create_multipart_upload(self, *, storage_key: str, content_type: str) -> str:
-        self.ensure_bucket()
-        response = self.client.create_multipart_upload(
+        response = self._bucket_operation(
+            self.client.create_multipart_upload,
             Bucket=self.bucket,
             Key=storage_key,
             ContentType=content_type,
@@ -248,11 +282,15 @@ class ObjectStorage:
         )
 
     def abort_multipart_upload(self, *, storage_key: str, upload_id: str) -> None:
-        self.client.abort_multipart_upload(
-            Bucket=self.bucket,
-            Key=storage_key,
-            UploadId=upload_id,
-        )
+        try:
+            self.client.abort_multipart_upload(
+                Bucket=self.bucket,
+                Key=storage_key,
+                UploadId=upload_id,
+            )
+        except Exception as exc:
+            self._invalidate_missing_bucket(exc)
+            raise
 
     def cleanup_multipart_upload(self, *, storage_key: str, upload_id: str) -> None:
         abort_error: Exception | None = None
@@ -274,11 +312,10 @@ class ObjectStorage:
             raise delete_error
 
     def abort_multipart_uploads_for_key(self, *, storage_key: str) -> int:
-        self.ensure_bucket()
         request: dict[str, object] = {"Bucket": self.bucket, "Prefix": storage_key}
         aborted = 0
         while True:
-            response = self.client.list_multipart_uploads(**request)
+            response = self._bucket_operation(self.client.list_multipart_uploads, **request)
             for upload in response.get("Uploads") or []:
                 if str(upload.get("Key") or "") != storage_key:
                     continue
