@@ -90,6 +90,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_required_tool_contract.py",
         "tests/test_intent_router.py",
         "tests/test_public_answer_stream.py",
+        "tests/test_control_plane_contracts.py",
         "tests/test_sandbox_executor_app.py",
         "tests/test_sandbox_executor_async_dispatch.py",
         "tests/test_settings.py",
