@@ -153,7 +153,6 @@ function bootstrapSource() {
       });
       if (url.pathname === '/api/ai/chat/sessions') return json({ sessions: [], next_cursor: null });
       if (url.pathname === '/api/sessions') return json({ sessions: [], total: 0, skip: 0, limit: 20, has_more: false });
-      if (url.pathname.includes('notification')) return json([]);
       if (url.pathname.startsWith('/api/')) {
         state.errors.push('unstubbed_api:' + method + ':' + url.pathname);
         return json({ detail: 'route_layout_smoke_unstubbed_api' }, 501);

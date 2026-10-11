@@ -464,7 +464,6 @@ async function prepareShellHarness({ authenticated = false } = {}) {
   const { authApi } = await import("../../../services/api/auth.ts");
   const { sessionApi } = await import("../../../services/api/session.ts");
   const { modelPublicApi } = await import("../../../services/api/modelPublic.ts");
-  const { notificationPublicApi } = await import("../../../services/api/notificationPublic.ts");
   const originals = {
     bootstrapAuthContext: authApi.bootstrapAuthContext,
     getCurrentUser: authApi.getCurrentUser,
@@ -472,7 +471,6 @@ async function prepareShellHarness({ authenticated = false } = {}) {
     listSessions: sessionApi.list,
     listAvailableModels: modelPublicApi.listAvailable,
     getPinnedModelIds: modelPublicApi.getPinnedModelIds,
-    getActiveNotifications: notificationPublicApi.getActive,
   };
   authApi.bootstrapAuthContext = async (request) => ({
     status: "ready",
@@ -516,7 +514,6 @@ async function prepareShellHarness({ authenticated = false } = {}) {
     default_model_id: "model-default",
   });
   modelPublicApi.getPinnedModelIds = async () => [];
-  notificationPublicApi.getActive = async () => [];
 
   function AuthenticatedGate({ children }: { children: React.ReactNode }) {
     return useAuth().hasPermission(Permission.CHAT_WRITE) ? children : null;
@@ -544,7 +541,6 @@ async function prepareShellHarness({ authenticated = false } = {}) {
       sessionApi.list = originals.listSessions;
       modelPublicApi.listAvailable = originals.listAvailableModels;
       modelPublicApi.getPinnedModelIds = originals.getPinnedModelIds;
-      notificationPublicApi.getActive = originals.getActiveNotifications;
     },
   };
 }

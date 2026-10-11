@@ -41,6 +41,7 @@ current SHAs, exceptions, and evidence results belong in the issue/PR.
 | SSE bytes, identity, replay, and client acceptance | [SSE wire](architecture/redis-streams-sse-wire-protocol.md) |
 | Stream admission, direct publication, leases, and hydration | [SSE execution control](architecture/redis-streams-sse-execution-control.md) |
 | Chat display and public terminal errors | [Chat projection](architecture/chat-run-lifecycle-and-public-error-projection.md) |
+| Retired feedback and announcement entrypoints | [Unavailable contract](frontend/feedback-announcements-unavailable.md) |
 | Dependency locks, image builds, and publication | [Packaging](architecture/docker-packaging.md) |
 
 Do not duplicate these rules in an overview. When two current documents conflict,

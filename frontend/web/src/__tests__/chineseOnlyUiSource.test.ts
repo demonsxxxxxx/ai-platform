@@ -41,29 +41,28 @@ test("product language controls are absent from authentication and workbench sur
   }
 });
 
-test("transport and notification client copy explicitly use Chinese", () => {
+test("transport and task notification copy explicitly use Chinese", () => {
   const fetch = read("services/api/fetch.ts");
   const authApi = read("services/api/auth.ts");
   const notifications = read(
     "components/layout/AppContent/useWebSocketNotifications.tsx",
   );
-  const projections = read("components/workbench/WorkbenchProjectionPages.tsx");
 
   assert.match(fetch, /headers\.set\("Accept-Language", "zh-CN"\)/);
   assert.match(fetch, /finalHeaders\.set\("Accept-Language", "zh-CN"\)/);
   assert.match(authApi, /"Accept-Language": "zh-CN"/);
   assert.match(notifications, /i18n\.getFixedT\("zh"\)/);
-  assert.match(projections, /resolveChineseNotificationText/);
-  assert.doesNotMatch(projections, /language\.startsWith/);
 });
 
-test("active notification surfaces use the Chinese-only projection helper", () => {
-  const dialog = read("components/notification/NotificationDialog.tsx");
-  const projections = read("components/workbench/WorkbenchProjectionPages.tsx");
-
-  for (const source of [dialog, projections]) {
-    assert.match(source, /resolveChineseNotificationText/);
-    assert.doesNotMatch(source, /title_i18n\.en|content_i18n\.en/);
+test("retired feature deep-links use truthful Chinese unavailable copy", () => {
+  const zh = JSON.parse(read("i18n/locales/zh.json"));
+  assert.equal(zh.workbench.unavailable.feedback.title, "反馈功能不可用");
+  assert.equal(zh.workbench.unavailable.notifications.title, "公告功能不可用");
+  for (const feature of ["feedback", "notifications"]) {
+    assert.match(zh.workbench.unavailable[feature].description, /尚未实现/);
+    assert.doesNotMatch(zh.workbench.unavailable[feature].description, /重试|稍后|恢复|暂无/);
+    assert.equal(zh.workbench.projections[feature], undefined);
+    assert.equal(zh.workbench.phaseTwo[feature], undefined);
   }
 });
 

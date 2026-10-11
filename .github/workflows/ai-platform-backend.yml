@@ -238,6 +238,9 @@ jobs:
               tests/test_admin_part_messages.py
               tests/test_admin_runtime_routes.py
               tests/test_auth_principal.py
+              tests/test_workbench_projection_routes.py
+              tests/test_lambchat_frontend_compat.py::test_notifications_have_one_workbench_route_owner
+              tests/test_lambchat_frontend_compat.py::test_frontend_bootstrap_endpoints_match_retained_contracts
               tests/test_chat_selected_skill_routing.py
               tests/test_claude_agent_events.py
               tests/test_public_event_enum_types.py
@@ -303,6 +306,7 @@ jobs:
               tests/test_trusted_governance.py
               tests/test_code_governance.py
               tests/test_source_authority_docs.py
+              tests/test_frontend_projection_audit.py::test_feedback_and_announcements_have_no_active_browser_api_or_projection_allowlist
               tests/test_ci_image_scope.py
               tests/test_require_zero_junit_skips.py
               tests/test_packaging_contract.py

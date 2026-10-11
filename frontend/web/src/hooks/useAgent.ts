@@ -175,8 +175,7 @@ function messagesAfterSubmissionRejection(
 type HistoryLoadFailurePhase =
   | "session_projection"
   | "identity_validation"
-  | "event_history"
-  | "feedback";
+  | "event_history";
 
 /** Emit only fixed phase plus bounded status/code for history diagnostics. */
 function logHistoryLoadFailure(
