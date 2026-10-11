@@ -647,6 +647,11 @@ and the release runbook. No source cleanup authorizes a weaker public projection
 `tool_calls[].is_interrupt` is an optional strict boolean copied only from a
 native `PostToolUseFailure` hook before large failure/input values are truncated.
 Both diagnostic boundaries retain it only for the current failed tool stage.
+Repeated lifecycle evidence for the same tool name and invocation ID, still at
+the failed stage and without a new failure payload, preserves the observed flag.
+A new explicit failure payload re-evaluates the native-hook and strict-boolean
+guards; any non-failed stage clears the flag. Observations do not carry across
+different invocations or runner attempts.
 It means the SDK reported an abort, not that the user cancelled the Run. Missing
 values remain unknown; false means only that the received hook reported false.
 The SDK documents that interrupting a running tool does not fire this hook.

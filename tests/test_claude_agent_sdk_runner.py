@@ -317,7 +317,9 @@ def _fake_sdk(
             self.parent_tool_use_id = None
 
     class MirrorErrorMessage:
-        pass
+        def __init__(self, *, key=None, error="synthetic mirror failure"):
+            self.key = key
+            self.error = error
 
     class ResultMessage:
         session_id = "sdk-session"
@@ -6521,7 +6523,8 @@ async def test_sdk_provider_session_preflight_failure_is_private_and_fail_closed
 
     assert result.error == "claude_agent_sdk_provider_session_failed"
     assert result.message == ""
-    assert "private callback details" not in repr(result)
+    assert "private callback details" not in repr((result.message, result.error, result.turn_diagnostics))
+    assert result.runtime_diagnostics["sdk"]["exception_message"] == "private callback details"
     assert captured == {}
 
 
@@ -6554,7 +6557,9 @@ async def test_sdk_mirror_error_is_a_private_fail_closed_provider_failure(monkey
 
     assert result.error == "claude_agent_sdk_provider_session_failed"
     assert result.message == ""
-    assert "MirrorError" not in repr(result)
+    assert result.runtime_diagnostics["failure_source"] == "provider_session_mirror"
+    assert result.runtime_diagnostics["sdk"]["errors"] == "synthetic mirror failure"
+    assert "synthetic mirror failure" not in repr((result.message, result.error, result.turn_diagnostics))
     assert "entry-1" not in repr(result)
 
 
@@ -6969,3 +6974,199 @@ async def test_terminal_timing_covers_sdk_result_to_final_eof(monkeypatch, tmp_p
     assert records[0].terminal_phase_duration_ms == 1750
     assert records[0].terminal_phase_outcome == {"success": "ok", "failure": "error", "cancel": "cancelled"}[ending]
     assert "private" not in repr(vars(records[0]))
+
+
+async def _persist_sdk_failure_diagnostics(result):
+    """Exercise the real worker projection and Runs private capture boundary."""
+    from app.execution.application.worker_terminal_projection import project_worker_terminal_result
+    from app.runs.application.diagnostics import RunDiagnosticsService
+    from app.sandbox.api import SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION, normalize_sdk_runtime_diagnostics
+
+    observations = []
+
+    async def append_observation(_conn, **kwargs):
+        observations.append(kwargs["observation"])
+
+    projected = project_worker_terminal_result(
+        types.SimpleNamespace(
+            result={"error_code": result.error, "message": result.message},
+            executor_payload={"runtime_diagnostics": result.runtime_diagnostics},
+            schema_version="synthetic.v1", adapter_version="synthetic.v1",
+            executor_type="claude", executor_version="synthetic", capabilities=[],
+        ),
+        [], trace_id="synthetic-trace", latency_ms=None, invoked_skill_ids=lambda _: set(),
+    )
+    service = RunDiagnosticsService(
+        persistence=types.SimpleNamespace(append_observation=append_observation),
+        normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
+        runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+    )
+    public = await service.capture_failure_result(
+        object(), tenant_id="synthetic-tenant", run_id="synthetic-run",
+        attempt_id="synthetic-attempt", source="worker_executor", stage="terminalization",
+        error_code=result.error, result_json=projected.result_payload,
+    )
+    assert "runtime_diagnostics" not in public
+    assert len(observations) == 1
+    assert observations[0]["attempt_id"] == "synthetic-attempt"
+    return public, observations[0]["runtime_diagnostics"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", [
+    "provider_session_callback_rejected", "provider_session_response_too_large",
+    "provider_session_callback_timeout", "provider_session_callback_unavailable",
+    "provider_session_response_invalid", "provider_session_sequence_conflict",
+])
+async def test_sdk_preload_cause_reaches_private_persistence(monkeypatch, tmp_path, reason):
+    from app.execution.infrastructure.harness.claude.session_store import ClaudeSessionStoreTransportError
+
+    class Store:
+        async def load(self, _key):
+            try:
+                raise TimeoutError("synthetic transport cause https://callback.invalid/path token=synthetic-secret")
+            except TimeoutError as cause:
+                raise ClaudeSessionStoreTransportError(reason) from cause
+
+    captured = {}
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", _fake_sdk(captured, hook_invocations=[]))
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+    result = await run_claude_agent_sdk(
+        prompt="private-prompt-sentinel", cwd=tmp_path, skill_id=None,
+        session_id="private-session-sentinel", session_store=Store(),
+        provider_session_resume_required=False,
+    )
+    assert result.error == "claude_agent_sdk_provider_session_failed"
+    assert result.message == "" and captured == {}
+    assert result.turn_diagnostics["retryable"] is False
+    public, private = await _persist_sdk_failure_diagnostics(result)
+    assert private["failure_source"] == "provider_session_preload"
+    assert private["sdk"]["exception_message"] == reason
+    chain = private["sdk"]["exception_chain"]
+    assert [item["type"] for item in chain] == ["ClaudeSessionStoreTransportError", "TimeoutError"]
+    assert chain[0]["relation"] == "cause"
+    assert "synthetic transport cause" in chain[1]["message"]
+    for secret in ("callback.invalid", "synthetic-secret", "private-session-sentinel", "private-prompt-sentinel"):
+        assert secret not in json.dumps(private)
+    assert reason not in json.dumps(public)
+    assert "synthetic transport cause" not in json.dumps(public)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("session_id", "resume", "entries", "source"), [
+    (None, False, None, "provider_session_identity"),
+    ("private-session-sentinel", None, None, "provider_session_resume_choice"),
+    ("private-session-sentinel", False, [{"text": "private-transcript-sentinel"}], "provider_session_resume_mismatch"),
+])
+async def test_sdk_session_guard_diagnostics_are_value_free(monkeypatch, tmp_path, session_id, resume, entries, source):
+    class Store:
+        async def load(self, _key):
+            return entries
+
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", _fake_sdk({}, hook_invocations=[]))
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+    result = await run_claude_agent_sdk(
+        prompt="private-prompt-sentinel", cwd=tmp_path, skill_id=None,
+        session_id=session_id, session_store=Store(), provider_session_resume_required=resume,
+    )
+    assert result.error == "claude_agent_sdk_provider_session_failed"
+    assert result.runtime_diagnostics["failure_source"] == source
+    assert not result.runtime_diagnostics.get("sdk")
+    for secret in ("private-session-sentinel", "private-transcript-sentinel", "private-prompt-sentinel"):
+        assert secret not in json.dumps(result.runtime_diagnostics)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("oversized", [False, True])
+async def test_sdk_final_mirror_failure_preserves_bounded_error_after_eof(monkeypatch, tmp_path, oversized):
+    from app.sandbox.domain.runtime_diagnostics import SDK_RUNTIME_DIAGNOSTICS_MAX_BYTES
+
+    captured = {}
+    sdk = _fake_sdk(captured, hook_invocations=[])
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+    tail_started, release_tail, closed = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    class Store:
+        accepted_final_sequence = 1
+
+        async def load(self, _key):
+            return None
+
+        async def append(self, _key, _entries):
+            pass
+
+    class Client(sdk.ClaudeSDKClient):
+        async def receive_messages(self):
+            await self.options.session_store.append("private-session-sentinel", [{"text": "private-transcript-sentinel"}])
+            terminal = sdk.ResultMessage()
+            terminal.session_id = "private-session-sentinel"
+            yield terminal
+            tail_started.set()
+            await release_tail.wait()
+            yield sdk.MirrorErrorMessage(
+                key={"session_id": "private-session-sentinel", "subpath": "private-subpath-sentinel"},
+                error="final flush rejected https://callback.invalid/path token=synthetic-secret " + ("x" * 20000 if oversized else ""),
+            )
+            closed.set()
+
+    task = asyncio.create_task(run_claude_agent_sdk(
+        prompt="private-prompt-sentinel", cwd=tmp_path, skill_id=None,
+        session_id="private-session-sentinel", session_store=Store(),
+        provider_session_resume_required=False, client_fn=Client,
+    ))
+    try:
+        await asyncio.wait_for(tail_started.wait(), 2)
+        assert not task.done()
+        release_tail.set()
+        result = await asyncio.wait_for(task, 2)
+    finally:
+        release_tail.set()
+        await asyncio.gather(task, return_exceptions=True)
+    assert closed.is_set()
+    assert result.error == "claude_agent_sdk_provider_session_failed"
+    assert result.message == "" and not result.received_structured_terminal
+    assert result.provider_final_sequence is None
+    assert result.response_files == [] and result.response_file_descriptors == []
+    assert len(json.dumps(result.runtime_diagnostics).encode()) <= SDK_RUNTIME_DIAGNOSTICS_MAX_BYTES
+    public, private = await _persist_sdk_failure_diagnostics(result)
+    assert private["failure_source"] == "provider_session_mirror"
+    if oversized:
+        assert private["sdk"]["errors"]["truncated"] is True
+        assert private["sdk"]["errors"]["size_bytes"] > 20000
+    else:
+        assert private["sdk"]["errors"].startswith("final flush rejected")
+    for secret in ("callback.invalid", "synthetic-secret", "private-session-sentinel", "private-subpath-sentinel", "private-transcript-sentinel", "private-prompt-sentinel"):
+        assert secret not in json.dumps(private)
+    assert "final flush rejected" not in json.dumps(public)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("required", [False, True])
+async def test_sdk_response_registration_keeps_private_cause_only_when_required(monkeypatch, tmp_path, required):
+    def fail_registration(*_args, **_kwargs):
+        try:
+            raise ValueError("synthetic decorator cause token=synthetic-secret")
+        except ValueError as cause:
+            raise RuntimeError("synthetic response registration failed") from cause
+
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", _fake_sdk({}, hook_invocations=[]))
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner._build_response_mcp_server", fail_registration)
+    result = await run_claude_agent_sdk(
+        prompt="hello", cwd=tmp_path, skill_id=None, execution_policy="sandbox_brokered",
+        tool_policy_subjects=internal_response_tool_policy_subjects() if required else [],
+    )
+    if not required:
+        assert result.error is None
+        assert not result.runtime_diagnostics
+        return
+    assert result.error == "claude_agent_sdk_tool_admission_failed"
+    assert result.message == ""
+    public, private = await _persist_sdk_failure_diagnostics(result)
+    assert private["failure_source"] == "response_file_registration"
+    assert private["sdk"]["exception_message"] == "synthetic response registration failed"
+    assert [item["type"] for item in private["sdk"]["exception_chain"]] == ["RuntimeError", "ValueError"]
+    assert "synthetic decorator cause" in json.dumps(private)
+    assert "synthetic-secret" not in json.dumps(private)
+    assert "synthetic response registration failed" not in json.dumps(public)
