@@ -153,6 +153,52 @@ async def test_tenant_rollout_retries_preserve_shared_version_and_rollback(relea
         assert (await postgres.get_skill_version(conn, skill_id=SKILL_ID, version=db.v2))["status"] == "released"
 
 
+@pytest.mark.parametrize("rollout_percent", [0, 10, 99])
+async def test_first_release_requires_runnable_previous_before_persisting_policy(release_db, rollout_percent):
+    db = release_db
+    async with db.connect() as conn:
+        for version in (db.v1, db.v2):
+            await versions_postgres.update_skill_version_status(
+                conn, skill_id=SKILL_ID, version=version, status="reviewed",
+            )
+        await conn.execute(
+            "delete from skill_release_policies where tenant_id = %s and skill_id = %s",
+            ("tenant-a", SKILL_ID),
+        )
+        original_policy_b = await versions_postgres.get_skill_release_policy(
+            conn, tenant_id="tenant-b", skill_id=SKILL_ID,
+        )
+
+    with pytest.raises(HTTPException) as rejected:
+        await admin_skills.admin_promote_skill_version(
+            SKILL_ID, AdminSkillPromoteRequest(version=db.v2, rollout_percent=rollout_percent), db.principal,
+        )
+    assert rejected.value.status_code == 409
+    assert rejected.value.detail == "skill_version_not_materializable"
+    async with db.connect() as conn:
+        assert await versions_postgres.get_skill_release_policy(
+            conn, tenant_id="tenant-a", skill_id=SKILL_ID,
+        ) is None
+        for version in (db.v1, db.v2):
+            assert (await postgres.get_skill_version(conn, skill_id=SKILL_ID, version=version))["status"] == "reviewed"
+        assert await versions_postgres.get_skill_release_policy(
+            conn, tenant_id="tenant-b", skill_id=SKILL_ID,
+        ) == original_policy_b
+
+    promoted = await admin_skills.admin_promote_skill_version(
+        SKILL_ID, AdminSkillPromoteRequest(version=db.v2, rollout_percent=100), db.principal,
+    )
+    assert (promoted.current_version, promoted.previous_version, promoted.rollout_percent) == (db.v2, db.v1, 100)
+    async with db.connect() as conn:
+        policy_a = await versions_postgres.get_skill_release_policy(conn, tenant_id="tenant-a", skill_id=SKILL_ID)
+        assert (policy_a["current_version"], policy_a["previous_version"], policy_a["rollout_percent"]) == (db.v2, db.v1, 100)
+        assert (await postgres.get_skill_version(conn, skill_id=SKILL_ID, version=db.v1))["status"] == "reviewed"
+        assert (await postgres.get_skill_version(conn, skill_id=SKILL_ID, version=db.v2))["status"] == "released"
+        assert await versions_postgres.get_skill_release_policy(
+            conn, tenant_id="tenant-b", skill_id=SKILL_ID,
+        ) == original_policy_b
+
+
 @pytest.mark.parametrize("kind,expected", [
     ("other_tenant_current", True), ("gray_zero", True), ("gray_half", True),
     ("full_previous", False), ("inactive_policy", False), ("catalog_fallback", True), ("unreferenced", False),
