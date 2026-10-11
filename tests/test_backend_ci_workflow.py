@@ -75,6 +75,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_claude_agent_worker_adapter.py",
         "tests/test_execution_pinned_skill_materialization.py",
         "tests/test_claude_agent_worker_file_continuity.py",
+        "tests/test_provider_session_transport.py",
         "tests/test_context_file_content.py",
         "tests/test_file_parser_contracts.py",
         "tests/test_file_preview_contracts.py",
@@ -170,6 +171,7 @@ BACKEND_TEST_SHARDS = {
     "model-control-plane": (
         "tests/test_model_management.py",
         "tests/test_model_upstream_stream.py",
+        "tests/test_model_stream_ownership.py",
         "tests/test_lambchat_frontend_compat.py::test_lambchat_model_catalog_is_empty_without_governed_connection",
         "tests/test_lambchat_frontend_compat.py::test_lambchat_governed_model_catalog_preserves_raw_ids",
         "tests/test_execution_spec.py::test_execution_spec_preserves_raw_upstream_model_identity",
@@ -211,6 +213,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_run_diagnostics_postgres.py",
         "tests/test_schema_migrations.py",
         "tests/test_schema_migrations_postgres.py",
+        "tests/test_skill_release_lifecycle_postgres.py",
         "tests/test_run_inputs_postgres.py",
         "tests/test_provider_session_recovery_postgres.py",
         "tests/test_frozen_receipt_spec_postgres.py",
