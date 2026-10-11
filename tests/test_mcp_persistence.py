@@ -1,9 +1,10 @@
 import json
 import pytest
-import app.mcp.infrastructure.chat_access_postgres as _repo_owner_app_mcp_infrastructure_chat_access_postgres
 import app.mcp.infrastructure.registry_postgres as _repo_owner_app_mcp_infrastructure_registry_postgres
 import app.mcp.infrastructure.tool_policies_postgres as _repo_owner_app_mcp_infrastructure_tool_policies_postgres
-import app.mcp.repository as _repo_owner_app_mcp_repository
+from app.mcp.infrastructure import postgres as _repo_owner_app_mcp_repository
+from app.mcp.api import mcp_runtime_metadata_usable
+from app.mcp.repository import mcp_tool_tenant_authority_sql
 import app.platform.postgres.errors as _repo_owner_app_platform_postgres_errors
 import app.runs.infrastructure.capability_admission_postgres as _repo_owner_app_runs_infrastructure_capability_admission_postgres
 from app.platform.postgres.errors import RepositoryConflictError, RepositoryNotFoundError
@@ -439,32 +440,16 @@ async def test_get_mcp_tool_registry_entry_scopes_tool_through_parent_server_ten
         "visible_to_user": True,
         "effective_status": "active",
     }
-    assert _repo_owner_app_mcp_repository.mcp_runtime_metadata_usable(row)
+    assert mcp_runtime_metadata_usable(row)
 
 
-@pytest.mark.asyncio
-async def test_chat_catalog_query_accepts_only_the_known_builtin_as_local_compatibility():
-    class Cursor:
-        async def fetchall(self):
-            return []
-
-    class Connection:
-        def __init__(self):
-            self.sql = ""
-            self.params = ()
-
-        async def execute(self, sql, params):
-            self.sql = sql
-            self.params = params
-            return Cursor()
-
-    conn = Connection()
-    assert await _repo_owner_app_mcp_infrastructure_chat_access_postgres.list_chat_mcp_tool_catalog_entries(conn, tenant_id="tenant-a") == []
-
-    assert "mcp_tools.id = 'ragflow-knowledge-search'" in conn.sql
-    assert "mcp_tools.server_id = 'ragflow'" in conn.sql
-    assert "catalog_entry.tenant_id = %s" not in conn.sql
-    assert conn.params == ("tenant-a", "tenant-a")
+def test_retained_builtin_tool_policy_authority_stays_narrow():
+    sql = mcp_tool_tenant_authority_sql()
+    assert "mcp_tools.id = 'ragflow-knowledge-search'" in sql
+    assert "mcp_tools.server_id = 'ragflow'" in sql
+    assert "mcp_tools.write_capable = false" in sql
+    assert "mcp_tools.auth_mode = 'platform-managed'" in sql
+    assert "%s::text <> ''" in sql
 
 
 @pytest.mark.asyncio

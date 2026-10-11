@@ -16,7 +16,7 @@ from app.control_plane_contracts import is_legacy_synthetic_chat_identity
 from app.control_plane_contracts import standard_trace_id
 from app.conversations.infrastructure.postgres import append_message
 from app.identity.infrastructure.audit_postgres import append_audit_log
-from app.mcp.repository import authorize_selected_chat_mcp_tools
+from app.mcp.api import authorize_selected_replay_mcp_tools
 from app.platform.postgres.errors import RepositoryConflictError
 from app.platform.postgres.limits import RUN_INPUT_MAX_BYTES
 from app.platform.postgres.limits import compact_json_dumps
@@ -131,7 +131,7 @@ async def copy_run_as_new_task(
             or executor_type != HARNESS_CHAT_EXECUTOR_TYPE
         ):
             raise RepositoryConflictError("run_execution_skill_identity_mismatch")
-        await authorize_selected_chat_mcp_tools(
+        await authorize_selected_replay_mcp_tools(
             conn,
             tenant_id=tenant_id,
             tool_ids=extract_run_mcp_tool_ids(source_execution_input),

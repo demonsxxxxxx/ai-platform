@@ -31,6 +31,7 @@ import {
 import { formatDateTimeShort } from "../../utils/datetime";
 import {
   buildAdminRunMonitorView,
+  indexToolDiagnosticEvidence,
   type AdminRunEventDiagnostic,
   type AdminRunTimelineItem,
 } from "./adminRunTimeline";
@@ -766,15 +767,13 @@ function RunDetail({
     model: {},
   };
   const journal = executionJournal(workerExecution);
-  const toolEvidenceById = new Map(
+  const toolEvidenceById = indexToolDiagnosticEvidence(
     (diagnostics?.details.observations ?? [])
       .flatMap((observation) => [
         ...observation.tool_lifecycles,
         ...observation.tool_calls,
         ...observation.tool_policy_denials,
-      ])
-      .filter((evidence) => evidence.invocation_id)
-      .map((evidence) => [evidence.invocation_id, evidence] as const),
+      ]),
   );
   const artifacts = detail?.artifacts ?? [];
   const failureGuidance = detail ? buildAdminFailureGuidance(detail) : null;

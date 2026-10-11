@@ -122,8 +122,16 @@ generation, timestamps, and reconciliation ownership in one migration.
    A successful streamed answer returns a versioned `AssistantAnswerReceipt`
    containing only `schema_version`, `message_id`, `delta_count`, `text_length`,
    and `last_delta_event_id`. Its legacy `message` is exactly empty, and failed
-   or cancelled terminals cannot carry a receipt. It never carries the full
-   answer body. The Worker
+   or cancelled terminals cannot carry a receipt or response-file references.
+   The executor admits those success-only fields after its SDK capability outcome
+   is final; an executor-owned downgrade of a successful runner outcome omits them
+   after public delivery drains. The final failure classification, SDK usage,
+   native session sequence and bounded private diagnostics remain available to
+   the terminal callback and authenticated status probe. This does not repair
+   malformed already-failed runner payloads or relax the terminal validator.
+   Rejected delivery stays failed; uncertain delivery still suppresses terminal
+   publication. No artifact or previously acknowledged answer fact is deleted.
+   The receipt never carries the full answer body. The Worker
    accepts only current-Attempt, strictly ordered v4 rows whose database and
    canonical metadata publication states are both `published`; `pending` remains
    retryable, while inconsistent or `suppressed` publication fails closed. Receipt,
@@ -327,9 +335,27 @@ path.
 
 The host-bind path resolution, sentinel read, and selected-file snapshot routines
 are owned by `app.sandbox.domain.host_bind` and exposed through `app.sandbox.api`.
-The provider calls this boundary directly. Every opened traversal descriptor is
+The provider composes the snapshot through `app.bootstrap.sandbox_snapshot` and
+`app.sandbox.infrastructure.host_bind_snapshot`, using the existing bounded
+storage admission and default executor. No-follow traversal, selected-file
+allowlist, flock, stable-copy/hash checks, fsync and atomic publication remain
+inside the same synchronous domain operation. Other host-bind reads still call
+the public boundary directly. Every opened traversal descriptor is
 owned immediately and closed exactly once on success, metadata rejection, or
 filesystem inspection failure, including rejected roots and nested directories.
+Snapshot cancellation waits for a submitted physical operation to finish before
+propagating the original caller exception and releasing the reconciler claim.
+Repeated cancellation cannot shorten this join. Storage capacity is released on
+the owner loop after physical completion, including a cancelled asyncio waiter;
+worker shutdown gathers maintenance owners before closing clients. Admission
+failure has no physical job to join. The snapshot opts out of the helper's
+request wait budget, preserving the original physical-completion semantics;
+filesystem operations are not forcibly interrupted. Shared storage slots may
+therefore delay other storage work. This removes event-loop blocking, not the
+underlying copy/hash/fsync work, and does not establish production latency.
+Durable Attempt snapshot retention is separate; this path does not delete
+historical directories after cancellation.
+
 The previous recursive workspace
 manifest and file-upload helpers have been removed from both modules.
 

@@ -2447,3 +2447,20 @@ def test_public_skill_batch_routes_are_permission_gated_and_report_item_errors(m
         "updated": [],
         "errors": [{"name": "missing-skill", "reason": "missing-skill_not_found"}],
     }
+
+
+def test_skill_file_projection_preserves_empty_snapshot_files():
+    from app.skills import marketplace_projection
+
+    row = {
+        "name": "synthetic",
+        "source": {"files": [
+            {"relative_path": "SKILL.md", "content_base64": "Ym9keQ==", "size_bytes": 4},
+            {"relative_path": "empty.txt", "content_base64": "", "size_bytes": 0},
+        ]},
+    }
+    files = marketplace_projection.project_skill_files(row)
+    assert [(item.path, item.content, item.size) for item in files] == [
+        ("SKILL.md", b"body", 4),
+        ("empty.txt", b"", 0),
+    ]

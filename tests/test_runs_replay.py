@@ -512,7 +512,7 @@ async def test_copy_retry_resume_legacy_general_chat_upgrades_child_to_skillless
         calls["message"] = kwargs
 
     monkeypatch.setattr(replay_persistence, "get_authorized_run", get_source)
-    monkeypatch.setattr(replay_persistence, "authorize_selected_chat_mcp_tools", authorize_mcp)
+    monkeypatch.setattr(replay_persistence, "authorize_selected_replay_mcp_tools", authorize_mcp)
     monkeypatch.setattr(replay_persistence, "authorize_replay_run_capabilities", forbid_skill_authority)
     monkeypatch.setattr(replay_persistence, "validate_run_skill_snapshots_for_dispatch", forbid_skill_authority)
     monkeypatch.setattr(replay_persistence, "insert_run_skill_snapshots_at_creation", forbid_skill_authority)
@@ -536,7 +536,11 @@ async def test_copy_retry_resume_legacy_general_chat_upgrades_child_to_skillless
         run_id="run-legacy",
     )
 
-    assert calls["mcp"]["tool_ids"] == []
+    assert calls["mcp"] == {
+        "tenant_id": "tenant-a", "tool_ids": [],
+        "principal_department_id": "qa", "principal_roles": ["user"],
+        "is_admin": False, "permissions": [],
+    }
     assert copied["execution_kind"] == "harness_chat"
     assert copied["skill_id"] is None
     assert copied["schema_version"] == "ai-platform.run-payload.v2"
@@ -584,6 +588,11 @@ async def test_copy_run_rejects_expanded_resume_input_before_generation_write(mo
     monkeypatch.setattr(replay_persistence, "require_replay_source_identity", lambda **_kwargs: None)
     monkeypatch.setattr(replay_persistence, "validate_run_skill_snapshots_for_dispatch", allow)
     monkeypatch.setattr(replay_persistence, "authorize_replay_run_capabilities", allow)
+    async def authorize_empty_selection(_conn, **kwargs):
+        assert kwargs["tool_ids"] == []
+        return []
+
+    monkeypatch.setattr(replay_persistence, "authorize_selected_replay_mcp_tools", authorize_empty_selection)
     monkeypatch.setattr(replay_persistence, "_completed_steps_for_resume", oversized_resume)
     monkeypatch.setattr(replay_persistence, "allocate_session_run_generation", forbidden_generation)
 

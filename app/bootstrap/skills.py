@@ -1,5 +1,5 @@
 from app.skills.api import (
-    configure_skill_display_version_persistence,
+    configure_skill_version_persistence,
     configure_skill_run_admission,
     resolve_worker_runtime_catalog as resolve_worker_catalog_binding,
     worker_catalog_binding,
@@ -95,7 +95,7 @@ def configure_skill_markdown() -> None:
 
 def configure_skill_services() -> None:
     configure_skill_markdown()
-    configure_skill_display_version_persistence(postgres)
+    configure_skill_version_persistence(postgres)
     configure_skill_run_admission(
         SkillRunAdmissionService(
             SkillRunAdmissionPorts(

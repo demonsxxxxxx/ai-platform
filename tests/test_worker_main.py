@@ -3558,3 +3558,60 @@ async def test_upload_cleanup_uses_storage_operation_owned_by_reservation_kind(m
     ]
     assert deleted == ["upload-direct", "multipart", "opaque"]
     assert retained == [("initializing", 86_400)]
+
+
+async def test_worker_shutdown_settles_snapshot_physical_owner_before_clients(monkeypatch):
+    import threading
+    import app.sandbox.infrastructure.host_bind_snapshot as snapshot_owner
+    from app.platform.storage_io_completion import StorageIOCompletion
+    from app.storage import run_storage_io
+
+    started, release = threading.Event(), threading.Event()
+    events = []
+    original_cancellation = []
+
+    def snapshot():
+        started.set()
+        assert release.wait(5)
+        events.append("physical-finished")
+        raise RuntimeError("late physical error")
+
+    monkeypatch.setattr(snapshot_owner, "snapshot_host_bind_delivery_files", snapshot)
+
+    async def maintenance():
+        try:
+            await snapshot_owner.snapshot_with_physical_owner(
+                storage_io=run_storage_io, completion_factory=StorageIOCompletion,
+            )
+        except asyncio.CancelledError as error:
+            original_cancellation.append(error)
+            events.append("owner-cancelled")
+            raise
+
+    async def close_runtime():
+        events.append("runtime-closed")
+
+    async def close_clients():
+        events.append("clients-closed")
+
+    monkeypatch.setattr(worker_main, "_close_runtime_clients", close_clients)
+    task = asyncio.create_task(maintenance())
+    shutdown = None
+    try:
+        assert await asyncio.to_thread(started.wait, 5)
+        shutdown = asyncio.create_task(worker_main._close_worker_runtime(
+            SimpleNamespace(aclose=close_runtime), [task], primary_error=None,
+        ))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        task.cancel("repeat")
+        await asyncio.sleep(0)
+        assert events == [] and not shutdown.done()
+    finally:
+        release.set()
+        if shutdown is not None:
+            await shutdown
+        else:
+            await asyncio.gather(task, return_exceptions=True)
+    assert len(original_cancellation) == 1
+    assert events == ["physical-finished", "owner-cancelled", "runtime-closed", "clients-closed"]
