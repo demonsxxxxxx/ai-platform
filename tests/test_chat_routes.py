@@ -62,6 +62,7 @@ from app.routes.chat import (
     retry_chat_submission_admission as _route_retry_chat_submission_admission,
 )
 from app.settings import Settings
+from app.skills.pinning import SkillVersionMaterializationError
 _ORIGINAL_SKILL_RUN_ADMISSION = _owner_skills_application_run_admission.admit
 _ORIGINAL_SKILL_SET_ADMISSION = _owner_skills_application_run_admission.admit_set
 
@@ -897,6 +898,176 @@ def test_submission_code_accepts_only_bounded_required_capability_detail_code():
         "code": "private_error",
         "submission_disposition": "rejected_before_persist",
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure",
+    [
+        HTTPException(status_code=409, detail="user_active_run_limit_exceeded"),
+        HTTPException(status_code=500, detail="queue_payload_invalid"),
+        _owner_platform_postgres_errors.RepositoryAuthorizationError("capability_not_authorized"),
+        _owner_platform_postgres_errors.RepositoryNotFoundError("session_not_found"),
+        RepositoryConflictError("agent_profile_revision_stale"),
+        SkillVersionMaterializationError("skill_version_materialization_failed"),
+        RuntimeError("private admission failure"),
+    ],
+    ids=["http-conflict", "queue-payload", "authorization", "not-found", "conflict", "materialization", "internal"],
+)
+async def test_rejection_recovery_returns_the_durable_outcome_that_won_the_claim(monkeypatch, failure):
+    request = ChatStreamRequest(
+        message="same concurrent intent",
+        submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+    )
+    fingerprint = _canonical_pre_persistence_rejection_fingerprint(
+        request=request, principal=principal(), query_agent_id=None,
+    )
+    row = {
+        "submission_id": str(request.submission_id),
+        "request_fingerprint_sha256": fingerprint,
+        "state": "accepted_pending_enqueue",
+        "session_id": "session-durable",
+        "run_id": "run-durable",
+        "outcome_json": {},
+    }
+    claims = AsyncMock(return_value=(row, False))
+    finalize = AsyncMock(side_effect=AssertionError("accepted submission cannot be rejected"))
+    enqueue = AsyncMock(side_effect=AssertionError("recovery must not dispatch a second run"))
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.chat._audit_capability_denial", AsyncMock())
+    monkeypatch.setattr(
+        _owner_runs_infrastructure_postgres, "acquire_user_active_run_admission_lock",
+        AsyncMock(side_effect=failure),
+    )
+    monkeypatch.setattr(_owner_persistence_chat_submissions, "claim_chat_submission", claims)
+    monkeypatch.setattr(_owner_persistence_chat_submissions, "finalize_chat_submission", finalize)
+    monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", enqueue)
+
+    response = await chat_stream(request, principal=principal())
+
+    assert response.status == "accepted_pending_enqueue"
+    assert response.run_id == "run-durable"
+    assert response.session_id == "session-durable"
+    claims.assert_awaited_once()
+    finalize.assert_not_awaited()
+    enqueue.assert_not_awaited()
+    assert row["state"] == "accepted_pending_enqueue"
+
+
+@pytest.mark.asyncio
+async def test_prevalidation_rejection_returns_a_concurrently_committed_outcome(monkeypatch):
+    request = ChatStreamRequest(
+        message="same rejected intent",
+        skill_id="raw-skill",
+        submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+    )
+    row = {
+        "submission_id": str(request.submission_id),
+        "request_fingerprint_sha256": _canonical_pre_persistence_rejection_fingerprint(
+            request=request, principal=principal(), query_agent_id=None,
+        ),
+        "state": "queued",
+        "outcome_json": {
+            "session_id": "session-durable", "run_id": "run-durable", "status": "queued",
+        },
+    }
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        _owner_persistence_chat_submissions, "claim_chat_submission", AsyncMock(return_value=(row, False)),
+    )
+    finalize = AsyncMock(side_effect=AssertionError("existing outcome must not be replaced"))
+    monkeypatch.setattr(_owner_persistence_chat_submissions, "finalize_chat_submission", finalize)
+
+    response = await chat_stream(request, principal=principal())
+
+    assert response.status == "queued"
+    assert response.run_id == "run-durable"
+    finalize.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mismatched_payload", [False, True])
+async def test_internal_failure_recovery_preserves_durable_rejection_or_payload_conflict(
+    monkeypatch, mismatched_payload,
+):
+    request = ChatStreamRequest(
+        message="recover durable rejection",
+        submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+    )
+    row = {
+        "submission_id": str(request.submission_id),
+        "request_fingerprint_sha256": "different-payload" if mismatched_payload else
+        _canonical_pre_persistence_rejection_fingerprint(
+            request=request, principal=principal(), query_agent_id=None,
+        ),
+        "state": "rejected_before_persist",
+        "submission_disposition": "rejected_before_persist",
+        "rejection_code": "user_active_run_limit_exceeded",
+    }
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        _owner_runs_infrastructure_postgres, "acquire_user_active_run_admission_lock",
+        AsyncMock(side_effect=RuntimeError("private admission failure")),
+    )
+    monkeypatch.setattr(
+        _owner_persistence_chat_submissions, "claim_chat_submission", AsyncMock(return_value=(row, False)),
+    )
+    finalize = AsyncMock(side_effect=AssertionError("existing rejection must not be replaced"))
+    monkeypatch.setattr(_owner_persistence_chat_submissions, "finalize_chat_submission", finalize)
+
+    with pytest.raises(HTTPException) as raised:
+        await chat_stream(request, principal=principal())
+
+    assert raised.value.status_code == 409
+    assert raised.value.detail == (
+        "submission_payload_mismatch" if mismatched_payload else {
+            "code": "user_active_run_limit_exceeded",
+            "submission_disposition": "rejected_before_persist",
+        }
+    )
+    finalize.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancelled", [False, True], ids=["lost-ack", "cancelled"])
+async def test_unkeyed_chat_commit_uncertainty_never_claims_rejection(monkeypatch, cancelled):
+    pending = []
+    committed = []
+
+    @asynccontextmanager
+    async def commit_then_raise():
+        yield object()
+        committed.extend(pending)
+        if cancelled:
+            raise asyncio.CancelledError()
+        raise RuntimeError("commit acknowledged-lost")
+
+    async def create_run(_conn, **_kwargs):
+        pending.append("run-unkeyed")
+        return "run-unkeyed"
+
+    monkeypatch.setattr("app.routes.chat.transaction", commit_then_raise)
+    monkeypatch.setattr(_owner_identity_infrastructure_postgres, "ensure_user", AsyncMock())
+    monkeypatch.setattr(_owner_conversations_infrastructure_postgres, "create_session", AsyncMock(return_value="session-unkeyed"))
+    monkeypatch.setattr(_owner_runs_infrastructure_creation_postgres, "create_run", create_run)
+    monkeypatch.setattr(_owner_conversations_infrastructure_postgres, "append_message", AsyncMock(return_value="message-unkeyed"))
+    monkeypatch.setattr(_owner_files_infrastructure_run_bindings_postgres, "bind_files_to_run", AsyncMock())
+    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, "append_event", AsyncMock())
+    claims = AsyncMock(side_effect=AssertionError("unkeyed request has no ledger"))
+    enqueue = AsyncMock(side_effect=AssertionError("commit outcome is not established"))
+    monkeypatch.setattr(_owner_persistence_chat_submissions, "claim_chat_submission", claims)
+    monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", enqueue)
+
+    with pytest.raises(asyncio.CancelledError if cancelled else HTTPException) as raised:
+        await chat_stream(ChatStreamRequest(message="hello"), principal=principal())
+
+    assert committed == ["run-unkeyed"]
+    claims.assert_not_awaited()
+    enqueue.assert_not_awaited()
+    if not cancelled:
+        assert raised.value.status_code == 500
+        assert raised.value.detail["code"] == "chat_submission_internal_error"
+        assert "submission_disposition" not in raised.value.detail
 
 
 @pytest.mark.asyncio
@@ -4539,22 +4710,27 @@ async def test_chat_stream_revalidates_preserved_continuation_skill_for_current_
 @pytest.mark.parametrize(
     (
         "submission_id",
-        "force_creation_rollback",
+        "creation_failure",
         "restored_continuation",
         "enqueue_failure_mode",
     ),
     [
-        (None, False, False, None),
-        ("7ea93033-30f5-40ea-8a33-2f3c6e7b21c4", False, False, None),
-        (None, True, False, None),
-        ("7ea93033-30f5-40ea-8a33-2f3c6e7b21c4", True, False, None),
-        (None, False, False, "before_publish"),
-        (None, False, False, "definitive_rejection"),
-        ("8f2cf18b-e414-4ddd-b99e-c21c32d4f086", False, True, None),
-        (None, False, True, "builder_revision_changed"),
+        (None, None, False, None),
+        ("7ea93033-30f5-40ea-8a33-2f3c6e7b21c4", None, False, None),
+        (None, "before_commit", False, None),
+        ("7ea93033-30f5-40ea-8a33-2f3c6e7b21c4", "after_commit", False, None),
+        ("7ea93033-30f5-40ea-8a33-2f3c6e7b21c4", "readback_failure", False, None),
+        ("7ea93033-30f5-40ea-8a33-2f3c6e7b21c4", "readback_commit_failure", False, None),
+        ("7ea93033-30f5-40ea-8a33-2f3c6e7b21c4", "rejection_write_failure", False, None),
+        ("7ea93033-30f5-40ea-8a33-2f3c6e7b21c4", "rejection_commit_unknown", False, None),
+        ("7ea93033-30f5-40ea-8a33-2f3c6e7b21c4", "before_commit", False, None),
+        (None, None, False, "before_publish"),
+        (None, None, False, "definitive_rejection"),
+        ("8f2cf18b-e414-4ddd-b99e-c21c32d4f086", None, True, None),
+        (None, None, True, "builder_revision_changed"),
         (
             "9c356f6d-360b-41d0-a97e-3ab16d70a874",
-            False,
+            None,
             True,
             "after_publish_unknown",
         ),
@@ -4563,6 +4739,11 @@ async def test_chat_stream_revalidates_preserved_continuation_skill_for_current_
         "unkeyed",
         "keyed",
         "unkeyed-rollback",
+        "creation-commit-ack-lost",
+        "creation-commit-readback-failed",
+        "creation-commit-readback-exit-failed",
+        "rollback-rejection-write-failed",
+        "rollback-rejection-commit-ack-lost",
         "keyed-rollback",
         "unkeyed-publish-failure",
         "unkeyed-definitive-rejection",
@@ -4573,8 +4754,9 @@ async def test_chat_stream_revalidates_preserved_continuation_skill_for_current_
 )
 async def test_new_profile_submit_commits_after_user_and_profile_admission_before_enqueue(
     monkeypatch,
+    caplog,
     submission_id,
-    force_creation_rollback,
+    creation_failure,
     restored_continuation,
     enqueue_failure_mode,
 ):
@@ -4612,11 +4794,27 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         except BaseException:
             raise
         else:
-            if force_creation_rollback and state.run is not None and committed_run is None:
-                raise RuntimeError("forced Agent run commit failure")
+            creating_run = state.run is not None and committed_run is None
+            writing_rejection = (
+                state.submission is not None
+                and state.submission.get("state") == "rejected_before_persist"
+                and committed_submission is None
+            )
+            if creating_run and creation_failure in {
+                "before_commit", "rejection_write_failure", "rejection_commit_unknown",
+            }:
+                raise RuntimeError("forced Agent run commit failure: private-commit-detail")
             committed_submission = state.submission
             committed_run = state.run
             committed_transactions += 1
+            if (
+                creating_run and creation_failure in {
+                    "after_commit", "readback_failure", "readback_commit_failure",
+                }
+                or writing_rejection and creation_failure == "rejection_commit_unknown"
+                or committed_run is not None and creation_failure == "readback_commit_failure"
+            ):
+                raise RuntimeError("committed but acknowledgement lost: private-commit-detail")
         finally:
             transaction_depth -= 1
 
@@ -4776,6 +4974,10 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
 
     async def claim_submission(conn, **kwargs):
         calls.append("claim")
+        if committed_run is not None and creation_failure == "readback_failure":
+            raise RuntimeError("ledger readback unavailable: private-commit-detail")
+        if conn.submission is not None:
+            return conn.submission, False
         conn.submission = {
             "submission_id": kwargs["submission_id"],
             "request_fingerprint_sha256": kwargs["request_fingerprint_sha256"],
@@ -4791,6 +4993,8 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         return conn.run
 
     async def finalize_submission(conn, **kwargs):
+        if kwargs["state"] == "rejected_before_persist" and creation_failure == "rejection_write_failure":
+            raise RuntimeError("rejection write unavailable: private-commit-detail")
         assert conn.submission is not None
         conn.submission.update(
             {
@@ -4804,6 +5008,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
                     "run_id",
                     "outcome_json",
                     "rejection_code",
+                    "submission_disposition",
                     "queue_position",
                     "queue_admission_ordinal",
                     "queue_message_id",
@@ -4963,7 +5168,54 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         assert "enqueue" not in calls
         return
 
-    if force_creation_rollback:
+    if creation_failure == "after_commit":
+        response = await chat_stream(chat_request, agent_id=query_agent_id, principal=principal())
+        assert response.status == "accepted_pending_enqueue"
+        assert response.run_id == "run-profile-lock-order"
+        assert response.session_id == "ses-profile-lock-order"
+        assert committed_submission["state"] == "accepted_pending_enqueue"
+        assert committed_run["status"] == "queued"
+        assert "enqueue" not in calls
+        assert "private-commit-detail" not in caplog.text
+        duplicate = await chat_stream(chat_request, agent_id=query_agent_id, principal=principal())
+        assert duplicate == response
+        assert calls.count("create_run") == 1
+        assert "enqueue" not in calls
+        return
+
+    if creation_failure in {
+        "readback_failure", "readback_commit_failure", "rejection_write_failure", "rejection_commit_unknown",
+    }:
+        with pytest.raises(HTTPException) as exc_info:
+            await chat_stream(chat_request, agent_id=query_agent_id, principal=principal())
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.detail["code"] == "chat_submission_internal_error"
+        assert "submission_disposition" not in exc_info.value.detail
+        assert exc_info.value.detail["diagnostic_id"].startswith("diag_")
+        assert "private-commit-detail" not in caplog.text
+        assert "enqueue" not in calls
+        if creation_failure.startswith("readback"):
+            assert committed_submission["state"] == "accepted_pending_enqueue"
+            assert committed_run["status"] == "queued"
+            creation_failure = None
+            duplicate = await chat_stream(chat_request, agent_id=query_agent_id, principal=principal())
+            assert duplicate.status == "accepted_pending_enqueue"
+            assert duplicate.run_id == "run-profile-lock-order"
+            assert calls.count("create_run") == 1
+        else:
+            assert committed_run is None
+            if creation_failure == "rejection_commit_unknown":
+                assert committed_submission["state"] == "rejected_before_persist"
+                creation_failure = None
+                with pytest.raises(HTTPException) as replay_info:
+                    await chat_stream(chat_request, agent_id=query_agent_id, principal=principal())
+                assert replay_info.value.detail["submission_disposition"] == "rejected_before_persist"
+                assert calls.count("create_run") == 1
+            else:
+                assert committed_submission is None
+        return
+
+    if creation_failure == "before_commit":
         with pytest.raises(HTTPException) as exc_info:
             await chat_stream(
                 chat_request,

@@ -305,6 +305,19 @@ malformed HTTP success response is outcome-unknown: preserve the submission
 recovery fence and confirm history/status before any resubmission. Diagnostic
 identifiers are accepted only in their existing bounded format.
 
+A failed Chat admission transaction exit does not establish rollback: PostgreSQL
+may have committed before its acknowledgement was lost. For keyed submissions,
+the existing principal-scoped ledger claim must settle that race. A committed
+outcome is replayed with its actual status, including `accepted_pending_enqueue`;
+this recovery does not enqueue another Run. Only a successfully committed
+rejection may emit `rejected_before_persist`. If the claim/readback or rejection
+commit cannot establish the outcome, the sanitized internal error omits that
+disposition and the client retains its existing submission recovery fence.
+Unkeyed transaction failures likewise cannot claim absence without durable proof.
+This retires the unconditional internal-error rejection projection; the existing
+ledger, idempotency and explicit reconciliation remain its sole compatibility
+owners. No new recovery or retry authority is introduced.
+
 This replaces blanket SDK-upstream attribution and blanket admission
 login/fix-input guidance. Historical `claude_agent_sdk_upstream_error` remains
 a compatibility input because persisted records lack evidence for retrospective

@@ -486,8 +486,13 @@ async def _persist_pre_persistence_rejection(
     workspace_id: str | None,
     session_id: str | None,
     code: str,
-) -> None:
-    """Record a deterministic rejection after the mutation transaction rolled back."""
+) -> ChatStreamResponse | None:
+    """Commit a rejection or replay the outcome that won the durable claim.
+
+    A transaction exit error does not prove rollback: COMMIT may have succeeded
+    before its acknowledgement was lost. The principal-scoped claim serializes
+    with that transaction before deciding whether rejection is still possible.
+    """
 
     if submission_id is None:
         return
@@ -538,6 +543,14 @@ async def _persist_pre_persistence_rejection(
             raise _chat_submission_http_error(
                 status_code=409,
                 code=str(row.get("rejection_code") or "chat_submission_rejected"),
+            )
+        if not created and row.get("state") != "resolving":
+            return _existing_chat_submission_response(
+                row,
+                request=request,
+                principal=principal,
+                query_agent_id=query_agent_id,
+                request_fingerprint=request_fingerprint,
             )
         if created or row.get("state") == "resolving":
             await persistence_chat_submissions.finalize_chat_submission(
@@ -1257,7 +1270,7 @@ async def chat_stream(
             )
     if contains_platform_multi_agent_control(request.input):
         code = PLATFORM_MULTI_AGENT_NOT_SUPPORTED
-        await _persist_pre_persistence_rejection(
+        recovered_response = await _persist_pre_persistence_rejection(
             principal=principal,
             submission_id=submission_id,
             request=request,
@@ -1266,6 +1279,8 @@ async def chat_stream(
             session_id=request.session_id,
             code=code,
         )
+        if recovered_response is not None:
+            return recovered_response
         if submission_id is not None:
             raise _chat_submission_http_error(status_code=400, code=code)
         raise HTTPException(status_code=400, detail=code)
@@ -1278,7 +1293,7 @@ async def chat_stream(
     if selected_agent_profile is not None:
         requested_agent_id = selected_agent_profile.agent_id
     if skill_selector_allowed and request.skill_id and not is_ai_admin(principal):
-        await _persist_pre_persistence_rejection(
+        recovered_response = await _persist_pre_persistence_rejection(
             principal=principal,
             submission_id=submission_id,
             request=request,
@@ -1287,12 +1302,14 @@ async def chat_stream(
             session_id=request.session_id,
             code="raw_skill_selector_forbidden",
         )
+        if recovered_response is not None:
+            return recovered_response
         if submission_id is not None:
             raise _chat_submission_http_error(status_code=403, code="raw_skill_selector_forbidden")
         raise HTTPException(status_code=403, detail="raw_skill_selector_forbidden")
     requested_skill_id = request.skill_id if skill_selector_allowed and is_ai_admin(principal) else None
     if skill_selector_allowed and request.selected_skill is not None and request.skill_id:
-        await _persist_pre_persistence_rejection(
+        recovered_response = await _persist_pre_persistence_rejection(
             principal=principal,
             submission_id=submission_id,
             request=request,
@@ -1301,6 +1318,8 @@ async def chat_stream(
             session_id=request.session_id,
             code="skill_selector_conflict",
         )
+        if recovered_response is not None:
+            return recovered_response
         if submission_id is not None:
             raise _chat_submission_http_error(status_code=400, code="skill_selector_conflict")
         raise HTTPException(status_code=400, detail="skill_selector_conflict")
@@ -1308,7 +1327,7 @@ async def chat_stream(
         requested_model_selection = parse_requested_model_selection(request.agent_options)
     except ValueError as exc:
         code = str(exc)
-        await _persist_pre_persistence_rejection(
+        recovered_response = await _persist_pre_persistence_rejection(
             principal=principal,
             submission_id=submission_id,
             request=request,
@@ -1317,6 +1336,8 @@ async def chat_stream(
             session_id=request.session_id,
             code=code,
         )
+        if recovered_response is not None:
+            return recovered_response
         if submission_id is not None:
             raise _chat_submission_http_error(status_code=400, code=code) from exc
         raise HTTPException(status_code=400, detail=code) from exc
@@ -1327,7 +1348,7 @@ async def chat_stream(
     requested_file_ids = _file_ids_from_request(request)
     if allowed and _has_legacy_client_mcp_selector(request.input):
         code = "selected_mcp_tool_ids_required"
-        await _persist_pre_persistence_rejection(
+        recovered_response = await _persist_pre_persistence_rejection(
             principal=principal,
             submission_id=submission_id,
             request=request,
@@ -1336,6 +1357,8 @@ async def chat_stream(
             session_id=request.session_id,
             code=code,
         )
+        if recovered_response is not None:
+            return recovered_response
         if submission_id is not None:
             raise _chat_submission_http_error(status_code=400, code=code)
         raise HTTPException(status_code=400, detail=code)
@@ -1351,7 +1374,7 @@ async def chat_stream(
     except platform_errors.RepositoryAuthorizationError as exc:
         await _audit_capability_denial(principal, exc, source="chat_stream")
         error_code = _capability_authorization_error_code(exc)
-        await _persist_pre_persistence_rejection(
+        recovered_response = await _persist_pre_persistence_rejection(
             principal=principal,
             submission_id=submission_id,
             request=request,
@@ -1360,6 +1383,8 @@ async def chat_stream(
             session_id=request.session_id,
             code=error_code,
         )
+        if recovered_response is not None:
+            return recovered_response
         if submission_id is not None:
             raise _chat_submission_http_error(status_code=403, code=error_code) from exc
         raise HTTPException(status_code=403, detail=error_code) from exc
@@ -1374,7 +1399,7 @@ async def chat_stream(
         and selected_skill_for_execution.skill_id == LEGACY_SYNTHETIC_CHAT_SKILL_ID
     ) or requested_skill_id == LEGACY_SYNTHETIC_CHAT_SKILL_ID:
         code = "general_chat_is_not_a_skill"
-        await _persist_pre_persistence_rejection(
+        recovered_response = await _persist_pre_persistence_rejection(
             principal=principal,
             submission_id=submission_id,
             request=request,
@@ -1383,6 +1408,8 @@ async def chat_stream(
             session_id=request.session_id,
             code=code,
         )
+        if recovered_response is not None:
+            return recovered_response
         if submission_id is not None:
             raise _chat_submission_http_error(status_code=400, code=code)
         raise HTTPException(status_code=400, detail=code)
@@ -2108,7 +2135,7 @@ async def chat_stream(
         code = _submission_code(exc.detail)
         rejected_before_persist = 400 <= exc.status_code < 500 or code == _QUEUE_PAYLOAD_INVALID_CODE
         if rejected_before_persist:
-            await _persist_pre_persistence_rejection(
+            recovered_response = await _persist_pre_persistence_rejection(
                 principal=principal,
                 submission_id=submission_id,
                 request=request,
@@ -2117,13 +2144,15 @@ async def chat_stream(
                 session_id=request.session_id,
                 code=code,
             )
+            if recovered_response is not None:
+                return recovered_response
         if submission_id is not None and rejected_before_persist:
             raise _chat_submission_http_error(status_code=exc.status_code, code=code) from exc
         raise
     except platform_errors.RepositoryAuthorizationError as exc:
         await _audit_capability_denial(principal, exc, source="chat_stream")
         error_code = _capability_authorization_error_code(exc)
-        await _persist_pre_persistence_rejection(
+        recovered_response = await _persist_pre_persistence_rejection(
             principal=principal,
             submission_id=submission_id,
             request=request,
@@ -2132,12 +2161,14 @@ async def chat_stream(
             session_id=request.session_id,
             code=error_code,
         )
+        if recovered_response is not None:
+            return recovered_response
         if submission_id is not None:
             raise _chat_submission_http_error(status_code=403, code=error_code) from exc
         raise HTTPException(status_code=403, detail=error_code) from exc
     except RepositoryNotFoundError as exc:
         code = str(exc)
-        await _persist_pre_persistence_rejection(
+        recovered_response = await _persist_pre_persistence_rejection(
             principal=principal,
             submission_id=submission_id,
             request=request,
@@ -2146,12 +2177,14 @@ async def chat_stream(
             session_id=request.session_id,
             code=code,
         )
+        if recovered_response is not None:
+            return recovered_response
         if submission_id is not None:
             raise _chat_submission_http_error(status_code=404, code=code) from exc
         raise HTTPException(status_code=404, detail=code) from exc
     except SkillVersionMaterializationError as exc:
         code = str(exc)
-        await _persist_pre_persistence_rejection(
+        recovered_response = await _persist_pre_persistence_rejection(
             principal=principal,
             submission_id=submission_id,
             request=request,
@@ -2160,12 +2193,14 @@ async def chat_stream(
             session_id=request.session_id,
             code=code,
         )
+        if recovered_response is not None:
+            return recovered_response
         if submission_id is not None:
             raise _chat_submission_http_error(status_code=409, code=code) from exc
         raise HTTPException(status_code=409, detail=code) from exc
     except RepositoryConflictError as exc:
         code = str(exc)
-        await _persist_pre_persistence_rejection(
+        recovered_response = await _persist_pre_persistence_rejection(
             principal=principal,
             submission_id=submission_id,
             request=request,
@@ -2174,6 +2209,8 @@ async def chat_stream(
             session_id=request.session_id,
             code=code,
         )
+        if recovered_response is not None:
+            return recovered_response
         if submission_id is not None:
             raise _chat_submission_http_error(status_code=409, code=code) from exc
         raise HTTPException(status_code=409, detail=code) from exc
@@ -2184,8 +2221,9 @@ async def chat_stream(
             diagnostic_id=diagnostic_id,
             exc=exc,
         )
+        rejection_persisted = False
         try:
-            await _persist_pre_persistence_rejection(
+            recovered_response = await _persist_pre_persistence_rejection(
                 principal=principal,
                 submission_id=submission_id,
                 request=request,
@@ -2194,23 +2232,24 @@ async def chat_stream(
                 session_id=request.session_id,
                 code=_CHAT_SUBMISSION_INTERNAL_ERROR_CODE,
             )
+            if recovered_response is not None:
+                return recovered_response
+            rejection_persisted = submission_id is not None
+        except HTTPException:
+            # Existing durable rejection/conflict retains its established replay
+            # semantics; it is not a failure to read or commit the ledger.
+            raise
         except Exception as persistence_exc:
             _log_safe_submission_exception(
                 phase="rejection_ledger",
                 diagnostic_id=diagnostic_id,
                 exc=persistence_exc,
             )
-        if submission_id is not None:
-            raise _chat_submission_http_error(
-                status_code=500,
-                code=_CHAT_SUBMISSION_INTERNAL_ERROR_CODE,
-                diagnostic_id=diagnostic_id,
-            ) from None
         raise HTTPException(
             status_code=500,
             detail=_submission_error_detail(
                 code=_CHAT_SUBMISSION_INTERNAL_ERROR_CODE,
-                rejected_before_persist=True,
+                rejected_before_persist=rejection_persisted,
                 diagnostic_id=diagnostic_id,
             ),
         ) from None
