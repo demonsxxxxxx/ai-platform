@@ -91,6 +91,33 @@ try {
   await page.locator('#network-control').evaluate(node=>node.remove());
   evidence.assertions.push('official context routing blocks top, cross-site child, nested frame and same-origin controls; no parent CSP');
 
+  // Synthetic-only observation: do not mutate srcdoc, navigation, or component state.
+  await page.evaluate(()=>{
+    const ids=new WeakMap();let nextId=0;const events=[];
+    const record=(node,kind)=>{
+      if(!ids.has(node))ids.set(node,++nextId);
+      events.push({id:ids.get(node),kind,at:Date.now(),connected:node.isConnected,srcdocLength:node.srcdoc.length,sandbox:node.getAttribute('sandbox')});
+      if(events.length>100)events.shift();
+    };
+    const observer=new MutationObserver(records=>{
+      for(const mutation of records){
+        if(mutation.type==='attributes')record(mutation.target,'srcdoc-change');
+        for(const node of mutation.addedNodes){
+          if(node.nodeType!==Node.ELEMENT_NODE)continue;
+          for(const frame of [node,...node.querySelectorAll('iframe')].filter(element=>element.tagName==='IFRAME')){
+            if(ids.has(frame))continue;
+            record(frame,'attached');frame.addEventListener('load',()=>record(frame,'load'));
+          }
+        }
+        for(const node of mutation.removedNodes)if(node.nodeType===Node.ELEMENT_NODE){
+          for(const frame of [node,...node.querySelectorAll('iframe')].filter(element=>element.tagName==='IFRAME'))record(frame,'removed');
+        }
+      }
+    });
+    observer.observe(document.querySelector('#preview-host'),{subtree:true,childList:true,attributes:true,attributeFilter:['srcdoc']});
+    window.__wordSmokeFrameObservation={events,id:node=>ids.get(node)};
+  });
+
   // Controlled async-return window, after the unmodified real converter settles.
   await page.evaluate(()=>{window.__wordSmokeGate={armed:true};});
   await page.locator('#portrait').click();
@@ -188,6 +215,7 @@ try {
   assert.ok(evidence.csp.some(text=>text.includes('/__word_probe__/document')),'same-origin CSS must be rejected by child CSP');
   evidence.assertions.push('zero untrusted requests across real render/prepare/iframe/replacement/close');
   evidence.conversions=await page.evaluate(()=>window.__wordSmokeConversions);
+  evidence.frameEvents=await page.evaluate(()=>window.__wordSmokeFrameObservation.events);
   evidence.status='passed';console.log(JSON.stringify(evidence,null,2));
 }catch(error){
   evidence.status='failed';evidence.failure=String(error);
@@ -195,8 +223,13 @@ try {
     try{
       evidence.failureSnapshot=await withTimeout(page.evaluate(()=>{
         const host=document.querySelector('#preview-host'),frame=host?.querySelector('iframe'),gate=window.__wordSmokeGate;
-        return {url:location.href,status:document.querySelector('#status')?.textContent,gate:gate?{armed:gate.armed,requested:gate.requested,settled:gate.settled,returned:gate.returned,hasRelease:typeof gate.release==='function'}:null,conversions:window.__wordSmokeConversions,hostHtml:host?.outerHTML.slice(0,60000),iframeCount:host?.querySelectorAll('iframe').length,srcdocLength:frame?.srcdoc.length,srcdoc:frame?.srcdoc.slice(0,50000)};
+        return {frameEvents:window.__wordSmokeFrameObservation?.events,iframeId:window.__wordSmokeFrameObservation?.id(frame),url:location.href,status:document.querySelector('#status')?.textContent,gate:gate?{armed:gate.armed,requested:gate.requested,settled:gate.settled,returned:gate.returned,hasRelease:typeof gate.release==='function'}:null,conversions:window.__wordSmokeConversions,hostHtml:host?.outerHTML.slice(0,60000),iframeCount:host?.querySelectorAll('iframe').length,srcdocLength:frame?.srcdoc.length,srcdoc:frame?.srcdoc.slice(0,50000)};
       }),2000,'failure_snapshot');
+      evidence.failureFrames=await Promise.all(page.frames().map(async frame=>{
+        const snapshot={url:frame.url(),parentUrl:frame.parentFrame()?.url()};
+        try{snapshot.document=await withTimeout(frame.evaluate(()=>({url:location.href,readyState:document.readyState,bodyHtml:document.body?.innerHTML.slice(0,50000),htmlLength:document.documentElement?.outerHTML.length,markerCount:[...document.querySelectorAll('span')].filter(node=>node.textContent==='Final synthetic page').length})),2000,'failure_child_document');}
+        catch(error){snapshot.error=String(error);}return snapshot;
+      }));
       await page.screenshot({path:resolve(evidenceDir,'failure.png'),timeout:2000});
     }catch(diagnosticError){evidence.diagnosticError=String(diagnosticError);}
   }
