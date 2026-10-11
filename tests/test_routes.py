@@ -6144,7 +6144,6 @@ async def test_create_run_producer_contract_persists_uploaded_release_policy_man
                     path=dependency_dir,
                     version=dependency_version,
                     source={"kind": "builtin", "asset_dir": "minimax-docx", "version": dependency_version},
-                    entry={"kind": "filesystem", "path": str(dependency_dir)},
                 )
             ]
 

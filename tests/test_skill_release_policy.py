@@ -1,4 +1,4 @@
-from app.skills.release_policy import resolve_rollout_skill_decision, resolve_rollout_skill_version, skill_rollout_bucket
+from app.skills.release_policy import resolve_rollout_skill_decision, skill_rollout_bucket
 
 
 def test_skill_rollout_bucket_is_stable_and_bounded():
@@ -9,7 +9,7 @@ def test_skill_rollout_bucket_is_stable_and_bounded():
     assert 0 <= first <= 99
 
 
-def test_resolve_rollout_skill_version_uses_current_for_full_rollout():
+def test_resolve_rollout_skill_decision_uses_current_for_full_rollout():
     skill = {
         "skill_version": "hash-new",
         "release_policy_version": "hash-new",
@@ -18,17 +18,17 @@ def test_resolve_rollout_skill_version_uses_current_for_full_rollout():
     }
 
     assert (
-        resolve_rollout_skill_version(
+        resolve_rollout_skill_decision(
             skill,
             tenant_id="tenant-a",
             skill_id="qa-file-reviewer",
             rollout_key="user-a",
-        )
+        ).selected_version
         == "hash-new"
     )
 
 
-def test_resolve_rollout_skill_version_uses_previous_for_zero_rollout():
+def test_resolve_rollout_skill_decision_uses_previous_for_zero_rollout():
     skill = {
         "skill_version": "hash-new",
         "release_policy_version": "hash-new",
@@ -37,31 +37,31 @@ def test_resolve_rollout_skill_version_uses_previous_for_zero_rollout():
     }
 
     assert (
-        resolve_rollout_skill_version(
+        resolve_rollout_skill_decision(
             skill,
             tenant_id="tenant-a",
             skill_id="qa-file-reviewer",
             rollout_key="user-a",
-        )
+        ).selected_version
         == "hash-old"
     )
 
 
-def test_resolve_rollout_skill_version_keeps_fallback_without_policy():
+def test_resolve_rollout_skill_decision_keeps_fallback_without_policy():
     skill = {"skill_version": "0.1.0", "release_policy_version": None}
 
     assert (
-        resolve_rollout_skill_version(
+        resolve_rollout_skill_decision(
             skill,
             tenant_id="tenant-a",
             skill_id="general-chat",
             rollout_key="user-a",
-        )
+        ).selected_version
         == "0.1.0"
     )
 
 
-def test_resolve_rollout_skill_version_splits_stable_mid_percent_cohorts():
+def test_resolve_rollout_skill_decision_splits_stable_mid_percent_cohorts():
     skill = {
         "skill_version": "hash-new",
         "release_policy_version": "hash-new",
@@ -80,21 +80,21 @@ def test_resolve_rollout_skill_version_splits_stable_mid_percent_cohorts():
     )
 
     assert (
-        resolve_rollout_skill_version(
+        resolve_rollout_skill_decision(
             skill,
             tenant_id="tenant-a",
             skill_id="qa-file-reviewer",
             rollout_key=current_user,
-        )
+        ).selected_version
         == "hash-new"
     )
     assert (
-        resolve_rollout_skill_version(
+        resolve_rollout_skill_decision(
             skill,
             tenant_id="tenant-a",
             skill_id="qa-file-reviewer",
             rollout_key=previous_user,
-        )
+        ).selected_version
         == "hash-old"
     )
 
@@ -150,7 +150,7 @@ def test_resolve_rollout_skill_decision_records_catalog_fallback_without_policy(
     assert decision.to_payload()["bucket"] is None
 
 
-def test_resolve_rollout_skill_version_uses_current_for_gray_policy_without_previous():
+def test_resolve_rollout_skill_decision_uses_current_for_gray_policy_without_previous():
     skill = {
         "skill_version": "hash-new",
         "release_policy_version": "hash-new",
@@ -159,17 +159,17 @@ def test_resolve_rollout_skill_version_uses_current_for_gray_policy_without_prev
     }
 
     assert (
-        resolve_rollout_skill_version(
+        resolve_rollout_skill_decision(
             skill,
             tenant_id="tenant-a",
             skill_id="qa-file-reviewer",
             rollout_key="user-a",
-        )
+        ).selected_version
         == "hash-new"
     )
 
 
-def test_resolve_rollout_skill_version_clamps_or_defaults_invalid_percent_values():
+def test_resolve_rollout_skill_decision_clamps_or_defaults_invalid_percent_values():
     base_skill = {
         "skill_version": "hash-new",
         "release_policy_version": "hash-new",
@@ -177,30 +177,30 @@ def test_resolve_rollout_skill_version_clamps_or_defaults_invalid_percent_values
     }
 
     assert (
-        resolve_rollout_skill_version(
+        resolve_rollout_skill_decision(
             {**base_skill, "release_policy_rollout_percent": -1},
             tenant_id="tenant-a",
             skill_id="qa-file-reviewer",
             rollout_key="user-a",
-        )
+        ).selected_version
         == "hash-old"
     )
     assert (
-        resolve_rollout_skill_version(
+        resolve_rollout_skill_decision(
             {**base_skill, "release_policy_rollout_percent": 101},
             tenant_id="tenant-a",
             skill_id="qa-file-reviewer",
             rollout_key="user-a",
-        )
+        ).selected_version
         == "hash-new"
     )
     assert (
-        resolve_rollout_skill_version(
+        resolve_rollout_skill_decision(
             {**base_skill, "release_policy_rollout_percent": "not-a-number"},
             tenant_id="tenant-a",
             skill_id="qa-file-reviewer",
             rollout_key="user-a",
-        )
+        ).selected_version
         == "hash-new"
     )
 

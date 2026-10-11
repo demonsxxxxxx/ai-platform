@@ -15,7 +15,6 @@ from app.skills.execution_profiles import (
 )
 from app.skills.pinning import (
     build_skill_version_manifest_pin,
-    build_uploaded_skill_manifest_pin,
 )
 
 
@@ -61,7 +60,7 @@ def _worker_subjects(manifest: dict[str, object]) -> dict[str, dict[str, object]
 
 
 def test_reviewed_uploaded_v1_pin_keeps_snapshot_profile_but_runtime_uses_full_local():
-    manifest = build_uploaded_skill_manifest_pin(
+    manifest = build_skill_version_manifest_pin(
         _skill_version("reviewed-upload", status="reviewed", source_kind="uploaded")
     )
 

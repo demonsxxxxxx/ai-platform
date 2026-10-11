@@ -14,7 +14,6 @@ from app.skills.pinning import (
     SkillVersionMaterializationError,
     build_skill_version_manifest_pin,
     build_skill_version_policy_manifest_pins,
-    build_uploaded_skill_manifest_pin,
     governed_locked_skill_version,
 )
 from app.skills.registry import BuiltinSkillRegistry
@@ -36,7 +35,7 @@ def write_skill(root, name, description):
 
 
 def test_snapshot_source_locks_canonical_uploaded_tool_identities():
-    manifest = build_uploaded_skill_manifest_pin(
+    manifest = build_skill_version_manifest_pin(
         {
             "skill_id": "example-skill",
             "version": "hash-uploaded",
@@ -251,13 +250,13 @@ def test_build_skill_snapshot_governance_rejects_invalid_or_escaped_file_entries
             build_skill_snapshot_governance({**base_manifest, "files": files})
 
 
-def test_build_uploaded_skill_manifest_pin_uses_source_snapshot_files():
+def test_build_skill_version_manifest_pin_uses_source_snapshot_files():
     files = [
         {"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5},
         {"relative_path": "references/guide.md", "content_base64": "Z3VpZGU=", "size_bytes": 5},
     ]
 
-    pin = build_uploaded_skill_manifest_pin(
+    pin = build_skill_version_manifest_pin(
         {
             "skill_id": "example-skill",
             "version": "hash-uploaded",
@@ -292,7 +291,49 @@ def test_build_uploaded_skill_manifest_pin_uses_source_snapshot_files():
     assert pin["builtin_tool_identities"] == pin["execution_profile"]["builtin_tool_identities"]
 
 
-def test_build_uploaded_skill_manifest_pin_rejects_overlong_utf8_path_component():
+@pytest.mark.parametrize("source_kind", ["filesystem", "run-snapshot", "", None])
+def test_build_skill_version_manifest_pin_rejects_unsupported_source_kind(source_kind):
+    with pytest.raises(SkillVersionMaterializationError, match="skill_version_not_materializable"):
+        build_skill_version_manifest_pin(
+            {
+                "skill_id": "example-skill",
+                "version": "hash-uploaded",
+                "content_hash": "hash-uploaded",
+                "source": {
+                    "kind": source_kind,
+                    "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
+                },
+                "status": "released",
+            }
+        )
+
+
+@pytest.mark.parametrize("source_kind", ["builtin", "uploaded"])
+def test_build_skill_version_manifest_pin_strips_historical_dependency_manifests(source_kind):
+    files = [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}]
+    source = {
+        "kind": source_kind,
+        "files": files,
+        "dependency_manifests": [{"skill_id": "historical-dependency", "version": "old"}],
+        "dependency_evidence": {"manifest_snapshot_present": True},
+    }
+    pin = build_skill_version_manifest_pin(
+        {
+            "skill_id": "example-skill",
+            "version": "hash",
+            "content_hash": "hash",
+            "source": source,
+            "dependency_ids": ["declared-dependency"],
+            "status": "released",
+        }
+    )
+    assert pin["source"] == {"kind": source_kind, "dependency_evidence": {"manifest_snapshot_present": True}}
+    assert pin["dependency_ids"] == ["declared-dependency"]
+    assert pin["files"] == files
+    assert source["dependency_manifests"] == [{"skill_id": "historical-dependency", "version": "old"}]
+
+
+def test_build_skill_version_manifest_pin_rejects_overlong_utf8_path_component():
     files = [
         {"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5},
         {
@@ -306,7 +347,7 @@ def test_build_uploaded_skill_manifest_pin_rejects_overlong_utf8_path_component(
         SkillVersionMaterializationError,
         match="skill_version_not_materializable",
     ):
-        build_uploaded_skill_manifest_pin(
+        build_skill_version_manifest_pin(
             {
                 "skill_id": "example-skill",
                 "version": "hash-uploaded",
@@ -354,7 +395,7 @@ def test_build_skill_version_manifest_pin_preserves_historical_builtin_source():
 
 def test_snapshot_source_rejects_forged_uploaded_execution_profile():
     files = [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}]
-    manifest = build_uploaded_skill_manifest_pin(
+    manifest = build_skill_version_manifest_pin(
         {
             "skill_id": "example-skill",
             "version": "hash-uploaded",
@@ -428,9 +469,9 @@ def test_build_skill_version_policy_manifest_pins_accepts_zero_dependency_upload
     assert pins[0]["dependency_ids"] == []
 
 
-def test_build_uploaded_skill_manifest_pin_rejects_missing_files():
+def test_build_skill_version_manifest_pin_rejects_missing_files():
     with pytest.raises(SkillVersionMaterializationError, match="skill_version_not_materializable"):
-        build_uploaded_skill_manifest_pin(
+        build_skill_version_manifest_pin(
             {
                 "skill_id": "example-skill",
                 "version": "hash-uploaded",
@@ -443,9 +484,9 @@ def test_build_uploaded_skill_manifest_pin_rejects_missing_files():
         )
 
 
-def test_build_uploaded_skill_manifest_pin_rejects_inactive_version():
+def test_build_skill_version_manifest_pin_rejects_inactive_version():
     with pytest.raises(SkillVersionMaterializationError, match="skill_version_not_materializable"):
-        build_uploaded_skill_manifest_pin(
+        build_skill_version_manifest_pin(
             {
                 "skill_id": "example-skill",
                 "version": "hash-uploaded",

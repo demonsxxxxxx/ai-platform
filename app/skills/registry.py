@@ -16,7 +16,6 @@ class BuiltinSkill:
     path: Path
     version: str
     source: dict[str, Any]
-    entry: dict[str, Any]
 
 
 def iter_skill_files(path: Path):
@@ -92,7 +91,6 @@ class BuiltinSkillRegistry:
                     path=skill_dir,
                     version=version,
                     source={"kind": "builtin", "asset_dir": skill_dir.name, "version": version},
-                    entry={"kind": "filesystem", "path": str(skill_dir)},
                 )
             )
         return skills

@@ -111,21 +111,6 @@ def resolve_rollout_skill_decision(
     )
 
 
-def resolve_rollout_skill_version(
-    skill: dict[str, Any],
-    *,
-    tenant_id: str,
-    skill_id: str,
-    rollout_key: str,
-) -> str:
-    return resolve_rollout_skill_decision(
-        skill,
-        tenant_id=tenant_id,
-        skill_id=skill_id,
-        rollout_key=rollout_key,
-    ).selected_version
-
-
 def release_decision_payload_for_locked_version(
     decision: SkillReleaseDecision | dict[str, Any],
     *,
