@@ -284,6 +284,16 @@ session cleanup. Known multipart cleanup converges both the upload handle and
 its exact final object key, covering completion that reached ObjectStorage but
 not PostgreSQL.
 
+Multipart completion retains physical ownership of its bounded validation
+download until its temporary path is handed to the completion caller or
+reclaimed after failure. Request cancellation or the storage wait budget ending
+is not evidence that the storage thread has stopped; failure cleanup joins that
+physical operation before returning its original failure. This safety settlement
+may outlast the request wait budget. Session-bound direct and multipart uploads
+must authorize the exact requested workspace as well as the tenant, user, and
+session before reserving quota or mutating storage. ProfileDrive imports continue
+to derive their workspace from the authorized session.
+
 Acceptance: the complete nine-file `3.2.S.3.1-IP266` corpus (approximately
 164.18 MiB, with one approximately 63.49 MiB file) can upload and pass Run
 admission under the new limits; a 129 MiB input or a 257 MiB input set fails
