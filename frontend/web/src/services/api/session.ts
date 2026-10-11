@@ -594,10 +594,11 @@ export const sessionApi = {
   /**
    * Get a session
    */
-  async get(sessionId: string): Promise<BackendSession | null> {
+  async get(sessionId: string, options: { signal?: AbortSignal } = {}): Promise<BackendSession | null> {
     try {
       return await authFetch<BackendSession>(
         `${API_BASE}/api/sessions/${sessionId}`,
+        { signal: options.signal },
       );
     } catch (error) {
       if ((error as Error).message.includes("404")) {
