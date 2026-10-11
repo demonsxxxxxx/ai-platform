@@ -269,3 +269,19 @@ reintroduce mandatory Skill invocation, per-Agent file-type gates,
   server-authorized definition fields, not presentation defaults. Models are
   intentionally selected from the shared governed catalog at Run admission and
   are not Agent Profile definition fields.
+
+## Independent SOP application request ownership
+
+The authenticated `/ai-apps/sop-assistant` page remains an independent RAGFlow
+application, not a platform Run or MCP invocation. Its `sopTransport` feature
+module owns initialization/answer stream readers, the shared request deadline,
+and local transport cleanup. The page owns cancellation and a request generation
+bound to the current authenticated tenant/user. Leaving the page or changing
+that scope aborts its request and clears local conversation state; late progress,
+results, errors and completion cannot update the replacement scope.
+
+Reader cancellation only closes the local request. It is not evidence of remote
+session deletion or remote computation cancellation. Clearing the conversation
+continues to clear local messages/session selection only. Existing endpoint,
+share-token configuration, request fields and answer accumulation stay unchanged;
+this resource-lifecycle boundary does not add an upstream authorization system.
