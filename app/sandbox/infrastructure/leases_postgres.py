@@ -236,3 +236,26 @@ async def list_sandbox_leases(conn: AsyncConnection, *, tenant_id: str, status: 
         (tenant_id, status, status, limit),
     )
     return list(await cursor.fetchall())
+
+
+async def lock_scoped_reconciliation_receipt(
+    conn, *, tenant_id: str, workspace_id: str, user_id: str, session_id: str,
+    run_id: str, attempt_id: str, lease_id: str, claim_token: str,
+    expected_owner_generation: int,
+) -> bool:
+    """Fence receipt settlement to its original exact scope and generation."""
+    cursor = await conn.execute(
+        """
+        select id from sandbox_leases
+        where id = %s and tenant_id = %s and workspace_id = %s and user_id = %s
+          and session_id = %s and run_id = %s and attempt_id = %s
+          and status in ('active', 'released') and executor_terminal_json is not null
+          and executor_reconciliation_status = 'claimed'
+          and executor_reconciliation_claim_token = %s
+          and lease_payload_json->>'owner_generation' = %s
+        for update
+        """,
+        (lease_id, tenant_id, workspace_id, user_id, session_id, run_id, attempt_id,
+         claim_token, str(expected_owner_generation)),
+    )
+    return await cursor.fetchone() is not None

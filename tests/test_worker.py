@@ -2051,6 +2051,47 @@ async def test_reconcile_executor_terminal_result_normalizes_only_empty_agent_pr
     assert result.result.get("diagnostics", []) == []
 
 
+def _install_frozen_receipt(monkeypatch, persisted, lease_row, *, calls=None):
+    from tests.support.frozen_receipts import frozen_attempt, frozen_spec
+    payload = QueueRunPayload.model_validate(persisted)
+    model = locked_run_from_payload(persisted)
+    spec = frozen_spec(**{
+        **{field: getattr(payload, field) for field in (
+            "tenant_id", "workspace_id", "user_id", "session_id", "run_id", "agent_id",
+            "execution_kind", "skill_id", "file_ids", "input", "executor_type",
+            "release_decision", "skill_manifests", "model_id", "model_value",
+        )},
+        "skill_version": payload.skill_version or "", "agent_profile": payload.agent_profile or {},
+        "run_payload_schema_version": payload.schema_version,
+        "context_snapshot_id": payload.context_snapshot_id,
+        "context_snapshot": {"context_snapshot_id": payload.context_snapshot_id},
+        "model_gateway_revision": model["model_gateway_revision"],
+        "model_max_input_tokens": model["max_input_tokens"],
+        "model_max_output_tokens": model["max_output_tokens"],
+    })
+    attempt = frozen_attempt(spec, id=lease_row["attempt_id"], queue_attempt_id="qat-attempt-a")
+    lease_row.update({field: getattr(payload, field) for field in (
+        "tenant_id", "workspace_id", "user_id", "session_id", "run_id",
+    )})
+    lease_row["lease_payload_json"] = {"owner_generation": 4}
+
+    async def run(conn, **kwargs):
+        return {**model, "executor_type": payload.executor_type,
+                "context_snapshot_id": payload.context_snapshot_id}
+    async def read(conn, **kwargs):
+        assert kwargs["attempt_id"] == lease_row["attempt_id"]
+        if calls is not None:
+            calls.append(("attempt_fence", "worker-original", "qat-attempt-a"))
+        return dict(attempt)
+    async def claim(conn, **kwargs):
+        assert kwargs["expected_owner_generation"] == 4
+        return True
+    monkeypatch.setattr(_TEST_ATTEMPT_PERSISTENCE, "get_scoped_reconciliation_run", run, raising=False)
+    monkeypatch.setattr(_TEST_ATTEMPT_PERSISTENCE, "get_run_attempt", read)
+    monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.lock_scoped_reconciliation_receipt", claim)
+    return spec
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("run_start", ["valid", "missing", "invalid", "naive", "future"])
 async def test_bound_agent_executor_reconciliation_uses_session_pins_and_terminalizes(
@@ -2195,6 +2236,7 @@ async def test_bound_agent_executor_reconciliation_uses_session_pins_and_termina
         executor_payload={},
     )
 
+    frozen = _install_frozen_receipt(monkeypatch, persisted, lease_row)
     outcome = await worker_module.reconcile_executor_terminal_result(
         lease_row=lease_row,
         result=result,
@@ -2208,6 +2250,8 @@ async def test_bound_agent_executor_reconciliation_uses_session_pins_and_termina
     )
 
     assert outcome == WorkerOutcome("succeeded", "run-a")
+    assert ("event", "worker_started") not in terminal_calls
+    assert frozen.to_mapping()["input"] == persisted["input"]
     assert get_run_calls.count(False) >= 2
     assert True in get_run_calls
     assert ("complete", "run-a") in terminal_calls
@@ -2392,6 +2436,7 @@ async def test_v2_reconciliation_snapshot_terminalizes_and_persists_assistant_me
         executor_payload={},
     )
 
+    _install_frozen_receipt(monkeypatch, persisted, lease_row, calls=calls)
     outcome = await worker_module.reconcile_executor_terminal_result(
         lease_row=lease_row,
         result=result,
@@ -2405,6 +2450,7 @@ async def test_v2_reconciliation_snapshot_terminalizes_and_persists_assistant_me
 
     assert outcome == WorkerOutcome("succeeded", "run-a")
     assert messages == ["done"]
+    assert ("event", "worker_started") not in calls
     assert ("complete", "run-a") in calls
     assert ("attempt_fence", "worker-original", "qat-attempt-a") in calls
     assert ("attempt_terminal", "rat-attempt-a", "succeeded") in calls

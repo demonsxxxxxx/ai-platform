@@ -92,7 +92,33 @@ the stream owner also has an idempotent `close()` for an unstarted body. The
 20-second ordinary and 3600-second streaming operation timeout budgets remain
 explicit. They are per-operation network timeouts, not a DNS-inclusive or
 whole-response deadline. This synchronous transport does not claim prompt ASGI
-cancellation of a blocked thread; async response ownership is a separate change.
+cancellation of a blocked thread: socket close may not wake its current read,
+and the existing read timeout still bounds that wait.
+
+Execution explicitly transfers stream ownership from opening worker to caller.
+The handoff states are pending, delivered, accepted and abandoned: cancellation
+before delivery leaves late-result close to the original worker; cancellation
+after delivery closes the unaccepted result in the caller. Its lock only chooses
+the owner and is never held during network I/O or close. No new executor or
+fire-and-forget cleanup task is introduced. Finite catalog/count requests already
+close their response in the worker and retain their existing behavior.
+
+RuntimeProxyResponse carries the owned body's close callback through the HTTP
+transport. A model-specific StreamingResponse finally runs it across the entire
+ASGI invocation, including failures before body iteration or during downstream
+send. Construction failures also close the accepted stream. Cleanup is synchronous
+without cancellation checkpoints; secondary failures record only a fixed private
+reason and never replace the primary error or cancellation.
+
+The owned body separates resource close from iterator close. An active reader
+retains iterator-close duty until its current next returns or raises, avoiding
+concurrent generator.close; close suppresses a late chunk from that read. An idle
+iterator closes immediately, including the Anthropic observation wrapper. Resource
+close is attempted even if iterator or diagnostic finalization fails. Under the
+current ASGI2.3/threadpool path, disconnect can still wait for a blocking read
+before the response finally runs. This change provides deterministic ownership
+and eventual cleanup, not instantaneous upstream cancellation. Request-scoped
+async I/O would be a separate bounded follow-up if faster interruption is needed.
 
 The private `http.client` connection factory and pinned HTTPS socket subclass are
 retired. Their test doubles are replaced by HTTPX transport fixtures and real
