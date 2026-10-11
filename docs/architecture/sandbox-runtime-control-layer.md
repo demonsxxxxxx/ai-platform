@@ -327,9 +327,27 @@ path.
 
 The host-bind path resolution, sentinel read, and selected-file snapshot routines
 are owned by `app.sandbox.domain.host_bind` and exposed through `app.sandbox.api`.
-The provider calls this boundary directly. Every opened traversal descriptor is
+The provider composes the snapshot through `app.bootstrap.sandbox_snapshot` and
+`app.sandbox.infrastructure.host_bind_snapshot`, using the existing bounded
+storage admission and default executor. No-follow traversal, selected-file
+allowlist, flock, stable-copy/hash checks, fsync and atomic publication remain
+inside the same synchronous domain operation. Other host-bind reads still call
+the public boundary directly. Every opened traversal descriptor is
 owned immediately and closed exactly once on success, metadata rejection, or
 filesystem inspection failure, including rejected roots and nested directories.
+Snapshot cancellation waits for a submitted physical operation to finish before
+propagating the original caller exception and releasing the reconciler claim.
+Repeated cancellation cannot shorten this join. Storage capacity is released on
+the owner loop after physical completion, including a cancelled asyncio waiter;
+worker shutdown gathers maintenance owners before closing clients. Admission
+failure has no physical job to join. The snapshot opts out of the helper's
+request wait budget, preserving the original physical-completion semantics;
+filesystem operations are not forcibly interrupted. Shared storage slots may
+therefore delay other storage work. This removes event-loop blocking, not the
+underlying copy/hash/fsync work, and does not establish production latency.
+Durable Attempt snapshot retention is separate; this path does not delete
+historical directories after cancellation.
+
 The previous recursive workspace
 manifest and file-upload helpers have been removed from both modules.
 
