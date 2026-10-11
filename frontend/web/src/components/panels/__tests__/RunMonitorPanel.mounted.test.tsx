@@ -17,10 +17,10 @@ import {
 import {
   buildAdminRunEventDiagnostics,
   buildAdminRunMonitorView,
+  indexToolDiagnosticEvidence,
 } from "../adminRunTimeline";
 import {
   filterAdminRuns,
-  indexToolDiagnosticEvidence,
   RunMonitorPanel,
   summarizeAdminRuns,
 } from "../RunMonitorPanel";
@@ -1013,4 +1013,16 @@ test("Run Monitor correlates opaque and legacy IDs without ambiguous fallback", 
   const conflicted = indexToolDiagnosticEvidence([evidence, { tool_name: "Write", invocation_id: native, operation_id: operation }]);
   assert.equal(conflicted.size, 0);
   assert.equal(indexToolDiagnosticEvidence([evidence, { ...evidence, last_stage: "completed" }]).get(operation)?.last_stage, "completed");
+});
+
+
+test("Run Monitor fails closed on same-tool cross-namespace identity collisions", () => {
+  const first = { tool_name: "Read", invocation_id: "sdk_A", operation_id: "op_X", reason: "failure_A" };
+  const second = { tool_name: "Read", invocation_id: "op_X", operation_id: "op_Y", reason: "failure_B" };
+  for (const items of [[first, second], [second, first]]) {
+    const indexed = indexToolDiagnosticEvidence(items);
+    assert.equal(indexed.has("op_X"), false);
+    assert.equal(indexed.get("sdk_A")?.reason, "failure_A");
+    assert.equal(indexed.get("op_Y")?.reason, "failure_B");
+  }
 });

@@ -24,7 +24,6 @@ import {
   readAdminRunDeepLinkScope,
   type AdminQueueInsight,
   type AdminRunDiagnosticsResponse,
-  type AdminRunDiagnosticToolEvidence,
   type AdminRunDetailResponse,
   type AdminRunSummary,
   type AdminWorkerExecution,
@@ -32,6 +31,7 @@ import {
 import { formatDateTimeShort } from "../../utils/datetime";
 import {
   buildAdminRunMonitorView,
+  indexToolDiagnosticEvidence,
   type AdminRunEventDiagnostic,
   type AdminRunTimelineItem,
 } from "./adminRunTimeline";
@@ -39,25 +39,6 @@ import { RunDiagnosticsSection } from "./RunDiagnosticsSection";
 import { AdminRunTrajectoryReplay } from "./AdminRunTrajectoryReplay";
 import { FailureGuidanceCard } from "../common/FailureGuidanceCard";
 import { buildAdminFailureGuidance } from "./runFailureGuidance";
-
-export function indexToolDiagnosticEvidence(evidence: AdminRunDiagnosticToolEvidence[]) {
-  const indexed = new Map<string, AdminRunDiagnosticToolEvidence>();
-  const conflicts = new Set<string>();
-  for (const item of evidence) {
-    // Public operations and legacy native-ID actions remain separate aliases.
-    for (const key of new Set([item.operation_id, item.invocation_id])) {
-      if (!key || !key.trim() || conflicts.has(key)) continue;
-      const previous = indexed.get(key);
-      if (previous && previous.tool_name !== item.tool_name) {
-        indexed.delete(key);
-        conflicts.add(key);
-      } else {
-        indexed.set(key, item);
-      }
-    }
-  }
-  return indexed;
-}
 
 const RUN_LIMIT = 50;
 const PAGE_SIZE = 10;
