@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import windows from "../../../../../../../tests/fixtures/run_playback_context_windows.json";
+import windows from "../../../../services/api/__tests__/fixtures/runPlaybackContextWindows.json";
 
 import { normalizeRunPlayback, type RunPlaybackResponse } from "../../../../services/api/runPlayback.ts";
 import {

@@ -12,7 +12,8 @@ from app.routes import runs
 
 
 WINDOW_FIXTURES = json.loads(
-    (Path(__file__).parent / "fixtures" / "run_playback_context_windows.json").read_text(encoding="utf-8")
+    (Path(__file__).parents[1] / "frontend/web/src/services/api/__tests__/fixtures/runPlaybackContextWindows.json")
+    .read_text(encoding="utf-8")
 )
 
 

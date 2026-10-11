@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test, { after } from "node:test";
 // @ts-expect-error jsdom runtime import.
 import { JSDOM } from "jsdom";
-import windows from "../../../../../../../tests/fixtures/run_playback_context_windows.json";
+import windows from "../../../../services/api/__tests__/fixtures/runPlaybackContextWindows.json";
 import type { RunControlParentIdentity } from "../../../../hooks/useAgent/runControlLifecycle";
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/chat" });

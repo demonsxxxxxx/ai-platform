@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import windows from "../../../../../../tests/fixtures/run_playback_context_windows.json";
+import windows from "./fixtures/runPlaybackContextWindows.json";
 
 import {
   buildRunPlaybackUrl,
