@@ -5909,7 +5909,12 @@ async def test_reconciler_collection_failure_preserves_primary_and_retry_authori
             raise RuntimeError("private diagnostic transaction commit failure")
 
     persistence = Persistence()
-    diagnostics = RunDiagnosticsService(persistence, normalize_sdk_runtime_diagnostics, SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION)
+    from app.platform.tracing import safe_exception_log_fields
+
+    diagnostics = RunDiagnosticsService(
+        persistence, normalize_sdk_runtime_diagnostics, SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+        exception_log_fields=safe_exception_log_fields,
+    )
     if with_primary_diagnostics and status != "succeeded" and collection_mode == "error":
         await diagnostics.capture_failure_result(
             None, tenant_id=current.tenant_id, run_id=current.run_id,

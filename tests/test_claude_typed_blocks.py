@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 
 import pytest
 
+from app.platform.tracing import safe_exception_log_fields
+
 from app.execution.infrastructure.harness.claude.typed_blocks import (
     ClaudeTypedBlockObservations,
 )
@@ -892,7 +894,7 @@ async def test_successful_empty_runner_record_reaches_private_storage_only(
         invoked_skill_ids=lambda _payload: set(),
     )
     persistence = InMemoryDiagnostics()
-    service = RunDiagnosticsService(
+    service = RunDiagnosticsService(exception_log_fields=safe_exception_log_fields,
         persistence=persistence,
         normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
         runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
