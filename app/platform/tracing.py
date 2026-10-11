@@ -177,7 +177,7 @@ def safe_exception_log_fields(exc: BaseException) -> dict[str, object]:
                 frames.append(f"{module}:{tb.tb_lineno}:{function}")
             tb = tb.tb_next
         node["frames"] = frames[-8:]
-        if tb is not None:
+        if len(frames) > 8 or tb is not None:
             node["frames_limited"] = True
         # Only the exact psycopg registered error class supplies SQLSTATE. Do not
         # inspect arbitrary exception attributes, driver diagnostics or strings.

@@ -253,3 +253,19 @@ def test_capability_authorization_projection_preserves_safe_mapping(message, cap
     assert detail == {"code": expected, "submission_disposition": "rejected_before_persist"}
     assert "private" not in str(detail)
     assert "secret" not in str(detail)
+
+
+@pytest.mark.parametrize("frame_count", [1, 8, 9])
+def test_submission_frame_limit_reports_retention_truncation(frame_count):
+    from app.platform.tracing import safe_exception_log_fields
+
+    namespace = {"__name__": "app.synthetic_test"}
+    exec(compile("def recurse(n):\n if n: return recurse(n-1)\n raise ValueError('private-prompt')", "/private/path/file.py", "exec"), namespace)
+    try:
+        namespace["recurse"](frame_count - 1)
+    except ValueError as exc:
+        evidence = safe_exception_log_fields(exc)
+    node = evidence["exception_chain"][0]
+    assert len(node["frames"]) == min(frame_count, 8)
+    assert node.get("frames_limited", False) is (frame_count > 8)
+    assert evidence["exception_chain_end"] == "complete"
