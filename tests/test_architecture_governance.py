@@ -854,13 +854,54 @@ def test_run_lifecycle_boundary_document_freezes_explicit_composition() -> None:
 
     for required in (
         "RunLifecycleService",
-        "StreamingEventLedgerWriter",
-        "AuditLedgerWriter",
-        "SandboxRuntimeClient",
+        "RunLifecyclePersistence",
+        "RunEventWriter",
+        "RunAuditWriter",
+        "logical roles, not the current Python port names",
+        "same PostgreSQL connection and transaction",
+        "Sandbox cleanup remains Sandbox-owned",
         "A route, transport helper, or admission helper MUST NOT import",
         "`ContextVar`, thread-local, request-local, or connection attributes",
     ):
-        assert required in source
+        assert required in " ".join(source.split())
+    assert "app.platform.postgres.audit" not in source
+    assert "platform audit-ledger adapter" not in source
+    assert "Identity-owned audit-ledger adapter" in source
+
+    # Verify the documented current ports and adapters exist and are the ones
+    # wired by bootstrap. This is source composition evidence, not runtime proof.
+    lifecycle = ast.parse((REPO_ROOT / "app/runs/application/lifecycle.py").read_text())
+    classes = {node.name: node for node in lifecycle.body if isinstance(node, ast.ClassDef)}
+    service = classes["RunLifecycleService"]
+    constructor = next(node for node in service.body if isinstance(node, ast.FunctionDef) and node.name == "__init__")
+    annotations = {arg.arg: ast.unparse(arg.annotation) for arg in constructor.args.kwonlyargs}
+    for parameter, port in {
+        "persistence": "RunLifecyclePersistence",
+        "append_event": "RunEventWriter",
+        "append_audit_log": "RunAuditWriter",
+    }.items():
+        assert port in classes and annotations[parameter] == port
+
+    composition = ast.parse((REPO_ROOT / "app/bootstrap/run_lifecycle.py").read_text())
+    imports = {
+        alias.asname or alias.name: (node.module, alias.name)
+        for node in composition.body if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+    }
+    factory = next(node for node in composition.body if isinstance(node, ast.FunctionDef) and node.name == "build_run_lifecycle_service")
+    call = next(node for node in ast.walk(factory) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "RunLifecycleService")
+    arguments = {keyword.arg: ast.unparse(keyword.value) for keyword in call.keywords}
+    for parameter, symbol, module in (
+        ("persistence", "PostgresRunLifecyclePersistence", "app.runs.infrastructure.lifecycle_postgres"),
+        ("append_event", "append_event", "app.streaming.infrastructure.run_events_postgres"),
+        ("append_audit_log", "append_audit_log", "app.identity.infrastructure.audit_postgres"),
+    ):
+        assert arguments[parameter] == (f"{symbol}()" if parameter == "persistence" else symbol)
+        assert imports[symbol] == (module, symbol)
+        path = REPO_ROOT / (module.replace(".", "/") + ".py")
+        assert f"../../{path.relative_to(REPO_ROOT).as_posix()}" in source
+        adapter = ast.parse(path.read_text())
+        assert symbol in {node.name for node in adapter.body if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))}
 
 
 def test_undeclared_root_to_domain_internal_import_remains_forbidden(
