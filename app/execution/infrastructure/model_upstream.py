@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-import http.client
 import json
-import socket
-import ssl
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterator, Mapping
+
+import httpx
 
 from app.execution.domain.model_catalog import validate_upstream_model_id
 
-from .model_security import ValidatedEndpoint, tls_context, validate_endpoint
+from .model_security import ValidatedEndpoint, endpoint_parts, tls_context, validate_endpoint
 
 
 @dataclass(frozen=True)
@@ -35,45 +34,93 @@ _PROXY_PATHS = {
 class UpstreamStream:
     status: int
     content_type: str
-    response: http.client.HTTPResponse
-    connection: http.client.HTTPConnection
+    response: httpx.Response
+    client: httpx.Client
     max_response_bytes: int
+    _closed: bool = field(default=False, init=False, repr=False)
+
+    def close(self) -> None:
+        """Release the owned transport, even before body iteration starts."""
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self.response.close()
+        finally:
+            self.client.close()
 
     def body(self) -> Iterator[bytes]:
         total = 0
         try:
-            # read(size) waits for the requested amount or EOF, including across
-            # HTTP chunks. read1 preserves the upstream's incremental delivery
-            # without waiting for a small SSE event to fill our buffer.
-            while chunk := self.response.read1(64 * 1024):
+            # No chunk_size: HTTPX's fixed-size chunker buffers small SSE events.
+            # Raw bytes also avoid transparent decompression before our bound.
+            for chunk in self.response.iter_raw():
                 total += len(chunk)
                 if total > self.max_response_bytes:
                     raise ModelUpstreamError("model_upstream_response_too_large")
                 yield chunk
         finally:
-            try:
-                self.response.close()
-            finally:
-                self.connection.close()
+            self.close()
 
 
-class _PinnedHTTPSConnection(http.client.HTTPSConnection):
-    def __init__(self, endpoint: ValidatedEndpoint, ip: str, *, timeout: float) -> None:
-        super().__init__(
-            endpoint.hostname,
-            endpoint.port,
-            timeout=timeout,
-            context=tls_context(),
-        )
-        self._pinned_ip = ip
+def _new_client(timeout_seconds: float) -> httpx.Client:
+    # One operation owns one client. An IP-keyed shared pool could reuse a TLS
+    # connection verified for a different original hostname on the same IP.
+    transport = httpx.HTTPTransport(
+        verify=tls_context(), trust_env=False, retries=0, http2=False,
+        limits=httpx.Limits(max_connections=1, max_keepalive_connections=0),
+    )
+    return httpx.Client(
+        transport=transport, trust_env=False, follow_redirects=False,
+        timeout=httpx.Timeout(timeout_seconds),
+    )
 
-    def connect(self) -> None:
-        raw = socket.create_connection((self._pinned_ip, self.port), self.timeout)
+
+def _open_response(
+    *, endpoint: ValidatedEndpoint, method: str, path: str, query: str,
+    body: bytes, headers: Mapping[str, str], timeout_seconds: float,
+    max_response_bytes: int,
+) -> UpstreamStream:
+    origin = httpx.URL(endpoint.base_url)
+    last_error: Exception | None = None
+    for ip in endpoint.ips:
+        client = _new_client(timeout_seconds)
+        response = None
+        transferred = False
         try:
-            self.sock = self._context.wrap_socket(raw, server_hostname=self.host)
-        except Exception:
-            raw.close()
-            raise
+            url = origin.copy_with(host=ip, path=path, query=query.encode("ascii"))
+            request = client.build_request(
+                method, url, content=body, headers=headers,
+                extensions={"sni_hostname": endpoint.hostname},
+            )
+            response = client.send(request, stream=True)
+            if 300 <= response.status_code < 400:
+                raise ModelUpstreamError("model_upstream_redirect_rejected")
+            if response.headers.get("content-encoding", "identity").strip().lower() != "identity":
+                # The proxy does not forward Content-Encoding. Do not silently
+                # decode an unbounded compressed body or forward unusable bytes.
+                raise ModelUpstreamError("model_upstream_unavailable")
+            stream = UpstreamStream(
+                status=response.status_code,
+                content_type=response.headers.get("content-type") or "application/octet-stream",
+                response=response, client=client, max_response_bytes=max_response_bytes,
+            )
+            transferred = True
+            return stream
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            # Only connection establishment failures prove no POST was sent.
+            # Read/write/protocol failures may follow an accepted, billed call.
+            last_error = exc
+        except (httpx.HTTPError, OSError) as exc:
+            raise ModelUpstreamError("model_upstream_unavailable") from exc
+        finally:
+            if not transferred:
+                try:
+                    if response is not None:
+                        response.close()
+                finally:
+                    client.close()
+    raise ModelUpstreamError("model_upstream_unavailable") from last_error
 
 
 def open_upstream_stream(
@@ -101,36 +148,11 @@ def open_upstream_stream(
         api_key=api_key,
         headers=headers,
     )
-    last_error: Exception | None = None
-    for ip in endpoint.ips:
-        connection = _connection(endpoint, ip, timeout_seconds=timeout_seconds)
-        try:
-            connection.request(
-                method,
-                path + (f"?{query}" if query else ""),
-                body=body,
-                headers=outbound,
-            )
-            response = connection.getresponse()
-            if 300 <= response.status < 400:
-                response.close()
-                raise ModelUpstreamError("model_upstream_redirect_rejected")
-            return UpstreamStream(
-                status=response.status,
-                content_type=str(
-                    response.getheader("content-type") or "application/octet-stream"
-                ),
-                response=response,
-                connection=connection,
-                max_response_bytes=max_response_bytes,
-            )
-        except ModelUpstreamError:
-            connection.close()
-            raise
-        except (OSError, ssl.SSLError, http.client.HTTPException) as exc:
-            last_error = exc
-            connection.close()
-    raise ModelUpstreamError("model_upstream_unavailable") from last_error
+    return _open_response(
+        endpoint=endpoint, method=method, path=path, query=query, body=body,
+        headers=outbound, timeout_seconds=timeout_seconds,
+        max_response_bytes=max_response_bytes,
+    )
 
 
 def _outbound_headers(
@@ -153,23 +175,9 @@ def _outbound_headers(
         outbound["x-api-key"] = api_key
     else:
         outbound["authorization"] = f"Bearer {api_key}"
-    outbound["host"] = (
-        endpoint.hostname
-        if endpoint.port in {80, 443}
-        else f"{endpoint.hostname}:{endpoint.port}"
-    )
+    outbound["host"] = endpoint_parts(endpoint).netloc
+    outbound["accept-encoding"] = "identity"
     return outbound
-
-
-def _connection(
-    endpoint: ValidatedEndpoint,
-    ip: str,
-    *,
-    timeout_seconds: float,
-) -> http.client.HTTPConnection:
-    if endpoint.scheme == "https":
-        return _PinnedHTTPSConnection(endpoint, ip, timeout=timeout_seconds)
-    return http.client.HTTPConnection(ip, endpoint.port, timeout=timeout_seconds)
 
 
 def request_upstream(
@@ -197,34 +205,18 @@ def request_upstream(
         api_key=api_key,
         headers=headers,
     )
-    last_error: Exception | None = None
-    for ip in endpoint.ips:
-        connection = _connection(endpoint, ip, timeout_seconds=timeout_seconds)
-        try:
-            connection.request(
-                method,
-                path + (f"?{query}" if query else ""),
-                body=body,
-                headers=outbound,
-            )
-            response = connection.getresponse()
-            if 300 <= response.status < 400:
-                raise ModelUpstreamError("model_upstream_redirect_rejected")
-            payload = response.read(max_response_bytes + 1)
-            if len(payload) > max_response_bytes:
-                raise ModelUpstreamError("model_upstream_response_too_large")
-            return UpstreamResponse(
-                status=response.status,
-                content_type=str(response.getheader("content-type") or "application/octet-stream"),
-                body=payload,
-            )
-        except ModelUpstreamError:
-            raise
-        except (OSError, ssl.SSLError, http.client.HTTPException) as exc:
-            last_error = exc
-        finally:
-            connection.close()
-    raise ModelUpstreamError("model_upstream_unavailable") from last_error
+    stream = _open_response(
+        endpoint=endpoint, method=method, path=path, query=query, body=body,
+        headers=outbound, timeout_seconds=timeout_seconds,
+        max_response_bytes=max_response_bytes,
+    )
+    try:
+        payload = b"".join(stream.body())
+        return UpstreamResponse(
+            status=stream.status, content_type=stream.content_type, body=payload,
+        )
+    except (httpx.HTTPError, OSError) as exc:
+        raise ModelUpstreamError("model_upstream_unavailable") from exc
 
 
 def parse_model_ids(response: UpstreamResponse) -> list[str]:
