@@ -28,7 +28,7 @@ from app.control_plane_contracts import (
     sanitize_public_payload,
 )
 from app.platform.tracing import TerminalStageTiming
-from app.execution.api import SessionStoreAppendTracker
+from app.bootstrap.claude_session_store import track_claude_session_store
 from app.platform.public_payload import (
     sanitize_public_answer_text,
     sanitize_public_text,
@@ -1859,9 +1859,8 @@ async def run_claude_agent_sdk(
     except Exception as exc:
         raise ClaudeAgentSdkNotAvailable(str(exc)) from exc
 
-    provider_session_store: SessionStoreAppendTracker | None = None
-    if session_store is not None:
-        provider_session_store = SessionStoreAppendTracker(session_store)
+    provider_session_store = track_claude_session_store(session_store)
+    if provider_session_store is not None:
         provider_session_options: dict[str, Any] = {
             "session_store": provider_session_store,
             "session_store_flush": "eager",

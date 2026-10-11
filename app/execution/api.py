@@ -131,11 +131,7 @@ async def resolve_chat_model_selection(
         selection=selection,
     )
 
-from app.execution.infrastructure.harness.claude.session_store_tracking import SessionStoreAppendTracker
-
-
 __all__ = [
-    "SessionStoreAppendTracker",
     "ModelTextCheckpoint",
     "WorkerExecutorResult",
     "WorkerBoundRunPayload",
