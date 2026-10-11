@@ -171,6 +171,7 @@ BACKEND_TEST_SHARDS = {
     "model-control-plane": (
         "tests/test_model_management.py",
         "tests/test_model_upstream_stream.py",
+        "tests/test_model_stream_ownership.py",
         "tests/test_lambchat_frontend_compat.py::test_lambchat_model_catalog_is_empty_without_governed_connection",
         "tests/test_lambchat_frontend_compat.py::test_lambchat_governed_model_catalog_preserves_raw_ids",
         "tests/test_execution_spec.py::test_execution_spec_preserves_raw_upstream_model_identity",
