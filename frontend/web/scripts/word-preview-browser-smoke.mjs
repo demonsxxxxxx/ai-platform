@@ -75,8 +75,10 @@ try {
   await page.evaluate(()=>{window.__wordSmokeGate={armed:true};});
   await page.locator('#portrait').click();
   await page.waitForFunction(()=>window.__wordSmokeGate?.settled===true);
-  assert.equal(await page.locator('#preview-host iframe').count(),0,'conversion result is still pending');
+  assert.equal(await page.locator('#preview-host iframe').count(),1,'loading preview keeps its empty frame');
+  assert.doesNotMatch(await page.locator('#preview-host iframe').getAttribute('srcdoc'),/Final synthetic page/,'conversion result is still pending');
   await page.locator('#close').click();
+  assert.equal(await page.locator('#preview-host iframe').count(),0,'Close unmounts the loading frame');
   await page.evaluate(()=>window.__wordSmokeGate.release());
   await page.waitForFunction(()=>window.__wordSmokeGate.returned===true);
   await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
