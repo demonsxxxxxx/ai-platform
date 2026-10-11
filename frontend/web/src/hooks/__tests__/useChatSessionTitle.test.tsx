@@ -24,6 +24,7 @@ async function withTitle(
     flush(action?: () => void): Promise<void>;
     unmount(): Promise<void>;
     title(): string | null;
+    renders(): Array<string | null>;
   }) => Promise<void>,
 ) {
   const React = await import("react");
@@ -33,8 +34,9 @@ async function withTitle(
   sessionApi.get = get;
   const root = createRoot(dom.document.createElement("div") as never);
   let visible: string | null = null;
+  const renders: Array<string | null> = [];
   let mounted = true;
-  function Probe(props: Scope) { visible = useChatSessionTitle(props); return null; }
+  function Probe(props: Scope) { visible = useChatSessionTitle(props); renders.push(visible); return null; }
   const flush = async (action?: () => void) => { await React.act(async () => { action?.(); await Promise.resolve(); }); };
   try {
     await run({
@@ -42,6 +44,7 @@ async function withTitle(
       flush,
       unmount: async () => { if (mounted) { await React.act(async () => root.unmount()); mounted = false; } },
       title: () => visible,
+      renders: () => [...renders],
     });
   } finally {
     if (mounted) await React.act(async () => root.unmount());
@@ -114,17 +117,45 @@ test("404, mismatched identity and denied reads never expose past or unverified 
   }
 });
 
-test("authorized hydration cannot roll back a newer title event", async () => {
-  const pending = deferred<BackendSession | null>();
-  await withTitle(async () => pending.promise, async ({ render, flush, title }) => {
+test("title events only invalidate reads and older GET cannot roll back fresh server title", async () => {
+  const initial = deferred<BackendSession | null>();
+  const refresh = deferred<BackendSession | null>();
+  let calls = 0;
+  await withTitle(async () => ++calls === 1 ? initial.promise : refresh.promise, async ({ render, flush, title }) => {
     await render(scope());
-    await flush(() => dispatchSessionTitleUpdated({ sessionId: "a", title: "new title" }));
+    await flush(() => dispatchSessionTitleUpdated({ sessionId: "a", title: "untrusted event title" }));
+    assert.equal(calls, 2);
     assert.equal(title(), null);
-    await flush(() => pending.resolve(session("a", "old title")));
-    assert.equal(title(), "new title");
+    await flush(() => refresh.resolve(session("a", "current server title")));
+    assert.equal(title(), "current server title");
+    await flush(() => initial.resolve(session("a", "stale server title")));
+    assert.equal(title(), "current server title");
     await flush(() => dispatchSessionTitleUpdated({ sessionId: "b", title: "unrelated title" }));
-    assert.equal(title(), "new title");
+    assert.equal(calls, 2);
   });
+});
+
+test("late old-subject title events never expose their payload in a new subject scope", async () => {
+  for (const next of [scope("a", "user-b"), scope("a", "user-a", "tenant-b")]) {
+    const currentRead = deferred<BackendSession | null>();
+    const refreshedRead = deferred<BackendSession | null>();
+    let calls = 0;
+    await withTitle(async () => {
+      calls += 1;
+      return calls === 1 ? session("a", "old subject title") : calls === 2 ? currentRead.promise : refreshedRead.promise;
+    }, async ({ render, flush, title }) => {
+      await render(scope());
+      await render(next);
+      await flush(() => dispatchSessionTitleUpdated({ sessionId: "a", title: "late old subject secret" }));
+      assert.equal(title(), null);
+      await flush(() => currentRead.resolve(session("a", "superseded current read")));
+      assert.equal(title(), null);
+      await flush(() => refreshedRead.resolve(session("a", "new subject authorized title")));
+      assert.equal(title(), "new subject authorized title");
+      await flush(() => dispatchSessionTitleUpdated({ sessionId: "a", title: "another old subject secret" }));
+      assert.equal(title(), "new subject authorized title");
+    });
+  }
 });
 
 test("already-started poll and unmounted reads cannot publish into later scopes", async () => {
@@ -178,4 +209,21 @@ test("unmount aborts an initial read and removes title listeners", async () => {
     });
     assert.equal(title(), null);
   });
+});
+
+
+test("A to anonymous or empty session to A never revives a previous title in any render", async () => {
+  for (const gap of [{ sessionId: "a" }, { tenantId: "tenant-a", userId: "user-a" }, scope("b")]) {
+    const pending = deferred<BackendSession | null>();
+    let calls = 0;
+    await withTitle(async () => ++calls === 1 ? session("a", "previous private title") : pending.promise, async ({ render, renders, title }) => {
+      await render(scope());
+      assert.equal(title(), "previous private title");
+      const start = renders().length;
+      await render(gap);
+      await render(scope());
+      assert.ok(renders().length > start);
+      assert.ok(renders().slice(start).every((value) => value === null));
+    });
+  }
 });

@@ -13,59 +13,51 @@ export function useChatSessionTitle({ sessionId, tenantId, userId }: ChatTitleSc
   const scope = sessionId && tenantId && userId
     ? JSON.stringify([tenantId, userId, sessionId])
     : null;
-  const activeScope = useRef(scope);
-  activeScope.current = scope;
-  const [snapshot, setSnapshot] = useState<{ scope: string; title: string | null } | null>(null);
+  const activeScope = useRef({ scope, generation: 0 });
+  if (activeScope.current.scope !== scope) {
+    activeScope.current = { scope, generation: activeScope.current.generation + 1 };
+  }
+  const generation = activeScope.current.generation;
+  const [snapshot, setSnapshot] = useState<{ generation: number; title: string | null } | null>(null);
 
   useEffect(() => {
     if (!scope || !sessionId) return;
     let active = true;
-    let authorized = false;
-    let observedEvent = false;
-    let eventTitle: string | null = null;
+    let requestSequence = 0;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     const controller = new AbortController();
-    const ownsScope = () => active && activeScope.current === scope;
+    const ownsScope = () => active && activeScope.current.generation === generation;
     const publish = (title: string | null) => {
-      if (ownsScope()) setSnapshot({ scope, title });
+      if (ownsScope()) setSnapshot({ generation, title });
     };
-    // Never hydrate the process-wide session-only title cache: it has no
-    // tenant/user ownership and cannot establish this subject's access.
+    // Each scope incarnation starts empty; returning to an earlier subject or
+    // session must not resurrect its previously authorized projection.
     publish(null);
-    const stopListening = listenSessionTitleUpdated((detail) => {
-      if (!ownsScope() || detail.sessionId !== sessionId) return;
-      observedEvent = true;
-      eventTitle = detail.title;
-      if (authorized) {
-        clearTimeout(retryTimer);
-        publish(eventTitle);
-      }
-    });
-
     const load = async (mayPoll: boolean) => {
+      const request = ++requestSequence;
+      const ownsRequest = () => ownsScope() && request === requestSequence;
       try {
         const session = await sessionApi.get(sessionId, { signal: controller.signal });
-        if (!ownsScope()) return;
-        authorized = session?.id === sessionId;
-        if (!authorized) {
-          eventTitle = null;
-          observedEvent = false;
+        if (!ownsRequest()) return;
+        if (session?.id !== sessionId) {
           publish(null);
           return;
         }
-        // A title event observed after this scope began is newer than this
-        // hydration. It may be shown only after access has been established.
-        const title = observedEvent ? eventTitle : session?.name?.trim() || null;
+        const title = session.name?.trim() || null;
         publish(title);
         if (mayPoll && !title) retryTimer = setTimeout(() => { void load(false); }, 3000);
       } catch {
-        if (!ownsScope()) return;
-        authorized = false;
-        eventTitle = null;
-        observedEvent = false;
+        if (!ownsRequest()) return;
         publish(null);
       }
     };
+    const stopListening = listenSessionTitleUpdated((detail) => {
+      if (!ownsScope() || detail.sessionId !== sessionId) return;
+      // Events carry no authenticated subject. Even a matching session ID does
+      // not authorize their title; use them only to invalidate this read.
+      clearTimeout(retryTimer);
+      void load(false);
+    });
     void load(true);
     return () => {
       active = false;
@@ -73,7 +65,7 @@ export function useChatSessionTitle({ sessionId, tenantId, userId }: ChatTitleSc
       clearTimeout(retryTimer);
       stopListening();
     };
-  }, [scope, sessionId]);
+  }, [scope, sessionId, generation]);
 
-  return scope && snapshot?.scope === scope ? snapshot.title : null;
+  return scope && snapshot?.generation === generation ? snapshot.title : null;
 }
