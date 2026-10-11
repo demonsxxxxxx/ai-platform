@@ -2867,13 +2867,13 @@ async def test_sdk_disconnects_before_selected_mcp_session_closes(
     async def list_tools(_session):
         return [types.SimpleNamespace(name="search")]
 
-    def prepare(subjects, configs, callback_wrapper=None):
+    def prepare(subjects, configs, callback_wrapper=None, *, failure_observer=None):
         return ClaudeMcpRegistration(
             subjects,
             configs,
             session_factory=session_factory,
             list_tools=list_tools,
-            callback_wrapper=callback_wrapper,
+            callback_wrapper=callback_wrapper, failure_observer=failure_observer,
         )
 
     monkeypatch.setitem(
