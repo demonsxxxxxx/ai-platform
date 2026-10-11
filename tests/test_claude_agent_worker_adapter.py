@@ -2040,6 +2040,10 @@ async def test_sandbox_runtime_request_carries_prepared_public_skill_metadata(
     )
 
     assert result.run_id == "run_1"
+    context = runtime_requests[0].reconciliation_context
+    assert "run_payload" in context
+    assert "run_payload" not in context["adapter_context"]
+    assert "run_payload" not in result.adapter_context
     assert runtime_requests[0].public_skill_metadata == {
         "public-skill": metadata["public-skill"]
     }
@@ -5789,6 +5793,7 @@ async def test_reconciler_conversion_timing_keeps_actual_selected_file_storage_s
                 "sdk_used": True, TOOL_INVOCATION_EVIDENCE_KEY: []}
     context = {"adapter_name": "claude-agent-worker", "adapter_context": {
         "schema_version": "ai-platform.claude-agent-reconciliation-context.v1",
+        "run_payload": {"legacy_extra_key": "ignored"},
         "workspace": str(tmp_path), "allowed_skill_names": ["general-chat"],
         "staged_skill_names": ["general-chat"], "skill_manifests": [],
     }}
