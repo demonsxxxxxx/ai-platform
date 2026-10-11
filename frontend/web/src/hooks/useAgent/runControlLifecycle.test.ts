@@ -480,3 +480,120 @@ test("RunControlLifecycle does not replay when resolver reports pending queue ad
     restoreStorage();
   }
 });
+
+
+test("RunControlLifecycle retains safe read errors independently and clears them only after successful reads", async () => {
+  const { ApiRequestError } = await import("../../services/api/fetch.ts");
+  const lifecycle = new RunControlLifecycle();
+  lifecycle.bindParent(parent());
+  const originalFetch = globalThis.fetch;
+  const originalStatus = sessionApi.getStatus;
+  let playbackFailure: "http" | "network" | "protocol" | null = "http";
+  let readinessFailure = false;
+  sessionApi.getStatus = (async () => {
+    if (readinessFailure) throw new ApiRequestError("安全的状态错误", 503, "service_unavailable");
+    return { session_id: "session-a", run_id: "run-a", status: "running" };
+  }) as typeof sessionApi.getStatus;
+  globalThis.fetch = (async () => {
+    if (playbackFailure === "http") throw new ApiRequestError("安全的回放错误", 503, "service_unavailable", undefined, "diag_0123456789abcdef");
+    if (playbackFailure === "network") throw new Error("private-path-and-token");
+    if (playbackFailure === "protocol") return new Response("not JSON");
+    return new Response(JSON.stringify({
+      run_id: "run-a", run: { status: "running" }, timeline: [], events: [], artifacts: [], steps: [],
+    }));
+  }) as typeof fetch;
+  try {
+    await lifecycle.refresh();
+    assert.deepEqual(lifecycle.getSnapshot().playbackReadError, { message: "安全的回放错误", status: 503, code: "service_unavailable", diagnosticId: "diag_0123456789abcdef" });
+    assert.equal(lifecycle.getSnapshot().readinessReadError, null);
+    assert.equal(lifecycle.getSnapshot().canRetry, false, "a read error must not invent a failed run");
+    for (const failure of ["network", "protocol"] as const) {
+      playbackFailure = failure;
+      await lifecycle.refresh();
+      assert.ok(lifecycle.getSnapshot().playbackReadError);
+      assert.doesNotMatch(lifecycle.getSnapshot().playbackReadError!.message, /private-path-and-token/);
+    }
+    playbackFailure = null;
+    readinessFailure = true;
+    await lifecycle.refresh();
+    assert.equal(lifecycle.getSnapshot().playbackReadError, null);
+    assert.equal(lifecycle.getSnapshot().readinessReadError?.message, "安全的状态错误");
+    assert.equal(lifecycle.getSnapshot().playback?.run_id, "run-a");
+    readinessFailure = false;
+    await lifecycle.refresh();
+    assert.equal(lifecycle.getSnapshot().readinessReadError, null);
+    lifecycle.bindParent({ ...parent(), chatHistoryGeneration: 2, runId: "run-b" });
+    assert.equal(lifecycle.getSnapshot().playbackReadError, null);
+    assert.equal(lifecycle.getSnapshot().readinessReadError, null);
+  } finally { globalThis.fetch = originalFetch; sessionApi.getStatus = originalStatus; }
+});
+
+
+test("unconfirmed child recovery clears an earlier readiness read error without releasing its durable fence", async () => {
+  const restoreStorage = installSessionStorage(new MemoryStorage());
+  const lifecycle = new RunControlLifecycle();
+  const originalFetch = globalThis.fetch;
+  const originalStatus = sessionApi.getStatus;
+  const originalRetry = sessionApi.retryRun;
+  const originalResolve = sessionApi.resolveRunControlOperation;
+  let statusFails = true;
+  let mutations = 0;
+  globalThis.fetch = (async () => new Response(JSON.stringify({ run_id: "run-a", run: { status: "failed" }, timeline: [], events: [], artifacts: [], steps: [] }))) as typeof fetch;
+  sessionApi.getStatus = (async () => {
+    if (statusFails) throw new Error("private readiness failure");
+    return { session_id: "session-a", run_id: "run-a", status: "failed" };
+  }) as typeof sessionApi.getStatus;
+  sessionApi.retryRun = (async () => { mutations += 1; throw new Error("response lost"); }) as typeof sessionApi.retryRun;
+  sessionApi.resolveRunControlOperation = async () => { throw new Error("resolver unavailable"); };
+  lifecycle.configure({ adoptRunControlChild: async () => "superseded", reconnectRunControlOwner: async () => {} });
+  lifecycle.bindParent(parent());
+  try {
+    await lifecycle.refresh();
+    assert.ok(lifecycle.getSnapshot().readinessReadError);
+    statusFails = false;
+    await lifecycle.retry();
+    assert.equal(lifecycle.getSnapshot().readinessReadError, null);
+    assert.equal(lifecycle.getSnapshot().phase, "unconfirmed");
+    assert.equal(lifecycle.getSnapshot().canRetry, false);
+    await lifecycle.retry();
+    assert.equal(mutations, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    sessionApi.getStatus = originalStatus;
+    sessionApi.retryRun = originalRetry;
+    sessionApi.resolveRunControlOperation = originalResolve;
+    restoreStorage();
+  }
+});
+
+
+test("late read failures cannot replace a newer successful refresh or a new parent", async () => {
+  const lifecycle = new RunControlLifecycle();
+  lifecycle.bindParent(parent());
+  const originalFetch = globalThis.fetch;
+  const originalStatus = sessionApi.getStatus;
+  let rejectOld!: (error: Error) => void;
+  let defer = true;
+  sessionApi.getStatus = (async () => ({ session_id: "session-a", run_id: "run-a", status: "running" })) as typeof sessionApi.getStatus;
+  globalThis.fetch = (async () => {
+    if (defer) return new Promise<Response>((_resolve, reject) => { rejectOld = reject; });
+    return new Response(JSON.stringify({ run_id: "run-a", timeline: [], events: [], artifacts: [], steps: [] }));
+  }) as typeof fetch;
+  try {
+    const oldRead = lifecycle.refresh();
+    defer = false;
+    await lifecycle.refresh();
+    rejectOld(new Error("late private exception"));
+    await oldRead;
+    assert.equal(lifecycle.getSnapshot().playbackReadError, null);
+    assert.equal(lifecycle.getSnapshot().playback?.run_id, "run-a");
+    defer = true;
+    const previousParentRead = lifecycle.refresh();
+    lifecycle.bindParent({ ...parent(), chatHistoryGeneration: 2, runId: "run-b" });
+    rejectOld(new Error("previous parent private exception"));
+    await previousParentRead;
+    assert.equal(lifecycle.getSnapshot().playbackReadError, null);
+    assert.equal(lifecycle.getSnapshot().readinessReadError, null);
+    assert.equal(lifecycle.getSnapshot().playback, null);
+  } finally { globalThis.fetch = originalFetch; sessionApi.getStatus = originalStatus; }
+});
