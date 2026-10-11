@@ -378,5 +378,5 @@ def test_word_preview_browser_acceptance_is_required_in_frontend_lane():
     assert "continue-on-error" not in smoke
     package = json.loads(PACKAGE.read_text(encoding="utf-8"))
     assert package["scripts"]["test:word-preview-browser"] == "node scripts/word-preview-browser-smoke.mjs"
-    assert "node --test scripts/browser-smoke-harness.test.mjs" in package["scripts"]["test:document-previews"]
+    assert "node --test scripts/word-preview-request-policy.test.mjs" in package["scripts"]["test:document-previews"]
     assert "corepack pnpm run test:document-previews" in package["scripts"]["ci:verify"]

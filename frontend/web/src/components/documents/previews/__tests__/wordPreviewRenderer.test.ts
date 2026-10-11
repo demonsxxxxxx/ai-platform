@@ -82,3 +82,23 @@ test("DOCX failure clears inert output and preserves the Mammoth fallback", asyn
   assert.equal(document.body.innerHTML, "");
   dom.window.close();
 });
+
+test("browser dark fixture triggers real DOCX failure and readable text fallback", async () => {
+  const dom = installDom();
+  try {
+    const { renderAsync } = await import("docx-preview");
+    const { isDocxSafeForMammoth, extractDocxTextFallback, docxTextToHtml } = await import("../wordPreviewUtils.ts");
+    const arrayBuffer = await createSyntheticWordDocument({ fallback: true });
+    let failed = false;
+    const result = await renderDocxPreviewHtml({
+      arrayBuffer, renderAsync,
+      onDocxPreviewError: () => { failed = true; },
+      convertToHtml: async ({ arrayBuffer }) => {
+        assert.equal(await isDocxSafeForMammoth(arrayBuffer), false);
+        return { value: docxTextToHtml(await extractDocxTextFallback(arrayBuffer)) };
+      },
+    });
+    assert.equal(failed, true);
+    assert.deepEqual(result, { kind: "html", html: "<p>Dark synthetic fallback</p>" });
+  } finally { dom.window.close(); }
+});

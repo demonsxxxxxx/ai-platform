@@ -25,7 +25,7 @@
     "i18n:extract": "tsx scripts/extract-i18n.ts",
     "find-large-files": "tsx scripts/find-large-files.ts",
     "migrate-tests": "tsx scripts/migrate-tests.ts",
-    "test:document-previews": "tsx --test src/components/documents/__tests__/*.test.ts* src/components/documents/previews/__tests__/*.test.ts* src/components/documents/utils/__tests__/*.test.ts* src/components/common/__tests__/*.test.ts* && node --test scripts/browser-smoke-harness.test.mjs",
+    "test:document-previews": "tsx --test src/components/documents/__tests__/*.test.ts* src/components/documents/previews/__tests__/*.test.ts* src/components/documents/utils/__tests__/*.test.ts* src/components/common/__tests__/*.test.ts* && node --test scripts/word-preview-request-policy.test.mjs",
     "test:pwa": "tsx --test src/__tests__/pwaGuards.test.ts src/__tests__/pwaRouting.test.ts src/__tests__/swOfflineFallback.test.ts",
     "test:word-preview-browser": "node scripts/word-preview-browser-smoke.mjs"
   },
@@ -108,6 +108,7 @@
     "glob": "^13.0.6",
     "globals": "^15.14.0",
     "jsdom": "26.1.0",
+    "playwright-core": "1.62.1",
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.17",
     "tsx": "^4.21.0",

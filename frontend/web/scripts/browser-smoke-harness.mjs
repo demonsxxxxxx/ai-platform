@@ -164,7 +164,6 @@ export class CdpClient {
     this.timeoutMs = timeoutMs;
     this.nextId = 1;
     this.pending = new Map();
-    this.listeners = new Map();
   }
 
   async connect() {
@@ -179,10 +178,6 @@ export class CdpClient {
     );
     this.ws.addEventListener("message", (event) => {
       const payload = JSON.parse(event.data);
-      if (!payload.id) {
-        for (const listener of this.listeners.get(payload.method) ?? []) listener(payload.params ?? {}, payload.sessionId);
-        return;
-      }
       const pending = this.pending.get(payload.id);
       if (!pending) return;
       this.pending.delete(payload.id);
@@ -191,33 +186,25 @@ export class CdpClient {
     });
   }
 
-  on(method, listener) {
-    const listeners = this.listeners.get(method) ?? new Set();
-    listeners.add(listener);
-    this.listeners.set(method, listeners);
-    return () => listeners.delete(listener);
-  }
-
-  send(method, params = {}, sessionId) {
+  send(method, params = {}) {
     const id = this.nextId++;
     return withTimeout(
       new Promise((resolvePromise, rejectPromise) => {
         this.pending.set(id, { resolve: resolvePromise, reject: rejectPromise });
-        this.ws.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+        this.ws.send(JSON.stringify({ id, method, params }));
       }),
       this.timeoutMs,
       `cdp_send:${method}`,
     );
   }
 
-  async evaluate(expression, { contextId, sessionId } = {}) {
+  async evaluate(expression) {
     const result = await this.send("Runtime.evaluate", {
       expression,
       awaitPromise: true,
       returnByValue: true,
       userGesture: true,
-      ...(contextId ? { contextId } : {}),
-    }, sessionId);
+    });
     if (result.exceptionDetails) {
       throw new Error(
         result.exceptionDetails.exception?.description ||
@@ -242,7 +229,6 @@ export class CdpClient {
     this.ws?.close();
     for (const pending of this.pending.values()) pending.reject(new Error("cdp_closed"));
     this.pending.clear();
-    this.listeners.clear();
   }
 }
 
@@ -319,7 +305,7 @@ export async function startBrowser({
       mobile: viewport.mobile,
     });
     reportRedacted("browser_ready", { port });
-    return { client, close };
+    return { client, close, endpoint };
   } catch (error) {
     try {
       await close();
