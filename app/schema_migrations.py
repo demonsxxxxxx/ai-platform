@@ -1063,7 +1063,14 @@ async def _ensure_ledger(conn: Any) -> None:
 
 async def _default_index_connection_factory() -> Any:
     conn = await connect()
-    await conn.set_autocommit(True)
+    try:
+        await conn.set_autocommit(True)
+    except BaseException:
+        try:
+            await conn.close()
+        except BaseException:
+            pass  # Failed initialization remains the primary error.
+        raise
     return conn
 
 
@@ -1305,6 +1312,7 @@ async def apply_migrations(
     core_applied = False
     coordinator = await index_connection_factory()
     locked = False
+    primary_error: BaseException | None = None
     try:
         await _acquire_coordinator_lock(coordinator)
         locked = True
@@ -1331,10 +1339,27 @@ async def apply_migrations(
                 )
                 core_applied = True
         indexes_applied = await _apply_concurrent_indexes(coordinator)
+    except BaseException as exc:
+        primary_error = exc
+        raise
     finally:
-        if locked:
-            await coordinator.execute("select pg_advisory_unlock(%s)", (INDEX_MIGRATION_LOCK_ID,))
-        await coordinator.close()
+        try:
+            if locked:
+                await coordinator.execute(
+                    "select pg_advisory_unlock(%s)", (INDEX_MIGRATION_LOCK_ID,)
+                )
+        except BaseException as exc:
+            if primary_error is None:
+                primary_error = exc
+                raise
+        finally:
+            # Closing the owned session must still be attempted if unlock fails.
+            # Preserve the first failure, including migration cancellation.
+            try:
+                await coordinator.close()
+            except BaseException:
+                if primary_error is None:
+                    raise
     return {
         "status": "applied" if core_applied or indexes_applied else "current",
         "version": TARGET_SCHEMA_VERSION,
