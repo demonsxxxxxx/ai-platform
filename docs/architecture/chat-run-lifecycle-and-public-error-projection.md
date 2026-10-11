@@ -532,3 +532,21 @@ client-state and fault-isolation scenarios. Source and local tests do not prove
 SDK timing, API replicas, proxy flushes, deployed browser behavior or provider
 cleanup. Those remain under [SSE acceptance](../operations/redis-streams-sse-cutover-acceptance.md)
 and the release runbook. No source cleanup authorizes a weaker public projection.
+
+
+## Administrator tool-diagnostic correlation
+
+Public tool events retain opaque `operation_id` values owned by Execution. The
+Execution public API `public_tool_operation_id` is the sole owner of deriving a
+tool operation from the Run and native SDK invocation identity; the event adapter
+and the bootstrap-injected diagnostic read projection use that same function.
+
+Runs adds optional `operation_id` only to sanitized administrator diagnostic
+responses. Persisted private evidence and its budgets remain unchanged, and
+historical native invocation records gain correlation at read time. Native IDs
+stay in the private administrator response, never the ordinary-user event.
+Different tool names sharing one invocation ID are ambiguous and receive no
+new correlation key. The Run Monitor indexes explicit public and legacy native
+aliases, excludes blank keys and conflicting tool identities, and performs no
+hash reconstruction. This repair neither restores raw tool input/failure text
+nor changes authorization, failure classification or retry behavior.

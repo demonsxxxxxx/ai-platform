@@ -78,6 +78,7 @@ from app.execution.application.claude_agent_events import (
     ClaudeAgentEventCandidate,
     ClaudeSdkAgentEventAdapter,
     runtime_terminal_payload,
+    public_tool_operation_id as public_tool_operation_id,
 )
 from app.execution.domain.model_text_checkpoint import ModelTextCheckpoint as ModelTextCheckpoint
 from app.execution.application.stale_terminalization import (

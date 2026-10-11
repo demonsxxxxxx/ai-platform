@@ -57,14 +57,20 @@ def api_key_fingerprint(api_key: str) -> str:
     return hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:16]
 
 
-def validate_endpoint(base_url: str, *, allowed_internal_hosts: str = "") -> ValidatedEndpoint:
+def normalize_endpoint_url(base_url: str) -> str:
+    """Canonicalize a model origin without DNS or network-policy approval."""
     normalized = base_url.strip().rstrip("/")
     if not normalized or len(normalized) > 2048 or any(char in normalized for char in "\r\n\x00"):
         raise ModelConnectionSecurityError("model_connection_endpoint_invalid")
-    parsed = urlsplit(normalized)
+    try:
+        parsed = urlsplit(normalized)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError as exc:
+        raise ModelConnectionSecurityError("model_connection_endpoint_invalid") from exc
     if (
         parsed.scheme not in {"http", "https"}
-        or not parsed.hostname
+        or not hostname
         or parsed.username is not None
         or parsed.password is not None
         or parsed.query
@@ -73,18 +79,26 @@ def validate_endpoint(base_url: str, *, allowed_internal_hosts: str = "") -> Val
         raise ModelConnectionSecurityError("model_connection_endpoint_invalid")
     if parsed.path.rstrip("/") not in {"", "/v1"}:
         raise ModelConnectionSecurityError("model_connection_endpoint_must_be_origin")
-    hostname = parsed.hostname.rstrip(".").lower()
+    hostname = hostname.rstrip(".").lower()
+    default_port = 443 if parsed.scheme == "https" else 80
+    port = default_port if port is None else port
+    if not 1 <= port <= 65535:
+        raise ModelConnectionSecurityError("model_connection_endpoint_invalid")
+    authority_host = f"[{hostname}]" if ":" in hostname else hostname
+    authority = authority_host if port == default_port else f"{authority_host}:{port}"
+    return f"{parsed.scheme}://{authority}"
+
+
+def validate_endpoint(base_url: str, *, allowed_internal_hosts: str = "") -> ValidatedEndpoint:
+    normalized = normalize_endpoint_url(base_url)
+    parsed = urlsplit(normalized)
+    hostname = parsed.hostname or ""
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
     allowed_hosts = {
         item.strip().rstrip(".").lower()
         for item in allowed_internal_hosts.split(",")
         if item.strip()
     }
-    try:
-        port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    except ValueError as exc:
-        raise ModelConnectionSecurityError("model_connection_endpoint_invalid") from exc
-    if not 1 <= port <= 65535:
-        raise ModelConnectionSecurityError("model_connection_endpoint_invalid")
     try:
         resolved = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
     except OSError as exc:
@@ -101,11 +115,8 @@ def validate_endpoint(base_url: str, *, allowed_internal_hosts: str = "") -> Val
             raise ModelConnectionSecurityError("model_connection_endpoint_forbidden")
     if parsed.scheme != "https" and not internal_allowed:
         raise ModelConnectionSecurityError("model_connection_https_required")
-    default_port = 443 if parsed.scheme == "https" else 80
-    authority_host = f"[{hostname}]" if ":" in hostname else hostname
-    authority = authority_host if port == default_port else f"{authority_host}:{port}"
     return ValidatedEndpoint(
-        base_url=f"{parsed.scheme}://{authority}",
+        base_url=normalized,
         hostname=hostname,
         port=port,
         scheme=parsed.scheme,
@@ -132,5 +143,5 @@ def _decode_encryption_key(encoded_key: str) -> bytes:
 
 
 class ModelEndpointSecurityAdapter:
-    validate = staticmethod(validate_endpoint)
+    normalize = staticmethod(normalize_endpoint_url)
     fingerprint = staticmethod(api_key_fingerprint)
