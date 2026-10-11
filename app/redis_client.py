@@ -109,6 +109,13 @@ async def close_redis_client() -> None:
         entry.state = "closing"
     try:
         await entry.client.aclose()
+    except asyncio.CancelledError:
+        # Keep the same poisoned pool available only to a later cleanup owner.
+        # Cancellation is not evidence that its physical close completed.
+        with _clients_lock:
+            if _clients.get(loop) is entry:
+                entry.state = "close_failed"
+        raise
     except Exception as exc:
         with _clients_lock:
             if _clients.get(loop) is entry:

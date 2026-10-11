@@ -7,7 +7,7 @@ from app import auth_sessions, queue, redis_client
 
 
 class FakeRedis:
-    def __init__(self, *, close_error: Exception | None = None):
+    def __init__(self, *, close_error: BaseException | None = None):
         self.connection_pool = object()
         self.close_calls = 0
         self.close_error = close_error
@@ -164,3 +164,162 @@ async def test_api_lifespan_closes_redis_then_database_even_if_redis_close_fails
             calls.append("app")
 
     assert calls == ["app", "stream_runtime", "redis", "database"]
+
+
+class BlockingCloseRedis(FakeRedis):
+    def __init__(self):
+        super().__init__()
+        self.close_started = asyncio.Event()
+        self.finish_close = asyncio.Event()
+        self.active_closes = 0
+        self.max_active_closes = 0
+
+    async def aclose(self):
+        self.close_calls += 1
+        self.active_closes += 1
+        self.max_active_closes = max(self.max_active_closes, self.active_closes)
+        self.close_started.set()
+        try:
+            await self.finish_close.wait()
+        finally:
+            self.active_closes -= 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancellations", [1, 2])
+async def test_cancelled_close_keeps_same_client_for_exclusive_cleanup_retry(monkeypatch, cancellations):
+    client = BlockingCloseRedis()
+    created = []
+
+    def from_url(*_args, **_kwargs):
+        created.append(client if not created else FakeRedis())
+        return created[-1]
+
+    monkeypatch.setattr(redis_client.Redis, "from_url", from_url)
+    handle = redis_client.get_redis_client()
+    old_ping = handle.ping
+    entry = redis_client._clients[asyncio.get_running_loop()]
+
+    for _ in range(cancellations):
+        client.close_started.clear()
+        closing = asyncio.create_task(redis_client.close_redis_client())
+        try:
+            await asyncio.wait_for(client.close_started.wait(), timeout=1)
+            with pytest.raises(redis_client.RedisClientUnavailable):
+                await redis_client.close_redis_client()
+            with pytest.raises(redis_client.RedisClientUnavailable):
+                redis_client.get_redis_client()
+            closing.cancel("shutdown deadline")
+            with pytest.raises(asyncio.CancelledError, match="shutdown deadline"):
+                await closing
+        finally:
+            if not closing.done():
+                closing.cancel()
+            await asyncio.gather(closing, return_exceptions=True)
+
+        assert redis_client._clients[asyncio.get_running_loop()] is entry
+        assert entry.state == "close_failed"
+        assert client.active_closes == 0
+        with pytest.raises(redis_client.RedisClientUnavailable):
+            redis_client.get_redis_client()
+        with pytest.raises(redis_client.RedisClientUnavailable):
+            await old_ping()
+        assert len(created) == 1
+
+    client.finish_close.set()
+    await redis_client.close_redis_client()
+    assert client.close_calls == cancellations + 1
+    assert client.max_active_closes == 1
+    assert asyncio.get_running_loop() not in redis_client._clients
+    with pytest.raises(redis_client.RedisClientUnavailable):
+        await old_ping()
+    replacement = redis_client.get_redis_client()
+    assert replacement.connection_pool is not client.connection_pool
+    assert len(created) == 2
+    await redis_client.close_redis_client()
+    await redis_client.close_redis_client()
+    assert created[1].close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_close_retries_same_client_before_rebuilding(monkeypatch):
+    client = FakeRedis(close_error=RuntimeError("synthetic close failure"))
+    monkeypatch.setattr(redis_client.Redis, "from_url", lambda *_args, **_kwargs: client)
+    handle = redis_client.get_redis_client()
+    with pytest.raises(redis_client.RedisClientCloseError):
+        await redis_client.close_redis_client()
+    with pytest.raises(redis_client.RedisClientUnavailable):
+        await handle.ping()
+    client.close_error = None
+    await redis_client.close_redis_client()
+    assert client.close_calls == 2
+    with pytest.raises(redis_client.RedisClientUnavailable):
+        await handle.ping()
+
+
+def test_cancelled_close_does_not_poison_another_loop(monkeypatch):
+    clients = [FakeRedis(close_error=asyncio.CancelledError()), FakeRedis()]
+    monkeypatch.setattr(redis_client.Redis, "from_url", lambda *_args, **_kwargs: clients.pop(0))
+    first_loop = asyncio.new_event_loop()
+    second_loop = asyncio.new_event_loop()
+
+    async def acquire():
+        return redis_client.get_redis_client()
+
+    async def ping(handle):
+        return await handle.ping()
+
+    try:
+        first = first_loop.run_until_complete(acquire())
+        with pytest.raises(asyncio.CancelledError):
+            first_loop.run_until_complete(redis_client.close_redis_client())
+        second = second_loop.run_until_complete(acquire())
+        assert second_loop.run_until_complete(ping(second)) is True
+        second_loop.run_until_complete(redis_client.close_redis_client())
+        assert redis_client._clients[first_loop] is first._entry
+        first._entry.client.close_error = None
+        first_loop.run_until_complete(redis_client.close_redis_client())
+        assert not redis_client._clients
+    finally:
+        first_loop.close()
+        second_loop.close()
+
+
+@pytest.mark.asyncio
+async def test_repeated_cancellation_during_close_unwind_retains_cleanup_owner(monkeypatch):
+    unwinding = asyncio.Event()
+
+    class UnwindingRedis(FakeRedis):
+        async def aclose(self):
+            self.close_calls += 1
+            if self.close_calls > 1:
+                return
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                unwinding.set()
+                await asyncio.Event().wait()
+                raise
+
+    client = UnwindingRedis()
+    monkeypatch.setattr(redis_client.Redis, "from_url", lambda *_args, **_kwargs: client)
+    redis_client.get_redis_client()
+    closing = asyncio.create_task(redis_client.close_redis_client())
+    try:
+        # Let aclose enter its first suspension before cancelling its owner.
+        await asyncio.sleep(0)
+        closing.cancel("first cancel")
+        await asyncio.wait_for(unwinding.wait(), timeout=1)
+        with pytest.raises(redis_client.RedisClientUnavailable):
+            await redis_client.close_redis_client()
+        assert client.close_calls == 1
+        closing.cancel("second cancel")
+        with pytest.raises(asyncio.CancelledError, match="second cancel"):
+            await closing
+        await redis_client.close_redis_client()
+        assert client.close_calls == 2
+        assert not redis_client._clients
+    finally:
+        if not closing.done():
+            closing.cancel()
+        await asyncio.gather(closing, return_exceptions=True)
