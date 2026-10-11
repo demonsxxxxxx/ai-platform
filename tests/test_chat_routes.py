@@ -2150,7 +2150,7 @@ def test_queue_payload_invalid_detail_is_field_level_and_redacted():
     assert exc_info.value.status_code == 500
     detail = exc_info.value.detail
     assert detail["code"] == "queue_payload_invalid"
-    assert detail["submission_disposition"] == "rejected_before_persist"
+    assert "submission_disposition" not in detail
     assert detail["errors"] == [
         {
             "loc": [],
@@ -2179,7 +2179,6 @@ def test_queue_payload_invalid_detail_sanitizes_validation_messages():
 
     assert detail == {
         "code": "queue_payload_invalid",
-        "submission_disposition": "rejected_before_persist",
         "errors": [
             {
                 "loc": ["input", "field"],
@@ -2193,6 +2192,24 @@ def test_queue_payload_invalid_detail_sanitizes_validation_messages():
     assert "loc-secret" not in serialized
     assert "/var/lib/ai-platform/private/run.log" not in serialized
     assert "/var/lib/ai-platform/private/type.log" not in serialized
+
+
+@pytest.mark.parametrize("error", [ValueError("token=private-value"), ValueError()])
+def test_queue_payload_invalid_detail_without_field_errors_is_phase_neutral(error):
+    assert queue_payload_invalid_detail(error) == {"code": "queue_payload_invalid"}
+
+
+def test_queue_payload_invalid_detail_keeps_existing_public_error_budget():
+    class ManyErrors(ValueError):
+        def errors(self):
+            return [{"loc": ("x" * 200, i), "type": "y" * 200, "msg": "z" * 400}
+                    for i in range(12)]
+
+    detail = queue_payload_invalid_detail(ManyErrors())
+    assert "submission_disposition" not in detail
+    assert len(detail["errors"]) == 8
+    for i, error in enumerate(detail["errors"]):
+        assert error == {"loc": ["x" * 120, i], "type": "y" * 120, "message": "z" * 240}
 
 
 class EmptyBuiltinRegistry:
@@ -4548,6 +4565,9 @@ async def test_chat_stream_revalidates_preserved_continuation_skill_for_current_
         ("7ea93033-30f5-40ea-8a33-2f3c6e7b21c4", False, False, None),
         (None, True, False, None),
         ("7ea93033-30f5-40ea-8a33-2f3c6e7b21c4", True, False, None),
+        (None, False, False, "invalid_before_commit"),
+        ("7ea93033-30f5-40ea-8a33-2f3c6e7b21c4", False, False, "invalid_before_commit"),
+        ("7ea93033-30f5-40ea-8a33-2f3c6e7b21c4", False, False, "invalid_after_commit"),
         (None, False, False, "before_publish"),
         (None, False, False, "definitive_rejection"),
         ("8f2cf18b-e414-4ddd-b99e-c21c32d4f086", False, True, None),
@@ -4564,6 +4584,9 @@ async def test_chat_stream_revalidates_preserved_continuation_skill_for_current_
         "keyed",
         "unkeyed-rollback",
         "keyed-rollback",
+        "unkeyed-invalid-before-commit",
+        "keyed-invalid-before-commit",
+        "keyed-invalid-after-commit",
         "unkeyed-publish-failure",
         "unkeyed-definitive-rejection",
         "restored-continuation",
@@ -4776,6 +4799,8 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
 
     async def claim_submission(conn, **kwargs):
         calls.append("claim")
+        if conn.submission is not None:
+            return conn.submission, False
         conn.submission = {
             "submission_id": kwargs["submission_id"],
             "request_fingerprint_sha256": kwargs["request_fingerprint_sha256"],
@@ -4788,6 +4813,12 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         return conn.submission
 
     async def get_run(conn, **_kwargs):
+        assert _kwargs["tenant_id"] == "tenant-a"
+        assert _kwargs["user_id"] == "user-a"
+        if enqueue_failure_mode == "invalid_after_commit":
+            assert committed_run is not None
+            # Synthetic historical snapshot incompatible with the current DTO.
+            return {**conn.run, "input_json": {**conn.run["input_json"], "model_id": "../private/model"}}
         return conn.run
 
     async def finalize_submission(conn, **kwargs):
@@ -4938,6 +4969,16 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         lambda kind: "ses-profile-lock-order" if kind == "ses" else "run-profile-lock-order",
     )
 
+    if enqueue_failure_mode == "invalid_before_commit":
+        original_validate = _validate_queue_payload_for_enqueue
+
+        def invalid_final_payload(payload):
+            if payload.get("context_snapshot_id"):
+                payload = {**payload, "model_id": "../private/model"}
+            return original_validate(payload)
+
+        monkeypatch.setattr("app.routes.chat._validate_queue_payload_for_enqueue", invalid_final_payload)
+
     request_payload = {
         "message": "run the selected Agent",
         "agent_options": {"enable_thinking": "off"},
@@ -4961,6 +5002,33 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         assert committed_run is None
         assert "create_run" not in calls
         assert "enqueue" not in calls
+        return
+
+    if enqueue_failure_mode in {"invalid_before_commit", "invalid_after_commit"}:
+        with pytest.raises(HTTPException) as exc_info:
+            await chat_stream(chat_request, agent_id=query_agent_id, principal=principal())
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.detail["code"] == "queue_payload_invalid"
+        assert "../private/model" not in str(exc_info.value.detail)
+        assert "enqueue" not in calls
+        if enqueue_failure_mode == "invalid_before_commit":
+            assert exc_info.value.detail["submission_disposition"] == "rejected_before_persist"
+            assert committed_run is None
+            assert committed_submission["state"] == "rejected_before_persist"
+        else:
+            assert "submission_disposition" not in exc_info.value.detail
+            assert committed_run["status"] == "queued"
+            assert committed_submission["state"] == "accepted_pending_enqueue"
+            with pytest.raises(HTTPException) as retry_info:
+                await retry_chat_submission_admission(
+                    submission_id=submission_id, response=Response(), principal=principal(),
+                )
+            assert retry_info.value.detail == exc_info.value.detail
+            assert retry_info.value.headers["Cache-Control"] == "private, no-store"
+            assert committed_run["status"] == "queued"
+            assert committed_submission["state"] == "accepted_pending_enqueue"
+            assert calls.count("create_run") == 1
+            assert "enqueue" not in calls
         return
 
     if force_creation_rollback:

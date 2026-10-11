@@ -325,6 +325,16 @@ malformed HTTP success response is outcome-unknown: preserve the submission
 recovery fence and confirm history/status before any resubmission. Diagnostic
 identifiers are accepted only in their existing bounded format.
 
+Queue DTO error projection is phase-neutral: `queue_payload_invalid` and its
+bounded, redacted field errors describe a shape failure, not absence of durable
+work. Only Chat's rolled-back creation transaction may add
+`submission_disposition: rejected_before_persist`. Rebuilding an already
+committed Chat submission or retry/resume child must retain its durable identity;
+an invalid frozen payload remains rejected, and Run control GET reports unknown
+queue admission. Explicit Chat retry errors keep the existing recovery fence,
+including errors from older servers that still attach the former label. No
+snapshot repair, state transition, or new retry authority is implied.
+
 This replaces blanket SDK-upstream attribution and blanket admission
 login/fix-input guidance. Historical `claude_agent_sdk_upstream_error` remains
 a compatibility input because persisted records lack evidence for retrospective

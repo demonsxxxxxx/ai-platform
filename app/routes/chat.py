@@ -2119,6 +2119,10 @@ async def chat_stream(
             )
         if submission_id is not None and rejected_before_persist:
             raise _chat_submission_http_error(status_code=exc.status_code, code=code) from exc
+        if code == _QUEUE_PAYLOAD_INVALID_CODE:
+            # This creation transaction rolled back. Shared DTO validation also
+            # serves committed recovery, so only this owner can attest absence.
+            exc.detail = {**exc.detail, "submission_disposition": "rejected_before_persist"}
         raise
     except platform_errors.RepositoryAuthorizationError as exc:
         await _audit_capability_denial(principal, exc, source="chat_stream")
