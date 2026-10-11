@@ -1,4 +1,5 @@
 import type {
+  AdminRunDiagnosticToolEvidence,
   AdminRunDiagnosticsResponse,
   AdminRunEvent,
   AdminRunSummary,
@@ -546,4 +547,25 @@ export function buildAdminRunMonitorView(
     modelOutput,
     rawEventCount: events.length,
   };
+}
+
+export function indexToolDiagnosticEvidence(evidence: AdminRunDiagnosticToolEvidence[]) {
+  const indexed = new Map<string, AdminRunDiagnosticToolEvidence>();
+  const conflicts = new Set<string>();
+  for (const item of evidence) {
+    // Public operations and legacy native-ID actions remain separate aliases.
+    for (const key of new Set([item.operation_id, item.invocation_id])) {
+      if (!key || !key.trim() || conflicts.has(key)) continue;
+      const previous = indexed.get(key);
+      if (previous && (previous.tool_name !== item.tool_name
+        || previous.invocation_id !== item.invocation_id
+        || previous.operation_id !== item.operation_id)) {
+        indexed.delete(key);
+        conflicts.add(key);
+      } else {
+        indexed.set(key, item);
+      }
+    }
+  }
+  return indexed;
 }

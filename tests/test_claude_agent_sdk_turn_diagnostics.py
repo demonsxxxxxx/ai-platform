@@ -7,12 +7,14 @@ from typing import Any
 
 import pytest
 
+from tests.support.claude_mcp import install_mcp_sessions
 from tests.support.claude_sdk import native_client_factory
 
 from app.executors.claude_agent_sdk_runner import (
     project_sdk_turn_diagnostics,
     run_claude_agent_sdk,
 )
+from app.required_tool_contract import with_sandbox_local_tool_capability_subjects
 from app.runs.domain.diagnostics import sanitize_runtime_diagnostics
 from app.sandbox.domain.runtime_diagnostics import (
     SDK_RUNTIME_DIAGNOSTICS_MAX_BYTES,
@@ -914,3 +916,302 @@ async def test_native_error_result_keeps_status_without_changing_public_failure(
     assert result.runtime_diagnostics["sdk"]["api_error_status"] == status
     assert "api_error_status" not in str(result.turn_diagnostics)
     assert "private upstream detail" not in str(result.turn_diagnostics)
+
+
+@pytest.fixture(params=["Read", "mcp__diagnostic-server__search", "Skill"])
+def diagnostic_tool(request, monkeypatch, tmp_path):
+    tool_name = request.param
+    facts = []
+
+    async def acknowledge(fact):
+        facts.append(fact)
+        return True
+
+    arguments = {
+        "skill_id": None,
+        "skills": [],
+        "on_capability_evidence": acknowledge,
+        "on_tool_lifecycle": acknowledge,
+    }
+    tool_input = {"file_path": str(tmp_path / "document.txt")}
+    if tool_name == "Skill":
+        tool_input = {"skill": "review-skill"}
+        arguments.update(skill_id="review-skill", skills=["review-skill"])
+    elif tool_name == "Read":
+        arguments.update(
+            execution_policy="sandbox_brokered",
+            tool_policy_subjects=with_sandbox_local_tool_capability_subjects(
+                [], sandbox_provider="opensandbox",
+                authorized_sandbox_tool_identities=["Read"],
+            ),
+        )
+    elif tool_name.startswith("mcp__"):
+        install_mcp_sessions(monkeypatch)
+        tool_input = {}
+        arguments.update(
+            execution_policy="sandbox_brokered",
+            tool_policy_subjects=[{
+                "identity": tool_name,
+                "mcp_server": "diagnostic-server",
+                "mcp_tool": "search",
+                "registered": True,
+                "declared": True,
+                "active": True,
+                "distributed": True,
+                "identity_authorized": True,
+                "object_authorized": True,
+                "parameters_authorized": True,
+                "allowed_parameter_keys": ["padding"],
+                "required_parameter_keys": [],
+                "risk_level": "low",
+                "write_capable": False,
+                "mcp_server_config": {
+                    "type": "http", "url": "https://synthetic.invalid/mcp",
+                },
+            }],
+        )
+    return tool_name, tool_input, arguments, facts
+
+
+async def _dispatch_diagnostic_hook(options, hook_name, hook_input):
+    tool_name = hook_input["tool_name"]
+    matcher_name = (
+        "Skill" if tool_name == "Skill"
+        else "mcp__*" if tool_name.startswith("mcp__")
+        else None
+    )
+    results = []
+    for matcher in options.kwargs["hooks"][hook_name]:
+        if matcher.matcher is None or matcher.matcher == matcher_name:
+            for hook in matcher.hooks:
+                results.append(await hook(hook_input, hook_input["tool_use_id"], {}))
+    assert results
+    return results
+
+
+_MISSING_INTERRUPT = object()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("interrupt", [
+    True, False, pytest.param(_MISSING_INTERRUPT, id="missing"), None, 1, 0, "true",
+])
+async def test_native_tool_abort_flag_survives_large_failure_without_public_classification(
+    monkeypatch, tmp_path, diagnostic_tool, interrupt,
+):
+    from claude_agent_sdk.types import PostToolUseFailureHookInput
+
+    tool_name, tool_input, arguments, facts = diagnostic_tool
+
+    async def query(prompt, options):
+        hook = PostToolUseFailureHookInput(
+            session_id="synthetic-session", cwd="/synthetic", transcript_path="/synthetic/transcript",
+            hook_event_name="PostToolUseFailure", tool_name=tool_name, tool_use_id="native-abort-call",
+            tool_input={**tool_input, "padding": "PRIVATE_MARKER" * 1000},
+            error="PRIVATE_MARKER" * 1000,
+        )
+        if interrupt is not _MISSING_INTERRUPT:
+            hook["is_interrupt"] = interrupt
+        admission = await _dispatch_diagnostic_hook(options, "PreToolUse", hook)
+        assert admission[0]["hookSpecificOutput"]["permissionDecision"] == "allow"
+        await _dispatch_diagnostic_hook(options, "PostToolUseFailure", hook)
+        raise RuntimeError("synthetic failure")
+        yield
+
+    _install_sdk(monkeypatch, query)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+    result = await run_claude_agent_sdk(
+        prompt="review", cwd=tmp_path, **arguments,
+    )
+    assert result.error == "claude_agent_sdk_execution_failed"
+    assert result.turn_diagnostics["terminal_class"] == "execution_failure"
+    assert result.turn_diagnostics["counters"]["tool_admission_denials"] == 0
+    assert result.turn_diagnostics["counters"]["tool_lifecycle_denials"] == 0
+    assert len(facts) == 2
+    call = next(
+        call for call in result.runtime_diagnostics["tool_calls"]
+        if call["tool_name"] == tool_name
+    )
+    assert call["last_stage"] == "failed"
+    assert call["failure"]["truncated"] is True
+    if type(interrupt) is bool:
+        assert call["is_interrupt"] is interrupt
+    else:
+        assert "is_interrupt" not in call
+    private = sanitize_runtime_diagnostics(result.runtime_diagnostics)
+    private_call = next(call for call in private["tool_calls"] if call["tool_name"] == tool_name)
+    assert ("is_interrupt" in private_call) is (type(interrupt) is bool)
+    if type(interrupt) is bool:
+        assert private_call["is_interrupt"] is interrupt
+    assert "PRIVATE_MARKER" not in str(private)
+    assert "is_interrupt" not in str(result.turn_diagnostics)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("next_event", "next_fields", "expected_interrupt"),
+    [
+        ("PostToolUseFailure", {"is_interrupt": False}, False),
+        ("PostToolUseFailure", {}, None),
+        ("PostToolUseFailure", {"is_interrupt": 1}, None),
+        ("PostToolUseFailure", {"is_interrupt": True, "hook_event_name": "PostToolUse"}, None),
+        ("PostToolUse", {"is_interrupt": True}, None),
+    ],
+)
+async def test_native_tool_abort_replaced_only_by_new_outcome(
+    monkeypatch, tmp_path, diagnostic_tool, next_event, next_fields, expected_interrupt,
+):
+    tool_name, tool_input, arguments, facts = diagnostic_tool
+
+    async def query(prompt, options):
+        hook = {
+            "tool_name": tool_name, "tool_use_id": "native-abort-call",
+            "tool_input": tool_input, "hook_event_name": "PostToolUseFailure",
+            "error": "synthetic failure", "is_interrupt": True,
+        }
+        await _dispatch_diagnostic_hook(options, "PreToolUse", hook)
+        await _dispatch_diagnostic_hook(options, "PostToolUseFailure", hook)
+        updated = {
+            key: value for key, value in hook.items() if key != "is_interrupt"
+        }
+        updated.update({"hook_event_name": next_event, **next_fields})
+        await _dispatch_diagnostic_hook(options, next_event, updated)
+        raise RuntimeError("synthetic failure")
+        yield
+
+    _install_sdk(monkeypatch, query)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+    result = await run_claude_agent_sdk(prompt="review", cwd=tmp_path, **arguments)
+
+    # Diagnostic replacement does not admit an invalid repeated terminal fact.
+    assert len(facts) == 2
+    call = next(
+        call for call in result.runtime_diagnostics["tool_calls"]
+        if call["tool_name"] == tool_name
+    )
+    assert call["last_stage"] == ("completed" if next_event == "PostToolUse" else "failed")
+    if expected_interrupt is None:
+        assert "is_interrupt" not in call
+    else:
+        assert call["is_interrupt"] is expected_interrupt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("retry_event", ["PostToolUse", "PostToolUseFailure"])
+@pytest.mark.parametrize("successful_terminal", [False, True])
+async def test_native_tool_abort_does_not_leak_to_retry_or_next_attempt(
+    monkeypatch, tmp_path, diagnostic_tool, retry_event, successful_terminal,
+):
+    tool_name, tool_input, arguments, _facts = diagnostic_tool
+    attempts = 0
+
+    async def query(prompt, options):
+        nonlocal attempts
+        attempts += 1
+        hook = {
+            "tool_name": tool_name, "tool_use_id": "native-abort-call",
+            "tool_input": tool_input, "hook_event_name": "PostToolUseFailure",
+            "error": "synthetic failure",
+        }
+        if attempts == 1:
+            await _dispatch_diagnostic_hook(options, "PreToolUse", hook)
+            await _dispatch_diagnostic_hook(
+                options, "PostToolUseFailure", {**hook, "is_interrupt": True},
+            )
+            hook["tool_use_id"] = "native-retry-call"
+        admission = await _dispatch_diagnostic_hook(options, "PreToolUse", hook)
+        assert admission[0]["hookSpecificOutput"]["permissionDecision"] == "allow"
+        await _dispatch_diagnostic_hook(
+            options, retry_event, {**hook, "hook_event_name": retry_event},
+        )
+        if not successful_terminal:
+            raise RuntimeError("synthetic failure")
+        yield sdk.AssistantMessage([sdk.TextBlock("done")])
+        yield sdk.ResultMessage()
+
+    sdk = _install_sdk(monkeypatch, query)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+    first = await run_claude_agent_sdk(
+        prompt="review", cwd=tmp_path, run_id="synthetic-run", attempt_id="attempt-1",
+        **arguments,
+    )
+    second = await run_claude_agent_sdk(
+        prompt="review", cwd=tmp_path, run_id="synthetic-run", attempt_id="attempt-2",
+        **arguments,
+    )
+
+    if not successful_terminal:
+        first_calls = {
+            call["invocation_id"]: call for call in first.runtime_diagnostics["tool_calls"]
+            if call["tool_name"] == tool_name
+        }
+        assert first_calls["native-abort-call"]["is_interrupt"] is True
+        assert "is_interrupt" not in first_calls["native-retry-call"]
+        assert all("is_interrupt" not in call for call in second.runtime_diagnostics["tool_calls"])
+    for result in (first, second):
+        if successful_terminal:
+            assert result.error is None
+            assert result.terminal_reason == "completed"
+            assert result.turn_diagnostics["terminal_class"] == "completed"
+        else:
+            assert result.error == "claude_agent_sdk_execution_failed"
+            assert result.turn_diagnostics["terminal_class"] == "execution_failure"
+        assert result.turn_diagnostics["counters"]["tool_admission_denials"] == 0
+        assert result.turn_diagnostics["counters"]["tool_lifecycle_denials"] == 0
+        assert "is_interrupt" not in str(result.turn_diagnostics)
+
+
+@pytest.mark.asyncio
+async def test_native_tool_abort_does_not_change_cancellation_propagation(
+    monkeypatch, tmp_path, diagnostic_tool,
+):
+    tool_name, tool_input, arguments, _facts = diagnostic_tool
+
+    async def query(prompt, options):
+        hook = {
+            "tool_name": tool_name, "tool_use_id": "native-abort-call",
+            "tool_input": tool_input, "hook_event_name": "PostToolUseFailure",
+            "error": "synthetic failure", "is_interrupt": True,
+        }
+        await _dispatch_diagnostic_hook(options, "PreToolUse", hook)
+        await _dispatch_diagnostic_hook(options, "PostToolUseFailure", hook)
+        raise asyncio.CancelledError()
+        yield
+
+    _install_sdk(monkeypatch, query)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+    with pytest.raises(asyncio.CancelledError):
+        await run_claude_agent_sdk(prompt="review", cwd=tmp_path, **arguments)
+
+
+@pytest.mark.parametrize("interrupt", [True, False, None, 1, 0, "true", [], {"private": "MARKER"}])
+def test_tool_abort_scalar_is_strict_and_private_at_each_boundary(interrupt):
+    from app.runs.domain.diagnostics import sanitize_runtime_diagnostics
+
+    raw = {"schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION, "error_code": "failed", "tool_calls": [{
+        "tool_name": "Read", "invocation_id": "native-call", "last_stage": "failed", "is_interrupt": interrupt,
+    }]}
+    normalized = normalize_sdk_runtime_diagnostics(raw)
+    private = sanitize_runtime_diagnostics(normalized)
+    direct = sanitize_runtime_diagnostics(raw)
+    for payload in (normalized, private, direct):
+        assert ("is_interrupt" in payload["tool_calls"][0]) is (type(interrupt) is bool)
+        if type(interrupt) is bool:
+            assert payload["tool_calls"][0]["is_interrupt"] is interrupt
+    assert sanitize_runtime_diagnostics(private) == private
+    assert normalize_sdk_runtime_diagnostics(normalized) == normalized
+
+
+def test_completed_tool_does_not_retain_stale_abort_and_budget_remains_bounded(monkeypatch):
+    from app.runs.domain.diagnostics import sanitize_runtime_diagnostics
+
+    raw = {"schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION, "error_code": "failed", "tool_calls": [{
+        "tool_name": "Read", "invocation_id": "native-call", "last_stage": "completed", "is_interrupt": True,
+    }]}
+    assert "is_interrupt" not in normalize_sdk_runtime_diagnostics(raw)["tool_calls"][0]
+    assert "is_interrupt" not in sanitize_runtime_diagnostics(raw)["tool_calls"][0]
+    raw["tool_calls"] = [{"tool_name": "Read", "invocation_id": f"native-{i}", "last_stage": "failed", "is_interrupt": True} for i in range(20)]
+    normalized = normalize_sdk_runtime_diagnostics(raw)
+    assert len(normalized["tool_calls"]) <= 8
+    assert all(call["is_interrupt"] is True for call in normalized["tool_calls"])
+    assert len(json.dumps(normalized).encode()) <= 128 * 1024
