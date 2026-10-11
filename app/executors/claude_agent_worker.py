@@ -778,7 +778,6 @@ class ClaudeAgentWorkerAdapter:
         runtime_context_manifest["queue_attempt_id"] = payload.attempt_id
         adapter_reconciliation_context = {
             "schema_version": "ai-platform.claude-agent-reconciliation-context.v1",
-            "run_payload": execution_api.sandbox_reconciliation_payload(payload),
             "workspace": str(prepared.workspace),
             "allowed_skill_names": list(prepared.allowed_skill_names),
             "staged_skill_names": list(prepared.staged_skill_names),

@@ -142,7 +142,12 @@ async def _no_attempt_lifecycle_operation(*_args, **_kwargs):
     return None
 
 
+async def _forbidden_receipt_restore(*_args, **_kwargs):
+    raise AssertionError("current authority denial must precede frozen receipt restoration")
+
+
 _TEST_ATTEMPT_LIFECYCLE = types.SimpleNamespace(
+    restore_reconciliation=_forbidden_receipt_restore,
     get=_no_attempt_lifecycle_operation,
     get_for_queue_attempt=_no_attempt_lifecycle_operation,
     start_worker=_no_attempt_lifecycle_operation,
