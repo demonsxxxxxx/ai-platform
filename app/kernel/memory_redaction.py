@@ -143,16 +143,21 @@ class SecretQuoteContinuation:
     quote: str
     escaped: bool = False
 
-    def consume(self, value: str) -> tuple[int, SecretQuoteContinuation | None]:
+    def consume(
+        self, value: str, *, start: int = 0
+    ) -> tuple[int, SecretQuoteContinuation | None]:
+        """Return characters consumed from start without copying the suffix."""
+
         escaped = self.escaped
-        for index, character in enumerate(value):
+        for index in range(start, len(value)):
+            character = value[index]
             if escaped:
                 escaped = False
             elif character == "\\":
                 escaped = True
             elif character == self.quote:
-                return index + 1, None
-        return len(value), SecretQuoteContinuation(self.quote, escaped)
+                return index - start + 1, None
+        return len(value) - start, SecretQuoteContinuation(self.quote, escaped)
 
 
 def _unfinished_secret_assignment(
@@ -169,7 +174,7 @@ def _unfinished_secret_assignment(
         quote = match.group("value_quote")
         if quote:
             consumed, continuation = SecretQuoteContinuation(quote).consume(
-                value[value_start:]
+                value, start=value_start
             )
             if continuation is not None:
                 return match.start(), continuation

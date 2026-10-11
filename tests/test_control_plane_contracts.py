@@ -536,3 +536,25 @@ def test_unfinished_quoted_secret_is_redacted_through_eof_by_shared_wrappers(mod
     assert redact_memory_metadata({"note": [body]}, mode=mode) == {"note": [expected]}
     assert sanitize_public_text(body) == expected
     assert sanitize_public_payload({"outer": [{"note": body}]}) == {"outer": [{"note": expected}]}
+
+
+@pytest.mark.parametrize("quote", ['"', "'"])
+@pytest.mark.parametrize("escaped", [False, True])
+def test_secret_quote_continuation_offset_matches_chunk_semantics_without_copy(quote, escaped):
+    from app.kernel.memory_redaction import (
+        SecretQuoteContinuation,
+        sanitizer_unstable_assignment_suffix_length,
+    )
+
+    class NoSuffixCopy(str):
+        def __getitem__(self, key):
+            assert not isinstance(key, slice), "quoted assignment scan copied a suffix"
+            return super().__getitem__(key)
+
+    state = SecretQuoteContinuation(quote, escaped)
+    prefix = "ignored prefix "
+    for suffix in ("", "alpha\\", quote + " after", "alpha\\" + quote + " bravo" + quote + " after"):
+        assert state.consume(NoSuffixCopy(prefix + suffix), start=len(prefix)) == state.consume(suffix)
+    assert sanitizer_unstable_assignment_suffix_length(
+        NoSuffixCopy((f"password={quote}synthetic{quote} " * 32)), max_chars=32,
+    ) == 0
