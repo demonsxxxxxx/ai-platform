@@ -60,6 +60,26 @@ controlled system channel. Claude does not receive `read_session_messages`.
 Provider IDs, transcript entries, callback credentials and storage/runtime details
 remain private. Public Context summaries expose counts and safe provenance.
 
+## Run Playback Context Window
+
+Run Playback reads the exact scoped Run-bound executor snapshot. An unavailable
+binding produces a `degraded` window; embedded Run input and the latest unbound
+snapshot are not fallback authorities. The frontend consumes only
+`context_ref.context_window`; the backend's top-level `context_window` mirror
+is not a second frontend source.
+
+The existing playback panel displays `complete`, `trimmed`, or `degraded`,
+nonnegative history candidate/authorized/omitted counts, the legacy-history
+exclusion flag, and up to eight safe selected-file basenames. Zero counts keep
+the window visible, including degraded fallback. These are snapshot metadata,
+not reconstructed model history or evidence that native transcript was lost.
+Missing windows, unknown status, or invalid counts produce a degraded display;
+invalid counts become zero placeholders and unsafe names are discarded. No raw snapshot, material IDs,
+Skill identifiers, runtime paths, tier/source/version provenance, or historical
+message bodies enter this projection. The superseded frontend provenance DTO,
+renderer, labels and fixtures are retired without rewriting stored snapshots.
+Run-control request ownership and supersession remain lifecycle-owned.
+
 ## Bounded Artifact Text Retrieval
 
 `read_run_artifact` authorizes the exact scoped artifact before storage access.

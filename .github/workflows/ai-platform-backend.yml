@@ -250,6 +250,7 @@ jobs:
               tests/test_platform_multi_agent_retirement.py
               tests/test_provider_epoch_authority.py
               tests/test_routes.py
+              tests/test_run_playback_context_window_contract.py
               tests/test_run_admission_terminalization.py
               tests/test_run_cancellation_use_case.py
               tests/test_run_control_routes.py
