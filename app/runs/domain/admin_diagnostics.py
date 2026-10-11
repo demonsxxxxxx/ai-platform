@@ -114,6 +114,27 @@ class AdminRunDiagnosticExecutorProtocol(TypedDict):
     canonical: AdminRunDiagnosticProtocolCanonical
 
 
+class AdminRunDiagnosticFrameObservation(TypedDict):
+    event_type: str
+    block_type: str
+    delta_type: str
+    message_state: str
+    open_block_type: str
+    index_state: str
+
+
+class AdminRunDiagnosticFrameShape(AdminRunDiagnosticFrameObservation):
+    guard: str
+
+
+class AdminRunDiagnosticProjectionFailure(TypedDict):
+    reason: str
+    stage: str
+    location: str
+    frame_shape: NotRequired[AdminRunDiagnosticFrameShape]
+    preceding_frames: NotRequired[list[AdminRunDiagnosticFrameObservation]]
+
+
 class AdminRunDiagnosticObservationEvidence(TypedDict):
     observation_id: str | None
     attempt_id: str | None
@@ -129,6 +150,7 @@ class AdminRunDiagnosticObservationEvidence(TypedDict):
     tool_calls: list[AdminRunDiagnosticToolEvidence]
     tool_policy_denials: list[AdminRunDiagnosticToolEvidence]
     executor_protocol: AdminRunDiagnosticExecutorProtocol | None
+    projection_failure: NotRequired[AdminRunDiagnosticProjectionFailure | None]
     normalization_losses: list[AdminRunDiagnosticLoss]
 
 
@@ -139,6 +161,7 @@ class AdminRunDiagnosticDetails(TypedDict):
     tool_calls: list[AdminRunDiagnosticToolEvidence]
     tool_policy_denials: list[AdminRunDiagnosticToolEvidence]
     executor_protocol: AdminRunDiagnosticExecutorProtocol | None
+    projection_failure: NotRequired[AdminRunDiagnosticProjectionFailure | None]
     observations: list[AdminRunDiagnosticObservationEvidence]
 
 
