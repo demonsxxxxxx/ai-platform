@@ -40,6 +40,7 @@ current SHAs, exceptions, and evidence results belong in the issue/PR.
 | SSE navigation and supersession | [SSE index](architecture/redis-streams-sse-event-channel.md) |
 | SSE bytes, identity, replay, and client acceptance | [SSE wire](architecture/redis-streams-sse-wire-protocol.md) |
 | Stream admission, direct publication, leases, and hydration | [SSE execution control](architecture/redis-streams-sse-execution-control.md) |
+| Browser-local theme and sidebar preferences | [Browser preferences](frontend/browser-local-preferences.md) |
 | Chat display and public terminal errors | [Chat projection](architecture/chat-run-lifecycle-and-public-error-projection.md) |
 | Dependency locks, image builds, and publication | [Packaging](architecture/docker-packaging.md) |
 

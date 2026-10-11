@@ -155,7 +155,7 @@ test("post-login shell removes legacy LambChat runtime identifiers", () => {
     read("src/components/layout/AppContent/WorkbenchMenuHost.tsx"),
   ].join("\n");
 
-  assert.match(auth, /SIDEBAR_COLLAPSED_STORAGE_KEY = "ai-platform-sidebar-collapsed"/);
+  assert.match(read("src/hooks/useSidebarPreference.ts"), /SIDEBAR_COLLAPSED_STORAGE_KEY = "ai-platform-sidebar-collapsed"/);
   assert.doesNotMatch(sources, /lamb/i);
 });
 
@@ -163,8 +163,7 @@ test("post-login workbench defaults to expanded application navigation", () => {
   const appContent = read("src/components/layout/AppContent/index.tsx");
   const sessionSidebar = read("src/components/panels/SessionSidebar.tsx");
 
-  assert.match(appContent, /saved !== null \? saved === "true" : false/);
-  assert.doesNotMatch(appContent, /saved !== null \? saved === "true" : true/);
+  assert.match(appContent, /useSidebarPreference\(\)/);
   assert.doesNotMatch(sessionSidebar, /useState\(true\)/);
   assert.match(sessionSidebar, /useState\(false\)/);
 });

@@ -13,8 +13,7 @@ import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { APP_ROUTE_PATHS } from "../../appRouteManifest";
 import { AppShell } from "../../components/layout/AppContent/AppShell";
 import { SessionSidebar } from "../../components/panels/SessionSidebar";
-import { SIDEBAR_COLLAPSED_STORAGE_KEY } from "../../hooks/useAuth";
-import { authApi } from "../../services/api";
+import { useSidebarPreference } from "../../hooks/useSidebarPreference";
 import { agentProfileApi } from "../../services/api/agentProfile";
 import type { AgentProfilePublicProjection } from "../../types";
 import {
@@ -49,16 +48,8 @@ type MarketSort = "default" | "tasks" | "recent";
 function AgentMarketShell({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
-    const saved = localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY);
-    return saved !== null ? saved === "true" : false;
-  });
+  const [sidebarCollapsed, handleSetSidebarCollapsed] = useSidebarPreference();
 
-  const handleSetSidebarCollapsed = useCallback((collapsed: boolean) => {
-    setSidebarCollapsed(collapsed);
-    localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, String(collapsed));
-    authApi.updateMetadata({ sidebarCollapsed: String(collapsed) }).catch(() => {});
-  }, []);
   const handleSelectSession = useCallback(
     (sessionId: string) => {
       setMobileSidebarOpen(false);

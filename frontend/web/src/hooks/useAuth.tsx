@@ -34,17 +34,13 @@ import {
   ensureBrowserAuthContextBeforeLogin,
   publishBrowserAuthIncarnationChange,
 } from "./browserAuthCoordinator";
-import { DEFAULT_THINKING_LEVEL_STORAGE_KEY } from "../components/layout/AppContent/useAgentOptions";
 import {
   hasAllEffectivePermissions,
   hasAnyEffectivePermission,
   hasEffectivePermission,
 } from "../components/governance/permissionProjection";
-import { THEME_STORAGE_KEY } from "../utils/themeDom";
 import { Permission } from "../types";
 import type { User, LoginRequest, AuthState } from "../types";
-
-export const SIDEBAR_COLLAPSED_STORAGE_KEY = "ai-platform-sidebar-collapsed";
 
 function rememberRedirectPathForLogin(): void {
   if (typeof window === "undefined") return;
@@ -52,49 +48,6 @@ function rememberRedirectPathForLogin(): void {
   if (isSafeRedirectPath(currentPath)) {
     setRedirectPath(currentPath);
   }
-}
-
-/** Apply user metadata preferences from backend */
-function applyUserMetadata(metadata?: {
-  language?: string;
-  theme?: string;
-  defaultThinkingLevel?: string;
-  sidebarCollapsed?: string;
-}) {
-  if (!metadata) return;
-
-  if (metadata.theme) {
-    localStorage.setItem(THEME_STORAGE_KEY, metadata.theme);
-    // Notify ThemeContext to update React state + DOM in sync
-    window.dispatchEvent(
-      new CustomEvent("theme:external-change", { detail: metadata.theme }),
-    );
-  }
-
-  if (metadata.defaultThinkingLevel) {
-    localStorage.setItem(
-      DEFAULT_THINKING_LEVEL_STORAGE_KEY,
-      metadata.defaultThinkingLevel,
-    );
-    window.dispatchEvent(
-      new CustomEvent("thinking-preference-updated", {
-        detail: metadata.defaultThinkingLevel,
-      }),
-    );
-  }
-
-  if (metadata.sidebarCollapsed !== undefined) {
-    localStorage.setItem(
-      SIDEBAR_COLLAPSED_STORAGE_KEY,
-      metadata.sidebarCollapsed,
-    );
-    window.dispatchEvent(
-      new CustomEvent("sidebar-collapsed-changed", {
-        detail: metadata.sidebarCollapsed === "true",
-      }),
-    );
-  }
-
 }
 
 /** Explicit completion contract for caller-visible identity operations. */
@@ -245,7 +198,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!isCurrentAuthOperation(owner)) return false;
     setToken(owner.expectedMarker);
     setUser(currentUser);
-    applyUserMetadata(currentUser.metadata);
     if (currentUser.permissions) {
       setDynamicPermissions(
         currentUser.permissions.filter((p): p is Permission =>

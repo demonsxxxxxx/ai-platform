@@ -1,12 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
 import { ChatAppContent } from "../../components/layout/AppContent/ChatAppContent";
 import { AppShell } from "../../components/layout/AppContent/AppShell";
 import { SessionSidebar } from "../../components/panels/SessionSidebar";
 import type { SessionSidebarSessionSource } from "../../components/panels/SessionSidebar";
-import { SIDEBAR_COLLAPSED_STORAGE_KEY, useAuth } from "../../hooks/useAuth";
-import { authApi } from "../../services/api";
+import { useAuth } from "../../hooks/useAuth";
+import { useSidebarPreference } from "../../hooks/useSidebarPreference";
 import { agentProfileApi } from "../../services/api/agentProfile";
 import { sessionApi } from "../../services/api/session";
 import type {
@@ -70,10 +70,7 @@ export function AgentWorkspaceRoute() {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const workspaceViewRef = useRef({ phase, loadedWorkspace });
   workspaceViewRef.current = { phase, loadedWorkspace };
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
-    const saved = localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY);
-    return saved !== null ? saved === "true" : false;
-  });
+  const [sidebarCollapsed, handleSetSidebarCollapsed] = useSidebarPreference();
   const historyScopeAuthorized =
     phase === "ready" &&
     loadedWorkspace !== null &&
@@ -184,12 +181,6 @@ export function AgentWorkspaceRoute() {
       navigate("/agent-market", { replace: true });
     }
   }, [navigate, phase]);
-
-  const handleSetSidebarCollapsed = useCallback((collapsed: boolean) => {
-    setSidebarCollapsed(collapsed);
-    localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, String(collapsed));
-    authApi.updateMetadata({ sidebarCollapsed: String(collapsed) }).catch(() => {});
-  }, []);
 
   // Route params can change before the passive fetch cleanup runs. Never let
   // the previous URL's profile reach canonical Chat.
