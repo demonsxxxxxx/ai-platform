@@ -718,3 +718,11 @@ project files or start an external execution environment. Backend nullable
 `project_meta` projections and historical messages remain under their API/data
 owners and are not removed by this frontend retirement. Skills ZIP export remains
 an independent, active capability.
+
+`ToolResultPanel` owns explicit UI dismissal: custom headers receive its close
+callback so X, Escape, overlay and mobile swipe all clear sidebar history before
+closing. Registry replacement, Back restoration and unmount remain separate from
+explicit dismissal; conversation/auth revocation retains its existing store owner.
+`useSidebarPanel` reserves desktop layout space only for an open, non-fullscreen
+sidebar. Center/fullscreen panels keep their open-owned interactions without a
+layout lease; reference counting preserves other preview/editor sidebar leases.

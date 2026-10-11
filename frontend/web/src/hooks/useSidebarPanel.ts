@@ -10,6 +10,8 @@ import { useSwipeToClose } from "./useSwipeToClose";
 export interface SidebarPanelOptions {
   open: boolean;
   onClose: () => void;
+  /** Reserve desktop layout space only while rendering as a sidebar. */
+  reserveSidebarSpace?: boolean;
   /** localStorage key for persisting sidebar width */
   widthStorageKey: string;
   /** CSS variable name for sidebar width */
@@ -38,6 +40,7 @@ const _compressCounts = new Map<string, number>();
 export function useSidebarPanel({
   open,
   onClose,
+  reserveSidebarSpace = true,
   widthStorageKey,
   widthCssVar,
   defaultWidthPct = 35,
@@ -96,41 +99,41 @@ export function useSidebarPanel({
     localStorage.setItem(widthStorageKey, String(sidebarWidth));
   }, [sidebarWidth, widthCssVar, widthStorageKey]);
 
-  // Layout compression + body scroll lock
+  // Desktop layout lease is independent of open-owned modal interactions.
   useLayoutEffect(() => {
-    if (!open) return;
+    if (!open || isMobile || !reserveSidebarSpace) return;
 
-    if (!isMobile) {
-      const prev = _compressCounts.get(dataAttr) || 0;
-      _compressCounts.set(dataAttr, prev + 1);
-      if (prev === 0) {
-        document.documentElement.setAttribute(dataAttr, "open");
-      }
-    }
-
-    if (isMobile) {
-      const scrollbarWidth =
-        window.innerWidth - document.documentElement.clientWidth;
-      document.body.style.overflow = "hidden";
-      if (scrollbarWidth > 0) {
-        document.body.style.paddingRight = `${scrollbarWidth}px`;
-      }
+    const prev = _compressCounts.get(dataAttr) || 0;
+    _compressCounts.set(dataAttr, prev + 1);
+    if (prev === 0) {
+      document.documentElement.setAttribute(dataAttr, "open");
     }
 
     return () => {
-      if (!isMobile) {
-        const prev = _compressCounts.get(dataAttr) || 1;
-        _compressCounts.set(dataAttr, prev - 1);
-        if (prev === 1) {
-          document.documentElement.removeAttribute(dataAttr);
-        }
-      }
-      if (isMobile) {
-        document.body.style.overflow = "";
-        document.body.style.paddingRight = "";
+      const prev = _compressCounts.get(dataAttr) || 1;
+      _compressCounts.set(dataAttr, prev - 1);
+      if (prev === 1) {
+        document.documentElement.removeAttribute(dataAttr);
       }
     };
-  }, [open, isMobile, dataAttr]);
+  }, [open, isMobile, reserveSidebarSpace, dataAttr]);
+
+  // Mobile scroll lock follows the open panel, not its desktop view mode.
+  useLayoutEffect(() => {
+    if (!open || !isMobile) return;
+
+    const scrollbarWidth =
+      window.innerWidth - document.documentElement.clientWidth;
+    document.body.style.overflow = "hidden";
+    if (scrollbarWidth > 0) {
+      document.body.style.paddingRight = `${scrollbarWidth}px`;
+    }
+
+    return () => {
+      document.body.style.overflow = "";
+      document.body.style.paddingRight = "";
+    };
+  }, [open, isMobile]);
 
   // ESC to close
   useEffect(() => {

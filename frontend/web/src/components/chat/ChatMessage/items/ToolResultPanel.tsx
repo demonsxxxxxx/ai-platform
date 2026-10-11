@@ -46,8 +46,8 @@ interface ToolResultPanelProps {
   onFullscreenChange?: (fullscreen: boolean) => void;
   /** Extra action buttons rendered in sidebar header, between title and close */
   headerActions?: React.ReactNode;
-  /** Custom header replacing the default one (rendered outside scroll area) */
-  customHeader?: React.ReactNode;
+  /** Custom header; render callbacks receive the panel-owned explicit close action. */
+  customHeader?: React.ReactNode | ((actions: { onClose: () => void }) => React.ReactNode);
   /** Footer rendered below the scrollable content area */
   footer?: React.ReactNode;
   /** Custom overlay className (overrides default) */
@@ -171,6 +171,7 @@ export function ToolResultPanel({
   } = useSidebarPanel({
     open,
     onClose: handleUserClose,
+    reserveSidebarSpace: effectiveViewMode === "sidebar" && !isFullscreen,
     widthStorageKey: WIDTH_STORAGE_KEY,
     widthCssVar: WIDTH_CSS_VAR,
     defaultWidthPct: DEFAULT_WIDTH_PCT,
@@ -355,7 +356,9 @@ export function ToolResultPanel({
             </div>
           )}
           {hasCustomHeader ? (
-            customHeader
+            typeof customHeader === "function"
+              ? customHeader({ onClose: handleUserClose })
+              : customHeader
           ) : (
             <div className="flex items-center gap-2 sm:gap-3 px-2 sm:px-4 py-2 sm:py-3 border-b border-stone-200 dark:border-stone-700 shrink-0 overflow-hidden">
               {/* Back button */}
