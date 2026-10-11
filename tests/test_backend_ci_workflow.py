@@ -101,6 +101,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_opensandbox_live_credential_isolation.py",
         "tests/test_opensandbox_client_ca.py",
         "tests/test_runtime_workspace_permissions.py",
+        "tests/test_workspace_storage_migration.py",
         "tests/test_sandbox_workspace_manager.py",
         "tests/test_sandbox_runtime.py",
         "tests/test_sandbox_runtime_cleanup.py",
