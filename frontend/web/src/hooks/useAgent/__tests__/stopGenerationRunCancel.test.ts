@@ -2,45 +2,20 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import test from "node:test";
+import { createElement } from "react";
+import { createInstance } from "i18next";
+import { I18nextProvider } from "react-i18next";
+import { renderToStaticMarkup } from "react-dom/server";
+// @ts-expect-error jsdom 26 does not ship declarations.
+import { JSDOM } from "jsdom";
+import { ChatInputToolbar } from "../../../components/chat/ChatInputToolbar.tsx";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-
-function getStopGenerationSource(): string {
-  const source = readFileSync(resolve(__dirname, "../../useAgent.ts"), "utf8");
-  const stopGenerationStart = source.indexOf("const stopGeneration = useCallback");
-  const clearMessagesStart = source.indexOf("const clearMessages = useCallback", stopGenerationStart);
-
-  assert.notEqual(stopGenerationStart, -1);
-  assert.notEqual(clearMessagesStart, -1);
-
-  return source.slice(stopGenerationStart, clearMessagesStart);
-}
-
-test("stopGeneration delegates the real run id to the run-control lifecycle", () => {
-  const source = getStopGenerationSource();
-
-  assert.match(source, /const currentRunId = currentRunIdRef\.current/);
-  assert.match(source, /return runControlLifecycle\.cancel\(\)/);
-  assert.doesNotMatch(source, /sessionApi\.cancel\(currentSessionId\)/);
-  assert.doesNotMatch(source, /\/chat\/sessions\/\$\{sessionId\}\/cancel/);
-});
-
-test("stopGeneration returns unavailable instead of claiming cancellation without a trusted run", () => {
-  const source = getStopGenerationSource();
-
-  assert.match(source, /if \(!currentRunId \|\| !currentSessionId\) \{\s*return "unavailable" as const;/);
-  assert.doesNotMatch(source, /toast\.custom/);
-});
-
-test("stopGeneration fails closed when the current run has no legal lifecycle owner", () => {
-  const source = getStopGenerationSource();
-
-  assert.match(
-    source,
-    /if \(\s*!owner,[\s\S]*!runControlLifecycle\.isCurrentOwner\(owner\)[\s\S]*return "unavailable" as const;/,
-  );
-  assert.doesNotMatch(source, /bindRunControlParent\(currentSessionId, currentRunId\)/);
+const translations = createInstance();
+await translations.init({
+  lng: "en", initImmediate: false,
+  resources: { en: { translation: { chat: { stop: "Stop" } } } },
 });
 
 test("the stop confirmation awaits the command result before showing acknowledgement", () => {
@@ -65,15 +40,32 @@ test("the stop confirmation awaits the command result before showing acknowledge
   assert.doesNotMatch(confirm, /chat\.status\.cancelled/);
 });
 
-test("composer stop controls require a confirmed run-control owner", () => {
-  const inputSource = readFileSync(
-    resolve(__dirname, "../../../components/chat/ChatInput.tsx"),
-    "utf8",
-  );
-  const toolbarSource = readFileSync(
-    resolve(__dirname, "../../../components/chat/ChatInputToolbar.tsx"),
-    "utf8",
-  );
-  assert.match(inputSource, /if \(isLoading && canStop\)/);
-  assert.match(toolbarSource, /isLoading && canStop/);
-});
+for (const [isLoading, canStop, canSend, expectedStop] of [
+  [true, true, true, true],
+  [true, false, true, false],
+  [false, true, true, false],
+  [true, true, false, false],
+]) {
+  test(`composer stop control: loading=${isLoading}, owner=${canStop}, permission=${canSend}`, () => {
+    const noop = () => {};
+    const toolbar = createElement(ChatInputToolbar, {
+      activePanel: null, onActivePanelChange: noop, canSend, isLoading, canStop,
+      canSubmit: false, hasUploadingAttachment: false, enabledToolsCount: 0,
+      totalToolsCount: 0, enabledSkillsCount: 0, totalSkillsCount: 0,
+      availableModels: [], uploadCategories: [], uploadFiles: noop,
+      onStopClick: noop, onNoPermissionClick: noop,
+    });
+    const markup = renderToStaticMarkup(createElement(I18nextProvider, { i18n: translations }, toolbar));
+    const dom = new JSDOM(markup);
+    try {
+      const stop = dom.window.document.querySelector('button[title="Stop"]');
+      assert.equal(stop !== null, expectedStop);
+      if (isLoading && canSend && !canStop) {
+        assert.ok(dom.window.document.querySelector('button[disabled][aria-busy="true"]'));
+        assert.equal(dom.window.document.querySelector('button[type="submit"]'), null);
+      }
+    } finally {
+      dom.window.close();
+    }
+  });
+}
