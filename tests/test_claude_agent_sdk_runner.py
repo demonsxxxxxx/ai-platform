@@ -6360,7 +6360,9 @@ async def test_outer_cancellation_reaches_sdk_query_cleanup(monkeypatch, tmp_pat
         r"Review C:\examples\report.json",
     ],
 )
+@pytest.mark.usefixtures("terminal_stage_logs")
 async def test_sdk_provider_session_options_are_exclusive_and_eager(
+    caplog,
     monkeypatch,
     tmp_path,
     stored_transcript,
@@ -6408,6 +6410,9 @@ async def test_sdk_provider_session_options_are_exclusive_and_eager(
     assert captured[expected_option] == "stable-provider-id"
     assert {"session_id", "resume"}.intersection(captured) == {expected_option}
     assert append_calls == [("stable-provider-id", [{"uuid": "entry-ack"}])]
+    summaries = [record for record in caplog.records if record.msg == "run_session_store_append_summary"]
+    assert len(summaries) == 1
+    assert summaries[0].append_calls == 1 and summaries[0].append_active_calls == 0
 
 
 

@@ -222,16 +222,28 @@ The barriers remain separate:
 
 - `sdk_final_flush`: accepted final SDK Result through public EOF and callback /
   provider-store settlement. Intermediate/background Results are excluded.
+  The SDK flushes pending mirror entries **before** delivering public Result;
+  that earlier wait is excluded even when this span is near zero.
+  `run_session_store_append_summary` reports full-run append calls (including
+  retries), failed calls, cumulative/max duration and active calls at runner exit.
+  It includes pre-Result store calls; cumulative work can overlap model execution
+  and is not terminal tail latency or additive with the other spans. Failed calls
+  may later succeed on retry. The aggregate has no per-entry payloads and is
+  emitted at most once; active calls indicate an incomplete observation.
   `sdk_disconnect_flush` measures the existing combined disconnect/store fallback
   on early exit or cancellation. Neither measures post-settlement resource teardown.
 - `executor_heartbeat_drain`: join the supervisor heartbeat and active progress;
   `executor_public_stream_drain`: close the buffered public callback stream;
+  the preceding final phase callback already flushes/waits for its receipt, so
+  a small close span does not exclude earlier callback backlog;
   `executor_terminal_callback_ack`: the complete terminal-callback retry/ack wait.
 - `terminal_receipt_commit`: the callback receipt transaction through its exit;
   `terminal_receipt_signal` and `terminal_receipt_publication`: the subsequent
   reconciliation wake and callback-row publication. Receipt commit does not mean
   the final assistant, artifact records, or Run result have committed.
-- `reconciler_workspace_snapshot`: selected-file immutable snapshot collection;
+- `reconciler_workspace_snapshot`: selected-file immutable snapshot collection,
+  including the remote OpenSandbox identity check before local snapshot I/O;
+  this span alone cannot identify disk latency;
   `reconciler_result_conversion`: the existing storage bridge await, including
   thread admission/queueing, selected-file validation/read/hash, provisional
   cleanup reservation, object-storage writes and adapter result projection.

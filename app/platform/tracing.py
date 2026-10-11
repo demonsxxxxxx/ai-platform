@@ -27,13 +27,41 @@ class _TerminalStageHandler(logging.StreamHandler):
         pass
 
 
+class _TerminalObservationFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        if record.msg == "run_session_store_append_summary":
+            return logging.Formatter(
+                "%(asctime)s %(message)s run_id=%(run_id)r attempt_id=%(attempt_id)r "
+                "calls=%(append_calls)d failed_calls=%(append_failed_calls)d "
+                "total_duration_ms=%(append_total_duration_ms)d max_duration_ms=%(append_max_duration_ms)d "
+                "active_calls=%(append_active_calls)d"
+            ).format(record)
+        return super().format(record)
+
+
+def log_session_store_append_summary(
+    *, run_id: str, attempt_id: str, calls: int, failed_calls: int,
+    total_ms: int, max_ms: int, active_calls: int,
+) -> None:
+    """One payload-free aggregate; cumulative append work can overlap model work."""
+    try:
+        _terminal_stage_logger.info("run_session_store_append_summary", extra={
+            "run_id": run_id, "attempt_id": attempt_id,
+            "append_calls": calls, "append_failed_calls": failed_calls,
+            "append_total_duration_ms": total_ms, "append_max_duration_ms": max_ms,
+            "append_active_calls": active_calls,
+        })
+    except Exception:
+        pass  # Observation failure cannot replace the persistence result.
+
+
 def configure_terminal_stage_logging() -> None:
     """Enable only bounded terminal observations at the process entrypoint."""
     _terminal_stage_logger.setLevel(logging.INFO)
     _terminal_stage_logger.propagate = False
     if not any(isinstance(handler, _TerminalStageHandler) for handler in _terminal_stage_logger.handlers):
         handler = _TerminalStageHandler()
-        handler.setFormatter(logging.Formatter(
+        handler.setFormatter(_TerminalObservationFormatter(
             "%(asctime)s %(message)s run_id=%(run_id)r attempt_id=%(attempt_id)r "
             "phase=%(terminal_phase)r duration_ms=%(terminal_phase_duration_ms)d "
             "outcome=%(terminal_phase_outcome)r terminal_status=%(terminal_status)r"

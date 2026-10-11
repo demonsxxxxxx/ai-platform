@@ -28,6 +28,7 @@ from app.control_plane_contracts import (
     sanitize_public_payload,
 )
 from app.platform.tracing import TerminalStageTiming
+from app.executors.claude.session_store_tracking import SessionStoreAppendTracker
 from app.platform.public_payload import (
     sanitize_public_answer_text,
     sanitize_public_text,
@@ -261,59 +262,6 @@ class _ProjectionFailure:
             "location": self.location,
         }
         return result
-
-
-class _SessionStoreAppendTracker:
-    def __init__(self, store: Any) -> None:
-        self._store = store
-        self.main_append_acknowledged = False
-        self.final_sequence: int | None = None
-        self._failed_calls: list[tuple[str, tuple[Any, ...]]] = []
-        self.active_calls = 0
-        self._idle = asyncio.Event()
-        self._idle.set()
-
-    async def _call(self, operation: Callable[..., Awaitable[Any]], *args: Any) -> Any:
-        self.active_calls += 1
-        self._idle.clear()
-        try:
-            result = await operation(*args)
-        except BaseException:
-            failure = (operation.__name__, args)
-            if failure not in self._failed_calls:
-                self._failed_calls.append(failure)
-            raise
-        else:
-            # The SDK retries an identical mirror batch. A confirmed receipt
-            # resolves that failure; unrelated successful writes do not.
-            self._failed_calls = [item for item in self._failed_calls if item != (operation.__name__, args)]
-            return result
-        finally:
-            self.active_calls -= 1
-            if self.active_calls == 0:
-                self._idle.set()
-
-    @property
-    def failed(self) -> bool:
-        return bool(self._failed_calls)
-
-    async def wait_idle(self) -> None:
-        await self._idle.wait()
-
-    async def load(self, key: Any) -> Any:
-        return await self._call(self._store.load, key)
-
-    async def append(self, key: Any, entries: Any) -> None:
-        await self._call(self._store.append, key, entries)
-        sequence = getattr(self._store, "accepted_final_sequence", None)
-        if type(sequence) is int and sequence >= 1:
-            self.final_sequence = sequence
-        subpath = key.get("subpath") if isinstance(key, dict) else None
-        if not subpath:
-            self.main_append_acknowledged = True
-
-    async def list_subkeys(self, key: Any = None) -> Any:
-        return await self._call(self._store.list_subkeys, key)
 
 
 class ClaudeAgentSdkNotAvailable(RuntimeError):
@@ -1911,9 +1859,9 @@ async def run_claude_agent_sdk(
     except Exception as exc:
         raise ClaudeAgentSdkNotAvailable(str(exc)) from exc
 
-    provider_session_store: _SessionStoreAppendTracker | None = None
+    provider_session_store: SessionStoreAppendTracker | None = None
     if session_store is not None:
-        provider_session_store = _SessionStoreAppendTracker(session_store)
+        provider_session_store = SessionStoreAppendTracker(session_store)
         provider_session_options: dict[str, Any] = {
             "session_store": provider_session_store,
             "session_store_flush": "eager",
@@ -4539,3 +4487,6 @@ async def run_claude_agent_sdk(
                 )
             ),
         )
+    finally:
+        if provider_session_store is not None:
+            provider_session_store.log_append_summary(run_id=run_id or "", attempt_id=attempt_id or "")
