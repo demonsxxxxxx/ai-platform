@@ -77,6 +77,61 @@ the answer gate and seal candidates before diagnostics are captured. Successful
 results expose files and provider sequence only after terminal validation.
 Cancellation still propagates after the consumer task is stopped and awaited.
 
+## Result usage and estimated cost
+
+Execution's Claude harness observes each `ResultMessage` before background-task
+or supplemental-input continuation can hide it. The SDK's top-level
+`total_cost_usd` is not a member of its `.usage` dict. The private platform
+`sdk_usage` carrier is a normalized projection: existing per-turn main-loop
+token aggregation is retained, while the official `total_cost_usd` and
+`model_usage` fields are latest cumulative snapshots, never recursively added
+across turns. Per-model rows keep only bounded numeric token/cost fields and
+bounded private model keys. They are not exposed in public Run results/events.
+
+This interpretation is version-bound: Python SDK 0.2.130 bundles CLI 2.1.222.
+The [official cost contract](https://code.claude.com/docs/en/agent-sdk/cost-tracking)
+distinguishes turn usage from call-cumulative cost/model usage and documents
+changed resume accounting in CLI 2.1.277. At this repository's fixed version,
+each new executor CLI process, including native resume, starts these totals at
+zero. Revalidate that boundary when upgrading; do not infer it from a runtime
+version string or apply it to a newer binary without conformance evidence.
+SDK prices are client-side estimates, not authoritative billing data.
+
+The single private `cost_coverage` marker is `complete`, `partial`, or
+`unavailable`. Missing/invalid latest cost does not erase an earlier observation.
+An execution-crash result can contain false zeroes; earlier observations remain
+partial. Missing final results, cumulative regressions, changed session identity,
+or initial/supplemental `/clear`, `/reset`, or `/new` commands never manufacture
+a complete Run total. This older SDK drops conversation-reset messages, so the
+adapter observes inputs and result identity instead. It does not alter user
+input or reconstruct accounting across resets. A legitimate zero on an intact
+call remains a complete zero. Optional telemetry failure cannot fail a Run.
+Cancellation still propagates directly without assembling a returned result;
+this observer does not persist a partial cost on that cancellation path.
+Partial snapshots are carried only by results the existing assembler returns,
+including missing-final-result EOF and transport failures.
+
+When the whole call has no normal `.usage` observation, a complete final
+`model_usage` snapshot may supply the fallback token projection once. Its
+whole-tree scope is not added to existing main-loop counters. Mixed coverage
+does not silently combine those scopes. Known nonnegative finite complete USD
+estimates retain the existing `Decimal` half-up conversion to hundredths;
+invalid, incomplete or out-of-range amounts do not enter that numeric metric.
+
+Retirement: remove the runner's `usage or model_usage` shape substitution and
+its implied cumulative addition. Historical carriers without `cost_coverage`
+retain their existing cost aliases at the reader only. New production writes
+use official source field names. The existing non-null integer DB metric still
+defaults to zero for unknown values and rounds small amounts to zero; this
+change neither migrates that ambiguity nor recalculates historical costs.
+No billing account, exchange-rate service or second cost ledger is introduced.
+
+Owning regressions exercise real installed SDK result objects, same-client
+continuations, cumulative replacement, model-only fallback, unknown/zero,
+crash/reset/absence and invalid-number boundaries, existing terminal metrics,
+and exclusion of private carrier fields from public projections. They extend
+existing canonical backend test files, without a separate workflow.
+
 ## SDK-native automatic compaction
 
 Execution passes the immutable Run `max_input_tokens` through

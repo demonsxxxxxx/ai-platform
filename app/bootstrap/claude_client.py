@@ -7,6 +7,11 @@ from app.execution.infrastructure.harness.claude_client_lifecycle import (
 from app.execution.infrastructure.harness.claude.interaction import ClaudeRunInteractionActor
 from app.execution.infrastructure.harness.claude.assistant_text_sources import AssistantTextSourceBuffer
 from app.execution.infrastructure.harness.claude.typed_blocks import ClaudeTypedBlockObservations
+from app.execution.infrastructure.harness.claude.result_usage import ClaudeResultUsage
+
+
+def prepare_claude_result_usage(*, session_id, prompt):
+    return ClaudeResultUsage(session_id=session_id, prompt=prompt)
 
 
 def prepare_claude_typed_observations():

@@ -116,6 +116,25 @@ def test_terminal_projection_uses_native_skill_evidence_and_public_artifact_fiel
     assert projection.terminal_event_kwargs["trace_id"] == "trace-1"
 
 
+def test_private_sdk_usage_carrier_projects_only_existing_numeric_metrics():
+    result = ExecutorResult(
+        status="succeeded", adapter_version="v1", executor_type="claude-agent-worker",
+        executor_version="v1", capabilities={}, result={"message": "done"},
+        executor_payload={"sdk_usage": {
+            "input_tokens": 3, "total_cost_usd": 0.125, "cost_coverage": "complete",
+            "model_usage": {"private-provider-model": {"inputTokens": 3, "costUSD": 0.125}},
+        }},
+    )
+    projection = project_worker_terminal_result(
+        result, [], trace_id="trace", latency_ms=1, invoked_skill_ids=lambda _: set(),
+    )
+    assert projection.result_payload["cost"] == {"estimated_cost_minor": 13}
+    assert projection.terminal_event_kwargs["estimated_cost_minor"] == 13
+    for private in ("sdk_usage", "private-provider-model", "total_cost_usd", "model_usage", "cost_coverage"):
+        assert private not in str(projection.result_payload)
+        assert private not in str(projection.terminal_event_kwargs)
+
+
 @pytest.mark.parametrize(
     "legacy_metadata",
     [

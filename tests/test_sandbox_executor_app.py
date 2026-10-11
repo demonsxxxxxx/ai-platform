@@ -1767,13 +1767,23 @@ def test_executor_runtime_identity_requires_lease_credential_and_returns_only_ef
 
 
 def test_executor_execute_posts_only_non_terminal_execution_callbacks(tmp_path, monkeypatch):
+    from claude_agent_sdk import ResultMessage
+    from app.execution.infrastructure.harness.claude.result_usage import ClaudeResultUsage
+
     callbacks = []
+    observation = ClaudeResultUsage(session_id="sdk-session-a", prompt="start")
+    observation.observe_result(ResultMessage(
+        subtype="success", duration_ms=1, duration_api_ms=1, is_error=False,
+        num_turns=1, session_id="sdk-session-a", total_cost_usd=0.125,
+        usage={"input_tokens": 1, "output_tokens": 1},
+    ))
+    usage = observation.project({"input_tokens": 1, "output_tokens": 1}, terminal_result=True)
 
     class StubSettings:
         claude_agent_sdk_enabled = True
 
     async def fake_run_claude_agent_sdk(**kwargs):
-        return sdk_result("sdk final", usage={"input_tokens": 1, "output_tokens": 1})
+        return sdk_result("sdk final", usage=usage)
 
     def callback_sender(url, payload, token):
         callbacks.append((url, payload, token))
@@ -1790,6 +1800,9 @@ def test_executor_execute_posts_only_non_terminal_execution_callbacks(tmp_path, 
     body = response.json()
     assert body["status"] == "completed"
     assert body["run_id"] == "run-a"
+    assert body["sdk_usage"] == usage
+    assert "total_cost_usd" not in str(callbacks)
+    assert "cost_coverage" not in str(callbacks)
     assert isinstance(body["executor_model_latency_ms"], int)
     assert isinstance(body["document_processing_latency_ms"], int)
     assert [item["status"] for item in non_phase_callbacks([entry[1] for entry in callbacks])] == ["running"]

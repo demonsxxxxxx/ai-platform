@@ -1,7 +1,7 @@
 """Execution result metrics projected for Run persistence and public events."""
 
 from datetime import datetime
-from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, DecimalException
 from typing import Any
 
 
@@ -24,14 +24,19 @@ def _int_mapping_value(payload: dict[str, Any], *keys: str) -> int:
 
 
 def _usd_cost_to_minor_units(value: Any) -> int:
+    if isinstance(value, bool):
+        return 0
     try:
-        minor_units = (Decimal(str(value)) * Decimal(100)).quantize(
+        amount = Decimal(str(value))
+        if not amount.is_finite() or not 0 <= amount <= Decimal("21474836.48"):
+            return 0
+        minor_units = (amount * Decimal(100)).quantize(
             Decimal(1),
             rounding=ROUND_HALF_UP,
         )
-    except (InvalidOperation, TypeError, ValueError):
+        return int(minor_units) if minor_units <= 2**31 - 1 else 0
+    except (DecimalException, TypeError, ValueError, OverflowError):
         return 0
-    return max(int(minor_units), 0)
 
 
 def _sdk_usage_observability(executor_payload: dict[str, Any]) -> dict[str, Any]:
@@ -45,8 +50,13 @@ def _sdk_usage_observability(executor_payload: dict[str, Any]) -> dict[str, Any]
     total_tokens = _int_mapping_value(usage, "total_tokens", "total")
     if total_tokens <= 0:
         total_tokens = input_tokens + output_tokens
-    estimated_cost_minor = _int_mapping_value(usage, "estimated_cost_minor", "cost_minor")
-    if estimated_cost_minor <= 0:
+    coverage = usage.get("cost_coverage")
+    # New producers explicitly distinguish incomplete cumulative observations.
+    # Historical carriers without this marker retain their existing reader.
+    estimated_cost_minor = 0 if coverage is not None else _int_mapping_value(usage, "estimated_cost_minor", "cost_minor")
+    if coverage == "complete":
+        estimated_cost_minor = _usd_cost_to_minor_units(usage.get("total_cost_usd"))
+    elif coverage is None and estimated_cost_minor <= 0:
         estimated_cost_minor = _usd_cost_to_minor_units(
             usage.get("total_cost_usd") or usage.get("cost_usd") or usage.get("estimated_cost_usd")
         )
