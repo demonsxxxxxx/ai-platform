@@ -152,6 +152,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_redis_client.py",
         "tests/test_worker_maintenance.py",
         "tests/test_data_retention.py",
+        "tests/test_data_retention_postgres.py",
         "tests/test_storage.py",
         "tests/test_sandbox_cleanup_postgres.py",
         "tests/test_provider_empty_start_postgres.py",
