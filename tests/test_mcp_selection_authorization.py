@@ -6,7 +6,10 @@ import pytest
 
 from app.identity.infrastructure.capability_distributions_postgres import _capability_not_authorized
 from app.mcp import api as mcp_api
-from app.mcp.application import runtime_registry, selection_authorization
+from app.mcp.application import runtime_registry
+from app.auth import normalize_roles
+from app.capability_distribution import CapabilityAccessContext, CapabilityDistributionSubject, resolve_capability_access
+from app.tool_policy import evaluate_tool_policy
 from app.mcp.application.selection_authorization import McpSelectionAuthorization
 from app.platform.postgres.errors import RepositoryAuthorizationError, RepositoryConflictError
 
@@ -45,6 +48,9 @@ def selection():
     service = McpSelectionAuthorization(
         get_tool=get_tool, get_distribution=get_distribution,
         authorization_error=_capability_not_authorized, conflict_error=RepositoryConflictError,
+        normalize_roles=normalize_roles, context_type=CapabilityAccessContext,
+        subject_type=CapabilityDistributionSubject, resolve_access=resolve_capability_access,
+        evaluate_policy=evaluate_tool_policy,
     )
     state.service = service
     state.arguments = dict(
@@ -131,14 +137,14 @@ async def test_corrupt_distribution_preserves_chat_conflict_and_replay_denial(se
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", MODES)
 async def test_explicit_admin_and_normalized_context_are_not_recomputed(selection, monkeypatch, mode):
-    original = selection_authorization.resolve_capability_access
+    original = resolve_capability_access
     contexts = []
 
     def resolve(context, subject, **kwargs):
         contexts.append(context)
         return original(context, subject, **kwargs)
 
-    monkeypatch.setattr(selection_authorization, "resolve_capability_access", resolve)
+    monkeypatch.setattr(selection.service, "_resolve_access", resolve)
     selection.arguments.update(principal_roles=[" ADMIN "], is_admin=False, permissions=["read:only"])
     if mode == "authorize_available_chat":
         assert await getattr(selection.service, mode)(object(), **selection.arguments) == []
@@ -162,7 +168,7 @@ async def test_tool_policy_is_not_bypassed_after_distribution_allows(selection, 
         subjects.append(tool)
         return SimpleNamespace(allowed=False)
 
-    monkeypatch.setattr(selection_authorization, "evaluate_tool_policy", deny)
+    monkeypatch.setattr(selection.service, "_evaluate_policy", deny)
     if mode == "authorize_available_chat":
         assert await getattr(selection.service, mode)(object(), **selection.arguments) == []
     else:

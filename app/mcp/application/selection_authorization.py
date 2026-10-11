@@ -3,18 +3,11 @@
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from app.auth import normalize_roles
-from app.capability_distribution import (
-    CapabilityAccessContext,
-    CapabilityDistributionSubject,
-    resolve_capability_access,
-)
 from app.mcp.domain.tool_references import mcp_runtime_metadata_usable
-from app.tool_policy import evaluate_tool_policy
 
 
 class _SelectionDenied(Exception):
-    def __init__(self, context: CapabilityAccessContext, tool_id: str, *, decision: Any = None,
+    def __init__(self, context: Any, tool_id: str, *, decision: Any = None,
                  duplicate: bool = False) -> None:
         self.context = context
         self.tool_id = tool_id
@@ -23,7 +16,7 @@ class _SelectionDenied(Exception):
 
 
 class _DistributionConflict(_SelectionDenied):
-    def __init__(self, context: CapabilityAccessContext, tool_id: str, cause: Exception) -> None:
+    def __init__(self, context: Any, tool_id: str, cause: Exception) -> None:
         super().__init__(context, tool_id)
         self.cause = cause
 
@@ -34,11 +27,19 @@ class McpSelectionAuthorization:
     def __init__(self, *, get_tool: Callable[..., Awaitable[Any]],
                  get_distribution: Callable[..., Awaitable[Any]],
                  authorization_error: Callable[..., Exception],
-                 conflict_error: type[Exception]) -> None:
+                 conflict_error: type[Exception],
+                 normalize_roles: Callable[..., Any], context_type: Callable[..., Any],
+                 subject_type: Callable[..., Any], resolve_access: Callable[..., Any],
+                 evaluate_policy: Callable[..., Any]) -> None:
         self._get_tool = get_tool
         self._get_distribution = get_distribution
         self._authorization_error = authorization_error
         self._conflict_error = conflict_error
+        self._normalize_roles = normalize_roles
+        self._context_type = context_type
+        self._subject_type = subject_type
+        self._resolve_access = resolve_access
+        self._evaluate_policy = evaluate_policy
 
     def _denial(self, failure: _SelectionDenied, *, capability_id: str) -> Exception:
         return self._authorization_error(
@@ -78,10 +79,10 @@ class McpSelectionAuthorization:
         principal_department_id: str, principal_roles: list[str] | None,
         is_admin: bool, permissions: list[str] | None, available_only: bool,
     ) -> list[dict[str, Any]]:
-        context = CapabilityAccessContext(
+        context = self._context_type(
             tenant_id=tenant_id,
             department_id=str(principal_department_id or ""),
-            roles=normalize_roles(principal_roles or []),
+            roles=self._normalize_roles(principal_roles or []),
             is_admin=bool(is_admin),
             permissions=[str(item) for item in permissions or [] if str(item)],
         )
@@ -108,16 +109,16 @@ class McpSelectionAuthorization:
                 and str(tool.get("server_status") or "disabled") == "active"
                 and bool(tool.get("visible_to_user")) else "disabled"
             )
-            decision = resolve_capability_access(
+            decision = self._resolve_access(
                 context,
-                CapabilityDistributionSubject(
+                self._subject_type(
                     capability_kind="mcp_tool", capability_id=tool_id,
                     lifecycle_status=lifecycle_status, distribution=distribution,
                     inherited_distribution_source=f"mcp_server:{server_id}",
                 ),
                 intent="use",
             )
-            policy = evaluate_tool_policy(tool={
+            policy = self._evaluate_policy(tool={
                 "mcp_server": server_id,
                 "mcp_tool": str((tool.get("allowed_tools") or [""])[0]),
                 "registered": True, "declared": True,

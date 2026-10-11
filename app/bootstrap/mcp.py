@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from app.auth import normalize_roles
+from app.capability_distribution import CapabilityAccessContext, CapabilityDistributionSubject, resolve_capability_access
+
 from dataclasses import dataclass
 from typing import Any
 
@@ -63,6 +66,9 @@ class _McpRuntimeServices:
             get_distribution=identity_capability_distributions_postgres.get_capability_distribution_row,
             authorization_error=identity_capability_distributions_postgres._capability_not_authorized,
             conflict_error=RepositoryConflictError,
+            normalize_roles=normalize_roles, context_type=CapabilityAccessContext,
+            subject_type=CapabilityDistributionSubject, resolve_access=resolve_capability_access,
+            evaluate_policy=evaluate_tool_policy,
         )
         self.principal_jwt_store = mcp_runtime.get_mcp_principal_jwt_store()
         self.live_catalog = LiveMcpCatalogService(
