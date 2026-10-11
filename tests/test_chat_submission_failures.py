@@ -60,3 +60,27 @@ def test_submission_diagnostics_never_log_exception_content_or_private_paths(cap
     assert "private-token" not in caplog.text
     assert "/private/runtime/path" not in caplog.text
     assert "Traceback" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("message", "capability_kind", "expected"),
+    [
+        ("private token=secret /private/runtime/path", "mcp_tool", "mcp_tool_not_available"),
+        ("mcp_tool_not_available", None, "mcp_tool_not_available"),
+        ("private token=secret /private/runtime/path", "native_command", "capability_not_authorized"),
+        ("private token=secret /private/runtime/path", None, "capability_not_authorized"),
+    ],
+)
+def test_capability_authorization_projection_preserves_safe_mapping(message, capability_kind, expected):
+    from types import SimpleNamespace
+    from app.conversations.api import capability_authorization_error_code
+    from app.platform.postgres.errors import RepositoryAuthorizationError
+
+    denial = SimpleNamespace(capability_kind=capability_kind, private_payload="token=private") if capability_kind else None
+    error = RepositoryAuthorizationError(message, denial=denial)
+    code = capability_authorization_error_code(error)
+    assert code == expected
+    detail = submission_error_detail(code=code, rejected_before_persist=True)
+    assert detail == {"code": expected, "submission_disposition": "rejected_before_persist"}
+    assert "private" not in str(detail)
+    assert "secret" not in str(detail)

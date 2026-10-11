@@ -60,3 +60,15 @@ def submission_error_code(detail: object, fallback: str = "chat_submission_rejec
     if isinstance(detail, str):
         return safe_submission_code(detail, fallback)
     return fallback
+
+
+def capability_authorization_error_code(
+    exc: ValueError,
+) -> str:
+    denial = getattr(exc, "denial", None)
+    if (
+        (denial is not None and denial.capability_kind == "mcp_tool")
+        or str(exc) == "mcp_tool_not_available"
+    ):
+        return "mcp_tool_not_available"
+    return "capability_not_authorized"
