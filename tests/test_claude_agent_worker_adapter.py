@@ -38,7 +38,7 @@ from app.executors.claude_agent_sdk_runner import (
 from app.executors.claude_agent_worker import (
     ClaudeAgentWorkerAdapter,
     PreparedSdkRun,
-    _ordinary_run_requires_sandbox,
+    _execution_boundary_decision,
 )
 from app.executors.registry import AdapterRegistry
 from app.file_parser_contracts import (
@@ -2341,7 +2341,7 @@ async def test_general_chat_routes_heavy_sandbox_runs_to_sandbox_runtime(monkeyp
     ],
 )
 def test_single_run_claude_writing_tiers_require_real_sandbox(execution_tier, skill_id):
-    assert _ordinary_run_requires_sandbox(
+    assert _execution_boundary_decision(
         payload(
             agent_id="general-agent",
             skill_id=skill_id,
@@ -2349,11 +2349,11 @@ def test_single_run_claude_writing_tiers_require_real_sandbox(execution_tier, sk
             context_snapshot={"execution_tier": execution_tier},
             context_pack={"execution_tier": execution_tier},
         )
-    ) is True
+    ).requires_real_sandbox is True
 
 
 def test_external_mcp_availability_requires_real_sandbox_without_client_execution_tier():
-    assert _ordinary_run_requires_sandbox(
+    assert _execution_boundary_decision(
         payload(
             agent_id="general-agent",
             skill_id="general-chat",
@@ -2377,7 +2377,7 @@ def test_external_mcp_availability_requires_real_sandbox_without_client_executio
                 ],
             },
         )
-    ) is True
+    ).requires_real_sandbox is True
 
 
 def test_claude_sandbox_admission_passes_available_mcp_scope(monkeypatch):
@@ -2409,7 +2409,7 @@ def test_claude_sandbox_admission_passes_available_mcp_scope(monkeypatch):
         },
     )
 
-    assert _ordinary_run_requires_sandbox(current_payload) is True
+    assert _execution_boundary_decision(current_payload).requires_real_sandbox is True
     assert captured == {
         "executor_type": "claude-agent-worker",
         "execution_mode": "",
@@ -4415,7 +4415,7 @@ def test_context_tool_subjects_are_manifest_scoped_and_reserved_input_is_rebuilt
 
 
 
-def test_worker_constructs_context_retrieval_authority_from_existing_scope(monkeypatch, tmp_path):
+def test_context_bootstrap_constructs_retrieval_authority(monkeypatch, tmp_path):
     captured = {}
     authority = object()
     storage = object()
@@ -4439,37 +4439,39 @@ def test_worker_constructs_context_retrieval_authority_from_existing_scope(monke
 
     monkeypatch.setattr(context_bootstrap, "ContextRetrievalAuthority", AuthorityFactory)
     monkeypatch.setattr(context_bootstrap, "ObjectStorage", lambda: storage)
-    current_payload = payload(
-        context_pack={
-            "schema_version": "ai-platform.executor-context-pack.v1",
-            "context_manifest": {
-                "schema_version": "ai-platform.context-manifest.v1",
-                "available_retrieval_tools": ["stage_context_file_to_workspace"],
-            },
-        }
-    )
-    adapter = ClaudeAgentWorkerAdapter()
-
-    retrieval, identity = adapter._context_retrieval_for_payload(
-        current_payload,
-        current_payload.context_pack,
-        tmp_path,
-    )
-    scope = adapter._context_retrieval_scope_for_payload(
-        current_payload,
-        current_payload.context_pack,
-    )
+    retrieval = context_bootstrap.worker_context_retrieval_authority(tmp_path)
 
     assert retrieval is authority
-    assert scope is not None
-    assert identity is not None
-    assert identity.__dict__ == scope.model_dump()
     assert captured["factory"] == (
         context_bootstrap.transaction,
         storage,
         tmp_path,
         context_bootstrap.run_storage_io,
     )
+
+
+@pytest.mark.parametrize("has_manifest", [False, True])
+def test_worker_context_retrieval_scope_preserves_payload_identity(has_manifest):
+    context_pack = {
+        "schema_version": "ai-platform.executor-context-pack.v1",
+    }
+    if has_manifest:
+        context_pack["context_manifest"] = {
+            "schema_version": "ai-platform.context-manifest.v1",
+            "available_retrieval_tools": ["stage_context_file_to_workspace"],
+        }
+    current_payload = payload(context_pack=context_pack)
+    scope = ClaudeAgentWorkerAdapter()._context_retrieval_scope_for_payload(
+        current_payload, current_payload.context_pack,
+    )
+    if not has_manifest:
+        assert scope is None
+    else:
+        assert scope is not None
+        assert scope.model_dump() == {
+            key: getattr(current_payload, key)
+            for key in ("tenant_id", "workspace_id", "user_id", "session_id", "run_id", "agent_id")
+        }
 
 
 
