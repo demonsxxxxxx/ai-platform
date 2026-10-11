@@ -4,8 +4,6 @@ import logging
 import re
 from uuid import uuid4
 
-from app.platform.postgres import errors as platform_errors
-
 
 # Preserve the existing operator log category while moving its safe projection.
 logger = logging.getLogger("app.routes.chat")
@@ -65,7 +63,7 @@ def submission_error_code(detail: object, fallback: str = "chat_submission_rejec
 
 
 def capability_authorization_error_code(
-    exc: platform_errors.RepositoryAuthorizationError,
+    exc: ValueError,
 ) -> str:
     denial = getattr(exc, "denial", None)
     if (
