@@ -199,3 +199,74 @@ test("explicit scope invalidation still revokes a subscribed settled controller"
   assert.equal(calls, 0);
   assert.equal(registry.size(), 0);
 });
+
+test("capacity retry joins one entry after delayed subscribe and observer reconnect", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
+  const registry = createArtifactDownloadRegistry({ maxEntries: 1 });
+  const context = createContext();
+  const scope = createArtifactDownloadScope(context, "message-a")!;
+  const releaseOwner = registry.get(scope, "occupied")!.subscribe(() => undefined);
+  const first = registry.get(scope, "waiting")!;
+  const second = registry.get(scope, "waiting")!;
+  await Promise.resolve();
+  await Promise.resolve(); // A React render need not commit before microtasks.
+  const firstStates: string[] = [];
+  const releaseFirst = first.subscribe((state) => firstStates.push(state));
+  releaseFirst();
+  await Promise.resolve();
+  const releaseReconnected = first.subscribe((state) => firstStates.push(state));
+  const secondStates: string[] = [];
+  const releaseSecond = second.subscribe((state) => secondStates.push(state));
+  releaseOwner();
+  let calls = 0;
+  let finish!: (succeeded: boolean) => void;
+  const pending = first.download(() => new Promise<boolean>((resolve) => {
+    calls += 1;
+    finish = resolve;
+  }));
+  await second.download(async () => { calls += 1; return true; });
+  assert.equal(calls, 1);
+  assert.equal(registry.size(), 1);
+  assert.deepEqual(firstStates, ["failed", "failed", "idle", "downloading"]);
+  assert.deepEqual(secondStates, ["failed", "downloading"]);
+  finish(true);
+  await pending;
+  assert.equal(firstStates[firstStates.length - 1], "idle");
+  assert.equal(secondStates[secondStates.length - 1], "idle");
+  releaseReconnected();
+  releaseSecond();
+  t.mock.timers.tick(30_001);
+  assert.equal(registry.size(), 0);
+  registry.clearScope(context);
+});
+
+test("capacity retry tracks scope revocation across late subscribe without revoking unrelated contexts", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
+  const registry = createArtifactDownloadRegistry({ maxEntries: 1 });
+  const context = createContext();
+  const scope = createArtifactDownloadScope(context, "message-a")!;
+  const releaseOwner = registry.get(scope, "occupied")!.subscribe(() => undefined);
+  const stale = registry.get(scope, "waiting")!;
+  const unrelated = createContext({ sessionId: "unrelated" });
+  registry.clearScope(unrelated);
+  const release = stale.subscribe(() => undefined);
+  registry.clearScope(unrelated);
+  let calls = 0;
+  await stale.download(async () => { calls += 1; return true; });
+  assert.equal(calls, 0); // Still full, not revoked by the other context.
+  releaseOwner();
+  await stale.download(async () => { calls += 1; return true; });
+  assert.equal(calls, 1);
+  const late = registry.get(scope, "late")!;
+  registry.clearScope(context);
+  await Promise.resolve();
+  const releaseLate = late.subscribe(() => undefined);
+  await late.download(async () => { calls += 1; return true; });
+  await stale.download(async () => { calls += 1; return true; });
+  assert.equal(calls, 1, "revocation persists even across late subscription");
+  await registry.get(scope, "late")!.download(async () => { calls += 1; return true; });
+  assert.equal(calls, 2, "new acquisition belongs to a new scope lifetime");
+  release();
+  releaseLate();
+  registry.clearScope(context);
+});
