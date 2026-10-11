@@ -155,7 +155,7 @@ async def test_capture_moves_private_diagnostics_out_of_terminal_result_and_is_i
     conn = object()
     result = {
         "message": "safe public result",
-        "runtime_diagnostics": runtime_diagnostics(),
+        "runtime_diagnostics": runtime_diagnostics(sdk={"exception_message": "model wait expired", "api_error_status": 429}),
         "nested": {"runtime_diagnostics": {"token": "must-not-persist"}},
     }
 
@@ -188,6 +188,8 @@ async def test_capture_moves_private_diagnostics_out_of_terminal_result_and_is_i
     assert persistence.payload["schema_version"] == RUN_DIAGNOSTICS_SCHEMA_VERSION
     assert len(persistence.payload["observations"]) == 1
     assert persistence.payload["observations"][0]["attempt_id"] == "attempt-a"
+
+    assert persistence.payload["observations"][0]["runtime_diagnostics"]["sdk"]["api_error_status"] == 429
 
 
 @pytest.mark.asyncio
@@ -565,6 +567,7 @@ def test_run_budget_keeps_the_first_and_latest_observations():
             runtime_diagnostics=normalize_sdk_runtime_diagnostics(
                 runtime_diagnostics(
                     sdk={
+                        "api_error_status": 529,
                         "exception_type": "RuntimeError",
                         "exception_message": f"failure-{index}-" + "x" * 7_000,
                     }
@@ -581,6 +584,8 @@ def test_run_budget_keeps_the_first_and_latest_observations():
     assert payload["counts"]["omitted_observations"] > 0
     assert payload["coverage"] == "partial"
     assert json_size_bytes(payload) <= RUN_DIAGNOSTICS_MAX_BYTES
+
+    assert all(item["runtime_diagnostics"]["sdk"]["api_error_status"] == 529 for item in payload["observations"])
 
 
 def test_observation_limit_reports_loss_even_when_byte_budget_is_not_exhausted():
@@ -1139,3 +1144,10 @@ def test_bootstrap_uses_execution_tool_operation_identity_owner():
     assert build_run_diagnostics_service().tool_operation_id is public_tool_operation_id
     # Paired with the mounted Run Monitor fixture; no frontend hash implementation.
     assert public_tool_operation_id("run_running", "tool-call-7") == "op_6aaadf71488c9cf9ca0e4928bbf70f1e"
+
+
+@pytest.mark.parametrize("severe", [False, True])
+def test_run_diagnostic_minimization_preserves_api_status(severe):
+    observation = {"runtime_diagnostics": sanitize_runtime_diagnostics(runtime_diagnostics(sdk={"api_error_status": 500}))}
+    runs_diagnostics_contract._minimize_observation(observation, severe=severe)
+    assert observation["runtime_diagnostics"]["sdk"] == {"api_error_status": 500}

@@ -488,6 +488,7 @@ def test_admin_run_diagnostics_reads_legacy_without_mutating_detail(monkeypatch)
     diagnostics = {
         "schema_version": "ai-platform.sdk-runtime-diagnostics.v1",
         "error_code": "claude_agent_sdk_tool_admission_failed",
+        "sdk": {"api_error_status": 429},
         "tool_calls": [
             {
                 "tool_name": "Bash",
@@ -586,6 +587,9 @@ def test_admin_run_diagnostics_reads_legacy_without_mutating_detail(monkeypatch)
     assert "runtime_diagnostics" not in detail_response.json()["run"]["result"]
     assert diagnostics_response.status_code == 200
     projected = diagnostics_response.json()
+    assert projected["details"]["sdk"]["api_error_status"] == 429
+    assert projected["details"]["observations"][0]["sdk"]["api_error_status"] == 429
+    assert "api_error_status" not in str(detail_response.json())
     assert projected["coverage"] == "legacy_record"
     assert projected["root"]["error_code"] == diagnostics["error_code"]
     assert projected["details"]["tool_calls"][0]["operation_id"] == public_tool_operation_id("run_failed", "tool-1")

@@ -440,7 +440,7 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
     ],
     details: {
       schema_version: "ai-platform.sdk-runtime-diagnostics.v1",
-      sdk: { errors: ["ACTUAL_SDK_FAILURE_MARKER"] },
+      sdk: { api_error_status: 429, errors: ["ACTUAL_SDK_FAILURE_MARKER"] },
       observations: [
         {
           observation_id: "obs-a",
@@ -449,6 +449,7 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
           stage: "model_wait",
           error_code: "claude_agent_sdk_tool_admission_failed",
           sdk: {
+            api_error_status: 429,
             errors: ["ACTUAL_SDK_FAILURE_MARKER"],
             exception_chain: [
               {
@@ -757,6 +758,7 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
     assert.doesNotMatch(container.textContent ?? "", /裁剪或拒绝/);
     assert.match(container.textContent ?? "", /执行诊断/);
     assert.match(container.textContent ?? "", /ACTUAL_SDK_FAILURE_MARKER/);
+    assert.match(container.querySelector("[data-sdk-http-status]")?.textContent ?? "", /上游 HTTP 状态：429/);
     assert.match(container.textContent ?? "", /ACTUAL_STACK_TAIL_MARKER/);
     assert.match(container.textContent ?? "", /tool_parameters_not_authorized/);
     assert.match(container.textContent ?? "", /逐条观测证据/);
@@ -768,6 +770,7 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
   const observationEvidence = Array.from(container.querySelectorAll("details") as NodeListOf<HTMLDetailsElement>)
     .find((item) => item.querySelector("summary")?.textContent?.includes("sdk_result_error"));
   assert.match(observationEvidence?.querySelector("pre")?.textContent ?? "", /block_delta_type/);
+  assert.match(observationEvidence?.querySelector("pre")?.textContent ?? "", /"api_error_status": 429/);
     assert.match(container.textContent ?? "", /ACTUAL_CHAIN_MARKER/);
     assert.match(container.textContent ?? "", /message.delta/);
     assert.match(container.textContent ?? "", /第 1 \/ 2 页 · 共 21 条/);

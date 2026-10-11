@@ -330,6 +330,28 @@ authority, database schema, or retry side-effect policy is replaced.
   they cannot be converted into a success, a retained-file claim or a blind
   retry instruction.
 
+## SDK API status in private diagnostics
+
+The Claude adapter retains `ResultMessage.api_error_status` only when consuming
+an error result, including the SDK's `subtype=success, is_error=true` case. Sandbox
+normalization and Runs sanitization independently accept only an integer HTTP
+status from 100 through 599; booleans, strings and integral floats are not coerced.
+Absent status remains unknown. Invalid fields record a bounded loss reason,
+never their supplied values.
+
+The optional scalar travels through the existing private diagnostic JSON record,
+administrator response and Run Monitor SDK evidence. Byte-budget minimization
+prioritizes this content-free scalar without increasing any size/count limit;
+ordinary-user results/events still exclude the private carrier. Existing tenant
+and administrator authorization, public error taxonomy, Run/Attempt/receipt
+control and retry policy are unchanged. The status is an observation, not a new
+control decision or permission. No raw body, request, token or prompt is added.
+
+This adds an optional diagnostic field without a schema migration or compatibility
+reader. Existing records remain readable; rollback removes its capture/display.
+Repeated normalization, budget truncation, HTTP response projection, administrator
+RBAC and ordinary-result absence are the owning regression requirements.
+
 ## Change Contract: executor terminal protocol evidence
 
 - **Owner:** Runs owns the bounded private diagnostic record and platform-admin
