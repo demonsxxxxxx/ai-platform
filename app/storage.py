@@ -11,6 +11,7 @@ import boto3
 from botocore.client import Config
 
 from app.settings import get_settings
+from app.platform.storage_io_completion import StorageIOCompletion
 from app.platform.object_storage_errors import is_missing_object_storage_bucket
 
 
@@ -53,12 +54,15 @@ async def run_storage_io(
     operation: Callable[..., _StorageResult],
     /,
     *args: object,
-    timeout_seconds: float = _STORAGE_IO_TIMEOUT_SECONDS,
+    timeout_seconds: float | None = _STORAGE_IO_TIMEOUT_SECONDS,
+    completion: StorageIOCompletion | None = None,
     on_abandoned: Callable[[], None] | None = None,
     **kwargs: object,
 ) -> _StorageResult:
     """Run blocking storage work without releasing its slot before it stops."""
 
+    if completion is not None:
+        completion.claim()
     admissions = _STORAGE_IO_ADMISSIONS
     if admissions.locked():
         raise StorageIOBusyError("storage_io_busy")
@@ -74,21 +78,38 @@ async def run_storage_io(
         except TimeoutError as exc:
             raise StorageIOBusyError("storage_io_busy") from exc
 
-        task = asyncio.create_task(asyncio.to_thread(partial(operation, *args, **kwargs)))
+        try:
+            call = partial(operation, *args, **kwargs)
+            task = (completion.submit(call) if completion is not None
+                    else asyncio.create_task(asyncio.to_thread(call)))
+        except BaseException:
+            if completion is not None and completion.submitted and not completion.finished:
+                def release_failed_submission(_outcome: object) -> None:
+                    slots.release()
+                    admissions.release()
+
+                release_admission = False
+                completion.add_done_callback(release_failed_submission)
+            else:
+                slots.release()
+            raise
+
+        def physically_finished() -> bool:
+            return completion.finished if completion is not None else task.done()
         try:
             return await asyncio.wait_for(asyncio.shield(task), timeout=timeout_seconds)
         except TimeoutError as exc:
-            if task.done():
-                return task.result()
+            if physically_finished():
+                return completion.result() if completion is not None else task.result()
             if on_abandoned is not None:
                 on_abandoned()
             raise StorageIOTimeoutError("storage_io_timeout") from exc
         except BaseException:
-            if not task.done() and on_abandoned is not None:
+            if not physically_finished() and on_abandoned is not None:
                 on_abandoned()
             raise
         finally:
-            if task.done():
+            if physically_finished():
                 slots.release()
             else:
                 def release_capacity(_task: object) -> None:
@@ -96,7 +117,10 @@ async def run_storage_io(
                     admissions.release()
 
                 release_admission = False
-                task.add_done_callback(release_capacity)
+                if completion is not None:
+                    completion.add_done_callback(release_capacity)
+                else:
+                    task.add_done_callback(release_capacity)
             # A timed-out or cancelled thread keeps its capacity until it really stops.
     finally:
         if release_admission:
