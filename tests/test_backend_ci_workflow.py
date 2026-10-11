@@ -90,6 +90,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_sandbox_executor_app.py",
         "tests/test_sandbox_executor_async_dispatch.py",
         "tests/test_settings.py",
+        "tests/test_host_bind.py",
         "tests/test_sandbox_container_provider.py",
         "tests/test_docker_async_operations.py",
         "tests/test_sandbox_creation_claim.py",
