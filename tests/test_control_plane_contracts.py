@@ -623,6 +623,9 @@ def kernel_lexical_oracle():
         ("x.secret.foo=1", "[redacted-secret].foo=1"),
         ("a.secret.helper", "a.secret.helper"),
         ("a.ſecret.helper", "[redacted-secret]"),
+        ("a.toKen.value", "[redacted-secret]"),
+        ("a.credentİal.value", "[redacted-secret]"),
+        ("a.credentıal.value", "[redacted-secret]"),
         ("foo.secret.helper.secret.count]", "foo.secret.helper.secret.count]"),
         ("token_count=123", "token_count=123"),
         ("password-reset-flow", "password-reset-flow"),
@@ -716,6 +719,10 @@ def test_kernel_lexical_redaction_has_linear_scan_work(monkeypatch, unit):
     work = [0]
 
     class MeteredText(str):
+        def __contains__(self, value):
+            work[0] += len(self)
+            return super().__contains__(value)
+
         def __getitem__(self, index):
             value = super().__getitem__(index)
             work[0] += len(value)
@@ -738,6 +745,10 @@ def test_kernel_lexical_redaction_has_linear_scan_work(monkeypatch, unit):
         def fullmatch(self, text):
             work[0] += len(text)
             return self.pattern.fullmatch(text)
+
+        def search(self, text):
+            work[0] += len(text)
+            return self.pattern.search(text)
 
         def match(self, text, start):
             if self.name == "_EMAIL_DOMAIN_PATTERN":
@@ -775,3 +786,26 @@ def test_kernel_lexical_redaction_has_linear_scan_work(monkeypatch, unit):
         assert work[0] < 200 * len(text)
     assert totals[1] <= 2.1 * totals[0]
     assert totals[2] <= 2.1 * totals[1]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The report is ready. Please review the introduction before the meeting.",
+        "x " * 409600 + "x",
+        "a." * 2048,
+    ],
+)
+def test_kernel_lexical_absence_checks_skip_per_word_scans(monkeypatch, text):
+    from app.kernel import memory_redaction as kernel
+
+    class UnexpectedRunScan:
+        def finditer(self, *args):
+            pytest.fail("marker-free, no-@ prose entered the per-word run scanner")
+
+    # A work invariant for the large plain-narration path: its cost must not
+    # include one Python iteration/allocation per word. No wall-clock threshold.
+    monkeypatch.setattr(kernel, "_SECRET_LIKE_RUN_PATTERN", UnexpectedRunScan())
+    monkeypatch.setattr(kernel, "_EMAIL_LOCAL_RUN_PATTERN", UnexpectedRunScan())
+    assert kernel._redact_secret_like_values(text) == text
+    assert kernel._redact_emails(text) == text

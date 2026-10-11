@@ -472,6 +472,11 @@ def _secret_like_token_matches(text: str) -> Iterator[tuple[int, int, bool]]:
     Unicode token runs can contain many separate chains; classify each run's
     safe followers once so partial matches never rescan the remaining suffix.
     """
+    # Every lexical match requires one of these fixed literals. A single
+    # C-level search avoids allocating a segment list for every prose word;
+    # marker-present input still uses the bounded run/chain scanner below.
+    if not _SECRET_LIKE_MARKER_PATTERN.search(text):
+        return
     for run in _SECRET_LIKE_RUN_PATTERN.finditer(text):
         segments = list(_SECRET_LIKE_SEGMENT_PATTERN.finditer(text, run.start(), run.end()))
         if len(segments) < 2:
@@ -578,6 +583,8 @@ def _redact_secret_like_values(text: str) -> str:
 
 def _email_matches(text: str) -> Iterator[tuple[int, int]]:
     """Scan each local run and anchor the unchanged domain grammar once."""
+    if "@" not in text:
+        return
     previous = 0
     for local in _EMAIL_LOCAL_RUN_PATTERN.finditer(text):
         end = local.end()
