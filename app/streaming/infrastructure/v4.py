@@ -99,6 +99,9 @@ def _normalize_redis_fields(fields: object) -> dict[str, str]:
 
 _V4_REPLAY_PAGE_LUA = r"""
 local rows = redis.call('XRANGE', KEYS[1], ARGV[1], ARGV[2], 'COUNT', tonumber(ARGV[3]))
+if #rows == 0 and redis.call('EXISTS', KEYS[1]) == 0 then
+  return {-1, rows}
+end
 local predecessor = ARGV[4]
 if predecessor == '' then
   return {1, rows}
@@ -1374,7 +1377,7 @@ class V4RedisStreamBridge:
     ) -> tuple[V4StreamEntry, ...]:
         after = _redis_id_tuple(after_redis_id)
         through = _redis_id_tuple(through_redis_id)
-        if after >= through:
+        if after > through:
             return ()
         key = stream_key(tenant_scope_value=tenant_scope_value, run_id=run_id, stream_incarnation=stream_incarnation)
         predecessor = "" if after_redis_id == "0-0" else after_redis_id
@@ -1395,11 +1398,13 @@ class V4RedisStreamBridge:
         if not isinstance(result, (tuple, list)) or len(result) != 2:
             raise StreamTransportUnavailable("v4_stream_replay_result_invalid")
         continuity, rows = result
+        if int(continuity) == -1:
+            raise StreamContractError("stream_missing")
         if int(continuity) != 1:
             raise StreamContractError("stream_replay_continuity_unproven")
         if not isinstance(rows, (tuple, list)):
             raise StreamTransportUnavailable("v4_stream_replay_result_invalid")
-        return tuple(
+        entries = tuple(
             self._decode(
                 row,
                 tenant_scope_value=tenant_scope_value,
@@ -1407,8 +1412,15 @@ class V4RedisStreamBridge:
                 attempt_id=attempt_id,
                 stream_incarnation=stream_incarnation,
             )
-            for row in rows or ()
+            for row in rows
         )
+        # Validate the origin from this atomic page, not an earlier bounds read:
+        # stream.open can be trimmed between resolve_resume and initial replay.
+        if not predecessor and (
+            not entries or entries[0].envelope["event_type"] != "stream.open"
+        ):
+            raise StreamContractError("stream_replay_continuity_unproven")
+        return entries
 
     async def read_stream(
         self,
@@ -1421,7 +1433,11 @@ class V4RedisStreamBridge:
         count: int = 128,
         block_ms: int = 5000,
     ) -> tuple[V4StreamEntry, ...]:
-        """Read later entries directly from the authorized Redis Stream."""
+        """Wait on the Stream, then prove retention before delivering a page.
+
+        XREAD can skip a trimmed predecessor. Its result only captures the page's
+        tail; the existing atomic replay read owns delivery and continuity.
+        """
         _redis_id_tuple(after_redis_id)
         if (
             isinstance(count, bool)
@@ -1444,7 +1460,16 @@ class V4RedisStreamBridge:
         except Exception as exc:
             raise StreamTransportUnavailable("v4_stream_read_unavailable") from exc
         if not result:
-            return ()
+            # An idle Stream still retains our anchor. Expiration must become a
+            # gap rather than an ordinary heartbeat on a silently missing key.
+            return await self.replay_page(
+                tenant_scope_value=tenant_scope_value,
+                run_id=run_id,
+                attempt_id=attempt_id,
+                stream_incarnation=stream_incarnation,
+                after_redis_id=after_redis_id,
+                through_redis_id=after_redis_id,
+            )
         if not isinstance(result, (list, tuple)) or len(result) != 1:
             raise StreamTransportUnavailable("v4_stream_read_result_invalid")
         stream_result = result[0]
@@ -1460,7 +1485,7 @@ class V4RedisStreamBridge:
             raise StreamContractError("v4_stream_authority_mismatch")
         if not isinstance(rows, (list, tuple)):
             raise StreamTransportUnavailable("v4_stream_read_result_invalid")
-        return tuple(
+        candidates = tuple(
             self._decode(
                 row,
                 tenant_scope_value=tenant_scope_value,
@@ -1470,6 +1495,22 @@ class V4RedisStreamBridge:
             )
             for row in rows
         )
+        if not candidates or len(candidates) > count:
+            raise StreamTransportUnavailable("v4_stream_read_result_invalid")
+        tail = candidates[-1].cursor.redis_id
+        if _redis_id_tuple(tail) <= _redis_id_tuple(after_redis_id):
+            raise StreamContractError("stream_replay_continuity_unproven")
+        entries = await self.replay_page(
+            tenant_scope_value=tenant_scope_value,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            stream_incarnation=stream_incarnation,
+            after_redis_id=after_redis_id,
+            through_redis_id=tail,
+        )
+        if not entries or entries[-1].cursor.redis_id != tail:
+            raise StreamContractError("stream_replay_continuity_unproven")
+        return entries
 
 
 __all__ = [

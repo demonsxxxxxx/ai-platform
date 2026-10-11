@@ -345,3 +345,89 @@ async def test_real_redis_exact_resume_reports_terminal_and_end_state_after_trim
     finally:
         await client.delete(key, state_key)
         await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_real_initial_replay_rejects_origin_trim_after_resume():
+    client, key, state_key, bridge = await _stream()
+    try:
+        origin = (await client.xrange(key, count=1))[0][0]
+        tail = await bridge.append(_envelope(event_id="evt4_initial_trim", seq=3))
+        identity = dict(tenant_scope_value="scope_v4_evidence", run_id="run-v4-evidence",
+                        attempt_id="attempt-v4-evidence")
+        resume = await bridge.resolve_resume(
+            **identity, current_stream_incarnation=3, last_event_id=None,
+        )
+        assert resume.after_redis_id == "0-0" and resume.gap is None
+        await client.xtrim(key, minid=tail, approximate=False)
+        assert await client.xrange(key, min=origin, max=origin) == []
+        assert (await client.xrange(key, count=1))[0][0] == tail
+        with pytest.raises(StreamContractError, match="stream_replay_continuity_unproven"):
+            await bridge.replay_page(
+                **identity, stream_incarnation=3,
+                after_redis_id="0-0", through_redis_id=tail,
+            )
+    finally:
+        await client.delete(key, state_key)
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("trim_after_xread", [False, True])
+async def test_real_live_read_rejects_trimmed_accepted_anchor_and_unread_row(monkeypatch, trim_after_xread):
+    client, key, state_key, bridge = await _stream()
+    try:
+        accepted = await bridge.append(_envelope(event_id="evt4_accepted", seq=1))
+        unread = await bridge.append(_envelope(event_id="evt4_unread_trimmed", seq=3))
+        tail = await bridge.append(_envelope(event_id="evt4_retained_tail", seq=7))
+        before = [item[0] for item in await client.xrange(key)]
+        assert accepted in before and unread in before and tail in before
+        original_xread = client.xread
+        if trim_after_xread:
+            async def read_then_trim(*args, **kwargs):
+                result = await original_xread(*args, **kwargs)
+                await client.xtrim(key, minid=tail, approximate=False)
+                return result
+            monkeypatch.setattr(client, "xread", read_then_trim)
+        else:
+            await client.xtrim(key, minid=tail, approximate=False)
+        with pytest.raises(StreamContractError, match="stream_replay_continuity_unproven"):
+            await bridge.read_stream(
+                tenant_scope_value="scope_v4_evidence", run_id="run-v4-evidence",
+                attempt_id="attempt-v4-evidence", stream_incarnation=3,
+                after_redis_id=accepted, block_ms=1,
+            )
+        # Exact retained rows, not numeric sequence adjacency, prove the gap.
+        assert await client.xrange(key, min=accepted, max=accepted) == []
+        assert await client.xrange(key, min=unread, max=unread) == []
+        assert [item[0] for item in await client.xrange(key)] == [tail]
+    finally:
+        await client.delete(key, state_key)
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_real_live_retained_anchor_survives_open_trim_and_missing_is_not_idle():
+    client, key, state_key, bridge = await _stream()
+    identity = dict(tenant_scope_value="scope_v4_evidence", run_id="run-v4-evidence",
+                    attempt_id="attempt-v4-evidence", stream_incarnation=3)
+    try:
+        accepted = await bridge.append(_envelope(event_id="evt4_idle_anchor", seq=3))
+        await client.xtrim(key, minid=accepted, approximate=False)
+        assert await bridge.replay_page(
+            **identity, after_redis_id=accepted, through_redis_id=accepted,
+        ) == ()
+        assert await bridge.read_stream(**identity, after_redis_id=accepted, block_ms=1) == ()
+        first = await bridge.append(_envelope(event_id="evt4_bounded_first", seq=7))
+        second = await bridge.append(_envelope(event_id="evt4_bounded_second", seq=11))
+        page = await bridge.read_stream(**identity, after_redis_id=accepted, count=1, block_ms=1)
+        assert [item.cursor.redis_id for item in page] == [first]
+        page = await bridge.read_stream(**identity, after_redis_id=first, count=1, block_ms=1)
+        assert [item.cursor.redis_id for item in page] == [second]
+        await client.delete(key, state_key)
+        with pytest.raises(StreamContractError, match="stream_missing"):
+            await bridge.read_stream(**identity, after_redis_id=second, block_ms=1)
+        assert await client.exists(key) == 0
+    finally:
+        await client.delete(key, state_key)
+        await client.aclose()
