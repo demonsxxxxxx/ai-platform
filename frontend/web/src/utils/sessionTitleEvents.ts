@@ -6,8 +6,6 @@ export interface SessionTitleUpdatedDetail {
   title: string;
 }
 
-const cachedSessionTitles = new Map<string, string>();
-
 function getEventTarget(target?: EventTarget): EventTarget | null {
   if (target) return target;
   if (typeof window === "undefined") return null;
@@ -23,10 +21,6 @@ function normalizeDetail(
   return { sessionId, title };
 }
 
-export function getCachedSessionTitle(sessionId: string): string | null {
-  return cachedSessionTitles.get(sessionId) ?? null;
-}
-
 export function dispatchSessionTitleUpdated(
   detail: SessionTitleUpdatedDetail,
   target?: EventTarget,
@@ -35,7 +29,6 @@ export function dispatchSessionTitleUpdated(
   const eventTarget = getEventTarget(target);
   if (!normalized || !eventTarget) return;
 
-  cachedSessionTitles.set(normalized.sessionId, normalized.title);
   eventTarget.dispatchEvent(
     new CustomEvent<SessionTitleUpdatedDetail>(SESSION_TITLE_UPDATED_EVENT, {
       detail: normalized,
