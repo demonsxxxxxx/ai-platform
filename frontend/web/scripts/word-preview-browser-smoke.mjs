@@ -48,7 +48,8 @@ try {
   const page=await context.newPage();
   page.on('console',message=>{if(/Content Security Policy|violates.*directive/i.test(message.text()))evidence.csp.push(message.text());});
   const pageErrors=[];page.on('pageerror',error=>pageErrors.push(String(error)));
-  await page.goto(`${origin}/scripts/fixtures/word-preview/index.html`);
+  const navigation=await page.goto(`${origin}/scripts/fixtures/word-preview/index.html`);
+  assert.equal(navigation.headers()['content-security-policy'],undefined,'parent HTTP CSP must not mask isolation');
   await page.locator('#status').filter({hasText:'ready'}).waitFor();
   assert.equal(await page.locator('meta[http-equiv="Content-Security-Policy"]').count(),0,'parent CSP must not mask isolation');
   // Real cross-site child and nested frames, plus same-origin sentinel controls.
