@@ -64,6 +64,17 @@ DELETE `/api/skills/{skill_name}/files/{file_path}` stores a tenant/user-scoped 
 
 Marketplace file previews continue to read released Skill snapshots and do not include tenant/user file overlays.
 
+Skill export reads the complete authenticated file list and each file's content.
+Binary file responses carry base64 in `content` with `is_binary=true`; the ZIP
+writer receives decoded bytes, not an external URL or a display placeholder.
+The retired project-preview URL-fetch parameter is removed; ZIP creation does
+not fetch secondary URLs or silently omit failed downloads.
+Empty base64 is a valid zero-byte file. A failed file read or malformed binary
+content fails the whole export instead of downloading a partial archive. Export
+completion is fenced by the initiating mounted UI/authentication generation,
+including a final check after asynchronous ZIP generation. This is a collection
+of authorized reads, not an atomic snapshot across concurrent file edits.
+
 `POST /api/skills/upload/preview` accepts a multipart ZIP package in field
 `file`, validates the package `SKILL.md`, and returns package metadata without
 persistence. It only supports one Skill package per ZIP in this backend slice.
@@ -123,6 +134,21 @@ The Admin release-management surface under `/api/ai/admin/skills/*` is the only
 authority for immutable version upload, review, promote, rollout policy, and
 rollback. Marketplace routes remain projections and tenant-distribution
 controls; they cannot create an active version or redirect a release policy.
+
+Tenant promote and rollback select a release policy and mark the verified target
+released; they do not deprecate the globally shared previous version. Repeating
+promotion of the current version (including a rollout-percentage update) preserves
+the previous track and rollback target. Global deprecation or disabling is an
+explicit version-status action and is blocked while any active tenant policy
+selects that version, including its previous track below 100% rollout, or while
+the global catalog fallback pointer still references it. The current management
+API does not move that pointer, so its initial version stays protected as a
+compatibility owner for policy-free tenant selection. Retiring that version needs
+a separately governed catalog migration or replacement of the fallback authority,
+with reference-exit evidence; this change adds no force-retirement mechanism.
+These writes and version uploads serialize on the same Skill lifecycle row lock.
+A disabled historical pin still fails replay authorization; ordinary deprecation
+retains replay semantics.
 
 `GET /api/ai/admin/skills` and its detail route expose the current management
 catalog only. Every returned aggregate has `lifecycle_status: "active"`;

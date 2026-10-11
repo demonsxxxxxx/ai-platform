@@ -92,7 +92,33 @@ the stream owner also has an idempotent `close()` for an unstarted body. The
 20-second ordinary and 3600-second streaming operation timeout budgets remain
 explicit. They are per-operation network timeouts, not a DNS-inclusive or
 whole-response deadline. This synchronous transport does not claim prompt ASGI
-cancellation of a blocked thread; async response ownership is a separate change.
+cancellation of a blocked thread: socket close may not wake its current read,
+and the existing read timeout still bounds that wait.
+
+Execution explicitly transfers stream ownership from opening worker to caller.
+The handoff states are pending, delivered, accepted and abandoned: cancellation
+before delivery leaves late-result close to the original worker; cancellation
+after delivery closes the unaccepted result in the caller. Its lock only chooses
+the owner and is never held during network I/O or close. No new executor or
+fire-and-forget cleanup task is introduced. Finite catalog/count requests already
+close their response in the worker and retain their existing behavior.
+
+RuntimeProxyResponse carries the owned body's close callback through the HTTP
+transport. A model-specific StreamingResponse finally runs it across the entire
+ASGI invocation, including failures before body iteration or during downstream
+send. Construction failures also close the accepted stream. Cleanup is synchronous
+without cancellation checkpoints; secondary failures record only a fixed private
+reason and never replace the primary error or cancellation.
+
+The owned body separates resource close from iterator close. An active reader
+retains iterator-close duty until its current next returns or raises, avoiding
+concurrent generator.close; close suppresses a late chunk from that read. An idle
+iterator closes immediately, including the Anthropic observation wrapper. Resource
+close is attempted even if iterator or diagnostic finalization fails. Under the
+current ASGI2.3/threadpool path, disconnect can still wait for a blocking read
+before the response finally runs. This change provides deterministic ownership
+and eventual cleanup, not instantaneous upstream cancellation. Request-scoped
+async I/O would be a separate bounded follow-up if faster interruption is needed.
 
 The private `http.client` connection factory and pinned HTTPS socket subclass are
 retired. Their test doubles are replaced by HTTPX transport fixtures and real
@@ -168,7 +194,25 @@ owned by the API; Nginx does not replace it or accept lifecycle operations.
 
 Administrators store compatible-endpoint roots and credentials in the Model
 control plane. Model discovery validates the endpoint and reads `/v1/models`
-without changing the active revision. Publication re-discovers the same model
+without changing the active revision. Administrative origin normalization is pure:
+it is used for saved-key same-origin comparison, not as SSRF approval. The existing
+offloaded HTTP request resolves DNS once, checks every returned address, and pins
+the actual connection to those approved IPs. Publication's database/advisory-lock
+transaction begins only after that request finishes. A canceled discovery cannot
+publish; the existing finite-response worker still owns and closes its request.
+OS resolver duration and default-executor occupancy are not bounded by the HTTP
+read timeout, and cancellation does not instantly stop synchronous DNS.
+
+Endpoint ports must be 1–65535. An explicit port 0 is invalid rather than an alias
+for the scheme's default port; the prior truthiness-based coercion is retired.
+Malformed URL/port parsing returns `model_connection_endpoint_invalid`, without
+propagating parser-specific details. Unicode and ASCII IDNA hostname spellings
+retain their existing normalization behavior; this change does not introduce IDNA
+alias matching for saved credentials. Missing credentials or encryption setup can
+now fail before DNS policy checks; every actual request must still pass those
+checks before credentials are sent.
+
+Publication re-discovers the same model
 identities and atomically activates a new encrypted connection revision together
 with the enabled directory, configured token capacities, and one default model.
 Users fetch the new public directory when they reload chat; no live catalog push
@@ -185,10 +229,18 @@ an entered credential; a saved credential can be reused only for the same origin
 Connection edits, cancellation, reload, permission loss and unmount abort owned
 requests and invalidate stale callbacks. Saving locks the draft until the atomic
 publication returns, then adopts the acknowledged revision and clears the entered
-credential. A revision conflict retains the draft and requires fresh discovery;
-other publication failures retain the draft for retry. Cancellation restores the
+credential. A revision conflict retains the draft and requires an explicit reload
+of the saved configuration; other publication failures retain the draft for retry. Cancellation restores the
 last saved baseline. Explicit reload clears entered credentials and replaces edits
 with the saved state when loading succeeds.
+
+The model editor's compare-and-swap baseline changes only after loading saved
+configuration or receiving a successful publication. Discovery cannot advance it:
+if another administrator has published since that baseline, discovery preserves
+all unsaved fields, reports the conflict, and disables publication until the user
+explicitly reloads. Same-revision discovery may refresh candidate membership while
+retaining edits. A connection test reports connectivity only and never acknowledges
+a newer catalog revision. Abandoned discovery responses cannot alter this state.
 
 Run admission pins the active connection revision, exact upstream model ID,
 and input/output capacities. Existing Runs and Attempts retain that immutable
