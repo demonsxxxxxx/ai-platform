@@ -65,13 +65,40 @@ request. Anthropic version and beta headers are restricted to the installed
 CLI's fixed per-path allowlist; other upstream headers remain filtered. The
 proxy does not implement OpenSandbox lifecycle or capability admission.
 
-The pinned HTTP model transport forwards available response bytes incrementally,
-including small chunked SSE events before the upstream response completes. The
-64 KiB read size is a maximum per read, not a minimum batching threshold. The
-cumulative response-size limit still applies before each chunk is forwarded;
-completion, read failure, and closing the started body iterator close both the
-response and its connection. Existing socket timeout budgets remain unchanged;
-this transport change does not introduce retries after streaming starts.
+The pinned HTTP model transport uses the locked HTTPX/HTTPCore implementation
+for HTTP framing, socket operations and TLS. The platform validates every DNS
+answer before connecting, uses an approved IP in the request URL, and preserves
+the original authority in `Host` and hostname in the TLS `sni_hostname` extension.
+It supplies the existing system-trust SSL context explicitly, disables environment
+proxies and redirects, and retains provider-header and credential isolation.
+All 3xx responses are rejected without a second dispatch. Connection establishment
+errors alone may try another approved IP; read, write, protocol and response-body
+failures never replay a potentially accepted model POST.
+
+Each operation owns its own client until the response is closed. There is no
+cross-request IP-keyed pool, cookie jar or default provider credential. Such a
+pool could reuse a TLS connection verified for another hostname on the same IP.
+Responses are streamed as raw available bytes with no fixed-size batching,
+including small chunked SSE events before the upstream response completes.
+`Accept-Encoding: identity` is explicit; non-identity responses fail with the
+existing `model_upstream_unavailable` transport error rather than being implicitly
+decompressed or forwarded without their encoding header. This deliberately
+rejects gateways that ignore the identity request.
+
+The cumulative response-size limit applies before each chunk is forwarded:
+16 MiB by default and 8192 bytes for explicit count-token responses. Completion,
+read failure and closing a started body iterator close both response and client;
+the stream owner also has an idempotent `close()` for an unstarted body. The
+20-second ordinary and 3600-second streaming operation timeout budgets remain
+explicit. They are per-operation network timeouts, not a DNS-inclusive or
+whole-response deadline. This synchronous transport does not claim prompt ASGI
+cancellation of a blocked thread; async response ownership is a separate change.
+
+The private `http.client` connection factory and pinned HTTPS socket subclass are
+retired. Their test doubles are replaced by HTTPX transport fixtures and real
+local HTTP/TLS wire tests. The synchronous ModelUpstream port, catalog parsing,
+Run/Attempt binding, count compatibility and private response evidence remain
+owned by the platform; no provider SDK or duplicate fallback transport remains.
 
 For successful Anthropic `/v1/messages` SSE responses, the proxy emits private
 `model_wire_text` checkpoints scoped to Run, Attempt and one model call. Each
