@@ -106,6 +106,16 @@ try {
   evidence.assertions.push('Close during controlled real-converter return window: settled result released after unmount, no late iframe');
 
   const frame=()=>page.frameLocator('#preview-host iframe');
+  async function visibleMarker(marker,scroll=true){
+    const target=frame().getByText(marker,{exact:true});
+    if(scroll)await target.scrollIntoViewIfNeeded();
+    const box=await target.boundingBox();const host=await page.locator('#preview-host').boundingBox();
+    const viewport=page.viewportSize();
+    assert.ok(box&&host&&box.width>0&&box.height>0);
+    assert.ok(box.x>=Math.max(0,host.x)&&box.x+box.width<=Math.min(viewport.width,host.x+host.width),'marker must be inside horizontal parent clip');
+    assert.ok(box.y>=Math.max(0,host.y)&&box.y+box.height<=Math.min(viewport.height,host.y+host.height),'marker must be inside vertical parent clip');
+    return box;
+  }
   async function inspectDocument(marker){
     await frame().getByText(marker,{exact:true}).waitFor();
     const owner=await page.locator('#preview-host iframe').elementHandle();
@@ -129,19 +139,35 @@ try {
   await page.waitForFunction(initial=>document.querySelector('#preview-host iframe').parentElement.style.transform!==initial,initial);
   await page.getByRole('button',{name:'Reset',exact:true}).click();
   await page.waitForFunction(initial=>document.querySelector('#preview-host iframe').parentElement.style.transform===initial,initial);
+  portrait.viewportMarker=await visibleMarker('Final synthetic page');
   evidence.portrait=portrait;evidence.assertions.push('real Word: embedded PNG/font/MathML, last page, opaque frame, toolbar zoom/reset');
   await page.screenshot({path:resolve(evidenceDir,'portrait.png')});
   await page.locator('#landscape').click();const landscape=await inspectDocument('Final landscape page');
   assert.ok(landscape.endVisible&&landscape.imageLoaded&&landscape.fontLoaded&&landscape.math>0&&landscape.pageWidth>portrait.pageWidth);
   const horizontal=await frame().locator('body').evaluate(()=>{window.scrollTo(document.documentElement.scrollWidth,window.scrollY);return {x:scrollX,max:document.documentElement.scrollWidth-innerWidth};});
   assert.ok(horizontal.max>0&&horizontal.x>0);
+  landscape.viewportMarker=await visibleMarker('Final landscape page');
   evidence.landscape={...landscape,horizontal};evidence.assertions.push('document replacement, landscape final page and horizontal scrolling');
   await page.screenshot({path:resolve(evidenceDir,'landscape.png')});
+  await page.getByRole('button',{name:'Zoom in',exact:true}).click();await page.getByText('120%',{exact:true}).waitFor();
   await page.locator('#dark-fallback').click();await frame().getByText('Dark synthetic fallback',{exact:true}).waitFor();
   const dark=await frame().locator('body').evaluate(body=>({background:getComputedStyle(body).backgroundColor,color:getComputedStyle(body.querySelector('.word-preview-content')).color}));
   assert.equal(dark.background,'rgb(17, 24, 39)');assert.equal(dark.color,'rgb(229, 231, 235)');
+  dark.viewportMarker=await visibleMarker('Dark synthetic fallback',false);
+  dark.outerScroll=await page.locator('#preview-host div[aria-label]').evaluate(node=>node.scrollTop);
+  assert.equal(dark.outerScroll,0);await page.getByText('100%',{exact:true}).waitFor();
   evidence.dark=dark;evidence.assertions.push('real WordPreview malformed DOCX text fallback and production dark theme');
   await page.screenshot({path:resolve(evidenceDir,'dark-fallback.png')});
+  await page.getByRole('button',{name:'Zoom in',exact:true}).click();await page.getByText('120%',{exact:true}).waitFor();
+  await page.evaluate(()=>{window.__wordSmokeGate={armed:true};});
+  await page.locator('#portrait').click();await page.waitForFunction(()=>window.__wordSmokeGate?.settled===true);
+  assert.equal(await page.locator('#preview-host div[aria-label]').evaluate(node=>node.scrollTop),0,'fallback to loading restores original owner scroll reset');
+  assert.doesNotMatch(await page.locator('#preview-host iframe').getAttribute('srcdoc'),/Dark synthetic fallback|Final synthetic page/);
+  await page.evaluate(()=>window.__wordSmokeGate.release());await page.waitForFunction(()=>window.__wordSmokeGate.returned===true);
+  await page.evaluate(()=>{delete window.__wordSmokeGate;});
+  await inspectDocument('Final synthetic page');await page.getByText('100%',{exact:true}).waitFor();
+  evidence.replacementMarker=await visibleMarker('Final synthetic page');
+  evidence.assertions.push('actual parent-viewport clipped marker visibility; fallback/loading/new-DOCX owner resets scroll and zoom');
   await page.locator('#close').click();assert.equal(await page.locator('#preview-host iframe').count(),0);
   evidence.requests=requestLog;assert.deepEqual(requestLog,[],'renderer attempted an untrusted request');
   assert.deepEqual(routeErrors,[]);

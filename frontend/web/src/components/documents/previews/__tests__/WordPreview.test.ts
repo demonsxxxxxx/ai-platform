@@ -11,3 +11,7 @@ test("Word preview only mounts static sandboxed output, not renderer-owned nodes
 test("Word preview preserves DOCX image dimensions against global CSS", () => {
   assert.match(source, /\.docx-preview-content section\.docx img\s*{[^}]*max-width: none;/s);
 });
+
+test("Word fallback restores the previous viewer-owner reset boundary", () => {
+  assert.match(source, /key=\{loading \|\| renderedWithDocxPreview \? "docx" : "fallback"\}/);
+});

@@ -5,6 +5,7 @@ import { initReactI18next } from 'react-i18next';
 import WordPreview from '../../../src/components/documents/previews/WordPreview';
 import { createSyntheticWordDocument } from '../../../src/components/documents/previews/__tests__/wordPreviewFixture';
 import '../../../src/styles/tailwind.css';
+import '../../../src/styles/base.css';
 
 await i18n.use(initReactI18next).init({lng:'en',fallbackLng:'en',resources:{en:{translation:{imageViewer:{zoomIn:'Zoom in',zoomOut:'Zoom out',reset:'Reset'}}}},interpolation:{escapeValue:false}});
 const translate=(key:string)=>key;

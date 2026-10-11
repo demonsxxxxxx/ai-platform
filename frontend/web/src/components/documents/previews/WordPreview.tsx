@@ -358,6 +358,7 @@ const WordPreview = memo(function WordPreview({
 
   return (
     <DocumentViewerFrame
+      key={loading || renderedWithDocxPreview ? "docx" : "fallback"}
       naturalWidth={DEFAULT_DOCX_SIZE.width}
       loading={loading}
       ariaLabel={t("documents.wordPreviewTitle") || "Word preview"}
