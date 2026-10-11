@@ -157,7 +157,14 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
         in test_sse.split(" && ")
     )
     assert "src/hooks/useAgent/__tests__/historyLoader.test.ts" in test_sse
-    assert test_sse.split().count("src/services/api/__tests__/session.test.ts") == 1
+    for selector in (
+        "src/hooks/useAgent/__tests__/runControlLifecycle.test.ts",
+        "src/hooks/useAgent/runControlLifecycle.test.ts",
+        "src/hooks/useAgent/__tests__/runLifecycle.test.ts",
+        "src/hooks/useAgent/__tests__/stopGenerationRunCancel.test.ts",
+        "src/services/api/__tests__/session.test.ts",
+    ):
+        assert test_sse.split().count(selector) == 1
     assert "group: ai-platform-frontend-${{ github.event.pull_request.number || github.run_id }}" in workflow
     assert "cancel-in-progress: ${{ github.event_name == 'pull_request' }}" in workflow
     contract = _workflow_contract()
