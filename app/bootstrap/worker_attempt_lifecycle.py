@@ -7,7 +7,6 @@ from app.runs.infrastructure import postgres as runs_postgres
 
 from app.bootstrap.run_diagnostics import build_run_diagnostics_service
 from app.execution.api import WorkerAttemptLifecyclePorts
-from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 from app.runs.api import (
     RunAttemptLifecycleService,
     cancel_run_with_v4,
@@ -15,6 +14,8 @@ from app.runs.api import (
     fail_run_with_v4,
 )
 from app.runs.application.lifecycle import RunLifecycleService
+from app.sandbox.api import SandboxReconciliationReceiptAuthority
+from app.sandbox.infrastructure import leases_postgres
 
 
 def build_worker_attempt_lifecycle_ports(
@@ -24,16 +25,17 @@ def build_worker_attempt_lifecycle_ports(
     """Bind worker lifecycle ports to one process-owned attempt service."""
 
     run_diagnostics = build_run_diagnostics_service()
+    receipt_authority = SandboxReconciliationReceiptAuthority(
+        lock_receipt=leases_postgres.lock_scoped_reconciliation_receipt,
+    )
     return WorkerAttemptLifecyclePorts(
         lock_run=runs_postgres.get_run,
+        restore_reconciliation_attempt=partial(
+            attempt_lifecycle.restore_reconciliation, receipt_authority=receipt_authority.is_current,
+        ),
         complete_run=partial(complete_run_with_v4, lifecycle=lifecycle),
         fail_run=partial(fail_run_with_v4, lifecycle=lifecycle),
         cancel_run=partial(cancel_run_with_v4, lifecycle=lifecycle),
-        is_reconciliation_claim_current=(
-            sandbox_lease_repository.is_sandbox_executor_reconciliation_claim_current
-        ),
-        get_attempt=attempt_lifecycle.get,
-        get_attempt_for_queue_attempt=attempt_lifecycle.get_for_queue_attempt,
         start_attempt=attempt_lifecycle.start_worker,
         assert_current_attempt=attempt_lifecycle.assert_worker_current,
         request_attempt_cancel=attempt_lifecycle.request_cancel,
