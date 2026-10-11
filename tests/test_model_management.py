@@ -149,8 +149,8 @@ async def test_model_discovery_is_read_only_and_publication_rechecks_upstream_id
             return 1, kwargs["models"]
 
     class Security:
-        def validate(self, base_url, **_kwargs):
-            return SimpleNamespace(base_url=base_url)
+        def normalize(self, base_url):
+            return base_url
 
         def fingerprint(self, _api_key):
             return "synthetic-fingerprint"
