@@ -1661,10 +1661,12 @@ def test_run_control_operation_get_linearizes_before_authorized_absence(monkeypa
     ]
 
 
-def test_run_control_operation_get_reports_safe_pending_queue_admission(monkeypatch):
+@pytest.mark.parametrize("action", ["retry", "resume"])
+@pytest.mark.parametrize("invalid_snapshot", [False, True])
+def test_run_control_operation_get_reports_safe_pending_queue_admission(monkeypatch, action, invalid_snapshot):
     operation = {
         "source_run_id": "run-parent",
-        "action": "resume",
+        "action": action,
         "operation_id": RUN_CONTROL_OPERATION_ID,
         "run_id": "run-child-pending",
         "session_id": "session-parent",
@@ -1679,6 +1681,12 @@ def test_run_control_operation_get_reports_safe_pending_queue_admission(monkeypa
         "status": "queued",
     }
 
+    if invalid_snapshot:
+        operation["input_json"]["model_id"] = "../private/model"
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("invalid committed child must not enqueue or create another child")
+
     async def noop_lock(conn, **kwargs):
         return None
 
@@ -1686,9 +1694,15 @@ def test_run_control_operation_get_reports_safe_pending_queue_admission(monkeypa
         return {"id": kwargs["run_id"], "status": "failed"}
 
     async def resolve_operation(conn, **kwargs):
+        assert kwargs["tenant_id"] == "default"
+        assert kwargs["user_id"] == "user-a"
+        assert kwargs["source_run_id"] == "run-parent"
+        assert kwargs["action"] == action
+        assert kwargs["operation_id"] == RUN_CONTROL_OPERATION_ID
         return operation
 
     async def absent_admission(payload):
+        assert not invalid_snapshot
         assert payload["input"] == {"private": "must-not-be-public"}
         return None
 
@@ -1698,24 +1712,39 @@ def test_run_control_operation_get_reports_safe_pending_queue_admission(monkeypa
     monkeypatch.setattr(_owner_runs_infrastructure_creation_postgres, 'get_authorized_run', authorized_source)
     monkeypatch.setattr(_owner_runs_infrastructure_control_operations_postgres, 'get_run_control_operation', resolve_operation, raising=False)
     monkeypatch.setattr("app.routes.runs.read_queue_admission", absent_admission, raising=False)
+    monkeypatch.setattr("app.routes.runs.enqueue_run", forbidden)
+    monkeypatch.setattr(_owner_runs_infrastructure_replay_postgres, "retry_run_as_new_task", forbidden)
+    monkeypatch.setattr(_owner_runs_infrastructure_replay_postgres, "resume_run_as_new_task", forbidden)
+    monkeypatch.setattr(_owner_runs_infrastructure_control_operations_postgres, "record_run_control_operation", forbidden)
     client = TestClient(create_app())
 
     response = client.get(
-        f"/api/ai/runs/run-parent/control-operations/resume/{RUN_CONTROL_OPERATION_ID}",
+        f"/api/ai/runs/run-parent/control-operations/{action}/{RUN_CONTROL_OPERATION_ID}",
         headers=headers(),
     )
 
     assert response.status_code == 200
     assert response.json() == {
         "source_run_id": "run-parent",
-        "action": "resume",
+        "action": action,
         "operation_id": RUN_CONTROL_OPERATION_ID,
         "run_id": "run-child-pending",
         "session_id": "session-parent",
         "status": "queued",
-        "queue_admission": "pending",
+        "queue_admission": "unknown" if invalid_snapshot else "pending",
     }
     assert "private" not in response.text
+
+    if invalid_snapshot:
+        rejected = client.post(run_control_url("run-parent", action), headers=headers())
+        assert rejected.status_code == 500
+        assert rejected.json()["detail"]["code"] == "queue_payload_invalid"
+        assert "submission_disposition" not in rejected.json()["detail"]
+        assert "../private/model" not in rejected.text
+        assert "must-not-be-public" not in rejected.text
+        assert operation["run_id"] == "run-child-pending"
+        assert operation["status"] == "queued"
+        assert operation["input_json"]["model_id"] == "../private/model"
 
 
 def test_retry_and_resume_generate_uuid4_when_operation_id_is_omitted_but_reject_non_uuid4(monkeypatch):

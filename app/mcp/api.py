@@ -103,6 +103,11 @@ async def authorize_selected_chat_mcp_tools(conn: Any, **kwargs: Any) -> list[di
     return await _repository_call("authorize_selected_chat_mcp_tools", conn, **kwargs)
 
 
+async def authorize_selected_replay_mcp_tools(conn: Any, **kwargs: Any) -> list[dict[str, Any]]:
+    """Preserve source-identity replay admission and its authorization errors."""
+    return await _repository_call("authorize_selected_replay_mcp_tools", conn, **kwargs)
+
+
 async def authorize_available_chat_mcp_tools(conn: Any, **kwargs: Any) -> list[dict[str, Any]]:
     return await _repository_call("authorize_available_chat_mcp_tools", conn, **kwargs)
 
@@ -167,6 +172,7 @@ __all__ = [
     "mcp_tool_lifecycle_status",
     "authorize_available_chat_mcp_tools",
     "authorize_selected_chat_mcp_tools",
+    "authorize_selected_replay_mcp_tools",
     "build_mcp_tool_reference",
     "configure_mcp_runtime_services",
     "delete_mcp_server_registry",
