@@ -716,7 +716,6 @@ test("queued submit clears chat-queue when the current SSE v4 stream opens", asy
   const { sessionApi } = await import("../../../services/api/session.ts");
   const toast = (await import("react-hot-toast")).default;
   const originalSubmitChat = sessionApi.submitChat;
-  const originalMarkRead = sessionApi.markRead;
   const originalGenerateTitle = sessionApi.generateTitle;
   const originalGetEvents = sessionApi.getEvents;
   const originalFetch = dom.window.fetch;
@@ -740,7 +739,6 @@ test("queued submit clears chat-queue when the current SSE v4 stream opens", asy
     }, 1_000);
     return stream.response;
   };
-  sessionApi.markRead = async () => {};
   sessionApi.generateTitle = async () => ({
     title: "队列切换会话",
     session_id: "session-queue-open",
@@ -801,7 +799,6 @@ test("queued submit clears chat-queue when the current SSE v4 stream opens", asy
     );
   } finally {
     sessionApi.submitChat = originalSubmitChat;
-    sessionApi.markRead = originalMarkRead;
     sessionApi.generateTitle = originalGenerateTitle;
     sessionApi.getEvents = originalGetEvents;
     dom.window.fetch = originalFetch;
@@ -847,11 +844,9 @@ test("useAgent defers the locked Skill label until the server projects it", asyn
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalSubmitChat = sessionApi.submitChat;
-  const originalMarkRead = sessionApi.markRead;
   const originalGenerateTitle = sessionApi.generateTitle;
   const originalFetch = dom.window.fetch;
   dom.window.fetch = async () => completedSseResponse();
-  sessionApi.markRead = async () => {};
   sessionApi.generateTitle = async (sessionId) => ({
     title: "Internal comms",
     session_id: sessionId,
@@ -886,7 +881,6 @@ test("useAgent defers the locked Skill label until the server projects it", asyn
     assert.doesNotMatch(userMessage?.content || "", /\/skill|internal-comms/);
   } finally {
     sessionApi.submitChat = originalSubmitChat;
-    sessionApi.markRead = originalMarkRead;
     sessionApi.generateTitle = originalGenerateTitle;
     dom.window.fetch = originalFetch;
     await harness.cleanup();
@@ -902,7 +896,6 @@ test("Agent first-send URL canonicalization keeps the live SSE owner", async () 
   });
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalSubmitChat = sessionApi.submitChat;
-  const originalMarkRead = sessionApi.markRead;
   const originalGenerateTitle = sessionApi.generateTitle;
   const originalGetAuthoritative = sessionApi.getAuthoritative;
   const originalGetEvents = sessionApi.getEvents;
@@ -915,7 +908,6 @@ test("Agent first-send URL canonicalization keeps the live SSE owner", async () 
     exactHistoryLoads += 1;
     return originalGetAuthoritative(sessionId);
   };
-  sessionApi.markRead = async () => {};
   sessionApi.getEvents = async () => ({ events: [] });
   sessionApi.generateTitle = async () => ({
     title: "专家首发会话",
@@ -961,7 +953,6 @@ test("Agent first-send URL canonicalization keeps the live SSE owner", async () 
     const pendingFinish = finishStream as (() => void) | null;
     pendingFinish?.();
     sessionApi.submitChat = originalSubmitChat;
-    sessionApi.markRead = originalMarkRead;
     sessionApi.generateTitle = originalGenerateTitle;
     sessionApi.getAuthoritative = originalGetAuthoritative;
     sessionApi.getEvents = originalGetEvents;
@@ -974,7 +965,6 @@ test("useAgent preserves accepted authority through URL canonicalization for a s
   const harness = await loadReactHarness({ sessionRouteLifecycle: true });
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalSubmitChat = sessionApi.submitChat;
-  const originalMarkRead = sessionApi.markRead;
   const originalGenerateTitle = sessionApi.generateTitle;
   const submissions: unknown[][] = [];
   const originalFetch = dom.window.fetch;
@@ -983,7 +973,6 @@ test("useAgent preserves accepted authority through URL canonicalization for a s
     sseCalls += 1;
     return completedSseResponse();
   };
-  sessionApi.markRead = async () => {};
   sessionApi.generateTitle = async () => ({
     title: "翻译会话",
     session_id: "session-routed",
@@ -1031,7 +1020,6 @@ test("useAgent preserves accepted authority through URL canonicalization for a s
     assert.equal(sseCalls, 2);
   } finally {
     sessionApi.submitChat = originalSubmitChat;
-    sessionApi.markRead = originalMarkRead;
     sessionApi.generateTitle = originalGenerateTitle;
     dom.window.fetch = originalFetch;
     await harness.cleanup();
@@ -1045,7 +1033,6 @@ test("session route lifecycle supersedes stale loads across external and sidebar
   const originalGetAuthoritative = sessionApi.getAuthoritative;
   const originalGetEvents = sessionApi.getEvents;
   const originalSubmitChat = sessionApi.submitChat;
-  const originalMarkRead = sessionApi.markRead;
   const originalGenerateTitle = sessionApi.generateTitle;
   const originalFetch = dom.window.fetch;
   const historyLoads: string[] = [];
@@ -1063,7 +1050,6 @@ test("session route lifecycle supersedes stale loads across external and sidebar
   });
 
   dom.window.fetch = async () => completedSseResponse();
-  sessionApi.markRead = async () => {};
   sessionApi.generateTitle = async (sessionId) => ({
     title: "会话 A",
     session_id: sessionId,
@@ -1193,7 +1179,6 @@ test("session route lifecycle supersedes stale loads across external and sidebar
     sessionApi.getAuthoritative = originalGetAuthoritative;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.submitChat = originalSubmitChat;
-    sessionApi.markRead = originalMarkRead;
     sessionApi.generateTitle = originalGenerateTitle;
     dom.window.fetch = originalFetch;
     await harness.cleanup();
@@ -1206,10 +1191,8 @@ test("useAgent restores a routed session agent before the next submission", asyn
   const originalGet = sessionApi.get;
   const originalGetAuthoritative = sessionApi.getAuthoritative;
   const originalGetEvents = sessionApi.getEvents;
-  const originalMarkRead = sessionApi.markRead;
   const originalSubmitChat = sessionApi.submitChat;
   const submissions: unknown[][] = [];
-  sessionApi.markRead = async () => {};
   sessionApi.get = async () => ({
     id: "session-restored",
     agent_id: "general-agent",
@@ -1251,7 +1234,6 @@ test("useAgent restores a routed session agent before the next submission", asyn
     sessionApi.get = originalGet;
     sessionApi.getAuthoritative = originalGetAuthoritative;
     sessionApi.getEvents = originalGetEvents;
-    sessionApi.markRead = originalMarkRead;
     sessionApi.submitChat = originalSubmitChat;
     await harness.cleanup();
   }
@@ -1263,7 +1245,6 @@ test("useAgent clears colliding rotated auth scopes before fresh and owned-sessi
   const originalGet = sessionApi.get;
   const originalGetAuthoritative = sessionApi.getAuthoritative;
   const originalGetEvents = sessionApi.getEvents;
-  const originalMarkRead = sessionApi.markRead;
   const originalSubmitChat = sessionApi.submitChat;
   const originalGenerateTitle = sessionApi.generateTitle;
   const originalGetStatus = sessionApi.getStatus;
@@ -1274,7 +1255,6 @@ test("useAgent clears colliding rotated auth scopes before fresh and owned-sessi
     resolveStaleSubmit = resolve;
   });
 
-  sessionApi.markRead = async () => {};
   sessionApi.getAuthoritative = async (sessionId) => ({
     session_id: sessionId,
     workspace_id: "workspace-test",
@@ -1390,7 +1370,6 @@ test("useAgent clears colliding rotated auth scopes before fresh and owned-sessi
     sessionApi.get = originalGet;
     sessionApi.getAuthoritative = originalGetAuthoritative;
     sessionApi.getEvents = originalGetEvents;
-    sessionApi.markRead = originalMarkRead;
     sessionApi.submitChat = originalSubmitChat;
     sessionApi.generateTitle = originalGenerateTitle;
     sessionApi.getStatus = originalGetStatus;
@@ -1413,7 +1392,6 @@ test("useAgent invalidates old owners in the auth layout boundary before they ca
   const originalGet = sessionApi.get;
   const originalGetAuthoritative = sessionApi.getAuthoritative;
   const originalGetEvents = sessionApi.getEvents;
-  const originalMarkRead = sessionApi.markRead;
   const originalSubmitChat = sessionApi.submitChat;
   const originalGenerateTitle = sessionApi.generateTitle;
   const originalGetStatus = sessionApi.getStatus;
@@ -1436,7 +1414,6 @@ test("useAgent invalidates old owners in the auth layout boundary before they ca
     closeStreams.push(stream.close);
     return stream.response;
   };
-  sessionApi.markRead = async () => {};
   sessionApi.getAuthoritative = async () => ({
     session_id: "session-old-history",
     workspace_id: "workspace-test",
@@ -1521,7 +1498,6 @@ test("useAgent invalidates old owners in the auth layout boundary before they ca
     sessionApi.get = originalGet;
     sessionApi.getAuthoritative = originalGetAuthoritative;
     sessionApi.getEvents = originalGetEvents;
-    sessionApi.markRead = originalMarkRead;
     sessionApi.submitChat = originalSubmitChat;
     sessionApi.generateTitle = originalGenerateTitle;
     sessionApi.getStatus = originalGetStatus;
@@ -2622,12 +2598,10 @@ test("useAgent keeps an unknown submission locked until explicit admission retry
   const originalGet = sessionApi.get;
   const originalGetAuthoritative = sessionApi.getAuthoritative;
   const originalGetEvents = sessionApi.getEvents;
-  const originalMarkRead = sessionApi.markRead;
   const originalSubmitChat = sessionApi.submitChat;
   const originalRetryAdmission = sessionApi.retryChatSubmissionAdmission;
   let submissions = 0;
   let retryAdmissions = 0;
-  sessionApi.markRead = async () => {};
   sessionApi.getAuthoritative = async () => ({
     session_id: "session-known-uncertain",
     workspace_id: "workspace-test",
@@ -2691,7 +2665,6 @@ test("useAgent keeps an unknown submission locked until explicit admission retry
     sessionApi.get = originalGet;
     sessionApi.getAuthoritative = originalGetAuthoritative;
     sessionApi.getEvents = originalGetEvents;
-    sessionApi.markRead = originalMarkRead;
     sessionApi.submitChat = originalSubmitChat;
     sessionApi.retryChatSubmissionAdmission = originalRetryAdmission;
     await harness.cleanup();
@@ -2893,7 +2866,6 @@ test("useAgent drops an A1 resolver result after A-to-B-to-A2", async () => {
   const originalGet = sessionApi.get;
   const originalGetEvents = sessionApi.getEvents;
   const originalGetStatus = sessionApi.getStatus;
-  const originalMarkRead = sessionApi.markRead;
   let resolveA1!: (value: Awaited<ReturnType<typeof sessionApi.getChatSubmission>>) => void;
   const a1Result = new Promise<Awaited<ReturnType<typeof sessionApi.getChatSubmission>>>(
     (resolve) => {
@@ -2935,7 +2907,6 @@ test("useAgent drops an A1 resolver result after A-to-B-to-A2", async () => {
       },
     };
   };
-  sessionApi.markRead = async () => {};
   sessionApi.get = async () => ({
     id: "session-a1",
     agent_id: "general-agent",
@@ -2986,7 +2957,6 @@ test("useAgent drops an A1 resolver result after A-to-B-to-A2", async () => {
     sessionApi.get = originalGet;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.getStatus = originalGetStatus;
-    sessionApi.markRead = originalMarkRead;
     await harness.cleanup();
   }
 });
@@ -3135,11 +3105,9 @@ test("useAgent resolves a fresh unknown submission after reload without another 
   const originalGet = sessionApi.get;
   const originalGetEvents = sessionApi.getEvents;
   const originalGetStatus = sessionApi.getStatus;
-  const originalMarkRead = sessionApi.markRead;
   let submissions = 0;
   let resolverCalls = 0;
   let submissionId = "";
-  sessionApi.markRead = async () => {};
   sessionApi.submitChat = (async (...args) => {
     submissions += 1;
     submissionId = String(args[7]);
@@ -3204,7 +3172,6 @@ test("useAgent resolves a fresh unknown submission after reload without another 
     sessionApi.get = originalGet;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.getStatus = originalGetStatus;
-    sessionApi.markRead = originalMarkRead;
   }
 });
 
@@ -3288,7 +3255,6 @@ async function assertStaleSubmitCannotOverwriteNewSession({
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalGet = sessionApi.get;
   const originalGetEvents = sessionApi.getEvents;
-  const originalMarkRead = sessionApi.markRead;
   const originalSubmitChat = sessionApi.submitChat;
   const originalGetChatSubmission = sessionApi.getChatSubmission;
   const originalRetryAdmission = sessionApi.retryChatSubmissionAdmission;
@@ -3302,7 +3268,6 @@ async function assertStaleSubmitCannotOverwriteNewSession({
     sseCalls += 1;
     return completedSseResponse();
   };
-  sessionApi.markRead = async () => {};
   sessionApi.get = async () => ({
     id: "session-new",
     agent_id: "general-agent",
@@ -3408,7 +3373,6 @@ async function assertStaleSubmitCannotOverwriteNewSession({
   } finally {
     sessionApi.get = originalGet;
     sessionApi.getEvents = originalGetEvents;
-    sessionApi.markRead = originalMarkRead;
     sessionApi.submitChat = originalSubmitChat;
     sessionApi.getChatSubmission = originalGetChatSubmission;
     sessionApi.retryChatSubmissionAdmission = originalRetryAdmission;
@@ -3435,7 +3399,6 @@ test("useAgent ignores an old title response after clear creates a new session",
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalSubmitChat = sessionApi.submitChat;
-  const originalMarkRead = sessionApi.markRead;
   const originalGenerateTitle = sessionApi.generateTitle;
   const originalFetch = dom.window.fetch;
   const titleResolvers: Array<
@@ -3443,7 +3406,6 @@ test("useAgent ignores an old title response after clear creates a new session",
   > = [];
   let submissionCount = 0;
   dom.window.fetch = async () => completedSseResponse();
-  sessionApi.markRead = async () => {};
   sessionApi.submitChat = (async () => {
     submissionCount += 1;
     const suffix = submissionCount === 1 ? "old" : "new";
@@ -3483,7 +3445,6 @@ test("useAgent ignores an old title response after clear creates a new session",
     assert.equal(harness.hook.newlyCreatedSession?.name, "新会话标题");
   } finally {
     sessionApi.submitChat = originalSubmitChat;
-    sessionApi.markRead = originalMarkRead;
     sessionApi.generateTitle = originalGenerateTitle;
     dom.window.fetch = originalFetch;
     await harness.cleanup();
@@ -3497,12 +3458,10 @@ test("useAgent clear invalidates delayed history get, events, and status continu
   const originalGetAuthoritative = sessionApi.getAuthoritative;
   const originalGetEvents = sessionApi.getEvents;
   const originalGetStatus = sessionApi.getStatus;
-  const originalMarkRead = sessionApi.markRead;
   let resolveSession!: (value: Awaited<ReturnType<typeof sessionApi.get>>) => void;
   let resolveEvents!: (value: Awaited<ReturnType<typeof sessionApi.getEvents>>) => void;
   let resolveStatus!: (value: Awaited<ReturnType<typeof sessionApi.getStatus>>) => void;
   const statusCalls: Array<[string, string | undefined]> = [];
-  sessionApi.markRead = async () => {};
   sessionApi.getAuthoritative = async (sessionId) => ({
     session_id: sessionId,
     workspace_id: "workspace-test",
@@ -3584,7 +3543,6 @@ test("useAgent clear invalidates delayed history get, events, and status continu
     sessionApi.getAuthoritative = originalGetAuthoritative;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.getStatus = originalGetStatus;
-    sessionApi.markRead = originalMarkRead;
     await harness.cleanup();
   }
 });
@@ -3595,13 +3553,11 @@ test("useAgent rejects a deferred A session GET after B history owns the hook", 
   const originalGet = sessionApi.get;
   const originalGetAuthoritative = sessionApi.getAuthoritative;
   const originalGetEvents = sessionApi.getEvents;
-  const originalMarkRead = sessionApi.markRead;
   let resolveA!: (value: Awaited<ReturnType<typeof sessionApi.get>>) => void;
   let notifyAGetStarted!: () => void;
   const aGetStarted = new Promise<void>((resolve) => {
     notifyAGetStarted = resolve;
   });
-  sessionApi.markRead = async () => {};
   sessionApi.getAuthoritative = async (sessionId) => ({
     session_id: sessionId,
     workspace_id: "workspace-test",
@@ -3674,7 +3630,6 @@ test("useAgent rejects a deferred A session GET after B history owns the hook", 
     sessionApi.get = originalGet;
     sessionApi.getAuthoritative = originalGetAuthoritative;
     sessionApi.getEvents = originalGetEvents;
-    sessionApi.markRead = originalMarkRead;
     await harness.cleanup();
   }
 });
@@ -3686,7 +3641,6 @@ test("useAgent rejects deferred A events after B history owns the hook", async (
   const originalGetAuthoritative = sessionApi.getAuthoritative;
   const originalGetEvents = sessionApi.getEvents;
   const originalGetStatus = sessionApi.getStatus;
-  const originalMarkRead = sessionApi.markRead;
   let resolveAEvents!: (
     value: Awaited<ReturnType<typeof sessionApi.getEvents>>,
   ) => void;
@@ -3695,7 +3649,6 @@ test("useAgent rejects deferred A events after B history owns the hook", async (
     notifyAEventsStarted = resolve;
   });
   let statusCalls = 0;
-  sessionApi.markRead = async () => {};
   sessionApi.getAuthoritative = async (sessionId) => ({
     session_id: sessionId,
     workspace_id: "workspace-test",
@@ -3776,7 +3729,6 @@ test("useAgent rejects deferred A events after B history owns the hook", async (
     sessionApi.getAuthoritative = originalGetAuthoritative;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.getStatus = originalGetStatus;
-    sessionApi.markRead = originalMarkRead;
     await harness.cleanup();
   }
 });
@@ -3788,7 +3740,6 @@ test("useAgent rejects a deferred A status after B history owns the hook", async
   const originalGetAuthoritative = sessionApi.getAuthoritative;
   const originalGetEvents = sessionApi.getEvents;
   const originalGetStatus = sessionApi.getStatus;
-  const originalMarkRead = sessionApi.markRead;
   let resolveAStatus!: (
     value: Awaited<ReturnType<typeof sessionApi.getStatus>>,
   ) => void;
@@ -3796,7 +3747,6 @@ test("useAgent rejects a deferred A status after B history owns the hook", async
   const statusStart = new Promise<void>((resolve) => {
     statusStarted = resolve;
   });
-  sessionApi.markRead = async () => {};
   sessionApi.getAuthoritative = async (sessionId) => ({
     session_id: sessionId,
     workspace_id: "workspace-test",
@@ -3879,7 +3829,6 @@ test("useAgent rejects a deferred A status after B history owns the hook", async
     sessionApi.getAuthoritative = originalGetAuthoritative;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.getStatus = originalGetStatus;
-    sessionApi.markRead = originalMarkRead;
     await harness.cleanup();
   }
 });
@@ -3888,7 +3837,6 @@ test("useAgent finalizes a failed run once with a Chinese product failure card",
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalSubmitChat = sessionApi.submitChat;
-  const originalMarkRead = sessionApi.markRead;
   const originalGenerateTitle = sessionApi.generateTitle;
   const originalGetEvents = sessionApi.getEvents;
   const originalFetch = dom.window.fetch;
@@ -3897,7 +3845,6 @@ test("useAgent finalizes a failed run once with a Chinese product failure card",
     sseCalls += 1;
     return completedPublicRunResponse("run-failed", "failed");
   };
-  sessionApi.markRead = async () => {};
   sessionApi.generateTitle = async () => ({
     title: "失败会话",
     session_id: "session-failed",
@@ -3956,7 +3903,6 @@ test("useAgent finalizes a failed run once with a Chinese product failure card",
     assert.equal(sseCalls, 1);
   } finally {
     sessionApi.submitChat = originalSubmitChat;
-    sessionApi.markRead = originalMarkRead;
     sessionApi.generateTitle = originalGenerateTitle;
     sessionApi.getEvents = originalGetEvents;
     dom.window.fetch = originalFetch;
@@ -3968,7 +3914,6 @@ test("useAgent retains final answer and artifact frames that precede a succeeded
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalSubmitChat = sessionApi.submitChat;
-  const originalMarkRead = sessionApi.markRead;
   const originalGenerateTitle = sessionApi.generateTitle;
   const originalGetEvents = sessionApi.getEvents;
   const originalFetch = dom.window.fetch;
@@ -3986,7 +3931,6 @@ test("useAgent retains final answer and artifact frames that precede a succeeded
     { eventType: "message.delta", payload: { delta: "最终答复" } },
   ]);
   dom.window.fetch = async () => lifecycle.response;
-  sessionApi.markRead = async () => {};
   sessionApi.generateTitle = async () => ({
     title: "成功终态会话",
     session_id: "session-final-success",
@@ -4074,7 +4018,6 @@ test("useAgent retains final answer and artifact frames that precede a succeeded
     );
   } finally {
     sessionApi.submitChat = originalSubmitChat;
-    sessionApi.markRead = originalMarkRead;
     sessionApi.generateTitle = originalGenerateTitle;
     sessionApi.getEvents = originalGetEvents;
     animationWindow.requestAnimationFrame = originalRequestAnimationFrame;
@@ -4088,7 +4031,6 @@ test("mounted SSE reclassifies answer text as work and isolates delayed failed h
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalSubmitChat = sessionApi.submitChat;
-  const originalMarkRead = sessionApi.markRead;
   const originalGenerateTitle = sessionApi.generateTitle;
   const originalGetEvents = sessionApi.getEvents;
   const originalFetch = dom.window.fetch;
@@ -4183,7 +4125,6 @@ test("mounted SSE reclassifies answer text as work and isolates delayed failed h
     openedRun(secondRunId, secondMessageId, secondPartId, "New answer", "answer"),
   );
 
-  sessionApi.markRead = async () => {};
   sessionApi.generateTitle = async () => ({
     title: "Assistant text parts",
     session_id: "session-part-hydration",
@@ -4338,7 +4279,6 @@ test("mounted SSE reclassifies answer text as work and isolates delayed failed h
   } finally {
     secondStream?.close();
     sessionApi.submitChat = originalSubmitChat;
-    sessionApi.markRead = originalMarkRead;
     sessionApi.generateTitle = originalGenerateTitle;
     sessionApi.getEvents = originalGetEvents;
     dom.window.fetch = originalFetch;
@@ -4351,7 +4291,6 @@ test(`useAgent preserves terminal backfill during next admission: ${admissionOut
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalSubmitChat = sessionApi.submitChat;
-  const originalMarkRead = sessionApi.markRead;
   const originalGenerateTitle = sessionApi.generateTitle;
   const originalGetEvents = sessionApi.getEvents;
   const originalGetStatus = sessionApi.getStatus;
@@ -4379,7 +4318,6 @@ test(`useAgent preserves terminal backfill during next admission: ${admissionOut
     | null = null;
   dom.window.fetch = async () =>
     streamResponseIndex++ === 0 ? lifecycle.response : nextLifecycle.response;
-  sessionApi.markRead = async () => {};
   sessionApi.generateTitle = async () => ({
     title: "终态同步会话",
     session_id: "session-terminal-sync",
@@ -4503,7 +4441,6 @@ test(`useAgent preserves terminal backfill during next admission: ${admissionOut
     }
   } finally {
     sessionApi.submitChat = originalSubmitChat;
-    sessionApi.markRead = originalMarkRead;
     sessionApi.generateTitle = originalGenerateTitle;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.getStatus = originalGetStatus;
@@ -4518,7 +4455,6 @@ test("useAgent keeps a succeeded Run terminal when result synchronization fails"
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalSubmitChat = sessionApi.submitChat;
-  const originalMarkRead = sessionApi.markRead;
   const originalGenerateTitle = sessionApi.generateTitle;
   const originalGetEvents = sessionApi.getEvents;
   const originalFetch = dom.window.fetch;
@@ -4531,7 +4467,6 @@ test("useAgent keeps a succeeded Run terminal when result synchronization fails"
     ],
   );
   dom.window.fetch = async () => lifecycle.response;
-  sessionApi.markRead = async () => {};
   sessionApi.generateTitle = async () => ({
     title: "终态同步失败会话",
     session_id: "session-terminal-sync-unavailable",
@@ -4589,7 +4524,6 @@ test("useAgent keeps a succeeded Run terminal when result synchronization fails"
     assert.equal(harness.hook.connectionStatus, "disconnected");
   } finally {
     sessionApi.submitChat = originalSubmitChat;
-    sessionApi.markRead = originalMarkRead;
     sessionApi.generateTitle = originalGenerateTitle;
     sessionApi.getEvents = originalGetEvents;
     dom.window.fetch = originalFetch;
@@ -4601,7 +4535,6 @@ test("useAgent consumes lambchat's runless error then done fallback exactly once
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalSubmitChat = sessionApi.submitChat;
-  const originalMarkRead = sessionApi.markRead;
   const originalGenerateTitle = sessionApi.generateTitle;
   const originalGetEvents = sessionApi.getEvents;
   const originalFetch = dom.window.fetch;
@@ -4610,7 +4543,6 @@ test("useAgent consumes lambchat's runless error then done fallback exactly once
     sseCalls += 1;
     return completedPublicRunResponse("run-fallback-failed", "failed");
   };
-  sessionApi.markRead = async () => {};
   sessionApi.generateTitle = async () => ({
     title: "失败回退会话",
     session_id: "session-fallback-failed",
@@ -4657,7 +4589,6 @@ test("useAgent consumes lambchat's runless error then done fallback exactly once
     assert.equal(sseCalls, 1);
   } finally {
     sessionApi.submitChat = originalSubmitChat;
-    sessionApi.markRead = originalMarkRead;
     sessionApi.generateTitle = originalGenerateTitle;
     sessionApi.getEvents = originalGetEvents;
     dom.window.fetch = originalFetch;
@@ -4669,14 +4600,12 @@ test("useAgent preserves an actionable hydrated failure without a generic duplic
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalSubmitChat = sessionApi.submitChat;
-  const originalMarkRead = sessionApi.markRead;
   const originalGenerateTitle = sessionApi.generateTitle;
   const originalGetStatus = sessionApi.getStatus;
   const originalGetEvents = sessionApi.getEvents;
   const originalFetch = dom.window.fetch;
   dom.window.fetch = async () =>
     completedPublicRunResponse("run-public-fallback-failed", "failed");
-  sessionApi.markRead = async () => {};
   sessionApi.generateTitle = async () => ({
     title: "公开失败回退会话",
     session_id: "session-public-fallback-failed",
@@ -4737,7 +4666,6 @@ test("useAgent preserves an actionable hydrated failure without a generic duplic
     assert.doesNotMatch(serializedMessages, /PdfReadError|private|token=secret/i);
   } finally {
     sessionApi.submitChat = originalSubmitChat;
-    sessionApi.markRead = originalMarkRead;
     sessionApi.generateTitle = originalGenerateTitle;
     sessionApi.getStatus = originalGetStatus;
     sessionApi.getEvents = originalGetEvents;
@@ -4750,14 +4678,12 @@ test("useAgent preserves its active owner after bounded transient status-query f
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalSubmitChat = sessionApi.submitChat;
-  const originalMarkRead = sessionApi.markRead;
   const originalGenerateTitle = sessionApi.generateTitle;
   const originalGetStatus = sessionApi.getStatus;
   const originalFetch = dom.window.fetch;
   let statusCalls = 0;
   dom.window.fetch = async () =>
     new Response("", { headers: { "content-type": "text/event-stream" } });
-  sessionApi.markRead = async () => {};
   sessionApi.generateTitle = async () => ({
     title: "状态不可用会话",
     session_id: "session-status-unavailable",
@@ -4804,7 +4730,6 @@ test("useAgent preserves its active owner after bounded transient status-query f
     );
   } finally {
     sessionApi.submitChat = originalSubmitChat;
-    sessionApi.markRead = originalMarkRead;
     sessionApi.generateTitle = originalGenerateTitle;
     sessionApi.getStatus = originalGetStatus;
     dom.window.fetch = originalFetch;
@@ -4820,7 +4745,6 @@ test("useAgent fails closed for each protocol-invalid SSE frame", async () => {
   ];
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalSubmitChat = sessionApi.submitChat;
-  const originalMarkRead = sessionApi.markRead;
   const originalGenerateTitle = sessionApi.generateTitle;
   const originalGetStatus = sessionApi.getStatus;
   const originalFetch = dom.window.fetch;
@@ -4837,7 +4761,6 @@ test("useAgent fails closed for each protocol-invalid SSE frame", async () => {
         sseCalls += 1;
         return protocolInvalidSseResponse(kind, runId);
       };
-      sessionApi.markRead = async () => {};
       sessionApi.generateTitle = async () => ({
         title: label,
         session_id: sessionId,
@@ -4885,7 +4808,6 @@ test("useAgent fails closed for each protocol-invalid SSE frame", async () => {
     }
   } finally {
     sessionApi.submitChat = originalSubmitChat;
-    sessionApi.markRead = originalMarkRead;
     sessionApi.generateTitle = originalGenerateTitle;
     sessionApi.getStatus = originalGetStatus;
     dom.window.fetch = originalFetch;
@@ -4896,7 +4818,6 @@ test("useAgent reconciles an ordinary transport interruption authoritatively", a
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalSubmitChat = sessionApi.submitChat;
-  const originalMarkRead = sessionApi.markRead;
   const originalGenerateTitle = sessionApi.generateTitle;
   const originalGetStatus = sessionApi.getStatus;
   const originalGetEvents = sessionApi.getEvents;
@@ -4907,7 +4828,6 @@ test("useAgent reconciles an ordinary transport interruption authoritatively", a
     sseCalls += 1;
     throw new Error("ordinary network interruption");
   };
-  sessionApi.markRead = async () => {};
   sessionApi.generateTitle = async () => ({
     title: "网络中断会话",
     session_id: "session-transport-interruption",
@@ -4981,7 +4901,6 @@ test("useAgent reconciles an ordinary transport interruption authoritatively", a
     );
   } finally {
     sessionApi.submitChat = originalSubmitChat;
-    sessionApi.markRead = originalMarkRead;
     sessionApi.generateTitle = originalGenerateTitle;
     sessionApi.getStatus = originalGetStatus;
     sessionApi.getEvents = originalGetEvents;
@@ -4995,7 +4914,6 @@ test(`useAgent shares one reconciliation owner across online callers during ${re
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalSubmitChat = sessionApi.submitChat;
-  const originalMarkRead = sessionApi.markRead;
   const originalGenerateTitle = sessionApi.generateTitle;
   const originalGetStatus = sessionApi.getStatus;
   const originalGetEvents = sessionApi.getEvents;
@@ -5005,7 +4923,6 @@ test(`useAgent shares one reconciliation owner across online callers during ${re
   dom.window.fetch = async () => {
     throw new Error("concurrent recovery transport interruption");
   };
-  sessionApi.markRead = async () => {};
   sessionApi.generateTitle = async () => ({
     title: "并发恢复会话",
     session_id: "session-reconcile-owner",
@@ -5088,7 +5005,6 @@ test(`useAgent shares one reconciliation owner across online callers during ${re
     );
   } finally {
     sessionApi.submitChat = originalSubmitChat;
-    sessionApi.markRead = originalMarkRead;
     sessionApi.generateTitle = originalGenerateTitle;
     sessionApi.getStatus = originalGetStatus;
     sessionApi.getEvents = originalGetEvents;
@@ -5103,7 +5019,6 @@ test(`useAgent expires cookie-session stream ownership with ${sessionMarker ? "a
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalSubmitChat = sessionApi.submitChat;
-  const originalMarkRead = sessionApi.markRead;
   const originalGenerateTitle = sessionApi.generateTitle;
   const originalGetStatus = sessionApi.getStatus;
   const originalGetEvents = sessionApi.getEvents;
@@ -5137,7 +5052,6 @@ test(`useAgent expires cookie-session stream ownership with ${sessionMarker ? "a
   }
   dom.window.fetch = fetchWithExpiredSession;
   globalThis.fetch = fetchWithExpiredSession;
-  sessionApi.markRead = async () => {};
   sessionApi.generateTitle = async () => ({
     title: "登录过期会话",
     session_id: "session-expired-session",
@@ -5191,7 +5105,6 @@ test(`useAgent expires cookie-session stream ownership with ${sessionMarker ? "a
     assert.deepEqual(harness.hook.messages, []);
   } finally {
     sessionApi.submitChat = originalSubmitChat;
-    sessionApi.markRead = originalMarkRead;
     sessionApi.generateTitle = originalGenerateTitle;
     sessionApi.getStatus = originalGetStatus;
     sessionApi.getEvents = originalGetEvents;
@@ -5217,7 +5130,6 @@ test("useAgent clears restored history when its cookie session expires", async (
   const originalGet = sessionApi.get;
   const originalGetEvents = sessionApi.getEvents;
   const originalGetStatus = sessionApi.getStatus;
-  const originalMarkRead = sessionApi.markRead;
   const originalFetch = dom.window.fetch;
   const originalSessionMarker = dom.window.localStorage.getItem(
     "ai_platform_session_present",
@@ -5229,7 +5141,6 @@ test("useAgent clears restored history when its cookie session expires", async (
     streamCalls += 1;
     return new Response(null, { status: 401 });
   };
-  sessionApi.markRead = async () => {};
   sessionApi.get = async () => ({
     id: "session-history-auth",
     agent_id: "general-agent",
@@ -5279,7 +5190,6 @@ test("useAgent clears restored history when its cookie session expires", async (
     sessionApi.get = originalGet;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.getStatus = originalGetStatus;
-    sessionApi.markRead = originalMarkRead;
     dom.window.fetch = originalFetch;
     if (originalSessionMarker === null) {
       dom.window.localStorage.removeItem("ai_platform_session_present");
@@ -5301,7 +5211,6 @@ test("useAgent releases the active state for succeeded and cancelled terminals",
     const harness = await loadReactHarness();
     const { sessionApi } = await import("../../../services/api/session.ts");
     const originalSubmitChat = sessionApi.submitChat;
-    const originalMarkRead = sessionApi.markRead;
     const originalGenerateTitle = sessionApi.generateTitle;
     const originalGetEvents = sessionApi.getEvents;
     const originalFetch = dom.window.fetch;
@@ -5310,7 +5219,6 @@ test("useAgent releases the active state for succeeded and cancelled terminals",
         terminal.runId,
         terminal.eventType === "run_cancelled" ? "cancelled" : "succeeded",
       );
-    sessionApi.markRead = async () => {};
     sessionApi.generateTitle = async () => ({
       title: "终态会话",
       session_id: `session-${terminal.runId}`,
@@ -5382,7 +5290,6 @@ test("useAgent releases the active state for succeeded and cancelled terminals",
       );
     } finally {
       sessionApi.submitChat = originalSubmitChat;
-      sessionApi.markRead = originalMarkRead;
       sessionApi.generateTitle = originalGenerateTitle;
       sessionApi.getEvents = originalGetEvents;
       dom.window.fetch = originalFetch;
@@ -5397,7 +5304,6 @@ test("useAgent uses the backend current run subject before normalizing a failed 
   const originalGet = sessionApi.get;
   const originalGetEvents = sessionApi.getEvents;
   const originalGetStatus = sessionApi.getStatus;
-  const originalMarkRead = sessionApi.markRead;
   const originalFetch = dom.window.fetch;
   let sseCalls = 0;
   const statusCalls: Array<[string, string | undefined]> = [];
@@ -5405,7 +5311,6 @@ test("useAgent uses the backend current run subject before normalizing a failed 
     sseCalls += 1;
     return completedSseResponse();
   };
-  sessionApi.markRead = async () => {};
   sessionApi.get = async () => ({
     id: "session-history-failed",
     agent_id: "general-agent",
@@ -5491,7 +5396,6 @@ test("useAgent uses the backend current run subject before normalizing a failed 
     sessionApi.get = originalGet;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.getStatus = originalGetStatus;
-    sessionApi.markRead = originalMarkRead;
     dom.window.fetch = originalFetch;
     await harness.cleanup();
   }
@@ -5503,11 +5407,9 @@ test("useAgent reconnects only the backend-selected active run after reload", as
   const originalGet = sessionApi.get;
   const originalGetEvents = sessionApi.getEvents;
   const originalGetStatus = sessionApi.getStatus;
-  const originalMarkRead = sessionApi.markRead;
   const originalFetch = dom.window.fetch;
   const statusCalls: Array<[string, string | undefined]> = [];
   const streamUrls: string[] = [];
-  sessionApi.markRead = async () => {};
   sessionApi.get = async () => ({
     id: "session-history-active",
     agent_id: "general-agent",
@@ -5556,7 +5458,6 @@ test("useAgent reconnects only the backend-selected active run after reload", as
     sessionApi.get = originalGet;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.getStatus = originalGetStatus;
-    sessionApi.markRead = originalMarkRead;
     dom.window.fetch = originalFetch;
     await harness.cleanup();
   }
@@ -5568,11 +5469,9 @@ test("session route lifecycle resets replay state before a same-session history 
   const originalGet = sessionApi.get;
   const originalGetEvents = sessionApi.getEvents;
   const originalGetStatus = sessionApi.getStatus;
-  const originalMarkRead = sessionApi.markRead;
   const originalFetch = dom.window.fetch;
   const requestCursors: Array<string | null> = [];
   let streamCalls = 0;
-  sessionApi.markRead = async () => {};
   sessionApi.get = async () => ({
     id: "session-history-replay",
     agent_id: "general-agent",
@@ -5647,7 +5546,6 @@ test("session route lifecycle resets replay state before a same-session history 
     sessionApi.get = originalGet;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.getStatus = originalGetStatus;
-    sessionApi.markRead = originalMarkRead;
     dom.window.fetch = originalFetch;
     await harness.cleanup();
   }
@@ -5659,12 +5557,10 @@ test("useAgent reloads a cancel-requested Skill run as pending without a submit 
   const originalGet = sessionApi.get;
   const originalGetEvents = sessionApi.getEvents;
   const originalGetStatus = sessionApi.getStatus;
-  const originalMarkRead = sessionApi.markRead;
   const originalSubmitChat = sessionApi.submitChat;
   const originalFetch = dom.window.fetch;
   let submitCalls = 0;
   let streamCalls = 0;
-  sessionApi.markRead = async () => {};
   sessionApi.get = async () => ({
     id: "session-cancel-requested",
     agent_id: "general-agent",
@@ -5747,7 +5643,6 @@ test("useAgent reloads a cancel-requested Skill run as pending without a submit 
     sessionApi.get = originalGet;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.getStatus = originalGetStatus;
-    sessionApi.markRead = originalMarkRead;
     sessionApi.submitChat = originalSubmitChat;
     dom.window.fetch = originalFetch;
     await harness.cleanup();
@@ -5760,12 +5655,10 @@ test("useAgent reloads a terminal cancelled Skill run without resubmitting or re
   const originalGet = sessionApi.get;
   const originalGetEvents = sessionApi.getEvents;
   const originalGetStatus = sessionApi.getStatus;
-  const originalMarkRead = sessionApi.markRead;
   const originalSubmitChat = sessionApi.submitChat;
   const originalFetch = dom.window.fetch;
   let submitCalls = 0;
   let streamCalls = 0;
-  sessionApi.markRead = async () => {};
   sessionApi.get = async () => ({
     id: "session-cancelled-reload",
     agent_id: "general-agent",
@@ -5827,7 +5720,6 @@ test("useAgent reloads a terminal cancelled Skill run without resubmitting or re
     sessionApi.get = originalGet;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.getStatus = originalGetStatus;
-    sessionApi.markRead = originalMarkRead;
     sessionApi.submitChat = originalSubmitChat;
     dom.window.fetch = originalFetch;
     await harness.cleanup();
@@ -5840,10 +5732,8 @@ test("useAgent reconciles a reload SSE interruption to its failed run status", a
   const originalGet = sessionApi.get;
   const originalGetEvents = sessionApi.getEvents;
   const originalGetStatus = sessionApi.getStatus;
-  const originalMarkRead = sessionApi.markRead;
   const originalFetch = dom.window.fetch;
   let statusCalls = 0;
-  sessionApi.markRead = async () => {};
   sessionApi.get = async () => ({
     id: "session-history-interrupted",
     agent_id: "general-agent",
@@ -5905,7 +5795,6 @@ test("useAgent reconciles a reload SSE interruption to its failed run status", a
     sessionApi.get = originalGet;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.getStatus = originalGetStatus;
-    sessionApi.markRead = originalMarkRead;
     dom.window.fetch = originalFetch;
     await harness.cleanup();
   }
@@ -5919,7 +5808,6 @@ test(`useAgent hydrates an active same-incarnation gap ${recovery === "timeout" 
   const originalGet = sessionApi.get;
   const originalGetEvents = sessionApi.getEvents;
   const originalGetStatus = sessionApi.getStatus;
-  const originalMarkRead = sessionApi.markRead;
   const originalFetch = dom.window.fetch;
   const animationWindow = dom.window as typeof dom.window &
     Pick<Window, "requestAnimationFrame" | "cancelAnimationFrame">;
@@ -5978,7 +5866,6 @@ test(`useAgent hydrates an active same-incarnation gap ${recovery === "timeout" 
       envelope(eventType, eventId, sequence, payload),
     )}\n\n`;
 
-  sessionApi.markRead = async () => {};
   sessionApi.get = async () => ({
     id: "session-active-gap",
     agent_id: "general-agent",
@@ -6169,7 +6056,6 @@ test(`useAgent hydrates an active same-incarnation gap ${recovery === "timeout" 
     sessionApi.get = originalGet;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.getStatus = originalGetStatus;
-    sessionApi.markRead = originalMarkRead;
     dom.window.fetch = originalFetch;
     await harness.cleanup();
     animationWindow.requestAnimationFrame = originalRequestAnimationFrame;
@@ -6185,7 +6071,6 @@ test("useAgent rejects an invalid assistant text-part history during gap hydrati
   const originalGet = sessionApi.get;
   const originalGetEvents = sessionApi.getEvents;
   const originalGetStatus = sessionApi.getStatus;
-  const originalMarkRead = sessionApi.markRead;
   const originalFetch = dom.window.fetch;
   const runId = "run-invalid-part-gap";
   const messageId = "protocol-invalid-part-gap";
@@ -6221,7 +6106,6 @@ test("useAgent rejects an invalid assistant text-part history during gap hydrati
     return `id: ${runId}:1:${cursor}\nevent: ${eventType}\ndata: ${JSON.stringify(envelope)}\n\n`;
   };
 
-  sessionApi.markRead = async () => {};
   sessionApi.get = async () => ({
     id: "session-invalid-part-gap",
     agent_id: "general-agent",
@@ -6361,7 +6245,6 @@ test("useAgent rejects an invalid assistant text-part history during gap hydrati
     sessionApi.get = originalGet;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.getStatus = originalGetStatus;
-    sessionApi.markRead = originalMarkRead;
     dom.window.fetch = originalFetch;
     await harness.cleanup();
   }
@@ -6373,13 +6256,11 @@ test("useAgent does not complete terminal history from a raw answer before a bad
   const originalGet = sessionApi.get;
   const originalGetEvents = sessionApi.getEvents;
   const originalGetStatus = sessionApi.getStatus;
-  const originalMarkRead = sessionApi.markRead;
   const runId = "run-terminal-invalid-part";
   const messageId = "protocol-terminal-invalid-part";
   let eventReads = 0;
   let statusReads = 0;
 
-  sessionApi.markRead = async () => {};
   sessionApi.get = async () => ({
     id: "session-terminal-invalid-part",
     agent_id: "general-agent",
@@ -6486,7 +6367,6 @@ test("useAgent does not complete terminal history from a raw answer before a bad
     sessionApi.get = originalGet;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.getStatus = originalGetStatus;
-    sessionApi.markRead = originalMarkRead;
     await harness.cleanup();
   }
 });
@@ -6497,7 +6377,6 @@ test("useAgent preserves accepted body and tool state through terminal-only stre
   const originalGet = sessionApi.get;
   const originalGetEvents = sessionApi.getEvents;
   const originalGetStatus = sessionApi.getStatus;
-  const originalMarkRead = sessionApi.markRead;
   const originalFetch = dom.window.fetch;
   const animationWindow = dom.window as typeof dom.window &
     Pick<Window, "requestAnimationFrame" | "cancelAnimationFrame">;
@@ -6546,7 +6425,6 @@ test("useAgent preserves accepted body and tool state through terminal-only stre
       envelope(eventType, eventId, sequence, payload),
     )}\n\n`;
 
-  sessionApi.markRead = async () => {};
   sessionApi.get = async () => ({
     id: "session-stream-missing-terminal",
     agent_id: "general-agent",
@@ -6742,7 +6620,6 @@ test("useAgent preserves accepted body and tool state through terminal-only stre
     sessionApi.get = originalGet;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.getStatus = originalGetStatus;
-    sessionApi.markRead = originalMarkRead;
     dom.window.fetch = originalFetch;
     await harness.cleanup();
     animationWindow.requestAnimationFrame = originalRequestAnimationFrame;
@@ -6756,9 +6633,7 @@ test("useAgent hydrates the exact terminal run compatibility history before conv
   const originalGet = sessionApi.get;
   const originalGetEvents = sessionApi.getEvents;
   const originalGetStatus = sessionApi.getStatus;
-  const originalMarkRead = sessionApi.markRead;
   const eventQueries: Array<string | undefined> = [];
-  sessionApi.markRead = async () => {};
   sessionApi.get = async () => ({
     id: "session-terminal-hydrate",
     agent_id: "general-agent",
@@ -6888,7 +6763,6 @@ test("useAgent hydrates the exact terminal run compatibility history before conv
     sessionApi.get = originalGet;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.getStatus = originalGetStatus;
-    sessionApi.markRead = originalMarkRead;
     await harness.cleanup();
   }
 });
@@ -6900,9 +6774,7 @@ test(`useAgent requires complete metadata for exact Run history: ${initiallyComp
   const originalGet = sessionApi.get;
   const originalGetEvents = sessionApi.getEvents;
   const originalGetStatus = sessionApi.getStatus;
-  const originalMarkRead = sessionApi.markRead;
   let eventReads = 0;
-  sessionApi.markRead = async () => {};
   sessionApi.get = async () => ({
     id: "session-complete-terminal",
     agent_id: "general-agent",
@@ -6958,7 +6830,6 @@ test(`useAgent requires complete metadata for exact Run history: ${initiallyComp
     sessionApi.get = originalGet;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.getStatus = originalGetStatus;
-    sessionApi.markRead = originalMarkRead;
     await harness.cleanup();
   }
 });
@@ -6971,9 +6842,7 @@ test("useAgent loads an exact old run as one complete deduplicated segment from 
   const originalGet = sessionApi.get;
   const originalGetEvents = sessionApi.getEvents;
   const originalGetStatus = sessionApi.getStatus;
-  const originalMarkRead = sessionApi.markRead;
   const eventQueries: Array<string | undefined> = [];
-  sessionApi.markRead = async () => {};
   sessionApi.get = async () => ({
     id: "session-exact-old",
     agent_id: "general-agent",
@@ -7085,7 +6954,6 @@ test("useAgent loads an exact old run as one complete deduplicated segment from 
     sessionApi.get = originalGet;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.getStatus = originalGetStatus;
-    sessionApi.markRead = originalMarkRead;
     await harness.cleanup();
   }
 });
@@ -7095,7 +6963,6 @@ test("useAgent paginates backend-shaped history and merges an older successful R
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalGet = sessionApi.get;
   const originalGetStatus = sessionApi.getStatus;
-  const originalMarkRead = sessionApi.markRead;
   const originalFetch = globalThis.fetch;
   const requests: URL[] = [];
   let resolveOlderExactPage!: (response: Response) => void;
@@ -7106,7 +6973,6 @@ test("useAgent paginates backend-shaped history and merges an older successful R
   const olderExactPage = new Promise<Response>((resolve) => {
     resolveOlderExactPage = resolve;
   });
-  sessionApi.markRead = async () => {};
   sessionApi.get = async (sessionId) => ({
     id: sessionId,
     agent_id: "general-agent",
@@ -7233,7 +7099,6 @@ test("useAgent paginates backend-shaped history and merges an older successful R
   } finally {
     sessionApi.get = originalGet;
     sessionApi.getStatus = originalGetStatus;
-    sessionApi.markRead = originalMarkRead;
     globalThis.fetch = originalFetch;
     await harness.cleanup();
   }
@@ -7244,7 +7109,6 @@ test("useAgent discards stale older Run hydration after a new history load owns 
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalGet = sessionApi.get;
   const originalGetStatus = sessionApi.getStatus;
-  const originalMarkRead = sessionApi.markRead;
   const originalFetch = globalThis.fetch;
   let resolveOlderExact!: (response: Response) => void;
   let notifyOlderExactStarted!: () => void;
@@ -7254,7 +7118,6 @@ test("useAgent discards stale older Run hydration after a new history load owns 
   const olderExact = new Promise<Response>((resolve) => {
     resolveOlderExact = resolve;
   });
-  sessionApi.markRead = async () => {};
   sessionApi.get = async (sessionId) => ({
     id: sessionId,
     agent_id: "general-agent",
@@ -7330,7 +7193,6 @@ test("useAgent discards stale older Run hydration after a new history load owns 
   } finally {
     sessionApi.get = originalGet;
     sessionApi.getStatus = originalGetStatus;
-    sessionApi.markRead = originalMarkRead;
     globalThis.fetch = originalFetch;
     await harness.cleanup();
   }
@@ -7343,7 +7205,6 @@ test(`useAgent preserves the visible answer when ${terminalStatus} exact history
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalGet = sessionApi.get;
   const originalGetStatus = sessionApi.getStatus;
-  const originalMarkRead = sessionApi.markRead;
   const originalFetch = globalThis.fetch;
   const requests: URL[] = [];
   const shell = {
@@ -7353,7 +7214,6 @@ test(`useAgent preserves the visible answer when ${terminalStatus} exact history
     timestamp: "2026-07-15T00:00:00Z",
     data: { run_id: "run-empty-successful-shell" },
   };
-  sessionApi.markRead = async () => {};
   sessionApi.get = async () => ({
     id: "session-empty-successful-history",
     agent_id: "general-agent",
@@ -7442,7 +7302,6 @@ test(`useAgent preserves the visible answer when ${terminalStatus} exact history
   } finally {
     sessionApi.get = originalGet;
     sessionApi.getStatus = originalGetStatus;
-    sessionApi.markRead = originalMarkRead;
     globalThis.fetch = originalFetch;
     await harness.cleanup();
   }
@@ -7456,8 +7315,6 @@ test("useAgent renders a payload-free exact cancelled run as a complete user and
   const originalGet = sessionApi.get;
   const originalGetEvents = sessionApi.getEvents;
   const originalGetStatus = sessionApi.getStatus;
-  const originalMarkRead = sessionApi.markRead;
-  sessionApi.markRead = async () => {};
   sessionApi.get = async () => ({
     id: "session-exact-cancelled",
     agent_id: "general-agent",
@@ -7526,7 +7383,6 @@ test("useAgent renders a payload-free exact cancelled run as a complete user and
     sessionApi.get = originalGet;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.getStatus = originalGetStatus;
-    sessionApi.markRead = originalMarkRead;
     await harness.cleanup();
   }
 });
@@ -7537,10 +7393,8 @@ test("useAgent keeps overlapping run segments separate and trusts latest-created
   const originalGet = sessionApi.get;
   const originalGetEvents = sessionApi.getEvents;
   const originalGetStatus = sessionApi.getStatus;
-  const originalMarkRead = sessionApi.markRead;
   const statusRunIds: Array<string | undefined> = [];
   const eventQueries: Array<string | undefined> = [];
-  sessionApi.markRead = async () => {};
   sessionApi.get = async () => ({
     id: "session-overlapping-runs",
     agent_id: "general-agent",
@@ -7643,7 +7497,6 @@ test("useAgent keeps overlapping run segments separate and trusts latest-created
     sessionApi.get = originalGet;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.getStatus = originalGetStatus;
-    sessionApi.markRead = originalMarkRead;
     await harness.cleanup();
   }
 });
@@ -7657,9 +7510,7 @@ test("useAgent presents a safe local card when terminal history hydration fails"
   const originalGetAuthoritative = sessionApi.getAuthoritative;
   const originalGetEvents = sessionApi.getEvents;
   const originalGetStatus = sessionApi.getStatus;
-  const originalMarkRead = sessionApi.markRead;
   let eventQueries = 0;
-  sessionApi.markRead = async () => {};
   sessionApi.getAuthoritative = async (sessionId) => ({
     session_id: sessionId,
     workspace_id: "workspace-terminal-hydrate-failure",
@@ -7726,7 +7577,6 @@ test("useAgent presents a safe local card when terminal history hydration fails"
     sessionApi.getAuthoritative = originalGetAuthoritative;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.getStatus = originalGetStatus;
-    sessionApi.markRead = originalMarkRead;
     await harness.cleanup();
   }
 });
@@ -7738,9 +7588,7 @@ test("useAgent presents a safe local card when terminal history has no assistant
   const originalGetAuthoritative = sessionApi.getAuthoritative;
   const originalGetEvents = sessionApi.getEvents;
   const originalGetStatus = sessionApi.getStatus;
-  const originalMarkRead = sessionApi.markRead;
   let eventQueries = 0;
-  sessionApi.markRead = async () => {};
   sessionApi.getAuthoritative = async (sessionId) => ({
     session_id: sessionId,
     workspace_id: "workspace-terminal-no-assistant",
@@ -7799,7 +7647,6 @@ test("useAgent presents a safe local card when terminal history has no assistant
     sessionApi.getAuthoritative = originalGetAuthoritative;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.getStatus = originalGetStatus;
-    sessionApi.markRead = originalMarkRead;
     await harness.cleanup();
   }
 });
@@ -7810,7 +7657,6 @@ test("useAgent rehydrates durable partial text and one fixed failure card", asyn
   const originalGet = sessionApi.get;
   const originalGetEvents = sessionApi.getEvents;
   const originalGetStatus = sessionApi.getStatus;
-  const originalMarkRead = sessionApi.markRead;
   let eventQueries = 0;
   const historyEvents = [
     {
@@ -7835,7 +7681,6 @@ test("useAgent rehydrates durable partial text and one fixed failure card", asyn
       },
     },
   ];
-  sessionApi.markRead = async () => {};
   sessionApi.get = async () => ({
     id: "session-durable-partial",
     agent_id: "general-agent",
@@ -7888,7 +7733,6 @@ test("useAgent rehydrates durable partial text and one fixed failure card", asyn
     sessionApi.get = originalGet;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.getStatus = originalGetStatus;
-    sessionApi.markRead = originalMarkRead;
     await harness.cleanup();
   }
 });
@@ -7901,12 +7745,10 @@ test("Agent route restores a high-watermark history owner after unmount and repl
   const originalGet = sessionApi.get;
   const originalGetEvents = sessionApi.getEvents;
   const originalGetStatus = sessionApi.getStatus;
-  const originalMarkRead = sessionApi.markRead;
   const originalFetch = dom.window.fetch;
   const streams: Array<ReturnType<typeof controlledPublicRunLifecycle>> = [];
   const streamSignals: AbortSignal[] = [];
   let streamCalls = 0;
-  sessionApi.markRead = async () => {};
   sessionApi.get = async () => ({
     id: sessionId,
     agent_id: "general-agent",
@@ -8021,7 +7863,6 @@ test("Agent route restores a high-watermark history owner after unmount and repl
     sessionApi.get = originalGet;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.getStatus = originalGetStatus;
-    sessionApi.markRead = originalMarkRead;
     dom.window.fetch = originalFetch;
   }
 });
@@ -8032,11 +7873,9 @@ test("useAgent restores the v4 message owner while replay catches up with histor
   const originalGet = sessionApi.get;
   const originalGetEvents = sessionApi.getEvents;
   const originalGetStatus = sessionApi.getStatus;
-  const originalMarkRead = sessionApi.markRead;
   const originalFetch = dom.window.fetch;
   const runId = "run-history-replay-owner";
   let stream: ReturnType<typeof controlledPublicRunLifecycle> | null = null;
-  sessionApi.markRead = async () => {};
   sessionApi.get = async () => ({
     id: "session-history-replay-owner",
     agent_id: "general-agent",
@@ -8123,7 +7962,6 @@ test("useAgent restores the v4 message owner while replay catches up with histor
     sessionApi.get = originalGet;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.getStatus = originalGetStatus;
-    sessionApi.markRead = originalMarkRead;
     dom.window.fetch = originalFetch;
     await harness.cleanup();
   }
@@ -8135,13 +7973,11 @@ test("useAgent keeps transient status failure recoverable and fails closed on st
   const originalGet = sessionApi.get;
   const originalGetEvents = sessionApi.getEvents;
   const originalGetStatus = sessionApi.getStatus;
-  const originalMarkRead = sessionApi.markRead;
   const originalFetch = dom.window.fetch;
   let statusCalls = 0;
   let sseCalls = 0;
   let statusMode: "unavailable" | "running" | "unauthorized" = "unavailable";
   let resumedStream: ReturnType<typeof controlledPublicRunLifecycle> | null = null;
-  sessionApi.markRead = async () => {};
   sessionApi.get = async () => ({
     id: "session-initial-status-unavailable",
     agent_id: "general-agent",
@@ -8254,7 +8090,6 @@ test("useAgent keeps transient status failure recoverable and fails closed on st
     sessionApi.get = originalGet;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.getStatus = originalGetStatus;
-    sessionApi.markRead = originalMarkRead;
     dom.window.fetch = originalFetch;
     await harness.cleanup();
   }
@@ -8344,7 +8179,6 @@ test("useAgent drops title events that resolve after unmount", async () => {
   const { SESSION_TITLE_UPDATED_EVENT } = await import("../../../utils/sessionTitleEvents.ts");
   const originalSubmitChat = sessionApi.submitChat;
   const originalGenerateTitle = sessionApi.generateTitle;
-  const originalMarkRead = sessionApi.markRead;
   const originalFetch = dom.window.fetch;
   let resolveTitle!: (value: { title: string; session_id: string }) => void;
   let titleEvents = 0;
@@ -8353,7 +8187,6 @@ test("useAgent drops title events that resolve after unmount", async () => {
   };
   dom.window.addEventListener(SESSION_TITLE_UPDATED_EVENT, onTitle);
   dom.window.fetch = async () => completedSseResponse();
-  sessionApi.markRead = async () => {};
   sessionApi.submitChat = (async () => ({
     session_id: "session-unmounted-title",
     run_id: "run-unmounted-title",
@@ -8378,7 +8211,6 @@ test("useAgent drops title events that resolve after unmount", async () => {
     dom.window.removeEventListener(SESSION_TITLE_UPDATED_EVENT, onTitle);
     sessionApi.submitChat = originalSubmitChat;
     sessionApi.generateTitle = originalGenerateTitle;
-    sessionApi.markRead = originalMarkRead;
     dom.window.fetch = originalFetch;
     await harness.cleanup();
   }
@@ -8388,11 +8220,9 @@ test("useAgent remains live after the StrictMode cleanup/remount cycle", async (
   const harness = await loadReactHarness({ strict: true });
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalSubmitChat = sessionApi.submitChat;
-  const originalMarkRead = sessionApi.markRead;
   const originalGenerateTitle = sessionApi.generateTitle;
   const originalFetch = dom.window.fetch;
   dom.window.fetch = async () => completedSseResponse();
-  sessionApi.markRead = async () => {};
   sessionApi.generateTitle = async () => ({
     title: "重新挂载会话",
     session_id: "session-strict-mode",
@@ -8414,7 +8244,6 @@ test("useAgent remains live after the StrictMode cleanup/remount cycle", async (
     assert.equal(harness.hook.isLoading, false);
   } finally {
     sessionApi.submitChat = originalSubmitChat;
-    sessionApi.markRead = originalMarkRead;
     sessionApi.generateTitle = originalGenerateTitle;
     dom.window.fetch = originalFetch;
     await harness.cleanup();
@@ -8428,13 +8257,11 @@ test("useAgent clears a pending reconnect timer when switching sessions", async 
   const originalGet = sessionApi.get;
   const originalGetEvents = sessionApi.getEvents;
   const originalGetStatus = sessionApi.getStatus;
-  const originalMarkRead = sessionApi.markRead;
   const originalGenerateTitle = sessionApi.generateTitle;
   const originalFetch = dom.window.fetch;
   const originalRandom = Math.random;
   let sseCalls = 0;
   Math.random = () => 0;
-  sessionApi.markRead = async () => {};
   sessionApi.generateTitle = async () => ({
     title: "待切换会话",
     session_id: "session-reconnect-old",
@@ -8482,7 +8309,6 @@ test("useAgent clears a pending reconnect timer when switching sessions", async 
     sessionApi.get = originalGet;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.getStatus = originalGetStatus;
-    sessionApi.markRead = originalMarkRead;
     sessionApi.generateTitle = originalGenerateTitle;
     dom.window.fetch = originalFetch;
     await harness.cleanup();
@@ -8495,12 +8321,10 @@ test("useAgent preserves replay-safe reconnect budget from production-shaped his
   const originalGet = sessionApi.get;
   const originalGetEvents = sessionApi.getEvents;
   const originalGetStatus = sessionApi.getStatus;
-  const originalMarkRead = sessionApi.markRead;
   const originalFetch = dom.window.fetch;
   const originalRandom = Math.random;
   let sseCalls = 0;
   Math.random = () => 0;
-  sessionApi.markRead = async () => {};
   sessionApi.get = async () => ({
     id: "session-reconnect-budget",
     agent_id: "general-agent",
@@ -8561,7 +8385,6 @@ test("useAgent preserves replay-safe reconnect budget from production-shaped his
     sessionApi.get = originalGet;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.getStatus = originalGetStatus;
-    sessionApi.markRead = originalMarkRead;
     dom.window.fetch = originalFetch;
     await harness.cleanup();
   }
@@ -8574,7 +8397,6 @@ test("useAgent adopts a current retry child through one parent history load", as
   const originalGetAuthoritative = sessionApi.getAuthoritative;
   const originalGetEvents = sessionApi.getEvents;
   const originalGetStatus = sessionApi.getStatus;
-  const originalMarkRead = sessionApi.markRead;
   const originalRetryRun = sessionApi.retryRun;
   const originalFetch = globalThis.fetch;
   const originalSessionStorage = globalThis.sessionStorage;
@@ -8584,7 +8406,6 @@ test("useAgent adopts a current retry child through one parent history load", as
   });
   let childLoads = 0;
   let retries = 0;
-  sessionApi.markRead = async () => {};
   sessionApi.get = async (sessionId) => ({
     id: sessionId,
     agent_id: "general-agent",
@@ -8661,7 +8482,6 @@ test("useAgent adopts a current retry child through one parent history load", as
     sessionApi.getAuthoritative = originalGetAuthoritative;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.getStatus = originalGetStatus;
-    sessionApi.markRead = originalMarkRead;
     sessionApi.retryRun = originalRetryRun;
     globalThis.fetch = originalFetch;
     Object.defineProperty(globalThis, "sessionStorage", {
@@ -8678,7 +8498,6 @@ test("useAgent drops a delayed A retry before it can load A-child after B replac
   const originalGet = sessionApi.get;
   const originalGetEvents = sessionApi.getEvents;
   const originalGetStatus = sessionApi.getStatus;
-  const originalMarkRead = sessionApi.markRead;
   const originalRetryRun = sessionApi.retryRun;
   let resolveRetry!: (value: Awaited<ReturnType<typeof sessionApi.retryRun>>) => void;
   const pendingRetry = new Promise<Awaited<ReturnType<typeof sessionApi.retryRun>>>(
@@ -8687,7 +8506,6 @@ test("useAgent drops a delayed A retry before it can load A-child after B replac
     },
   );
   let staleChildLoads = 0;
-  sessionApi.markRead = async () => {};
   sessionApi.get = async (sessionId) => {
     if (sessionId === "session-a-child") staleChildLoads += 1;
     return {
@@ -8749,7 +8567,6 @@ test("useAgent drops a delayed A retry before it can load A-child after B replac
     sessionApi.get = originalGet;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.getStatus = originalGetStatus;
-    sessionApi.markRead = originalMarkRead;
     sessionApi.retryRun = originalRetryRun;
     await harness.cleanup();
   }
@@ -8761,11 +8578,9 @@ test("useAgent aborts a deferred run-control GET before unmount can publish it",
   const originalGet = sessionApi.get;
   const originalGetEvents = sessionApi.getEvents;
   const originalGetStatus = sessionApi.getStatus;
-  const originalMarkRead = sessionApi.markRead;
   const originalFetch = globalThis.fetch;
   let resolvePlayback!: (value: Response) => void;
   let playbackSignal: AbortSignal | null = null;
-  sessionApi.markRead = async () => {};
   sessionApi.get = async () => ({
     id: "session-unmount-control",
     agent_id: "general-agent",
@@ -8818,7 +8633,6 @@ test("useAgent aborts a deferred run-control GET before unmount can publish it",
     sessionApi.get = originalGet;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.getStatus = originalGetStatus;
-    sessionApi.markRead = originalMarkRead;
     globalThis.fetch = originalFetch;
     await harness.cleanup();
   }
@@ -8830,11 +8644,9 @@ test("useAgent synchronously aborts a deferred run-control GET from the producti
   const originalGet = sessionApi.get;
   const originalGetEvents = sessionApi.getEvents;
   const originalGetStatus = sessionApi.getStatus;
-  const originalMarkRead = sessionApi.markRead;
   const originalFetch = globalThis.fetch;
   let resolvePlayback!: (value: Response) => void;
   let playbackSignal: AbortSignal | null = null;
-  sessionApi.markRead = async () => {};
   sessionApi.get = async () => ({
     id: "session-auth-event-control",
     agent_id: "general-agent",
@@ -8894,7 +8706,6 @@ test("useAgent synchronously aborts a deferred run-control GET from the producti
     sessionApi.get = originalGet;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.getStatus = originalGetStatus;
-    sessionApi.markRead = originalMarkRead;
     globalThis.fetch = originalFetch;
     await harness.cleanup();
   }
@@ -8908,7 +8719,6 @@ test("useAgent synchronously retires an active Chat SSE from the production auth
   );
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalSubmitChat = sessionApi.submitChat;
-  const originalMarkRead = sessionApi.markRead;
   const originalGenerateTitle = sessionApi.generateTitle;
   const originalGetStatus = sessionApi.getStatus;
   const originalGlobalFetch = globalThis.fetch;
@@ -8919,7 +8729,6 @@ test("useAgent synchronously retires an active Chat SSE from the production auth
   let rejectStream!: (reason?: unknown) => void;
   let statusCalls = 0;
   let streamCalls = 0;
-  sessionApi.markRead = async () => {};
   sessionApi.generateTitle = async () => ({
     title: "认证代际流",
     session_id: "session-auth-event-stream",
@@ -9018,7 +8827,6 @@ test("useAgent synchronously retires an active Chat SSE from the production auth
     assert.deepEqual(dismissedToastIds, ["chat-queue"]);
   } finally {
     sessionApi.submitChat = originalSubmitChat;
-    sessionApi.markRead = originalMarkRead;
     sessionApi.generateTitle = originalGenerateTitle;
     sessionApi.getStatus = originalGetStatus;
     globalThis.fetch = originalGlobalFetch;
@@ -9040,7 +8848,6 @@ test("useAgent fences the old owner before login's deferred principal GET resolv
   const originalGet = sessionApi.get;
   const originalGetEvents = sessionApi.getEvents;
   const originalGetStatus = sessionApi.getStatus;
-  const originalMarkRead = sessionApi.markRead;
   const originalFetch = globalThis.fetch;
   const freshPrincipal = await originalAuthGetCurrentUser();
   let resolvePrincipal!: (value: typeof freshPrincipal) => void;
@@ -9063,7 +8870,6 @@ test("useAgent fences the old owner before login's deferred principal GET resolv
     principalSignal = options?.signal;
     return deferredPrincipal;
   }) as typeof authApi.getCurrentUser;
-  sessionApi.markRead = async () => {};
   sessionApi.get = async () => ({
     id: "session-login-order-control",
     agent_id: "general-agent",
@@ -9141,7 +8947,6 @@ test("useAgent fences the old owner before login's deferred principal GET resolv
     sessionApi.get = originalGet;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.getStatus = originalGetStatus;
-    sessionApi.markRead = originalMarkRead;
     globalThis.fetch = originalFetch;
     await harness.cleanup();
   }
@@ -9153,7 +8958,6 @@ test("useAgent fences an A retry before pending B submission can issue its POST"
   const originalGet = sessionApi.get;
   const originalGetEvents = sessionApi.getEvents;
   const originalGetStatus = sessionApi.getStatus;
-  const originalMarkRead = sessionApi.markRead;
   const originalRetryRun = sessionApi.retryRun;
   const originalSubmitChat = sessionApi.submitChat;
   let rejectSubmission!: (reason?: unknown) => void;
@@ -9161,7 +8965,6 @@ test("useAgent fences an A retry before pending B submission can issue its POST"
     rejectSubmission = reject;
   });
   let retryPosts = 0;
-  sessionApi.markRead = async () => {};
   sessionApi.get = async () => ({
     id: "session-a-admission",
     agent_id: "general-agent",
@@ -9220,9 +9023,118 @@ test("useAgent fences an A retry before pending B submission can issue its POST"
     sessionApi.get = originalGet;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.getStatus = originalGetStatus;
-    sessionApi.markRead = originalMarkRead;
     sessionApi.retryRun = originalRetryRun;
     sessionApi.submitChat = originalSubmitChat;
+    await harness.cleanup();
+  }
+});
+
+test("history starts scoped reads without waiting for a legacy read-mark request", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalFetch = globalThis.fetch;
+  const originalWindowFetch = dom.window.fetch;
+  const requestedSessions: string[] = [];
+  const requestedPaths: string[] = [];
+  let releaseLegacyRequest!: (response: Response) => void;
+  const stalledLegacyRequest = new Promise<Response>((resolve) => {
+    releaseLegacyRequest = resolve;
+  });
+  const fetchWithStalledLegacyRequest = (async (input: RequestInfo | URL) => {
+    const path = String(input);
+    requestedPaths.push(path);
+    if (path.endsWith("/mark-read")) return stalledLegacyRequest;
+    throw new Error(`Unexpected history transport: ${path}`);
+  }) as typeof fetch;
+  globalThis.fetch = fetchWithStalledLegacyRequest;
+  dom.window.fetch = fetchWithStalledLegacyRequest;
+  sessionApi.get = async (sessionId) => {
+    requestedSessions.push(sessionId);
+    return {
+      id: sessionId,
+      agent_id: "general-agent",
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+      is_active: true,
+      metadata: {},
+    };
+  };
+  sessionApi.getEvents = async () => ({ current_run_id: null, events: [] });
+  let history: ReturnType<typeof harness.hook.loadHistory> | undefined;
+
+  try {
+    await harness.act(async () => {
+      history = harness.hook.loadHistory("session-read-free");
+      await Promise.resolve();
+    });
+    assert.deepEqual(requestedSessions, ["session-read-free"]);
+    assert.deepEqual(requestedPaths, [], "history must issue no read-mark POST");
+    assert.equal(Object.hasOwn(sessionApi, "markRead"), false);
+    await harness.act(async () => { await history; });
+    assert.equal(harness.hook.sessionId, "session-read-free");
+    assert.equal(harness.hook.isLoadingHistory, false);
+  } finally {
+    releaseLegacyRequest(new Response('{"success":true}', {
+      headers: { "content-type": "application/json" },
+    }));
+    await harness.act(async () => { await history; });
+    sessionApi.get = originalGet;
+    sessionApi.getEvents = originalGetEvents;
+    globalThis.fetch = originalFetch;
+    dom.window.fetch = originalWindowFetch;
+    await harness.cleanup();
+  }
+});
+
+test("history without read-mark still rejects a late A projection after switching to B", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetEvents = sessionApi.getEvents;
+  let resolveSessionA!: (value: Awaited<ReturnType<typeof sessionApi.get>>) => void;
+  const sessionA = new Promise<Awaited<ReturnType<typeof sessionApi.get>>>((resolve) => {
+    resolveSessionA = resolve;
+  });
+  const row = (id: string) => ({
+    id,
+    agent_id: "general-agent",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    is_active: true,
+    metadata: { agent_options: { source: id } },
+  });
+  const eventReads: string[] = [];
+  sessionApi.get = async (sessionId) => sessionId === "session-read-a" ? sessionA : row(sessionId);
+  sessionApi.getEvents = async (sessionId) => {
+    eventReads.push(sessionId);
+    return { current_run_id: null, events: [] };
+  };
+  let older: ReturnType<typeof harness.hook.loadHistory> | undefined;
+
+  try {
+    await harness.act(async () => {
+      older = harness.hook.loadHistory("session-read-a");
+      await Promise.resolve();
+    });
+    await harness.act(async () => {
+      const restored = await harness.hook.loadHistory("session-read-b");
+      assert.equal(restored?.agent_options?.source, "session-read-b");
+    });
+    assert.equal(harness.hook.sessionId, "session-read-b");
+    await harness.act(async () => {
+      resolveSessionA(row("session-read-a"));
+      assert.equal(await older, null);
+    });
+    assert.equal(harness.hook.sessionId, "session-read-b");
+    assert.deepEqual(eventReads, ["session-read-b"]);
+    assert.equal(harness.hook.isLoadingHistory, false);
+  } finally {
+    resolveSessionA(row("session-read-a"));
+    await harness.act(async () => { await older; });
+    sessionApi.get = originalGet;
+    sessionApi.getEvents = originalGetEvents;
     await harness.cleanup();
   }
 });

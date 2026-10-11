@@ -1900,13 +1900,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
 
       processedEventIdsRef.current.clear();
       lastHistoryTimestampRef.current = null;
-      const markReadPromise = sessionApi
-        .markRead(targetSessionId)
-        .catch(() => {});
 
       let historyFailurePhase: HistoryLoadFailurePhase = "session_projection";
       try {
-        await markReadPromise;
         if (!isCurrentHistoryLoadRequest()) {
           return null;
         }
@@ -2530,11 +2526,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       let admissionAccepted = false;
 
       try {
-        // 用户发送消息时标记当前 session 为已读
-        if (requestSessionId) {
-          sessionApi.markRead(requestSessionId).catch(() => {});
-        }
-
         // Keep the legacy Skill blacklist while MCP uses an explicit
         // canonical selection with omitted/clear/select tri-state semantics.
         const disabledSkills = isBoundAgentConversation

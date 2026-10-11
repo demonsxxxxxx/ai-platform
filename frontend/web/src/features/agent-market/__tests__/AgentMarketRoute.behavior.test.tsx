@@ -984,7 +984,6 @@ test("Agent starter prompts draft before explicit first-message submission", asy
   const originalGet = sessionApi.get;
   const originalGetAuthoritative = sessionApi.getAuthoritative;
   const originalGetEvents = sessionApi.getEvents;
-  const originalMarkRead = sessionApi.markRead;
   const originalSubmitChat = sessionApi.submitChat;
   agentProfileApi.listPublished = async () => ({ agent_profiles: [profile] });
   agentProfileApi.getPublished = async () => profile;
@@ -1038,7 +1037,6 @@ test("Agent starter prompts draft before explicit first-message submission", asy
     },
   });
   sessionApi.getEvents = async () => ({ events: [] });
-  sessionApi.markRead = async () => {};
   const submissions: unknown[][] = [];
   sessionApi.submitChat = (async (...args) => {
     submissions.push(args);
@@ -1207,7 +1205,6 @@ test("Agent starter prompts draft before explicit first-message submission", asy
     sessionApi.get = originalGet;
     sessionApi.getAuthoritative = originalGetAuthoritative;
     sessionApi.getEvents = originalGetEvents;
-    sessionApi.markRead = originalMarkRead;
     sessionApi.submitChat = originalSubmitChat;
     shellHarness.restore();
     await React.act(async () => root.unmount());
@@ -1546,7 +1543,6 @@ test("a route-param change never wires Agent A into Agent B while B is loading o
   const originalGetPublished = agentProfileApi.getPublished;
   const originalListConversations = agentProfileApi.listConversations;
   const originalListSessions = sessionApi.list;
-  const originalMarkRead = sessionApi.markRead;
   const originalGetSession = sessionApi.get;
   const originalGetAuthoritative = sessionApi.getAuthoritative;
   const originalGetEvents = sessionApi.getEvents;
@@ -1605,7 +1601,6 @@ test("a route-param change never wires Agent A into Agent B while B is loading o
     limit: 20,
     has_more: false,
   })) as typeof sessionApi.list;
-  sessionApi.markRead = (async () => {}) as typeof sessionApi.markRead;
   sessionApi.get = (async (sessionId: string) => {
     const agent = sessionId === "session-a" ? agentA : agentB;
     return {
@@ -1792,7 +1787,6 @@ test("a route-param change never wires Agent A into Agent B while B is loading o
     agentProfileApi.getPublished = originalGetPublished;
     agentProfileApi.listConversations = originalListConversations;
     sessionApi.list = originalListSessions;
-    sessionApi.markRead = originalMarkRead;
     sessionApi.get = originalGetSession;
     sessionApi.getAuthoritative = originalGetAuthoritative;
     sessionApi.getEvents = originalGetEvents;

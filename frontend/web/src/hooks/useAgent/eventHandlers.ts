@@ -9,7 +9,6 @@
 
 import type { Message, MessagePart } from "../../types";
 import { uuid } from "../../utils/uuid";
-import { sessionApi } from "../../services/api";
 import i18n from "../../i18n";
 import { translateBackendError } from "../../utils/backendErrors";
 import { parseDate } from "../../utils/datetime";
@@ -1139,11 +1138,6 @@ export function handleStreamEvent(
       );
       ctx.publicStreamPresentation?.invalidate();
       ctx.setConnectionStatus("disconnected");
-      // AI 回复完成，用户正在查看当前 session，立即标记为已读
-      const activeSessionId = ctx.sessionIdRef.current;
-      if (activeSessionId) {
-        sessionApi.markRead(activeSessionId).catch(() => {});
-      }
       ctx.options?.onStreamDone?.();
       commitAcceptedEvent();
       return true;

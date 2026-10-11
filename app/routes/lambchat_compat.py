@@ -2119,6 +2119,7 @@ async def generate_title(
 
 @router.post("/sessions/{session_id}/mark-read")
 async def mark_read(session_id: str) -> dict[str, bool]:
+    """Acknowledge older clients without persisting or authorizing unread state."""
     return {"success": True}
 
 

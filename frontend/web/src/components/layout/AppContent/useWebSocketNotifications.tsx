@@ -70,7 +70,6 @@ export function useWebSocketNotifications({
       });
 
       if (!shouldSurface) {
-        sessionApi.markRead(session_id).catch(() => {});
         onSessionUnreadRef.current?.(session_id, 0);
         return;
       }
