@@ -1518,12 +1518,39 @@ async def test_opensandbox_collect_snapshots_shared_response_without_remote_tran
         AssertionError("Host bind collection must not download response files")
     )
 
+    sequence = []
+    transfer = provider._workspace_transfer_sandbox
+    collect = container_provider.collect_host_bind_snapshot
+
+    async def verified_transfer(*args):
+        result = await transfer(*args)
+        sequence.append("identity-verified")
+        return result
+
+    async def ordered_snapshot(*args, **kwargs):
+        assert sequence == ["identity-verified"]
+        sequence.append("snapshot-submitted")
+        return await collect(*args, **kwargs)
+
+    monkeypatch.setattr(provider, "_workspace_transfer_sandbox", verified_transfer)
+    monkeypatch.setattr(container_provider, "collect_host_bind_snapshot", ordered_snapshot)
     snapshot = await provider.collect_workspace(
         lease,
         runtime_request,
         leased_workspace,
         ["outputs/delivery/result.txt"],
     )
+    assert sequence == ["identity-verified", "snapshot-submitted"]
+
+    async def rejected_transfer(*args):
+        raise RuntimeError("identity rejected")
+
+    monkeypatch.setattr(provider, "_workspace_transfer_sandbox", rejected_transfer)
+    with pytest.raises(container_provider.ContainerStartFailedError, match="collection failed"):
+        await provider.collect_workspace(
+            lease, runtime_request, leased_workspace, ["outputs/delivery/result.txt"],
+        )
+    assert sequence == ["identity-verified", "snapshot-submitted"]
 
     assert snapshot is not None
     assert snapshot.parent == Path(leased_workspace.host_root)

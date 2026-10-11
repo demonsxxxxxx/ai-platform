@@ -321,3 +321,55 @@ def test_reads_only_the_fixed_bounded_control_file(tmp_path):
 
     with pytest.raises(OpenSandboxHostBindError, match="name"):
         read_host_bind_control_file(workspace, "../outside")
+
+
+def test_async_snapshot_keeps_file_lock_until_physical_copy_finishes(tmp_path, monkeypatch):
+    import asyncio
+    import fcntl
+    from app.bootstrap.sandbox_snapshot import collect_host_bind_snapshot
+
+    attempt = tmp_path / "attempt"
+    workspace = attempt / "workspace"
+    workspace.mkdir(parents=True)
+    attempt.chmod(0o700)
+    workspace.chmod(0o700)
+    (workspace / "report.txt").write_bytes(b"snapshot")
+    (workspace / "report.txt").chmod(0o600)
+    started, release = threading.Event(), threading.Event()
+    original = host_bind._copy_stable_delivery_file
+
+    def copy(*args, **kwargs):
+        started.set()
+        assert release.wait(5)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(host_bind, "_copy_stable_delivery_file", copy)
+
+    async def scenario():
+        task = asyncio.create_task(collect_host_bind_snapshot(
+            workspace, attempt, ["report.txt"], max_files=1,
+            max_file_bytes=32, max_total_bytes=32,
+            expected_uid=os.getuid(), expected_gid=os.getgid(),
+        ))
+        try:
+            assert await asyncio.to_thread(started.wait, 5)
+            task.cancel("original")
+            await asyncio.sleep(0)
+            task.cancel("repeat")
+            await asyncio.sleep(0)
+            assert not task.done()
+            with open(attempt / host_bind._SNAPSHOT_LOCK, "rb") as lock:
+                with pytest.raises(BlockingIOError):
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            release.set()
+            with pytest.raises(asyncio.CancelledError) as caught:
+                await task
+            assert caught.value.args == ("original",)
+        with open(attempt / host_bind._SNAPSHOT_LOCK, "rb") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(lock, fcntl.LOCK_UN)
+        snapshot = attempt / host_bind._SNAPSHOT_DIRECTORY
+        assert (snapshot / "report.txt").read_bytes() == b"snapshot"
+
+    asyncio.run(scenario())
