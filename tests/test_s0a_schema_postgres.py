@@ -571,7 +571,7 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
     monkeypatch,
     tmp_path,
 ):
-    """Exercise cleanup, recovery, and terminalization against the real schema."""
+    """Retain receipts through cleanup; unknown recovery scope only quarantines."""
 
     from app.context.application import provider_sessions
     from app.bootstrap.run_lifecycle import build_run_lifecycle_service
@@ -819,8 +819,10 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
             await conn.execute("select count(*) as count from artifacts where tenant_id = 'tenant-a'")
         ).fetchone()
 
-        assert run["status"] == "failed"
-        assert run["error_code"] == "terminal_reconciliation_failed"
+        # The historical receipt has no adapter context or authoritative
+        # Attempt. Quarantine it without granting authority to fail its Run.
+        assert run["status"] == "running"
+        assert run["error_code"] is None
         assert "artifact_count" not in run["result_json"]
         assert lease == {
             "status": "quarantined",

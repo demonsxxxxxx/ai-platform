@@ -406,3 +406,90 @@ async def test_cancel_tail_cannot_claim_new_writer_or_use_stale_authority(
             "select count(*) as n from provider_session_entries"
         )
         assert (await cursor.fetchone())["n"] == 2
+
+
+@pytest.mark.parametrize("lost_sequence", [3, 131, 259])
+async def test_chunked_sdk_append_reuses_actual_pg_receipts_after_ack_loss(recovery_db, lost_sequence):
+    """Actual host ledger SQL/constraints; transport alone simulates a lost ACK."""
+    from app.execution.infrastructure.harness.claude.session_store import ClaudeSessionStoreAdapter, ClaudeSessionStoreTransportError
+    adapter = ClaudeSessionStoreAdapter(
+        callback_url="https://callback.example.test", callback_token="synthetic",
+        callback_token_id="synthetic", run_id="run", attempt_id="attempt", provider_session_id=PROVIDER_ID,
+    )
+    lost = False
+    sequences = []
+
+    async def request(payload):
+        nonlocal lost
+        async with recovery_db() as conn:
+            response = await operation(conn, payload["action"], subpath=payload["subpath"],
+                                       entries=payload["entries"], expected_sequence=payload["expected_sequence"])
+        if payload["action"] == "append":
+            sequences.append(payload["expected_sequence"])
+            if not lost and payload["expected_sequence"] == lost_sequence:
+                lost = True
+                raise ClaudeSessionStoreTransportError("provider_session_callback_timeout")
+        return response
+
+    adapter._request = request
+    key = {"session_id": PROVIDER_ID}
+    await adapter.load(key)
+    entries = [{"type": "assistant", "uuid": f"chunk-{i}"} for i in range(257)]
+    with pytest.raises(ClaudeSessionStoreTransportError, match="callback_timeout"):
+        await adapter.append(key, entries)
+    assert adapter.accepted_final_sequence == 2
+    await adapter.append(key, entries)
+    assert adapter.accepted_final_sequence == 259
+    assert sequences == [s for n in (3, 131, 259) for s in ([n, n] if n == lost_sequence else [n])]
+    async with recovery_db() as conn:
+        # This load verifies the entire contiguous ledger and every batch hash.
+        loaded = await operation(conn, "load")
+        assert loaded["entries"] == INITIAL + entries
+        assert loaded["next_sequence"] == 260
+        receipts = await (await conn.execute(
+            "select expected_sequence,entry_count,last_sequence from provider_session_append_receipts order by expected_sequence"
+        )).fetchall()
+        assert [(r["expected_sequence"], r["entry_count"], r["last_sequence"]) for r in receipts] == [(1, 2, 2), (3, 128, 130), (131, 128, 258), (259, 1, 259)]
+
+
+async def test_chunked_append_legal_cancel_tail_and_restart_cannot_adopt_dirty_epoch(recovery_db):
+    from app.execution.infrastructure.harness.claude.session_store import ClaudeSessionStoreAdapter
+
+    def make_adapter():
+        return ClaudeSessionStoreAdapter(
+            callback_url="https://callback.example.test", callback_token="synthetic",
+            callback_token_id="synthetic", run_id="run", attempt_id="attempt", provider_session_id=PROVIDER_ID,
+        )
+
+    adapter = make_adapter()
+    cancelled = False
+
+    async def request(payload):
+        nonlocal cancelled
+        async with recovery_db() as conn:
+            response = await operation(conn, payload["action"], subpath=payload["subpath"],
+                                       entries=payload["entries"], expected_sequence=payload["expected_sequence"])
+        if payload["action"] == "append" and not cancelled:
+            async with recovery_db() as conn:
+                await request_cancel(conn)
+            cancelled = True
+        return response
+
+    adapter._request = request
+    key = {"session_id": PROVIDER_ID}
+    await adapter.load(key)
+    await adapter.append(key, [{"type": "last-prompt", "n": i} for i in range(129)])
+    assert adapter.accepted_final_sequence == 131
+    async with recovery_db() as conn:
+        rows = await (await conn.execute(
+            "select expected_sequence,owner_generation from provider_session_append_receipts order by expected_sequence"
+        )).fetchall()
+        assert [(r["expected_sequence"], r["owner_generation"]) for r in rows] == [(1, 2), (3, 2), (131, 2)]
+        # Model the existing host recovery disposition after an uncommitted
+        # writer disappears. A fresh adapter must not bypass that disposition.
+        await conn.execute("update provider_session_epochs set state='dirty'")
+    restarted = make_adapter()
+    restarted._request = request
+    with pytest.raises(ProviderSessionConflictError, match="epoch_unavailable"):
+        await restarted.load(key)
+    assert restarted.accepted_final_sequence is None

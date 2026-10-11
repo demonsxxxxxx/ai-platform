@@ -199,6 +199,7 @@ export interface AdminRunDiagnosticsResponse {
   details: {
     schema_version?: string | null;
     sdk: {
+      api_error_status?: number;
       result_subtype?: string | null;
       stop_reason?: string | null;
       terminal_reason?: string | null;
@@ -218,6 +219,7 @@ export interface AdminRunDiagnosticsResponse {
       stage?: string | null;
       error_code?: string | null;
       sdk: {
+        api_error_status?: number;
         exception_chain?: Array<{
           type: string;
           message?: string | null;

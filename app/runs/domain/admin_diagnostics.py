@@ -55,6 +55,7 @@ class AdminRunDiagnosticAttempt(TypedDict):
 
 
 class AdminRunDiagnosticSdk(TypedDict, total=False):
+    api_error_status: int
     result_subtype: str
     stop_reason: str
     terminal_reason: str
