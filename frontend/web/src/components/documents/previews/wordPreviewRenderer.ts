@@ -18,15 +18,13 @@ export type MammothConvertToHtml = (
 
 interface RenderDocxPreviewHtmlInput {
   arrayBuffer: ArrayBuffer;
-  container: HTMLElement;
-  styleContainer?: HTMLElement;
   renderAsync: DocxPreviewRenderAsync;
   convertToHtml: MammothConvertToHtml;
   onDocxPreviewError?: (error: unknown) => void;
 }
 
 export type WordPreviewRenderResult =
-  | { kind: "docx-preview" }
+  | { kind: "docx-preview"; html: string }
   | { kind: "html"; html: string };
 
 const mammothStyleMap = [
@@ -38,27 +36,6 @@ const mammothStyleMap = [
   "i => em",
   "u => u",
 ];
-
-const SAFE_LINK_PROTOCOLS = new Set(["http:", "https:", "mailto:", "tel:"]);
-
-function sanitizeRenderedLinks(container: HTMLElement) {
-  for (const link of container.querySelectorAll<HTMLAnchorElement>("a[href]")) {
-    const href = link.getAttribute("href")?.trim() ?? "";
-    if (href.startsWith("#")) continue;
-
-    try {
-      if (
-        !SAFE_LINK_PROTOCOLS.has(
-          new URL(href, "https://preview.invalid").protocol,
-        )
-      ) {
-        link.removeAttribute("href");
-      }
-    } catch {
-      link.removeAttribute("href");
-    }
-  }
-}
 
 export function createWordPreviewRendererOptions(): Partial<DocxPreviewOptions> {
   return {
@@ -79,44 +56,29 @@ export function createWordPreviewRendererOptions(): Partial<DocxPreviewOptions> 
   };
 }
 
-export interface DocxPreviewSize {
-  width: number;
-  height: number;
-}
-
-export function measureDocxPreview(
-  container: HTMLElement,
-): DocxPreviewSize | null {
-  const firstPage = container.querySelector<HTMLElement>("section.docx");
-  const wrapper = container.querySelector<HTMLElement>(".docx-wrapper");
-  const width = firstPage?.offsetWidth ?? 0;
-  const height = wrapper?.scrollHeight ?? 0;
-
-  return width > 0 && height > 0 ? { width, height } : null;
-}
-
 export async function renderDocxPreviewHtml({
   arrayBuffer,
-  container,
-  styleContainer,
   renderAsync,
   convertToHtml,
   onDocxPreviewError = (error) => {
     console.warn("docx-preview failed, falling back to mammoth:", error);
   },
 }: RenderDocxPreviewHtmlInput): Promise<WordPreviewRenderResult> {
-  container.innerHTML = "";
+  // A template owns inert nodes: untrusted document styles never enter the
+  // application DOM before the final sandboxed, CSP-protected iframe.
+  const template = document.createElement("template");
+  const container = document.createElement("div");
+  template.content.appendChild(container);
 
   try {
     await renderAsync(
       arrayBuffer,
       container,
-      styleContainer,
+      container,
       createWordPreviewRendererOptions(),
     );
-    sanitizeRenderedLinks(container);
     if (container.textContent?.trim() || container.innerHTML.trim()) {
-      return { kind: "docx-preview" };
+      return { kind: "docx-preview", html: container.innerHTML };
     }
   } catch (error) {
     onDocxPreviewError(error);
