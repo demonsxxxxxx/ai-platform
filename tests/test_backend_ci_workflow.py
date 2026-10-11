@@ -58,6 +58,7 @@ AGENT_SKILL_CONTRACT_TESTS = (
     "tests/test_admin_skills.py",
     "tests/test_skill_run_admission.py",
     "tests/test_chat_routes.py",
+    "tests/test_chat_submission_failures.py",
     "tests/test_skills_marketplace_routes.py",
 )
 BACKEND_TEST_SHARDS = {
@@ -156,6 +157,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_storage.py",
         "tests/test_sandbox_cleanup_postgres.py",
         "tests/test_provider_empty_start_postgres.py",
+        "tests/test_chat_admission_postgres.py",
         "tests/test_s0a_schema_postgres.py::test_expired_terminal_receipt_survives_cleanup_and_historical_release",
         "tests/test_worker_heartbeat_postgres_redis_integration.py",
         "tests/test_sse_runtime_cutover.py",

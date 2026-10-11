@@ -325,6 +325,25 @@ malformed HTTP success response is outcome-unknown: preserve the submission
 recovery fence and confirm history/status before any resubmission. Diagnostic
 identifiers are accepted only in their existing bounded format.
 
+A failed Chat admission transaction exit does not establish rollback: PostgreSQL
+may have committed before its acknowledgement was lost. For keyed submissions,
+the existing principal-scoped ledger claim must settle that race. A committed
+outcome is replayed with its actual status, including `accepted_pending_enqueue`;
+this recovery does not enqueue another Run. Only a successfully committed
+rejection may emit `rejected_before_persist`. If the claim/readback or rejection
+commit cannot establish the outcome, the sanitized internal error omits that
+disposition and the client retains its existing submission recovery fence.
+Unkeyed transaction failures likewise cannot claim absence without durable proof.
+The same safe internal-error projection applies when prevalidation or a typed
+admission rejection cannot commit its rejection ledger. HTTP outcome mappings
+and cancellation retain their existing semantics. Conversations application
+owns bounded error codes, public detail and redacted correlated diagnostics in
+`submission_failures`, exposed through `conversations.api`; the route retains
+HTTP translation and shares one diagnostic ID across admission and recovery.
+This retires the unconditional internal-error rejection projection; the existing
+ledger, idempotency and explicit reconciliation remain its sole compatibility
+owners. No new recovery or retry authority is introduced.
+
 Queue DTO error projection is phase-neutral: `queue_payload_invalid` and its
 bounded, redacted field errors describe a shape failure, not absence of durable
 work. Only Chat's rolled-back creation transaction may add
@@ -333,7 +352,11 @@ committed Chat submission or retry/resume child must retain its durable identity
 an invalid frozen payload remains rejected, and Run control GET reports unknown
 queue admission. Explicit Chat retry errors keep the existing recovery fence,
 including errors from older servers that still attach the former label. No
-snapshot repair, state transition, or new retry authority is implied.
+snapshot repair, state transition, or new retry authority is implied. The
+Conversations `submission_failures` owner composes confirmed rejection details;
+legacy unkeyed Chat reprojects the validation cause through the bounded DTO
+sanitizer rather than forwarding arbitrary HTTP detail fields. The route only
+attests the creation validation boundary and translates the public HTTP result.
 
 This replaces blanket SDK-upstream attribution and blanket admission
 login/fix-input guidance. Historical `claude_agent_sdk_upstream_error` remains

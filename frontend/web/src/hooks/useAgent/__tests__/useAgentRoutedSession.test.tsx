@@ -1681,6 +1681,16 @@ test("useAgent retains an unknown submission and blocks an automatic duplicate",
       error: new ApiRequestError("invalid queue payload", 500, "queue_payload_invalid"),
     },
     {
+      name: "database commit outcome unknown",
+      error: new ApiRequestError(
+        "safe internal projection",
+        500,
+        "chat_submission_internal_error",
+        undefined,
+        "diag_0123456789abcdef",
+      ),
+    },
+    {
       name: "server failure",
       error: new ApiRequestError("gateway failure", 503, "queue_unavailable"),
     },
