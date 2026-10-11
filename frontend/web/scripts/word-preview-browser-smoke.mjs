@@ -122,8 +122,7 @@ try {
   await page.evaluate(()=>{window.__wordSmokeGate={armed:true};});
   await page.locator('#portrait').click();
   await page.waitForFunction(()=>window.__wordSmokeGate?.settled===true);
-  assert.equal(await page.locator('#preview-host iframe').count(),1,'loading preview keeps its empty frame');
-  assert.doesNotMatch(await page.locator('#preview-host iframe').getAttribute('srcdoc'),/Final synthetic page/,'conversion result is still pending');
+  assert.equal(await page.locator('#preview-host iframe').count(),0,'pending conversion must not navigate an empty loading document');
   await page.locator('#close').click();
   assert.equal(await page.locator('#preview-host iframe').count(),0,'Close unmounts the loading frame');
   await page.evaluate(()=>window.__wordSmokeGate.release());
@@ -166,6 +165,20 @@ try {
       return {pages:pages.length,imageLoaded:image.naturalWidth>0,fontLoaded:fonts.length>0&&fonts.every(f=>f.status==='loaded'),math:body.querySelectorAll('math mroot').length,endVisible:box.top>=0&&box.bottom<=innerHeight,scrollY,pageWidth:pages[0].getBoundingClientRect().width,links:body.querySelectorAll('a[href]:not([href^="#"])').length,csp:document.head.querySelector('meta[http-equiv="Content-Security-Policy"]')?.content};
     },marker);
   }
+  // Replace a settled-but-held old conversion before the new document returns.
+  await page.evaluate(()=>{window.__wordSmokeGate={armed:true};});
+  await page.locator('#portrait').click();await page.waitForFunction(()=>window.__wordSmokeGate?.settled===true);
+  await page.evaluate(()=>{window.__wordSmokeOldGate=window.__wordSmokeGate;window.__wordSmokeGate={armed:true};});
+  await page.locator('#landscape').click();await page.waitForFunction(()=>window.__wordSmokeGate?.settled===true);
+  assert.equal(await page.locator('#preview-host iframe').count(),0);
+  await page.evaluate(()=>window.__wordSmokeOldGate.release());await page.waitForFunction(()=>window.__wordSmokeOldGate.returned===true);
+  await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+  assert.equal(await page.locator('#preview-host iframe').count(),0,'late old conversion cannot publish over pending replacement');
+  await page.evaluate(()=>window.__wordSmokeGate.release());await page.waitForFunction(()=>window.__wordSmokeGate.returned===true);
+  await page.evaluate(()=>{delete window.__wordSmokeGate;delete window.__wordSmokeOldGate;});
+  await inspectDocument('Final landscape page');
+  assert.equal(await frame().getByText('Final synthetic page',{exact:true}).count(),0);
+  evidence.assertions.push('rapid replacement publishes only completed current document; pending and stale results own no iframe');
   await page.locator('#portrait').click();const portrait=await inspectDocument('Final synthetic page');
   assert.ok(portrait.pages>=2&&portrait.imageLoaded&&portrait.fontLoaded&&portrait.math>0&&portrait.endVisible&&portrait.scrollY>0);
   assert.equal(portrait.links,0);assert.match(portrait.csp,/default-src 'none'/);
@@ -198,7 +211,7 @@ try {
   await page.evaluate(()=>{window.__wordSmokeGate={armed:true};});
   await page.locator('#portrait').click();await page.waitForFunction(()=>window.__wordSmokeGate?.settled===true);
   assert.equal(await page.locator('#preview-host div[aria-label]').evaluate(node=>node.scrollTop),0,'fallback to loading restores original owner scroll reset');
-  assert.doesNotMatch(await page.locator('#preview-host iframe').getAttribute('srcdoc'),/Dark synthetic fallback|Final synthetic page/);
+  assert.equal(await page.locator('#preview-host iframe').count(),0,'loading replacement unmounts the old document frame');
   await page.evaluate(()=>window.__wordSmokeGate.release());await page.waitForFunction(()=>window.__wordSmokeGate.returned===true);
   await page.evaluate(()=>{delete window.__wordSmokeGate;});
   await inspectDocument('Final synthetic page');await page.getByText('100%',{exact:true}).waitFor();

@@ -363,7 +363,7 @@ const WordPreview = memo(function WordPreview({
       loading={loading}
       ariaLabel={t("documents.wordPreviewTitle") || "Word preview"}
     >
-      {(displayScale) => (
+      {(displayScale) => loading ? null : (
         <ScaledDocumentContent
           naturalWidth={DEFAULT_DOCX_SIZE.width}
           naturalHeight={DEFAULT_DOCX_SIZE.height}

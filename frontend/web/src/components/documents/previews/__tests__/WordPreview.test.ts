@@ -15,3 +15,8 @@ test("Word preview preserves DOCX image dimensions against global CSS", () => {
 test("Word fallback restores the previous viewer-owner reset boundary", () => {
   assert.match(source, /key=\{loading \|\| renderedWithDocxPreview \? "docx" : "fallback"\}/);
 });
+
+test("Word mounts a document only after conversion instead of navigating an empty loading frame", () => {
+  assert.match(source, /\{\(displayScale\) => loading \? null : \(/);
+  assert.match(source, /loading=\{loading\}/);
+});
