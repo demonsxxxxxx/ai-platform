@@ -182,6 +182,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_auth_principal.py",
         "tests/test_chat_selected_skill_routing.py",
         "tests/test_claude_agent_events.py",
+        "tests/test_public_event_enum_types.py",
         "tests/test_lambchat_frontend_compat.py::test_lambchat_history_restores_strict_v4_commentary_as_work_summary",
         "tests/test_lambchat_frontend_compat.py::test_session_event_pages_project_authorized_run_columns_on_every_page",
         "tests/test_executor_reconciler.py",
