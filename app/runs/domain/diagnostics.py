@@ -197,6 +197,11 @@ def sanitize_runtime_diagnostics(value: object) -> dict[str, Any]:
     losses = sanitize_run_diagnostic_losses(value.get("normalization_losses"))
     sdk = value.get("sdk") if isinstance(value.get("sdk"), dict) else {}
     sdk_projection: dict[str, Any] = {}
+    api_error_status = sdk.get("api_error_status")
+    if type(api_error_status) is int and 100 <= api_error_status <= 599:
+        sdk_projection["api_error_status"] = api_error_status
+    elif api_error_status is not None:
+        losses.append({"field": "sdk.api_error_status", "reason": "invalid_field"})
     for key in ("result_subtype", "stop_reason", "terminal_reason"):
         if projected := _identity(sdk.get(key)):
             sdk_projection[key] = projected
@@ -930,12 +935,16 @@ def _minimize_observation(
     sdk_projection = {
         key: sdk[key]
         for key in (
+            "api_error_status",
             "exception_type",
             "exception_message",
             "exception_traceback",
             "errors",
         )
-        if key in sdk
+        if key in sdk and (
+            key != "api_error_status"
+            or (type(sdk[key]) is int and 100 <= sdk[key] <= 599)
+        )
     }
     retained_failures = failures[:1] if isinstance(failures, list) else []
     if severe:
