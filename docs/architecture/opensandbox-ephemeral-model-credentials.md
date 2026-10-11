@@ -190,6 +190,14 @@ other publication failures retain the draft for retry. Cancellation restores the
 last saved baseline. Explicit reload clears entered credentials and replaces edits
 with the saved state when loading succeeds.
 
+The environment does not publish a model directory. `DEFAULT_MODEL_ID` and
+`MODEL_CATALOG_JSON` have no supported Settings or executor-forwarding surface.
+The public `default_model_id` response remains part of the database projection.
+SDK/adapter defaults (`OPENAI_MODEL`, `ANTHROPIC_MODEL`, `CLAUDE_AGENT_MODEL`)
+remain supported at their existing adapter boundaries; they cannot substitute
+for governed Run admission. The OpenSandbox environment sanitizer still rejects
+legacy catalog payloads defensively because they may contain credentials.
+
 Run admission pins the active connection revision, exact upstream model ID,
 and input/output capacities. Existing Runs and Attempts retain that immutable
 snapshot after later publication. The internal proxy serves only queued or running Runs whose requested model

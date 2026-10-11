@@ -45,8 +45,6 @@ RUNTIME_ENV_ALLOWLIST = frozenset(
         "CLAUDE_AGENT_SDK_ENABLED",
         "WORKER_CLAUDE_AGENT_SDK_ENABLED",
         "CLAUDE_AGENT_MODEL",
-        "DEFAULT_MODEL_ID",
-        "MODEL_CATALOG_JSON",
         "OPENAI_MODEL",
         "ANTHROPIC_MODEL",
         "EXISTING_AUTH_BASE_URL",
@@ -392,7 +390,7 @@ def check_frontend_dist_api_boundary(frontend_dist: str) -> Gate:
     )
 
 
-def check_api_compat(api_url: str, *, expected_default_model_id: str = "") -> Gate:
+def check_api_compat(api_url: str) -> Gate:
     paths = [
         "/api/ai/health",
         "/api/auth/oauth/providers",
@@ -412,6 +410,13 @@ def check_api_compat(api_url: str, *, expected_default_model_id: str = "") -> Ga
     permissions_payload = payloads.get("/api/auth/permissions") if isinstance(payloads.get("/api/auth/permissions"), dict) else {}
     available_model_ids = _model_ids_from_catalog_payload(model.get("models"))
     default_model_id = str(model.get("default_model_id") or "")
+    default_models = [
+        item for item in model.get("models", [])
+        if isinstance(item, dict) and item.get("id") == default_model_id
+    ] if isinstance(model.get("models"), list) else []
+    default_capacity_valid = len(default_models) == 1 and _valid_model_capacity(
+        default_models[0].get("profile")
+    )
     permission_values = {
         str(item.get("value"))
         for item in permissions_payload.get("all_permissions", [])
@@ -423,7 +428,7 @@ def check_api_compat(api_url: str, *, expected_default_model_id: str = "") -> Ga
         and oauth.get("registration_enabled") is False
         and bool(default_model_id)
         and default_model_id in available_model_ids
-        and (not expected_default_model_id or default_model_id == expected_default_model_id)
+        and default_capacity_valid
         and not missing_permissions
     )
     return Gate(
@@ -433,8 +438,7 @@ def check_api_compat(api_url: str, *, expected_default_model_id: str = "") -> Ga
             "statuses": statuses,
             "registration_enabled": oauth.get("registration_enabled"),
             "default_model_id": default_model_id,
-            "expected_default_model_id": expected_default_model_id,
-            "default_model_matches_expected": not expected_default_model_id or default_model_id == expected_default_model_id,
+            "default_model_capacity_valid": default_capacity_valid,
             "available_model_ids": available_model_ids,
             "missing_permissions": missing_permissions,
         },
@@ -454,57 +458,27 @@ def _model_ids_from_catalog_payload(value: Any) -> list[str]:
     return sorted(set(model_ids))
 
 
-def _model_ids_from_catalog_json(raw: str) -> tuple[str, list[str]]:
-    if not raw.strip():
-        return "absent", []
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        return "invalid_json", []
-    if not isinstance(parsed, list):
-        return "invalid_shape", []
-    model_ids = _model_ids_from_catalog_payload(parsed)
-    if not model_ids:
-        return "empty", []
-    return "present", model_ids
+def _positive_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _valid_model_capacity(value: Any) -> bool:
+    return isinstance(value, dict) and all(
+        _positive_int(value.get(field))
+        for field in ("max_input_tokens", "max_output_tokens")
+    )
 
 
 def check_runtime_config(env_path: str, values: dict[str, str] | None = None) -> Gate:
+    """Check worker SDK enablement; environment defaults are not model authority."""
     values = dict(values) if values is not None else read_env(env_path)
-    configured_models = {
-        values.get("CLAUDE_AGENT_MODEL"),
-        values.get("OPENAI_MODEL"),
-        values.get("ANTHROPIC_MODEL"),
-    }
-    configured_models = {item for item in configured_models if item}
-    configured_model_id = next(iter(configured_models)) if len(configured_models) == 1 else ""
-    default_model_id = values.get("DEFAULT_MODEL_ID") or configured_model_id
-    catalog_status, catalog_model_ids = _model_ids_from_catalog_json(values.get("MODEL_CATALOG_JSON", ""))
-    catalog_contains_configured_model = (
-        catalog_status == "absent"
-        or (bool(configured_model_id) and configured_model_id in catalog_model_ids)
-    )
-    catalog_valid = catalog_status in {"absent", "present"} and catalog_contains_configured_model
-    ok = (
-        values.get("CLAUDE_AGENT_SDK_ENABLED", "").lower() == "true"
-        and bool(configured_model_id)
-        and default_model_id == configured_model_id
-        and catalog_valid
-    )
     return Gate(
         "runtime_config",
-        ok,
+        values.get("CLAUDE_AGENT_SDK_ENABLED", "").lower() == "true",
         {
             "env_path": env_path,
             "claude_agent_sdk_enabled": values.get("CLAUDE_AGENT_SDK_ENABLED"),
-            "claude_agent_model": values.get("CLAUDE_AGENT_MODEL"),
-            "openai_model": values.get("OPENAI_MODEL"),
-            "anthropic_model": values.get("ANTHROPIC_MODEL"),
-            "configured_model_id": configured_model_id,
-            "default_model_id": default_model_id,
-            "model_catalog_status": catalog_status,
-            "available_model_ids": catalog_model_ids,
-            "model_catalog_contains_configured_model": catalog_contains_configured_model,
+            "model_authority": "database_catalog_and_run_binding",
         },
     )
 
@@ -1225,6 +1199,14 @@ def check_upload_attachment_chat(
 select json_build_object(
   'run_id', r.id,
   'status', r.status,
+  'model_id', r.model_id,
+  'model_value', r.model_value,
+  'model_gateway_revision', r.model_gateway_revision,
+  'max_input_tokens', r.max_input_tokens,
+  'max_output_tokens', r.max_output_tokens,
+  'model_connection_exists', exists (
+    select 1 from model_gateway_revisions m where m.revision = r.model_gateway_revision
+  ),
   'file_ids', r.input_json->'file_ids',
   'context_snapshot', r.input_json->'context_snapshot',
   'error_code', r.error_code,
@@ -1283,12 +1265,22 @@ group by r.id;
         or (run_evidence.get("status") == "running" and worker_started)
         or (run_terminal_turn_limit and attachment_context_recorded)
     )
+    # A later publication may deactivate this revision; the admitted pin must
+    # still resolve, rather than being compared with today's mutable catalog.
+    model_binding_valid = (
+        bool(run_evidence.get("model_id"))
+        and bool(run_evidence.get("model_value"))
+        and _positive_int(run_evidence.get("model_gateway_revision"))
+        and _valid_model_capacity(run_evidence)
+        and run_evidence.get("model_connection_exists") is True
+    )
     ok = (
         upload_status == 200
         and isinstance(upload_payload, dict)
         and str(upload_payload.get("file_id") or "").startswith("file_")
         and chat_status == 200
         and run_accepted_by_worker
+        and model_binding_valid
         and file_id in (run_evidence.get("file_ids") or [])
     )
     return Gate(
@@ -1305,6 +1297,7 @@ group by r.id;
             "run_terminal_turn_limit": run_terminal_turn_limit,
             "attachment_context_recorded": attachment_context_recorded,
             "run_accepted_by_worker": run_accepted_by_worker,
+            "model_binding_valid": model_binding_valid,
         },
     )
 
@@ -1372,10 +1365,7 @@ def main() -> int:
         check_frontend(args.frontend_url),
         check_frontend_dist_api_boundary(args.frontend_dist),
         check_frontend_origin_api(args.frontend_url),
-        check_api_compat(
-            args.api_url,
-            expected_default_model_id=str(runtime_config_gate.evidence.get("default_model_id") or ""),
-        ),
+        check_api_compat(args.api_url),
         runtime_config_gate,
         check_company_auth_bridge(env_values.get("EXISTING_AUTH_BASE_URL", "")),
         *db_gates,

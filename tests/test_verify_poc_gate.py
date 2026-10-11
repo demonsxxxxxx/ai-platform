@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 from tools import verify_poc_gate
 
 
@@ -33,7 +35,7 @@ def test_api_compat_gate_accepts_runtime_default_model_from_catalog(monkeypatch)
                 "default_model_id": "gpt-5.3-codex-spark",
                 "models": [
                     {"id": "deepseek-v4-flash"},
-                    {"id": "gpt-5.3-codex-spark"},
+                    {"id": "gpt-5.3-codex-spark", "profile": {"max_input_tokens": 32000, "max_output_tokens": 2048}},
                 ],
             }
         if url.endswith("/api/auth/permissions"):
@@ -51,7 +53,7 @@ def test_api_compat_gate_accepts_runtime_default_model_from_catalog(monkeypatch)
     assert "gpt-5.3-codex-spark" in gate.evidence["available_model_ids"]
 
 
-def test_api_compat_gate_rejects_default_model_drift_from_runtime(monkeypatch):
+def test_api_compat_gate_rejects_default_model_without_capacity(monkeypatch):
     def fake_http_json(url: str):
         if url.endswith("/api/auth/oauth/providers"):
             return 200, {"registration_enabled": False}
@@ -71,11 +73,10 @@ def test_api_compat_gate_rejects_default_model_drift_from_runtime(monkeypatch):
 
     monkeypatch.setattr(verify_poc_gate, "http_json", fake_http_json)
 
-    gate = verify_poc_gate.check_api_compat("http://api.local", expected_default_model_id="gpt-5.3-codex-spark")
+    gate = verify_poc_gate.check_api_compat("http://api.local")
 
     assert gate.ok is False
-    assert gate.evidence["expected_default_model_id"] == "gpt-5.3-codex-spark"
-    assert gate.evidence["default_model_matches_expected"] is False
+    assert gate.evidence["default_model_capacity_valid"] is False
 
 
 def test_poc_gate_cli_bootstraps_repo_root_for_direct_script_execution():
@@ -561,57 +562,23 @@ def test_runtime_env_values_uses_env_file_only_when_container_env_unavailable(tm
     assert values["EXISTING_AUTH_BASE_URL"] == "http://auth.local"
 
 
-def test_runtime_config_accepts_consistent_model_from_catalog():
+@pytest.mark.parametrize("sdk_enabled, expected", [("true", True), ("false", False), ("", False)])
+def test_runtime_config_checks_sdk_not_legacy_model_defaults(sdk_enabled, expected):
     gate = verify_poc_gate.check_runtime_config(
         "unused.env",
         {
-            "CLAUDE_AGENT_SDK_ENABLED": "true",
-            "CLAUDE_AGENT_MODEL": "gpt-5.3-codex-spark",
-            "OPENAI_MODEL": "gpt-5.3-codex-spark",
-            "ANTHROPIC_MODEL": "gpt-5.3-codex-spark",
-            "DEFAULT_MODEL_ID": "gpt-5.3-codex-spark",
-            "MODEL_CATALOG_JSON": '[{"id":"deepseek-v4-flash"},{"id":"gpt-5.3-codex-spark"}]',
-        },
-    )
-
-    assert gate.ok is True
-    assert gate.evidence["configured_model_id"] == "gpt-5.3-codex-spark"
-    assert gate.evidence["model_catalog_contains_configured_model"] is True
-
-
-def test_runtime_config_rejects_malformed_model_catalog_json():
-    gate = verify_poc_gate.check_runtime_config(
-        "unused.env",
-        {
-            "CLAUDE_AGENT_SDK_ENABLED": "true",
-            "CLAUDE_AGENT_MODEL": "gpt-5.3-codex-spark",
-            "OPENAI_MODEL": "gpt-5.3-codex-spark",
-            "ANTHROPIC_MODEL": "gpt-5.3-codex-spark",
-            "DEFAULT_MODEL_ID": "gpt-5.3-codex-spark",
+            "CLAUDE_AGENT_SDK_ENABLED": sdk_enabled,
+            "CLAUDE_AGENT_MODEL": "sdk-default",
+            "OPENAI_MODEL": "another-adapter-default",
+            "ANTHROPIC_MODEL": "third-default",
+            "DEFAULT_MODEL_ID": "retired-default",
             "MODEL_CATALOG_JSON": "{not-json",
         },
     )
-
-    assert gate.ok is False
-    assert gate.evidence["model_catalog_status"] == "invalid_json"
-
-
-def test_runtime_config_rejects_catalog_missing_configured_model():
-    gate = verify_poc_gate.check_runtime_config(
-        "unused.env",
-        {
-            "CLAUDE_AGENT_SDK_ENABLED": "true",
-            "CLAUDE_AGENT_MODEL": "gpt-5.3-codex-spark",
-            "OPENAI_MODEL": "gpt-5.3-codex-spark",
-            "ANTHROPIC_MODEL": "gpt-5.3-codex-spark",
-            "DEFAULT_MODEL_ID": "gpt-5.3-codex-spark",
-            "MODEL_CATALOG_JSON": '[{"id":"deepseek-v4-flash"}]',
-        },
-    )
-
-    assert gate.ok is False
-    assert gate.evidence["model_catalog_status"] == "present"
-    assert gate.evidence["model_catalog_contains_configured_model"] is False
+    assert gate.ok is expected
+    assert gate.evidence["model_authority"] == "database_catalog_and_run_binding"
+    assert "default_model_id" not in gate.evidence
+    assert "MODEL_CATALOG_JSON" not in verify_poc_gate.RUNTIME_ENV_ALLOWLIST
 
 
 def test_container_auth_url_source_of_truth_can_fail_gate_despite_valid_env_file(tmp_path, monkeypatch):
@@ -1292,6 +1259,12 @@ def test_upload_attachment_chat_reports_worker_runtime_evidence(monkeypatch):
         return [
             {
                 "run_id": "run_upload",
+                "model_id": "mdl_public",
+                "model_value": "provider/model",
+                "model_gateway_revision": 7,
+                "max_input_tokens": 32000,
+                "max_output_tokens": 2048,
+                "model_connection_exists": True,
                 "status": "failed",
                 "file_ids": ["file_upload"],
                 "error_code": "claude_agent_sdk_disabled",
@@ -1344,6 +1317,12 @@ def test_upload_attachment_chat_accepts_worker_started_running_run(monkeypatch):
         return [
             {
                 "run_id": "run_upload",
+                "model_id": "mdl_public",
+                "model_value": "provider/model",
+                "model_gateway_revision": 7,
+                "max_input_tokens": 32000,
+                "max_output_tokens": 2048,
+                "model_connection_exists": True,
                 "status": "running",
                 "file_ids": ["file_upload"],
                 "error_code": None,
@@ -1395,6 +1374,12 @@ def test_upload_attachment_chat_accepts_worker_started_terminal_sdk_failure_with
         return [
             {
                 "run_id": "run_upload",
+                "model_id": "mdl_public",
+                "model_value": "provider/model",
+                "model_gateway_revision": 7,
+                "max_input_tokens": 32000,
+                "max_output_tokens": 2048,
+                "model_connection_exists": True,
                 "status": "failed",
                 "file_ids": ["file_upload"],
                 "error_code": "claude_agent_sdk_runtime_error",
@@ -1452,6 +1437,12 @@ def test_upload_attachment_chat_rejects_non_turn_limit_sdk_failure_with_context(
         return [
             {
                 "run_id": "run_upload",
+                "model_id": "mdl_public",
+                "model_value": "provider/model",
+                "model_gateway_revision": 7,
+                "max_input_tokens": 32000,
+                "max_output_tokens": 2048,
+                "model_connection_exists": True,
                 "status": "failed",
                 "file_ids": ["file_upload"],
                 "error_code": "claude_agent_sdk_runtime_error",
@@ -1506,6 +1497,12 @@ def test_upload_attachment_chat_rejects_success_without_worker_start(monkeypatch
         return [
             {
                 "run_id": "run_upload",
+                "model_id": "mdl_public",
+                "model_value": "provider/model",
+                "model_gateway_revision": 7,
+                "max_input_tokens": 32000,
+                "max_output_tokens": 2048,
+                "model_connection_exists": True,
                 "status": "succeeded",
                 "file_ids": ["file_upload"],
                 "error_code": None,
@@ -1587,3 +1584,36 @@ def test_auth_audit_gate_returns_boolean_ok_for_valid_company_login(monkeypatch)
     }
     assert "user_id" not in gate.evidence
     assert "payload" not in gate.evidence
+
+
+@pytest.mark.parametrize("field,value", [
+    ("model_id", None), ("model_value", ""),
+    ("model_gateway_revision", None), ("model_gateway_revision", True),
+    ("model_connection_exists", False), ("max_input_tokens", 0),
+    ("max_output_tokens", None), ("max_output_tokens", True),
+])
+def test_upload_gate_rejects_missing_or_invalid_model_binding(monkeypatch, field, value):
+    row = {
+        "run_id": "run_upload", "status": "succeeded", "file_ids": ["file_upload"],
+        "model_id": "mdl_public", "model_value": "provider/model",
+        "model_gateway_revision": 7, "model_connection_exists": True,
+        "max_input_tokens": 32000, "max_output_tokens": 2048,
+        "worker_events": [{"executor_type": "claude-agent-worker",
+                           "claude_agent_sdk_enabled": True, "claude_agent_sdk_import": "ok"}],
+    }
+    row[field] = value
+    monkeypatch.setattr(verify_poc_gate, "http_multipart_file_post", lambda *a, **k: (200, {"file_id": "file_upload"}))
+    monkeypatch.setattr(verify_poc_gate, "http_json_post_with_headers", lambda *a, **k: (200, {"run_id": "run_upload"}))
+
+    def query(*args):
+        sql = args[-1]
+        assert "m.revision = r.model_gateway_revision" in sql
+        assert "m.active" not in sql  # Later publication must not invalidate a frozen pin.
+        assert "r.max_input_tokens" in sql and "r.max_output_tokens" in sql
+        return [row]
+
+    monkeypatch.setattr(verify_poc_gate, "psql_rows", query)
+    gate = verify_poc_gate.check_upload_attachment_chat("http://api.local", "postgres", "user", "db")
+    assert gate.evidence["run_accepted_by_worker"] is True
+    assert gate.evidence["model_binding_valid"] is False
+    assert gate.ok is False

@@ -57,12 +57,14 @@ The browser's retained `/settings` address redirects to `/models`. The removed
 generic settings API did not persist or apply submitted values; model changes
 now have one browser entrance and one database-backed control plane.
 
-`OPENAI_MODEL`, `ANTHROPIC_MODEL`, `CLAUDE_AGENT_MODEL`, `DEFAULT_MODEL_ID`
-and `MODEL_CATALOG_JSON` supply legacy model selection before the database
-catalog is active. That selection can create a Run without a connection revision;
-it does not provide a working production proxy fallback. Model gateway request
-concurrency is currently unbounded by the platform; the capacity report records
-enforcement as unimplemented.
+`OPENAI_MODEL`, `ANTHROPIC_MODEL` and `CLAUDE_AGENT_MODEL` remain SDK/adapter
+defaults for direct or legacy executor use. They do not publish a public catalog
+or admit a new Run without a database connection revision and paired token
+capacities. `DEFAULT_MODEL_ID` and `MODEL_CATALOG_JSON` are retired deployment
+settings; remove them from existing operator configuration. Public default model
+selection comes only from the database-backed Models control plane. Model gateway
+request concurrency is currently unbounded by the platform; the capacity report
+records enforcement as unimplemented.
 
 ## Prepare the host once
 
