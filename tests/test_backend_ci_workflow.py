@@ -75,6 +75,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_claude_agent_worker_adapter.py",
         "tests/test_execution_pinned_skill_materialization.py",
         "tests/test_claude_agent_worker_file_continuity.py",
+        "tests/test_provider_session_transport.py",
         "tests/test_context_file_content.py",
         "tests/test_file_parser_contracts.py",
         "tests/test_file_preview_contracts.py",
