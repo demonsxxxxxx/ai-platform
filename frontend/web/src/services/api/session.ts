@@ -17,7 +17,7 @@ import {
 } from "../../types/agentProfile";
 import { API_BASE } from "./config";
 import type { ProfileDriveFileReference } from "./profileDrive";
-import { authFetch } from "./fetch";
+import { ApiRequestError, authFetch } from "./fetch";
 
 export const DEFAULT_CHAT_AGENT_ID = "general-agent";
 
@@ -592,7 +592,7 @@ export const sessionApi = {
   },
 
   /**
-   * Get a session
+   * Get a session; a typed missing-session response returns null.
    */
   async get(sessionId: string, options: { signal?: AbortSignal } = {}): Promise<BackendSession | null> {
     try {
@@ -601,7 +601,7 @@ export const sessionApi = {
         { signal: options.signal },
       );
     } catch (error) {
-      if ((error as Error).message.includes("404")) {
+      if (error instanceof ApiRequestError && error.status === 404) {
         return null;
       }
       throw error;
