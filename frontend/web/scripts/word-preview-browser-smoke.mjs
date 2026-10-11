@@ -111,10 +111,18 @@ try {
     if(scroll)await target.scrollIntoViewIfNeeded();
     const box=await target.boundingBox();const host=await page.locator('#preview-host').boundingBox();
     const viewport=page.viewportSize();
+    const inner=await frame().locator('html').evaluate(root=>({width:root.clientWidth,height:root.clientHeight}));
+    const clips=await page.locator('#preview-host').evaluate((host,inner)=>{
+      const contentRect=node=>{const r=node.getBoundingClientRect();const sx=r.width/node.offsetWidth,sy=r.height/node.offsetHeight;return {x:r.x+node.clientLeft*sx,y:r.y+node.clientTop*sy,width:node.clientWidth*sx,height:node.clientHeight*sy,sx,sy};};
+      const iframe=contentRect(host.querySelector('iframe'));
+      iframe.width=Math.min(iframe.width,inner.width*iframe.sx);iframe.height=Math.min(iframe.height,inner.height*iframe.sy);
+      return {iframe,scroller:contentRect(host.querySelector('div[aria-label]'))};
+    },inner);
     assert.ok(box&&host&&box.width>0&&box.height>0);
-    assert.ok(box.x>=Math.max(0,host.x)&&box.x+box.width<=Math.min(viewport.width,host.x+host.width),'marker must be inside horizontal parent clip');
-    assert.ok(box.y>=Math.max(0,host.y)&&box.y+box.height<=Math.min(viewport.height,host.y+host.height),'marker must be inside vertical parent clip');
-    return box;
+    const bounds=[host,clips.iframe,clips.scroller,{x:0,y:0,...viewport}];
+    assert.ok(box.x>=Math.max(...bounds.map(r=>r.x))&&box.x+box.width<=Math.min(...bounds.map(r=>r.x+r.width)),'marker must be inside every horizontal ancestor clip');
+    assert.ok(box.y>=Math.max(...bounds.map(r=>r.y))&&box.y+box.height<=Math.min(...bounds.map(r=>r.y+r.height)),'marker must be inside every vertical ancestor clip');
+    return {box,host,...clips,viewport};
   }
   async function inspectDocument(marker){
     await frame().getByText(marker,{exact:true}).waitFor();
