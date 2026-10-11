@@ -67,6 +67,8 @@ Marketplace file previews continue to read released Skill snapshots and do not i
 Skill export reads the complete authenticated file list and each file's content.
 Binary file responses carry base64 in `content` with `is_binary=true`; the ZIP
 writer receives decoded bytes, not an external URL or a display placeholder.
+The retired project-preview URL-fetch parameter is removed; ZIP creation does
+not fetch secondary URLs or silently omit failed downloads.
 Empty base64 is a valid zero-byte file. A failed file read or malformed binary
 content fails the whole export instead of downloading a partial archive. Export
 completion is fenced by the initiating mounted UI/authentication generation,

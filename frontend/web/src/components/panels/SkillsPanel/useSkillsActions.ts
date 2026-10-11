@@ -246,7 +246,7 @@ export function useSkillsActions(options?: {
       return;
     }
     try {
-      await exportProjectZip(files, name, undefined, isCurrent);
+      await exportProjectZip(files, name, isCurrent);
       if (isCurrent()) toast.success(t("skills.exportSuccess"));
     } catch {
       if (isCurrent()) toast.error(t("skills.exportFailed"));

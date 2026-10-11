@@ -32,11 +32,11 @@ test("file API binary content is strict base64 bytes; text and empty files remai
 
 test("ZIP round trip preserves binary, UTF-8 and empty bytes without fetching URLs", async () => {
   const original = { create: URL.createObjectURL, revoke: URL.revokeObjectURL, click: dom.window.HTMLAnchorElement.prototype.click, fetch: globalThis.fetch };
-  let captured!: Blob; let clicks = 0; let revoked = 0;
+  let captured!: Blob; let clicks = 0; let revoked = 0; let fetches = 0;
   URL.createObjectURL = (blob) => { captured = blob as Blob; return "blob:synthetic"; };
   URL.revokeObjectURL = () => { revoked += 1; };
   dom.window.HTMLAnchorElement.prototype.click = () => { clicks += 1; };
-  globalThis.fetch = async () => { throw new Error("unexpected external fetch"); };
+  globalThis.fetch = async () => { fetches += 1; throw new Error("unexpected external fetch"); };
   try {
     const bytes = Uint8Array.of(137, 80, 78, 71, 13, 10, 26, 10, 255, 0);
     await exportProjectZip({ "SKILL.md": "中文\n", "图片.png": bytes, "empty.txt": "" }, "synthetic");
@@ -46,12 +46,13 @@ test("ZIP round trip preserves binary, UTF-8 and empty bytes without fetching UR
     assert.equal((await zip.file("empty.txt")!.async("uint8array")).length, 0);
     assert.equal(clicks, 1); assert.equal(revoked, 1);
     let checks = 0;
-    await assert.rejects(exportProjectZip({ "SKILL.md": "body" }, "stale", undefined, () => ++checks === 1), { name: "AbortError" });
+    await assert.rejects(exportProjectZip({ "SKILL.md": "body" }, "stale", () => ++checks === 1), { name: "AbortError" });
     assert.equal(clicks, 1);
     dom.window.HTMLAnchorElement.prototype.click = () => { throw new Error("blocked click"); };
     await assert.rejects(exportProjectZip({ "SKILL.md": "body" }, "failure"), /blocked click/);
     assert.equal(revoked, 2);
     assert.equal(document.querySelectorAll("a").length, 0);
+    assert.equal(fetches, 0);
   } finally {
     URL.createObjectURL = original.create; URL.revokeObjectURL = original.revoke;
     dom.window.HTMLAnchorElement.prototype.click = original.click; globalThis.fetch = original.fetch;
