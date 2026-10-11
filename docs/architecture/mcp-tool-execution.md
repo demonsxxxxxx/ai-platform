@@ -22,6 +22,17 @@ Mandatory per-call checks stay in PreToolUse, including when can_use_tool is
 skipped by SDK approval rules. The installed CLI normalizes server/tool names
 by replacing characters outside `[a-zA-Z0-9_-]` with `_`.
 
+## Principal credential lifetime
+
+The principal JWT store holds one encrypted company credential per tenant/user;
+its key and authenticated envelope preserve that binding. `put` sets Redis TTL
+from the credential expiration. `get` validates the captured credential and
+returns the existing expired-credential error when its deadline has passed.
+Redis TTL owns reclamation: an expired read must not delete the shared key,
+because a concurrent login may already have replaced it with a valid credential.
+This does not change browser authentication lifetime, logout, or the existing
+last-write-wins credential replacement policy.
+
 ## Implementation
 
 1. Keep `server::raw_tool` references and canonical platform subject identities
