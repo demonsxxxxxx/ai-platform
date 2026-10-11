@@ -1677,6 +1677,16 @@ test("useAgent retains an unknown submission and blocks an automatic duplicate",
   const unknownFailures: Array<{ name: string; error: Error }> = [
     { name: "network loss", error: new Error("response lost after acceptance") },
     {
+      name: "database commit outcome unknown",
+      error: new ApiRequestError(
+        "safe internal projection",
+        500,
+        "chat_submission_internal_error",
+        undefined,
+        "diag_0123456789abcdef",
+      ),
+    },
+    {
       name: "server failure",
       error: new ApiRequestError("gateway failure", 503, "queue_unavailable"),
     },
