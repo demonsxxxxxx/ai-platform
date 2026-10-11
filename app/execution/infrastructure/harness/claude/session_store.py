@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -12,11 +14,21 @@ DEFAULT_PROVIDER_SESSION_TIMEOUT_SECONDS = 10.0
 MAX_PROVIDER_SESSION_TIMEOUT_SECONDS = 30.0
 MIN_PROVIDER_SESSION_TIMEOUT_SECONDS = 0.1
 MAX_PROVIDER_SESSION_REQUEST_BYTES = 2 * 1024 * 1024
+# Existing host callback limits; adapter chunks SDK batches without widening them.
+MAX_PROVIDER_SESSION_APPEND_ENTRIES = 128
+MAX_PROVIDER_SESSION_APPEND_ENTRY_BYTES = 256 * 1024
 MAX_PROVIDER_SESSION_RESPONSE_BYTES = 8 * 1024 * 1024 + 64 * 1024
 
 
 class ClaudeSessionStoreTransportError(RuntimeError):
     """A bounded, detail-free failure from the host SessionStore callback."""
+
+
+@dataclass
+class _PendingAppend:
+    signature: str
+    payloads: list[dict[str, Any]]
+    next_chunk: int = 0
 
 
 class ClaudeSessionStoreAdapter:
@@ -72,11 +84,13 @@ class ClaudeSessionStoreAdapter:
         self._max_response_bytes = max_response_bytes
         self._load_cache: dict[tuple[str, str | None], list[dict[str, Any]] | None] = {}
         self._next_sequence: int | None = None
-        self._pending_batch: tuple[int, str] | None = None
+        self._pending_batch: _PendingAppend | None = None
+        self._append_lock = asyncio.Lock()
+        self._completed_sequence: int | None = None
 
     @property
     def accepted_final_sequence(self) -> int | None:
-        return self._next_sequence - 1 if self._next_sequence is not None else None
+        return self._completed_sequence
 
     @staticmethod
     def _key_value(key: Mapping[str, Any] | str, name: str) -> Any:
@@ -197,6 +211,12 @@ class ClaudeSessionStoreAdapter:
         return body
 
     async def load(self, key: Mapping[str, Any] | str) -> list[dict[str, Any]] | None:
+        async with self._append_lock:
+            return await self._load_locked(key)
+
+    async def _load_locked(self, key: Mapping[str, Any] | str) -> list[dict[str, Any]] | None:
+        if self._pending_batch is not None:
+            raise ClaudeSessionStoreTransportError("provider_session_append_pending")
         session_id = self._session_id(key)
         subpath = self._subpath(key)
         cache_key = (session_id, subpath)
@@ -207,6 +227,7 @@ class ClaudeSessionStoreAdapter:
         if self._next_sequence is not None and sequence != self._next_sequence:
             raise ClaudeSessionStoreTransportError("provider_session_sequence_conflict")
         self._next_sequence = sequence
+        self._completed_sequence = sequence - 1
         entries = body.get("entries")
         if not isinstance(entries, list) or any(not isinstance(entry, dict) for entry in entries):
             raise ClaudeSessionStoreTransportError("provider_session_response_invalid")
@@ -214,30 +235,84 @@ class ClaudeSessionStoreAdapter:
         self._load_cache[cache_key] = result
         return result
 
-    async def append(
-        self,
-        key: Mapping[str, Any] | str,
-        entries: Sequence[Mapping[str, Any]],
-    ) -> None:
+    def _append_input(
+        self, key: Mapping[str, Any] | str, entries: Sequence[Mapping[str, Any]],
+    ) -> tuple[str, list[dict[str, Any]]]:
         if not isinstance(entries, Sequence) or isinstance(entries, (str, bytes, bytearray)):
             raise ClaudeSessionStoreTransportError("provider_session_entry_batch_invalid")
-        if self._next_sequence is None:
-            raise ClaudeSessionStoreTransportError("provider_session_sequence_uninitialized")
-        payload = self._payload(action="append", key=key, entries=entries,
-                                expected_sequence=self._next_sequence)
-        signature = (self._next_sequence, json.dumps(
-            [payload["subpath"] or "", payload["entries"]],
-            ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
-        ))
-        if self._pending_batch not in (None, signature):
-            raise ClaudeSessionStoreTransportError("provider_session_append_pending")
-        self._pending_batch = signature
-        body = await self._request(payload)
-        self._next_sequence = body["next_sequence"]
-        self._pending_batch = None
-        self._load_cache.clear()
+        if any(not isinstance(entry, Mapping) for entry in entries):
+            raise ClaudeSessionStoreTransportError("provider_session_entry_shape_invalid")
+        try:
+            # Freeze caller-owned nested data for deterministic retries.
+            encoded = json.dumps(
+                [self._session_id(key), self._subpath(key), [dict(entry) for entry in entries]],
+                ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+            )
+            frozen = json.loads(encoded)[2]
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ClaudeSessionStoreTransportError("provider_session_entry_not_json") from exc
+        for entry in frozen:
+            if len(json.dumps(entry, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")) > MAX_PROVIDER_SESSION_APPEND_ENTRY_BYTES:
+                raise ClaudeSessionStoreTransportError("provider_session_entry_too_large")
+        return encoded, frozen
+
+    def _append_chunks(
+        self, key: Mapping[str, Any] | str, entries: list[dict[str, Any]], start: int,
+    ) -> list[dict[str, Any]]:
+        payloads: list[dict[str, Any]] = []
+        chunk: list[dict[str, Any]] = []
+        for entry in entries:
+            candidate = [*chunk, entry]
+            try:
+                if len(candidate) > MAX_PROVIDER_SESSION_APPEND_ENTRIES:
+                    raise ClaudeSessionStoreTransportError("provider_session_request_too_large")
+                self._payload(action="append", key=key, entries=candidate, expected_sequence=start)
+            except ClaudeSessionStoreTransportError as exc:
+                if str(exc) != "provider_session_request_too_large" or not chunk:
+                    raise
+                payloads.append(self._payload(action="append", key=key, entries=chunk, expected_sequence=start))
+                start += len(chunk)
+                chunk = [entry]
+                self._payload(action="append", key=key, entries=chunk, expected_sequence=start)
+            else:
+                chunk = candidate
+        if chunk:
+            payloads.append(self._payload(action="append", key=key, entries=chunk, expected_sequence=start))
+        return payloads
+
+    async def append(
+        self, key: Mapping[str, Any] | str, entries: Sequence[Mapping[str, Any]],
+    ) -> None:
+        signature, frozen = self._append_input(key, entries)
+        async with self._append_lock:
+            pending = self._pending_batch
+            if pending is not None and pending.signature != signature:
+                raise ClaudeSessionStoreTransportError("provider_session_append_pending")
+            if not frozen:
+                return
+            if self._next_sequence is None:
+                raise ClaudeSessionStoreTransportError("provider_session_sequence_uninitialized")
+            if pending is None:
+                session_id, subpath, _entries = json.loads(signature)
+                frozen_key = {"session_id": session_id, "subpath": subpath}
+                pending = _PendingAppend(signature, self._append_chunks(frozen_key, frozen, self._next_sequence))
+                self._pending_batch = pending
+            while pending.next_chunk < len(pending.payloads):
+                # An uncertain ACK keeps the exact chunk and expected_sequence.
+                body = await self._request(pending.payloads[pending.next_chunk])
+                self._next_sequence = body["next_sequence"]
+                pending.next_chunk += 1
+                self._load_cache.clear()
+            self._completed_sequence = self._next_sequence - 1
+            self._pending_batch = None
 
     async def list_subkeys(self, key: Mapping[str, Any] | str | None = None) -> list[str]:
+        async with self._append_lock:
+            return await self._list_subkeys_locked(key)
+
+    async def _list_subkeys_locked(self, key: Mapping[str, Any] | str | None) -> list[str]:
+        if self._pending_batch is not None:
+            raise ClaudeSessionStoreTransportError("provider_session_append_pending")
         if key is None:
             if self._provider_session_id is None:
                 raise ClaudeSessionStoreTransportError("provider_session_key_invalid")
@@ -246,6 +321,7 @@ class ClaudeSessionStoreAdapter:
         if self._next_sequence is not None and body["next_sequence"] != self._next_sequence:
             raise ClaudeSessionStoreTransportError("provider_session_sequence_conflict")
         self._next_sequence = body["next_sequence"]
+        self._completed_sequence = self._next_sequence - 1
         subpaths = body.get("subpaths")
         if not isinstance(subpaths, list) or any(
             not isinstance(subpath, str) for subpath in subpaths
