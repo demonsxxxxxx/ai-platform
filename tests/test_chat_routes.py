@@ -2436,7 +2436,7 @@ def test_queue_payload_invalid_detail_is_field_level_and_redacted():
     assert exc_info.value.status_code == 500
     detail = exc_info.value.detail
     assert detail["code"] == "queue_payload_invalid"
-    assert detail["submission_disposition"] == "rejected_before_persist"
+    assert "submission_disposition" not in detail
     assert detail["errors"] == [
         {
             "loc": [],
@@ -2465,7 +2465,6 @@ def test_queue_payload_invalid_detail_sanitizes_validation_messages():
 
     assert detail == {
         "code": "queue_payload_invalid",
-        "submission_disposition": "rejected_before_persist",
         "errors": [
             {
                 "loc": ["input", "field"],
@@ -2479,6 +2478,24 @@ def test_queue_payload_invalid_detail_sanitizes_validation_messages():
     assert "loc-secret" not in serialized
     assert "/var/lib/ai-platform/private/run.log" not in serialized
     assert "/var/lib/ai-platform/private/type.log" not in serialized
+
+
+@pytest.mark.parametrize("error", [ValueError("token=private-value"), ValueError()])
+def test_queue_payload_invalid_detail_without_field_errors_is_phase_neutral(error):
+    assert queue_payload_invalid_detail(error) == {"code": "queue_payload_invalid"}
+
+
+def test_queue_payload_invalid_detail_keeps_existing_public_error_budget():
+    class ManyErrors(ValueError):
+        def errors(self):
+            return [{"loc": ("x" * 200, i), "type": "y" * 200, "msg": "z" * 400}
+                    for i in range(12)]
+
+    detail = queue_payload_invalid_detail(ManyErrors())
+    assert "submission_disposition" not in detail
+    assert len(detail["errors"]) == 8
+    for i, error in enumerate(detail["errors"]):
+        assert error == {"loc": ["x" * 120, i], "type": "y" * 120, "message": "z" * 240}
 
 
 class EmptyBuiltinRegistry:
@@ -3489,7 +3506,8 @@ def test_chat_stream_request_rejects_structured_model_id(raw_model_id):
 
 
 @pytest.mark.asyncio
-async def test_chat_stream_maps_governed_model_to_runtime_value_and_revision(monkeypatch):
+@pytest.mark.parametrize("validation_failure", [None, "prevalidation", "finalvalidation"])
+async def test_chat_stream_maps_governed_model_to_runtime_value_and_revision(monkeypatch, validation_failure):
     calls = []
     connections = {}
     current_settings = type(
@@ -3564,13 +3582,63 @@ async def test_chat_stream_maps_governed_model_to_runtime_value_and_revision(mon
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', fake_append_event)
     monkeypatch.setattr("app.routes.chat.enqueue_run_with_metadata", fake_enqueue_run)
 
-    response = await chat_stream(
-        ChatStreamRequest(
-            message="hello",
-            agent_options={"model_id": "pro-tier", "model": "openai/gpt-5"},
-        ),
-        principal=principal(),
+    request = ChatStreamRequest(
+        message="hello",
+        agent_options={"model_id": "pro-tier", "model": "openai/gpt-5"},
     )
+    if validation_failure is not None:
+        validation_calls = 0
+        transaction_outcomes = []
+        validation_details = []
+
+        @asynccontextmanager
+        async def observed_transaction():
+            async with fake_transaction() as conn:
+                try:
+                    yield conn
+                except Exception:
+                    transaction_outcomes.append("rolled_back")
+                    raise
+                else:
+                    transaction_outcomes.append("committed")
+
+        def invalid_queue_payload(payload):
+            nonlocal validation_calls
+            validation_calls += 1
+            if validation_calls == (1 if validation_failure == "prevalidation" else 2):
+                payload = {**payload, "model_id": "../private/model"}
+            try:
+                return _validate_queue_payload_for_enqueue(payload)
+            except HTTPException as exc:
+                validation_details.append(dict(exc.detail))
+                # An unrelated field on the HTTP detail must never be forwarded.
+                exc.detail["private_executor_payload"] = "token=private-queue-token"
+                raise
+
+        async def unexpected_ledger(*_args, **_kwargs):
+            raise AssertionError("legacy unkeyed Chat must not acquire a submission ledger")
+
+        monkeypatch.setattr("app.routes.chat.transaction", observed_transaction)
+        monkeypatch.setattr("app.routes.chat._validate_queue_payload_for_enqueue", invalid_queue_payload)
+        monkeypatch.setattr(_owner_persistence_chat_submissions, "claim_chat_submission", unexpected_ledger)
+        with pytest.raises(HTTPException) as exc_info:
+            await chat_stream(request, principal=principal())
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.detail["code"] == "queue_payload_invalid"
+        assert exc_info.value.detail["submission_disposition"] == "rejected_before_persist"
+        assert exc_info.value.detail == {
+            **validation_details[0], "submission_disposition": "rejected_before_persist",
+        }
+        assert exc_info.value.detail["errors"]
+        assert set(exc_info.value.detail) == {"code", "submission_disposition", "errors"}
+        assert "../private/model" not in str(exc_info.value.detail)
+        assert "private-queue-token" not in str(exc_info.value.detail)
+        assert transaction_outcomes[-1] == "rolled_back"
+        assert not any(item[0] == "queue_payload" for item in calls)
+        assert sum(item[0] == "create_run" for item in calls) == (validation_failure == "finalvalidation")
+        return
+
+    response = await chat_stream(request, principal=principal())
 
     create_run = next(item[1] for item in calls if item[0] == "create_run")
     bind_run = next(item[1] for item in calls if item[0] == "bind_run_model")
@@ -4839,6 +4907,9 @@ async def test_chat_stream_revalidates_preserved_continuation_skill_for_current_
         ("7ea93033-30f5-40ea-8a33-2f3c6e7b21c4", "rejection_write_failure", False, None),
         ("7ea93033-30f5-40ea-8a33-2f3c6e7b21c4", "rejection_commit_unknown", False, None),
         ("7ea93033-30f5-40ea-8a33-2f3c6e7b21c4", "before_commit", False, None),
+        (None, None, False, "invalid_before_commit"),
+        ("7ea93033-30f5-40ea-8a33-2f3c6e7b21c4", None, False, "invalid_before_commit"),
+        ("7ea93033-30f5-40ea-8a33-2f3c6e7b21c4", None, False, "invalid_after_commit"),
         (None, None, False, "before_publish"),
         (None, None, False, "definitive_rejection"),
         ("8f2cf18b-e414-4ddd-b99e-c21c32d4f086", None, True, None),
@@ -4860,6 +4931,9 @@ async def test_chat_stream_revalidates_preserved_continuation_skill_for_current_
         "rollback-rejection-write-failed",
         "rollback-rejection-commit-ack-lost",
         "keyed-rollback",
+        "unkeyed-invalid-before-commit",
+        "keyed-invalid-before-commit",
+        "keyed-invalid-after-commit",
         "unkeyed-publish-failure",
         "unkeyed-definitive-rejection",
         "restored-continuation",
@@ -5105,6 +5179,12 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         return conn.submission
 
     async def get_run(conn, **_kwargs):
+        assert _kwargs["tenant_id"] == "tenant-a"
+        assert _kwargs["user_id"] == "user-a"
+        if enqueue_failure_mode == "invalid_after_commit":
+            assert committed_run is not None
+            # Synthetic historical snapshot incompatible with the current DTO.
+            return {**conn.run, "input_json": {**conn.run["input_json"], "model_id": "../private/model"}}
         return conn.run
 
     async def finalize_submission(conn, **kwargs):
@@ -5258,6 +5338,16 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         lambda kind: "ses-profile-lock-order" if kind == "ses" else "run-profile-lock-order",
     )
 
+    if enqueue_failure_mode == "invalid_before_commit":
+        original_validate = _validate_queue_payload_for_enqueue
+
+        def invalid_final_payload(payload):
+            if payload.get("context_snapshot_id"):
+                payload = {**payload, "model_id": "../private/model"}
+            return original_validate(payload)
+
+        monkeypatch.setattr("app.routes.chat._validate_queue_payload_for_enqueue", invalid_final_payload)
+
     request_payload = {
         "message": "run the selected Agent",
         "agent_options": {"enable_thinking": "off"},
@@ -5281,6 +5371,33 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
         assert committed_run is None
         assert "create_run" not in calls
         assert "enqueue" not in calls
+        return
+
+    if enqueue_failure_mode in {"invalid_before_commit", "invalid_after_commit"}:
+        with pytest.raises(HTTPException) as exc_info:
+            await chat_stream(chat_request, agent_id=query_agent_id, principal=principal())
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.detail["code"] == "queue_payload_invalid"
+        assert "../private/model" not in str(exc_info.value.detail)
+        assert "enqueue" not in calls
+        if enqueue_failure_mode == "invalid_before_commit":
+            assert exc_info.value.detail["submission_disposition"] == "rejected_before_persist"
+            assert committed_run is None
+            assert committed_submission["state"] == "rejected_before_persist"
+        else:
+            assert "submission_disposition" not in exc_info.value.detail
+            assert committed_run["status"] == "queued"
+            assert committed_submission["state"] == "accepted_pending_enqueue"
+            with pytest.raises(HTTPException) as retry_info:
+                await retry_chat_submission_admission(
+                    submission_id=submission_id, response=Response(), principal=principal(),
+                )
+            assert retry_info.value.detail == exc_info.value.detail
+            assert retry_info.value.headers["Cache-Control"] == "private, no-store"
+            assert committed_run["status"] == "queued"
+            assert committed_submission["state"] == "accepted_pending_enqueue"
+            assert calls.count("create_run") == 1
+            assert "enqueue" not in calls
         return
 
     if creation_failure == "after_commit":
