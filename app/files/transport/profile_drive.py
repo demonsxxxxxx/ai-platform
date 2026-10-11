@@ -28,9 +28,11 @@ class _ProfileDriveStreamingResponse(StreamingResponse):
 
         async def tracked_send(message: Any) -> None:
             nonlocal started
-            await send(message)
             if message["type"] == "http.response.start":
+                # send may consume the start message and then block/fail. Once
+                # attempted, conservatively forbid any replacement status.
                 started = True
+            await send(message)
 
         try:
             async with self.transfer:

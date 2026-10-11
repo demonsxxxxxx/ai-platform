@@ -192,14 +192,17 @@ async def test_asgi_failure_before_iteration_closes_transfer(monkeypatch):
     transfer = await open_file()
     response = profile_drive_streaming_response(transfer)
 
+    original = RuntimeError("synthetic downstream failure")
+
     async def send(message):
-        raise RuntimeError("synthetic downstream failure")
+        raise original
 
     async def receive():
         return {"type": "http.disconnect"}
 
-    with pytest.raises(RuntimeError, match="synthetic downstream failure"):
+    with pytest.raises(RuntimeError, match="synthetic downstream failure") as caught:
         await response({"type": "http", "asgi": {"spec_version": "2.4"}}, receive, send)
+    assert caught.value is original
     assert stream.closed and clients[0].is_closed
 
 
@@ -345,7 +348,8 @@ async def test_owner_budget_preserves_independent_operation_timeout_identity(mon
 
 
 @pytest.mark.asyncio
-async def test_asgi_overall_timeout_after_start_never_sends_second_status(monkeypatch):
+@pytest.mark.parametrize("blocked_message", ["http.response.start", "http.response.body"])
+async def test_asgi_overall_timeout_after_start_never_sends_second_status(monkeypatch, blocked_message):
     stream = Stream()
     clients = client_factory(monkeypatch, lambda request: httpx.Response(
         200, headers={"Content-Length": "1"}, stream=stream))
@@ -355,7 +359,7 @@ async def test_asgi_overall_timeout_after_start_never_sends_second_status(monkey
 
     async def send(message):
         messages.append(message)
-        if message["type"] == "http.response.body":
+        if message["type"] == blocked_message:
             await anyio.sleep(100)
 
     async def receive():
@@ -426,3 +430,21 @@ async def test_import_claim_budget_rolls_back_and_reconciles_without_masking_err
         assert isinstance(exits[-1], asyncio.CancelledError)
     assert len(reconciled) == 1
     assert stream.closed and clients[0].is_closed
+
+
+def test_transfer_timeout_configuration_has_finite_positive_bounds():
+    from pydantic import ValidationError
+    from app.settings import Settings
+
+    settings = Settings(_env_file=None)
+    assert settings.profile_drive_transfer_read_timeout_seconds == 60
+    assert settings.profile_drive_transfer_total_timeout_seconds == 1800
+    for field, value in [
+        ("profile_drive_transfer_read_timeout_seconds", 0),
+        ("profile_drive_transfer_read_timeout_seconds", 3601),
+        ("profile_drive_transfer_total_timeout_seconds", 0),
+        ("profile_drive_transfer_total_timeout_seconds", 10801),
+        ("profile_drive_transfer_total_timeout_seconds", float("inf")),
+    ]:
+        with pytest.raises(ValidationError):
+            Settings(_env_file=None, **{field: value})
