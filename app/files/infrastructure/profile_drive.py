@@ -136,7 +136,7 @@ class _ProfileDriveFile:
                     # Do not hold a cancel scope across yield/ASGI send. The
                     # absolute deadline still includes downstream backpressure.
                     with _transfer_budget(min(self.deadline, anyio.current_time() + self.read_timeout_seconds)):
-                        chunk = await anext(iterator)
+                        chunk = await iterator.__anext__()
                 except StopAsyncIteration:
                     break
                 transferred += len(chunk)
