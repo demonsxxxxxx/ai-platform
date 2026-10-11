@@ -660,6 +660,11 @@ def _normalize_tool_item(
         if capability_kind := _structured_value(value.get("capability_kind")):
             normalized["capability_kind"] = capability_kind
     elif kind == "call":
+        if "is_interrupt" in value:
+            if type(value["is_interrupt"]) is bool and value.get("last_stage") == "failed":
+                normalized["is_interrupt"] = value["is_interrupt"]
+            else:
+                _append_loss(losses, field=f"{field}.is_interrupt", reason="invalid_field")
         for key in ("state", "last_stage"):
             if structured := _structured_value(value.get(key)):
                 normalized[key] = structured

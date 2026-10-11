@@ -1825,6 +1825,14 @@ async def run_claude_agent_sdk(
             },
         )
         entry["last_stage"] = stage
+        entry.pop("is_interrupt", None)
+        if (
+            stage == "failed"
+            and isinstance(failure, dict)
+            and failure.get("hook_event_name") == "PostToolUseFailure"
+            and type(failure.get("is_interrupt")) is bool
+        ):
+            entry["is_interrupt"] = failure["is_interrupt"]
         if tool_input is not None:
             entry["tool_input"] = _runtime_diagnostic_value(tool_input)
         if failure is not None:

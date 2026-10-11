@@ -194,7 +194,25 @@ owned by the API; Nginx does not replace it or accept lifecycle operations.
 
 Administrators store compatible-endpoint roots and credentials in the Model
 control plane. Model discovery validates the endpoint and reads `/v1/models`
-without changing the active revision. Publication re-discovers the same model
+without changing the active revision. Administrative origin normalization is pure:
+it is used for saved-key same-origin comparison, not as SSRF approval. The existing
+offloaded HTTP request resolves DNS once, checks every returned address, and pins
+the actual connection to those approved IPs. Publication's database/advisory-lock
+transaction begins only after that request finishes. A canceled discovery cannot
+publish; the existing finite-response worker still owns and closes its request.
+OS resolver duration and default-executor occupancy are not bounded by the HTTP
+read timeout, and cancellation does not instantly stop synchronous DNS.
+
+Endpoint ports must be 1–65535. An explicit port 0 is invalid rather than an alias
+for the scheme's default port; the prior truthiness-based coercion is retired.
+Malformed URL/port parsing returns `model_connection_endpoint_invalid`, without
+propagating parser-specific details. Unicode and ASCII IDNA hostname spellings
+retain their existing normalization behavior; this change does not introduce IDNA
+alias matching for saved credentials. Missing credentials or encryption setup can
+now fail before DNS policy checks; every actual request must still pass those
+checks before credentials are sent.
+
+Publication re-discovers the same model
 identities and atomically activates a new encrypted connection revision together
 with the enabled directory, configured token capacities, and one default model.
 Users fetch the new public directory when they reload chat; no live catalog push

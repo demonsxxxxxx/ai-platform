@@ -78,3 +78,50 @@ test("save passes explicit removals and leaves unwritten lazy files retained", a
     assert.deepEqual(calls[0][1].deletedFiles, ["remove.txt"]);
   } finally { await view.close(); skillApi.get = originalGet; skillApi.update = originalUpdate; }
 });
+
+test("export never downloads a partial archive and ignores a session changed mid-read", async () => {
+  const toast = (await import("react-hot-toast")).default;
+  const { AUTH_SESSION_MARKER_KEY } = await import("../../../services/api/token");
+  const old = { get: skillApi.get, file: skillApi.getFile, create: URL.createObjectURL, success: toast.success, error: toast.error };
+  let downloads = 0; let successes = 0; let errors = 0;
+  URL.createObjectURL = () => { downloads += 1; return "blob:synthetic"; };
+  toast.success = () => { successes += 1; return "success"; };
+  toast.error = () => { errors += 1; return "error"; };
+  skillApi.get = async () => ({ files: ["SKILL.md", "missing.png"] });
+  skillApi.getFile = async (_name, path) => {
+    if (path === "missing.png") throw new Error("synthetic file request failed");
+    return { content: "body" };
+  };
+  const view = await harness();
+  try {
+    await act(async () => view.current().handleExportZip("one"));
+    assert.equal(downloads, 0); assert.equal(successes, 0); assert.equal(errors, 1);
+    const held = deferred<UserSkillDetail>(); let reads = 0;
+    skillApi.get = () => held.promise;
+    skillApi.getFile = async () => { reads += 1; return { content: "new session content" }; };
+    let pending!: Promise<void>;
+    await act(async () => { pending = view.current().handleExportZip("one"); });
+    localStorage.setItem(AUTH_SESSION_MARKER_KEY, "synthetic-next-generation");
+    await act(async () => { held.resolve({ files: ["SKILL.md"] }); await pending; });
+    assert.equal(reads, 0); assert.equal(downloads, 0); assert.equal(successes, 0); assert.equal(errors, 1);
+  } finally {
+    await view.close(); localStorage.removeItem(AUTH_SESSION_MARKER_KEY);
+    skillApi.get = old.get; skillApi.getFile = old.file; URL.createObjectURL = old.create;
+    toast.success = old.success; toast.error = old.error;
+  }
+});
+
+test("an export resolving after unmount cannot trigger a download", async () => {
+  const oldGet = skillApi.get; const oldCreate = URL.createObjectURL;
+  const held = deferred<UserSkillDetail>(); let downloads = 0;
+  skillApi.get = () => held.promise;
+  URL.createObjectURL = () => { downloads += 1; return "blob:synthetic"; };
+  const view = await harness();
+  try {
+    let pending!: Promise<void>;
+    await act(async () => { pending = view.current().handleExportZip("one"); });
+    await view.close();
+    held.resolve({ files: [] }); await pending;
+    assert.equal(downloads, 0);
+  } finally { skillApi.get = oldGet; URL.createObjectURL = oldCreate; }
+});
