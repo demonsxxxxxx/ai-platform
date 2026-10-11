@@ -175,6 +175,18 @@ The immutable admitted execution specification, durable attempt authority, and
 their mixed-version migration are defined by
 [`execution-spec-and-attempt-lifecycle.md`](execution-spec-and-attempt-lifecycle.md).
 
+Streaming owns event contracts: `streaming.events` exposes the public event sets
+from `streaming.domain.protocol_v4` and the durable envelope version from
+`streaming.domain.run_events`. The root control-plane module does not define
+another event taxonomy or placeholder event envelope. Retiring an unused Python
+record does not retire persisted events, public v4 schemas, or Context snapshot
+versions and their readers.
+
+The legacy `capabilities` record carries only the internal Harness routing
+identity and label consumed by Intent and Run selection/recovery. It is not a
+public response or an authorization/visibility authority; those decisions stay
+with the owning contexts.
+
 ### 2.2 Kernel and platform limits
 
 `kernel` is a dependency leaf for framework-neutral primitives used by at least

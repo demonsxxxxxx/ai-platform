@@ -6,24 +6,16 @@ from app.control_plane_contracts import (
     RUN_CONTRACT_VERSION,
     RUN_PAYLOAD_SCHEMA_VERSION,
     SKILL_MANIFEST_SCHEMA_VERSION,
-    STANDARD_EVENT_TYPES,
     TOOL_POLICY_SCHEMA_VERSION,
-    ContextSnapshot,
-    EventEnvelope,
-    SkillManifest,
-    ToolPolicy,
     artifact_lineage_contract,
     artifact_manifest_contract,
     attach_run_thinking_effort,
-    is_standard_event_type,
     sanitize_public_payload,
     sanitize_public_text,
     standard_trace_id,
 )
 from app.projection_redaction import redact_raw_skill_references, sanitize_user_control_input
 from app.platform import public_payload
-from app.streaming.domain.run_events import standard_error_code
-from app.streaming.events import EVENT_ENVELOPE_SCHEMA_VERSION
 
 
 def test_control_plane_public_sanitizers_are_platform_identity_aliases():
@@ -34,7 +26,6 @@ def test_control_plane_public_sanitizers_are_platform_identity_aliases():
 def test_control_plane_versions_are_stable():
     assert RUN_CONTRACT_VERSION == "ai-platform.run.v1"
     assert RUN_PAYLOAD_SCHEMA_VERSION == "ai-platform.run-payload.v1"
-    assert EVENT_ENVELOPE_SCHEMA_VERSION == "ai-platform.event-envelope.v1"
     assert ARTIFACT_MANIFEST_SCHEMA_VERSION == "ai-platform.artifact-manifest.v1"
     assert SKILL_MANIFEST_SCHEMA_VERSION == "ai-platform.skill-manifest.v1"
     assert TOOL_POLICY_SCHEMA_VERSION == "ai-platform.tool-policy.v1"
@@ -49,49 +40,9 @@ def test_run_thinking_effort_omits_auto_and_attaches_explicit_level():
     }
 
 
-def test_trace_ids_and_error_codes_are_normalized():
+def test_trace_ids_are_normalized():
     assert standard_trace_id("run_abc").startswith("trace_")
     assert standard_trace_id().startswith("trace_")
-    assert standard_error_code("executor_failure") == "executor_failure"
-    assert standard_error_code("") == "unknown_error"
-
-
-def test_standard_event_taxonomy_covers_g2_lifecycle_events():
-    assert "queued" in STANDARD_EVENT_TYPES
-    assert "skill_selected" in STANDARD_EVENT_TYPES
-    assert "artifact_created" in STANDARD_EVENT_TYPES
-    assert "mcp_tool_call_completed" in STANDARD_EVENT_TYPES
-    assert "context_snapshot_created" in STANDARD_EVENT_TYPES
-    assert "sandbox_lease_created" in STANDARD_EVENT_TYPES
-    assert "checkpoint_created" in STANDARD_EVENT_TYPES
-    assert "subagent_started" in STANDARD_EVENT_TYPES
-    assert "subagent_completed" in STANDARD_EVENT_TYPES
-    assert "subagent_failed" in STANDARD_EVENT_TYPES
-    assert is_standard_event_type("tool_permission_requested") is False
-    assert is_standard_event_type("multi_agent_dispatch_handoff") is False
-    assert is_standard_event_type("run_multi_agent_child_created") is False
-    assert is_standard_event_type("run_succeeded") is True
-    assert is_standard_event_type("unknown_custom_event") is False
-    assert standard_error_code(None) == "unknown_error"
-
-
-def test_g2_canonical_placeholder_models_are_contract_only():
-    event = EventEnvelope(run_id="run-a", trace_id="trace_a", type="queued", stage="queue")
-    assert event.schema_version == "ai-platform.event-envelope.v1"
-    assert event.severity == "info"
-    assert event.visible_to_user is True
-    assert event.token_counts == {}
-    assert event.cost == {}
-
-    skill = SkillManifest(skill_id="qa-file-reviewer", version="0.1.0", source="builtin")
-    assert skill.schema_version == "ai-platform.skill-manifest.v1"
-
-    policy = ToolPolicy(tool_id="ragflow-knowledge-search", decision="deny")
-    assert policy.schema_version == "ai-platform.tool-policy.v1"
-
-    snapshot = ContextSnapshot(run_id="run-a", trace_id="trace_a")
-    assert snapshot.schema_version == "ai-platform.context-snapshot.v1"
-    assert snapshot.included_memory_record_ids == []
 
 
 def test_artifact_manifest_contract_platform_fields_cannot_be_overridden():
