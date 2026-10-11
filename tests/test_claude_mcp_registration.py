@@ -471,3 +471,84 @@ async def test_registration_timeout_does_not_limit_healthy_session_lifetime(monk
         assert registration.server_aliases["gateway"] in options.mcp_servers
         assert closed == []
     assert closed == [True]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", [-32602, 408, -(2**53 - 1), 2**53 - 1, True, "408", {}, 2**53])
+async def test_typed_session_failure_is_content_free_and_reraised_unchanged(code):
+    from mcp.shared.exceptions import McpError
+    from mcp.types import CallToolRequest, CallToolRequestParams, ErrorData
+
+    failure = McpError(ErrorData.model_construct(code=code, message="PRIVATE_MESSAGE", data={"secret": "PRIVATE_DATA"}))
+    observations = []
+    callbacks = []
+
+    def track(callback):
+        callbacks.append(callback)
+        return callback
+
+    async def call_tool(name, arguments):
+        raise failure
+
+    registration = ClaudeMcpRegistration(
+        {}, {}, session_factory=None, list_tools=None,
+        callback_wrapper=track, failure_observer=observations.append,
+    )
+    server = registration._server("gateway", [("lookup", Tool(name="lookup", inputSchema={}), "lookup")], SimpleNamespace(call_tool=call_tool))["instance"]
+    with pytest.raises(McpError) as raised:
+        await callbacks[0]("lookup", {"query": "PRIVATE_ARGUMENT"})
+    assert raised.value is failure
+    expected = {"source": "mcp_session_call", "scope": "run_attempt", "exception_type": "McpError"}
+    if type(code) is int and abs(code) <= 2**53 - 1:
+        expected["code"] = code
+    assert observations == [expected]
+    # Real low-level MCP handler still converts ordinary McpError to its text result.
+    result = await server.request_handlers[CallToolRequest](CallToolRequest(
+        method="tools/call", params=CallToolRequestParams(name="lookup", arguments={}),
+    ))
+    assert result.root.isError is True
+    assert result.root.content[0].text == "PRIVATE_MESSAGE"
+    assert "PRIVATE" not in json.dumps(observations)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["ordinary", "result", "cancel", "elicitation", "observer"])
+async def test_session_failure_observation_does_not_change_other_outcomes(kind):
+    from mcp.shared.exceptions import McpError, UrlElicitationRequiredError
+    from mcp.types import ErrorData
+
+    observations = []
+    callbacks = []
+    failure = {
+        "ordinary": RuntimeError("timeout permission denied 404"),
+        "cancel": asyncio.CancelledError(),
+        "elicitation": UrlElicitationRequiredError([]),
+        "observer": McpError(ErrorData(code=-32602, message="PRIVATE")),
+    }.get(kind)
+    result = CallToolResult(content=[TextContent(type="text", text="404 PRIVATE")], structuredContent={"code": 408}, isError=True)
+
+    def observe(item):
+        observations.append(item)
+        if kind == "observer":
+            raise RuntimeError("OBSERVER_PRIVATE")
+
+    def track(callback):
+        callbacks.append(callback)
+        return callback
+
+    async def call_tool(name, arguments):
+        if failure is not None:
+            raise failure
+        return result
+
+    registration = ClaudeMcpRegistration({}, {}, session_factory=None, list_tools=None, callback_wrapper=track, failure_observer=observe)
+    registration._server("gateway", [("lookup", Tool(name="lookup", inputSchema={}), "lookup")], SimpleNamespace(call_tool=call_tool))
+    if failure is not None:
+        with pytest.raises(type(failure)) as raised:
+            await callbacks[0]("lookup", {})
+        assert raised.value is failure
+    else:
+        returned = await callbacks[0]("lookup", {})
+        assert returned.isError is True
+        assert returned.structuredContent == result.structuredContent
+    assert len(observations) == (1 if kind == "observer" else 0)
