@@ -1,4 +1,3 @@
-import app.mcp.repository as _owner_mcp_repository
 import json
 from pathlib import Path
 
@@ -322,10 +321,9 @@ async def test_retired_bare_mcp_id_never_queries_database():
         async def execute(self, *_args, **_kwargs):
             raise AssertionError("retired bare references must fail before database access")
 
-    for repository in (_owner_mcp_repository, mcp_repository):
-        assert await repository.get_mcp_tool_registry_entry(
-            Connection(), tenant_id="tenant-a", tool_id="ragflow-knowledge-search"
-        ) is None
+    assert await mcp_repository.get_mcp_tool_registry_entry(
+        Connection(), tenant_id="tenant-a", tool_id="ragflow-knowledge-search"
+    ) is None
 
 
 @pytest.mark.asyncio
