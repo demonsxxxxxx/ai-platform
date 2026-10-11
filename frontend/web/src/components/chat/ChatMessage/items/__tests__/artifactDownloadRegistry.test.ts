@@ -136,3 +136,66 @@ test("does not create a cross-principal shared scope while authentication is inc
     undefined,
   );
 });
+
+test("live subscribers survive timer, collection and capacity pressure until the final release", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
+  const registry = createArtifactDownloadRegistry({ maxEntries: 1, maxEntriesPerScope: 1 });
+  const context = createContext();
+  const scope = createArtifactDownloadScope(context, "message-a")!;
+  const controller = registry.get(scope, "artifact-a")!;
+  const listener = () => undefined;
+  const releaseFirst = controller.subscribe(listener);
+  const releaseSecond = controller.subscribe(listener);
+  await controller.download(async () => false);
+  t.mock.timers.tick(30_001);
+  registry.collectExpired();
+  assert.equal(registry.size(), 1);
+  releaseFirst();
+  releaseFirst(); // Cleanup is idempotent; a different subscriber still owns it.
+  registry.collectExpired();
+  const refused = registry.get(scope, "artifact-b")!;
+  assert.equal(refused.getState(), "failed");
+  const otherScope = createArtifactDownloadScope(context, "message-b")!;
+  assert.equal(registry.get(otherScope, "artifact-b")!.getState(), "failed");
+  let calls = 0;
+  await refused.download(async () => { calls += 1; return true; });
+  await controller.download(async () => { calls += 1; return true; });
+  assert.equal(calls, 1);
+  assert.equal(registry.size(), 1);
+  releaseSecond();
+  t.mock.timers.tick(30_001);
+  assert.equal(registry.size(), 0);
+  registry.clearScope(context);
+});
+
+test("StrictMode-style release and reacquire cancels cleanup; a final idle release is bounded", (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
+  const registry = createArtifactDownloadRegistry();
+  const context = createContext();
+  const scope = createArtifactDownloadScope(context, "message-a")!;
+  const controller = registry.get(scope, "artifact-a")!;
+  controller.subscribe(() => undefined)();
+  const release = controller.subscribe(() => undefined);
+  t.mock.timers.tick(30_001);
+  assert.equal(registry.size(), 1);
+  release();
+  t.mock.timers.tick(1);
+  assert.equal(registry.size(), 0);
+});
+
+test("explicit scope invalidation still revokes a subscribed settled controller", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 0 });
+  const registry = createArtifactDownloadRegistry();
+  const context = createContext();
+  const scope = createArtifactDownloadScope(context, "message-a")!;
+  const controller = registry.get(scope, "artifact-a")!;
+  const release = controller.subscribe(() => undefined);
+  await controller.download(async () => true);
+  registry.clearScope(context);
+  let calls = 0;
+  await controller.download(async () => { calls += 1; return true; });
+  release();
+  t.mock.timers.tick(30_001);
+  assert.equal(calls, 0);
+  assert.equal(registry.size(), 0);
+});

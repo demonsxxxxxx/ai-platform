@@ -142,7 +142,7 @@ function createUnavailableController(): ArtifactDownloadController {
       return () => undefined;
     },
     async download() {
-      // The registry is at capacity with active work. Refusing this operation
+      // The registry is at capacity with live owners. Refusing this operation
       // preserves the one-request invariant instead of evicting an active card.
     },
   };
@@ -185,17 +185,23 @@ export function createArtifactDownloadRegistry(
     entry.listeners.forEach((listener) => listener(entry.state));
   };
 
+  // Mounted subscribers and pending requests own their entry. GC may only
+  // reclaim entries after both owners have released it; clearScope remains
+  // the explicit authorization invalidation path.
+  const canCollect = (entry: RegistryEntry) =>
+    !entry.isInFlight && entry.listeners.size === 0;
+
   const collectExpired = () => {
     const expiredAt = now() - settledTtlMs;
     entries.forEach((entry) => {
-      if (!entry.isInFlight && entry.settledAt !== undefined && entry.settledAt <= expiredAt) {
+      if (canCollect(entry) && entry.settledAt !== undefined && entry.settledAt <= expiredAt) {
         dispose(entry);
       }
     });
   };
 
   const scheduleCleanup = (entry: RegistryEntry) => {
-    if (entry.isDisposed || entry.isInFlight || entry.settledAt === undefined) {
+    if (entry.isDisposed || !canCollect(entry) || entry.settledAt === undefined) {
       return;
     }
     if (entry.timeout) {
@@ -204,13 +210,13 @@ export function createArtifactDownloadRegistry(
     entry.timeout = setTimeout(() => {
       if (
         !entry.isDisposed &&
-        !entry.isInFlight &&
+        canCollect(entry) &&
         entry.settledAt !== undefined &&
         now() - entry.settledAt >= settledTtlMs
       ) {
         dispose(entry);
       }
-    }, settledTtlMs);
+    }, Math.max(0, settledTtlMs - (now() - entry.settledAt)));
   };
 
   const createController = (entry: RegistryEntry): ArtifactDownloadController => ({
@@ -219,10 +225,20 @@ export function createArtifactDownloadRegistry(
       if (entry.isDisposed || entry.isInvalidated) {
         return () => undefined;
       }
-      entry.listeners.add(listener);
+      if (entry.timeout) {
+        clearTimeout(entry.timeout);
+        entry.timeout = undefined;
+      }
+      // Each subscription owns a separate lease, even for the same callback.
+      const notify = (state: ArtifactDownloadState) => listener(state);
+      entry.listeners.add(notify);
       listener(entry.state);
       return () => {
-        entry.listeners.delete(listener);
+        entry.listeners.delete(notify);
+        if (entry.listeners.size === 0) {
+          entry.settledAt ??= now();
+          scheduleCleanup(entry);
+        }
       };
     },
     async download(downloadArtifact) {
@@ -271,7 +287,7 @@ export function createArtifactDownloadRegistry(
       .filter(predicate)
       .sort((left, right) => left.lastTouchedAt - right.lastTouchedAt);
     while (scopedEntries.length >= maximum) {
-      const settledEntry = scopedEntries.find((entry) => !entry.isInFlight);
+      const settledEntry = scopedEntries.find(canCollect);
       if (!settledEntry) {
         return false;
       }
