@@ -504,6 +504,7 @@ test("RunControlLifecycle retains safe read errors independently and clears them
   }) as typeof fetch;
   try {
     await lifecycle.refresh();
+    assert.equal(Object.hasOwn(lifecycle.getSnapshot(), "readError"), false);
     assert.deepEqual(lifecycle.getSnapshot().playbackReadError, { message: "安全的回放错误", status: 503, code: "service_unavailable", diagnosticId: "diag_0123456789abcdef" });
     assert.equal(lifecycle.getSnapshot().readinessReadError, null);
     assert.equal(lifecycle.getSnapshot().canRetry, false, "a read error must not invent a failed run");

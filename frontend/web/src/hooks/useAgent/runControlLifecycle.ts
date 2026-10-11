@@ -133,7 +133,6 @@ export interface RunControlSnapshot {
   phase: RunControlPhase;
   playback: RunPlaybackResponse | null;
   readiness: ChatRunStatusResponse | null;
-  readError: "unavailable" | null;
   playbackReadError: RunControlReadError | null;
   readinessReadError: RunControlReadError | null;
   rejectionMessage: string | null;
@@ -153,7 +152,6 @@ const EMPTY_SNAPSHOT: RunControlSnapshot = {
   readiness: null,
   playbackReadError: null,
   readinessReadError: null,
-  readError: null,
   rejectionMessage: null,
   child: null,
   canCancel: false,
@@ -456,7 +454,6 @@ export class RunControlLifecycle {
       readiness: null,
       playbackReadError: null,
       readinessReadError: null,
-      readError: null,
       rejectionMessage: null,
       child: null,
     });
@@ -475,7 +472,6 @@ export class RunControlLifecycle {
       readiness: null,
       playbackReadError: null,
       readinessReadError: null,
-      readError: null,
       rejectionMessage: null,
       child: null,
     });
@@ -517,7 +513,6 @@ export class RunControlLifecycle {
       expectedOwner.phase = "loading";
       this.publishForOwner(expectedOwner, {
         phase: "loading",
-        readError: null,
         rejectionMessage: null,
       });
     }
@@ -553,7 +548,6 @@ export class RunControlLifecycle {
       phase: expectedOwner.phase,
       playback: playback ?? this.snapshot.playback,
       readiness: readiness ?? this.snapshot.readiness,
-      readError: unavailable ? "unavailable" : null,
       playbackReadError:
         playbackResult.status === "rejected"
           ? projectReadError(playbackResult.reason)
@@ -643,7 +637,6 @@ export class RunControlLifecycle {
       phase: "created_unopened",
       child,
       rejectionMessage: null,
-      readError: null,
     });
   }
 
@@ -706,7 +699,7 @@ export class RunControlLifecycle {
           ? "retrying"
           : "resuming";
     owner.phase = phase;
-    this.publishForOwner(owner, { phase, rejectionMessage: null, readError: null });
+    this.publishForOwner(owner, { phase, rejectionMessage: null });
 
     try {
       const response = await this.requestMutation(

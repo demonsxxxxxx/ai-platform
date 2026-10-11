@@ -219,12 +219,17 @@ for (const warm of [false, true]) {
     const originalFetch = globalThis.fetch;
     let failPlayback = !warm;
     let failReadiness = false;
+    let unsafeDetails = false;
     const requests: string[] = [];
     globalThis.fetch = (async (input, options) => {
       requests.push(options?.method ?? "GET");
       const playback = String(input).includes("/playback");
       if ((playback && failPlayback) || (!playback && failReadiness)) {
-        return new Response(JSON.stringify({ detail: { code: "service_unavailable", message: "private-secret-exception" } }), { status: 503 });
+        return new Response(JSON.stringify({ detail: {
+          code: unsafeDetails ? "../private-secret-code" : "service_unavailable",
+          diagnostic_id: unsafeDetails ? "private-secret-id" : "diag_0123456789abcdef",
+          message: "private-secret-exception",
+        } }), { status: 503 });
       }
       return new Response(JSON.stringify(playback ? {
         run_id: "run-a", run: { status: "running" }, timeline: [], events: [{ event_id: "event-a", event_type: "run.started", message: "已保留的回放事件" }], artifacts: [], steps: [],
@@ -239,14 +244,18 @@ for (const warm of [false, true]) {
       assert.equal(container.querySelector("[data-run-playback-panel]")?.getAttribute("data-run-playback-state"), warm ? "ready" : "error");
       assert.ok(container.querySelector('[role="alert"]'), "read failure must be visible");
       assert.doesNotMatch(container.textContent ?? "", /private-secret-exception/);
+      assert.match(container.textContent ?? "", /HTTP 503/);
+      assert.match(container.textContent ?? "", /service_unavailable/);
+      assert.match(container.textContent ?? "", /diag_0123456789abcdef/);
       if (warm) {
         assert.strictEqual(lifecycle.getSnapshot().playback, previous);
         assert.match(container.textContent ?? "", /上次/);
         assert.match(container.textContent ?? "", /已保留的回放事件/);
-        failReadiness = true;
-        await React.act(async () => { await lifecycle.refresh(); });
-        assert.ok(container.querySelector('[role="alert"]'), "both failed reads must not hide behind old playback");
       }
+      failReadiness = true;
+      await React.act(async () => { await lifecycle.refresh(); });
+      assert.ok(container.querySelector('[role="alert"]'), "both failed reads must remain visible");
+      assert.match(container.textContent ?? "", /运行状态更新失败/);
       failPlayback = false;
       failReadiness = false;
       const refresh = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("刷新"));
@@ -257,8 +266,16 @@ for (const warm of [false, true]) {
       failReadiness = true;
       await React.act(async () => { await lifecycle.refresh(); });
       assert.match(container.textContent ?? "", /运行状态更新失败/);
+      assert.match(container.textContent ?? "", /HTTP 503/);
+      assert.match(container.textContent ?? "", /service_unavailable/);
+      assert.match(container.textContent ?? "", /diag_0123456789abcdef/);
       assert.doesNotMatch(container.textContent ?? "", /回放更新失败/);
       assert.match(container.textContent ?? "", /已保留的回放事件/);
+      unsafeDetails = true;
+      failPlayback = true;
+      await React.act(async () => { await lifecycle.refresh(); });
+      assert.doesNotMatch(container.textContent ?? "", /private-secret|service_unavailable|diag_0123456789abcdef/);
+      assert.match(container.textContent ?? "", /HTTP 503/);
       assert.ok(requests.length >= 4);
       assert.ok(requests.every((method) => method === "GET"));
     } finally { globalThis.fetch = originalFetch; await React.act(async () => root.unmount()); }
