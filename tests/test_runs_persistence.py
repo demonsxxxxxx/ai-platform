@@ -17,7 +17,7 @@ from app.runs.application.lifecycle import RunLifecycleService
 from app.runs.infrastructure.lifecycle_postgres import PostgresRunLifecyclePersistence, require_run_result_size
 from app.platform.postgres.errors import RepositoryConflictError, RepositoryNotFoundError
 from app.runs.infrastructure.creation_postgres import create_run
-from app.runs.infrastructure.postgres import count_active_runs_for_user
+from app.runs.infrastructure.postgres import count_active_runs_for_user, lock_queued_run_for_attempt
 from app.runs.infrastructure.steps_postgres import upsert_run_step
 from app.streaming.infrastructure.run_events_postgres import append_event, list_run_events
 from tests.support.repository_fixtures import FakeConnection, RecordingConnection, SingleRowConnection, SingleRowCursor
@@ -519,7 +519,7 @@ async def test_update_run_auth_snapshot_normalizes_roles_and_scopes_update():
 async def test_locked_run_query_projects_complete_auth_snapshot():
     conn = RecordingConnection()
 
-    await PostgresRunLifecyclePersistence().mark_run_running(conn, tenant_id="tenant-a", run_id="run-a")
+    await lock_queued_run_for_attempt(conn, tenant_id="tenant-a", run_id="run-a")
 
     sql, _params = conn.calls[0]
     assert "runs.execution_kind" in sql
@@ -571,14 +571,18 @@ async def test_create_run_rejects_session_scope_mismatch_before_insert_returns()
 
 
 @pytest.mark.asyncio
-async def test_mark_run_running_requires_run_session_scope_to_match():
+async def test_queued_run_lock_requires_run_session_scope_to_match():
     conn = RecordingConnection()
 
-    await PostgresRunLifecyclePersistence().mark_run_running(conn, tenant_id="tenant-a", run_id="run-a")
+    await lock_queued_run_for_attempt(conn, tenant_id="tenant-a", run_id="run-a")
 
     sql, params = conn.calls[0]
-    assert "update runs" in sql
-    assert "from sessions" in sql
+    assert sql.startswith("select runs.id")
+    assert "from runs join sessions" in sql
+    assert "where runs.tenant_id = %s" in sql
+    assert "runs.id = %s" in sql
+    assert "runs.status = 'queued'" in sql
+    assert "for update of runs" in sql
     assert "sessions.id = runs.session_id" in sql
     assert "sessions.tenant_id = runs.tenant_id" in sql
     assert "sessions.workspace_id = runs.workspace_id" in sql

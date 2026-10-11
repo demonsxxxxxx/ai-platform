@@ -50,7 +50,11 @@ transitions through explicit ports. `bootstrap.run_lifecycle` constructs it for
 API and Worker composition; `lifecycle_postgres` owns its SQL and
 `terminalization_v4` coordinates provider lineage and committed event rows.
 Legacy repository lifecycle exports and human approval/parent-child recovery
-are retired. Source, tests, image and runtime acceptance remain separate.
+are retired. The lifecycle service and its persistence port have no Run-only
+running writer. Worker dispatch locks the session-consistent queued Run through
+`RunAttemptLifecycleService`; the durable Attempt transition projects running in
+PostgreSQL. Pre-dispatch failures without a valid specification retain their
+Run-only terminal paths. Source, tests, image and runtime acceptance remain separate.
 
 ## 2. Source ownership
 

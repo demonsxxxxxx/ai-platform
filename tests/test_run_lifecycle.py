@@ -86,9 +86,6 @@ class MemoryPersistence:
     async def is_cancel_requested(self, _conn: object, **_kwargs: Any) -> bool:
         return self.target in {"cancel_requested", "cancelled"}
 
-    async def mark_run_running(self, _conn: object, **_kwargs: Any):
-        return None
-
     async def list_stale_run_reconciliation_candidates(self, _conn: object, **_kwargs: Any):
         return []
 
