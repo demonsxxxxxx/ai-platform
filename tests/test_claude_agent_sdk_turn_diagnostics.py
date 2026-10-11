@@ -1215,3 +1215,85 @@ def test_completed_tool_does_not_retain_stale_abort_and_budget_remains_bounded(m
     assert len(normalized["tool_calls"]) <= 8
     assert all(call["is_interrupt"] is True for call in normalized["tool_calls"])
     assert len(json.dumps(normalized).encode()) <= 128 * 1024
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("codes", [[-32602, 408], list(range(12)), [True, "408", 2**53]])
+async def test_registered_mcp_failure_reaches_private_run_observation(monkeypatch, tmp_path, codes):
+    from contextlib import asynccontextmanager
+    from datetime import datetime, timezone
+    from mcp.shared.exceptions import McpError
+    from mcp.types import CallToolRequest, CallToolRequestParams, ErrorData, Tool
+    from app.bootstrap import claude_mcp
+    from app.runs.application.diagnostics import _project_observations
+    from app.runs.domain.diagnostics import build_failure_observation, merge_run_diagnostics
+    from tests.test_claude_mcp_registration import subject
+
+    call_codes = list(codes)
+
+    @asynccontextmanager
+    async def session_factory(config):
+        async def call_tool(name, arguments):
+            code = call_codes.pop(0)
+            await asyncio.sleep(0)
+            raise McpError(ErrorData.model_construct(code=code, message="PRIVATE_MESSAGE", data={"secret": "PRIVATE_DATA"}))
+        yield types.SimpleNamespace(call_tool=call_tool)
+
+    async def list_tools(session):
+        return [Tool(name="lookup", inputSchema={"type": "object"})]
+
+    monkeypatch.setattr(claude_mcp, "open_mcp_session", session_factory)
+    monkeypatch.setattr(claude_mcp, "list_mcp_tools", list_tools)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+
+    async def query(prompt, options):
+        server = options.mcp_servers["gateway"]["instance"]
+        async def invoke():
+            return await server.request_handlers[CallToolRequest](CallToolRequest(
+                method="tools/call", params=CallToolRequestParams(name="lookup", arguments={"query": "PRIVATE_ARGUMENT"}),
+            ))
+        results = await asyncio.gather(*(invoke() for _ in codes))
+        assert all(result.root.isError for result in results)
+        yield sdk.ResultMessage(is_error=True, errors=["existing_sdk_error"])
+
+    sdk = _install_sdk(monkeypatch, query)
+    result = await run_claude_agent_sdk(
+        prompt="PRIVATE_PROMPT", cwd=tmp_path, skill_id=None, skills=[],
+        execution_policy="sandbox_brokered", tool_policy_subjects=[subject(tool="lookup")],
+        run_id="run_test", attempt_id="attempt_test",
+    )
+    runtime = result.runtime_diagnostics
+    assert result.error is not None
+    errors = runtime["sdk"]["errors"]
+    assert isinstance(errors, dict), "typed MCP evidence missing from private SDK errors"
+    assert errors["sdk_reported_errors"] == ["existing_sdk_error"]
+    expected = []
+    for code in codes[-8:]:
+        item = {"source": "mcp_session_call", "scope": "run_attempt", "exception_type": "McpError"}
+        if type(code) is int and abs(code) <= 2**53 - 1:
+            item["code"] = code
+        expected.append(item)
+    assert errors["mcp_session_failures"] == expected
+    assert "api_error_status" not in runtime["sdk"]
+    if len(codes) > 8:
+        assert {"field": "sdk.errors.mcp_session_failures", "reason": "truncated", "original": 12, "retained": 8} in runtime["normalization_losses"]
+    if any(type(code) is not int or abs(code) > 2**53 - 1 for code in codes):
+        assert {"field": "sdk.errors.mcp_session_failures.code", "reason": "invalid_field", "count": 3} in runtime["normalization_losses"]
+    observation = build_failure_observation(
+        attempt_id="attempt_test", source="worker", stage="terminalization", error_code=result.error,
+        runtime_diagnostics=runtime, received_at=datetime.now(timezone.utc),
+    )
+    payload, changed = merge_run_diagnostics(None, observation)
+    assert changed
+    # Serialize the storage contract, then exercise the actual admin read projector.
+    stored = json.loads(json.dumps(payload))
+    _root, _handling, details, _losses = _project_observations(stored["observations"])
+    assert details["observations"][0]["sdk"]["errors"]["mcp_session_failures"] == expected
+    assert "PRIVATE" not in json.dumps(stored)
+
+    # A fresh run/attempt has no registration or observer state carried over.
+    async def empty_query(prompt, options):
+        yield sdk.ResultMessage(is_error=True, errors=["next_sdk_error"])
+    sdk = _install_sdk(monkeypatch, empty_query)
+    next_result = await run_claude_agent_sdk(prompt="next", cwd=tmp_path, skill_id=None, run_id="run_next", attempt_id="attempt_next")
+    assert next_result.runtime_diagnostics["sdk"]["errors"] == ["next_sdk_error"]
