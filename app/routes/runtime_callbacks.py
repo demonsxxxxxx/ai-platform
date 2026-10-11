@@ -889,7 +889,7 @@ async def _profile_drive_file_response(
         raise HTTPException(status_code=409, detail="profile_drive_reauth_required") from exc
 
     try:
-        client, upstream_response, content_length, _content_type = await open_profile_drive_file(
+        transfer = await open_profile_drive_file(
             upstream=str(getattr(settings, "profile_drive_transfer_upstream", "") or ""),
             ca_cert_file=str(
                 getattr(settings, "profile_drive_transfer_ca_cert_file", "") or ""
@@ -900,55 +900,41 @@ async def _profile_drive_file_response(
             require_nonempty=False,
             not_found_status=403,
             too_large_detail="profile_drive_file_too_large",
+            read_timeout_seconds=settings.profile_drive_transfer_read_timeout_seconds,
+            total_timeout_seconds=settings.profile_drive_transfer_total_timeout_seconds,
         )
     except ProfileDriveTransferError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
     try:
-        async with transaction() as conn:
-            await _require_current_runtime_attempt(
-                conn,
-                tenant_id=tenant_id,
-                run_id=request.run_id,
-                attempt_id=request.attempt_id,
-                callback_token_id=request.callback_token_id,
-            )
-            await streaming_run_events.append_event(
-                conn,
-                tenant_id=tenant_id,
-                run_id=request.run_id,
-                event_type="context_retrieved",
-                stage="context",
-                message="Sandbox context retrieval admitted",
-                payload={
-                    "action": PROFILE_DRIVE_STAGE_TOOL,
-                    "result": "allowed",
-                    "visible_to_user": False,
-                },
-            )
-    except Exception:
-        await upstream_response.aclose()
-        await client.aclose()
+        with transfer.budget():
+            async with transaction() as conn:
+                await _require_current_runtime_attempt(
+                    conn,
+                    tenant_id=tenant_id,
+                    run_id=request.run_id,
+                    attempt_id=request.attempt_id,
+                    callback_token_id=request.callback_token_id,
+                )
+                await streaming_run_events.append_event(
+                    conn,
+                    tenant_id=tenant_id,
+                    run_id=request.run_id,
+                    event_type="context_retrieved",
+                    stage="context",
+                    message="Sandbox context retrieval admitted",
+                    payload={
+                        "action": PROFILE_DRIVE_STAGE_TOOL,
+                        "result": "allowed",
+                        "visible_to_user": False,
+                    },
+                )
+        return profile_drive_streaming_response(transfer)
+    except BaseException as exc:
+        await transfer.__aexit__(type(exc), exc, exc.__traceback__)
+        if isinstance(exc, ProfileDriveTransferError):
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
         raise
-
-    async def stream_file():
-        transferred = 0
-        try:
-            async for chunk in upstream_response.aiter_raw():
-                transferred += len(chunk)
-                if transferred > content_length or transferred > PROFILE_DRIVE_STAGE_MAX_BYTES:
-                    raise RuntimeError("profile_drive_transfer_size_mismatch")
-                yield chunk
-            if transferred != content_length:
-                raise RuntimeError("profile_drive_transfer_size_mismatch")
-        finally:
-            await upstream_response.aclose()
-            await client.aclose()
-
-    return profile_drive_streaming_response(
-        stream_file(),
-        content_length=content_length,
-    )
 
 
 @router.post("/runtime/callbacks/context-retrieval")
