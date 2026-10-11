@@ -135,10 +135,23 @@ authority for immutable version upload, review, promote, rollout policy, and
 rollback. Marketplace routes remain projections and tenant-distribution
 controls; they cannot create an active version or redirect a release policy.
 
+Admin upload checks executable snapshot paths before opening a transaction or
+storing the package. Upload admission, immutable upload review, and manifest pinning
+share the same materializable path eligibility, including rejection of colons in
+any file-path component. Public overlay ZIP import/editor path rules are unchanged;
+existing immutable versions and content hashes are never rewritten by this check.
+
 Tenant promote and rollback select a release policy and mark the verified target
 released; they do not deprecate the globally shared previous version. Repeating
 promotion of the current version (including a rollout-percentage update) preserves
-the previous track and rollback target. Global deprecation or disabling is an
+the previous track and rollback target. Below 100% rollout, a nonempty selected
+previous track must already be user-runnable (`released` or legacy `active`) before
+any policy, status, distribution, or audit write. A reviewed previous track fails
+with 409 `skill_version_not_materializable`; draft and inactive tracks retain their
+existing error classifications. The request does not implicitly release previous,
+change its identity, or change the requested percentage. At 100%, previous remains
+historical metadata and is not revalidated; without a previous track, current
+selection retains its existing behavior. Global deprecation or disabling is an
 explicit version-status action and is blocked while any active tenant policy
 selects that version, including its previous track below 100% rollout, or while
 the global catalog fallback pointer still references it. The current management

@@ -34,6 +34,7 @@ from app.skills.lifecycle import (
     SKILL_VERSION_RELEASED,
     SKILL_VERSION_REVIEWED,
     is_releasable_status,
+    is_user_runnable_status,
     normalize_skill_version_status,
 )
 from app.skills.packages import (
@@ -43,6 +44,7 @@ from app.skills.packages import (
     build_uploaded_skill_admin_trust_review,
     parse_skill_package_zip,
     validate_skill_package_contract,
+    validate_skill_package_snapshot_path,
 )
 from app.skills.pinning import (
     SkillVersionMaterializationError,
@@ -325,6 +327,8 @@ async def admin_upload_skill_package(
     package_content = await _read_skill_package_upload(package)
     try:
         parsed = parse_skill_package_zip(package_content, expected_skill_id=skill_id)
+        for item in parsed.files:
+            validate_skill_package_snapshot_path(item["relative_path"])
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -639,25 +643,17 @@ async def admin_promote_skill_version(
                 None, target_version=request.version,
                 fallback_version=str(skill.get("version") or "") or None,
             )
-            if request.rollout_percent < 100 and previous_version:
-                previous = version if previous_version == request.version else await skills_postgres.get_skill_version(
-                    conn,
-                    skill_id=skill_id,
-                    version=previous_version,
-                )
-                if previous is None:
-                    raise HTTPException(status_code=409, detail="skill_version_not_materializable")
-                _require_releasable_skill_version(previous)
-                _require_materializable_skill_version(skill_id, previous)
-        elif request.rollout_percent < 100 and previous_version:
+        if request.rollout_percent < 100 and previous_version:
             previous = version if previous_version == request.version else await skills_postgres.get_skill_version(
                 conn,
                 skill_id=skill_id,
-                version=str(previous_version),
+                version=previous_version,
             )
             if previous is None:
                 raise HTTPException(status_code=409, detail="skill_version_not_materializable")
             _require_releasable_skill_version(previous)
+            if not is_user_runnable_status(previous.get("status")):
+                raise HTTPException(status_code=409, detail="skill_version_not_materializable")
             _require_materializable_skill_version(skill_id, previous)
         from_version = str(policy["current_version"]) if policy else previous_version
         await skills_versions.set_skill_release_policy(

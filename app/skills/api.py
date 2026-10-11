@@ -44,6 +44,7 @@ from app.skills.domain.pinned_snapshot import (
     validate_pinned_skill_relative_path as validate_pinned_skill_relative_path,
 )
 from app.skills.domain.snapshot_paths import (
+    is_materializable_skill_snapshot_path as is_materializable_skill_snapshot_path,
     skill_snapshot_components_fit as skill_snapshot_components_fit,
 )
 from app.skills.domain.executable_names import (
