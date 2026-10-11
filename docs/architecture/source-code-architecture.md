@@ -596,7 +596,7 @@ ledger. It names the target owner for future bounded migrations.
 | Queue consumers, `app/worker.py`, `app/worker_main.py`, model/executor selection | `execution` plus `bootstrap.worker` |
 | `app/executors/**` and Harness SDK translation | `execution.infrastructure.harness` |
 | `app/context/**`, memory selection and context continuity | `context` |
-| `app/attachments/**` and file parser contracts | byte classification belongs to `files`; Skill requirements belong to `skills`; run attachment admission is orchestrated by `runs` through both public APIs |
+| `app/file_parser_contracts.py` and `app/file_preview_contracts.py` | `files` owns the separately authorized, bounded XLSX presentation preview; it is not a Run admission or attachment-staging parser |
 | Upload/file authorization and file lifecycle persistence | `files` |
 | Artifact records, lineage, and expiry eligibility | `artifacts`; shared byte client remains `platform.object_storage` |
 | `app/persistence/object_deletions.py` and shared file/artifact outbox transitions | `object_lifecycle` |
@@ -613,6 +613,15 @@ ledger. It names the target owner for future bounded migrations.
 | `app/routes/**` | each context's `transport/http`; shared root router assembly only in `bootstrap.api` |
 | readiness, audit, acceptance, baseline and evidence generators in `app/` | supported runtime health belongs to its domain; source/release/evidence tools move to `tools/` or `scripts/`; obsolete POCs are deleted |
 | fake providers, deterministic adapters, and executor stubs | `tests/support` unless the capability is explicitly supported and registered in production |
+
+The former `app/attachments` typed-admission package is retired without a
+replacement registry or migration of its parser/Skill-selection policy into
+Files, Skills, or Runs. Under
+[ADR 0010](../adr/0010-sandbox-owned-attachment-content-processing.md), Context
+owns authorized raw-file staging and metadata delivery, including the existing
+identity, resource, and declared-XLSX package-safety checks. The independent XLSX
+presentation preview retains its parser core and dependencies. Existing Skill
+authorization and persisted historical failure projections remain unchanged.
 
 ## 11. Test architecture
 
