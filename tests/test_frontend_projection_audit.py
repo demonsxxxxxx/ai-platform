@@ -5,6 +5,8 @@ import subprocess
 import sys
 import time
 
+import pytest
+
 from tools.frontend_projection_audit import (
     LEGACY_ROUTE_POLICY_MAP,
     SAFE_PUBLIC_ROUTE_PREFIXES,
@@ -57,7 +59,7 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
         route["route_prefix"] == "/api/admin/mcp"
         for route in audit["route_inventory"]["legacy_policy_required_routes"]
     )
-    assert any(
+    assert not any(
         route["route_prefix"] == "/api/env-vars"
         for route in audit["route_inventory"]["legacy_policy_required_routes"]
     )
@@ -84,8 +86,6 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
     assert active_safe_routes == {
         "/api/agent/models/available",
         "/api/feedback",
-        "/api/github",
-        "/api/marketplace",
         "/api/mcp",
         "/api/notifications/active",
         "/api/role-governance",
@@ -96,7 +96,7 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
         route["route_prefix"]
         for route in active_route_inventory["safe_admin_projection_routes"]
     }
-    assert active_safe_admin_routes == {"/api/admin/mcp", "/api/notifications/admin"}
+    assert active_safe_admin_routes == {"/api/notifications/admin"}
     all_safe_routes = {
         route["route_prefix"]
         for route in audit["route_inventory"]["safe_public_projection_routes"]
@@ -114,7 +114,10 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
     assert "/api/notifications/admin" in all_safe_admin_routes
     assert "/api/admin/mcp" not in active_policy_routes
     assert "/api/mcp" not in active_policy_routes
-    assert set(active_policy_routes) == {"/api/env-vars", "/api/roles"}
+    # The current browser entry has retired these legacy callers. Synthetic
+    # fixtures below retain enforcement and missing-policy regression coverage.
+    assert active_policy_routes == {}
+    assert active_route_inventory["legacy_policy_required_routes"] == []
     assert "/api/agent/models" not in active_policy_routes
     assert "/api/github" not in active_policy_routes
     assert "/api/marketplace" not in active_policy_routes
@@ -142,6 +145,7 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
         route["route_prefix"]: route
         for route in audit["route_inventory"]["legacy_route_policies"]
     }
+    assert set(policy_routes) == {"/api/admin/", "/api/roles"}
     assert set(policy_routes) == {
         route["route_prefix"]
         for route in audit["route_inventory"]["legacy_policy_required_routes"]
@@ -151,8 +155,8 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
     assert LEGACY_ROUTE_POLICY_MAP["/api/agent/models"]["required_action"] == (
         "remap_to_ai_platform_admin_projection_or_hide"
     )
-    assert "active_legacy_routes_need_policy_enforcement_or_ai_platform_remap" in audit["open_gaps"]
-    assert "ordinary_user_reachable_legacy_routes_need_policy_enforcement_or_ai_platform_remap" in audit["open_gaps"]
+    assert "active_legacy_routes_need_policy_enforcement_or_ai_platform_remap" not in audit["open_gaps"]
+    assert "ordinary_user_reachable_legacy_routes_need_policy_enforcement_or_ai_platform_remap" not in audit["open_gaps"]
     assert "legacy_routes_need_policy_enforcement_or_ai_platform_remap" in audit["open_gaps"]
     assert "quarantined_legacy_sources_need_ai_platform_projection_remap" not in audit["open_gaps"]
     gap_details = {item["gap"]: item for item in audit["open_gap_details"]}
@@ -161,18 +165,13 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
     assert set(legacy_detail["governance_gates"]) == {"G1", "G6"}
     assert not any(route["route_prefix"] == "/api/mcp" for route in legacy_detail["routes"])
     assert not any(route["route_prefix"] == "/api/admin/mcp" for route in legacy_detail["routes"])
-    active_detail = gap_details["active_legacy_routes_need_policy_enforcement_or_ai_platform_remap"]
-    assert active_detail["count"] == len(active_route_inventory["legacy_route_policies"])
-    assert any(route["route_scope"] == "active_browser_entry" for route in active_detail["routes"])
-    assert not any(route["route_prefix"] == "/api/mcp" for route in active_detail["routes"])
-    assert not any(route["route_prefix"] == "/api/admin/mcp" for route in active_detail["routes"])
-    ordinary_detail = gap_details[
-        "ordinary_user_reachable_legacy_routes_need_policy_enforcement_or_ai_platform_remap"
-    ]
-    assert {route["route_prefix"] for route in ordinary_detail["routes"]} == {
-        "/api/env-vars",
+    assert {route["route_prefix"] for route in legacy_detail["routes"]} == {
+        "/api/admin/",
         "/api/roles",
     }
+    assert all(route["route_scope"] == "production_source" for route in legacy_detail["routes"])
+    assert "active_legacy_routes_need_policy_enforcement_or_ai_platform_remap" not in gap_details
+    assert "ordinary_user_reachable_legacy_routes_need_policy_enforcement_or_ai_platform_remap" not in gap_details
     assert "quarantined_legacy_sources_need_ai_platform_projection_remap" not in gap_details
     serialized_gap_details = json.dumps(audit["open_gap_details"], ensure_ascii=False).lower()
     assert "storage_key" not in serialized_gap_details
@@ -1264,8 +1263,10 @@ def test_frontend_projection_audit_cli_outputs_json():
     assert "c:\\users" not in result.stdout.lower()
 
 
-def test_render_frontend_projection_audit_markdown_is_operator_readable():
-    markdown = render_frontend_projection_audit_markdown(build_frontend_projection_audit())
+def test_render_frontend_projection_audit_markdown_is_operator_readable(active_legacy_repo):
+    markdown = render_frontend_projection_audit_markdown(
+        build_frontend_projection_audit(active_legacy_repo)
+    )
 
     assert "# ai-platform Frontend Projection Audit" in markdown
     assert "pass_with_policy_gaps" in markdown
@@ -1278,3 +1279,68 @@ def test_render_frontend_projection_audit_markdown_is_operator_readable():
     assert "active_legacy_routes_need_policy_enforcement_or_ai_platform_remap" in markdown
     assert "legacy_routes_need_policy_enforcement_or_ai_platform_remap" in markdown
     assert "c:\\users" not in markdown.lower()
+
+
+@pytest.fixture
+def active_legacy_repo(tmp_path):
+    """Keep gap behavior falsifiable without requiring retired product routes."""
+    source_root = tmp_path / "frontend" / "web" / "src"
+    source_root.mkdir(parents=True)
+    (source_root / "main.tsx").write_text(
+        'fetch("/api/env-vars");\n'
+        'fetch("/api/roles");\n'
+        'fetch("/api/ai/admin/runs");\n'
+        'fetch("/api/mcp");\n',
+        encoding="utf-8",
+    )
+    (source_root.parent / "package.json").write_text(
+        json.dumps({"scripts": {
+            "projection:audit": "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json",
+            "ci:verify": "pnpm run projection:audit && eslint . && tsc -b && vite build",
+        }}),
+        encoding="utf-8",
+    )
+    return tmp_path
+
+
+def test_frontend_projection_audit_reports_active_legacy_gap_details(active_legacy_repo):
+    audit = build_frontend_projection_audit(active_legacy_repo)
+    assert audit["status"] == "pass_with_policy_gaps"
+    details = {item["gap"]: item for item in audit["open_gap_details"]}
+    expected_gaps = {
+        "legacy_routes_need_policy_enforcement_or_ai_platform_remap": "production_source",
+        "active_legacy_routes_need_policy_enforcement_or_ai_platform_remap": "active_browser_entry",
+        "ordinary_user_reachable_legacy_routes_need_policy_enforcement_or_ai_platform_remap": "active_browser_entry",
+    }
+    assert set(audit["open_gaps"]) == set(details) == set(expected_gaps)
+    for gap, scope in expected_gaps.items():
+        detail = details[gap]
+        assert detail["count"] == 2
+        assert detail["governance_gates"] == ["G1", "G6"]
+        assert {route["route_prefix"] for route in detail["routes"]} == {
+            "/api/env-vars", "/api/roles",
+        }
+        assert all(route["route_scope"] == scope for route in detail["routes"])
+        assert all(route["ordinary_user_exposure"] == "fail_closed" for route in detail["routes"])
+        assert all(route["reference_count"] == 1 for route in detail["routes"])
+
+
+def test_frontend_projection_audit_reports_missing_active_legacy_policy(
+    active_legacy_repo, monkeypatch,
+):
+    monkeypatch.delitem(LEGACY_ROUTE_POLICY_MAP, "/api/env-vars")
+    audit = build_frontend_projection_audit(active_legacy_repo)
+    assert audit["status"] == "pass_with_policy_gaps"
+    for scope in (audit, audit["active_browser_entry"]):
+        routes = {route["route_prefix"]: route for route in scope["route_inventory"]["legacy_route_policies"]}
+        missing = routes["/api/env-vars"]
+        assert missing["mapping_status"] == "missing_policy_mapping"
+        assert missing["ordinary_user_exposure"] == "fail_closed"
+        assert missing["admin_exposure"] == "fail_closed"
+        assert missing["required_action"] == "define_ai_platform_projection_policy"
+    details = {item["gap"]: item for item in audit["open_gap_details"]}
+    missing_detail = details["legacy_routes_need_route_by_route_ai_platform_policy_mapping"]
+    assert missing_detail["count"] == 1
+    assert [route["route_prefix"] for route in missing_detail["routes"]] == ["/api/env-vars"]
+    assert "active_legacy_routes_need_policy_enforcement_or_ai_platform_remap" in details
+    assert "ordinary_user_reachable_legacy_routes_need_policy_enforcement_or_ai_platform_remap" in details
