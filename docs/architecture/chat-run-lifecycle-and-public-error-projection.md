@@ -139,6 +139,14 @@ that material can produce public output. Pattern matching supplements known
 sensitive values; it cannot establish that arbitrary unlabelled text is safe.
 Sensitive values and the replacement registry never enter public events or logs.
 Cross-chunk matching retains only the undecided suffix needed for safe redaction.
+An opened quoted secret assignment stays private through its matching unescaped
+quote or end of input. Registry updates preserve the bounded raw suffix and its
+source spans; display replacements cannot alter that raw assignment grammar.
+If an unsafe suffix is omitted, only constant-size quote/escape state survives
+until the matching close, after which ordinary text can resume. A terminal value
+that merely repeats the public prefix is not closure evidence for a discarded
+quote. Completed provider blocks supply text through the source-owned stream;
+terminal completion releases only its retained safe tail.
 
 Non-sensitive narration, public Tool labels and authorized task-file references
 must survive redaction. They are not grounds for deleting an entire string.
