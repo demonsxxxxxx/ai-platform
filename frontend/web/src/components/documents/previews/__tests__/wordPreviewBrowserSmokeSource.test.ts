@@ -1,0 +1,23 @@
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import {resolve} from 'node:path';
+import test from 'node:test';
+const script=readFileSync(resolve('scripts/word-preview-browser-smoke.mjs'),'utf8');
+const fixture=readFileSync(resolve('scripts/fixtures/word-preview/main.tsx'),'utf8');
+test('Word browser acceptance reuses the browser lifecycle and guards every target before rendering',()=>{
+  assert.match(script,/from '\.\/browser-smoke-harness\.mjs'/);
+  assert.doesNotMatch(script,/class CdpClient|--no-sandbox|--disable-web-security|playwright|puppeteer/);
+  assert.ok(script.indexOf('await protect();')<script.indexOf("await client.send('Page.navigate'"));
+  assert.match(script,/waitForDebuggerOnStart:true/);
+  assert.match(script,/await protect\(sessionId\);await client.send\('Runtime.runIfWaitingForDebugger'/);
+  assert.match(script,/requestStage:'Request'/);
+  assert.match(script,/Fetch.failRequest/);
+  assert.match(script,/frame-control/);
+  assert.match(script,/assert.deepEqual\(requestLog,\[\]/);
+  assert.match(script,/await browser\?\.close\(\)/);
+  assert.match(script,/await server\?\.close\(\)/);
+  assert.match(script,/word_preview_cleanup_failed/);
+  assert.match(fixture,/import WordPreview from/);
+  assert.match(fixture,/styles\/tailwind.css/);
+  assert.doesNotMatch(fixture,/Content-Security-Policy/);
+});
