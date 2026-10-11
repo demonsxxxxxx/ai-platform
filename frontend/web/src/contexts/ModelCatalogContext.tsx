@@ -23,20 +23,16 @@ interface ModelCatalogContextValue {
   isLoading: boolean;
   availableModels: AvailableModel[] | null;
   defaultModel: string;
-  pinnedModelIds: string[];
-  togglePinnedModel: (modelId: string) => void;
 }
 
 const ModelCatalogContext = createContext<ModelCatalogContextValue | undefined>(
   undefined,
 );
-const EMPTY_PINNED_MODEL_IDS: string[] = [];
 
 interface SubjectModelCatalogSnapshot {
   subjectKey: string;
   dbModels: AvailableModel[] | null;
   adminDefaultModelId: string;
-  pinnedModelIds: string[];
   isLoading: boolean;
 }
 
@@ -51,7 +47,6 @@ function emptySubjectModelCatalog(subjectKey: string): SubjectModelCatalogSnapsh
     subjectKey,
     dbModels: null,
     adminDefaultModelId: "",
-    pinnedModelIds: [],
     isLoading: true,
   };
 }
@@ -68,8 +63,6 @@ export function ModelCatalogProvider({ children }: { children: ReactNode }) {
   const subjectOwnerRef = useRef<SubjectRequestOwner | null>(null);
   const [subjectModelCatalog, setSubjectModelCatalog] =
     useState<SubjectModelCatalogSnapshot | null>(null);
-  const subjectModelCatalogRef = useRef(subjectModelCatalog);
-  subjectModelCatalogRef.current = subjectModelCatalog;
   const isCurrentSubjectOwner = useCallback((owner: SubjectRequestOwner) => {
     return (
       authSubjectKeyRef.current === owner.subjectKey &&
@@ -132,11 +125,6 @@ export function ModelCatalogProvider({ children }: { children: ReactNode }) {
       })
       .finally(() => patchCurrentSubject({ isLoading: false }));
 
-    void modelPublicApi
-      .getPinnedModelIds({ signal: owner.abortController.signal })
-      .then((pinnedModelIds) => patchCurrentSubject({ pinnedModelIds }))
-      .catch(() => patchCurrentSubject({ pinnedModelIds: [] }));
-
     return () => {
       if (subjectOwnerRef.current === owner) {
         subjectGenerationRef.current += 1;
@@ -153,63 +141,6 @@ export function ModelCatalogProvider({ children }: { children: ReactNode }) {
   const dbModels = visibleSubjectModelCatalog?.dbModels ?? null;
   const adminDefaultModelId =
     visibleSubjectModelCatalog?.adminDefaultModelId ?? "";
-  const pinnedModelIds =
-    visibleSubjectModelCatalog?.pinnedModelIds ?? EMPTY_PINNED_MODEL_IDS;
-
-  const togglePinnedModel = useCallback(
-    (modelId: string) => {
-      const owner = subjectOwnerRef.current;
-      if (!owner || !isCurrentSubjectOwner(owner)) return;
-      const current = subjectModelCatalogRef.current;
-      if (current?.subjectKey !== owner.subjectKey) return;
-      const nextPinnedModelIds = current.pinnedModelIds.includes(modelId)
-        ? current.pinnedModelIds.filter((id) => id !== modelId)
-        : [...current.pinnedModelIds, modelId];
-      setSubjectModelCatalog({ ...current, pinnedModelIds: nextPinnedModelIds });
-      void modelPublicApi
-        .updatePinnedModelIds(nextPinnedModelIds, {
-          signal: owner.abortController.signal,
-        })
-        .then((serverPinnedModelIds) => {
-          if (!isCurrentSubjectOwner(owner)) return;
-          setSubjectModelCatalog((previous) =>
-            previous?.subjectKey === owner.subjectKey
-              ? { ...previous, pinnedModelIds: serverPinnedModelIds }
-              : previous,
-          );
-        })
-        .catch(() => {
-          // The optimistic value remains local to this exact subject. A later
-          // authoritative hydration is the recovery route.
-        });
-    },
-    [isCurrentSubjectOwner],
-  );
-
-  // Auto-clean orphaned pinned IDs (models that were deleted)
-  const cleanedPinnedIds = useMemo(() => {
-    if (!dbModels || pinnedModelIds.length === 0) return pinnedModelIds;
-    const validIds = new Set(dbModels.map((m) => m.id));
-    const cleaned = pinnedModelIds.filter((id) => validIds.has(id));
-    return cleaned;
-  }, [dbModels, pinnedModelIds]);
-
-  useEffect(() => {
-    if (cleanedPinnedIds.length === pinnedModelIds.length) return;
-    const owner = subjectOwnerRef.current;
-    if (!owner || !isCurrentSubjectOwner(owner)) return;
-    setSubjectModelCatalog((previous) =>
-      previous?.subjectKey === owner.subjectKey
-        ? { ...previous, pinnedModelIds: cleanedPinnedIds }
-        : previous,
-    );
-    void modelPublicApi
-      .updatePinnedModelIds(cleanedPinnedIds, {
-        signal: owner.abortController.signal,
-      })
-      .catch(() => {});
-  }, [cleanedPinnedIds, isCurrentSubjectOwner, pinnedModelIds.length]);
-
   // 从 DB 读取模型
   const availableModels = useMemo(() => {
     return dbModels;
@@ -228,8 +159,6 @@ export function ModelCatalogProvider({ children }: { children: ReactNode }) {
   const value: ModelCatalogContextValue = {
     availableModels,
     defaultModel,
-    pinnedModelIds: cleanedPinnedIds,
-    togglePinnedModel,
     isLoading: visibleSubjectModelCatalog?.isLoading ?? false,
   };
 

@@ -124,7 +124,6 @@ async function mountWorkspace(overrides: Partial<typeof sessionApi> = {}) {
     email: `${account}@example.test`, roles: [], permissions: [Permission.CHAT_READ, Permission.CHAT_WRITE],
     is_admin: false, is_active: true, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" });
   modelPublicApi.listAvailable = async () => ({ models: [{ id: "model-default", value: "model-default", label: "Default" }], count: 1, enabled_count: 1, default_model_id: "model-default" });
-  modelPublicApi.getPinnedModelIds = async () => [];
   notificationPublicApi.getActive = async () => [];
   agentProfileApi.getPublished = async () => profile;
   agentProfileApi.listConversations = async () => ({ sessions: [projection("session-a"), projection("session-b"), projection("session-c")], next_cursor: null });

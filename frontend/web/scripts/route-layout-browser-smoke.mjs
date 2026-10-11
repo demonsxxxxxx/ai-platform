@@ -92,8 +92,6 @@ function bootstrapSource() {
       if (url.pathname === '/api/ai/auth/bootstrap' && method === 'POST') return json({
         status: 'ready', protocol_version: 2, generation: 1
       });
-      if (url.pathname === '/api/auth/profile') return json({ metadata: { pinned_model_ids: [] } });
-      if (url.pathname === '/api/auth/profile/metadata' && method === 'PUT') return json({ metadata: { pinned_model_ids: [] } });
       if (url.pathname === '/api/auth/oauth/providers') return json({
         providers: [], registration_enabled: false,
         turnstile: { enabled: false, site_key: '', require_on_login: false, require_on_register: false, require_on_password_change: false }
