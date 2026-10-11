@@ -15,6 +15,7 @@ RELEASE_EVIDENCE_INDEX = ROOT / "docs/release-evidence/README.md"
 SOURCE_ARCHITECTURE = ROOT / "docs/architecture/source-code-architecture.md"
 CI_TEST_READINESS_GOVERNANCE = ROOT / "docs/architecture/ci-test-readiness-governance.md"
 SDK_DIAGNOSTIC_HISTORY = ROOT / "docs/agent-rules/history/github-sdk-diagnostic-examples.md"
+DATA_LIFECYCLE = ROOT / "docs/architecture/single-enterprise-data-lifecycle.md"
 SOURCE_ARCHITECTURE_ADR = ROOT / "docs/adr/0006-domain-first-modular-monolith.md"
 
 
@@ -76,6 +77,12 @@ def test_agent_rule_navigation_and_pr_template_remain_usable():
             "../../.github/PULL_REQUEST_TEMPLATE.md",
             "../../architecture-policy.json",
             "../../schemas/architecture-policy.v1.schema.json",
+        },
+        DATA_LIFECYCLE: {
+            "../operations/release-operations-runbook.md",
+            "../operations/redis-streams-sse-cutover-acceptance.md#explicit-legacy-state-retirement",
+            "run-lifecycle-boundary.md",
+            "agent-profile-persistence-boundary.md",
         },
         MULTI_AGENT_WORKFLOW: {
             "github-issue-pr-workflow.md",
@@ -370,3 +377,43 @@ def test_release_evidence_keeps_concurrency_artifacts_machine_readable():
 
     assert list(evidence_root.rglob("*.json"))
     assert not list(evidence_root.rglob("*.md"))
+
+
+def test_schema_lifecycle_documents_destructive_source_contracts():
+    lifecycle = " ".join(read(DATA_LIFECYCLE).split())
+    schema = read(ROOT / "app/schema.sql")
+    migrations = read(ROOT / "app/schema_migrations.py")
+    # These are compatibility boundaries, not an editorial wording inventory.
+    for retired_surface, source_removal in (
+        ("publication columns", "drop column if exists stream_publication_state"),
+        ("run_tool_permission_requests", "drop table if exists run_tool_permission_requests"),
+        ("compatibility triggers", "drop trigger if exists trg_agent_profile_legacy_insert_compatibility"),
+    ):
+        assert retired_surface in lifecycle
+        assert source_removal in schema
+    assert 'RETIRED_RELATIONS = ("run_tool_permission_requests",)' in migrations
+    assert "not binary rollback-compatible" in migrations
+    assert "old binary fails readiness" in lifecycle
+    assert "Migrations in this phase are additive" not in lifecycle
+    assert "Apply additive core schema" not in migrations
+
+
+def test_schema_lifecycle_separates_retry_safety_from_rollback_authority():
+    lifecycle = " ".join(read(DATA_LIFECYCLE).split())
+    migrations = read(ROOT / "app/schema_migrations.py")
+    runbook = " ".join(read(RUNBOOK).split())
+    assert "session-scoped advisory coordinator lock" in lifecycle
+    assert "transaction-scoped advisory lock" in lifecycle
+    assert "pg_advisory_xact_lock" in migrations
+    assert "pg_try_advisory_lock" in migrations
+    assert "committed destructive cutover reversible" in lifecycle
+    assert "core transaction can already be committed" in lifecycle
+    assert "only between supported versions with evidence" in lifecycle
+    assert "entire installed schema" in lifecycle
+    assert "separate reversibility evidence" in lifecycle
+    assert "no automatic down migration" in lifecycle
+    assert "explicit deployment authority" in lifecycle
+    assert "does not establish a verified restore" in lifecycle
+    assert "operator-authorized restore" in lifecycle
+    assert "operator-authorized restore" in runbook
+    assert "Do not edit migration checksums" in runbook
