@@ -6412,7 +6412,7 @@ async def test_sdk_provider_session_options_are_exclusive_and_eager(
     assert append_calls == [("stable-provider-id", [{"uuid": "entry-ack"}])]
     summaries = [record for record in caplog.records if record.msg == "run_session_store_append_summary"]
     assert len(summaries) == 1
-    assert summaries[0].append_calls == 1 and summaries[0].append_active_calls == 0
+    assert summaries[0].append_calls == 1 and summaries[0].store_active_calls == 0
 
 
 

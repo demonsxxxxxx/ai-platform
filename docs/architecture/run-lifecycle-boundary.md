@@ -225,11 +225,12 @@ The barriers remain separate:
   The SDK flushes pending mirror entries **before** delivering public Result;
   that earlier wait is excluded even when this span is near zero.
   `run_session_store_append_summary` reports full-run append calls (including
-  retries), failed calls, cumulative/max duration and active calls at runner exit.
+  retries), failed calls, cumulative/max duration and `store_active_calls` at runner exit (all store
+  operations, including load/list).
   It includes pre-Result store calls; cumulative work can overlap model execution
   and is not terminal tail latency or additive with the other spans. Failed calls
   may later succeed on retry. The aggregate has no per-entry payloads and is
-  emitted at most once; active calls indicate an incomplete observation.
+  emitted at most once; active store calls indicate an incomplete observation.
   `sdk_disconnect_flush` measures the existing combined disconnect/store fallback
   on early exit or cancellation. Neither measures post-settlement resource teardown.
 - `executor_heartbeat_drain`: join the supervisor heartbeat and active progress;

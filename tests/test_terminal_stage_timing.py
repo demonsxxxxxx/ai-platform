@@ -121,7 +121,7 @@ assert logging.getLogger().getEffectiveLevel() == logging.WARNING
     assert "run_terminal_stage run_id='run-a' attempt_id='attempt-a'" in lines[0]
     assert "phase='result_business_commit' duration_ms=" in lines[0]
     assert "outcome='ok' terminal_status='succeeded'" in lines[0]
-    assert "calls=2 failed_calls=1 total_duration_ms=250 max_duration_ms=125 active_calls=0" in lines[1]
+    assert "calls=2 failed_calls=1 total_duration_ms=250 max_duration_ms=125 store_active_calls=0" in lines[1]
     assert "private" not in result.stderr
 
 
@@ -151,7 +151,7 @@ def test_broken_timing_stream_does_not_print_chained_private_exception(monkeypat
 async def test_real_sdk_pre_result_flush_is_visible_in_append_summary(monkeypatch, caplog):
     from claude_agent_sdk._internal.query import Query
     from claude_agent_sdk._internal.transcript_mirror_batcher import TranscriptMirrorBatcher
-    from app.executors.claude import session_store_tracking
+    from app.execution.infrastructure.harness.claude import session_store_tracking
 
     now = [10.0]
     monkeypatch.setattr(session_store_tracking, "monotonic", lambda: now[0])
@@ -207,7 +207,7 @@ async def test_real_sdk_pre_result_flush_is_visible_in_append_summary(monkeypatc
     summary = [r for r in caplog.records if r.msg == "run_session_store_append_summary"]
     assert len(summary) == 1
     record = summary[0]
-    assert (record.append_calls, record.append_failed_calls, record.append_active_calls) == (1, 0, 0)
+    assert (record.append_calls, record.append_failed_calls, record.store_active_calls) == (1, 0, 0)
     assert record.append_total_duration_ms == record.append_max_duration_ms == 250
     assert tracker.main_append_acknowledged and tracker.final_sequence == 1
     assert not tracker.failed
@@ -218,7 +218,7 @@ async def test_real_sdk_pre_result_flush_is_visible_in_append_summary(monkeypatc
 @pytest.mark.parametrize("failure", [RuntimeError("private payload"), asyncio.CancelledError("secret-token")])
 @pytest.mark.usefixtures("terminal_stage_logs")
 async def test_append_observation_preserves_failure_identity_retry_and_receipt(monkeypatch, caplog, failure):
-    from app.executors.claude import session_store_tracking
+    from app.execution.infrastructure.harness.claude import session_store_tracking
     now = [1.0]
     monkeypatch.setattr(session_store_tracking, "monotonic", lambda: now[0])
 
@@ -250,7 +250,7 @@ async def test_append_observation_preserves_failure_identity_retry_and_receipt(m
 
 
 def test_append_summary_logging_failure_and_counter_bounds(monkeypatch):
-    from app.executors.claude import session_store_tracking
+    from app.execution.infrastructure.harness.claude import session_store_tracking
     tracker = session_store_tracking.SessionStoreAppendTracker(object())
     tracker._append_total_seconds = tracker._append_max_seconds = 1_000_000_000
     observations = []

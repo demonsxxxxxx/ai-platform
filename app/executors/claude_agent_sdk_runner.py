@@ -28,7 +28,7 @@ from app.control_plane_contracts import (
     sanitize_public_payload,
 )
 from app.platform.tracing import TerminalStageTiming
-from app.executors.claude.session_store_tracking import SessionStoreAppendTracker
+from app.execution.infrastructure.harness.claude.session_store_tracking import SessionStoreAppendTracker
 from app.platform.public_payload import (
     sanitize_public_answer_text,
     sanitize_public_text,

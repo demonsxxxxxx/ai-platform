@@ -6,7 +6,7 @@ import pytest
 from claude_agent_sdk._internal.query import Query
 
 from app.execution.infrastructure.harness.claude_client_lifecycle import ClaudeInjectedCallbackTracker
-from app.executors.claude.session_store_tracking import SessionStoreAppendTracker
+from app.execution.infrastructure.harness.claude.session_store_tracking import SessionStoreAppendTracker
 
 
 async def test_public_eof_seals_platform_callbacks_and_joins_their_finalizers():
