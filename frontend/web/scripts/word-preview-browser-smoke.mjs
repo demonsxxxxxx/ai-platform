@@ -36,9 +36,11 @@ try {
   context=await browser.newContext({serviceWorkers:'block',viewport:{width:1280,height:1000}});
   context.setDefaultTimeout(20000);
   const requestLog=[];const routeErrors=[];
+  const sandboxControlUrl=`${origin}/__word_probe__/empty-sandbox-control`;
   await context.route('**/*',async route=>{
     try {
       const request=route.request();
+      if(request.url()===sandboxControlUrl&&request.resourceType()==='document')return await route.fulfill({status:200,contentType:'text/html',body:'<!doctype html><title>Empty control</title>'});
       if(isWordFixtureAsset(request.url(),request.resourceType(),[origin,crossSiteOrigin]))return await route.continue();
       const ancestry=[];for(let frame=request.frame();frame;frame=frame.parentFrame())ancestry.push(frame.url());
       requestLog.push({url:request.url(),resourceType:request.resourceType(),ancestry});
@@ -53,6 +55,7 @@ try {
   page.on('pageerror',error=>pageErrors.push({name:error.name,message:error.message,stack:error.stack}));
   // No application modules or scripts exist yet. Require the known upstream
   // signature; never learn an allowlist from an arbitrary control exception.
+  await page.goto(sandboxControlUrl);
   await page.setContent('<!doctype html><iframe id="empty-sandbox" sandbox="" srcdoc="<!doctype html><p>Empty sandbox control</p>"></iframe>');
   await page.frameLocator('#empty-sandbox').getByText('Empty sandbox control',{exact:true}).waitFor();
   assert.equal(pageErrors.length,1,'empty opaque frame must reproduce exactly one upstream init error');

@@ -11,7 +11,7 @@ test('Word acceptance reuses lifecycle and official context routing before page 
   assert.doesNotMatch(script,/class CdpClient|--no-sandbox|--disable-web-security|Target.setAutoAttach|Fetch.enable|for\(;;\)/);
   assert.ok(script.indexOf("await context.route('**/*'")<script.indexOf('await context.newPage()'));
   assert.match(script,/serviceWorkers:'block'/);
-  assert.ok(script.indexOf("await page.setContent('")<script.indexOf('await page.goto('));
+  assert.ok(script.indexOf("await page.setContent('")<script.indexOf('const navigation=await page.goto('));
   assert.match(script,/verifyPinnedPlaywrightSwSource\(\)/);
   assert.match(script,/navigator.serviceWorker.register\('\/__word_probe__\/worker.js'\)/);
   assert.match(script,/pageErrors.filter\(error=>!isPinnedPlaywrightSwError\(error\)\)/);
