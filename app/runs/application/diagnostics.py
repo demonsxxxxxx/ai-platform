@@ -503,13 +503,14 @@ def _project_observations(
         failures = evidence.get("failure_observations")
         failures = failures if isinstance(failures, list) else []
         failure_projections = [
-            _failure_projection(raw, item, kind="handling") for item in failures
+            _failure_projection(raw, item, evidence=evidence, kind="handling")
+            for item in failures
         ]
         if root is None:
             root = (
                 failure_projections.pop(0)
                 if failure_projections
-                else _failure_projection(raw, raw)
+                else _failure_projection(raw, None, evidence=evidence)
             )
             root["kind"] = "failure"
             details.update(
@@ -530,7 +531,9 @@ def _project_observations(
                 }
             )
         handling.extend(failure_projections)
-        record_projection = _failure_projection(raw, raw, kind="handling")
+        record_projection = _failure_projection(
+            raw, None, evidence=evidence, kind="handling"
+        )
         failure_identities = {
             _projection_identity(item)
             for item in [*failure_projections, root]
@@ -558,12 +561,13 @@ def _failure_projection(
     record: dict[str, Any],
     value: object,
     *,
+    evidence: dict[str, Any],
     kind: str = "failure",
 ) -> dict[str, Any]:
     item = value if isinstance(value, dict) else {}
     exception = item.get("exception") if isinstance(item.get("exception"), dict) else {}
-    evidence = record.get("runtime_diagnostics")
-    evidence = evidence if isinstance(evidence, dict) else {}
+    # Fallbacks must use the same read-time redaction as detailed evidence,
+    # including when a retained record predates the current redaction policy.
     sdk = evidence.get("sdk") if isinstance(evidence.get("sdk"), dict) else {}
     return {
         "observation_id": record.get("observation_id"),
