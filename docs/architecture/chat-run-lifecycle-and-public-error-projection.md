@@ -353,10 +353,10 @@ an invalid frozen payload remains rejected, and Run control GET reports unknown
 queue admission. Explicit Chat retry errors keep the existing recovery fence,
 including errors from older servers that still attach the former label. No
 snapshot repair, state transition, or new retry authority is implied. The
-Conversations `submission_failures` owner composes confirmed rejection details;
-legacy unkeyed Chat reprojects the validation cause through the bounded DTO
-sanitizer rather than forwarding arbitrary HTTP detail fields. The route only
-attests the creation validation boundary and translates the public HTTP result.
+existing Conversations `submission_failures` projection supplies the explicit
+rejection signal. Legacy unkeyed Chat combines it with the validation cause's
+bounded DTO projection, never arbitrary HTTP detail fields. The route retains
+the creation validation boundary and HTTP translation.
 
 This replaces blanket SDK-upstream attribution and blanket admission
 login/fix-input guidance. Historical `claude_agent_sdk_upstream_error` remains

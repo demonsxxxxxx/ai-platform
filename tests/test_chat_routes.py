@@ -3589,6 +3589,7 @@ async def test_chat_stream_maps_governed_model_to_runtime_value_and_revision(mon
     if validation_failure is not None:
         validation_calls = 0
         transaction_outcomes = []
+        validation_details = []
 
         @asynccontextmanager
         async def observed_transaction():
@@ -3609,6 +3610,7 @@ async def test_chat_stream_maps_governed_model_to_runtime_value_and_revision(mon
             try:
                 return _validate_queue_payload_for_enqueue(payload)
             except HTTPException as exc:
+                validation_details.append(dict(exc.detail))
                 # An unrelated field on the HTTP detail must never be forwarded.
                 exc.detail["private_executor_payload"] = "token=private-queue-token"
                 raise
@@ -3624,6 +3626,9 @@ async def test_chat_stream_maps_governed_model_to_runtime_value_and_revision(mon
         assert exc_info.value.status_code == 500
         assert exc_info.value.detail["code"] == "queue_payload_invalid"
         assert exc_info.value.detail["submission_disposition"] == "rejected_before_persist"
+        assert exc_info.value.detail == {
+            **validation_details[0], "submission_disposition": "rejected_before_persist",
+        }
         assert exc_info.value.detail["errors"]
         assert set(exc_info.value.detail) == {"code", "submission_disposition", "errors"}
         assert "../private/model" not in str(exc_info.value.detail)

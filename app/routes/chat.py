@@ -40,7 +40,7 @@ from app.control_plane_contracts import (
     standard_trace_id,
 )
 from app.conversations.api import (
-    submission_rejection_detail as _submission_rejection_detail,
+    safe_submission_code as _safe_submission_code,
     new_submission_diagnostic_id as _new_submission_diagnostic_id,
     log_safe_submission_exception as _log_safe_submission_exception,
     submission_error_detail as _submission_error_detail,
@@ -112,6 +112,7 @@ from app.queue import (
 from app.queue_payload_validation import queue_payload_invalid_detail
 from app.required_tool_contract import (
     attach_required_tool_declaration,
+    public_required_tool_detail,
 )
 from app.run_admission_policy import (
     PLATFORM_MULTI_AGENT_NOT_SUPPORTED,
@@ -236,9 +237,17 @@ def _chat_submission_http_error(
 ) -> HTTPException:
     """Return the sole server-controlled pre-persistence rejection signal."""
 
+    safe_code = _safe_submission_code(code)
+    detail = _submission_error_detail(
+        code=safe_code,
+        rejected_before_persist=True,
+        diagnostic_id=diagnostic_id,
+    )
+    if safe_code == _REQUIRED_CAPABILITY_UNAVAILABLE_CODE:
+        detail.update(public_required_tool_detail("unavailable"))
     return HTTPException(
         status_code=status_code,
-        detail=_submission_rejection_detail(code=code, diagnostic_id=diagnostic_id),
+        detail=detail,
     )
 
 
@@ -2107,8 +2116,10 @@ async def chat_stream(
         if submission_id is not None and rejected_before_persist:
             raise _chat_submission_http_error(status_code=exc.status_code, code=code) from exc
         if code == _QUEUE_PAYLOAD_INVALID_CODE:
-            # This validation failed inside creation, before transaction commit.
-            exc.detail = _submission_rejection_detail(code=code, validation_error=exc.__cause__)
+            exc.detail = {
+                **queue_payload_invalid_detail(exc.__cause__),
+                **_submission_error_detail(code=code, rejected_before_persist=True),
+            }
         raise
     except platform_errors.RepositoryAuthorizationError as exc:
         await _audit_capability_denial(principal, exc, source="chat_stream")

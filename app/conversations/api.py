@@ -19,5 +19,4 @@ from app.conversations.application.submission_failures import (
     log_safe_submission_exception as log_safe_submission_exception,
     submission_error_detail as submission_error_detail,
     submission_error_code as submission_error_code,
-    submission_rejection_detail as submission_rejection_detail,
 )

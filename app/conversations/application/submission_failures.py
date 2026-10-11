@@ -3,10 +3,6 @@
 import logging
 import re
 from uuid import uuid4
-from typing import Any
-
-from app.queue_payload_validation import queue_payload_invalid_detail
-from app.required_tool_contract import public_required_tool_detail
 
 
 # Preserve the existing operator log category while moving its safe projection.
@@ -64,21 +60,3 @@ def submission_error_code(detail: object, fallback: str = "chat_submission_rejec
     if isinstance(detail, str):
         return safe_submission_code(detail, fallback)
     return fallback
-
-
-def submission_rejection_detail(
-    *,
-    code: str,
-    diagnostic_id: str | None = None,
-    validation_error: BaseException | None = None,
-) -> dict[str, Any]:
-    """Project an owner-confirmed rejection; never infer transaction outcome."""
-
-    detail: dict[str, Any] = submission_error_detail(
-        code=code, rejected_before_persist=True, diagnostic_id=diagnostic_id,
-    )
-    if detail["code"] == "required_capability_unavailable":
-        detail.update(public_required_tool_detail("unavailable"))
-    if detail["code"] == "queue_payload_invalid" and isinstance(validation_error, ValueError):
-        detail.update(queue_payload_invalid_detail(validation_error))
-    return detail

@@ -60,34 +60,3 @@ def test_submission_diagnostics_never_log_exception_content_or_private_paths(cap
     assert "private-token" not in caplog.text
     assert "/private/runtime/path" not in caplog.text
     assert "Traceback" not in caplog.text
-
-
-def test_submission_rejection_keeps_safe_queue_fields_and_order():
-    from app.conversations.api import submission_rejection_detail
-    from app.queue_payload_validation import queue_payload_invalid_detail
-
-    class QueueValidationError(ValueError):
-        def errors(self):
-            return [
-                {"loc": ("input", i), "type": "value_error", "msg": f"safe field {i}",
-                 "input": "token=private-input", "ctx": {"private": "/private/runtime/path"}}
-                for i in range(12)
-            ]
-
-    error = QueueValidationError("token=private-exception-text")
-    neutral = queue_payload_invalid_detail(error)
-    detail = submission_rejection_detail(code="queue_payload_invalid", validation_error=error)
-    assert detail == {**neutral, "submission_disposition": "rejected_before_persist"}
-    assert len(detail["errors"]) == 8
-    assert [item["loc"] for item in detail["errors"]] == [["input", i] for i in range(8)]
-    assert "private" not in str(detail)
-
-
-@pytest.mark.parametrize("cause", [None, RuntimeError("token=private-unknown-cause")])
-def test_submission_rejection_unknown_validation_cause_never_exposes_raw_content(cause):
-    from app.conversations.api import submission_rejection_detail
-
-    assert submission_rejection_detail(code="queue_payload_invalid", validation_error=cause) == {
-        "code": "queue_payload_invalid",
-        "submission_disposition": "rejected_before_persist",
-    }
