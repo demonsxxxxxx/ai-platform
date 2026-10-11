@@ -186,6 +186,27 @@ async def create_run_attempt(
     return dict(row)
 
 
+async def get_scoped_reconciliation_run(
+    conn: AsyncConnection, *, tenant_id: str, run_id: str, scope: dict[str, str],
+) -> dict[str, Any] | None:
+    """Lock only Runs-owned facts before Sandbox and Attempt receipt fences."""
+    cursor = await conn.execute(
+        """
+        select id, tenant_id, workspace_id, user_id, session_id, agent_id, status,
+          cancel_requested_at, execution_kind, skill_id, context_snapshot_id,
+          input_json->>'executor_type' as executor_type,
+          model_id, model_value, model_gateway_revision, max_input_tokens, max_output_tokens
+        from runs where tenant_id = %s and id = %s
+          and workspace_id = %s and user_id = %s and session_id = %s and agent_id = %s
+          and status = 'running'
+        for update
+        """,
+        (tenant_id, run_id, scope["workspace_id"], scope["user_id"], scope["session_id"], scope["agent_id"]),
+    )
+    row = await cursor.fetchone()
+    return dict(row) if row is not None else None
+
+
 async def get_run_attempt_for_queue_attempt(
     conn: AsyncConnection,
     *,

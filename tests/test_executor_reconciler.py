@@ -25,6 +25,7 @@ from app.executor_reconciler import (
 from app.executors.base import ExecutorResult
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 from app.runs.application.diagnostics import RunDiagnosticsService
+from app.runs.api import ReconciliationAuthorityError
 from app.runtime.sandbox.executor_signals import (
     ExecutorReconciliationSignalCursor,
     ExecutorSignalUnavailable,
@@ -599,7 +600,7 @@ async def test_terminal_artifact_conversion_uses_storage_bridge(monkeypatch, cap
     assert "private" not in repr([vars(record) for record in records])
 
 
-def test_reconciler_classifies_invalid_persisted_run_payload_as_permanent(monkeypatch):
+def test_reconciler_quarantines_invalid_persisted_payload_without_run_authority(monkeypatch):
     row = _lease_row()
     row["executor_reconciliation_context_json"] = {
         "run_payload": {"schema_version": "invalid"},
@@ -614,7 +615,7 @@ def test_reconciler_classifies_invalid_persisted_run_payload_as_permanent(monkey
         fail_restore,
     )
 
-    with pytest.raises(PermanentExecutorReconciliationError) as exc_info:
+    with pytest.raises(ReconciliationAuthorityError) as exc_info:
         _context_payload(row, row["executor_terminal_json"])
 
     assert exc_info.value.code == "executor_reconciliation_run_payload_invalid"
@@ -648,7 +649,7 @@ def test_reconciler_rejects_persisted_payload_identity_mismatch_before_use(
         lambda *_args: SimpleNamespace(**payload_identity),
     )
 
-    with pytest.raises(PermanentExecutorReconciliationError) as exc_info:
+    with pytest.raises(ReconciliationAuthorityError) as exc_info:
         _context_payload(row, row["executor_terminal_json"])
 
     assert exc_info.value.code == "executor_reconciliation_identity_mismatch"
@@ -679,7 +680,7 @@ def test_reconciler_does_not_equate_missing_and_empty_identity(monkeypatch):
         lambda *_args, **_kwargs: restored,
     )
 
-    with pytest.raises(PermanentExecutorReconciliationError) as exc_info:
+    with pytest.raises(ReconciliationAuthorityError) as exc_info:
         _context_payload(row, row["executor_terminal_json"])
 
     assert exc_info.value.code == "executor_reconciliation_identity_mismatch"
@@ -711,7 +712,10 @@ async def test_reconciler_entrypoint_rejects_identity_mismatch_before_workspace_
         return {"id": "run-a", "status": "running"}
 
     async def finish(_lease_row, **kwargs):
-        calls.append(("finish", kwargs["error_code"]))
+        pytest.fail("unknown scope must not terminalize a Run")
+
+    async def quarantine(_lease_row, **kwargs):
+        calls.append(("quarantine", kwargs["error_code"]))
 
     monkeypatch.setattr("app.executor_reconciler.transaction", _transaction)
     monkeypatch.setattr(
@@ -736,8 +740,9 @@ async def test_reconciler_entrypoint_rejects_identity_mismatch_before_workspace_
         finish,
     )
 
+    monkeypatch.setattr("app.executor_reconciler._quarantine_failed_reconciliation", quarantine)
     assert await reconcile_pending_executor_terminals_once(worker_id="worker-a") == 1
-    assert calls == [("finish", "executor_reconciliation_identity_mismatch")]
+    assert calls == [("quarantine", "executor_reconciliation_identity_mismatch")]
 
 
 def _result() -> ExecutorResult:
@@ -2455,8 +2460,8 @@ async def test_terminal_reconciliation_failure_is_claim_fenced_and_published(
         "message": "Executor terminal reconciliation could not be completed.",
     }
     assert [name for name, _value in calls] == [
-        "has_claim",
         "get_run",
+        "has_claim",
         "diagnostics",
         "fail_run",
         "terminalize_attempt",
@@ -2550,8 +2555,8 @@ async def test_terminal_reconciliation_failure_honors_existing_cancel_request(mo
     )
 
     assert [call if isinstance(call, str) else call[0] for call in calls] == [
-        "has_claim",
         "get_run",
+        "has_claim",
         "request_attempt_cancel",
         "cancel_run",
         "terminalize_attempt",
@@ -2609,7 +2614,7 @@ async def test_terminal_reconciliation_failure_does_not_republish_an_already_ter
         v4_capabilities=_TEST_V4_CAPABILITIES,
     )
 
-    assert calls == ["has_claim", "get_run"]
+    assert calls == ["get_run", "has_claim"]
 
 
 @pytest.mark.asyncio
@@ -2645,7 +2650,7 @@ async def test_terminal_reconciliation_failure_cannot_mutate_run_after_claim_los
             v4_capabilities=_TEST_V4_CAPABILITIES,
         )
 
-    assert calls == ["has_claim"]
+    assert calls == ["get_run", "has_claim"]
 
 
 @pytest.mark.asyncio
