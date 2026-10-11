@@ -704,3 +704,223 @@ async def test_provider_session_callback_rejects_provider_identity_mismatch(monk
         )
     assert error.value.status_code == 409
     assert error.value.detail == "provider_session_identity_mismatch"
+
+
+def _chunk_adapter(**kwargs):
+    return ClaudeSessionStoreAdapter(
+        callback_url="https://callback.example.test/provider-session",
+        callback_token="synthetic", callback_token_id="synthetic",
+        run_id="run-a", attempt_id="attempt-a", provider_session_id="provider-a", **kwargs,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lost_sequence", [1, 129, 257])
+async def test_sdk_whole_batch_retry_resumes_exact_unacknowledged_chunk(monkeypatch, lost_sequence):
+    """Fake HTTP commit receipts, real adapter serialization and ACK checks."""
+    class ReceiptClient(_FakeClient):
+        requests = []
+        receipts = {}
+        lost = False
+
+        def stream(self, method, url, **kwargs):
+            payload = kwargs["json"]
+            if payload["action"] == "append":
+                sequence = payload["expected_sequence"]
+                previous = self.receipts.setdefault(sequence, payload)
+                assert previous == payload
+                if sequence == lost_sequence and not type(self).lost:
+                    type(self).lost = True
+                    self.requests.append((url, kwargs))
+                    raise httpx.ReadTimeout("synthetic ACK loss after commit")
+            return super().stream(method, url, **kwargs)
+
+    monkeypatch.setattr("app.execution.infrastructure.harness.claude.session_store.httpx.AsyncClient", ReceiptClient)
+    adapter = _chunk_adapter()
+    key = {"session_id": "provider-a"}
+    await adapter.load(key)
+    entries = [{"type": "assistant", "uuid": f"entry-{i}"} for i in range(257)]
+    with pytest.raises(ClaudeSessionStoreTransportError, match="callback_timeout"):
+        await adapter.append(key, entries)
+    assert adapter.accepted_final_sequence == 0
+    with pytest.raises(ClaudeSessionStoreTransportError, match="append_pending"):
+        await adapter.append({**key, "subpath": "subagents/other"}, entries)
+    with pytest.raises(ClaudeSessionStoreTransportError, match="append_pending"):
+        await adapter.load(key)
+    await adapter.append(key, entries)
+    requests = [r[1]["json"] for r in ReceiptClient.requests if r[1]["json"]["action"] == "append"]
+    assert [r["expected_sequence"] for r in requests] == [s for n in (1, 129, 257) for s in ([n, n] if n == lost_sequence else [n])]
+    assert [len(r["entries"]) for r in ReceiptClient.receipts.values()] == [128, 128, 1]
+    assert adapter.accepted_final_sequence == 257
+    assert adapter._pending_batch is None
+
+
+@pytest.mark.asyncio
+async def test_append_preflights_all_entries_and_chunks_by_envelope(monkeypatch):
+    from app.context.domain.provider_sessions import MAX_PROVIDER_SESSION_BATCH_COUNT, MAX_PROVIDER_SESSION_ENTRY_BYTES
+    from app.execution.infrastructure.harness.claude.session_store import MAX_PROVIDER_SESSION_APPEND_ENTRIES, MAX_PROVIDER_SESSION_APPEND_ENTRY_BYTES
+    assert MAX_PROVIDER_SESSION_APPEND_ENTRIES == MAX_PROVIDER_SESSION_BATCH_COUNT
+    assert MAX_PROVIDER_SESSION_APPEND_ENTRY_BYTES == MAX_PROVIDER_SESSION_ENTRY_BYTES
+    _FakeClient.requests = []
+    monkeypatch.setattr("app.execution.infrastructure.harness.claude.session_store.httpx.AsyncClient", _FakeClient)
+    adapter = _chunk_adapter(max_request_bytes=600)
+    key = {"session_id": "provider-a"}
+    await adapter.load(key)
+    with pytest.raises(ClaudeSessionStoreTransportError, match="entry_too_large"):
+        await adapter.append(key, [{"type": "assistant"}] * 129 + [{"content": "x" * MAX_PROVIDER_SESSION_ENTRY_BYTES}])
+    assert len(_FakeClient.requests) == 1
+    assert adapter._pending_batch is None
+    await adapter.append(key, [{"content": "x" * 100}] * 10)
+    appends = [r[1]["json"] for r in _FakeClient.requests[1:]]
+    assert len(appends) > 1
+    assert sum(len(r["entries"]) for r in appends) == 10
+    assert all(len(json.dumps(r, ensure_ascii=False, separators=(",", ":")).encode()) <= 600 for r in appends)
+    assert adapter.accepted_final_sequence == 10
+    await adapter.append(key, [])
+    assert len(_FakeClient.requests) == len(appends) + 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_subpath_appends_are_serialized_over_global_sequence(monkeypatch):
+    import asyncio
+    _FakeClient.requests = []
+    monkeypatch.setattr("app.execution.infrastructure.harness.claude.session_store.httpx.AsyncClient", _FakeClient)
+    adapter = _chunk_adapter()
+    key = {"session_id": "provider-a"}
+    await adapter.load(key)
+    entered, release = asyncio.Event(), asyncio.Event()
+    request = adapter._request
+
+    async def blocked_request(payload):
+        if payload["expected_sequence"] == 1:
+            entered.set()
+            await release.wait()
+        return await request(payload)
+
+    monkeypatch.setattr(adapter, "_request", blocked_request)
+    first = asyncio.create_task(adapter.append(key, [{"n": i} for i in range(129)]))
+    await entered.wait()
+    second = asyncio.create_task(adapter.append({**key, "subpath": "subagents/agent-a"}, [{"n": 0}]))
+    await asyncio.sleep(0)
+    assert not second.done()
+    release.set()
+    await asyncio.gather(first, second)
+    appends = [r[1]["json"] for r in _FakeClient.requests[1:]]
+    assert [r["expected_sequence"] for r in appends] == [1, 129, 130]
+    assert [r["subpath"] for r in appends] == [None, None, "subagents/agent-a"]
+    assert adapter.accepted_final_sequence == 130
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("count", [129, 500])
+async def test_real_sdk_eager_read_loop_coalesced_batch_is_chunked(monkeypatch, tmp_path, count):
+    from claude_agent_sdk._internal.query import Query
+    from claude_agent_sdk._internal.session_resume import build_mirror_batcher
+    from app.execution.infrastructure.harness.claude.session_store_tracking import SessionStoreAppendTracker
+    _FakeClient.requests = []
+    monkeypatch.setattr("app.execution.infrastructure.harness.claude.session_store.httpx.AsyncClient", _FakeClient)
+    adapter = _chunk_adapter()
+    tracker = SessionStoreAppendTracker(adapter)
+    await tracker.load({"session_id": "provider-a"})
+    errors = []
+
+    async def on_error(_key, error):
+        errors.append(error)
+
+    class Transport:
+        async def read_messages(self):
+            for i in range(count):
+                yield {"type": "transcript_mirror", "filePath": str(tmp_path / "projects/proj/provider-a.jsonl"),
+                       "entries": [{"type": "assistant", "uuid": f"entry-{i}"}]}
+
+    batcher = build_mirror_batcher(tracker, None, {"CLAUDE_CONFIG_DIR": str(tmp_path)}, on_error, flush_mode="eager")
+    query = Query(Transport(), is_streaming_mode=True)
+    query.set_transcript_mirror_batcher(batcher)
+    await query._read_messages()
+    await batcher.close()
+    assert errors == []
+    assert tracker.final_sequence == count and tracker.main_append_acknowledged
+    assert not tracker.failed
+    sizes = [len(r[1]["json"]["entries"]) for r in _FakeClient.requests[1:]]
+    assert sizes == [128] * (count // 128) + ([count % 128] if count % 128 else [])
+
+
+@pytest.mark.asyncio
+async def test_real_sdk_exhausted_chunk_retry_keeps_runner_failed_and_final_sequence_unadvanced(monkeypatch, tmp_path):
+    from claude_agent_sdk._internal.query import Query
+    from claude_agent_sdk._internal.session_resume import build_mirror_batcher
+    from app.execution.infrastructure.harness.claude.session_store_tracking import SessionStoreAppendTracker
+
+    class FailingChunkClient(_FakeClient):
+        requests = []
+
+        def stream(self, method, url, **kwargs):
+            payload = kwargs["json"]
+            if payload["action"] == "append" and payload["expected_sequence"] == 129:
+                self.requests.append((url, kwargs))
+                raise httpx.ReadError("synthetic transport failure")
+            return super().stream(method, url, **kwargs)
+
+    monkeypatch.setattr("app.execution.infrastructure.harness.claude.session_store.httpx.AsyncClient", FailingChunkClient)
+    adapter = _chunk_adapter()
+    tracker = SessionStoreAppendTracker(adapter)
+    await tracker.load({"session_id": "provider-a"})
+    errors = []
+
+    async def on_error(_key, error):
+        errors.append(error)
+
+    class Transport:
+        async def read_messages(self):
+            yield {"type": "transcript_mirror", "filePath": str(tmp_path / "projects/proj/provider-a.jsonl"),
+                   "entries": [{"type": "assistant", "uuid": f"entry-{i}"} for i in range(129)]}
+
+    batcher = build_mirror_batcher(tracker, None, {"CLAUDE_CONFIG_DIR": str(tmp_path)}, on_error, flush_mode="eager")
+    query = Query(Transport(), is_streaming_mode=True)
+    query.set_transcript_mirror_batcher(batcher)
+    await query._read_messages()
+    await batcher.close()
+    assert len(errors) == 1
+    assert tracker.failed and not tracker.main_append_acknowledged
+    assert tracker.final_sequence is None
+    assert adapter.accepted_final_sequence == 0
+    assert [r[1]["json"]["expected_sequence"] for r in FailingChunkClient.requests[1:]] == [1, 129, 129, 129]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("read_method", ["load", "list_subkeys"])
+async def test_deferred_read_cannot_publish_partial_chunk_cursor(monkeypatch, read_method):
+    import asyncio
+    _FakeClient.requests = []
+    monkeypatch.setattr("app.execution.infrastructure.harness.claude.session_store.httpx.AsyncClient", _FakeClient)
+    adapter = _chunk_adapter()
+    key = {"session_id": "provider-a"}
+    await adapter.load(key)
+    adapter._load_cache.clear()
+    read_entered, release_read = asyncio.Event(), asyncio.Event()
+    second_chunk, release_chunk = asyncio.Event(), asyncio.Event()
+    request = adapter._request
+
+    async def deferred(payload):
+        if payload["action"] == read_method:
+            read_entered.set()
+            await release_read.wait()
+        if payload["action"] == "append" and payload["expected_sequence"] == 129:
+            second_chunk.set()
+            await release_chunk.wait()
+        return await request(payload)
+
+    monkeypatch.setattr(adapter, "_request", deferred)
+    reader = asyncio.create_task(getattr(adapter, read_method)(key))
+    await read_entered.wait()
+    writer = asyncio.create_task(adapter.append(key, [{"n": i} for i in range(129)]))
+    await asyncio.sleep(0)
+    assert not writer.done() and adapter._pending_batch is None
+    release_read.set()
+    await reader
+    await second_chunk.wait()
+    assert adapter._next_sequence == 129
+    assert adapter.accepted_final_sequence == 0
+    release_chunk.set()
+    await writer
+    assert adapter.accepted_final_sequence == 129

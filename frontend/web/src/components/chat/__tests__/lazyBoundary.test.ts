@@ -36,5 +36,5 @@ test("chat preview hosts do not statically import heavy preview panels", () => {
     /import\s+ProjectPreview\s+from\s+"..\/..\/..\/documents\/previews\/ProjectPreview";/,
   );
   assert.match(revealPreviewHost, /LazyDocumentPreview/);
-  assert.match(revealPreviewHost, /LazyProjectPreview/);
+  assert.doesNotMatch(revealPreviewHost, /LazyProjectPreview/);
 });

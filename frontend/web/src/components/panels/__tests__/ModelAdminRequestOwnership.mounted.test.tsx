@@ -87,14 +87,14 @@ test("A/B late discovery cannot rewrite connection, mix credentials, or finish B
     await React.act(async () => a.resolve(candidate()));
     assert.equal(input("模型 API 地址").value, "https://gateway-b.example/v1"); assert.equal(input("模型 API Key").value, "synthetic-b");
     assert.equal(props(button("data-model-admin-publish")).disabled, true); assert.match(text(container), /正在测试当前连接/);
-    await React.act(async () => b.resolve(candidate(8))); await click("data-model-admin-publish");
-    assert.deepEqual(publications, [{ url: "https://gateway-b.example/v1", key: "synthetic-b", revision: 8 }]);
+    await React.act(async () => b.resolve(candidate())); await click("data-model-admin-publish");
+    assert.deepEqual(publications, [{ url: "https://gateway-b.example/v1", key: "synthetic-b", revision: 4 }]);
   });
 });
 
 test("late A failure cannot replace successful B result", async () => {
   const a = deferred<ReturnType<typeof candidate>>(); let calls = 0;
-  await withControl({ discover: async () => ++calls === 1 ? a.promise : candidate(7) }, async ({ React, change, click, input, container }) => {
+  await withControl({ discover: async () => ++calls === 1 ? a.promise : candidate() }, async ({ React, change, click, input, container }) => {
     await click("data-model-admin-discover"); await change("模型 API 地址", "https://gateway-b.example"); await change("模型 API Key", "synthetic-b");
     await click("data-model-admin-discover"); await React.act(async () => a.reject(new ApiRequestError("old error", 502, "model_upstream_unavailable")));
     assert.equal(input("模型 API 地址").value, "https://gateway-b.example"); assert.match(text(container), /当前连接测试通过/);
@@ -140,14 +140,19 @@ test("dirty reload updates saved baseline; discovery preserves edits and failure
   });
 });
 
-test("save conflict keeps edits and requires rediscovery; saving locks all fields and blocks duplicate mutations", async () => {
+test("save conflict keeps edits until explicit reload; saving locks fields and blocks duplicate mutations", async () => {
   const pending = deferred<AdminModelState>(); let calls = 0;
-  await withControl({ discover: async () => candidate(7), publish: async () => {
+  await withControl({ get: async () => saved(calls ? 7 : 4), discover: async () => candidate(7), publish: async () => {
     if (++calls === 1) throw new ApiRequestError("conflict", 409, "model_catalog_revision_conflict"); return pending.promise;
   } }, async ({ React, change, click, input, button, container }) => {
     await change("mock/gpt 最大输入 Token", "64000"); await click("data-model-admin-publish");
     assert.equal(input("mock/gpt 最大输入 Token").value, "64000"); assert.match(text(container), /模型配置已被更新/);
     assert.equal(props(button("data-model-admin-publish")).disabled, true); await click("data-model-admin-discover");
+    assert.equal(input("mock/gpt 最大输入 Token").value, "64000");
+    assert.equal(props(button("data-model-admin-publish")).disabled, true);
+    await click("data-model-admin-publish"); assert.equal(calls, 1);
+    await click("data-model-admin-reload");
+    await change("mock/gpt 最大输入 Token", "64000");
     await click("data-model-admin-publish"); await click("data-model-admin-publish"); assert.equal(calls, 2);
     for (const label of ["模型 API 地址", "模型 API Key", "mock/gpt 显示名称", "mock/gpt 最大输入 Token"]) assert.equal(props(input(label)).disabled, true);
     await React.act(async () => pending.resolve(saved(8)));
@@ -165,7 +170,7 @@ test("unmount aborts the owned probe and ignores its late completion", async () 
 
 test("ordinary publish failure preserves the entered key and model edits for retry", async () => {
   const calls: Array<{ key?: string; revision: number | null }> = [];
-  await withControl({ discover: async () => candidate(7), publish: async (_url, key, revision, models) => {
+  await withControl({ discover: async () => candidate(), publish: async (_url, key, revision, models) => {
     calls.push({ key, revision });
     if (calls.length === 1) throw new ApiRequestError("unavailable", 502, "model_upstream_unavailable");
     return { ...saved(8), models };
@@ -174,7 +179,63 @@ test("ordinary publish failure preserves the entered key and model edits for ret
     await click("data-model-admin-discover"); await click("data-model-admin-publish");
     assert.equal(input("模型 API Key").value, "synthetic-retry"); assert.equal(input("mock/gpt 显示名称").value, "我的草稿");
     assert.match(text(container), /无法连接模型服务/); assert.equal(props(button("data-model-admin-publish")).disabled, false);
-    await click("data-model-admin-publish"); assert.deepEqual(calls, [{ key: "synthetic-retry", revision: 7 }, { key: "synthetic-retry", revision: 7 }]);
+    await click("data-model-admin-publish"); assert.deepEqual(calls, [{ key: "synthetic-retry", revision: 4 }, { key: "synthetic-retry", revision: 4 }]);
     assert.equal(input("模型 API Key").value, "");
+  });
+});
+
+for (const discoveredRevision of [3, 5]) {
+  test(`discovery at revision ${discoveredRevision} cannot rebase another administrator's stale draft`, async () => {
+    const pending = deferred<ReturnType<typeof candidate>>(); let publications = 0;
+    await withControl({ discover: async () => pending.promise, publish: async () => { publications += 1; return saved(6); } },
+      async ({ React, change, click, input, button, container }) => {
+        await change("mock/gpt 显示名称", "我的未保存名称");
+        await change("mock/gpt 最大输入 Token", "64000");
+        await change("mock/gpt 最大输出 Token", "4096");
+        await change("模型 API Key", "synthetic-unsaved");
+        await click("data-model-admin-discover");
+        // Another administrator's published configuration arrives after this editor loaded revision 4.
+        const concurrent = candidate(discoveredRevision);
+        concurrent.models[0].label = "其他管理员的新名称";
+        await React.act(async () => pending.resolve(concurrent));
+        assert.equal(input("mock/gpt 显示名称").value, "我的未保存名称");
+        assert.equal(input("mock/gpt 最大输入 Token").value, "64000");
+        assert.equal(input("mock/gpt 最大输出 Token").value, "4096");
+        assert.equal(input("启用 我的未保存名称").checked, true);
+        assert.equal(input("设为默认 我的未保存名称").checked, true);
+        assert.equal(input("模型 API Key").value, "synthetic-unsaved");
+        assert.equal(props(button("data-model-admin-publish")).disabled, true);
+        assert.match(text(container), /未保存编辑已保留，请重新加载配置后再发布/);
+        await click("data-model-admin-publish"); assert.equal(publications, 0);
+        await click("data-model-admin-discover");
+        assert.equal(props(button("data-model-admin-publish")).disabled, true);
+      });
+  });
+}
+
+test("first-configuration discovery cannot acknowledge a concurrent first publication", async () => {
+  let publications = 0;
+  await withControl({ get: async () => ({ connection: { configured: false, revision: null, base_url: "", key_fingerprint: "" }, models: [] }),
+    discover: async () => candidate(1), publish: async () => { publications += 1; return saved(2); },
+  }, async ({ change, click, input, button, container }) => {
+    await change("模型 API 地址", "https://new-gateway.example"); await change("模型 API Key", "synthetic-first");
+    await click("data-model-admin-discover");
+    assert.equal(input("模型 API 地址").value, "https://new-gateway.example");
+    assert.equal(input("模型 API Key").value, "synthetic-first");
+    assert.match(text(container), /未保存编辑已保留/);
+    assert.equal(props(button("data-model-admin-publish")).disabled, true);
+    await click("data-model-admin-publish"); assert.equal(publications, 0);
+  });
+});
+
+test("a connectivity test at a newer revision never changes the draft publication baseline", async () => {
+  const revisions: Array<number | null> = [];
+  await withControl({ discover: async () => candidate(7), publish: async (_url, _key, revision) => {
+    revisions.push(revision); throw new ApiRequestError("conflict", 409, "model_catalog_revision_conflict");
+  } }, async ({ change, click, input, container }) => {
+    await change("mock/gpt 显示名称", "我的草稿"); await click("data-model-admin-test");
+    assert.equal(input("mock/gpt 显示名称").value, "我的草稿");
+    await click("data-model-admin-publish"); assert.deepEqual(revisions, [4]);
+    assert.match(text(container), /模型配置已被更新/);
   });
 });
