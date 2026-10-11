@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterable, Callable, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -49,13 +50,30 @@ def parse_profile_drive_file_import_request(value: object) -> ProfileDriveFileIm
     )
 
 
+class ProfileDriveFile(Protocol):
+    """One acquired transfer owns its transport until consumed or closed."""
+
+    content_length: int
+    content_type: str
+
+    def iter_bytes(self) -> AsyncIterator[bytes]: ...
+
+    def budget(self) -> AbstractContextManager[None]: ...
+
+    async def aclose(self) -> None: ...
+
+    async def __aenter__(self) -> ProfileDriveFile: ...
+
+    async def __aexit__(self, exc_type: Any, exc: Any, traceback: Any) -> None: ...
+
+
 class ProfileDriveTransferPort(Protocol):
-    async def open_profile_drive_file(self, **kwargs: Any) -> tuple[Any, Any, int, str]: ...
+    async def open_profile_drive_file(self, **kwargs: Any) -> ProfileDriveFile: ...
 
     async def download_profile_drive_file(self, **kwargs: Any) -> tuple[str, str, int]: ...
 
 
-ProfileDriveResponseFactory = Callable[[AsyncIterable[bytes]], Any]
+ProfileDriveResponseFactory = Callable[[ProfileDriveFile], Any]
 _transfer_port: ProfileDriveTransferPort | None = None
 _response_factory: Callable[..., Any] | None = None
 
@@ -76,7 +94,7 @@ def _configured_transfer() -> ProfileDriveTransferPort:
     return _transfer_port
 
 
-async def open_profile_drive_file(**kwargs: Any) -> tuple[Any, Any, int, str]:
+async def open_profile_drive_file(**kwargs: Any) -> ProfileDriveFile:
     return await _configured_transfer().open_profile_drive_file(**kwargs)
 
 
@@ -85,10 +103,8 @@ async def download_profile_drive_file(**kwargs: Any) -> tuple[str, str, int]:
 
 
 def profile_drive_streaming_response(
-    content: AsyncIterable[bytes],
-    *,
-    content_length: int,
+    transfer: ProfileDriveFile,
 ) -> Any:
     if _response_factory is None:
         raise RuntimeError("profile_drive_streaming_response_not_configured")
-    return _response_factory(content, content_length=content_length)
+    return _response_factory(transfer)
