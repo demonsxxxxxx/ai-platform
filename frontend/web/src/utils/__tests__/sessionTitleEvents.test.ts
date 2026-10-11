@@ -2,7 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   dispatchSessionTitleUpdated,
-  getCachedSessionTitle,
   listenSessionTitleUpdated,
 } from "../sessionTitleEvents.ts";
 
@@ -22,7 +21,6 @@ test("dispatches generated session title updates to listeners", () => {
   assert.deepEqual(received, [
     { sessionId: "session-1", title: "Generated title" },
   ]);
-  assert.equal(getCachedSessionTitle("session-1"), "Generated title");
 
   cleanup();
   dispatchSessionTitleUpdated(

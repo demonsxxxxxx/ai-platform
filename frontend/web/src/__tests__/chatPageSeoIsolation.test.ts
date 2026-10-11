@@ -39,3 +39,12 @@ test("keeps chat page title updates isolated from the chat UI tree", () => {
     /listenSessionTitleUpdated|sessionApi\.get/,
   );
 });
+
+
+test("chat title scope is supplied by the authenticated tenant and user", () => {
+  const body = extractFunctionBody("ChatPageSEO");
+  assert.match(body, /useChatSessionTitle/);
+  assert.match(body, /tenantId: isAuthenticated \? user\?\.tenant_id : undefined/);
+  assert.match(body, /userId: isAuthenticated \? user\?\.id : undefined/);
+  assert.doesNotMatch(body, /sessionApi\.get|getCachedSessionTitle/);
+});
