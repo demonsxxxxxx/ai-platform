@@ -1745,6 +1745,7 @@ async def run_claude_agent_sdk(
         *,
         failure_source: str,
         sdk_errors: object = None,
+        api_error_status: object = None,
         result_subtype: object = None,
         stop_reason: object = None,
         terminal_reason: object = None,
@@ -1754,6 +1755,8 @@ async def run_claude_agent_sdk(
         finalize_read_only_lifecycle_denials()
         sdk: dict[str, Any] = {}
         normalization_losses: list[dict[str, object]] = []
+        if api_error_status is not None:
+            sdk["api_error_status"] = api_error_status
         for key, value in (
             ("errors", sdk_errors),
             ("result_subtype", result_subtype),
@@ -4050,6 +4053,7 @@ async def run_claude_agent_sdk(
                             runtime_diagnostics(
                                 error_code,
                                 failure_source="sdk_result_error",
+                                api_error_status=getattr(message, "api_error_status", None),
                                 sdk_errors=(
                                     {
                                         "result_errors": message.errors,
