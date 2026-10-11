@@ -313,6 +313,222 @@ def test_storage_io_cancellation_holds_permit_until_thread_finishes(monkeypatch)
     asyncio.run(scenario())
 
 
+@pytest.fixture
+def bucket_client_factory(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr(storage_module, "get_settings", lambda: SimpleNamespace(
+        s3_bucket="bucket", s3_endpoint_url="https://storage.invalid", s3_access_key_id="synthetic",
+        s3_secret_access_key="synthetic", s3_region="synthetic",
+    ))
+
+    class Client:
+        def __init__(self):
+            self.lists = self.creates = 0
+            self.puts = []
+            self.exists = True
+            self.list_error = self.create_error = self.put_error = None
+
+        def list_buckets(self):
+            self.lists += 1
+            if self.list_error:
+                raise self.list_error
+            return {"Buckets": [{"Name": "bucket"}] if self.exists else []}
+
+        def create_bucket(self, **kwargs):
+            self.creates += 1
+            assert isinstance(kwargs.get("Bucket"), str)
+            if self.create_error:
+                raise self.create_error
+            self.exists = True
+
+        def put_object(self, **kwargs):
+            self.puts.append(kwargs)
+            if self.put_error:
+                raise self.put_error
+
+    def create():
+        client = Client()
+        monkeypatch.setattr(storage_module.boto3, "client", lambda *_args, **_kwargs: client)
+        return ObjectStorage(), client
+    return create
+
+
+def _put_synthetic(storage, index=0):
+    return storage.put_bytes(storage_key=f"private/{index}", content=b"synthetic", content_type="text/plain")
+
+
+@pytest.mark.parametrize("count", [1, 16, 128])
+@pytest.mark.parametrize("exists", [True, False])
+def test_bucket_confirmation_is_once_per_instance_and_preserves_uploads(bucket_client_factory, count, exists):
+    import hashlib
+    storage, client = bucket_client_factory()
+    client.exists = exists
+    for index in range(count):
+        result = _put_synthetic(storage, index)
+        assert result == storage_module.StoredObject(f"private/{index}", hashlib.sha256(b"synthetic").hexdigest(), 9)
+        assert client.puts[index] == {"Bucket": "bucket", "Key": f"private/{index}", "Body": b"synthetic", "ContentType": "text/plain"}
+    assert client.lists == 1 and client.creates == int(not exists)
+    assert len(client.puts) == count
+
+
+@pytest.mark.parametrize("phase,code", [("list", "AccessDenied"), ("list", "RequestTimeout"),
+                                        ("create", "BucketAlreadyExists"), ("create", "BucketAlreadyOwnedByYou")])
+def test_bucket_confirmation_does_not_cache_or_swallow_failure(bucket_client_factory, phase, code):
+    from botocore.exceptions import ClientError
+    storage, client = bucket_client_factory()
+    client.exists = phase != "create"
+    failure = ClientError({"Error": {"Code": code}}, phase)
+    setattr(client, f"{phase}_error", failure)
+    with pytest.raises(ClientError) as caught:
+        _put_synthetic(storage)
+    assert caught.value is failure and client.puts == []
+    setattr(client, f"{phase}_error", None)
+    _put_synthetic(storage)
+    assert client.lists == 2 and len(client.puts) == 1
+
+
+@pytest.mark.parametrize("code", ["NoSuchBucket", "AccessDenied", "RequestTimeout"])
+def test_bucket_write_error_propagates_without_replay_and_missing_invalidates(bucket_client_factory, code):
+    from botocore.exceptions import ClientError
+    storage, client = bucket_client_factory()
+    _put_synthetic(storage)
+    failure = ClientError({"Error": {"Code": code}}, "PutObject")
+    client.put_error = failure
+    with pytest.raises(ClientError) as caught:
+        _put_synthetic(storage, 1)
+    assert caught.value is failure and len(client.puts) == 2
+    client.put_error = None
+    _put_synthetic(storage, 2)
+    assert len(client.puts) == 3
+    assert client.lists == (2 if code == "NoSuchBucket" else 1)
+
+
+def test_bucket_confirmation_is_single_flight_within_instance(bucket_client_factory):
+    from concurrent.futures import ThreadPoolExecutor
+    storage, client = bucket_client_factory()
+    original = client.list_buckets
+    started, release = threading.Event(), threading.Event()
+
+    def list_buckets():
+        started.set()
+        assert release.wait(2)
+        return original()
+
+    client.list_buckets = list_buckets
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [pool.submit(_put_synthetic, storage, i) for i in range(8)]
+        try:
+            assert started.wait(2)
+        finally:
+            release.set()
+        assert all(future.result(timeout=2).size_bytes == 9 for future in futures)
+    assert client.lists == 1 and len(client.puts) == 8
+
+
+def test_bucket_confirmation_does_not_cross_instance_configuration(bucket_client_factory):
+    first, first_client = bucket_client_factory()
+    second, second_client = bucket_client_factory()
+    second.bucket = "different-bucket"
+    first.ensure_bucket()
+    second.ensure_bucket()
+    assert first_client.lists == second_client.lists == 1
+    assert first_client.creates == 0 and second_client.creates == 1
+
+
+def test_wrapped_upload_file_missing_bucket_invalidates_without_replay(bucket_client_factory, tmp_path):
+    from botocore.exceptions import ClientError
+    storage, client = bucket_client_factory()
+    source = tmp_path / "synthetic.txt"
+    source.write_bytes(b"synthetic")
+    calls = []
+
+    def upload_file(*_args, **_kwargs):
+        calls.append(1)
+        try:
+            raise ClientError({"Error": {"Code": "NoSuchBucket"}}, "PutObject")
+        except ClientError as cause:
+            raise RuntimeError("synthetic wrapper") from cause
+
+    client.upload_file = upload_file
+    with pytest.raises(RuntimeError, match="synthetic wrapper"):
+        storage.put_file(storage_key="private/file", source_path=str(source), content_type="text/plain")
+    assert len(calls) == 1
+    _put_synthetic(storage)
+    assert client.lists == 2
+
+
+def test_artifact_batch_uses_one_confirmation_and_preserves_reservation_order(bucket_client_factory, tmp_path):
+    from app.execution.api import collect_workspace_artifacts
+    storage, client = bucket_client_factory()
+    output = tmp_path / "output"
+    output.mkdir()
+    for name in ["a.txt", "b.txt"]:
+        (output / name).write_bytes(b"synthetic")
+    operations = []
+    original_put = client.put_object
+
+    def put(**kwargs):
+        operations.append(("put", kwargs["Key"]))
+        original_put(**kwargs)
+
+    def reserve(key):
+        operations.append(("reserve", key))
+        return "synthetic-receipt"
+
+    client.put_object = put
+    artifacts = collect_workspace_artifacts(
+        tenant_id="synthetic", workspace_id="synthetic", session_id="synthetic", run_id="synthetic",
+        source_executor="synthetic", workspace=tmp_path, response_files=["output/a.txt", "output/b.txt"],
+        required_artifact_types=(), artifact_factory=lambda **kwargs: kwargs, storage_factory=lambda: storage,
+        ensure_inside=lambda root, path, _message: path.relative_to(root), reserve_storage=reserve,
+    )
+    assert [item[0] for item in operations] == ["reserve", "put", "reserve", "put"]
+    assert operations[0][1] == operations[1][1] and operations[2][1] == operations[3][1]
+    assert client.lists == 1 and len(client.puts) == 2
+    assert [artifact["manifest"]["delivery_position"] for artifact in artifacts] == [0, 1]
+    assert all(artifact["provisional_cleanup_id"] == "synthetic-receipt" for artifact in artifacts)
+
+
+def test_multipart_operations_reuse_bucket_confirmation_not_upload_state(bucket_client_factory):
+    storage, client = bucket_client_factory()
+    initialized = []
+    listed = []
+
+    def initialize(**kwargs):
+        initialized.append(kwargs["Key"])
+        return {"UploadId": f"upload-{len(initialized)}"}
+
+    def list_uploads(**kwargs):
+        listed.append(kwargs)
+        return {"Uploads": [], "IsTruncated": False}
+
+    client.create_multipart_upload, client.list_multipart_uploads = initialize, list_uploads
+    assert storage.create_multipart_upload(storage_key="a", content_type="text/plain") == "upload-1"
+    assert storage.create_multipart_upload(storage_key="b", content_type="text/plain") == "upload-2"
+    assert storage.abort_multipart_uploads_for_key(storage_key="a") == 0
+    assert initialized == ["a", "b"] and listed == [{"Bucket": "bucket", "Prefix": "a"}]
+    assert client.lists == 1
+
+
+def test_multipart_cleanup_abort_missing_bucket_invalidates_without_replay(bucket_client_factory):
+    from botocore.exceptions import ClientError
+    storage, client = bucket_client_factory()
+    aborts = []
+    failure = ClientError({"Error": {"Code": "NoSuchBucket"}}, "AbortMultipartUpload")
+    client.list_multipart_uploads = lambda **kwargs: {"Uploads": [{"Key": "a", "UploadId": "u"}]}
+
+    def abort(**kwargs):
+        aborts.append(kwargs)
+        raise failure
+
+    client.abort_multipart_upload = abort
+    with pytest.raises(ClientError) as caught:
+        storage.abort_multipart_uploads_for_key(storage_key="a")
+    assert caught.value is failure and len(aborts) == 1
+    _put_synthetic(storage)
+    assert client.lists == 2
+
+
 def test_storage_completion_survives_direct_waiter_cancel_and_preserves_context(monkeypatch):
     import contextvars
     from app.platform.storage_io_completion import StorageIOCompletion

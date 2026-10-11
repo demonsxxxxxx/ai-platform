@@ -549,6 +549,15 @@ def _normalize_exception_chain(
     return normalized
 
 
+def _sdk_api_status_evidence(value: object) -> dict[str, int]:
+    """Keep the SDK's content-free HTTP observation, never coerced text/bools."""
+
+    if not isinstance(value, dict):
+        return {}
+    status = value.get("api_error_status")
+    return {"api_error_status": status} if type(status) is int and 100 <= status <= 599 else {}
+
+
 def _normalize_sdk(
     value: object,
     *,
@@ -563,6 +572,10 @@ def _normalize_sdk(
         for key in _SDK_VALUE_FIELDS
         if value.get(key) not in (None, "", [])
     }
+    status_evidence = _sdk_api_status_evidence(value)
+    normalized.update(status_evidence)
+    if value.get("api_error_status") is not None and not status_evidence:
+        _append_loss(losses, field="sdk.api_error_status", reason="invalid_field")
     for key, max_bytes, preserve_tail in (
         ("exception_type", SDK_RUNTIME_DIAGNOSTIC_IDENTITY_MAX_BYTES, False),
         ("exception_message", SDK_RUNTIME_DIAGNOSTIC_TEXT_MAX_BYTES, True),
@@ -583,6 +596,7 @@ def _normalize_sdk(
             losses=losses,
         )
     known = _SDK_VALUE_FIELDS | {
+        "api_error_status",
         "exception_chain",
         "exception_type",
         "exception_message",
@@ -772,7 +786,7 @@ def _fit_runtime_diagnostics(payload: dict[str, Any]) -> dict[str, Any]:
 
     if encoded_size() > SDK_RUNTIME_DIAGNOSTICS_MAX_BYTES:
         sdk_bytes = len(_json_bytes(payload.get("sdk") or {}))
-        payload["sdk"] = {}
+        payload["sdk"] = _sdk_api_status_evidence(payload.get("sdk"))
         for key in ("tool_lifecycles", "tool_calls", "tool_policy_denials"):
             original = len(payload[key])
             payload[key] = []
@@ -790,7 +804,7 @@ def _fit_runtime_diagnostics(payload: dict[str, Any]) -> dict[str, Any]:
                 field="sdk",
                 reason="truncated",
                 original_bytes=sdk_bytes,
-                retained_bytes=2,
+                retained_bytes=len(_json_bytes(payload["sdk"])),
             )
     if encoded_size() <= SDK_RUNTIME_DIAGNOSTICS_MAX_BYTES:
         return payload
@@ -800,7 +814,7 @@ def _fit_runtime_diagnostics(payload: dict[str, Any]) -> dict[str, Any]:
         "error_code": payload["error_code"],
         "failure_source": payload.get("failure_source", ""),
         "failure_stage": payload.get("failure_stage", ""),
-        "sdk": {},
+        "sdk": _sdk_api_status_evidence(payload.get("sdk")),
         "failure_observations": payload.get("failure_observations", [])[:1],
         "tool_lifecycles": [],
         "tool_calls": [],
