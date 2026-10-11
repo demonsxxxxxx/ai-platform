@@ -135,7 +135,11 @@ async def _release_reconciled_lease(
         )
     if not claimed:
         raise RuntimeError("executor_reconciliation_claim_lost")
-    stop_result = await _stop_reconciled_provider(provider, lease)
+    with TerminalStageTiming(
+        "reconciler_provider_stop", run_id=str(lease_row["run_id"]),
+        attempt_id=str(lease_row.get("attempt_id") or ""),
+    ):
+        stop_result = await _stop_reconciled_provider(provider, lease)
     if getattr(stop_result, "status", "failed") not in {"stopped", "not_found"}:
         raise SandboxReconciliationStopError(
             "executor_reconciliation_sandbox_stop_failed"

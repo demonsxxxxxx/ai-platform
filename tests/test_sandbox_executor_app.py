@@ -4772,6 +4772,13 @@ async def test_supervisor_heartbeat_does_not_block_deltas_and_drains_before_term
             heartbeat_acknowledged.set()
         if any(event.get("type") == "message.delta" for event in payload.get("events", [])):
             delta_delivered.set()
+        if any(
+            event.get("type") == "agent_public_progress"
+            and event.get("payload", {}).get("phase") == "sandbox_submission"
+            and event.get("payload", {}).get("lifecycle") == "completed"
+            for event in payload.get("events", [])
+        ):
+            now[0] += 0.75
         if payload.get("terminal_result"):
             terminal_started.set()
             terminal_after_heartbeat_ack.append(heartbeat_acknowledged.is_set())
@@ -4818,9 +4825,10 @@ async def test_supervisor_heartbeat_does_not_block_deltas_and_drains_before_term
 
     records = [record for record in caplog.records if record.msg == "run_terminal_stage"]
     assert [record.terminal_phase for record in records] == [
-        "executor_heartbeat_drain", "executor_public_stream_drain", "executor_terminal_callback_ack",
+        "executor_heartbeat_drain", "executor_final_phase_callback",
+        "executor_public_stream_drain", "executor_terminal_callback_ack",
     ]
-    assert [record.terminal_phase_duration_ms for record in records] == [2000, 0, 500]
+    assert [record.terminal_phase_duration_ms for record in records] == [2000, 750, 0, 500]
     assert all(record.terminal_phase_outcome == "ok" for record in records)
     assert all(record.terminal_status == "succeeded" for record in records)
     assert all(record.run_id == "run-a" and record.attempt_id == "qat-attempt-a" for record in records)

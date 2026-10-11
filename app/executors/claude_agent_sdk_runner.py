@@ -3574,6 +3574,8 @@ async def run_claude_agent_sdk(
                 aclosing(observed_model_messages(raw_responses)) as responses,
             ):
                 async for message in responses:
+                    if provider_session_store is not None:
+                        provider_session_store.observe_public_message(is_result=isinstance(message, ResultMessage))
                     if stop_requested:
                         # Drain the public stream through its final mirror flush,
                         # without processing more output or supplementary inputs.

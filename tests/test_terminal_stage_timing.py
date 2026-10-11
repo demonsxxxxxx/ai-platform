@@ -157,9 +157,13 @@ async def test_real_sdk_pre_result_flush_is_visible_in_append_summary(monkeypatc
     monkeypatch.setattr(session_store_tracking, "monotonic", lambda: now[0])
     monkeypatch.setattr(tracing, "monotonic", lambda: now[0])
     raw_result_at = []
+    public_message_seen = asyncio.Event()
 
     class Transport:
         async def read_messages(self):
+            yield {"type": "system", "subtype": "init"}
+            await public_message_seen.wait()
+            now[0] += 0.5  # Non-store work must not be attributed to append.
             yield {"type": "transcript_mirror",
                    "filePath": "/private/projects/project/session.jsonl",
                    "entries": [{"uuid": "entry", "text": "private prompt secret-token"}]}
@@ -186,6 +190,8 @@ async def test_real_sdk_pre_result_flush_is_visible_in_append_summary(monkeypatc
     post_result_timer = None
     try:
         async for message in query.receive_messages():
+            tracker.observe_public_message(is_result=message["type"] == "result")
+            public_message_seen.set()
             if message["type"] == "result":
                 public_result_at = now[0]
                 post_result_timer = TerminalStageTiming(
@@ -209,6 +215,8 @@ async def test_real_sdk_pre_result_flush_is_visible_in_append_summary(monkeypatc
     record = summary[0]
     assert (record.append_calls, record.append_failed_calls, record.store_active_calls) == (1, 0, 0)
     assert record.append_total_duration_ms == record.append_max_duration_ms == 250
+    assert record.latest_public_result_gap_ms == 750
+    assert record.append_await_in_latest_result_gap_ms == 250
     assert tracker.main_append_acknowledged and tracker.final_sequence == 1
     assert not tracker.failed
     assert "private" not in repr(vars(record)) and "secret-token" not in repr(vars(record))
@@ -264,3 +272,55 @@ def test_append_summary_logging_failure_and_counter_bounds(monkeypatch):
     monkeypatch.setattr(tracing, "_terminal_stage_logger", BrokenLogger())
     tracing.log_session_store_append_summary(run_id="run-a", attempt_id="attempt-a", calls=0,
         failed_calls=0, total_ms=0, max_ms=0, active_calls=0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("terminal_stage_logs")
+async def test_result_gap_clips_inflight_append_and_keeps_latest_result(monkeypatch, caplog):
+    from app.execution.infrastructure.harness.claude import session_store_tracking
+    now = [10.0]
+    monkeypatch.setattr(session_store_tracking, "monotonic", lambda: now[0])
+    caplog.set_level(logging.INFO)
+    started, release = asyncio.Event(), asyncio.Event()
+
+    class Store:
+        async def append(self, *_args):
+            started.set()
+            await release.wait()
+
+    tracker = session_store_tracking.SessionStoreAppendTracker(Store())
+    task = asyncio.create_task(tracker.append({}, [{"text": "private"}]))
+    try:
+        await started.wait()
+        now[0] = 11.0
+        tracker.observe_public_message(is_result=False)
+        now[0] = 11.25
+        tracker.observe_public_message(is_result=True)
+        # Neither pre-window work nor post-Result work belongs to this gap.
+        now[0] = 12.0
+        tracker.observe_public_message(is_result=False)
+        release.set()
+        await task
+        tracker.log_append_summary(run_id="run-a", attempt_id="attempt-a")
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+    record = caplog.records[-1]
+    assert record.append_total_duration_ms == 2000
+    assert record.latest_public_result_gap_ms == 250
+    assert record.append_await_in_latest_result_gap_ms == 250
+    assert "private" not in repr(vars(record))
+
+
+@pytest.mark.parametrize("first_result", [False, True])
+@pytest.mark.usefixtures("terminal_stage_logs")
+def test_result_gap_without_preceding_message_is_absent(caplog, first_result):
+    from app.execution.infrastructure.harness.claude.session_store_tracking import SessionStoreAppendTracker
+    caplog.set_level(logging.INFO)
+    tracker = SessionStoreAppendTracker(object())
+    if first_result:
+        tracker.observe_public_message(is_result=True)
+    tracker.log_append_summary(run_id="run-a", attempt_id="attempt-a")
+    record = caplog.records[-1]
+    assert record.latest_public_result_gap_ms is None
+    assert record.append_await_in_latest_result_gap_ms is None

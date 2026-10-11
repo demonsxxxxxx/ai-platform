@@ -24,6 +24,7 @@ from app.bootstrap.worker_result_commit import (
 from app.agent_apps.capability_state import exact_invoked_skills
 from app.control_plane_contracts import standard_trace_id
 from app.db import transaction
+from app.platform.tracing import TerminalStageTiming
 from app.execution.api import (
     WorkerExecutorReconciliation,
     WorkerQueueLease, WorkerRunCancelled,
@@ -377,7 +378,11 @@ async def process_run_payload(
         )
         runtime_sandbox_lease_released = committed.status in {"succeeded", "failed", "cancelled"}
         if committed.publish_run_event:
-            await publish_run_event(v4_capabilities, tenant_id=payload.tenant_id, run_id=payload.run_id)
+            with TerminalStageTiming(
+                "result_business_publication", run_id=payload.run_id,
+                attempt_id=attempt_id, terminal_status=committed.status,
+            ):
+                await publish_run_event(v4_capabilities, tenant_id=payload.tenant_id, run_id=payload.run_id)
         return WorkerOutcome(committed.status, payload.run_id, committed.error_code, committed.error_message)
     finally:
         await cleanup_runtime_sandbox_lease_after_interruption()

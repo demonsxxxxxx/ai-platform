@@ -2843,11 +2843,15 @@ def create_executor_app(
         failed = timed_out or runner_status not in {"completed", "succeeded"}
         if runner_events_open["value"]:
             phase_lifecycle = "failed" if failed else "completed"
-            await await_with_callback_buffer_cleanup(
-                emit_runner_event(
-                    _PlatformExecutionPhaseFact("sandbox_submission", phase_lifecycle)
+            with TerminalStageTiming(
+                "executor_final_phase_callback", run_id=request.run_id,
+                attempt_id=request.attempt_id, terminal_status=runner_status,
+            ):
+                await await_with_callback_buffer_cleanup(
+                    emit_runner_event(
+                        _PlatformExecutionPhaseFact("sandbox_submission", phase_lifecycle)
+                    )
                 )
-            )
         apply_stream_delivery_failure(runner_result)
         runner_events_open["value"] = False
         positive_deadline_exceeded = timed_out and max_seconds is not None and max_seconds > 0
