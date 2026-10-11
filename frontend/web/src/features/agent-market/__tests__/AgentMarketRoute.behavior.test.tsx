@@ -468,7 +468,6 @@ async function prepareShellHarness({ authenticated = false } = {}) {
   const originals = {
     bootstrapAuthContext: authApi.bootstrapAuthContext,
     getCurrentUser: authApi.getCurrentUser,
-    updateMetadata: authApi.updateMetadata,
     listSessions: sessionApi.list,
     listAvailableModels: modelPublicApi.listAvailable,
     getPinnedModelIds: modelPublicApi.getPinnedModelIds,
@@ -495,9 +494,6 @@ async function prepareShellHarness({ authenticated = false } = {}) {
     : async () => {
         throw new Error("logged out test session");
       };
-  authApi.updateMetadata = async () => {
-    throw new Error("no backend in mounted route test");
-  };
   sessionApi.list = async () => ({
     sessions: [],
     total: 0,
@@ -540,7 +536,6 @@ async function prepareShellHarness({ authenticated = false } = {}) {
     restore() {
       authApi.bootstrapAuthContext = originals.bootstrapAuthContext;
       authApi.getCurrentUser = originals.getCurrentUser;
-      authApi.updateMetadata = originals.updateMetadata;
       sessionApi.list = originals.listSessions;
       modelPublicApi.listAvailable = originals.listAvailableModels;
       modelPublicApi.getPinnedModelIds = originals.getPinnedModelIds;

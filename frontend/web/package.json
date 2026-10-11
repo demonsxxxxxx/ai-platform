@@ -27,7 +27,7 @@
     "migrate-tests": "tsx scripts/migrate-tests.ts",
     "test:document-previews": "tsx --test src/components/documents/__tests__/*.test.ts* src/components/documents/previews/__tests__/*.test.ts* src/components/documents/utils/__tests__/*.test.ts* src/components/common/__tests__/*.test.ts*",
     "test:pwa": "tsx --test src/__tests__/pwaGuards.test.ts src/__tests__/pwaRouting.test.ts src/__tests__/swOfflineFallback.test.ts",
-    "test:browser-preferences": "node --import tsx --test src/contexts/__tests__/BrowserPreferences.mounted.test.tsx src/utils/__tests__/themeDom.test.ts"
+    "test:browser-preferences": "node --import tsx --test src/contexts/__tests__/BrowserPreferences.mounted.test.tsx src/utils/__tests__/themeDom.test.ts src/features/agent-builder/__tests__/AgentBuilderShell.test.tsx"
   },
   "dependencies": {
     "@assistant-ui/react": "0.15.16",
