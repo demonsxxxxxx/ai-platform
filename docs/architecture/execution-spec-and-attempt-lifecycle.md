@@ -94,6 +94,14 @@ unsupported schema versions, identity mismatch, and supplied digest mismatch
 fail closed. Callers receive copies/projections; they never receive mutable
 references to the compiler's internal value.
 
+A rejected dispatch compilation keeps the generic public `execution_spec_invalid`
+outcome. Its typed `ExecutionSpecError.code` is retained only as a private
+predispatch diagnostic reason through the existing Runs failure owner. Input,
+canonical specification bytes and arbitrary exception text are not copied
+into that reason. Unknown `ValueError` failures remain generic; MCP retains
+its existing typed error mapping. This observation does not alter admission,
+Attempt fencing or terminalization.
+
 Each attempt's specification is compiled only after admission and worker-side
 reauthorization/context preparation have completed and immediately before the
 first executor dispatch. Reauthorization may remove capability but MUST NOT add
