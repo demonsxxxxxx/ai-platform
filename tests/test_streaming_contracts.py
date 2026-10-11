@@ -8,6 +8,16 @@ import pytest
 from app.streaming import api as streaming_api
 from app.streaming import redis as redis_transport
 from app.streaming.domain import transport as domain_transport
+from app.streaming.domain.run_events import RunCursor
+
+
+def test_run_cursor_validates_sequence_and_formats_identity() -> None:
+    cursor = RunCursor(run_id="run-a", sequence=42)
+    assert cursor.event_id == "run-a:42"
+    with pytest.raises(ValueError, match="run_cursor_sequence_invalid"):
+        RunCursor(run_id="run-a", sequence=-1)
+    with pytest.raises(ValueError, match="run_cursor_sequence_invalid"):
+        RunCursor(run_id="run-a", sequence=True)
 
 
 def test_public_boundary_reuses_domain_values_without_legacy_wire_types() -> None:

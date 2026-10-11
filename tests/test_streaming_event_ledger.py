@@ -77,6 +77,15 @@ class _BatchConnection:
             return _Result(
                 rows=[event for event in self.events if str(event["id"]) in wanted]
             )
+        if normalized.startswith("select id from run_events"):
+            assert "event_type = 'message.part.delta'" in normalized
+            assert "payload_json -> '__stream_v4' ->> 'attempt_id' = %s" in normalized
+            assert "payload_json -> '__stream_v4' ->> 'stream_incarnation' = %s" in normalized
+            assert normalized.endswith("limit 1")
+            assert params == ("tenant-a", "run-a", "attempt-a", "2")
+            # This fixture contains only legacy message.delta facts.
+            assert all(event["event_type"] == "message.delta" for event in self.events)
+            return _Result()
         if normalized.startswith("insert into run_events"):
             rows = []
             for offset in range(0, len(params), 18):
@@ -233,7 +242,8 @@ async def test_callback_public_rows_use_one_lookup_and_one_ordered_insert_batch(
 
     rows = await append_callback_v4_rows(conn, items=items, **kwargs)
 
-    assert len(conn.calls) == 4
+    # One identity lookup, one bounded part-mode probe, and one bulk append.
+    assert len(conn.calls) == 5
     assert (
         sum("where id = any(%s::text[])" in statement for statement in conn.calls) == 1
     )
@@ -241,6 +251,7 @@ async def test_callback_public_rows_use_one_lookup_and_one_ordered_insert_batch(
         sum(statement.startswith("insert into run_events") for statement in conn.calls)
         == 1
     )
+    assert sum(statement.startswith("select id from run_events") for statement in conn.calls) == 1
     assert [row["sequence"] for row in rows] == list(range(1, 101))
     assert [row["payload_json"]["delta"] for row in rows] == [
         f"public-{index}" for index in range(100)
@@ -248,7 +259,7 @@ async def test_callback_public_rows_use_one_lookup_and_one_ordered_insert_batch(
 
     replay = await append_callback_v4_rows(conn, items=items, **kwargs)
     assert replay == rows
-    assert len(conn.calls) == 5
+    assert len(conn.calls) == 6
 
     changed = items[:-1] + (
         V4CallbackItem(
@@ -262,7 +273,7 @@ async def test_callback_public_rows_use_one_lookup_and_one_ordered_insert_batch(
     )
     with pytest.raises(ValueError, match="v4_callback_existing_row_conflict"):
         await append_callback_v4_rows(conn, items=changed, **kwargs)
-    assert len(conn.calls) == 6
+    assert len(conn.calls) == 7
     assert len(conn.events) == 100
 
 

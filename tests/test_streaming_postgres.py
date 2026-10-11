@@ -298,15 +298,36 @@ async def test_postgres_terminal_fence_rejects_concurrent_competitor_and_isolate
                 isinstance(result, postgres.RunEventLedgerConflictError) and "terminal_drain_already_consumed" in str(result)
                 for result in results
             )
+            winner_batch_id = next(
+                batch_id for batch_id, result in zip(("batch-a", "batch-b"), results)
+                if isinstance(result, postgres.TerminalDrainReceipt)
+            )
             async with first_conn.transaction():
-                isolated = await postgres.acquire_terminal_drain_fence(
+                replay = await postgres.acquire_terminal_drain_fence(
                     first_conn,
                     tenant_id="tenant-a",
                     run_id="run-a",
-                    attempt_id="attempt-b",
-                    batch_id="batch-b",
+                    attempt_id="attempt-a",
+                    batch_id=winner_batch_id,
                 )
-            assert isolated.duplicate is False
+            assert replay.duplicate is True
+
+            for tenant_id, run_id, attempt_id in (
+                ("tenant-b", "run-a", "attempt-a"),
+                ("tenant-a", "run-b", "attempt-a"),
+                ("tenant-a", "run-a", "attempt-b"),
+            ):
+                async with first_conn.transaction():
+                    isolated = await postgres.acquire_terminal_drain_fence(
+                        first_conn,
+                        tenant_id=tenant_id,
+                        run_id=run_id,
+                        attempt_id=attempt_id,
+                        batch_id="batch-b",
+                    )
+                assert isolated.duplicate is False
+            count = await first_conn.execute("select count(*) as count from run_event_terminal_drains")
+            assert (await count.fetchone())["count"] == 4
         finally:
             await first_conn.close()
             await second_conn.close()
