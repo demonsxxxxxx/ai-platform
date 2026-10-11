@@ -21,6 +21,10 @@ test("Word frame removes executable/navigation markup and preserves styles, font
   assert.equal(parsed.head.firstElementChild?.getAttribute("http-equiv"), "Content-Security-Policy");
   assert.match(parsed.head.firstElementChild?.getAttribute("content") ?? "", /default-src 'none'.*font-src data: blob:/);
   assert.match(result, /https:\/\/synthetic.invalid\/css/);
+  const darkFallback = prepareWordPreviewDocument({ html: "<p>Fallback</p>", className: "word-preview-content dark", dark: true });
+  assert.match(darkFallback, /background:#111827/);
+  assert.match(darkFallback, /class="word-preview-content dark"/);
+  assert.match(result, /background:white/);
   assert.equal(document.body.innerHTML, "");
   dom.window.close();
 });

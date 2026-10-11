@@ -8,9 +8,10 @@ export function prepareWordPreviewDocument(input: {
   html: string;
   styles?: string;
   className?: string;
+  dark?: boolean;
 }): string {
   const sanitized = DOMPurify.sanitize(input.html, {
-    USE_PROFILES: { html: true, svg: true, svgFilters: true },
+    USE_PROFILES: { html: true, svg: true, svgFilters: true, mathMl: true },
     ADD_TAGS: ["style"],
     FORCE_BODY: true,
     FORBID_TAGS: ["base", "embed", "form", "iframe", "link", "meta", "object", "script"],
@@ -31,12 +32,12 @@ export function prepareWordPreviewDocument(input: {
       if (!localAnchor && !localImage) element.removeAttribute(attribute);
     }
   }
-  const wrapper = document.createElement("div");
+  const wrapper = template.content.ownerDocument.createElement("div");
   wrapper.className = input.className ?? "docx-preview-content";
   wrapper.append(template.content);
   return buildStaticDocumentFrame({
     content: wrapper.outerHTML,
     allowBlobFonts: true,
-    styles: `html,body{margin:0;min-height:100%;background:white}body{overflow:auto}${input.styles ?? ""}`,
+    styles: `html,body{margin:0;min-height:100%;background:${input.dark ? "#111827" : "white"}}body{overflow:auto}${input.styles ?? ""}`,
   });
 }

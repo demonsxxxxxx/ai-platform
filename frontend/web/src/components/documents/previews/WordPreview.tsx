@@ -321,6 +321,7 @@ const WordPreview = memo(function WordPreview({
   const previewDocument = useMemo(() => prepareWordPreviewDocument({
     html,
     styles: wordContentStyles,
+    dark: isDark && !renderedWithDocxPreview,
     className: renderedWithDocxPreview
       ? "docx-preview-content"
       : `word-preview-content${isDark ? " dark" : ""}`,

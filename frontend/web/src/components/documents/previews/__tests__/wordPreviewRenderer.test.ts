@@ -48,6 +48,13 @@ test("real DOCX renderer keeps first insertion inert, retaining embedded resourc
     assert.match(result.html, /data:application\/octet-stream;base64,iVBOR/);
     assert.match(result.html, /@font-face/);
     assert.match(result.html, /SyntheticPreview/);
+    assert.match(result.html, /<math/);
+    assert.match(result.html, /<mroot/);
+    const { prepareWordPreviewDocument } = await import("../wordHtmlPreview.ts");
+    const prepared = prepareWordPreviewDocument({ html: result.html });
+    assert.match(prepared, /<math/);
+    assert.match(prepared, /<mroot/);
+    assert.match(prepared, /data:application\/octet-stream;base64,iVBOR/);
     assert.match(result.html, /https:\/\/synthetic.invalid\/pixel/);
     assert.equal(document.body.innerHTML, "");
     assert.equal(networkCalls, 0);
