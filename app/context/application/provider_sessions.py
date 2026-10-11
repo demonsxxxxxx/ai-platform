@@ -36,6 +36,7 @@ class ProviderSessionOperationResult:
     accepted_entry_count: int = 0
     next_sequence: int = 1
     last_sequence: int | None = None
+    child_entries: dict[str, list[dict[str, Any]]] | None = None
 
     @property
     def entry_count(self) -> int:
@@ -89,6 +90,7 @@ class ProviderSessionUseCases:
         entries: list[dict[str, Any]],
         subpath: str | None,
         expected_sequence: int | None,
+        include_child_entries: bool = False,
     ) -> ProviderSessionOperationResult:
         receipt = await self._repository.callback_epoch(
             conn, tenant_id=tenant_id, workspace_id=workspace_id,
@@ -96,6 +98,7 @@ class ProviderSessionUseCases:
             run_id=run_id, attempt_id=attempt_id,
             provider_session_id=provider_session_id, action=action,
             subpath=subpath, entries=entries, expected_sequence=expected_sequence,
+            **({"include_child_entries": True} if include_child_entries else {}),
         )
         return ProviderSessionOperationResult(
             action=action,
@@ -104,6 +107,7 @@ class ProviderSessionUseCases:
             accepted_entry_count=receipt.get("entry_count", 0),
             next_sequence=receipt["next_sequence"],
             last_sequence=receipt.get("last_sequence"),
+            child_entries=receipt.get("child_entries"),
         )
 
 
