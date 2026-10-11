@@ -32,6 +32,7 @@ const hooks = registerHooks({
       export const renderDocxPreviewHtml = async ({ arrayBuffer, container }) => {
         if (new Uint8Array(arrayBuffer)[0] === 2) throw new Error('synthetic DOCX conversion failure');
         container.innerHTML = '<section class="docx">Current document B</section>';
+        globalThis.__wordCancellationTest.renderedCurrent();
         return { kind: 'docx-preview' };
       };
     `;
@@ -54,8 +55,13 @@ async function runScenario(scenario: Scenario, cancelled: boolean) {
   install("ResizeObserver", class { observe() {} disconnect() {} });
   const completion = deferred<string>();
   const entered = deferred<void>();
+  const renderedCurrent = deferred<void>();
   const waitForCompletion = () => { entered.resolve(); return completion.promise; };
-  install("__wordCancellationTest", { legacy: waitForCompletion, fallback: waitForCompletion });
+  install("__wordCancellationTest", {
+    legacy: waitForCompletion,
+    fallback: waitForCompletion,
+    renderedCurrent: () => renderedCurrent.resolve(),
+  });
   const host = document.getElementById("root")!;
   const root = createRoot(host);
   const { default: WordPreview } = await import("../WordPreview.tsx");
@@ -73,6 +79,9 @@ async function runScenario(scenario: Scenario, cancelled: boolean) {
       await act(async () => {
         root.render(<WordPreview arrayBuffer={Uint8Array.of(3).buffer} t={t} />);
       });
+      // Dynamic module loading can finish after act on Windows. Observe the
+      // actual current renderer before asserting or completing the old request.
+      await act(async () => { await renderedCurrent.promise; });
       assert.match(host.textContent!, /Current document B/);
     }
     await act(async () => {
