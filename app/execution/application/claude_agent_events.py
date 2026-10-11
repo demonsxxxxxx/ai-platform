@@ -348,7 +348,7 @@ def _validate_payload(event_type: str, payload: Mapping[str, object]) -> None:
     for key, value in payload.items():
         enum_values = PUBLIC_PAYLOAD_ENUMS.get((event_type, key))
         if enum_values is not None:
-            if value not in enum_values:
+            if not any(type(value) is type(option) and value == option for option in enum_values):
                 raise ValueError(f"invalid {key}")
             continue
         if key in PUBLIC_PAYLOAD_REF_FIELDS:
