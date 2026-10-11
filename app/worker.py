@@ -17,14 +17,10 @@ from app.bootstrap.worker_dispatch_admission import (
 )
 from app.bootstrap import worker_execution as worker_execution_bootstrap
 from app.bootstrap.worker_execution_terminal import build_worker_execution_terminal_service
-from app.bootstrap.worker_result_commit import (
-    build_worker_artifact_records,
-    build_worker_result_commit_service,
-)
+from app.bootstrap import worker_result_commit as result_commit_bootstrap
 from app.agent_apps.capability_state import exact_invoked_skills
 from app.control_plane_contracts import standard_trace_id
 from app.db import transaction
-from app.platform.tracing import TerminalStageTiming
 from app.execution.api import (
     WorkerExecutorReconciliation,
     WorkerQueueLease, WorkerRunCancelled,
@@ -342,7 +338,7 @@ async def process_run_payload(
             await publish_run_event(v4_capabilities, tenant_id=payload.tenant_id, run_id=payload.run_id)
             return WorkerOutcome(terminal.status, payload.run_id, terminal.error_code, terminal.error_message)
 
-        artifact_records = build_worker_artifact_records(
+        artifact_records = result_commit_bootstrap.build_worker_artifact_records(
             result, reconciliation=reconciliation is not None,
         )
         terminal_projection = project_worker_terminal_result(
@@ -355,7 +351,7 @@ async def process_run_payload(
         result, artifact_records, result_payload = enforce_required_artifact_types(
             result, artifact_records, result_payload
         )
-        result_commit = build_worker_result_commit_service(transaction_factory)
+        result_commit = result_commit_bootstrap.build_worker_result_commit_service(transaction_factory)
         commit_command = WorkerResultCommitCommand(
             payload=payload,
             result=result,
@@ -378,11 +374,9 @@ async def process_run_payload(
         )
         runtime_sandbox_lease_released = committed.status in {"succeeded", "failed", "cancelled"}
         if committed.publish_run_event:
-            with TerminalStageTiming(
-                "result_business_publication", run_id=payload.run_id,
-                attempt_id=attempt_id, terminal_status=committed.status,
-            ):
-                await publish_run_event(v4_capabilities, tenant_id=payload.tenant_id, run_id=payload.run_id)
+            await result_commit_bootstrap.publish_worker_result_event(
+                publish_run_event, v4_capabilities, commit_command, committed,
+            )
         return WorkerOutcome(committed.status, payload.run_id, committed.error_code, committed.error_message)
     finally:
         await cleanup_runtime_sandbox_lease_after_interruption()
