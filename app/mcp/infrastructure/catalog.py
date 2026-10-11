@@ -7,19 +7,12 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
+from app.mcp.domain.errors import McpToolDiscoveryError
 from app.mcp.domain.tool_references import MCP_PUBLIC_TOOL_NAME_PATTERN
 
 
 MCP_DISCOVERY_PAGE_LIMIT = 100
 MCP_TOOL_DESCRIPTION_MAX_LENGTH = 2048
-
-
-class McpToolDiscoveryError(ValueError):
-    """Represent a bounded, public-safe MCP discovery failure category."""
-
-    def __init__(self, reason: str) -> None:
-        super().__init__(reason)
-        self.reason = reason
 
 
 def _parsed_discovery_endpoint(endpoint: str | None):
