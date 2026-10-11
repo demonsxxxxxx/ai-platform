@@ -203,4 +203,3 @@ export async function streamSopAnswer(
 
   }
 }
-
