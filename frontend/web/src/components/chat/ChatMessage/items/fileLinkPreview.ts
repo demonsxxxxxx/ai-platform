@@ -21,7 +21,7 @@ function hashPreviewIdentity(value: string): string {
 export function buildFileLinkPreviewRequest(input: {
   href: string;
   fileName: string;
-}): Extract<RevealPreviewRequest, { kind: "file" }> | null {
+}): RevealPreviewRequest | null {
   const fullUrl = normalizeString(getFullUrl(input.href) || input.href);
   if (!fullUrl || !isAllowedRevealArtifactUrl(fullUrl)) {
     return null;

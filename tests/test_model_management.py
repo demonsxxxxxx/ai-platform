@@ -149,8 +149,8 @@ async def test_model_discovery_is_read_only_and_publication_rechecks_upstream_id
             return 1, kwargs["models"]
 
     class Security:
-        def validate(self, base_url, **_kwargs):
-            return SimpleNamespace(base_url=base_url)
+        def normalize(self, base_url):
+            return base_url
 
         def fingerprint(self, _api_key):
             return "synthetic-fingerprint"
@@ -1132,7 +1132,7 @@ async def test_model_proxy_evidence_only_wraps_authorized_anthropic_sse(caplog) 
 
     wire = b'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hello"}}\n\n'
     upstream = SimpleNamespace(open_stream=lambda **_kwargs: SimpleNamespace(
-        status=200, content_type="text/event-stream; charset=utf-8", body=lambda: iter([wire])
+        status=200, content_type="text/event-stream; charset=utf-8", body=lambda: iter([wire]), close=lambda: None
     ))
     service = ModelControlPlaneService(
         transaction_factory=transaction,
@@ -1156,7 +1156,7 @@ async def test_model_proxy_evidence_only_wraps_authorized_anthropic_sse(caplog) 
     assert "model_wire_text" in caplog.text
     caplog.clear()
     upstream.open_stream = lambda **_kwargs: SimpleNamespace(
-        status=200, content_type="application/json", body=lambda: iter([wire])
+        status=200, content_type="application/json", body=lambda: iter([wire]), close=lambda: None
     )
     with caplog.at_level(logging.WARNING):
         response = await service.proxy(provider="anthropic", upstream_path="v1/messages", **fields)
@@ -1207,6 +1207,7 @@ async def test_anthropic_beta_query_is_forwarded_only_on_fixed_allowed_paths():
         )
 
     class FakeStream:
+        close = staticmethod(lambda: None)
         status = 200
         content_type = "application/json"
 
@@ -1288,7 +1289,7 @@ async def test_anthropic_messages_delegate_input_capacity_to_claude():
         return SimpleNamespace(
             status=200,
             content_type="application/json",
-            body=lambda: iter([b"{}"]),
+            body=lambda: iter([b"{}"]), close=lambda: None,
         )
 
     service = ModelControlPlaneService(
@@ -1355,7 +1356,7 @@ async def test_anthropic_count_tokens_404_uses_bounded_local_fallback_only():
     def forward(**kwargs):
         forwarded.append(kwargs)
         return SimpleNamespace(
-            status=200, content_type="application/json", body=lambda: iter([b"{}"]),
+            status=200, content_type="application/json", body=lambda: iter([b"{}"]), close=lambda: None,
         )
 
     service = ModelControlPlaneService(
@@ -1458,6 +1459,7 @@ async def test_internal_runtime_proxy_resolves_run_revision_and_streams_response
         )
 
     class FakeUpstream:
+        close = staticmethod(lambda: None)
         status = 200
         content_type = "text/event-stream; charset=utf-8"
 

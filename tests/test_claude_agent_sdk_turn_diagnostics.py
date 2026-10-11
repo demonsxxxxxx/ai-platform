@@ -914,3 +914,78 @@ async def test_native_error_result_keeps_status_without_changing_public_failure(
     assert result.runtime_diagnostics["sdk"]["api_error_status"] == status
     assert "api_error_status" not in str(result.turn_diagnostics)
     assert "private upstream detail" not in str(result.turn_diagnostics)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("interrupt", [True, False, None, 1, 0, "true"])
+async def test_native_tool_abort_flag_survives_large_failure_without_public_classification(monkeypatch, tmp_path, interrupt):
+    from claude_agent_sdk.types import PostToolUseFailureHookInput
+    from app.runs.domain.diagnostics import sanitize_runtime_diagnostics
+
+    async def query(prompt, options):
+        hook = PostToolUseFailureHookInput(
+            session_id="synthetic-session", cwd="/synthetic", transcript_path="/synthetic/transcript",
+            hook_event_name="PostToolUseFailure", tool_name="Skill", tool_use_id="native-abort-call",
+            tool_input={"skill": "review-skill", "padding": "PRIVATE_MARKER" * 1000},
+            error="PRIVATE_MARKER" * 1000,
+        )
+        if interrupt is not None:
+            hook["is_interrupt"] = interrupt
+        await options.kwargs["hooks"]["PreToolUse"][0].hooks[0](hook)
+        await options.kwargs["hooks"]["PostToolUseFailure"][0].hooks[0](hook)
+        raise RuntimeError("synthetic failure")
+        yield
+
+    async def acknowledge(_fact):
+        return True
+
+    _install_sdk(monkeypatch, query)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+    result = await run_claude_agent_sdk(
+        prompt="review", cwd=tmp_path, skill_id="review-skill", skills=["review-skill"],
+        on_capability_evidence=acknowledge,
+    )
+    assert result.error == "claude_agent_sdk_execution_failed"
+    call = result.runtime_diagnostics["tool_calls"][0]
+    assert call["failure"]["truncated"] is True
+    if type(interrupt) is bool:
+        assert call["is_interrupt"] is interrupt
+    else:
+        assert "is_interrupt" not in call
+    private = sanitize_runtime_diagnostics(result.runtime_diagnostics)
+    assert ("is_interrupt" in private["tool_calls"][0]) is (type(interrupt) is bool)
+    assert "PRIVATE_MARKER" not in str(private)
+    assert "is_interrupt" not in str(result.turn_diagnostics)
+
+
+@pytest.mark.parametrize("interrupt", [True, False, None, 1, 0, "true", [], {"private": "MARKER"}])
+def test_tool_abort_scalar_is_strict_and_private_at_each_boundary(interrupt):
+    from app.runs.domain.diagnostics import sanitize_runtime_diagnostics
+
+    raw = {"schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION, "error_code": "failed", "tool_calls": [{
+        "tool_name": "Read", "invocation_id": "native-call", "last_stage": "failed", "is_interrupt": interrupt,
+    }]}
+    normalized = normalize_sdk_runtime_diagnostics(raw)
+    private = sanitize_runtime_diagnostics(normalized)
+    direct = sanitize_runtime_diagnostics(raw)
+    for payload in (normalized, private, direct):
+        assert ("is_interrupt" in payload["tool_calls"][0]) is (type(interrupt) is bool)
+        if type(interrupt) is bool:
+            assert payload["tool_calls"][0]["is_interrupt"] is interrupt
+    assert sanitize_runtime_diagnostics(private) == private
+    assert normalize_sdk_runtime_diagnostics(normalized) == normalized
+
+
+def test_completed_tool_does_not_retain_stale_abort_and_budget_remains_bounded(monkeypatch):
+    from app.runs.domain.diagnostics import sanitize_runtime_diagnostics
+
+    raw = {"schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION, "error_code": "failed", "tool_calls": [{
+        "tool_name": "Read", "invocation_id": "native-call", "last_stage": "completed", "is_interrupt": True,
+    }]}
+    assert "is_interrupt" not in normalize_sdk_runtime_diagnostics(raw)["tool_calls"][0]
+    assert "is_interrupt" not in sanitize_runtime_diagnostics(raw)["tool_calls"][0]
+    raw["tool_calls"] = [{"tool_name": "Read", "invocation_id": f"native-{i}", "last_stage": "failed", "is_interrupt": True} for i in range(20)]
+    normalized = normalize_sdk_runtime_diagnostics(raw)
+    assert len(normalized["tool_calls"]) <= 8
+    assert all(call["is_interrupt"] is True for call in normalized["tool_calls"])
+    assert len(json.dumps(normalized).encode()) <= 128 * 1024

@@ -106,7 +106,7 @@ function buildPreviewKey(input: {
 
 export function buildArtifactPreviewRequest<T extends ArtifactPreviewInput>(
   artifact: T,
-): Extract<RevealPreviewRequest, { kind: "file" }> | null {
+): RevealPreviewRequest | null {
   const previewUrl = normalizeArtifactPreviewUrl(
     artifact.preview_url ?? artifact.previewUrl,
   );

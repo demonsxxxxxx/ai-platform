@@ -276,11 +276,12 @@ async def get_skill_version(
     return _project_skill_version(row) if row is not None else None
 
 
-async def lock_skill_for_version_upload(
+async def lock_skill_version_lifecycle(
     conn: AsyncConnection,
     *,
     skill_id: str,
 ) -> None:
+    """Serialize upload, release-policy and global lifecycle writes for a Skill."""
     cursor = await conn.execute(
         "select id from skills where id = %s for update",
         (skill_id,),

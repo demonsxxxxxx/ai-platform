@@ -73,17 +73,9 @@ test("still allows manual preview to replace an external navigation preview", ()
 test("stabilizes chat scroll only when an auto preview opens near the bottom", () => {
   const autoPreview = createActiveRevealPreviewState(
     {
-      kind: "project",
-      previewKey: "project:/tmp/demo",
-      project: {
-        version: 1,
-        name: "demo",
-        path: "/tmp/demo",
-        template: "static",
-        mode: "folder",
-        files: {},
-        fileCount: 0,
-      },
+      kind: "file",
+      previewKey: "file:demo.txt",
+      filePath: "demo.txt",
     },
     "auto",
   );

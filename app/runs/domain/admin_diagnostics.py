@@ -69,8 +69,10 @@ class AdminRunDiagnosticSdk(TypedDict, total=False):
 class AdminRunDiagnosticToolEvidence(TypedDict):
     tool_name: str
     invocation_id: NotRequired[str]
+    operation_id: NotRequired[str]
     state: NotRequired[str]
     last_stage: NotRequired[str]
+    is_interrupt: NotRequired[bool]
     capability_kind: NotRequired[str]
     reason: NotRequired[str]
 

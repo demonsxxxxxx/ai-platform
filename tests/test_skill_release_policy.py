@@ -203,3 +203,25 @@ def test_resolve_rollout_skill_version_clamps_or_defaults_invalid_percent_values
         )
         == "hash-new"
     )
+
+
+def test_promotion_previous_version_distinguishes_new_target_from_rollout_update():
+    from app.skills.api import previous_skill_version_for_promotion
+
+    policy = {"current_version": "v2", "previous_version": "v1"}
+    assert previous_skill_version_for_promotion(policy, target_version="v2") == "v1"
+    assert previous_skill_version_for_promotion(policy, target_version="v3") == "v2"
+    assert previous_skill_version_for_promotion(None, target_version="v1") is None
+    assert previous_skill_version_for_promotion(
+        {"current_version": "v1", "previous_version": None}, target_version="v1",
+    ) is None
+    assert previous_skill_version_for_promotion(
+        {"current_version": "v1", "previous_version": "v1"}, target_version="v1",
+    ) is None
+
+    assert previous_skill_version_for_promotion(
+        None, target_version="v1", fallback_version="v1",
+    ) is None
+    assert previous_skill_version_for_promotion(
+        None, target_version="v2", fallback_version="v1",
+    ) == "v1"

@@ -1,5 +1,6 @@
 """Composition root for Runs-owned private diagnostics."""
 
+from app.execution.api import public_tool_operation_id
 from app.runs.application.diagnostics import RunDiagnosticsService
 from app.runs.infrastructure.diagnostics_postgres import PostgresRunDiagnosticsRepository
 from app.sandbox.api import (
@@ -17,4 +18,5 @@ def build_run_diagnostics_service() -> RunDiagnosticsService:
         ),
         normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
         runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+        tool_operation_id=public_tool_operation_id,
     )
