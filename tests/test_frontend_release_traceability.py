@@ -26,6 +26,7 @@ EXPECTED_CI_VERIFY = (
     "&& corepack pnpm run test:company-rbac-browser-smoke-source "
     "&& corepack pnpm run test:skill-admin-ui "
     "&& corepack pnpm run test:run-monitor "
+    "&& corepack pnpm run test:run-playback "
     "&& corepack pnpm run test:profile-drive "
     "&& corepack pnpm run test:control-plane-ui "
     "&& corepack pnpm run test:model-admin "
