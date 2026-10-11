@@ -218,7 +218,9 @@ def _validate_control_payload(event_type: str, payload: object) -> dict[str, obj
         raise V4ProjectionError("v4_control_payload_invalid")
     for key, value in result.items():
         enum_values = PUBLIC_PAYLOAD_ENUMS.get((event_type, key))
-        if enum_values is not None and value not in enum_values:
+        if enum_values is not None and not any(
+            type(value) is type(option) and value == option for option in enum_values
+        ):
             raise V4ProjectionError(f"v4_{key}_invalid")
         if key in PUBLIC_PAYLOAD_REF_FIELDS:
             _safe_ref(value, name=key)
@@ -404,7 +406,7 @@ def _validate_payload(event_type: str, payload: object) -> dict[str, object]:
     for key, value in result.items():
         enum_values = PUBLIC_PAYLOAD_ENUMS.get((event_type, key))
         if enum_values is not None:
-            if value not in enum_values:
+            if not any(type(value) is type(option) and value == option for option in enum_values):
                 raise V4ProjectionError(f"v4_{key}_invalid")
             continue
         if key in PUBLIC_PAYLOAD_REF_FIELDS:
