@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { lazy, Suspense } from "react";
 import {
   Routes,
   Route,
@@ -15,11 +15,7 @@ import { ErrorBoundary } from "./components/common/ErrorBoundary";
 import { SelectionActionPopover } from "./components/common/SelectionActionPopover";
 import { useSEO } from "./hooks/usePageTitle";
 import { Permission } from "./types";
-import { sessionApi } from "./services/api";
-import {
-  getCachedSessionTitle,
-  listenSessionTitleUpdated,
-} from "./utils/sessionTitleEvents";
+import { useChatSessionTitle } from "./hooks/useChatSessionTitle";
 import { APP_TOASTER_CLASS_NAME } from "./components/layout/AppContent/appToastLayout";
 import { useAuth } from "./hooks/useAuth";
 import type { TabType } from "./components/layout/AppContent/types";
@@ -67,68 +63,12 @@ const NotFoundPage = lazy(() =>
 
 function ChatPageSEO() {
   const { sessionId } = useParams<{ sessionId?: string }>();
-  const [sessionName, setSessionName] = useState<string | null>(null);
-  const prevSessionIdRef = useRef<string | null>(null);
-
-  // Fetch session name when sessionId changes
-  useEffect(() => {
-    if (!sessionId) {
-      setSessionName(null);
-      prevSessionIdRef.current = null;
-      return;
-    }
-
-    // Reset only when switching to a different session
-    if (sessionId !== prevSessionIdRef.current) {
-      setSessionName(null);
-      prevSessionIdRef.current = sessionId;
-    }
-
-    const fetchSessionName = async () => {
-      try {
-        const session = await sessionApi.get(sessionId);
-        if (session?.name) {
-          setSessionName(session.name);
-        }
-      } catch (err) {
-        console.warn("[ChatPage] Failed to fetch session:", err);
-      }
-    };
-
-    fetchSessionName();
-  }, [sessionId]);
-
-  // React immediately when generateTitle finishes in the active chat session.
-  useEffect(() => {
-    if (!sessionId) return;
-
-    const cachedTitle = getCachedSessionTitle(sessionId);
-    if (cachedTitle) {
-      setSessionName(cachedTitle);
-    }
-
-    return listenSessionTitleUpdated((detail) => {
-      if (detail.sessionId === sessionId) {
-        setSessionName(detail.title);
-      }
-    });
-  }, [sessionId]);
-
-  // Poll for session name after initial load (handles race with generate-title)
-  useEffect(() => {
-    if (!sessionId || sessionName) return;
-
-    const delay = setTimeout(() => {
-      sessionApi
-        .get(sessionId)
-        .then((session) => {
-          if (session?.name) setSessionName(session.name);
-        })
-        .catch(() => {});
-    }, 3000);
-
-    return () => clearTimeout(delay);
-  }, [sessionId, sessionName]);
+  const { isAuthenticated, user } = useAuth();
+  const sessionName = useChatSessionTitle({
+    sessionId,
+    tenantId: isAuthenticated ? user?.tenant_id : undefined,
+    userId: isAuthenticated ? user?.id : undefined,
+  });
 
   // Use session name if available, otherwise use default "nav.chat"
   useSEO({
