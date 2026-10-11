@@ -210,6 +210,9 @@ or unknown started work retains its generation and retry accounting, while untou
 objects are not preclaimed and do not consume attempts. Each claim retains the
 existing oldest-eligible ordering, `SKIP LOCKED`, and stale-lease rules; no existing
 dead-letter rows are automatically requeued.
+Candidate selection independently checks the exact target identity, storage key,
+and `delete_pending` lifecycle, so a bounded quarantine pass cannot expose an
+uninspected invalid target to physical deletion.
 
 
 - Expired artifacts are selected with `FOR UPDATE SKIP LOCKED` only when no

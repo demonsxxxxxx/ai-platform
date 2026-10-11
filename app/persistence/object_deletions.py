@@ -125,7 +125,7 @@ async def claim_object_deletions(
         with candidates as (
           select id
           from object_deletion_outbox
-          where (
+          where ((
               target_type = 'artifact'
               and (
                 (
@@ -158,6 +158,27 @@ async def claim_object_deletions(
               )
               and attempts < %s
             )
+          ) and (
+            (
+              target_type = 'artifact'
+              and exists (
+                select 1 from artifacts
+                where artifacts.tenant_id = object_deletion_outbox.tenant_id
+                  and artifacts.id = object_deletion_outbox.artifact_id
+                  and artifacts.storage_key = object_deletion_outbox.storage_key
+                  and artifacts.lifecycle_state = 'delete_pending'
+              )
+            ) or (
+              target_type = 'file'
+              and exists (
+                select 1 from files
+                where files.tenant_id = object_deletion_outbox.tenant_id
+                  and files.id = object_deletion_outbox.file_id
+                  and files.storage_key = object_deletion_outbox.storage_key
+                  and files.lifecycle_state = 'delete_pending'
+              )
+            )
+          )
           order by available_at asc, created_at asc, id asc
           limit %s
           for update skip locked
