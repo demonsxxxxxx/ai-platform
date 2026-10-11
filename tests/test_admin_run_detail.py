@@ -163,6 +163,81 @@ def test_admin_run_diagnostics_keeps_not_found_tenant_scoped(monkeypatch):
     assert response.json()["detail"] == "run_not_found"
 
 
+@pytest.mark.parametrize("include_frames", [False, True])
+def test_admin_run_diagnostics_preserves_projection_failure_over_http(
+    monkeypatch, include_frames,
+):
+    projection_failure = {
+        "reason": "raw_frame_invalid", "stage": "message", "location": "raw_stream_frame",
+    }
+    if include_frames:
+        frame = {
+            "event_type": "content_block_start", "block_type": "tool_use",
+            "delta_type": "other", "message_state": "open",
+            "open_block_type": "none", "index_state": "other",
+        }
+        projection_failure.update(
+            frame_shape={**frame, "guard": "block_start_state"},
+            preceding_frames=[frame],
+        )
+
+    class StoredDiagnosticsPersistence:
+        async def get_admin_snapshot(self, _conn, *, tenant_id, run_id):
+            assert tenant_id == "default"
+            assert run_id == "run_a"
+            return {
+                "run": {
+                    "run_id": run_id, "session_id": "ses-a", "user_id": "user-a",
+                    "workspace_id": "default", "status": "failed", "trace_id": None,
+                    "created_at": None, "queued_at": None, "started_at": None,
+                    "finished_at": None, "error_code": "claude_agent_sdk_output_validation_failed",
+                },
+                "result_json": {},
+                "diagnostic": {
+                    "diagnostic_id": "rdiag-a", "revision": 1,
+                    "schema_version": "ai-platform.run-diagnostics.v1",
+                    "payload_json": {
+                        "coverage": "full",
+                        "observations": [{
+                            "observation_id": "obs-a", "attempt_id": "attempt-a",
+                            "source": "sdk", "stage": "message",
+                            "error_code": "claude_agent_sdk_output_validation_failed",
+                            "runtime_diagnostics": {
+                                "schema_version": "ai-platform.sdk-runtime-diagnostics.v1",
+                                "projection_failure": {
+                                    **projection_failure, "body": "PRIVATE_FRAME_BODY",
+                                },
+                            },
+                        }],
+                    },
+                },
+                "attempts": [],
+            }
+
+        async def append_observation(self, *_args, **_kwargs):
+            raise AssertionError("read route must not write diagnostics")
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.admin_runs.transaction", fake_transaction)
+    app = create_app()
+    app.state.run_diagnostics_service = RunDiagnosticsService(
+        persistence=StoredDiagnosticsPersistence(),
+        normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
+        runtime_diagnostics_schema_version="ai-platform.sdk-runtime-diagnostics.v1",
+    )
+    client = TestClient(app)
+    try:
+        response = client.get("/api/ai/admin/runs/run_a/diagnostics", headers=headers())
+    finally:
+        client.close()
+
+    assert response.status_code == 200
+    details = response.json()["details"]
+    assert details["projection_failure"] == projection_failure
+    assert details["observations"][0]["projection_failure"] == projection_failure
+    assert "PRIVATE_FRAME_BODY" not in response.text
+
+
 def test_admin_run_list_requires_admin(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     client = TestClient(create_app())

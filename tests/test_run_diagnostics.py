@@ -760,6 +760,92 @@ async def test_capture_redacts_private_tool_values_before_storage_and_admin_proj
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("has_failure_observations", [False, True])
+async def test_admin_read_redacts_stored_sdk_fallbacks_in_root_handling_and_export(
+    has_failure_observations,
+):
+    observations = []
+    for index, (source, stage, code) in enumerate(
+        (
+            ("executor_callback", "terminal_receipt", "provider_timeout"),
+            ("executor_reconciler", "terminalization", "terminal_reconciliation_failed"),
+        )
+    ):
+        evidence = runtime_diagnostics(
+            error_code=code,
+            failure_source=source,
+            failure_stage=stage,
+            sdk={
+                "exception_type": "RuntimeError",
+                "exception_message": f"retained failure token=STORED_SECRET_{index}",
+                "exception_traceback": f"https://private-{index}.example.invalid/trace",
+            },
+            failure_observations=(
+                [{"error_code": code, "failure_source": source, "failure_stage": stage}]
+                if has_failure_observations else []
+            ),
+        )
+        observations.append({
+            "observation_id": f"obs-{index}",
+            "attempt_id": "attempt-a",
+            "source": source,
+            "stage": stage,
+            "error_code": code,
+            "received_at": NOW.isoformat(),
+            "runtime_diagnostics": evidence,
+        })
+    # Model retained data from an earlier policy, not the already-redacted writer.
+    payload = {
+        **runs_diagnostics_contract.empty_run_diagnostics_payload(),
+        "observations": observations,
+        "counts": {"retained_observations": 2, "omitted_observations": 0},
+    }
+    snapshot = {
+        "run": {"run_id": "run-a", "status": "failed"},
+        "result_json": {},
+        "diagnostic": {
+            "diagnostic_id": "rdiag-a",
+            "schema_version": RUN_DIAGNOSTICS_SCHEMA_VERSION,
+            "revision": 2,
+            "payload_json": payload,
+        },
+        "attempts": [],
+    }
+    stored_snapshot = deepcopy(snapshot)
+    service = RunDiagnosticsService(
+        persistence=InMemoryDiagnostics(snapshot),
+        normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
+        runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+    )
+
+    response = await service.read_admin(object(), tenant_id="tenant-a", run_id="run-a")
+
+    assert snapshot == stored_snapshot
+    assert response["root"]["error_code"] == "provider_timeout"
+    assert len(response["handling"]) == 1
+    assert response["handling"][0]["error_code"] == "terminal_reconciliation_failed"
+    for failure in [response["root"], *response["handling"]]:
+        assert failure["exception_type"] == "RuntimeError"
+        assert failure["message"] == "retained failure token=[redacted-secret]"
+        assert failure["stack"] == "https://[redacted-host]"
+    for evidence in response["details"]["observations"]:
+        assert evidence["sdk"]["exception_message"] == response["root"]["message"]
+        assert evidence["sdk"]["exception_traceback"] == response["root"]["stack"]
+    assert "STORED_SECRET_" not in str(response)
+    assert ".example.invalid" not in str(response)
+
+    package = build_admin_diagnostic_export(
+        diagnostics=response, export_id="export-a", generated_at=NOW,
+    )
+    with zipfile.ZipFile(io.BytesIO(package)) as archive:
+        exported = json.loads(archive.read("diagnostics.json"))
+    assert exported["root"] == response["root"]
+    assert exported["handling"] == response["handling"]
+    assert "STORED_SECRET_" not in str(exported)
+    assert ".example.invalid" not in str(exported)
+
+
+@pytest.mark.asyncio
 async def test_protocol_failure_capture_keeps_structure_and_drops_reported_values():
     persistence = InMemoryDiagnostics()
     service = RunDiagnosticsService(
