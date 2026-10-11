@@ -1,3 +1,8 @@
+import itertools
+import random
+import re
+import sys
+
 import pytest
 
 from app.control_plane_contracts import (
@@ -509,3 +514,250 @@ def test_secret_quote_continuation_offset_matches_chunk_semantics_without_copy(q
     assert sanitizer_unstable_assignment_suffix_length(
         NoSuffixCopy((f"password={quote}synthetic{quote} " * 32)), max_chars=32,
     ) == 0
+
+
+@pytest.fixture
+def kernel_lexical_oracle():
+    # Frozen pre-K2 policy, used only on short synthetic inputs. Keeping spans
+    # and callback decisions catches changes that output-only checks conceal.
+    token = re.compile(
+        r"(?i)(?<!\[)\b(?=[A-Za-z0-9._-]{8,}\b)"
+        r"(?:[A-Za-z0-9]+[._-])+(?:secret|token|credential|password)(?:[._-][A-Za-z0-9]+)*\b"
+        r"(?![\"']?\s*[:=])(?!\])"
+        r"|(?<!\[)\b(?=[A-Za-z0-9._-]{8,}\b)"
+        r"(?:secret|token|credential|password)(?:[._-][A-Za-z0-9]+)+\b"
+        r"(?![\"']?\s*[:=])(?!\])"
+    )
+    email = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+    followers = {
+        "budget", "budgets", "count", "counts", "flow", "flows", "helper",
+        "helpers", "reset", "resets", "status", "total", "usage",
+    }
+
+    def safe(value):
+        segments = [part.lower() for part in re.split(r"[._-]+", value) if part]
+        sensitive = [
+            index for index, part in enumerate(segments)
+            if part in {"secret", "token", "credential", "password"}
+        ]
+        return bool(sensitive) and all(
+            index + 1 < len(segments) and segments[index + 1] in followers
+            for index in sensitive
+        )
+
+    def replacement(match):
+        text = match.string
+        end = match.end()
+        if end + 1 < len(text) and text[end] in "._-" and text[end + 1].isalnum():
+            full_end = end
+            while full_end < len(text) and (text[full_end].isalnum() or text[full_end] in "._-"):
+                full_end += 1
+            if safe(text[match.start():full_end]):
+                return match.group()
+        return match.group() if safe(match.group()) else "[redacted-secret]"
+
+    return token, replacement, email
+
+
+@pytest.mark.parametrize("mode", ["standard", "strict"])
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("x.token..a", "[redacted-secret]..a"),
+        ("a.token..é", "[redacted-secret]..é"),
+        ("x.token.......", "x.token......."),
+        ("[foo.bar.secret.baz]", "[foo.[redacted-secret].baz]"),
+        ("éfoo.bar.secret.baz", "éfoo.[redacted-secret]"),
+        ("foo_secret_bar", "[redacted-secret]"),
+        ("éfoo_secret_bar", "éfoo_secret_bar"),
+        ("foo_secret_bar_", "foo_secret_bar_"),
+        ("x.secret.foo=1", "[redacted-secret].foo=1"),
+        ("a.secret.helper", "a.secret.helper"),
+        ("a.ſecret.helper", "[redacted-secret]"),
+        ("a.toKen.value", "[redacted-secret]"),
+        ("a.credentİal.value", "[redacted-secret]"),
+        ("a.credentıal.value", "[redacted-secret]"),
+        ("foo.secret.helper.secret.count]", "foo.secret.helper.secret.count]"),
+        ("token_count=123", "token_count=123"),
+        ("password-reset-flow", "password-reset-flow"),
+        ("credential-helper", "credential-helper"),
+        ("x@y@z.com", "x@[redacted-email]"),
+        ("éabc.x@y.com", "éabc[redacted-email]"),
+        ("a@b.com_", "a@b.com_"),
+        ("a@b.comé", "a@b.comé"),
+        ("a@b.com9.def", "[redacted-email]"),
+        ("a@b.com.x-y@z.com", "[redacted-email][redacted-email]"),
+        ("a@..com", "[redacted-email]"),
+        ("a@.com", "a@.com"),
+        ("[redacted-secret] [redacted-email]", "[redacted-secret] [redacted-email]"),
+    ],
+)
+def test_kernel_lexical_redaction_preserves_policy(text, expected, mode):
+    from app.kernel.memory_redaction import redact_memory_text
+
+    assert redact_memory_text(text, mode=mode) == expected
+    assert redact_memory_text(expected, mode=mode) == expected
+
+
+def test_kernel_lexical_redaction_matches_bounded_oracle(kernel_lexical_oracle):
+    from app.kernel import memory_redaction as kernel
+
+    token, replacement, email = kernel_lexical_oracle
+    segments = ["a", "token", "secret", "helper", "count", "ſecret", "toKen", "İ", "ı", "é", "猫"]
+    cases = [
+        prefix + left + separator + right + suffix
+        for left, separator, right in itertools.product(segments, [".", "_", "..", ".-"], segments)
+        for prefix, suffix in [("", ""), ("[", "]"), ("é", "_"), ("", "..é"), ("", "' :=1")]
+    ]
+    rng = random.Random(82951)
+    pieces = segments + ["password", "credential", "SECRET", "-", "__", " ", "@", "[", "]", ":", "=", '"', "'", "\\", "\n", "\u0301", "²", "ß", "%", "+", "/", "com", "com9"]
+    cases.extend("".join(rng.choices(pieces, k=rng.randrange(1, 19))) for _ in range(3000))
+    for text in cases:
+        assert len(text) <= 192  # The retired regex is never used for large-work tests.
+        assert list(kernel._secret_like_token_matches(text)) == [
+            (*match.span(), replacement(match) == "[redacted-secret]")
+            for match in token.finditer(text)
+        ], text
+        assert list(kernel._email_matches(text)) == [match.span() for match in email.finditer(text)], text
+        assert kernel._redact_secret_like_values(text) == token.sub(replacement, text), text
+        assert kernel._redact_emails(text) == email.sub("[redacted-email]", text), text
+
+
+def test_kernel_lexical_redaction_preserves_modes_and_wrappers(monkeypatch, kernel_lexical_oracle):
+    from app.kernel import memory_redaction as kernel
+
+    token, replacement, email = kernel_lexical_oracle
+    texts = [
+        "safe token_count=123 password-reset-flow credential-helper",
+        "[foo.bar.secret.baz] a.ſecret.helper a.secret.é.a.secret.é.",
+        "a@b.com.x-y@z.com and éabc.x@y.com",
+        "sk-demoABCDEFGHIJKLMN abcdefghij.klmnopqrst.uvwxyzABCD",
+        "[redacted-secret] [redacted-email]",
+        'api_key="synthetic \\"quote\\" value" next=x.token..a',
+        "client_secret: 'synthetic unfinished value",
+    ]
+    payload = {"note": texts, "token_count": 123, "api_key": "synthetic-value"}
+    actual = {
+        mode: ([kernel.redact_memory_text(text, mode=mode) for text in texts],
+               kernel.redact_memory_metadata(payload, mode=mode))
+        for mode in ("standard", "strict")
+    }
+    actual_public = sanitize_public_payload(payload)
+    actual_text = [sanitize_public_text(text) for text in texts]
+    monkeypatch.setattr(kernel, "_redact_secret_like_values", lambda text: token.sub(replacement, text))
+    monkeypatch.setattr(kernel, "_redact_emails", lambda text: email.sub("[redacted-email]", text))
+    for mode in ("standard", "strict"):
+        assert actual[mode] == (
+            [kernel.redact_memory_text(text, mode=mode) for text in texts],
+            kernel.redact_memory_metadata(payload, mode=mode),
+        )
+    assert actual_public == sanitize_public_payload(payload)
+    assert actual_text == [sanitize_public_text(text) for text in texts]
+    assert actual["standard"][0][3] == texts[3]
+    assert actual["strict"][0][3] == "[redacted-secret] [redacted-secret]"
+
+
+@pytest.mark.parametrize(
+    "unit",
+    ["a.", "_a.secret_", "a.secret.é.", "secret.helper.é.", "a@b.com.x-y@z.com ", "a." * 8 + "@..comé "],
+)
+def test_kernel_lexical_redaction_has_linear_scan_work(monkeypatch, unit):
+    from app.kernel import memory_redaction as kernel
+
+    # Count Python scan steps, inspected/copied string units, and the input
+    # lengths supplied to each simple regex primitive. This exercises matching,
+    # safe-suffix classification and output assembly without wall-clock limits.
+    work = [0]
+
+    class MeteredText(str):
+        def __contains__(self, value):
+            work[0] += len(self)
+            return super().__contains__(value)
+
+        def __getitem__(self, index):
+            value = super().__getitem__(index)
+            work[0] += len(value)
+            return MeteredText(value)
+
+        def lower(self):
+            work[0] += len(self)
+            return MeteredText(super().lower())
+
+    class MeteredPattern:
+        def __init__(self, pattern, name):
+            self.pattern = pattern
+            self.name = name
+
+        def finditer(self, text, start=0, end=None):
+            end = len(text) if end is None else end
+            work[0] += end - start
+            return self.pattern.finditer(text, start, end)
+
+        def fullmatch(self, text):
+            work[0] += len(text)
+            return self.pattern.fullmatch(text)
+
+        def search(self, text):
+            work[0] += len(text)
+            return self.pattern.search(text)
+
+        def match(self, text, start):
+            if self.name == "_EMAIL_DOMAIN_PATTERN":
+                region = re.compile(r"[A-Za-z0-9.-]*").match(text, start)
+            else:
+                region = re.compile(r"[\"']?\s*").match(text, start)
+            work[0] += region.end() - start + 1
+            return self.pattern.match(text, start)
+
+    names = [
+        "_SECRET_LIKE_RUN_PATTERN", "_SECRET_LIKE_SEGMENT_PATTERN", "_SECRET_LIKE_ALNUM_PATTERN",
+        "_SECRET_LIKE_MARKER_PATTERN", "_SECRET_LIKE_ASSIGNMENT_FOLLOWER_PATTERN",
+        "_EMAIL_LOCAL_RUN_PATTERN", "_EMAIL_DOMAIN_PATTERN",
+    ]
+    for name in names:
+        monkeypatch.setattr(kernel, name, MeteredPattern(getattr(kernel, name), name))
+
+    def trace(frame, event, arg):
+        if event == "line" and frame.f_code.co_filename == kernel.__file__:
+            work[0] += 1
+        return trace
+
+    totals = []
+    for repetitions in (128, 256, 512):
+        text = MeteredText(unit * repetitions)
+        work[0] = 0
+        previous_trace = sys.gettrace()
+        try:
+            sys.settrace(trace)
+            kernel._redact_secret_like_values(text)
+            kernel._redact_emails(text)
+        finally:
+            sys.settrace(previous_trace)
+        totals.append(work[0])
+        assert work[0] < 200 * len(text)
+    assert totals[1] <= 2.1 * totals[0]
+    assert totals[2] <= 2.1 * totals[1]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The report is ready. Please review the introduction before the meeting.",
+        "x " * 409600 + "x",
+        "a." * 2048,
+    ],
+    ids=["plain-small", "plain-large", "dotted-marker-free"],
+)
+def test_kernel_lexical_absence_checks_skip_per_word_scans(monkeypatch, text):
+    from app.kernel import memory_redaction as kernel
+
+    class UnexpectedRunScan:
+        def finditer(self, *args):
+            pytest.fail("marker-free, no-@ prose entered the per-word run scanner")
+
+    # A work invariant for the large plain-narration path: its cost must not
+    # include one Python iteration/allocation per word. No wall-clock threshold.
+    monkeypatch.setattr(kernel, "_SECRET_LIKE_RUN_PATTERN", UnexpectedRunScan())
+    monkeypatch.setattr(kernel, "_EMAIL_LOCAL_RUN_PATTERN", UnexpectedRunScan())
+    assert kernel._redact_secret_like_values(text) == text
+    assert kernel._redact_emails(text) == text
