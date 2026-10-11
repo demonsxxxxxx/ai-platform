@@ -642,7 +642,6 @@ class FakeRedis:
                 run_index_field,
                 metadata_json,
                 retry_metadata_json,
-                remove_processing,
                 expected_attempt_id,
                 expected_owner_token,
                 visibility_timeout_seconds,
@@ -687,8 +686,8 @@ class FakeRedis:
                 )
             if self.server_time - lease_activity_at <= float(visibility_timeout_seconds):
                 return json.dumps({"status": "lease_active"})
-            if str(remove_processing) == "1":
-                await self.lrem(processing_key, 1, raw)
+            if await self.lrem(processing_key, 1, raw) != 1:
+                return json.dumps({"status": "processing_missing"})
             self.queued.append(raw)
             self.pushed.append((queued_key, raw))
             self.sequence += 1
@@ -973,7 +972,6 @@ async def test_atomic_fence_blocks_enqueue_lease_and_retry_until_token_release(m
         expected_attempt_id=attempt_id,
         expected_owner_token=owner_token,
         visibility_timeout_seconds=10,
-        remove_processing=True,
     )
     assert requeued is False
     assert raw in fake.processing
@@ -3244,3 +3242,34 @@ def test_queue_payload_rejects_missing_user_id():
         assert "user_id" in str(exc)
     else:
         raise AssertionError("ValidationError expected")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing_processing_metadata", [False, True])
+async def test_requeue_consumes_processing_entry_once(monkeypatch, missing_processing_metadata):
+    raw = payload_json()
+    message_id, attempt_id, owner_token, _, metadata = lease_identity(raw)
+    encoded = json.dumps(metadata)
+    fake = FakeRedis(
+        processing=[raw],
+        meta={} if missing_processing_metadata else {message_id: encoded},
+        retry={message_id: encoded},
+    )
+    monkeypatch.setattr(queue, "get_settings", _fence_settings)
+    keys = queue.get_queue_keys()
+    kwargs = dict(
+        raw=raw, retry_metadata=metadata, expected_attempt_id=attempt_id,
+        expected_owner_token=owner_token, visibility_timeout_seconds=10,
+    )
+    assert await queue._requeue_run_with_fence(fake, keys, **kwargs) is True
+    queued_metadata = dict(fake.metadata_by_message_id)
+    retry_metadata = dict(fake.retry)
+    assert await queue._requeue_run_with_fence(fake, keys, **kwargs) is False
+    assert fake.queued == [raw]
+    assert fake.processing == []
+    assert fake.meta == {}
+    assert fake.sequence == 1
+    assert fake.metadata_by_message_id == queued_metadata
+    assert fake.retry == retry_metadata
+    assert indexed_message_ids(fake, "tenant-a:run-a") == [message_id]
+    assert fake.order_scores == {message_id: 1}

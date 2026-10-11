@@ -915,3 +915,119 @@ async def test_real_worker_heartbeat_fails_closed_then_converges_after_postgres_
             )
         )
         await admin.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing_processing_metadata", [False, True])
+async def test_real_redis_concurrent_reclaim_transfers_processing_entry_once(
+    monkeypatch, missing_processing_metadata,
+):
+    redis_url = _required_env(REDIS_URL_ENV)
+    suffix = uuid.uuid4().hex[:12]
+    queue_prefix = f"ai-platform:test:reclaim-once:{suffix}"
+
+    class Settings:
+        queue_key_prefix = queue_prefix
+
+    monkeypatch.setattr(queue, "get_settings", lambda: Settings())
+    keys = queue.get_queue_keys()
+    redis_keys = tuple(getattr(keys, field.name) for field in fields(keys))
+    redis = Redis.from_url(redis_url, decode_responses=True)
+    payload = QueueRunPayload(
+        tenant_id=f"tenant-{suffix}", workspace_id=f"workspace-{suffix}",
+        user_id=f"user-{suffix}", session_id=f"session-{suffix}",
+        run_id=f"run-{suffix}", agent_id=f"agent-{suffix}",
+        skill_id=f"skill-{suffix}", file_ids=[], input={"message": "reclaim once"},
+        executor_type="fake", skill_version="version-a",
+        release_decision={
+            "schema_version": "ai-platform.skill-release-decision.v1",
+            "selected_version": "version-a",
+        },
+        skill_manifests=[{"skill_id": f"skill-{suffix}", "content_hash": "version-a"}],
+    )
+    raw = payload.model_dump_json()
+    message_id = queue.message_id_for_raw(raw)
+    attempt_id, owner_token = f"qat_{'a' * 64}", f"qown_{'b' * 64}"
+    snapshots = []
+    both_snapshots_read = asyncio.Event()
+    requeue_calls = []
+
+    class SnapshotBarrierClient:
+        def __init__(self):
+            self.client = Redis.from_url(redis_url, decode_responses=True)
+
+        def __getattr__(self, name):
+            return getattr(self.client, name)
+
+        async def lrange(self, key, start, end):
+            values = await self.client.lrange(key, start, end)
+            if key == keys.processing:
+                snapshots.append(values)
+                if len(snapshots) == 2:
+                    both_snapshots_read.set()
+                await both_snapshots_read.wait()
+            return values
+
+        async def eval(self, script, *args):
+            if script == queue.REQUEUE_WITH_FENCE_SCRIPT:
+                requeue_calls.append((script, *args))
+            return await self.client.eval(script, *args)
+
+    async def get_redis():
+        return SnapshotBarrierClient()
+
+    monkeypatch.setattr(queue, "get_redis", get_redis)
+    try:
+        epoch = await _redis_epoch(redis) - 120
+        metadata = {
+            "message_id": message_id, "raw": raw, "attempts": 1,
+            "attempt_id": attempt_id, "owner_token_v2": owner_token,
+            "lease_protocol_version": 2, "leased_at": epoch, "heartbeat_at": epoch,
+            "worker_id": f"worker-{suffix}", "tenant_id": payload.tenant_id,
+            "user_id": payload.user_id, "run_id": payload.run_id,
+        }
+        encoded = json.dumps(metadata)
+        await redis.lpush(keys.processing, raw)
+        await redis.hset(keys.retry_meta, message_id, encoded)
+        if not missing_processing_metadata:
+            await redis.hset(keys.processing_meta, message_id, encoded)
+        async with asyncio.timeout(5):
+            results = await asyncio.gather(*(
+                queue.reclaim_expired_leases(visibility_timeout_seconds=60, max_attempts=3)
+                for _ in range(2)
+            ))
+        assert snapshots == [[raw], [raw]]
+        assert sorted(result["reclaimed"] for result in results) == [0, 1]
+        assert all(result["dead_lettered"] == 0 for result in results)
+        assert len(requeue_calls) == 2
+        assert await redis.lrange(keys.processing, 0, -1) == []
+        assert await redis.lrange(keys.queued, 0, -1) == [raw]
+        assert await redis.hget(keys.processing_meta, message_id) is None
+        assert await redis.lrange(keys.dead_letter, 0, -1) == []
+        index_field = queue.queued_run_index_field(tenant_id=payload.tenant_id, run_id=payload.run_id)
+        assert json.loads(await redis.hget(keys.queued_run_index, index_field)) == [message_id]
+        assert await redis.zrange(keys.queued_order, 0, -1) == [message_id]
+        assert await redis.get(keys.queued_sequence) == "1"
+        queued_metadata = await redis.hget(keys.queued_meta, message_id)
+        retry_metadata = await redis.hget(keys.retry_meta, message_id)
+        assert json.loads(retry_metadata)["attempts"] == 1
+        assert json.loads(retry_metadata)["owner_token_v2"] == owner_token
+
+        # Replay exactly the same production EVAL after its first success.
+        assert json.loads(await redis.eval(*requeue_calls[0])) == {"status": "processing_missing"}
+        assert await redis.lrange(keys.queued, 0, -1) == [raw]
+        assert await redis.get(keys.queued_sequence) == "1"
+        assert await redis.hget(keys.queued_meta, message_id) == queued_metadata
+        assert await redis.hget(keys.retry_meta, message_id) == retry_metadata
+
+        # A late old reclaim cannot consume the new lease's processing entry.
+        leased = await queue.lease_run(worker_id=f"next-worker-{suffix}")
+        assert leased is not None and leased.delivery_attempt == 2
+        current_metadata = await redis.hget(keys.processing_meta, message_id)
+        assert json.loads(await redis.eval(*requeue_calls[0])) == {"status": "stale_owner"}
+        assert await redis.lrange(keys.processing, 0, -1) == [raw]
+        assert await redis.lrange(keys.queued, 0, -1) == []
+        assert await redis.hget(keys.processing_meta, message_id) == current_metadata
+    finally:
+        await redis.delete(*redis_keys)
+        await redis.aclose()
