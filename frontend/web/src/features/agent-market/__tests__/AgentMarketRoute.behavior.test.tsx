@@ -1897,6 +1897,24 @@ test("main chat exposes event-only history failure and a read-only retry", async
     assert.ok(container.querySelector("[data-chat-history-read-error]"));
     assert.equal(container.querySelectorAll("[data-chat-transcript]").some((node) => node.getAttribute("data-session-id") === "session-c"), false, "no old transcript crosses Session ownership");
     assert.doesNotMatch(container.querySelector("[data-chat-history-read-error]")!.textContent, /PRIVATE_|private|secret|HTTP|diag_|service_unavailable/);
+
+    // A status-only API error retains useful HTTP evidence without inventing
+    // missing diagnostic metadata or disclosing its unknown private message.
+    readEvents = async () => { throw new ApiRequestError("PRIVATE_STATUS_ONLY /private/path token=secret", 503); };
+    const statusOnlyReadCount = calls.events;
+    const statusOnlyMarkReadCount = calls.markRead;
+    await React.act(async () => {
+      container.querySelector("[data-chat-history-read-error]")!.querySelector("button")!.dispatchEvent({ type: "click" });
+    });
+    const statusOnlyAlert = container.querySelector("[data-chat-history-read-error]");
+    assert.ok(statusOnlyAlert);
+    assert.match(statusOnlyAlert.textContent, /历史消息暂时无法读取/);
+    assert.match(statusOnlyAlert.textContent, /加载会话失败/);
+    assert.match(statusOnlyAlert.textContent, /HTTP 503/);
+    assert.doesNotMatch(statusOnlyAlert.textContent, /PRIVATE_STATUS_ONLY|private|secret|错误代码|问题编号|diag_/);
+    assert.equal(calls.events, statusOnlyReadCount + 1);
+    assert.equal(calls.markRead, statusOnlyMarkReadCount);
+    assert.equal(calls.submit, 0);
   } finally {
     await React.act(async () => root.unmount());
     Object.assign(sessionApi, originals);
