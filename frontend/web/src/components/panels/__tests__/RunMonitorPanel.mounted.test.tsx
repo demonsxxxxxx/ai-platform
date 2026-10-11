@@ -740,7 +740,7 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
     assert.match(failureTrace.textContent ?? "", /claude_agent_sdk_tool_admission_failed/);
     assert.match(failureTrace.textContent ?? "", /同一观察中的工具证据/);
     assert.match(failureTrace.textContent ?? "", /留存异常摘要：ACTUAL_SDK_FAILURE_MARKER/);
-    const abortLabels = Array.from(container.querySelectorAll("[data-sdk-tool-abort]")).map((item) => item.textContent);
+    const abortLabels = (Array.from(container.querySelectorAll("[data-sdk-tool-abort]")) as HTMLElement[]).map((item) => item.textContent);
     assert.deepEqual(abortLabels, [
       "SDK 报告工具 abort：是；不代表用户取消或 Run 取消状态。",
       "SDK 报告工具 abort：否；不代表用户取消或 Run 取消状态。",
