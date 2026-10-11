@@ -514,3 +514,47 @@ def test_raw_skill_redaction_can_preserve_empty_camel_case_skill_ids_for_compat(
     payload = redact_raw_skill_references({"stepKey": "review", "skillIds": ["qa-file-reviewer"]}, preserve_empty_skill_ids=True)
 
     assert payload == {"stepKey": "review", "skillIds": []}
+
+
+@pytest.mark.parametrize("mode", ["standard", "strict"])
+@pytest.mark.parametrize(
+    "body",
+    [
+        'Before password="alpha bravo charlie',
+        "Before api_key -> 'alpha bravo,charlie",
+        '{"outer":{"client_secret":"alpha\nbravo;charlie',
+        'Before auth_header => "alpha \\"bravo\\" charlie\\',
+    ],
+)
+def test_unfinished_quoted_secret_is_redacted_through_eof_by_shared_wrappers(mode, body):
+    from app.kernel.memory_redaction import redact_memory_metadata, redact_memory_text
+
+    expected = redact_memory_text(body, mode=mode)
+    assert all(word not in expected for word in ("alpha", "bravo", "charlie"))
+    assert "[redacted-secret]" in expected
+    assert redact_memory_text(expected, mode=mode) == expected
+    assert redact_memory_metadata({"note": [body]}, mode=mode) == {"note": [expected]}
+    assert sanitize_public_text(body) == expected
+    assert sanitize_public_payload({"outer": [{"note": body}]}) == {"outer": [{"note": expected}]}
+
+
+@pytest.mark.parametrize("quote", ['"', "'"])
+@pytest.mark.parametrize("escaped", [False, True])
+def test_secret_quote_continuation_offset_matches_chunk_semantics_without_copy(quote, escaped):
+    from app.kernel.memory_redaction import (
+        SecretQuoteContinuation,
+        sanitizer_unstable_assignment_suffix_length,
+    )
+
+    class NoSuffixCopy(str):
+        def __getitem__(self, key):
+            assert not isinstance(key, slice), "quoted assignment scan copied a suffix"
+            return super().__getitem__(key)
+
+    state = SecretQuoteContinuation(quote, escaped)
+    prefix = "ignored prefix "
+    for suffix in ("", "alpha\\", quote + " after", "alpha\\" + quote + " bravo" + quote + " after"):
+        assert state.consume(NoSuffixCopy(prefix + suffix), start=len(prefix)) == state.consume(suffix)
+    assert sanitizer_unstable_assignment_suffix_length(
+        NoSuffixCopy((f"password={quote}synthetic{quote} " * 32)), max_chars=32,
+    ) == 0

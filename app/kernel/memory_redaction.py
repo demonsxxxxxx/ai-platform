@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from typing import Any
 
 
@@ -110,8 +111,8 @@ _SECRET_ASSIGNMENT_STREAM_PATTERN = re.compile(
     )
     \s*(?P<separator>=>|->|[:=])\s*
     (?P<value>
-        "(?:\\.|[^"\\])*"
-        | '(?:\\.|[^'\\])*'
+        "(?:\\.|[^"\\])*(?:"|\\?\Z)
+        | '(?:\\.|[^'\\])*(?:'|\\?\Z)
         | bearer\s+[A-Za-z0-9._~+/=-]+
         | [^\s,;}}]+
     )
@@ -129,45 +130,87 @@ def _redact_stream_secret_assignment(match: re.Match[str]) -> str:
     return f"{match.group('key')}{match.group('separator')}{redacted_value}"
 
 
-def _unfinished_secret_assignment_start(value: str) -> int | None:
+def redact_secret_assignments(value: str) -> str:
+    """Redact raw assignment spans before display replacements can alter quotes."""
+
+    return _SECRET_ASSIGNMENT_STREAM_PATTERN.sub(_redact_stream_secret_assignment, value)
+
+
+@dataclass(frozen=True, slots=True)
+class SecretQuoteContinuation:
+    """Constant-size syntax state after discarding an oversized quoted value."""
+
+    quote: str
+    escaped: bool = False
+
+    def consume(
+        self, value: str, *, start: int = 0
+    ) -> tuple[int, SecretQuoteContinuation | None]:
+        """Return characters consumed from start without copying the suffix."""
+
+        escaped = self.escaped
+        for index in range(start, len(value)):
+            character = value[index]
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == self.quote:
+                return index - start + 1, None
+        return len(value) - start, SecretQuoteContinuation(self.quote, escaped)
+
+
+def _unfinished_secret_assignment(
+    value: str,
+) -> tuple[int, SecretQuoteContinuation | None] | None:
+    completed_quote_end = 0
     for match in _SANITIZER_ASSIGNMENT_START.finditer(value):
+        if match.start() < completed_quote_end:
+            continue
         key = match.group("quoted_key") or match.group("plain_key")
         if not is_sensitive_redaction_key(key):
             continue
         value_start = match.end()
         quote = match.group("value_quote")
         if quote:
-            index = value_start
-            while index < len(value):
-                if value[index] == "\\":
-                    index += 2
-                    continue
-                if value[index] == quote:
-                    break
-                index += 1
-            if index >= len(value):
-                return match.start()
+            consumed, continuation = SecretQuoteContinuation(quote).consume(
+                value, start=value_start
+            )
+            if continuation is not None:
+                return match.start(), continuation
+            completed_quote_end = value_start + consumed
             continue
         if not re.search(r"[\s,;}]", value[value_start:]):
-            return match.start()
+            return match.start(), None
     separator_prefix = _SANITIZER_ASSIGNMENT_SEPARATOR_PREFIX.search(value)
-    if separator_prefix:
+    if separator_prefix and separator_prefix.start() >= completed_quote_end:
         key = separator_prefix.group("arrow_quoted_key") or separator_prefix.group(
             "arrow_plain_key"
         )
         if is_sensitive_redaction_key(key):
-            return separator_prefix.start()
+            return separator_prefix.start(), None
     quoted_key_prefix = _SANITIZER_QUOTED_KEY_PREFIX.search(value)
-    if quoted_key_prefix:
-        return quoted_key_prefix.start()
+    if quoted_key_prefix and quoted_key_prefix.start() >= completed_quote_end:
+        return quoted_key_prefix.start(), None
     key_suffix = _SANITIZER_ASSIGNMENT_KEY_SUFFIX.search(value)
-    if key_suffix:
+    if key_suffix and key_suffix.start() >= completed_quote_end:
         key = key_suffix.group("quoted_key_suffix") or key_suffix.group(
             "plain_key_suffix"
         )
         if "__" not in key and is_sensitive_redaction_key(key):
-            return key_suffix.start()
+            return key_suffix.start(), None
     return None
+
+
+def sanitizer_unfinished_quote(
+    value: str,
+) -> tuple[int, SecretQuoteContinuation] | None:
+    """Locate an open secret quote and its byte-free continuation grammar."""
+
+    assignment = _unfinished_secret_assignment(value)
+    if assignment is None or assignment[1] is None:
+        return None
+    return assignment[0], assignment[1]
 
 
 def sanitizer_unstable_assignment_suffix_length(
@@ -175,10 +218,10 @@ def sanitizer_unstable_assignment_suffix_length(
 ) -> int:
     """Return a bounded suffix held while a secret assignment remains incomplete."""
 
-    assignment_start = _unfinished_secret_assignment_start(value)
-    if assignment_start is None:
+    assignment = _unfinished_secret_assignment(value)
+    if assignment is None:
         return 0
-    candidate_chars = len(value) - assignment_start
+    candidate_chars = len(value) - assignment[0]
     return candidate_chars if candidate_chars <= max_chars else max_chars + 1
 
 
@@ -451,7 +494,7 @@ def _redact_secret_like_token_value(match: re.Match[str]) -> str:
 def redact_memory_text(value: object, *, mode: str = MEMORY_REDACTION_MODE_STANDARD) -> str:
     redaction_mode = normalize_memory_redaction_mode(mode)
     text = "" if value is None else str(value)
-    text = _SECRET_ASSIGNMENT_STREAM_PATTERN.sub(_redact_stream_secret_assignment, text)
+    text = redact_secret_assignments(text)
     text = QUOTED_SECRET_FIELD_PATTERN.sub(_redact_quoted_secret_field, text)
     text = SECRET_ASSIGNMENT_PATTERN.sub(_redact_secret_assignment, text)
     text = BEARER_TOKEN_PATTERN.sub("Bearer [redacted-secret]", text)

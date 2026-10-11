@@ -1339,3 +1339,22 @@ async def test_set_uploaded_workbench_skill_status_creates_authoritative_distrib
     assert "tenant_workbench_skills" not in " ".join(sql for sql, _ in conn.calls)
     assert conn.calls[2][1][1:5] == ("default", "skill", "new-research-skill", "active")
     assert conn.calls[3][1] == ("default", "new-research-skill")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("referenced", [False, True])
+async def test_global_skill_version_release_reference_query_includes_all_tenants_and_fallback(referenced):
+    class Connection:
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            assert "select 1 from skills where id = %s and version = %s" in normalized
+            assert "select 1 from skill_release_policies where skill_id = %s and status = 'active'" in normalized
+            assert "current_version = %s" in normalized
+            assert "rollout_percent < 100 and previous_version = %s" in normalized
+            assert "tenant_id =" not in normalized
+            assert params == ("shared-skill", "v1", "shared-skill", "v1", "v1")
+            return SingleRowCursor({"referenced": referenced})
+
+    assert await skill_versions_persistence.has_active_skill_version_release_references(
+        Connection(), skill_id="shared-skill", version="v1",
+    ) is referenced

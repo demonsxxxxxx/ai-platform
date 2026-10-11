@@ -206,6 +206,36 @@ async def backfill_builtin_skill_version_snapshot(
     )
 
 
+async def has_active_skill_version_release_references(
+    conn: AsyncConnection, *, skill_id: str, version: str,
+) -> bool:
+    """Check global release references while the caller holds the Skill row lock.
+
+    The catalog pointer remains the authority for tenants without a policy,
+    including future distributions. Tenant release transitions never retire it.
+    """
+    cursor = await conn.execute(
+        """
+        select (
+          exists (
+            select 1 from skills
+            where id = %s and version = %s
+          ) or exists (
+            select 1 from skill_release_policies
+            where skill_id = %s and status = 'active'
+              and (
+                current_version = %s
+                or (rollout_percent < 100 and previous_version = %s)
+              )
+          )
+        ) as referenced
+        """,
+        (skill_id, version, skill_id, version, version),
+    )
+    row = await cursor.fetchone()
+    return bool(row and row["referenced"])
+
+
 async def update_skill_version_status(
     conn: AsyncConnection,
     *,

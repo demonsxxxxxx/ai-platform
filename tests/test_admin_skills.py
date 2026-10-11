@@ -50,7 +50,7 @@ def skill_admin_headers():
 
 
 @pytest.fixture(autouse=True)
-def stub_uploaded_skill_display_version_persistence(monkeypatch):
+def stub_skill_version_lifecycle_persistence(monkeypatch):
     async def lock_skill(conn, *, skill_id):
         assert conn is not None
         assert skill_id
@@ -59,8 +59,16 @@ def stub_uploaded_skill_display_version_persistence(monkeypatch):
         assert conn is not None
         return []
 
+    async def no_release_references(conn, *, skill_id, version):
+        return False
+
     monkeypatch.setattr(
-        "app.routes.admin_skills.lock_skill_for_version_upload",
+        "app.skills.infrastructure.versions_postgres.has_active_skill_version_release_references",
+        no_release_references,
+    )
+
+    monkeypatch.setattr(
+        "app.routes.admin_skills.lock_skill_version_lifecycle",
         lock_skill,
     )
     monkeypatch.setattr(
@@ -1901,9 +1909,9 @@ def test_admin_skill_version_status_can_disable_or_deprecate_without_release_rev
         calls.append(("audit", kwargs))
         return "aud-status"
 
-    async def fake_get_policy(conn, *, tenant_id, skill_id, channel="stable"):
-        calls.append(("get_policy", {"tenant_id": tenant_id, "skill_id": skill_id, "channel": channel}))
-        return {"current_version": "hash-current", "previous_version": "hash-a"}
+    async def fake_has_references(conn, *, skill_id, version):
+        calls.append(("release_references", {"skill_id": skill_id, "version": version}))
+        return False
 
     def fail_review(version):
         raise AssertionError("disable/deprecate must not require release review")
@@ -1911,7 +1919,7 @@ def test_admin_skill_version_status_can_disable_or_deprecate_without_release_rev
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
-    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.get_skill_release_policy", fake_get_policy)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.has_active_skill_version_release_references", fake_has_references)
     monkeypatch.setattr("app.skills.infrastructure.versions_postgres.update_skill_version_status", fake_update_status, raising=False)
     monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", fake_audit)
     monkeypatch.setattr("app.routes.admin_skills._build_skill_version_admin_review", fail_review)
@@ -1936,8 +1944,9 @@ def test_admin_skill_version_status_rejects_disabling_current_release_policy(mon
     async def fake_get_version(conn, *, skill_id, version):
         return materializable_uploaded_qa_version(version)
 
-    async def fake_get_policy(conn, *, tenant_id, skill_id, channel="stable"):
-        return {"current_version": "hash-current", "previous_version": "hash-a"}
+    async def fake_has_references(conn, *, skill_id, version):
+        assert version == "hash-current"
+        return True
 
     async def fail_update_status(conn, **kwargs):
         raise AssertionError("current release policy version must not be disabled or deprecated directly")
@@ -1945,7 +1954,7 @@ def test_admin_skill_version_status_rejects_disabling_current_release_policy(mon
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
-    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.get_skill_release_policy", fake_get_policy)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.has_active_skill_version_release_references", fake_has_references)
     monkeypatch.setattr("app.skills.infrastructure.versions_postgres.update_skill_version_status", fail_update_status, raising=False)
     client = TestClient(create_app())
 
@@ -1969,12 +1978,9 @@ def test_admin_skill_version_status_rejects_disabling_gray_rollout_previous_poli
     async def fake_get_version(conn, *, skill_id, version):
         return materializable_uploaded_qa_version(version)
 
-    async def fake_get_policy(conn, *, tenant_id, skill_id, channel="stable"):
-        return {
-            "current_version": "hash-current",
-            "previous_version": "hash-a",
-            "rollout_percent": rollout_percent,
-        }
+    async def fake_has_references(conn, *, skill_id, version):
+        assert version == "hash-a"
+        return rollout_percent < 100
 
     async def fail_update_status(conn, **kwargs):
         raise AssertionError("gray rollout previous version must not be disabled or deprecated directly")
@@ -1982,7 +1988,7 @@ def test_admin_skill_version_status_rejects_disabling_gray_rollout_previous_poli
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
     monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
-    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.get_skill_release_policy", fake_get_policy)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.has_active_skill_version_release_references", fake_has_references)
     monkeypatch.setattr("app.skills.infrastructure.versions_postgres.update_skill_version_status", fail_update_status, raising=False)
     client = TestClient(create_app())
 
@@ -2073,7 +2079,7 @@ def test_admin_promote_skill_version_sets_release_policy_and_audit(monkeypatch):
     assert set_call["version"] == "hash-b"
     assert set_call["previous_version"] == "hash-a"
     assert ("update_status", {"skill_id": "qa-file-reviewer", "version": "hash-b", "status": "released"}) in calls
-    assert ("update_status", {"skill_id": "qa-file-reviewer", "version": "hash-a", "status": "deprecated"}) in calls
+    assert not any(item[0] == "update_status" and item[1]["version"] == "hash-a" for item in calls)
     audit_call = [item for item in calls if item[0] == "audit"][0][1]
     assert audit_call["action"] == "skill_version_promoted"
     assert audit_call["target_id"] == "qa-file-reviewer"
@@ -2081,7 +2087,7 @@ def test_admin_promote_skill_version_sets_release_policy_and_audit(monkeypatch):
     assert audit_call["payload_json"]["schema_version"] == "ai-platform.skill-version-release-audit.v1"
     assert audit_call["payload_json"]["lifecycle"] == {
         "released_version": "hash-b",
-        "deprecated_version": "hash-a",
+        "deprecated_version": None,
         "target_status": "released",
     }
     assert audit_call["payload_json"]["release_review"]["status"] == "passed"
@@ -2392,14 +2398,11 @@ def test_admin_promote_full_without_policy_allows_unmaterializable_catalog_previ
     assert response.status_code == 200
     assert response.json()["current_version"] == "hash-uploaded"
     assert response.json()["previous_version"] == "hash-stale"
-    assert ("get_version", "qa-file-reviewer", "hash-stale") in calls
+    assert ("get_version", "qa-file-reviewer", "hash-stale") not in calls
     set_call = [item for item in calls if item[0] == "set_policy"][0][1]
     assert set_call["version"] == "hash-uploaded"
     assert set_call["previous_version"] == "hash-stale"
-    assert (
-        "update_status",
-        {"skill_id": "qa-file-reviewer", "version": "hash-stale", "status": "deprecated"},
-    ) in calls
+    assert not any(item[0] == "update_status" and item[1]["version"] == "hash-stale" for item in calls)
     audit_call = [item for item in calls if item[0] == "audit"][0][1]
     assert audit_call["payload_json"]["from_version"] == "hash-stale"
 
@@ -2535,7 +2538,6 @@ def test_admin_promote_accepts_root_files_without_requiring_dependency_snapshots
     }]
     assert [item[1] for item in calls if item[0] == "status"] == [
         {"skill_id": "qa-file-reviewer", "version": "hash-uploaded", "status": "released"},
-        {"skill_id": "qa-file-reviewer", "version": "hash-a", "status": "deprecated"},
     ]
     audit = [item[1] for item in calls if item[0] == "audit"]
     assert len(audit) == 1
@@ -2730,7 +2732,7 @@ def test_admin_rollback_skill_version_sets_release_policy_and_audit(monkeypatch)
     assert set_call["version"] == "hash-a"
     assert set_call["previous_version"] == "hash-b"
     assert ("update_status", {"skill_id": "qa-file-reviewer", "version": "hash-a", "status": "released"}) in calls
-    assert ("update_status", {"skill_id": "qa-file-reviewer", "version": "hash-b", "status": "deprecated"}) in calls
+    assert not any(item[0] == "update_status" and item[1]["version"] == "hash-b" for item in calls)
     audit_call = [item for item in calls if item[0] == "audit"][0][1]
     assert audit_call["action"] == "skill_version_rolled_back"
     assert audit_call["payload_json"]["from_version"] == "hash-b"
@@ -2739,7 +2741,7 @@ def test_admin_rollback_skill_version_sets_release_policy_and_audit(monkeypatch)
     assert audit_call["payload_json"]["schema_version"] == "ai-platform.skill-version-release-audit.v1"
     assert audit_call["payload_json"]["lifecycle"] == {
         "released_version": "hash-a",
-        "deprecated_version": "hash-b",
+        "deprecated_version": None,
         "target_status": "released",
     }
     assert audit_call["payload_json"]["release_review"]["status"] == "passed"
@@ -2889,7 +2891,6 @@ def test_admin_rollback_accepts_root_files_without_requiring_dependency_snapshot
     }]
     assert [item[1] for item in calls if item[0] == "status"] == [
         {"skill_id": "qa-file-reviewer", "version": "hash-uploaded", "status": "released"},
-        {"skill_id": "qa-file-reviewer", "version": "hash-current", "status": "deprecated"},
     ]
     audit = [item[1] for item in calls if item[0] == "audit"]
     assert len(audit) == 1
@@ -3158,3 +3159,119 @@ def test_admin_rollback_requires_previous_version_target(monkeypatch):
 
     assert response.status_code == 409
     assert response.json()["detail"] == "rollback_target_not_previous_version"
+
+
+@pytest.mark.parametrize("rollout_percent", [0, 20, 100])
+def test_admin_repromote_preserves_previous_track_and_other_tenant_version(monkeypatch, rollout_percent):
+    """A rollout adjustment/retry neither changes its predecessor nor retires shared bytes."""
+    states = {
+        version: {**materializable_uploaded_qa_version(version), "status": "released"}
+        for version in ("hash-a", "hash-b")
+    }
+    policies = {
+        "default": {"current_version": "hash-b", "previous_version": "hash-a", "rollout_percent": 10},
+        "tenant-b": {"current_version": "hash-a", "previous_version": None, "rollout_percent": 100},
+    }
+    calls = []
+    audits = []
+
+    async def lock(conn, *, skill_id):
+        calls.append("lock")
+
+    async def get_version(conn, *, skill_id, version):
+        calls.append("read")
+        return dict(states[version])
+
+    async def get_policy(conn, *, tenant_id, skill_id, channel="stable"):
+        return dict(policies[tenant_id])
+
+    async def set_policy(conn, **kwargs):
+        policies[kwargs["tenant_id"]] = {
+            "current_version": kwargs["version"],
+            "previous_version": kwargs["previous_version"],
+            "rollout_percent": kwargs["rollout_percent"],
+        }
+
+    async def update_status(conn, *, skill_id, version, status):
+        states[version]["status"] = status
+        return dict(states[version])
+
+    async def no_op(conn, **kwargs):
+        if "payload_json" in kwargs:
+            audits.append(kwargs["payload_json"])
+        return None
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.lock_skill_version_lifecycle", lock)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", get_version)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.get_skill_release_policy", get_policy)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.set_skill_release_policy", set_policy)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.update_skill_version_status", update_status)
+    monkeypatch.setattr("app.skills.infrastructure.catalog_postgres.set_uploaded_workbench_skill_status", no_op)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", no_op)
+    monkeypatch.setattr("app.routes.admin_skills._build_skill_version_admin_review", reviewed_skill_version_release)
+    client = TestClient(create_app())
+
+    for _ in range(2):
+        calls.clear()
+        response = client.post(
+            "/api/ai/admin/skills/qa-file-reviewer/promote",
+            json={"version": "hash-b", "rollout_percent": rollout_percent},
+            headers=admin_headers(),
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["previous_version"] == "hash-a"
+        assert audits[-1]["from_version"] == "hash-b"
+        assert calls[0:2] == ["lock", "read"]
+        assert policies["default"]["previous_version"] == "hash-a"
+        assert policies["tenant-b"]["current_version"] == "hash-a"
+        assert states["hash-a"]["status"] == "released"
+
+    # The preserved predecessor remains a valid rollback target after completion/retry.
+    response = client.post(
+        "/api/ai/admin/skills/qa-file-reviewer/rollback",
+        json={"version": "hash-a"}, headers=admin_headers(),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["previous_version"] == "hash-b"
+    assert states["hash-b"]["status"] == "released"
+
+
+@pytest.mark.parametrize("target_status", ["disabled", "deprecated"])
+def test_admin_global_status_checks_references_without_caller_tenant_filter(monkeypatch, target_status):
+    calls = []
+
+    async def lock(conn, *, skill_id):
+        calls.append("lock")
+
+    async def get_version(conn, *, skill_id, version):
+        calls.append("read")
+        return materializable_uploaded_qa_version(version)
+
+    async def has_reference(conn, *, skill_id, version):
+        calls.append("all_references")
+        assert skill_id == "qa-file-reviewer" and version == "hash-a"
+        return True  # Another tenant's policy or the global fallback selects this version.
+
+    async def unexpected_policy(conn, **kwargs):
+        raise AssertionError("a global status transition must not infer safety from the caller's policy")
+
+    async def unexpected_update(conn, **kwargs):
+        raise AssertionError("a referenced global version cannot be retired")
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.lock_skill_version_lifecycle", lock)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", get_version)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.has_active_skill_version_release_references", has_reference)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.get_skill_release_policy", unexpected_policy)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.update_skill_version_status", unexpected_update)
+    client = TestClient(create_app())
+    response = client.post(
+        "/api/ai/admin/skills/qa-file-reviewer/versions/hash-a/status",
+        json={"status": target_status}, headers=admin_headers(),
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "skill_version_has_active_release_policy"
+    assert calls == ["lock", "read", "all_references"]

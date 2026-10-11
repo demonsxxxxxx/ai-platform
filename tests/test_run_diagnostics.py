@@ -1076,6 +1076,76 @@ async def test_admin_projection_marks_empty_legacy_carrier_as_not_collected():
     assert response["root"] is None
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("run_id", ["run-correlation-fixture", "run-correlation-other"])
+async def test_admin_tool_correlation_matches_native_public_projection_without_storage_changes(run_id):
+    from app.execution.api import ClaudeSdkAgentEventAdapter, public_tool_operation_id
+    from app.platform.public_payload import sanitize_public_answer_text, sanitize_public_event_candidate
+    from app.runs.application.admin_run_monitor import build_admin_worker_execution
+
+    native_id = "sdk-native-call-1"
+    adapter = ClaudeSdkAgentEventAdapter(
+        run_id=run_id, attempt_id="attempt-1",
+        sanitizer=sanitize_public_answer_text, payload_sanitizer=sanitize_public_event_candidate,
+        authorized_capabilities={"Read": ("read", "Read file")},
+    )
+    hook = {"tool_name": "Read", "tool_use_id": native_id, "tool_input": {"file_path": "/private/fixture"}}
+    candidate, = adapter.accept_hook("PreToolUse", hook, tool_use_id=native_id)
+    public = build_admin_worker_execution([
+        {"type": candidate.event_type, "payload": dict(candidate.payload), "sequence": 1, "visible_to_user": True},
+    ], sanitize_text=lambda value: value)
+    raw = runtime_diagnostics(tool_calls=[{
+        "tool_name": "Read", "invocation_id": native_id, "last_stage": "failed",
+        "tool_input": {"prompt": "PRIVATE_MARKER"}, "failure": {"error": "PRIVATE_MARKER"},
+    }])
+    snapshot = {"run": {"run_id": run_id}, "result_json": {"runtime_diagnostics": raw}, "attempts": []}
+    before = deepcopy(snapshot)
+    service = RunDiagnosticsService(
+        persistence=InMemoryDiagnostics(snapshot), normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
+        runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+        tool_operation_id=public_tool_operation_id,
+    )
+    response = await service.read_admin(object(), tenant_id="tenant-a", run_id=run_id)
+    item = response["details"]["tool_calls"][0]
+    assert item["operation_id"] == public["actions"][0]["invocation_id"]
+    assert item["invocation_id"] == native_id
+    assert native_id not in str(candidate.payload)
+    assert "PRIVATE_MARKER" not in str(response)
+    assert snapshot == before
+    assert "operation_id" not in normalize_sdk_runtime_diagnostics(raw)["tool_calls"][0]
+    assert item["operation_id"] != public_tool_operation_id(run_id + "-other", native_id)
+    assert response["details"]["observations"][0]["tool_calls"][0]["operation_id"] == item["operation_id"]
+
+
+@pytest.mark.asyncio
+async def test_admin_tool_correlation_omits_ambiguous_or_missing_native_identity():
+    from app.execution.api import public_tool_operation_id
+
+    snapshot = {"run": {"run_id": "run-a"}, "result_json": {"runtime_diagnostics": runtime_diagnostics(
+        tool_calls=[{"tool_name": name, "invocation_id": "duplicate"} for name in ("Read", "Write")],
+        tool_policy_denials=[{"tool_name": "Read", "reason": "denied"}],
+    )}, "attempts": []}
+    service = RunDiagnosticsService(
+        persistence=InMemoryDiagnostics(snapshot), normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
+        runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+        tool_operation_id=public_tool_operation_id,
+    )
+    response = await service.read_admin(object(), tenant_id="tenant-a", run_id="run-a")
+    for item in response["details"]["tool_calls"] + response["details"]["tool_policy_denials"]:
+        assert "operation_id" not in item
+    assert public_tool_operation_id("run-a", "") is None
+    assert public_tool_operation_id(None, "native") is None
+
+
+def test_bootstrap_uses_execution_tool_operation_identity_owner():
+    from app.bootstrap.run_diagnostics import build_run_diagnostics_service
+    from app.execution.api import public_tool_operation_id
+
+    assert build_run_diagnostics_service().tool_operation_id is public_tool_operation_id
+    # Paired with the mounted Run Monitor fixture; no frontend hash implementation.
+    assert public_tool_operation_id("run_running", "tool-call-7") == "op_6aaadf71488c9cf9ca0e4928bbf70f1e"
+
+
 @pytest.mark.parametrize("severe", [False, True])
 def test_run_diagnostic_minimization_preserves_api_status(severe):
     observation = {"runtime_diagnostics": sanitize_runtime_diagnostics(runtime_diagnostics(sdk={"api_error_status": 500}))}
