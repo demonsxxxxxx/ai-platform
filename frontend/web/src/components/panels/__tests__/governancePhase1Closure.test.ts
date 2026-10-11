@@ -212,7 +212,7 @@ test("governed MCP and Skill hooks fail closed before calling APIs", () => {
 
   for (const apiName of [
     "getSkill",
-    "getFullSkill",
+    "getSkillExportFiles",
     "updateSkill",
     "deleteSkill",
     "toggleSkill",

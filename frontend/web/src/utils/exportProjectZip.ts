@@ -1,10 +1,12 @@
 import JSZip from "jszip";
 
 export async function exportProjectZip(
-  files: Record<string, string>,
+  files: Record<string, string | Uint8Array>,
   projectName: string,
   binaryFiles?: Record<string, string>,
+  isCurrent: () => boolean = () => true,
 ): Promise<void> {
+  if (!isCurrent()) throw new DOMException("Export cancelled", "AbortError");
   const zip = new JSZip();
 
   // 添加文本文件
@@ -35,6 +37,7 @@ export async function exportProjectZip(
   }
 
   const blob = await zip.generateAsync({ type: "blob" });
+  if (!isCurrent()) throw new DOMException("Export cancelled", "AbortError");
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -42,8 +45,11 @@ export async function exportProjectZip(
     /[^a-zA-Z0-9_\u4e00-\u9fa5-]/g,
     "_",
   )}.zip`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  try {
+    document.body.appendChild(a);
+    a.click();
+  } finally {
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
 }
