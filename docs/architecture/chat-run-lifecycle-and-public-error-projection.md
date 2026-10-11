@@ -168,6 +168,26 @@ intervening narration, Tool/process parts, artifacts, Todo state, permission
 requests, and other actionable statuses. The hydrated fold includes accepted
 narration and final answer, not only the last successful fragment.
 
+### Kernel lexical redaction
+
+`app/kernel/memory_redaction.py` owns the secret-like token and email passes
+shared by memory and public-payload projections. Token matching scans maximal
+Unicode word/dot/hyphen runs and classifies their segment chains and safe
+followers once. Email matching scans unconditional local-part runs and anchors
+the existing domain grammar after `@`. Both preserve the original match spans,
+Unicode word boundaries, case-insensitive ASCII extensions, `.lower()` safety
+classification, partial bracket matches, assignment exclusions, minimum-length
+lookahead, replacement order, and standard/strict mode behavior.
+
+These two lexical passes take bounded linear work in their input length; token
+classification uses memory bounded by the largest token run. This is not a
+linearity guarantee for assignment, bearer, provider/JWT rules or the complete
+sanitizer pipeline. The previous restart-at-each-boundary token/email regex
+substitutions and repeated full-token safety callback are retired without a
+production compatibility path. Short synthetic oracle cases and deterministic
+scan-work checks in `tests/test_control_plane_contracts.py` preserve their
+lexical policy; stream/assignment ownership and boundary rechecks stay unchanged.
+
 ## Queue-to-processing presentation
 
 A truthful submission/status response may show `queued` and `queue_position`.
@@ -304,6 +324,42 @@ keep their fixed refresh/reselection or workspace-switch instructions. A
 malformed HTTP success response is outcome-unknown: preserve the submission
 recovery fence and confirm history/status before any resubmission. Diagnostic
 identifiers are accepted only in their existing bounded format.
+
+A failed Chat admission transaction exit does not establish rollback: PostgreSQL
+may have committed before its acknowledgement was lost. For keyed submissions,
+the existing principal-scoped ledger claim must settle that race. A committed
+outcome is replayed with its actual status, including `accepted_pending_enqueue`;
+this recovery does not enqueue another Run. Only a successfully committed
+rejection may emit `rejected_before_persist`. If the claim/readback or rejection
+commit cannot establish the outcome, the sanitized internal error omits that
+disposition and the client retains its existing submission recovery fence.
+Unkeyed transaction failures likewise cannot claim absence without durable proof.
+The same safe internal-error projection applies when prevalidation or a typed
+admission rejection cannot commit its rejection ledger. HTTP outcome mappings
+and cancellation retain their existing semantics. Conversations application
+owns bounded error codes, public detail and redacted correlated diagnostics in
+`submission_failures`, exposed through `conversations.api`; the route retains
+HTTP translation and shares one diagnostic ID across admission and recovery.
+This retires the unconditional internal-error rejection projection; the existing
+ledger, idempotency and explicit reconciliation remain its sole compatibility
+owners. No new recovery or retry authority is introduced.
+
+Queue DTO error projection is phase-neutral: `queue_payload_invalid` and its
+bounded, redacted field errors describe a shape failure, not absence of durable
+work. Only Chat's rolled-back creation transaction may add
+`submission_disposition: rejected_before_persist`. Rebuilding an already
+committed Chat submission or retry/resume child must retain its durable identity;
+an invalid frozen payload remains rejected, and Run control GET reports unknown
+queue admission. Explicit Chat retry errors keep the existing recovery fence,
+including errors from older servers that still attach the former label. No
+snapshot repair, state transition, or new retry authority is implied. The
+existing Conversations `submission_failures` projection supplies the explicit
+rejection signal. Legacy unkeyed Chat combines it with the validation cause's
+bounded DTO projection, never arbitrary HTTP detail fields. The route retains
+the creation validation boundary and HTTP translation. Capability authorization
+failures share that existing Conversations safe-code owner; the former route
+mapping is retired without changing denial decisions or exposing their private
+messages or capability payloads.
 
 This replaces blanket SDK-upstream attribution and blanket admission
 login/fix-input guidance. Historical `claude_agent_sdk_upstream_error` remains
@@ -547,6 +603,11 @@ and the release runbook. No source cleanup authorizes a weaker public projection
 `tool_calls[].is_interrupt` is an optional strict boolean copied only from a
 native `PostToolUseFailure` hook before large failure/input values are truncated.
 Both diagnostic boundaries retain it only for the current failed tool stage.
+Repeated lifecycle evidence for the same tool name and invocation ID, still at
+the failed stage and without a new failure payload, preserves the observed flag.
+A new explicit failure payload re-evaluates the native-hook and strict-boolean
+guards; any non-failed stage clears the flag. Observations do not carry across
+different invocations or runner attempts.
 It means the SDK reported an abort, not that the user cancelled the Run. Missing
 values remain unknown; false means only that the received hook reported false.
 The SDK documents that interrupting a running tool does not fire this hook.
@@ -574,3 +635,24 @@ new correlation key. The Run Monitor indexes explicit public and legacy native
 aliases, excludes blank keys and conflicting tool identities, and performs no
 hash reconstruction. This repair neither restores raw tool input/failure text
 nor changes authorization, failure classification or retry behavior.
+
+## Workspace collection after an executor failure
+
+The reconciler preserves an existing failed or cancelled executor receipt as the
+primary terminal cause, including MCP outcome-uncertain codes used by Runs retry
+admission. Workspace collection is still attempted; a later collection failure
+cannot replace that status, code, or private diagnostic carrier. A successful
+executor receipt whose workspace collection fails remains a failed Run, never a
+successful publication of missing files.
+
+Secondary collection failures use the existing bounded Runs diagnostics owner:
+the observed receipt code (or its status when no code exists) precedes a separate
+`executor_reconciliation` / `workspace_collection` observation. Existing private
+root evidence remains first; observation IDs deduplicate repeated reconciliation.
+Collection evidence contains the fixed code and exception type, not exception
+text, prompts, credentials, or workspace paths. The correlated structured warning
+is the fallback when diagnostic capture is unavailable. Diagnostic persistence
+failures, including entry or commit failure of the diagnostic-only transaction,
+do not veto the original terminal outcome. Cancellation still propagates; the
+business-result transaction retains its existing authority and failure rules. No new diagnostic
+store, public field, schema migration, or retry policy is introduced.

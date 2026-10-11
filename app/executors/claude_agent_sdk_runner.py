@@ -1804,7 +1804,9 @@ async def run_claude_agent_sdk(
             },
         )
         entry["last_stage"] = stage
-        entry.pop("is_interrupt", None)
+        # A repeated lifecycle fact carries no new failure observation.
+        if stage != "failed" or failure is not None:
+            entry.pop("is_interrupt", None)
         if (
             stage == "failed"
             and isinstance(failure, dict)
@@ -1861,16 +1863,25 @@ async def run_claude_agent_sdk(
                 used_sdk=True,
                 error=error_code,
                 turn_diagnostics=turn_diagnostics(error_code),
+                runtime_diagnostics=runtime_diagnostics(
+                    error_code,
+                    failure_source="provider_session_identity",
+                ),
             )
         try:
             main_transcript = await provider_session_store.load(session_id)
-        except Exception:  # noqa: BLE001 - provider details stay private.
+        except Exception as exc:  # noqa: BLE001 - provider details stay private.
             main_transcript = None
             error_code = _SDK_PROVIDER_SESSION_FAILED
             return ClaudeAgentSdkRunResult(
                 used_sdk=True,
                 error=error_code,
                 turn_diagnostics=turn_diagnostics(error_code),
+                runtime_diagnostics=runtime_diagnostics(
+                    error_code,
+                    failure_source="provider_session_preload",
+                    exception=exc,
+                ),
             )
         if type(provider_session_resume_required) is not bool:
             error_code = _SDK_PROVIDER_SESSION_FAILED
@@ -1878,6 +1889,10 @@ async def run_claude_agent_sdk(
                 used_sdk=True,
                 error=error_code,
                 turn_diagnostics=turn_diagnostics(error_code),
+                runtime_diagnostics=runtime_diagnostics(
+                    error_code,
+                    failure_source="provider_session_resume_choice",
+                ),
             )
         # The platform selected resume from exact coverage; SDK load only checks
         # that the frozen choice matches the actual opaque store.
@@ -1887,6 +1902,10 @@ async def run_claude_agent_sdk(
                 used_sdk=True,
                 error=error_code,
                 turn_diagnostics=turn_diagnostics(error_code),
+                runtime_diagnostics=runtime_diagnostics(
+                    error_code,
+                    failure_source="provider_session_resume_mismatch",
+                ),
             )
         provider_session_options[
             "resume" if provider_session_resume_required else "session_id"
@@ -2082,6 +2101,7 @@ async def run_claude_agent_sdk(
         if context_retrieval_server is not None
         else {}
     )
+    response_registration_exception: BaseException | None = None
     try:
         response_server = _build_response_mcp_server(
             sdk,
@@ -2091,8 +2111,9 @@ async def run_claude_agent_sdk(
             diagnostic_counters=diagnostic_counters,
             callback_wrapper=callback_tracker.wrap,
         )
-    except Exception:  # noqa: BLE001 - optional response attachments stay unavailable.
+    except Exception as exc:  # noqa: BLE001 - optional response attachments stay unavailable.
         response_server = None
+        response_registration_exception = exc
     diagnostic_counters["attachment_tool_registered"] = int(response_server is not None)
     internal_response_subjects = (
         {
@@ -2111,6 +2132,7 @@ async def run_claude_agent_sdk(
             runtime_diagnostics=runtime_diagnostics(
                 error_code,
                 failure_source="response_file_registration",
+                exception=response_registration_exception,
             ),
         )
     internal_platform_subjects = {
@@ -3836,6 +3858,11 @@ async def run_claude_agent_sdk(
                     error=error_code,
                     terminal_reason=terminal_reason,
                     received_structured_terminal=False,
+                    runtime_diagnostics_snapshot=lambda: runtime_diagnostics(
+                        error_code,
+                        failure_source="provider_session_mirror",
+                        sdk_errors=getattr(message, "error", None),
+                    ),
                 )
             if agent_event_adapter is not None and isinstance(
                 message,
