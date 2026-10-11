@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { beforeEach } from "node:test";
+import { installBrowserAuthTestDb } from "./browserAuthTestDb.ts";
 
 import {
   CompanyADLoginError,
+  type AuthContextBootstrapRequest,
 } from "../../services/api/auth.ts";
 import { ApiRequestError } from "../../services/api/fetch.ts";
 import { registerAuthScopedCacheClearer } from "../../services/api/authCacheInvalidation.ts";
@@ -271,6 +273,13 @@ Object.defineProperty(globalThis, "navigator", {
   },
 });
 
+// Each mounted scenario has its own durable V2 coordinator store.
+beforeEach(() => installBrowserAuthTestDb());
+
+function readyAuthContext(request: AuthContextBootstrapRequest) {
+  return { status: "ready" as const, protocol_version: 2 as const, generation: request.generation };
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason?: unknown) => void;
@@ -311,7 +320,7 @@ async function mountAuthHarness(
     beginOAuth: authApi.beginOAuth,
     handleOAuthCallback: authApi.handleOAuthCallback,
   };
-  authApi.bootstrapAuthContext = async () => undefined;
+  authApi.bootstrapAuthContext = async (request) => readyAuthContext(request);
   authApi.beginOAuth = async () => ({ state: "test-oauth-state" });
   configure(authApi);
   storage.clear();
@@ -396,7 +405,7 @@ async function mountAuthPageHarness(
     toastSuccess: toast.success,
     toastError: toast.error,
   };
-  authApi.bootstrapAuthContext = async () => undefined;
+  authApi.bootstrapAuthContext = async (request) => readyAuthContext(request);
   authApi.beginOAuth = async () => ({ state: "test-oauth-state" });
   authApi.getADLoginConfig = async () => ({ ad_login_url: null });
   authApi.getOAuthProviders = async () => ({
@@ -514,7 +523,7 @@ async function mountOAuthCallbackHarness(
     logout: authApi.logout,
     handleOAuthCallback: authApi.handleOAuthCallback,
   };
-  authApi.bootstrapAuthContext = async () => undefined;
+  authApi.bootstrapAuthContext = async (request) => readyAuthContext(request);
   authApi.handleOAuthCallback = async () => undefined;
   configure(authApi);
   storage.clear();
@@ -1058,8 +1067,9 @@ test("AuthPage gets Windows identity before the login-specific bootstrap and red
   const calls: string[] = [];
   const companyJwt = "signed-company-jwt";
   const mounted = await mountAuthPageHarness((api) => {
-    api.bootstrapAuthContext = async () => {
+    api.bootstrapAuthContext = async (request) => {
       calls.push("bootstrap");
+      return readyAuthContext(request);
     };
     api.getCurrentUser = async () => {
       calls.push("me");
@@ -1645,13 +1655,14 @@ test("AuthPage renders actionable localized copy when secure browser auth coordi
   let bootstrapCalls = 0;
   const mounted = await mountAuthPageHarness((api) => {
     api.getCurrentUser = async () => authUser("admin-a", "tenant-a");
-    api.bootstrapAuthContext = async () => {
+    api.bootstrapAuthContext = async (request) => {
       bootstrapCalls += 1;
       if (bootstrapCalls > 1) {
         throw new BrowserAuthCoordinatorError(
           "auth_context_coordination_unavailable",
         );
       }
+      return readyAuthContext(request);
     };
     api.login = async () => undefined;
   });
@@ -1690,11 +1701,12 @@ test("reversed stale cookie arrival repairs and retries exactly one idempotent p
   let bootstrapCalls = 0;
   let principalCalls = 0;
   const mounted = await mountAuthHarness((api) => {
-    api.bootstrapAuthContext = async () => {
+    api.bootstrapAuthContext = async (request) => {
       bootstrapCalls += 1;
-      // The first post-reversal bootstrap is the ordinary ensure. The second
-      // is the typed stale repair; model delayed Set-Cookie only there.
-      if (bootstrapCalls === 3) cookieJar = "current-generation";
+      // A confirmed V2 store skips ordinary ensure. Only the forced
+      // typed-stale repair contacts bootstrap after initial admission.
+      if (bootstrapCalls === 2) cookieJar = "current-generation";
+      return readyAuthContext(request);
     };
     api.getCurrentUser = async () => {
       principalCalls += 1;
@@ -1719,7 +1731,7 @@ test("reversed stale cookie arrival repairs and retries exactly one idempotent p
     assert.equal(outcome!.status, "completed");
     assert.equal(mounted.auth.user?.id, "repaired-user");
     assert.equal(principalCalls, 3);
-    assert.equal(bootstrapCalls, 3);
+    assert.equal(bootstrapCalls, 2);
     assert.equal(cookieJar, "current-generation");
   } finally {
     await mounted.cleanup();
@@ -1754,8 +1766,9 @@ test("login issues one context bootstrap before one business login mutation", as
   const calls: string[] = [];
   let currentUserCalls = 0;
   const mounted = await mountAuthHarness((api) => {
-    api.bootstrapAuthContext = async () => {
+    api.bootstrapAuthContext = async (request) => {
       calls.push("bootstrap");
+      return readyAuthContext(request);
     };
     api.login = async () => {
       calls.push("login");

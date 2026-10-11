@@ -134,6 +134,20 @@ def test_frontend_ci_workflow_derives_and_verifies_jsonschema_from_lock_authorit
         verify_installed(expected_locked_version)
 
 
+def test_frontend_ci_runs_browser_auth_owner_regressions():
+    scripts = json.loads(PACKAGE.read_text(encoding="utf-8"))["scripts"]
+    assert "corepack pnpm run test:auth" in scripts["ci:verify"].split(" && ")
+    assert scripts["test:auth"].split() == [
+        "tsx", "--test",
+        "src/hooks/__tests__/browserAuthCoordinator.test.ts",
+        "src/hooks/__tests__/browserAuthStorage.test.ts",
+        "src/hooks/__tests__/useAuth.test.ts",
+        "src/hooks/__tests__/useAuthProvider.test.tsx",
+    ]
+    for selector in scripts["test:auth"].split()[2:]:
+        assert (PACKAGE.parent / selector).is_file()
+
+
 def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability():
     workflow = WORKFLOW.read_text(encoding="utf-8")
     backend_workflow = BACKEND_WORKFLOW.read_text(encoding="utf-8")
