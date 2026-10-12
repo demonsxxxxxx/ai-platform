@@ -71,20 +71,20 @@
       },
       "artifacts": "产物",
     "context": {
-      "contextPackVersion": "上下文包",
-      "counts": {
-        "artifacts": "产物",
-        "files": "文件",
-        "memory": "记忆",
-        "messages": "消息"
+      "title": "运行上下文",
+      "status": {
+        "complete": "上下文记录完整",
+        "trimmed": "上下文范围已裁剪",
+        "degraded": "上下文记录不可完整确认"
       },
-      "executionTier": "执行层级",
-      "generatedAt": "生成时间",
-      "inputKeys": "输入键",
-      "latestArtifactVersion": "最新产物",
-      "referencedMaterials": "引用材料",
-      "source": "来源",
-      "title": "上下文来源"
+      "degradedDescription": "无法从此运行绑定的快照完整确认上下文，以下计数不代表模型历史丢失。",
+      "counts": {
+        "candidate": "候选历史",
+        "authorized": "已授权历史",
+        "omitted": "已省略历史"
+      },
+      "legacyHistoryExcluded": "旧版历史已排除",
+      "selectedFiles": "本次选择的文件"
     },
     "download": "下载",
     "empty": "此运行暂无回放数据。",
