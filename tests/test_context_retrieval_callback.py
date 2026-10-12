@@ -409,7 +409,7 @@ async def test_profile_drive_transfer_has_stable_office_content_types(
         lambda **kwargs: real_async_client(transport=transport, **kwargs),
     )
 
-    client, response, _content_length, content_type = await open_profile_drive_file(
+    transfer = await open_profile_drive_file(
         upstream="https://profile-drive.test",
         ca_cert_file="",
         jwt="company.jwt",
@@ -420,10 +420,9 @@ async def test_profile_drive_transfer_has_stable_office_content_types(
         too_large_detail="file_too_large",
     )
     try:
-        assert content_type == expected_content_type
+        assert transfer.content_type == expected_content_type
     finally:
-        await response.aclose()
-        await client.aclose()
+        await transfer.aclose()
 
 
 def test_profile_drive_callback_streams_only_for_attempt_authorized_lease(monkeypatch):
@@ -462,6 +461,8 @@ def test_profile_drive_callback_streams_only_for_attempt_authorized_lease(monkey
             sandbox_callback_token="secret",
             profile_drive_transfer_upstream="https://profile-drive.test",
             profile_drive_transfer_ca_cert_file="",
+            profile_drive_transfer_read_timeout_seconds=60.0,
+            profile_drive_transfer_total_timeout_seconds=1800.0,
         ),
     )
 

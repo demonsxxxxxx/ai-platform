@@ -122,12 +122,23 @@ generation, timestamps, and reconciliation ownership in one migration.
    A successful streamed answer returns a versioned `AssistantAnswerReceipt`
    containing only `schema_version`, `message_id`, `delta_count`, `text_length`,
    and `last_delta_event_id`. Its legacy `message` is exactly empty, and failed
-   or cancelled terminals cannot carry a receipt. It never carries the full
-   answer body. The Worker
-   accepts only current-Attempt, strictly ordered v4 rows whose database and
-   canonical metadata publication states are both `published`; `pending` remains
-   retryable, while inconsistent or `suppressed` publication fails closed. Receipt,
-   identity, sequence, count, or length mismatch also fails closed. Legacy
+   or cancelled terminals cannot carry a receipt or response-file references.
+   The executor admits those success-only fields after its SDK capability outcome
+   is final; an executor-owned downgrade of a successful runner outcome omits them
+   after public delivery drains. The final failure classification, SDK usage,
+   native session sequence and bounded private diagnostics remain available to
+   the terminal callback and authenticated status probe. This does not repair
+   malformed already-failed runner payloads or relax the terminal validator.
+   Rejected delivery stays failed; uncertain delivery still suppresses terminal
+   publication. No artifact or previously acknowledged answer fact is deleted.
+   The receipt never carries the full answer body. The Worker
+   accepts only current-Attempt, strictly ordered, committed v4 rows with
+   `visible_to_user = true`; retired publication metadata and Redis delivery do
+   not govern answer eligibility. Streaming owns
+   [receipt reconstruction](../../app/streaming/infrastructure/v4.py) for legacy
+   v1 and final answer-part v2 receipts under the
+   [current execution-control contract](redis-streams-sse-execution-control.md).
+   Receipt, identity, sequence, count, or length mismatch fails closed. Legacy
    non-streaming bounded terminal messages use the same stable-source
    `assistant_delta` compatibility shape only when no streamed answer exists;
    obsolete `assistant_final` is retired.
@@ -221,6 +232,11 @@ generation, timestamps, and reconciliation ownership in one migration.
 7. Provider-internal recovery state is observed and reconciled; it is never
    copied into an independently writable business state.
 8. Provider stop exceptions are normalized without leaking provider details.
+   An authoritative OpenSandbox SDK absence response during connection,
+   `get_info`, or deletion returns `not_found` and clears only the matching
+   provider tracking. The existing claim-fenced release path accepts that
+   result. Untyped "not found" text, timeouts, other provider failures, and
+   runtime identity mismatches remain stop failures and retain the lease.
    Expiry compensation and admin orphan-cleanup failures write tenant-scoped
    audit outcomes while the failed lease remains a reconciliation subject.
    A lost executor probe keeps the public `sandbox_executor_lost` receipt and
@@ -281,6 +297,28 @@ resource-cleanup helpers to `platform.sandbox.docker_operations`, the Docker SDK
 thread-isolation adapter. Docker's previous application-loop SDK calls and
 shared-default-executor probes are retired; OpenSandbox keeps its existing async
 SDK lifecycle. No provider ownership checks or durable release semantics change.
+
+## ProfileDrive retrieval staging ownership
+
+The executor's `PlatformContextRetrievalClient` owns only the temporary file it
+successfully creates with exclusive open for a scoped ProfileDrive transfer.
+It closes the local output before validating the complete byte count and atomically
+replacing the target. A zero-byte response remains a valid complete transfer.
+Until that handoff succeeds, every exit, including cancellation, synchronously
+attempts removal of this owned temporary file. A failed exclusive open conveys
+no ownership; existing target files and other staging files are never cleanup
+targets. Cleanup does not scan the workspace or change file authorization.
+
+A close failure during body failure or cancellation, or an unlink failure during
+cleanup, is secondary: it cannot replace the primary error or cancellation.
+Only a stable warning label is logged, without source paths, credentials or raw
+exception details. Warning-sink failures cannot replace that primary result.
+If unlink fails, the temporary file may remain; failure is
+not reported as a successful transfer. A close failure after a successful body
+retains the existing callback-failure mapping and prevents replacement. Existing
+scope, encoding, content-length, maximum-byte checks and callback mappings remain
+unchanged. The Files upstream transfer and HTTP response/client context owners
+remain separate from this executor-local temporary-file owner.
 
 ## Task workspace and Claude project instructions
 
@@ -363,6 +401,21 @@ The executor connects through a read-only IPC mount. After stopping the native
 container, a scoped cleanup helper removes its root-owned socket; cleanup failure
 keeps the existing lease retry obligation. Older native filesystem layouts are
 rejected at reuse and retired with their runtime pair.
+
+The native command owner starts one cleanup task after command execution ends.
+It joins the existing process-group termination, same-UID sweep and both bounded
+output readers before returning or releasing the request's command lock, even
+under repeated command/request cancellation. Readers remain active during
+process termination; success and timeout drain their bounded output, while
+cancellation or failure cancels and gathers unfinished readers. Cancellation
+remains the caller outcome after cleanup; other cleanup failures stay sanitized.
+Signal scope and termination budgets are unchanged. A failed UID sweep is not
+proof of process quiescence, and the existing subsequent-admission policy remains
+unchanged; this ownership fix does not add a failed-sidecar admission latch.
+Direct cancellation of the cleanup task (for example during global loop teardown)
+is a different boundary: it can interrupt cleanup. The command still preserves
+an already observed caller cancellation, but does not claim survival of global
+all-task shutdown or completed process cleanup in that case.
 
 `tools/native_tool_filesystem_smoke.py` exercises the built image's actual mounts,
 private-path mutation attempts, consecutive commands, privilege drop and socket

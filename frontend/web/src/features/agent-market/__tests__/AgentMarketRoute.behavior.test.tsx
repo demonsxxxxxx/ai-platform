@@ -470,7 +470,6 @@ async function prepareShellHarness({ authenticated = false } = {}) {
     getCurrentUser: authApi.getCurrentUser,
     listSessions: sessionApi.list,
     listAvailableModels: modelPublicApi.listAvailable,
-    getPinnedModelIds: modelPublicApi.getPinnedModelIds,
     getActiveNotifications: notificationPublicApi.getActive,
   };
   authApi.bootstrapAuthContext = async (request) => ({
@@ -511,7 +510,6 @@ async function prepareShellHarness({ authenticated = false } = {}) {
     enabled_count: 1,
     default_model_id: "model-default",
   });
-  modelPublicApi.getPinnedModelIds = async () => [];
   notificationPublicApi.getActive = async () => [];
 
   function AuthenticatedGate({ children }: { children: React.ReactNode }) {
@@ -538,7 +536,6 @@ async function prepareShellHarness({ authenticated = false } = {}) {
       authApi.getCurrentUser = originals.getCurrentUser;
       sessionApi.list = originals.listSessions;
       modelPublicApi.listAvailable = originals.listAvailableModels;
-      modelPublicApi.getPinnedModelIds = originals.getPinnedModelIds;
       notificationPublicApi.getActive = originals.getActiveNotifications;
     },
   };
@@ -1793,5 +1790,126 @@ test("a route-param change never wires Agent A into Agent B while B is loading o
     sessionApi.getEvents = originalGetEvents;
     shellHarness.restore();
     await React.act(async () => root.unmount());
+  }
+});
+
+
+test("main chat exposes event-only history failure and a read-only retry", async () => {
+  const dom = installDom();
+  const ReactDOM = await import("react-dom/client");
+  const { MemoryRouter, Route, Routes, useNavigate } = await import("react-router-dom");
+  const { ChatAppContent } = await import("../../../components/layout/AppContent/ChatAppContent.tsx");
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const { ApiRequestError } = await import("../../../services/api/fetch.ts");
+  const shellHarness = await prepareShellHarness({ authenticated: true });
+  const originals = { ...sessionApi };
+  const calls = { identity: 0, events: 0, markRead: 0, submit: 0 };
+  sessionApi.get = async (id) => ({
+    id, agent_id: "general-agent", is_active: true,
+    created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", metadata: {},
+  });
+  sessionApi.getAuthoritative = async (sessionId) => {
+    calls.identity += 1;
+    return { session_id: sessionId, workspace_id: "default", agent_id: "general-agent", title: "Test conversation", purpose: "conversation", agent_conversation: null };
+  };
+  sessionApi.markRead = async () => { calls.markRead += 1; };
+  sessionApi.submitChat = async () => { calls.submit += 1; throw new Error("Unexpected task submission"); };
+  sessionApi.getRunInputHistory = async (sessionId) => ({ session_id: sessionId, runs: [], has_more: false, next_before_run_id: null });
+  let readEvents: typeof sessionApi.getEvents = async () => { throw new ApiRequestError("PRIVATE_EVENT_HISTORY_FAILURE", 503, "service_unavailable", undefined, "diag_0123456789abcdef"); };
+  sessionApi.getEvents = async (...args) => { calls.events += 1; return readEvents(...args); };
+  const container = dom.document.createElement("div");
+  const root = ReactDOM.createRoot(container as never);
+  let navigate!: ReturnType<typeof useNavigate>;
+  function RouteProbe() { navigate = useNavigate(); return null; }
+  const renderChat = () => React.createElement(React.Fragment, null,
+    React.createElement(RouteProbe),
+    React.createElement(ChatAppContent, { sidebarCollapsed: false, setSidebarCollapsed() {}, mobileSidebarOpen: false, setMobileSidebarOpen() {} }),
+  );
+  try {
+    await React.act(async () => {
+      root.render(React.createElement(MemoryRouter, { initialEntries: ["/chat/session-a"] }, shellHarness.wrap(
+        React.createElement(Routes, null, React.createElement(Route, { path: "/chat/:sessionId?", element:
+          renderChat(),
+        })),
+      )));
+    });
+    assert.equal(calls.events, 1);
+    assert.ok(calls.identity >= 2, "both hook authority and page identity GETs succeeded");
+    const alert = container.querySelector("[data-chat-history-read-error]");
+    assert.ok(alert, "events-only failure must have a mounted main-chat UI exit");
+    assert.match(alert.textContent, /历史消息暂时无法读取/);
+    assert.match(alert.textContent, /HTTP 503/);
+    assert.match(alert.textContent, /错误代码: service_unavailable/);
+    assert.match(alert.textContent, /问题编号: diag_0123456789abcdef/);
+    assert.doesNotMatch(container.textContent, /PRIVATE_EVENT_HISTORY_FAILURE|已删除/);
+    assert.equal(calls.submit, 0);
+    const button = alert.querySelector("button");
+    assert.ok(button);
+    assert.match(button.textContent, /重试读取历史/);
+    const markReadCount = calls.markRead;
+    let rejectRetry!: (error: Error) => void;
+    readEvents = () => new Promise((_, reject) => { rejectRetry = reject; });
+    await React.act(async () => {
+      button.dispatchEvent({ type: "click" });
+      button.dispatchEvent({ type: "click" });
+    });
+    assert.equal(calls.events, 2, "duplicate clicks share one bounded read attempt");
+    assert.equal(calls.markRead, markReadCount, "explicit retry never marks history read");
+    await React.act(async () => rejectRetry(new ApiRequestError("PRIVATE_RETRY_FAILURE", 999, "private/path?token=secret", undefined, "diag_private_secret")));
+    const retryAlert = container.querySelector("[data-chat-history-read-error]");
+    assert.ok(retryAlert);
+    assert.doesNotMatch(retryAlert.textContent, /HTTP 999|private|secret|PRIVATE_|diag_|service_unavailable/);
+    await React.act(async () => { await Promise.resolve(); });
+    assert.equal(calls.events, 2, "failure must not automatically retry");
+    readEvents = async () => ({ events: [] });
+    await React.act(async () => {
+      container.querySelector("[data-chat-history-read-error]")!.querySelector("button")!.dispatchEvent({ type: "click" });
+    });
+    assert.equal(calls.events, 3);
+    assert.equal(calls.markRead, markReadCount);
+    assert.equal(container.querySelector("[data-chat-history-read-error]"), null, "a genuinely empty successful history is not a read error");
+
+    // A pending failure from another route cannot overwrite this empty owner.
+    let rejectOldRoute!: (error: Error) => void;
+    readEvents = (sessionId) => sessionId === "session-b"
+      ? new Promise((_, reject) => { rejectOldRoute = reject; })
+      : Promise.resolve({ events: [] });
+    await React.act(async () => navigate("/chat/session-b"));
+    await React.act(async () => navigate("/chat/session-a"));
+    await React.act(async () => rejectOldRoute(new ApiRequestError("PRIVATE_OLD_ROUTE", 503, "old_owner_failure", undefined, "diag_aaaaaaaaaaaaaaaa")));
+    assert.equal(container.querySelector("[data-chat-history-read-error]"), null);
+    assert.equal(calls.submit, 0);
+    assert.doesNotMatch(container.textContent, /PRIVATE_|已删除|old_owner_failure|diag_aaaaaaaaaaaaaaaa/);
+
+    readEvents = async () => ({ events: [{ id: "message-c", event_type: "user:message", timestamp: "2026-01-01T00:00:00Z", data: { content: "Readable C transcript" } }] });
+    await React.act(async () => navigate("/chat/session-c"));
+    assert.ok(container.querySelectorAll("[data-chat-transcript]").some((node) => node.getAttribute("data-session-id") === "session-c"));
+    readEvents = async () => { throw new Error("PRIVATE_NETWORK_ERROR /private/path token=secret"); };
+    await React.act(async () => navigate("/chat/session-a"));
+    assert.ok(container.querySelector("[data-chat-history-read-error]"));
+    assert.equal(container.querySelectorAll("[data-chat-transcript]").some((node) => node.getAttribute("data-session-id") === "session-c"), false, "no old transcript crosses Session ownership");
+    assert.doesNotMatch(container.querySelector("[data-chat-history-read-error]")!.textContent, /PRIVATE_|private|secret|HTTP|diag_|service_unavailable/);
+
+    // A status-only API error retains useful HTTP evidence without inventing
+    // missing diagnostic metadata or disclosing its unknown private message.
+    readEvents = async () => { throw new ApiRequestError("PRIVATE_STATUS_ONLY /private/path token=secret", 503); };
+    const statusOnlyReadCount = calls.events;
+    const statusOnlyMarkReadCount = calls.markRead;
+    await React.act(async () => {
+      container.querySelector("[data-chat-history-read-error]")!.querySelector("button")!.dispatchEvent({ type: "click" });
+    });
+    const statusOnlyAlert = container.querySelector("[data-chat-history-read-error]");
+    assert.ok(statusOnlyAlert);
+    assert.match(statusOnlyAlert.textContent, /历史消息暂时无法读取/);
+    assert.match(statusOnlyAlert.textContent, /加载会话失败/);
+    assert.match(statusOnlyAlert.textContent, /HTTP 503/);
+    assert.doesNotMatch(statusOnlyAlert.textContent, /PRIVATE_STATUS_ONLY|private|secret|错误代码|问题编号|diag_/);
+    assert.equal(calls.events, statusOnlyReadCount + 1);
+    assert.equal(calls.markRead, statusOnlyMarkReadCount);
+    assert.equal(calls.submit, 0);
+  } finally {
+    await React.act(async () => root.unmount());
+    Object.assign(sessionApi, originals);
+    shellHarness.restore();
   }
 });

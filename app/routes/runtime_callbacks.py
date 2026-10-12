@@ -9,6 +9,10 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
 from app.bootstrap.run_inputs import RunInputsCallbackRequest
+from app.bootstrap.execution import (
+    ProviderSessionCallbackWireResponse,
+    build_provider_session_callback_response,
+)
 from app.context import api as context_api
 from app.context.infrastructure import snapshot_postgres as context_snapshot
 from app.context.retrieval import (
@@ -55,6 +59,8 @@ from app.runtime.sandbox.contracts import (
     ExecutorContextRetrievalRequest,
     ProviderSessionCallbackRequest,
     ProviderSessionCallbackResponse,
+    PROVIDER_SESSION_READ_VIEW_HEADER,
+    PROVIDER_SESSION_CHILD_READ_VIEW,
     executor_callback_receipt_event_count,
     executor_terminal_receipt_payload,
 )
@@ -656,7 +662,7 @@ async def run_inputs_callback(
                 operation=callback.operation,
                 question_id=callback.question_id,
                 questions=(
-                    [item.model_dump() for item in callback.questions]
+                    [item.model_dump(exclude_none=True) for item in callback.questions]
                     if callback.questions is not None
                     else None
                 ),
@@ -680,7 +686,8 @@ async def run_inputs_callback(
 async def provider_session_callback(
     callback: ProviderSessionCallbackRequest = Depends(_provider_session_callback_from_request),
     callback_token: str | None = Header(default=None, alias="X-AI-Platform-Callback-Token"),
-) -> ProviderSessionCallbackResponse:
+    provider_read_view: str | None = Header(default=None, alias=PROVIDER_SESSION_READ_VIEW_HEADER),
+) -> ProviderSessionCallbackWireResponse:
     """Broker one exact-run Claude SessionStore operation."""
 
     _require_valid_callback_token(
@@ -688,6 +695,10 @@ async def provider_session_callback(
         callback.callback_token_id,
         run_id=callback.run_id,
         attempt_id=callback.attempt_id,
+    )
+    include_children = (
+        callback.action == "list_subkeys"
+        and provider_read_view == PROVIDER_SESSION_CHILD_READ_VIEW
     )
     try:
         async with transaction() as conn:
@@ -712,15 +723,10 @@ async def provider_session_callback(
                 entries=callback.entries,
                 subpath=callback.subpath,
                 expected_sequence=callback.expected_sequence,
+                **({"include_child_entries": True} if include_children else {}),
             )
-            return ProviderSessionCallbackResponse(
-                action=result.action,
-                entries=list(result.entries),
-                subpaths=list(result.subpaths),
-                accepted=result.accepted,
-                entry_count=result.entry_count,
-                next_sequence=result.next_sequence,
-                last_sequence=result.last_sequence,
+            return build_provider_session_callback_response(
+                result, include_child_entries=include_children,
             )
     except HTTPException:
         raise
@@ -889,7 +895,7 @@ async def _profile_drive_file_response(
         raise HTTPException(status_code=409, detail="profile_drive_reauth_required") from exc
 
     try:
-        client, upstream_response, content_length, _content_type = await open_profile_drive_file(
+        transfer = await open_profile_drive_file(
             upstream=str(getattr(settings, "profile_drive_transfer_upstream", "") or ""),
             ca_cert_file=str(
                 getattr(settings, "profile_drive_transfer_ca_cert_file", "") or ""
@@ -900,55 +906,41 @@ async def _profile_drive_file_response(
             require_nonempty=False,
             not_found_status=403,
             too_large_detail="profile_drive_file_too_large",
+            read_timeout_seconds=settings.profile_drive_transfer_read_timeout_seconds,
+            total_timeout_seconds=settings.profile_drive_transfer_total_timeout_seconds,
         )
     except ProfileDriveTransferError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
     try:
-        async with transaction() as conn:
-            await _require_current_runtime_attempt(
-                conn,
-                tenant_id=tenant_id,
-                run_id=request.run_id,
-                attempt_id=request.attempt_id,
-                callback_token_id=request.callback_token_id,
-            )
-            await streaming_run_events.append_event(
-                conn,
-                tenant_id=tenant_id,
-                run_id=request.run_id,
-                event_type="context_retrieved",
-                stage="context",
-                message="Sandbox context retrieval admitted",
-                payload={
-                    "action": PROFILE_DRIVE_STAGE_TOOL,
-                    "result": "allowed",
-                    "visible_to_user": False,
-                },
-            )
-    except Exception:
-        await upstream_response.aclose()
-        await client.aclose()
+        with transfer.budget():
+            async with transaction() as conn:
+                await _require_current_runtime_attempt(
+                    conn,
+                    tenant_id=tenant_id,
+                    run_id=request.run_id,
+                    attempt_id=request.attempt_id,
+                    callback_token_id=request.callback_token_id,
+                )
+                await streaming_run_events.append_event(
+                    conn,
+                    tenant_id=tenant_id,
+                    run_id=request.run_id,
+                    event_type="context_retrieved",
+                    stage="context",
+                    message="Sandbox context retrieval admitted",
+                    payload={
+                        "action": PROFILE_DRIVE_STAGE_TOOL,
+                        "result": "allowed",
+                        "visible_to_user": False,
+                    },
+                )
+        return profile_drive_streaming_response(transfer)
+    except BaseException as exc:
+        await transfer.__aexit__(type(exc), exc, exc.__traceback__)
+        if isinstance(exc, ProfileDriveTransferError):
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
         raise
-
-    async def stream_file():
-        transferred = 0
-        try:
-            async for chunk in upstream_response.aiter_raw():
-                transferred += len(chunk)
-                if transferred > content_length or transferred > PROFILE_DRIVE_STAGE_MAX_BYTES:
-                    raise RuntimeError("profile_drive_transfer_size_mismatch")
-                yield chunk
-            if transferred != content_length:
-                raise RuntimeError("profile_drive_transfer_size_mismatch")
-        finally:
-            await upstream_response.aclose()
-            await client.aclose()
-
-    return profile_drive_streaming_response(
-        stream_file(),
-        content_length=content_length,
-    )
 
 
 @router.post("/runtime/callbacks/context-retrieval")

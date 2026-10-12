@@ -96,10 +96,10 @@ test("mcp lifecycle governance exposes the backed admin lifecycle within role bo
   assert.doesNotMatch(mcp, /mcp\.credentialsUnavailable/);
   assert.doesNotMatch(mcp, /mcp\.lifecycleUnavailable/);
   assert.match(mcp, /data-mcp-directory-shell/);
-  assert.match(mcp, /isPermissionError\(error\)/);
-  assert.match(mcp, /enabled: !permissionDenied/);
+  assert.match(mcp, /permissionDenied/);
+  assert.match(mcp, /enabled: isAuthenticated/);
   assert.doesNotMatch(mcp, /hasAnyPermission\(\[Permission\.MCP_READ\]\)/);
-  assert.match(mcp, /canManageMcp && !mcpGovernance\.governedUnavailable/);
+  assert.match(mcp, /canManageMcp && isAvailable/);
   assert.match(mcp, /data-mcp-admin-controls/);
   assert.match(mcp, /deleteServer\(/);
   assert.match(mcp, /createServer\(/);
@@ -203,16 +203,17 @@ test("governed MCP and Skill hooks fail closed before calling APIs", () => {
   ]) {
     assert.match(
       mcpHook,
-      new RegExp(`const ${apiName} = useCallback[\\s\\S]*?if \\(!enabled\\)`),
-      `${apiName} must guard enabled=false before MCP API calls`,
+      new RegExp(`const ${apiName} = useCallback[\\s\\S]*?requestServer\\(`),
+      `${apiName} must use the shared MCP request admission owner`,
     );
   }
+  assert.match(mcpHook, /const requestServer = useCallback[\s\S]*?!enabled[\s\S]*?return null/);
   assert.match(mcpHook, /getServer[\s\S]*?encodeURIComponent\(name\)/);
   assert.match(mcpHook, /toggleServer[\s\S]*?encodeURIComponent\(name\)[\s\S]*?\/toggle/);
 
   for (const apiName of [
     "getSkill",
-    "getFullSkill",
+    "getSkillExportFiles",
     "updateSkill",
     "deleteSkill",
     "toggleSkill",

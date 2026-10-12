@@ -133,6 +133,8 @@ export interface AdminRunDiagnosticRun {
 
 export interface AdminRunDiagnosticToolEvidence {
   tool_name: string;
+  is_interrupt?: boolean;
+  operation_id?: string | null;
   invocation_id?: string | null;
   state?: string | null;
   last_stage?: string | null;
