@@ -219,7 +219,8 @@ test("Run Monitor reads user and Run deep-link scope", () => {
   });
 });
 
-test("Run Monitor mounts recent Worker state and renders only authorized diagnostics", async () => {
+for (const observedCost of [1, 0, null]) {
+  test(`Run Monitor mounts authorized diagnostics with estimated cost ${observedCost}`, async () => {
   const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", {
     url: "http://localhost/runs",
     pretendToBeVisual: true,
@@ -272,7 +273,7 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
       input_token_count: 101,
       output_token_count: 37,
       total_token_count: 138,
-      estimated_cost_minor: 1,
+      estimated_cost_minor: observedCost,
       model_value: "claude-sonnet",
       trace_id_recorded: true,
       input: { prompt: "PRIVATE_PROMPT_MARKER" },
@@ -717,6 +718,8 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
     assert.match(container.querySelector("[data-run-attempts]")?.textContent ?? "", /派发责任：队列 Worker/);
     assert.doesNotMatch(container.querySelector("[data-run-attempts]")?.textContent ?? "", /耗时未知/);
     assert.match(container.textContent ?? "", /138/);
+    assert.ok(container.textContent?.includes(observedCost === null ? "未记录" : `${observedCost} 最小计价单位`));
+    if (observedCost === null) assert.doesNotMatch(container.textContent ?? "", /0 最小计价单位/);
     assert.match(container.textContent ?? "", /下载脱敏诊断包/);
     const exportButton = (
       Array.from(container.querySelectorAll("button")) as HTMLButtonElement[]
@@ -1014,6 +1017,7 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
   }
 });
 
+}
 
 test("Run Monitor correlates opaque and legacy IDs without ambiguous fallback", () => {
   const native = "sdk-native-call-1";

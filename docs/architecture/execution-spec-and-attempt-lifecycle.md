@@ -178,6 +178,13 @@ identity for executor, Sandbox, callback, stream, cancellation, and terminal
 projection paths. Pre-dispatch failures that never produce a valid specification
 remain compatible Run-only terminal paths.
 
+`lock_queued_run_for_attempt` is a read/lock port: it selects the queued Run with
+`FOR UPDATE OF runs`, requiring matching tenant, workspace, user, session, and
+Agent identity. It retains the admitted authorization snapshot and distinct Run
+and session Profile pins without changing Run status. There is no separate
+Run-only running writer in the lifecycle service or PostgreSQL lifecycle adapter;
+only the durable Attempt dispatch transition projects queued to running.
+
 This is not the complete attempt migration. The ordinary worker records the
 initial queue-message identity and lease window during `created -> queued`, then
 persists each Redis-fenced heartbeat with the exact attempt identity, queue

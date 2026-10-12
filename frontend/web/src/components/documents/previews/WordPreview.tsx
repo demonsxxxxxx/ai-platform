@@ -283,7 +283,7 @@ const WordPreview = memo(function WordPreview({
         if (isLegacyDocArrayBuffer(arrayBuffer)) {
           const legacyText = await extractLegacyDocText(arrayBuffer);
           if (!renderText(legacyText)) {
-            setError(t("documents.wordConversionError"));
+            if (!cancelled) setError(t("documents.wordConversionError"));
           }
           return;
         }
@@ -336,7 +336,7 @@ const WordPreview = memo(function WordPreview({
           console.error("Failed to extract DOCX text fallback:", fallbackErr);
         }
         console.error("Failed to convert Word document:", err);
-        setError(t("documents.wordConversionError"));
+        if (!cancelled) setError(t("documents.wordConversionError"));
       } finally {
         if (!cancelled) setLoading(false);
       }

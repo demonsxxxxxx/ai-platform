@@ -961,3 +961,30 @@ def pytest_generate_tests(metafunc):
                 {"dirty": "unknown"},
             ],
         )
+
+
+def test_monitor_and_playback_cost_contracts_have_distinct_ci_owners() -> None:
+    scripts = json.loads(Path("frontend/web/package.json").read_text())["scripts"]
+    assert scripts["test:run-monitor"].split() == [
+        "tsx", "--test",
+        "src/services/api/__tests__/adminRuns.test.ts",
+        "src/services/api/__tests__/adminUsers.test.ts",
+        "src/components/panels/__tests__/RunMonitorPanel.mounted.test.tsx",
+        "src/components/workbench/__tests__/AdminUserDiagnosticsDrawer.mounted.test.tsx",
+        "src/components/governance/__tests__/workbenchAccessPolicy.test.ts",
+        "src/components/panels/SidebarParts/__tests__/navigationState.test.ts",
+        "src/__tests__/appRouteManifest.test.ts",
+        "src/__tests__/App.test.tsx",
+    ]
+    assert scripts["test:run-playback"].split() == [
+        "tsx", "--test",
+        "src/services/api/__tests__/runPlayback.test.ts",
+        "src/components/layout/AppContent/__tests__/runPlaybackPanelState.test.ts",
+        "src/components/layout/AppContent/__tests__/RunPlaybackPanel.mounted.test.tsx",
+        "src/components/chat/__tests__/contextUiAffordances.test.ts",
+        "src/hooks/useAgent/__tests__/runControlLifecycle.test.ts",
+        "src/hooks/useAgent/runControlLifecycle.test.ts",
+    ]
+    ci_commands = [command.strip() for command in scripts["ci:verify"].split("&&")]
+    assert ci_commands.count("corepack pnpm run test:run-monitor") == 1
+    assert ci_commands.count("corepack pnpm run test:run-playback") == 1
