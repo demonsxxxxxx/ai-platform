@@ -31,10 +31,10 @@ without fixes) from the fixable HIGH/CRITICAL blocking gate; a passing gate does
 not mean the complete inventory is empty.
 
 Publication jobs reference the `packaging-publish` environment, but its name
-does not establish approval protection. The settings inspection on 2026-10-11
-found no configured protection rules or deployment branch policy. Recheck the
-actual environment settings before relying on any approval gate; repository/main
-restrictions and workflow qualification checks still apply. The operator must
+does not establish approval protection. Recheck the actual environment settings,
+including protection rules and deployment branch policy, before relying on any
+approval gate; repository/main restrictions and workflow qualification checks
+still apply. The operator must
 verify Backend and Frontend checks for the selected exact main commit before
 requesting a formal version; environment selection is not evidence of that check.
 The workflow creates a unique versioned Release only after all qualification
