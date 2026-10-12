@@ -12,7 +12,7 @@ from app.context.file_content import (
     MAX_CONTEXT_FILE_STAGE_BYTES,
     validate_context_file_for_stage,
 )
-from app.file_parser_contracts import XLSX_CONTENT_TYPE
+from app.files.api import XLSX_CONTENT_TYPE
 
 
 DOCX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"

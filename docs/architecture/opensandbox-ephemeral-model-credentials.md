@@ -234,6 +234,16 @@ of the saved configuration; other publication failures retain the draft for retr
 last saved baseline. Explicit reload clears entered credentials and replaces edits
 with the saved state when loading succeeds.
 
+Disabling a model preserves its token-capacity draft. Available models keep both
+capacity fields editable while disabled: administrators may retain a valid pair
+or explicitly clear both fields. Before publication, the editor checks every
+available row against the server contract: enabled models require both limits;
+disabled models allow both absent or both integers from 1 through 10,000,000.
+Incomplete or invalid pairs block the request with model-specific correction
+instructions, without clearing other draft edits or the entered credential.
+The server remains the final validation authority; disabling is not a validation
+bypass and does not silently discard saved capacities.
+
 The model editor's compare-and-swap baseline changes only after loading saved
 configuration or receiving a successful publication. Discovery cannot advance it:
 if another administrator has published since that baseline, discovery preserves
@@ -241,6 +251,14 @@ all unsaved fields, reports the conflict, and disables publication until the use
 explicitly reloads. Same-revision discovery may refresh candidate membership while
 retaining edits. A connection test reports connectivity only and never acknowledges
 a newer catalog revision. Abandoned discovery responses cannot alter this state.
+
+The environment does not publish a model directory. `DEFAULT_MODEL_ID` and
+`MODEL_CATALOG_JSON` have no supported Settings or executor-forwarding surface.
+The public `default_model_id` response remains part of the database projection.
+SDK/adapter defaults (`OPENAI_MODEL`, `ANTHROPIC_MODEL`, `CLAUDE_AGENT_MODEL`)
+remain supported at their existing adapter boundaries; they cannot substitute
+for governed Run admission. The OpenSandbox environment sanitizer still rejects
+legacy catalog payloads defensively because they may contain credentials.
 
 Run admission pins the active connection revision, exact upstream model ID,
 and input/output capacities. Existing Runs and Attempts retain that immutable

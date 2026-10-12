@@ -146,7 +146,7 @@ def build_governance_readiness(
     include_frontend_projection_audit: bool = False,
     repo_root: Path | None = None,
 ) -> dict[str, Any]:
-    """Build a secret-safe G6 governance readiness baseline for Admin Runtime and CLI use."""
+    """Build a secret-safe offline G6 governance report for historical review."""
     resolved_settings = settings or _default_settings()
     skill_release_readiness = build_skill_release_readiness(
         skill_release_evidence_root="docs/release-evidence/skill-release"
@@ -164,7 +164,7 @@ def build_governance_readiness(
         else None
     )
     office_context_next_checks = [
-        "keep delete, retention, and export erasure evidence current through tools/memory_erasure_readiness.py",
+        "keep delete, retention, and export erasure behavior covered by tests/test_context_memory_retention.py, tests/test_context_routes.py, and tests/test_worker_main.py",
         "keep cross-session long-term memory disabled until policy and acceptance are complete",
         "use tools/office_context_readiness.py to keep the office context-pack source contract, prompt injection tests, and sandbox latency split contract current",
         "keep context snapshot public provenance limited to counts, safe input keys, memory policy source/read flag, execution tier, bounded artifact/context-pack versions, and generated time",

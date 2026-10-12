@@ -10,6 +10,8 @@ import { getAccessToken } from "./token";
 
 interface FetchOptions extends RequestInit {
   skipAuth?: boolean;
+  /** Principal hydration already has an auth-operation owner for ordinary 401. */
+  ordinary401Recovery?: "global" | "caller";
 }
 
 /** A sanitized server status/code pair for callers that need safe recovery. */
@@ -133,6 +135,7 @@ export async function authFetch<T>(
 ): Promise<T> {
   const {
     skipAuth = false,
+    ordinary401Recovery = "global",
     headers = {},
     ...restOptions
   } = options;
@@ -160,7 +163,8 @@ export async function authFetch<T>(
   const forceReloginHeader =
     response.headers.get("X-Force-Relogin") === "true";
   if (
-    (response.status === 401 &&
+    (ordinary401Recovery === "global" &&
+      response.status === 401 &&
       requestAuthMarker !== null &&
       authMarkerIsCurrent) ||
     (forceReloginHeader && authMarkerIsCurrent)

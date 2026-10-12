@@ -212,6 +212,7 @@ export const authApi = {
       `${API_BASE}/api/ai/auth/me`,
       {
         skipAuth: true,
+        ordinary401Recovery: "caller",
         credentials: "include",
         signal: withAuthRequestTimeout(options.signal),
       },

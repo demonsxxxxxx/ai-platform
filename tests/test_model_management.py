@@ -819,7 +819,9 @@ async def test_run_model_resolution_without_gateway_returns_none() -> None:
 
 
 @pytest.mark.asyncio
-async def test_chat_model_resolution_fails_without_governed_connection() -> None:
+async def test_chat_model_resolution_fails_without_governed_connection(monkeypatch) -> None:
+    monkeypatch.setenv("DEFAULT_MODEL_ID", "retired-env-model")
+    monkeypatch.setenv("MODEL_CATALOG_JSON", '[{"id":"retired-env-model"}]')
     conn = _ResolveConnection(row=None)
     with pytest.raises(ValueError, match="model_connection_not_configured"):
         await model_selection.resolve_chat_model_selection(

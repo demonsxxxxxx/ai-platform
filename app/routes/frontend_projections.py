@@ -10,7 +10,7 @@ from app.artifact_preview import artifact_preview_allowed, artifact_preview_url
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.control_plane_contracts import standard_trace_id
 from app.db import transaction
-from app.file_preview_contracts import xlsx_preview_identity_from_metadata
+from app.files.api import xlsx_preview_identity_from_metadata
 from app.models import (
     RevealedFileGroupedListResponse,
     RevealedFileItemResponse,

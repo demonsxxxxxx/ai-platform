@@ -5808,6 +5808,7 @@ async def test_create_run_reuses_snapshot_authorized_session_file_without_rebind
         "workspace_id": "default",
         "user_id": "user-a",
         "session_id": "ses-existing",
+        "input_modes": ["docx"],
     }
     assert calls["run_file_ids"] == ["file-prior"]
     assert calls["queue_file_ids"] == ["file-prior"]
@@ -6144,7 +6145,6 @@ async def test_create_run_producer_contract_persists_uploaded_release_policy_man
                     path=dependency_dir,
                     version=dependency_version,
                     source={"kind": "builtin", "asset_dir": "minimax-docx", "version": dependency_version},
-                    entry={"kind": "filesystem", "path": str(dependency_dir)},
                 )
             ]
 

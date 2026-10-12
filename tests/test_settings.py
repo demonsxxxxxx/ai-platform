@@ -523,3 +523,13 @@ def test_nonproduction_retention_projection_can_report_unsupported_configuration
     )
 
     assert settings.run_event_retention_days == 7
+
+
+def test_retired_catalog_environment_does_not_restore_settings(monkeypatch):
+    monkeypatch.setenv("DEFAULT_MODEL_ID", "legacy-default")
+    monkeypatch.setenv("MODEL_CATALOG_JSON", '[{"id":"legacy-default"}]')
+    settings = Settings(_env_file=None)
+    assert "default_model_id" not in type(settings).model_fields
+    assert "model_catalog_json" not in type(settings).model_fields
+    assert not hasattr(settings, "default_model_id")
+    assert not hasattr(settings, "model_catalog_json")

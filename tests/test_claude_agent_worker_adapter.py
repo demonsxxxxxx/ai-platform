@@ -38,12 +38,10 @@ from app.executors.claude_agent_sdk_runner import (
 from app.executors.claude_agent_worker import (
     ClaudeAgentWorkerAdapter,
     PreparedSdkRun,
-    _ordinary_run_requires_sandbox,
+    _execution_boundary_decision,
 )
 from app.executors.registry import AdapterRegistry
-from app.file_parser_contracts import (
-    XLSX_CONTENT_TYPE,
-)
+from app.files.api import XLSX_CONTENT_TYPE
 from app.required_tool_contract import (
     REQUIRED_CAPABILITY_EVIDENCE_KEY,
     SANDBOX_LOCAL_TOOL_IDENTITIES,
@@ -69,7 +67,7 @@ from app.sandbox.domain.runtime_diagnostics import (
 from app.runtime.sandbox.workspace_manager import SandboxWorkspaceManager
 from app.skills.application import skill_markdown
 from app.skills.infrastructure.skill_markdown_yaml import load_skill_markdown_metadata
-from app.skills.pinning import build_uploaded_skill_manifest_pin
+from app.skills.pinning import build_skill_version_manifest_pin
 from app.skills.registry import BuiltinSkillRegistry, iter_skill_files
 from app.storage import StoredObject
 from app.worker import WorkerRunCancelled
@@ -512,7 +510,7 @@ def _registry_pins(root, *, skill_id, input_payload=None):
                 }
             )
         pins.append(
-            build_uploaded_skill_manifest_pin(
+            build_skill_version_manifest_pin(
                 {
                     "skill_id": skill.name,
                     "version": skill.version,
@@ -1248,9 +1246,14 @@ def test_collect_workspace_artifacts_rejects_invalid_docx_before_upload(monkeypa
     output.mkdir(parents=True)
     (output / "document.docx").write_bytes(b"not-a-docx")
 
+    storage_calls = []
+
     class FailIfStored:
-        def put_bytes(self, **_kwargs):
+        def put_bytes(self, **kwargs):
+            storage_calls.append(kwargs)
             raise AssertionError("invalid required artifacts must not be uploaded")
+
+    monkeypatch.setattr(claude_agent_worker, "ObjectStorage", FailIfStored)
 
     with pytest.raises(ValueError, match="response DOCX file is invalid"):
         ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
@@ -1258,6 +1261,7 @@ def test_collect_workspace_artifacts_rejects_invalid_docx_before_upload(monkeypa
             workspace,
             response_files=["output/document.docx"],
         )
+    assert storage_calls == []
 
 
 @pytest.mark.parametrize(
@@ -1338,9 +1342,14 @@ def test_collect_workspace_artifacts_rejects_malformed_required_docx_package(
             '<document xmlns="http://schemas.openxmlformats.org/wordprocessingml/2006/main" />',
         )
 
+    storage_calls = []
+
     class FailIfStored:
-        def put_bytes(self, **_kwargs):
+        def put_bytes(self, **kwargs):
+            storage_calls.append(kwargs)
             raise AssertionError("malformed required artifacts must not be uploaded")
+
+    monkeypatch.setattr(claude_agent_worker, "ObjectStorage", FailIfStored)
 
     with pytest.raises(ValueError, match="response DOCX file is invalid"):
         ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
@@ -1348,6 +1357,7 @@ def test_collect_workspace_artifacts_rejects_malformed_required_docx_package(
             workspace,
             response_files=["output/document.docx"],
         )
+    assert storage_calls == []
 
 
 @pytest.mark.parametrize("skill_id", ["qa-file-reviewer"])
@@ -1365,9 +1375,14 @@ def test_collect_workspace_artifacts_rejects_expanding_docx_before_parse_or_uplo
 
     monkeypatch.setattr(artifact_storage, "_MAX_DOCX_ARCHIVE_ENTRY_BYTES", 1024)
 
+    storage_calls = []
+
     class FailIfStored:
-        def put_bytes(self, **_kwargs):
+        def put_bytes(self, **kwargs):
+            storage_calls.append(kwargs)
             raise AssertionError("oversized required artifacts must not be uploaded")
+
+    monkeypatch.setattr(claude_agent_worker, "ObjectStorage", FailIfStored)
 
     with pytest.raises(ValueError, match="response DOCX file is invalid"):
         ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
@@ -1375,6 +1390,7 @@ def test_collect_workspace_artifacts_rejects_expanding_docx_before_parse_or_uplo
             workspace,
             response_files=["output/document.docx"],
         )
+    assert storage_calls == []
 
 
 def test_artifact_storage_keys_are_content_addressed_within_attempt_scope(
@@ -2341,7 +2357,7 @@ async def test_general_chat_routes_heavy_sandbox_runs_to_sandbox_runtime(monkeyp
     ],
 )
 def test_single_run_claude_writing_tiers_require_real_sandbox(execution_tier, skill_id):
-    assert _ordinary_run_requires_sandbox(
+    assert _execution_boundary_decision(
         payload(
             agent_id="general-agent",
             skill_id=skill_id,
@@ -2349,11 +2365,11 @@ def test_single_run_claude_writing_tiers_require_real_sandbox(execution_tier, sk
             context_snapshot={"execution_tier": execution_tier},
             context_pack={"execution_tier": execution_tier},
         )
-    ) is True
+    ).requires_real_sandbox is True
 
 
 def test_external_mcp_availability_requires_real_sandbox_without_client_execution_tier():
-    assert _ordinary_run_requires_sandbox(
+    assert _execution_boundary_decision(
         payload(
             agent_id="general-agent",
             skill_id="general-chat",
@@ -2377,7 +2393,7 @@ def test_external_mcp_availability_requires_real_sandbox_without_client_executio
                 ],
             },
         )
-    ) is True
+    ).requires_real_sandbox is True
 
 
 def test_claude_sandbox_admission_passes_available_mcp_scope(monkeypatch):
@@ -2409,7 +2425,7 @@ def test_claude_sandbox_admission_passes_available_mcp_scope(monkeypatch):
         },
     )
 
-    assert _ordinary_run_requires_sandbox(current_payload) is True
+    assert _execution_boundary_decision(current_payload).requires_real_sandbox is True
     assert captured == {
         "executor_type": "claude-agent-worker",
         "execution_mode": "",
@@ -2472,6 +2488,8 @@ async def test_external_mcp_available_or_exactly_invoked_succeeds_in_sandbox(
         ("repeated_complete", None),
         ("started", "required_tool_completion_evidence_mismatch"),
         ("failed", None),
+        ("failed_write", "required_tool_completion_evidence_mismatch"),
+        ("returned_error_write", None),
         ("stale", "required_tool_completion_evidence_mismatch"),
         ("unauthorized", "required_tool_completion_evidence_mismatch"),
         ("duplicate", "required_tool_completion_evidence_mismatch"),
@@ -2490,6 +2508,8 @@ def test_worker_capability_execution_plan_validates_observed_calls(case, expecte
     }
     skill_id = "qa-review" if case.startswith("skill_") else "general-chat"
     subjects = [_mcp_subject(), second_subject] if case == "cross_mcp_call_id" else [_mcp_subject()]
+    if case in {"failed_write", "returned_error_write"}:
+        subjects[0]["write_capable"] = True
     current_payload = payload(
         skill_id=skill_id,
         input={"message": "work", "_runtime_tool_policy_subjects": subjects},
@@ -2509,7 +2529,7 @@ def test_worker_capability_execution_plan_validates_observed_calls(case, expecte
         evidence = [item for item in evidence if item["capability_kind"] == "mcp"]
     elif case == "started":
         evidence = evidence[:1]
-    elif case == "failed":
+    elif case in {"failed", "failed_write", "returned_error_write"}:
         declaration = RequiredCapabilityDeclaration.from_authorized_subject(
             capability_kind="mcp", canonical_identity=_mcp_subject()["identity"]
         )
@@ -2520,6 +2540,7 @@ def test_worker_capability_execution_plan_validates_observed_calls(case, expecte
             )},
             tool_call_id=evidence[0]["tool_call_id"],
             lifecycle_phase="failed",
+            tool_error_result=case == "returned_error_write",
         ).__dict__
     elif case == "stale":
         evidence[1]["attempt_id"] = "stale-attempt"
@@ -2701,7 +2722,10 @@ async def test_single_run_writing_entrypoint_never_calls_worker_local_helpers(
     current_settings = settings(tmp_path, sdk_enabled=True)
     adapter = ClaudeAgentWorkerAdapter()
 
+    local_calls = []
+
     async def fail_local_helper(*args, **kwargs):
+        local_calls.append((args, kwargs))
         raise AssertionError("ordinary writing entrypoint must not call worker-local execution helpers")
 
     async def no_files(payload, workspace):
@@ -2709,6 +2733,7 @@ async def test_single_run_writing_entrypoint_never_calls_worker_local_helpers(
 
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
+    monkeypatch.setattr(sdk_runner, "run_claude_agent_sdk", fail_local_helper)
     runtime_requests = install_sandbox_runtime(monkeypatch)
 
     result = await adapter.submit_run(
@@ -2723,6 +2748,7 @@ async def test_single_run_writing_entrypoint_never_calls_worker_local_helpers(
 
     assert result.status == "succeeded"
     assert len(runtime_requests) == 1
+    assert local_calls == []
 
 
 @pytest.mark.asyncio
@@ -4095,6 +4121,7 @@ async def test_prompt_preflight_returns_typed_failure_before_runtime_dispatch(
         lambda: settings(tmp_path, sdk_enabled=True),
     )
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
+    monkeypatch.setattr(adapter, "_submit_prepared_run_to_sandbox_runtime", sdk_must_not_run)
 
     failure = await adapter._run_with_staged_skills(
         payload(
@@ -4415,7 +4442,7 @@ def test_context_tool_subjects_are_manifest_scoped_and_reserved_input_is_rebuilt
 
 
 
-def test_worker_constructs_context_retrieval_authority_from_existing_scope(monkeypatch, tmp_path):
+def test_context_bootstrap_constructs_retrieval_authority(monkeypatch, tmp_path):
     captured = {}
     authority = object()
     storage = object()
@@ -4439,37 +4466,39 @@ def test_worker_constructs_context_retrieval_authority_from_existing_scope(monke
 
     monkeypatch.setattr(context_bootstrap, "ContextRetrievalAuthority", AuthorityFactory)
     monkeypatch.setattr(context_bootstrap, "ObjectStorage", lambda: storage)
-    current_payload = payload(
-        context_pack={
-            "schema_version": "ai-platform.executor-context-pack.v1",
-            "context_manifest": {
-                "schema_version": "ai-platform.context-manifest.v1",
-                "available_retrieval_tools": ["stage_context_file_to_workspace"],
-            },
-        }
-    )
-    adapter = ClaudeAgentWorkerAdapter()
-
-    retrieval, identity = adapter._context_retrieval_for_payload(
-        current_payload,
-        current_payload.context_pack,
-        tmp_path,
-    )
-    scope = adapter._context_retrieval_scope_for_payload(
-        current_payload,
-        current_payload.context_pack,
-    )
+    retrieval = context_bootstrap.worker_context_retrieval_authority(tmp_path)
 
     assert retrieval is authority
-    assert scope is not None
-    assert identity is not None
-    assert identity.__dict__ == scope.model_dump()
     assert captured["factory"] == (
         context_bootstrap.transaction,
         storage,
         tmp_path,
         context_bootstrap.run_storage_io,
     )
+
+
+@pytest.mark.parametrize("has_manifest", [False, True])
+def test_worker_context_retrieval_scope_preserves_payload_identity(has_manifest):
+    context_pack = {
+        "schema_version": "ai-platform.executor-context-pack.v1",
+    }
+    if has_manifest:
+        context_pack["context_manifest"] = {
+            "schema_version": "ai-platform.context-manifest.v1",
+            "available_retrieval_tools": ["stage_context_file_to_workspace"],
+        }
+    current_payload = payload(context_pack=context_pack)
+    scope = ClaudeAgentWorkerAdapter()._context_retrieval_scope_for_payload(
+        current_payload, current_payload.context_pack,
+    )
+    if not has_manifest:
+        assert scope is None
+    else:
+        assert scope is not None
+        assert scope.model_dump() == {
+            key: getattr(current_payload, key)
+            for key in ("tenant_id", "workspace_id", "user_id", "session_id", "run_id", "agent_id")
+        }
 
 
 
@@ -5909,7 +5938,12 @@ async def test_reconciler_collection_failure_preserves_primary_and_retry_authori
             raise RuntimeError("private diagnostic transaction commit failure")
 
     persistence = Persistence()
-    diagnostics = RunDiagnosticsService(persistence, normalize_sdk_runtime_diagnostics, SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION)
+    from app.platform.tracing import safe_exception_log_fields
+
+    diagnostics = RunDiagnosticsService(
+        persistence, normalize_sdk_runtime_diagnostics, SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+        exception_log_fields=safe_exception_log_fields,
+    )
     if with_primary_diagnostics and status != "succeeded" and collection_mode == "error":
         await diagnostics.capture_failure_result(
             None, tenant_id=current.tenant_id, run_id=current.run_id,

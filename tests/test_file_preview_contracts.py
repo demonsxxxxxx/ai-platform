@@ -13,13 +13,12 @@ from openpyxl.drawing.image import Image as SpreadsheetImage
 
 from app import file_preview_contracts
 from app.bootstrap.files import configure_file_preview_services
-from app.file_parser_contracts import AttachmentParserRequirement, parser_spec_for_attachment
+from app.file_parser_contracts import AttachmentParserRequirement
+from app.files.api import parser_spec_for_attachment
 from app.file_preview_contracts import (
     _stage_xlsx_preview_bytes,
     acquire_xlsx_preview_lease,
     build_xlsx_preview,
-    is_xlsx_preview_request,
-    xlsx_preview_identity_from_metadata,
 )
 
 
@@ -263,87 +262,6 @@ def test_xlsx_preview_keeps_authoritative_archive_and_xml_preflight(raw):
     assert preview.error is not None
     assert preview.error.code == "xlsx_preview_failed"
     assert preview.content is None
-
-
-def test_xlsx_preview_metadata_requires_the_supported_xlsx_extension_and_mime_type():
-    assert is_xlsx_preview_request(
-        file_name="checks.xlsx",
-        content_type=XLSX_CONTENT_TYPE,
-    )
-    assert not is_xlsx_preview_request(
-        file_name="checks.xlsm",
-        content_type=XLSX_CONTENT_TYPE,
-    )
-    assert not is_xlsx_preview_request(
-        file_name="checks.xlsx",
-        content_type="application/vnd.ms-excel",
-    )
-
-
-@pytest.mark.parametrize(
-    ("row", "expected_name", "has_xlsx_content_type", "eligible"),
-    [
-        (
-            {
-                "original_name": "report.xlsx",
-                "storage_key": "private/opaque-object",
-                "content_type": XLSX_CONTENT_TYPE,
-            },
-            "report.xlsx",
-            True,
-            True,
-        ),
-        (
-            {
-                "storage_key": "private/export.xlsx",
-                "content_type": XLSX_CONTENT_TYPE,
-            },
-            "export.xlsx",
-            True,
-            True,
-        ),
-        (
-            {
-                "original_name": "report.xlsx",
-                "file_name": "report.xlsm",
-                "storage_key": "private/report.xlsx",
-                "content_type": XLSX_CONTENT_TYPE,
-            },
-            None,
-            True,
-            False,
-        ),
-        (
-            {
-                "storage_key": "private/export.xlsm",
-                "content_type": XLSX_CONTENT_TYPE,
-            },
-            "export.xlsm",
-            True,
-            False,
-        ),
-        (
-            {
-                "storage_key": "private/export.xlsx",
-                "content_type": "application/vnd.ms-excel",
-            },
-            "export.xlsx",
-            False,
-            False,
-        ),
-    ],
-)
-def test_xlsx_preview_identity_uses_stored_metadata_and_fails_closed_on_mismatch(
-    row,
-    expected_name,
-    has_xlsx_content_type,
-    eligible,
-):
-    identity = xlsx_preview_identity_from_metadata(row)
-
-    assert identity.file_name == expected_name
-    assert identity.has_xlsx_content_type is has_xlsx_content_type
-    assert identity.eligible is eligible
 
 
 def test_oversized_xlsx_preview_fails_with_a_stable_public_code():
