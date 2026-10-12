@@ -135,9 +135,9 @@ write/accumulation rules are rewritten. Mixed aggregate coverage is unknown,
 not an apparently complete subtotal; an empty aggregate retains its zero.
 Terminal event payloads preserve the same small private enum wrapper and
 normalized cost, then omit the optional public cost envelope when unknown;
-token counts remain independent. Cancelled results copy only normalized
+token counts remain independent. Cancelled results with a new marker copy only normalized
 latency/token/cost observations and the enum wrapper, never the discarded answer
-or private executor content. Small known amounts retain existing rounding.
+or private executor content. Unmarked cancellation keeps its message-only contract. Small known amounts retain existing rounding.
 No billing account, exchange-rate service or second cost ledger is introduced.
 
 Owning regressions exercise real installed SDK result objects, same-client

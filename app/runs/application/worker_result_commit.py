@@ -194,7 +194,8 @@ class WorkerResultCommitService:
                     terminal_written = await attempt_authority.cancel(
                         conn, capabilities=capabilities, result_json={
                             "message": "任务已取消",
-                            **{key: result_payload[key] for key in ("latency_ms", "token_counts", "cost") if key in result_payload},
+                            **({key: result_payload[key] for key in ("latency_ms", "token_counts", "cost") if key in result_payload}
+                               if private_cost_observation(result_payload) else {}),
                             **private_cost_observation(result_payload),
                         }
                     )
@@ -224,7 +225,8 @@ class WorkerResultCommitService:
                     terminal_written = await attempt_authority.cancel(
                         conn, capabilities=capabilities, result_json={
                             "message": "任务已取消",
-                            **{key: result_payload[key] for key in ("latency_ms", "token_counts", "cost") if key in result_payload},
+                            **({key: result_payload[key] for key in ("latency_ms", "token_counts", "cost") if key in result_payload}
+                               if private_cost_observation(result_payload) else {}),
                             **private_cost_observation(result_payload),
                         }
                     )

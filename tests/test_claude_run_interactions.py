@@ -48,7 +48,7 @@ class Inputs:
         return RunInputSnapshot("open", (self.answer,) if self.answer else ())
 
 
-@pytest.mark.parametrize("supplement,coverage,cost_minor", [("second", "complete", 6), ("/clear", "partial", 0)])
+@pytest.mark.parametrize("supplement,coverage,cost_minor", [("second", "complete", 6), ("/clear", "partial", None)])
 async def test_continuations_use_one_client_and_session_then_finish_input(
     monkeypatch, tmp_path, supplement, coverage, cost_minor,
 ):
