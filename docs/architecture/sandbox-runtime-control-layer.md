@@ -402,6 +402,21 @@ container, a scoped cleanup helper removes its root-owned socket; cleanup failur
 keeps the existing lease retry obligation. Older native filesystem layouts are
 rejected at reuse and retired with their runtime pair.
 
+The native command owner starts one cleanup task after command execution ends.
+It joins the existing process-group termination, same-UID sweep and both bounded
+output readers before returning or releasing the request's command lock, even
+under repeated command/request cancellation. Readers remain active during
+process termination; success and timeout drain their bounded output, while
+cancellation or failure cancels and gathers unfinished readers. Cancellation
+remains the caller outcome after cleanup; other cleanup failures stay sanitized.
+Signal scope and termination budgets are unchanged. A failed UID sweep is not
+proof of process quiescence, and the existing subsequent-admission policy remains
+unchanged; this ownership fix does not add a failed-sidecar admission latch.
+Direct cancellation of the cleanup task (for example during global loop teardown)
+is a different boundary: it can interrupt cleanup. The command still preserves
+an already observed caller cancellation, but does not claim survival of global
+all-task shutdown or completed process cleanup in that case.
+
 `tools/native_tool_filesystem_smoke.py` exercises the built image's actual mounts,
 private-path mutation attempts, consecutive commands, privilege drop and socket
 cleanup in the backend image CI check. Unit configuration checks alone do not
