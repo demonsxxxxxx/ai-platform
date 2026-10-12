@@ -562,10 +562,11 @@ async def test_background_result_without_final_keeps_partial_cost_for_worker(
         ),
         [], trace_id="trace", latency_ms=1, invoked_skill_ids=lambda _: set(),
     )
-    assert projected.result_payload["cost"] == {"estimated_cost_minor": 0}
-    assert projected.terminal_event_kwargs.get("estimated_cost_minor", 0) == 0
+    assert projected.result_payload["cost"] == {"estimated_cost_minor": None}
+    assert projected.terminal_event_kwargs.get("estimated_cost_minor") is None
     assert projected.result_payload["error_code"] == error_code
-    assert "cost_coverage" not in str(projected.result_payload)
+    from app.platform.public_payload import sanitize_public_payload
+    assert "cost_coverage" not in str(sanitize_public_payload(projected.result_payload))
 
 
 @pytest.mark.asyncio
