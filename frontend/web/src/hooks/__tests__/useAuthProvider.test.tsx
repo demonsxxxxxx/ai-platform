@@ -1977,9 +1977,18 @@ for (const delay of ["response", "body"] as const) {
         started.resolve();
         return lateResponse.promise;
       }
-      return new Response(new ReadableStream<Uint8Array>({
-        pull(controller) { bodyController = controller; started.resolve(); },
+      const response = new Response(new ReadableStream<Uint8Array>({
+        start(controller) { bodyController = controller; },
       }), { status: 401, headers: { "X-Force-Relogin": "true" } });
+      const readText = response.text.bind(response);
+      response.text = () => {
+        const reading = readText();
+        // Stream pull can prefetch; only native text consumption proves the
+        // response-arrival fence ran before the replacement owner signs in.
+        started.resolve();
+        return reading;
+      };
+      return response;
     };
     let oldRefresh: ReturnType<typeof mounted.auth.refreshUser> | undefined;
     try {
