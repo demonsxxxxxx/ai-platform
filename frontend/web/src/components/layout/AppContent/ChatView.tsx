@@ -78,6 +78,7 @@ import type {
   StopGenerationResult,
   SubmissionOutcome,
   RunInputsController,
+  HistoryReadError,
 } from "../../../hooks/useAgent/types";
 import type {
   SelectedSkillRecoverableCode,
@@ -158,6 +159,8 @@ interface ChatViewProps {
   canStopGeneration: boolean;
   isLoading: boolean;
   isLoadingHistory: boolean;
+  historyReadError?: HistoryReadError | null;
+  onRetryHistoryLoad?: () => Promise<void>;
   connectionStatus?: ConnectionStatus;
   canSendMessage: boolean;
   composerPlaceholder?: string;
@@ -229,6 +232,8 @@ export function ChatView({
   canStopGeneration,
   isLoading,
   isLoadingHistory,
+  historyReadError = null,
+  onRetryHistoryLoad,
   connectionStatus,
   canSendMessage,
   composerPlaceholder,
@@ -1024,6 +1029,38 @@ export function ChatView({
         />
       )}
 
+      {historyReadError && (
+        <div
+          className="mx-auto mb-2 flex max-w-[68rem] flex-wrap items-center gap-2 px-2 text-sm text-[var(--theme-warning)]"
+          data-chat-history-read-error
+          role="alert"
+        >
+          <div className="min-w-0 break-words">
+            <p>{t("chat.historyReadFailed")}</p>
+            <p>{historyReadError.message}</p>
+            <p className="text-xs">
+              {[
+                historyReadError.status !== undefined ? `HTTP ${historyReadError.status}` : null,
+                historyReadError.code ? `${t("chat.historyReadErrorCode")}: ${historyReadError.code}` : null,
+                historyReadError.diagnosticId ? `${t("chat.historyReadDiagnosticId")}: ${historyReadError.diagnosticId}` : null,
+              ].filter(Boolean).join(" · ")}
+            </p>
+          </div>
+          {onRetryHistoryLoad && (
+            <button
+              type="button"
+              disabled={
+                isLoading || isLoadingHistory || currentRunId !== null ||
+                hasVisibleStreamingMessage || terminalResultSynchronizing || canRetryPendingSubmission
+              }
+              onClick={() => void onRetryHistoryLoad()}
+              className="rounded-md border border-[var(--theme-border)] px-3 py-1.5 disabled:opacity-50"
+            >
+              {t("chat.retryHistoryRead")}
+            </button>
+          )}
+        </div>
+      )}
       {canRetryPendingSubmission && (
         <div className="mx-auto mb-2 flex max-w-[68rem] px-2">
           <button

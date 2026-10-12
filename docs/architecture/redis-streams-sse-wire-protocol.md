@@ -14,8 +14,12 @@ remain with their dedicated owners.
 
 The [streaming message design](../implementation/streaming-message-parts-design.md)
 defines how current v4 Assistant text, public summaries, Tool activity and
-artifacts compose in one reply. It does not extend the v4 schema; schema
-compatibility alone still does not establish correct content or latency.
+artifacts compose in one reply. Its incremental Assistant parts and final
+selection use the adopted coordinated v4 schema extension and answer receipt v2
+specified in the [change contract below](#change-contract-incremental-assistant-parts-and-final-selection).
+The outer v4 envelope is unchanged; new event types still require coordinated
+readers and producers. Schema compatibility alone does not establish correct
+content or latency.
 
 ## Generated protocol authority
 

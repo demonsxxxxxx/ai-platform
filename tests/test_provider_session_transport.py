@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 import app.runs.infrastructure.postgres as _owner_runs_infrastructure_postgres
 import app.sandbox.infrastructure.leases_postgres as _owner_sandbox_infrastructure_leases_postgres
 
@@ -119,6 +120,18 @@ async def test_uuidless_append_retry_after_lost_response_keeps_sequence_and_batc
 
 def test_session_store_response_bound_includes_transcript_envelope():
     assert MAX_PROVIDER_SESSION_RESPONSE_BYTES == 8 * 1024 * 1024 + 64 * 1024
+
+
+def test_provider_session_response_legacy_import_is_canonical_transport_contract():
+    from app.bootstrap.execution import ProviderSessionCallbackResponse as composed
+    from app.context.transport.provider_session_responses import ProviderSessionCallbackResponse as canonical
+    from app.runtime.sandbox.contracts import ProviderSessionCallbackResponse as legacy
+
+    assert legacy is composed is canonical
+    assert legacy(action="load", next_sequence=1).model_dump() == {
+        "action": "load", "entries": [], "subpaths": [], "accepted": True,
+        "entry_count": 0, "next_sequence": 1, "last_sequence": None,
+    }
 
 
 @pytest.mark.asyncio
@@ -924,3 +937,305 @@ async def test_deferred_read_cannot_publish_partial_chunk_cursor(monkeypatch, re
     release_chunk.set()
     await writer
     assert adapter.accepted_final_sequence == 129
+
+
+def _child_view_http(monkeypatch, *, child_entries=None, omit_view=False, list_sequence=3):
+    from app.execution.infrastructure.harness.claude import session_store
+
+    main = [{"type": "user", "uuid": "main", "message": {"content": "current"}}]
+    children = {"subagents/a": [{"type": "assistant", "uuid": "child", "message": {"content": "child"}}]}
+
+    class Client(_FakeClient):
+        requests = []
+
+        def stream(self, method, url, **kwargs):
+            payload = kwargs["json"]
+            if payload["action"] == "append":
+                return super().stream(method, url, **kwargs)
+            self.requests.append((url, kwargs))
+            response = _FakeResponse(payload["action"], next_sequence=list_sequence if payload["action"] == "list_subkeys" else 3)
+            if payload["action"] == "list_subkeys":
+                response._payload["subpaths"] = list(children)
+                if not omit_view:
+                    response._payload["child_entries"] = children if child_entries is None else child_entries
+            else:
+                response._payload["entries"] = children[payload["subpath"]] if payload["subpath"] else main
+            return _FakeStream(response)
+
+    monkeypatch.setattr(session_store.httpx, "AsyncClient", Client)
+    return Client, main, children
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("omit_view", [False, True])
+async def test_child_view_negotiates_only_list_and_old_host_keeps_original_load(monkeypatch, omit_view):
+    from app.execution.infrastructure.harness.claude import session_store
+    from app.execution.infrastructure.harness.claude.session_store_tracking import SessionStoreAppendTracker
+    from app.runtime.sandbox import contracts
+
+    assert session_store.PROVIDER_SESSION_READ_VIEW_HEADER == contracts.PROVIDER_SESSION_READ_VIEW_HEADER
+    assert session_store.PROVIDER_SESSION_CHILD_READ_VIEW == contracts.PROVIDER_SESSION_CHILD_READ_VIEW
+    assert session_store.MAX_PROVIDER_SESSION_RESPONSE_BYTES == contracts.MAX_PROVIDER_SESSION_CALLBACK_RESPONSE_BYTES
+    client, main, children = _child_view_http(monkeypatch, omit_view=omit_view)
+    adapter = _chunk_adapter()
+    tracker = SessionStoreAppendTracker(adapter)
+    assert await tracker.load("provider-a") == main
+    assert await tracker.list_subkeys("provider-a") == list(children)
+    assert await tracker.load({"session_id": "provider-a", "subpath": "subagents/a"}) == children["subagents/a"]
+    assert len(client.requests) == (3 if omit_view else 2)
+    for _, request in client.requests:
+        assert (session_store.PROVIDER_SESSION_READ_VIEW_HEADER in request["headers"]) == (request["json"]["action"] == "list_subkeys")
+        assert "child_entries" not in request["json"]
+    assert tracker.main_append_acknowledged is False and tracker.final_sequence is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", [
+    {}, {"subagents/a": []}, {"subagents/a": ["not-an-entry"]},
+    {"subagents/b": [{"uuid": "child"}]}, {"subagents/a": [{}, {}]},
+])
+async def test_child_view_malformed_is_atomic_and_never_downgrades(monkeypatch, invalid):
+    client, main, _ = _child_view_http(monkeypatch, child_entries=invalid)
+    adapter = _chunk_adapter()
+    await adapter.load("provider-a")
+    with pytest.raises(ClaudeSessionStoreTransportError, match="response_invalid"):
+        await adapter.list_subkeys("provider-a")
+    assert adapter._load_cache == {("provider-a", None): main}
+    assert adapter._next_sequence == 3
+    assert len(client.requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_present_null_child_view_is_invalid_not_old_host(monkeypatch):
+    _child_view_http(monkeypatch)
+    adapter = _chunk_adapter()
+    await adapter.load("provider-a")
+    request = adapter._request
+
+    async def null_view(payload):
+        result = await request(payload)
+        result["child_entries"] = None
+        return result
+
+    monkeypatch.setattr(adapter, "_request", null_view)
+    with pytest.raises(ClaudeSessionStoreTransportError, match="response_invalid"):
+        await adapter.list_subkeys("provider-a")
+    assert set(adapter._load_cache) == {("provider-a", None)}
+
+
+@pytest.mark.asyncio
+async def test_child_view_rejects_sequence_change_without_replacing_main(monkeypatch):
+    _, main, _ = _child_view_http(monkeypatch, list_sequence=4)
+    adapter = _chunk_adapter()
+    await adapter.load("provider-a")
+    with pytest.raises(ClaudeSessionStoreTransportError, match="sequence_conflict"):
+        await adapter.list_subkeys("provider-a")
+    assert adapter._load_cache == {("provider-a", None): main}
+    assert adapter._next_sequence == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [403, 409, 422, 503])
+async def test_child_view_http_rejection_is_not_unsupported_fallback(monkeypatch, status):
+    client, _, _ = _child_view_http(monkeypatch)
+    original = client.stream
+
+    def rejected(self, method, url, **kwargs):
+        stream = original(self, method, url, **kwargs)
+        stream.response.status_code = status
+        return stream
+
+    monkeypatch.setattr(client, "stream", rejected)
+    with pytest.raises(ClaudeSessionStoreTransportError, match="callback_rejected"):
+        await _chunk_adapter().list_subkeys("provider-a")
+    assert len(client.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_child_view_cache_hit_has_cancellation_checkpoint(monkeypatch):
+    client, _, _ = _child_view_http(monkeypatch)
+    adapter = _chunk_adapter()
+    await adapter.load("provider-a")
+    await adapter.list_subkeys("provider-a")
+    task = asyncio.create_task(adapter.load({"session_id": "provider-a", "subpath": "subagents/a"}))
+    asyncio.get_running_loop().call_soon(task.cancel)
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert len(client.requests) == 2
+    assert not adapter._append_lock.locked()
+
+
+@pytest.mark.asyncio
+async def test_child_view_load_returns_only_detached_path_copies(monkeypatch):
+    client, main, children = _child_view_http(monkeypatch)
+    children["subagents/b"] = [{"type": "assistant", "message": {"content": "other"}}]
+    original_stream = client.stream
+
+    def stream(self, method, url, **kwargs):
+        response = original_stream(self, method, url, **kwargs)
+        response.response._payload["next_sequence"] = 4
+        return response
+
+    monkeypatch.setattr(client, "stream", stream)
+    adapter = _chunk_adapter()
+    fresh_main = await adapter.load("provider-a")
+    fresh_main[0]["message"]["content"] = "mutated fresh main"
+    fresh_main.append({"type": "injected"})
+    fresh_main.pop(0)
+    assert await adapter.load("provider-a") == main
+    await adapter.list_subkeys("provider-a")
+    first_child = await adapter.load({"session_id": "provider-a", "subpath": "subagents/a"})
+    first_child[0]["message"]["content"] = "mutated child"
+    first_child.append({"type": "injected"})
+    first_child.pop(0)
+    assert await adapter.load({"session_id": "provider-a", "subpath": "subagents/a"}) == children["subagents/a"]
+    assert await adapter.load({"session_id": "provider-a", "subpath": "subagents/b"}) == children["subagents/b"]
+    assert await adapter.load("provider-a") == main
+    assert len(client.requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_child_view_is_cleared_before_uncertain_append_ack(monkeypatch):
+    _child_view_http(monkeypatch)
+    adapter = _chunk_adapter()
+    await adapter.load("provider-a")
+    await adapter.list_subkeys("provider-a")
+    request = adapter._request
+    lose_ack = True
+
+    async def append_request(payload):
+        nonlocal lose_ack
+        assert adapter._load_cache == {}
+        if lose_ack:
+            lose_ack = False
+            raise ClaudeSessionStoreTransportError("provider_session_callback_timeout")
+        return await request(payload)
+
+    monkeypatch.setattr(adapter, "_request", append_request)
+    with pytest.raises(ClaudeSessionStoreTransportError, match="callback_timeout"):
+        await adapter.append("provider-a", [{"type": "assistant", "uuid": "new"}])
+    with pytest.raises(ClaudeSessionStoreTransportError, match="append_pending"):
+        await adapter.load({"session_id": "provider-a", "subpath": "subagents/a"})
+    with pytest.raises(ClaudeSessionStoreTransportError, match="append_pending"):
+        await adapter.list_subkeys("provider-a")
+    await adapter.append("provider-a", [{"type": "assistant", "uuid": "new"}])
+    assert adapter.accepted_final_sequence == 3
+    assert adapter._load_cache == {} and adapter._pending_batch is None
+
+
+@pytest.fixture
+def child_view_callback(monkeypatch):
+    from contextlib import asynccontextmanager
+    from app.context.application.provider_sessions import ProviderSessionOperationResult
+
+    calls = []
+    children = {"subagents/测试": [{"text": "quoted \\\"é", "number": -0.0}]}
+
+    @asynccontextmanager
+    async def transaction():
+        yield object()
+
+    async def locked(_conn, **_kwargs):
+        return dict(tenant_id="tenant-a", workspace_id="workspace-a", user_id="user-a", session_id="session-a", agent_id="agent-a"), {}
+
+    async def execute(_conn, **kwargs):
+        calls.append(kwargs)
+        return ProviderSessionOperationResult(action=kwargs["action"], subpaths=tuple(children), next_sequence=3, child_entries=children)
+
+    monkeypatch.setattr(runtime_callbacks, "transaction", transaction)
+    monkeypatch.setattr(runtime_callbacks, "_require_valid_callback_token", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runtime_callbacks, "_lock_current_runtime_attempt_then_run", locked)
+    monkeypatch.setattr(runtime_callbacks.context_api, "execute_provider_session_callback", execute)
+    callback = ProviderSessionCallbackRequest(action="list_subkeys", run_id="run-a", attempt_id="attempt-a", callback_token_id="cbt-a", provider_session_id="provider-a")
+    return callback, children, calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("view", [None, "unknown-version"])
+async def test_old_client_response_shape_does_not_gain_optional_fields(child_view_callback, view):
+    from fastapi.encoders import jsonable_encoder
+
+    callback, _, calls = child_view_callback
+    response = await runtime_callbacks.provider_session_callback(callback, callback_token="test", provider_read_view=view)
+    assert set(jsonable_encoder(response)) == {"action", "entries", "subpaths", "accepted", "entry_count", "next_sequence", "last_sequence"}
+    assert response.last_sequence is None
+    assert "include_child_entries" not in calls[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("allowance", [-1, 0, 1])
+async def test_child_view_budget_uses_actual_encoded_response(child_view_callback, monkeypatch, allowance):
+    from fastapi.encoders import jsonable_encoder
+    from fastapi.responses import JSONResponse
+    from app.runtime.sandbox.contracts import ProviderSessionCallbackResponse
+    from app.context.transport import provider_session_responses
+
+    callback, children, calls = child_view_callback
+    model = ProviderSessionCallbackResponse(action="list_subkeys", subpaths=list(children), next_sequence=3, child_entries=children)
+    expected = JSONResponse(content=jsonable_encoder(model)).body
+    monkeypatch.setattr(provider_session_responses, "MAX_PROVIDER_SESSION_CALLBACK_RESPONSE_BYTES", len(expected) + allowance)
+    response = await runtime_callbacks.provider_session_callback(callback, callback_token="test", provider_read_view="children-v1")
+    assert calls[0]["include_child_entries"] is True
+    if allowance >= 0:
+        assert response.body == expected
+        assert json.loads(response.body)["child_entries"] == children
+    else:
+        model.child_entries = None
+        assert response.body == JSONResponse(content=jsonable_encoder(model)).body
+        assert "child_entries" not in json.loads(response.body)
+
+
+@pytest.mark.asyncio
+async def test_child_view_opt_in_still_validates_response_model(child_view_callback):
+    callback, children, _ = child_view_callback
+    children["subagents/测试"] = ["invalid-entry"]
+    with pytest.raises(HTTPException) as error:
+        await runtime_callbacks.provider_session_callback(callback, callback_token="test", provider_read_view="children-v1")
+    assert error.value.status_code == 503
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("opt_in", [False, True])
+async def test_child_view_http_route_preserves_old_wire_shape(child_view_callback, opt_in):
+    from fastapi import FastAPI
+
+    callback, children, _ = child_view_callback
+    app = FastAPI()
+    app.include_router(runtime_callbacks.router)
+    headers = {"X-AI-Platform-Provider-Read-View": "children-v1"} if opt_in else {}
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/runtime/callbacks/provider-session", json=callback.model_dump(), headers=headers)
+    assert response.status_code == 200
+    expected = {"action": "list_subkeys", "entries": [], "subpaths": list(children), "accepted": True, "entry_count": 0, "next_sequence": 3, "last_sequence": None}
+    if opt_in:
+        expected["child_entries"] = children
+    assert response.json() == expected
+
+
+@pytest.mark.asyncio
+async def test_real_sdk_cached_child_cancellation_cleans_materialization(monkeypatch, tmp_path):
+    from claude_agent_sdk import ClaudeAgentOptions
+    from claude_agent_sdk._internal import session_resume
+
+    _child_view_http(monkeypatch)
+    session_id = "00000000-0000-4000-8000-000000000041"
+    adapter = ClaudeSessionStoreAdapter(callback_url="https://callback.example.test/provider-session", callback_token="synthetic", callback_token_id="synthetic", run_id="run-a", attempt_id="attempt-a", provider_session_id=session_id)
+    await adapter.load(session_id)
+    original_load = adapter.load
+
+    async def cancel_at_child(key):
+        if isinstance(key, dict) and key.get("subpath"):
+            asyncio.get_running_loop().call_soon(asyncio.current_task().cancel)
+        return await original_load(key)
+
+    monkeypatch.setattr(adapter, "load", cancel_at_child)
+    monkeypatch.setattr(session_resume, "_copy_auth_files", lambda *_args: None)
+    materialized = tmp_path / "resume"
+    materialized.mkdir()
+    monkeypatch.setattr(session_resume.tempfile, "mkdtemp", lambda **_kwargs: str(materialized))
+    options = ClaudeAgentOptions(session_store=adapter, resume=session_id, cwd=str(tmp_path))
+    task = asyncio.create_task(session_resume.materialize_resume_session(options))
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not materialized.exists()
+    assert not adapter._append_lock.locked()
