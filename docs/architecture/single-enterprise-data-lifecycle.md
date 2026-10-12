@@ -110,6 +110,15 @@ across the concurrent index build. Every committed schema change must advance
 `TARGET_SCHEMA_VERSION`; reusing a version with different SQL fails closed on
 checksum mismatch.
 
+The migration runner owns a separate autocommit coordinator connection whose
+session advisory lock spans the core transaction and concurrent-index phase.
+Failed or cancelled autocommit setup closes the connection before ownership can
+transfer to the runner. Once transferred, the runner always attempts session
+close, including when explicit advisory unlock fails. The first failure or
+cancellation remains primary; a cleanup failure is raised when no earlier
+failure exists. This does not change migration transactions, ledger checksums,
+or retry/idempotency semantics.
+
 Compose runs this command as a one-shot `migrate` service before API and worker
 startup. `python -m app.schema_migrations status`, API readiness, and worker startup all
 verify the target ledger and index-ledger entries, checksum, critical column
