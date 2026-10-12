@@ -6,6 +6,13 @@ from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.bootstrap.execution import ProviderSessionCallbackResponse as ProviderSessionCallbackResponse
+from app.context.api import (
+    MAX_PROVIDER_SESSION_CALLBACK_RESPONSE_BYTES as MAX_PROVIDER_SESSION_CALLBACK_RESPONSE_BYTES,
+    PROVIDER_SESSION_READ_VIEW_HEADER as PROVIDER_SESSION_READ_VIEW_HEADER,
+    PROVIDER_SESSION_CHILD_READ_VIEW as PROVIDER_SESSION_CHILD_READ_VIEW,
+)
+
 from app.control_plane_contracts import normalize_thinking_effort
 # Retained imports for runtime, callback, and executor compatibility callers.
 from app.files.api import (
@@ -216,20 +223,6 @@ class ProviderSessionCallbackRequest(BaseModel):
         if self.action != "append" and (self.entries or self.expected_sequence is not None):
             raise ValueError("provider_session_append_fields_forbidden")
         return self
-
-
-class ProviderSessionCallbackResponse(BaseModel):
-    """Private callback receipt carrying no platform scope claims."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    action: Literal["load", "append", "list_subkeys"]
-    entries: list[dict[str, Any]] = Field(default_factory=list)
-    subpaths: list[str] = Field(default_factory=list, max_length=4096)
-    accepted: bool = True
-    entry_count: int = Field(default=0, ge=0)
-    next_sequence: int = Field(ge=1)
-    last_sequence: int | None = Field(default=None, ge=1)
 
 
 class ContextRetrievalScope(BaseModel):
