@@ -246,3 +246,59 @@ def test_worker_result_commit_bootstrap_selects_timing_without_changing_public_c
     assert type(service) is TimedWorkerResultCommitService
     assert inspect.signature(TimedWorkerResultCommitService) == inspect.signature(WorkerResultCommitService)
     assert inspect.signature(TimedWorkerResultCommitService.commit) == inspect.signature(WorkerResultCommitService.commit)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_path", ["failed_result", "blocked_success"])
+@pytest.mark.parametrize("amount", [None, 0, 17])
+async def test_cancel_preserves_only_normalized_observations_without_answer_or_private_payload(cancel_path, amount):
+    @asynccontextmanager
+    async def transaction():
+        yield object()
+
+    async def noop(*args, **kwargs):
+        return None
+
+    async def lock_run(*args, **kwargs):
+        return {"status": "running"}
+
+    captured = []
+
+    class Attempt:
+        async def is_cancel_requested(self, conn):
+            return cancel_path == "failed_result"
+
+        async def complete(self, conn, **kwargs):
+            return False
+
+        async def classify_success_commit_block(self, conn):
+            return "cancel_requested"
+
+        async def cancel(self, conn, **kwargs):
+            captured.append(kwargs["result_json"])
+            return True
+
+    service = WorkerResultCommitService(
+        transaction_factory=transaction, lock_run=lock_run,
+        reconciliation_claim_current=noop, materialize_answer=noop,
+        persist_artifacts=noop, persist_skill_snapshots=noop,
+        persist_assistant=noop, append_user_event=noop,
+        append_hidden_event=noop, persist_failure_event=noop,
+        public_failure_message=lambda result: "safe failure",
+        prefers_cancelled=lambda result: True,
+    )
+    observation = {"latency_ms": 7, "token_counts": {"input": 3, "output": 5, "total": 8},
+                   "cost": {"estimated_cost_minor": amount},
+                   "runtime_private_payload": {"sdk_usage": {"cost_coverage": "partial" if amount is None else "complete"}}}
+    command = WorkerResultCommitCommand(
+        payload=SimpleNamespace(tenant_id="tenant", run_id="run"),
+        result=SimpleNamespace(status="failed" if cancel_path == "failed_result" else "succeeded",
+                               artifacts=[], executor_payload={}, result={}),
+        result_payload={"message": "PRIVATE_ANSWER", "private_payload": "PRIVATE_PAYLOAD", **observation},
+        artifact_records=[], skill_snapshot={"used_skills": []}, terminal_event_kwargs={},
+        attempt_id="attempt", trace_id="trace",
+    )
+    outcome = await service.commit(command, attempt_authority=Attempt(), capabilities=object(), release_runtime_lease=noop)
+    assert outcome.status == "cancelled"
+    assert captured == [{"message": "任务已取消", **observation}]
+    assert "PRIVATE" not in repr(captured)

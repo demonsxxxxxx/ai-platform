@@ -83,7 +83,7 @@ def test_missing_or_invalid_latest_cost_keeps_partial_prior_observation(cost):
     value = observation.project({"input_tokens": 10}, terminal_result=True)
     assert value["total_cost_usd"] == 0.25
     assert value["cost_coverage"] == "partial"
-    assert _metrics(value)["cost"] == {"estimated_cost_minor": 0}
+    assert _metrics(value)["cost"] == {"estimated_cost_minor": None}
     assert _metrics(value)["token_counts"]["input"] == 10
 
 
@@ -106,7 +106,7 @@ def test_crash_zero_preserves_prior_cumulative_evidence_without_complete_cost():
     assert value["total_cost_usd"] == 0.25
     assert value["model_usage"]["private-model"]["inputTokens"] == 11
     assert value["cost_coverage"] == "partial"
-    assert _metrics(value)["cost"] == {"estimated_cost_minor": 0}
+    assert _metrics(value)["cost"] == {"estimated_cost_minor": None}
 
 
 def test_noncrash_error_result_preserves_complete_reported_estimate():
@@ -125,7 +125,7 @@ def test_initial_and_supplementary_reset_commands_never_claim_complete_run_cost(
     observation.observe_result(_sdk_result(cost=0.5))
     value = observation.project({}, terminal_result=True)
     assert value["cost_coverage"] == "partial"
-    assert _metrics(value)["cost"] == {"estimated_cost_minor": 0}
+    assert _metrics(value)["cost"] == {"estimated_cost_minor": None}
 
 
 @pytest.mark.parametrize("second", [
@@ -160,3 +160,30 @@ def test_cost_projection_rejects_nonfinite_or_out_of_range_legacy_value_without_
 @pytest.mark.parametrize("cost,expected", [("21474836.474", 2**31 - 1), ("21474836.475", 0)])
 def test_legacy_cost_upper_bound_retains_half_up_rounding(cost, expected):
     assert _metrics({"total_cost_usd": cost})["cost"] == {"estimated_cost_minor": expected}
+
+
+@pytest.mark.parametrize("coverage", ["partial", "unavailable"])
+def test_incomplete_cost_is_unknown_even_with_tokens_and_stale_top_level_amount(coverage):
+    payload = {"estimated_cost_minor": 99, "sdk_usage": {
+        "cost_coverage": coverage, "total_cost_usd": 0.25, "input_tokens": 3,
+    }}
+    observed = executor_observability(payload, latency_ms=7)
+    assert observed["cost"] == {"estimated_cost_minor": None}
+    assert observed["token_counts"] == {"input": 3, "output": 0, "total": 3}
+    assert event_observability_kwargs(observed, payload)["input_token_count"] == 3
+
+
+def test_marked_complete_zero_wins_over_stale_legacy_top_level_amount():
+    observed = executor_observability({"estimated_cost_minor": 97, "sdk_usage": {
+        "cost_coverage": "complete", "total_cost_usd": 0.0,
+    }}, latency_ms=1)
+    assert observed["cost"] == {"estimated_cost_minor": 0}
+    assert observed["runtime_private_payload"] == {"sdk_usage": {"cost_coverage": "complete"}}
+
+
+@pytest.mark.parametrize("value", [None, True, "NaN", float("inf"), -1, 21474836.48])
+def test_malformed_marked_complete_usd_never_becomes_known_zero(value):
+    observed = executor_observability({"sdk_usage": {
+        "cost_coverage": "complete", "total_cost_usd": value,
+    }}, latency_ms=1)
+    assert observed["cost"] == {"estimated_cost_minor": None}

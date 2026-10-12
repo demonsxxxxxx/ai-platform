@@ -23,20 +23,20 @@ def _int_mapping_value(payload: dict[str, Any], *keys: str) -> int:
     return 0
 
 
-def _usd_cost_to_minor_units(value: Any) -> int:
+def _usd_cost_to_minor_units(value: Any, *, unknown: int | None = 0) -> int | None:
     if isinstance(value, bool):
-        return 0
+        return unknown
     try:
         amount = Decimal(str(value))
         if not amount.is_finite() or not 0 <= amount <= Decimal("21474836.48"):
-            return 0
+            return unknown
         minor_units = (amount * Decimal(100)).quantize(
             Decimal(1),
             rounding=ROUND_HALF_UP,
         )
-        return int(minor_units) if minor_units <= 2**31 - 1 else 0
+        return int(minor_units) if minor_units <= 2**31 - 1 else unknown
     except (DecimalException, TypeError, ValueError, OverflowError):
-        return 0
+        return unknown
 
 
 def _sdk_usage_observability(executor_payload: dict[str, Any]) -> dict[str, Any]:
@@ -53,9 +53,9 @@ def _sdk_usage_observability(executor_payload: dict[str, Any]) -> dict[str, Any]
     coverage = usage.get("cost_coverage")
     # New producers explicitly distinguish incomplete cumulative observations.
     # Historical carriers without this marker retain their existing reader.
-    estimated_cost_minor = 0 if coverage is not None else _int_mapping_value(usage, "estimated_cost_minor", "cost_minor")
+    estimated_cost_minor = None if coverage is not None else _int_mapping_value(usage, "estimated_cost_minor", "cost_minor")
     if coverage == "complete":
-        estimated_cost_minor = _usd_cost_to_minor_units(usage.get("total_cost_usd"))
+        estimated_cost_minor = _usd_cost_to_minor_units(usage.get("total_cost_usd"), unknown=None)
     elif coverage is None and estimated_cost_minor <= 0:
         estimated_cost_minor = _usd_cost_to_minor_units(
             usage.get("total_cost_usd") or usage.get("cost_usd") or usage.get("estimated_cost_usd")
@@ -67,6 +67,8 @@ def _sdk_usage_observability(executor_payload: dict[str, Any]) -> dict[str, Any]
             "total": total_tokens,
         },
         "cost": {"estimated_cost_minor": estimated_cost_minor},
+        **({"runtime_private_payload": {"sdk_usage": {"cost_coverage": coverage}}}
+           if coverage in ("complete", "partial", "unavailable") else {}),
     }
 
 
@@ -77,7 +79,7 @@ def _has_sdk_observability(executor_payload: dict[str, Any]) -> bool:
         token_counts["input"] > 0
         or token_counts["output"] > 0
         or token_counts["total"] > 0
-        or sdk_observability["cost"]["estimated_cost_minor"] > 0
+        or (sdk_observability["cost"]["estimated_cost_minor"] or 0) > 0
     )
 
 
@@ -105,6 +107,8 @@ def executor_observability(
     total_default = sdk_token_counts["total"] or (input_tokens + output_tokens)
     total_tokens = _int_payload_value(executor_payload, "total_token_count", total_default)
     return {
+        **({"runtime_private_payload": sdk_observability["runtime_private_payload"]}
+           if "runtime_private_payload" in sdk_observability else {}),
         "latency_ms": latency_ms,
         "token_counts": {
             "input": input_tokens,
@@ -112,7 +116,8 @@ def executor_observability(
             "total": total_tokens,
         },
         "cost": {
-            "estimated_cost_minor": _int_payload_value(
+            "estimated_cost_minor": sdk_observability["cost"]["estimated_cost_minor"]
+            if "runtime_private_payload" in sdk_observability else _int_payload_value(
                 executor_payload,
                 "estimated_cost_minor",
                 sdk_observability["cost"]["estimated_cost_minor"],

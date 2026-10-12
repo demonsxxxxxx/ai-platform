@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, Protocol
 
+from app.runs.domain.cost_observability import projected_estimated_cost_minor, private_cost_observation
 from app.runs.domain.terminalization import (
     RunTerminalizationProgress,
     progress_for_requested_status,
@@ -182,7 +183,7 @@ class RunLifecycleService:
         input_tokens = int(final.get("input_token_count") or 0)
         output_tokens = int(final.get("output_token_count") or 0)
         total_tokens = int(final.get("total_token_count") or 0)
-        estimated_cost_minor = int(final.get("estimated_cost_minor") or 0)
+        estimated_cost_minor = projected_estimated_cost_minor(final.get("estimated_cost_minor"), result_payload)
         message = "Run failed" if target_status == "failed" else "任务已取消"
         event_type = "run_failed" if target_status == "failed" else "run_cancelled"
         stage = "worker" if target_status == "failed" else "control"
@@ -192,6 +193,8 @@ class RunLifecycleService:
             "artifact_count": artifact_count,
             "result_status": target_status,
             "result": self._sanitize_payload(result_payload),
+            "cost": {"estimated_cost_minor": estimated_cost_minor},
+            **private_cost_observation(result_payload),
         }
         if target_status == "failed" and staged.get("terminalization_error_code"):
             event_payload["error_code"] = str(staged["terminalization_error_code"])
@@ -204,7 +207,7 @@ class RunLifecycleService:
             message=message, payload=event_payload, visible_to_user=True,
             latency_ms=latency_ms, input_token_count=input_tokens,
             output_token_count=output_tokens, total_token_count=total_tokens,
-            estimated_cost_minor=estimated_cost_minor,
+            estimated_cost_minor=estimated_cost_minor or 0,
         )
         await self._append_audit_log(
             conn, tenant_id=tenant_id, user_id=None,

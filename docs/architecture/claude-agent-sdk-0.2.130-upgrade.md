@@ -121,9 +121,23 @@ invalid, incomplete or out-of-range amounts do not enter that numeric metric.
 Retirement: remove the runner's `usage or model_usage` shape substitution and
 its implied cumulative addition. Historical carriers without `cost_coverage`
 retain their existing cost aliases at the reader only. New production writes
-use official source field names. The existing non-null integer DB metric still
-defaults to zero for unknown values and rounds small amounts to zero; this
-change neither migrates that ambiguity nor recalculates historical costs.
+use official source field names. The existing non-null integer DB column remains a compatibility carrier.
+New normalized `result_json.cost.estimated_cost_minor` observations preserve
+unknown as explicit JSON null and complete zero as zero. Only new observations
+carry the bounded `runtime_private_payload.sdk_usage.cost_coverage` enum. This
+existing private container is excluded by the public sanitizer; no raw SDK
+usage, model identity, prior partial amount, or public coverage field is added.
+Readers use a marked complete, bounded integer observation (including zero)
+before the compatibility column; marked partial/unavailable or malformed complete
+observations are unknown. Unmarked legacy rows, including conflicting old JSON
+amounts, retain their column reader and original event bounds. No rows or monetary
+write/accumulation rules are rewritten. Mixed aggregate coverage is unknown,
+not an apparently complete subtotal; an empty aggregate retains its zero.
+Terminal event payloads preserve the same small private enum wrapper and
+normalized cost, then omit the optional public cost envelope when unknown;
+token counts remain independent. Cancelled results copy only normalized
+latency/token/cost observations and the enum wrapper, never the discarded answer
+or private executor content. Small known amounts retain existing rounding.
 No billing account, exchange-rate service or second cost ledger is introduced.
 
 Owning regressions exercise real installed SDK result objects, same-client

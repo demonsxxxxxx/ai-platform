@@ -408,3 +408,16 @@ test("normalizeRunPlayback drops unsafe lineage allowlist values", () => {
     producer_kind: "artifact",
   });
 });
+
+
+test("playback preserves unknown cost absence and real zero independently of tokens", () => {
+  for (const amount of [null, undefined, 0, 17]) {
+    const projected = normalizeRunPlayback(JSON.parse(JSON.stringify({run_id: "run-cost", events: [{
+      id: "evt-cost", event_type: "run_succeeded", sequence: 1,
+      cost: {estimated_cost_minor: amount},
+      token_counts: {input: 3, output: 5, total: 8},
+    }]})));
+    assert.equal(projected.events[0].cost?.estimated_cost_minor, amount ?? undefined);
+    assert.deepEqual(projected.events[0].token_counts, {input: 3, output: 5, total: 8});
+  }
+});
