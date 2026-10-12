@@ -1341,8 +1341,10 @@ async def test_session_bound_upload_requires_exact_requested_workspace(
     monkeypatch, kind, session_workspace,
 ):
     install_basic_upload_fakes(monkeypatch)
+    # The base fixture has no expired uploads; this checks only the requested
+    # upload, not the separate pre-admission global expiry maintenance.
     calls = []
-    mutations = []
+    target_mutations = []
 
     async def owned_session(_conn, *, tenant_id, user_id, session_id, workspace_id=None):
         calls.append((tenant_id, user_id, session_id, workspace_id))
@@ -1351,21 +1353,21 @@ async def test_session_bound_upload_requires_exact_requested_workspace(
         return {"id": session_id, "workspace_id": session_workspace}
 
     async def usage(_conn, **_kwargs):
-        mutations.append("quota")
+        target_mutations.append("quota")
         return {"stored_bytes": 0, "reserved_bytes": 0, "active_uploads": 0}
 
     async def create_upload(_conn, **_kwargs):
-        mutations.append("reservation")
+        target_mutations.append("reservation")
 
     async def activate_upload(_conn, **_kwargs):
         return True
 
     class Storage:
         def put_bytes(self, *, storage_key, content, content_type):
-            mutations.append("put")
+            target_mutations.append("put")
             return StoredObject(storage_key, hashlib.sha256(content).hexdigest(), len(content))
         def create_multipart_upload(self, **_kwargs):
-            mutations.append("multipart")
+            target_mutations.append("multipart")
             return "synthetic-upload"
 
     monkeypatch.setattr(files_routes, "get_authorized_session", owned_session)
@@ -1392,9 +1394,9 @@ async def test_session_bound_upload_requires_exact_requested_workspace(
             await invoke()
         assert caught.value.status_code == 404
         assert caught.value.detail == "session_not_found"
-        assert mutations == []
+        assert target_mutations == []
     else:
         assert await invoke() is not None
-        assert "quota" in mutations
-        assert ("put" if kind == "direct" else "multipart") in mutations
+        assert "quota" in target_mutations
+        assert ("put" if kind == "direct" else "multipart") in target_mutations
     assert calls == [("default", "user-a", "session-a", "default")]
