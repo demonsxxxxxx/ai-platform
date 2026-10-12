@@ -22,3 +22,11 @@ test("Word preview preserves DOCX image dimensions against global CSS", () => {
     /\.docx-preview-content section\.docx img\s*{[^}]*max-width: none;/s,
   );
 });
+
+test("Word owns measured direct DOM content rather than fixed-size iframe output", () => {
+  assert.match(source, /measureDocxPreview\(container\)/);
+  assert.match(source, /naturalWidth=\{docxSize.width\}/);
+  assert.match(source, /naturalHeight=\{docxSize.height\}/);
+  assert.match(source, /contentRef=\{contentRef\}/);
+  assert.doesNotMatch(source, /<iframe|srcDoc=|prepareWordPreviewDocument/);
+});
