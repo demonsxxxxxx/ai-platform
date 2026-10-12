@@ -2,7 +2,7 @@ import { useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { RunInputAnswer, RunInputQuestionBatch } from "../../services/api/session";
 import type { RunInputsController } from "../../hooks/useAgent/types";
-import { presentRunInputOption } from "./runInputPresentation";
+import { presentRunInputAnswer, presentRunInputOption } from "./runInputPresentation";
 
 interface QuestionDraft {
   selected: string[];
@@ -50,13 +50,17 @@ export function RunQuestionCard({
     (runInputs.isClosed || runInputs.projection?.state !== "open") &&
     (batch.status === "pending" || batch.status === "answered");
   const displayStatus = closedUnprocessed ? "closed" : batch.status;
-  const alreadySubmitted = runInputs.projection?.inputs.some(
+  const submittedInput = runInputs.projection?.inputs.find(
     (input) => input.kind === "answer" && input.question_id === batch.question_id,
   );
+  const alreadySubmitted = Boolean(submittedInput);
+  const automaticAnswer = submittedInput?.source === "timeout_default";
   if (alreadySubmitted || displayStatus !== "pending") {
     const status = closedUnprocessed
       ? t("chat.runInputs.answerClosedUnprocessed", "当前任务输入已关闭，问题未完成处理。")
-      : displayStatus === "resolved"
+      : automaticAnswer
+        ? t("chat.runInputs.answerAutoSelected", "超过5分钟未收到答复，系统已自动选择默认答复。")
+        : displayStatus === "resolved"
         ? t("chat.runInputs.answerResolved", "问题已处理。")
         : alreadySubmitted || batch.status === "answered"
         ? t("chat.runInputs.answerWaiting", "答案已提交，等待当前任务继续。")
@@ -84,6 +88,11 @@ export function RunQuestionCard({
       <div className="mb-2 text-xs font-semibold text-[var(--theme-primary)]">
         {t("chat.runInputs.questionTitle", "当前任务需要你的答复")}
       </div>
+      {batch.deadline_at ? (
+        <p className="mb-2 text-xs text-[var(--theme-text-secondary)]" role="status">
+          {t("chat.runInputs.defaultAnswerNotice", "5分钟未提交时，系统会选择推荐项；没有推荐项时选择第一项。没有可选项的问题会结束任务并提示补充信息。")}
+        </p>
+      ) : null}
       <form
         onSubmit={(event) => {
           event.preventDefault();
@@ -108,6 +117,13 @@ export function RunQuestionCard({
                 <p className="mb-2 text-sm font-medium text-[var(--theme-text)]">
                   {question.question}
                 </p>
+                {batch.default_answers?.[question.key] !== undefined ? (
+                  <p className="mb-2 text-xs text-[var(--theme-text-secondary)]" data-run-question-default>
+                    {t("chat.runInputs.defaultChoice", "到期默认答复：{{answer}}", {
+                      answer: presentRunInputAnswer(question.key, batch.default_answers[question.key], batch).answer,
+                    })}
+                  </p>
+                ) : null}
                 {question.options.length > 0 ? (
                   <div className="space-y-1.5">
                     {question.options.map((option) => {
