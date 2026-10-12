@@ -41,9 +41,7 @@ from app.executors.claude_agent_worker import (
     _execution_boundary_decision,
 )
 from app.executors.registry import AdapterRegistry
-from app.file_parser_contracts import (
-    XLSX_CONTENT_TYPE,
-)
+from app.files.api import XLSX_CONTENT_TYPE
 from app.required_tool_contract import (
     REQUIRED_CAPABILITY_EVIDENCE_KEY,
     SANDBOX_LOCAL_TOOL_IDENTITIES,
