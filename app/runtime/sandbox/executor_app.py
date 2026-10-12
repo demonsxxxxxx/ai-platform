@@ -45,6 +45,7 @@ from app.required_tool_contract import (
     MCP_EXECUTION_OUTCOME_UNKNOWN,
     MCP_EXECUTION_SUCCEEDED_RECEIPT_INCOMPLETE,
     MCP_EXECUTION_UNCERTAIN_ERROR_CODES,
+    MCP_TOOL_ERROR_RESULT_TRUST_BASIS,
     REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY,
     REQUIRED_CAPABILITY_EVIDENCE_KEY,
     SANDBOX_EFFECTFUL_TOOL_IDENTITIES,
@@ -1723,6 +1724,7 @@ async def _default_executor_runner(
                 binding=_evidence_binding(request),
                 tool_call_id=str(raw.get("tool_call_id") or ""),
                 lifecycle_phase=str(raw.get("lifecycle_phase") or ""),
+                tool_error_result=raw.get("trust_basis") == MCP_TOOL_ERROR_RESULT_TRUST_BASIS,
             )
         except (AttributeError, RequiredToolContractError):
             return reject_capability_evidence("capability_lifecycle_sequence_invalid")
@@ -2325,6 +2327,7 @@ def create_executor_app(
         mcp_invocation_states: dict[str, str] = {}
         stream_delivery_failure: dict[str, str | None] = {"error_code": None}
         heartbeat_stop = asyncio.Event()
+        heartbeat_retired = False
         public_execution_projector = PublicExecutionV2Projector()
         public_agent_progress_publisher = PublicAgentProgressPublisher()
         runner_event_lock = asyncio.Lock()
@@ -2426,6 +2429,11 @@ def create_executor_app(
                     retry_sleep=resolved_callback_retry_sleep,
                 )
             except asyncio.CancelledError:
+                if heartbeat_retired and asyncio.current_task() is heartbeat_task:
+                    # A settled runner no longer needs lease renewal. Its pure
+                    # heartbeat carries no answer/capability receipt. The host
+                    # fences any late renewal against the terminal receipt.
+                    raise
                 seal_runner_events_after_delivery_cancellation()
                 if event.state_patch.get("executor_heartbeat") is True:
                     mark_delivery_uncertain(
@@ -2740,6 +2748,7 @@ def create_executor_app(
             else None
         )
         runner_result: dict[str, Any] = {}
+        runner_returned = False
         try:
             if invalid_max_seconds:
                 runner_result = {
@@ -2772,6 +2781,7 @@ def create_executor_app(
                             else:
                                 raw_runner_result = await raw_runner_result
                         runner_result = raw_runner_result if isinstance(raw_runner_result, dict) else {}
+                        runner_returned = not timed_out
                     except _ExecutorCleanupError as exc:
                         runner_result = {
                             "status": "failed",
@@ -2809,6 +2819,9 @@ def create_executor_app(
             ):
                 if heartbeat_task is not None:
                     heartbeat_stop.set()
+                    if runner_returned and stream_delivery_failure["error_code"] is None:
+                        heartbeat_retired = True
+                        heartbeat_task.cancel()
                     await await_shutdown_task(heartbeat_task)
                 progress_cleanup = asyncio.create_task(drain_active_progress())
                 await await_shutdown_task(progress_cleanup)
@@ -2843,11 +2856,15 @@ def create_executor_app(
         failed = timed_out or runner_status not in {"completed", "succeeded"}
         if runner_events_open["value"]:
             phase_lifecycle = "failed" if failed else "completed"
-            await await_with_callback_buffer_cleanup(
-                emit_runner_event(
-                    _PlatformExecutionPhaseFact("sandbox_submission", phase_lifecycle)
+            with TerminalStageTiming(
+                "executor_final_phase_callback", run_id=request.run_id,
+                attempt_id=request.attempt_id, terminal_status=runner_status,
+            ):
+                await await_with_callback_buffer_cleanup(
+                    emit_runner_event(
+                        _PlatformExecutionPhaseFact("sandbox_submission", phase_lifecycle)
+                    )
                 )
-            )
         apply_stream_delivery_failure(runner_result)
         runner_events_open["value"] = False
         positive_deadline_exceeded = timed_out and max_seconds is not None and max_seconds > 0

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from time import monotonic
 from uuid import uuid4
 
@@ -34,7 +35,9 @@ class _TerminalObservationFormatter(logging.Formatter):
                 "%(asctime)s %(message)s run_id=%(run_id)r attempt_id=%(attempt_id)r "
                 "calls=%(append_calls)d failed_calls=%(append_failed_calls)d "
                 "total_duration_ms=%(append_total_duration_ms)d max_duration_ms=%(append_max_duration_ms)d "
-                "store_active_calls=%(store_active_calls)d"
+                "store_active_calls=%(store_active_calls)d "
+                "latest_public_result_gap_ms=%(latest_public_result_gap_ms)s "
+                "append_await_in_latest_result_gap_ms=%(append_await_in_latest_result_gap_ms)s"
             ).format(record)
         return super().format(record)
 
@@ -42,6 +45,8 @@ class _TerminalObservationFormatter(logging.Formatter):
 def log_session_store_append_summary(
     *, run_id: str, attempt_id: str, calls: int, failed_calls: int,
     total_ms: int, max_ms: int, active_calls: int,
+    latest_public_result_gap_ms: int | None = None,
+    append_await_in_latest_result_gap_ms: int | None = None,
 ) -> None:
     """One payload-free aggregate; cumulative append work can overlap model work."""
     try:
@@ -50,6 +55,8 @@ def log_session_store_append_summary(
             "append_calls": calls, "append_failed_calls": failed_calls,
             "append_total_duration_ms": total_ms, "append_max_duration_ms": max_ms,
             "store_active_calls": active_calls,
+            "latest_public_result_gap_ms": latest_public_result_gap_ms,
+            "append_await_in_latest_result_gap_ms": append_await_in_latest_result_gap_ms,
         })
     except Exception:
         pass  # Observation failure cannot replace the persistence result.
@@ -127,3 +134,74 @@ class TerminalStageTiming:
             # An observability failure cannot change receipt/commit semantics or
             # replace the exception (including cancellation) being propagated.
             pass
+
+
+_LOG_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,95}")
+_LOG_MODULE = re.compile(r"app(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
+
+
+def safe_exception_log_fields(exc: BaseException) -> dict[str, object]:
+    """Bounded structural evidence only; never render exception text or locals.
+
+    Read BaseException descriptors directly so wrapper-defined properties cannot
+    execute during failure handling. A displayed chain follows Python's explicit
+    cause precedence and suppressed-context semantics. This is logging evidence,
+    not an authority for retry or terminal state.
+    """
+    from psycopg import errors
+
+    chain: list[dict[str, object]] = []
+    seen: set[int] = set()
+    cursor: BaseException | None = exc
+    relation = "root"
+    end = "complete"
+    while cursor is not None:
+        if id(cursor) in seen:
+            end = "cycle"
+            break
+        if len(chain) >= 8:
+            end = "limit"
+            break
+        seen.add(id(cursor))
+        cls = type(cursor)
+        name = type.__getattribute__(cls, "__name__") if type(cls) is type else "Exception"
+        node: dict[str, object] = {
+            "relation": relation,
+            "exception_type": name if type(name) is str and _LOG_IDENTIFIER.fullmatch(name) else "Exception",
+        }
+        frames: list[str] = []
+        tb = BaseException.__traceback__.__get__(cursor)
+        for _ in range(128):
+            if tb is None:
+                break
+            module = tb.tb_frame.f_globals.get("__name__")
+            function = tb.tb_frame.f_code.co_name
+            if (
+                type(module) is str and len(module) <= 192 and _LOG_MODULE.fullmatch(module)
+                and _LOG_IDENTIFIER.fullmatch(function)
+            ):
+                frames.append(f"{module}:{tb.tb_lineno}:{function}")
+            tb = tb.tb_next
+        node["frames"] = frames[-8:]
+        if len(frames) > 8 or tb is not None:
+            node["frames_limited"] = True
+        # Only the exact psycopg registered error class supplies SQLSTATE. Do not
+        # inspect arbitrary exception attributes, driver diagnostics or strings.
+        if type(cls) is type:
+            code = type.__getattribute__(cls, "__dict__").get("sqlstate")
+            if type(code) is str and re.fullmatch(r"[0-9A-Z]{5}", code):
+                try:
+                    if errors.lookup(code) is cls:
+                        node["sqlstate"] = code
+                except KeyError:
+                    pass
+        chain.append(node)
+        cause = BaseException.__cause__.__get__(cursor)
+        context = BaseException.__context__.__get__(cursor)
+        if cause is not None:
+            cursor, relation = cause, "cause"
+        elif not BaseException.__suppress_context__.__get__(cursor):
+            cursor, relation = context, "context"
+        else:
+            cursor = None
+    return {"exception_chain": chain, "exception_chain_end": end}

@@ -14,7 +14,7 @@ import {
   refreshAccessToken,
   refreshTokens,
 } from "../tokenManager.ts";
-import { uploadApi } from "../upload.ts";
+import { UploadRequestError, uploadApi } from "../upload.ts";
 
 function installAuthApiBrowserStubs(
   responseBody:
@@ -421,71 +421,26 @@ test("legacy refresh functions fail closed without network or global auth side e
   }
 });
 
-test("legacy upload 401 cannot refresh or replay through the compatibility firewall", async () => {
-  const stubs = installAuthApiBrowserStubs();
-  const originalXhr = Object.getOwnPropertyDescriptor(
-    globalThis,
-    "XMLHttpRequest",
-  );
-  let sendCalls = 0;
-
-  class UnauthorizedUploadRequest {
-    status = 401;
-    statusText = "Unauthorized";
-    responseText = JSON.stringify({ detail: "unauthorized" });
-    withCredentials = false;
-    readonly upload = { addEventListener: () => undefined };
-    private readonly listeners = new Map<
-      string,
-      Array<(event: Event) => void>
-    >();
-
-    addEventListener(type: string, listener: (event: Event) => void) {
-      const listeners = this.listeners.get(type) ?? [];
-      listeners.push(listener);
-      this.listeners.set(type, listeners);
-    }
-
-    open() {}
-    setRequestHeader() {}
-    abort() {}
-
-    send() {
-      sendCalls += 1;
-      queueMicrotask(() => {
-        for (const listener of this.listeners.get("load") ?? []) {
-          listener(new Event("load"));
-        }
-      });
-    }
-  }
-
-  Object.defineProperty(globalThis, "XMLHttpRequest", {
-    configurable: true,
-    value: UnauthorizedUploadRequest as unknown as typeof XMLHttpRequest,
-  });
+test("multipart initiation 401 cannot refresh or replay through the compatibility firewall", async () => {
+  const stubs = installAuthApiBrowserStubs({ detail: "unauthorized" }, 401);
   stubs.stored.set("ai_platform_session_present", "existing-marker");
-
   try {
     const handle = uploadApi.uploadFile(
       new File(["fixture"], "fixture.txt", { type: "text/plain" }),
     );
-    await assert.rejects(handle.promise);
-
-    assert.equal(sendCalls, 1);
-    assert.deepEqual(stubs.fetchCalls, []);
-    assert.equal(
-      stubs.stored.get("ai_platform_session_present"),
-      "existing-marker",
+    await assert.rejects(handle.promise, (error: unknown) =>
+      error instanceof UploadRequestError && error.kind === "recoverable" && error.status === 401,
     );
-    assert.deepEqual(stubs.events, []);
+    // An initiation rejection has no session to upload, complete, abort or replay.
+    assert.deepEqual(stubs.fetchCalls, ["/api/ai/files/uploads"]);
+    assert.equal(stubs.fetchInit[0].method, "POST");
+    assert.equal(stubs.fetchInit[0].credentials, "include");
+    assert.equal(new Headers(stubs.fetchInit[0].headers).has("Authorization"), false);
+    assert.equal(stubs.stored.get("ai_platform_session_present"), "existing-marker");
+    // Uploads retain the default current-owner recovery signal; transport itself
+    // does not clear the marker, renew credentials or replay the write.
+    assert.deepEqual(stubs.events, ["auth:force-relogin"]);
   } finally {
-    if (originalXhr) {
-      Object.defineProperty(globalThis, "XMLHttpRequest", originalXhr);
-    } else {
-      delete (globalThis as { XMLHttpRequest?: typeof XMLHttpRequest })
-        .XMLHttpRequest;
-    }
     stubs.restore();
   }
 });
