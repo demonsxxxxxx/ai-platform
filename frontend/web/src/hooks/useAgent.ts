@@ -1865,7 +1865,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       targetSessionId: string,
       targetRunId?: string,
       runControlAdoption?: { owner: RunControlOwner },
-      readOnlyRetry = false,
     ) => {
       if (!isMountedRef.current) {
         return null;
@@ -2450,8 +2449,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     await loadHistory(
       historyLoadFailure.sessionId,
       historyLoadFailure.runId,
-      undefined,
-      true,
     );
   }, [historyLoadFailure, loadHistory]);
 
