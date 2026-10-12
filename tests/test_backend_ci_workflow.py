@@ -253,6 +253,7 @@ BACKEND_TEST_SHARDS = {
     ),
     "v4-durable-streaming": (
         "tests/test_streaming_callback_direct.py",
+        "tests/test_streaming_event_ledger.py",
         "tests/test_retire_legacy_sse_streams.py",
         "tests/test_streaming_v4_durable.py",
         "tests/test_assistant_text_part_ledger.py",
