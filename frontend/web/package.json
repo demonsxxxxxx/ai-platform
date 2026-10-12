@@ -13,7 +13,7 @@
     "smoke:prd-closure": "node scripts/prd-closure-browser-smoke.mjs",
     "smoke:company-rbac": "node scripts/company-rbac-browser-smoke.mjs",
     "smoke:route-layout": "node scripts/route-layout-browser-smoke.mjs",
-    "test:auth": "tsx --test src/hooks/__tests__/browserAuthCoordinator.test.ts src/hooks/__tests__/browserAuthStorage.test.ts src/hooks/__tests__/useAuth.test.ts src/hooks/__tests__/useAuthProvider.test.tsx",
+    "test:auth": "tsx --test src/hooks/__tests__/browserAuthCoordinator.test.ts src/hooks/__tests__/browserAuthStorage.test.ts src/hooks/__tests__/useAuth.test.ts src/hooks/__tests__/useAuthProvider.test.tsx src/services/api/__tests__/authenticatedRequest.test.ts",
     "test:agent-market": "tsx --test src/features/agent-market/__tests__/*.test.ts* src/hooks/useAgent/__tests__/useAgentMarketBinding.test.tsx",
     "test:company-rbac-browser-smoke-source": "tsx --test src/__tests__/companyRbacBrowserSmokeSource.test.ts",
     "test:prd-closure-smoke-source": "tsx --test src/__tests__/frontendPrdClosureSmokeSource.test.ts",
