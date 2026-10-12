@@ -133,7 +133,7 @@ async function mountWorkspace(overrides: Partial<typeof sessionApi> = {}) {
     getAuthoritative: async (id: string) => projection(id),
     getEvents: async (id: string) => ({ events: [{ id: `event-${id}`, event_type: "user:message", timestamp: "2026-10-01T00:00:00Z", data: { content: `Transcript ${id}` } }] }),
     getRunInputHistory: async (id: string) => ({ session_id: id, runs: [], has_more: false, next_before_run_id: null }),
-    markRead: async () => {}, delete: async () => ({}),
+    delete: async () => ({}),
     update: async (id: string, data: { name: string }) => ({ status: "ok", session: row(id, data.name) }),
     ...overrides,
   });

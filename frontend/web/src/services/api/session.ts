@@ -957,15 +957,6 @@ export const sessionApi = {
     });
   },
 
-  /**
-   * Mark session as read (clear unread count)
-   */
-  async markRead(sessionId: string): Promise<void> {
-    await authFetch(`${API_BASE}/api/sessions/${sessionId}/mark-read`, {
-      method: "POST",
-    });
-  },
-
   async forkMessage(
     sessionId: string,
     messageId: string,

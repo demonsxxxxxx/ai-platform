@@ -176,6 +176,18 @@ The immutable admitted execution specification, durable attempt authority, and
 their mixed-version migration are defined by
 [`execution-spec-and-attempt-lifecycle.md`](execution-spec-and-attempt-lifecycle.md).
 
+Streaming owns event contracts: `streaming.events` exposes the public event sets
+from `streaming.domain.protocol_v4` and the durable envelope version from
+`streaming.domain.run_events`. The root control-plane module does not define
+another event taxonomy or placeholder event envelope. Retiring an unused Python
+record does not retire persisted events, public v4 schemas, or Context snapshot
+versions and their readers.
+
+The legacy `capabilities` record carries only the internal Harness routing
+identity and label consumed by Intent and Run selection/recovery. It is not a
+public response or an authorization/visibility authority; those decisions stay
+with the owning contexts.
+
 ### 2.2 Kernel and platform limits
 
 `kernel` is a dependency leaf for framework-neutral primitives used by at least
@@ -733,3 +745,34 @@ project files or start an external execution environment. Backend nullable
 `project_meta` projections and historical messages remain under their API/data
 owners and are not removed by this frontend retirement. Skills ZIP export remains
 an independent, active capability.
+
+
+### XLSX identity and retained preview execution
+
+`files/domain/xlsx_preview.py` owns pure XLSX metadata identity, parser
+registration and bounded parser policy. Metadata readers in `run_projection`,
+`routes/frontend_projections`, and `routes/files` use `files.api`; importing
+that public boundary must not load the parser, bootstrap, preview runtime,
+openpyxl, or construct a preview semaphore/executor. Parser selection remains
+extension **or** MIME; public preview eligibility remains extension **and**
+MIME, including authoritative filename conflict rejection and storage-key
+basename fallback. Attachments consumes the same Files-owned constants without
+changing byte-classification admission.
+
+This is the identity/policy slice, not preview execution retirement.
+`file_preview_contracts.py` still owns wire v2 DTOs, public projection, bounded
+execution, admission, cancellation/reaper ownership and its existing logger.
+`file_parser_contracts.py` still owns its three Pydantic input/evidence/result
+models, preprocessing error and ZIP/OPC/XML/openpyxl core; Attachments
+classification still consumes its two private preflight helpers. Both approved
+root allowances and their runtime CI selectors remain required. The image-only
+configuration contract is also retained with its actual preview caller.
+
+A later preview ownership change must establish a canonical transport and
+parser-contract boundary under the dependency rules in §3 before retiring these
+roots. It must not add application-to-Pydantic, canonical-to-legacy, or
+API-to-transport imports, or bypass those rules with an unowned callback graph.
+That follow-up must preserve the current process-wide two-slot admission,
+physical completion/reaper policy, callable identities and public JSON/error
+contracts. Presentation preview remains separately authorized; this does not
+introduce Run attachment preprocessing or expand parser admission.

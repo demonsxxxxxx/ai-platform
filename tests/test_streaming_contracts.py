@@ -6,8 +6,29 @@ from pathlib import Path
 import pytest
 
 from app.streaming import api as streaming_api
+from app.streaming import events as streaming_events
 from app.streaming import redis as redis_transport
+from app.streaming.domain import run_events
 from app.streaming.domain import transport as domain_transport
+
+
+def test_event_envelope_version_is_owned_by_the_durable_ledger() -> None:
+    assert run_events.EVENT_ENVELOPE_SCHEMA_VERSION == "ai-platform.event-envelope.v1"
+    assert streaming_events.EVENT_ENVELOPE_SCHEMA_VERSION == run_events.EVENT_ENVELOPE_SCHEMA_VERSION
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("executor_failure", "executor_failure"),
+        (" executor_failure ", "executor_failure"),
+        ("", "unknown_error"),
+        (" ", "unknown_error"),
+        (None, "unknown_error"),
+    ],
+)
+def test_run_event_error_codes_are_normalized(value, expected) -> None:
+    assert run_events.standard_error_code(value) == expected
 
 
 def test_public_boundary_reuses_domain_values_without_legacy_wire_types() -> None:

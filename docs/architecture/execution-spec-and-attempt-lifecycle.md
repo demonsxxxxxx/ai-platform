@@ -114,11 +114,12 @@ an exact-field `ai-platform.execution-spec.v2` mapping with the Run-frozen
 `model_gateway_revision`, `model_max_input_tokens`, and
 `model_max_output_tokens`. The dispatcher can compile v2 only from an
 independently locked Runs-owned model snapshot matching its model identity, not
-from Redis queue fields. v2 is not yet the production writer: worker dispatch
-continues to compile v1 until the model proxy enforces provider token counts
-and Context selects a single native-resume or bootstrap mode. The sandbox
-transport accepts a strict paired `model_token_limits` projection, but that
-projection is advisory without the same Run/Attempt-bound proxy gate.
+from Redis queue fields. Worker dispatch writes v2 and rejects a missing or
+mismatched durable model snapshot. The sandbox transport carries the paired
+`model_token_limits` projection; the Run/Attempt-bound proxy verifies the
+binding and output limit. Claude input capacity configures SDK-owned automatic
+compaction, not an additional proxy input recount. The detailed enforcement
+boundary is owned by [Model credentials](opensandbox-ephemeral-model-credentials.md).
 
 ## 3. Durable attempt state machine
 
