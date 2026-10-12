@@ -18,6 +18,28 @@ its eventual source migration must not create a second taxonomy.
 codes. Live, historical and hydrated messages use the same presentation catalog
 and message projection semantics.
 
+## Session navigation and local unread presentation
+
+History restoration starts with the existing scoped Session projections. It
+must not wait for a read-mark request: the legacy `/sessions/{session_id}/mark-read`
+endpoint only acknowledges a request and never persists unread state. The current
+frontend removes that API method and all navigation, send, terminal and task-
+notification calls. Request-generation, authentication, Session/Run ownership,
+and stale-navigation fences still guard every asynchronous history result.
+
+Sidebar unread presentation and the active-session task-notification callback
+remain local UI state. Removing the empty HTTP request must not clear another
+Session's count, change terminal callbacks, or imply cross-device read receipts.
+No unread persistence system or new business authority is introduced.
+
+The compatibility route remains a no-op for older shipped clients whose calls
+cannot be excluded by the current source inventory. Conversations owns this
+bounded compatibility response. Delete it only with a separate compatibility
+inventory proving that supported older clients no longer call it; do not turn
+it into a second unread-state store. The superseded frontend method, calls and
+mock-only test surfaces are retired together. Existing history/terminal tests
+and focused navigation/unread regressions remain the verification owners.
+
 ## User-visible content and redaction
 
 Assistant narration and final answers are content facts, independent of Tool
@@ -277,8 +299,8 @@ history request token, mounted generation, auth identity/revision and Session. N
 loads, clear/reset, identity retirement and disposal invalidate the old notice
 and any captured retry callback. Failed retries do not schedule another attempt.
 
-`retryHistoryLoad` reuses the canonical loader and skips its ordinary mark-read
-mutation. It reads Session identity and events, and may restore the existing
+`retryHistoryLoad` reuses the canonical read-only loader. It reads Session
+identity and events, and may restore the existing
 read-only status/SSE convergence; it never submits or retries a task. It is
 fenced during history loading, sending, active Run ownership, uncertain task
 admission and terminal synchronization. The old history-specific write to the

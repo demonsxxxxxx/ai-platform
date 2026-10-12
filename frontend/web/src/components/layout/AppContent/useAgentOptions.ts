@@ -217,31 +217,6 @@ export function useAgentOptions(
     });
   }, [optionDefinitions]);
 
-  useEffect(() => {
-    const handleThinkingPreferenceUpdated = () => {
-      const options = normalizeAgentOptions(optionDefinitions);
-      // Only update the thinking level default; preserve all other user selections.
-      setAgentOptionValues((prev) => ({
-        ...buildAgentOptionValues(options),
-        // Keep non-thinking user selections intact
-        ...Object.fromEntries(
-          Object.entries(prev).filter(([k]) => k !== "enable_thinking"),
-        ),
-      }));
-    };
-
-    window.addEventListener(
-      "thinking-preference-updated",
-      handleThinkingPreferenceUpdated,
-    );
-    return () => {
-      window.removeEventListener(
-        "thinking-preference-updated",
-        handleThinkingPreferenceUpdated,
-      );
-    };
-  }, [optionDefinitions]);
-
   const handleToggleAgentOption = useCallback(
     (key: string, value: boolean | string | number) => {
       setAgentOptionValues((prev) => ({ ...prev, [key]: value }));
