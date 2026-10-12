@@ -2,6 +2,8 @@
 
 状态：**分批实施方案**。本文的固定样本分析保留原证据；S5 的普通终态服务与旧审批/平台父子恢复退役已在源码中完成，详见 Run lifecycle 契约。其余目标接口、数据字段与新增测试仍按各批次核验，不能作为已经部署的证明。提交 SHA、测试结果和阻塞项记录在当前任务或 PR。
 
+SSE 状态说明：[ADR 0013](../adr/0013-redis-stream-only-sse.md) 已取代固定样本中的持久化发布重试、独立 terminal intent 和 successor/rebuild 恢复设计。下文保留当时证据与已标明的历史结论；现行发布与恢复以 [SSE execution control](../architecture/redis-streams-sse-execution-control.md) 为准：提交业务/事件事实后直接发布，缺失 Stream 时 gap/hydrate，不设置后台发布扫描器。S3 的业务 pending admission 恢复仍是独立实施目标，不能用旧 SSE 恢复机制替代，也不因本次文档更正而视为已完成。
+
 ## 1. 目标与设计依据
 
 ai-platform 已采用 PostgreSQL 保存持久化事实、Redis 承担队列和实时传输的架构。下一步的重点是完成已有边界的迁移：删除闲置生产入口，把仍在工作的通用逻辑交回业务 owner，并使已持久化的提交在客户端离开后仍能得到有界恢复。
@@ -9,7 +11,7 @@ ai-platform 已采用 PostgreSQL 保存持久化事实、Redis 承担队列和�
 完成本计划后应具备四项可观察结果：
 
 1. 新运行只经过现行队列和 v4 发布入口；旧测试不再维持第二套生产写法。
-2. API、Worker、reconciler 使用显式注入的 Runs 用例；终态、事件、审计和发布意图保持原子提交。
+2. API、Worker、reconciler 使用显式注入的 Runs 用例；终态、事件和审计事实保持原子提交；Redis 直接发布在提交后进行，不创建独立发布意图。
 3. 已接受但未确认投递的 chat submission 可以由服务端恢复，且不会产生第二个 Run 或重复执行授权。
 4. 调度接管、Executor 执行权、Sandbox 资源所有权各自校验；过期操作不能修改后来者的状态。
 
@@ -39,7 +41,7 @@ ai-platform 已采用 PostgreSQL 保存持久化事实、Redis 承担队列和�
 | 未投递任务恢复 | `recover_pending_dispatches` 从数据库找 pending Run 和 queued request，再调用同一派发入口。[源码](https://github.com/xerrors/Yuxi/blob/caff3208c9db9128aa0b277bc5c669141383ddbd/backend/package/yuxi/services/agent_request_queue_service.py#L500) | 为持久化 chat submission 增加有界恢复；API 重试和后台恢复复用同一个准入用例。扫描必须分页、限并发、限时间，不能照搬该实现的全量 `.all()` 和集中 `gather()`。 |
 | 队列载荷 | `enqueue_agent_run` 传 `run_id`，以 `run:{run_id}` 作为 job ID。[源码](https://github.com/xerrors/Yuxi/blob/caff3208c9db9128aa0b277bc5c669141383ddbd/backend/package/yuxi/services/agent_run_service.py#L811) | 逐字段证明哪些内容能从已接受事实重建，再收缩载荷；保留调度所需的作用域与配额维度，继续使用现有队列。 |
 | 运行所有权 | `mark_running`、`renew_lease`、过期回收以数据库行及 owner token 判定，并维护 attempt 记录。[源码](https://github.com/xerrors/Yuxi/blob/caff3208c9db9128aa0b277bc5c669141383ddbd/backend/package/yuxi/repositories/agent_run_repository.py#L390) | 完成本项目已有 RunAttempt CAS 和跨进程校验。复用当前账本，保留异步 Executor 合法交接与独立 Sandbox 资源租约。 |
-| 事件可靠性 | 流事件直接写 Redis；Worker 对发布失败采取 best effort。[Redis 写入](https://github.com/xerrors/Yuxi/blob/caff3208c9db9128aa0b277bc5c669141383ddbd/backend/package/yuxi/services/run_queue_service.py#L150)、[Worker 包装](https://github.com/xerrors/Yuxi/blob/caff3208c9db9128aa0b277bc5c669141383ddbd/backend/package/yuxi/services/run_worker.py#L367) | 保留本项目 PostgreSQL canonical 事件、持久化发布重试和 successor recovery。减少代码量应通过删除闲置写入入口实现。 |
+| 事件可靠性 | 流事件直接写 Redis；Worker 对发布失败采取 best effort。[Redis 写入](https://github.com/xerrors/Yuxi/blob/caff3208c9db9128aa0b277bc5c669141383ddbd/backend/package/yuxi/services/run_queue_service.py#L150)、[Worker 包装](https://github.com/xerrors/Yuxi/blob/caff3208c9db9128aa0b277bc5c669141383ddbd/backend/package/yuxi/services/run_worker.py#L367) | 历史样本结论（发布重试/successor 部分已被 ADR 0013 取代）：保留本项目 PostgreSQL canonical 事件、持久化发布重试和 successor recovery。减少代码量应通过删除闲置写入入口实现。 |
 
 这里可借鉴的是恢复入口和职责组织。Yuxi 的较短路径没有自动证明更强的故障语义；双方都需要按自己的约束验收。
 
@@ -51,7 +53,7 @@ ai-platform 已采用 PostgreSQL 保存持久化事实、Redis 承担队列和�
 | --- | --- | --- |
 | `dequeue_run` | [queue.py:2600](https://github.com/demonsxxxxxx/ai-platform/blob/2ba4e172598df2bae7aa03684da2e39c7b9fbf0a/app/queue.py#L2600)：先 lease、再 ack、最后返回 payload；仓内 `app/tests/tools/docs` 仅有定义 | 删除函数；保留 `lease_run`、`ack_run` 和正式 Worker 的处理后确认顺序。删除前补查配置、插件和动态导入。没有证据时不虚构外部兼容承诺。 |
 | `RunStreamPublisher` 与 `publish_committed_stream_event` | [redis.py:1197](https://github.com/demonsxxxxxx/ai-platform/blob/2ba4e172598df2bae7aa03684da2e39c7b9fbf0a/app/streaming/redis.py#L1197)、[redis.py:146](https://github.com/demonsxxxxxx/ai-platform/blob/2ba4e172598df2bae7aa03684da2e39c7b9fbf0a/app/streaming/redis.py#L146)：生产调用闭环只在旧 publisher 内；外部实例化来自旧测试 | 成对移除，处理仅由它们使用的导入；旧 producer 专属测试删除，共享安全断言迁至现行 v4 owner。 |
-| 旧 `create_or_get_stream_admission`、`publish_terminal_intent`、`canonical_assistant_delta_event` | [旧 admission:683](https://github.com/demonsxxxxxx/ai-platform/blob/2ba4e172598df2bae7aa03684da2e39c7b9fbf0a/app/streaming/redis.py#L683)、[旧 terminal:1117](https://github.com/demonsxxxxxx/ai-platform/blob/2ba4e172598df2bae7aa03684da2e39c7b9fbf0a/app/streaming/redis.py#L1117)、[旧 delta:1176](https://github.com/demonsxxxxxx/ai-platform/blob/2ba4e172598df2bae7aa03684da2e39c7b9fbf0a/app/streaming/redis.py#L1176)；已核查外部调用为旧测试或守卫字符串 | 删除旧 producer；保留 v4 admission、共享意图存储和静态防回退守卫。按测试职责逐项迁移，不能整文件删测试。 |
+| 旧 `create_or_get_stream_admission`、`publish_terminal_intent`、`canonical_assistant_delta_event` | [旧 admission:683](https://github.com/demonsxxxxxx/ai-platform/blob/2ba4e172598df2bae7aa03684da2e39c7b9fbf0a/app/streaming/redis.py#L683)、[旧 terminal:1117](https://github.com/demonsxxxxxx/ai-platform/blob/2ba4e172598df2bae7aa03684da2e39c7b9fbf0a/app/streaming/redis.py#L1117)、[旧 delta:1176](https://github.com/demonsxxxxxx/ai-platform/blob/2ba4e172598df2bae7aa03684da2e39c7b9fbf0a/app/streaming/redis.py#L1176)；已核查外部调用为旧测试或守卫字符串 | 删除旧 producer；按现行 SSE execution control 保留 v4 准入、已提交事实的直接发布和静态防回退守卫，不再保留共享 terminal intent 存储。按测试职责逐项迁移，不能整文件删测试。 |
 
 以上是源码清理机会，不是已经发生线上事故的结论。尤其不能把“旧类没有调用者”扩大成“整个 Redis 模块没有价值”。
 
@@ -74,8 +76,8 @@ ai-platform 已采用 PostgreSQL 保存持久化事实、Redis 承担队列和�
 
 | 保留对象 | 当前用途 | 退出或变更条件 |
 | --- | --- | --- |
-| `RedisStreamBridge`、v4 candidate 操作、client 生命周期 | [`V4RedisStreamBridge`](https://github.com/demonsxxxxxx/ai-platform/blob/2ba4e172598df2bae7aa03684da2e39c7b9fbf0a/app/streaming/infrastructure/v4.py#L589) 和 rebuild 共用 | 只有完成所有 v4 调用方迁移及等价测试后，才可拆共享设施。 |
-| `create_or_get_stream_admission_v4`、confirmation、terminal intent persistence | 现行 v4 准入、冻结语义身份、重试与终态恢复 | 作为现行机制保留；删除旧封装不改变其语义。 |
+| 固定样本中的 `RedisStreamBridge`、v4 candidate 操作、client 生命周期 | [`V4RedisStreamBridge`](https://github.com/demonsxxxxxx/ai-platform/blob/2ba4e172598df2bae7aa03684da2e39c7b9fbf0a/app/streaming/infrastructure/v4.py#L589) 和 rebuild 共用 | 历史共享依赖说明；rebuild 已被 ADR 0013 退役，不再构成保留条件。现行 Stream transport/client 按实际调用方与等价测试保留。 |
+| 固定样本中的 `create_or_get_stream_admission_v4`、confirmation、terminal intent persistence | 历史 v4 准入、冻结语义身份、重试与终态恢复 | terminal intent persistence 已被 ADR 0013 退役；现行准入与 receipt 语义由 SSE execution control 管理，不恢复旧存储或调度器。 |
 | Redis 物理命名空间与队列 v1/v2 lease 读取 | 现存数据及混合版本消费者 | 按队列契约完成 fleet/租约排空证明后再退出。名称含旧版本不等于闲置。 |
 | 历史审批及平台父子任务记录 | schema `2026.09.26.1` 负责一次性处置 | 停止旧进程后事务化升级；历史 Run/Attempt 保留，旧审批表删除，普通终态列改名。Python drain 已退役。 |
 | `lambchat_compat` 的现行路由、历史投影与同名常量 | 当前 HTTP/历史读取消费者 | 逐个接口证明替代消费者和数据处理完成；不能按 `compat` 文件名整删。 |
@@ -122,7 +124,7 @@ flowchart LR
 - `tests/test_streaming_redis.py`、`tests/test_streaming_control.py`：移除旧 writer 专属行为；对冻结身份、未知发布、确认和持久化等共享要求，保留原测试或在 v4 测试中建立等价断言。
 - `tools/check_sse_runtime_cutover.py`、`tests/test_sse_runtime_cutover.py`：保留防回退语义；必要调整必须继续能检出旧 producer 被重新引入。
 
-本批不改变公开事件名称、序列、canonical bytes、Redis key 或数据库 schema。验收需要证明现行 v4 发布、重建和终态恢复仍可到达。不能以删除大量失败测试替代验证。
+本批不改变公开事件名称、序列、canonical bytes、Redis key 或数据库 schema。验收需要证明现行 v4 直接发布、receipt 幂等和缺失 Stream 的 gap/hydrate 路径仍可到达；不再要求已退役的重建或 terminal intent 恢复。不能以删除大量失败测试替代验证。
 
 ### 5.2 S2a 显式依赖注入
 
@@ -152,7 +154,7 @@ flowchart LR
 
 ### 6.1 权威与选择范围
 
-权威继续是 `chat_submissions` 与所属 Run。SSE 的 `admission_pending` 是流发布恢复，不能用于推断队列是否已经投递。
+权威继续是 `chat_submissions` 与所属 Run。SSE 的 `admission_pending` 是 Stream 准入状态，不能用于推断业务队列是否已经投递；现行 SSE execution control 不允许据此建立后台发布扫描器。
 
 候选查询从 `accepted_pending_enqueue` 且存在持久化 Run 的记录开始，使用有索引的到期条件、稳定排序和显式 LIMIT。读取候选仅是调度提示；获得 scoped claim 后重新核验 submission、Run、当前权限和执行状态。
 

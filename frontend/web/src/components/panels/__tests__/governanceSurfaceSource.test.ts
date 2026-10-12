@@ -83,7 +83,7 @@ test("mcp panel gives AI admins lifecycle controls while keeping the ordinary di
   );
   assert.match(source, /MCPServerForm/);
   assert.match(source, /ConfirmDialog/);
-  assert.match(source, /canManageMcp && !mcpGovernance\.governedUnavailable/);
+  assert.match(source, /canManageMcp && isAvailable/);
   assert.match(source, /data-mcp-admin-controls/);
   assert.match(source, /if \(!isAiAdmin\)/);
   assert.match(source, /allAuthorizedCatalog: !isAiAdmin/);

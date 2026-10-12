@@ -399,6 +399,7 @@ async def callback_provider_epoch(
     session_id: str, agent_id: str, run_id: str, attempt_id: str,
     provider_session_id: str, action: str, subpath: str | None,
     entries: list[dict[str, Any]], expected_sequence: int | None,
+    include_child_entries: bool = False,
 ) -> dict[str, Any]:
     scope = ProviderSessionScope(tenant_id, workspace_id, user_id, session_id, agent_id)
     epoch, attempt, private = await _locked_callback_epoch(
@@ -409,9 +410,16 @@ async def callback_provider_epoch(
     if action in {"load", "list_subkeys"}:
         rows = await _verified_provider_entries(conn, epoch=epoch)
         if action == "list_subkeys":
-            return {"action": action,
-                    "subpaths": sorted({row["subpath"] for row in rows if row["subpath"]}),
-                    "next_sequence": epoch["next_sequence"]}
+            result = {"action": action,
+                      "subpaths": sorted({row["subpath"] for row in rows if row["subpath"]}),
+                      "next_sequence": epoch["next_sequence"]}
+            if include_child_entries:
+                children: dict[str, list[dict[str, Any]]] = {}
+                for row in rows:
+                    if row["subpath"]:
+                        children.setdefault(row["subpath"], []).append(row["entry_json"])
+                result["child_entries"] = children
+            return result
         return {"action": action,
                 "entries": [row["entry_json"] for row in rows if row["subpath"] == path],
                 "next_sequence": epoch["next_sequence"]}

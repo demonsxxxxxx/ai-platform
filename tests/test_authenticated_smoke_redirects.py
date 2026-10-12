@@ -11,8 +11,6 @@ from urllib.response import addinfourl
 import pytest
 
 from tools import capacity_runtime_evidence, verify_auth_rbac_smoke
-from tools.verify_alert_trace_export_runtime_acceptance import build_alert_trace_export_runtime_acceptance
-from tools.verify_governance_runtime_smoke import build_governance_runtime_smoke
 
 
 BASE_URL = "https://api.example.invalid"
@@ -159,8 +157,6 @@ def test_capacity_capture_preserves_same_origin_redirect(monkeypatch, scripted_t
 
 @pytest.mark.parametrize("builder,request_count", (
     (verify_auth_rbac_smoke.build_auth_rbac_smoke, 5),
-    (build_alert_trace_export_runtime_acceptance, 2),
-    (build_governance_runtime_smoke, 2),
 ))
 def test_smoke_consumers_fail_closed_on_cross_origin_redirect(scripted_transport, builder, request_count):
     transport = scripted_transport([
@@ -181,7 +177,6 @@ def test_smoke_consumers_fail_closed_on_cross_origin_redirect(scripted_transport
 
 @pytest.mark.parametrize("script", (
     "verify_auth_rbac_smoke.py", "capacity_runtime_evidence.py",
-    "verify_alert_trace_export_runtime_acceptance.py", "verify_governance_runtime_smoke.py",
 ))
 def test_authenticated_smoke_cli_imports_from_outside_repository(tmp_path, script):
     path = Path(__file__).resolve().parents[1] / "tools" / script

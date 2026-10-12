@@ -122,6 +122,7 @@ def test_public_run_outcome_does_not_mislabel_runtime_capability_failure_as_logi
         ("model_capacity_missing", "模型运行配置", "可以重试"),
         ("mcp_execution_outcome_unknown", "请勿重复提交", "可以重试"),
         ("terminal_reconciliation_failed", "刷新会话", "可以重试"),
+        ("run_question_needs_input", "补充问题所需信息", "可以重试"),
     ],
 )
 def test_public_run_outcome_recovery_matches_failure_cause(error_code, expected_action, forbidden_action):

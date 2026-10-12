@@ -32,6 +32,7 @@ _CLAUDE_SDK_ACTIONABLE_FAILURE_CODES = frozenset(
         "claude_agent_sdk_output_validation_failed",
         "claude_agent_sdk_turn_limit_exceeded",
         "claude_agent_sdk_timeout",
+        "run_question_needs_input",
         "claude_agent_sdk_provider_session_failed",
         "claude_agent_sdk_tool_admission_failed",
         "claude_agent_sdk_upstream_error",
@@ -83,6 +84,10 @@ def claude_sdk_failure_message(sdk_result: object) -> str:
         ),
         "claude_agent_sdk_timeout": (
             "This run timed out. Start a new conversation and split the request."
+        ),
+        "run_question_needs_input": (
+            "This run stopped because a required question was not answered within five minutes. "
+            "Provide the missing information and try again."
         ),
         "claude_agent_sdk_missing_structured_terminal": (
             "The executor ended without an authoritative terminal result. Start a new conversation."

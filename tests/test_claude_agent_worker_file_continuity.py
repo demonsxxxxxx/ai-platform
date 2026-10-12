@@ -11,7 +11,7 @@ from app.context.api import ContextFileContentError
 from app.context.file_continuity import select_run_file_snapshot
 from app.executors.base import RunPayload
 from app.executors.claude_agent_worker import ClaudeAgentWorkerAdapter
-from app.file_parser_contracts import XLSX_CONTENT_TYPE
+from app.files.api import XLSX_CONTENT_TYPE
 from app.storage import ObjectStorageSizeLimitError
 
 

@@ -1153,32 +1153,29 @@ def test_admin_draft_upload_rolls_back_when_response_model_build_fails(monkeypat
     ]
 
 
-def test_admin_upload_skill_package_rejects_name_mismatch_before_storage(monkeypatch):
-    class FakeConnection:
-        pass
+@pytest.mark.parametrize("invalid_package", ["name_mismatch", "nonmaterializable_path"])
+def test_admin_upload_skill_package_rejects_invalid_package_before_storage(monkeypatch, invalid_package):
+    buffer = io.BytesIO(skill_package_zip(name="other-skill"))
+    if invalid_package == "nonmaterializable_path":
+        with zipfile.ZipFile(buffer, "a") as archive:
+            archive.writestr("references/notes:2026.md", "ordinary notes")
+    skill_id = "unknown-skill" if invalid_package == "name_mismatch" else "other-skill"
+    expected_error = "skill_package_name_mismatch" if invalid_package == "name_mismatch" else "skill_package_path_escape"
 
-    @asynccontextmanager
-    async def fake_transaction():
-        raise AssertionError("database must not be called for a package name mismatch")
-        yield FakeConnection()
-
-    class FailingObjectStorage:
-        def put_bytes(self, **kwargs):
-            raise AssertionError("storage must not be called for a package name mismatch")
+    def fail_persistence(*args, **kwargs):
+        raise AssertionError("invalid package must fail before transaction or storage")
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.ObjectStorage", FailingObjectStorage)
-    client = TestClient(create_app(), raise_server_exceptions=False)
-
+    monkeypatch.setattr("app.routes.admin_skills.transaction", fail_persistence)
+    monkeypatch.setattr("app.routes.admin_skills.ObjectStorage", fail_persistence)
+    client = TestClient(create_app())
     response = client.post(
-        "/api/ai/admin/skills/unknown-skill/versions/upload",
-        files={"package": ("other-skill.zip", skill_package_zip(name="other-skill"), "application/zip")},
+        f"/api/ai/admin/skills/{skill_id}/versions/upload",
+        files={"package": ("other-skill.zip", buffer.getvalue(), "application/zip")},
         headers=admin_headers(),
     )
-
     assert response.status_code == 400
-    assert response.json()["detail"] == "skill_package_name_mismatch"
+    assert response.json()["detail"] == expected_error
 
 
 @pytest.mark.asyncio
@@ -3275,3 +3272,95 @@ def test_admin_global_status_checks_references_without_caller_tenant_filter(monk
     assert response.status_code == 409
     assert response.json()["detail"] == "skill_version_has_active_release_policy"
     assert calls == ["lock", "read", "all_references"]
+
+
+@pytest.mark.parametrize("policy_origin", ["catalog", "policy", "same_target", "absent"])
+@pytest.mark.parametrize("rollout_percent", [0, 10, 99, 100])
+@pytest.mark.parametrize(
+    ("previous_status", "error"),
+    [
+        ("reviewed", "skill_version_not_materializable"),
+        ("draft", "skill_version_not_reviewed"),
+        ("disabled", "skill_version_inactive"),
+        ("deprecated", "skill_version_inactive"),
+        ("released", None),
+        ("active", None),
+    ],
+)
+def test_admin_promote_previous_track_requires_runnable_before_any_write(
+    monkeypatch, policy_origin, rollout_percent, previous_status, error
+):
+    calls = []
+
+    async def fake_lock(conn, *, skill_id):
+        calls.append(("lock", skill_id))
+
+    async def fake_get_version(conn, *, skill_id, version):
+        assert calls[0] == ("lock", "qa-file-reviewer")
+        calls.append(("read", version))
+        return {
+            **materializable_uploaded_qa_version(version),
+            "status": previous_status if version == "hash-previous" else "reviewed",
+        }
+
+    async def fake_get_policy(conn, *, tenant_id, skill_id, channel):
+        assert tenant_id == "default"
+        if policy_origin in {"catalog", "absent"}:
+            return None
+        return {
+            "current_version": "hash-target" if policy_origin == "same_target" else "hash-previous",
+            "previous_version": "hash-previous" if policy_origin == "same_target" else "hash-older",
+            "rollout_percent": 100,
+        }
+
+    async def fake_get_skill(conn, *, skill_id):
+        return {"version": "hash-target" if policy_origin == "absent" else "hash-previous"}
+
+    async def record_policy(conn, **kwargs):
+        calls.append(("policy", kwargs))
+
+    async def record_status(conn, **kwargs):
+        calls.append(("status", kwargs))
+        return {**materializable_uploaded_qa_version(kwargs["version"]), "status": kwargs["status"]}
+
+    async def record_visibility(conn, **kwargs):
+        calls.append(("visibility", kwargs))
+
+    async def record_audit(conn, **kwargs):
+        calls.append(("audit", kwargs))
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.admin_skills.transaction", opaque_connection_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.lock_skill_version_lifecycle", fake_lock)
+    monkeypatch.setattr("app.skills.infrastructure.postgres.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.get_skill_release_policy", fake_get_policy)
+    monkeypatch.setattr("app.skills.infrastructure.catalog_postgres.get_skill", fake_get_skill)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.set_skill_release_policy", record_policy)
+    monkeypatch.setattr("app.skills.infrastructure.versions_postgres.update_skill_version_status", record_status)
+    monkeypatch.setattr("app.skills.infrastructure.catalog_postgres.set_uploaded_workbench_skill_status", record_visibility)
+    monkeypatch.setattr("app.identity.infrastructure.audit_postgres.append_audit_log", record_audit)
+    monkeypatch.setattr("app.routes.admin_skills._build_skill_version_admin_review", reviewed_skill_version_release)
+    client = TestClient(create_app())
+    response = client.post(
+        "/api/ai/admin/skills/qa-file-reviewer/promote",
+        json={"version": "hash-target", "rollout_percent": rollout_percent},
+        headers=admin_headers(),
+    )
+
+    writes = [(kind, payload) for kind, payload in calls if kind not in {"lock", "read"}]
+    expected_previous = None if policy_origin == "absent" else "hash-previous"
+    if rollout_percent < 100 and expected_previous and error:
+        assert response.status_code == 409
+        assert response.json()["detail"] == error
+        assert writes == []
+    else:
+        assert response.status_code == 200
+        assert response.json()["previous_version"] == expected_previous
+        assert response.json()["rollout_percent"] == rollout_percent
+        assert [kind for kind, _ in writes] == ["policy", "status", "visibility", "audit"]
+        assert writes[0][1]["tenant_id"] == "default"
+        assert writes[0][1]["previous_version"] == expected_previous
+        assert writes[0][1]["rollout_percent"] == rollout_percent
+        assert writes[1][1]["version"] == "hash-target"
+        assert writes[1][1]["status"] == "released"
+    assert (("read", "hash-previous") in calls) == (rollout_percent < 100 and bool(expected_previous))
