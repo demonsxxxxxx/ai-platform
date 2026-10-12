@@ -5,6 +5,26 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
 
+from app.files.domain.xlsx_preview import (
+    MAX_XLSX_CELL_CHARS,
+    MAX_XLSX_CELLS,
+    MAX_XLSX_COLUMNS_PER_SHEET,
+    MAX_XLSX_FILE_BYTES,
+    MAX_XLSX_ROWS_PER_SHEET,
+    MAX_XLSX_SHEETS,
+    MAX_XLSX_ZIP_COMPRESSION_RATIO,
+    MAX_XLSX_ZIP_ENTRIES,
+    MAX_XLSX_ZIP_ENTRY_BYTES,
+    MAX_XLSX_ZIP_TOTAL_BYTES,
+    XLSX_CONTENT_TYPE,
+    XLSX_PARSER_ID,
+    XLSX_PARSER_VERSION,
+    is_xlsx_preview_request,
+    normalized_xlsx_content_type,
+    parser_spec_for_attachment,
+    xlsx_preview_identity_from_metadata,
+    xlsx_preview_max_bytes,
+)
 from app.files.application.previews import (
     XlsxPreviewImageExtractor,
     configure_xlsx_preview_image_extractor,
@@ -31,6 +51,12 @@ from app.files.application.session_files import (
     get_owned_unbound_file,
     list_owned_session_files,
 )
+
+# Stable capability identities for authorized ProfileDrive file access.
+# Admission and sandbox staging policy remain with their callers.
+PROFILE_DRIVE_STAGE_TOOL = "stage_profile_drive_file_to_workspace"
+PROFILE_DRIVE_STAGE_IDENTITY = f"mcp__ai-platform-context__{PROFILE_DRIVE_STAGE_TOOL}"
+PROFILE_DRIVE_READ_TEXT_IDENTITY = "mcp__ProfileDriveMCPServer__read_text_file"
 
 MAX_UPLOAD_BYTES = 512 * 1024 * 1024
 
@@ -178,6 +204,24 @@ async def abort_file_upload_session(conn: Any, **kwargs: Any) -> None:
 
 
 __all__ = [
+    "MAX_XLSX_CELL_CHARS",
+    "MAX_XLSX_CELLS",
+    "MAX_XLSX_COLUMNS_PER_SHEET",
+    "MAX_XLSX_FILE_BYTES",
+    "MAX_XLSX_ROWS_PER_SHEET",
+    "MAX_XLSX_SHEETS",
+    "MAX_XLSX_ZIP_COMPRESSION_RATIO",
+    "MAX_XLSX_ZIP_ENTRIES",
+    "MAX_XLSX_ZIP_ENTRY_BYTES",
+    "MAX_XLSX_ZIP_TOTAL_BYTES",
+    "XLSX_CONTENT_TYPE",
+    "XLSX_PARSER_ID",
+    "XLSX_PARSER_VERSION",
+    "is_xlsx_preview_request",
+    "normalized_xlsx_content_type",
+    "parser_spec_for_attachment",
+    "xlsx_preview_identity_from_metadata",
+    "xlsx_preview_max_bytes",
     "MAX_UPLOAD_BYTES",
     "FileUploadPersistence",
     "ProfileDriveFile",

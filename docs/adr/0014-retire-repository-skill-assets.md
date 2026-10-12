@@ -56,6 +56,20 @@ Public aliases do not map back to retired Agent names or inject a default Skill;
 SOP keywords do not select a fixed knowledge Skill. The unused filesystem pin
 builder and builtin version lookup stub are deleted.
 
+Internal snapshot construction uses the canonical SkillVersion manifest builder
+for both uploaded and historical builtin snapshots. Source-kind validation and
+historical embedded dependency-manifest stripping remain in that owner; uploaded
+package reuse separately requires an uploaded source. New upload dependency
+evidence keeps `manifest_snapshot_present=false` and does not produce embedded
+dependency manifests. Existing dependency evidence and immutable source records
+are not rewritten.
+
+Rollout consumers use the complete release decision, including its selected
+version. The offline `BuiltinSkill` record and staged snapshots use `path` for
+filesystem location rather than an unused duplicate entry field. The admin
+catalog response is owned by the DTOs in `skills.api`; the unused duplicate
+models are removed without changing the registered HTTP response fields.
+
 Dependency validation uses declared IDs and complete immutable dependency pins.
 Root and dependency versions each require current tenant distribution authority;
 there are no public/internal Skill name lists, name-derived tool grants, or

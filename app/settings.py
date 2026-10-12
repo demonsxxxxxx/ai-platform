@@ -173,8 +173,6 @@ class Settings(BaseSettings):
     anthropic_auth_token: str = Field(default="")
     anthropic_model: str = Field(default="deepseek-v4-flash")
     claude_agent_model: str = Field(default="deepseek-v4-flash")
-    default_model_id: str = Field(default="")
-    model_catalog_json: str = Field(default="")
     model_connection_encryption_key: str = Field(default="")
     model_connection_allowed_internal_hosts: str = Field(default="")
     model_proxy_internal_token: str = Field(default="")

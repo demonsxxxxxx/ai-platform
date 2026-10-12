@@ -18,7 +18,7 @@ from app.context.api import (
     read_provider_coverage,
     make_authority_receipt,
 )
-from app.context.file_continuity import snapshot_file_ids
+from app.context.file_continuity import MAX_PRIMARY_FILE_IDS, snapshot_file_ids
 from app.context_manifest import (
     CONTEXT_MANIFEST_SCHEMA_VERSION,
     ContextPlanner,
@@ -579,7 +579,7 @@ async def record_initial_context_snapshot(
     include_session_files: bool = True,
 ) -> dict[str, Any]:
     included_message_ids = list(dict.fromkeys(message_ids or []))
-    included_file_ids = list(file_ids or [])
+    included_file_ids = list(dict.fromkeys(file_ids or []))
     included_artifact_ids: list[str] = []
     source_run_ids: list[str] = []
     source_artifacts: list[dict[str, Any]] = []
@@ -627,7 +627,8 @@ async def record_initial_context_snapshot(
             source_sha256=coverage["source_sha256"],
             current_message_id=included_message_ids[0] if included_message_ids else None,
         )
-        if include_session_files:
+        remaining_history_slots = max(0, MAX_PRIMARY_FILE_IDS - len(included_file_ids))
+        if include_session_files and remaining_history_slots:
             session_files = await context_sources_postgres.list_session_context_files(
                 conn,
                 tenant_id=tenant_id,
@@ -635,13 +636,14 @@ async def record_initial_context_snapshot(
                 user_id=user_id,
                 session_id=session_id,
                 run_id=run_id,
-                limit=8,
+                limit=remaining_history_slots,
+                excluded_file_ids=included_file_ids,
             )
             included_file_ids = snapshot_file_ids(
                 current_file_ids=included_file_ids,
                 historical_file_ids=[
                     str(row.get("id") or "")
-                    for row in session_files
+                    for row in reversed(session_files)
                     if isinstance(row, dict) and row.get("id")
                 ],
             )

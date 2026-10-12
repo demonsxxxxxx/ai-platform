@@ -31,13 +31,11 @@ async def test_real_opensandbox_bash_cannot_read_raw_model_credentials(
     credential_canaries = [
         f"live-openai-canary-{suffix}",
         f"live-anthropic-canary-{suffix}",
-        f"live-catalog-canary-{suffix}",
     ]
     acceptance_settings = settings.model_copy(
         update={
             "openai_api_key": credential_canaries[0],
             "anthropic_auth_token": credential_canaries[1],
-            "model_catalog_json": json.dumps({"canary": credential_canaries[2]}),
         }
     )
     monkeypatch.setattr(
