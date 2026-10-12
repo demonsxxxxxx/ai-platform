@@ -147,6 +147,21 @@ boolean. `tests/test_sandbox_runtime_evidence_script.py` owns nested verifier
 validation, while `tests/test_office_context_readiness.py` owns projection of the
 blocker and rejection of historical wrappers.
 
+### Archived inventory acceptance
+
+The governance and alert/trace inventory probes are retired. Current Admin
+Runtime exposes offline references, not source inventories. Foundation and Skill
+release readers retain the recorded verifier/schema identities to interpret
+archived evidence; the Foundation wrapper may package that existing output but
+cannot refresh it. Their missing-evidence blockers remain open. Define an owned
+current-runtime observation before introducing any replacement acceptance;
+producer retirement alone never closes a stage or authorizes release.
+
+Memory erasure behavior is owned by Context persistence/routes and Worker cleanup
+regressions, including `tests/test_context_memory_retention.py`,
+`tests/test_context_routes.py`, and `tests/test_worker_main.py`. A source-marker
+scanner is not independent erasure or runtime evidence.
+
 ## 6. Retirement and ownership
 
 When deleting a test or readiness surface:

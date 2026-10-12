@@ -267,9 +267,9 @@ test("loading, error, and empty view models do not throw", () => {
       artifacts: [],
       contextWindow: null,
       failureGuidance: {
-        whatHappened: "无法刷新任务的最新状态。",
-        retained: "当前连接无法确认已完成内容；后台任务可能仍在继续。",
-        nextAction: "恢复网络后请先刷新或重新连接，确认状态前不要重复提交。",
+        whatHappened: "无法读取运行回放。",
+        retained: "回放暂时无法显示；这不代表后台任务已失败或停止。",
+        nextAction: "请刷新回放重试；刷新只读取已有结果，不会重新提交任务。",
         problemNumber: "run-error",
       },
       errorMessage: "Network failed",

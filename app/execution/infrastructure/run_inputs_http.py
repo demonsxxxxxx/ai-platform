@@ -181,8 +181,11 @@ class RunInputCallbackClient:
             not isinstance(questions, list) or not all(isinstance(item, dict) for item in questions)
         ):
             raise RunInputCallbackError("run_input_response_invalid")
+        error_code = value.get("error_code")
+        if error_code not in {None, "run_question_needs_input"} or (error_code is not None and inputs):
+            raise RunInputCallbackError("run_input_response_invalid")
         return RunInputSnapshot(
-            state=state, inputs=inputs,
+            state=state, inputs=inputs, error_code=error_code,
             questions=tuple(questions) if questions is not None else None,
         )  # type: ignore[arg-type]
 

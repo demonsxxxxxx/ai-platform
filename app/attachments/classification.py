@@ -18,11 +18,10 @@ from zipfile import BadZipFile, ZipFile
 
 from app.file_parser_contracts import (
     AttachmentPreprocessingError,
-    MAX_XLSX_FILE_BYTES,
-    XLSX_CONTENT_TYPE,
     _preflight_xlsx_worksheets,
     _validate_xlsx_archive,
 )
+from app.files.api import MAX_XLSX_FILE_BYTES, XLSX_CONTENT_TYPE
 from app.validation import assert_safe_id
 
 

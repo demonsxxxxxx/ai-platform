@@ -2,7 +2,7 @@
 
 Status: active source contract
 Owner: Context; native engine adaptation is owned by Execution
-Last updated: 2026-09-28
+Last updated: 2026-10-11
 
 ## Authorities
 
@@ -59,6 +59,30 @@ controlled system channel. Claude does not receive `read_session_messages`.
 
 Provider IDs, transcript entries, callback credentials and storage/runtime details
 remain private. Public Context summaries expose counts and safe provenance.
+
+## Bounded Attachment Selection
+
+Current attachments retain priority and are all preserved within the existing
+request limits. Historical attachments fill only the remaining slots in the
+eight-file continuity selection. Runs API snapshots take the newest eligible
+generation/time/ID tail after excluding current IDs; an ascending repository
+result is reversed before applying the newest-first selection contract.
+
+Pre-admission Session file selection uses 128-row keyset pages ordered by
+`created_at DESC, id DESC` on the caller's existing connection and transaction.
+It stops when enough eligible files are selected. Skill input matching and
+Unicode casefold basename deduplication retain their existing Python owner, so
+an incompatible file or a repeated name cannot consume a final selection slot.
+The existing owner/session/time index supports this access path. Exhausting
+large incompatible or duplicate histories can still require multiple pages;
+the change bounds materialized pages, not total worst-case scanning.
+
+When current attachments fill all slots, no historical page is requested.
+Explicit current IDs still receive a bounded membership query when needed to
+preserve their existing reusable-file classification. Every query retains the
+exact source Run snapshot binding and scope predicates; final locked file
+authorization remains unchanged. Keyset paging does not open a second
+transaction or claim stronger isolation than the caller supplies.
 
 ## Run Playback Context Window
 

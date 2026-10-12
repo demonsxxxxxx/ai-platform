@@ -38,6 +38,7 @@ import { updatePersistentToolPanel } from "../../chat/ChatMessage/items/persiste
 import {
   type RunControlLifecycle,
   type RunControlPhase,
+  type RunControlReadError,
   type RunControlSnapshot,
 } from "../../../hooks/useAgent/runControlLifecycle";
 
@@ -79,6 +80,9 @@ export function RunPlaybackPanel({ lifecycle, panelKey }: RunPlaybackPanelProps)
     >
       <SummaryBlock summary={viewModel.summary} />
       <RunControlActions lifecycle={lifecycle} snapshot={snapshot} />
+      {snapshot.playback && (
+        <ReadFailureNotice lifecycle={lifecycle} snapshot={snapshot} />
+      )}
       {viewModel.failureGuidance ? (
         <div className="shrink-0 border-b border-[var(--theme-border)] px-3 py-3 dark:border-stone-800 sm:px-4">
           <FailureGuidanceCard guidance={viewModel.failureGuidance} />
@@ -90,7 +94,10 @@ export function RunPlaybackPanel({ lifecycle, panelKey }: RunPlaybackPanelProps)
         {viewModel.state === "error" && (
           <ErrorBlock
             message={viewModel.errorMessage}
-            onRetry={() => lifecycle.open()}
+            readFailure={snapshot.rejectionMessage ? null : snapshot.playbackReadError}
+            readinessFailure={snapshot.readinessReadError}
+            onRetry={() => void lifecycle.refresh()}
+            disabled={snapshot.isBusy}
           />
         )}
         {viewModel.state === "empty" && <EmptyBlock />}
@@ -121,13 +128,59 @@ function getViewModel(
       new Error(snapshot.rejectionMessage),
     );
   }
-  if (snapshot.readError) {
+  if (snapshot.playbackReadError) {
     return buildRunPlaybackErrorViewModel(
       runId,
-      new Error(snapshot.readError),
+      new Error(snapshot.playbackReadError.message),
     );
   }
   return buildRunPlaybackLoadingViewModel(runId);
+}
+
+/** Safe HTTP metadata already projected at the API boundary, shared by cold and stale reads. */
+function ReadErrorDetails({ error }: { error: RunControlReadError | null }) {
+  const { t } = useTranslation();
+  if (!error) return null;
+  const details = [
+    error.status !== undefined ? `HTTP ${error.status}` : null,
+    error.code ? `${t("runPlayback.readErrorCode")}: ${error.code}` : null,
+    error.diagnosticId ? `${t("runPlayback.diagnosticId")}: ${error.diagnosticId}` : null,
+  ].filter(Boolean);
+  return details.length ? (
+    <p className="mt-1 break-words text-xs">{details.join(" · ")}</p>
+  ) : null;
+}
+
+function ReadFailureNotice({
+  lifecycle,
+  snapshot,
+}: {
+  lifecycle: RunControlLifecycle;
+  snapshot: RunControlSnapshot;
+}) {
+  const { t } = useTranslation();
+  if (!snapshot.playbackReadError && !snapshot.readinessReadError) return null;
+  return (
+    <div role="alert" className="shrink-0 border-b border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
+      {snapshot.playbackReadError && (
+        <div>
+          <p>{t("runPlayback.stalePlayback")} {snapshot.playbackReadError.message}</p>
+          <ReadErrorDetails error={snapshot.playbackReadError} />
+        </div>
+      )}
+      {snapshot.readinessReadError && (
+        <div>
+          <p>{t("runPlayback.readinessReadFailed")} {snapshot.readinessReadError.message}</p>
+          <ReadErrorDetails error={snapshot.readinessReadError} />
+        </div>
+      )}
+      <RunControlButton
+        label={t("runPlayback.actions.refresh")}
+        disabled={snapshot.isBusy}
+        onClick={() => void lifecycle.refresh()}
+      />
+    </div>
+  );
 }
 
 function RunControlActions({
@@ -366,14 +419,20 @@ function LoadingBlock() {
 
 function ErrorBlock({
   message,
+  readFailure,
+  readinessFailure,
   onRetry,
+  disabled,
 }: {
   message: string | null;
+  readFailure: RunControlReadError | null;
+  readinessFailure: RunControlReadError | null;
   onRetry: () => void;
+  disabled: boolean;
 }) {
   const { t } = useTranslation();
   return (
-    <div className="rounded-md border border-red-200 bg-red-50 p-3 dark:border-red-900/50 dark:bg-red-950/30">
+    <div role="alert" className="rounded-md border border-red-200 bg-red-50 p-3 dark:border-red-900/50 dark:bg-red-950/30">
       <div className="flex items-start gap-2">
         <AlertTriangle
           size={16}
@@ -386,11 +445,19 @@ function ErrorBlock({
           <div className="mt-1 text-xs text-red-600 dark:text-red-300/80">
             {message || t("runPlayback.errorFallback")}
           </div>
+          <ReadErrorDetails error={readFailure} />
+          {readinessFailure && (
+            <div className="mt-2 text-xs">
+              <p>{t("runPlayback.readinessReadFailed")} {readinessFailure.message}</p>
+              <ReadErrorDetails error={readinessFailure} />
+            </div>
+          )}
         </div>
       </div>
       <button
         type="button"
         onClick={onRetry}
+        disabled={disabled}
         className="mt-3 inline-flex h-8 items-center gap-2 rounded-md border border-red-200 bg-[var(--theme-bg-card)] px-2.5 text-xs font-medium text-red-700 transition-colors hover:bg-red-50 dark:border-red-900/60 dark:bg-red-950/20 dark:text-red-300 dark:hover:bg-red-950/40"
       >
         <RefreshCw size={13} />

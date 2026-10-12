@@ -12,6 +12,7 @@ from app.mcp.application.worker_dispatch_authorization import (
 )
 from app.mcp.application.live_catalog import (
     LiveMcpServerResult,
+    McpCatalogFailure,
     LiveMcpTool,
 )
 from app.mcp.application.runtime_registry import (
@@ -162,6 +163,7 @@ async def toggle_mcp_server_distribution(conn: Any, **kwargs: Any) -> dict[str, 
 
 __all__ = [
     "LiveMcpServerResult",
+    "McpCatalogFailure",
     "LiveMcpTool",
     "MCP_JWT_AUTHORIZATION_HEADER",
     "McpRuntimeContextError",
