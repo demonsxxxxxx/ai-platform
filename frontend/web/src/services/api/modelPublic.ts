@@ -2,7 +2,7 @@
  * Public model projection API.
  *
  * This module is safe for ordinary browser entry points. It only exposes
- * model options, provider names, and per-user pinned model preferences.
+ * model options, provider names, and the administrator-selected default.
  */
 
 import { API_BASE } from "./config";
@@ -41,28 +41,5 @@ export const modelPublicApi = {
       `${API_BASE}/api/agent/models/available`,
       { signal: options.signal, cache: "no-store" },
     );
-  },
-
-  async getPinnedModelIds(
-    options: ModelPublicRequestOptions = {},
-  ): Promise<string[]> {
-    const user = await authFetch<{
-      metadata?: { pinned_model_ids?: string[] };
-    }>(`${API_BASE}/api/auth/profile`, { signal: options.signal });
-    return user.metadata?.pinned_model_ids ?? [];
-  },
-
-  async updatePinnedModelIds(
-    ids: string[],
-    options: ModelPublicRequestOptions = {},
-  ): Promise<string[]> {
-    const user = await authFetch<{
-      metadata?: { pinned_model_ids?: string[] };
-    }>(`${API_BASE}/api/auth/profile/metadata`, {
-      method: "PUT",
-      body: JSON.stringify({ metadata: { pinned_model_ids: ids } }),
-      signal: options.signal,
-    });
-    return user.metadata?.pinned_model_ids ?? [];
   },
 };

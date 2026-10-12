@@ -142,6 +142,16 @@ def _opaque(prefix: str, run_id: str, kind: str, identity: str) -> str:
     return f"{prefix}_{digest}"
 
 
+def public_tool_operation_id(run_id: object, invocation_id: object) -> str | None:
+    """Correlate a private SDK call with its existing public tool operation."""
+
+    if not isinstance(run_id, str) or _RUN_ID_PATTERN.fullmatch(run_id) is None:
+        return None
+    if _safe_private_identity(invocation_id) is None:
+        return None
+    return _opaque("op", run_id, "tool", invocation_id)
+
+
 def _bounded_int(value: object, *, maximum: int, default: int = 0) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         return default
@@ -1091,7 +1101,7 @@ class ClaudeSdkAgentEventAdapter:
             self._candidate(
                 "tool.denied",
                 {
-                    "operation_id": _opaque("op", self.run_id, "tool", call_id),
+                    "operation_id": public_tool_operation_id(self.run_id, call_id),
                     "category": category,
                     "display_name": label,
                     "denial_code": "policy_denied",
@@ -1151,7 +1161,7 @@ class ClaudeSdkAgentEventAdapter:
                 self._candidate(
                     "tool.started",
                     {
-                        "operation_id": _opaque("op", self.run_id, "tool", call_id),
+                        "operation_id": public_tool_operation_id(self.run_id, call_id),
                         "category": category,
                         "display_name": label,
                     },
@@ -1162,7 +1172,7 @@ class ClaudeSdkAgentEventAdapter:
             return ()
         state.terminal = True
         duration = _bounded_int(round((self._clock() - state.started_at) * 1000), maximum=_MAX_DURATION)
-        operation_id = _opaque("op", self.run_id, "tool", call_id)
+        operation_id = public_tool_operation_id(self.run_id, call_id)
         if hook_event_name == "PostToolUseFailure":
             failure = _failure_category(hook_input.get("error_type") or hook_input.get("error_category"))
             return (

@@ -13,10 +13,7 @@ from app.context.api import (
     manifest_with_worker_attachment_metadata,
 )
 from app.bootstrap.context import (
-    ContextRetrievalAuthority,
-    ContextRetrievalIdentity,
     materialize_worker_context_files,
-    worker_context_retrieval_authority,
 )
 from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION
 from app.control_plane_contracts import (
@@ -239,10 +236,6 @@ def _execution_boundary_decision(payload: RunPayload) -> ExecutionBoundaryDecisi
             ).available
         ),
     )
-
-
-def _ordinary_run_requires_sandbox(payload: RunPayload) -> bool:
-    return _execution_boundary_decision(payload).requires_real_sandbox
 
 
 def _sandbox_workspace(settings: object, payload: RunPayload) -> Path:
@@ -494,20 +487,6 @@ class ClaudeAgentWorkerAdapter:
         snapshot_pack = executor_context_pack_from_snapshot(payload.context_snapshot)
         return ({**snapshot_pack, "conversation_context": provider_context}
                 if isinstance(provider_context, dict) else pack)
-
-    def _context_retrieval_for_payload(
-        self,
-        payload: RunPayload,
-        context_pack: dict[str, Any],
-        workspace: Path,
-    ) -> tuple[ContextRetrievalAuthority | None, ContextRetrievalIdentity | None]:
-        scope = self._context_retrieval_scope_for_payload(payload, context_pack)
-        if scope is None:
-            return None, None
-        return (
-            worker_context_retrieval_authority(workspace),
-            ContextRetrievalIdentity(**scope.model_dump()),
-        )
 
     def _context_retrieval_scope_for_payload(
         self,

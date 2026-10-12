@@ -17,7 +17,9 @@ from app.platform.public_payload import sanitize_public_text
 from app.platform.postgres import values as platform_values
 from app.runs import api as runs_api
 from app.runs.infrastructure import postgres as runs_postgres
-from app.runs.infrastructure.worker_result_commit_timing import TimedWorkerResultCommitService
+from app.runs.infrastructure.worker_result_commit_timing import (
+    TimedWorkerResultCommitService, observe_worker_result_publication,
+)
 from app.skills import api as skills_api
 from app.skills.infrastructure import postgres as skills_postgres
 from app.skills.infrastructure import run_snapshots_postgres as skills_run_snapshots_postgres
@@ -107,3 +109,11 @@ def build_worker_result_commit_service(transaction_factory: Any) -> runs_api.Wor
         ),
         prefers_cancelled=execution_api.sandbox_failure_prefers_cancelled,
     )
+
+
+async def publish_worker_result_event(
+    publish: Any, capabilities: Any,
+    command: runs_api.WorkerResultCommitCommand, outcome: runs_api.WorkerResultCommitOutcome,
+) -> None:
+    """Bind Worker publication to the existing Runs observation owner."""
+    await observe_worker_result_publication(publish, capabilities, command, outcome)

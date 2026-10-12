@@ -75,6 +75,8 @@ def _next_action(*, detail_code: str, artifact_count: int) -> str:
         return "请检查所选专家或工具配置；如仍不可用，请联系管理员并提供问题编号。"
     if detail_code in {"context_file_storage_unavailable", "context_file_staging_unavailable"}:
         return "请稍后重试；如文件服务仍不可用，请联系管理员并提供问题编号。"
+    if detail_code == "run_question_needs_input":
+        return "请补充问题所需信息后重新提交任务。"
     if detail_code == "current_request_too_large":
         return "请缩短或拆分当前请求后重试。"
     if detail_code == "input_context_too_large":

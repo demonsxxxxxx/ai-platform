@@ -47,6 +47,7 @@ import {
   type UseAgentOptions,
   type SubagentStackItem,
   type HistoryEvent,
+  type HistoryReadError,
   type SubmissionOutcome,
   type UseAgentReturn,
 } from "./useAgent/types";
@@ -99,6 +100,7 @@ import {
 import { createOptimisticMessagesForSend } from "./useAgent/optimisticMessages";
 import {
   projectChatAdmissionError,
+  projectSafeBackendError,
   safeDiagnosticCode,
   translateBackendError,
   translateChatAdmissionError,
@@ -172,11 +174,37 @@ function messagesAfterSubmissionRejection(
   return uncertainty.previousMessages || [];
 }
 
+interface HistoryLoadFailure {
+  error: HistoryReadError;
+  sessionId: string;
+  runId?: string;
+  token: number;
+  mountedGeneration: number;
+  authIdentity: string | null;
+  authRevision: number;
+}
+
 type HistoryLoadFailurePhase =
   | "session_projection"
   | "identity_validation"
   | "event_history"
   | "feedback";
+
+/** Reuse the API safe-copy/code boundary; never retain an arbitrary exception. */
+function projectHistoryReadError(error: unknown): HistoryReadError {
+  if (!(error instanceof ApiRequestError)) {
+    return { message: i18n.t("chat.historyLoadFailed") };
+  }
+  const status = Number.isInteger(error.status) && error.status >= 100 && error.status <= 599
+    ? error.status : undefined;
+  const code = safeDiagnosticCode(error);
+  // Match the existing fetch.ts diagnostic-id boundary even for constructed
+  // ApiRequestErrors; class membership alone is not disclosure authority.
+  const diagnosticId = typeof error.diagnosticId === "string" && /^diag_[a-f0-9]{16}$/.test(error.diagnosticId)
+    ? error.diagnosticId : undefined;
+  const projection = projectSafeBackendError(code ?? error.message, status ?? 0, i18n.getFixedT("zh"));
+  return { message: projection.message, status, code, diagnosticId };
+}
 
 /** Emit only fixed phase plus bounded status/code for history diagnostics. */
 function logHistoryLoadFailure(
@@ -763,6 +791,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [sessionAgentId, setSessionAgentId] = useState(DEFAULT_CHAT_AGENT_ID);
   const [error, setError] = useState<string | null>(null);
+  // History incompleteness is independent of submission errors. A later send
+  // cannot clear it; only this history owner may replace or retire it.
+  const [historyLoadFailure, setHistoryLoadFailure] =
+    useState<HistoryLoadFailure | null>(null);
   const [failureGuidance, setFailureGuidance] =
     useState<FailureGuidance | null>(null);
   const [connectionStatus, setConnectionStatus] =
@@ -1833,6 +1865,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       targetSessionId: string,
       targetRunId?: string,
       runControlAdoption?: { owner: RunControlOwner },
+      readOnlyRetry = false,
     ) => {
       if (!isMountedRef.current) {
         return null;
@@ -1844,6 +1877,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         return null;
       }
       const mountedGeneration = mountedGenerationRef.current;
+      const historyAuthIdentity = runControlAuthIdentityRef.current;
+      const historyAuthRevision = runControlAuthRevisionRef.current;
       if (isLoadingHistoryRef.current) {
         console.log(
           "[loadHistory] Switching to new session, aborting previous load...",
@@ -1882,6 +1917,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
 
       isLoadingHistoryRef.current = true;
       setIsLoadingHistory(true);
+      setHistoryLoadFailure(null);
 
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
@@ -2278,7 +2314,15 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             sessionAgentAuthorityRef.current = null;
           }
           logHistoryLoadFailure(historyFailurePhase, error);
-          setError(i18n.t("chat.historyLoadFailed"));
+          setHistoryLoadFailure({
+            error: projectHistoryReadError(error),
+            sessionId: targetSessionId,
+            runId: targetRunId,
+            token: historyLoadToken,
+            mountedGeneration,
+            authIdentity: historyAuthIdentity,
+            authRevision: historyAuthRevision,
+          });
         }
       } finally {
         if (isCurrentHistoryLoadRequest()) {
@@ -2376,6 +2420,40 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       reconnectRunControlOwner,
     });
   }, [adoptRunControlChild, reconnectRunControlOwner, runControlLifecycle]);
+
+  const historyReadError = (
+    historyLoadFailure &&
+      historyLoadFailure.sessionId === sessionId &&
+      historyLoadFailure.token === historyLoadTokenRef.current &&
+      historyLoadFailure.mountedGeneration === mountedGenerationRef.current &&
+      historyLoadFailure.authIdentity === runControlAuthIdentity &&
+      historyLoadFailure.authRevision === runControlAuthRevisionRef.current
+  ) ? historyLoadFailure.error : null;
+  const retryHistoryLoad = useCallback(async () => {
+    if (
+      !historyLoadFailure ||
+      !isMountedRef.current ||
+      historyLoadFailure.sessionId !== sessionIdRef.current ||
+      historyLoadFailure.token !== historyLoadTokenRef.current ||
+      historyLoadFailure.mountedGeneration !== mountedGenerationRef.current ||
+      historyLoadFailure.authIdentity !== runControlAuthIdentityRef.current ||
+      historyLoadFailure.authRevision !== runControlAuthRevisionRef.current ||
+      isLoadingHistoryRef.current ||
+      isSendingRef.current ||
+      currentRunIdRef.current !== null ||
+      submissionUncertaintyRef.current !== null ||
+      messagesRef.current.some((message) => message.isStreaming || message.isSynchronizing)
+    ) {
+      return;
+    }
+    // Explicit read retry only: no task resubmission.
+    await loadHistory(
+      historyLoadFailure.sessionId,
+      historyLoadFailure.runId,
+      undefined,
+      true,
+    );
+  }, [historyLoadFailure, loadHistory]);
 
   // Send message
   const sendMessage = useCallback(
@@ -3035,6 +3113,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     sessionAgentIdRef.current = DEFAULT_CHAT_AGENT_ID;
     setSessionAgentId(DEFAULT_CHAT_AGENT_ID);
     setError(null);
+    setHistoryLoadFailure(null);
     setFailureGuidance(null);
     setCurrentRunId(null);
     setRunInputsRunId(null);
@@ -3548,7 +3627,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     messages,
     isLoading,
     isLoadingHistory,
-    error,
+    error: error ?? historyReadError?.message ?? null,
+    historyReadError,
+    retryHistoryLoad,
     failureGuidance,
     sessionId,
     currentRunId,

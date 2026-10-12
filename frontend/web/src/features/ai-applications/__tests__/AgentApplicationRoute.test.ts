@@ -7,6 +7,8 @@ import { resolveInternalAiApplication } from "../aiApplicationCatalog.ts";
 
 const routeSource = readFileSync(resolve(import.meta.dirname, "../AgentApplicationRoute.tsx"), "utf8");
 
+const sopSource = readFileSync(resolve(import.meta.dirname, "../sopTransport.ts"), "utf8");
+
 test("internal AI application aliases resolve their dedicated pages", () => {
   assert.deepEqual(resolveInternalAiApplication("sop-assistant"), {
     name: "知识库问答",
@@ -27,13 +29,13 @@ test("application routes render task-specific surfaces and use the independent W
   assert.match(routeSource, /累计审核文档/);
   assert.match(routeSource, /当前任务/);
   assert.match(routeSource, /历史记录/);
-  assert.match(routeSource, /SOP_RAGFLOW_API_BASE = "http:\/\/10\.56\.0\.211:8080"/);
-  assert.match(routeSource, /VITE_RAGFLOW_SOP_SHARE_URL/);
-  assert.match(routeSource, /\/api\/v1\/chatbots\/\$\{encodeURIComponent\(config\.chatId\)\}\/completions/);
-  assert.match(routeSource, /question: "初始化会话", stream: true/);
-  assert.match(routeSource, /sessionId \|\| \(await createSopSession\(config, controller\.signal\)\)/);
-  assert.match(routeSource, /session_id: activeSessionId/);
-  assert.match(routeSource, /Authorization: `Bearer \$\{config\.auth\}`/);
+  assert.match(sopSource, /SOP_RAGFLOW_API_BASE = "http:\/\/10\.56\.0\.211:8080"/);
+  assert.match(sopSource, /VITE_RAGFLOW_SOP_SHARE_URL/);
+  assert.match(sopSource, /\/api\/v1\/chatbots\/\$\{encodeURIComponent\(config\.chatId\)\}\/completions/);
+  assert.match(sopSource, /question: "初始化会话", stream: true/);
+  assert.match(sopSource, /sessionId \|\| \(await createSopSession\(config, controller\)\)/);
+  assert.match(sopSource, /session_id: activeSessionId/);
+  assert.match(sopSource, /Authorization: `Bearer \$\{config\.auth\}`/);
   assert.match(routeSource, /Accept: "text\/event-stream"/);
   assert.doesNotMatch(routeSource, /useAgent\(|getPublished\(|agentProfileApi|sendMessage\(/);
   assert.match(routeSource, /<main className="flex h-full min-h-0 flex-col overflow-hidden/);
