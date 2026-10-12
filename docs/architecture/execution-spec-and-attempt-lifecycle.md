@@ -247,6 +247,14 @@ the oldest eligible Run. This removes the fixed tail horizon that could starve
 an older eligible Run while arrivals continued. A dispatch with a long blocked
 prefix can read the full queued list; capacity testing must include that case.
 
+Redis reclaim transfers an expired lease only when the same atomic operation
+consumes its processing-list entry. Retained retry metadata preserves the
+delivery budget; it cannot authorize a second enqueue after transfer. Concurrent
+reclaimers and repeated calls must leave one queued copy and one admission
+ordinal. Missing processing metadata may still recover through exact retry
+metadata when the processing entry remains. This does not repair historical
+duplicate entries or make an older reclaimer implementation replay-safe.
+
 Redis reclaim must create a new durable ordinal attempt before a new worker can
 execute. It never overwrites the old attempt identity. Retry, resume, and copy
 continue to create a new Run under the current product contract; they do not
