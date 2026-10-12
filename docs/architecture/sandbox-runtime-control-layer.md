@@ -132,10 +132,13 @@ generation, timestamps, and reconciliation ownership in one migration.
    Rejected delivery stays failed; uncertain delivery still suppresses terminal
    publication. No artifact or previously acknowledged answer fact is deleted.
    The receipt never carries the full answer body. The Worker
-   accepts only current-Attempt, strictly ordered v4 rows whose database and
-   canonical metadata publication states are both `published`; `pending` remains
-   retryable, while inconsistent or `suppressed` publication fails closed. Receipt,
-   identity, sequence, count, or length mismatch also fails closed. Legacy
+   accepts only current-Attempt, strictly ordered, committed v4 rows with
+   `visible_to_user = true`; retired publication metadata and Redis delivery do
+   not govern answer eligibility. Streaming owns
+   [receipt reconstruction](../../app/streaming/infrastructure/v4.py) for legacy
+   v1 and final answer-part v2 receipts under the
+   [current execution-control contract](redis-streams-sse-execution-control.md).
+   Receipt, identity, sequence, count, or length mismatch fails closed. Legacy
    non-streaming bounded terminal messages use the same stable-source
    `assistant_delta` compatibility shape only when no streamed answer exists;
    obsolete `assistant_final` is retired.
