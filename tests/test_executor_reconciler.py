@@ -8,6 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.platform.tracing import safe_exception_log_fields
+
 from app.context.api import ProviderSessionConflictError
 from app.executor_reconciler import (
     PermanentExecutorReconciliationError,
@@ -972,7 +974,7 @@ async def test_probe_keeps_terminal_receipt_when_protocol_diagnostics_fail(
             calls.append(("protocol", conn))
             raise RuntimeError("diagnostic storage unavailable")
 
-    run_diagnostics = RunDiagnosticsService(
+    run_diagnostics = RunDiagnosticsService(exception_log_fields=safe_exception_log_fields,
         persistence=FailingPersistence(),
         normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
         runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
@@ -2759,7 +2761,8 @@ async def test_verified_runtime_stop_failure_remains_eligible_for_cleanup(monkey
 
 
 @pytest.mark.asyncio
-async def test_release_helper_stops_provider_between_claim_and_finalize_transactions(monkeypatch):
+@pytest.mark.parametrize("stop_status", ("stopped", "not_found"))
+async def test_release_helper_stops_provider_between_claim_and_finalize_transactions(monkeypatch, stop_status):
     calls = []
     transaction_state = {"active": False}
     connection = object()
@@ -2779,7 +2782,7 @@ async def test_release_helper_stops_provider_between_claim_and_finalize_transact
         async def stop(self, lease, *, reason):
             assert transaction_state["active"] is False
             calls.append(("stop", lease, reason))
-            return SimpleNamespace(status="stopped")
+            return SimpleNamespace(status=stop_status)
 
     async def has_claim(conn, **kwargs):
         assert conn is connection

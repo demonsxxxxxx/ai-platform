@@ -121,7 +121,75 @@ async def test_principal_jwt_store_encrypts_overwrites_and_uses_jwt_exp(monkeypa
     with pytest.raises(McpRuntimeContextError) as expired:
         await store.get(principal)
     assert expired.value.code == "mcp_principal_jwt_expired"
-    assert backend.values == {}
+    # The in-memory backend does not expire keys; Redis owns reclamation.
+    assert key in backend.values
+    assert backend.expirations[key] == 600
+
+
+
+@pytest.mark.asyncio
+async def test_expired_principal_jwt_read_preserves_concurrent_new_login(monkeypatch):
+    _install_mcp_test_keyring(monkeypatch)
+    backend = _McpTestRedisBackend()
+    read_captured = asyncio.Event()
+    resume_read = asyncio.Event()
+    pause_read = True
+
+    def client():
+        delegate = backend.client()
+
+        class Client:
+            captured_read = False
+
+            async def set(self, key, value, *, ex):
+                await delegate.set(key, value, ex=ex)
+
+            async def get(self, key):
+                nonlocal pause_read
+                value = await delegate.get(key)
+                if pause_read:
+                    pause_read = False
+                    self.captured_read = True
+                return value
+
+            async def delete(self, key):
+                await delegate.delete(key)
+
+            async def aclose(self):
+                if self.captured_read:
+                    read_captured.set()
+                    await resume_read.wait()
+                await delegate.aclose()
+
+        return Client()
+
+    monkeypatch.setattr("app.mcp.infrastructure.runtime.get_redis_client", client)
+    now = [2_000_000_000]
+    store = McpPrincipalJwtStore(clock=lambda: now[0])
+    principal = AuthPrincipal(
+        tenant_id="tenant-a", user_id="user-a", display_name="user-a",
+        source="company-login",
+    )
+    await store.put(principal, _mcp_test_jwt(exp=now[0] + 1))
+    expired_read = asyncio.create_task(store.get(principal))
+    try:
+        await asyncio.wait_for(read_captured.wait(), timeout=5)
+        now[0] += 2
+        fresh = _mcp_test_jwt(exp=now[0] + 600)
+        await store.put(principal, fresh)
+        assert await store.get(principal) == fresh
+        resume_read.set()
+        with pytest.raises(McpRuntimeContextError) as expired:
+            await asyncio.wait_for(expired_read, timeout=5)
+        assert expired.value.code == "mcp_principal_jwt_expired"
+        assert expired.value.status_code == 401
+        assert await store.get(principal) == fresh
+        assert list(backend.expirations.values()) == [600]
+    finally:
+        resume_read.set()
+        if not expired_read.done():
+            expired_read.cancel()
+        await asyncio.gather(expired_read, return_exceptions=True)
 
 
 def test_mcp_server_credentials_are_encrypted_and_bound_to_tenant_server(monkeypatch):
