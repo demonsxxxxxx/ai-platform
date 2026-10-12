@@ -4495,8 +4495,16 @@ async def test_opensandbox_provider_stop_clears_tracking_for_authoritative_sdk_e
 
 
 @pytest.mark.asyncio
-async def test_opensandbox_provider_stop_retains_tracking_for_sdk_not_found_from_get_info(monkeypatch):
-    from opensandbox.exceptions import SandboxApiException
+@pytest.mark.parametrize("reconnect", (False, True), ids=("cached", "reconnected"))
+@pytest.mark.parametrize(
+    ("status_code", "error_code"),
+    ((404, None), (404, "DOCKER::SANDBOX_NOT_FOUND"), (500, "DOCKER::SANDBOX_NOT_FOUND")),
+    ids=("sdk-404", "sdk-404-with-absence-code", "sdk-absence-code"),
+)
+async def test_opensandbox_provider_stop_clears_tracking_for_authoritative_not_found_from_get_info(
+    monkeypatch, reconnect, status_code, error_code,
+):
+    from opensandbox.exceptions import SandboxApiException, SandboxError
 
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()
@@ -4505,19 +4513,27 @@ async def test_opensandbox_provider_stop_retains_tracking_for_sdk_not_found_from
     provider = opensandbox_provider()
     lease = await provider.create_or_reuse(request(), workspace())
     sandbox = FakeOpenSandbox.instances[lease.container_id]
+    if reconnect:
+        provider._sandboxes.clear()
 
     def get_info_not_found():
-        raise SandboxApiException("sandbox metadata is unavailable", status_code=404)
+        raise SandboxApiException(
+            "sandbox is absent",
+            status_code=status_code,
+            error=SandboxError(code=error_code, message="sandbox is absent") if error_code else None,
+        )
 
     monkeypatch.setattr(sandbox, "get_info", get_info_not_found)
 
     stop_result = await provider.stop(lease, reason="expired")
 
-    assert stop_result.status == "failed"
+    assert stop_result.status == "not_found"
+    assert stop_result.container_id == lease.container_id
+    assert stop_result.message == "expired"
     assert sandbox.killed is False
     assert sandbox.closed is False
-    assert provider._leases[(lease.run_id, "qat-test-attempt")] is lease
-    assert provider._sandboxes[lease.container_id] is sandbox
+    assert (lease.run_id, "qat-test-attempt") not in provider._leases
+    assert lease.container_id not in provider._sandboxes
 
 
 @pytest.mark.asyncio
@@ -4542,24 +4558,49 @@ async def test_opensandbox_provider_stop_clears_tracking_for_authoritative_sdk_n
 
 
 @pytest.mark.asyncio
-async def test_opensandbox_provider_stop_retains_tracking_for_untrusted_not_found_signal(monkeypatch):
+@pytest.mark.parametrize("failure_stage", ("connect", "get_info"))
+@pytest.mark.parametrize("failure_kind", ("untrusted-404", "timeout", "sdk-503", "sdk-other-code"))
+async def test_opensandbox_provider_stop_retains_tracking_for_untrusted_not_found_signal(
+    monkeypatch, failure_stage, failure_kind,
+):
+    from opensandbox.exceptions import SandboxApiException, SandboxError
+
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()
     FakeOpenSandboxManager.reset()
     monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
     provider = opensandbox_provider()
     lease = await provider.create_or_reuse(request(), workspace())
+    sandbox = FakeOpenSandbox.instances[lease.container_id]
     provider._sandboxes.clear()
+    error = {
+        "untrusted-404": RuntimeError("sandbox not found (404)"),
+        "timeout": TimeoutError("sandbox lookup timed out"),
+        "sdk-503": SandboxApiException("sandbox lookup unavailable", status_code=503),
+        "sdk-other-code": SandboxApiException(
+            "sandbox lookup failed",
+            status_code=500,
+            error=SandboxError(code="DOCKER::UNKNOWN", message="sandbox lookup failed"),
+        ),
+    }[failure_kind]
 
-    def untrusted_not_found(cls, sandbox_id, **_kwargs):
-        raise RuntimeError(f"sandbox container {sandbox_id} not found (404)")
+    def lookup_failed(*_args, **_kwargs):
+        raise error
 
-    monkeypatch.setattr(FakeOpenSandbox, "connect", classmethod(untrusted_not_found))
+    if failure_stage == "connect":
+        monkeypatch.setattr(FakeOpenSandbox, "connect", classmethod(lookup_failed))
+    else:
+        monkeypatch.setattr(sandbox, "get_info", lookup_failed)
 
     stop_result = await provider.stop(lease, reason="expired")
 
     assert stop_result.status == "failed"
+    assert stop_result.message == "OpenSandbox sandbox stop failed"
     assert provider._leases[(lease.run_id, "qat-test-attempt")] is lease
+    assert sandbox.killed is False
+    assert sandbox.closed is False
+    if failure_stage == "get_info":
+        assert provider._sandboxes[lease.container_id] is sandbox
 
 
 @pytest.mark.asyncio

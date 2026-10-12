@@ -16,6 +16,7 @@ from app.files.application.upload_sessions import (
     file_upload_persistence,
 )
 from app.files.application.profile_drive import (
+    ProfileDriveFile,
     ProfileDriveFileImportRequest,
     ProfileDriveTransferError,
     configure_profile_drive_streaming_response,
@@ -30,6 +31,12 @@ from app.files.application.session_files import (
     get_owned_unbound_file,
     list_owned_session_files,
 )
+
+# Stable capability identities for authorized ProfileDrive file access.
+# Admission and sandbox staging policy remain with their callers.
+PROFILE_DRIVE_STAGE_TOOL = "stage_profile_drive_file_to_workspace"
+PROFILE_DRIVE_STAGE_IDENTITY = f"mcp__ai-platform-context__{PROFILE_DRIVE_STAGE_TOOL}"
+PROFILE_DRIVE_READ_TEXT_IDENTITY = "mcp__ProfileDriveMCPServer__read_text_file"
 
 MAX_UPLOAD_BYTES = 512 * 1024 * 1024
 
@@ -179,6 +186,7 @@ async def abort_file_upload_session(conn: Any, **kwargs: Any) -> None:
 __all__ = [
     "MAX_UPLOAD_BYTES",
     "FileUploadPersistence",
+    "ProfileDriveFile",
     "ProfileDriveFileImportRequest",
     "ProfileDriveTransferError",
     "MultipartUploadCompleteRequest",

@@ -474,6 +474,8 @@ export function ChatAppContent({
     isLoadingHistory,
     connectionStatus,
     failureGuidance,
+    historyReadError,
+    retryHistoryLoad,
     newlyCreatedSession,
     sendMessage,
     canRetryPendingSubmission,
@@ -1349,6 +1351,8 @@ export function ChatAppContent({
             }
             isLoading={isLoading}
             isLoadingHistory={isLoadingHistory}
+            historyReadError={agentWorkspaceTranscriptReady ? historyReadError : null}
+            onRetryHistoryLoad={retryHistoryLoad}
             connectionStatus={connectionStatus}
             canSendMessage={canSendMessage}
             initialComposerDraft={agentWorkspaceStarterDraft}

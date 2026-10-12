@@ -108,6 +108,30 @@ certificate renewal before expiry; after replacing a certificate file,
 recreate the API container through the authorized release procedure so its bind
 mount uses the new file.
 
+ProfileDrive transfers now have finite configurable budgets. The API applies
+`PROFILE_DRIVE_TRANSFER_READ_TIMEOUT_SECONDS` (default 60, positive and at most
+3600) to network idle waits and `PROFILE_DRIVE_TRANSFER_TOTAL_TIMEOUT_SECONDS`
+(default 1800, positive and at most 10800) as one deadline starting when the
+transfer owner is acquired, including connection, response headers, body and
+claim/admission waits and ASGI downstream sends. Each body read uses the smaller remaining
+budget; continuous small chunks cannot reset the total deadline. This is new
+behavior: stalled upstreams no longer hold requests indefinitely. The 30-minute
+default leaves roughly 291 KiB/s for the existing 512 MiB import limit; operators
+must tune it to their upstream bandwidth/SLA rather than disable the bound.
+The independent 3-hour upload reservation expiry and 300-second object-storage
+put budget are unchanged. These are server operation budgets, not time that a
+user spends selecting a file before acquisition.
+
+The Files transfer owner closes both HTTPX resources on admission rejection,
+request cancellation and downstream disconnect, including failure before body
+iteration. Each close has its own shielded 5-second cleanup budget; failures are
+logged without upstream exception text, paths or credentials and do not replace
+the primary error. Transfer timeout reports `profile_drive_transfer_timeout`
+(503 before response headers); once a runtime callback stream starts, an error
+terminates the stream rather than claiming complete content. Existing denial,
+size-limit and invalid-content errors retain their meanings.
+
+
 Production requires independent generated `TRUSTED_PRINCIPAL_SECRET` and
 `AI_SESSION_SECRET` values of at least 32 characters; blank values and known
 placeholder prefixes are rejected before application services stop. Preserve

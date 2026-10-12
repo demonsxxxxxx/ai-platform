@@ -47,7 +47,7 @@ async def test_public_drive_transfer_selects_only_the_public_source(monkeypatch)
         ),
     )
 
-    client, response, content_length, _ = await open_profile_drive_file(
+    transfer = await open_profile_drive_file(
         upstream="https://profile-drive.test",
         ca_cert_file="",
         jwt="company.jwt",
@@ -59,8 +59,7 @@ async def test_public_drive_transfer_selects_only_the_public_source(monkeypatch)
         too_large_detail="file_too_large",
     )
     try:
-        assert content_length == 1
+        assert transfer.content_length == 1
         assert captured == {"source": "public", "path": "01-研发部/report.pdf"}
     finally:
-        await response.aclose()
-        await client.aclose()
+        await transfer.aclose()

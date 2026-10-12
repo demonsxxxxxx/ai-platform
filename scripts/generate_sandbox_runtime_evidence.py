@@ -1172,7 +1172,6 @@ def _stage_inspection_skill(
                 path=source,
                 version=version,
                 source={"kind": "verifier", "version": version},
-                entry={"kind": "filesystem"},
             )
         ],
     )
