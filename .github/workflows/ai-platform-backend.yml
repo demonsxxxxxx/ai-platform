@@ -259,6 +259,7 @@ jobs:
               tests/test_public_event_enum_types.py
               tests/test_lambchat_frontend_compat.py::test_lambchat_history_restores_strict_v4_commentary_as_work_summary
               tests/test_lambchat_frontend_compat.py::test_session_event_pages_project_authorized_run_columns_on_every_page
+              tests/test_lambchat_frontend_compat.py::test_read_mark_compatibility_route_keeps_its_noop_acknowledgement
               tests/test_executor_reconciler.py
               tests/test_executor_signals.py
               tests/test_run_attempt_lifecycle_domain.py
@@ -343,6 +344,8 @@ jobs:
               tests/test_foundation_alpha_readiness.py
               tests/test_foundation_runtime_concurrency.py
               tests/test_verify_multiuser_poc.py
+              tests/test_verify_poc_gate.py
+              tests/test_watch_poc_gate.py
               tests/test_capacity_baseline.py
               tests/test_office_context_readiness.py
               tests/test_release_evidence_export_acceptance.py

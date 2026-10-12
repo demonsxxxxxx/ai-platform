@@ -1719,7 +1719,6 @@ async def test_opensandbox_governed_uses_run_bound_proxy_without_provider_creden
     FakeOpenSandbox.reset()
 
     class ProxySettings(OpenSandboxSettings):
-        model_catalog_json = '[{"id":"deepseek-v4-flash","api_key":"catalog-secret"}]'
         openai_api_key = "test-openai-credential"
         anthropic_auth_token = "test-anthropic-credential"
 
@@ -3803,8 +3802,6 @@ async def test_docker_provider_forwards_executor_sdk_environment(monkeypatch):
                 "anthropic_auth_token": "test-anthropic-token",
                 "anthropic_model": "deepseek-v4-flash",
                 "claude_agent_model": "deepseek-v4-flash",
-                "default_model_id": "deepseek-v4-flash",
-                "model_catalog_json": "[{\"id\":\"deepseek-v4-flash\"}]",
                 "claude_agent_sdk_enabled": True,
                 "claude_agent_sdk_timeout_seconds": 0,
                 "claude_agent_sdk_max_turns": 128,
@@ -3827,6 +3824,8 @@ async def test_docker_provider_forwards_executor_sdk_environment(monkeypatch):
 
     environment = fake.created[0]["environment"]
     assert environment["CLAUDE_AGENT_SDK_ENABLED"] == "true"
+    assert "DEFAULT_MODEL_ID" not in environment
+    assert "MODEL_CATALOG_JSON" not in environment
     assert environment["ANTHROPIC_BASE_URL"] == "http://new-api.test"
     assert environment["ANTHROPIC_AUTH_TOKEN"] == "test-anthropic-token"
     assert environment["OPENAI_API_KEY"] == "test-newapi-token"
@@ -7775,3 +7774,15 @@ def test_host_bind_delivery_descriptor_ownership_on_every_exit(tmp_path, monkeyp
         # Keep the regression self-cleaning if run against the defective source.
         for descriptor in live:
             os.close(descriptor)
+
+
+def test_opensandbox_environment_still_filters_legacy_catalog_secrets():
+    from app.platform.sandbox.model_credentials import prepare_opensandbox_executor_environment
+
+    environment, credential_free = prepare_opensandbox_executor_environment(
+        {"MODEL_CATALOG_JSON": '{"api_key":"catalog-secret"}', "OPENAI_MODEL": "sdk-default"},
+        model_proxy_capability="attempt-capability",
+    )
+    assert "MODEL_CATALOG_JSON" not in environment
+    assert "MODEL_CATALOG_JSON" not in credential_free
+    assert environment["OPENAI_MODEL"] == "sdk-default"

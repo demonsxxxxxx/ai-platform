@@ -287,13 +287,24 @@ redis_bytes ~= retained_runs * min(MAXLEN, event_rate * ttl_seconds)
 The API validates retained bounds and the accepted cursor, then replays through
 a captured tail. The replay Lua operation checks that a nonzero predecessor
 still exists before removing it from the returned page. An initial `0-0` read
-uses the legal exclusive range `(0-0`. A trim during replay produces a gap.
+uses the legal exclusive range `(0-0` and verifies `stream.open` in that same
+returned page; an earlier bounds observation cannot prove its origin survived.
+A missing Stream or lost predecessor produces a gap.
 
-After replay, the same decoder and public projector consume exclusive `XREAD`
-from that tail. Entries appended between tail capture and the first read remain
-in the Stream, so there is no subscription/attach race. Each read returns at
-most 128 entries and blocks at most five seconds, shortened for the connection
-lease. An empty read can emit an id-less heartbeat after lease revalidation.
+After replay, exclusive `XREAD` waits from that tail and captures the bounded
+candidate page's last ID. Before delivery, the same atomic replay operation
+re-reads through that ID and proves the retained predecessor. Only that verified
+page reaches the existing decoder/public projector and SSE delivery. This may
+conservatively gap if trimming occurs after XREAD returns. It never infers
+continuity from adjacent Redis IDs or application sequences, and the accepted
+cursor advances only through delivered rows. A retained nonzero cursor remains
+valid when the original open was trimmed.
+
+Each read returns at most 128 entries and blocks at most five seconds. An empty
+XREAD verifies the retained predecessor with an empty atomic page before it can
+emit an id-less heartbeat after lease revalidation; a missing key instead emits
+the existing null-bounds gap. This adds no publication state, per-browser queue,
+PostgreSQL live polling, or replacement transport.
 
 Every browser owns its authorization lease, accepted cursor and request
 lifetime. The lifespan owns bounded read/publish pools; request cancellation

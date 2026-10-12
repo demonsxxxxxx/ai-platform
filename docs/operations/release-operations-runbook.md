@@ -254,6 +254,17 @@ restart counts, no active work, and no volume deletion. A configured browser
 origin must be the browser-visible frontend origin. The local lifecycle example
 defaults to `18001`.
 
+The separately invoked POC diagnostic (`tools/verify_poc_gate.py`) is not the
+package deployment procedure or a substitute for exact-package acceptance. Its
+runtime-config check verifies Worker SDK enablement only. Model readiness uses
+the database-backed public default and its paired capacities, then checks that
+the diagnostic's newly admitted upload Run has model identity, a resolvable
+pinned connection revision and paired capacities. A later catalog publication
+must not invalidate that Run's older pin. Environment model defaults are not an
+expected public catalog. This diagnostic still accepts a Worker-started running
+Run (or its documented turn-limit outcome); it does not prove successful model
+completion, upstream reachability or production capacity enforcement.
+
 The old repository deployment wrappers and implicit "latest" selection are
 retired. Use the package command above; do not reconstruct release metadata or
 copy source files on the target host.

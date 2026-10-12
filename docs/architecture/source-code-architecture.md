@@ -176,6 +176,18 @@ The immutable admitted execution specification, durable attempt authority, and
 their mixed-version migration are defined by
 [`execution-spec-and-attempt-lifecycle.md`](execution-spec-and-attempt-lifecycle.md).
 
+Streaming owns event contracts: `streaming.events` exposes the public event sets
+from `streaming.domain.protocol_v4` and the durable envelope version from
+`streaming.domain.run_events`. The root control-plane module does not define
+another event taxonomy or placeholder event envelope. Retiring an unused Python
+record does not retire persisted events, public v4 schemas, or Context snapshot
+versions and their readers.
+
+The legacy `capabilities` record carries only the internal Harness routing
+identity and label consumed by Intent and Run selection/recovery. It is not a
+public response or an authorization/visibility authority; those decisions stay
+with the owning contexts.
+
 ### 2.2 Kernel and platform limits
 
 `kernel` is a dependency leaf for framework-neutral primitives used by at least
@@ -604,7 +616,7 @@ ledger. It names the target owner for future bounded migrations.
 | Queue consumers, `app/worker.py`, `app/worker_main.py`, model/executor selection | `execution` plus `bootstrap.worker` |
 | `app/executors/**` and Harness SDK translation | `execution.infrastructure.harness` |
 | `app/context/**`, memory selection and context continuity | `context` |
-| `app/attachments/**` and file parser contracts | byte classification belongs to `files`; Skill requirements belong to `skills`; run attachment admission is orchestrated by `runs` through both public APIs |
+| `app/file_parser_contracts.py` and `app/file_preview_contracts.py` | `files` owns the separately authorized, bounded XLSX presentation preview; it is not a Run admission or attachment-staging parser |
 | Upload/file authorization and file lifecycle persistence | `files` |
 | Artifact records, lineage, and expiry eligibility | `artifacts`; shared byte client remains `platform.object_storage` |
 | `app/persistence/object_deletions.py` and shared file/artifact outbox transitions | `object_lifecycle` |
@@ -621,6 +633,17 @@ ledger. It names the target owner for future bounded migrations.
 | `app/routes/**` | each context's `transport/http`; shared root router assembly only in `bootstrap.api` |
 | readiness, audit, acceptance, baseline and evidence generators in `app/` | supported runtime health belongs to its domain; source/release/evidence tools move to `tools/` or `scripts/`; obsolete POCs are deleted |
 | fake providers, deterministic adapters, and executor stubs | `tests/support` unless the capability is explicitly supported and registered in production |
+
+The former `app/attachments` typed-admission package is retired without a
+replacement registry or migration of its parser/Skill-selection policy into
+Files, Skills, or Runs. Retirement follows the current source inventory: there
+are no production callers outside the package.
+[ADR 0010](../adr/0010-sandbox-owned-attachment-content-processing.md) remains
+proposed design context, not retirement authority. The current Context call chain
+owns authorized raw-file staging and metadata delivery, including the existing
+identity, resource, and declared-XLSX package-safety checks. The independent XLSX
+presentation preview retains its parser core and dependencies. Existing Skill
+authorization and persisted historical failure projections remain unchanged.
 
 ## 11. Test architecture
 
@@ -734,6 +757,17 @@ project files or start an external execution environment. Backend nullable
 owners and are not removed by this frontend retirement. Skills ZIP export remains
 an independent, active capability.
 
+`ToolResultPanel` owns explicit UI dismissal: custom headers receive its close
+callback so X, Escape, overlay and mobile swipe all clear sidebar history before
+closing. Registry replacement, Back restoration and unmount remain separate from
+explicit dismissal; conversation/auth revocation retains its existing store owner.
+Pending mobile swipe dismissal belongs to the logical registry key. Replacing
+content in the same mounted host cancels its timer and drag state before the
+replacement can receive the old close action.
+`useSidebarPanel` reserves desktop layout space only for an open, non-fullscreen
+sidebar. Center/fullscreen panels keep their open-owned interactions without a
+layout lease; reference counting preserves other preview/editor sidebar leases.
+
 
 ### XLSX identity and retained preview execution
 
@@ -744,15 +778,14 @@ that public boundary must not load the parser, bootstrap, preview runtime,
 openpyxl, or construct a preview semaphore/executor. Parser selection remains
 extension **or** MIME; public preview eligibility remains extension **and**
 MIME, including authoritative filename conflict rejection and storage-key
-basename fallback. Attachments consumes the same Files-owned constants without
-changing byte-classification admission.
+basename fallback. The unconnected Attachments typed-admission package is
+retired; current raw-file delivery does not depend on its classification policy.
 
 This is the identity/policy slice, not preview execution retirement.
 `file_preview_contracts.py` still owns wire v2 DTOs, public projection, bounded
 execution, admission, cancellation/reaper ownership and its existing logger.
 `file_parser_contracts.py` still owns its three Pydantic input/evidence/result
-models, preprocessing error and ZIP/OPC/XML/openpyxl core; Attachments
-classification still consumes its two private preflight helpers. Both approved
+models, preprocessing error and ZIP/OPC/XML/openpyxl core. Both approved
 root allowances and their runtime CI selectors remain required. The image-only
 configuration contract is also retained with its actual preview caller.
 
