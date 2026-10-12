@@ -3149,3 +3149,77 @@ async def test_failed_reconciliation_cleanup_repository_is_claim_fenced():
     assert "set status = 'quarantined'" in quarantine_sql
     assert "executor_reconciliation_status = 'failed'" in quarantine_sql
     assert "executor_reconciliation_claim_token = %s" in quarantine_sql
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "outcome_run_id", "expected_release"),
+    [
+        ("succeeded", "run-a", True),
+        ("failed", "run-a", True),
+        ("cancelled", "run-a", True),
+        ("skipped", "run-a", False),
+        ("running", "run-a", False),
+        ("dead_letter", None, False),
+        ("ownership_lost", "run-a", False),
+        ("unexpected", "run-a", False),
+        ("succeeded", "run-other", False),
+        ("failed", "run-other", False),
+        ("cancelled", None, False),
+    ],
+)
+async def test_reconciler_releases_only_exact_run_terminal_outcomes(
+    monkeypatch, status, outcome_run_id, expected_release,
+):
+    row = _lease_row()
+    calls = []
+
+    async def claim(_conn, **kwargs):
+        row["executor_reconciliation_claim_token"] = kwargs["claim_token"]
+        return [row]
+
+    async def has_claim(_conn, **kwargs):
+        return kwargs == {
+            "lease_id": row["id"],
+            "claim_token": row["executor_reconciliation_claim_token"],
+        }
+
+    async def get_run(_conn, **_kwargs):
+        return {"id": "run-a", "status": "running"}
+
+    async def collect(_row, **_kwargs):
+        return _result(), object(), object()
+
+    async def terminalize(**_kwargs):
+        # The label must not turn a skipped outcome into a terminal fact.
+        return WorkerOutcome(status, outcome_run_id, "stale_terminal_state")
+
+    async def retry(_conn, **kwargs):
+        calls.append(("retry", kwargs))
+        return True
+
+    async def release(_row, **_kwargs):
+        calls.append(("release", {}))
+
+    monkeypatch.setattr("app.executor_reconciler.transaction", _transaction)
+    monkeypatch.setattr(sandbox_lease_repository, "claim_sandbox_executor_reconciliations", claim)
+    monkeypatch.setattr(sandbox_lease_repository, "has_sandbox_executor_reconciliation_claim", has_claim)
+    monkeypatch.setattr(sandbox_lease_repository, "retry_sandbox_executor_reconciliation", retry)
+    monkeypatch.setattr(_owner_runs_infrastructure_postgres, "get_run", get_run)
+    monkeypatch.setattr("app.executor_reconciler._collect_workspace_and_convert_result", collect)
+    monkeypatch.setattr("app.executor_reconciler.reconcile_executor_terminal_result", terminalize)
+    monkeypatch.setattr("app.executor_reconciler._release_reconciled_lease", release)
+
+    assert await reconcile_pending_executor_terminals_once() == 1
+    if expected_release:
+        assert calls == [("release", {})]
+    else:
+        assert calls == [("retry", {
+            "lease_id": "lease-a",
+            "claim_token": row["executor_reconciliation_claim_token"],
+            "error": (
+                "executor_reconciliation_outcome_run_mismatch"
+                if outcome_run_id != "run-a"
+                else "executor_reconciliation_run_not_terminal"
+            ),
+        })]

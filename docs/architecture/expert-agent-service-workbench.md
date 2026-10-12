@@ -90,6 +90,27 @@ CI lane alongside the fetch parser and history consumers.
 6. Agent Workspace starters are presented as ready-to-run task examples and
    keep the existing explicit-send behavior.
 
+### Public model catalog and selection
+
+The shared composer uses `ChatInputToolbar` and `ComposerModelPanel` to select
+an administrator-enabled public model. `ModelCatalogProvider` hydrates only
+`/api/agent/models/available`; its subject-scoped read remains abortable and
+rejects stale completions after login changes or unmount. `default_model_id`
+is the public catalog's administrator-selected default; the composer resolves
+its model value, falling back to the first available model when necessary.
+
+The unmounted `components/agent/ModelSelector` and its private click-away guard
+are retired. Catalog hydration has no per-user pin read, toggle, or automatic
+metadata cleanup. The generic Identity profile/metadata API, persistence, and
+historical `pinned_model_ids` values remain compatible and are not migrated or
+deleted. Shared model icons remain in use by messages and the catalog panel.
+
+`test:model-admin` keeps mounted catalog subject-isolation, denial/logout,
+and cancellation coverage. It also checks the real public API transport makes
+only the catalog GET, preserves historical metadata, and resolves the public
+default and fallback. Browser-route and Agent Market fixtures no longer stub
+the retired pin client; generic backend metadata compatibility tests remain.
+
 ### Agent Builder
 
 The initial editing surface contains only these core fields:
