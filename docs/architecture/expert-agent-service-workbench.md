@@ -66,6 +66,16 @@ server-side and appended to the executor system prompt.
    identity and history lifecycle owns recovery and supersession, including a
    return to the previously open task while another identity read is pending.
 
+The compatibility `sessionApi.get` read converts a failure to `null` only when the
+shared safe-error owner produces `ApiRequestError` with status 404. Public/localized
+error text is never an HTTP discriminator. Authentication, transient failures,
+protocol errors and cancellation retain their original error object; forced
+re-login classification remains owned by `authFetch`. The authoritative identity
+read continues to reject missing sessions. Existing title, history and notification
+consumers retain the nullable compatibility contract. The owning regression is
+`services/api/__tests__/session.test.ts`, selected once by the existing `test:sse`
+CI lane alongside the fetch parser and history consumers.
+
 ### Agent Market and Workspace
 
 1. The Market leads with the outcome: choose an expert and start a task.

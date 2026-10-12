@@ -2472,6 +2472,8 @@ async def test_external_mcp_available_or_exactly_invoked_succeeds_in_sandbox(
         ("repeated_complete", None),
         ("started", "required_tool_completion_evidence_mismatch"),
         ("failed", None),
+        ("failed_write", "required_tool_completion_evidence_mismatch"),
+        ("returned_error_write", None),
         ("stale", "required_tool_completion_evidence_mismatch"),
         ("unauthorized", "required_tool_completion_evidence_mismatch"),
         ("duplicate", "required_tool_completion_evidence_mismatch"),
@@ -2490,6 +2492,8 @@ def test_worker_capability_execution_plan_validates_observed_calls(case, expecte
     }
     skill_id = "qa-review" if case.startswith("skill_") else "general-chat"
     subjects = [_mcp_subject(), second_subject] if case == "cross_mcp_call_id" else [_mcp_subject()]
+    if case in {"failed_write", "returned_error_write"}:
+        subjects[0]["write_capable"] = True
     current_payload = payload(
         skill_id=skill_id,
         input={"message": "work", "_runtime_tool_policy_subjects": subjects},
@@ -2509,7 +2513,7 @@ def test_worker_capability_execution_plan_validates_observed_calls(case, expecte
         evidence = [item for item in evidence if item["capability_kind"] == "mcp"]
     elif case == "started":
         evidence = evidence[:1]
-    elif case == "failed":
+    elif case in {"failed", "failed_write", "returned_error_write"}:
         declaration = RequiredCapabilityDeclaration.from_authorized_subject(
             capability_kind="mcp", canonical_identity=_mcp_subject()["identity"]
         )
@@ -2520,6 +2524,7 @@ def test_worker_capability_execution_plan_validates_observed_calls(case, expecte
             )},
             tool_call_id=evidence[0]["tool_call_id"],
             lifecycle_phase="failed",
+            tool_error_result=case == "returned_error_write",
         ).__dict__
     elif case == "stale":
         evidence[1]["attempt_id"] = "stale-attempt"
@@ -5824,3 +5829,159 @@ async def test_reconciler_conversion_timing_keeps_actual_selected_file_storage_s
     assert records[-1].terminal_phase_outcome == ("error" if fail_upload else "ok")
     assert all(record.run_id == current.run_id and record.attempt_id == current.attempt_id for record in records)
     assert "private" not in repr([vars(record) for record in records])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status,error_code", [
+    ("failed", "sdk_execution_failed"),
+    ("failed", "mcp_execution_outcome_unknown"),
+    ("failed", "mcp_execution_succeeded_receipt_incomplete"),
+    ("cancelled", "executor_cancelled"),
+    ("succeeded", ""),
+])
+@pytest.mark.parametrize("with_primary_diagnostics", [False, True])
+@pytest.mark.parametrize("collection_mode", ["error", "ok", "cancel", "diagnostics_unavailable", "log_only", "transaction_enter_error", "transaction_exit_error", "transaction_enter_cancel", "transaction_exit_cancel"])
+async def test_reconciler_collection_failure_preserves_primary_and_retry_authority(
+    monkeypatch, tmp_path, caplog, status, error_code, with_primary_diagnostics, collection_mode,
+):
+    from copy import deepcopy
+    from app import executor_reconciler
+    from app.runs.application.diagnostics import RunDiagnosticsService
+    from app.runs.domain.diagnostics import RUN_DIAGNOSTICS_SCHEMA_VERSION, merge_run_diagnostics
+    from app.runs.domain.retry import run_retry_block_reason
+    from app.execution.application.worker_failure_diagnostics import normalize_sandbox_reported_failure, sandbox_failure_prefers_cancelled
+    from app.sandbox.api import SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION, normalize_sdk_runtime_diagnostics
+
+    current = sandbox_writing_payload(agent_id="general-agent", skill_id="general-chat", file_ids=[])
+    terminal = {"status": status, "error_code": error_code, "response_files": [], "sdk_used": True, "message": "answer", TOOL_INVOCATION_EVIDENCE_KEY: []}
+    if with_primary_diagnostics:
+        terminal["runtime_diagnostics"] = {
+            "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+            "error_code": error_code or "original_diagnostic",
+            "failure_source": "sdk", "failure_stage": "sdk_execution",
+            "sdk": {"exception_type": "OriginalFailure"},
+        }
+    original = deepcopy(terminal)
+    context = {"adapter_name": "claude-agent-worker", "adapter_context": {
+        "schema_version": "ai-platform.claude-agent-reconciliation-context.v1",
+        "workspace": str(tmp_path), "allowed_skill_names": ["general-chat"],
+        "staged_skill_names": ["general-chat"], "skill_manifests": [],
+    }}
+    calls = []
+
+    class Provider:
+        async def collect_workspace(self, _lease, _request, _workspace, response_files):
+            # OpenSandbox resolves its host binding before the empty-file return.
+            assert response_files == []
+            calls.append("collect")
+            if collection_mode == "ok":
+                return tmp_path
+            if collection_mode == "cancel":
+                raise asyncio.CancelledError()
+            raise FileNotFoundError("/private/workspace secret=synthetic-token prompt=synthetic-body")
+
+    class Lease:
+        def model_copy(self, *, update):
+            return self
+
+    class Persistence:
+        value = None
+
+        async def append_observation(self, _conn, *, tenant_id, run_id, observation):
+            assert (tenant_id, run_id) == (current.tenant_id, current.run_id)
+            assert observation["attempt_id"] == current.attempt_id
+            assert observation["lease_id"] == "lease-a"
+            if collection_mode == "diagnostics_unavailable":
+                raise RuntimeError("diagnostic persistence unavailable")
+            self.value, _changed = merge_run_diagnostics(self.value, observation)
+            return self.value
+
+        async def get_admin_snapshot(self, _conn, **_kwargs):
+            return {"run": {"run_id": current.run_id, "error_code": error_code}, "diagnostic": {
+                "schema_version": RUN_DIAGNOSTICS_SCHEMA_VERSION, "payload_json": self.value,
+            }}
+
+    @asynccontextmanager
+    async def transaction():
+        if collection_mode == "transaction_enter_cancel":
+            raise asyncio.CancelledError()
+        if collection_mode == "transaction_enter_error":
+            raise RuntimeError("private diagnostic transaction enter failure")
+        yield object()
+        if collection_mode == "transaction_exit_cancel":
+            raise asyncio.CancelledError()
+        if collection_mode == "transaction_exit_error":
+            raise RuntimeError("private diagnostic transaction commit failure")
+
+    persistence = Persistence()
+    from app.platform.tracing import safe_exception_log_fields
+
+    diagnostics = RunDiagnosticsService(
+        persistence, normalize_sdk_runtime_diagnostics, SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+        exception_log_fields=safe_exception_log_fields,
+    )
+    if with_primary_diagnostics and status != "succeeded" and collection_mode == "error":
+        await diagnostics.capture_failure_result(
+            None, tenant_id=current.tenant_id, run_id=current.run_id,
+            attempt_id=current.attempt_id, lease_id="lease-a", source="executor_callback",
+            stage="terminal_receipt", error_code=error_code, result_json=terminal,
+        )
+    monkeypatch.setattr(executor_reconciler, "transaction", transaction)
+    monkeypatch.setattr(executor_reconciler, "_context_and_payload", lambda _row: (context, terminal, current))
+    monkeypatch.setattr(executor_reconciler, "_reconciliation_request", lambda *_args: object())
+    monkeypatch.setattr(executor_reconciler, "SandboxWorkspaceManager", lambda: types.SimpleNamespace(
+        prepare=lambda _request: types.SimpleNamespace(workspace_host_path=str(tmp_path))))
+    monkeypatch.setattr(executor_reconciler._sandbox_cleanup, "container_lease_from_persisted_row", lambda _row: Lease())
+    monkeypatch.setattr(executor_reconciler, "_container_provider_for_lease", lambda _lease: Provider())
+    registry = AdapterRegistry({"claude-agent-worker": ClaudeAgentWorkerAdapter()})
+    row = {"id": "lease-a", "tenant_id": current.tenant_id, "run_id": current.run_id, "provider": "opensandbox"}
+    if collection_mode == "cancel" or (
+        status != "succeeded" and collection_mode in {"transaction_enter_cancel", "transaction_exit_cancel"}
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await executor_reconciler._collect_workspace_and_convert_result(
+                row, registry=registry, claim_token="claim-a", run_diagnostics=None if collection_mode == "log_only" else diagnostics)
+        assert terminal == original
+        if collection_mode != "transaction_exit_cancel":
+            assert persistence.value is None
+        return
+    for _ in range(2):
+        result, _, _ = await executor_reconciler._collect_workspace_and_convert_result(
+            row, registry=registry, claim_token="claim-a", run_diagnostics=None if collection_mode == "log_only" else diagnostics)
+        assert result.status == ("succeeded" if status == "succeeded" and collection_mode == "ok" else "failed")
+        assert result.artifacts == []
+        assert terminal == original
+        if status == "succeeded":
+            if collection_mode != "ok":
+                assert result.result["error_code"] == "sandbox_workspace_collection_failed"
+        else:
+            assert result.result["error_code"] == error_code
+            assert result.executor_payload["runtime_terminal_status"] == status
+            if with_primary_diagnostics:
+                assert result.result["runtime_diagnostics"]["sdk"]["exception_type"] == "OriginalFailure"
+            expected_block = "execution_outcome_unconfirmed" if error_code.startswith("mcp_execution_") else None
+            assert run_retry_block_reason(result.status, result.result["error_code"]) == expected_block
+            normalized = normalize_sandbox_reported_failure(result)
+            assert run_retry_block_reason(normalized.status, normalized.result["error_code"]) == expected_block
+            assert sandbox_failure_prefers_cancelled(normalized) is (status == "cancelled")
+    assert calls == ["collect", "collect"]
+    if status != "succeeded" and collection_mode == "error":
+        admin = await diagnostics.read_admin(None, tenant_id=current.tenant_id, run_id=current.run_id)
+        assert admin["root"]["error_code"] == error_code
+        assert admin["handling"][-1]["error_code"] == "sandbox_workspace_collection_failed"
+        assert len(admin["details"]["observations"]) == (3 if with_primary_diagnostics else 2)
+        if with_primary_diagnostics:
+            assert admin["root"]["source"] == "sdk"
+            assert admin["details"]["observations"][0]["source"] == "executor_callback"
+            assert admin["details"]["sdk"]["exception_type"] == "OriginalFailure"
+        assert admin["details"]["observations"][-1]["sdk"]["exception_type"] == "FileNotFoundError"
+        assert "synthetic-token" not in repr(persistence.value)
+        assert "/private/workspace" not in repr(persistence.value)
+    logs = [vars(record) for record in caplog.records if record.msg == "sandbox_workspace_collection_failed"]
+    assert len(logs) == (0 if collection_mode == "ok" else 2)
+    assert "synthetic-token" not in repr(logs)
+    assert "/private/workspace" not in repr(logs)
+    if status != "succeeded" and collection_mode.startswith("transaction_"):
+        degraded = [vars(record) for record in caplog.records if record.msg == "executor_reconciliation_diagnostics_unavailable"]
+        assert len(degraded) == 2
+        assert "private diagnostic transaction" not in repr(degraded)

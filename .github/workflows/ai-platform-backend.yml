@@ -158,6 +158,7 @@ jobs:
               tests/test_conversations_persistence.py
               tests/test_files_artifacts_persistence.py
               tests/test_artifact_manifest_projection.py
+              tests/test_file_deletion_lifecycle.py
               tests/test_identity_capability_distribution.py
               tests/test_identity_worker_capability_audit.py
               tests/test_identity_worker_distribution.py
@@ -165,6 +166,7 @@ jobs:
               tests/test_mcp_selection_authorization.py
               tests/test_mcp_tool_catalog.py
               tests/test_mcp_client.py
+              tests/test_mcp_routes.py
               tests/test_mcp_authorization_projection.py
               tests/test_mcp_worker_dispatch_authorization.py
               tests/test_runs_admin.py
@@ -187,13 +189,16 @@ jobs:
               tests/test_run_attempt_application.py
               tests/test_run_attempt_repository.py
               tests/test_worker_main.py
+              tests/test_worker_principal_authority.py
               tests/test_db_pool.py
               tests/test_redis_client.py
               tests/test_worker_maintenance.py
               tests/test_data_retention.py
+              tests/test_data_retention_postgres.py
               tests/test_storage.py
               tests/test_sandbox_cleanup_postgres.py
               tests/test_provider_empty_start_postgres.py
+              tests/test_chat_admission_postgres.py
               tests/test_s0a_schema_postgres.py::test_expired_terminal_receipt_survives_cleanup_and_historical_release
               tests/test_worker_heartbeat_postgres_redis_integration.py
               tests/test_sse_runtime_cutover.py
@@ -237,6 +242,12 @@ jobs:
               tests/test_admin_part_messages.py
               tests/test_admin_runtime_routes.py
               tests/test_auth_principal.py
+              tests/test_artifact_permissions.py
+              tests/test_two_user_artifact_isolation.py
+              tests/test_auth_routes.py
+              tests/test_auth_session_operations.py
+              tests/test_principal_authority.py
+              tests/test_principal_routes.py
               tests/test_chat_selected_skill_routing.py
               tests/test_claude_agent_events.py
               tests/test_public_event_enum_types.py
@@ -252,6 +263,7 @@ jobs:
               tests/test_run_admission_terminalization.py
               tests/test_run_cancellation_use_case.py
               tests/test_run_control_routes.py
+              tests/test_run_file_continuity_routes.py
               tests/test_run_diagnostics.py
               tests/test_run_persistence.py
               tests/test_run_projection.py
@@ -457,6 +469,7 @@ jobs:
               tests/test_admin_skills.py \
               tests/test_skill_run_admission.py \
               tests/test_chat_routes.py \
+              tests/test_chat_submission_failures.py \
               tests/test_skills_marketplace_routes.py \
               -vv \
               --tb=short \

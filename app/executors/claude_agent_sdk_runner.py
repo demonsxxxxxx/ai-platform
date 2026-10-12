@@ -63,6 +63,7 @@ from app.execution.api import (
     ClaudeSdkAgentEventAdapter,
     ModelTextCheckpoint,
     RunInteractionProtocol,
+    RunQuestionNeedsInput,
 )
 from app.executors.public_answer_stream import (
     PublicAnswerStreamGate,
@@ -70,6 +71,7 @@ from app.executors.public_answer_stream import (
 from app.required_tool_contract import (
     MCP_EXECUTION_OUTCOME_UNKNOWN,
     MCP_EXECUTION_SUCCEEDED_RECEIPT_INCOMPLETE,
+    MCP_TOOL_ERROR_RESULT_TRUST_BASIS,
     REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY,
     SANDBOX_EFFECTFUL_TOOL_IDENTITIES,
     SANDBOX_LOCAL_TOOL_IDENTITIES,
@@ -1645,11 +1647,24 @@ async def run_claude_agent_sdk(
     capability_evidence_rejected = False
     actual_mcp_invocation_observed = False
     mcp_execution_states: dict[tuple[str, str], str] = {}
+    mcp_confirmed_error_results: set[tuple[str, str]] = set()
     mcp_execution_conflicted = False
     capability_invocation_states: dict[tuple[str, str, str], str] = {}
     governed_builtin_invocation_states: dict[tuple[str, str], str] = {}
     observed_read_only_invocation_states: dict[tuple[str, str], str] = {}
     runtime_tool_calls: dict[tuple[str, str], dict[str, Any]] = {}
+    mcp_session_failures: list[dict[str, Any]] = []
+    mcp_session_failure_count = 0
+    mcp_session_invalid_code_count = 0
+
+    def observe_mcp_session_failure(observation: dict[str, Any]) -> None:
+        nonlocal mcp_session_failure_count, mcp_session_invalid_code_count
+        mcp_session_failure_count = min(mcp_session_failure_count + 1, 1_000_000_000)
+        if "code" not in observation:
+            mcp_session_invalid_code_count = min(mcp_session_invalid_code_count + 1, 1_000_000_000)
+        mcp_session_failures.append(dict(observation))
+        del mcp_session_failures[:-_MAX_RUNTIME_DIAGNOSTIC_DETAIL_ENTRIES]
+
     read_only_lifecycle_denials_finalized = False
     answer_stream_gate: PublicAnswerStreamGate | None = None
     agent_event_adapter: ClaudeSdkAgentEventAdapter | None = None
@@ -1714,6 +1729,23 @@ async def run_claude_agent_sdk(
         ):
             if value not in (None, "", []):
                 sdk[key] = _runtime_diagnostic_value(value)
+        if mcp_session_failures:
+            # Keep existing SDK errors alongside bounded, preprojected observations.
+            # This evidence belongs to this runner attempt, never a native invocation.
+            sdk["errors"] = {
+                **({"sdk_reported_errors": sdk["errors"]} if "errors" in sdk else {}),
+                "mcp_session_failures": list(mcp_session_failures),
+            }
+            if mcp_session_failure_count > len(mcp_session_failures):
+                normalization_losses.append({
+                    "field": "sdk.errors.mcp_session_failures", "reason": "truncated",
+                    "original": mcp_session_failure_count, "retained": len(mcp_session_failures),
+                })
+            if mcp_session_invalid_code_count:
+                normalization_losses.append({
+                    "field": "sdk.errors.mcp_session_failures.code", "reason": "invalid_field",
+                    "count": mcp_session_invalid_code_count,
+                })
         if exception is not None:
             sdk.update(
                 {
@@ -1825,7 +1857,9 @@ async def run_claude_agent_sdk(
             },
         )
         entry["last_stage"] = stage
-        entry.pop("is_interrupt", None)
+        # A repeated lifecycle fact carries no new failure observation.
+        if stage != "failed" or failure is not None:
+            entry.pop("is_interrupt", None)
         if (
             stage == "failed"
             and isinstance(failure, dict)
@@ -1882,16 +1916,25 @@ async def run_claude_agent_sdk(
                 used_sdk=True,
                 error=error_code,
                 turn_diagnostics=turn_diagnostics(error_code),
+                runtime_diagnostics=runtime_diagnostics(
+                    error_code,
+                    failure_source="provider_session_identity",
+                ),
             )
         try:
             main_transcript = await provider_session_store.load(session_id)
-        except Exception:  # noqa: BLE001 - provider details stay private.
+        except Exception as exc:  # noqa: BLE001 - provider details stay private.
             main_transcript = None
             error_code = _SDK_PROVIDER_SESSION_FAILED
             return ClaudeAgentSdkRunResult(
                 used_sdk=True,
                 error=error_code,
                 turn_diagnostics=turn_diagnostics(error_code),
+                runtime_diagnostics=runtime_diagnostics(
+                    error_code,
+                    failure_source="provider_session_preload",
+                    exception=exc,
+                ),
             )
         if type(provider_session_resume_required) is not bool:
             error_code = _SDK_PROVIDER_SESSION_FAILED
@@ -1899,6 +1942,10 @@ async def run_claude_agent_sdk(
                 used_sdk=True,
                 error=error_code,
                 turn_diagnostics=turn_diagnostics(error_code),
+                runtime_diagnostics=runtime_diagnostics(
+                    error_code,
+                    failure_source="provider_session_resume_choice",
+                ),
             )
         # The platform selected resume from exact coverage; SDK load only checks
         # that the frozen choice matches the actual opaque store.
@@ -1908,6 +1955,10 @@ async def run_claude_agent_sdk(
                 used_sdk=True,
                 error=error_code,
                 turn_diagnostics=turn_diagnostics(error_code),
+                runtime_diagnostics=runtime_diagnostics(
+                    error_code,
+                    failure_source="provider_session_resume_mismatch",
+                ),
             )
         provider_session_options[
             "resume" if provider_session_resume_required else "session_id"
@@ -2103,6 +2154,7 @@ async def run_claude_agent_sdk(
         if context_retrieval_server is not None
         else {}
     )
+    response_registration_exception: BaseException | None = None
     try:
         response_server = _build_response_mcp_server(
             sdk,
@@ -2112,8 +2164,9 @@ async def run_claude_agent_sdk(
             diagnostic_counters=diagnostic_counters,
             callback_wrapper=callback_tracker.wrap,
         )
-    except Exception:  # noqa: BLE001 - optional response attachments stay unavailable.
+    except Exception as exc:  # noqa: BLE001 - optional response attachments stay unavailable.
         response_server = None
+        response_registration_exception = exc
     diagnostic_counters["attachment_tool_registered"] = int(response_server is not None)
     internal_response_subjects = (
         {
@@ -2132,6 +2185,7 @@ async def run_claude_agent_sdk(
             runtime_diagnostics=runtime_diagnostics(
                 error_code,
                 failure_source="response_file_registration",
+                exception=response_registration_exception,
             ),
         )
     internal_platform_subjects = {
@@ -2162,7 +2216,8 @@ async def run_claude_agent_sdk(
             _mcp_server_options(authorized_subjects) if sandbox_brokered else {}
         )
         mcp_registration = prepare_claude_mcp(
-            authorized_subjects if sandbox_brokered else {}, mcp_servers, callback_tracker.wrap
+            authorized_subjects if sandbox_brokered else {}, mcp_servers, callback_tracker.wrap,
+            failure_observer=observe_mcp_session_failure,
         )
         allowed_tools = [
             mcp_registration.sdk_names.get(name, name) for name in allowed_tools
@@ -2424,6 +2479,7 @@ async def run_claude_agent_sdk(
         tool_call_id: str,
         lifecycle_phase: str,
         skill_metadata: dict[str, Any] | None = None,
+        tool_error_result: bool = False,
     ) -> bool:
         """Record one bounded actual-call fact without tool input or output."""
 
@@ -2474,6 +2530,7 @@ async def run_claude_agent_sdk(
                 ),
                 tool_call_id=tool_call_id,
                 lifecycle_phase=lifecycle_phase,
+                tool_error_result=tool_error_result,
             )
             acknowledged = (
                 await on_capability_evidence(dict(evidence))
@@ -2817,8 +2874,10 @@ async def run_claude_agent_sdk(
             or capability_evidence_rejected
             or agent_event_callback_failed
             or any(
-                state == "failed" and authorized_subjects.get(identity, {}).get("write_capable") is not False
-                for (identity, _call_id), state in mcp_execution_states.items()
+                state == "failed"
+                and (identity, call_id) not in mcp_confirmed_error_results
+                and authorized_subjects.get(identity, {}).get("write_capable") is not False
+                for (identity, call_id), state in mcp_execution_states.items()
             )
         )
 
@@ -2842,6 +2901,13 @@ async def run_claude_agent_sdk(
                 )
             except asyncio.CancelledError:
                 raise
+            except RunQuestionNeedsInput as exc:
+                if not result_ready.done():
+                    result_ready.set_exception(exc)
+                return {"hookSpecificOutput": {
+                    "hookEventName": "PreToolUse", "permissionDecision": "deny",
+                    "permissionDecisionReason": "run_question_needs_input",
+                }}
             except Exception:  # noqa: BLE001 - fail closed without exposing input.
                 return {
                     "hookSpecificOutput": {
@@ -3016,6 +3082,7 @@ async def run_claude_agent_sdk(
                 ):
                     mcp_execution_conflicted = True
                 mcp_execution_states[execution_key] = "admitted"
+                mcp_registration.track_tool_call(identity, resolved_tool_call_id, hook_input.get("tool_input"))
         # A concurrent write may fail while this admission awaits its receipts.
         # Recheck immediately before returning authority to dispatch the call.
         if output["permissionDecision"] == "allow" and external_write and external_write_outcome_unconfirmed():
@@ -3088,6 +3155,7 @@ async def run_claude_agent_sdk(
                 failure=hook_input if lifecycle_phase == "failed" else None,
             )
             evidence_acknowledged = False
+            tool_error_result = False
             if identity in internal_platform_subjects:
                 evidence_acknowledged = await record_tool_lifecycle(
                     tool_name="MCP",
@@ -3100,11 +3168,14 @@ async def run_claude_agent_sdk(
                     mcp_execution_conflicted = True
                 else:
                     mcp_execution_states[execution_key] = lifecycle_phase
+                tool_error_result = mcp_registration.consume_tool_error_result(identity, call_id)
+                tool_error_result = tool_error_result and lifecycle_phase == "failed"
                 evidence_acknowledged = await record_capability_evidence(
                     capability_kind="mcp",
                     canonical_identity=identity,
                     tool_call_id=call_id,
                     lifecycle_phase=lifecycle_phase,
+                    tool_error_result=tool_error_result,
                 )
             if agent_event_adapter is not None and evidence_acknowledged is True:
                 candidates = agent_event_adapter.accept_hook(
@@ -3117,6 +3188,8 @@ async def run_claude_agent_sdk(
                 if not candidates and not agent_event_callback_failed:
                     mcp_execution_conflicted = True
                 evidence_acknowledged = await publish_agent_candidates(candidates)
+            if tool_error_result and evidence_acknowledged is True:
+                mcp_confirmed_error_results.add((identity, call_id))
             return {}
 
         return handler
@@ -3398,8 +3471,9 @@ async def run_claude_agent_sdk(
         if mcp_execution_conflict_observed():
             return MCP_EXECUTION_OUTCOME_UNKNOWN
         write_states = [
-            state for (identity, _call_id), state in mcp_execution_states.items()
+            state for (identity, call_id), state in mcp_execution_states.items()
             if authorized_subjects.get(identity, {}).get("write_capable") is not False
+            and (identity, call_id) not in mcp_confirmed_error_results
         ]
         if not write_states:
             return None
@@ -3466,7 +3540,7 @@ async def run_claude_agent_sdk(
             ).declaration_sha256
             recoverable_failure = kind == "skill" or (
                 kind == "mcp" and authorized_subjects.get(identity, {}).get("write_capable") is False
-            )
+            ) or any(item.get("trust_basis") == MCP_TOOL_ERROR_RESULT_TRUST_BASIS for item in matching)
             phases = [item.get("lifecycle_phase") for item in matching]
             statuses = [item.get("lifecycle_status") for item in matching]
             terminal_valid = (
@@ -3863,6 +3937,11 @@ async def run_claude_agent_sdk(
                     error=error_code,
                     terminal_reason=terminal_reason,
                     received_structured_terminal=False,
+                    runtime_diagnostics_snapshot=lambda: runtime_diagnostics(
+                        error_code,
+                        failure_source="provider_session_mirror",
+                        sdk_errors=getattr(message, "error", None),
+                    ),
                 )
             if agent_event_adapter is not None and isinstance(
                 message,
@@ -4458,6 +4537,16 @@ async def run_claude_agent_sdk(
         ):
             raise consume_cancellation
         raise
+    except RunQuestionNeedsInput:
+        await stop_execution()
+        close_failed_terminal("run_question_needs_input")
+        error_code = mcp_execution_receipt_error() or "run_question_needs_input"
+        return assemble_run_result(
+            message="", error=error_code,
+            runtime_diagnostics_snapshot=lambda: runtime_diagnostics(
+                error_code, failure_source="run_question_timeout", terminal_reason=terminal_reason,
+            ),
+        )
     except TimeoutError:
         result_ready.cancel()
         await stop_execution()
