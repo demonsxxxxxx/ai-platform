@@ -1,197 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-type Listener = (event: { type: string; [key: string]: unknown }) => void;
+// jsdom 26 ships no declarations; this test uses only its runtime constructor.
+// @ts-expect-error jsdom is the pinned mounted-test runtime.
+import { JSDOM } from "jsdom";
 
-class TestEventTarget {
-  private readonly listeners = new Map<string, Set<Listener>>();
-
-  addEventListener(type: string, listener: Listener) {
-    const listeners = this.listeners.get(type) || new Set<Listener>();
-    listeners.add(listener);
-    this.listeners.set(type, listeners);
-  }
-
-  removeEventListener(type: string, listener: Listener) {
-    this.listeners.get(type)?.delete(listener);
-  }
-}
-
-class TestNode extends TestEventTarget {
-  parentNode: TestNode | null = null;
-  childNodes: TestNode[] = [];
-  nodeValue: string | null = null;
-  textContent = "";
-
-  get firstChild() {
-    return this.childNodes[0] || null;
-  }
-
-  get lastChild() {
-    return this.childNodes[this.childNodes.length - 1] || null;
-  }
-
-  appendChild(child: TestNode) {
-    child.parentNode = this;
-    this.childNodes.push(child);
-    return child;
-  }
-
-  insertBefore(child: TestNode, reference: TestNode | null) {
-    child.parentNode = this;
-    const index = reference ? this.childNodes.indexOf(reference) : -1;
-    if (index < 0) this.childNodes.push(child);
-    else this.childNodes.splice(index, 0, child);
-    return child;
-  }
-
-  removeChild(child: TestNode) {
-    const index = this.childNodes.indexOf(child);
-    if (index >= 0) this.childNodes.splice(index, 1);
-    child.parentNode = null;
-    return child;
-  }
-
-  contains(node: TestNode | null): boolean {
-    return node === this || this.childNodes.some((child) => child.contains(node));
-  }
-}
-
-class TestElement extends TestNode {
-  readonly nodeType = 1;
-  readonly namespaceURI = "http://www.w3.org/1999/xhtml";
-  readonly style = { setProperty() {}, removeProperty() {} };
-  readonly attributes = new Map<string, string>();
-  ownerDocument!: TestDocument;
-  className = "";
-  private html = "";
-
-  constructor(readonly tagName: string) {
-    super();
-  }
-
-  get nodeName() {
-    return this.tagName.toUpperCase();
-  }
-
-  get innerHTML() {
-    return this.html;
-  }
-
-  set innerHTML(value: string) {
-    this.html = value;
-    this.childNodes = [];
-    if (value) this.appendChild(this.ownerDocument.createTextNode(value));
-  }
-
-  setAttribute(name: string, value: string) {
-    this.attributes.set(name, value);
-  }
-
-  removeAttribute(name: string) {
-    this.attributes.delete(name);
-  }
-
-  getAttribute(name: string) {
-    return this.attributes.get(name) || null;
-  }
-
-  hasAttribute(name: string) {
-    return this.attributes.has(name);
-  }
-}
-
-class TestText extends TestNode {
-  readonly nodeType = 3;
-  readonly nodeName = "#text";
-  ownerDocument!: TestDocument;
-
-  constructor(value: string) {
-    super();
-    this.nodeValue = value;
-    this.textContent = value;
-  }
-
-  get data() {
-    return this.nodeValue || "";
-  }
-
-  set data(value: string) {
-    this.nodeValue = value;
-    this.textContent = value;
-  }
-}
-
-class TestDocument extends TestNode {
-  readonly nodeType = 9;
-  readonly nodeName = "#document";
-  readonly documentElement: TestElement;
-  readonly head: TestElement;
-  readonly body: TestElement;
-  activeElement: TestElement;
-  defaultView: typeof window | null = null;
-
-  constructor() {
-    super();
-    this.documentElement = this.createElement("html");
-    this.head = this.createElement("head");
-    this.body = this.createElement("body");
-    this.documentElement.appendChild(this.head);
-    this.documentElement.appendChild(this.body);
-    this.appendChild(this.documentElement);
-    this.activeElement = this.body;
-  }
-
-  createElement(tagName: string) {
-    const element = new TestElement(tagName);
-    element.ownerDocument = this;
-    return element;
-  }
-
-  createElementNS(_namespace: string, tagName: string) {
-    return this.createElement(tagName);
-  }
-
-  createTextNode(value: string) {
-    const text = new TestText(value);
-    text.ownerDocument = this;
-    return text;
-  }
-}
-
-function installDom() {
-  const document = new TestDocument();
-  const windowTarget = new TestEventTarget() as TestEventTarget & {
-    document: TestDocument;
-    location: { href: string };
-    setTimeout: typeof setTimeout;
-    clearTimeout: typeof clearTimeout;
-  };
-  windowTarget.document = document;
-  windowTarget.location = { href: "http://test.local/" };
-  windowTarget.setTimeout = setTimeout;
-  windowTarget.clearTimeout = clearTimeout;
-  Object.assign(windowTarget, {
-    Element: TestElement,
-    HTMLElement: TestElement,
-    HTMLIFrameElement: TestElement,
-    Node: TestNode,
-  });
-  document.defaultView = windowTarget as unknown as typeof window;
-  Object.assign(globalThis, {
-    window: windowTarget,
-    document,
-    Node: TestNode,
-    Element: TestElement,
-    HTMLElement: TestElement,
-    HTMLIFrameElement: TestElement,
-    SVGElement: TestElement,
-    IS_REACT_ACT_ENVIRONMENT: true,
-  });
-  return document;
-}
-
-const document = installDom();
+const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://test.local/" });
+const { document } = dom.window;
+Object.assign(globalThis, {
+  window: dom.window,
+  document,
+  Node: dom.window.Node,
+  HTMLElement: dom.window.HTMLElement,
+  IS_REACT_ACT_ENVIRONMENT: true,
+});
 
 test("mounted RunPlaybackPanel ignores an aborted stale owner read after run replacement", async () => {
   const React = await import("react");
@@ -291,7 +113,7 @@ test("mounted RunPlaybackPanel ignores an aborted stale owner read after run rep
     const snapshot = lifecycle.getSnapshot();
     assert.equal(snapshot.owner?.runId, "run-b");
     assert.equal(snapshot.playback, null, "stale run A must not publish over run B");
-    const panel = container.firstChild as TestElement;
+    const panel = container.firstChild as HTMLElement;
     assert.equal(panel.getAttribute("aria-busy"), "false");
   } finally {
     globalThis.fetch = originalFetch;
@@ -299,85 +121,184 @@ test("mounted RunPlaybackPanel ignores an aborted stale owner read after run rep
   }
 });
 
-test("mounted RunPlaybackPanel rejects a late read after marker and role rotation", async () => {
-  const React = await import("react");
-  const { createRoot } = await import("react-dom/client");
-  const { RunPlaybackPanel } = await import("../RunPlaybackPanel.tsx");
-  const { RunControlLifecycle } = await import(
-    "../../../../hooks/useAgent/runControlLifecycle.ts"
-  );
-  const lifecycle = new RunControlLifecycle();
-  lifecycle.configure({
-    adoptRunControlChild: async () => "superseded",
-    reconnectRunControlOwner: async () => {},
-  });
-  lifecycle.bindParent({
-    chatHistoryGeneration: 1,
-    authRevision: 1,
-    auth: {
-      incarnation: "incarnation-a",
-      sessionMarker: "marker-a",
-      tenantId: "tenant-a",
-      userId: "user-a",
-      roles: ["member"],
-      permissions: ["chat:write"],
-      isAdmin: false,
-      isActive: true,
-    },
-    sessionId: "session-a",
-    runId: "run-a",
-  });
-  const originalFetch = globalThis.fetch;
-  let resolvePlayback!: (response: Response) => void;
-  let signal: AbortSignal | null = null;
-  globalThis.fetch = ((_input, options) => {
-    signal = options?.signal as AbortSignal;
-    return new Promise<Response>((resolve) => {
-      resolvePlayback = resolve;
-    });
-  }) as typeof fetch;
-  const container = document.createElement("div");
-  const root = createRoot(container as never);
-
-  try {
-    await React.act(async () => {
-      root.render(React.createElement(RunPlaybackPanel, { lifecycle, panelKey: "run-playback:run-a" }));
-      lifecycle.open();
-      await Promise.resolve();
-    });
-    assert.ok(signal);
-    await React.act(async () => {
-      lifecycle.bindParent({
-        chatHistoryGeneration: 1,
-        authRevision: 2,
-        auth: {
-          incarnation: "incarnation-b",
-          sessionMarker: "marker-b",
-          tenantId: "tenant-a",
-          userId: "user-a",
-          roles: ["reviewer"],
-          permissions: ["chat:read"],
-          isAdmin: false,
-          isActive: true,
-        },
-        sessionId: "session-a",
-        runId: "run-a",
-      });
-    });
-    assert.equal((signal as AbortSignal).aborted, true);
-    resolvePlayback(
-      new Response(
-        JSON.stringify({ run_id: "run-a", timeline: [], events: [], artifacts: [], steps: [] }),
-      ),
+for (const rotation of ["none", "marker", "role", "marker and role"]) {
+  test(`mounted RunPlaybackPanel settles both reads with ${rotation} rotation`, async () => {
+    const React = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    const { RunPlaybackPanel } = await import("../RunPlaybackPanel.tsx");
+    const { RunControlLifecycle } = await import(
+      "../../../../hooks/useAgent/runControlLifecycle.ts"
     );
-    await React.act(async () => {
-      await Promise.resolve();
-      await Promise.resolve();
+    const lifecycle = new RunControlLifecycle();
+    lifecycle.configure({
+      adoptRunControlChild: async () => "superseded",
+      reconnectRunControlOwner: async () => {},
     });
-    assert.equal(lifecycle.getSnapshot().owner?.auth.sessionMarker, "marker-b");
-    assert.equal(lifecycle.getSnapshot().playback, null);
-  } finally {
-    globalThis.fetch = originalFetch;
-    await React.act(async () => root.unmount());
-  }
-});
+    lifecycle.bindParent({
+      chatHistoryGeneration: 1,
+      authRevision: 1,
+      auth: {
+        incarnation: "incarnation-a",
+        sessionMarker: "marker-a",
+        tenantId: "tenant-a",
+        userId: "user-a",
+        roles: ["member"],
+        permissions: ["chat:write"],
+        isAdmin: false,
+        isActive: true,
+      },
+      sessionId: "session-a",
+      runId: "run-a",
+    });
+    const originalFetch = globalThis.fetch;
+    let resolvePlayback!: (response: Response) => void;
+    let resolveReadiness!: (response: Response) => void;
+    // Await the real allSettled continuation, not only the fetch promises.
+    let pendingRead!: Promise<void>;
+    const refresh = lifecycle.refresh.bind(lifecycle);
+    lifecycle.refresh = (...args) => {
+      pendingRead = refresh(...args);
+      return pendingRead;
+    };
+    let signal: AbortSignal | null = null;
+    globalThis.fetch = ((input, options) => {
+      signal = options?.signal as AbortSignal;
+      return new Promise<Response>((resolve) => {
+        if (String(input).includes("/runs/run-a/playback")) resolvePlayback = resolve;
+        else if (String(input).includes("/sessions/session-a/status")) resolveReadiness = resolve;
+        else throw new Error(`unexpected request: ${String(input)}`);
+      });
+    }) as typeof fetch;
+    const container = document.createElement("div");
+    const root = createRoot(container as never);
+
+    try {
+      await React.act(async () => {
+        root.render(React.createElement(RunPlaybackPanel, { lifecycle, panelKey: "run-playback:run-a" }));
+        lifecycle.open();
+        await Promise.resolve();
+      });
+      assert.ok(signal);
+      assert.equal(typeof resolvePlayback, "function");
+      assert.equal(typeof resolveReadiness, "function");
+      assert.ok(pendingRead);
+      await React.act(async () => {
+        if (rotation !== "none") lifecycle.bindParent({
+          chatHistoryGeneration: 1,
+          authRevision: 2,
+          auth: {
+            incarnation: "incarnation-a",
+            sessionMarker: rotation.includes("marker") ? "marker-b" : "marker-a",
+            tenantId: "tenant-a",
+            userId: "user-a",
+            roles: rotation.includes("role") ? ["reviewer"] : ["member"],
+            permissions: ["chat:write"],
+            isAdmin: false,
+            isActive: true,
+          },
+          sessionId: "session-a",
+          runId: "run-a",
+        });
+      });
+      assert.equal((signal as AbortSignal).aborted, rotation !== "none");
+      resolvePlayback(
+        new Response(
+          JSON.stringify({ run_id: "run-a", timeline: [], events: [], artifacts: [], steps: [] }),
+        ),
+      );
+      resolveReadiness(new Response(JSON.stringify({ session_id: "session-a", run_id: "run-a", status: "running" })));
+      await React.act(async () => { await pendingRead; });
+      const snapshot = lifecycle.getSnapshot();
+      assert.equal(snapshot.owner?.auth.sessionMarker, rotation.includes("marker") ? "marker-b" : "marker-a");
+      assert.deepEqual(snapshot.owner?.auth.roles, rotation.includes("role") ? ["reviewer"] : ["member"]);
+      if (rotation === "none") {
+        assert.equal(snapshot.playback?.run_id, "run-a", "settled current reads must publish");
+        assert.equal(snapshot.readiness?.run_id, "run-a");
+      } else {
+        assert.equal(snapshot.playback, null, "settled stale playback must not publish");
+        assert.equal(snapshot.readiness, null, "settled stale readiness must not publish");
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
+      await React.act(async () => root.unmount());
+    }
+  });
+}
+
+for (const warm of [false, true]) {
+  test(`mounted playback exposes ${warm ? "stale refresh" : "cold read"} failure despite successful readiness and retries GET only`, async () => {
+    const React = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    const { RunPlaybackPanel } = await import("../RunPlaybackPanel.tsx");
+    const { RunControlLifecycle } = await import("../../../../hooks/useAgent/runControlLifecycle.ts");
+    const lifecycle = new RunControlLifecycle();
+    lifecycle.configure({ adoptRunControlChild: async () => "superseded", reconnectRunControlOwner: async () => {} });
+    lifecycle.bindParent({ chatHistoryGeneration: 1, authRevision: 1, auth: {
+      incarnation: "incarnation-a", sessionMarker: "marker-a", tenantId: "tenant-a", userId: "user-a",
+      roles: ["member"], permissions: ["chat:write"], isAdmin: false, isActive: true,
+    }, sessionId: "session-a", runId: "run-a" });
+    const originalFetch = globalThis.fetch;
+    let failPlayback = !warm;
+    let failReadiness = false;
+    let unsafeDetails = false;
+    const requests: string[] = [];
+    globalThis.fetch = (async (input, options) => {
+      requests.push(options?.method ?? "GET");
+      const playback = String(input).includes("/playback");
+      if ((playback && failPlayback) || (!playback && failReadiness)) {
+        return new Response(JSON.stringify({ detail: {
+          code: unsafeDetails ? "../private-secret-code" : "service_unavailable",
+          diagnostic_id: unsafeDetails ? "private-secret-id" : "diag_0123456789abcdef",
+          message: "private-secret-exception",
+        } }), { status: 503 });
+      }
+      return new Response(JSON.stringify(playback ? {
+        run_id: "run-a", run: { status: "running" }, timeline: [], events: [{ event_id: "event-a", event_type: "run.started", message: "已保留的回放事件" }], artifacts: [], steps: [],
+      } : { session_id: "session-a", run_id: "run-a", status: "running" }));
+    }) as typeof fetch;
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    try {
+      await React.act(async () => { root.render(React.createElement(RunPlaybackPanel, { lifecycle, panelKey: "run-playback:run-a" })); await lifecycle.refresh(); });
+      const previous = lifecycle.getSnapshot().playback;
+      if (warm) { failPlayback = true; await React.act(async () => { await lifecycle.refresh(); }); }
+      assert.equal(container.querySelector("[data-run-playback-panel]")?.getAttribute("data-run-playback-state"), warm ? "ready" : "error");
+      assert.ok(container.querySelector('[role="alert"]'), "read failure must be visible");
+      assert.doesNotMatch(container.textContent ?? "", /private-secret-exception/);
+      assert.match(container.textContent ?? "", /HTTP 503/);
+      assert.match(container.textContent ?? "", /service_unavailable/);
+      assert.match(container.textContent ?? "", /diag_0123456789abcdef/);
+      if (warm) {
+        assert.strictEqual(lifecycle.getSnapshot().playback, previous);
+        assert.match(container.textContent ?? "", /上次/);
+        assert.match(container.textContent ?? "", /已保留的回放事件/);
+      }
+      failReadiness = true;
+      await React.act(async () => { await lifecycle.refresh(); });
+      assert.ok(container.querySelector('[role="alert"]'), "both failed reads must remain visible");
+      assert.match(container.textContent ?? "", /运行状态更新失败/);
+      failPlayback = false;
+      failReadiness = false;
+      const refresh = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("刷新"));
+      assert.ok(refresh, "failed reads offer an explicit GET-only refresh");
+      await React.act(async () => { refresh.click(); await new Promise((resolve) => setTimeout(resolve, 0)); });
+      assert.equal(container.querySelector('[role="alert"]'), null);
+      assert.equal(lifecycle.getSnapshot().playback?.run_id, "run-a");
+      failReadiness = true;
+      await React.act(async () => { await lifecycle.refresh(); });
+      assert.match(container.textContent ?? "", /运行状态更新失败/);
+      assert.match(container.textContent ?? "", /HTTP 503/);
+      assert.match(container.textContent ?? "", /service_unavailable/);
+      assert.match(container.textContent ?? "", /diag_0123456789abcdef/);
+      assert.doesNotMatch(container.textContent ?? "", /回放更新失败/);
+      assert.match(container.textContent ?? "", /已保留的回放事件/);
+      unsafeDetails = true;
+      failPlayback = true;
+      await React.act(async () => { await lifecycle.refresh(); });
+      assert.doesNotMatch(container.textContent ?? "", /private-secret|service_unavailable|diag_0123456789abcdef/);
+      assert.match(container.textContent ?? "", /HTTP 503/);
+      assert.ok(requests.length >= 4);
+      assert.ok(requests.every((method) => method === "GET"));
+    } finally { globalThis.fetch = originalFetch; await React.act(async () => root.unmount()); }
+  });
+}
