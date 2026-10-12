@@ -226,6 +226,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_platform_multi_agent_retirement.py",
         "tests/test_provider_epoch_authority.py",
         "tests/test_routes.py",
+        "tests/test_run_playback_context_window_contract.py",
         "tests/test_run_admission_terminalization.py",
         "tests/test_run_cancellation_use_case.py",
         "tests/test_run_control_routes.py",
@@ -253,6 +254,7 @@ BACKEND_TEST_SHARDS = {
     ),
     "v4-durable-streaming": (
         "tests/test_streaming_callback_direct.py",
+        "tests/test_streaming_event_ledger.py",
         "tests/test_retire_legacy_sse_streams.py",
         "tests/test_streaming_v4_durable.py",
         "tests/test_assistant_text_part_ledger.py",

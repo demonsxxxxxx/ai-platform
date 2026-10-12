@@ -104,6 +104,188 @@ def test_download_to_tempfile_removes_partial_file_on_limit_error(tmp_path, monk
     assert list(tmp_path.iterdir()) == []
 
 
+@pytest.mark.parametrize(
+    ("failure_stage", "cleanup_failures"),
+    [
+        ("create", ()),
+        ("create", ("body_close",)),
+        ("read", ()),
+        ("read", ("temporary_close", "body_close", "unlink")),
+        ("write", ()),
+        ("write", ("temporary_close", "body_close", "unlink")),
+        ("flush", ()),
+        ("flush", ("temporary_close", "body_close", "unlink")),
+        ("result", ()),
+        ("result", ("temporary_close", "body_close", "unlink")),
+        ("limit", ()),
+        ("limit", ("temporary_close", "body_close", "unlink")),
+        ("temporary_close", ()),
+        ("temporary_close", ("body_close", "unlink")),
+        ("body_close", ()),
+        ("body_close", ("unlink",)),
+        ("cancelled", ("temporary_close", "body_close", "unlink")),
+    ],
+)
+def test_download_to_tempfile_keeps_primary_failure_and_cleans_every_resource(
+    monkeypatch, failure_stage, cleanup_failures,
+):
+    storage, _body = _storage(b"x")
+    events = []
+    primary = (
+        asyncio.CancelledError("synthetic primary cancellation")
+        if failure_stage == "cancelled"
+        else OSError("synthetic primary failure")
+    )
+
+    def at(stage):
+        events.append(stage)
+        if stage == failure_stage or (stage == "read" and failure_stage == "cancelled"):
+            raise primary
+        if stage in cleanup_failures:
+            raise OSError("synthetic private cleanup detail")
+
+    class Body(_Body):
+        def read(self, size):
+            at("read")
+            return super().read(size)
+
+        def close(self):
+            at("body_close")
+
+    class Temporary:
+        name = "/synthetic/download"
+
+        def write(self, _chunk):
+            at("write")
+
+        def flush(self):
+            at("flush")
+
+        def close(self):
+            at("temporary_close")
+
+    def create(**_kwargs):
+        at("create")
+        return Temporary()
+
+    def unlink(path):
+        assert path == Temporary.name
+        at("unlink")
+
+    downloaded_object = storage_module.DownloadedObject
+
+    def result(**kwargs):
+        at("result")
+        return downloaded_object(**kwargs)
+
+    storage.client = _Client(Body(b"xx" if failure_stage == "limit" else b"x"))
+    monkeypatch.setattr(storage_module.tempfile, "NamedTemporaryFile", create)
+    monkeypatch.setattr(storage_module.os, "unlink", unlink)
+    monkeypatch.setattr(storage_module, "DownloadedObject", result)
+
+    with pytest.raises(BaseException) as caught:
+        storage.download_to_tempfile(storage_key="private/file.xlsx", max_bytes=1)
+
+    if failure_stage == "limit":
+        assert isinstance(caught.value, ObjectStorageSizeLimitError)
+    else:
+        assert caught.value is primary
+    assert events.count("body_close") == 1
+    assert events.count("temporary_close") == (0 if failure_stage == "create" else 1)
+    assert events.count("unlink") == (0 if failure_stage == "create" else 1)
+    assert set(getattr(caught.value, "__notes__", [])) == {
+        f"object_storage_download_{stage}_failed:OSError" for stage in cleanup_failures
+    }
+
+
+@pytest.mark.parametrize("primary_type", [OSError, asyncio.CancelledError])
+@pytest.mark.parametrize("notes_mode", ["override", "cancelled", "invalid"])
+@pytest.mark.parametrize("cleanup_stage", ["temporary_close", "body_close", "unlink"])
+def test_download_cleanup_diagnostics_cannot_replace_primary_or_stop_cleanup(
+    monkeypatch, primary_type, notes_mode, cleanup_stage,
+):
+    storage, _body = _storage(b"x")
+    primary = primary_type("synthetic download failure")
+    events = []
+    if notes_mode in {"override", "cancelled"}:
+        def broken_note(_note):
+            if notes_mode == "cancelled":
+                raise asyncio.CancelledError("synthetic diagnostic cancellation")
+            raise RuntimeError("synthetic diagnostic failure")
+        primary.add_note = broken_note
+    else:
+        primary.__notes__ = "invalid notes from upstream"
+
+    class Body(_Body):
+        def read(self, _size):
+            raise primary
+
+        def close(self):
+            events.append("body_close")
+            if cleanup_stage == "body_close":
+                raise OSError("synthetic secondary close")
+
+    class Temporary:
+        name = "/synthetic/download"
+
+        def close(self):
+            events.append("temporary_close")
+            if cleanup_stage == "temporary_close":
+                raise OSError("synthetic secondary close")
+
+    def unlink(path):
+        assert path == Temporary.name
+        events.append("unlink")
+        if cleanup_stage == "unlink":
+            raise OSError("synthetic secondary unlink")
+
+    storage.client = _Client(Body(b"x"))
+    monkeypatch.setattr(storage_module.tempfile, "NamedTemporaryFile", lambda **_kwargs: Temporary())
+    monkeypatch.setattr(storage_module.os, "unlink", unlink)
+    with pytest.raises(BaseException) as caught:
+        storage.download_to_tempfile(storage_key="private/file.xlsx", max_bytes=1)
+    assert caught.value is primary
+    assert events == ["temporary_close", "body_close", "unlink"]
+
+
+@pytest.mark.parametrize("read_fails", [False, True])
+def test_download_to_tempfile_body_close_failure_removes_real_temporary_file(
+    tmp_path, monkeypatch, read_fails,
+):
+    storage, _body = _storage(b"downloaded")
+    read_error = RuntimeError("synthetic read failed")
+    close_error = OSError("synthetic close failed")
+    body_closes = []
+    temporary_files = []
+    create = storage_module.tempfile.NamedTemporaryFile
+
+    class Body(_Body):
+        def read(self, size):
+            if read_fails:
+                raise read_error
+            return super().read(size)
+
+        def close(self):
+            body_closes.append(True)
+            raise close_error
+
+    def record_temporary(**kwargs):
+        temporary = create(dir=tmp_path, **kwargs)
+        temporary_files.append(temporary)
+        return temporary
+
+    storage.client = _Client(Body(b"downloaded"))
+    monkeypatch.setattr(storage_module.tempfile, "NamedTemporaryFile", record_temporary)
+    with pytest.raises(Exception) as caught:
+        storage.download_to_tempfile(storage_key="private/file.xlsx", max_bytes=10)
+
+    assert caught.value is (read_error if read_fails else close_error)
+    assert len(body_closes) == 1
+    assert len(temporary_files) == 1
+    assert temporary_files[0].closed
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_get_bytes_bounded_returns_streamed_payload_and_closes_body():
     storage, body = _storage(b"preview")
 

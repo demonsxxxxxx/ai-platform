@@ -114,32 +114,17 @@ export interface RunPlaybackStep {
   updated_at?: string | null;
 }
 
-export interface RunPlaybackReferencedMaterials {
-  file_count?: number;
-  message_count?: number;
-  memory_record_count?: number;
-  artifact_count?: number;
-}
-
-export interface RunPlaybackUsedContextSummary {
-  source?: string;
-  input_keys: string[];
-  file_count?: number;
-  message_count?: number;
-  memory_record_count?: number;
-  artifact_count?: number;
-  memory_policy_source?: string;
-  long_term_memory_read?: boolean;
+export interface RunPlaybackContextWindow {
+  status: "complete" | "trimmed" | "degraded";
+  history_candidate_count: number;
+  history_authorized_count: number;
+  history_omitted_count: number;
+  legacy_history_excluded: boolean;
+  selected_file_names: string[];
 }
 
 export interface RunPlaybackContextRef {
-  source?: string;
-  referenced_materials: RunPlaybackReferencedMaterials;
-  used_context_summary: RunPlaybackUsedContextSummary;
-  execution_tier?: string;
-  latest_artifact_version?: string | null;
-  context_pack_version?: string;
-  context_pack_generated_at?: string;
+  context_window: RunPlaybackContextWindow;
 }
 
 export interface RunPlaybackTimelineEntry {
@@ -188,52 +173,7 @@ const PUBLIC_LINEAGE_KEYS = new Set([
   "subagent_id",
 ]);
 
-const PUBLIC_CONTEXT_COUNTS = [
-  "file_count",
-  "message_count",
-  "memory_record_count",
-  "artifact_count",
-] as const;
-
-const PUBLIC_CONTEXT_INPUT_KEYS = new Set([
-  "attachments",
-  "message",
-  "messages",
-  "files",
-  "file",
-  "memory",
-  "artifacts",
-  "mode",
-  "prompt",
-  "query",
-  "text",
-]);
-
-const PUBLIC_CONTEXT_SOURCE_VALUES = new Set([
-  "chat_stream",
-  "copy_run",
-  "manual_context_snapshot",
-  "resume_run",
-  "retry_run",
-  "runs_api",
-  "stored_context_snapshot",
-  "worker_refresh",
-]);
-
-const PUBLIC_CONTEXT_MEMORY_POLICY_SOURCE_VALUES = new Set([
-  "default",
-  "not_recorded",
-  "stored",
-]);
-
-const PUBLIC_CONTEXT_EXECUTION_TIERS = new Set([
-  "sdk_only_writing",
-  "document_worker",
-  "heavy_sandbox",
-]);
-
 const HASH_LIKE_VALUE_PATTERN = /^(?:sha256:)?[a-f0-9]{40,}$/i;
-const PUBLIC_VERSION_PATTERN = /^v\d+(?:[._:-]\d+){0,3}$/i;
 
 const UNSAFE_LINEAGE_VALUE_FRAGMENTS = [
   "/",
@@ -290,7 +230,7 @@ export async function fetchRunPlayback(
   params: RunPlaybackParams = {},
   options: RunPlaybackFetchOptions = {},
 ): Promise<RunPlaybackResponse> {
-  const response = await authFetch<RunPlaybackResponse | null>(
+  const response = await authFetch<unknown>(
     buildRunPlaybackUrl(runId, params),
     {
       ...options,
@@ -302,7 +242,7 @@ export async function fetchRunPlayback(
 }
 
 export function normalizeRunPlayback(
-  response: RunPlaybackResponse | null | undefined,
+  response: unknown,
 ): RunPlaybackResponse {
   const source = asRecord(response) ?? {};
 
@@ -496,123 +436,59 @@ function normalizeStep(value: unknown): RunPlaybackStep {
   });
 }
 
-function normalizeContextRef(value: unknown): RunPlaybackContextRef | null {
-  const source = asRecord(value);
-  if (!source) return null;
+function normalizeContextRef(value: unknown): RunPlaybackContextRef {
+  // The exact Run-bound projection owns this window. Do not merge the top-level
+  // mirror or revive the retired provenance fields as a fallback authority.
+  const source = asRecord(asRecord(value)?.context_window) ?? {};
+  const validCounts = [
+    source.history_candidate_count,
+    source.history_authorized_count,
+    source.history_omitted_count,
+  ].every(isSafeContextCount);
 
-  const usedSummary = normalizeUsedContextSummary(source.used_context_summary);
-  const referencedMaterials = normalizeReferencedMaterials(
-    source.referenced_materials,
-  );
-  return compactObject({
-    source: safeContextSource(source.source),
-    referenced_materials: referencedMaterials,
-    used_context_summary: usedSummary,
-    execution_tier: safeContextExecutionTier(source.execution_tier),
-    latest_artifact_version: safeContextVersion(
-      source.latest_artifact_version,
-    ),
-    context_pack_version: safeContextVersion(source.context_pack_version) ?? undefined,
-    context_pack_generated_at: safeIsoDateTime(source.context_pack_generated_at),
-  });
-}
-
-function normalizeReferencedMaterials(
-  value: unknown,
-): RunPlaybackReferencedMaterials {
-  const source = asRecord(value);
-  const output: RunPlaybackReferencedMaterials = {};
-  if (!source) return output;
-  for (const key of PUBLIC_CONTEXT_COUNTS) {
-    const count = asNumber(source[key]);
-    if (count !== undefined && count >= 0) {
-      output[key] = count;
-    }
-  }
-  return output;
-}
-
-function normalizeUsedContextSummary(
-  value: unknown,
-): RunPlaybackUsedContextSummary {
-  const source = asRecord(value);
-  if (!source) return { input_keys: [] };
-  const output: RunPlaybackUsedContextSummary = {
-    input_keys: normalizeContextInputKeys(source.input_keys),
+  return {
+    context_window: {
+      status:
+        validCounts && (source.status === "complete" || source.status === "trimmed")
+          ? source.status
+          : "degraded",
+      history_candidate_count: safeContextCount(source.history_candidate_count),
+      history_authorized_count: safeContextCount(source.history_authorized_count),
+      history_omitted_count: safeContextCount(source.history_omitted_count),
+      legacy_history_excluded: source.legacy_history_excluded === true,
+      selected_file_names: safeContextFileNames(source.selected_file_names),
+    },
   };
-  const summarySource = safeContextSource(source.source);
-  if (summarySource) output.source = summarySource;
-  for (const key of PUBLIC_CONTEXT_COUNTS) {
-    const count = asNumber(source[key]);
-    if (count !== undefined && count >= 0) {
-      output[key] = count;
-    }
-  }
-  const memoryPolicySource = asString(source.memory_policy_source);
-  if (
-    memoryPolicySource &&
-    PUBLIC_CONTEXT_MEMORY_POLICY_SOURCE_VALUES.has(memoryPolicySource)
-  ) {
-    output.memory_policy_source = memoryPolicySource;
-  }
-  const longTermMemoryRead = asBoolean(source.long_term_memory_read);
-  if (longTermMemoryRead !== undefined) {
-    output.long_term_memory_read = longTermMemoryRead;
-  }
-  return output;
 }
 
-function safeContextSource(value: unknown): string | undefined {
-  const source = asString(value);
-  return source && PUBLIC_CONTEXT_SOURCE_VALUES.has(source) ? source : undefined;
+function isSafeContextCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
-function safeContextExecutionTier(value: unknown): string | undefined {
-  const tier = asString(value);
-  return tier && PUBLIC_CONTEXT_EXECUTION_TIERS.has(tier) ? tier : undefined;
+function safeContextCount(value: unknown): number {
+  return isSafeContextCount(value) ? value : 0;
 }
 
-function safeContextVersion(value: unknown): string | null | undefined {
-  if (value === null) return null;
-  const version = asString(value)?.trim();
-  if (!version) return undefined;
-  if (!PUBLIC_VERSION_PATTERN.test(version)) return undefined;
-  if (HASH_LIKE_VALUE_PATTERN.test(version)) return undefined;
-  if (!isSafeLineageString(version)) return undefined;
-  return version;
-}
-
-function safeIsoDateTime(value: unknown): string | undefined {
-  const timestamp = asString(value)?.trim();
-  if (!timestamp) return undefined;
-  if (asTime(timestamp) === undefined) return undefined;
-  const normalized = timestamp.toLowerCase();
-  if (
-    normalized.includes("/") ||
-    normalized.includes("\\") ||
-    normalized.includes(snakeKey("storage", "key")) ||
-    normalized.includes(snakeKey("runtime", "path")) ||
-    normalized.includes(snakeKey("work", "dir")) ||
-    normalized.includes("payload")
-  ) {
-    return undefined;
-  }
-  return timestamp;
-}
-
-function normalizeContextInputKeys(value: unknown): string[] {
+function safeContextFileNames(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
-  return Array.from(
-    new Set(
-      value.flatMap((item) => {
-        const key = asString(item)?.trim();
-        if (!key || !PUBLIC_CONTEXT_INPUT_KEYS.has(key)) {
-          return [];
-        }
-        return [key];
-      }),
-    ),
-  ).sort();
+  const names: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string") continue;
+    // File names are public basenames, not lineage IDs: words such as manifest
+    // and ordinary percent characters do not identify private metadata.
+    const name = item.replace(/\\/g, "/").split("/").pop()?.trim();
+    if (
+      !name || name === "." || name === ".." || name.length > 160 ||
+      /:/u.test(name) || /%(?:2f|5c)/iu.test(name) ||
+      /(?:^|[._\s-])(?:api[_-]?key|access[_-]?token|auth(?:orization)?|password|secret|token)\s*=/iu.test(name) ||
+      Array.from(name).some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)
+    ) {
+      continue;
+    }
+    if (!names.includes(name)) names.push(name);
+    if (names.length === 8) break;
+  }
+  return names;
 }
 
 function normalizeTimeline(value: unknown): RunPlaybackTimelineEntry[] {

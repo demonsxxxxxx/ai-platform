@@ -26,6 +26,7 @@ EXPECTED_CI_VERIFY = (
     "&& corepack pnpm run test:company-rbac-browser-smoke-source "
     "&& corepack pnpm run test:skill-admin-ui "
     "&& corepack pnpm run test:run-monitor "
+    "&& corepack pnpm run test:run-playback "
     "&& corepack pnpm run test:profile-drive "
     "&& corepack pnpm run test:control-plane-ui "
     "&& corepack pnpm run test:model-admin "
@@ -962,7 +963,7 @@ def pytest_generate_tests(metafunc):
         )
 
 
-def test_run_monitor_owning_selectors_include_cost_mapper_contract() -> None:
+def test_monitor_and_playback_cost_contracts_have_distinct_ci_owners() -> None:
     scripts = json.loads(Path("frontend/web/package.json").read_text())["scripts"]
     assert scripts["test:run-monitor"].split() == [
         "tsx", "--test",
@@ -974,5 +975,16 @@ def test_run_monitor_owning_selectors_include_cost_mapper_contract() -> None:
         "src/components/panels/SidebarParts/__tests__/navigationState.test.ts",
         "src/__tests__/appRouteManifest.test.ts",
         "src/__tests__/App.test.tsx",
-        "src/services/api/__tests__/runPlayback.test.ts",
     ]
+    assert scripts["test:run-playback"].split() == [
+        "tsx", "--test",
+        "src/services/api/__tests__/runPlayback.test.ts",
+        "src/components/layout/AppContent/__tests__/runPlaybackPanelState.test.ts",
+        "src/components/layout/AppContent/__tests__/RunPlaybackPanel.mounted.test.tsx",
+        "src/components/chat/__tests__/contextUiAffordances.test.ts",
+        "src/hooks/useAgent/__tests__/runControlLifecycle.test.ts",
+        "src/hooks/useAgent/runControlLifecycle.test.ts",
+    ]
+    ci_commands = [command.strip() for command in scripts["ci:verify"].split("&&")]
+    assert ci_commands.count("corepack pnpm run test:run-monitor") == 1
+    assert ci_commands.count("corepack pnpm run test:run-playback") == 1
