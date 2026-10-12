@@ -340,7 +340,6 @@ def build_uploaded_skill_admin_trust_review(skill_version: dict[str, Any]) -> di
 def build_skill_dependency_evidence(
     *,
     dependency_ids: list[str],
-    dependency_manifests: list[dict[str, Any]],
     package_contract: dict[str, Any],
 ) -> dict[str, Any]:
     evidence_files = package_contract.get("evidence_files") if isinstance(package_contract.get("evidence_files"), dict) else {}
@@ -349,7 +348,7 @@ def build_skill_dependency_evidence(
         "status": "review_required" if dependency_ids else "not_required",
         "dependency_count": len(dependency_ids),
         "dependency_ids": list(dependency_ids),
-        "manifest_snapshot_present": bool(dependency_manifests),
+        "manifest_snapshot_present": False,
         "package_evidence_present": any(bool(evidence_files.get(key)) for key in ("sbom_or_signed_package", "license_policy", "vulnerability_scan")),
         "evidence_files": {
             "sbom_or_signed_package": list(evidence_files.get("sbom_or_signed_package") or []),
