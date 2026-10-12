@@ -68,6 +68,15 @@ last-write-wins credential replacement policy.
    acknowledged before dispatch. These labels exclude private identities,
    arguments, runtime paths and results; the existing event acknowledgement and
    execution-evidence checks remain required. Known failed calls to platform-authorized read-only tools may recover.
+   A complete remote `CallToolResult(isError=true)` may also end a potentially
+   write-capable call as a known failure when the adapter uniquely matches the
+   canonical tool and original argument digest to an admitted native call ID,
+   and that call's failure hook and receipts are acknowledged. The private
+   evidence retains `lifecycle_phase=failed` with
+   `trust_basis=tool_call_bound_error_result`; it never claims tool success or
+   absence of partial writes. Other authorized calls may continue. Error text,
+   model claims and remote read-only hints do not supply this evidence. Identical
+   concurrent calls whose response cannot be uniquely joined remain uncertain.
    For write-capable calls after admission, a missing terminal hook is
    `mcp_execution_outcome_unknown`; a completed hook whose durable callback or
    public receipt is incomplete is `mcp_execution_succeeded_receipt_incomplete`.
@@ -76,8 +85,9 @@ last-write-wins credential replacement policy.
    deadline preserve that uncertainty after an observed MCP invocation.
    Retry and resume reject either error code at the locked Runs control
    boundary and in the public readiness/manifest projections.
-   A failed external write, identity conflict or unacknowledged receipt also
-   denies subsequent external writes in the current SDK turn. Admission rechecks
+   A failed external write without a uniquely bound returned-error receipt,
+   identity conflict or unacknowledged receipt also denies subsequent external
+   writes in the current SDK turn. Admission rechecks
    after awaited receipts to cover concurrent failures. Ordinary concurrent
    writes remain available before an uncertain outcome is observed; authorized
    read-only tools remain available for reconciliation when their receipts work.
@@ -200,6 +210,15 @@ and absence of secrets in public events. That stage remains unclaimed until run.
   remain compatible and no parallel retry path remains. The installed CLI MCP
   regression now runs in the Sandbox CI shard; its selected catalog also
   includes the platform-owned `attach_file` tool.
+- Replace unconditional uncertainty for an admitted write-capable MCP's failed
+  hook with call-bound proof of a complete returned error result. Unproven failed
+  hooks retain the existing uncertainty path; no name/error-text whitelist or
+  parallel execution path remains. Existing v1 evidence fields are unchanged;
+  the added MCP-only failed-result trust basis is consumed by SDK, Sandbox and
+  Worker together. Legacy hook evidence remains conservative. The Runner,
+  registration, shared evidence, Sandbox binding and Worker selectors cover
+  failure recovery, ambiguous joins, missing callbacks and transport exceptions;
+  the installed CLI selector now exercises possibly writable remote error results.
 - Platform-owned response/context public labels complete existing Tool subjects;
   no production path, canonical identity or wire schema is superseded.
 - Update the owning MCP section in `docs/frontend/skills-marketplace-public-api.md`
