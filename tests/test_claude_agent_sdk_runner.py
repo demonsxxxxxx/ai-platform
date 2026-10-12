@@ -264,6 +264,7 @@ def _client_sdk(module, captured):
         def __init__(self, options):
             super().__init__(options)
             self.options = options
+            captured["client_options"] = options
             captured["client_mcp_server_types_at_construction"] = {
                 name: config.get("type") if isinstance(config, dict) else None
                 for name, config in getattr(options, "mcp_servers", {}).items()
@@ -930,6 +931,28 @@ def _scripted_sdk(
                         + event["delta"]["text"]
                     )
                 yield StreamEvent(value)
+            elif kind == "mcp_call":
+                from mcp.types import CallToolRequest, CallToolRequestParams
+
+                hook_input = {
+                    "tool_name": value["tool_name"],
+                    "tool_use_id": value["call_id"],
+                    "tool_input": value["arguments"],
+                }
+                await invoke_hook(("PreToolUse", hook_input, value["call_id"]))
+                admission = captured["hook_results"][-1][1]["hookSpecificOutput"]
+                if admission["permissionDecision"] != "allow":
+                    continue
+                server = captured["client_options"].mcp_servers[value["server"]]["instance"]
+                reply = await server.request_handlers[CallToolRequest](CallToolRequest(
+                    method="tools/call",
+                    params=CallToolRequestParams(name=value["name"], arguments=value["arguments"]),
+                ))
+                captured.setdefault("mcp_results", []).append(reply.root)
+                if value.get("omit_terminal_hook"):
+                    continue
+                terminal = "PostToolUseFailure" if reply.root.isError else "PostToolUse"
+                await invoke_hook((terminal, hook_input, value["call_id"]))
             elif kind in {"hook", "cancel_hook"}:
                 if kind == "cancel_hook":
                     hook_task = asyncio.create_task(invoke_hook(value))
@@ -6725,6 +6748,83 @@ async def test_protocol_close_includes_late_skill_outcome_without_sticky_failure
 
 
 
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first_result", ["returned_error", "timeout", "missing_hook", "unacknowledged"])
+async def test_returned_mcp_error_only_fails_current_call(monkeypatch, tmp_path, first_result):
+    from contextlib import asynccontextmanager
+    from mcp.types import CallToolResult, TextContent, Tool
+    from app.execution.infrastructure.claude_mcp import ClaudeMcpRegistration
+
+    captured, calls, events = {}, [], []
+    first = {**_subject(server_id="files", tool_name="list_files"), "write_capable": True}
+    next_tool = {**_subject(server_id="projects", tool_name="update"), "write_capable": True}
+
+    def prepare(subjects, configs, callback_wrapper=None, *, failure_observer=None):
+        @asynccontextmanager
+        async def session_factory(config):
+            names = [item["mcp_tool"] for item in subjects.values()
+                     if item.get("mcp_server") in configs
+                     and configs[item["mcp_server"]] == config]
+            async def call_tool(name, arguments):
+                calls.append((name, arguments))
+                if name == "list_files" and first_result == "timeout":
+                    raise TimeoutError("synthetic response missing")
+                return CallToolResult(
+                    content=[TextContent(type="text", text='{"status":"access_denied"}'
+                                        if name == "list_files" else "updated")],
+                    isError=name == "list_files",
+                )
+            yield types.SimpleNamespace(names=names, call_tool=call_tool)
+        async def list_tools(session):
+            return [Tool(name=name, inputSchema={"type": "object"}) for name in session.names]
+        return ClaudeMcpRegistration(
+            subjects, configs, session_factory=session_factory, list_tools=list_tools,
+            callback_wrapper=callback_wrapper, failure_observer=failure_observer,
+        )
+
+    steps = [("mcp_call", {
+        "tool_name": item["identity"], "server": item["mcp_server"], "name": item["mcp_tool"],
+        "arguments": {"private": "restricted" if item is first else "another operation"},
+        "call_id": call_id,
+        "omit_terminal_hook": item is first and first_result == "missing_hook",
+    }) for item, call_id in [(first, "list-denied"), (next_tool, "update-next")]]
+    steps.append(("assistant", "Handled the tool error."))
+    async def acknowledge(evidence):
+        return not (first_result == "unacknowledged" and evidence["lifecycle_phase"] == "failed")
+    async def publish(candidates):
+        events.extend(candidate.as_agent_event_fields() for candidate in candidates)
+        return True
+
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", _scripted_sdk(captured, steps))
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _sandbox_brokered_settings)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.prepare_claude_mcp", prepare)
+    result = await run_claude_agent_sdk(
+        prompt="Continue after a directory refuses access", cwd=tmp_path, skill_id="general-chat",
+        run_id="run-a", attempt_id="attempt-a", execution_policy="sandbox_brokered",
+        tool_policy_subjects=[first, next_tool], on_capability_evidence=acknowledge,
+        on_agent_event=publish,
+    )
+    admissions = [value["hookSpecificOutput"]["permissionDecision"]
+                  for kind, value in captured["hook_results"] if kind == "PreToolUse"]
+    if first_result == "returned_error":
+        assert admissions == ["allow", "allow"], captured["hook_results"]
+        assert [name for name, _arguments in calls] == ["list_files", "update"]
+        assert result.error is None
+        assert result.capability_evidence[1]["lifecycle_phase"] == "failed"
+        assert result.capability_evidence[1]["trust_basis"] == "tool_call_bound_error_result"
+        assert "tool.failed" in [event["type"] for event in events]
+        assert "tool.denied" not in [event["type"] for event in events]
+    elif first_result == "missing_hook":
+        assert admissions == ["allow", "allow"]
+        assert result.error == "mcp_execution_outcome_unknown"
+    else:
+        assert admissions == ["allow", "deny"]
+        assert [name for name, _arguments in calls] == ["list_files"]
+        assert result.error == "mcp_execution_outcome_unknown"
+    assert "restricted" not in json.dumps(events)
+    assert "access_denied" not in json.dumps(events)
 
 
 @pytest.mark.asyncio

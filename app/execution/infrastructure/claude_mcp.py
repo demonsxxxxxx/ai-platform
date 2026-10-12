@@ -82,6 +82,14 @@ def _stable_aliases(
     return aliases
 
 
+def _tool_arguments_digest(arguments: object) -> str | None:
+    try:
+        encoded = json.dumps(arguments, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    except (TypeError, ValueError):
+        return None
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 class ClaudeMcpRegistration:
     def __init__(self, subjects, configs, *, session_factory, list_tools, callback_wrapper=None, failure_observer=None):
         self._failure_observer = failure_observer
@@ -98,6 +106,8 @@ class ClaudeMcpRegistration:
         self.unavailable: dict[str, str] = {}
         self._identity_components: dict[str, tuple[str, str]] = {}
         self._tool_aliases: dict[tuple[str, str], str] = {}
+        self._tool_calls: dict[tuple[str, str], str] = {}
+        self._tool_error_results: set[tuple[str, str]] = set()
 
         selected_identities: list[tuple[str, str, str]] = []
         for identity, subject in sorted(subjects.items()):
@@ -158,6 +168,19 @@ class ClaudeMcpRegistration:
         value = str(name or "")
         return self.aliases.get(value, value)
 
+    def track_tool_call(self, identity: str, call_id: str, arguments: object) -> None:
+        if identity in self._identity_components:
+            digest = _tool_arguments_digest(arguments)
+            if digest is not None:
+                self._tool_calls.setdefault((identity, call_id), digest)
+
+    def consume_tool_error_result(self, identity: str, call_id: str) -> bool:
+        key = (identity, call_id)
+        self._tool_calls.pop(key, None)
+        received = key in self._tool_error_results
+        self._tool_error_results.discard(key)
+        return received
+
     def _server(self, server_name, tools, session):
         selected = {alias: (tool, remote_name) for alias, tool, remote_name in tools}
         server = Server(server_name)
@@ -200,6 +223,15 @@ class ClaudeMcpRegistration:
                         # Diagnostics must never replace the model-facing exception.
                         pass
                 raise
+            if isinstance(result, CallToolResult) and result.isError is True:
+                identity = self.canonical_identity(f"mcp__{server_name}__{name}")
+                digest = _tool_arguments_digest(arguments)
+                matching = [key for key, value in self._tool_calls.items()
+                            if key[0] == identity and value == digest]
+                # MCP carries no native call ID. Identical concurrent inputs
+                # cannot prove which admitted call received this error result.
+                if len(matching) == 1:
+                    self._tool_error_results.add(matching[0])
             # The installed Claude SDK bridge forwards MCP content and isError
             # but drops structuredContent. Keep that data available to the model
             # while retaining the original typed result for direct MCP callers.

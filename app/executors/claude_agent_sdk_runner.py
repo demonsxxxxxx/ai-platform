@@ -70,6 +70,7 @@ from app.executors.public_answer_stream import (
 from app.required_tool_contract import (
     MCP_EXECUTION_OUTCOME_UNKNOWN,
     MCP_EXECUTION_SUCCEEDED_RECEIPT_INCOMPLETE,
+    MCP_TOOL_ERROR_RESULT_TRUST_BASIS,
     REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY,
     SANDBOX_EFFECTFUL_TOOL_IDENTITIES,
     SANDBOX_LOCAL_TOOL_IDENTITIES,
@@ -1645,6 +1646,7 @@ async def run_claude_agent_sdk(
     capability_evidence_rejected = False
     actual_mcp_invocation_observed = False
     mcp_execution_states: dict[tuple[str, str], str] = {}
+    mcp_confirmed_error_results: set[tuple[str, str]] = set()
     mcp_execution_conflicted = False
     capability_invocation_states: dict[tuple[str, str, str], str] = {}
     governed_builtin_invocation_states: dict[tuple[str, str], str] = {}
@@ -2476,6 +2478,7 @@ async def run_claude_agent_sdk(
         tool_call_id: str,
         lifecycle_phase: str,
         skill_metadata: dict[str, Any] | None = None,
+        tool_error_result: bool = False,
     ) -> bool:
         """Record one bounded actual-call fact without tool input or output."""
 
@@ -2526,6 +2529,7 @@ async def run_claude_agent_sdk(
                 ),
                 tool_call_id=tool_call_id,
                 lifecycle_phase=lifecycle_phase,
+                tool_error_result=tool_error_result,
             )
             acknowledged = (
                 await on_capability_evidence(dict(evidence))
@@ -2869,8 +2873,10 @@ async def run_claude_agent_sdk(
             or capability_evidence_rejected
             or agent_event_callback_failed
             or any(
-                state == "failed" and authorized_subjects.get(identity, {}).get("write_capable") is not False
-                for (identity, _call_id), state in mcp_execution_states.items()
+                state == "failed"
+                and (identity, call_id) not in mcp_confirmed_error_results
+                and authorized_subjects.get(identity, {}).get("write_capable") is not False
+                for (identity, call_id), state in mcp_execution_states.items()
             )
         )
 
@@ -3068,6 +3074,7 @@ async def run_claude_agent_sdk(
                 ):
                     mcp_execution_conflicted = True
                 mcp_execution_states[execution_key] = "admitted"
+                mcp_registration.track_tool_call(identity, resolved_tool_call_id, hook_input.get("tool_input"))
         # A concurrent write may fail while this admission awaits its receipts.
         # Recheck immediately before returning authority to dispatch the call.
         if output["permissionDecision"] == "allow" and external_write and external_write_outcome_unconfirmed():
@@ -3140,6 +3147,7 @@ async def run_claude_agent_sdk(
                 failure=hook_input if lifecycle_phase == "failed" else None,
             )
             evidence_acknowledged = False
+            tool_error_result = False
             if identity in internal_platform_subjects:
                 evidence_acknowledged = await record_tool_lifecycle(
                     tool_name="MCP",
@@ -3152,11 +3160,14 @@ async def run_claude_agent_sdk(
                     mcp_execution_conflicted = True
                 else:
                     mcp_execution_states[execution_key] = lifecycle_phase
+                tool_error_result = mcp_registration.consume_tool_error_result(identity, call_id)
+                tool_error_result = tool_error_result and lifecycle_phase == "failed"
                 evidence_acknowledged = await record_capability_evidence(
                     capability_kind="mcp",
                     canonical_identity=identity,
                     tool_call_id=call_id,
                     lifecycle_phase=lifecycle_phase,
+                    tool_error_result=tool_error_result,
                 )
             if agent_event_adapter is not None and evidence_acknowledged is True:
                 candidates = agent_event_adapter.accept_hook(
@@ -3169,6 +3180,8 @@ async def run_claude_agent_sdk(
                 if not candidates and not agent_event_callback_failed:
                     mcp_execution_conflicted = True
                 evidence_acknowledged = await publish_agent_candidates(candidates)
+            if tool_error_result and evidence_acknowledged is True:
+                mcp_confirmed_error_results.add((identity, call_id))
             return {}
 
         return handler
@@ -3450,8 +3463,9 @@ async def run_claude_agent_sdk(
         if mcp_execution_conflict_observed():
             return MCP_EXECUTION_OUTCOME_UNKNOWN
         write_states = [
-            state for (identity, _call_id), state in mcp_execution_states.items()
+            state for (identity, call_id), state in mcp_execution_states.items()
             if authorized_subjects.get(identity, {}).get("write_capable") is not False
+            and (identity, call_id) not in mcp_confirmed_error_results
         ]
         if not write_states:
             return None
@@ -3518,7 +3532,7 @@ async def run_claude_agent_sdk(
             ).declaration_sha256
             recoverable_failure = kind == "skill" or (
                 kind == "mcp" and authorized_subjects.get(identity, {}).get("write_capable") is False
-            )
+            ) or any(item.get("trust_basis") == MCP_TOOL_ERROR_RESULT_TRUST_BASIS for item in matching)
             phases = [item.get("lifecycle_phase") for item in matching]
             statuses = [item.get("lifecycle_status") for item in matching]
             terminal_valid = (

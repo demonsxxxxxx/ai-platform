@@ -1881,7 +1881,8 @@ def test_executor_rejects_invalid_private_system_prompt_before_sdk_or_public_lea
     assert private_marker not in json.dumps(result)
 
 
-def test_executor_binds_sdk_mcp_evidence_and_emits_only_safe_capability_event(tmp_path, monkeypatch):
+@pytest.mark.parametrize("returned_error", [False, True])
+def test_executor_binds_sdk_mcp_evidence_and_emits_only_safe_capability_event(tmp_path, monkeypatch, returned_error):
     callbacks = []
     acknowledgements = []
 
@@ -1889,12 +1890,11 @@ def test_executor_binds_sdk_mcp_evidence_and_emits_only_safe_capability_event(tm
         claude_agent_sdk_enabled = True
 
     async def fake_run_claude_agent_sdk(**kwargs):
-        for phase in ("invocation_requested", "completed"):
-            acknowledgements.append(
-                await kwargs["on_capability_evidence"](
-                    sdk_mcp_evidence("mcp__tenant-server__search", "tool-call-1", phase)
-                )
-            )
+        for phase in ("invocation_requested", "failed" if returned_error else "completed"):
+            raw_evidence = sdk_mcp_evidence("mcp__tenant-server__search", "tool-call-1", phase)
+            if returned_error and phase == "failed":
+                raw_evidence["trust_basis"] = "tool_call_bound_error_result"
+            acknowledgements.append(await kwargs["on_capability_evidence"](raw_evidence))
         return sdk_result()
 
     def callback_sender(url, payload, token):
@@ -1914,8 +1914,11 @@ def test_executor_binds_sdk_mcp_evidence_and_emits_only_safe_capability_event(tm
     evidence = response.json()["capability_evidence"]
     assert [(item["lifecycle_phase"], item["tool_call_id"]) for item in evidence] == [
         ("invocation_requested", "tool-call-1"),
-        ("completed", "tool-call-1"),
+        ("failed" if returned_error else "completed", "tool-call-1"),
     ]
+    assert evidence[-1]["trust_basis"] == (
+        "tool_call_bound_error_result" if returned_error else "tool_call_bound_invocation"
+    )
     capability_events = [
         item
         for item in callbacks
@@ -1927,16 +1930,17 @@ def test_executor_binds_sdk_mcp_evidence_and_emits_only_safe_capability_event(tm
     } == {("session-a", "run-a", "qat-attempt-a")}
     assert [[event["type"] for event in item["events"]] for item in capability_events] == [
         ["capability_invoking", "execution_step"],
+        ["capability_failed", "execution_step_failed"] if returned_error else
         ["capability_completed", "execution_step_completed"],
     ]
     assert [item["events"][0]["payload"]["capability"] for item in capability_events] == [
         {"kind": "mcp", "name": "Tenant Search", "status": "invoking"},
-        {"kind": "mcp", "name": "Tenant Search", "status": "completed"},
+        {"kind": "mcp", "name": "Tenant Search", "status": "failed" if returned_error else "completed"},
     ]
     execution_events = [item["events"][1] for item in capability_events]
     assert [item["type"] for item in execution_events] == [
         "execution_step",
-        "execution_step_completed",
+        "execution_step_failed" if returned_error else "execution_step_completed",
     ]
     assert execution_events[0]["payload"]["step_id"] == execution_events[1]["payload"]["step_id"]
     assert set(execution_events[0]["payload"]) <= PUBLIC_EXECUTION_V2_STEP_PAYLOAD_FIELDS
