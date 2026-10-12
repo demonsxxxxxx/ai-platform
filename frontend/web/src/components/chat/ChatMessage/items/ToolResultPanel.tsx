@@ -172,6 +172,7 @@ export function ToolResultPanel({
     open,
     onClose: handleUserClose,
     reserveSidebarSpace: effectiveViewMode === "sidebar" && !isFullscreen,
+    gestureOwnerKey: registryKey,
     widthStorageKey: WIDTH_STORAGE_KEY,
     widthCssVar: WIDTH_CSS_VAR,
     defaultWidthPct: DEFAULT_WIDTH_PCT,

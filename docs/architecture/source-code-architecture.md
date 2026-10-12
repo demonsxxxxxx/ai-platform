@@ -738,6 +738,9 @@ an independent, active capability.
 callback so X, Escape, overlay and mobile swipe all clear sidebar history before
 closing. Registry replacement, Back restoration and unmount remain separate from
 explicit dismissal; conversation/auth revocation retains its existing store owner.
+Pending mobile swipe dismissal belongs to the logical registry key. Replacing
+content in the same mounted host cancels its timer and drag state before the
+replacement can receive the old close action.
 `useSidebarPanel` reserves desktop layout space only for an open, non-fullscreen
 sidebar. Center/fullscreen panels keep their open-owned interactions without a
 layout lease; reference counting preserves other preview/editor sidebar leases.

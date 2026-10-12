@@ -12,6 +12,8 @@ export interface SidebarPanelOptions {
   onClose: () => void;
   /** Reserve desktop layout space only while rendering as a sidebar. */
   reserveSidebarSpace?: boolean;
+  /** Identity of the content owning mobile swipe dismissal. */
+  gestureOwnerKey?: string;
   /** localStorage key for persisting sidebar width */
   widthStorageKey: string;
   /** CSS variable name for sidebar width */
@@ -41,6 +43,7 @@ export function useSidebarPanel({
   open,
   onClose,
   reserveSidebarSpace = true,
+  gestureOwnerKey,
   widthStorageKey,
   widthCssVar,
   defaultWidthPct = 35,
@@ -226,6 +229,7 @@ export function useSidebarPanel({
   const swipeElementRef = useSwipeToClose({
     onClose,
     enabled: open && isMobile,
+    ownerKey: gestureOwnerKey,
     dragHandleRef,
   });
 

@@ -238,6 +238,26 @@ test("mobile content swipe stays open; explicit handle swipe clears history", as
   } finally { await view.close(); }
 });
 
+test("pending swipe cannot close a replacement document in the same mounted host", async () => {
+  const view = await harness();
+  try {
+    await viewport(500); await view.render(createElement(AttachmentPreviewHost)); await view.open("A");
+    const handle = document.querySelector(".mobile-drag-handle"); assert.ok(handle);
+    await act(async () => { touch(handle, "touchstart", 0); touch(handle, "touchmove", 150); touch(handle, "touchend", 150); });
+    await view.open("B");
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 350)); });
+    assert.equal(attachment.getAttachmentPreviewState()?.attachment.key, "B");
+    assert.equal(document.body.style.overflow, "hidden");
+    const replacementHandle = document.querySelector(".mobile-drag-handle"); assert.ok(replacementHandle);
+    await act(async () => {
+      touch(replacementHandle, "touchstart", 0); touch(replacementHandle, "touchmove", 150); touch(replacementHandle, "touchend", 150);
+      await new Promise(resolve => setTimeout(resolve, 350));
+    });
+    assert.equal(attachment.getAttachmentPreviewState(), null, "B retains its own swipe close");
+    assert.equal(history.getSidebarHistoryLength(), 0);
+  } finally { await view.close(); }
+});
+
 test("pending swipe cleanup and native fullscreen Escape cannot close a replacement document", async () => {
   const view = await harness();
   try {
