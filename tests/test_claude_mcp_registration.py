@@ -100,6 +100,44 @@ async def test_real_mcp_transport_preserves_auth_names_results_and_cleanup(monke
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["error", "success", "exception", "duplicate", "different_input"])
+async def test_tool_error_result_is_bound_to_one_admitted_call(case):
+    from mcp.types import CallToolRequest, CallToolRequestParams
+
+    item = subject(server="files", tool="list_files")
+    arguments = {"path": "restricted", "source": "public"}
+    @asynccontextmanager
+    async def session_factory(_config):
+        async def call_tool(_name, _arguments):
+            if case == "exception":
+                raise TimeoutError("response was not received")
+            return CallToolResult(content=[TextContent(type="text", text="access_denied")],
+                                  isError=case != "success")
+        yield SimpleNamespace(call_tool=call_tool)
+    async def list_tools(_session):
+        return [Tool(name="list_files", inputSchema={"type": "object"})]
+    registration = ClaudeMcpRegistration(
+        {item["identity"]: item}, {"files": item["mcp_server_config"]},
+        session_factory=session_factory, list_tools=list_tools,
+    )
+    registration.track_tool_call(item["identity"], "call-a", arguments)
+    if case == "duplicate":
+        registration.track_tool_call(item["identity"], "call-b", arguments)
+    options = SimpleNamespace()
+    async with registration.activate(options):
+        server = options.mcp_servers["files"]["instance"]
+        result = await server.request_handlers[CallToolRequest](CallToolRequest(
+            method="tools/call", params=CallToolRequestParams(
+                name="list_files", arguments=arguments if case != "different_input" else {"path": "other"},
+            ),
+        ))
+    assert result.root.isError is (case != "success")
+    assert registration.consume_tool_error_result(item["identity"], "call-a") is (case == "error")
+    assert registration.consume_tool_error_result(item["identity"], "call-a") is False
+    assert registration.consume_tool_error_result(item["identity"], "call-b") is False
+
+
+@pytest.mark.asyncio
 async def test_registration_filters_catalog_preserves_results_and_closes_on_cancel():
     item = subject()
     closed = []
@@ -212,7 +250,7 @@ async def test_installed_claude_cli_selected_mcp_end_to_end(monkeypatch, tmp_pat
 
     with local_mcp_peers() as peer:
         peer.is_error = remote_error
-        selected_subject = subject(server=server_name)
+        selected_subject = {**subject(server=server_name, url=peer.url + "/mcp"), "write_capable": True}
         registration = ClaudeMcpRegistration(
             {selected_subject["identity"]: selected_subject}, {}, session_factory=None, list_tools=None
         )
@@ -258,7 +296,7 @@ async def test_installed_claude_cli_selected_mcp_end_to_end(monkeypatch, tmp_pat
         result = await runner.run_claude_agent_sdk(
             prompt="Use the selected lookup once for synthetic, then report its result.",
             cwd=tmp_path, skill_id=None, skills=[], execution_policy="sandbox_brokered",
-            tool_policy_subjects=[subject(server=server_name, url=peer.url + "/mcp")],
+            tool_policy_subjects=[selected_subject],
             on_capability_evidence=receipt, on_agent_event=event,
             run_id="run_mcp_check", attempt_id="attempt_mcp_check",
         )
@@ -297,7 +335,10 @@ async def test_installed_claude_cli_selected_mcp_end_to_end(monkeypatch, tmp_pat
         assert [(value["lifecycle_phase"], value["lifecycle_status"]) for value in receipts] == [
             ("invocation_requested", "invoking"), ("failed", "failed") if remote_error else ("completed", "succeeded"),
         ]
-        assert all(value["canonical_identity"] == subject(server=server_name)["identity"] for value in receipts)
+        assert all(value["canonical_identity"] == selected_subject["identity"] for value in receipts)
+        assert receipts[-1]["trust_basis"] == (
+            "tool_call_bound_error_result" if remote_error else "tool_call_bound_invocation"
+        )
 
         assert {value.event_type for value in events} >= {"policy.allowed", "tool.started", "tool.failed" if remote_error else "tool.completed"}
         assert peer.sdk_tool not in str([value.payload for value in events])

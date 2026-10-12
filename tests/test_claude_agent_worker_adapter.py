@@ -2472,6 +2472,8 @@ async def test_external_mcp_available_or_exactly_invoked_succeeds_in_sandbox(
         ("repeated_complete", None),
         ("started", "required_tool_completion_evidence_mismatch"),
         ("failed", None),
+        ("failed_write", "required_tool_completion_evidence_mismatch"),
+        ("returned_error_write", None),
         ("stale", "required_tool_completion_evidence_mismatch"),
         ("unauthorized", "required_tool_completion_evidence_mismatch"),
         ("duplicate", "required_tool_completion_evidence_mismatch"),
@@ -2490,6 +2492,8 @@ def test_worker_capability_execution_plan_validates_observed_calls(case, expecte
     }
     skill_id = "qa-review" if case.startswith("skill_") else "general-chat"
     subjects = [_mcp_subject(), second_subject] if case == "cross_mcp_call_id" else [_mcp_subject()]
+    if case in {"failed_write", "returned_error_write"}:
+        subjects[0]["write_capable"] = True
     current_payload = payload(
         skill_id=skill_id,
         input={"message": "work", "_runtime_tool_policy_subjects": subjects},
@@ -2509,7 +2513,7 @@ def test_worker_capability_execution_plan_validates_observed_calls(case, expecte
         evidence = [item for item in evidence if item["capability_kind"] == "mcp"]
     elif case == "started":
         evidence = evidence[:1]
-    elif case == "failed":
+    elif case in {"failed", "failed_write", "returned_error_write"}:
         declaration = RequiredCapabilityDeclaration.from_authorized_subject(
             capability_kind="mcp", canonical_identity=_mcp_subject()["identity"]
         )
@@ -2520,6 +2524,7 @@ def test_worker_capability_execution_plan_validates_observed_calls(case, expecte
             )},
             tool_call_id=evidence[0]["tool_call_id"],
             lifecycle_phase="failed",
+            tool_error_result=case == "returned_error_write",
         ).__dict__
     elif case == "stale":
         evidence[1]["attempt_id"] = "stale-attempt"
