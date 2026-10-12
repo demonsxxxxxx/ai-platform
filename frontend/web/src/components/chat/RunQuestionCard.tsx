@@ -170,31 +170,33 @@ export function RunQuestionCard({
             );
           })}
         </div>
-        {answerAttempted && runInputs.submissionError === "answer_required" ? (
-          <p className="mt-2 text-xs text-[var(--theme-danger)]" role="alert">
-            {t("chat.runInputs.answerRequired", "请回答每个问题后再提交。")}
-          </p>
-        ) : null}
-        {runInputs.submissionError === "rejected" ? (
-          <p className="mt-2 text-xs text-[var(--theme-danger)]" role="alert">
-            {t("chat.runInputs.answerRejected", "答案未被接受，选择仍保留。")}
-          </p>
-        ) : null}
-        {runInputs.isClosed ? (
-          <p className="mt-2 text-xs text-[var(--theme-warning)]" role="status">
-            {t("chat.runInputs.answerRunClosed", "当前任务暂不接收答案，填写内容仍保留。")}
-          </p>
-        ) : null}
-        <div className="mt-3 flex justify-end">
-          <button
-            className="rounded-full bg-[var(--theme-primary)] px-3 py-1.5 text-xs font-medium text-white disabled:cursor-not-allowed disabled:opacity-45"
-            disabled={readOnly || busy}
-            type="submit"
-          >
-            {pending?.kind === "answer" && pending.questionId === batch.question_id && pending.state === "submitting"
-              ? t("chat.runInputs.submittingAnswer", "正在提交…")
-              : t("chat.runInputs.submitAnswer", "提交答复")}
-          </button>
+        <div className="sticky bottom-0 z-10 -mx-3 -mb-3 mt-3 rounded-b-2xl border-t border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-3 py-3">
+          {answerAttempted && runInputs.submissionError === "answer_required" ? (
+            <p className="mb-2 text-xs text-[var(--theme-danger)]" role="alert">
+              {t("chat.runInputs.answerRequired", "请回答每个问题后再提交。")}
+            </p>
+          ) : null}
+          {runInputs.submissionError === "rejected" ? (
+            <p className="mb-2 text-xs text-[var(--theme-danger)]" role="alert">
+              {t("chat.runInputs.answerRejected", "答案未被接受，选择仍保留。")}
+            </p>
+          ) : null}
+          {runInputs.isClosed ? (
+            <p className="mb-2 text-xs text-[var(--theme-warning)]" role="status">
+              {t("chat.runInputs.answerRunClosed", "当前任务暂不接收答案，填写内容仍保留。")}
+            </p>
+          ) : null}
+          <div className="flex justify-end">
+            <button
+              className="rounded-full bg-[var(--theme-primary)] px-3 py-1.5 text-xs font-medium text-white disabled:cursor-not-allowed disabled:opacity-45"
+              disabled={readOnly || busy}
+              type="submit"
+            >
+              {pending?.kind === "answer" && pending.questionId === batch.question_id && pending.state === "submitting"
+                ? t("chat.runInputs.submittingAnswer", "正在提交…")
+                : t("chat.runInputs.submitAnswer", "提交答复")}
+            </button>
+          </div>
         </div>
       </form>
     </section>

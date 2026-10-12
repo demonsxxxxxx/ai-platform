@@ -53,18 +53,24 @@ PreToolUse is the single question entry; there is no second question handler in
 No new SSE event is required. Chat queries this projection while the Run is
 active. A separate session/auth-bound history projection restores every loaded
 Run page on refresh and supports loading older pages; replacing the active Run
-retains prior rounds as read-only history. The active Run overrides its history
+retains prior rounds in the session-bound history projection. The active Run overrides its history
 snapshot by Run ID. Session or principal replacement aborts old reads and drops
 old projections. Persisted pre-key records use a display-only legacy mapping;
 new submissions require the current key contract. Refresh starts pagination
 again from the fresh first-page cursor and inserts gap pages in Run order while
 deduplicating cached records. Current pending questions appear above older history;
 a newly pending batch resets the history scroll position. Colliding public option
-labels use safe ordinal numbering in both cards and accepted-answer history.
-Previously accepted text inputs remain visible as read-only Run history entries;
-the web chat no longer offers a text-entry control for appending to an active Run.
-Question batches remain answerable in chat. The HTTP and callback input protocol
-remains unchanged. Text and answers are Run input facts; the existing provider
+labels use safe ordinal numbering in cards and visible answer receipts.
+The composer no longer echoes successfully applied inputs or resolved question
+summaries; hiding them does not remove durable inputs or cached history. Queued
+inputs and closed, unprocessed inputs remain visible, including an unresolved
+answer after its Run closes. The web chat no longer offers a text-entry control
+for appending to an active Run. Pending questions remain answerable cards with
+confirmation and submission feedback anchored at the bottom of the task-input
+scroll area, so reading long option lists does not require scrolling to find the
+submit action. Chat displays queued text separately from persisted conversation
+Messages. The HTTP and callback input protocol remains unchanged. Text and
+answers are Run input facts; the existing provider
 coverage continues to count the original conversation user message and final
 assistant message. SDK SessionStore persists all native continuation/tool entries.
 
