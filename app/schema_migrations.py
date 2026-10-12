@@ -1308,7 +1308,7 @@ async def apply_migrations(
     transaction_factory: Callable[[], AbstractAsyncContextManager[Any]] = transaction,
     index_connection_factory: Callable[[], Awaitable[Any]] = _default_index_connection_factory,
 ) -> dict[str, object]:
-    """Apply additive core schema and resumable concurrent indexes."""
+    """Apply versioned core schema, including cutovers, and resumable concurrent indexes."""
 
     sql = schema_sql()
     checksum = schema_checksum(sql)

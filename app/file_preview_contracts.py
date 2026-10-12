@@ -10,14 +10,13 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
 import base64
 import hashlib
 import logging
 import math
 import multiprocessing
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import stat
 import tempfile
 import threading
@@ -29,15 +28,18 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.file_parser_contracts import (
     AttachmentParserRequirement,
     AttachmentPreprocessingError,
+    ParsedAttachmentContext,
+    parse_xlsx_preview_attachment,
+)
+from app.files.api import (
     MAX_XLSX_COLUMNS_PER_SHEET,
     MAX_XLSX_ROWS_PER_SHEET,
     MAX_XLSX_SHEETS,
-    ParsedAttachmentContext,
-    XLSX_CONTENT_TYPE,
-    parse_xlsx_preview_attachment,
+    XlsxPreviewImageExtractor,
+    is_xlsx_preview_request,
     parser_spec_for_attachment,
+    xlsx_preview_image_extractor,
 )
-from app.files.api import XlsxPreviewImageExtractor, xlsx_preview_image_extractor
 
 
 logger = logging.getLogger(__name__)
@@ -268,29 +270,6 @@ class XlsxPreviewResponse(BaseModel):
         return self
 
 
-@dataclass(frozen=True)
-class XlsxPreviewIdentity:
-    """One stored-metadata decision for the exact XLSX preview contract."""
-
-    file_name: str | None
-    content_type: str
-
-    @property
-    def has_xlsx_content_type(self) -> bool:
-        """Return whether the stored MIME type selects the XLSX presentation path."""
-
-        return self.content_type.split(";", 1)[0].strip().casefold() == XLSX_CONTENT_TYPE
-
-    @property
-    def eligible(self) -> bool:
-        """Return whether both authoritative filename and MIME select XLSX."""
-
-        return self.file_name is not None and is_xlsx_preview_request(
-            file_name=self.file_name,
-            content_type=self.content_type,
-        )
-
-
 class XlsxPreviewLease:
     """One route-owned permit retained until work and any child reaping finish."""
 
@@ -391,62 +370,6 @@ async def run_xlsx_preview_job(
     finally:
         if future.done():
             lease.release()
-
-
-def is_xlsx_preview_request(*, file_name: object, content_type: object) -> bool:
-    """Return whether this exact metadata is eligible for the XLSX DTO path."""
-
-    normalized_name = PurePosixPath(str(file_name or "").replace("\\", "/")).name
-    normalized_type = str(content_type or "").split(";", 1)[0].strip().casefold()
-    return normalized_name.casefold().endswith(".xlsx") and normalized_type == XLSX_CONTENT_TYPE
-
-
-def xlsx_preview_identity_from_metadata(
-    row: Mapping[str, object],
-) -> XlsxPreviewIdentity:
-    """Resolve XLSX eligibility from stored file metadata, never a display label.
-
-    ``original_name`` and ``file_name`` are preferred when present.  When both
-    are present they must agree; a disagreement fails closed.  Artifact rows
-    without either field use the persisted storage-key basename, which is also
-    the filename consumed by the authorized preview route.
-    """
-
-    preferred_names: list[str] = []
-    for field_name in ("original_name", "file_name"):
-        name = _stored_metadata_basename(row.get(field_name))
-        if name is not None:
-            preferred_names.append(name)
-    normalized_names = {name.casefold() for name in preferred_names}
-    if len(normalized_names) > 1:
-        file_name = None
-    elif preferred_names:
-        file_name = preferred_names[0]
-    else:
-        file_name = _stored_metadata_basename(row.get("storage_key"))
-    return XlsxPreviewIdentity(
-        file_name=file_name,
-        content_type=str(row.get("content_type") or ""),
-    )
-
-
-def _stored_metadata_basename(value: object) -> str | None:
-    """Return a non-empty basename from a stored filename-like metadata value."""
-
-    normalized = PurePosixPath(str(value or "").replace("\\", "/")).name.strip()
-    return normalized or None
-
-
-def xlsx_preview_max_bytes(*, file_name: object, content_type: object) -> int:
-    """Resolve the registered byte cap for an eligible XLSX presentation request."""
-
-    spec = parser_spec_for_attachment(file_name=file_name, content_type=content_type)
-    if spec is None or not is_xlsx_preview_request(
-        file_name=file_name,
-        content_type=content_type,
-    ):
-        raise ValueError("xlsx_preview_unsupported")
-    return spec.max_bytes
 
 
 def build_xlsx_preview(
