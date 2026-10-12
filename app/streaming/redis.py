@@ -158,13 +158,17 @@ class RedisStreamBridge:
                 except BaseException as exc:
                     if first_error is None:
                         first_error = exc
-                    logger.warning(
-                        "Redis stream pool close failed",
-                        extra={
-                            "cleanup_phase": phase,
-                            "cleanup_error_type": type(exc).__name__,
-                        },
-                    )
+                    try:
+                        logger.warning(
+                            "Redis stream pool close failed",
+                            extra={
+                                "cleanup_phase": phase,
+                                "cleanup_error_type": type(exc).__name__,
+                            },
+                        )
+                    except Exception:
+                        # Diagnostics must not interrupt resource settlement.
+                        pass
             if first_error is not None:
                 raise first_error
 

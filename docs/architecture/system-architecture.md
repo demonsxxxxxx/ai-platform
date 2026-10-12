@@ -40,7 +40,9 @@ cancellation cannot abandon that task or advance to dependent clients early.
 The original lifespan error or cancellation wins; without one, the first caller
 cancellation during cleanup wins over close failures, otherwise the first close
 failure wins. Each phase is attempted and failures are observed using only
-phase and exception type, without raw error text or traceback. Injected stream
+phase and exception type, without raw error text or traceback. Ordinary logging
+handler failures cannot interrupt later close attempts or replace the selected
+failure/cancellation. Injected stream
 bridges/clients remain externally owned. Each resource phase has a cooperative
 30-second budget: deadline cancellation is joined to the actual phase end,
 including finite cancellation settlement, before continuing. This is not a hard

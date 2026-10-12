@@ -276,6 +276,44 @@ async def test_api_shutdown_observes_all_close_failures_without_replacing_primar
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("primary_kind", ["none", "error", "cancellation"])
+@pytest.mark.parametrize("close_kind", ["error", "cancellation"])
+async def test_api_shutdown_broken_logger_preserves_failures_and_later_closes(
+    monkeypatch, primary_kind, close_kind,
+):
+    events = []
+    close_error = {
+        "error": ValueError("synthetic-close-error"),
+        "cancellation": asyncio.CancelledError("synthetic-close-cancellation"),
+    }[close_kind]
+    stream = _CloseResource("stream", events, error=close_error)
+    shared = _CloseResource("shared", events, error=RuntimeError("secondary-redis"))
+    database = _CloseResource("database", events, error=OSError("secondary-database"))
+    app = _install_lifespan(monkeypatch, stream, shared.aclose, database.aclose)
+    warnings = []
+
+    def broken_warning(_message, *, extra):
+        warnings.append(extra["cleanup_phase"])
+        raise RuntimeError("synthetic_logger_failure")
+
+    monkeypatch.setattr(main.logger, "warning", broken_warning)
+    primary = {
+        "none": None,
+        "error": LookupError("original-body-error"),
+        "cancellation": asyncio.CancelledError("original-body-cancellation"),
+    }[primary_kind]
+    with pytest.raises(BaseException) as caught:
+        await _run_lifespan(app, primary)
+    expected_events = ["stream:start"]
+    if close_kind == "cancellation":
+        expected_events.append("stream:cancelled")
+    assert events == expected_events + ["shared:start", "database:start"]
+    assert caught.value is (primary if primary is not None else close_error)
+    assert warnings == ["stream_runtime", "redis_client", "database_pool"]
+    assert stream.owner.done()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("phase", ["stream_runtime", "redis_client", "database_pool"])
 @pytest.mark.parametrize("settlement", ["cancelled", "suppressed", "failed"])
 async def test_api_close_budget_joins_finite_settlement_before_next_phase(
@@ -487,11 +525,20 @@ async def test_api_shutdown_joins_real_shared_client_owner_after_caller_cancella
 
 
 @pytest.mark.asyncio
-async def test_api_cancellation_during_database_close_wins_over_secondary_error(monkeypatch):
+@pytest.mark.parametrize("broken_logger", [False, True])
+async def test_api_cancellation_during_database_close_wins_over_secondary_error(
+    monkeypatch, broken_logger,
+):
     events = []
     stream = _CloseResource("stream", events)
     shared = _CloseResource("shared", events)
     database = _CloseResource("database", events, blocked=True, error=RuntimeError("secondary"))
+
+    def broken_warning(*_args, **_kwargs):
+        raise RuntimeError("synthetic_logger_failure")
+
+    if broken_logger:
+        monkeypatch.setattr(main.logger, "warning", broken_warning)
     app = _install_lifespan(monkeypatch, stream, shared.aclose, database.aclose)
     task = asyncio.create_task(_run_lifespan(app))
     try:

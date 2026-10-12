@@ -77,8 +77,9 @@ async def test_default_bridge_uses_bounded_publish_and_read_pools(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("read_failure", ["none", "error", "cancellation"])
 @pytest.mark.parametrize("publish_failure", [False, True])
+@pytest.mark.parametrize("broken_logger", [False, True])
 async def test_owned_stream_pools_attempt_both_closes_and_preserve_first_failure(
-    monkeypatch, caplog, read_failure, publish_failure,
+    monkeypatch, caplog, read_failure, publish_failure, broken_logger,
 ):
     calls = []
     secret = "redis://synthetic-user:synthetic-secret@synthetic.invalid/0"
@@ -103,6 +104,14 @@ async def test_owned_stream_pools_attempt_both_closes_and_preserve_first_failure
         lambda _url, **options: read if options["max_connections"] == 256 else publish,
     )
     bridge = stream_redis.RedisStreamBridge()
+    warnings = []
+
+    def broken_warning(_message, *, extra):
+        warnings.append(extra["cleanup_phase"])
+        raise RuntimeError("synthetic_logger_failure")
+
+    if broken_logger:
+        monkeypatch.setattr(stream_redis.logger, "warning", broken_warning)
     expected = read_error if read_error is not None else publish_error
     if expected is None:
         await bridge.aclose()
@@ -111,11 +120,16 @@ async def test_owned_stream_pools_attempt_both_closes_and_preserve_first_failure
             await bridge.aclose()
         assert caught.value is expected
     assert calls == ["read", "publish"]
-    assert [(r.cleanup_phase, r.cleanup_error_type) for r in caplog.records] == [
+    expected_warnings = [
         (f"stream_{phase}", type(error).__name__)
         for phase, error in (("read", read_error), ("publish", publish_error))
         if error is not None
     ]
+    if broken_logger:
+        assert warnings == [phase for phase, _ in expected_warnings]
+        assert caplog.records == []
+    else:
+        assert [(r.cleanup_phase, r.cleanup_error_type) for r in caplog.records] == expected_warnings
     assert secret not in caplog.text
     assert all(r.exc_info is None and r.args == () for r in caplog.records)
 
