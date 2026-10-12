@@ -160,6 +160,17 @@ they no longer classify fixed package names as public or internal.
 
 ## MCP Routes
 
+The browser MCP request hook owns catalog failures and lifecycle admission in
+one scoped state. Typed HTTP 403 responses remain visibly unavailable; hiding
+controls does not discard the denial. Explicit permission recovery first
+refreshes the authenticated principal and admits a new catalog read only after
+a completed refresh. A failed refresh, or a successful ordinary directory GET
+alone, cannot restore lifecycle authority. Retry never replays a mutation.
+Tenant/user, role/permission projection changes, auth refresh pauses, and
+unmount fence old reads, details, mutations, and retained callbacks. Ordinary
+operation failures retain the editor draft and show safe error copy; raw
+backend error details are not rendered. The ordinary directory remains read-only.
+
 Backed read and server lifecycle routes:
 
 - `GET /api/mcp/chat-tools`

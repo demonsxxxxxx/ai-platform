@@ -146,9 +146,12 @@ tenant_id + run_id + attempt_id + expected_state
 ```
 
 An owning transition transaction updates the attempt, projects the compatible
-Run status, records the safe lifecycle event/audit fact, and freezes any
-terminal publication intent. Queue acknowledgement and Redis publication occur
-after commit and cannot authorize a database transition.
+Run status, and records the safe lifecycle event/audit fact in the same
+transaction. Under [ADR 0013](../adr/0013-redis-stream-only-sse.md), terminal
+publication derives from committed Run/event facts; independent terminal intents
+are retired. Queue acknowledgement and direct Redis publication occur after
+commit and cannot authorize a database transition. Publication ordering belongs
+to [SSE execution control](redis-streams-sse-execution-control.md).
 
 ### 3.1 Implemented foundation and remaining cutover
 

@@ -672,13 +672,17 @@ classified handling observation. The authorized admin route reads this Runs-owne
 record independently of Run status; absence and legacy data remain explicit.
 
 Terminal-reconciliation failure uses the existing fixed code
-`terminal_reconciliation_failed` for the owning permanent-contract failure or
-exhausted retry policy. Private reasons remain private. Existing source budgets
-include a 240-second work deadline under a 300-second stale-claim interval and a
-narrower stop timeout; the current retry policy treats the fifth unclassified
-terminal failure as terminal failure. These are implementation budgets, not
-end-user latency guarantees. Before changing them, verify the exact code and
-matching tests and record effective deployed configuration separately.
+`terminal_reconciliation_failed` for typed permanent-contract failures, including
+terminal provider-session conflicts. The
+[reconciler](../../app/executor_reconciler.py) quarantines unverified authority
+errors; other nonterminal failures remain durably pending with PostgreSQL
+backoff, without an attempt-count cutoff. Monitor receipt age and retry progress
+under [ADR 0011](../adr/0011-durable-executor-terminalization.md); private reasons
+remain private. Existing source budgets include a 240-second work deadline under
+a 300-second stale-claim interval and a narrower stop timeout. These are
+implementation budgets, not end-user latency guarantees. Before changing them,
+verify the exact code and matching tests and record effective deployed
+configuration separately.
 
 Claim the exact eligible receipt in a short transaction. Re-prove tenant,
 workspace, user, Session, Run and Attempt before restoring context or collecting

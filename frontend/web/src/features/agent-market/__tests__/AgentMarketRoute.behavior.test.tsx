@@ -471,7 +471,6 @@ async function prepareShellHarness({ authenticated = false } = {}) {
     updateMetadata: authApi.updateMetadata,
     listSessions: sessionApi.list,
     listAvailableModels: modelPublicApi.listAvailable,
-    getPinnedModelIds: modelPublicApi.getPinnedModelIds,
     getActiveNotifications: notificationPublicApi.getActive,
   };
   authApi.bootstrapAuthContext = async (request) => ({
@@ -515,7 +514,6 @@ async function prepareShellHarness({ authenticated = false } = {}) {
     enabled_count: 1,
     default_model_id: "model-default",
   });
-  modelPublicApi.getPinnedModelIds = async () => [];
   notificationPublicApi.getActive = async () => [];
 
   function AuthenticatedGate({ children }: { children: React.ReactNode }) {
@@ -543,7 +541,6 @@ async function prepareShellHarness({ authenticated = false } = {}) {
       authApi.updateMetadata = originals.updateMetadata;
       sessionApi.list = originals.listSessions;
       modelPublicApi.listAvailable = originals.listAvailableModels;
-      modelPublicApi.getPinnedModelIds = originals.getPinnedModelIds;
       notificationPublicApi.getActive = originals.getActiveNotifications;
     },
   };
