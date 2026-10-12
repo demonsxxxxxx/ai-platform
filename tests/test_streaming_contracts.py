@@ -10,6 +10,16 @@ from app.streaming import events as streaming_events
 from app.streaming import redis as redis_transport
 from app.streaming.domain import run_events
 from app.streaming.domain import transport as domain_transport
+from app.streaming.domain.run_events import RunCursor
+
+
+def test_run_cursor_validates_sequence_and_formats_identity() -> None:
+    cursor = RunCursor(run_id="run-a", sequence=42)
+    assert cursor.event_id == "run-a:42"
+    with pytest.raises(ValueError, match="run_cursor_sequence_invalid"):
+        RunCursor(run_id="run-a", sequence=-1)
+    with pytest.raises(ValueError, match="run_cursor_sequence_invalid"):
+        RunCursor(run_id="run-a", sequence=True)
 
 
 def test_event_envelope_version_is_owned_by_the_durable_ledger() -> None:

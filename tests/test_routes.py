@@ -1674,8 +1674,9 @@ async def test_upload_file_rejects_cross_user_session(monkeypatch):
         assert user_id == "user-a"
         assert display_name == "User A"
 
-    async def fake_get_authorized_session(conn, *, tenant_id, user_id, session_id):
+    async def fake_get_authorized_session(conn, *, tenant_id, user_id, session_id, workspace_id):
         assert user_id == "user-a"
+        assert workspace_id == "default"
         return None
 
     class FakeUpload:
