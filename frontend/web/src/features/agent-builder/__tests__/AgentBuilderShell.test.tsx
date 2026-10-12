@@ -11,6 +11,8 @@ test("AgentBuilderShell retains the primary application sidebar", () => {
 
   assert.match(source, /<AppShell\s+activeTab="chat"/);
   assert.match(source, /<SessionSidebar/);
-  assert.match(source, /authApi\.updateMetadata/);
-  assert.match(source, /onToggleCollapsed/);
+  assert.match(source, /const \[sidebarCollapsed, handleSetSidebarCollapsed\] = useSidebarPreference\(\)/);
+  assert.match(source, /isCollapsed=\{sidebarCollapsed\}/);
+  assert.match(source, /onToggleCollapsed=\{handleSetSidebarCollapsed\}/);
+  assert.doesNotMatch(source, /updateMetadata/);
 });
