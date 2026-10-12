@@ -628,12 +628,23 @@ export interface HistoryEvent {
   run_id?: string;
 }
 
+/** Safe API read detail owned by the current main-chat history request. */
+export interface HistoryReadError {
+  message: string;
+  status?: number;
+  code?: string;
+  diagnosticId?: string;
+}
+
 // Return type for useAgent hook
 export interface UseAgentReturn {
   messages: Message[];
   isLoading: boolean;
   isLoadingHistory: boolean;
   error: string | null;
+  /** Current owner's transcript read failed; never means backend history deletion. */
+  historyReadError: HistoryReadError | null;
+  retryHistoryLoad: () => Promise<void>;
   failureGuidance: FailureGuidance | null;
   sessionId: string | null;
   currentRunId: string | null;

@@ -256,8 +256,6 @@ async function mountModelCatalogHarness(
     login: authApi.login,
     logout: authApi.logout,
     listAvailable: modelPublicApi.listAvailable,
-    getPinnedModelIds: modelPublicApi.getPinnedModelIds,
-    updatePinnedModelIds: modelPublicApi.updatePinnedModelIds,
   };
   const restoreApis = () => {
     Object.assign(authApi, {
@@ -268,8 +266,6 @@ async function mountModelCatalogHarness(
     });
     Object.assign(modelPublicApi, {
       listAvailable: originals.listAvailable,
-      getPinnedModelIds: originals.getPinnedModelIds,
-      updatePinnedModelIds: originals.updatePinnedModelIds,
     });
   };
   authApi.bootstrapAuthContext = async (request) => ({
@@ -361,12 +357,9 @@ async function mountModelCatalogHarness(
 
 test("ModelCatalogProvider hides A synchronously and accepts only B GET completions", async () => {
   const bModels = deferred<ReturnType<typeof modelProjection>>();
-  const bPins = deferred<string[]>();
   const modelSignals: AbortSignal[] = [];
-  const pinSignals: AbortSignal[] = [];
   let userCalls = 0;
   let modelCalls = 0;
-  let pinCalls = 0;
   const harness = await mountModelCatalogHarness((authApi, modelApi) => {
     authApi.getCurrentUser = async () =>
       ++userCalls === 1
@@ -380,17 +373,11 @@ test("ModelCatalogProvider hides A synchronously and accepts only B GET completi
         ? modelProjection("model-a", "Model A")
         : bModels.promise;
     };
-    modelApi.getPinnedModelIds = async (options?: { signal?: AbortSignal }) => {
-      if (options?.signal) pinSignals.push(options.signal);
-      pinCalls += 1;
-      return pinCalls === 1 ? ["model-a"] : bPins.promise;
-    };
   });
 
   try {
     await harness.flush();
     assert.equal(harness.modelCatalog.availableModels?.[0]?.id, "model-a");
-    assert.deepEqual(harness.modelCatalog.pinnedModelIds, ["model-a"]);
 
     await harness.React.act(async () => {
       await harness.auth.login({ username: "user-b", password: "safe-test" });
@@ -398,31 +385,23 @@ test("ModelCatalogProvider hides A synchronously and accepts only B GET completi
 
     assert.equal(harness.auth.user?.id, "user-b");
     assert.equal(harness.modelCatalog.availableModels, null);
-    assert.deepEqual(harness.modelCatalog.pinnedModelIds, []);
     assert.equal(modelSignals[0]?.aborted, true);
-    assert.equal(pinSignals[0]?.aborted, true);
 
     bModels.resolve(modelProjection("model-b", "Model B"));
-    bPins.resolve(["model-b"]);
     await harness.flush();
 
     assert.deepEqual(availableModelIds(harness.modelCatalog.availableModels), [
       "model-b",
     ]);
-    assert.deepEqual(harness.modelCatalog.pinnedModelIds, ["model-b"]);
   } finally {
     await harness.cleanup();
   }
 });
 
-test("deferred A GET and PUT results cannot mutate authenticated subject B", async () => {
+test("deferred A GET results cannot mutate authenticated subject B", async () => {
   const aModels = deferred<ReturnType<typeof modelProjection>>();
-  const aPins = deferred<string[]>();
-  const aPut = deferred<string[]>();
   let userCalls = 0;
   let modelCalls = 0;
-  let pinCalls = 0;
-  let putCalls = 0;
   const harness = await mountModelCatalogHarness((authApi, modelApi) => {
     authApi.getCurrentUser = async () =>
       ++userCalls === 1
@@ -433,33 +412,21 @@ test("deferred A GET and PUT results cannot mutate authenticated subject B", asy
       ++modelCalls === 1
         ? aModels.promise
         : modelProjection("model-b", "Model B");
-    modelApi.getPinnedModelIds = async () =>
-      ++pinCalls === 1 ? aPins.promise : ["model-b"];
-    modelApi.updatePinnedModelIds = async () => {
-      putCalls += 1;
-      return aPut.promise;
-    };
   });
 
   try {
     await harness.React.act(async () => {
-      harness.modelCatalog.togglePinnedModel("model-a-pending");
       await Promise.resolve();
       await harness.auth.login({ username: "user-b", password: "safe-test" });
     });
     await harness.flush();
 
     assert.equal(harness.modelCatalog.availableModels?.[0]?.id, "model-b");
-    assert.deepEqual(harness.modelCatalog.pinnedModelIds, ["model-b"]);
 
     aModels.resolve(modelProjection("model-a", "Model A"));
-    aPins.resolve(["model-a"]);
-    aPut.resolve(["model-a-pending"]);
     await harness.flush();
 
     assert.equal(harness.modelCatalog.availableModels?.[0]?.id, "model-b");
-    assert.deepEqual(harness.modelCatalog.pinnedModelIds, ["model-b"]);
-    assert.equal(putCalls, 1);
   } finally {
     await harness.cleanup();
   }
@@ -468,7 +435,6 @@ test("deferred A GET and PUT results cannot mutate authenticated subject B", asy
 test("ModelCatalogProvider fails closed on B denial and clears state on logout", async () => {
   let userCalls = 0;
   let modelCalls = 0;
-  let pinCalls = 0;
   const harness = await mountModelCatalogHarness((authApi, modelApi) => {
     authApi.getCurrentUser = async () =>
       ++userCalls === 1
@@ -480,10 +446,6 @@ test("ModelCatalogProvider fails closed on B denial and clears state on logout",
       if (++modelCalls === 1) return modelProjection("model-a", "Model A");
       throw new Error("forbidden private diagnostic");
     };
-    modelApi.getPinnedModelIds = async () => {
-      if (++pinCalls === 1) return ["model-a"];
-      throw new Error("forbidden private diagnostic");
-    };
   });
 
   try {
@@ -493,13 +455,11 @@ test("ModelCatalogProvider fails closed on B denial and clears state on logout",
     });
     await harness.flush();
     assert.equal(harness.modelCatalog.availableModels, null);
-    assert.deepEqual(harness.modelCatalog.pinnedModelIds, []);
 
     await harness.React.act(async () => {
       await harness.auth.logout();
     });
     assert.equal(harness.modelCatalog.availableModels, null);
-    assert.deepEqual(harness.modelCatalog.pinnedModelIds, []);
   } finally {
     await harness.cleanup();
   }
@@ -507,7 +467,6 @@ test("ModelCatalogProvider fails closed on B denial and clears state on logout",
 
 test("ModelCatalogProvider aborts pending subject work on unmount", async () => {
   const models = deferred<ReturnType<typeof modelProjection>>();
-  const pins = deferred<string[]>();
   const signals: AbortSignal[] = [];
   const harness = await mountModelCatalogHarness((authApi, modelApi) => {
     authApi.getCurrentUser = async () => authUser("user-a", "tenant-a");
@@ -515,20 +474,65 @@ test("ModelCatalogProvider aborts pending subject work on unmount", async () => 
       if (options?.signal) signals.push(options.signal);
       return models.promise;
     };
-    modelApi.getPinnedModelIds = async (options?: { signal?: AbortSignal }) => {
-      if (options?.signal) signals.push(options.signal);
-      return pins.promise;
-    };
   });
 
   try {
     await harness.unmount();
-    assert.equal(signals.length, 2);
+    assert.equal(signals.length, 1);
     assert.equal(signals.every((signal) => signal.aborted), true);
     models.resolve(modelProjection("model-a", "Model A"));
-    pins.resolve(["model-a"]);
-    await Promise.all([models.promise, pins.promise]);
+    await models.promise;
   } finally {
     await harness.cleanup();
   }
 });
+
+for (const [defaultModelId, expectedValue] of [
+  ["model-b", "provider/model-b"],
+  ["unavailable-model", "provider/model-a"],
+] as const) {
+  test(`catalog hydration is read-only and resolves public default ${defaultModelId}`, async () => {
+    const originalFetch = globalThis.fetch;
+    const requests: { path: string; method: string; cache?: RequestCache }[] = [];
+    const user = {
+      ...authUser("user-a", "tenant-a"),
+      metadata: { pinned_model_ids: ["deleted-model"], unrelated_preference: true },
+    };
+    const metadataBefore = structuredClone(user.metadata);
+    globalThis.fetch = async (input, options) => {
+      const path = new URL(String(input), "https://example.test").pathname;
+      requests.push({ path, method: options?.method ?? "GET", cache: options?.cache });
+      if (path === "/api/agent/models/available") {
+        return Response.json({
+          models: [
+            { id: "model-a", value: "provider/model-a", label: "Model A" },
+            { id: "model-b", value: "provider/model-b", label: "Model B" },
+          ],
+          count: 2,
+          enabled_count: 2,
+          default_model_id: defaultModelId,
+        });
+      }
+      // Record unexpected profile reads/writes, even when the provider catches
+      // an error. Historical metadata must not trigger orphan-pin cleanup.
+      return Response.json(user);
+    };
+    let harness: Awaited<ReturnType<typeof mountModelCatalogHarness>> | undefined;
+    try {
+      harness = await mountModelCatalogHarness((authApi) => {
+        authApi.getCurrentUser = async () => user;
+      });
+      await harness.flush();
+      assert.deepEqual(requests, [{
+        path: "/api/agent/models/available", method: "GET", cache: "no-store",
+      }]);
+      assert.equal(harness.modelCatalog.defaultModel, expectedValue);
+      assert.equal(harness.modelCatalog.isLoading, false);
+      assert.deepEqual(availableModelIds(harness.modelCatalog.availableModels), ["model-a", "model-b"]);
+      assert.deepEqual(user.metadata, metadataBefore);
+    } finally {
+      await harness?.cleanup();
+      globalThis.fetch = originalFetch;
+    }
+  });
+}

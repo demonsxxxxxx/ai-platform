@@ -5,7 +5,7 @@ import hmac
 import os
 import signal
 import socket
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -254,41 +254,78 @@ async def _run_command(
         raise RuntimeError(_NATIVE_TOOL_PRE_SPAWN_FAILURE)
     stdout_task = asyncio.create_task(_read_bounded(process.stdout))
     stderr_task = asyncio.create_task(_read_bounded(process.stderr))
+    readers = (stdout_task, stderr_task)
     timed_out = False
     post_spawn_failed = False
+    cleanup_failed = False
+    cancelled: asyncio.CancelledError | None = None
+    include_orphans = False
+    process_cleanup_finished = False
+    output: list[tuple[bytes, bool]] | None = None
     try:
         await asyncio.wait_for(process.wait(), timeout=timeout_ms / 1000.0)
     except TimeoutError:
         timed_out = True
-        await _terminate_process_group(process)
-    except asyncio.CancelledError:
-        await _terminate_process_group(process)
-        raise
+    except asyncio.CancelledError as exc:
+        cancelled = exc
     except Exception:
-        try:
-            await _terminate_process_group(process)
-        except Exception:
-            pass
         post_spawn_failed = True
     else:
         # A native Skill command may background children. The command boundary
         # ends when its shell exits, so no descendant may survive that boundary.
-        await _terminate_process_group(process, include_orphans=True)
-    finally:
-        # The sibling container is dedicated to this run and UID. Sweep every
-        # active untrusted process so setsid/new-process-group descendants
-        # cannot outlive the command boundary.
-        await _terminate_uid_processes(uid)
-    if post_spawn_failed:
+        include_orphans = True
+
+    async def finish_command() -> None:
+        nonlocal cleanup_failed, post_spawn_failed, process_cleanup_finished, output
+        try:
+            try:
+                await _terminate_process_group(process, include_orphans=include_orphans)
+            except Exception:
+                post_spawn_failed = True
+            finally:
+                # The sibling container is dedicated to this run and UID. Keep
+                # readers running during termination so full pipes cannot block
+                # the process wait. A failed sweep does not prove quiescence.
+                try:
+                    await _terminate_uid_processes(uid)
+                except Exception:
+                    cleanup_failed = True
+            process_cleanup_finished = True
+            if cancelled is None and not (post_spawn_failed or cleanup_failed):
+                try:
+                    output = await asyncio.gather(*readers)
+                except (asyncio.CancelledError, Exception):
+                    post_spawn_failed = True
+        finally:
+            for reader in readers:
+                if not reader.done():
+                    reader.cancel()
+            await asyncio.gather(*readers, return_exceptions=True)
+
+    cleanup_task = asyncio.create_task(finish_command())
+    while not cleanup_task.done():
+        try:
+            # wait does not forward caller cancellation or raise a cancelled
+            # child's error, so only caller cancellation reaches this handler.
+            await asyncio.wait({cleanup_task})
+        except asyncio.CancelledError as exc:
+            if cancelled is None:
+                cancelled = exc
+            if process_cleanup_finished:
+                # Final output draining has no useful result after cancellation.
+                for reader in readers:
+                    if not reader.done():
+                        reader.cancel()
+    if cancelled is not None:
+        if not cleanup_task.cancelled():
+            cleanup_task.exception()
+        raise cancelled
+    cleanup_task.result()
+    if cleanup_failed:
+        raise RuntimeError("native_tool_process_cleanup_failed")
+    if post_spawn_failed or output is None:
         raise RuntimeError(_NATIVE_TOOL_POST_SPAWN_FAILURE)
-    output_failed = False
-    try:
-        stdout, stdout_truncated = await stdout_task
-        stderr, stderr_truncated = await stderr_task
-    except Exception:
-        output_failed = True
-    if output_failed:
-        raise RuntimeError(_NATIVE_TOOL_POST_SPAWN_FAILURE)
+    (stdout, stdout_truncated), (stderr, stderr_truncated) = output
     return NativeToolResult(
         returncode=124 if timed_out else int(process.returncode or 0),
         stdout=stdout.decode("utf-8", errors="replace"),
@@ -322,6 +359,7 @@ async def _execute_with_disconnect_cancellation(
             await asyncio.sleep(NATIVE_TOOL_TERMINATION_POLL_SECONDS)
 
     disconnect_task = asyncio.create_task(wait_for_disconnect())
+    cancelled: asyncio.CancelledError | None = None
     try:
         done, _pending = await asyncio.wait(
             {run_task, disconnect_task},
@@ -329,18 +367,30 @@ async def _execute_with_disconnect_cancellation(
         )
         if disconnect_task in done and not run_task.done():
             run_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await run_task
+            await asyncio.wait({run_task})
+            if not run_task.cancelled():
+                run_task.result()
             raise HTTPException(status_code=499, detail="native_tool_client_disconnected")
         return await run_task
+    except asyncio.CancelledError as exc:
+        cancelled = exc
+        raise
     finally:
         disconnect_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await disconnect_task
         if not run_task.done():
             run_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await run_task
+        # The request owns both children until they settle. In particular, the
+        # app's command lock must not release while command cleanup is pending.
+        settlement = asyncio.gather(disconnect_task, run_task, return_exceptions=True)
+        while not settlement.done():
+            try:
+                await asyncio.shield(settlement)
+            except asyncio.CancelledError as exc:
+                if cancelled is None:
+                    cancelled = exc
+        settlement.result()
+        if cancelled is not None:
+            raise cancelled
 
 
 def _bind_native_tool_socket(socket_path: Path) -> socket.socket:

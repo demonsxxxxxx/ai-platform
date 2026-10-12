@@ -9,6 +9,7 @@ PUBLIC_TERMINAL_DETAIL_MESSAGES = {
     "run_failed": "任务未能完成。请稍后重试；如问题持续，请联系管理员。",
     "terminal_reconciliation_failed": "任务执行已结束，但结果同步失败（terminal_reconciliation_failed）。已保留可恢复的内容；请刷新会话或联系管理员并提供任务编号。",
     "run_timeout": "任务执行超时。请缩小任务范围后重试。",
+    "run_question_needs_input": "5 分钟内未收到必填问题的答复，任务已结束。请补充所需信息后重新提交。",
     "run_budget_exhausted": "任务已达到执行轮次上限。请缩小或拆分任务后重试。",
     "input_context_too_large": "当前输入或会话上下文超过模型处理上限。请缩短或拆分请求、减少附件，或新建会话后重试。",
     "input_image_invalid": "输入图片无法处理或超过模型限制。请检查图片格式、尺寸和数量，调整后重试。",
