@@ -41,6 +41,13 @@ export const PUBLIC_TERMINAL_PRESENTATION_DEFINITIONS = {
     "chat.runStatus.event.runTimeout",
     "执行已超时",
   ),
+  run_question_needs_input: failed(
+    "chat.runTerminal.questionNeedsInput",
+    "5 分钟内未收到必填问题的答复，任务已结束。请补充所需信息后重新提交。",
+    "chat.runStatus.event.questionNeedsInput",
+    "需要补充信息",
+    "input_required",
+  ),
   run_budget_exhausted: failed(
     "chat.runTerminal.runBudgetExhausted",
     "任务已达到执行轮次上限。请缩小或拆分任务后重试。",

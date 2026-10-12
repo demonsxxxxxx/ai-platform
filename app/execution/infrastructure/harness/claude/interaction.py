@@ -10,8 +10,10 @@ from typing import Any, Callable
 from app.execution.application.run_interaction import (
     RunInputCommand,
     RunInteractionProtocol,
+    RunQuestionNeedsInput,
 )
 from app.platform.public_payload import sanitize_public_text
+from app.runs.api import is_recommended_question_option
 
 
 QUESTION_POLL_INTERVAL_SECONDS = 0.25
@@ -155,6 +157,8 @@ class ClaudeRunInteractionActor:
             raise ClaudeRunInteractionError("run_question_session_inactive")
         while not self._closed.is_set():
             snapshot = await self._port.poll(question_id=question_id)
+            if snapshot.error_code == "run_question_needs_input":
+                raise RunQuestionNeedsInput("run_question_needs_input")
             if snapshot.state != "open":
                 raise ClaudeRunInteractionError("run_question_session_inactive")
             for command in snapshot.inputs:
@@ -232,7 +236,8 @@ def _project_questions(
         "key": f"q{index}", "question": sanitize_text(item["question"]) or f"Question {index + 1}",
         "header": sanitize_text(item["header"]) or "Question", "multiSelect": item["multiSelect"],
         "options": [{"key": f"o{option_index}", "label": sanitize_text(option["label"]) or f"Option {option_index + 1}",
-                     "description": sanitize_text(option["description"])}
+                     "description": sanitize_text(option["description"]),
+                     **({"recommended": True} if is_recommended_question_option(option["label"]) else {})}
                     for option_index, option in enumerate(item["options"])],
     } for index, item in enumerate(questions)]
 
