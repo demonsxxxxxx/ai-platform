@@ -119,7 +119,9 @@ readiness remains visible through the v4 public execution timeline; legacy
 `sandbox` parts, sandbox IDs, and raw sandbox errors are not display inputs.
 Subagent cards likewise use only the public operation identity and public
 lifecycle fields; raw subagent input, result, and error values never enter the
-panel store or markup. Conversation-wide derived views such as the image gallery
+panel store or markup. A subagent card stays in the message, and its right panel
+opens only after an explicit user action; a `running` lifecycle event does not
+auto-open the panel. Conversation-wide derived views such as the image gallery
 index only accepted message content, authorized attachments, and recursively
 filtered public subagent children; they never scan raw Tool or subagent payloads.
 
