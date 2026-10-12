@@ -2761,7 +2761,8 @@ async def test_verified_runtime_stop_failure_remains_eligible_for_cleanup(monkey
 
 
 @pytest.mark.asyncio
-async def test_release_helper_stops_provider_between_claim_and_finalize_transactions(monkeypatch):
+@pytest.mark.parametrize("stop_status", ("stopped", "not_found"))
+async def test_release_helper_stops_provider_between_claim_and_finalize_transactions(monkeypatch, stop_status):
     calls = []
     transaction_state = {"active": False}
     connection = object()
@@ -2781,7 +2782,7 @@ async def test_release_helper_stops_provider_between_claim_and_finalize_transact
         async def stop(self, lease, *, reason):
             assert transaction_state["active"] is False
             calls.append(("stop", lease, reason))
-            return SimpleNamespace(status="stopped")
+            return SimpleNamespace(status=stop_status)
 
     async def has_claim(conn, **kwargs):
         assert conn is connection

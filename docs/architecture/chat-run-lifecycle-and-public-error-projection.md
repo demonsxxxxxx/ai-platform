@@ -119,7 +119,9 @@ readiness remains visible through the v4 public execution timeline; legacy
 `sandbox` parts, sandbox IDs, and raw sandbox errors are not display inputs.
 Subagent cards likewise use only the public operation identity and public
 lifecycle fields; raw subagent input, result, and error values never enter the
-panel store or markup. Conversation-wide derived views such as the image gallery
+panel store or markup. A subagent card stays in the message, and its right panel
+opens only after an explicit user action; a `running` lifecycle event does not
+auto-open the panel. Conversation-wide derived views such as the image gallery
 index only accepted message content, authorized attachments, and recursively
 filtered public subagent children; they never scan raw Tool or subagent payloads.
 
@@ -251,6 +253,42 @@ a transient history-loading failure remains eligible for result recovery without
 resubmission or removal of accepted content. Recovery belongs to the current
 session/Run/connection generation and is cancelled on replacement or disposal.
 Authorization failure and foreign incarnation/cursor rejection remain fail-closed.
+
+### Main-chat history read failures
+
+`useAgent.loadHistory` owns the transcript-read outcome independently of task
+submission and terminal-result errors. A failed history read is not successful
+empty history and is never evidence that backend messages were deleted. The main
+Chat consumer presents fixed localized context, the API's safe read detail and
+an explicit history-read retry. `historyReadError` exposes bounded HTTP status,
+validated error code and diagnostic ID; each has a visible consumer. Messages
+reuse `projectSafeBackendError`'s existing allowlist/status-copy boundary, codes
+reuse `safeDiagnosticCode`, and diagnostic IDs use the API's existing
+`diag_[a-f0-9]{16}` boundary. Arbitrary exception text, malformed metadata,
+private paths, prompts and stacks are not presentation inputs. Ordinary untyped
+errors retain fixed fallback copy without invented metadata. The existing clear-on-load
+transcript policy remains: failed loads display an explained incomplete body,
+without keeping a second transcript snapshot or reusing another Session's body.
+
+A read failure after identity validation preserves the already confirmed Session
+submission authority. The user may explicitly send another task; doing so does
+not clear the history-incomplete notice. The failure is owned by the existing
+history request token, mounted generation, auth identity/revision and Session. New history
+loads, clear/reset, identity retirement and disposal invalidate the old notice
+and any captured retry callback. Failed retries do not schedule another attempt.
+
+`retryHistoryLoad` reuses the canonical loader and skips its ordinary mark-read
+mutation. It reads Session identity and events, and may restore the existing
+read-only status/SSE convergence; it never submits or retries a task. It is
+fenced during history loading, sending, active Run ownership, uncertain task
+admission and terminal synchronization. The old history-specific write to the
+generic `error` state is retired; its legacy hook string is derived from the
+single owned history failure for existing hook consumers. No parallel history
+cache, retry controller, error taxonomy or backend protocol is introduced.
+The mounted consumer regression belongs to the existing `test:agent-market`
+selector, and owner/fence regressions to the existing `test:sse` selector; no
+second CI lane executes either file. Playback-panel errors have their own owner
+and are unaffected.
 
 Only the backend-approved fixed code/kind/severity taxonomy selects public text.
 Unknown, private, malformed or kind-mismatched details use the fixed `run_failed`

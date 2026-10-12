@@ -793,6 +793,7 @@ create table if not exists run_inputs (
   question_id text,
   answers jsonb not null default '{}'::jsonb,
   status text not null default 'queued',
+  source text not null default 'manual',
   created_at timestamptz not null default now(),
   constraint run_inputs_pkey primary key (tenant_id, run_id, input_id),
   constraint fk_run_inputs_session foreign key (
@@ -813,6 +814,12 @@ create table if not exists run_inputs (
       and text is null and question_id is not null
       and jsonb_typeof(answers) = 'object' and answers <> '{}'::jsonb)
   )
+);
+
+alter table run_inputs add column if not exists source text not null default 'manual';
+alter table run_inputs drop constraint if exists chk_run_inputs_source;
+alter table run_inputs add constraint chk_run_inputs_source check (
+  source = 'manual' or (source = 'timeout_default' and kind = 'answer')
 );
 
 create index if not exists idx_run_inputs_queued

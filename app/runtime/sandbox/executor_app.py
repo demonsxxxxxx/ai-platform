@@ -45,6 +45,7 @@ from app.required_tool_contract import (
     MCP_EXECUTION_OUTCOME_UNKNOWN,
     MCP_EXECUTION_SUCCEEDED_RECEIPT_INCOMPLETE,
     MCP_EXECUTION_UNCERTAIN_ERROR_CODES,
+    MCP_TOOL_ERROR_RESULT_TRUST_BASIS,
     REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY,
     REQUIRED_CAPABILITY_EVIDENCE_KEY,
     SANDBOX_EFFECTFUL_TOOL_IDENTITIES,
@@ -1723,6 +1724,7 @@ async def _default_executor_runner(
                 binding=_evidence_binding(request),
                 tool_call_id=str(raw.get("tool_call_id") or ""),
                 lifecycle_phase=str(raw.get("lifecycle_phase") or ""),
+                tool_error_result=raw.get("trust_basis") == MCP_TOOL_ERROR_RESULT_TRUST_BASIS,
             )
         except (AttributeError, RequiredToolContractError):
             return reject_capability_evidence("capability_lifecycle_sequence_invalid")
