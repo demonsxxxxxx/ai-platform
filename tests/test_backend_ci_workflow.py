@@ -65,6 +65,7 @@ BACKEND_TEST_SHARDS = {
     "sandbox-runtime": (
         "tests/test_claude_agent_sdk_installed_contract.py",
         "tests/test_claude_agent_sdk_runner.py",
+        "tests/test_claude_executor_leaves.py",
         "tests/test_claude_typed_blocks.py",
         "tests/test_claude_assistant_text_sources.py",
         "tests/test_claude_assistant_source_routing.py",
@@ -207,6 +208,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_lambchat_frontend_compat.py::test_lambchat_history_restores_strict_v4_commentary_as_work_summary",
         "tests/test_lambchat_frontend_compat.py::test_session_event_pages_project_authorized_run_columns_on_every_page",
         "tests/test_executor_reconciler.py",
+        "tests/test_executor_receipt_settlement.py",
         "tests/test_conversation_authority.py",
         "tests/test_file_upload_security.py",
         "tests/test_issue_511_session_context_gen2.py",

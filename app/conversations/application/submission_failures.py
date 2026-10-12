@@ -1,6 +1,7 @@
 """Safe public Chat submission failure projection and correlated diagnostics."""
 
 import logging
+from collections.abc import Callable
 import re
 from uuid import uuid4
 
@@ -24,18 +25,33 @@ def log_safe_submission_exception(
     phase: str,
     diagnostic_id: str,
     exc: BaseException,
+    exception_log_fields: Callable[[BaseException], dict[str, object]],
 ) -> None:
-    frames: list[str] = []
-    traceback_cursor = exc.__traceback__
-    while traceback_cursor is not None:
-        module_name = str(traceback_cursor.tb_frame.f_globals.get("__name__") or "unknown")
-        if module_name == "app" or module_name.startswith("app."):
-            frames.append(f"{module_name}:{traceback_cursor.tb_lineno}:{traceback_cursor.tb_frame.f_code.co_name}")
-        traceback_cursor = traceback_cursor.tb_next
-    logger.error(
-        "chat submission failure diagnostic_id=%s phase=%s exception_type=%s frames=%s",
-        diagnostic_id, phase, type(exc).__name__, ",".join(frames[-8:]) or "none",
-    )
+    try:
+        fields = exception_log_fields(exc)
+        chain = fields["exception_chain"]
+        safe_phase = phase if type(phase) is str and phase in {
+            "resolver", "rejection_ledger", "admission_transaction",
+        } else "unknown"
+        safe_id = diagnostic_id if type(diagnostic_id) is str and re.fullmatch(
+            r"diag_[0-9a-f]{16}", diagnostic_id,
+        ) else "unknown"
+        try:
+            # Default StreamHandler.handleError prints the active exception chain
+            # to stderr. Keep the caller's private failure behind a suppression
+            # boundary even when a handler absorbs its own write failure.
+            raise RuntimeError("safe failure logging context") from None
+        except RuntimeError:
+            logger.error(
+                "chat submission failure diagnostic_id=%s phase=%s exception_type=%s frames=%s "
+                "exception_chain=%s exception_chain_end=%s",
+                safe_id, safe_phase, chain[0]["exception_type"],
+                ",".join(chain[0]["frames"]) or "none",
+                chain, fields["exception_chain_end"],
+            )
+    except Exception:
+        # Logging cannot replace the submission's original failure.
+        pass
 
 
 def submission_error_detail(
@@ -60,3 +76,15 @@ def submission_error_code(detail: object, fallback: str = "chat_submission_rejec
     if isinstance(detail, str):
         return safe_submission_code(detail, fallback)
     return fallback
+
+
+def capability_authorization_error_code(
+    exc: ValueError,
+) -> str:
+    denial = getattr(exc, "denial", None)
+    if (
+        (denial is not None and denial.capability_kind == "mcp_tool")
+        or str(exc) == "mcp_tool_not_available"
+    ):
+        return "mcp_tool_not_available"
+    return "capability_not_authorized"

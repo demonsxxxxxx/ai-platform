@@ -536,6 +536,7 @@ async def _collect_workspace_and_convert_result(
     *,
     registry: AdapterRegistry,
     claim_token: str,
+    run_diagnostics: RunDiagnosticsService | None = None,
 ) -> tuple[ExecutorResult, Any, Any]:
     context, terminal_result, run_payload = _context_and_payload(lease_row)
     diagnostics = terminal_result.get("diagnostics")
@@ -597,28 +598,95 @@ async def _collect_workspace_and_convert_result(
     else:
         adapter_context.pop("_artifact_workspace", None)
     if collection_error is not None:
-        exception_chain_losses: list[dict[str, object]] = []
-        terminal_result = {
-            **terminal_result,
-            "status": "failed",
-            "error_code": "sandbox_workspace_collection_failed",
-            "message": "Sandbox workspace collection failed.",
-            "runtime_diagnostics": {
-                "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
-                "error_code": "sandbox_workspace_collection_failed",
-                "failure_source": "sandbox_runtime",
-                "failure_stage": "workspace_collection",
-                "sdk": {
-                    "exception_type": type(collection_error).__name__,
-                    "exception_message": str(collection_error),
-                    "exception_chain": exception_chain_from_error(
-                        collection_error,
-                        losses=exception_chain_losses,
-                    ),
-                },
-                "normalization_losses": exception_chain_losses,
-            },
+        collection_code = "sandbox_workspace_collection_failed"
+        # A late artifact failure cannot replace execution/cancellation authority,
+        # especially the MCP outcome codes that prohibit unsafe retries.
+        primary_failure = str(terminal_result.get("status") or "").strip().lower() in {
+            "failed", "cancelled", "canceled",
         }
+        _logger.warning(
+            "sandbox_workspace_collection_failed",
+            extra={
+                "lease_id": str(lease_row["id"]),
+                "run_id": str(lease_row["run_id"]),
+                "attempt_id": str(run_payload.attempt_id),
+                "error_code": collection_code,
+                "primary_failure_preserved": primary_failure,
+            },
+        )
+        if primary_failure:
+            if run_diagnostics is not None:
+                try:
+                    async with transaction() as conn:
+                        # The persisted receipt normally has its private carrier
+                        # stripped. Keep the authoritative cause ahead of handling
+                        # evidence even when no earlier diagnostic was captured.
+                        primary_code = str(
+                            terminal_result.get("error_code") or terminal_result["status"]
+                        )
+                        primary_diagnostics = terminal_result.get("runtime_diagnostics") or {
+                            "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+                            "error_code": primary_code,
+                            "failure_source": "sandbox_runtime",
+                            "failure_stage": "terminal_receipt",
+                        }
+                        collection_diagnostics = {
+                            "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+                            "error_code": collection_code,
+                            "failure_source": "sandbox_runtime",
+                            "failure_stage": "workspace_collection",
+                            "sdk": {"exception_type": type(collection_error).__name__},
+                        }
+                        for stage, code, evidence in (
+                            ("terminal_receipt", primary_code, primary_diagnostics),
+                            ("workspace_collection", collection_code, collection_diagnostics),
+                        ):
+                            await run_diagnostics.capture_failure_result(
+                                conn,
+                                tenant_id=str(lease_row["tenant_id"]),
+                                run_id=str(lease_row["run_id"]),
+                                attempt_id=str(run_payload.attempt_id),
+                                lease_id=str(lease_row["id"]),
+                                source="executor_reconciliation",
+                                stage=stage,
+                                error_code=code,
+                                result_json={"runtime_diagnostics": evidence},
+                            )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - diagnostic-only transaction cannot veto the receipt.
+                    _logger.warning(
+                        "executor_reconciliation_diagnostics_unavailable",
+                        extra={
+                            "lease_id": str(lease_row["id"]),
+                            "run_id": str(lease_row["run_id"]),
+                            "attempt_id": str(run_payload.attempt_id),
+                            "error_type": type(exc).__name__,
+                        },
+                    )
+        else:
+            exception_chain_losses: list[dict[str, object]] = []
+            terminal_result = {
+                **terminal_result,
+                "status": "failed",
+                "error_code": "sandbox_workspace_collection_failed",
+                "message": "Sandbox workspace collection failed.",
+                "runtime_diagnostics": {
+                    "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+                    "error_code": "sandbox_workspace_collection_failed",
+                    "failure_source": "sandbox_runtime",
+                    "failure_stage": "workspace_collection",
+                    "sdk": {
+                        "exception_type": type(collection_error).__name__,
+                        "exception_message": str(collection_error),
+                        "exception_chain": exception_chain_from_error(
+                            collection_error,
+                            losses=exception_chain_losses,
+                        ),
+                    },
+                    "normalization_losses": exception_chain_losses,
+                },
+            }
     abandoned = threading.Event()
     loop = asyncio.get_running_loop()
 
@@ -958,8 +1026,9 @@ async def reconcile_pending_executor_terminals_once(
                         lease_row,
                         registry=adapter_registry,
                         claim_token=claim_token,
+                        run_diagnostics=run_diagnostics,
                     )
-                    await reconcile_executor_terminal_result(
+                    outcome = await reconcile_executor_terminal_result(
                         lease_row=lease_row,
                         result=result,
                         registry=adapter_registry,
@@ -970,6 +1039,25 @@ async def reconcile_pending_executor_terminals_once(
                         run_attempt_lifecycle=attempt_lifecycle,
                         run_lifecycle=lifecycle,
                     )
+                    if (
+                        outcome.run_id != str(lease_row["run_id"])
+                        or outcome.status not in _TERMINAL_RUN_STATUSES
+                    ):
+                        # A stale dispatch fence can mean cancellation intent,
+                        # not a committed terminal Run. Keep the receipt as the
+                        # settlement owner until a later claim can finish it.
+                        async with transaction() as conn:
+                            await sandbox_lease_repository.retry_sandbox_executor_reconciliation(
+                                conn,
+                                lease_id=str(lease_row["id"]),
+                                claim_token=claim_token,
+                                error=(
+                                    "executor_reconciliation_outcome_run_mismatch"
+                                    if outcome.run_id != str(lease_row["run_id"])
+                                    else "executor_reconciliation_run_not_terminal"
+                                ),
+                            )
+                        continue
                 await _release_reconciled_lease(
                     lease_row,
                     provider=provider,
