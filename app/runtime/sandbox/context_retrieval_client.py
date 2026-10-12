@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import logging
 import os
 import uuid
 from pathlib import Path
@@ -18,6 +19,9 @@ from app.runtime.sandbox.contracts import (
     ContextRetrievalScope,
 )
 from app.validation import assert_safe_id
+
+
+_logger = logging.getLogger(__name__)
 
 
 class PlatformContextRetrievalClient:
@@ -216,6 +220,7 @@ class PlatformContextRetrievalClient:
         ensure_creatable_inside(workspace_root, target, "context_retrieval_workspace_escape")
         target.parent.mkdir(parents=True, exist_ok=True)
         temporary = target.with_name(f".staging-{uuid.uuid4().hex}.part")
+        temporary_owned = False
         bytes_staged = 0
         payload = {
             "session_id": self._scope.session_id,
@@ -248,21 +253,45 @@ class PlatformContextRetrievalClient:
                         raise RuntimeError("context_retrieval_callback_invalid") from exc
                     if expected_bytes < 0 or expected_bytes > PROFILE_DRIVE_STAGE_MAX_BYTES:
                         raise ContextRetrievalDenied("profile_drive_file_too_large")
-                    with temporary.open("xb") as output:
+                    output = temporary.open("xb")
+                    temporary_owned = True
+                    try:
                         async for chunk in response.aiter_bytes():
                             bytes_staged += len(chunk)
                             if bytes_staged > expected_bytes or bytes_staged > PROFILE_DRIVE_STAGE_MAX_BYTES:
                                 raise ContextRetrievalDenied("profile_drive_file_too_large")
                             output.write(chunk)
+                    except BaseException:
+                        # A secondary close failure must not replace cancellation
+                        # or the transfer failure that caused this unwind.
+                        try:
+                            output.close()
+                        except Exception:
+                            try:
+                                _logger.warning("profile_drive_staging_close_failed")
+                            except Exception:
+                                pass  # Observation cannot replace the primary failure.
+                        raise
+                    else:
+                        output.close()
                     if bytes_staged != expected_bytes:
                         raise RuntimeError("context_retrieval_callback_invalid")
             os.replace(temporary, target)
+            temporary_owned = False
         except (ContextRetrievalDenied, RuntimeError):
-            temporary.unlink(missing_ok=True)
             raise
         except Exception as exc:
-            temporary.unlink(missing_ok=True)
             raise RuntimeError("context_retrieval_callback_failed") from exc
+        finally:
+            if temporary_owned:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except Exception:
+                    # Keep the primary error and omit paths/exception details.
+                    try:
+                        _logger.warning("profile_drive_staging_cleanup_failed")
+                    except Exception:
+                        pass  # Observation cannot replace the primary failure.
         workspace_path = target.relative_to(Path(workspace_root)).as_posix()
         return {
             "workspace_path": workspace_path,

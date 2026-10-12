@@ -56,6 +56,10 @@ distinct facts.
 
 See the wire contract for the progressive timeline, sanitization, identity,
 body consistency, and final-hydration invariants. The streaming message design
-uses the current v4 body, commentary, Tool and artifact events; it does not alter
-the transport above. A future text-part selection feature would require an
-explicit coordinated protocol version rather than silently extending v4.
+uses the adopted coordinated v4 extension for `message.part.delta`,
+`message.part.classified` and final answer selection with answer receipt v2;
+it does not alter the transport above. The wire contract's
+[part extension and release/rollback rules](redis-streams-sse-wire-protocol.md#change-contract-incremental-assistant-parts-and-final-selection)
+require coordinated producers/readers: old clients reject the new events, and
+updated readers must remain while new facts or v2 receipts exist. Legacy v1
+receipt readers remain supported.

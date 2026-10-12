@@ -200,6 +200,13 @@ structured logging. It MUST NOT decide authorization, lifecycle, admission,
 retention eligibility, release, or public projection. Domain-specific SQL and
 storage decisions remain in that domain's `infrastructure` package.
 
+The shared Redis lifecycle owner (`app.redis_client`) admits one close operation
+per event-loop entry. Once closing starts, existing handles and new acquisition
+remain unavailable. Failed or cancelled close retains that same client for a
+later exclusive cleanup retry; cancellation propagates unchanged. Only a
+successful close removes the entry and permits a new pool. A retry does not
+reactivate old handles or establish that interrupted physical cleanup succeeded.
+
 `bootstrap` is the composition root. It MAY import every layer to create the API,
 worker, executor, and maintenance processes. It MUST NOT contain business rules
 or be imported by a domain.

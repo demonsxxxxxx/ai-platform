@@ -1677,6 +1677,20 @@ test("useAgent retains an unknown submission and blocks an automatic duplicate",
   const unknownFailures: Array<{ name: string; error: Error }> = [
     { name: "network loss", error: new Error("response lost after acceptance") },
     {
+      name: "committed queue payload validation failure",
+      error: new ApiRequestError("invalid queue payload", 500, "queue_payload_invalid"),
+    },
+    {
+      name: "database commit outcome unknown",
+      error: new ApiRequestError(
+        "safe internal projection",
+        500,
+        "chat_submission_internal_error",
+        undefined,
+        "diag_0123456789abcdef",
+      ),
+    },
+    {
       name: "server failure",
       error: new ApiRequestError("gateway failure", 503, "queue_unavailable"),
     },
@@ -1863,6 +1877,18 @@ test("useAgent clears a stale pre-ledger fence through explicit retry only after
 
 test("useAgent keeps generic, network, malformed, legacy, mismatched-ID, and unknown-version GET/retry results fenced", async () => {
   const ambiguousResolvers = [
+    {
+      name: "committed queue payload validation failure",
+      resolve: async (_submissionId: string) => {
+        throw new ApiRequestError("invalid queue payload", 500, "queue_payload_invalid");
+      },
+    },
+    {
+      name: "legacy queue payload rejection cannot clear explicit retry fence",
+      resolve: async (_submissionId: string) => {
+        throw new ApiRequestError("invalid queue payload", 500, "queue_payload_invalid", "rejected_before_persist");
+      },
+    },
     {
       name: "network failure",
       resolve: async (_submissionId: string) => {
@@ -9226,3 +9252,201 @@ test("useAgent fences an A retry before pending B submission can issue its POST"
     await harness.cleanup();
   }
 });
+
+test("history read recovery preserves authority and cannot replace a sending or retired owner", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originals = { ...sessionApi };
+  let eventReads = 0;
+  let submissions = 0;
+  let rejectSubmission!: (error: Error) => void;
+  sessionApi.markRead = async () => {};
+  sessionApi.get = async (id) => ({
+    id, agent_id: "general-agent", is_active: true,
+    created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", metadata: {},
+  });
+  sessionApi.getEvents = async () => {
+    eventReads += 1;
+    throw new ApiRequestError("private history error", 503);
+  };
+  sessionApi.submitChat = () => {
+    submissions += 1;
+    return new Promise((_, reject) => { rejectSubmission = reject; });
+  };
+  try {
+    await harness.act(async () => { await harness.hook.loadHistory("session-a"); });
+    assert.equal(Boolean(harness.hook.historyReadError), true);
+    assert.equal(harness.hook.isLoadingHistory, false);
+    const retryA = harness.hook.retryHistoryLoad;
+    let pending!: ReturnType<UseAgentReturn["sendMessage"]>;
+    await harness.act(async () => { pending = harness.hook.sendMessage("explicit new task"); });
+    assert.equal(submissions, 1, "event-only failure must retain confirmed generic session authority");
+    assert.equal(Boolean(harness.hook.historyReadError), true, "sending does not prove the old transcript complete");
+    await harness.act(async () => { await retryA(); });
+    assert.equal(eventReads, 1, "read retry must not retire an in-flight submission");
+    await harness.act(async () => {
+      rejectSubmission(new ApiRequestError("rejected", 400, "invalid_request", "rejected_before_persist"));
+      await pending;
+    });
+    assert.equal(Boolean(harness.hook.historyReadError), true, "submission error cannot overwrite history incompleteness");
+    sessionApi.getEvents = async () => { eventReads += 1; return { events: [] }; };
+    await harness.act(async () => { await harness.hook.loadHistory("session-b"); });
+    assert.equal(Boolean(harness.hook.historyReadError), false);
+    await harness.act(async () => { await retryA(); });
+    assert.equal(eventReads, 2, "retired route's button cannot load A into B");
+    assert.equal(harness.hook.sessionId, "session-b");
+
+    sessionApi.getEvents = async () => { eventReads += 1; throw new ApiRequestError("private history error", 503); };
+    await harness.act(async () => { await harness.hook.loadHistory("session-a"); });
+    const beforeClear = harness.hook.retryHistoryLoad;
+    await harness.act(async () => { harness.hook.clearMessages(); await beforeClear(); });
+    assert.equal(Boolean(harness.hook.historyReadError), false);
+    assert.equal(eventReads, 3);
+    assert.equal(harness.hook.sessionId, null);
+
+    await harness.act(async () => { await harness.hook.loadHistory("session-a"); });
+    const beforeAuthChange = harness.hook.retryHistoryLoad;
+    await harness.rotateAuthScope("user-b", "tenant-b");
+    await harness.act(async () => { await beforeAuthChange(); });
+    assert.equal(Boolean(harness.hook.historyReadError), false);
+    assert.equal(eventReads, 4, "auth-retired retry has no read authority");
+    let rejectOldAuthRead!: (error: Error) => void;
+    sessionApi.getEvents = () => {
+      eventReads += 1;
+      return new Promise((_, reject) => { rejectOldAuthRead = reject; });
+    };
+    let oldAuthRead!: ReturnType<UseAgentReturn["loadHistory"]>;
+    await harness.act(async () => { oldAuthRead = harness.hook.loadHistory("session-a"); });
+    await harness.rotateAuthScope("user-c", "tenant-c");
+    await harness.act(async () => {
+      rejectOldAuthRead(new ApiRequestError("private late auth failure", 503));
+      await oldAuthRead;
+    });
+    assert.equal(Boolean(harness.hook.historyReadError), false, "late failure cannot adopt a new auth owner");
+    sessionApi.getEvents = async () => ({ events: [{ id: "readable-c", event_type: "user:message", timestamp: "2026-01-01T00:00:00Z", data: { content: "Readable C transcript" } }] });
+    await harness.act(async () => { await harness.hook.loadHistory("session-c"); });
+    assert.equal(harness.hook.messages[0]?.content, "Readable C transcript");
+    sessionApi.getEvents = async () => { throw new ApiRequestError("private refresh failure", 503); };
+    await harness.act(async () => { await harness.hook.loadHistory("session-c"); });
+    assert.equal(Boolean(harness.hook.historyReadError), true, "same-session refresh has an explicit failed outcome");
+    assert.equal(harness.hook.messages.length, 0, "clear-on-load remains canonical; no shadow snapshot");
+    sessionApi.getEvents = async () => ({ events: [] });
+    await harness.act(async () => { await harness.hook.retryHistoryLoad(); });
+    assert.equal(Boolean(harness.hook.historyReadError), false);
+    assert.equal(harness.hook.messages.length, 0);
+    assert.equal(submissions, 1, "history recovery never replays a task");
+  } finally {
+    Object.assign(sessionApi, originals);
+    await harness.cleanup();
+  }
+});
+
+// Exercise the public hook command with real lifecycle ownership. The obsolete
+// stopGeneration source regex could not prove any of these dispatch boundaries.
+for (const scenario of ["acknowledged", "lost-response", "missing-owner", "wrong-session", "wrong-run", "stale-owner", "clear-during-cancel"] as const) {
+  test(`useAgent stopGeneration enforces exact ownership: ${scenario}`, { timeout: 10_000 }, async () => {
+    const harness = await loadReactHarness();
+    const { sessionApi } = await import("../../../services/api/session.ts");
+    const originals = {
+      get: sessionApi.get,
+      getEvents: sessionApi.getEvents,
+      getStatus: sessionApi.getStatus,
+      markRead: sessionApi.markRead,
+      cancelRun: sessionApi.cancelRun,
+    };
+    const originalFetch = dom.window.fetch;
+    const originalGlobalFetch = globalThis.fetch;
+    const streams: ReturnType<typeof controlledNonClosingSseHeartbeatResponse>[] = [];
+    const calls: Array<{ runId: string; signal: AbortSignal | undefined }> = [];
+    let resolveCancel!: (value: Awaited<ReturnType<typeof sessionApi.cancelRun>>) => void;
+    let rejectCancel!: (error: Error) => void;
+    const cancellation = new Promise<Awaited<ReturnType<typeof sessionApi.cancelRun>>>((resolve, reject) => {
+      resolveCancel = resolve;
+      rejectCancel = reject;
+    });
+    sessionApi.get = async () => ({
+      id: "session-stop", agent_id: "general-agent",
+      created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z",
+      is_active: true, metadata: {},
+    });
+    sessionApi.getEvents = async () => ({
+      current_run_id: "run-stop",
+      events: [{ id: "stop:user", run_id: "run-stop", event_type: "user:message",
+        timestamp: "2026-01-01T00:00:00Z", data: { content: "Stop this run" } }],
+    });
+    sessionApi.getStatus = async () => ({ session_id: "session-stop", run_id: "run-stop", status: "running" });
+    sessionApi.markRead = async () => {};
+    sessionApi.cancelRun = (runId, options) => {
+      calls.push({ runId, signal: options?.signal });
+      return cancellation;
+    };
+    dom.window.fetch = async () => {
+      const stream = controlledNonClosingSseHeartbeatResponse();
+      streams.push(stream);
+      return stream.response;
+    };
+    globalThis.fetch = async () => historyJsonResponse({
+      run: { run_id: "run-stop", status: "running" }, timeline: [], events: [], artifacts: [], steps: [],
+    });
+    try {
+      assert.equal(await harness.hook.stopGeneration(), "unavailable", "blank session has no trusted Run");
+      assert.equal(calls.length, 0);
+      await harness.act(async () => { await harness.hook.loadHistory("session-stop"); });
+      await settle(harness.act);
+      assert.equal(harness.hook.currentRunId, "run-stop");
+      const lifecycle = harness.hook.runControlLifecycle;
+      const owner = lifecycle.getSnapshot().owner;
+      assert.ok(owner);
+      const beforeMessages = structuredClone(harness.hook.messages);
+      if (["missing-owner", "wrong-session", "wrong-run", "stale-owner"].includes(scenario)) {
+        resolveCancel({ run_id: "run-stop", status: "cancel_requested" });
+        await harness.act(async () => {
+          if (scenario === "missing-owner") lifecycle.invalidate();
+          if (scenario === "wrong-session") lifecycle.bindParent({ ...owner, sessionId: "other-session" });
+          if (scenario === "wrong-run") lifecycle.bindParent({ ...owner, runId: "other-run" });
+          if (scenario === "stale-owner") owner.authRevision += 1;
+          assert.equal(await harness.hook.stopGeneration(), "unavailable");
+        });
+        assert.equal(calls.length, 0, "must not send a mutation or silently rebind ownership");
+        assert.deepEqual(harness.hook.messages, beforeMessages);
+        return;
+      }
+      let result!: ReturnType<typeof harness.hook.stopGeneration>;
+      await harness.act(async () => {
+        result = harness.hook.stopGeneration();
+        assert.equal(await harness.hook.stopGeneration(), "unavailable", "double click must not repeat POST");
+      });
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].runId, "run-stop");
+      assert.equal(calls[0].signal, owner.abortController.signal);
+      assert.deepEqual(harness.hook.messages, beforeMessages, "pending cancel cannot fabricate a terminal");
+      if (scenario === "clear-during-cancel") {
+        await harness.act(async () => { harness.hook.clearMessages(); });
+        assert.equal(calls[0].signal?.aborted, true);
+      }
+      await harness.act(async () => {
+        if (scenario === "lost-response") rejectCancel(new TypeError("response lost"));
+        else resolveCancel({ run_id: "run-stop", status: "cancel_requested" });
+        assert.equal(await result, scenario === "acknowledged" ? "acknowledged" : "unconfirmed");
+      });
+      await settle(harness.act);
+      if (scenario === "clear-during-cancel") {
+        assert.equal(harness.hook.currentRunId, null);
+        assert.deepEqual(harness.hook.messages, []);
+        assert.equal(lifecycle.getSnapshot().owner, null);
+      } else {
+        assert.equal(lifecycle.getSnapshot().phase, scenario === "acknowledged" ? "cancel_requested" : "unconfirmed");
+        assert.equal(harness.hook.currentRunId, "run-stop");
+        assert.deepEqual(harness.hook.messages, beforeMessages, "acknowledgement or ambiguity is not terminal evidence");
+      }
+      assert.equal(calls.length, 1);
+    } finally {
+      resolveCancel({ run_id: "run-stop", status: "cancel_requested" });
+      await harness.cleanup();
+      streams.forEach((stream) => stream.close());
+      Object.assign(sessionApi, originals);
+      dom.window.fetch = originalFetch;
+      globalThis.fetch = originalGlobalFetch;
+    }
+  });
+}

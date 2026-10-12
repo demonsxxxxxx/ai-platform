@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import os
 import uuid
@@ -71,6 +72,66 @@ async def test_default_bridge_uses_bounded_publish_and_read_pools(monkeypatch):
     assert [options["socket_timeout"] for _, options, _ in created] == [5, 10]
     await bridge.aclose()
     assert [client.close_calls for _, _, client in created] == [1, 1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("read_failure", ["none", "error", "cancellation"])
+@pytest.mark.parametrize("publish_failure", [False, True])
+@pytest.mark.parametrize("broken_logger", [False, True])
+async def test_owned_stream_pools_attempt_both_closes_and_preserve_first_failure(
+    monkeypatch, caplog, read_failure, publish_failure, broken_logger,
+):
+    calls = []
+    secret = "redis://synthetic-user:synthetic-secret@synthetic.invalid/0"
+    read_error = {
+        "none": None, "error": ValueError(secret),
+        "cancellation": asyncio.CancelledError(secret),
+    }[read_failure]
+    publish_error = RuntimeError(secret) if publish_failure else None
+
+    class Client:
+        def __init__(self, name, error):
+            self.name, self.error = name, error
+
+        async def aclose(self):
+            calls.append(self.name)
+            if self.error is not None:
+                raise self.error
+
+    read, publish = Client("read", read_error), Client("publish", publish_error)
+    monkeypatch.setattr(
+        stream_redis.Redis, "from_url",
+        lambda _url, **options: read if options["max_connections"] == 256 else publish,
+    )
+    bridge = stream_redis.RedisStreamBridge()
+    warnings = []
+
+    def broken_warning(_message, *, extra):
+        warnings.append(extra["cleanup_phase"])
+        raise RuntimeError("synthetic_logger_failure")
+
+    if broken_logger:
+        monkeypatch.setattr(stream_redis.logger, "warning", broken_warning)
+    expected = read_error if read_error is not None else publish_error
+    if expected is None:
+        await bridge.aclose()
+    else:
+        with pytest.raises(BaseException) as caught:
+            await bridge.aclose()
+        assert caught.value is expected
+    assert calls == ["read", "publish"]
+    expected_warnings = [
+        (f"stream_{phase}", type(error).__name__)
+        for phase, error in (("read", read_error), ("publish", publish_error))
+        if error is not None
+    ]
+    if broken_logger:
+        assert warnings == [phase for phase, _ in expected_warnings]
+        assert caplog.records == []
+    else:
+        assert [(r.cleanup_phase, r.cleanup_error_type) for r in caplog.records] == expected_warnings
+    assert secret not in caplog.text
+    assert all(r.exc_info is None and r.args == () for r in caplog.records)
 
 
 @pytest.mark.asyncio

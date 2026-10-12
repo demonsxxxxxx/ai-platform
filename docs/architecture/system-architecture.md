@@ -34,6 +34,21 @@ contracts remain authoritative. This overview links rather than reproduces them.
 These are source entrypoints, not a claim that every target package or an
 independent maintenance service already exists in the deployed image.
 
+API lifespan owns one shutdown task, closing the stream runtime (its read and
+publish Redis pools), shared Redis client, then database pool. Repeated caller
+cancellation cannot abandon that task or advance to dependent clients early.
+The original lifespan error or cancellation wins; without one, the first caller
+cancellation during cleanup wins over close failures, otherwise the first close
+failure wins. Each phase is attempted and failures are observed using only
+phase and exception type, without raw error text or traceback. Ordinary logging
+handler failures cannot interrupt later close attempts or replace the selected
+failure/cancellation. Injected stream
+bridges/clients remain externally owned. Each resource phase has a cooperative
+30-second budget: deadline cancellation is joined to the actual phase end,
+including finite cancellation settlement, before continuing. This is not a hard
+wall-clock bound or a guarantee that a failed third-party close succeeded;
+noncooperative resource code can still delay shutdown.
+
 Worker supervision observes background-task failure or unexpected exit while a
 Run is still executing. Shutdown cancels and drains owned tasks before closing
 the stream runtime and shared clients, attempts both resource-close phases even
