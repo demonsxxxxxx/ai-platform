@@ -2,7 +2,7 @@
 
 Status: source candidate; deployment and external acceptance are separate
 Owner: Context + Execution + Runs
-Last updated: 2026-10-09
+Last updated: 2026-10-11
 
 ## Decision
 
@@ -63,10 +63,10 @@ This change is limited to:
   check described below;
 - owning tests and these architecture documents.
 
-No frontend, SSE wire, public message schema, provider callback request/response
-schema, or deployment change is in scope. The cancellation
-drain qualification is limited to native append persistence; current tool,
-input and history-load authorization remains unchanged.
+No frontend, SSE wire, public message schema, or deployment change is in scope.
+The private provider callback has the opt-in child read extension described
+below; its request body, action names and append ACK shape are unchanged. The
+cancellation drain qualification remains limited to native append persistence.
 
 ### Preserved invariants
 
@@ -189,6 +189,61 @@ checks the native records already being restored, not platform message bodies.
 A mismatch reports `provider_session_integrity_mismatch`; absent complete
 append receipt coverage reports `provider_session_integrity_unavailable`.
 Neither condition silently resumes a prefix or fabricates replacement receipts.
+
+### Bounded child restore view
+
+The adapter requests `X-AI-Platform-Provider-Read-View: children-v1` only on the
+existing `list_subkeys` action. An opted-in host may attach `child_entries`, a
+typed mapping from every returned child subpath to its ordered entry list.
+The mapping comes from that callback's already verified whole-epoch rows, not
+another query or a main-only integrity check. Main entries remain in their
+ordinary preload response. The response's existing `next_sequence` must match
+the adapter's main preload; the host still binds the exact provider UUID,
+epoch, frozen context, Run, Attempt, writer generation and live lease.
+
+Context's `transport/provider_session_responses.py` owns the response model,
+typed-result projection, normal JSON encoder and measurement of the actual
+`JSONResponse` bytes it returns. The existing `bootstrap/execution.py` composes
+that boundary alongside the SessionStore adapter; the legacy callback route
+delegates without assembling or encoding a second response. The old
+`runtime/sandbox/contracts.py` model import remains an alias to this same class
+for the identified router and contract-test consumers. The shared fixed header,
+read-view value and cap have one owner in Context's native-session contract and
+are exposed through its in-process API; it does not export transport internals.
+The existing 8 MiB + 64 KiB wire cap includes both subpaths and child
+entries. Transcript byte accounting alone excludes path/envelope overhead and
+cannot establish this bound. If the entire mapping does not fit, the host
+omits the whole optional field and returns the ordinary subpath response.
+It never truncates entries, children or paths, or enlarges the old wire cap.
+
+The adapter installs a complete, shape-checked mapping atomically under its
+existing append lock in its existing per-instance load cache. Cached child
+reads consume this one authorized snapshot and yield to delivered task
+cancellation. They do not perform additional remote authorization requests;
+bytes already delivered cannot be recalled when host revocation precedes
+delivery of the executor's cancel signal. Every actual callback and later
+tool/input/model operation retains its current authority checks. The successful
+terminal coverage transaction still requires the exact live writer, no Run
+cancellation, a new current-turn main append and the accepted final sequence.
+The narrowly scoped cancellation-tail append exception is unchanged.
+
+Nonempty append invalidates the read cache when its pending batch is established
+and after each acknowledged chunk. An uncertain ACK retains the original
+pending batch and blocks all reads; a view cannot reset the write cursor or
+manufacture an append receipt. Instances never share this cache across Runs,
+Attempts or provider epochs. No server cache, persistent snapshot ledger,
+SDK override or second prompt-history owner is introduced.
+
+Compatibility disposition: old clients send no opt-in and receive exactly the
+original response fields, including the original null/default values. Old hosts
+ignore the new header and return ordinary subpaths. Absence of `child_entries`
+therefore retains the original per-child load path, also needed for valid
+histories whose aggregate wire envelope exceeds the cap. A present malformed
+view or a changed sequence fails closed; HTTP denial or timeout is not retried
+as version negotiation. These are two wire sizes for the same authorized native
+store, not two continuity implementations. With a fitting view, ordinary SDK
+resume does two whole-epoch verifications regardless of child count: main
+preload and child enumeration. Oversized views retain the prior n+2 bound.
 
 New appends also store their original canonical representation in the nullable
 `entry_canonical_json` JSON column, in the same transaction as JSONB and the

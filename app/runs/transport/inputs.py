@@ -38,6 +38,7 @@ class RunInputQuestionOptionRequest(BaseModel):
     key: str = Field(pattern=r"^o[0-7]$")
     label: str = Field(min_length=1, max_length=256)
     description: str = Field(default="", max_length=2_000)
+    recommended: StrictBool | None = None
 
 
 class RunInputQuestionRequest(BaseModel):

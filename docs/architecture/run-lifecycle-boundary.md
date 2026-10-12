@@ -172,6 +172,15 @@ cancels and joins signal waiters and maintenance operations, including an
 operation that has not yet finished after cancellation; claim/release and
 stop/finalize fences remain in their owning paths.
 
+After Worker reconciliation, only a terminal `WorkerOutcome` for the receipt's
+exact Run permits stop/release and receipt finalization. Nonterminal outcomes,
+including `skipped` with `stale_terminal_state`, retain settlement responsibility
+through the existing claim-fenced receipt retry. Cancellation can make a dispatch
+fence stale while the Run and its original Attempt are still nonterminal. The
+next claim must settle that Attempt or observe the already-terminal Run before
+finalizing; a stale error label is not a terminal fact. This does not replace
+the independent stale-Run maintenance fallback or relax receipt validation.
+
 For an asynchronously dispatched result, `latency_ms` measures elapsed time
 from the persisted, timezone-aware `runs.started_at` to terminal result
 projection. Execution's application projection samples the UTC observation time;
@@ -241,7 +250,14 @@ The barriers remain separate:
   can occupy the remainder. Later non-Result messages do not erase the snapshot.
   `sdk_disconnect_flush` measures the existing combined disconnect/store fallback
   on early exit or cancellation. Neither measures post-settlement resource teardown.
-- `executor_heartbeat_drain`: join the supervisor heartbeat and active progress;
+- `executor_heartbeat_drain`: join the supervisor heartbeat and active progress.
+  After a normal runner return (not timeout) with no observed stream failure,
+  retire the pure supervisor lease heartbeat by cancellation and join the sender's
+  actual completion; it carries no answer or capability receipt. A late host
+  renewal is fenced by exact Run/Attempt/owner and the terminal receipt. A sender
+  that resists cancellation still delays this join. API cancellation, timeout,
+  runner exceptions and already-observed delivery failure retain the conservative
+  drain/error path; retirement does not clear an existing failure;
   `executor_public_stream_drain`: close the buffered public callback stream;
   `executor_final_phase_callback`: the preceding final phase send, including
   its public callback flush/receipt barrier. A small close span does not exclude

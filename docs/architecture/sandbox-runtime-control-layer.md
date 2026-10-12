@@ -132,10 +132,13 @@ generation, timestamps, and reconciliation ownership in one migration.
    Rejected delivery stays failed; uncertain delivery still suppresses terminal
    publication. No artifact or previously acknowledged answer fact is deleted.
    The receipt never carries the full answer body. The Worker
-   accepts only current-Attempt, strictly ordered v4 rows whose database and
-   canonical metadata publication states are both `published`; `pending` remains
-   retryable, while inconsistent or `suppressed` publication fails closed. Receipt,
-   identity, sequence, count, or length mismatch also fails closed. Legacy
+   accepts only current-Attempt, strictly ordered, committed v4 rows with
+   `visible_to_user = true`; retired publication metadata and Redis delivery do
+   not govern answer eligibility. Streaming owns
+   [receipt reconstruction](../../app/streaming/infrastructure/v4.py) for legacy
+   v1 and final answer-part v2 receipts under the
+   [current execution-control contract](redis-streams-sse-execution-control.md).
+   Receipt, identity, sequence, count, or length mismatch fails closed. Legacy
    non-streaming bounded terminal messages use the same stable-source
    `assistant_delta` compatibility shape only when no streamed answer exists;
    obsolete `assistant_final` is retired.
@@ -229,6 +232,11 @@ generation, timestamps, and reconciliation ownership in one migration.
 7. Provider-internal recovery state is observed and reconciled; it is never
    copied into an independently writable business state.
 8. Provider stop exceptions are normalized without leaking provider details.
+   An authoritative OpenSandbox SDK absence response during connection,
+   `get_info`, or deletion returns `not_found` and clears only the matching
+   provider tracking. The existing claim-fenced release path accepts that
+   result. Untyped "not found" text, timeouts, other provider failures, and
+   runtime identity mismatches remain stop failures and retain the lease.
    Expiry compensation and admin orphan-cleanup failures write tenant-scoped
    audit outcomes while the failed lease remains a reconciliation subject.
    A lost executor probe keeps the public `sandbox_executor_lost` receipt and

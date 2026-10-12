@@ -1032,7 +1032,7 @@ async def reconcile_pending_executor_terminals_once(
                         claim_token=claim_token,
                         run_diagnostics=run_diagnostics,
                     )
-                    await reconcile_executor_terminal_result(
+                    outcome = await reconcile_executor_terminal_result(
                         lease_row=lease_row,
                         result=result,
                         registry=adapter_registry,
@@ -1043,6 +1043,25 @@ async def reconcile_pending_executor_terminals_once(
                         run_attempt_lifecycle=attempt_lifecycle,
                         run_lifecycle=lifecycle,
                     )
+                    if (
+                        outcome.run_id != str(lease_row["run_id"])
+                        or outcome.status not in _TERMINAL_RUN_STATUSES
+                    ):
+                        # A stale dispatch fence can mean cancellation intent,
+                        # not a committed terminal Run. Keep the receipt as the
+                        # settlement owner until a later claim can finish it.
+                        async with transaction() as conn:
+                            await sandbox_lease_repository.retry_sandbox_executor_reconciliation(
+                                conn,
+                                lease_id=str(lease_row["id"]),
+                                claim_token=claim_token,
+                                error=(
+                                    "executor_reconciliation_outcome_run_mismatch"
+                                    if outcome.run_id != str(lease_row["run_id"])
+                                    else "executor_reconciliation_run_not_terminal"
+                                ),
+                            )
+                        continue
                 await _release_reconciled_lease(
                     lease_row,
                     provider=provider,

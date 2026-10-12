@@ -143,6 +143,7 @@ def test_frontend_ci_runs_browser_auth_owner_regressions():
         "src/hooks/__tests__/browserAuthStorage.test.ts",
         "src/hooks/__tests__/useAuth.test.ts",
         "src/hooks/__tests__/useAuthProvider.test.tsx",
+        "src/services/api/__tests__/authenticatedRequest.test.ts",
     ]
     for selector in scripts["test:auth"].split()[2:]:
         assert (PACKAGE.parent / selector).is_file()

@@ -32,6 +32,12 @@ from app.files.application.session_files import (
     list_owned_session_files,
 )
 
+# Stable capability identities for authorized ProfileDrive file access.
+# Admission and sandbox staging policy remain with their callers.
+PROFILE_DRIVE_STAGE_TOOL = "stage_profile_drive_file_to_workspace"
+PROFILE_DRIVE_STAGE_IDENTITY = f"mcp__ai-platform-context__{PROFILE_DRIVE_STAGE_TOOL}"
+PROFILE_DRIVE_READ_TEXT_IDENTITY = "mcp__ProfileDriveMCPServer__read_text_file"
+
 MAX_UPLOAD_BYTES = 512 * 1024 * 1024
 
 

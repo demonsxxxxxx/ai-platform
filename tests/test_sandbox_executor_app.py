@@ -1881,7 +1881,8 @@ def test_executor_rejects_invalid_private_system_prompt_before_sdk_or_public_lea
     assert private_marker not in json.dumps(result)
 
 
-def test_executor_binds_sdk_mcp_evidence_and_emits_only_safe_capability_event(tmp_path, monkeypatch):
+@pytest.mark.parametrize("returned_error", [False, True])
+def test_executor_binds_sdk_mcp_evidence_and_emits_only_safe_capability_event(tmp_path, monkeypatch, returned_error):
     callbacks = []
     acknowledgements = []
 
@@ -1889,12 +1890,11 @@ def test_executor_binds_sdk_mcp_evidence_and_emits_only_safe_capability_event(tm
         claude_agent_sdk_enabled = True
 
     async def fake_run_claude_agent_sdk(**kwargs):
-        for phase in ("invocation_requested", "completed"):
-            acknowledgements.append(
-                await kwargs["on_capability_evidence"](
-                    sdk_mcp_evidence("mcp__tenant-server__search", "tool-call-1", phase)
-                )
-            )
+        for phase in ("invocation_requested", "failed" if returned_error else "completed"):
+            raw_evidence = sdk_mcp_evidence("mcp__tenant-server__search", "tool-call-1", phase)
+            if returned_error and phase == "failed":
+                raw_evidence["trust_basis"] = "tool_call_bound_error_result"
+            acknowledgements.append(await kwargs["on_capability_evidence"](raw_evidence))
         return sdk_result()
 
     def callback_sender(url, payload, token):
@@ -1914,8 +1914,11 @@ def test_executor_binds_sdk_mcp_evidence_and_emits_only_safe_capability_event(tm
     evidence = response.json()["capability_evidence"]
     assert [(item["lifecycle_phase"], item["tool_call_id"]) for item in evidence] == [
         ("invocation_requested", "tool-call-1"),
-        ("completed", "tool-call-1"),
+        ("failed" if returned_error else "completed", "tool-call-1"),
     ]
+    assert evidence[-1]["trust_basis"] == (
+        "tool_call_bound_error_result" if returned_error else "tool_call_bound_invocation"
+    )
     capability_events = [
         item
         for item in callbacks
@@ -1927,16 +1930,17 @@ def test_executor_binds_sdk_mcp_evidence_and_emits_only_safe_capability_event(tm
     } == {("session-a", "run-a", "qat-attempt-a")}
     assert [[event["type"] for event in item["events"]] for item in capability_events] == [
         ["capability_invoking", "execution_step"],
+        ["capability_failed", "execution_step_failed"] if returned_error else
         ["capability_completed", "execution_step_completed"],
     ]
     assert [item["events"][0]["payload"]["capability"] for item in capability_events] == [
         {"kind": "mcp", "name": "Tenant Search", "status": "invoking"},
-        {"kind": "mcp", "name": "Tenant Search", "status": "completed"},
+        {"kind": "mcp", "name": "Tenant Search", "status": "failed" if returned_error else "completed"},
     ]
     execution_events = [item["events"][1] for item in capability_events]
     assert [item["type"] for item in execution_events] == [
         "execution_step",
-        "execution_step_completed",
+        "execution_step_failed" if returned_error else "execution_step_completed",
     ]
     assert execution_events[0]["payload"]["step_id"] == execution_events[1]["payload"]["step_id"]
     assert set(execution_events[0]["payload"]) <= PUBLIC_EXECUTION_V2_STEP_PAYLOAD_FIELDS
@@ -4746,91 +4750,73 @@ async def test_message_delta_buffer_cancel_is_bounded(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("terminal_stage_logs")
-async def test_supervisor_heartbeat_does_not_block_deltas_and_drains_before_terminal(tmp_path, monkeypatch, caplog):
+@pytest.mark.parametrize("runner_status", ["completed", "failed"])
+async def test_settled_runner_retires_heartbeat_before_terminal(tmp_path, monkeypatch, caplog, runner_status):
     from app.platform import tracing
     now = [10.0]
     monkeypatch.setattr(tracing, "monotonic", lambda: now[0])
     caplog.set_level(logging.INFO)
     heartbeat_started = asyncio.Event()
-    heartbeat_release = asyncio.Event()
-    heartbeat_acknowledged = asyncio.Event()
+    heartbeat_cancelled = asyncio.Event()
     delta_delivered = asyncio.Event()
     terminal_started = asyncio.Event()
-    terminal_after_heartbeat_ack: list[bool] = []
+    terminals = []
 
     async def executor_runner(_request, _workspace_root, emit_event):
         await heartbeat_started.wait()
         await emit_event(message_delta_callback(1, "after heartbeat").events[0])
-        return {"status": "completed", "message": "done"}
+        return {"status": runner_status, "message": "done"}
 
     async def callback_sender(_url, payload, _token):
-        state_patch = payload.get("state_patch")
-        if isinstance(state_patch, dict) and state_patch.get("executor_heartbeat") is True:
+        if payload.get("state_patch", {}).get("executor_heartbeat") is True:
             heartbeat_started.set()
-            await heartbeat_release.wait()
-            now[0] += 2.0
-            heartbeat_acknowledged.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                now[0] += 0.125
+                heartbeat_cancelled.set()
         if any(event.get("type") == "message.delta" for event in payload.get("events", [])):
             delta_delivered.set()
         if any(
             event.get("type") == "agent_public_progress"
             and event.get("payload", {}).get("phase") == "sandbox_submission"
-            and event.get("payload", {}).get("lifecycle") == "completed"
+            and event.get("payload", {}).get("lifecycle") in {"completed", "failed"}
             for event in payload.get("events", [])
         ):
             now[0] += 0.75
         if payload.get("terminal_result"):
-            terminal_started.set()
-            terminal_after_heartbeat_ack.append(heartbeat_acknowledged.is_set())
+            assert heartbeat_cancelled.is_set()
+            assert delta_delivered.is_set()
             now[0] += 0.5
+            terminals.append(payload["terminal_result"])
+            terminal_started.set()
         return callback_ack(payload)
 
     app = create_executor_app(
-        workspace_root=tmp_path,
-        callback_sender=callback_sender,
-        executor_runner=executor_runner,
-        executor_auth_token=EXECUTOR_AUTH_TOKEN,
-        expected_session_id="session-a",
-        expected_run_id="run-a",
-        expected_attempt_id="qat-attempt-a",
-        trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
+        workspace_root=tmp_path, callback_sender=callback_sender,
+        executor_runner=executor_runner, executor_auth_token=EXECUTOR_AUTH_TOKEN,
+        expected_session_id="session-a", expected_run_id="run-a",
+        expected_attempt_id="qat-attempt-a", trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
         heartbeat_interval_seconds=0.001,
     )
-    lifespan = app.router.lifespan_context(app)
-    await lifespan.__aenter__()
-    try:
+    async with app.router.lifespan_context(app):
         dispatch = next(route.endpoint for route in app.routes if route.path == "/v2/tasks")
-        await dispatch(
-            ExecutorTaskRequest.model_validate(task_payload()),
-            executor_credential=EXECUTOR_AUTH_TOKEN,
-        )
-        await asyncio.wait_for(delta_delivered.wait(), timeout=1)
-        assert not heartbeat_acknowledged.is_set()
-        assert not terminal_started.is_set()
-
-        heartbeat_release.set()
+        await dispatch(ExecutorTaskRequest.model_validate(task_payload()), executor_credential=EXECUTOR_AUTH_TOKEN)
         await asyncio.wait_for(terminal_started.wait(), timeout=1)
-        assert terminal_after_heartbeat_ack == [True]
-        # Sender entry precedes the owned callback task's acknowledgement.
-        # Join its observation before lifespan shutdown can cancel that wait.
         async with asyncio.timeout(1):
-            while not any(
-                getattr(record, "terminal_phase", None) == "executor_terminal_callback_ack"
-                for record in caplog.records
-            ):
+            while not any(getattr(record, "terminal_phase", None) == "executor_terminal_callback_ack" for record in caplog.records):
                 await asyncio.sleep(0)
-    finally:
-        heartbeat_release.set()
-        await asyncio.wait_for(lifespan.__aexit__(None, None, None), timeout=1)
-
+    assert len(terminals) == 1
+    assert terminals[0]["status"] == runner_status
+    assert terminals[0].get("error_code") != "stream_delivery_exhausted"
     records = [record for record in caplog.records if record.msg == "run_terminal_stage"]
     assert [record.terminal_phase for record in records] == [
         "executor_heartbeat_drain", "executor_final_phase_callback",
         "executor_public_stream_drain", "executor_terminal_callback_ack",
     ]
-    assert [record.terminal_phase_duration_ms for record in records] == [2000, 750, 0, 500]
+    assert [record.terminal_phase_duration_ms for record in records] == [125, 750, 0, 500]
     assert all(record.terminal_phase_outcome == "ok" for record in records)
-    assert all(record.terminal_status == "succeeded" for record in records)
+    assert all(record.terminal_status == ("succeeded" if runner_status == "completed" else "failed") for record in records)
     assert all(record.run_id == "run-a" and record.attempt_id == "qat-attempt-a" for record in records)
     assert "after heartbeat" not in repr([vars(record) for record in records])
 
@@ -5786,3 +5772,120 @@ def test_rejected_phase_receipt_prevents_success(tmp_path):
     assert response.json()["status"] == "failed"
     assert response.json()["error_code"] == "stream_delivery_rejected"
     assert len(callbacks) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_during_retirement", [False, True])
+async def test_retiring_heartbeat_joins_cancellation_resistant_sender(tmp_path, cancel_during_retirement):
+    started = asyncio.Event()
+    retiring = asyncio.Event()
+    release = asyncio.Event()
+    terminal = asyncio.Event()
+    statuses = []
+
+    async def runner(_request, _workspace_root, _emit_event):
+        await started.wait()
+        return {"status": "completed", "message": "done"}
+
+    async def sender(_url, payload, _token):
+        if payload.get("state_patch", {}).get("executor_heartbeat") is True:
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                retiring.set()
+                while not release.is_set():
+                    try:
+                        await release.wait()
+                    except asyncio.CancelledError:
+                        continue
+                raise
+        if payload.get("terminal_result"):
+            assert release.is_set()
+            statuses.append(payload["terminal_result"]["status"])
+            terminal.set()
+        return callback_ack(payload)
+
+    app = create_executor_app(
+        workspace_root=tmp_path, callback_sender=sender, executor_runner=runner,
+        executor_auth_token=EXECUTOR_AUTH_TOKEN, expected_session_id="session-a",
+        expected_run_id="run-a", expected_attempt_id="qat-attempt-a",
+        trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL, heartbeat_interval_seconds=0.001,
+    )
+    async with app.router.lifespan_context(app):
+        dispatch = next(route.endpoint for route in app.routes if route.path == "/v2/tasks")
+        cancel = next(route.endpoint for route in app.routes if route.path == "/v2/tasks/{run_id}/{attempt_id}/cancel")
+        await dispatch(ExecutorTaskRequest.model_validate(task_payload()), executor_credential=EXECUTOR_AUTH_TOKEN)
+        try:
+            await asyncio.wait_for(retiring.wait(), timeout=1)
+            if cancel_during_retirement:
+                await cancel("run-a", "qat-attempt-a", executor_credential=EXECUTOR_AUTH_TOKEN)
+            await asyncio.sleep(0.01)
+            assert not terminal.is_set()
+        finally:
+            release.set()
+        await asyncio.wait_for(terminal.wait(), timeout=1)
+    assert statuses == ["cancelled" if cancel_during_retirement else "completed"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ending", ["runner_exception", "deadline", "observed_heartbeat_failure"])
+async def test_unsettled_or_failed_heartbeat_keeps_conservative_terminal_path(tmp_path, ending):
+    started = asyncio.Event()
+    release = asyncio.Event()
+    heartbeat_cancelled = asyncio.Event()
+    terminal = asyncio.Event()
+    statuses = []
+
+    async def runner(_request, _workspace_root, _emit_event):
+        await started.wait()
+        if ending == "runner_exception":
+            raise ValueError("synthetic runner failure")
+        if ending == "deadline":
+            await asyncio.Event().wait()
+        await asyncio.sleep(0.02)  # Let the one-attempt heartbeat failure be observed.
+        return {"status": "completed", "message": "done"}
+
+    async def sender(_url, payload, _token):
+        if payload.get("state_patch", {}).get("executor_heartbeat") is True:
+            started.set()
+            if ending == "observed_heartbeat_failure":
+                raise httpx.ReadTimeout("synthetic heartbeat failure")
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                heartbeat_cancelled.set()
+                raise
+        if payload.get("terminal_result"):
+            statuses.append(payload["terminal_result"]["status"])
+            terminal.set()
+        return callback_ack(payload)
+
+    app = create_executor_app(
+        workspace_root=tmp_path, callback_sender=sender, executor_runner=runner,
+        executor_auth_token=EXECUTOR_AUTH_TOKEN, expected_session_id="session-a",
+        expected_run_id="run-a", expected_attempt_id="qat-attempt-a",
+        trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL, heartbeat_interval_seconds=0.001,
+    )
+    payload = task_payload()
+    if ending == "deadline":
+        payload["config"]["resource_limits"]["max_seconds"] = 0.02
+    async with app.router.lifespan_context(app):
+        dispatch = next(route.endpoint for route in app.routes if route.path == "/v2/tasks")
+        status = next(route.endpoint for route in app.routes if route.path == "/v2/tasks/{run_id}/{attempt_id}")
+        await dispatch(ExecutorTaskRequest.model_validate(payload), executor_credential=EXECUTOR_AUTH_TOKEN)
+        try:
+            await asyncio.wait_for(started.wait(), timeout=1)
+            await asyncio.sleep(0.06)
+            assert not heartbeat_cancelled.is_set()
+            assert not terminal.is_set()
+        finally:
+            release.set()
+        if ending == "observed_heartbeat_failure":
+            async with asyncio.timeout(1):
+                while (await status("run-a", "qat-attempt-a", executor_credential=EXECUTOR_AUTH_TOKEN))["status"] != "callback_failed":
+                    await asyncio.sleep(0)
+            assert statuses == []
+        else:
+            await asyncio.wait_for(terminal.wait(), timeout=1)
+            assert statuses == ["failed"]
