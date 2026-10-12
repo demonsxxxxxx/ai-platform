@@ -37,3 +37,15 @@ class TimedWorkerResultCommitService(WorkerResultCommitService):
             )
             timing.terminal_status = outcome.status
             return outcome
+
+
+async def observe_worker_result_publication(
+    publish: AsyncPort, capabilities: Any,
+    command: WorkerResultCommitCommand, outcome: WorkerResultCommitOutcome,
+) -> None:
+    """Observe the existing post-commit publication without owning its order."""
+    with TerminalStageTiming(
+        "result_business_publication", run_id=command.payload.run_id,
+        attempt_id=command.attempt_id, terminal_status=outcome.status,
+    ):
+        await publish(capabilities, tenant_id=command.payload.tenant_id, run_id=command.payload.run_id)

@@ -17,12 +17,15 @@ import {
 import {
   buildAdminRunEventDiagnostics,
   buildAdminRunMonitorView,
+  indexToolDiagnosticEvidence,
 } from "../adminRunTimeline";
 import {
   filterAdminRuns,
   RunMonitorPanel,
   summarizeAdminRuns,
 } from "../RunMonitorPanel";
+
+import { RunDiagnosticsSection } from "../RunDiagnosticsSection";
 
 const waitFor = async (predicate: () => boolean, timeoutMs = 2_000) => {
   const startedAt = Date.now();
@@ -299,7 +302,7 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
         {
           ordinal: 1,
           sequence: 10,
-          invocation_id: "tool-call-7",
+          invocation_id: "op_6aaadf71488c9cf9ca0e4928bbf70f1e",
           label: "Read",
           category: "read",
           status: "succeeded",
@@ -459,10 +462,15 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
             ],
           },
           tool_lifecycles: [],
-          tool_calls: [],
+          tool_calls: [
+            { tool_name: "Read", invocation_id: "abort-true", last_stage: "failed", is_interrupt: true },
+            { tool_name: "Read", invocation_id: "abort-false", last_stage: "failed", is_interrupt: false },
+            { tool_name: "Read", invocation_id: "abort-unknown", last_stage: "failed" },
+          ],
           tool_policy_denials: [
             {
-              tool_name: "Bash",
+              tool_name: "Read",
+              operation_id: "op_6aaadf71488c9cf9ca0e4928bbf70f1e",
               invocation_id: "tool-call-7",
               reason: "tool_parameters_not_authorized",
             },
@@ -498,7 +506,8 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
       tool_calls: [],
       tool_policy_denials: [
         {
-          tool_name: "Bash",
+          tool_name: "Read",
+          operation_id: "op_6aaadf71488c9cf9ca0e4928bbf70f1e",
           invocation_id: "tool-call-7",
           reason: "tool_parameters_not_authorized",
         },
@@ -736,6 +745,12 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
     assert.match(failureTrace.textContent ?? "", /claude_agent_sdk_tool_admission_failed/);
     assert.match(failureTrace.textContent ?? "", /同一观察中的工具证据/);
     assert.match(failureTrace.textContent ?? "", /留存异常摘要：ACTUAL_SDK_FAILURE_MARKER/);
+    const abortLabels = (Array.from(container.querySelectorAll("[data-sdk-tool-abort]")) as HTMLElement[]).map((item) => item.textContent);
+    assert.deepEqual(abortLabels, [
+      "SDK 报告工具 abort：是；不代表用户取消或 Run 取消状态。",
+      "SDK 报告工具 abort：否；不代表用户取消或 Run 取消状态。",
+      "SDK 报告工具 abort：未知（未采集）；不代表用户取消或 Run 取消状态。",
+    ]);
     assert.match(journalEntries[1].textContent ?? "", /关联诊断：tool_parameters_not_authorized/);
     assert.match(journalEntries[1].textContent ?? "", /调用编号/);
     assert.match(container.textContent ?? "", /读取 3 个文件/);
@@ -993,6 +1008,82 @@ test("Run Monitor mounts recent Worker state and renders only authorized diagnos
     adminRunsApi.exportDiagnostics = originalExportDiagnostics;
     dom.window.close();
     for (const [key, descriptor] of previousDescriptors) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else delete (globalThis as Record<string, unknown>)[key];
+    }
+  }
+});
+
+
+test("Run Monitor correlates opaque and legacy IDs without ambiguous fallback", () => {
+  const native = "sdk-native-call-1";
+  const operation = "op_00a5e5319edd5ba68d82da8fcae645f7";
+  const evidence = { tool_name: "Read", invocation_id: native, operation_id: operation, last_stage: "failed" };
+  const indexed = indexToolDiagnosticEvidence([evidence]);
+  assert.equal(indexed.get(operation), evidence);
+  assert.equal(indexed.get(native), evidence);
+  assert.equal(indexed.has("op_other_run"), false);
+  assert.equal(indexToolDiagnosticEvidence([{ tool_name: "Read" }]).size, 0);
+  assert.equal(indexToolDiagnosticEvidence([{ tool_name: "Read", invocation_id: native, operation_id: "" }]).has(native), true);
+  const conflicted = indexToolDiagnosticEvidence([evidence, { tool_name: "Write", invocation_id: native, operation_id: operation }]);
+  assert.equal(conflicted.size, 0);
+  assert.equal(indexToolDiagnosticEvidence([evidence, { ...evidence, last_stage: "completed" }]).get(operation)?.last_stage, "completed");
+});
+
+
+test("Run Monitor fails closed on same-tool cross-namespace identity collisions", () => {
+  const first = { tool_name: "Read", invocation_id: "sdk_A", operation_id: "op_X", reason: "failure_A" };
+  const second = { tool_name: "Read", invocation_id: "op_X", operation_id: "op_Y", reason: "failure_B" };
+  for (const items of [[first, second], [second, first]]) {
+    const indexed = indexToolDiagnosticEvidence(items);
+    assert.equal(indexed.has("op_X"), false);
+    assert.equal(indexed.get("sdk_A")?.reason, "failure_A");
+    assert.equal(indexed.get("op_Y")?.reason, "failure_B");
+  }
+});
+
+
+test("SDK errors retain readable causes alongside attempt-scoped MCP codes", async () => {
+  const dom = new JSDOM("<!doctype html><div id='root'></div>");
+  const globals: Record<string, unknown> = {
+    window: dom.window, document: dom.window.document, IS_REACT_ACT_ENVIRONMENT: true,
+  };
+  const previous = new Map(Object.keys(globals).map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+  for (const [key, value] of Object.entries(globals)) {
+    Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
+  }
+  const container = dom.window.document.getElementById("root") as HTMLElement;
+  const root = createRoot(container);
+  const mcp = { source: "mcp_session_call", scope: "run_attempt", exception_type: "McpError", code: 408 };
+  const cases: Array<{ errors: unknown; expected: string[] }> = [
+    { errors: ["legacy SDK cause", "second cause"], expected: ["legacy SDK cause", "second cause"] },
+    { errors: { sdk_reported_errors: ["original SDK cause", "second cause"], mcp_session_failures: [mcp] }, expected: ["original SDK cause", "second cause", JSON.stringify(mcp)] },
+    { errors: { sdk_reported_errors: "single SDK cause", mcp_session_failures: [mcp] }, expected: ["single SDK cause", JSON.stringify(mcp)] },
+    { errors: { mcp_session_failures: [mcp] }, expected: [JSON.stringify(mcp)] },
+    { errors: "legacy non-array", expected: [] },
+    { errors: { result_errors: ["legacy object"] }, expected: [] },
+    { errors: { truncated: true, size_bytes: 5000, sha256: "synthetic" }, expected: [] },
+    { errors: { mcp_session_failures: "invalid shape" }, expected: [] },
+    { errors: null, expected: [] },
+  ];
+  try {
+    for (const { errors, expected } of cases) {
+      const diagnostics: AdminRunDiagnosticsResponse = {
+        schema_version: "ai-platform.run-diagnostics.v1", revision: 1, coverage: "full",
+        run: { run_id: "run-test", session_id: null, user_id: null, workspace_id: "workspace-test", status: "failed" },
+        handling: [], losses: [], attempts: [],
+        details: { sdk: { errors }, tool_lifecycles: [], tool_calls: [], tool_policy_denials: [] },
+        versions: {}, counts: { retained_observations: 1, omitted_observations: 0 },
+      };
+      await act(async () => { root.render(<RunDiagnosticsSection diagnostics={diagnostics} loading={false} error={null} />); });
+      const section = Array.from(container.querySelectorAll("h4")).find((heading) => heading.textContent === "SDK 错误")?.parentElement;
+      assert.deepEqual(Array.from(section?.querySelectorAll("li") ?? [], (item) => item.textContent), expected);
+      assert.equal(container.querySelector("[data-sdk-http-status]"), null);
+    }
+  } finally {
+    await act(async () => { root.unmount(); });
+    dom.window.close();
+    for (const [key, descriptor] of previous) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor);
       else delete (globalThis as Record<string, unknown>)[key];
     }

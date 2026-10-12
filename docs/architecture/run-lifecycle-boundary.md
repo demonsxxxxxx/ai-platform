@@ -17,7 +17,8 @@ Run terminalization is one Runs application capability. It is not a generic
 repository utility, a transport concern, a Redis authority, a Sandbox lifecycle,
 or a compatibility feature.
 
-The target follows a domain-first modular-monolith/ports-and-adapters shape:
+The target follows a domain-first modular-monolith/ports-and-adapters shape.
+Names in this diagram describe logical roles, not the current Python port names:
 
 ```text
 HTTP transport ─┐
@@ -49,6 +50,11 @@ the current transport behavior.
 transitions through explicit ports. `bootstrap.run_lifecycle` constructs it for
 API and Worker composition; `lifecycle_postgres` owns its SQL and
 `terminalization_v4` coordinates provider lineage and committed event rows.
+The current [application ports](../../app/runs/application/lifecycle.py) are
+`RunLifecyclePersistence`, `RunEventWriter`, and `RunAuditWriter`.
+[Lifecycle composition](../../app/bootstrap/run_lifecycle.py) injects
+`PostgresRunLifecyclePersistence`, Streaming `append_event`, and Identity
+`append_audit_log`; target ledger-role names above do not introduce extra owners.
 Legacy repository lifecycle exports and human approval/parent-child recovery
 are retired. The lifecycle service and its persistence port have no Run-only
 running writer. Worker dispatch locks the session-consistent queued Run through
@@ -62,9 +68,9 @@ Run-only terminal paths. Source, tests, image and runtime acceptance remain sepa
 | --- | --- | --- | --- |
 | Terminal state and decision rules | `app.runs.domain` | framework-neutral values, status classification, typed decisions, safe result policy | psycopg, FastAPI, Redis, repository calls, process settings |
 | Terminalization use cases | `app.runs.application` | commands, results, ports, transaction-scoped orchestration, cancellation/reconciliation policy | concrete adapters, `ContextVar`, service locators, routes, environment reads |
-| PostgreSQL adapter | `app.runs.infrastructure.postgres` | SQL, row locks, CAS/fencing, bounded selectors, record mapping | user-visible wording, HTTP errors, Redis calls, event/audit policy, Sandbox provider calls |
-| Durable Run-event ledger | `app.streaming.infrastructure.postgres` | validate and receipt safe event records supplied by an owning application, write `run_events` on the caller's connection, serve authorized history | Run terminal decisions, event wording, independent transaction/commit, Redis terminal authority |
-| Durable audit ledger | `app.platform.postgres.audit` | validate a generic bounded audit envelope and write `audit_logs` on the caller's connection | Runs policy, target authorization, independent transaction/commit, public projection |
+| PostgreSQL adapter | [`app.runs.infrastructure.lifecycle_postgres`](../../app/runs/infrastructure/lifecycle_postgres.py) | SQL, row locks, CAS/fencing, bounded selectors, record mapping | user-visible wording, HTTP errors, Redis calls, event/audit policy, Sandbox provider calls |
+| Durable Run-event ledger | [`app.streaming.infrastructure.run_events_postgres`](../../app/streaming/infrastructure/run_events_postgres.py) | validate and receipt safe event records supplied by an owning application, write `run_events` on the caller's connection, serve authorized history | Run terminal decisions, event wording, independent transaction/commit, Redis terminal authority |
+| Durable audit ledger | [`app.identity.infrastructure.audit_postgres`](../../app/identity/infrastructure/audit_postgres.py) | validate a generic bounded audit envelope and write `audit_logs` on the caller's connection | Runs policy, target authorization, independent transaction/commit, public projection |
 | HTTP transport | `app.runs.transport.http` | auth/input validation, command mapping, safe response/error mapping | SQL, queue/terminal decisions, concrete infrastructure, `app.bootstrap` imports |
 | Public in-process contract | `app.runs.api` | stable application commands/results/service protocol and public Run constants | adapter construction, mutable global registration, compatibility behavior |
 | API/worker composition | `app.bootstrap.api`, `app.bootstrap.worker` | construct concrete adapters once and inject a complete service graph | product rules, SQL, request handling, implicit global lookup |
@@ -131,8 +137,9 @@ The migration MUST preserve these observable semantics:
 
 1. **One Unit of Work.** A protected Run/step transition and its durable
    Run-event/audit facts use the same
-   PostgreSQL connection and transaction. `StreamingEventLedgerWriter` owns
-   `run_events`; `AuditLedgerWriter` owns `audit_logs`; neither starts or commits
+   PostgreSQL connection and transaction. The current `RunEventWriter` port uses
+   Streaming `append_event` for `run_events`; `RunAuditWriter` uses Identity
+   `append_audit_log` for `audit_logs`. Neither adapter starts or commits
    a transaction supplied by Runs.
 2. **Owning row first.** Acquire the owning Run row before dependent step or
    Attempt locks. Do not introduce a reverse lock order.
@@ -175,6 +182,15 @@ Redis is unavailable. Redis errors retain bounded PostgreSQL polling. Shutdown
 cancels and joins signal waiters and maintenance operations, including an
 operation that has not yet finished after cancellation; claim/release and
 stop/finalize fences remain in their owning paths.
+
+After Worker reconciliation, only a terminal `WorkerOutcome` for the receipt's
+exact Run permits stop/release and receipt finalization. Nonterminal outcomes,
+including `skipped` with `stale_terminal_state`, retain settlement responsibility
+through the existing claim-fenced receipt retry. Cancellation can make a dispatch
+fence stale while the Run and its original Attempt are still nonterminal. The
+next claim must settle that Attempt or observe the already-terminal Run before
+finalizing; a stale error label is not a terminal fact. This does not replace
+the independent stale-Run maintenance fallback or relax receipt validation.
 
 For an asynchronously dispatched result, `latency_ms` measures elapsed time
 from the persisted, timezone-aware `runs.started_at` to terminal result
@@ -235,12 +251,28 @@ The barriers remain separate:
   and is not terminal tail latency or additive with the other spans. Failed calls
   may later succeed on retry. The aggregate has no per-entry payloads and is
   emitted at most once; active store calls indicate an incomplete observation.
+  `latest_public_result_gap_ms` is the interval from the preceding SDK-public
+  message to the latest observed public Result, not a raw-Result mirror-flush
+  span or necessarily the final Run Result. It is absent without both anchors.
+  `append_await_in_latest_result_gap_ms` sums append-call intervals clipped to
+  that window (including in-flight calls). Concurrent calls can overlap; it is
+  not their union. It excludes SDK lock/backoff waits outside append, and neither
+  field observes native CLI JSON write/fsync/close. Non-store model/tool work
+  can occupy the remainder. Later non-Result messages do not erase the snapshot.
   `sdk_disconnect_flush` measures the existing combined disconnect/store fallback
   on early exit or cancellation. Neither measures post-settlement resource teardown.
-- `executor_heartbeat_drain`: join the supervisor heartbeat and active progress;
+- `executor_heartbeat_drain`: join the supervisor heartbeat and active progress.
+  After a normal runner return (not timeout) with no observed stream failure,
+  retire the pure supervisor lease heartbeat by cancellation and join the sender's
+  actual completion; it carries no answer or capability receipt. A late host
+  renewal is fenced by exact Run/Attempt/owner and the terminal receipt. A sender
+  that resists cancellation still delays this join. API cancellation, timeout,
+  runner exceptions and already-observed delivery failure retain the conservative
+  drain/error path; retirement does not clear an existing failure;
   `executor_public_stream_drain`: close the buffered public callback stream;
-  the preceding final phase callback already flushes/waits for its receipt, so
-  a small close span does not exclude earlier callback backlog;
+  `executor_final_phase_callback`: the preceding final phase send, including
+  its public callback flush/receipt barrier. A small close span does not exclude
+  backlog in this earlier send;
   `executor_terminal_callback_ack`: the complete terminal-callback retry/ack wait.
 - `terminal_receipt_commit`: the callback receipt transaction through its exit;
   `terminal_receipt_signal` and `terminal_receipt_publication`: the subsequent
@@ -264,10 +296,14 @@ The barriers remain separate:
   written result. Existing SDK-placeholder lease bookkeeping remains inside the
   commit; later physical reconciler sandbox stop/release is outside it.
 
-Worker post-commit publication remains unmeasured in this slice. The separate
-`terminal_receipt_publication` span observes callback-row publication only;
-its timing cannot stand in for Worker publication. The frozen Worker coordinator
-and its release-flag / post-commit publication order remain unchanged.
+`result_business_publication` measures Worker publication after the unchanged
+commit and release-flag update. The separate `terminal_receipt_publication` span
+observes callback-row publication only. Neither proves frontend receipt/history
+or artifact download visibility. `reconciler_provider_stop` measures provider stop
+between claim verification and lease finalization, after business terminality;
+it excludes those two transactions and can delay the next serial reconciliation.
+Existing `reconciler_result_conversion` remains the artifact-path screening span;
+no per-file payload, upload-only claim or new tracing system is introduced.
 
 These spans may overlap across processes (especially callback ack versus receipt
 commit/publication), and retries produce another operation observation. Do not
@@ -284,7 +320,7 @@ source tests prove attribution and ordering only.
 
 `bootstrap.api` constructs one `RunLifecycleService` graph and supplies it to
 Runs/Chat/Admin HTTP transports. It also supplies the Streaming-owned
-transaction-scoped event-ledger adapter, the platform audit-ledger adapter, the
+transaction-scoped event-ledger adapter, the Identity-owned audit-ledger adapter, the
 direct post-commit publisher, and the public Sandbox Runtime
 client. Transport helpers receive the service explicitly or through framework
 dependency injection whose provider reads only the application instance
@@ -318,12 +354,12 @@ The Runs lifecycle MUST NOT use:
 ## 6. Naming contract
 
 - Application boundary: `RunLifecycleService`.
-- Persistence port: `RunRepository` or a narrower capability name.
-- Concrete adapter: `PostgresRunRepository` (or narrowly named PostgreSQL
-  adapters when the repository is split).
-- Cross-owner ports: capability nouns such as `StreamingEventLedgerWriter`,
-  `AuditLedgerWriter`, `RunEventPublisher`, and
-  `SandboxRuntimeClient`.
+- Current persistence port: `RunLifecyclePersistence`; concrete adapter:
+  `PostgresRunLifecyclePersistence`.
+- Current event/audit ports: `RunEventWriter` and `RunAuditWriter`.
+- Target cross-owner roles use capability nouns such as
+  `StreamingEventLedgerWriter`, `AuditLedgerWriter`, `RunEventPublisher`, and
+  `SandboxRuntimeClient`; these role names do not claim existing Python classes.
 - Input intents: explicit commands such as `CancelRunCommand` and
   `FailRunCommand` when a structured input is required.
 - Persisted shapes end in `Record`; safe reads end in `Projection`; outcomes

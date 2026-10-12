@@ -44,8 +44,18 @@ class FakeRedis:
         self.rows: list[tuple[str, dict[str, str]]] = []
         self.published: list[tuple[object, object]] = []
 
-    async def eval(self, *args: object) -> str:
+    async def eval(self, *args: object):
         self.calls.append(args)
+        if args[0] == streaming_v4._V4_REPLAY_PAGE_LUA:
+            minimum, maximum, count, predecessor = args[3:7]
+            rows = await self.xrange(args[2], min=minimum, max=maximum, count=count)
+            if not rows and not self.rows:
+                return [-1, rows]
+            if not predecessor:
+                return [1, rows]
+            if not rows or rows[0][0] != predecessor:
+                return [0, rows]
+            return [1, rows[1:]]
         redis_id = f"1-{len(self.rows)}"
         self.rows.append((redis_id, {"envelope": str(args[6])}))
         return redis_id
@@ -57,13 +67,16 @@ class FakeRedis:
         max: str = "+",
         count: int | None = None,
     ):
+        def key(value):
+            return tuple(map(int, value.split("-")))
+
         rows = self.rows
         if min.startswith("("):
-            rows = [item for item in rows if item[0] > min[1:]]
+            rows = [item for item in rows if key(item[0]) > key(min[1:])]
         elif min not in {"-", "+"}:
-            rows = [item for item in rows if item[0] == min]
+            rows = [item for item in rows if key(item[0]) >= key(min)]
         if max not in {"+", "-"}:
-            rows = [item for item in rows if item[0] <= max]
+            rows = [item for item in rows if key(item[0]) <= key(max)]
         return rows[:count] if count is not None else rows
 
     async def xread(self, streams, *, count, block):
@@ -266,7 +279,10 @@ async def test_v4_read_stream_uses_exclusive_xread_and_shared_authority_decode()
     )
     assert [entry.cursor.redis_id for entry in entries] == ["1-0"]
     assert entries[0].envelope == envelope
-    assert client.calls[-1] == ("xread", {key: "0-0"}, 7, 4500)
+    assert client.calls[0] == ("xread", {key: "0-0"}, 7, 4500)
+    assert client.calls[1] == (
+        streaming_v4._V4_REPLAY_PAGE_LUA, 1, key, "(0-0", "1-0", 128, ""
+    )
 
 
 @pytest.mark.asyncio
@@ -755,3 +771,114 @@ async def test_v4_resume_accepts_exact_retained_cursor_after_open_is_trimmed():
     )
 
     assert resume == ResumeDecision("9-0", None, "terminal-a", True)
+
+
+
+def _retained_delta(redis_id: str, *, sequence: int):
+    source = row()
+    source["id"] = f"evt4_delta_{sequence}"
+    source["sequence"] = sequence
+    envelope = streaming_v4.project_public_v4(source, authority=authority())
+    assert envelope is not None
+    return redis_id, {"envelope": canonical_json_bytes(envelope).decode()}
+
+
+@pytest.mark.asyncio
+async def test_initial_replay_proves_origin_in_the_actual_page_after_trim():
+    client = FakeRedis()
+    bridge = V4RedisStreamBridge(RedisStreamBridge(publish_client=client))
+    opened = control("stream.open", {"design_id": "ai-platform.redis-streams-sse-event-channel.v4"})
+    client.rows = [
+        ("1-0", {"envelope": canonical_json_bytes(opened).decode()}),
+        _retained_delta("7-3", sequence=3),
+        _retained_delta("50-9", sequence=7),
+    ]
+    resume = await bridge.resolve_resume(
+        tenant_scope_value="scope-a", run_id="run-a", attempt_id="attempt-a",
+        current_stream_incarnation=2, last_event_id=None,
+    )
+    assert resume.after_redis_id == "0-0" and resume.gap is None
+    removed = client.rows.pop(0)
+    assert removed[0] == "1-0"
+    with pytest.raises(StreamContractError, match="stream_replay_continuity_unproven"):
+        await bridge.replay_page(
+            tenant_scope_value="scope-a", run_id="run-a", attempt_id="attempt-a",
+            stream_incarnation=2, after_redis_id="0-0", through_redis_id="50-9",
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("trim_after_xread", [False, True])
+async def test_live_read_rejects_known_trimmed_predecessor_and_unread_prefix(trim_after_xread):
+    class TrimRedis(FakeRedis):
+        async def xread(self, *args, **kwargs):
+            result = await super().xread(*args, **kwargs)
+            if trim_after_xread:
+                self.rows = self.rows[2:]
+            return result
+
+    client = TrimRedis()
+    bridge = V4RedisStreamBridge(RedisStreamBridge(publish_client=client))
+    client.rows = [_retained_delta(value, sequence=seq) for value, seq in
+                   (("1-0", 1), ("7-3", 3), ("50-9", 7))]
+    before = [item[0] for item in client.rows]
+    if not trim_after_xread:
+        client.rows = client.rows[2:]
+    with pytest.raises(StreamContractError, match="stream_replay_continuity_unproven"):
+        await bridge.read_stream(
+            tenant_scope_value="scope-a", run_id="run-a", attempt_id="attempt-a",
+            stream_incarnation=2, after_redis_id="1-0",
+        )
+    assert before == ["1-0", "7-3", "50-9"]
+    assert [item[0] for item in client.rows] == ["50-9"]
+    # The explicitly removed 7-3 was unread, not inferred from a numeric gap.
+    assert client.calls[0][0] == "xread"
+    assert client.calls[1][0] == streaming_v4._V4_REPLAY_PAGE_LUA
+
+
+@pytest.mark.asyncio
+async def test_live_atomic_pages_preserve_sparse_ids_count_and_delivered_cursor():
+    client = FakeRedis()
+    bridge = V4RedisStreamBridge(RedisStreamBridge(publish_client=client))
+    # Open may already be trimmed. Exact retained after is the continuity anchor.
+    client.rows = [_retained_delta(value, sequence=seq) for value, seq in
+                   (("1-0", 1), ("7-3", 3), ("50-9", 7))]
+    identity = dict(tenant_scope_value="scope-a", run_id="run-a",
+                    attempt_id="attempt-a", stream_incarnation=2)
+    first = await bridge.read_stream(**identity, after_redis_id="1-0", count=1)
+    assert [item.cursor.redis_id for item in first] == ["7-3"]
+    second = await bridge.read_stream(**identity, after_redis_id=first[-1].cursor.redis_id, count=1)
+    assert [item.cursor.redis_id for item in second] == ["50-9"]
+    assert await bridge.read_stream(**identity, after_redis_id="50-9", count=1) == ()
+
+
+@pytest.mark.asyncio
+async def test_empty_live_read_distinguishes_retained_idle_anchor_from_missing_stream():
+    client = FakeRedis()
+    bridge = V4RedisStreamBridge(RedisStreamBridge(publish_client=client))
+    identity = dict(tenant_scope_value="scope-a", run_id="run-a",
+                    attempt_id="attempt-a", stream_incarnation=2)
+    client.rows = [_retained_delta("7-3", sequence=3)]
+    assert await bridge.read_stream(**identity, after_redis_id="7-3") == ()
+    client.rows.clear()
+    with pytest.raises(StreamContractError, match="stream_missing"):
+        await bridge.read_stream(**identity, after_redis_id="7-3")
+
+
+@pytest.mark.asyncio
+async def test_live_read_does_not_deliver_a_tail_deleted_after_xread():
+    class DeletedTailRedis(FakeRedis):
+        async def xread(self, *args, **kwargs):
+            result = await super().xread(*args, **kwargs)
+            self.rows.pop()
+            return result
+
+    client = DeletedTailRedis()
+    bridge = V4RedisStreamBridge(RedisStreamBridge(publish_client=client))
+    client.rows = [_retained_delta(value, sequence=seq) for value, seq in
+                   (("1-0", 1), ("7-3", 3), ("50-9", 7))]
+    with pytest.raises(StreamContractError, match="stream_replay_continuity_unproven"):
+        await bridge.read_stream(
+            tenant_scope_value="scope-a", run_id="run-a", attempt_id="attempt-a",
+            stream_incarnation=2, after_redis_id="1-0",
+        )

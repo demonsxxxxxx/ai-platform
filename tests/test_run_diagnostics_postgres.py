@@ -10,6 +10,8 @@ from psycopg import sql
 from psycopg.rows import dict_row
 import pytest
 
+from app.platform.tracing import safe_exception_log_fields
+
 from app.runs.application.diagnostics import RunDiagnosticsService
 from app.runs.infrastructure.diagnostics_postgres import (
     PostgresRunDiagnosticsRepository,
@@ -137,7 +139,7 @@ async def test_postgres_run_diagnostics_are_tenant_scoped_bounded_and_idempotent
             options=f"-c search_path={schema_name}",
             row_factory=dict_row,
         )
-        service = RunDiagnosticsService(
+        service = RunDiagnosticsService(exception_log_fields=safe_exception_log_fields,
             persistence=PostgresRunDiagnosticsRepository(),
             normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
             runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
@@ -238,7 +240,7 @@ async def test_postgres_diagnostic_constraint_failure_keeps_outer_terminal_write
             "alter table run_diagnostics add constraint reject_diagnostic_write "
             "check (revision < 0) not valid"
         )
-        service = RunDiagnosticsService(
+        service = RunDiagnosticsService(exception_log_fields=safe_exception_log_fields,
             persistence=PostgresRunDiagnosticsRepository(write_timeout_seconds=0.1),
             normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
             runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
@@ -289,7 +291,7 @@ async def test_postgres_diagnostic_constraint_failure_keeps_outer_terminal_write
 @pytest.mark.asyncio
 async def test_postgres_diagnostic_row_lock_timeout_keeps_outer_transaction_usable():
     async with _isolated_postgres_run() as (dsn, schema_name, _admin, conn):
-        service = RunDiagnosticsService(
+        service = RunDiagnosticsService(exception_log_fields=safe_exception_log_fields,
             persistence=PostgresRunDiagnosticsRepository(write_timeout_seconds=0.05),
             normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
             runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,

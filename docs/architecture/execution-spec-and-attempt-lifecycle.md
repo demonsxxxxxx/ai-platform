@@ -94,6 +94,14 @@ unsupported schema versions, identity mismatch, and supplied digest mismatch
 fail closed. Callers receive copies/projections; they never receive mutable
 references to the compiler's internal value.
 
+A rejected dispatch compilation keeps the generic public `execution_spec_invalid`
+outcome. Its typed `ExecutionSpecError.code` is retained only as a private
+predispatch diagnostic reason through the existing Runs failure owner. Input,
+canonical specification bytes and arbitrary exception text are not copied
+into that reason. Unknown `ValueError` failures remain generic; MCP retains
+its existing typed error mapping. This observation does not alter admission,
+Attempt fencing or terminalization.
+
 Each attempt's specification is compiled only after admission and worker-side
 reauthorization/context preparation have completed and immediately before the
 first executor dispatch. Reauthorization may remove capability but MUST NOT add
@@ -106,11 +114,12 @@ an exact-field `ai-platform.execution-spec.v2` mapping with the Run-frozen
 `model_gateway_revision`, `model_max_input_tokens`, and
 `model_max_output_tokens`. The dispatcher can compile v2 only from an
 independently locked Runs-owned model snapshot matching its model identity, not
-from Redis queue fields. v2 is not yet the production writer: worker dispatch
-continues to compile v1 until the model proxy enforces provider token counts
-and Context selects a single native-resume or bootstrap mode. The sandbox
-transport accepts a strict paired `model_token_limits` projection, but that
-projection is advisory without the same Run/Attempt-bound proxy gate.
+from Redis queue fields. Worker dispatch writes v2 and rejects a missing or
+mismatched durable model snapshot. The sandbox transport carries the paired
+`model_token_limits` projection; the Run/Attempt-bound proxy verifies the
+binding and output limit. Claude input capacity configures SDK-owned automatic
+compaction, not an additional proxy input recount. The detailed enforcement
+boundary is owned by [Model credentials](opensandbox-ephemeral-model-credentials.md).
 
 ## 3. Durable attempt state machine
 
@@ -138,9 +147,12 @@ tenant_id + run_id + attempt_id + expected_state
 ```
 
 An owning transition transaction updates the attempt, projects the compatible
-Run status, records the safe lifecycle event/audit fact, and freezes any
-terminal publication intent. Queue acknowledgement and Redis publication occur
-after commit and cannot authorize a database transition.
+Run status, and records the safe lifecycle event/audit fact in the same
+transaction. Under [ADR 0013](../adr/0013-redis-stream-only-sse.md), terminal
+publication derives from committed Run/event facts; independent terminal intents
+are retired. Queue acknowledgement and direct Redis publication occur after
+commit and cannot authorize a database transition. Publication ordering belongs
+to [SSE execution control](redis-streams-sse-execution-control.md).
 
 ### 3.1 Implemented foundation and remaining cutover
 
@@ -242,6 +254,14 @@ Queue leasing now scans candidates in oldest-first order across successive
 the oldest eligible Run. This removes the fixed tail horizon that could starve
 an older eligible Run while arrivals continued. A dispatch with a long blocked
 prefix can read the full queued list; capacity testing must include that case.
+
+Redis reclaim transfers an expired lease only when the same atomic operation
+consumes its processing-list entry. Retained retry metadata preserves the
+delivery budget; it cannot authorize a second enqueue after transfer. Concurrent
+reclaimers and repeated calls must leave one queued copy and one admission
+ordinal. Missing processing metadata may still recover through exact retry
+metadata when the processing entry remains. This does not repair historical
+duplicate entries or make an older reclaimer implementation replay-safe.
 
 Redis reclaim must create a new durable ordinal attempt before a new worker can
 execute. It never overwrites the old attempt identity. Retry, resume, and copy

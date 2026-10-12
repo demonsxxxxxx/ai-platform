@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Protocol
+from uuid import uuid4
 
 from app.runs.domain.inputs import (
     MAX_RUN_ANSWER_CHARS,
+    RUN_QUESTION_TIMEOUT_SECONDS,
     RunInputClosed,
     RunInputConflict,
     RunInputError,
     canonicalize_answers,
     canonicalize_questions,
+    default_question_answers,
     normalize_input_id,
     normalize_question_id,
     public_question,
@@ -61,6 +65,7 @@ class RunInputsPersistence(Protocol):
         text: str | None,
         question_id: str | None,
         answers: dict[str, Any],
+        source: str,
     ) -> dict[str, Any]: ...
 
     async def get_question(
@@ -77,6 +82,17 @@ class RunInputsPersistence(Protocol):
         question_id: str,
         questions: list[dict[str, Any]],
     ) -> dict[str, Any]: ...
+
+    async def complete_question_recommendations(
+        self,
+        conn: Any,
+        *,
+        tenant_id: str,
+        run_id: str,
+        attempt_id: str,
+        question_id: str,
+        questions: list[dict[str, Any]],
+    ) -> bool: ...
 
     async def set_question_status(
         self,
@@ -231,6 +247,7 @@ class RunInputsService:
         question_id: str | None = None,
         answers: dict[str, str | list[str] | dict[str, str]] | None = None,
         redact_public: bool = True,
+        source: str = "manual",
     ) -> dict[str, str] | None:
         input_sanitizer = self.sanitize_text if redact_public else lambda value: value
         run = await self.persistence.get_owner_run(
@@ -244,7 +261,9 @@ class RunInputsService:
             return None
         is_text = text is not None and question_id is None and answers is None
         is_answer = text is None and question_id is not None and answers is not None
-        if not (is_text or is_answer):
+        if not (is_text or is_answer) or source not in {"manual", "timeout_default"}:
+            raise RunInputError("run_input_shape_invalid")
+        if source == "timeout_default" and not is_answer:
             raise RunInputError("run_input_shape_invalid")
         input_id = normalize_input_id(input_id)
         existing = await self.persistence.get_input(
@@ -320,6 +339,7 @@ class RunInputsService:
             text=stored_text,
             question_id=stored_question_id,
             answers=stored_answers,
+            source=source,
         )
         if stored_question_id is not None:
             changed = await self.persistence.set_question_status(
@@ -388,8 +408,25 @@ class RunInputsService:
                 question_id=question_id,
                 questions=canonical_questions,
             )
-            if question.get("questions") != canonical_questions:
+            stored_questions = self._canonical_stored_questions(question.get("questions"))
+            compatible_questions = self._complete_legacy_recommendation_metadata(
+                stored_questions,
+                canonical_questions,
+            )
+            if compatible_questions is None:
                 raise RunInputConflict("run_input_question_id_conflict")
+            if compatible_questions != stored_questions:
+                updated = await self.persistence.complete_question_recommendations(
+                    conn,
+                    tenant_id=tenant_id,
+                    run_id=run_id,
+                    attempt_id=attempt_id,
+                    question_id=question_id,
+                    questions=compatible_questions,
+                )
+                if not updated:
+                    raise RunInputConflict("run_input_question_id_conflict")
+                question["questions"] = compatible_questions
             return {
                 "state": state,
                 "inputs": [],
@@ -404,6 +441,11 @@ class RunInputsService:
                 if question_id is not None
                 else None
             )
+            if question_id is not None and await self._expire_question(
+                conn, tenant_id=tenant_id, run=run, run_id=run_id,
+                attempt_id=attempt_id, question_id=question_id,
+            ):
+                return {"state": state, "inputs": [], "error_code": "run_question_needs_input"}
             rows = await self.persistence.list_queued_inputs(
                 conn,
                 tenant_id=tenant_id,
@@ -449,6 +491,33 @@ class RunInputsService:
             return {"state": str(session["state"]), "inputs": []}
 
         raise RunInputConflict("run_input_callback_operation_invalid")
+
+    async def _expire_question(
+        self, conn: Any, *, tenant_id: str, run: dict[str, Any],
+        run_id: str, attempt_id: str, question_id: str,
+    ) -> bool:
+        # Callback and manual submission hold the same owning Run lock.
+        question = await self.persistence.get_question(
+            conn, tenant_id=tenant_id, run_id=run_id, attempt_id=attempt_id, question_id=question_id,
+        )
+        if question is None or question["status"] not in {"pending", "closed"}:
+            return False
+        deadline = question["created_at"] + timedelta(seconds=RUN_QUESTION_TIMEOUT_SECONDS)
+        if datetime.now(timezone.utc) < deadline:
+            return False
+        answers = default_question_answers(self._canonical_stored_questions(question["questions"]))
+        if answers is None:
+            await self.persistence.set_question_status(
+                conn, tenant_id=tenant_id, run_id=run_id, attempt_id=attempt_id,
+                question_id=question_id, status="closed",
+            )
+            return True
+        if question["status"] == "pending":
+            await self.submit(
+                conn, tenant_id=tenant_id, user_id=str(run["user_id"]), run_id=run_id,
+                input_id=str(uuid4()), question_id=question_id, answers=answers, source="timeout_default",
+            )
+        return False
 
     async def _active_attempt_id(
         self,
@@ -513,6 +582,34 @@ class RunInputsService:
         if existing.get("answers") != safe_answers:
             raise RunInputConflict()
 
+    def _complete_legacy_recommendation_metadata(
+        self,
+        stored: list[dict[str, Any]],
+        incoming: list[dict[str, Any]],
+    ) -> list[dict[str, Any]] | None:
+        if len(stored) != len(incoming):
+            return None
+        completed = []
+        for old_question, new_question in zip(stored, incoming, strict=True):
+            if {k: v for k, v in old_question.items() if k != "options"} != {
+                k: v for k, v in new_question.items() if k != "options"
+            } or len(old_question["options"]) != len(new_question["options"]):
+                return None
+            options = []
+            for old_option, new_option in zip(old_question["options"], new_question["options"], strict=True):
+                option = dict(old_option)
+                expected = dict(new_option)
+                if "recommended" not in option and "recommended" in expected:
+                    option["recommended"] = expected["recommended"]
+                elif "recommended" in option and "recommended" not in expected:
+                    # An older publisher omits metadata; it cannot erase it.
+                    expected["recommended"] = option["recommended"]
+                if option != expected:
+                    return None
+                options.append(option)
+            completed.append({**old_question, "options": options})
+        return completed
+
     def _canonical_stored_questions(self, value: object) -> list[dict[str, Any]]:
         return public_question(value, sanitize_text=self.sanitize_text)
 
@@ -569,6 +666,7 @@ class RunInputsService:
         return {
             "input_id": str(row.get("input_id") or ""),
             "kind": kind,
+            "source": "timeout_default" if row.get("source") == "timeout_default" else "manual",
             "text": safe_text,
             "question_id": str(question_id) if question_id is not None else None,
             "answers": answers,
@@ -589,12 +687,12 @@ class RunInputsService:
         question_status = str(row.get("status") or "pending")
         if close_pending and question_status in {"pending", "answered"}:
             question_status = "closed"
+        questions = public_question(row.get("questions"), sanitize_text=self.sanitize_text)
         return {
             "question_id": str(row.get("question_id") or ""),
-            "questions": public_question(
-                row.get("questions"),
-                sanitize_text=self.sanitize_text,
-            ),
+            "questions": questions,
             "status": question_status,
             "created_at": row.get("created_at"),
+            "deadline_at": row["created_at"] + timedelta(seconds=RUN_QUESTION_TIMEOUT_SECONDS),
+            "default_answers": default_question_answers(questions),
         }

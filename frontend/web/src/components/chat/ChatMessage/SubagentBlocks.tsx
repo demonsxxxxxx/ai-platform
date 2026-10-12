@@ -44,12 +44,6 @@ import {
   isNearSubagentPanelBottom,
   shouldAutoScrollSubagentPanel,
 } from "./subagentPanelScroll";
-import {
-  dismissSubagentPanelAutoOpen,
-  isSubagentPanelAutoOpenDismissed,
-  resetSubagentPanelAutoOpenDismissal,
-  shouldAutoOpenSubagentPanel,
-} from "./subagentPanelControl";
 import { formatDateTime } from "../../../utils/datetime";
 
 function useSubagentPanelData(agentId: string): SubagentPanelData | undefined {
@@ -153,7 +147,6 @@ export function openSubagentPanelByAgentId(agentId: string): boolean {
     return true;
   }
 
-  resetSubagentPanelAutoOpenDismissal();
   openPersistentToolPanel({
     title: formattedAgentName,
     icon: <Users size={16} />,
@@ -161,7 +154,6 @@ export function openSubagentPanelByAgentId(agentId: string): boolean {
     subtitle,
     panelKey,
     children: <SubagentPanelContent agentId={agentId} />,
-    onUserClose: dismissSubagentPanelAutoOpen,
   });
 
   return true;
@@ -362,7 +354,6 @@ export function SubagentBlock({
       currentCategory: current_category,
     });
 
-    // Auto-open only when no panel is open; multiple running subagents should not steal focus.
     if (isPersistentToolPanelOpen(panelKey)) {
       updatePersistentToolPanel(
         (prev) => ({
@@ -372,23 +363,6 @@ export function SubagentBlock({
         }),
         panelKey,
       );
-    } else if (
-      shouldAutoOpenSubagentPanel({
-        status: effectiveStatus,
-        anyPanelOpen: isPersistentToolPanelOpen(),
-        autoOpenDismissed: isSubagentPanelAutoOpenDismissed(),
-      })
-    ) {
-      openPersistentToolPanel({
-        title: formattedAgentName,
-        icon: <Users size={16} />,
-        status: panelStatus,
-        subtitle,
-        panelKey,
-        children: <SubagentPanelContent agentId={agent_id} />,
-        auto: true,
-        onUserClose: dismissSubagentPanelAutoOpen,
-      });
     }
   }, [
     agent_id,
@@ -401,7 +375,6 @@ export function SubagentBlock({
     effectiveStatus,
     panelStatus,
     subtitle,
-    formattedAgentName,
     panelKey,
     parent_agent_id,
     duration_ms,
@@ -416,7 +389,6 @@ export function SubagentBlock({
   }, [agent_id]);
 
   const handleOpenInPanel = useCallback(() => {
-    resetSubagentPanelAutoOpenDismissal();
     openPersistentToolPanel({
       title: formattedAgentName,
       icon: <Users size={16} />,
@@ -424,7 +396,6 @@ export function SubagentBlock({
       subtitle,
       panelKey,
       children: <SubagentPanelContent agentId={agent_id} />,
-      onUserClose: dismissSubagentPanelAutoOpen,
     });
   }, [formattedAgentName, panelStatus, subtitle, panelKey, agent_id]);
 
