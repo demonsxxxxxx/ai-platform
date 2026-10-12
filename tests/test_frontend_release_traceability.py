@@ -960,3 +960,19 @@ def pytest_generate_tests(metafunc):
                 {"dirty": "unknown"},
             ],
         )
+
+
+def test_run_monitor_owning_selectors_include_cost_mapper_contract() -> None:
+    scripts = json.loads(Path("frontend/web/package.json").read_text())["scripts"]
+    assert scripts["test:run-monitor"].split() == [
+        "tsx", "--test",
+        "src/services/api/__tests__/adminRuns.test.ts",
+        "src/services/api/__tests__/adminUsers.test.ts",
+        "src/components/panels/__tests__/RunMonitorPanel.mounted.test.tsx",
+        "src/components/workbench/__tests__/AdminUserDiagnosticsDrawer.mounted.test.tsx",
+        "src/components/governance/__tests__/workbenchAccessPolicy.test.ts",
+        "src/components/panels/SidebarParts/__tests__/navigationState.test.ts",
+        "src/__tests__/appRouteManifest.test.ts",
+        "src/__tests__/App.test.tsx",
+        "src/services/api/__tests__/runPlayback.test.ts",
+    ]
