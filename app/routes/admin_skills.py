@@ -394,7 +394,6 @@ async def admin_upload_skill_package(
             return AdminSkillUploadResponse(uploaded=existing)
 
         display_version = next_uploaded_skill_display_version(skill_id, display_rows)
-        dependency_manifests: list[dict[str, object]] = []
         storage_key = f"skills/{skill_id}/versions/{parsed.content_hash}/package.zip"
         try:
             stored = await run_storage_io(
@@ -413,8 +412,6 @@ async def admin_upload_skill_package(
             "size_bytes": stored.size_bytes,
             "files": parsed.files,
         }
-        if dependency_manifests:
-            source_json["dependency_manifests"] = dependency_manifests
         package_contract = build_skill_package_contract(
             parsed,
             package_sha256=stored.sha256,
@@ -424,7 +421,6 @@ async def admin_upload_skill_package(
         source_json["package_contract"] = package_contract
         source_json["dependency_evidence"] = build_skill_dependency_evidence(
             dependency_ids=dependency_ids,
-            dependency_manifests=dependency_manifests,
             package_contract=package_contract,
         )
         # Upload creates immutable package evidence only. Trust and tenant
