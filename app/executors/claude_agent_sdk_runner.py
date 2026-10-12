@@ -63,6 +63,7 @@ from app.execution.api import (
     ClaudeSdkAgentEventAdapter,
     ModelTextCheckpoint,
     RunInteractionProtocol,
+    RunQuestionNeedsInput,
 )
 from app.executors.public_answer_stream import (
     PublicAnswerStreamGate,
@@ -2900,6 +2901,13 @@ async def run_claude_agent_sdk(
                 )
             except asyncio.CancelledError:
                 raise
+            except RunQuestionNeedsInput as exc:
+                if not result_ready.done():
+                    result_ready.set_exception(exc)
+                return {"hookSpecificOutput": {
+                    "hookEventName": "PreToolUse", "permissionDecision": "deny",
+                    "permissionDecisionReason": "run_question_needs_input",
+                }}
             except Exception:  # noqa: BLE001 - fail closed without exposing input.
                 return {
                     "hookSpecificOutput": {
@@ -4529,6 +4537,16 @@ async def run_claude_agent_sdk(
         ):
             raise consume_cancellation
         raise
+    except RunQuestionNeedsInput:
+        await stop_execution()
+        close_failed_terminal("run_question_needs_input")
+        error_code = mcp_execution_receipt_error() or "run_question_needs_input"
+        return assemble_run_result(
+            message="", error=error_code,
+            runtime_diagnostics_snapshot=lambda: runtime_diagnostics(
+                error_code, failure_source="run_question_timeout", terminal_reason=terminal_reason,
+            ),
+        )
     except TimeoutError:
         result_ready.cancel()
         await stop_execution()

@@ -18,7 +18,8 @@ export function RunInputHistory({
     const inputs = projection.inputs.flatMap((input) => {
       const batch = input.kind === "answer" ? projection.questions.find((question) => question.question_id === input.question_id) : undefined;
       const unprocessed = input.status === "closed" || (closed && (input.status === "queued" || (input.kind === "answer" && batch !== undefined && batch.status !== "resolved")));
-      if ((input.status === "applied" && !unprocessed) || (input.kind === "answer" && !input.answers)) return [];
+      const autoAnswer = input.source === "timeout_default";
+      if ((input.status === "applied" && !unprocessed && !autoAnswer) || (input.kind === "answer" && !input.answers)) return [];
       return [{ input, batch, unprocessed }];
     });
     const questions = projection.questions.filter((batch) => {
@@ -61,11 +62,11 @@ export function RunInputHistory({
               <RunQuestionCard key={batch.question_id} batch={batch} runInputs={controls} canSend={canSend && !closed} />
             ))}
             {inputs.map(({ input, batch, unprocessed }) => {
-              const status = unprocessed ? t("chat.runInputs.unprocessed", "任务已结束，未处理") : t("chat.runInputs.queued", "排队中");
+              const status = unprocessed ? t("chat.runInputs.unprocessed", "任务已结束，未处理") : input.status === "applied" ? t("chat.runInputs.processed", "已处理") : t("chat.runInputs.queued", "排队中");
               return (
                 <article className="rounded-xl border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-3 py-2" data-run-input-entry={input.kind} key={input.input_id}>
                   <div className="mb-1 flex items-center justify-between gap-3 text-xs text-[var(--theme-text-secondary)]">
-                    <span>{input.kind === "text" ? t("chat.runInputs.textEntry", "补充到当前任务") : t("chat.runInputs.answerEntry", "已提交答复")}</span>
+                    <span>{input.kind === "text" ? t("chat.runInputs.textEntry", "补充到当前任务") : input.source === "timeout_default" ? t("chat.runInputs.autoAnswerEntry", "系统默认答复") : t("chat.runInputs.answerEntry", "已提交答复")}</span>
                     <span>{status}</span>
                   </div>
                   {input.kind === "text" ? <p className="whitespace-pre-wrap text-sm text-[var(--theme-text)]">{input.text}</p> : (

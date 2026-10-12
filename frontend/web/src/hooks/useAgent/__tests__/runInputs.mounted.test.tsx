@@ -15,6 +15,7 @@ import type {
   SessionRunInputsResponse,
 } from "../../../services/api/session.ts";
 import { sessionApi } from "../../../services/api/session.ts";
+import { ApiRequestError } from "../../../services/api/fetch.ts";
 import { useRunInputs } from "../runInputs.ts";
 import type { RunInputsController } from "../types.ts";
 
@@ -490,6 +491,126 @@ test("answers indistinguishable redacted options by key and distinguishes free t
     env.restore();
   }
 });
+
+test("labels a server-selected timeout answer and keeps the current Run open", async () => {
+  const env = installDom();
+  const { createRoot } = await import("react-dom/client");
+  const container = env.dom.window.document.getElementById("root");
+  assert.ok(container);
+  const root = createRoot(container);
+  const originalGet = sessionApi.getRunInputs;
+  const projection = questionProjection("run-auto", { status: "resolved" });
+  projection.inputs = [{
+    input_id: "auto-answer", kind: "answer", text: null, question_id: "question-batch-1",
+    answers: { q0: ["o0"] }, status: "applied", source: "timeout_default",
+    created_at: "2026-10-07T00:05:01Z",
+  }];
+  sessionApi.getRunInputs = async () => structuredClone(projection);
+  let latest: RunInputsController | null = null;
+  function Probe() {
+    latest = useRunInputs({ sessionId: "session-auto", runId: "run-auto", isRunActive: true });
+    return latest.projection ? createElement(RunInputHistory, { runInputs: latest, canSend: true }) : null;
+  }
+  try {
+    await act(async () => { root.render(createElement(Probe)); await flush(); });
+    assert.equal((latest as unknown as RunInputsController).isClosed, false);
+    assert.match(container.textContent ?? "", /系统默认答复/);
+    assert.match(container.textContent ?? "", /Brief/);
+    assert.match(container.textContent ?? "", /已处理/);
+    assert.doesNotMatch(container.textContent ?? "", /排队中/);
+  } finally {
+    await act(async () => root.unmount());
+    sessionApi.getRunInputs = originalGet;
+    env.restore();
+  }
+});
+
+for (const response of ["conflict", "uncertain"] as const) {
+  test(`reconciles ${response} manual answers with a server timeout answer`, async () => {
+    const env = installDom();
+    const { createRoot } = await import("react-dom/client");
+    const container = env.dom.window.document.getElementById("root");
+    assert.ok(container);
+    const root = createRoot(container);
+    const originalGet = sessionApi.getRunInputs;
+    const originalSubmit = sessionApi.submitRunInput;
+    let persisted = questionProjection("run-race");
+    let writes = 0;
+    sessionApi.getRunInputs = async () => structuredClone(persisted);
+    sessionApi.submitRunInput = async () => {
+      writes += 1;
+      persisted = questionProjection("run-race", { status: "resolved" });
+      persisted.inputs = [{ input_id: "server-default", kind: "answer", text: null,
+        question_id: "question-batch-1", answers: { q0: ["o0"] }, status: "applied",
+        source: "timeout_default", created_at: "2026-10-07T00:05:01Z" }];
+      if (response === "conflict") throw new ApiRequestError("Already answered", 409, "run_input_question_already_answered");
+      throw new Error("response lost");
+    };
+    let latest: RunInputsController | null = null;
+    function Probe() {
+      latest = useRunInputs({ sessionId: "session-race", runId: "run-race", isRunActive: true });
+      return createElement(RunInputHistory, { runInputs: latest, canSend: true });
+    }
+    const controls = () => latest as unknown as RunInputsController;
+    try {
+      await act(async () => { root.render(createElement(Probe)); await flush(); });
+      await act(async () => { assert.equal(await controls().submitAnswers("question-batch-1", { q0: ["o1"] }), false); await flush(); });
+      assert.equal(controls().isClosed, false);
+      assert.equal(controls().pendingSubmission, null);
+      assert.equal(controls().submissionError, null);
+      assert.equal(controls().lastAcceptedSubmission, null, "server choice must not be reported as accepted manual input");
+      assert.match(container.textContent ?? "", /系统默认答复/);
+      assert.equal(await controls().retryPendingSubmission(), false);
+      assert.equal(writes, 1);
+    } finally {
+      await act(async () => root.unmount());
+      sessionApi.getRunInputs = originalGet;
+      sessionApi.submitRunInput = originalSubmit;
+      env.restore();
+    }
+  });
+}
+
+for (const noOptions of [false, true]) {
+  test(`shows server deadline policy and default choice with noOptions=${noOptions}`, async () => {
+    const env = installDom();
+    const { createRoot } = await import("react-dom/client");
+    const container = env.dom.window.document.getElementById("root");
+    assert.ok(container);
+    const root = createRoot(container);
+    const originalGet = sessionApi.getRunInputs;
+    const originalSubmit = sessionApi.submitRunInput;
+    const projection = questionProjection("run-deadline");
+    projection.questions[0].deadline_at = "2026-10-07T00:05:00Z";
+    projection.questions[0].default_answers = noOptions ? null : { q0: ["o1"] };
+    if (noOptions) projection.questions[0].questions[0].options = [];
+    let writes = 0;
+    sessionApi.getRunInputs = async () => structuredClone(projection);
+    sessionApi.submitRunInput = async () => { writes += 1; throw new Error("unexpected client default"); };
+    function Probe() {
+      const controls = useRunInputs({ sessionId: "session-deadline", runId: "run-deadline", isRunActive: true });
+      return createElement(RunInputHistory, { runInputs: controls, canSend: true });
+    }
+    try {
+      await act(async () => { root.render(createElement(Probe)); await flush(); });
+      assert.match(container.textContent ?? "", /5分钟未提交/);
+      assert.doesNotMatch(container.textContent ?? "", /q0|o1/);
+      assert.equal(writes, 0, "browser must not submit a default even when the timestamp is past");
+      if (noOptions) {
+        assert.equal(container.querySelectorAll("input").length, 0);
+        assert.ok(container.querySelector("textarea[aria-label]"));
+        assert.equal(container.querySelector("[data-run-question-default]"), null);
+      } else {
+        assert.match(container.querySelector("[data-run-question-default]")?.textContent ?? "", /Detailed/);
+      }
+    } finally {
+      await act(async () => root.unmount());
+      sessionApi.getRunInputs = originalGet;
+      sessionApi.submitRunInput = originalSubmit;
+      env.restore();
+    }
+  });
+}
 
 for (const scenario of [
   { name: "accepted answer", state: "open", status: "applied", questionStatus: "answered", visible: false },
