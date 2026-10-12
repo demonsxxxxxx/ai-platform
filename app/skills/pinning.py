@@ -224,15 +224,11 @@ def _materialization_error() -> SkillVersionMaterializationError:
     return SkillVersionMaterializationError("skill_version_not_materializable")
 
 
-def _build_skill_version_manifest_pin(
-    skill_version: dict[str, Any],
-    *,
-    allowed_kinds: set[str],
-) -> dict[str, Any]:
+def build_skill_version_manifest_pin(skill_version: dict[str, Any]) -> dict[str, Any]:
     if not is_admin_materializable_status(skill_version.get("status")):
         raise _materialization_error()
     source = skill_version.get("source")
-    if not isinstance(source, dict) or str(source.get("kind") or "") not in allowed_kinds:
+    if not isinstance(source, dict) or str(source.get("kind") or "") not in {"builtin", "uploaded"}:
         raise _materialization_error()
     version = str(skill_version.get("version") or "")
     content_hash = str(skill_version.get("content_hash") or "")
@@ -265,14 +261,6 @@ def _build_skill_version_manifest_pin(
         "staged": False,
         "used": False,
     }
-
-
-def build_uploaded_skill_manifest_pin(skill_version: dict[str, Any]) -> dict[str, Any]:
-    return _build_skill_version_manifest_pin(skill_version, allowed_kinds={"uploaded"})
-
-
-def build_skill_version_manifest_pin(skill_version: dict[str, Any]) -> dict[str, Any]:
-    return _build_skill_version_manifest_pin(skill_version, allowed_kinds={"builtin", "uploaded"})
 
 
 def validate_skill_version_dependency_policy(
