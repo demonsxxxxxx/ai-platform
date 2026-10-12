@@ -84,6 +84,9 @@ function makeOptimisticInput(
 }
 
 function errorKind(error: unknown): string {
+  if (error instanceof ApiRequestError && error.status === 409 && error.code === "run_input_question_already_answered") {
+    return "already_answered";
+  }
   if (error instanceof ApiRequestError && error.status === 409 && error.code === "run_input_closed") {
     return "closed";
   }
@@ -203,13 +206,16 @@ export function useRunInputs({
       });
       if (!isCurrent()) return false;
       let accepted: RunInputAcceptedSubmission | null = null;
+      let answeredElsewhere = false;
       const pending = pendingAttemptRef.current;
-      if (
-        pending?.owner === owner &&
-        projection.inputs.some((input) => input.input_id === pending.request.input_id)
-      ) {
-        pendingAttemptRef.current = null;
-        accepted = acceptedView(pending.request);
+      if (pending?.owner === owner) {
+        const ownReceipt = projection.inputs.some((input) => input.input_id === pending.request.input_id);
+        const questionId = "question_id" in pending.request ? pending.request.question_id : null;
+        answeredElsewhere = questionId !== null && projection.questions.some(
+          (question) => question.question_id === questionId && question.status !== "pending",
+        );
+        if (ownReceipt || answeredElsewhere) pendingAttemptRef.current = null;
+        if (ownReceipt) accepted = acceptedView(pending.request);
       }
       setState((previous) =>
         previous.owner === owner
@@ -219,8 +225,8 @@ export function useRunInputs({
               isLoading: false,
               loadFailed: false,
               isClosed: projection.state !== "open",
-              submissionError: accepted ? null : previous.submissionError,
-              pendingSubmission: accepted ? null : previous.pendingSubmission,
+              submissionError: accepted || answeredElsewhere ? null : previous.submissionError,
+              pendingSubmission: accepted || answeredElsewhere ? null : previous.pendingSubmission,
               lastAcceptedSubmission: accepted ?? previous.lastAcceptedSubmission,
             }
           : previous,
@@ -328,6 +334,16 @@ export function useRunInputs({
       } catch (error) {
         if (!isCurrent()) return false;
         const kind = errorKind(error);
+        if (kind === "already_answered") {
+          pendingAttemptRef.current = null;
+          setState((previous) =>
+            previous.owner === owner
+              ? { ...previous, submissionError: null, pendingSubmission: null }
+              : previous,
+          );
+          void readSnapshot();
+          return false;
+        }
         if (kind === "closed") {
           pendingAttemptRef.current = null;
           setState((previous) =>

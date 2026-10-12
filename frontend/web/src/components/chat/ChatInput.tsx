@@ -267,7 +267,7 @@ export const ChatInput = memo(function ChatInput({
     clearUploads();
   }, [attachmentScopeKey, clearUploads]);
 
-  const { history, pushHistory, navigateUp, navigateDown } = useInputHistory(user);
+  const { pushHistory, navigateUp, navigateDown } = useInputHistory(user);
 
   const { scheduleTextareaResize } = useTextareaResize(textareaRef, input);
 
@@ -373,6 +373,10 @@ export const ChatInput = memo(function ChatInput({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // IME candidate keys belong to the native editor, including the legacy 229
+    // signal used when composition ends before the confirming keydown event.
+    if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
+
     if (!disableSlashCommands && slashMenuOpen) {
       if (e.key === "ArrowUp") {
         e.preventDefault();
@@ -432,9 +436,9 @@ export const ChatInput = memo(function ChatInput({
       textarea?.selectionEnd === value.length;
 
     if (e.key === "ArrowUp" && atTop) {
-      e.preventDefault();
       const prev = navigateUp(input);
       if (prev !== null) {
+        e.preventDefault();
         setInput(prev);
         requestAnimationFrame(() => {
           if (textarea) {
@@ -442,10 +446,10 @@ export const ChatInput = memo(function ChatInput({
           }
         });
       }
-    } else if (e.key === "ArrowDown" && (atBottom || history.length > 0)) {
-      e.preventDefault();
+    } else if (e.key === "ArrowDown" && atBottom) {
       const next = navigateDown();
       if (next !== null) {
+        e.preventDefault();
         setInput(next);
         requestAnimationFrame(() => {
           if (textarea) {

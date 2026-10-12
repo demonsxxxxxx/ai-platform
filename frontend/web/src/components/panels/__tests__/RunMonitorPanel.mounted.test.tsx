@@ -25,6 +25,8 @@ import {
   summarizeAdminRuns,
 } from "../RunMonitorPanel";
 
+import { RunDiagnosticsSection } from "../RunDiagnosticsSection";
+
 const waitFor = async (predicate: () => boolean, timeoutMs = 2_000) => {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
@@ -1037,5 +1039,53 @@ test("Run Monitor fails closed on same-tool cross-namespace identity collisions"
     assert.equal(indexed.has("op_X"), false);
     assert.equal(indexed.get("sdk_A")?.reason, "failure_A");
     assert.equal(indexed.get("op_Y")?.reason, "failure_B");
+  }
+});
+
+
+test("SDK errors retain readable causes alongside attempt-scoped MCP codes", async () => {
+  const dom = new JSDOM("<!doctype html><div id='root'></div>");
+  const globals: Record<string, unknown> = {
+    window: dom.window, document: dom.window.document, IS_REACT_ACT_ENVIRONMENT: true,
+  };
+  const previous = new Map(Object.keys(globals).map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+  for (const [key, value] of Object.entries(globals)) {
+    Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
+  }
+  const container = dom.window.document.getElementById("root") as HTMLElement;
+  const root = createRoot(container);
+  const mcp = { source: "mcp_session_call", scope: "run_attempt", exception_type: "McpError", code: 408 };
+  const cases: Array<{ errors: unknown; expected: string[] }> = [
+    { errors: ["legacy SDK cause", "second cause"], expected: ["legacy SDK cause", "second cause"] },
+    { errors: { sdk_reported_errors: ["original SDK cause", "second cause"], mcp_session_failures: [mcp] }, expected: ["original SDK cause", "second cause", JSON.stringify(mcp)] },
+    { errors: { sdk_reported_errors: "single SDK cause", mcp_session_failures: [mcp] }, expected: ["single SDK cause", JSON.stringify(mcp)] },
+    { errors: { mcp_session_failures: [mcp] }, expected: [JSON.stringify(mcp)] },
+    { errors: "legacy non-array", expected: [] },
+    { errors: { result_errors: ["legacy object"] }, expected: [] },
+    { errors: { truncated: true, size_bytes: 5000, sha256: "synthetic" }, expected: [] },
+    { errors: { mcp_session_failures: "invalid shape" }, expected: [] },
+    { errors: null, expected: [] },
+  ];
+  try {
+    for (const { errors, expected } of cases) {
+      const diagnostics: AdminRunDiagnosticsResponse = {
+        schema_version: "ai-platform.run-diagnostics.v1", revision: 1, coverage: "full",
+        run: { run_id: "run-test", session_id: null, user_id: null, workspace_id: "workspace-test", status: "failed" },
+        handling: [], losses: [], attempts: [],
+        details: { sdk: { errors }, tool_lifecycles: [], tool_calls: [], tool_policy_denials: [] },
+        versions: {}, counts: { retained_observations: 1, omitted_observations: 0 },
+      };
+      await act(async () => { root.render(<RunDiagnosticsSection diagnostics={diagnostics} loading={false} error={null} />); });
+      const section = Array.from(container.querySelectorAll("h4")).find((heading) => heading.textContent === "SDK 错误")?.parentElement;
+      assert.deepEqual(Array.from(section?.querySelectorAll("li") ?? [], (item) => item.textContent), expected);
+      assert.equal(container.querySelector("[data-sdk-http-status]"), null);
+    }
+  } finally {
+    await act(async () => { root.unmount(); });
+    dom.window.close();
+    for (const [key, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else delete (globalThis as Record<string, unknown>)[key];
+    }
   }
 });
