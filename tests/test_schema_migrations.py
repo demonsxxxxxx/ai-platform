@@ -289,6 +289,195 @@ async def test_concurrent_migrations_serialize_and_apply_schema_once():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("setup_fails", [False, True])
+@pytest.mark.parametrize("close_fails", [False, True])
+async def test_index_connection_factory_transfers_only_initialized_connection(
+    monkeypatch, setup_fails, close_fails,
+):
+    setup_error = RuntimeError("autocommit failed")
+    calls = []
+
+    class Connection:
+        async def set_autocommit(self, value):
+            assert value is True
+            calls.append("autocommit")
+            if setup_fails:
+                raise setup_error
+
+        async def close(self):
+            calls.append("close")
+            if close_fails:
+                raise RuntimeError("close failed")
+
+    connection = Connection()
+
+    async def connect():
+        return connection
+
+    monkeypatch.setattr(schema_migrations, "connect", connect)
+    if setup_fails:
+        with pytest.raises(RuntimeError) as caught:
+            await schema_migrations._default_index_connection_factory()
+        assert caught.value is setup_error
+        assert calls == ["autocommit", "close"]
+    else:
+        assert await schema_migrations._default_index_connection_factory() is connection
+        assert calls == ["autocommit"]
+
+
+@pytest.mark.asyncio
+async def test_index_connection_factory_closes_on_setup_cancellation(monkeypatch):
+    entered = asyncio.Event()
+    calls = []
+
+    class Connection:
+        async def set_autocommit(self, value):
+            entered.set()
+            await asyncio.Future()
+
+        async def close(self):
+            calls.append("close")
+            raise RuntimeError("close failed")
+
+    async def connect():
+        return Connection()
+
+    monkeypatch.setattr(schema_migrations, "connect", connect)
+    task = asyncio.create_task(schema_migrations._default_index_connection_factory())
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    task.cancel("setup stopped")
+    with pytest.raises(asyncio.CancelledError, match="setup stopped"):
+        await task
+    assert task.cancelled()
+    assert calls == ["close"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_phase", [None, "lock", "core", "indexes"])
+@pytest.mark.parametrize("unlock_fails", [False, True])
+@pytest.mark.parametrize("close_fails", [False, True])
+async def test_migration_coordinator_preserves_first_failure_and_always_closes(
+    monkeypatch, failure_phase, unlock_fails, close_fails,
+):
+    state = SharedMigrationState()
+    primary = RuntimeError("migration failed")
+    unlock_error = RuntimeError("unlock failed")
+    close_error = RuntimeError("close failed")
+    calls = []
+
+    class Connection(FakeIndexConnection):
+        async def execute(self, statement, params=None):
+            if "pg_try_advisory_lock" in statement and failure_phase == "lock":
+                raise primary
+            if "pg_advisory_unlock" in statement:
+                calls.append("unlock")
+                if unlock_fails:
+                    raise unlock_error
+            return await super().execute(statement, params)
+
+        async def close(self):
+            calls.append("close")
+            await super().close()
+            if close_fails:
+                raise close_error
+
+    connection = Connection(state)
+
+    async def connection_factory():
+        return connection
+
+    @asynccontextmanager
+    async def core_transaction():
+        if failure_phase == "core":
+            raise primary
+        async with transaction_factory(state)() as conn:
+            yield conn
+
+    original_apply_indexes = schema_migrations._apply_concurrent_indexes
+
+    async def apply_indexes(conn):
+        if failure_phase == "indexes":
+            raise primary
+        return await original_apply_indexes(conn)
+
+    monkeypatch.setattr(schema_migrations, "_apply_concurrent_indexes", apply_indexes)
+    expected = primary if failure_phase else unlock_error if unlock_fails else close_error if close_fails else None
+    if expected is None:
+        result = await schema_migrations.apply_migrations(
+            transaction_factory=core_transaction,
+            index_connection_factory=connection_factory,
+        )
+        assert result["status"] == "applied"
+    else:
+        with pytest.raises(RuntimeError) as caught:
+            await schema_migrations.apply_migrations(
+                transaction_factory=core_transaction,
+                index_connection_factory=connection_factory,
+            )
+        assert caught.value is expected
+    assert calls == (["close"] if failure_phase == "lock" else ["unlock", "close"])
+    assert not state.index_lock.locked()
+    assert not state.lock.locked()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_phase", ["lock", "core", "indexes", "unlock"])
+async def test_migration_coordinator_closes_after_task_cancellation(monkeypatch, cancel_phase):
+    state = SharedMigrationState()
+    entered = asyncio.Event()
+    calls = []
+
+    async def wait_for_cancellation():
+        entered.set()
+        await asyncio.Future()
+
+    class Connection(FakeIndexConnection):
+        async def execute(self, statement, params=None):
+            if "pg_try_advisory_lock" in statement and cancel_phase == "lock":
+                await wait_for_cancellation()
+            if "pg_advisory_unlock" in statement:
+                calls.append("unlock")
+                if cancel_phase == "unlock":
+                    await wait_for_cancellation()
+                raise RuntimeError("unlock failed")
+            return await super().execute(statement, params)
+
+        async def close(self):
+            calls.append("close")
+            await super().close()
+            raise RuntimeError("close failed")
+
+    async def connection_factory():
+        return Connection(state)
+
+    @asynccontextmanager
+    async def core_transaction():
+        if cancel_phase == "core":
+            await wait_for_cancellation()
+        async with transaction_factory(state)() as conn:
+            yield conn
+
+    async def apply_indexes(conn):
+        if cancel_phase == "indexes":
+            await wait_for_cancellation()
+        return False
+
+    monkeypatch.setattr(schema_migrations, "_apply_concurrent_indexes", apply_indexes)
+    task = asyncio.create_task(schema_migrations.apply_migrations(
+        transaction_factory=core_transaction,
+        index_connection_factory=connection_factory,
+    ))
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    task.cancel("migration stopped")
+    with pytest.raises(asyncio.CancelledError, match="migration stopped"):
+        await task
+    assert task.cancelled()
+    assert calls == (["close"] if cancel_phase == "lock" else ["unlock", "close"])
+    assert not state.index_lock.locked()
+    assert not state.lock.locked()
+
+
+@pytest.mark.asyncio
 async def test_schema_upgrade_blocks_future_open_attempt_heartbeat_before_schema_write():
     state = SharedMigrationState()
     state.run_attempt_heartbeat_contract_supported = True
