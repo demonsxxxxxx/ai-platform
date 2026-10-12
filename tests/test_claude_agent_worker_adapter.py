@@ -1248,9 +1248,14 @@ def test_collect_workspace_artifacts_rejects_invalid_docx_before_upload(monkeypa
     output.mkdir(parents=True)
     (output / "document.docx").write_bytes(b"not-a-docx")
 
+    storage_calls = []
+
     class FailIfStored:
-        def put_bytes(self, **_kwargs):
+        def put_bytes(self, **kwargs):
+            storage_calls.append(kwargs)
             raise AssertionError("invalid required artifacts must not be uploaded")
+
+    monkeypatch.setattr(claude_agent_worker, "ObjectStorage", FailIfStored)
 
     with pytest.raises(ValueError, match="response DOCX file is invalid"):
         ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
@@ -1258,6 +1263,7 @@ def test_collect_workspace_artifacts_rejects_invalid_docx_before_upload(monkeypa
             workspace,
             response_files=["output/document.docx"],
         )
+    assert storage_calls == []
 
 
 @pytest.mark.parametrize(
@@ -1338,9 +1344,14 @@ def test_collect_workspace_artifacts_rejects_malformed_required_docx_package(
             '<document xmlns="http://schemas.openxmlformats.org/wordprocessingml/2006/main" />',
         )
 
+    storage_calls = []
+
     class FailIfStored:
-        def put_bytes(self, **_kwargs):
+        def put_bytes(self, **kwargs):
+            storage_calls.append(kwargs)
             raise AssertionError("malformed required artifacts must not be uploaded")
+
+    monkeypatch.setattr(claude_agent_worker, "ObjectStorage", FailIfStored)
 
     with pytest.raises(ValueError, match="response DOCX file is invalid"):
         ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
@@ -1348,6 +1359,7 @@ def test_collect_workspace_artifacts_rejects_malformed_required_docx_package(
             workspace,
             response_files=["output/document.docx"],
         )
+    assert storage_calls == []
 
 
 @pytest.mark.parametrize("skill_id", ["qa-file-reviewer"])
@@ -1365,9 +1377,14 @@ def test_collect_workspace_artifacts_rejects_expanding_docx_before_parse_or_uplo
 
     monkeypatch.setattr(artifact_storage, "_MAX_DOCX_ARCHIVE_ENTRY_BYTES", 1024)
 
+    storage_calls = []
+
     class FailIfStored:
-        def put_bytes(self, **_kwargs):
+        def put_bytes(self, **kwargs):
+            storage_calls.append(kwargs)
             raise AssertionError("oversized required artifacts must not be uploaded")
+
+    monkeypatch.setattr(claude_agent_worker, "ObjectStorage", FailIfStored)
 
     with pytest.raises(ValueError, match="response DOCX file is invalid"):
         ClaudeAgentWorkerAdapter()._collect_workspace_artifacts(
@@ -1375,6 +1392,7 @@ def test_collect_workspace_artifacts_rejects_expanding_docx_before_parse_or_uplo
             workspace,
             response_files=["output/document.docx"],
         )
+    assert storage_calls == []
 
 
 def test_artifact_storage_keys_are_content_addressed_within_attempt_scope(
@@ -2706,7 +2724,10 @@ async def test_single_run_writing_entrypoint_never_calls_worker_local_helpers(
     current_settings = settings(tmp_path, sdk_enabled=True)
     adapter = ClaudeAgentWorkerAdapter()
 
+    local_calls = []
+
     async def fail_local_helper(*args, **kwargs):
+        local_calls.append((args, kwargs))
         raise AssertionError("ordinary writing entrypoint must not call worker-local execution helpers")
 
     async def no_files(payload, workspace):
@@ -2714,6 +2735,7 @@ async def test_single_run_writing_entrypoint_never_calls_worker_local_helpers(
 
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
+    monkeypatch.setattr(sdk_runner, "run_claude_agent_sdk", fail_local_helper)
     runtime_requests = install_sandbox_runtime(monkeypatch)
 
     result = await adapter.submit_run(
@@ -2728,6 +2750,7 @@ async def test_single_run_writing_entrypoint_never_calls_worker_local_helpers(
 
     assert result.status == "succeeded"
     assert len(runtime_requests) == 1
+    assert local_calls == []
 
 
 @pytest.mark.asyncio
@@ -4100,6 +4123,7 @@ async def test_prompt_preflight_returns_typed_failure_before_runtime_dispatch(
         lambda: settings(tmp_path, sdk_enabled=True),
     )
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
+    monkeypatch.setattr(adapter, "_submit_prepared_run_to_sandbox_runtime", sdk_must_not_run)
 
     failure = await adapter._run_with_staged_skills(
         payload(
