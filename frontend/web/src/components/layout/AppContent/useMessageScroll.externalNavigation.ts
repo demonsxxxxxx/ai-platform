@@ -466,7 +466,6 @@ function matchesRevealProjectPart(
   const { projectName, projectPath } = parseProjectRevealSummary({
     args: part.args,
     result: part.result,
-    parseErrorMessage: "",
   });
   const targetPath = targetFile.originalPath;
   const targetName = targetFile.fileName?.trim();

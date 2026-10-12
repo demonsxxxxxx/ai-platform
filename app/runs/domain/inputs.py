@@ -12,6 +12,8 @@ MAX_RUN_QUESTION_BATCH = 4
 MAX_RUN_QUESTION_OPTIONS = 8
 MAX_RUN_QUESTION_ID_CHARS = 128
 MAX_RUN_ANSWER_CHARS = 16_000
+RUN_QUESTION_TIMEOUT_SECONDS = 300
+_RECOMMENDED_OPTION_SUFFIX = re.compile(r"(?:\(\s*(?:recommended|推荐)\s*\)|（\s*(?:recommended|推荐)\s*）)\s*$", re.IGNORECASE)
 _QUESTION_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 
 
@@ -98,7 +100,7 @@ def canonicalize_questions(
             or len(options_value) > MAX_RUN_QUESTION_OPTIONS
         ):
             raise RunInputError("run_input_question_invalid")
-        options: list[dict[str, str]] = []
+        options: list[dict[str, Any]] = []
         for option_index, option in enumerate(options_value):
             if not isinstance(option, dict):
                 raise RunInputError("run_input_question_invalid")
@@ -116,7 +118,13 @@ def canonicalize_questions(
                 max_chars=2_000,
                 allow_empty=True,
             )
-            options.append({"key": f"o{option_index}", "label": label, "description": description})
+            if "recommended" in option and not isinstance(option["recommended"], bool):
+                raise RunInputError("run_input_question_invalid")
+            projected: dict[str, Any] = {"key": f"o{option_index}", "label": label, "description": description}
+            recommended = option.get("recommended", is_recommended_question_option(option.get("label")))
+            if "recommended" in option or recommended:
+                projected["recommended"] = recommended
+            options.append(projected)
         multi_select = value.get("multiSelect")
         if not isinstance(multi_select, bool):
             raise RunInputError("run_input_question_invalid")
@@ -131,6 +139,22 @@ def canonicalize_questions(
             }
         )
     return canonical
+
+
+def is_recommended_question_option(label: object) -> bool:
+    return isinstance(label, str) and _RECOMMENDED_OPTION_SUFFIX.search(label) is not None
+
+
+def default_question_answers(questions: list[dict[str, Any]]) -> dict[str, str | list[str]] | None:
+    answers: dict[str, str | list[str]] = {}
+    for question in questions:
+        options = question["options"]
+        if not options:
+            return None
+        selected = [option["key"] for option in options if option.get("recommended") is True]
+        selected = selected or [options[0]["key"]]
+        answers[question["key"]] = selected if question["multiSelect"] else selected[0]
+    return answers or None
 
 
 def _sanitize_question_display(
