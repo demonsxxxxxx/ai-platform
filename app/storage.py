@@ -350,12 +350,15 @@ class ObjectStorage:
 
         if max_bytes < 0:
             raise ValueError("max_bytes must be non-negative")
-        response = self.client.get_object(Bucket=self.bucket, Key=storage_key)
-        body = response["Body"]
         digest = hashlib.sha256()
         size_bytes = 0
-        temporary = tempfile.NamedTemporaryFile(prefix="ai-platform-upload-", delete=False)
+        temporary = None
+        downloaded = None
+        failure: BaseException | None = None
+        response = self.client.get_object(Bucket=self.bucket, Key=storage_key)
+        body = response["Body"]
         try:
+            temporary = tempfile.NamedTemporaryFile(prefix="ai-platform-upload-", delete=False)
             while True:
                 chunk = body.read(min(64 * 1024, max_bytes - size_bytes + 1))
                 if not chunk:
@@ -366,18 +369,53 @@ class ObjectStorage:
                 digest.update(chunk)
                 temporary.write(chunk)
             temporary.flush()
-        except BaseException:
-            temporary.close()
-            os.unlink(temporary.name)
-            raise
-        finally:
+            downloaded = DownloadedObject(
+                path=temporary.name,
+                sha256=digest.hexdigest(),
+                size_bytes=size_bytes,
+            )
+        except BaseException as exc:
+            failure = exc
+
+        # Until every required close succeeds, this method still owns the path.
+        # Each resource gets its own cleanup attempt, even after another fails.
+        if temporary is not None:
+            try:
+                temporary.close()
+            except BaseException as exc:
+                if failure is None:
+                    failure = exc
+                else:
+                    try:
+                        failure.add_note(f"object_storage_download_temporary_close_failed:{type(exc).__name__}")
+                    except BaseException:
+                        # Optional diagnostics cannot replace the selected primary failure.
+                        pass
+        try:
             body.close()
-        temporary.close()
-        return DownloadedObject(
-            path=temporary.name,
-            sha256=digest.hexdigest(),
-            size_bytes=size_bytes,
-        )
+        except BaseException as exc:
+            if failure is None:
+                failure = exc
+            else:
+                try:
+                    failure.add_note(f"object_storage_download_body_close_failed:{type(exc).__name__}")
+                except BaseException:
+                    # Optional diagnostics cannot replace the selected primary failure.
+                    pass
+        if failure is not None:
+            if temporary is not None:
+                try:
+                    os.unlink(temporary.name)
+                except BaseException as exc:
+                    try:
+                        failure.add_note(f"object_storage_download_unlink_failed:{type(exc).__name__}")
+                    except BaseException:
+                        # Optional diagnostics cannot replace the selected primary failure.
+                        pass
+            raise failure
+
+        assert downloaded is not None
+        return downloaded
 
     def delete_object(self, *, storage_key: str) -> None:
         """Idempotently delete one object; PostgreSQL owns durable receipts."""

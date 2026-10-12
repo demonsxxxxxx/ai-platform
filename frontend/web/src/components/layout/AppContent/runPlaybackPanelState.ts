@@ -1,6 +1,6 @@
 import type {
   RunPlaybackArtifact,
-  RunPlaybackContextRef,
+  RunPlaybackContextWindow,
   RunPlaybackEvent,
   RunPlaybackResponse,
   RunPlaybackStep,
@@ -58,14 +58,11 @@ export interface RunPlaybackCountItem {
   value: number;
 }
 
-export interface RunPlaybackContextProvenanceViewModel {
-  source: string | null;
-  executionTier: string | null;
-  contextPackVersion: string | null;
-  contextPackGeneratedAt: string | null;
-  latestArtifactVersion: string | null;
-  referencedMaterials: RunPlaybackCountItem[];
-  inputKeys: string[];
+export interface RunPlaybackContextWindowViewModel {
+  status: RunPlaybackContextWindow["status"];
+  historyCounts: RunPlaybackCountItem[];
+  legacyHistoryExcluded: boolean;
+  selectedFileNames: string[];
 }
 
 export interface RunPlaybackPanelViewModel {
@@ -73,24 +70,10 @@ export interface RunPlaybackPanelViewModel {
   summary: RunPlaybackPanelSummary;
   timeline: RunPlaybackTimelineItem[];
   artifacts: RunPlaybackArtifactItem[];
-  contextProvenance: RunPlaybackContextProvenanceViewModel | null;
+  contextWindow: RunPlaybackContextWindowViewModel | null;
   failureGuidance: FailureGuidance | null;
   errorMessage: string | null;
 }
-
-const PUBLIC_CONTEXT_INPUT_KEYS = new Set([
-  "attachments",
-  "message",
-  "messages",
-  "files",
-  "file",
-  "memory",
-  "artifacts",
-  "mode",
-  "prompt",
-  "query",
-  "text",
-]);
 
 export function buildRunPlaybackLoadingViewModel(
   runId: string,
@@ -100,7 +83,7 @@ export function buildRunPlaybackLoadingViewModel(
     summary: buildFallbackSummary(runId, "loading", null),
     timeline: [],
     artifacts: [],
-    contextProvenance: null,
+    contextWindow: null,
     failureGuidance: null,
     errorMessage: null,
   };
@@ -116,7 +99,7 @@ export function buildRunPlaybackErrorViewModel(
     summary: buildFallbackSummary(runId, "error", errorMessage),
     timeline: [],
     artifacts: [],
-    contextProvenance: null,
+    contextWindow: null,
     failureGuidance: {
       whatHappened: "无法读取运行回放。",
       retained: "回放暂时无法显示；这不代表后台任务已失败或停止。",
@@ -133,12 +116,12 @@ export function buildRunPlaybackPanelViewModel(
   const summary = buildSummary(response);
   const timeline = buildTimelineItems(response);
   const artifacts = buildArtifactItems(response);
-  const contextProvenance = buildContextProvenanceViewModel(response?.context_ref);
+  const contextWindow = buildContextWindowViewModel(response?.context_ref?.context_window);
   const failureGuidance = buildFailureGuidance(response);
   const hasContent =
     timeline.length > 0 ||
     artifacts.length > 0 ||
-    contextProvenance !== null ||
+    contextWindow !== null ||
     failureGuidance !== null;
 
   return {
@@ -146,7 +129,7 @@ export function buildRunPlaybackPanelViewModel(
     summary,
     timeline,
     artifacts,
-    contextProvenance,
+    contextWindow,
     failureGuidance,
     errorMessage: null,
   };
@@ -343,52 +326,20 @@ function buildArtifactItems(
   }));
 }
 
-function buildContextProvenanceViewModel(
-  contextRef: RunPlaybackContextRef | null | undefined,
-): RunPlaybackContextProvenanceViewModel | null {
-  if (!contextRef) {
-    return null;
-  }
-  const referencedMaterials = [
-    countItem("files", contextRef.referenced_materials.file_count),
-    countItem("messages", contextRef.referenced_materials.message_count),
-    countItem("memory", contextRef.referenced_materials.memory_record_count),
-    countItem("artifacts", contextRef.referenced_materials.artifact_count),
-  ].filter((item): item is RunPlaybackCountItem => item !== null);
-  const inputKeys = Array.from(
-    new Set(
-      (contextRef.used_context_summary.input_keys ?? []).filter((key) =>
-        PUBLIC_CONTEXT_INPUT_KEYS.has(key),
-      ),
-    ),
-  ).sort();
-  const hasContent =
-    Boolean(contextRef.source) ||
-    Boolean(contextRef.execution_tier) ||
-    Boolean(contextRef.context_pack_version) ||
-    Boolean(contextRef.context_pack_generated_at) ||
-    Boolean(contextRef.latest_artifact_version) ||
-    referencedMaterials.length > 0 ||
-    inputKeys.length > 0;
-  if (!hasContent) {
-    return null;
-  }
+function buildContextWindowViewModel(
+  window: RunPlaybackContextWindow | null | undefined,
+): RunPlaybackContextWindowViewModel | null {
+  if (!window) return null;
   return {
-    source: contextRef.source ?? contextRef.used_context_summary.source ?? null,
-    executionTier: contextRef.execution_tier ?? null,
-    contextPackVersion: contextRef.context_pack_version ?? null,
-    contextPackGeneratedAt: contextRef.context_pack_generated_at ?? null,
-    latestArtifactVersion: contextRef.latest_artifact_version ?? null,
-    referencedMaterials,
-    inputKeys,
+    status: window.status,
+    historyCounts: [
+      { label: "candidate", value: window.history_candidate_count },
+      { label: "authorized", value: window.history_authorized_count },
+      { label: "omitted", value: window.history_omitted_count },
+    ],
+    legacyHistoryExcluded: window.legacy_history_excluded,
+    selectedFileNames: window.selected_file_names,
   };
-}
-
-function countItem(
-  label: string,
-  value: number | undefined,
-): RunPlaybackCountItem | null {
-  return typeof value === "number" && value > 0 ? { label, value } : null;
 }
 
 function getEventStatus(event: RunPlaybackEvent): RunPlaybackDisplayStatus {
