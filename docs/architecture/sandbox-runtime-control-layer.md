@@ -232,6 +232,11 @@ generation, timestamps, and reconciliation ownership in one migration.
 7. Provider-internal recovery state is observed and reconciled; it is never
    copied into an independently writable business state.
 8. Provider stop exceptions are normalized without leaking provider details.
+   An authoritative OpenSandbox SDK absence response during connection,
+   `get_info`, or deletion returns `not_found` and clears only the matching
+   provider tracking. The existing claim-fenced release path accepts that
+   result. Untyped "not found" text, timeouts, other provider failures, and
+   runtime identity mismatches remain stop failures and retain the lease.
    Expiry compensation and admin orphan-cleanup failures write tenant-scoped
    audit outcomes while the failed lease remains a reconciliation subject.
    A lost executor probe keeps the public `sandbox_executor_lost` receipt and

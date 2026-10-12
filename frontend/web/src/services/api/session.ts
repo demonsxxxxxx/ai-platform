@@ -93,6 +93,7 @@ export interface RunInputQuestionOption {
   key: string;
   label: string;
   description: string;
+  recommended?: boolean;
 }
 
 export interface RunInputQuestion {
@@ -108,6 +109,8 @@ export interface RunInputQuestionBatch {
   questions: RunInputQuestion[];
   status: RunQuestionStatus;
   created_at: string;
+  deadline_at?: string;
+  default_answers?: Record<string, RunInputAnswer> | null;
 }
 
 export interface RunInputRecord {
@@ -118,6 +121,7 @@ export interface RunInputRecord {
   answers: Record<string, RunInputAnswer> | null;
   status: RunInputStatus;
   created_at: string;
+  source?: "manual" | "timeout_default";
 }
 
 /** Safe public projection of Run-owned continuation inputs and questions. */

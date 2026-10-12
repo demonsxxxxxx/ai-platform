@@ -20,7 +20,6 @@ import { Pagination } from "../common/Pagination";
 import { ConfirmDialog } from "../common/ConfirmDialog";
 import {
   buildFrontendGovernanceSmokeAttributes,
-  isPermissionError,
 } from "../governance/frontendGovernanceState";
 import { WorkbenchStateSurface } from "../workbench/WorkbenchStateSurface";
 import { workbenchSurface } from "../workbench/workbenchSurface";
@@ -50,12 +49,13 @@ export function MCPPanel() {
     hasPermission,
     hasAnyPermission,
     isAuthenticated,
+    refreshUser,
     isLoading: authLoading,
   } = useAuth();
   const isAiAdmin = isAiAdminUser(user);
   const [searchQuery, setSearchQuery] = useState("");
   const [page, setPage] = useState(1);
-  const [permissionDenied, setPermissionDenied] = useState(false);
+  const [authorityRevision, setAuthorityRevision] = useState(0);
   const [editorServer, setEditorServer] = useState<MCPServerResponse | null>(null);
   const [editorOpen, setEditorOpen] = useState(false);
   const [editorDetailsLoading, setEditorDetailsLoading] = useState(false);
@@ -77,28 +77,6 @@ export function MCPPanel() {
     setPage(1);
   }, [searchQuery]);
 
-  const {
-    servers,
-    total,
-    isLoading,
-    error,
-    getServer,
-    createServer,
-    updateServer,
-    deleteServer,
-    toggleServer,
-  } = useMCP({
-    enabled: !permissionDenied,
-    listParams,
-    allAuthorizedCatalog: !isAiAdmin,
-  });
-  editorLoadingRef.current = isLoading;
-
-  useEffect(() => {
-    if (isPermissionError(error)) {
-      setPermissionDenied(true);
-    }
-  }, [error]);
   const canManageMcp = canManageMcpLifecycle({
     hasExplicitMcpPermission: hasAnyPermission([
       Permission.MCP_ADMIN,
@@ -109,6 +87,43 @@ export function MCPPanel() {
     ]),
     isAiAdmin,
   });
+
+  const {
+    servers,
+    total,
+    isLoading,
+    error,
+    catalogError,
+    permissionDenied,
+    isAvailable,
+    fetchServers,
+    getServer,
+    createServer,
+    updateServer,
+    deleteServer,
+    toggleServer,
+  } = useMCP({
+    enabled: isAuthenticated,
+    paused: authLoading,
+    identityScope: JSON.stringify([user?.tenant_id, user?.id, user?.roles, user?.permissions, user?.is_admin, authorityRevision]),
+    listParams,
+    allAuthorizedCatalog: !isAiAdmin,
+    canManageServers: canManageMcp,
+  });
+  editorLoadingRef.current = isLoading;
+  const retryCatalog = async () => {
+    if (!permissionDenied) {
+      await fetchServers();
+      return;
+    }
+    // A directory read alone cannot prove lifecycle authority. Only a
+    // completed principal refresh admits a new permission-checking read.
+    const outcome = await refreshUser();
+    if (outcome.status === "completed") {
+      setAuthorityRevision((revision) => revision + 1);
+    }
+  };
+
   const directoryIsLoading =
     authLoading || (isLoading && servers.length === 0 && !editorOpen);
   const mcpGovernance = resolveMcpGovernanceState({
@@ -118,10 +133,11 @@ export function MCPPanel() {
     canManageMcp,
     servers,
     total,
-    loadError: error,
+    loadError: catalogError,
+    permissionDenied,
   });
   const lifecycleAvailability = mcpGovernance.lifecycleAvailability;
-  const canManageMcpUi = canManageMcp && !mcpGovernance.governedUnavailable;
+  const canManageMcpUi = canManageMcp && isAvailable;
 
   const openEditor = async (server: MCPServerResponse | null) => {
     if (!canManageMcpUi) return;
@@ -244,7 +260,8 @@ export function MCPPanel() {
       <OrdinaryMcpCatalog
         servers={servers}
         isLoading={directoryIsLoading}
-        listError={error}
+        listError={catalogError}
+        onRetry={retryCatalog}
       />
     );
   }
@@ -295,6 +312,11 @@ export function MCPPanel() {
               ? t("mcp.catalogUnavailable.description")
               : undefined
           }
+          actions={mcpGovernance.pageState === "forbidden" ? (
+            <button type="button" className="btn-secondary" data-mcp-retry onClick={retryCatalog}>
+              {t("common.retry")}
+            </button>
+          ) : undefined}
           capabilities={[
             {
               title: t("mcp.permissionLimited.title"),
@@ -361,7 +383,8 @@ export function MCPPanel() {
             surface="mcp-directory"
             title={t("mcp.catalogUnavailable.title")}
             description={t("mcp.catalogUnavailable.description")}
-              className="max-w-none text-left"
+            actions={<button type="button" className="btn-secondary" data-mcp-retry onClick={retryCatalog}>{t("common.retry")}</button>}
+            className="max-w-none text-left"
           />
         </div>
       ) : null}
@@ -493,7 +516,9 @@ export function MCPPanel() {
               <h2 className="text-base font-semibold text-[var(--theme-text)]">{editorServer ? t("mcp.admin.editServer") : t("mcp.admin.addServer")}</h2>
               <button type="button" data-mcp-editor-initial-focus className="btn-icon" onClick={closeEditor} aria-label={t("common.close")} disabled={isLoading}><X size={18} /></button>
             </div>
-            <div className="p-5"><MCPServerForm server={editorServer} onSave={saveServer} onCancel={closeEditor} isLoading={isLoading} isSystemServer /></div>
+            <div className="p-5">
+              {error ? <p role="alert" className="mb-3 text-sm text-[var(--theme-danger)]">{t("mcp.admin.operationFailed")}</p> : null}
+              <MCPServerForm server={editorServer} onSave={saveServer} onCancel={closeEditor} isLoading={isLoading} isSystemServer /></div>
           </section>
         </div>
       ) : null}
