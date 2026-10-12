@@ -20,7 +20,11 @@ from app.skills.release_readiness import (
     _RELEASE_EVIDENCE_CATEGORIES,
     _VULNERABILITY_EVIDENCE_NAMES,
 )
-from app.skills.api import is_valid_executable_skill_name, parse_skill_markdown_front_matter
+from app.skills.api import (
+    is_materializable_skill_snapshot_path,
+    is_valid_executable_skill_name,
+    parse_skill_markdown_front_matter,
+)
 
 MAX_SKILL_PACKAGE_FILE_BYTES = MAX_SKILL_SNAPSHOT_FILE_BYTES
 MAX_SKILL_PACKAGE_TOTAL_BYTES = MAX_SKILL_SNAPSHOT_TOTAL_BYTES
@@ -219,6 +223,12 @@ def validate_skill_package_contract(
     return contract
 
 
+def validate_skill_package_snapshot_path(relative_path: str) -> None:
+    """Apply executable snapshot eligibility without changing overlay ZIP parsing."""
+    if not is_materializable_skill_snapshot_path(relative_path.replace("\\", "/")):
+        raise ValueError("skill_package_path_escape")
+
+
 def validate_skill_package_snapshot(
     files: object,
     *,
@@ -236,6 +246,7 @@ def validate_skill_package_snapshot(
         if not isinstance(item, dict):
             raise ValueError("skill_package_snapshot_files_invalid")
         relative_path = _safe_zip_member_path(str(item.get("relative_path") or ""))
+        validate_skill_package_snapshot_path(relative_path)
         normalized_key = relative_path.casefold()
         if normalized_key in seen:
             raise ValueError("skill_package_duplicate_path")
