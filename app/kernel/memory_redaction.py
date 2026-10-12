@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -19,15 +20,16 @@ QUOTED_SECRET_FIELD_PATTERN = re.compile(
 BEARER_TOKEN_PATTERN = re.compile(
     r"(?i)\bbearer\s+(?=[A-Za-z0-9._~+/=-]{8,})(?=[A-Za-z0-9._~+/=-]*[0-9._~+/=-])[A-Za-z0-9._~+/=-]+"
 )
-SECRET_LIKE_TOKEN_VALUE_PATTERN = re.compile(
-    r"(?i)(?<!\[)\b(?=[A-Za-z0-9._-]{8,}\b)"
-    r"(?:[A-Za-z0-9]+[._-])+(?:secret|token|credential|password)(?:[._-][A-Za-z0-9]+)*\b"
-    r"(?![\"']?\s*[:=])(?!\])"
-    r"|(?<!\[)\b(?=[A-Za-z0-9._-]{8,}\b)"
-    r"(?:secret|token|credential|password)(?:[._-][A-Za-z0-9]+)+\b"
-    r"(?![\"']?\s*[:=])(?!\])"
+# Unconditional run finders must not retry a failing suffix at every boundary.
+_SECRET_LIKE_RUN_PATTERN = re.compile(r"[\w.-]+")
+_SECRET_LIKE_SEGMENT_PATTERN = re.compile(r"[^._-]+")
+_SECRET_LIKE_ALNUM_PATTERN = re.compile(r"[A-Za-z0-9]+", re.IGNORECASE)
+_SECRET_LIKE_MARKER_PATTERN = re.compile(
+    r"secret|token|credential|password", re.IGNORECASE
 )
-EMAIL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+_SECRET_LIKE_ASSIGNMENT_FOLLOWER_PATTERN = re.compile(r"[\"']?\s*[:=]")
+_EMAIL_LOCAL_RUN_PATTERN = re.compile(r"[A-Za-z0-9._%+-]+")
+_EMAIL_DOMAIN_PATTERN = re.compile(r"[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 CAMEL_BOUNDARY_PATTERN = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 STRICT_PROVIDER_SECRET_PATTERN = re.compile(
     r"(?<![A-Za-z0-9_-])"
@@ -455,40 +457,159 @@ def _redact_quoted_secret_field(match: re.Match[str]) -> str:
     return f"{match.group(1)}{match.group(2)}{match.group(1)}:{match.group(3)}[redacted-secret]{match.group(3)}"
 
 
-def _is_safe_secret_like_value(value: str) -> bool:
-    segments = [item.lower() for item in re.split(r"[._-]+", value) if item]
-    sensitive_indexes = [
-        index
-        for index, segment in enumerate(segments)
-        if segment in {"secret", "token", "credential", "password"}
-    ]
-    if not sensitive_indexes:
-        return False
-    return all(
-        index + 1 < len(segments) and segments[index + 1] in SAFE_SECRET_VALUE_FOLLOWERS
-        for index in sensitive_indexes
-    )
+def _redaction_word_boundary(text: str, index: int) -> bool:
+    left = index > 0 and (text[index - 1].isalnum() or text[index - 1] == "_")
+    right = index < len(text) and (text[index].isalnum() or text[index] == "_")
+    return left != right
 
 
-def _full_secret_like_token_at(text: str, start: int) -> str:
-    end = start
-    while end < len(text) and (text[end].isalnum() or text[end] in "._-"):
-        end += 1
-    return text[start:end]
+def _secret_like_token_matches(text: str) -> Iterator[tuple[int, int, bool]]:
+    """Yield the existing lexical match spans and their redaction decisions.
+
+    A grammar chain has alphanumeric segments joined by single separators.
+    Both former regex alternatives select the earliest legal start and the
+    farthest legal end containing at least two segments and a secret marker.
+    Unicode token runs can contain many separate chains; classify each run's
+    safe followers once so partial matches never rescan the remaining suffix.
+    """
+    # Every lexical match requires one of these fixed literals. A single
+    # C-level search avoids allocating a segment list for every prose word;
+    # marker-present input still uses the bounded run/chain scanner below.
+    if not _SECRET_LIKE_MARKER_PATTERN.search(text):
+        return
+    for run in _SECRET_LIKE_RUN_PATTERN.finditer(text):
+        segments = list(_SECRET_LIKE_SEGMENT_PATTERN.finditer(text, run.start(), run.end()))
+        if len(segments) < 2:
+            continue
+        values = [text[segment.start():segment.end()] for segment in segments]
+        markers = [bool(_SECRET_LIKE_MARKER_PATTERN.fullmatch(value)) for value in values]
+        if not any(markers):
+            continue
+        grammar = [bool(_SECRET_LIKE_ALNUM_PATTERN.fullmatch(value)) for value in values]
+        # IGNORECASE includes İ, ı, ſ and K. Safety deliberately uses lower(),
+        # not casefold() or the regex's equivalence classes.
+        normalized = [value.lower() for value in values]
+        sensitive = [value in {"secret", "token", "credential", "password"} for value in normalized]
+        sensitive_counts = [0]
+        unsafe_counts = [0]
+        for index, is_sensitive in enumerate(sensitive):
+            unsafe = is_sensitive and (
+                index + 1 == len(segments)
+                or normalized[index + 1] not in SAFE_SECRET_VALUE_FOLLOWERS
+            )
+            sensitive_counts.append(sensitive_counts[-1] + is_sensitive)
+            unsafe_counts.append(unsafe_counts[-1] + unsafe)
+
+        # The old eight-character lookahead can reach beyond a grammar chain,
+        # and its last boundary may follow punctuation before a Unicode word.
+        length_reach = [-1] * len(segments)
+        segment_index = len(segments) - 1
+        boundary = -1
+        for position in range(run.end() - 1, run.start() - 1, -1):
+            character = text[position]
+            if character not in "._-" and not _SECRET_LIKE_ALNUM_PATTERN.fullmatch(character):
+                boundary = -1
+            elif boundary < 0 and _redaction_word_boundary(text, position + 1):
+                boundary = position + 1
+            if segment_index >= 0 and position == segments[segment_index].start():
+                length_reach[segment_index] = boundary
+                segment_index -= 1
+
+        chain_start = 0
+        while chain_start < len(segments):
+            if not grammar[chain_start]:
+                chain_start += 1
+                continue
+            chain_end = chain_start
+            while (
+                chain_end + 1 < len(segments)
+                and grammar[chain_end + 1]
+                and segments[chain_end + 1].start() == segments[chain_end].end() + 1
+            ):
+                chain_end += 1
+            # Endpoint checks are constant except for trailing whitespace at
+            # the end of this disjoint outer run, which is scanned only once.
+            last = chain_end
+            while last > chain_start:
+                end = segments[last].end()
+                if (
+                    _redaction_word_boundary(text, end)
+                    and (end == len(text) or text[end] != "]")
+                    and not _SECRET_LIKE_ASSIGNMENT_FOLLOWER_PATTERN.match(text, end)
+                ):
+                    break
+                last -= 1
+            last_marker = last
+            while last_marker >= chain_start and not markers[last_marker]:
+                last_marker -= 1
+            for first in range(chain_start, min(last, last_marker + 1)):
+                start = segments[first].start()
+                if (
+                    (start > 0 and text[start - 1] == "[")
+                    or not _redaction_word_boundary(text, start)
+                    or length_reach[first] < start + 8
+                ):
+                    continue
+                end = segments[last].end()
+                # A range's final sensitive segment has no follower, even if
+                # the full token run has a safe follower beyond this match.
+                safe_match = (
+                    sensitive_counts[last + 1] > sensitive_counts[first]
+                    and unsafe_counts[last] == unsafe_counts[first]
+                    and not sensitive[last]
+                )
+                safe_suffix = (
+                    end + 1 < len(text)
+                    and text[end] in "._-"
+                    and text[end + 1].isalnum()
+                    and sensitive_counts[-1] > sensitive_counts[first]
+                    and unsafe_counts[-1] == unsafe_counts[first]
+                )
+                yield start, end, not (safe_match or safe_suffix)
+                break
+            chain_start = chain_end + 1
 
 
-def _redact_secret_like_token_value(match: re.Match[str]) -> str:
-    value = match.group(0)
-    if (
-        match.end() + 1 < len(match.string)
-        and match.string[match.end()] in "._-"
-        and match.string[match.end() + 1].isalnum()
-        and _is_safe_secret_like_value(_full_secret_like_token_at(match.string, match.start()))
-    ):
-        return value
-    if _is_safe_secret_like_value(value):
-        return value
-    return "[redacted-secret]"
+def _redact_secret_like_values(text: str) -> str:
+    pieces = []
+    previous = 0
+    for start, end, redact in _secret_like_token_matches(text):
+        pieces.append(text[previous:start])
+        pieces.append("[redacted-secret]" if redact else text[start:end])
+        previous = end
+    pieces.append(text[previous:])
+    return "".join(pieces)
+
+
+def _email_matches(text: str) -> Iterator[tuple[int, int]]:
+    """Scan each local run and anchor the unchanged domain grammar once."""
+    if "@" not in text:
+        return
+    previous = 0
+    for local in _EMAIL_LOCAL_RUN_PATTERN.finditer(text):
+        end = local.end()
+        if end <= previous or end == len(text) or text[end] != "@":
+            continue
+        # A preceding email may end inside this run (a@b.com.x-y@z.com).
+        start = max(local.start(), previous)
+        while start < end and not _redaction_word_boundary(text, start):
+            start += 1
+        if start == end:
+            continue
+        domain = _EMAIL_DOMAIN_PATTERN.match(text, end + 1)
+        if domain:
+            previous = domain.end()
+            yield start, previous
+
+
+def _redact_emails(text: str) -> str:
+    pieces = []
+    previous = 0
+    for start, end in _email_matches(text):
+        pieces.extend((text[previous:start], "[redacted-email]"))
+        previous = end
+    pieces.append(text[previous:])
+    return "".join(pieces)
 
 
 def redact_memory_text(value: object, *, mode: str = MEMORY_REDACTION_MODE_STANDARD) -> str:
@@ -498,8 +619,8 @@ def redact_memory_text(value: object, *, mode: str = MEMORY_REDACTION_MODE_STAND
     text = QUOTED_SECRET_FIELD_PATTERN.sub(_redact_quoted_secret_field, text)
     text = SECRET_ASSIGNMENT_PATTERN.sub(_redact_secret_assignment, text)
     text = BEARER_TOKEN_PATTERN.sub("Bearer [redacted-secret]", text)
-    text = SECRET_LIKE_TOKEN_VALUE_PATTERN.sub(_redact_secret_like_token_value, text)
-    text = EMAIL_PATTERN.sub("[redacted-email]", text)
+    text = _redact_secret_like_values(text)
+    text = _redact_emails(text)
     if redaction_mode == MEMORY_REDACTION_MODE_STRICT:
         text = STRICT_PROVIDER_SECRET_PATTERN.sub("[redacted-secret]", text)
         text = STRICT_JWT_LIKE_PATTERN.sub("[redacted-secret]", text)

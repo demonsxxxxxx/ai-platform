@@ -644,7 +644,7 @@ return cjson.encode({status = "renewed"})
 
 
 REQUEUE_WITH_FENCE_SCRIPT = """
--- ai-platform:requeue-run-with-fence:v3
+-- ai-platform:requeue-run-with-fence:v4
 local queued_key = KEYS[1]
 local processing_key = KEYS[2]
 local queued_meta_key = KEYS[3]
@@ -664,10 +664,9 @@ local message_id = ARGV[2]
 local run_index_field = ARGV[3]
 local metadata_json = ARGV[4]
 local retry_metadata_json = ARGV[5]
-local remove_processing = ARGV[6]
-local expected_attempt_id = ARGV[7]
-local expected_owner_token = ARGV[8]
-local visibility_timeout_seconds = tonumber(ARGV[9])
+local expected_attempt_id = ARGV[6]
+local expected_owner_token = ARGV[7]
+local visibility_timeout_seconds = tonumber(ARGV[8])
 
 local function lease_owner_token(metadata)
   if tonumber(metadata["lease_protocol_version"]) == 2 then
@@ -736,10 +735,6 @@ local ok, metadata = pcall(cjson.decode, metadata_json)
 if not ok or type(metadata) ~= "table" then
   return cjson.encode({status = "inconclusive"})
 end
-local sequence = redis.call("incr", queued_sequence_key)
-metadata["sequence"] = sequence
-metadata["raw"] = raw
-
 local message_ids = {}
 local raw_index = redis.call("hget", queued_run_index_key, run_index_field)
 if raw_index then
@@ -756,8 +751,16 @@ if raw_index then
 end
 table.insert(message_ids, message_id)
 
-if remove_processing == "1" then
-  redis.call("lrem", processing_key, 1, raw)
+-- Retry metadata survives transfer but cannot authorize another transfer.
+-- Check before allocating an ordinal; Lua keeps membership stable until LREM.
+if not redis.call("lpos", processing_key, raw) then
+  return cjson.encode({status = "processing_missing"})
+end
+local sequence = redis.call("incr", queued_sequence_key)
+metadata["sequence"] = sequence
+metadata["raw"] = raw
+if redis.call("lrem", processing_key, 1, raw) ~= 1 then
+  return cjson.encode({status = "processing_missing"})
 end
 redis.call("hdel", processing_meta_key, message_id)
 redis.call("rpush", queued_key, raw)
@@ -2015,7 +2018,6 @@ async def _requeue_run_with_fence(
     expected_attempt_id: str,
     expected_owner_token: str,
     visibility_timeout_seconds: int,
-    remove_processing: bool = False,
 ) -> bool:
     """Atomically requeue only the exact expired, unfenced lease."""
 
@@ -2046,7 +2048,6 @@ async def _requeue_run_with_fence(
             queued_run_index_field(tenant_id=payload.tenant_id, run_id=payload.run_id),
             json.dumps(metadata, ensure_ascii=False),
             json.dumps(retry_metadata, ensure_ascii=False),
-            "1" if remove_processing else "0",
             expected_attempt_id,
             expected_owner_token,
             visibility_timeout_seconds,
@@ -2556,7 +2557,6 @@ async def reclaim_expired_leases(
                         expected_attempt_id=attempt_id,
                         expected_owner_token=owner_token,
                         visibility_timeout_seconds=visibility_timeout_seconds,
-                        remove_processing=True,
                     )
                     if requeued:
                         reclaimed += 1
@@ -2603,7 +2603,6 @@ async def reclaim_expired_leases(
                     expected_attempt_id=attempt_id,
                     expected_owner_token=owner_token,
                     visibility_timeout_seconds=visibility_timeout_seconds,
-                    remove_processing=True,
                 )
                 if requeued:
                     reclaimed += 1

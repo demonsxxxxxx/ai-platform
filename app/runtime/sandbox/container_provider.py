@@ -4364,7 +4364,14 @@ class OpenSandboxContainerProvider:
                 )
         try:
             if hasattr(sandbox, "get_info"):
-                info = await _maybe_await(sandbox.get_info())
+                try:
+                    info = await _maybe_await(sandbox.get_info())
+                except Exception as exc:
+                    if not is_authoritative_not_found_error(exc):
+                        raise
+                    self._leases.pop(cache_key, None)
+                    self._sandboxes.pop(lease.container_id, None)
+                    return StopResult(container_id=lease.container_id, status="not_found", message=reason)
             else:
                 info = sandbox
             status = _opensandbox_status_from_info(info)

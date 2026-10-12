@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { authenticatedRequest } from "../authenticatedRequest.ts";
 import { registerAuthScopedCacheClearer } from "../authCacheInvalidation.ts";
 import { ApiRequestError } from "../fetch.ts";
+import { mcpApi } from "../mcp.ts";
 
 function installAuthenticatedRequestStubs(
   fetchImpl: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>,
@@ -214,6 +215,31 @@ test("authenticatedRequest preserves AbortError identity", async () => {
       () => authenticatedRequest("/api/sessions"),
       (error: unknown) => error === abort,
     );
+  } finally {
+    stubs.restore();
+  }
+});
+
+
+test("MCP operational credential failures do not request login recovery", async () => {
+  const stubs = installAuthenticatedRequestStubs(async () => new Response(
+    JSON.stringify({ detail: "mcp_principal_jwt_unavailable" }),
+    { status: 503, headers: { "Content-Type": "application/json" } },
+  ));
+  try {
+    const raw = await authenticatedRequest("/api/mcp/gateway/tools");
+    assert.equal(raw.status, 503);
+    await assert.rejects(
+      () => mcpApi.discoverTools("gateway"),
+      (error: unknown) => {
+        assert.ok(error instanceof ApiRequestError);
+        assert.equal(error.status, 503);
+        return true;
+      },
+    );
+    assert.deepEqual(stubs.events, []);
+    assert.deepEqual(stubs.removedKeys, []);
+    assert.equal(stubs.localStore.get("ai_platform_session_present"), "session-marker");
   } finally {
     stubs.restore();
   }
