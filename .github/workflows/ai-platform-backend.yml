@@ -122,6 +122,7 @@ jobs:
               tests/test_context_retrieval_callback.py
               tests/test_profile_drive_contracts.py
               tests/test_profile_drive_transfer_lifecycle.py
+              tests/test_profile_drive_staging_lifecycle.py
               tests/test_context_retrieval.py
               tests/test_sandbox_document_capability.py
               tests/test_required_tool_contract.py
@@ -255,6 +256,10 @@ jobs:
               tests/test_lambchat_frontend_compat.py::test_lambchat_history_restores_strict_v4_commentary_as_work_summary
               tests/test_lambchat_frontend_compat.py::test_session_event_pages_project_authorized_run_columns_on_every_page
               tests/test_executor_reconciler.py
+              tests/test_executor_signals.py
+              tests/test_run_attempt_lifecycle_domain.py
+              tests/test_run_terminalization_domain.py
+              tests/test_projection_redaction.py
               tests/test_executor_receipt_settlement.py
               tests/test_conversation_authority.py
               tests/test_file_upload_security.py

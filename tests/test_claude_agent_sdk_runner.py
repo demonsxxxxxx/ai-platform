@@ -6442,6 +6442,8 @@ async def test_sdk_provider_session_options_are_exclusive_and_eager(
     summaries = [record for record in caplog.records if record.msg == "run_session_store_append_summary"]
     assert len(summaries) == 1
     assert summaries[0].append_calls == 1 and summaries[0].store_active_calls == 0
+    assert isinstance(getattr(summaries[0], "latest_public_result_gap_ms", None), int)
+    assert isinstance(getattr(summaries[0], "append_await_in_latest_result_gap_ms", None), int)
 
 
 

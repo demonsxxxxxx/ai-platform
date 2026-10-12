@@ -240,6 +240,14 @@ The barriers remain separate:
   and is not terminal tail latency or additive with the other spans. Failed calls
   may later succeed on retry. The aggregate has no per-entry payloads and is
   emitted at most once; active store calls indicate an incomplete observation.
+  `latest_public_result_gap_ms` is the interval from the preceding SDK-public
+  message to the latest observed public Result, not a raw-Result mirror-flush
+  span or necessarily the final Run Result. It is absent without both anchors.
+  `append_await_in_latest_result_gap_ms` sums append-call intervals clipped to
+  that window (including in-flight calls). Concurrent calls can overlap; it is
+  not their union. It excludes SDK lock/backoff waits outside append, and neither
+  field observes native CLI JSON write/fsync/close. Non-store model/tool work
+  can occupy the remainder. Later non-Result messages do not erase the snapshot.
   `sdk_disconnect_flush` measures the existing combined disconnect/store fallback
   on early exit or cancellation. Neither measures post-settlement resource teardown.
 - `executor_heartbeat_drain`: join the supervisor heartbeat and active progress.
@@ -251,8 +259,9 @@ The barriers remain separate:
   runner exceptions and already-observed delivery failure retain the conservative
   drain/error path; retirement does not clear an existing failure;
   `executor_public_stream_drain`: close the buffered public callback stream;
-  the preceding final phase callback already flushes/waits for its receipt, so
-  a small close span does not exclude earlier callback backlog;
+  `executor_final_phase_callback`: the preceding final phase send, including
+  its public callback flush/receipt barrier. A small close span does not exclude
+  backlog in this earlier send;
   `executor_terminal_callback_ack`: the complete terminal-callback retry/ack wait.
 - `terminal_receipt_commit`: the callback receipt transaction through its exit;
   `terminal_receipt_signal` and `terminal_receipt_publication`: the subsequent
@@ -276,10 +285,14 @@ The barriers remain separate:
   written result. Existing SDK-placeholder lease bookkeeping remains inside the
   commit; later physical reconciler sandbox stop/release is outside it.
 
-Worker post-commit publication remains unmeasured in this slice. The separate
-`terminal_receipt_publication` span observes callback-row publication only;
-its timing cannot stand in for Worker publication. The frozen Worker coordinator
-and its release-flag / post-commit publication order remain unchanged.
+`result_business_publication` measures Worker publication after the unchanged
+commit and release-flag update. The separate `terminal_receipt_publication` span
+observes callback-row publication only. Neither proves frontend receipt/history
+or artifact download visibility. `reconciler_provider_stop` measures provider stop
+between claim verification and lease finalization, after business terminality;
+it excludes those two transactions and can delay the next serial reconciliation.
+Existing `reconciler_result_conversion` remains the artifact-path screening span;
+no per-file payload, upload-only claim or new tracing system is introduced.
 
 These spans may overlap across processes (especially callback ack versus receipt
 commit/publication), and retries produce another operation observation. Do not
