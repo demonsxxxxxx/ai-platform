@@ -65,6 +65,7 @@ BACKEND_TEST_SHARDS = {
     "sandbox-runtime": (
         "tests/test_claude_agent_sdk_installed_contract.py",
         "tests/test_claude_agent_sdk_runner.py",
+        "tests/test_claude_executor_leaves.py",
         "tests/test_claude_typed_blocks.py",
         "tests/test_claude_assistant_text_sources.py",
         "tests/test_claude_assistant_source_routing.py",
