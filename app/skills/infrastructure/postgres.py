@@ -73,15 +73,6 @@ def _canonical_builtin_tool_identities(skill_manifest: dict[str, Any]) -> list[s
     return canonical
 
 
-def canonical_builtin_tool_identities(skill_manifest: dict[str, Any]) -> list[str]:
-    """Return the exact server-owned builtin capability declaration for a pin."""
-
-    try:
-        return _canonical_builtin_tool_identities(skill_manifest)
-    except SkillRunSnapshotError as exc:
-        raise RepositoryConflictError("run_skill_snapshot_identity_mismatch") from exc
-
-
 def run_skill_snapshot_source_json(
     skill_manifest: dict[str, Any],
     *,

@@ -9,6 +9,10 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
 from app.bootstrap.run_inputs import RunInputsCallbackRequest
+from app.bootstrap.execution import (
+    ProviderSessionCallbackWireResponse,
+    build_provider_session_callback_response,
+)
 from app.context import api as context_api
 from app.context.infrastructure import snapshot_postgres as context_snapshot
 from app.context.retrieval import (
@@ -55,6 +59,8 @@ from app.runtime.sandbox.contracts import (
     ExecutorContextRetrievalRequest,
     ProviderSessionCallbackRequest,
     ProviderSessionCallbackResponse,
+    PROVIDER_SESSION_READ_VIEW_HEADER,
+    PROVIDER_SESSION_CHILD_READ_VIEW,
     executor_callback_receipt_event_count,
     executor_terminal_receipt_payload,
 )
@@ -656,7 +662,7 @@ async def run_inputs_callback(
                 operation=callback.operation,
                 question_id=callback.question_id,
                 questions=(
-                    [item.model_dump() for item in callback.questions]
+                    [item.model_dump(exclude_none=True) for item in callback.questions]
                     if callback.questions is not None
                     else None
                 ),
@@ -680,7 +686,8 @@ async def run_inputs_callback(
 async def provider_session_callback(
     callback: ProviderSessionCallbackRequest = Depends(_provider_session_callback_from_request),
     callback_token: str | None = Header(default=None, alias="X-AI-Platform-Callback-Token"),
-) -> ProviderSessionCallbackResponse:
+    provider_read_view: str | None = Header(default=None, alias=PROVIDER_SESSION_READ_VIEW_HEADER),
+) -> ProviderSessionCallbackWireResponse:
     """Broker one exact-run Claude SessionStore operation."""
 
     _require_valid_callback_token(
@@ -688,6 +695,10 @@ async def provider_session_callback(
         callback.callback_token_id,
         run_id=callback.run_id,
         attempt_id=callback.attempt_id,
+    )
+    include_children = (
+        callback.action == "list_subkeys"
+        and provider_read_view == PROVIDER_SESSION_CHILD_READ_VIEW
     )
     try:
         async with transaction() as conn:
@@ -712,15 +723,10 @@ async def provider_session_callback(
                 entries=callback.entries,
                 subpath=callback.subpath,
                 expected_sequence=callback.expected_sequence,
+                **({"include_child_entries": True} if include_children else {}),
             )
-            return ProviderSessionCallbackResponse(
-                action=result.action,
-                entries=list(result.entries),
-                subpaths=list(result.subpaths),
-                accepted=result.accepted,
-                entry_count=result.entry_count,
-                next_sequence=result.next_sequence,
-                last_sequence=result.last_sequence,
+            return build_provider_session_callback_response(
+                result, include_child_entries=include_children,
             )
     except HTTPException:
         raise

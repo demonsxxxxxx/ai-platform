@@ -4,13 +4,13 @@ import {
   useEffect,
   useLayoutEffect,
   useState,
+  useRef,
   type ReactNode,
 } from "react";
-import { authApi } from "../services/api";
 import {
   applyThemeToDocument,
   getInitialThemePreference,
-  isTheme,
+  getStoredThemePreference,
   THEME_STORAGE_KEY,
   type Theme,
 } from "../utils/themeDom";
@@ -29,54 +29,41 @@ interface ThemeProviderProps {
 
 export function ThemeProvider({ children }: ThemeProviderProps) {
   const [theme, setThemeState] = useState<Theme>(getInitialThemePreference);
+  const themeRef = useRef(theme);
+  const hasExplicitPreference = useRef(getStoredThemePreference() !== null);
 
   useLayoutEffect(() => {
     applyThemeToDocument(theme);
   }, [theme]);
 
-  useEffect(() => {
-    localStorage.setItem(THEME_STORAGE_KEY, theme);
-    // Sync to backend (non-blocking)
-    authApi.updateMetadata({ theme }).catch(() => {});
-  }, [theme]);
-
-  // Listen for system preference changes
+  // An OS-derived initial color is not a user choice. Keep following the OS
+  // until the user explicitly chooses a theme, without writing account metadata.
   useEffect(() => {
     const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
     const handleChange = (e: MediaQueryListEvent) => {
-      const stored = localStorage.getItem(THEME_STORAGE_KEY);
-      // Only auto-switch if user hasn't explicitly set a preference
-      if (!stored) {
-        setThemeState(e.matches ? "dark" : "light");
+      if (!hasExplicitPreference.current) {
+        const next = e.matches ? "dark" : "light";
+        themeRef.current = next;
+        setThemeState(next);
       }
     };
-
     mediaQuery.addEventListener("change", handleChange);
     return () => mediaQuery.removeEventListener("change", handleChange);
   }, []);
 
-  // Listen for external theme changes (e.g. from auth login restoring backend preferences)
-  useEffect(() => {
-    const handleExternalThemeChange = (e: Event) => {
-      const newTheme = (e as CustomEvent<string>).detail;
-      if (isTheme(newTheme)) {
-        setThemeState(newTheme);
-      }
-    };
-    window.addEventListener("theme:external-change", handleExternalThemeChange);
-    return () =>
-      window.removeEventListener(
-        "theme:external-change",
-        handleExternalThemeChange,
-      );
-  }, []);
-
-  const toggleTheme = () => {
-    setThemeState((prev) => (prev === "light" ? "dark" : "light"));
+  const setTheme = (newTheme: Theme) => {
+    hasExplicitPreference.current = true;
+    themeRef.current = newTheme;
+    setThemeState(newTheme);
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, newTheme);
+    } catch {
+      // A blocked browser store must not prevent this tab's explicit choice.
+    }
   };
 
-  const setTheme = (newTheme: Theme) => {
-    setThemeState(newTheme);
+  const toggleTheme = () => {
+    setTheme(themeRef.current === "light" ? "dark" : "light");
   };
 
   return (

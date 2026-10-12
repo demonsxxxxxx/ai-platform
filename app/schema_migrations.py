@@ -43,7 +43,8 @@ HUMAN_APPROVAL_AND_LEGACY_MULTI_AGENT_RETIREMENT_SCHEMA_VERSION = "2026.09.26.1"
 RUN_INPUTS_SCHEMA_VERSION = "2026.10.07.1"
 ASSISTANT_TEXT_PART_INDEX_SCHEMA_VERSION = "2026.10.09.1"
 PROVIDER_TRANSCRIPT_REPRESENTATION_SCHEMA_VERSION = "2026.10.10.1"
-TARGET_SCHEMA_VERSION = PROVIDER_TRANSCRIPT_REPRESENTATION_SCHEMA_VERSION
+RUN_QUESTION_DEFAULT_ANSWER_SCHEMA_VERSION = "2026.10.12.1"
+TARGET_SCHEMA_VERSION = RUN_QUESTION_DEFAULT_ANSWER_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
 # The Stream-only cutover retires old index contracts and is not binary rollback-compatible.
 CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = ASSISTANT_TEXT_PART_INDEX_SCHEMA_VERSION
@@ -170,6 +171,7 @@ CRITICAL_COLUMNS = (
     ("run_inputs", "question_id", "text", False),
     ("run_inputs", "answers", "jsonb", True),
     ("run_inputs", "status", "text", True),
+    ("run_inputs", "source", "text", True),
     ("run_skill_materializations", "materialization_sha256", "text", True),
     ("run_skill_materializations", "manifest_json", "jsonb", True),
     ("messages", "content", "text", True),
@@ -328,6 +330,7 @@ CRITICAL_CONSTRAINTS = (
     ("run_inputs", "fk_run_inputs_question"),
     ("run_inputs", "chk_run_inputs_kind"),
     ("run_inputs", "chk_run_inputs_status"),
+    ("run_inputs", "chk_run_inputs_source"),
     ("run_inputs", "chk_run_inputs_payload"),
     ("sse_stream_authorities", "chk_sse_stream_authority_open_format"),
     ("sse_stream_authorities", "chk_sse_stream_authority_pending_confirmation"),
@@ -1063,7 +1066,14 @@ async def _ensure_ledger(conn: Any) -> None:
 
 async def _default_index_connection_factory() -> Any:
     conn = await connect()
-    await conn.set_autocommit(True)
+    try:
+        await conn.set_autocommit(True)
+    except BaseException:
+        try:
+            await conn.close()
+        except BaseException:
+            pass  # Failed initialization remains the primary error.
+        raise
     return conn
 
 
@@ -1298,13 +1308,14 @@ async def apply_migrations(
     transaction_factory: Callable[[], AbstractAsyncContextManager[Any]] = transaction,
     index_connection_factory: Callable[[], Awaitable[Any]] = _default_index_connection_factory,
 ) -> dict[str, object]:
-    """Apply additive core schema and resumable concurrent indexes."""
+    """Apply versioned core schema, including cutovers, and resumable concurrent indexes."""
 
     sql = schema_sql()
     checksum = schema_checksum(sql)
     core_applied = False
     coordinator = await index_connection_factory()
     locked = False
+    primary_error: BaseException | None = None
     try:
         await _acquire_coordinator_lock(coordinator)
         locked = True
@@ -1331,10 +1342,27 @@ async def apply_migrations(
                 )
                 core_applied = True
         indexes_applied = await _apply_concurrent_indexes(coordinator)
+    except BaseException as exc:
+        primary_error = exc
+        raise
     finally:
-        if locked:
-            await coordinator.execute("select pg_advisory_unlock(%s)", (INDEX_MIGRATION_LOCK_ID,))
-        await coordinator.close()
+        try:
+            if locked:
+                await coordinator.execute(
+                    "select pg_advisory_unlock(%s)", (INDEX_MIGRATION_LOCK_ID,)
+                )
+        except BaseException as exc:
+            if primary_error is None:
+                primary_error = exc
+                raise
+        finally:
+            # Closing the owned session must still be attempted if unlock fails.
+            # Preserve the first failure, including migration cancellation.
+            try:
+                await coordinator.close()
+            except BaseException:
+                if primary_error is None:
+                    raise
     return {
         "status": "applied" if core_applied or indexes_applied else "current",
         "version": TARGET_SCHEMA_VERSION,

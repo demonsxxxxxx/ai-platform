@@ -12,7 +12,7 @@ from app.runs.domain.inputs import RunInputClosed, RunInputConflict
 
 _INPUT_COLUMNS = (
     "input_id, tenant_id, run_id, attempt_id, kind, text, question_id, answers, "
-    "status, created_at"
+    "status, source, created_at"
 )
 _QUESTION_COLUMNS = "tenant_id, run_id, attempt_id, question_id, questions, status, created_at"
 
@@ -62,7 +62,7 @@ async def get_owner_run(
     lock_clause = "for update" if for_update else ""
     cursor = await conn.execute(
         f"""
-        select id, tenant_id, status, cancel_requested_at
+        select id, tenant_id, user_id, status, cancel_requested_at
         from runs
         where tenant_id = %s and id = %s and user_id = %s
         {lock_clause}
@@ -167,13 +167,14 @@ async def insert_input(
     text: str | None,
     question_id: str | None,
     answers: dict[str, Any],
+    source: str,
 ) -> dict[str, Any]:
     cursor = await conn.execute(
         f"""
         insert into run_inputs(
           input_id, tenant_id, run_id, attempt_id, kind, text, question_id,
-          answers, status
-        ) values (%s::uuid, %s, %s, %s, %s, %s, %s, %s::jsonb, 'queued')
+          answers, status, source
+        ) values (%s::uuid, %s, %s, %s, %s, %s, %s, %s::jsonb, 'queued', %s)
         returning {_INPUT_COLUMNS}
         """,
         (
@@ -185,6 +186,7 @@ async def insert_input(
             text,
             question_id,
             _json_dumps(answers),
+            source,
         ),
     )
     # The owning Run lock serializes submission and its idempotency lookup.
@@ -243,6 +245,28 @@ async def publish_question(
     if existing is None:
         raise RunInputConflict("run_input_question_id_conflict")
     return existing
+
+
+async def complete_question_recommendations(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+    attempt_id: str,
+    question_id: str,
+    questions: list[dict[str, Any]],
+) -> bool:
+    cursor = await conn.execute(
+        """
+        update run_input_questions
+        set questions = %s::jsonb
+        where tenant_id = %s and run_id = %s and attempt_id = %s
+          and question_id = %s
+        returning question_id
+        """,
+        (_json_dumps(questions), tenant_id, run_id, attempt_id, question_id),
+    )
+    return await cursor.fetchone() is not None
 
 
 async def set_question_status(

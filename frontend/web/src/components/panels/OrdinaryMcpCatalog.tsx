@@ -11,6 +11,7 @@ interface OrdinaryMcpCatalogProps {
   servers: MCPServerResponse[];
   isLoading: boolean;
   listError: string | null;
+  onRetry?: () => void;
 }
 
 export const ORDINARY_MCP_TOOL_DISCOVERY_CONCURRENCY = 6;
@@ -128,6 +129,7 @@ export function OrdinaryMcpCatalog({
   servers,
   isLoading,
   listError,
+  onRetry,
 }: OrdinaryMcpCatalogProps) {
   const { t } = useTranslation();
   const discoveryGenerationRef = useRef(0);
@@ -201,6 +203,7 @@ export function OrdinaryMcpCatalog({
             <p className={workbenchSurface.catalog.emptyTitle}>
               {t("mcp.available.unavailable")}
             </p>
+            {listError && onRetry ? <button type="button" className="btn-secondary mt-3" data-mcp-retry onClick={onRetry}>{t("common.retry")}</button> : null}
           </div>
         ) : catalog.length === 0 ? (
           <div className={workbenchSurface.catalog.emptyState}>
