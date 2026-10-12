@@ -201,7 +201,6 @@ def _configured_platform_runtime_model(settings: object) -> str:
         "claude_agent_model",
         "anthropic_model",
         "openai_model",
-        "default_model_id",
     ):
         value = str(getattr(settings, attr, "") or "").strip()
         if value:

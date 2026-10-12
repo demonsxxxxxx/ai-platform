@@ -1501,7 +1501,6 @@
     "DAYTONA_TIMEOUT": "Daytona 命令超时时间（秒）",
     "DEBUG": "启用调试模式",
     "DEFAULT_AGENT": "新会话的默认专家类型",
-    "DEFAULT_MODEL_ID": "管理员设置的新会话和后台任务默认模型配置。留空使用第一个启用模型。",
     "DEFAULT_USER_ROLE": "新注册用户的默认角色",
     "DEFERRED_TOOL_SEARCH_LIMIT": "工具搜索返回的最大结果数",
     "DEFERRED_TOOL_THRESHOLD": "MCP 工具延迟加载的工具总数阈值（0 = 始终延迟）",
