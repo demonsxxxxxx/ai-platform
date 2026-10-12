@@ -79,6 +79,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_claude_agent_worker_file_continuity.py",
         "tests/test_provider_session_transport.py",
         "tests/test_context_file_content.py",
+        "tests/test_context_file_continuity.py",
         "tests/test_file_parser_contracts.py",
         "tests/test_file_preview_contracts.py",
         "tests/contract/files/test_xlsx_preview_identity.py",
@@ -120,6 +121,7 @@ BACKEND_TEST_SHARDS = {
     "repository-worker-streaming": (
         "tests/test_context_memory_retention.py",
         "tests/test_context_persistence.py",
+        "tests/test_context_builder.py",
         "tests/test_conversations_persistence.py",
         "tests/test_files_artifacts_persistence.py",
         "tests/test_artifact_manifest_projection.py",
