@@ -121,7 +121,20 @@ last-write-wins credential replacement policy.
    permission to run arbitrary commands in the API or Worker.
 5. Use the MCP reference validator for Sandbox `mcp_tool_ids`, detect duplicate
    names within a page as well as across pages, and preserve discovery failure
-   state in the ordinary-user MCP directory.
+   state in the ordinary-user MCP directory. The live catalog retains a private,
+   payload-free failure (allowlisted reason, fixed exception category and the
+   target-resolution, transport-selection, discovery or projection stage).
+   Both discovery routes emit it once through their existing logger with tenant,
+   Server and a fresh catalog-request trace ID; concurrent Server failures share
+   that trace. Unknown errors retain only `unexpected_error` and a fixed class
+   category. No exception text, traceback, endpoint, header, JWT or tool input is
+   included. Ordinary per-Server responses keep `discovery_failed` (or the
+   existing `unsupported_transport`) and never serialize the private diagnostic.
+   Bulk JWT lookup maps only missing, expired or invalid principal credentials
+   to `authorization_required`; operational/configuration failures return
+   `discovery_failed` and retain their typed reason in the private log. The single
+   Server route keeps its typed HTTP error and existing force-relogin header
+   rules. Cancellation propagates without an unavailable result or failure log.
 
 ## Runnable checks
 
@@ -210,6 +223,13 @@ and absence of secrets in public events. That stage remains unclaimed until run.
   remain compatible and no parallel retry path remains. The installed CLI MCP
   regression now runs in the Sandbox CI shard; its selected catalog also
   includes the platform-owned `attach_file` tool.
+- Replace the catalog's unobserved catch and the bulk-only fallback logger with
+  one private failure projection consumed by both discovery routes. Retire the
+  blanket JWT-error-to-authorization mapping; the bulk response shape and known
+  authentication reasons remain compatible. `McpToolDiscoveryError` now belongs
+  to MCP domain errors and all explicit import consumers use that owner; the
+  transport/parser still raise the same type and reason. No database, credential
+  format, transport behavior or public diagnostic field is added.
 - Replace unconditional uncertainty for an admitted write-capable MCP's failed
   hook with call-bound proof of a complete returned error result. Unproven failed
   hooks retain the existing uncertainty path; no name/error-text whitelist or
