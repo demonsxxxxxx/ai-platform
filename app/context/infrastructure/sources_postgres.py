@@ -159,9 +159,13 @@ async def list_session_context_files(
     session_id: str,
     run_id: str,
     limit: int = 8,
+    excluded_file_ids: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Return a bounded recent file tail for one exact owned session."""
 
+    limit = max(0, int(limit))
+    if not limit:
+        return []
     cursor = await conn.execute(
         """
         with current_run as (
@@ -197,6 +201,7 @@ async def list_session_context_files(
             and files.workspace_id = %s
             and files.user_id = %s
             and files.session_id = %s
+            and not (files.id = any(%s::text[]))
             and sessions.workspace_id = files.workspace_id
             and sessions.user_id = files.user_id
             and sessions.status = 'active'
@@ -222,7 +227,8 @@ async def list_session_context_files(
             workspace_id,
             user_id,
             session_id,
-            max(1, int(limit)),
+            list(excluded_file_ids or []),
+            limit,
         ),
     )
     return list(await cursor.fetchall())
