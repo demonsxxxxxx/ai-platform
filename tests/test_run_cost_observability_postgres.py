@@ -6,11 +6,14 @@ from psycopg.types.json import Jsonb
 import pytest
 
 from app.control_plane_contracts import standard_trace_id
+from app.auth import AuthPrincipal
+from app.run_projection import run_event_response
 from app.identity.infrastructure.audit_postgres import append_audit_log
 from app.platform.public_payload import sanitize_public_payload, sanitize_public_text
 from app.runs.application.lifecycle import RunLifecycleService
 from app.runs.infrastructure.admin_queries_postgres import (
     get_admin_runtime_observability_summary,
+    get_admin_run_detail,
 )
 from app.runs.infrastructure.diagnostics_postgres import (
     PostgresRunDiagnosticsRepository,
@@ -318,7 +321,7 @@ async def test_postgres_terminalization_preserves_explicit_cost_and_public_facts
         assert "runtime_private_payload" not in metadata["run-a"]
 
         cursor = await admin.execute(
-            "select payload_json from run_events "
+            "select * from run_events "
             "where tenant_id = 'tenant-a' and run_id = 'run-a' and event_type = %s",
             (f"run_{target_status}",),
         )
@@ -332,6 +335,20 @@ async def test_postgres_terminalization_preserves_explicit_cost_and_public_facts
             "sdk_usage": {"cost_coverage": coverage}
         }
         assert "runtime_private_payload" not in events[0]["payload_json"]["result"]
+
+        detail = await get_admin_run_detail(admin, tenant_id="tenant-a", run_id="run-a")
+        assert detail is not None
+        public = run_event_response("run-a", events[0], principal=AuthPrincipal(
+            user_id="user-a", display_name="User A", tenant_id="tenant-a",
+        ))
+        privileged = run_event_response("run-a", events[0])
+        for projected in (public, privileged, detail["events"][0]):
+            if estimated_cost is None:
+                assert "cost" not in projected
+            else:
+                assert projected["cost"] == {"estimated_cost_minor": estimated_cost}
+            assert "runtime_private_payload" not in str(projected)
+            assert "cost_coverage" not in str(projected)
 
         cursor = await admin.execute(
             "select payload_json from audit_logs "
