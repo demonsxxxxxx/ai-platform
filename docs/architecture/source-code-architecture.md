@@ -624,8 +624,10 @@ ledger. It names the target owner for future bounded migrations.
 
 The former `app/attachments` typed-admission package is retired without a
 replacement registry or migration of its parser/Skill-selection policy into
-Files, Skills, or Runs. Under
-[ADR 0010](../adr/0010-sandbox-owned-attachment-content-processing.md), Context
+Files, Skills, or Runs. Retirement follows the current source inventory: there
+are no production callers outside the package.
+[ADR 0010](../adr/0010-sandbox-owned-attachment-content-processing.md) remains
+proposed design context, not retirement authority. The current Context call chain
 owns authorized raw-file staging and metadata delivery, including the existing
 identity, resource, and declared-XLSX package-safety checks. The independent XLSX
 presentation preview retains its parser core and dependencies. Existing Skill
