@@ -207,6 +207,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_lambchat_frontend_compat.py::test_lambchat_history_restores_strict_v4_commentary_as_work_summary",
         "tests/test_lambchat_frontend_compat.py::test_session_event_pages_project_authorized_run_columns_on_every_page",
         "tests/test_executor_reconciler.py",
+        "tests/test_executor_receipt_settlement.py",
         "tests/test_conversation_authority.py",
         "tests/test_file_upload_security.py",
         "tests/test_issue_511_session_context_gen2.py",
