@@ -195,17 +195,17 @@ test("malformed window fields fail closed to safe display values", () => {
   }
 });
 
-test("selected file names are bounded unique basenames with no paths or private tokens", () => {
+test("selected file names preserve ordinary basenames while rejecting paths and credentials", () => {
   const normalized = normalizeRunPlayback({ context_ref: { context_window: {
     status: "complete", selected_file_names: [
       "/private/计划.docx", "C:\\private\\report.pdf", "report.pdf", " plain.txt ",
       "../", ".", "..", "bad\u0000.txt", "x".repeat(161), 3, {},
-      "private%2Fsecret.txt", "file:secret.txt", "runtime_path.txt", "raw_skill.txt",
+      "private%2Fsecret.txt", "private%5Csecret.txt", "file:secret.txt", "token=synthetic-secret.txt", "api_key=synthetic-secret.txt", "runtime_path.txt", "raw_skill.txt",
       ...Array.from({ length: 12 }, (_, index) => `file-${index}.pdf`),
     ],
   } } });
   assert.deepEqual(normalized.context_ref?.context_window.selected_file_names, [
-    "计划.docx", "report.pdf", "plain.txt", "file-0.pdf", "file-1.pdf", "file-2.pdf", "file-3.pdf", "file-4.pdf",
+    "计划.docx", "report.pdf", "plain.txt", "runtime_path.txt", "raw_skill.txt", "file-0.pdf", "file-1.pdf", "file-2.pdf",
   ]);
 });
 

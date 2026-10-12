@@ -18,7 +18,9 @@
         "legacy_history_excluded": false,
         "selected_file_names": [
           "计划.docx",
-          "report.pdf"
+          "report.pdf",
+          "manifest.pdf",
+          "100%预算.xlsx"
         ]
       }
     },
@@ -31,7 +33,9 @@
       "legacy_history_excluded": false,
       "selected_file_names": [
         "计划.docx",
-        "report.pdf"
+        "report.pdf",
+        "manifest.pdf",
+        "100%预算.xlsx"
       ]
     }
   },

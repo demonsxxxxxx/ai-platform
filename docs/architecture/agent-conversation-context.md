@@ -94,7 +94,10 @@ is not a second frontend source.
 
 The existing playback panel displays `complete`, `trimmed`, or `degraded`,
 nonnegative history candidate/authorized/omitted counts, the legacy-history
-exclusion flag, and up to eight safe selected-file basenames. Zero counts keep
+exclusion flag, and up to eight safe selected-file basenames. Filename checks
+retain ordinary names such as `manifest.pdf` and `100%预算.xlsx`; lineage-ID
+keyword restrictions do not apply to authorized display basenames. Path and
+control-character boundaries and explicit credential expressions remain excluded. Zero counts keep
 the window visible, including degraded fallback. These are snapshot metadata,
 not reconstructed model history or evidence that native transcript was lost.
 Missing windows, unknown status, or invalid counts produce a degraded display;

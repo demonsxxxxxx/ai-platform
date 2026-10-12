@@ -116,8 +116,8 @@ test("missing and invalid fields stay safe through the mounted consumer", async 
     const section = view.container.querySelector('[data-run-context-window="degraded"]');
     assert.ok(section);
     assert.deepEqual(Array.from(section.querySelectorAll("dd"), node => node.textContent), ["0", "0", "0"]);
-    assert.deepEqual(Array.from(section.querySelectorAll("li"), node => node.textContent), ["report.pdf", "计划.docx"]);
-    assert.doesNotMatch(section.textContent!, /private|runtime_path|unsafe|旧版历史已排除/);
+    assert.deepEqual(Array.from(section.querySelectorAll("li"), node => node.textContent), ["report.pdf", "计划.docx", "runtime_path.txt"]);
+    assert.doesNotMatch(section.textContent!, /private|unsafe|旧版历史已排除/);
   } finally { await view.close(); }
 });
 

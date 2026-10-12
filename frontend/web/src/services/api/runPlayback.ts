@@ -473,12 +473,14 @@ function safeContextFileNames(value: unknown): string[] {
   const names: string[] = [];
   for (const item of value) {
     if (typeof item !== "string") continue;
+    // File names are public basenames, not lineage IDs: words such as manifest
+    // and ordinary percent characters do not identify private metadata.
     const name = item.replace(/\\/g, "/").split("/").pop()?.trim();
     if (
       !name || name === "." || name === ".." || name.length > 160 ||
-      /[:%]/u.test(name) ||
-      Array.from(name).some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127) ||
-      !isSafeLineageString(name)
+      /:/u.test(name) || /%(?:2f|5c)/iu.test(name) ||
+      /(?:^|[._\s-])(?:api[_-]?key|access[_-]?token|auth(?:orization)?|password|secret|token)\s*=/iu.test(name) ||
+      Array.from(name).some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)
     ) {
       continue;
     }
