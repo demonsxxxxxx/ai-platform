@@ -155,10 +155,6 @@ const BACKEND_ERROR_KEYS: Record<string, string> = {
   "OAuth authentication failed": "backendErrors.oauthFailed",
   "Invalid disabled_tools: must be a list of strings.":
     "backendErrors.invalidDisabledTools",
-  "Invalid pinned_model_ids: must be a list of strings.":
-    "backendErrors.invalidPinnedModelIds",
-  "Too many pinned models: maximum 10 allowed.":
-    "backendErrors.tooManyPinnedModels",
   "models must be a non-empty list": "backendErrors.modelsRequired",
   "A model cannot be its own fallback": "backendErrors.modelFallbackSelf",
 };

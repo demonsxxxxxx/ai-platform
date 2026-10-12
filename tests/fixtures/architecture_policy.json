@@ -129,7 +129,6 @@
     "app/governance_readiness.py",
     "app/intent_router.py",
     "app/main.py",
-    "app/memory_erasure_readiness.py",
     "app/memory_redaction.py",
     "app/model_catalog.py",
     "app/models.py",

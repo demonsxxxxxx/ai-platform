@@ -53,6 +53,7 @@ _RUNTIME_NEUTRAL_EXACT_PATHS = {
     "app/capacity_bounded_load_harness.py",
     "app/foundation_alpha_readiness.py",
     "app/governance_readiness.py",
+    # Historical deletion tombstone; preserve its existing runtime-neutral classification.
     "app/memory_erasure_readiness.py",
     "app/office_context_readiness.py",
     "app/release_evidence_export_acceptance.py",
@@ -69,6 +70,7 @@ _RUNTIME_NEUTRAL_EXACT_PATHS = {
     "tools/verify_auth_rbac_smoke.py",
     "tools/verify_poc_gate.py",
     "tools/verify_b1_memory_context_workflow.py",
+    # Retired producer identity retained for historical source-delta classification.
     "tools/verify_governance_runtime_smoke.py",
     "tools/verify_release_evidence_runtime_acceptance.py",
     "tools/verify_multiuser_poc.py",
@@ -445,6 +447,7 @@ def _is_poc_smoke_evidence(payload: dict[str, Any]) -> bool:
 
 
 def _is_governance_runtime_evidence(payload: dict[str, Any]) -> bool:
+    """Validate archived producer output, not the current live endpoint contract."""
     evidence_ref = payload.get("evidence_ref") if isinstance(payload, dict) else {}
     runtime_checks = evidence_ref.get("runtime_checks") if isinstance(evidence_ref, dict) else {}
     if not isinstance(runtime_checks, dict):
@@ -530,6 +533,7 @@ def _release_evidence_runtime_acceptance_entry_is_valid(payload: dict[str, Any],
 
 
 def _alert_trace_export_runtime_acceptance_from_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """Read archived alert/trace evidence without restoring its retired producer."""
     evidence_ref = payload.get("evidence_ref") if isinstance(payload, dict) else {}
     runtime_checks = evidence_ref.get("runtime_checks") if isinstance(evidence_ref, dict) else {}
     if not isinstance(runtime_checks, dict):
@@ -1785,6 +1789,19 @@ def _operator_context(
     for blocker in reversed(stage_acceptance_blockers or []):
         if blocker not in next_recommended_slices:
             next_recommended_slices.insert(0, blocker)
+    # Retired inventory probes cannot produce current runtime observations. Keep
+    # historical blockers intact while directing operators to the missing owner.
+    retired_probe_next_steps = {
+        "runtime_admin_dashboard_acceptance_for_governance":
+            "define_owned_current_runtime_governance_observation_first",
+        "g6_runtime_admin_dashboard_acceptance_for_governance":
+            "define_owned_current_runtime_governance_observation_first",
+        "alert_delivery_and_trace_export_controlled_host_acceptance":
+            "define_owned_current_runtime_alert_trace_observation_first",
+    }
+    next_recommended_slices = list(dict.fromkeys(
+        retired_probe_next_steps.get(item, item) for item in next_recommended_slices
+    ))
     return {
         "poc_scope": "foundation_alpha_controlled_internal_poc",
         "poc_loop_status": poc_loop_status,

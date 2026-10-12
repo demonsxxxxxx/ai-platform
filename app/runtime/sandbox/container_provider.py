@@ -1047,8 +1047,6 @@ def _executor_environment(
         "ANTHROPIC_AUTH_TOKEN": _env_value(settings, "anthropic_auth_token"),
         "ANTHROPIC_MODEL": _env_value(settings, "anthropic_model", "deepseek-v4-flash"),
         "CLAUDE_AGENT_MODEL": _env_value(settings, "claude_agent_model", "deepseek-v4-flash"),
-        "DEFAULT_MODEL_ID": request.model,
-        "MODEL_CATALOG_JSON": _env_value(settings, "model_catalog_json"),
         "CLAUDE_AGENT_SDK_ENABLED": _env_bool(getattr(settings, "claude_agent_sdk_enabled", False)),
         "CLAUDE_AGENT_SDK_TIMEOUT_SECONDS": _env_value(settings, "claude_agent_sdk_timeout_seconds", 0),
         "CLAUDE_AGENT_SDK_MAX_TURNS": _env_value(settings, "claude_agent_sdk_max_turns", 256),
@@ -4364,7 +4362,14 @@ class OpenSandboxContainerProvider:
                 )
         try:
             if hasattr(sandbox, "get_info"):
-                info = await _maybe_await(sandbox.get_info())
+                try:
+                    info = await _maybe_await(sandbox.get_info())
+                except Exception as exc:
+                    if not is_authoritative_not_found_error(exc):
+                        raise
+                    self._leases.pop(cache_key, None)
+                    self._sandboxes.pop(lease.container_id, None)
+                    return StopResult(container_id=lease.container_id, status="not_found", message=reason)
             else:
                 info = sandbox
             status = _opensandbox_status_from_info(info)

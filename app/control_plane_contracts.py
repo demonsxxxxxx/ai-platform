@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import re
 from typing import Any, Literal
 from app.platform.tracing import standard_trace_id as standard_trace_id
@@ -15,7 +14,6 @@ from app.runs.api import (
     normalize_thinking_effort,
 )
 from app.validation import assert_safe_id
-from app.streaming.events import EVENT_ENVELOPE_SCHEMA_VERSION as _EVENT_ENVELOPE_SCHEMA_VERSION
 
 
 RUN_CONTRACT_VERSION = "ai-platform.run.v1"
@@ -128,108 +126,6 @@ ARTIFACT_LINEAGE_PRODUCER_ROLES = frozenset(
     }
 )
 HASH_LIKE_VALUE_PATTERN = re.compile(r"^[a-f0-9]{32,}$", re.IGNORECASE)
-
-STANDARD_EVENT_TYPES = frozenset(
-    {
-        "agent_step_blocked",
-        "agent_step_completed",
-        "agent_step_failed",
-        "agent_step_reused",
-        "agent_step_started",
-        "artifact_created",
-        "artifact_ready",
-        "assistant_delta",
-        "assistant_message_created",
-        "cancel_requested",
-        "cancel_requested_but_completed",
-        "capability_selected",
-        "capability_staged",
-        "capability_sdk_registered",
-        "capability_actually_invoked",
-        "capability_completed",
-        "capability_optional_not_invoked",
-        "checkpoint_created",
-        "context_snapshot_created",
-        "error",
-        "event_replayed",
-        "file_bound",
-        "heartbeat",
-        "intent_confirmed",
-        "intent_detected",
-        "legacy_runtime211_direct_executor_denied",
-        "memory_record_created",
-        "mcp_tool_call_completed",
-        "mcp_tool_call_started",
-        "mcp_tool_denied",
-        "queued",
-        "run_cancelled",
-        "run_completed",
-        "run_created",
-        "run_failed",
-        "run_started",
-        "run_succeeded",
-        "skill_selected",
-        "skip",
-        "sandbox_lease_created",
-        "sandbox_lease_released",
-        "sandbox_lease_renewed",
-        "status",
-        "subagent_completed",
-        "subagent_failed",
-        "subagent_started",
-        "tool_call_completed",
-        "tool_call_started",
-        "tool_denied",
-        "worker_started",
-    }
-)
-
-
-@dataclass(frozen=True)
-class EventEnvelope:
-    run_id: str
-    trace_id: str
-    type: str
-    stage: str
-    message: str = ""
-    severity: Literal["info", "warning", "error"] = "info"
-    visible_to_user: bool = True
-    error_code: str | None = None
-    latency_ms: int | None = None
-    token_counts: dict[str, int] = field(default_factory=dict)
-    cost: dict[str, Any] = field(default_factory=dict)
-    payload: dict[str, Any] = field(default_factory=dict)
-    schema_version: str = _EVENT_ENVELOPE_SCHEMA_VERSION
-
-
-@dataclass(frozen=True)
-class SkillManifest:
-    skill_id: str
-    version: str
-    source: str
-    schema_version: str = SKILL_MANIFEST_SCHEMA_VERSION
-
-
-@dataclass(frozen=True)
-class ToolPolicy:
-    tool_id: str
-    decision: Literal["allow", "deny", "ask"]
-    schema_version: str = TOOL_POLICY_SCHEMA_VERSION
-
-
-@dataclass(frozen=True)
-class ContextSnapshot:
-    run_id: str
-    trace_id: str
-    included_message_ids: list[str] = field(default_factory=list)
-    included_file_ids: list[str] = field(default_factory=list)
-    included_memory_record_ids: list[str] = field(default_factory=list)
-    schema_version: str = CONTEXT_SNAPSHOT_SCHEMA_VERSION
-
-
-def is_standard_event_type(value: str | None) -> bool:
-    return bool(value and value in STANDARD_EVENT_TYPES)
-
 
 def artifact_manifest_contract(
     *,

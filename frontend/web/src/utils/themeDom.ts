@@ -31,24 +31,32 @@ export function isTheme(value: unknown): value is Theme {
   return value === "light" || value === "dark";
 }
 
-export function getInitialThemePreference(
+/** Only stored choices, including the supported legacy key, are explicit preferences. */
+export function getStoredThemePreference(
   env: ThemePreferenceEnvironment = globalThis,
-): Theme {
+): Theme | null {
   try {
     const stored =
       env.localStorage?.getItem(THEME_STORAGE_KEY) ??
       env.localStorage?.getItem(LEGACY_THEME_STORAGE_KEY);
-    if (isTheme(stored)) {
-      return stored;
-    }
+    return isTheme(stored) ? stored : null;
+  } catch {
+    return null;
+  }
+}
 
+export function getInitialThemePreference(
+  env: ThemePreferenceEnvironment = globalThis,
+): Theme {
+  const stored = getStoredThemePreference(env);
+  if (stored) return stored;
+  try {
     if (env.matchMedia?.("(prefers-color-scheme: dark)").matches) {
       return "dark";
     }
   } catch {
     // Storage or matchMedia can be unavailable in restricted browser contexts.
   }
-
   return "light";
 }
 
