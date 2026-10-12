@@ -1187,3 +1187,216 @@ def test_upload_filename_accepts_exact_utf8_byte_limit():
 
     assert len(filename.encode("utf-8")) == files_routes.MAX_UPLOAD_FILENAME_UTF8_BYTES
     assert files_routes._normalize_upload_filename(filename) == filename
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["timeout", "cancel", "repeat_cancel"])
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+async def test_multipart_download_reclaims_late_temp_after_waiter_failure(
+    monkeypatch, tmp_path, failure, cleanup_fails, caplog,
+):
+    from pathlib import Path
+    from app.storage import run_storage_io
+
+    started, release = threading.Event(), threading.Event()
+    path = tmp_path / "synthetic-multipart.txt"
+    original_cancel = "synthetic original cancellation"
+    unlink_calls = []
+    real_unlink = Path.unlink
+
+    class Storage:
+        def download_to_tempfile(self, **_kwargs):
+            started.set()
+            assert release.wait(2)
+            path.write_bytes(b"x")
+            return types.SimpleNamespace(path=str(path), sha256="a" * 64, size_bytes=1)
+
+    async def bounded_io(operation, *args, **kwargs):
+        return await run_storage_io(
+            operation, *args,
+            timeout_seconds=0.01 if failure == "timeout" else 1.0,
+            **kwargs,
+        )
+
+    def checked_unlink(self, *args, **kwargs):
+        unlink_calls.append(self)
+        if cleanup_fails:
+            raise OSError("synthetic path detail must not be logged")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(files_routes, "run_storage_io", bounded_io)
+    monkeypatch.setattr(Path, "unlink", checked_unlink)
+    task = asyncio.create_task(files_routes._download_multipart_completion_file(
+        Storage(), storage_key="synthetic-key",
+    ))
+    try:
+        assert await asyncio.to_thread(started.wait, 1)
+        if failure == "timeout":
+            await asyncio.sleep(0.03)
+        else:
+            task.cancel(original_cancel)
+            await asyncio.sleep(0)
+            if failure == "repeat_cancel":
+                task.cancel("synthetic later cancellation")
+                await asyncio.sleep(0)
+        assert not task.done()  # physical completion still owns the tempfile
+        release.set()
+        if failure == "timeout":
+            with pytest.raises(HTTPException) as caught:
+                await task
+            assert caught.value.status_code == 503
+            assert caught.value.detail == "storage_io_timeout"
+        else:
+            with pytest.raises(asyncio.CancelledError) as caught:
+                await task
+            assert caught.value.args == (original_cancel,)
+        assert unlink_calls == [path]
+        assert path.exists() is cleanup_fails
+        assert "synthetic path detail" not in caplog.text
+        if cleanup_fails:
+            assert "multipart_completion_temp_cleanup_failed" in caplog.text
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except BaseException:
+                pass
+        real_unlink(path, missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_multipart_download_hands_successful_temp_to_completion_caller(tmp_path):
+    path = tmp_path / "synthetic-multipart.txt"
+    result = types.SimpleNamespace(path=str(path), sha256="a" * 64, size_bytes=1)
+
+    class Storage:
+        def download_to_tempfile(self, **_kwargs):
+            path.write_bytes(b"x")
+            return result
+
+    assert await files_routes._download_multipart_completion_file(
+        Storage(), storage_key="synthetic-key",
+    ) is result
+    assert path.read_bytes() == b"x"
+    path.unlink()
+
+
+@pytest.mark.asyncio
+async def test_multipart_download_preserves_physical_failure(tmp_path):
+    failure = RuntimeError("synthetic physical failure")
+
+    class Storage:
+        def download_to_tempfile(self, **_kwargs):
+            raise failure
+
+    with pytest.raises(RuntimeError) as caught:
+        await files_routes._download_multipart_completion_file(
+            Storage(), storage_key="synthetic-key",
+        )
+    assert caught.value is failure
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_multipart_download_cleanup_logging_does_not_mask_cancellation(monkeypatch, tmp_path):
+    from pathlib import Path
+    from app.platform.storage_io_completion import StorageIOCompletion
+
+    path = tmp_path / "synthetic-multipart.txt"
+    path.write_bytes(b"x")
+    failure = asyncio.CancelledError("synthetic primary")
+
+    async def abandoned(operation, *args, completion: StorageIOCompletion, **kwargs):
+        completion.claim()
+        await completion.submit(lambda: types.SimpleNamespace(path=str(path)))
+        raise failure
+
+    def fail_unlink(*args, **kwargs):
+        raise OSError("synthetic unlink failure")
+
+    def fail_logging(*args, **kwargs):
+        raise RuntimeError("synthetic logging failure")
+
+    real_unlink = Path.unlink
+    monkeypatch.setattr(files_routes, "_run_storage", abandoned)
+    monkeypatch.setattr(Path, "unlink", fail_unlink)
+    monkeypatch.setattr(files_routes.logging.getLogger(files_routes.__name__), "warning", fail_logging)
+    try:
+        with pytest.raises(asyncio.CancelledError) as caught:
+            await files_routes._download_multipart_completion_file(
+                types.SimpleNamespace(download_to_tempfile=lambda: None),
+                storage_key="synthetic-key",
+            )
+        assert caught.value is failure
+    finally:
+        real_unlink(path, missing_ok=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["direct", "multipart"])
+@pytest.mark.parametrize("session_workspace", ["default", "other-workspace"])
+async def test_session_bound_upload_requires_exact_requested_workspace(
+    monkeypatch, kind, session_workspace,
+):
+    install_basic_upload_fakes(monkeypatch)
+    # The base fixture has no expired uploads; this checks only the requested
+    # upload, not the separate pre-admission global expiry maintenance.
+    calls = []
+    target_mutations = []
+
+    async def owned_session(_conn, *, tenant_id, user_id, session_id, workspace_id=None):
+        calls.append((tenant_id, user_id, session_id, workspace_id))
+        if workspace_id != session_workspace:
+            return None
+        return {"id": session_id, "workspace_id": session_workspace}
+
+    async def usage(_conn, **_kwargs):
+        target_mutations.append("quota")
+        return {"stored_bytes": 0, "reserved_bytes": 0, "active_uploads": 0}
+
+    async def create_upload(_conn, **_kwargs):
+        target_mutations.append("reservation")
+
+    async def activate_upload(_conn, **_kwargs):
+        return True
+
+    class Storage:
+        def put_bytes(self, *, storage_key, content, content_type):
+            target_mutations.append("put")
+            return StoredObject(storage_key, hashlib.sha256(content).hexdigest(), len(content))
+        def create_multipart_upload(self, **_kwargs):
+            target_mutations.append("multipart")
+            return "synthetic-upload"
+
+    monkeypatch.setattr(files_routes, "get_authorized_session", owned_session)
+    monkeypatch.setattr(files_routes, "get_file_storage_usage", usage)
+    monkeypatch.setattr(files_routes, "create_file_upload_session", create_upload)
+    monkeypatch.setattr(files_routes, "activate_file_upload_session", activate_upload)
+    monkeypatch.setattr(files_routes, "ObjectStorage", Storage)
+
+    async def invoke():
+        if kind == "direct":
+            return await files_routes.upload_file(
+                FakeUploadFile("synthetic.txt", "text/plain", b"x"),
+                "default", "session-a", upload_principal(),
+            )
+        return await files_routes.initiate_multipart_upload(
+            MultipartUploadCreateRequest(
+                workspace_id="default", session_id="session-a",
+                name="synthetic.txt", content_type="text/plain", size_bytes=1,
+            ), upload_principal(),
+        )
+
+    if session_workspace != "default":
+        with pytest.raises(HTTPException) as caught:
+            await invoke()
+        assert caught.value.status_code == 404
+        assert caught.value.detail == "session_not_found"
+        assert target_mutations == []
+    else:
+        assert await invoke() is not None
+        assert "quota" in target_mutations
+        assert ("put" if kind == "direct" else "multipart") in target_mutations
+    assert calls == [("default", "user-a", "session-a", "default")]

@@ -57,6 +57,7 @@ from app.bootstrap.claude_client import (
     prepare_claude_run_interaction,
     prepare_claude_text_sources,
     prepare_claude_typed_observations,
+    prepare_claude_result_usage,
 )
 from app.execution.api import (
     ClaudeSdkAgentEventAdapter,
@@ -3425,6 +3426,7 @@ async def run_claude_agent_sdk(
     received_structured_terminal = False
     continuation_usage: dict[str, Any] = {}
     continuation_turns = 0
+    result_usage = prepare_claude_result_usage(session_id=session_id, prompt=sdk_prompt)
 
     def mcp_execution_conflict_observed() -> bool:
         return mcp_execution_conflicted or bool(
@@ -3465,7 +3467,7 @@ async def run_claude_agent_sdk(
             message=message,
             answer_receipt=answer_receipt,
             session_id=result_session_id,
-            usage=usage,
+            usage=result_usage.project(usage or continuation_usage, terminal_result=terminal_result_message is not None),
             error=error,
             terminal_reason=terminal_reason,
             received_structured_terminal=received_structured_terminal,
@@ -3600,6 +3602,7 @@ async def run_claude_agent_sdk(
                         # without processing more output or supplementary inputs.
                         continue
                     if isinstance(message, ResultMessage):
+                        result_usage.observe_result(message)
                         permission_denials = getattr(message, "permission_denials", None)
                         if isinstance(permission_denials, list):
                             diagnostic_counters["tool_admission_denials"] += len(permission_denials)
@@ -3627,10 +3630,11 @@ async def run_claude_agent_sdk(
                             command = await interaction_actor.settle_at_result()
                             if command is not None:
                                 continuation_usage = _merge_sdk_usage(
-                                    continuation_usage, message.usage or message.model_usage or {}
+                                    continuation_usage, message.usage or {}
                                 )
                                 continuation_turns += _bounded_diagnostic_counter(message.num_turns)
                                 diagnostic_counters["result_messages"] += 1
+                                result_usage.observe_input(command.text or "")
                                 await interaction_actor.apply_text_at_result(
                                     client, command, session_id=message.session_id
                                 )
@@ -4021,7 +4025,7 @@ async def run_claude_agent_sdk(
                 )
                 result_session_id = message.session_id
                 permission_denials = getattr(message, "permission_denials", None)
-                usage = _merge_sdk_usage(continuation_usage, message.usage or message.model_usage or {})
+                usage = _merge_sdk_usage(continuation_usage, message.usage or {})
                 sdk_terminal_reason = getattr(message, "terminal_reason", None)
                 resolved_terminal_reason = (
                     str(sdk_terminal_reason).strip()

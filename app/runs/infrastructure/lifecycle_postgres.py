@@ -216,30 +216,6 @@ async def complete_run(
     return await cursor.fetchone() is not None
 
 
-async def mark_run_running(conn: AsyncConnection, *, tenant_id: str, run_id: str) -> dict[str, Any] | None:
-    cursor = await conn.execute(
-        """
-        update runs set status = 'running', started_at = coalesce(started_at, now())
-        from sessions
-        where runs.tenant_id = %s and runs.id = %s and runs.status = 'queued'
-          and sessions.id = runs.session_id and sessions.tenant_id = runs.tenant_id
-          and sessions.workspace_id = runs.workspace_id and sessions.user_id = runs.user_id
-          and sessions.agent_id = runs.agent_id
-        returning runs.id, runs.tenant_id, runs.workspace_id, runs.user_id,
-          runs.session_id, runs.agent_id, runs.execution_kind, runs.skill_id,
-          runs.trace_id, runs.principal_roles, runs.principal_department_id,
-          runs.auth_source, runs.admitted_agent_profile_revision,
-          runs.admitted_agent_profile_hash,
-          sessions.admitted_agent_profile_revision as session_admitted_agent_profile_revision,
-          sessions.admitted_agent_profile_hash as session_admitted_agent_profile_hash,
-          runs.input_json
-        """,
-        (tenant_id, run_id),
-    )
-    row = await cursor.fetchone()
-    return dict(row) if row is not None else None
-
-
 async def is_cancel_requested(conn: AsyncConnection, *, tenant_id: str, run_id: str) -> bool:
     cursor = await conn.execute(
         "select cancel_requested_at from runs where tenant_id = %s and id = %s",
@@ -331,7 +307,6 @@ class PostgresRunLifecyclePersistence:
     load_staged_terminalization = staticmethod(load_staged_terminalization)
     clear_cancel_requested_terminalization = staticmethod(clear_cancel_requested_terminalization)
     finalize_staged_terminalization = staticmethod(finalize_staged_terminalization)
-    mark_run_running = staticmethod(mark_run_running)
     is_cancel_requested = staticmethod(is_cancel_requested)
     classify_success_commit_block = staticmethod(classify_success_commit_block)
     list_stale_run_reconciliation_candidates = staticmethod(list_stale_run_reconciliation_candidates)

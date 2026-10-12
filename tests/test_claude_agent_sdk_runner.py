@@ -6060,7 +6060,7 @@ async def test_sdk_terminal_snapshots_preserve_shared_fields_and_release_semanti
 
     assert result.used_sdk is True
     assert result.session_id == "sdk-session"
-    assert result.usage == {"input_tokens": 7, "output_tokens": 3}
+    assert result.usage == {"input_tokens": 7, "output_tokens": 3, "cost_coverage": "unavailable"}
     assert result.used_skills == []
     assert result.used_skills_source == ""
     assert result.capability_evidence == []

@@ -9,9 +9,11 @@ import pytest
 from claude_agent_sdk._internal import transcript_mirror_batcher
 from claude_agent_sdk._internal.query import Query
 from claude_agent_sdk._internal.transcript_mirror_batcher import TranscriptMirrorBatcher
-from claude_agent_sdk import ProcessError
+from claude_agent_sdk import ProcessError, ResultMessage as InstalledResultMessage
 
+from app.execution.api import project_worker_terminal_result
 from app.execution.infrastructure.harness.claude_client_lifecycle import ClaudeClientCloseBoundary
+from app.executors.base import ExecutorResult
 from app.executors.claude_agent_sdk_runner import run_claude_agent_sdk
 from tests.test_claude_agent_sdk_runner import _fake_sdk, _settings
 from tests.support.model_text import response_events
@@ -110,7 +112,7 @@ async def test_installed_query_error_exit_keeps_error_result_and_final_flush(
         result = await asyncio.wait_for(task, 2)
         if error_result:
             assert result.error == "claude_agent_sdk_turn_limit_exceeded"
-            assert result.session_id == "stable-provider-id" and result.usage == {"input_tokens": 11}
+            assert result.session_id == "stable-provider-id" and result.usage == {"input_tokens": 11, "cost_coverage": "unavailable"}
             assert result.runtime_diagnostics["failure_source"] == "sdk_result_error"
         else:
             assert result.error == "claude_agent_sdk_execution_failed"
@@ -512,6 +514,59 @@ async def test_background_agent_defers_first_result_until_followup(monkeypatch, 
     finally:
         release_task.set()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream_end,error_code", [
+    ("eof", "claude_agent_sdk_missing_structured_terminal"),
+    ("transport_error", "claude_agent_sdk_execution_failed"),
+])
+async def test_background_result_without_final_keeps_partial_cost_for_worker(
+    monkeypatch, tmp_path, stream_end, error_code,
+):
+    sdk = _fake_sdk({}, hook_invocations=[])
+    sdk.ResultMessage = InstalledResultMessage
+
+    class Started:
+        task_id = "agent-task"
+        task_type = "local_agent"
+
+    sdk.TaskStartedMessage = Started
+
+    class Client(sdk.ClaudeSDKClient):
+        async def receive_messages(self):
+            yield Started()
+            yield InstalledResultMessage(
+                subtype="success", duration_ms=1, duration_api_ms=1,
+                is_error=False, num_turns=1, session_id="sdk-session",
+                total_cost_usd=0.25, usage={"input_tokens": 4},
+            )
+            # The Result above is hidden by the pending background task. No
+            # follow-up Result arrives, whether the stream closes or fails.
+            if stream_end == "transport_error":
+                raise RuntimeError("synthetic transport failure after intermediate result")
+
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+    result = await run_claude_agent_sdk(
+        prompt="delegate", cwd=tmp_path, skill_id=None, client_fn=Client,
+    )
+    assert result.error == error_code
+    assert result.usage["total_cost_usd"] == 0.25
+    assert result.usage["cost_coverage"] == "partial"
+    projected = project_worker_terminal_result(
+        ExecutorResult(
+            status="failed", adapter_version="v1", executor_type="claude-agent-worker",
+            executor_version="v1", capabilities={}, result={"error_code": result.error},
+            executor_payload={"sdk_usage": result.usage},
+        ),
+        [], trace_id="trace", latency_ms=1, invoked_skill_ids=lambda _: set(),
+    )
+    assert projected.result_payload["cost"] == {"estimated_cost_minor": None}
+    assert projected.terminal_event_kwargs.get("estimated_cost_minor") is None
+    assert projected.result_payload["error_code"] == error_code
+    from app.platform.public_payload import sanitize_public_payload
+    assert "cost_coverage" not in str(sanitize_public_payload(projected.result_payload))
 
 
 @pytest.mark.asyncio

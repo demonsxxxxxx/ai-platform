@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from app.runs.domain.cost_observability import private_cost_observation
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, AsyncContextManager, Protocol
@@ -174,6 +175,8 @@ class WorkerResultCommitService:
                         payload={
                             "artifact_count": len(result.artifacts),
                             "skills": command.skill_snapshot,
+                            **({"cost": result_payload["cost"]} if "cost" in result_payload else {}),
+                            **private_cost_observation(result_payload),
                         },
                         **command.terminal_event_kwargs,
                     )
@@ -189,7 +192,12 @@ class WorkerResultCommitService:
                 error_message = self._public_failure_message(result)
                 if cancel_requested and self._prefers_cancelled(result):
                     terminal_written = await attempt_authority.cancel(
-                        conn, capabilities=capabilities, result_json={"message": "任务已取消"}
+                        conn, capabilities=capabilities, result_json={
+                            "message": "任务已取消",
+                            **({key: result_payload[key] for key in ("latency_ms", "token_counts", "cost") if key in result_payload}
+                               if private_cost_observation(result_payload) else {}),
+                            **private_cost_observation(result_payload),
+                        }
                     )
                     if not terminal_written:
                         raise _WorkerResultCommitBlocked()
@@ -215,7 +223,12 @@ class WorkerResultCommitService:
                 blocked_reason = await attempt_authority.classify_success_commit_block(conn)
                 if blocked_reason == "cancel_requested":
                     terminal_written = await attempt_authority.cancel(
-                        conn, capabilities=capabilities, result_json={"message": "任务已取消"}
+                        conn, capabilities=capabilities, result_json={
+                            "message": "任务已取消",
+                            **({key: result_payload[key] for key in ("latency_ms", "token_counts", "cost") if key in result_payload}
+                               if private_cost_observation(result_payload) else {}),
+                            **private_cost_observation(result_payload),
+                        }
                     )
                     if terminal_written:
                         await release_runtime_lease(conn, reason="run_cancelled")

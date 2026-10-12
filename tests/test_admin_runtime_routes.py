@@ -2098,3 +2098,14 @@ def test_admin_runtime_overview_fails_closed_when_container_list_has_unexpected_
     assert response.status_code == 500
     assert "provider invariant broken" not in response.text.lower()
     assert calls == [("containers", {"tenant_id": "default"})]
+
+
+@pytest.mark.parametrize("amount", [None, 0, 17])
+def test_runtime_observability_cost_preserves_explicit_unknown_without_losing_tokens(amount):
+    from app.routes.admin_runtime import _sanitize_observability_summary
+    summary = _sanitize_observability_summary({
+        "estimated_cost_minor": amount, "token_counts": {"input": 3, "output": 5, "total": 8},
+    })
+    assert "estimated_cost_minor" in summary
+    assert summary["estimated_cost_minor"] == amount
+    assert summary["token_counts"] == {"input": 3, "output": 5, "total": 8}

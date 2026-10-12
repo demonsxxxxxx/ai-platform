@@ -37,6 +37,7 @@ import app.runs.application.model_snapshot as run_model_snapshot_module
 import app.bootstrap.worker_execution as worker_execution_bootstrap
 import app.worker as worker_module
 from app.runs.infrastructure import lifecycle_postgres as run_lifecycle_postgres
+from app.runs.application.lifecycle import RunLifecyclePersistence, RunLifecycleService
 import app.mcp.infrastructure.tool_policies_postgres as _repo_app_mcp_infrastructure_tool_policies_postgres
 import app.platform.postgres.errors as _repo_app_platform_postgres_errors
 import app.runs.infrastructure.capability_admission_postgres as _repo_app_runs_infrastructure_capability_admission_postgres
@@ -73,6 +74,7 @@ from app.platform.sandbox.errors import (
 )
 from app.platform.postgres.errors import RepositoryConflictError, RepositoryNotFoundError
 from app.required_tool_contract import declaration_from_input
+from app.runs import api as runs_api
 from app.runs.api import InvalidLeasedQueueEnvelope, RunAttemptLifecycleService, RunTerminalizationProgress
 from app.runtime.sandbox import container_provider
 from app.runtime.sandbox.container_provider import NativeToolAdmissionError
@@ -127,10 +129,19 @@ def _stub_terminal_context_ports(monkeypatch):
     )
 
 
-class _FakeRunLifecycle:
-    async def mark_run_running(self, _conn, **_kwargs):
-        return True
+def _install_queued_run_lock(monkeypatch, lock_queued_run):
+    """Install the Attempt read port and retain its exact row for model reads."""
+    persistence = _TEST_ATTEMPT_PERSISTENCE
 
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        locked_run = await lock_queued_run(conn, tenant_id=tenant_id, run_id=run_id)
+        persistence.locked_run_for_model_snapshot = locked_run
+        return locked_run
+
+    monkeypatch.setattr(persistence, "lock_queued_run_for_attempt", lock_queued_run_for_attempt)
+
+
+class _FakeRunLifecycle:
     async def complete_run(self, _conn, **_kwargs):
         return True
 
@@ -1059,23 +1070,12 @@ def default_cancel_not_requested(monkeypatch):
     global _TEST_RUN_LIFECYCLE
     _CURRENT_QUEUE_PAYLOAD = None
     _TEST_RUN_LIFECYCLE = _FakeRunLifecycle()
-    original_locked_agent_profile_identity_valid = locked_agent_profile_identity_valid
 
     def capture_queue_payload(raw):
         global _CURRENT_QUEUE_PAYLOAD
         parsed = parse_queue_payload(raw)
         _CURRENT_QUEUE_PAYLOAD = parsed.model_dump(mode="json")
         return parsed
-
-    def materialize_legacy_locked_run(locked_run, *, run_identity):
-        if locked_run is True:
-            locked_run = locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
-        return payload_from_locked_run(locked_run, run_identity=run_identity)
-
-    def validate_materialized_locked_agent_profile(agent_profile, locked_run):
-        if locked_run is True:
-            locked_run = locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
-        return original_locked_agent_profile_identity_valid(agent_profile, locked_run)
 
     async def reauthorize_test_profile(
         _conn,
@@ -1127,11 +1127,6 @@ def default_cancel_not_requested(monkeypatch):
 
     monkeypatch.setattr("app.context.api.prepare_provider_epoch", prepare_native_epoch)
     monkeypatch.setattr("app.worker.parse_queue_payload", capture_queue_payload)
-    monkeypatch.setattr("app.bootstrap.worker_locked_authorization.payload_from_locked_run", materialize_legacy_locked_run)
-    monkeypatch.setattr(
-        "app.agent_apps.api.locked_agent_profile_identity_valid",
-        validate_materialized_locked_agent_profile,
-    )
     monkeypatch.setattr(
         "app.agent_apps.api.reauthorize_bound_profile_for_worker_dispatch",
         reauthorize_test_profile,
@@ -1166,10 +1161,8 @@ def default_cancel_not_requested(monkeypatch):
 
     monkeypatch.setattr('app.runs.infrastructure.postgres.get_run', get_run, raising=False)
 
-    locked_run_for_model_snapshot: dict[str, object] = {}
-
     async def load_test_model(conn, **kwargs):
-        locked_run = locked_run_for_model_snapshot.get("value")
+        locked_run = _TEST_ATTEMPT_PERSISTENCE.locked_run_for_model_snapshot
         if not isinstance(locked_run, dict):
             locked_run = await _owner_runs_infrastructure_postgres.get_run(
                 conn,
@@ -1198,13 +1191,7 @@ def default_cancel_not_requested(monkeypatch):
     monkeypatch.setattr("app.runs.api.worker_dispatch_fence", ready_fence)
 
     async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
-        locked_run = await _TEST_RUN_LIFECYCLE.mark_run_running(
-            conn, tenant_id=tenant_id, run_id=run_id
-        )
-        if locked_run is True:
-            locked_run = locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
-        locked_run_for_model_snapshot["value"] = locked_run
-        return locked_run
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def start_worker_run_attempt(conn, **kwargs):
         return {
@@ -1237,6 +1224,7 @@ def default_cancel_not_requested(monkeypatch):
         return None
 
     _TEST_ATTEMPT_PERSISTENCE = SimpleNamespace(
+        locked_run_for_model_snapshot=None,
         lock_queued_run_for_attempt=lock_queued_run_for_attempt,
         start_worker_run_attempt=start_worker_run_attempt,
         get_run_attempt_for_queue_attempt=get_run_attempt_for_queue_attempt,
@@ -1245,6 +1233,7 @@ def default_cancel_not_requested(monkeypatch):
         request_run_attempt_cancel=request_run_attempt_cancel,
         terminalize_run_attempt=terminalize_run_attempt,
     )
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     _TEST_RUN_ATTEMPT_LIFECYCLE = RunAttemptLifecycleService(
         persistence=_TEST_ATTEMPT_PERSISTENCE
     )
@@ -2967,7 +2956,7 @@ async def test_worker_binds_pinned_harness_profile_before_adapter(monkeypatch, p
                 result={"message": "done"},
             )
 
-    async def mark_run_running(_conn, **_kwargs):
+    async def lock_queued_run_for_attempt(_conn, **_kwargs):
         return locked_run
 
     async def append_event(_conn, **kwargs):
@@ -2982,7 +2971,7 @@ async def test_worker_binds_pinned_harness_profile_before_adapter(monkeypatch, p
         )
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
     monkeypatch.setattr(
@@ -3075,7 +3064,7 @@ async def test_worker_reauthorizes_pinned_profile_before_adapter(
         async def submit_run(self, payload, event_sink=None):
             raise AssertionError("Profile denial must happen before adapter dispatch")
 
-    async def mark_run_running(_conn, **_kwargs):
+    async def lock_queued_run_for_attempt(_conn, **_kwargs):
         return locked_run_from_payload(raw)
 
     async def append_event(_conn, **kwargs):
@@ -3112,7 +3101,7 @@ async def test_worker_reauthorizes_pinned_profile_before_adapter(
         )
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
@@ -3153,7 +3142,7 @@ async def test_worker_reauthorizes_pinned_profile_before_adapter(
 
 
 @pytest.mark.asyncio
-async def test_mark_run_running_projects_distinct_run_and_session_profile_pins():
+async def test_queued_run_lock_projects_distinct_run_and_session_profile_pins():
     class Cursor:
         async def fetchone(self):
             return None
@@ -3174,7 +3163,7 @@ async def test_mark_run_running_projects_distinct_run_and_session_profile_pins()
             return Cursor()
 
     assert (
-        await run_lifecycle_postgres.mark_run_running(
+        await _owner_runs_infrastructure_postgres.lock_queued_run_for_attempt(
             Connection(),
             tenant_id="tenant-a",
             run_id="run-a",
@@ -3213,9 +3202,9 @@ async def test_worker_rechecks_queued_state_after_current_principal_http(monkeyp
         calls.append("current_principal_http")
         return _test_current_principal(user_id=user_id, tenant_id=tenant_id)
 
-    async def mark_run_running(_conn, **_kwargs):
+    async def lock_queued_run_for_attempt(_conn, **_kwargs):
         assert transaction_depth == 1
-        calls.append("mark_run_running")
+        calls.append("lock_queued_run_for_attempt")
         return None
 
     async def append_event(_conn, **_kwargs):
@@ -3225,7 +3214,7 @@ async def test_worker_rechecks_queued_state_after_current_principal_http(monkeyp
     monkeypatch.setattr("app.worker.transaction", recording_transaction)
     monkeypatch.setattr('app.runs.infrastructure.postgres.get_run', get_run)
     monkeypatch.setattr("app.bootstrap.worker_dispatch_admission.resolve_current_principal", resolve_current_principal)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
 
     outcome = await process_run_payload(base_payload())
@@ -3237,7 +3226,7 @@ async def test_worker_rechecks_queued_state_after_current_principal_http(monkeyp
         "transaction_exit",
         "current_principal_http",
         "transaction_enter",
-        "mark_run_running",
+        "lock_queued_run_for_attempt",
         "get_run_2",
         "skip_event",
         "transaction_exit",
@@ -3298,8 +3287,8 @@ async def test_worker_completes_successful_adapter_run(monkeypatch):
                 if key != "runtime_diagnostics"
             }
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        calls.append(("running", tenant_id, run_id))
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        calls.append(("lock", tenant_id, run_id))
         return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def append_event(conn, *, tenant_id, run_id, event_type, stage, message, payload=None):
@@ -3322,7 +3311,7 @@ async def test_worker_completes_successful_adapter_run(monkeypatch):
         return True
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.create_artifact', create_artifact)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
@@ -3338,7 +3327,7 @@ async def test_worker_completes_successful_adapter_run(monkeypatch):
     )
 
     assert outcome.status == "succeeded"
-    assert ("running", "tenant-a", "run-a") in calls
+    assert ("lock", "tenant-a", "run-a") in calls
     assert any(item[0] == "artifact" for item in calls)
     assert ("complete", "fake-adapter/1") in calls
     assert ("diagnostics", "non_terminal_tool_warning") in calls
@@ -3502,7 +3491,7 @@ async def test_worker_returns_after_durable_executor_dispatch_acceptance(monkeyp
                 timings={"dispatch_ms": 12},
             )
 
-    async def mark_run_running(_conn, **_kwargs):
+    async def lock_queued_run_for_attempt(_conn, **_kwargs):
         return locked_run_from_payload(raw)
 
     async def append_event(_conn, **_kwargs):
@@ -3518,7 +3507,7 @@ async def test_worker_returns_after_durable_executor_dispatch_acceptance(monkeyp
         raise AssertionError("detached execution retains its lease for reconciliation")
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', append_message)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
@@ -3575,8 +3564,8 @@ async def test_worker_enforces_executor_declared_required_artifact_types(
                 executor_payload={"required_artifact_types": required_artifact_types},
             )
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None, terminal_reason=None):
         calls.append(("fail", error_code, error_message))
@@ -3594,7 +3583,7 @@ async def test_worker_enforces_executor_declared_required_artifact_types(
         return "evt-a"
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.create_artifact', create_artifact)
@@ -3628,8 +3617,8 @@ async def test_worker_enforces_executor_declared_required_artifact_types(
 async def test_worker_does_not_append_success_terminal_events_when_run_is_already_terminal(monkeypatch):
     calls = []
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def append_event(conn, **kwargs):
         calls.append(("event", kwargs["event_type"], kwargs["stage"]))
@@ -3653,7 +3642,7 @@ async def test_worker_does_not_append_success_terminal_events_when_run_is_alread
         return {"id": kwargs["lease_id"], "status": "released", **kwargs}
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.create_artifact', create_artifact)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
@@ -3685,8 +3674,8 @@ async def test_worker_classifies_success_commit_cancel_race_without_permission_f
         else:
             committed.extend(pending)
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def complete_run(conn, **kwargs):
         return False
@@ -3716,7 +3705,7 @@ async def test_worker_classifies_success_commit_cancel_race_without_permission_f
         return None
 
     monkeypatch.setattr("app.worker.transaction", transactional_connection)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "classify_success_commit_block", classify_success_commit_block)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "cancel_run", cancel_run)
@@ -3736,6 +3725,19 @@ async def test_worker_classifies_success_commit_cancel_race_without_permission_f
 @pytest.mark.asyncio
 async def test_worker_passes_locked_run_model_id_to_adapter(monkeypatch):
     calls = []
+    raw = base_payload(
+        executor_type="capture",
+        model_id="queue-model",
+        model_value="provider/queue-model",
+    )
+    expected_snapshot = {
+        "model_id": "pro-tier",
+        "model_value": "deepseek-v4-pro",
+        "model_gateway_revision": 7,
+        "max_input_tokens": 96000,
+        "max_output_tokens": 4096,
+    }
+    load_test_model = runs_api.load_run_model_snapshot
     locked_run = locked_run_from_payload(
         base_payload(
             executor_type="capture",
@@ -3744,6 +3746,15 @@ async def test_worker_passes_locked_run_model_id_to_adapter(monkeypatch):
         )
     )
     locked_run["trace_id"] = "trace-run-a"
+    locked_run.update(expected_snapshot)
+
+    async def observe_locked_model_snapshot(conn, **kwargs):
+        assert _TEST_ATTEMPT_PERSISTENCE.locked_run_for_model_snapshot is locked_run
+        assert kwargs == {"tenant_id": "tenant-a", "run_id": "run-a"}
+        snapshot = await load_test_model(conn, **kwargs)
+        assert snapshot == expected_snapshot
+        calls.append(("model_snapshot", snapshot))
+        return snapshot
 
     class CaptureAdapter:
         async def submit_run(self, payload, event_sink=None):
@@ -3758,7 +3769,9 @@ async def test_worker_passes_locked_run_model_id_to_adapter(monkeypatch):
                 artifacts=[reviewed_docx_artifact()],
             )
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        assert (tenant_id, run_id) == ("tenant-a", "run-a")
+        calls.append(("lock", tenant_id, run_id))
         return locked_run
 
     async def append_event(conn, **kwargs):
@@ -3771,19 +3784,24 @@ async def test_worker_passes_locked_run_model_id_to_adapter(monkeypatch):
         return True
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
+    monkeypatch.setattr(runs_api, "load_run_model_snapshot", observe_locked_model_snapshot)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.create_artifact', create_artifact)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
 
     outcome = await process_run_payload(
-        base_payload(executor_type="capture"),
+        raw,
         AdapterRegistry({"capture": CaptureAdapter()}),
     )
 
     assert outcome.status == "succeeded"
-    assert calls == [("model", "pro-tier", "deepseek-v4-pro", "qat-test-attempt")]
+    assert calls == [
+        ("lock", "tenant-a", "run-a"),
+        ("model_snapshot", expected_snapshot),
+        ("model", "pro-tier", "deepseek-v4-pro", "qat-test-attempt"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -3799,8 +3817,8 @@ async def test_worker_records_runtime_sandbox_lease_around_successful_executor_r
     )
     locked_run["trace_id"] = "trace-run-a"
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        calls.append(("running", tenant_id, run_id))
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        calls.append(("lock", tenant_id, run_id))
         return locked_run
 
     async def append_event(conn, **kwargs):
@@ -3857,7 +3875,7 @@ async def test_worker_records_runtime_sandbox_lease_around_successful_executor_r
         return {"id": kwargs["lease_id"], "status": "released", **kwargs}
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(
         'app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker',
@@ -3929,6 +3947,15 @@ async def test_worker_records_runtime_sandbox_lease_around_successful_executor_r
 async def test_worker_starts_and_terminalizes_durable_attempt_around_dispatch(monkeypatch):
     calls = []
 
+    for surface in (
+        RunLifecyclePersistence,
+        RunLifecycleService,
+        run_lifecycle_postgres,
+        run_lifecycle_postgres.PostgresRunLifecyclePersistence,
+        _TEST_RUN_LIFECYCLE,
+    ):
+        assert not hasattr(surface, "mark_run_running")
+
     class CapturingSuccessfulExecutor(SuccessfulExecutorStub):
         async def submit_run(self, payload, event_sink=None):
             calls.append(("adapter_attempt", payload.attempt_id, payload.owner_generation))
@@ -3942,9 +3969,6 @@ async def test_worker_starts_and_terminalizes_durable_attempt_around_dispatch(mo
             agent_id="general-agent",
         )
     )
-
-    async def legacy_mark_run_running(*_args, **_kwargs):
-        raise AssertionError("durable attempt claim must replace the legacy running writer")
 
     async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
         calls.append(("lock", tenant_id, run_id))
@@ -3983,16 +4007,7 @@ async def test_worker_starts_and_terminalizes_durable_attempt_around_dispatch(mo
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
-    monkeypatch.setattr(
-        _TEST_RUN_LIFECYCLE,
-        "mark_run_running",
-        legacy_mark_run_running,
-    )
-    monkeypatch.setattr(
-        _TEST_ATTEMPT_PERSISTENCE,
-        "lock_queued_run_for_attempt",
-        lock_queued_run_for_attempt,
-    )
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr(
         _TEST_ATTEMPT_PERSISTENCE,
         "start_worker_run_attempt",
@@ -4198,8 +4213,8 @@ async def test_worker_does_not_record_placeholder_lease_for_sandbox_required_ord
                 executor_payload={"sandbox_provider": "docker"},
             )
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def append_event(conn, **kwargs):
         calls.append(("event", kwargs["event_type"], kwargs["stage"]))
@@ -4243,7 +4258,7 @@ async def test_worker_does_not_record_placeholder_lease_for_sandbox_required_ord
         raise AssertionError("sandbox-required ordinary runs must rely on SandboxRuntime leases, not worker placeholders")
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker', get_context_snapshot_for_worker)
     monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.create_artifact', create_artifact)
@@ -4283,8 +4298,8 @@ async def test_worker_does_not_record_runtime_sandbox_lease_when_cancelled_befor
                 result={"message": "should not run"},
             )
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def is_cancel_requested(conn, *, tenant_id, run_id):
         return True
@@ -4301,7 +4316,7 @@ async def test_worker_does_not_record_runtime_sandbox_lease_when_cancelled_befor
         raise AssertionError("cancelled run that never reaches executor setup must not create runtime sandbox leases")
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "is_cancel_requested", is_cancel_requested)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "cancel_run", cancel_run)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
@@ -4322,8 +4337,8 @@ async def test_worker_releases_runtime_sandbox_lease_when_executor_raises(monkey
         async def submit_run(self, payload, event_sink=None):
             raise RuntimeError("executor crashed")
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def append_event(conn, **kwargs):
         calls.append(("event", kwargs["event_type"], kwargs["stage"]))
@@ -4346,7 +4361,7 @@ async def test_worker_releases_runtime_sandbox_lease_when_executor_raises(monkey
         return {"id": kwargs["lease_id"], "status": "released", **kwargs}
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr("app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
@@ -4395,8 +4410,8 @@ async def test_worker_moves_http_failure_diagnostics_before_terminal_result(
             calls.append(("diagnostics", conn, kwargs))
             return None
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def assert_current_attempt(conn, **kwargs):
         return {"id": kwargs["queue_attempt_id"], "status": "running"}
@@ -4415,7 +4430,7 @@ async def test_worker_moves_http_failure_diagnostics_before_terminal_result(
         return {"id": kwargs["lease_id"], "status": "released", **kwargs}
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr(
@@ -4458,8 +4473,8 @@ async def test_worker_persists_native_tool_admission_failure_as_safe_stage_code(
         async def submit_run(self, payload, event_sink=None):
             raise NativeToolAdmissionError()
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def append_event(conn, **kwargs):
         calls.append(("event", kwargs["event_type"], kwargs["stage"], kwargs.get("payload")))
@@ -4481,7 +4496,7 @@ async def test_worker_persists_native_tool_admission_failure_as_safe_stage_code(
         return {"id": kwargs["lease_id"], "status": "released", **kwargs}
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr("app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
@@ -4514,8 +4529,8 @@ async def test_worker_persists_native_tool_admission_failure_as_safe_stage_code(
 async def test_worker_releases_runtime_sandbox_lease_when_adapter_reports_failure(monkeypatch):
     calls = []
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def append_event(conn, **kwargs):
         calls.append(("event", kwargs["event_type"], kwargs["stage"]))
@@ -4538,7 +4553,7 @@ async def test_worker_releases_runtime_sandbox_lease_when_adapter_reports_failur
         return {"id": kwargs["lease_id"], "status": "released", **kwargs}
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr("app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.create_sandbox_lease", create_sandbox_lease)
@@ -4562,8 +4577,8 @@ async def test_worker_releases_runtime_sandbox_lease_when_adapter_reports_failur
 async def test_worker_does_not_append_failure_terminal_events_when_run_is_already_terminal(monkeypatch):
     calls = []
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def append_event(conn, **kwargs):
         calls.append(("event", kwargs["event_type"], kwargs["stage"]))
@@ -4578,7 +4593,7 @@ async def test_worker_does_not_append_failure_terminal_events_when_run_is_alread
         return {"id": kwargs["lease_id"], "status": "released", **kwargs}
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr("app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.release_sandbox_lease", release_sandbox_lease)
@@ -4615,8 +4630,8 @@ async def test_worker_releases_runtime_sandbox_lease_when_cancelled_on_event_bou
                 result={"message": "should not complete"},
             )
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def is_cancel_requested(conn, *, tenant_id, run_id):
         nonlocal cancel_checks
@@ -4640,7 +4655,7 @@ async def test_worker_releases_runtime_sandbox_lease_when_cancelled_on_event_bou
         return {"id": kwargs["lease_id"], "status": "released", **kwargs}
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "is_cancel_requested", is_cancel_requested)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "cancel_run", cancel_run)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
@@ -4709,8 +4724,8 @@ async def test_worker_prefers_cancelled_after_executor_failure_when_cancel_reque
                 },
             )
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def is_cancel_requested(conn, *, tenant_id, run_id):
         nonlocal cancel_checks
@@ -4759,7 +4774,7 @@ async def test_worker_prefers_cancelled_after_executor_failure_when_cancel_reque
         raise AssertionError("heavy_sandbox runtime path must not record worker placeholder leases")
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "is_cancel_requested", is_cancel_requested)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "cancel_run", cancel_run)
@@ -4799,8 +4814,8 @@ async def test_worker_prefers_cancelled_when_executor_raises_after_cancel_reques
         async def submit_run(self, payload, event_sink=None):
             raise RuntimeError("executor failed after accepted cancel")
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def is_cancel_requested(conn, *, tenant_id, run_id):
         nonlocal cancel_checks
@@ -4819,7 +4834,7 @@ async def test_worker_prefers_cancelled_when_executor_raises_after_cancel_reques
         return "evt-cancelled"
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "is_cancel_requested", is_cancel_requested)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "cancel_run", cancel_run)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
@@ -4841,8 +4856,8 @@ async def test_worker_does_not_append_cancel_terminal_event_when_cancel_update_i
         async def submit_run(self, payload, event_sink=None):
             raise RuntimeError("executor failed after accepted cancel")
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def is_cancel_requested(conn, *, tenant_id, run_id):
         nonlocal cancel_checks
@@ -4865,7 +4880,7 @@ async def test_worker_does_not_append_cancel_terminal_event_when_cancel_update_i
         return {"id": kwargs["lease_id"], "status": "released", **kwargs}
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "is_cancel_requested", is_cancel_requested)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "cancel_run", cancel_run)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
@@ -4898,8 +4913,8 @@ async def test_worker_keeps_runtime_failure_when_cancel_requested_but_runtime_fa
                 executor_payload={"sandbox_provider": "docker", "runtime_terminal_status": "failed"},
             )
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def is_cancel_requested(conn, *, tenant_id, run_id):
         nonlocal cancel_checks
@@ -4949,7 +4964,7 @@ async def test_worker_keeps_runtime_failure_when_cancel_requested_but_runtime_fa
         raise AssertionError("heavy_sandbox runtime path must not record worker placeholder leases")
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "is_cancel_requested", is_cancel_requested)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "cancel_run", cancel_run)
@@ -4998,8 +5013,8 @@ async def test_worker_releases_runtime_sandbox_lease_when_terminal_persistence_r
         finally:
             calls.append(("tx_exit", tx_label))
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def append_event(conn, **kwargs):
         calls.append(("event", conn, kwargs["event_type"], kwargs["stage"]))
@@ -5024,7 +5039,7 @@ async def test_worker_releases_runtime_sandbox_lease_when_terminal_persistence_r
         return {"id": kwargs["lease_id"], "status": "released", **kwargs}
 
     monkeypatch.setattr("app.worker.transaction", recording_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.create_artifact', create_artifact)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
@@ -5110,8 +5125,8 @@ async def test_worker_passes_skill_manifest_pins_to_executor(monkeypatch):
                 artifacts=[reviewed_docx_artifact()],
             )
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def append_event(conn, **kwargs):
         return "evt-a"
@@ -5120,7 +5135,7 @@ async def test_worker_passes_skill_manifest_pins_to_executor(monkeypatch):
         return True
 
     monkeypatch.setattr("app.worker.transaction", materialization_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
@@ -5147,8 +5162,8 @@ async def test_worker_requires_new_conversation_before_attempt_binding(monkeypat
         async def submit_run(self, payload, event_sink=None):
             raise AssertionError("invalid native continuity must not reach the adapter")
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def append_event(conn, **kwargs):
         calls.append(("event", kwargs["event_type"], kwargs["stage"]))
@@ -5165,7 +5180,7 @@ async def test_worker_requires_new_conversation_before_attempt_binding(monkeypat
         raise AssertionError("native continuity must fail before Attempt binding")
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(
         "app.bootstrap.worker_dispatch_binding.materialize_queued_worker_context_snapshot",
@@ -5200,9 +5215,9 @@ async def test_worker_fails_missing_physical_context_snapshot_before_adapter(mon
         async def submit_run(self, payload, event_sink=None):
             raise AssertionError("missing physical context binding must not reach the adapter")
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        calls.append(("running", tenant_id, run_id))
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        calls.append(("lock", tenant_id, run_id))
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def append_event(conn, **kwargs):
         calls.append(("event", kwargs["event_type"], kwargs["stage"]))
@@ -5216,7 +5231,7 @@ async def test_worker_fails_missing_physical_context_snapshot_before_adapter(mon
         return RunTerminalizationProgress(True, "failed", True)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker', missing_snapshot)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
@@ -5253,7 +5268,7 @@ async def test_worker_uses_scoped_db_context_snapshot_instead_of_queue_copy(monk
                 result={"message": "done"},
             )
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
         return locked_run_from_payload(base_payload(
             executor_type="fake", agent_id="general-agent", skill_id="general-chat",
             context_snapshot={"source": "tampered_queue_copy"},
@@ -5308,7 +5323,7 @@ async def test_worker_uses_scoped_db_context_snapshot_instead_of_queue_copy(monk
         return True
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker', get_context_snapshot_for_worker)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
@@ -5357,7 +5372,7 @@ async def test_worker_uses_private_context_manifest_from_scoped_db_snapshot(monk
                 ],
             )
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
         return locked_run_from_payload(base_payload(
             executor_type="claude-agent-worker",
             context_snapshot={"source": "tampered_queue_copy"},
@@ -5434,7 +5449,7 @@ async def test_worker_uses_private_context_manifest_from_scoped_db_snapshot(monk
     monkeypatch.setattr("app.runs.api.persist_assistant_with_provider_coverage", persist_assistant)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr("app.runs.api.load_run_model_snapshot", load_frozen_model)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker', get_context_snapshot_for_worker)
@@ -5477,7 +5492,7 @@ async def test_worker_uses_scoped_db_context_snapshot_when_queue_copy_missing(mo
                 result={"message": "done"},
             )
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
         return locked_run_from_payload(base_payload(
             executor_type="claude-agent-worker", agent_id="general-agent", skill_id="general-chat",
             context_snapshot={},
@@ -5523,7 +5538,7 @@ async def test_worker_uses_scoped_db_context_snapshot_when_queue_copy_missing(mo
 
     monkeypatch.setattr("app.runs.api.persist_assistant_with_provider_coverage", persist_assistant)
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr("app.runs.api.load_run_model_snapshot", load_frozen_model)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker', get_context_snapshot_for_worker)
@@ -5567,8 +5582,8 @@ async def test_worker_preserves_stored_safe_summary_metadata_when_payload_has_on
                 result={"message": "done"},
             )
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def append_event(conn, **kwargs):
         return "evt-context"
@@ -5617,7 +5632,7 @@ async def test_worker_preserves_stored_safe_summary_metadata_when_payload_has_on
         return True
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker', get_context_snapshot_for_worker)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
@@ -5665,8 +5680,8 @@ async def test_worker_preserves_safe_top_level_legacy_context_source(monkeypatch
                 result={"message": "done"},
             )
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def append_event(conn, **kwargs):
         return "evt-context"
@@ -5702,7 +5717,7 @@ async def test_worker_preserves_safe_top_level_legacy_context_source(monkeypatch
         return True
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker', get_context_snapshot_for_worker)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
@@ -5748,8 +5763,8 @@ async def test_worker_rebuilds_db_context_snapshot_with_public_provenance(monkey
                 result={"message": "done"},
             )
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def append_event(conn, **kwargs):
         return "evt-context"
@@ -5818,7 +5833,7 @@ async def test_worker_rebuilds_db_context_snapshot_with_public_provenance(monkey
         return True
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker', get_context_snapshot_for_worker)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
@@ -5883,8 +5898,8 @@ async def test_worker_payload_includes_bounded_context_pack_from_scoped_db_snaps
                 result={"message": "done"},
             )
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def append_event(conn, **kwargs):
         return "evt-context-pack"
@@ -5931,7 +5946,7 @@ async def test_worker_payload_includes_bounded_context_pack_from_scoped_db_snaps
         return True
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker', get_context_snapshot_for_worker)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
@@ -5981,8 +5996,8 @@ async def test_worker_fails_invalid_physical_context_binding_before_adapter(monk
         async def submit_run(self, payload, event_sink=None):
             raise AssertionError("invalid physical context binding must not reach the adapter")
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def append_event(conn, **kwargs):
         calls.append(("event", kwargs["event_type"]))
@@ -5996,7 +6011,7 @@ async def test_worker_fails_invalid_physical_context_binding_before_adapter(monk
         return RunTerminalizationProgress(True, "failed", True)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr('app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker', get_context_snapshot_for_worker)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
@@ -6024,7 +6039,7 @@ async def test_worker_rejects_queue_payload_identity_mismatch_before_context_or_
         async def submit_run(self, payload, event_sink=None):
             raise AssertionError("identity-mismatched queue payload must not reach executor")
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
         return {
             "id": run_id,
             "tenant_id": tenant_id,
@@ -6050,7 +6065,7 @@ async def test_worker_rejects_queue_payload_identity_mismatch_before_context_or_
         raise AssertionError("identity-mismatched queue payload must not create runtime sandbox leases")
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr("app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.create_sandbox_lease", fail_create_sandbox_lease)
@@ -6079,7 +6094,7 @@ async def test_worker_rejects_missing_db_identity_fields_before_context_or_execu
         async def submit_run(self, payload, event_sink=None):
             raise AssertionError("DB identity with missing user_id must not reach executor")
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
         return {
             "id": run_id,
             "tenant_id": tenant_id,
@@ -6102,7 +6117,7 @@ async def test_worker_rejects_missing_db_identity_fields_before_context_or_execu
         raise AssertionError("missing DB identity must not refresh context snapshot")
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
 
@@ -6118,14 +6133,14 @@ async def test_worker_rejects_missing_db_identity_fields_before_context_or_execu
 
 
 @pytest.mark.asyncio
-async def test_worker_fails_queued_run_when_scope_guard_rejects_running_lock(monkeypatch):
+async def test_worker_fails_queued_run_when_scope_guard_rejects_queued_lock(monkeypatch):
     calls = []
 
     class ForbiddenAdapter:
         async def submit_run(self, payload, event_sink=None):
             raise AssertionError("scope-invalid queued run must not reach executor")
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
         calls.append(("lock", conn, tenant_id, run_id))
 
     async def get_run(conn, *, tenant_id, run_id, for_update=False):
@@ -6160,7 +6175,7 @@ async def test_worker_fails_queued_run_when_scope_guard_rejects_running_lock(mon
         raise AssertionError("scope-invalid queued run must not refresh context snapshot")
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.runs.infrastructure.postgres.get_run', get_run)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
@@ -6225,7 +6240,7 @@ async def test_worker_uses_db_run_input_and_snapshot_files_when_queue_fields_are
                 result={"message": "done"},
             )
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
         return {
             "id": run_id,
             "tenant_id": tenant_id,
@@ -6290,7 +6305,7 @@ async def test_worker_uses_db_run_input_and_snapshot_files_when_queue_fields_are
         return True
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr(model_control_plane_module, "_service", model_control_plane_module._service)
     monkeypatch.setattr(run_model_snapshot_module, "_service", run_model_snapshot_module._service)
     monkeypatch.setattr(model_services, "PostgresRunModelSnapshotRepository", SnapshotRepository)
@@ -6338,9 +6353,9 @@ async def test_worker_uses_db_run_input_and_snapshot_files_when_queue_fields_are
 async def test_worker_does_not_refresh_missing_context_for_unknown_executor(monkeypatch):
     calls = []
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        calls.append(("running", tenant_id, run_id))
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        calls.append(("lock", tenant_id, run_id))
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def append_event(conn, **kwargs):
         calls.append(("event", kwargs["event_type"], kwargs["stage"]))
@@ -6357,7 +6372,7 @@ async def test_worker_does_not_refresh_missing_context_for_unknown_executor(monk
         return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr("app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.create_sandbox_lease", fail_create_sandbox_lease)
@@ -6424,8 +6439,8 @@ async def test_worker_persists_run_skill_snapshots(monkeypatch):
                 },
             )
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def append_event(conn, **kwargs):
         return "evt-a"
@@ -6438,7 +6453,7 @@ async def test_worker_persists_run_skill_snapshots(monkeypatch):
         snapshots.append(kwargs)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
@@ -6543,8 +6558,8 @@ async def test_worker_terminal_snapshots_keep_each_admitted_skill_release_decisi
                 },
             )
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def append_event(conn, **kwargs):
         return "evt-a"
@@ -6557,7 +6572,7 @@ async def test_worker_terminal_snapshots_keep_each_admitted_skill_release_decisi
         snapshots.append(kwargs)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
@@ -6643,8 +6658,8 @@ async def test_worker_persists_reviewed_uploaded_skill_with_complete_governance_
                 },
             )
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def append_event(conn, **kwargs):
         return "evt-a"
@@ -6655,7 +6670,7 @@ async def test_worker_persists_reviewed_uploaded_skill_with_complete_governance_
         snapshots.append(kwargs)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
     monkeypatch.setattr('app.skills.infrastructure.run_snapshots_postgres.upsert_run_skill_snapshot', upsert_run_skill_snapshot)
@@ -6714,8 +6729,8 @@ async def test_worker_drops_executor_returned_snapshot_governance_without_payloa
                 },
             )
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def append_event(conn, **kwargs):
         return "evt-a"
@@ -6727,7 +6742,7 @@ async def test_worker_drops_executor_returned_snapshot_governance_without_payloa
         snapshots.append(kwargs)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
@@ -6790,8 +6805,8 @@ async def test_worker_uses_payload_source_instead_of_executor_returned_source(mo
                 },
             )
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def append_event(conn, **kwargs):
         return "evt-a"
@@ -6803,7 +6818,7 @@ async def test_worker_uses_payload_source_instead_of_executor_returned_source(mo
         snapshots.append(kwargs)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
@@ -6878,8 +6893,8 @@ async def test_worker_drops_executor_skill_manifest_without_payload_match(monkey
                 },
             )
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def append_event(conn, **kwargs):
         return "evt-a"
@@ -6891,7 +6906,7 @@ async def test_worker_drops_executor_skill_manifest_without_payload_match(monkey
         snapshots.append(kwargs)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
@@ -6942,8 +6957,8 @@ async def test_worker_rejects_used_skill_without_native_provenance(monkeypatch):
                 executor_payload={},
             )
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def append_event(conn, **kwargs):
         return "evt-a"
@@ -6956,7 +6971,7 @@ async def test_worker_rejects_used_skill_without_native_provenance(monkeypatch):
         snapshots.append(kwargs)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
@@ -7000,8 +7015,8 @@ async def test_worker_persists_g2_executor_contract_latency_and_token_placeholde
                 },
             )
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def append_event(conn, **kwargs):
         calls.append(
@@ -7025,7 +7040,7 @@ async def test_worker_persists_g2_executor_contract_latency_and_token_placeholde
     monotonic_values = iter([10.0])
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
@@ -7054,10 +7069,20 @@ async def test_worker_persists_g2_executor_contract_latency_and_token_placeholde
 
 @pytest.mark.asyncio
 async def test_worker_persists_sdk_usage_as_run_observability(monkeypatch):
+    from claude_agent_sdk import ResultMessage
+    from app.execution.infrastructure.harness.claude.result_usage import ClaudeResultUsage
+
     calls = []
 
     class SdkUsageAdapter:
         async def submit_run(self, payload, event_sink=None):
+            sdk_result = ResultMessage(
+                subtype="success", duration_ms=1, duration_api_ms=1, is_error=False,
+                num_turns=1, session_id="sdk-session-a", total_cost_usd=0.0123,
+                usage={"input_tokens": 101, "output_tokens": 37, "total_tokens": 138},
+            )
+            observation = ClaudeResultUsage(session_id="sdk-session-a", prompt="start")
+            observation.observe_result(sdk_result)
             return ExecutorResult(
                 status="succeeded",
                 adapter_version="adapter/1",
@@ -7068,17 +7093,12 @@ async def test_worker_persists_sdk_usage_as_run_observability(monkeypatch):
                 executor_payload={
                     "sdk_used": True,
                     "sdk_session_id": "sdk-session-a",
-                    "sdk_usage": {
-                        "input_tokens": 101,
-                        "output_tokens": 37,
-                        "total_tokens": 138,
-                        "total_cost_usd": 0.0123,
-                    },
+                    "sdk_usage": observation.project(sdk_result.usage, terminal_result=True),
                 },
             )
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def append_event(conn, **kwargs):
         calls.append(
@@ -7102,7 +7122,7 @@ async def test_worker_persists_sdk_usage_as_run_observability(monkeypatch):
     monotonic_values = iter([20.0])
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
@@ -7162,8 +7182,8 @@ async def test_worker_persists_artifact_manifest_contract(monkeypatch):
                 ],
             )
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def create_artifact(conn, **kwargs):
         created.append(kwargs)
@@ -7176,7 +7196,7 @@ async def test_worker_persists_artifact_manifest_contract(monkeypatch):
         return True
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.create_artifact', create_artifact)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
@@ -7215,8 +7235,8 @@ async def test_worker_persists_artifact_manifest_contract(monkeypatch):
 async def test_worker_marks_adapter_reported_failure(monkeypatch):
     calls = []
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def append_event(conn, *, tenant_id, run_id, event_type, stage, message, payload=None):
         calls.append(("event", event_type, stage, message))
@@ -7226,7 +7246,7 @@ async def test_worker_marks_adapter_reported_failure(monkeypatch):
         return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
 
@@ -7269,8 +7289,8 @@ async def test_worker_persists_context_file_diagnostic_only_in_hidden_event(
                 executor_payload={"context_file_failure": diagnostic},
             )
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def append_event(conn, **kwargs):
         calls.append(("event", kwargs))
@@ -7281,7 +7301,7 @@ async def test_worker_persists_context_file_diagnostic_only_in_hidden_event(
         return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     caplog.set_level("ERROR", logger="app.worker")
@@ -7367,8 +7387,8 @@ async def test_worker_rejects_malicious_http_200_sandbox_failure_identity(
                 },
             )
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def append_event(conn, **kwargs):
         calls.append(("event", kwargs))
@@ -7379,7 +7399,7 @@ async def test_worker_rejects_malicious_http_200_sandbox_failure_identity(
         return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
 
@@ -7449,8 +7469,8 @@ async def test_worker_preserves_canonical_sdk_failure_diagnostics_without_raw_er
                 },
             )
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def append_event(conn, *, tenant_id, run_id, event_type, stage, message, payload=None):
         calls.append(("event", event_type, stage, message))
@@ -7460,7 +7480,7 @@ async def test_worker_preserves_canonical_sdk_failure_diagnostics_without_raw_er
         return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
 
@@ -7485,8 +7505,8 @@ async def test_worker_preserves_canonical_sdk_failure_diagnostics_without_raw_er
 async def test_worker_records_non_secret_runtime_evidence(monkeypatch):
     events = []
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def append_event(conn, *, tenant_id, run_id, event_type, stage, message, payload=None):
         events.append({"event_type": event_type, "stage": stage, "message": message, "payload": payload or {}})
@@ -7498,7 +7518,7 @@ async def test_worker_records_non_secret_runtime_evidence(monkeypatch):
         return None
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.create_artifact', create_artifact)
@@ -7527,12 +7547,12 @@ async def test_worker_records_non_secret_runtime_evidence(monkeypatch):
 async def test_worker_rejects_bad_queue_payload_without_touching_database(monkeypatch):
     touched = False
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
         nonlocal touched
         touched = True
-        return True
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
 
     outcome = await process_run_payload(
         {"run_id": "../bad", "_queue_attempt_id": "qat-test-attempt"},
@@ -7548,9 +7568,9 @@ async def test_worker_rejects_bad_queue_payload_without_touching_database(monkey
 async def test_worker_skips_stale_queue_payload_when_run_row_is_missing(monkeypatch):
     calls = []
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        calls.append(("running", tenant_id, run_id))
-        return False
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        calls.append(("lock", tenant_id, run_id))
+        return None
 
     async def get_run(conn, *, tenant_id, run_id):
         calls.append(("get_run", tenant_id, run_id))
@@ -7559,7 +7579,7 @@ async def test_worker_skips_stale_queue_payload_when_run_row_is_missing(monkeypa
         raise AssertionError("stale queue payload without a run row must not write run_events")
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.runs.infrastructure.postgres.get_run', get_run)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
 
@@ -7569,7 +7589,7 @@ async def test_worker_skips_stale_queue_payload_when_run_row_is_missing(monkeypa
     assert outcome.error_code == "stale_queue_payload"
     assert calls == [
         ("get_run", "tenant-a", "run-a"),
-        ("running", "tenant-a", "run-a"),
+        ("lock", "tenant-a", "run-a"),
         ("get_run", "tenant-a", "run-a"),
     ]
 
@@ -7590,8 +7610,8 @@ async def test_worker_honors_cancel_before_executor_start(monkeypatch):
                 result={"message": "should not run"},
             )
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def is_cancel_requested(conn, *, tenant_id, run_id):
         return True
@@ -7604,7 +7624,7 @@ async def test_worker_honors_cancel_before_executor_start(monkeypatch):
         calls.append(("event", event_type, stage, message))
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "is_cancel_requested", is_cancel_requested)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "cancel_run", cancel_run)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
@@ -7626,8 +7646,8 @@ async def test_worker_does_not_report_soft_cancel_intent_as_cancelled(monkeypatc
         async def submit_run(self, payload, event_sink=None):
             raise AssertionError("soft cancellation must stop before adapter execution")
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def is_cancel_requested(conn, *, tenant_id, run_id):
         return True
@@ -7640,7 +7660,7 @@ async def test_worker_does_not_report_soft_cancel_intent_as_cancelled(monkeypatc
         calls.append(("event", kwargs["event_type"]))
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "is_cancel_requested", is_cancel_requested)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "cancel_run", cancel_run)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
@@ -7676,8 +7696,8 @@ async def test_worker_stops_running_executor_after_cancel_requested_on_event_bou
                 result={"message": "should not complete"},
             )
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def is_cancel_requested(conn, *, tenant_id, run_id):
         nonlocal cancel_checks
@@ -7696,7 +7716,7 @@ async def test_worker_stops_running_executor_after_cancel_requested_on_event_bou
         return True
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "is_cancel_requested", is_cancel_requested)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "cancel_run", cancel_run)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
@@ -7726,8 +7746,8 @@ async def test_worker_stops_silent_executor_after_cancel_requested(monkeypatch):
                 calls.append(("adapter", "cancelled"))
                 raise
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def is_cancel_requested(conn, *, tenant_id, run_id):
         nonlocal cancel_checks
@@ -7749,7 +7769,7 @@ async def test_worker_stops_silent_executor_after_cancel_requested(monkeypatch):
         raise AssertionError("cancelled silent execution must not complete successfully")
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "is_cancel_requested", is_cancel_requested)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "cancel_run", cancel_run)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
@@ -7806,7 +7826,7 @@ async def test_worker_waits_for_non_cooperative_adapter_before_cancel_terminal_a
                 calls.append(("adapter", "quiescent"))
                 raise
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
         locked = locked_run_from_payload(
             base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent")
         )
@@ -7861,7 +7881,7 @@ async def test_worker_waits_for_non_cooperative_adapter_before_cancel_terminal_a
         calls.append(("lease_release", kwargs["reason"]))
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "is_cancel_requested", is_cancel_requested)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "cancel_run", cancel_run)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
@@ -7942,12 +7962,12 @@ async def test_worker_records_unknown_executor_as_failed(monkeypatch):
         calls.append(("fail", error_code, error_message))
         return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        calls.append(("running", tenant_id, run_id))
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        calls.append(("lock", tenant_id, run_id))
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
 
@@ -7969,12 +7989,12 @@ async def test_worker_honors_explicit_empty_registry(monkeypatch):
         calls.append(("fail", error_code, error_message))
         return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        calls.append(("running", tenant_id, run_id))
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        calls.append(("lock", tenant_id, run_id))
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
 
@@ -8000,9 +8020,9 @@ async def test_worker_honors_falsy_registry_double(monkeypatch):
             calls.append(("get", executor_type))
             return SuccessfulExecutorStub()
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        calls.append(("running", tenant_id, run_id))
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        calls.append(("lock", tenant_id, run_id))
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def append_event(conn, *, tenant_id, run_id, event_type, stage, message, payload=None):
         calls.append(("event", event_type, stage))
@@ -8019,7 +8039,7 @@ async def test_worker_honors_falsy_registry_double(monkeypatch):
         return RunTerminalizationProgress(completed=True, status="failed", did_transition=True)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.create_artifact', create_artifact)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
@@ -8040,9 +8060,9 @@ async def test_worker_honors_falsy_registry_double(monkeypatch):
 async def test_worker_skips_unknown_executor_payload_for_terminal_run(monkeypatch):
     calls = []
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        calls.append(("running", tenant_id, run_id))
-        return False
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        calls.append(("lock", tenant_id, run_id))
+        return None
 
     async def get_run(conn, *, tenant_id, run_id):
         calls.append(("get_run", tenant_id, run_id))
@@ -8056,7 +8076,7 @@ async def test_worker_skips_unknown_executor_payload_for_terminal_run(monkeypatc
         calls.append(("event", event_type, stage))
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.runs.infrastructure.postgres.get_run', get_run)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
@@ -8070,7 +8090,7 @@ async def test_worker_skips_unknown_executor_payload_for_terminal_run(monkeypatc
     assert not any(item[0] == "fail" for item in calls)
     assert calls == [
         ("get_run", "tenant-a", "run-a"),
-        ("running", "tenant-a", "run-a"),
+        ("lock", "tenant-a", "run-a"),
         ("get_run", "tenant-a", "run-a"),
         ("event", "skip", "worker"),
     ]
@@ -8092,12 +8112,12 @@ async def test_worker_routes_retired_runtime211_through_unknown_executor_guard(m
     async def append_event(conn, *, tenant_id, run_id, event_type, stage, message, payload=None):
         calls.append(("event", event_type, stage, payload or {}))
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        calls.append(("running", tenant_id, run_id))
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        calls.append(("lock", tenant_id, run_id))
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
 
@@ -8108,7 +8128,7 @@ async def test_worker_routes_retired_runtime211_through_unknown_executor_guard(m
 
     assert outcome.status == "failed"
     assert outcome.error_code == "unknown_executor_type"
-    assert ("running", "tenant-a", "run-a") in calls
+    assert ("lock", "tenant-a", "run-a") in calls
     assert not any(item[0] == "adapter" for item in calls)
     assert any(item[0] == "fail" and item[1] == "unknown_executor_type" for item in calls)
     denied_event = next(item for item in calls if item[0] == "event" and item[1] == "error")
@@ -8125,9 +8145,9 @@ async def test_worker_skips_direct_runtime211_payload_for_terminal_run(monkeypat
             calls.append(("adapter", payload.run_id))
             raise AssertionError("terminal direct runtime211 payload must not reach adapter")
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        calls.append(("running", tenant_id, run_id))
-        return False
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        calls.append(("lock", tenant_id, run_id))
+        return None
 
     async def get_run(conn, *, tenant_id, run_id):
         calls.append(("get_run", tenant_id, run_id))
@@ -8141,7 +8161,7 @@ async def test_worker_skips_direct_runtime211_payload_for_terminal_run(monkeypat
         calls.append(("event", event_type, stage))
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.runs.infrastructure.postgres.get_run', get_run)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
@@ -8155,7 +8175,7 @@ async def test_worker_skips_direct_runtime211_payload_for_terminal_run(monkeypat
     assert not any(item[0] in {"adapter", "fail"} for item in calls)
     assert calls == [
         ("get_run", "tenant-a", "run-a"),
-        ("running", "tenant-a", "run-a"),
+        ("lock", "tenant-a", "run-a"),
         ("get_run", "tenant-a", "run-a"),
         ("event", "skip", "worker"),
     ]
@@ -8177,8 +8197,8 @@ async def test_worker_passes_user_id_to_executor_payload(monkeypatch):
                 result={"message": "done"},
             )
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def append_event(conn, **kwargs):
         return "evt-a"
@@ -8187,7 +8207,7 @@ async def test_worker_passes_user_id_to_executor_payload(monkeypatch):
         return True
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
@@ -8239,8 +8259,8 @@ async def test_worker_keeps_artifacts_out_of_success_message_text(monkeypatch):
                 ],
             )
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def append_event(conn, *, tenant_id, run_id, event_type, stage, message, payload=None):
         calls.append(("event", event_type, stage, payload))
@@ -8257,7 +8277,7 @@ async def test_worker_keeps_artifacts_out_of_success_message_text(monkeypatch):
         return "msg-a"
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.create_artifact', create_artifact)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
@@ -8316,8 +8336,8 @@ async def test_worker_sanitizes_artifact_manifest_paths_before_persisting(monkey
                 ],
             )
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def append_event(conn, **kwargs):
         return "evt-a"
@@ -8329,7 +8349,7 @@ async def test_worker_sanitizes_artifact_manifest_paths_before_persisting(monkey
         return True
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.create_artifact', create_artifact)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
@@ -8377,8 +8397,8 @@ async def test_worker_appends_user_visible_execution_timeline(monkeypatch):
                 ],
             )
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def append_event(conn, *, tenant_id, run_id, event_type, stage, message, payload=None):
         events.append({"event_type": event_type, "stage": stage, "message": message, "payload": payload or {}})
@@ -8390,7 +8410,7 @@ async def test_worker_appends_user_visible_execution_timeline(monkeypatch):
         return True
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr('app.artifacts.infrastructure.records_postgres.create_artifact', create_artifact)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
@@ -8431,8 +8451,8 @@ async def test_worker_rejects_direct_assistant_delta_ingress(monkeypatch):
         def get(self, executor_type):
             return StreamingAdapter()
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def append_event(conn, **kwargs):
         calls.append(("event", kwargs["event_type"]))
@@ -8450,7 +8470,7 @@ async def test_worker_rejects_direct_assistant_delta_ingress(monkeypatch):
         )
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "fail_run", fail_run)
@@ -8480,8 +8500,8 @@ async def test_worker_persists_terminal_assistant_message(monkeypatch):
                 result={"message": "最终回答"},
             )
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
+        return locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
 
     async def append_event(conn, **kwargs):
         return "evt-a"
@@ -8495,7 +8515,7 @@ async def test_worker_persists_terminal_assistant_message(monkeypatch):
         return "msg-a"
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "complete_run", complete_run)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', append_message)
@@ -8658,7 +8678,7 @@ def _install_task6_worker_fakes(
             calls.append(("registry_get", executor_type))
             return CaptureAdapter()
 
-    async def mark_run_running(conn, *, tenant_id, run_id):
+    async def lock_queued_run_for_attempt(conn, *, tenant_id, run_id):
         calls.append(("lock", tenant_id, run_id))
         return locked_run
 
@@ -8732,7 +8752,7 @@ def _install_task6_worker_fakes(
         resolve_task6_current_principal,
         raising=False,
     )
-    monkeypatch.setattr(_TEST_RUN_LIFECYCLE, "mark_run_running", mark_run_running)
+    _install_queued_run_lock(monkeypatch, lock_queued_run_for_attempt)
     monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_agent_skill', resolve_agent_skill, raising=False)
     monkeypatch.setattr('app.skills.infrastructure.resolution_postgres.resolve_skill_identity', resolve_agent_skill, raising=False)
     monkeypatch.setattr(
