@@ -234,6 +234,16 @@ of the saved configuration; other publication failures retain the draft for retr
 last saved baseline. Explicit reload clears entered credentials and replaces edits
 with the saved state when loading succeeds.
 
+Disabling a model preserves its token-capacity draft. Available models keep both
+capacity fields editable while disabled: administrators may retain a valid pair
+or explicitly clear both fields. Before publication, the editor checks every
+available row against the server contract: enabled models require both limits;
+disabled models allow both absent or both integers from 1 through 10,000,000.
+Incomplete or invalid pairs block the request with model-specific correction
+instructions, without clearing other draft edits or the entered credential.
+The server remains the final validation authority; disabling is not a validation
+bypass and does not silently discard saved capacities.
+
 The model editor's compare-and-swap baseline changes only after loading saved
 configuration or receiving a successful publication. Discovery cannot advance it:
 if another administrator has published since that baseline, discovery preserves
