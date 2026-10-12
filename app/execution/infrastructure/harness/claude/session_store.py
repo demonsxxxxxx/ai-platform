@@ -4,11 +4,17 @@ import asyncio
 import json
 import math
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
+from app.context.api import (
+    MAX_PROVIDER_SESSION_CALLBACK_RESPONSE_BYTES as MAX_PROVIDER_SESSION_RESPONSE_BYTES,
+    PROVIDER_SESSION_READ_VIEW_HEADER,
+    PROVIDER_SESSION_CHILD_READ_VIEW,
+)
 
 DEFAULT_PROVIDER_SESSION_TIMEOUT_SECONDS = 10.0
 MAX_PROVIDER_SESSION_TIMEOUT_SECONDS = 30.0
@@ -17,7 +23,6 @@ MAX_PROVIDER_SESSION_REQUEST_BYTES = 2 * 1024 * 1024
 # Existing host callback limits; adapter chunks SDK batches without widening them.
 MAX_PROVIDER_SESSION_APPEND_ENTRIES = 128
 MAX_PROVIDER_SESSION_APPEND_ENTRY_BYTES = 256 * 1024
-MAX_PROVIDER_SESSION_RESPONSE_BYTES = 8 * 1024 * 1024 + 64 * 1024
 
 
 class ClaudeSessionStoreTransportError(RuntimeError):
@@ -161,6 +166,9 @@ class ClaudeSessionStoreAdapter:
         return payload
 
     async def _request(self, payload: dict[str, Any]) -> dict[str, Any]:
+        headers = {"X-AI-Platform-Callback-Token": self._callback_token}
+        if payload["action"] == "list_subkeys":
+            headers[PROVIDER_SESSION_READ_VIEW_HEADER] = PROVIDER_SESSION_CHILD_READ_VIEW
         try:
             async with httpx.AsyncClient(
                 timeout=self._timeout_seconds,
@@ -170,7 +178,7 @@ class ClaudeSessionStoreAdapter:
                     "POST",
                     self._callback_url,
                     json=payload,
-                    headers={"X-AI-Platform-Callback-Token": self._callback_token},
+                    headers=headers,
                 ) as response:
                     if response.status_code >= 400:
                         raise ClaudeSessionStoreTransportError(
@@ -198,6 +206,8 @@ class ClaudeSessionStoreAdapter:
             raise ClaudeSessionStoreTransportError("provider_session_response_invalid") from exc
         if not isinstance(body, dict) or body.get("action") != payload["action"]:
             raise ClaudeSessionStoreTransportError("provider_session_response_invalid")
+        if "child_entries" in body and payload["action"] != "list_subkeys":
+            raise ClaudeSessionStoreTransportError("provider_session_response_invalid")
         sequence = body.get("next_sequence")
         if type(sequence) is not int or sequence < 1:
             raise ClaudeSessionStoreTransportError("provider_session_response_invalid")
@@ -221,19 +231,22 @@ class ClaudeSessionStoreAdapter:
         subpath = self._subpath(key)
         cache_key = (session_id, subpath)
         if cache_key in self._load_cache:
-            return self._load_cache[cache_key]
+            # SDK writes each child synchronously after awaiting load. A cache
+            # hit must still let delivered task cancellation stop materialization.
+            await asyncio.sleep(0)
+            return deepcopy(self._load_cache[cache_key])
         body = await self._request(self._payload(action="load", key=key))
         sequence = body["next_sequence"]
         if self._next_sequence is not None and sequence != self._next_sequence:
             raise ClaudeSessionStoreTransportError("provider_session_sequence_conflict")
-        self._next_sequence = sequence
-        self._completed_sequence = sequence - 1
         entries = body.get("entries")
         if not isinstance(entries, list) or any(not isinstance(entry, dict) for entry in entries):
             raise ClaudeSessionStoreTransportError("provider_session_response_invalid")
         result = entries or None
+        self._next_sequence = sequence
+        self._completed_sequence = sequence - 1
         self._load_cache[cache_key] = result
-        return result
+        return deepcopy(result)
 
     def _append_input(
         self, key: Mapping[str, Any] | str, entries: Sequence[Mapping[str, Any]],
@@ -306,6 +319,7 @@ class ClaudeSessionStoreAdapter:
                 frozen_key = {"session_id": session_id, "subpath": subpath}
                 pending = _PendingAppend(signature, self._append_chunks(frozen_key, frozen, entry_sizes, self._next_sequence))
                 self._pending_batch = pending
+                self._load_cache.clear()
             while pending.next_chunk < len(pending.payloads):
                 # An uncertain ACK keeps the exact chunk and expected_sequence.
                 body = await self._request(pending.payloads[pending.next_chunk])
@@ -326,16 +340,46 @@ class ClaudeSessionStoreAdapter:
             if self._provider_session_id is None:
                 raise ClaudeSessionStoreTransportError("provider_session_key_invalid")
             key = {"session_id": self._provider_session_id}
+        session_id = self._session_id(key)
         body = await self._request(self._payload(action="list_subkeys", key=key))
         if self._next_sequence is not None and body["next_sequence"] != self._next_sequence:
             raise ClaudeSessionStoreTransportError("provider_session_sequence_conflict")
-        self._next_sequence = body["next_sequence"]
-        self._completed_sequence = self._next_sequence - 1
         subpaths = body.get("subpaths")
         if not isinstance(subpaths, list) or any(
             not isinstance(subpath, str) for subpath in subpaths
         ):
             raise ClaudeSessionStoreTransportError("provider_session_response_invalid")
+        if "child_entries" in body:
+            children = body["child_entries"]
+            if (
+                not isinstance(children, dict)
+                or len(subpaths) > 4096
+                or len(set(subpaths)) != len(subpaths)
+                or set(children) != set(subpaths)
+                or any(not path or path != path.strip() or len(path) > 512 for path in subpaths)
+                or any(
+                    not isinstance(entries, list) or not entries
+                    or any(not isinstance(entry, dict) for entry in entries)
+                    for entries in children.values()
+                )
+            ):
+                raise ClaudeSessionStoreTransportError("provider_session_response_invalid")
+            child_count = sum(len(entries) for entries in children.values())
+            main_key = (session_id, None)
+            if (
+                child_count > 4096
+                or body["next_sequence"] > 4097
+                or child_count > body["next_sequence"] - 1
+                or (
+                    main_key in self._load_cache
+                    and child_count + len(self._load_cache[main_key] or []) != body["next_sequence"] - 1
+                )
+            ):
+                raise ClaudeSessionStoreTransportError("provider_session_response_invalid")
+            # Install only a complete validated view from this locked read.
+            self._load_cache.update({(session_id, path): entries for path, entries in children.items()})
+        self._next_sequence = body["next_sequence"]
+        self._completed_sequence = self._next_sequence - 1
         return subpaths
 
 

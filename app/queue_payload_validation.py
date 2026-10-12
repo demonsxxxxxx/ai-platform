@@ -11,10 +11,9 @@ def _safe_error_token(value: object, fallback: str, max_length: int = 120) -> st
 
 
 def queue_payload_invalid_detail(exc: ValueError) -> dict[str, Any]:
-    base = {
-        "code": "queue_payload_invalid",
-        "submission_disposition": "rejected_before_persist",
-    }
+    """Project bounded validation errors without claiming a persistence phase."""
+
+    base = {"code": "queue_payload_invalid"}
     errors_fn = getattr(exc, "errors", None)
     if not callable(errors_fn):
         return base

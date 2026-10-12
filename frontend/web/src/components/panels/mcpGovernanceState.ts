@@ -18,6 +18,7 @@ export interface McpGovernanceStateInput {
   servers: MCPServerResponse[];
   total: number;
   loadError?: string | null;
+  permissionDenied?: boolean;
 }
 
 export interface McpGovernanceState {
@@ -39,8 +40,9 @@ export function resolveMcpGovernanceState({
   servers,
   total,
   loadError,
+  permissionDenied: backendPermissionDenied = false,
 }: McpGovernanceStateInput): McpGovernanceState {
-  const permissionDenied = isPermissionError(loadError);
+  const permissionDenied = backendPermissionDenied || isPermissionError(loadError);
   const hasDirectoryRows = servers.length > 0 || total > 0;
   const projectionBacked = !loadError;
   const pageState = resolveFrontendGovernanceState({

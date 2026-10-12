@@ -1,15 +1,18 @@
-import asyncio
 import re
-from collections.abc import Awaitable, Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 
 from app.execution.api import public_answer_failure_reason
-from app.kernel.memory_redaction import sanitizer_unstable_suffix_length
+from app.kernel.memory_redaction import (
+    SecretQuoteContinuation,
+    redact_secret_assignments,
+    sanitizer_unfinished_quote,
+    sanitizer_unstable_assignment_suffix_length,
+    sanitizer_unstable_suffix_length,
+)
 
 
 _RECOVERED_TEXT = "[content unavailable]"
-_PUBLIC_ANSWER_COALESCE_SECONDS = 0.05
-_PUBLIC_ANSWER_MAX_CODEPOINTS = 8_192
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,117 +21,6 @@ class PublicAnswerFinish:
 
     chunks: tuple[str, ...]
     final_text: str
-
-
-class PublicAnswerCoalescer:
-    """Coalesce adjacent safe answer text before event identity allocation."""
-
-    def __init__(
-        self,
-        emit: Callable[[str], Awaitable[bool]],
-        *,
-        window_seconds: float = _PUBLIC_ANSWER_COALESCE_SECONDS,
-    ) -> None:
-        if window_seconds < 0:
-            raise ValueError("answer coalescing window must be non-negative")
-        self._emit = emit
-        self._window_seconds = window_seconds
-        self._pending = ""
-        self._source_identity: object = None
-        self._has_source = False
-        self._flush_task: asyncio.Task[None] | None = None
-        self._lock = asyncio.Lock()
-        self._closed = False
-        self._error: BaseException | None = None
-        self._emission_unacknowledged = False
-
-    async def push(self, text: object, *, source_identity: object = None) -> bool:
-        if not isinstance(text, str) or not text:
-            return True
-        async with self._lock:
-            self._raise_if_failed()
-            if self._closed:
-                return False
-            if (
-                self._pending
-                and self._has_source
-                and source_identity != self._source_identity
-                and not await self._flush_locked()
-            ):
-                return False
-            remaining = text
-            while remaining:
-                if not self._pending:
-                    self._source_identity = source_identity
-                    self._has_source = True
-                available = _PUBLIC_ANSWER_MAX_CODEPOINTS - len(self._pending)
-                self._pending += remaining[:available]
-                remaining = remaining[available:]
-                if len(self._pending) == _PUBLIC_ANSWER_MAX_CODEPOINTS:
-                    if not await self._flush_locked():
-                        return False
-            if self._pending and self._flush_task is None:
-                self._flush_task = asyncio.create_task(self._flush_after_window())
-            return True
-
-    async def flush(self) -> bool:
-        async with self._lock:
-            self._raise_if_failed()
-            return await self._flush_locked()
-
-    async def close(self, *, flush: bool) -> bool:
-        self._closed = True
-        task = self._flush_task
-        self._flush_task = None
-        if task is not None and task is not asyncio.current_task():
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-        async with self._lock:
-            self._raise_if_failed()
-            if self._emission_unacknowledged:
-                return False
-            if flush:
-                return await self._flush_locked()
-            self._pending = ""
-            self._has_source = False
-            return True
-
-    async def _flush_after_window(self) -> None:
-        try:
-            await asyncio.sleep(self._window_seconds)
-            await self.flush()
-        except asyncio.CancelledError as error:
-            task = asyncio.current_task()
-            if task is None or task.cancelling() == 0:
-                self._error = error
-        except Exception as error:  # noqa: BLE001 - re-raised at the owner barrier.
-            self._error = error
-        finally:
-            if self._flush_task is asyncio.current_task():
-                self._flush_task = None
-
-    def _raise_if_failed(self) -> None:
-        if self._error is not None:
-            raise self._error
-
-    async def _flush_locked(self) -> bool:
-        if not self._pending:
-            self._has_source = False
-            return True
-        text = self._pending
-        self._pending = ""
-        self._has_source = False
-        try:
-            accepted = await self._emit(text)
-        except asyncio.CancelledError:
-            self._emission_unacknowledged = True
-            raise
-        if not accepted:
-            self._closed = True
-        return accepted
 
 
 class PublicAnswerStreamGate:
@@ -151,6 +43,7 @@ class PublicAnswerStreamGate:
         self._tokens: tuple[str, ...] = ()
         self._private_tokens: tuple[str, ...] = ()
         self._pending = ""
+        self._discarded_quote: SecretQuoteContinuation | None = None
         self._pending_source_spans: list[tuple[object, int]] = []
         self._published_suffix = ""
         self._public_answer_chunks: list[str] = []
@@ -211,11 +104,22 @@ class PublicAnswerStreamGate:
         if not text:
             return ()
         self._accepted_text = True
+        if self._discarded_quote is not None:
+            consumed, self._discarded_quote = self._discarded_quote.consume(text)
+            text = text[consumed:]
+            if not text:
+                return ()
         raw_candidate = self._pending + text
         projected_candidate = self._project(raw_candidate, recoverable=True)
         if projected_candidate is None:
+            self._retain_quote_after_omission(raw_candidate)
             return self._emit(_RECOVERED_TEXT)
         raw_hold = max(
+            # Exact replacements cannot make the surrounding raw quote grammar
+            # stable, even when a known token occurs elsewhere in this fragment.
+            sanitizer_unstable_assignment_suffix_length(
+                raw_candidate, max_chars=self._max_private_token_chars
+            ),
             (
                 0
                 if any(token in raw_candidate for token in self._tokens)
@@ -225,12 +129,23 @@ class PublicAnswerStreamGate:
         )
         if raw_hold:
             if raw_hold > self._max_private_token_chars:
+                unfinished_quote = sanitizer_unfinished_quote(raw_candidate)
                 self._omit("sanitizer_bound_exceeded")
-                return self._emit(_RECOVERED_TEXT)
+                prefix = ""
+                if unfinished_quote is not None:
+                    start, self._discarded_quote = unfinished_quote
+                    prefix = self._project_across_publication_boundary(
+                        raw_candidate[:start], recoverable=True
+                    ) or ""
+                emitted = self._project_across_publication_boundary(
+                    prefix + _RECOVERED_TEXT, recoverable=True
+                )
+                return self._emit(emitted or "")
             stable_candidate = self._project(
                 raw_candidate[:-raw_hold], recoverable=True
             )
             if stable_candidate is None:
+                self._retain_quote_after_omission(raw_candidate)
                 return self._emit(_RECOVERED_TEXT)
             self._pending = raw_candidate[-raw_hold:]
             emitted = self._project_across_publication_boundary(
@@ -238,12 +153,14 @@ class PublicAnswerStreamGate:
             )
             if emitted is None:
                 self._pending = ""
+                self._retain_quote_after_omission(raw_candidate)
                 emitted = _RECOVERED_TEXT
             return self._emit(emitted)
         candidate = projected_candidate
         held_chars = self._private_prefix_chars(candidate)
         if held_chars > self._max_private_token_chars:
             self._omit("private_token_prefix_overflow")
+            self._retain_quote_after_omission(candidate)
             return self._emit(_RECOVERED_TEXT)
         emitted = candidate[:-held_chars] if held_chars else candidate
         self._pending = candidate[-held_chars:] if held_chars else ""
@@ -252,8 +169,14 @@ class PublicAnswerStreamGate:
         )
         if emitted is None:
             self._pending = ""
+            self._retain_quote_after_omission(raw_candidate)
             emitted = _RECOVERED_TEXT
         return self._emit(emitted)
+
+    def _retain_quote_after_omission(self, raw_candidate: str) -> None:
+        unfinished_quote = sanitizer_unfinished_quote(raw_candidate)
+        if unfinished_quote is not None:
+            self._discarded_quote = unfinished_quote[1]
 
     def accept_routed(
         self,
@@ -369,12 +292,18 @@ class PublicAnswerStreamGate:
 
         finished = self.finish(final_text=effective_final_text, release=release)
         if effective_final_text != final_text:
-            routed = self._route_finish_chunks(
-                finished.chunks,
-                spans,
-                fallback_source_identity,
-                expected_text=pending,
-            )
+            known_segments, matched = self._known_token_segments(pending, spans)
+            if matched and "".join(finished.chunks) == "".join(
+                text for _owner, text in known_segments
+            ):
+                routed = tuple(known_segments)
+            else:
+                routed = self._route_finish_chunks(
+                    finished.chunks,
+                    spans,
+                    fallback_source_identity,
+                    expected_text=pending,
+                )
             if routed is None:
                 del self._public_answer_chunks[published_count:]
                 self._published_suffix = published_suffix
@@ -478,14 +407,6 @@ class PublicAnswerStreamGate:
         return prefix, tail
 
     @staticmethod
-    def _prefix_spans(
-        spans: list[tuple[object, int]],
-        prefix_length: int,
-    ) -> list[tuple[object, int]]:
-        prefix, _tail = PublicAnswerStreamGate._split_spans(spans, prefix_length)
-        return prefix
-
-    @staticmethod
     def _span_lengths(segments: list[tuple[object, str]]) -> list[tuple[object, int]]:
         spans: list[tuple[object, int]] = []
         for owner, value in segments:
@@ -574,12 +495,10 @@ class PublicAnswerStreamGate:
         self,
         private_replacements: Mapping[str, str] | None = None,
         *,
-        capability_boundary: bool = False,
         invocation_key: tuple[str, str, str],
     ) -> None:
         """Register invocation identities without suppressing Assistant text."""
 
-        del capability_boundary
         if self._finished:
             return
         if private_replacements is not None:
@@ -619,38 +538,14 @@ class PublicAnswerStreamGate:
                 return
         if self._failed:
             return
-        prior_pending = self._pending
-        prior_spans = list(self._pending_source_spans)
-        if prior_spans and sum(length for _owner, length in prior_spans) != len(
-            prior_pending
-        ):
+        if self._pending_source_spans and sum(
+            length for _owner, length in self._pending_source_spans
+        ) != len(self._pending):
             self._fail("upstream_projection_failed")
             return
-        pending = self._project(self._pending, recoverable=True)
-        if pending is None:
-            self._pending = ""
-            self._pending_source_spans = []
-            return
-        if prior_spans and all(
-            owner == prior_spans[0][0] for owner, _ in prior_spans
-        ):
-            self._pending_source_spans = [(prior_spans[0][0], len(pending))]
-        elif len(pending) == len(prior_pending) and pending == prior_pending:
-            self._pending_source_spans = prior_spans
-        else:
-            routed_pending, matched = self._known_token_segments(
-                prior_pending,
-                prior_spans,
-            )
-            routed_text = "".join(value for _owner, value in routed_pending)
-            if matched and routed_text == pending:
-                self._pending_source_spans = self._span_lengths(routed_pending)
-            elif prior_spans:
-                self._fail("upstream_projection_failed")
-                return
-            else:
-                self._pending_source_spans = []
-        self._pending = pending
+        # The unpublished bounded suffix still owns its original syntax and
+        # source spans. Project it with the current registry only when releasing
+        # it; rendering an open quote here would erase its continuation context.
 
     def release_after_verified_capability(
         self,
@@ -685,6 +580,10 @@ class PublicAnswerStreamGate:
         if not isinstance(final_text, str):
             self._fail("invalid_input")
             return self._discard()
+        if self._discarded_quote is not None:
+            self._discarded_quote = None
+            self._finished = True
+            return PublicAnswerFinish((), published_text)
         pending = self._pending
         safe_final = self._project(final_text, recoverable=True)
         if safe_final is None:
@@ -769,6 +668,7 @@ class PublicAnswerStreamGate:
         )
 
     def _project(self, text: str, *, recoverable: bool = False) -> str | None:
+        text = redact_secret_assignments(text)
         candidate = (
             self._replacement_pattern.sub(
                 lambda match: (
@@ -883,10 +783,12 @@ class PublicAnswerStreamGate:
                 public_answer_failure_reason(reason) or "upstream_projection_failed"
             )
         self._failed = True
+        self._discarded_quote = None
         self._pending = ""
         self._pending_source_spans = []
 
     def _discard(self) -> PublicAnswerFinish:
+        self._discarded_quote = None
         self._pending = ""
         self._pending_source_spans = []
         self._finished = True
