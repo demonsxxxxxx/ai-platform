@@ -14,14 +14,6 @@ from app.skills.catalog import (
     render_authorized_skill_catalog_prompt,
 )
 
-_TRANSLATION_TARGET_ALIASES = {
-    "english": "English",
-    "英文": "English",
-    "en": "English",
-    "chinese": "Chinese",
-    "中文": "Chinese",
-    "zh": "Chinese",
-}
 _MAX_CURRENT_PROMPT_BYTES = 16384
 _MAX_FILE_LIST_PROMPT_BYTES = 4096
 _MAX_CONTEXT_SUMMARY_PROMPT_BYTES = 2048
@@ -57,16 +49,6 @@ def _current_request(user_message: str) -> str:
     if len(user_message.encode("utf-8")) > _MAX_CURRENT_PROMPT_BYTES:
         raise CurrentRequestTooLargeError("current_request_too_large")
     return user_message
-
-
-def translation_target_language(user_message: str) -> str:
-    """Map the supported user target-language spelling to the sandbox argument."""
-
-    lowered = user_message.casefold()
-    for token, target in _TRANSLATION_TARGET_ALIASES.items():
-        if token.casefold() in lowered:
-            return target
-    return "English"
 
 
 def context_pack_prompt_section(context_pack: dict[str, Any] | None) -> str:

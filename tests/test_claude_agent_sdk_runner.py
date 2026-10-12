@@ -60,24 +60,18 @@ def test_sdk_timeout_is_unbounded_by_default_and_bounded_when_configured():
     assert (
         _sdk_run_timeout_seconds(
             types.SimpleNamespace(),
-            sandbox_brokered=True,
-            full_access=False,
         )
         is None
     )
     assert (
         _sdk_run_timeout_seconds(
             types.SimpleNamespace(claude_agent_sdk_timeout_seconds=45),
-            sandbox_brokered=True,
-            full_access=False,
         )
         == 45.0
     )
     assert (
         _sdk_run_timeout_seconds(
             types.SimpleNamespace(claude_agent_sdk_timeout_seconds=0),
-            sandbox_brokered=True,
-            full_access=True,
         )
         is None
     )
@@ -5654,10 +5648,11 @@ async def test_sdk_structured_output_does_not_control_plain_text_terminal(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("character", ["a", "界"])
 async def test_sdk_preserves_gate_output_across_8192_candidate_boundary(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, character
 ):
-    answer = "a" * 8_182 + " token-count "
+    answer = character * 8_182 + " token-count "
     captured, candidates, deltas = {}, [], []
     monkeypatch.setitem(
         sys.modules,
@@ -5702,14 +5697,21 @@ async def test_sdk_preserves_gate_output_across_8192_candidate_boundary(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("callback_outcome", ["reject", "raise", "cancel"])
 async def test_sdk_rejected_part_candidate_cannot_be_reported_as_success(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, callback_outcome
 ):
     captured, candidates, deltas = {}, [], []
 
     def reject_part_batch(batch):
         candidates.extend(batch)
-        return not any(event.event_type == "message.part.delta" for event in batch)
+        if any(event.event_type == "message.part.delta" for event in batch):
+            if callback_outcome == "raise":
+                raise RuntimeError("synthetic answer callback failure")
+            if callback_outcome == "cancel":
+                raise asyncio.CancelledError("synthetic answer callback cancellation")
+            return False
+        return True
 
     monkeypatch.setitem(
         sys.modules,

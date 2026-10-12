@@ -50,7 +50,6 @@ from app.executors.claude.capability_policy import (
 from app.executors.claude.prompts import (
     build_skill_prompt as build_skill_prompt,
     context_pack_prompt_section as _prompt_context_pack_prompt_section,
-    translation_target_language as _prompt_translation_target_language,
 )
 from app.bootstrap.claude_client import (
     prepare_claude_client_close,
@@ -105,9 +104,6 @@ from app.skills.execution_profiles import (
 from app.tool_policy import evaluate_tool_policy
 
 _context_pack_prompt_section = _prompt_context_pack_prompt_section
-_translation_target_language = _prompt_translation_target_language
-
-
 _SDK_ENV_ALLOWLIST = {
     "PATH",
     "PATHEXT",
@@ -127,22 +123,12 @@ _SDK_AVAILABLE_TOOLS = [*_SDK_BASE_AVAILABLE_TOOLS, *_SDK_SUBAGENT_TOOLS]
 _SDK_AUTO_ALLOWED_TOOLS = {"Read", "Glob", "LS"}
 _SDK_PLATFORM_DISALLOWED_TOOLS = ["Write", "Edit", "NotebookEdit"]
 _SDK_LOCAL_READ_ONLY_TOOLS = ("Read", "Glob", "LS")
-_SDK_BROKERED_BUILTIN_TOOLS = (
-    "Bash",
-    "Write",
-    "Edit",
-    "NotebookEdit",
-    "Agent",
-    "WebFetch",
-    "WebSearch",
-)
 _SDK_SELECTED_SKILL_NOT_AUTHORIZED = "claude_agent_sdk_selected_skill_not_authorized"
 _SDK_TURN_LIMIT_EXCEEDED = "claude_agent_sdk_turn_limit_exceeded"
 _SDK_CANCELLED = "claude_agent_sdk_cancelled"
 _SDK_TIMEOUT = "claude_agent_sdk_timeout"
 _SDK_MISSING_STRUCTURED_TERMINAL = "claude_agent_sdk_missing_structured_terminal"
 _SDK_DELIVERY_MANIFEST_INVALID = "claude_agent_sdk_delivery_manifest_invalid"
-_MAX_PUBLIC_DELTA_CHARS = 8_192
 _SDK_TOOL_ADMISSION_FAILED = "claude_agent_sdk_tool_admission_failed"
 _SDK_EXECUTION_RECEIPT_INCOMPLETE = "claude_agent_sdk_execution_receipt_incomplete"
 _SDK_UPSTREAM_ERROR = "claude_agent_sdk_upstream_error"
@@ -196,7 +182,6 @@ _UPSTREAM_ERROR_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _SDK_PROJECT_SETTING_FILES = (".claude/settings.json", ".claude/settings.local.json")
-_SDK_FULL_ACCESS_MIN_TIMEOUT_SECONDS = 1800.0
 _DELIVERY_MANIFEST_MAX_FILES = 128
 _DELIVERY_MANIFEST_MAX_PATH_CHARS = 1_024
 _DELIVERY_MANIFEST_MAX_DISPLAY_NAME_CHARS = 255
@@ -205,12 +190,7 @@ _SDK_CLEANUP_TIMEOUT_SECONDS = 30.0
 _logger = logging.getLogger(__name__)
 
 
-def _sdk_run_timeout_seconds(
-    settings: object,
-    *,
-    sandbox_brokered: bool,
-    full_access: bool,
-) -> float | None:
+def _sdk_run_timeout_seconds(settings: object) -> float | None:
     """Return the bounded SDK execution time, or None for unbounded runs.
 
     A configured value <= 0 disables the internal SDK execution deadline
@@ -1118,7 +1098,6 @@ _WORKSPACE_SEARCH_MAX_OUTPUT_LINES = 1_000
 _WORKSPACE_SEARCH_MAX_OUTPUT_BYTES = 256 * 1024
 _WORKSPACE_GREP_MAX_HEAD_LIMIT = 1_000
 _WORKSPACE_SEARCH_OUTPUT_NOTICE = "[ai-platform filtered or truncated search output]"
-_GLOB_PARENT_COMPONENT = re.compile(r"(?:^|[/,{(|])\.\.(?=$|[/,})|])")
 _NATIVE_TOOL_PROXY_SCRIPT = (
     Path(__file__).resolve().parents[1] / "runtime" / "sandbox" / "native_tool_proxy.py"
 )
@@ -2284,10 +2263,8 @@ async def run_claude_agent_sdk(
     )
     if sandbox_brokered and internal_platform_subjects:
         strict_tool_lifecycle_names.add("MCP")
-    sandbox_bash_lifecycle_governed = "Bash" in strict_tool_lifecycle_names
     governed_builtin_lifecycle_rejected = False
     read_only_lifecycle_rejected = False
-    actual_sandbox_bash_invocation_observed = False
     private_capability_tokens = {
         identity
         for kind, identity in capability_plan.available
@@ -2400,11 +2377,7 @@ async def run_claude_agent_sdk(
             )
 
     sdk_prompt = prompt
-    timeout_seconds = _sdk_run_timeout_seconds(
-        settings,
-        sandbox_brokered=sandbox_brokered,
-        full_access=full_access,
-    )
+    timeout_seconds = _sdk_run_timeout_seconds(settings)
 
     agent_event_adapter = (
         ClaudeSdkAgentEventAdapter(
@@ -2519,7 +2492,6 @@ async def run_claude_agent_sdk(
                 )
             answer_stream_gate.seal(
                 lifecycle_replacements,
-                capability_boundary=True,
                 invocation_key=invocation_key,
             )
         try:
@@ -2591,7 +2563,6 @@ async def run_claude_agent_sdk(
     ) -> bool:
         """Report a private actual-tool fact and enforce strict evidence where needed."""
 
-        nonlocal actual_sandbox_bash_invocation_observed
         nonlocal governed_builtin_lifecycle_rejected
 
         name = str(tool_name or "").strip()
@@ -2606,9 +2577,6 @@ async def run_claude_agent_sdk(
         is_read_only_tool = name in read_only_tool_lifecycle_names
         lifecycle_required = is_required_builtin or name in strict_tool_lifecycle_names
         lifecycle_observed = lifecycle_required or is_read_only_tool
-        is_sandbox_bash = sandbox_bash_lifecycle_governed and name == "Bash"
-        if is_sandbox_bash:
-            actual_sandbox_bash_invocation_observed = True
         if (
             not name
             or not call_id
@@ -2645,7 +2613,6 @@ async def run_claude_agent_sdk(
         if lifecycle_observed and lifecycle == "started":
             answer_stream_gate.seal(
                 {call_id: replacement_for_private_token(call_id)},
-                capability_boundary=True,
                 invocation_key=gate_key,
             )
         if on_tool_lifecycle is None:
