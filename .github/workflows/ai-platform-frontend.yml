@@ -19,6 +19,7 @@ concurrency:
 env:
   FRONTEND_NODE_VERSION: "22.23.2"
   FRONTEND_PYTHON_VERSION: "3.13.14"
+  UV_VERSION: "0.12.1"
 
 jobs:
   frontend:
@@ -72,10 +73,16 @@ jobs:
         working-directory: frontend/web
         run: corepack pnpm install --frozen-lockfile
 
+      - name: Set up uv for frontend contracts
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+
       - name: Install Python test dependencies
         shell: pwsh
         run: |
-          python -m pip install pytest pyyaml
+          python tools/frontend_ci_dependencies.py --subset windows-contracts
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           @'
           import importlib.metadata
           import re
@@ -260,9 +267,15 @@ jobs:
         with:
           python-version: ${{ env.FRONTEND_PYTHON_VERSION }}
 
+      - name: Set up uv for Linux contracts
+        if: steps.image-scope.outputs.build == 'true'
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+
       - name: Install Linux contract test dependencies
         if: steps.image-scope.outputs.build == 'true'
-        run: python -m pip install pytest
+        run: python tools/frontend_ci_dependencies.py --subset linux-contracts
 
       - name: Verify Linux frontend healthcheck contract
         if: steps.image-scope.outputs.build == 'true'

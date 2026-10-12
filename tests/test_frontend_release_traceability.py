@@ -37,7 +37,7 @@ EXPECTED_CI_VERIFY = (
     "&& eslint . && tsc -b && vite build "
     "&& node scripts/write-build-provenance.mjs"
 )
-EXPECTED_PYTHON_DEPENDENCIES = "python -m pip install pytest pyyaml"
+EXPECTED_PYTHON_DEPENDENCIES = "python tools/frontend_ci_dependencies.py --subset windows-contracts"
 FRONTEND_HEALTHCHECK_FILE_PATHS = (
     "/usr/share/nginx/html/index.html",
     "/usr/share/nginx/html/manifest.json",
@@ -124,7 +124,7 @@ def test_frontend_release_traceability_records_ci_contract_without_local_paths()
     assert trace["workflow"]["enforced_step_commands"] == {
         "Verify static frontend Python contracts": EXPECTED_WORKFLOW_PYTEST,
         "Verify static frontend deploy helper": "python tools/deploy_frontend_static.py --help",
-        "Install Linux contract test dependencies": "python -m pip install pytest",
+        "Install Linux contract test dependencies": "python tools/frontend_ci_dependencies.py --subset linux-contracts",
         "Verify Linux frontend healthcheck contract": EXPECTED_LINUX_WORKFLOW_PYTEST,
     }
     assert trace["workflow"]["missing_step_commands"] == []

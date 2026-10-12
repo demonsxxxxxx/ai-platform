@@ -88,6 +88,13 @@ Rules:
    `not_affected`; they do not disappear from branch protection.
 9. CI success is CI evidence only.
 
+Frontend Python contract jobs use the existing pinned uv to export `uv.lock`
+with `--locked`, then install only their pytest/PyYAML subset and applicable
+transitive dependencies under those exported constraints. Installation verifies
+the selected distributions against the lock; Windows-only dependencies remain
+selected by platform markers. This candidate dependency source is separate from
+the accepted-base trusted governance dependency allowlist.
+
 ## 5. Runtime readiness boundary
 
 Code in `app/` exposes readiness only when it observes the running process or an

@@ -144,7 +144,7 @@ def test_packaged_image_jobs_have_no_publish_deploy_or_secret_authority():
     frontend_report_condition = "if: steps.image-scope.outputs.build != 'true'"
     for image_job, build_condition, report_condition, build_step_count in (
         (backend_image, backend_build_condition, backend_report_condition, 6),
-        (frontend_image, frontend_build_condition, frontend_report_condition, 8),
+        (frontend_image, frontend_build_condition, frontend_report_condition, 9),
     ):
         conditions = [
             line.strip()
@@ -156,6 +156,14 @@ def test_packaged_image_jobs_have_no_publish_deploy_or_secret_authority():
         assert set(conditions) == {build_condition, report_condition}
         assert image_job.index("id: image-scope") < image_job.index(report_condition)
         assert image_job.index(report_condition) < image_job.index(build_condition)
+    # The locked Linux dependency installer adds one conditional setup action;
+    # it must remain inside the same build-only authority boundary.
+    uv_setup = frontend_image.split("- name: Set up uv for Linux contracts", 1)[1].split(
+        "- name: Install Linux contract test dependencies", 1
+    )[0]
+    assert frontend_build_condition in uv_setup
+    assert "uses: astral-sh/setup-uv@" in uv_setup
+    assert "version: ${{ env.UV_VERSION }}" in uv_setup
     assert "PIP_INDEX_URL" not in backend_image
     assert "PIP_TRUSTED_HOST" not in backend_image
     for image_job in (backend_image, frontend_image):
