@@ -242,7 +242,14 @@ The barriers remain separate:
   emitted at most once; active store calls indicate an incomplete observation.
   `sdk_disconnect_flush` measures the existing combined disconnect/store fallback
   on early exit or cancellation. Neither measures post-settlement resource teardown.
-- `executor_heartbeat_drain`: join the supervisor heartbeat and active progress;
+- `executor_heartbeat_drain`: join the supervisor heartbeat and active progress.
+  After a normal runner return (not timeout) with no observed stream failure,
+  retire the pure supervisor lease heartbeat by cancellation and join the sender's
+  actual completion; it carries no answer or capability receipt. A late host
+  renewal is fenced by exact Run/Attempt/owner and the terminal receipt. A sender
+  that resists cancellation still delays this join. API cancellation, timeout,
+  runner exceptions and already-observed delivery failure retain the conservative
+  drain/error path; retirement does not clear an existing failure;
   `executor_public_stream_drain`: close the buffered public callback stream;
   the preceding final phase callback already flushes/waits for its receipt, so
   a small close span does not exclude earlier callback backlog;
