@@ -2761,8 +2761,13 @@ async def test_verified_runtime_stop_failure_remains_eligible_for_cleanup(monkey
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("terminal_stage_logs")
 @pytest.mark.parametrize("stop_status", ("stopped", "not_found"))
-async def test_release_helper_stops_provider_between_claim_and_finalize_transactions(monkeypatch, stop_status):
+async def test_release_helper_stops_provider_between_claim_and_finalize_transactions(monkeypatch, caplog, stop_status):
+    from app.platform import tracing
+    now = [10.0]
+    monkeypatch.setattr(tracing, "monotonic", lambda: now[0])
+    caplog.set_level("INFO")
     calls = []
     transaction_state = {"active": False}
     connection = object()
@@ -2775,6 +2780,7 @@ async def test_release_helper_stops_provider_between_claim_and_finalize_transact
         try:
             yield connection
         finally:
+            now[0] += 2.0
             transaction_state["active"] = False
             calls.append("transaction_exit")
 
@@ -2782,6 +2788,7 @@ async def test_release_helper_stops_provider_between_claim_and_finalize_transact
         async def stop(self, lease, *, reason):
             assert transaction_state["active"] is False
             calls.append(("stop", lease, reason))
+            now[0] += 0.5
             return SimpleNamespace(status=stop_status)
 
     async def has_claim(conn, **kwargs):
@@ -2839,6 +2846,11 @@ async def test_release_helper_stops_provider_between_claim_and_finalize_transact
             },
         ),
         "transaction_exit",
+    ]
+
+    records = [record for record in caplog.records if record.msg == "run_terminal_stage"]
+    assert [(record.terminal_phase, record.terminal_phase_duration_ms) for record in records] == [
+        ("reconciler_provider_stop", 500),
     ]
 
 

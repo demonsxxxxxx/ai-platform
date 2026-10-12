@@ -4777,6 +4777,13 @@ async def test_settled_runner_retires_heartbeat_before_terminal(tmp_path, monkey
                 heartbeat_cancelled.set()
         if any(event.get("type") == "message.delta" for event in payload.get("events", [])):
             delta_delivered.set()
+        if any(
+            event.get("type") == "agent_public_progress"
+            and event.get("payload", {}).get("phase") == "sandbox_submission"
+            and event.get("payload", {}).get("lifecycle") in {"completed", "failed"}
+            for event in payload.get("events", [])
+        ):
+            now[0] += 0.75
         if payload.get("terminal_result"):
             assert heartbeat_cancelled.is_set()
             assert delta_delivered.is_set()
@@ -4804,9 +4811,10 @@ async def test_settled_runner_retires_heartbeat_before_terminal(tmp_path, monkey
     assert terminals[0].get("error_code") != "stream_delivery_exhausted"
     records = [record for record in caplog.records if record.msg == "run_terminal_stage"]
     assert [record.terminal_phase for record in records] == [
-        "executor_heartbeat_drain", "executor_public_stream_drain", "executor_terminal_callback_ack",
+        "executor_heartbeat_drain", "executor_final_phase_callback",
+        "executor_public_stream_drain", "executor_terminal_callback_ack",
     ]
-    assert [record.terminal_phase_duration_ms for record in records] == [125, 0, 500]
+    assert [record.terminal_phase_duration_ms for record in records] == [125, 750, 0, 500]
     assert all(record.terminal_phase_outcome == "ok" for record in records)
     assert all(record.terminal_status == ("succeeded" if runner_status == "completed" else "failed") for record in records)
     assert all(record.run_id == "run-a" and record.attempt_id == "qat-attempt-a" for record in records)
