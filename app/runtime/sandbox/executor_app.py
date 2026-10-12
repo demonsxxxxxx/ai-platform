@@ -45,6 +45,7 @@ from app.required_tool_contract import (
     MCP_EXECUTION_OUTCOME_UNKNOWN,
     MCP_EXECUTION_SUCCEEDED_RECEIPT_INCOMPLETE,
     MCP_EXECUTION_UNCERTAIN_ERROR_CODES,
+    MCP_TOOL_ERROR_RESULT_TRUST_BASIS,
     REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY,
     REQUIRED_CAPABILITY_EVIDENCE_KEY,
     SANDBOX_EFFECTFUL_TOOL_IDENTITIES,
@@ -1723,6 +1724,7 @@ async def _default_executor_runner(
                 binding=_evidence_binding(request),
                 tool_call_id=str(raw.get("tool_call_id") or ""),
                 lifecycle_phase=str(raw.get("lifecycle_phase") or ""),
+                tool_error_result=raw.get("trust_basis") == MCP_TOOL_ERROR_RESULT_TRUST_BASIS,
             )
         except (AttributeError, RequiredToolContractError):
             return reject_capability_evidence("capability_lifecycle_sequence_invalid")
@@ -1922,11 +1924,6 @@ async def _default_executor_runner(
     response = {
         "status": "completed" if used_sdk and not effective_error else "failed",
         "message": str(getattr(sdk_result, "message", "") or ""),
-        "answer_receipt": getattr(sdk_result, "answer_receipt", None),
-        "response_files": list(getattr(sdk_result, "response_files", []) or []),
-        "response_file_descriptors": list(
-            getattr(sdk_result, "response_file_descriptors", []) or []
-        ),
         "sdk_session_id": getattr(sdk_result, "session_id", None),
         "sdk_usage": getattr(sdk_result, "usage", {}) or {},
         "provider_session_final_sequence": getattr(sdk_result, "provider_final_sequence", None),
@@ -2006,6 +2003,12 @@ async def _default_executor_runner(
         response["capability_evidence"] = []
         response[TOOL_INVOCATION_EVIDENCE_KEY] = []
         response.pop(REQUIRED_CAPABILITY_EVIDENCE_KEY, None)
+    if response["status"] == "completed":
+        response["answer_receipt"] = getattr(sdk_result, "answer_receipt", None)
+        response["response_files"] = list(getattr(sdk_result, "response_files", []) or [])
+        response["response_file_descriptors"] = list(
+            getattr(sdk_result, "response_file_descriptors", []) or []
+        )
     return response
 
 
@@ -2812,6 +2815,7 @@ def create_executor_app(
                 progress_cleanup = asyncio.create_task(drain_active_progress())
                 await await_shutdown_task(progress_cleanup)
 
+        runner_succeeded = str(runner_result.get("status") or "").strip().lower() in {"completed", "succeeded"}
         if capability_callback_failed["value"]:
             runner_error_code = str(runner_result.get("error_code") or "")
             error_code = (
@@ -2846,9 +2850,7 @@ def create_executor_app(
                     _PlatformExecutionPhaseFact("sandbox_submission", phase_lifecycle)
                 )
             )
-        if apply_stream_delivery_failure(runner_result):
-            runner_status = "failed"
-            failed = True
+        apply_stream_delivery_failure(runner_result)
         runner_events_open["value"] = False
         positive_deadline_exceeded = timed_out and max_seconds is not None and max_seconds > 0
         mcp_deadline_error = (
@@ -2879,19 +2881,6 @@ def create_executor_app(
             if failed
             else None
         )
-        if failed:
-            existing_runtime_diagnostics = normalize_sdk_runtime_diagnostics(
-                runner_result.get("runtime_diagnostics")
-            )
-            if existing_runtime_diagnostics.get("error_code") == error_code:
-                runner_result["runtime_diagnostics"] = existing_runtime_diagnostics
-            else:
-                runner_result["runtime_diagnostics"] = _merge_runtime_diagnostics(
-                    runner_result.get("runtime_diagnostics"),
-                    error_code=error_code or "executor_failed",
-                    failure_source="sandbox_terminal_normalization",
-                    failure_stage="sandbox_submission",
-                )
         timeout_observation = (
             {
                 "requested_max_seconds": max_seconds,
@@ -2910,7 +2899,19 @@ def create_executor_app(
             failed = True
             error_code = str(runner_result["error_code"])
             error_message = str(runner_result["error_message"])
-
+        if failed:
+            existing_runtime_diagnostics = normalize_sdk_runtime_diagnostics(
+                runner_result.get("runtime_diagnostics")
+            )
+            if existing_runtime_diagnostics.get("error_code") == error_code:
+                runner_result["runtime_diagnostics"] = existing_runtime_diagnostics
+            else:
+                runner_result["runtime_diagnostics"] = _merge_runtime_diagnostics(
+                    runner_result.get("runtime_diagnostics"),
+                    error_code=error_code or "executor_failed",
+                    failure_source="sandbox_terminal_normalization",
+                    failure_stage="sandbox_submission",
+                )
         executor_model_latency_ms = _elapsed_ms(started_at)
         response: dict[str, Any] = {
             "status": runner_status if not failed else "failed",
@@ -2929,9 +2930,10 @@ def create_executor_app(
         }
         for key in (
             "message",
-            "answer_receipt",
-            "response_files",
-            "response_file_descriptors",
+            # Omit output only for our downgrade; invalid runner failures still fail validation.
+            *(() if failed and runner_succeeded else (
+                "answer_receipt", "response_files", "response_file_descriptors",
+            )),
             "sdk_usage",
             "provider_session_final_sequence",
             "sdk_used",

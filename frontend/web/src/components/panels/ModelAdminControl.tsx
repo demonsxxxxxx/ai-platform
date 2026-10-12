@@ -28,7 +28,7 @@ const MODEL_ADMIN_ERROR_MESSAGES: Record<string, string> = {
   model_connection_catalog_invalid: "上游 /v1/models 返回格式不符合兼容协议。",
   model_connection_catalog_empty: "上游 /v1/models 没有返回任何模型。",
   model_upstream_unavailable: "无法连接模型服务，请检查地址、网络和服务状态。",
-  model_catalog_revision_conflict: "模型配置已被更新，请重新获取后再发布。",
+  model_catalog_revision_conflict: "模型配置已被更新，请重新加载配置后再发布。",
   model_catalog_discovery_changed: "上游模型已变化，请重新获取后再发布。",
 };
 
@@ -224,8 +224,15 @@ export function ModelAdminControl({
       setTestState("passed");
       // Discovery owns candidates, never the editable address or credential.
       if (operation === "discover") {
+        // Only a loaded or published state owns the draft's compare-and-swap baseline.
+        // Discovery may refresh candidates, but cannot acknowledge another admin's edits.
+        if (!state || result.connection.revision !== state.connection.revision) {
+          setCatalogReceipt(null);
+          setPublishError("模型配置已被更新，未保存编辑已保留，请重新加载配置后再发布。");
+          return;
+        }
         setDraft(mergeModelCandidates(result.models, draft));
-        setCatalogReceipt({ connectionVersion: owner.connectionVersion, revision: result.connection.revision });
+        setCatalogReceipt({ connectionVersion: owner.connectionVersion, revision: state.connection.revision });
         setMessage(`已获取 ${result.models.length} 个候选模型，已有编辑已保留；保存后生效。`);
       } else {
         setMessage(`连接测试通过，上游返回 ${result.models.length} 个模型；测试不会保存配置。`);
@@ -263,10 +270,16 @@ export function ModelAdminControl({
       setPublishError("连接已修改，请先获取当前地址的模型，再保存配置。"); return;
     }
     if (!enabled.length) { setPublishError("请至少启用一个模型。"); return; }
-    const invalid = enabled.find((model) => !validTokenLimit(model.max_input_tokens)
-      || !validTokenLimit(model.max_output_tokens));
+    const invalid = available.find((model) => {
+      if (!model.enabled && model.max_input_tokens === undefined
+        && model.max_output_tokens === undefined) return false;
+      return !validTokenLimit(model.max_input_tokens) || !validTokenLimit(model.max_output_tokens);
+    });
     if (invalid) {
-      setPublishError(`请填写 ${invalid.label} 的最大输入和输出 Token（1–10,000,000）。`); return;
+      setPublishError(invalid.enabled
+        ? `请填写 ${invalid.label} 的最大输入和输出 Token（1–10,000,000）。`
+        : `请填写 ${invalid.label}（${invalid.value}）的最大输入和输出 Token（1–10,000,000 的整数），或将两项同时留空。`);
+      return;
     }
     if (enabled.filter((model) => model.is_default).length !== 1) {
       setPublishError("请在已启用模型中指定唯一默认模型。"); return;
@@ -482,11 +495,11 @@ export function ModelAdminControl({
                     <input
                       aria-label={`${model.value} 最大输入 Token`}
                       className="h-9 w-full rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg)] px-2 disabled:opacity-60"
-                      disabled={!model.enabled || busy !== null}
+                      disabled={!model.available || busy !== null}
                       min={1}
                       max={10000000}
                       onChange={(event) => updateDraft(model.id, { max_input_tokens: event.target.value ? Number(event.target.value) : undefined })}
-                      placeholder={model.enabled ? "必填" : "—"}
+                      placeholder={model.enabled ? "必填" : "可同时留空"}
                       aria-required={model.enabled}
                       type="number"
                       value={model.max_input_tokens ?? ""}
@@ -496,11 +509,11 @@ export function ModelAdminControl({
                     <input
                       aria-label={`${model.value} 最大输出 Token`}
                       className="h-9 w-full rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg)] px-2 disabled:opacity-60"
-                      disabled={!model.enabled || busy !== null}
+                      disabled={!model.available || busy !== null}
                       min={1}
                       max={10000000}
                       onChange={(event) => updateDraft(model.id, { max_output_tokens: event.target.value ? Number(event.target.value) : undefined })}
-                      placeholder={model.enabled ? "必填" : "—"}
+                      placeholder={model.enabled ? "必填" : "可同时留空"}
                       aria-required={model.enabled}
                       type="number"
                       value={model.max_output_tokens ?? ""}

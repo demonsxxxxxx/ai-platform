@@ -122,8 +122,16 @@ generation, timestamps, and reconciliation ownership in one migration.
    A successful streamed answer returns a versioned `AssistantAnswerReceipt`
    containing only `schema_version`, `message_id`, `delta_count`, `text_length`,
    and `last_delta_event_id`. Its legacy `message` is exactly empty, and failed
-   or cancelled terminals cannot carry a receipt. It never carries the full
-   answer body. The Worker
+   or cancelled terminals cannot carry a receipt or response-file references.
+   The executor admits those success-only fields after its SDK capability outcome
+   is final; an executor-owned downgrade of a successful runner outcome omits them
+   after public delivery drains. The final failure classification, SDK usage,
+   native session sequence and bounded private diagnostics remain available to
+   the terminal callback and authenticated status probe. This does not repair
+   malformed already-failed runner payloads or relax the terminal validator.
+   Rejected delivery stays failed; uncertain delivery still suppresses terminal
+   publication. No artifact or previously acknowledged answer fact is deleted.
+   The receipt never carries the full answer body. The Worker
    accepts only current-Attempt, strictly ordered v4 rows whose database and
    canonical metadata publication states are both `published`; `pending` remains
    retryable, while inconsistent or `suppressed` publication fails closed. Receipt,
@@ -221,6 +229,11 @@ generation, timestamps, and reconciliation ownership in one migration.
 7. Provider-internal recovery state is observed and reconciled; it is never
    copied into an independently writable business state.
 8. Provider stop exceptions are normalized without leaking provider details.
+   An authoritative OpenSandbox SDK absence response during connection,
+   `get_info`, or deletion returns `not_found` and clears only the matching
+   provider tracking. The existing claim-fenced release path accepts that
+   result. Untyped "not found" text, timeouts, other provider failures, and
+   runtime identity mismatches remain stop failures and retain the lease.
    Expiry compensation and admin orphan-cleanup failures write tenant-scoped
    audit outcomes while the failed lease remains a reconciliation subject.
    A lost executor probe keeps the public `sandbox_executor_lost` receipt and
