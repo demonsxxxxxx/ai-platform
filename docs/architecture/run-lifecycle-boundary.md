@@ -17,7 +17,8 @@ Run terminalization is one Runs application capability. It is not a generic
 repository utility, a transport concern, a Redis authority, a Sandbox lifecycle,
 or a compatibility feature.
 
-The target follows a domain-first modular-monolith/ports-and-adapters shape:
+The target follows a domain-first modular-monolith/ports-and-adapters shape.
+Names in this diagram describe logical roles, not the current Python port names:
 
 ```text
 HTTP transport ─┐
@@ -49,6 +50,11 @@ the current transport behavior.
 transitions through explicit ports. `bootstrap.run_lifecycle` constructs it for
 API and Worker composition; `lifecycle_postgres` owns its SQL and
 `terminalization_v4` coordinates provider lineage and committed event rows.
+The current [application ports](../../app/runs/application/lifecycle.py) are
+`RunLifecyclePersistence`, `RunEventWriter`, and `RunAuditWriter`.
+[Lifecycle composition](../../app/bootstrap/run_lifecycle.py) injects
+`PostgresRunLifecyclePersistence`, Streaming `append_event`, and Identity
+`append_audit_log`; target ledger-role names above do not introduce extra owners.
 Legacy repository lifecycle exports and human approval/parent-child recovery
 are retired. Source, tests, image and runtime acceptance remain separate.
 
@@ -58,9 +64,9 @@ are retired. Source, tests, image and runtime acceptance remain separate.
 | --- | --- | --- | --- |
 | Terminal state and decision rules | `app.runs.domain` | framework-neutral values, status classification, typed decisions, safe result policy | psycopg, FastAPI, Redis, repository calls, process settings |
 | Terminalization use cases | `app.runs.application` | commands, results, ports, transaction-scoped orchestration, cancellation/reconciliation policy | concrete adapters, `ContextVar`, service locators, routes, environment reads |
-| PostgreSQL adapter | `app.runs.infrastructure.postgres` | SQL, row locks, CAS/fencing, bounded selectors, record mapping | user-visible wording, HTTP errors, Redis calls, event/audit policy, Sandbox provider calls |
-| Durable Run-event ledger | `app.streaming.infrastructure.postgres` | validate and receipt safe event records supplied by an owning application, write `run_events` on the caller's connection, serve authorized history | Run terminal decisions, event wording, independent transaction/commit, Redis terminal authority |
-| Durable audit ledger | `app.platform.postgres.audit` | validate a generic bounded audit envelope and write `audit_logs` on the caller's connection | Runs policy, target authorization, independent transaction/commit, public projection |
+| PostgreSQL adapter | [`app.runs.infrastructure.lifecycle_postgres`](../../app/runs/infrastructure/lifecycle_postgres.py) | SQL, row locks, CAS/fencing, bounded selectors, record mapping | user-visible wording, HTTP errors, Redis calls, event/audit policy, Sandbox provider calls |
+| Durable Run-event ledger | [`app.streaming.infrastructure.run_events_postgres`](../../app/streaming/infrastructure/run_events_postgres.py) | validate and receipt safe event records supplied by an owning application, write `run_events` on the caller's connection, serve authorized history | Run terminal decisions, event wording, independent transaction/commit, Redis terminal authority |
+| Durable audit ledger | [`app.identity.infrastructure.audit_postgres`](../../app/identity/infrastructure/audit_postgres.py) | validate a generic bounded audit envelope and write `audit_logs` on the caller's connection | Runs policy, target authorization, independent transaction/commit, public projection |
 | HTTP transport | `app.runs.transport.http` | auth/input validation, command mapping, safe response/error mapping | SQL, queue/terminal decisions, concrete infrastructure, `app.bootstrap` imports |
 | Public in-process contract | `app.runs.api` | stable application commands/results/service protocol and public Run constants | adapter construction, mutable global registration, compatibility behavior |
 | API/worker composition | `app.bootstrap.api`, `app.bootstrap.worker` | construct concrete adapters once and inject a complete service graph | product rules, SQL, request handling, implicit global lookup |
@@ -127,8 +133,9 @@ The migration MUST preserve these observable semantics:
 
 1. **One Unit of Work.** A protected Run/step transition and its durable
    Run-event/audit facts use the same
-   PostgreSQL connection and transaction. `StreamingEventLedgerWriter` owns
-   `run_events`; `AuditLedgerWriter` owns `audit_logs`; neither starts or commits
+   PostgreSQL connection and transaction. The current `RunEventWriter` port uses
+   Streaming `append_event` for `run_events`; `RunAuditWriter` uses Identity
+   `append_audit_log` for `audit_logs`. Neither adapter starts or commits
    a transaction supplied by Runs.
 2. **Owning row first.** Acquire the owning Run row before dependent step or
    Attempt locks. Do not introduce a reverse lock order.
@@ -309,7 +316,7 @@ source tests prove attribution and ordering only.
 
 `bootstrap.api` constructs one `RunLifecycleService` graph and supplies it to
 Runs/Chat/Admin HTTP transports. It also supplies the Streaming-owned
-transaction-scoped event-ledger adapter, the platform audit-ledger adapter, the
+transaction-scoped event-ledger adapter, the Identity-owned audit-ledger adapter, the
 direct post-commit publisher, and the public Sandbox Runtime
 client. Transport helpers receive the service explicitly or through framework
 dependency injection whose provider reads only the application instance
@@ -343,12 +350,12 @@ The Runs lifecycle MUST NOT use:
 ## 6. Naming contract
 
 - Application boundary: `RunLifecycleService`.
-- Persistence port: `RunRepository` or a narrower capability name.
-- Concrete adapter: `PostgresRunRepository` (or narrowly named PostgreSQL
-  adapters when the repository is split).
-- Cross-owner ports: capability nouns such as `StreamingEventLedgerWriter`,
-  `AuditLedgerWriter`, `RunEventPublisher`, and
-  `SandboxRuntimeClient`.
+- Current persistence port: `RunLifecyclePersistence`; concrete adapter:
+  `PostgresRunLifecyclePersistence`.
+- Current event/audit ports: `RunEventWriter` and `RunAuditWriter`.
+- Target cross-owner roles use capability nouns such as
+  `StreamingEventLedgerWriter`, `AuditLedgerWriter`, `RunEventPublisher`, and
+  `SandboxRuntimeClient`; these role names do not claim existing Python classes.
 - Input intents: explicit commands such as `CancelRunCommand` and
   `FailRunCommand` when a structured input is required.
 - Persisted shapes end in `Record`; safe reads end in `Projection`; outcomes
