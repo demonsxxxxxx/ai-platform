@@ -302,14 +302,12 @@ async function loadHarness() {
 test("useAgent forwards only an explicit Agent profile without inheriting it", async () => {
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalSubmitChat = sessionApi.submitChat;
-  const originalMarkRead = sessionApi.markRead;
   const selectedAgentProfile = {
     agent_id: "agt_support",
   } as const;
 
   const harness = await loadHarness();
   const submissions: unknown[][] = [];
-  sessionApi.markRead = async () => {};
   sessionApi.submitChat = (async (...args) => {
     submissions.push(args);
     return {
@@ -348,17 +346,14 @@ test("useAgent forwards only an explicit Agent profile without inheriting it", a
   } finally {
     await harness.cleanup();
     sessionApi.submitChat = originalSubmitChat;
-    sessionApi.markRead = originalMarkRead;
   }
 });
 
 test("generic Chat never inherits an Agent Market binding", async () => {
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalSubmitChat = sessionApi.submitChat;
-  const originalMarkRead = sessionApi.markRead;
   const harness = await loadHarness();
   const submissions: unknown[][] = [];
-  sessionApi.markRead = async () => {};
   sessionApi.submitChat = (async (...args) => {
     submissions.push(args);
     return {
@@ -382,20 +377,17 @@ test("generic Chat never inherits an Agent Market binding", async () => {
   } finally {
     await harness.cleanup();
     sessionApi.submitChat = originalSubmitChat;
-    sessionApi.markRead = originalMarkRead;
   }
 });
 
 test("a recovered Agent Conversation keeps composer models and omits client capabilities", async () => {
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalSubmitChat = sessionApi.submitChat;
-  const originalMarkRead = sessionApi.markRead;
   const originalGet = sessionApi.get;
   const originalGetAuthoritative = sessionApi.getAuthoritative;
   const originalGetEvents = sessionApi.getEvents;
   const harness = await loadHarness();
   const submissions: unknown[][] = [];
-  sessionApi.markRead = async () => {};
   let authoritativeMode: "current" | "agent-mismatch" | "rejected" = "current";
   sessionApi.get = async (sessionId) => ({
     id: sessionId,
@@ -537,7 +529,6 @@ test("a recovered Agent Conversation keeps composer models and omits client capa
   } finally {
     await harness.cleanup();
     sessionApi.submitChat = originalSubmitChat;
-    sessionApi.markRead = originalMarkRead;
     sessionApi.get = originalGet;
     sessionApi.getAuthoritative = originalGetAuthoritative;
     sessionApi.getEvents = originalGetEvents;
@@ -551,7 +542,6 @@ test("an ordinary failed file-Skill session preserves generic continuation autho
   const originalGetAuthoritative = sessionApi.getAuthoritative;
   const originalGetEvents = sessionApi.getEvents;
   const originalGetStatus = sessionApi.getStatus;
-  const originalMarkRead = sessionApi.markRead;
   const originalSubmitChat = sessionApi.submitChat;
   const submissions: unknown[][] = [];
   const historyReads: Array<string | null> = [];
@@ -568,7 +558,6 @@ test("an ordinary failed file-Skill session preserves generic continuation autho
       },
     },
   ];
-  sessionApi.markRead = async () => {};
   sessionApi.get = async (sessionId) => ({
     id: sessionId,
     agent_id: "general-agent",
@@ -639,7 +628,6 @@ test("an ordinary failed file-Skill session preserves generic continuation autho
     sessionApi.getAuthoritative = originalGetAuthoritative;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.getStatus = originalGetStatus;
-    sessionApi.markRead = originalMarkRead;
     sessionApi.submitChat = originalSubmitChat;
     await harness.cleanup();
   }
@@ -651,13 +639,11 @@ test("required session projection failures remain fail-closed with bounded diagn
     const { sessionApi } = await import("../../../services/api/session.ts");
     const originalGet = sessionApi.get;
     const originalGetAuthoritative = sessionApi.getAuthoritative;
-    const originalMarkRead = sessionApi.markRead;
     const originalSubmitChat = sessionApi.submitChat;
     const originalConsoleError = console.error;
     const diagnostics: unknown[][] = [];
     let submissions = 0;
     console.error = (...args: unknown[]) => diagnostics.push(args);
-    sessionApi.markRead = async () => {};
     sessionApi.get = async (sessionId) => {
       if (failingRead === "session") {
         throw new ApiRequestError(
@@ -723,7 +709,6 @@ test("required session projection failures remain fail-closed with bounded diagn
       console.error = originalConsoleError;
       sessionApi.get = originalGet;
       sessionApi.getAuthoritative = originalGetAuthoritative;
-      sessionApi.markRead = originalMarkRead;
       sessionApi.submitChat = originalSubmitChat;
       await harness.cleanup();
     }
@@ -736,14 +721,12 @@ test("event history failure keeps verified generic authority for explicit retry"
   const originalGet = sessionApi.get;
   const originalGetAuthoritative = sessionApi.getAuthoritative;
   const originalGetEvents = sessionApi.getEvents;
-  const originalMarkRead = sessionApi.markRead;
   const originalSubmitChat = sessionApi.submitChat;
   const originalConsoleError = console.error;
   const diagnostics: unknown[][] = [];
   const submissions: unknown[][] = [];
   let historyAvailable = false;
   console.error = (...args: unknown[]) => diagnostics.push(args);
-  sessionApi.markRead = async () => {};
   sessionApi.get = async (sessionId) => ({
     id: sessionId,
     agent_id: "general-agent",
@@ -812,7 +795,6 @@ test("event history failure keeps verified generic authority for explicit retry"
     sessionApi.get = originalGet;
     sessionApi.getAuthoritative = originalGetAuthoritative;
     sessionApi.getEvents = originalGetEvents;
-    sessionApi.markRead = originalMarkRead;
     sessionApi.submitChat = originalSubmitChat;
     await harness.cleanup();
   }
@@ -823,13 +805,11 @@ test("an authoritative identity mismatch remains fail-closed", async () => {
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalGet = sessionApi.get;
   const originalGetAuthoritative = sessionApi.getAuthoritative;
-  const originalMarkRead = sessionApi.markRead;
   const originalSubmitChat = sessionApi.submitChat;
   const originalConsoleError = console.error;
   const diagnostics: unknown[][] = [];
   let submissions = 0;
   console.error = (...args: unknown[]) => diagnostics.push(args);
-  sessionApi.markRead = async () => {};
   sessionApi.get = async (sessionId) => ({
     id: sessionId,
     agent_id: "general-agent",
@@ -876,7 +856,6 @@ test("an authoritative identity mismatch remains fail-closed", async () => {
     console.error = originalConsoleError;
     sessionApi.get = originalGet;
     sessionApi.getAuthoritative = originalGetAuthoritative;
-    sessionApi.markRead = originalMarkRead;
     sessionApi.submitChat = originalSubmitChat;
     await harness.cleanup();
   }
