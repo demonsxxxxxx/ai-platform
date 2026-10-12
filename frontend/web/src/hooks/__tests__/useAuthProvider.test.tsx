@@ -307,6 +307,7 @@ function authUser(id: string, tenantId: string): User {
 
 async function mountAuthHarness(
   configure: (api: typeof import("../../services/api/auth.ts").authApi) => void,
+  realTransport = false,
 ) {
   const React = await import("react");
   const { createRoot } = await import("react-dom/client");
@@ -320,8 +321,10 @@ async function mountAuthHarness(
     beginOAuth: authApi.beginOAuth,
     handleOAuthCallback: authApi.handleOAuthCallback,
   };
-  authApi.bootstrapAuthContext = async (request) => readyAuthContext(request);
-  authApi.beginOAuth = async () => ({ state: "test-oauth-state" });
+  if (!realTransport) {
+    authApi.bootstrapAuthContext = async (request) => readyAuthContext(request);
+    authApi.beginOAuth = async () => ({ state: "test-oauth-state" });
+  }
   configure(authApi);
   storage.clear();
   storage.set("ai_platform_session_present", "test-session-marker");
@@ -1817,4 +1820,225 @@ test("a fail-closed browser context recovery never reaches the login mutation", 
   } finally {
     await mounted.cleanup();
   }
+});
+
+// Real API wrappers and response parsing; only the HTTP boundary is replaced.
+async function mountAuthTransportHarness(initialStatus = 200) {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  const events: string[] = [];
+  const recordRecovery = () => events.push("auth:force-relogin");
+  const json = (body: unknown, status = 200, headers = {}) => new Response(
+    JSON.stringify(body), { status, headers: { "Content-Type": "application/json", ...headers } },
+  );
+  const principal = (id = "transport-a") => json({
+    user_id: id, user_name: id, tenant_id: "tenant-transport", department_id: "department-transport",
+    display_name: id, roles: ["admin"], permissions: ["settings:manage"], is_admin: true, source: "test",
+  });
+  const transport = {
+    me: (_init: RequestInit): Response | Promise<Response> => initialStatus === 200 ? principal() : json({ detail: "unauthorized" }, initialStatus),
+    logout: (): Response | Promise<Response> => new Response(null, { status: 204 }),
+  };
+  globalThis.fetch = (async (input: RequestInfo | URL, init: RequestInit = {}) => {
+    const url = String(input);
+    calls.push({ url, init });
+    assert.equal("ordinary401Recovery" in init, false, "internal policy must not reach fetch");
+    if (url === "/api/ai/auth/bootstrap") {
+      return json(readyAuthContext(JSON.parse(String(init.body)) as AuthContextBootstrapRequest));
+    }
+    if (url === "/api/ai/auth/me") return transport.me(init);
+    if (url === "/api/ai/auth/logout") return transport.logout();
+    if (url === "/company/GetADName") return json([{ token: "synthetic-company-jwt" }]);
+    if (["/api/ai/auth/login", "/api/ai/auth/ad-login", "/api/ai/auth/oauth/test/callback"].includes(url)) return json({});
+    throw new Error(`Unexpected auth test request: ${url}`);
+  }) as typeof fetch;
+  windowTarget.addEventListener("auth:force-relogin", recordRecovery);
+  try {
+    const mounted = await mountAuthHarness(() => {}, true);
+    await mounted.flush();
+    return {
+      ...mounted, get auth() { return mounted.auth; }, calls, events, transport, json, principal,
+      async cleanup() {
+        try { await mounted.cleanup(); } finally {
+          globalThis.fetch = originalFetch;
+          windowTarget.removeEventListener("auth:force-relogin", recordRecovery);
+          sessionStorageValues.clear();
+        }
+      },
+    };
+  } catch (error) {
+    globalThis.fetch = originalFetch;
+    windowTarget.removeEventListener("auth:force-relogin", recordRecovery);
+    throw error;
+  }
+}
+
+test("real transport initialization ordinary 401 converges without server logout", async () => {
+  const mounted = await mountAuthTransportHarness(401);
+  try {
+    assert.deepEqual(mounted.calls.map(({ url }) => url), ["/api/ai/auth/bootstrap", "/api/ai/auth/me"]);
+    assert.deepEqual(mounted.events, []);
+    assert.equal(mounted.auth.isAuthenticated, false);
+    assert.equal(mounted.auth.isLoading, false);
+    assert.equal(storage.has("ai_platform_session_present"), false);
+  } finally { await mounted.cleanup(); }
+});
+
+test("real transport ordinary hydration 401 stays with the refresh owner", async () => {
+  const mounted = await mountAuthTransportHarness();
+  mounted.calls.length = 0;
+  mounted.transport.me = () => mounted.json({ detail: "unauthorized" }, 401);
+  try {
+    await mounted.React.act(async () => {
+      assert.deepEqual(await mounted.auth.refreshUser(), { status: "failed" });
+    });
+    assert.deepEqual(mounted.calls.map(({ url, init }) => [init.method ?? "GET", url]), [["GET", "/api/ai/auth/me"]]);
+    assert.deepEqual(mounted.events, []);
+    assert.equal(mounted.auth.isAuthenticated, false);
+    assert.equal(mounted.auth.isLoading, false);
+    assert.equal(storage.has("ai_platform_session_present"), false);
+  } finally { await mounted.cleanup(); }
+});
+
+for (const operation of ["login", "AD", "OAuth"] as const) {
+  for (const rollbackFails of [false, true]) {
+    test(`real transport ${operation} hydration 401 preserves its error with rollback failure=${rollbackFails}`, async () => {
+      const mounted = await mountAuthTransportHarness();
+      mounted.calls.length = 0;
+      mounted.transport.me = () => mounted.json({ detail: "unauthorized" }, 401);
+      if (rollbackFails) mounted.transport.logout = () => mounted.json({ detail: "unavailable" }, 503);
+      try {
+        await mounted.React.act(async () => {
+          const operationPromise = operation === "login"
+            ? mounted.auth.login({ username: "fixture", password: "synthetic-test-only" })
+            : operation === "AD" ? mounted.auth.loginWithAD("/company/GetADName")
+              : mounted.auth.handleOAuthCallback("test", "synthetic-code", "synthetic-state");
+          await assert.rejects(operationPromise, (error: unknown) => error instanceof ApiRequestError && error.status === 401);
+        });
+        const mutation = operation === "login" ? "/api/ai/auth/login" : operation === "AD" ? "/api/ai/auth/ad-login" : "/api/ai/auth/oauth/test/callback";
+        assert.deepEqual(mounted.calls.filter(({ url }) => url !== "/api/ai/auth/bootstrap" && url !== "/company/GetADName").map(({ url, init }) => [init.method ?? "GET", url]), [
+          ["POST", mutation], ["GET", "/api/ai/auth/me"], ["POST", "/api/ai/auth/logout"],
+        ]);
+        assert.deepEqual(mounted.events, []);
+        assert.equal(mounted.auth.isAuthenticated, false);
+        assert.equal(mounted.auth.isLoading, false);
+        assert.equal(storage.has("ai_platform_session_present"), false);
+      } finally { await mounted.cleanup(); }
+    });
+  }
+}
+
+test("real transport ordinary hydration 403 remains caller-owned", async () => {
+  const mounted = await mountAuthTransportHarness();
+  mounted.calls.length = 0;
+  mounted.transport.me = () => mounted.json({ detail: "forbidden" }, 403);
+  try {
+    await mounted.React.act(async () => {
+      assert.deepEqual(await mounted.auth.refreshUser(), { status: "failed" });
+    });
+    assert.deepEqual(mounted.events, []);
+    assert.deepEqual(mounted.calls.map(({ url }) => url), ["/api/ai/auth/me"]);
+    assert.equal(mounted.auth.isAuthenticated, false);
+    assert.equal(mounted.auth.isLoading, false);
+  } finally { await mounted.cleanup(); }
+});
+
+test("real transport explicit force header retains recovery and cancels the old hydration owner", async () => {
+  const mounted = await mountAuthTransportHarness();
+  mounted.calls.length = 0;
+  mounted.transport.me = () => mounted.json({ detail: "unauthorized" }, 401, { "X-Force-Relogin": "true" });
+  try {
+    await mounted.React.act(async () => {
+      assert.deepEqual(await mounted.auth.refreshUser(), { status: "cancelled" });
+    });
+    await mounted.flush();
+    assert.deepEqual(mounted.events, ["auth:force-relogin"]);
+    assert.deepEqual(mounted.calls.map(({ url, init }) => [init.method ?? "GET", url]), [
+      ["GET", "/api/ai/auth/me"], ["POST", "/api/ai/auth/logout"],
+    ]);
+    assert.equal(mounted.auth.isAuthenticated, false);
+    assert.equal(mounted.auth.isLoading, false);
+    assert.equal(storage.has("ai_platform_session_present"), false);
+  } finally { await mounted.cleanup(); }
+});
+
+for (const delay of ["response", "body"] as const) {
+  test(`real transport delayed forced ${delay} cannot log out a replacement principal`, async () => {
+    const mounted = await mountAuthTransportHarness();
+    mounted.calls.length = 0;
+    const started = deferred<void>();
+    const lateResponse = deferred<Response>();
+    let bodyController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    let first = true;
+    mounted.transport.me = () => {
+      if (!first) return mounted.principal("transport-b");
+      first = false;
+      if (delay === "response") {
+        started.resolve();
+        return lateResponse.promise;
+      }
+      const response = new Response(new ReadableStream<Uint8Array>({
+        start(controller) { bodyController = controller; },
+      }), { status: 401, headers: { "X-Force-Relogin": "true" } });
+      const readText = response.text.bind(response);
+      response.text = () => {
+        const reading = readText();
+        // Stream pull can prefetch; only native text consumption proves the
+        // response-arrival fence ran before the replacement owner signs in.
+        started.resolve();
+        return reading;
+      };
+      return response;
+    };
+    let oldRefresh: ReturnType<typeof mounted.auth.refreshUser> | undefined;
+    try {
+      await mounted.React.act(async () => {
+        oldRefresh = mounted.auth.refreshUser();
+        await started.promise;
+      });
+      await mounted.React.act(async () => {
+        assert.equal((await mounted.auth.login({ username: "replacement", password: "synthetic-test-only" })).status, "completed");
+      });
+      const replacementMarker = storage.get("ai_platform_session_present");
+      await mounted.React.act(async () => {
+        if (delay === "response") lateResponse.resolve(mounted.json({ detail: "unauthorized" }, 401, { "X-Force-Relogin": "true" }));
+        else {
+          assert.ok(bodyController);
+          bodyController.enqueue(new TextEncoder().encode(JSON.stringify({ detail: "unauthorized" })));
+          bodyController.close();
+        }
+        assert.deepEqual(await oldRefresh, { status: "cancelled" });
+      });
+      assert.equal(mounted.auth.user?.id, "transport-b");
+      assert.equal(storage.get("ai_platform_session_present"), replacementMarker);
+      assert.deepEqual(mounted.events, []);
+      assert.equal(mounted.calls.filter(({ url }) => url === "/api/ai/auth/logout").length, 0);
+      assert.equal(mounted.calls.filter(({ url }) => url === "/api/ai/auth/login").length, 1);
+      assert.equal(mounted.calls.filter(({ url }) => url === "/api/ai/auth/me").length, 2);
+    } finally { await mounted.cleanup(); }
+  });
+}
+
+test("real transport unmount aborts hydration without recovery or replay", async () => {
+  const mounted = await mountAuthTransportHarness();
+  mounted.calls.length = 0;
+  const started = deferred<AbortSignal>();
+  let abortReason: unknown;
+  mounted.transport.me = (init) => new Promise<Response>((_resolve, reject) => {
+    assert.ok(init.signal);
+    const signal = init.signal;
+    signal.addEventListener("abort", () => { abortReason = signal.reason; reject(abortReason); }, { once: true });
+    started.resolve(signal);
+  });
+  let refresh: ReturnType<typeof mounted.auth.refreshUser> | undefined;
+  try {
+    await mounted.React.act(async () => { refresh = mounted.auth.refreshUser(); await started.promise; });
+    const signal = await started.promise;
+    await mounted.unmount();
+    assert.equal(signal.aborted, true);
+    assert.equal(abortReason, signal.reason);
+    assert.deepEqual(await refresh, { status: "cancelled" });
+    assert.deepEqual(mounted.events, []);
+    assert.deepEqual(mounted.calls.map(({ url }) => url), ["/api/ai/auth/me"]);
+  } finally { await mounted.cleanup(); }
 });
