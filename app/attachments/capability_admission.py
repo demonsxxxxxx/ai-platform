@@ -20,7 +20,7 @@ from app.attachments.classification import (
     _ClassifiedAttachment,
     _classify_attachment,
 )
-from app.file_parser_contracts import MAX_XLSX_FILE_BYTES, XLSX_CONTENT_TYPE, XLSX_PARSER_ID, XLSX_PARSER_VERSION
+from app.files.api import MAX_XLSX_FILE_BYTES, XLSX_CONTENT_TYPE, XLSX_PARSER_ID, XLSX_PARSER_VERSION
 from app.projection_redaction import public_skill_display_label
 from app.validation import assert_safe_id
 
