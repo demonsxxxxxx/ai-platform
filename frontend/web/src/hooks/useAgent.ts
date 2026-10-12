@@ -1865,7 +1865,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       targetSessionId: string,
       targetRunId?: string,
       runControlAdoption?: { owner: RunControlOwner },
-      readOnlyRetry = false,
     ) => {
       if (!isMountedRef.current) {
         return null;
@@ -1936,13 +1935,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
 
       processedEventIdsRef.current.clear();
       lastHistoryTimestampRef.current = null;
-      const markReadPromise = readOnlyRetry
-        ? Promise.resolve()
-        : sessionApi.markRead(targetSessionId).catch(() => {});
 
       let historyFailurePhase: HistoryLoadFailurePhase = "session_projection";
       try {
-        await markReadPromise;
         if (!isCurrentHistoryLoadRequest()) {
           return null;
         }
@@ -2450,12 +2445,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     ) {
       return;
     }
-    // Explicit read retry only: no mark-read mutation or task resubmission.
+    // Explicit read retry only: no task resubmission.
     await loadHistory(
       historyLoadFailure.sessionId,
       historyLoadFailure.runId,
-      undefined,
-      true,
     );
   }, [historyLoadFailure, loadHistory]);
 
@@ -2608,11 +2601,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       let admissionAccepted = false;
 
       try {
-        // 用户发送消息时标记当前 session 为已读
-        if (requestSessionId) {
-          sessionApi.markRead(requestSessionId).catch(() => {});
-        }
-
         // Keep the legacy Skill blacklist while MCP uses an explicit
         // canonical selection with omitted/clear/select tri-state semantics.
         const disabledSkills = isBoundAgentConversation
