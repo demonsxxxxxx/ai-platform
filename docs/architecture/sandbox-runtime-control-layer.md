@@ -312,7 +312,8 @@ targets. Cleanup does not scan the workspace or change file authorization.
 A close failure during body failure or cancellation, or an unlink failure during
 cleanup, is secondary: it cannot replace the primary error or cancellation.
 Only a stable warning label is logged, without source paths, credentials or raw
-exception details. If unlink fails, the temporary file may remain; failure is
+exception details. Warning-sink failures cannot replace that primary result.
+If unlink fails, the temporary file may remain; failure is
 not reported as a successful transfer. A close failure after a successful body
 retains the existing callback-failure mapping and prevents replacement. Existing
 scope, encoding, content-length, maximum-byte checks and callback mappings remain

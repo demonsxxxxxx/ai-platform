@@ -180,7 +180,12 @@ class _StageAbort(BaseException):
     asyncio.CancelledError("synthetic-cancellation"),
     _StageAbort("synthetic-abort"),
 ])
-async def test_profile_stage_cleanup_failures_preserve_primary(monkeypatch, tmp_path, caplog, primary):
+@pytest.mark.parametrize("broken_logging", [False, True])
+async def test_profile_stage_cleanup_failures_preserve_primary(monkeypatch, tmp_path, caplog, primary, broken_logging):
+    if broken_logging:
+        def fail_warning(*_args, **_kwargs):
+            raise RuntimeError("synthetic-logging-failure")
+        monkeypatch.setattr(staging._logger, "warning", fail_warning)
     execute, target, foreign = _stage_client(monkeypatch, tmp_path, _StageStream(error=primary))
     outputs = _patch_output(monkeypatch, close_error=OSError("private-output-path"))
     unlink_calls = []
@@ -208,9 +213,11 @@ async def test_profile_stage_cleanup_failures_preserve_primary(monkeypatch, tmp_
     assert unlink_calls[0].read_bytes() == b"partial"
     assert target.read_bytes() == b"previous-complete-file"
     assert foreign.read_bytes() == b"another-transfer"
-    assert [record.getMessage() for record in caplog.records if record.name == staging.__name__] == [
-        "profile_drive_staging_close_failed", "profile_drive_staging_cleanup_failed",
-    ]
+    assert [record.getMessage() for record in caplog.records if record.name == staging.__name__] == (
+        [] if broken_logging else [
+            "profile_drive_staging_close_failed", "profile_drive_staging_cleanup_failed",
+        ]
+    )
     assert "private-output-path" not in caplog.text
     assert "private-temporary-path" not in caplog.text
     assert "test-callback-token" not in caplog.text

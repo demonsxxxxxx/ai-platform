@@ -267,7 +267,10 @@ class PlatformContextRetrievalClient:
                         try:
                             output.close()
                         except Exception:
-                            _logger.warning("profile_drive_staging_close_failed")
+                            try:
+                                _logger.warning("profile_drive_staging_close_failed")
+                            except Exception:
+                                pass  # Observation cannot replace the primary failure.
                         raise
                     else:
                         output.close()
@@ -285,7 +288,10 @@ class PlatformContextRetrievalClient:
                     temporary.unlink(missing_ok=True)
                 except Exception:
                     # Keep the primary error and omit paths/exception details.
-                    _logger.warning("profile_drive_staging_cleanup_failed")
+                    try:
+                        _logger.warning("profile_drive_staging_cleanup_failed")
+                    except Exception:
+                        pass  # Observation cannot replace the primary failure.
         workspace_path = target.relative_to(Path(workspace_root)).as_posix()
         return {
             "workspace_path": workspace_path,
