@@ -2327,6 +2327,7 @@ def create_executor_app(
         mcp_invocation_states: dict[str, str] = {}
         stream_delivery_failure: dict[str, str | None] = {"error_code": None}
         heartbeat_stop = asyncio.Event()
+        heartbeat_retired = False
         public_execution_projector = PublicExecutionV2Projector()
         public_agent_progress_publisher = PublicAgentProgressPublisher()
         runner_event_lock = asyncio.Lock()
@@ -2428,6 +2429,11 @@ def create_executor_app(
                     retry_sleep=resolved_callback_retry_sleep,
                 )
             except asyncio.CancelledError:
+                if heartbeat_retired and asyncio.current_task() is heartbeat_task:
+                    # A settled runner no longer needs lease renewal. Its pure
+                    # heartbeat carries no answer/capability receipt. The host
+                    # fences any late renewal against the terminal receipt.
+                    raise
                 seal_runner_events_after_delivery_cancellation()
                 if event.state_patch.get("executor_heartbeat") is True:
                     mark_delivery_uncertain(
@@ -2742,6 +2748,7 @@ def create_executor_app(
             else None
         )
         runner_result: dict[str, Any] = {}
+        runner_returned = False
         try:
             if invalid_max_seconds:
                 runner_result = {
@@ -2774,6 +2781,7 @@ def create_executor_app(
                             else:
                                 raw_runner_result = await raw_runner_result
                         runner_result = raw_runner_result if isinstance(raw_runner_result, dict) else {}
+                        runner_returned = not timed_out
                     except _ExecutorCleanupError as exc:
                         runner_result = {
                             "status": "failed",
@@ -2811,6 +2819,9 @@ def create_executor_app(
             ):
                 if heartbeat_task is not None:
                     heartbeat_stop.set()
+                    if runner_returned and stream_delivery_failure["error_code"] is None:
+                        heartbeat_retired = True
+                        heartbeat_task.cancel()
                     await await_shutdown_task(heartbeat_task)
                 progress_cleanup = asyncio.create_task(drain_active_progress())
                 await await_shutdown_task(progress_cleanup)
