@@ -12,7 +12,7 @@ from app.control_plane_contracts import (
     sanitize_public_text,
     standard_trace_id,
 )
-from app.file_preview_contracts import xlsx_preview_identity_from_metadata
+from app.files.api import xlsx_preview_identity_from_metadata
 from app.streaming.events import EVENT_ENVELOPE_SCHEMA_VERSION
 from app.runs.api import (
     CHAT_PUBLIC_PROJECTION_VERSION as CHAT_PUBLIC_PROJECTION_VERSION,

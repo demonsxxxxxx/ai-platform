@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -23,6 +24,7 @@ from app.streaming.api import (
 )
 
 tenant_scope = _tenant_scope
+logger = logging.getLogger(__name__)
 
 SSE_PUBLISH_MAX_CONNECTIONS = 16
 SSE_READ_MAX_CONNECTIONS = 256
@@ -146,10 +148,29 @@ class RedisStreamBridge:
 
     async def aclose(self) -> None:
         if self._owns_publish_client:
-            try:
-                await self._read_client.aclose()
-            finally:
-                await self._publish_client.aclose()
+            first_error: BaseException | None = None
+            for phase, client in (
+                ("stream_read", self._read_client),
+                ("stream_publish", self._publish_client),
+            ):
+                try:
+                    await client.aclose()
+                except BaseException as exc:
+                    if first_error is None:
+                        first_error = exc
+                    try:
+                        logger.warning(
+                            "Redis stream pool close failed",
+                            extra={
+                                "cleanup_phase": phase,
+                                "cleanup_error_type": type(exc).__name__,
+                            },
+                        )
+                    except Exception:
+                        # Diagnostics must not interrupt resource settlement.
+                        pass
+            if first_error is not None:
+                raise first_error
 
 
     async def append_canonical(

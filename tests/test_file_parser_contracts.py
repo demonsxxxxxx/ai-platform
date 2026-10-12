@@ -9,6 +9,11 @@ import pytest
 from openpyxl import Workbook, load_workbook
 
 from app.file_parser_contracts import (
+    AttachmentParserRequirement,
+    AttachmentPreprocessingError,
+    parse_xlsx_preview_attachment,
+)
+from app.files.api import (
     MAX_XLSX_CELL_CHARS,
     MAX_XLSX_CELLS,
     MAX_XLSX_COLUMNS_PER_SHEET,
@@ -18,9 +23,6 @@ from app.file_parser_contracts import (
     XLSX_CONTENT_TYPE,
     XLSX_PARSER_ID,
     XLSX_PARSER_VERSION,
-    AttachmentParserRequirement,
-    AttachmentPreprocessingError,
-    parse_xlsx_preview_attachment,
 )
 
 

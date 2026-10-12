@@ -441,19 +441,46 @@ def test_initial_context_summary_adds_attachment_signal_for_file_context():
     assert "raw_storage_key" not in serialized
 
 
-def test_initial_context_summary_routes_document_skill_to_document_worker():
+@pytest.mark.parametrize(("input_payload", "file_ids", "expected_tier"), [
+    pytest.param(
+        {"message": "Review this DOCX and return a Word document."}, [],
+        "sdk_only_writing", id="document-skill-without-attachment",
+    ),
+    pytest.param(
+        {"message": "Review this DOCX and return a Word document."}, ["file-a"],
+        "sdk_only_writing", id="attachment-does-not-select-retired-document-tier",
+    ),
+    pytest.param(
+        {"message": "Review this DOCX.", "execution_tier": "document_worker"}, ["file-a"],
+        "sdk_only_writing", id="input-cannot-override-owned-tier-classification",
+    ),
+    pytest.param(
+        {"message": "Review this DOCX.", "sandbox_mode": "ephemeral"}, ["file-a"],
+        "heavy_sandbox", id="explicit-sandbox-still-selects-heavy-tier",
+    ),
+    pytest.param(
+        {"message": "Run this Python script to review the document."}, ["file-a"],
+        "heavy_sandbox", id="risky-tooling-still-selects-heavy-tier",
+    ),
+])
+def test_initial_context_summary_projects_current_tier_policy(input_payload, file_ids, expected_tier):
+    # Fresh snapshots use the office tier owner. document_worker remains a
+    # readable stored projection; a document Skill or attachment is not a new
+    # routing authority, and a public tier does not select runtime isolation.
     summary = initial_context_summary(
         source="chat_stream",
         agent_id="qa-word-review",
         skill_id="qa-file-reviewer",
-        input_payload={"message": "Review this DOCX and return a Word document."},
+        input_payload=input_payload,
         message_ids=["msg-a"],
-        file_ids=["file-a"],
+        file_ids=file_ids,
     )
 
-    assert summary["execution_tier"] == "document_worker"
-    assert summary["used_context_summary"]["input_keys"] == ["attachments", "message"]
-    assert summary["referenced_materials"]["file_count"] == 1
+    assert summary["execution_tier"] == expected_tier
+    assert ("attachments" in summary["used_context_summary"]["input_keys"]) is bool(file_ids)
+    assert "message" in summary["used_context_summary"]["input_keys"]
+    assert summary["referenced_materials"]["file_count"] == len(file_ids)
+    assert "file-a" not in str(summary)
 
 
 def test_initial_context_summary_routes_explicit_sandbox_request_to_heavy_sandbox():
@@ -925,15 +952,26 @@ async def test_record_initial_context_snapshot_uses_coverage_and_keeps_files_exp
 
 
 @pytest.mark.asyncio
-async def test_record_initial_context_snapshot_preserves_more_than_eight_current_files(monkeypatch):
+@pytest.mark.parametrize("current_file_ids", [
+    [], ["file-current"], ["file-prior-7", "file-current"],
+    [f"file-current-{index}" for index in range(8)],
+    [f"file-current-{index}" for index in range(9)],
+])
+async def test_record_initial_context_snapshot_keeps_current_and_newest_history(monkeypatch, current_file_ids):
     captured = {}
-    current_file_ids = [f"file-current-{index}" for index in range(9)]
+    history_calls = []
+    history = [{"id": f"file-prior-{index}"} for index in range(8)]
 
     async def empty(*_args, **_kwargs):
         return []
 
-    async def historical_files(*_args, **_kwargs):
-        return [{"id": f"file-prior-{index}"} for index in range(8)]
+    async def historical_files(*_args, **kwargs):
+        history_calls.append(kwargs)
+        assert kwargs["limit"] == 8 - len(current_file_ids)
+        assert kwargs["excluded_file_ids"] == current_file_ids
+        eligible = [row for row in history if row["id"] not in current_file_ids]
+        # The real PostgreSQL source returns its selected recent tail ascending.
+        return eligible[-kwargs["limit"]:]
 
     async def no_legacy(*_args, **_kwargs):
         return False
@@ -982,10 +1020,14 @@ async def test_record_initial_context_snapshot_preserves_more_than_eight_current
         include_session_history=True,
     )
 
-    assert captured["included_file_ids"] == current_file_ids
+    slots = max(0, 8 - len(current_file_ids))
+    eligible_ids = [row["id"] for row in reversed(history) if row["id"] not in current_file_ids]
+    expected_ids = eligible_ids[:slots] + current_file_ids
+    assert len(history_calls) == (1 if slots else 0)
+    assert captured["included_file_ids"] == expected_ids
     assert captured["payload_json"]["context_manifest"]["files"] == [
         {"file_id": file_id, "requires_retrieval": True}
-        for file_id in current_file_ids
+        for file_id in expected_ids
     ]
 
 

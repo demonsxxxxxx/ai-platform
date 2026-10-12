@@ -1,8 +1,8 @@
 # Historical SDK Diagnostic Examples
 
 These examples are historical context, not current merge gates or product
-requirements. Apply the generic layered diagnostic rule from
-`docs/agent-rules/github-issue-pr-workflow.md` to the current source and runtime.
+requirements. Use the current [delivery workflow](../github-issue-pr-workflow.md)
+for PR handling and evidence boundaries; these examples add no diagnostic rule.
 
 - PR #165 kept terminal run failures visible instead of hiding them behind
   artifact ACL symptoms.
