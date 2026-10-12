@@ -908,6 +908,8 @@ def test_notifications_have_one_workbench_route_owner(monkeypatch):
 
 
 def test_lambchat_model_catalog_is_empty_without_governed_connection(monkeypatch):
+    monkeypatch.setenv("DEFAULT_MODEL_ID", "retired-env-model")
+    monkeypatch.setenv("MODEL_CATALOG_JSON", '[{"id":"retired-env-model"}]')
     monkeypatch.setattr(
         "app.execution.infrastructure.model_management.list_public_models",
         AsyncMock(return_value=None),
