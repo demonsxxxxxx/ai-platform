@@ -386,20 +386,32 @@ class ObjectStorage:
                 if failure is None:
                     failure = exc
                 else:
-                    failure.add_note(f"object_storage_download_temporary_close_failed:{type(exc).__name__}")
+                    try:
+                        failure.add_note(f"object_storage_download_temporary_close_failed:{type(exc).__name__}")
+                    except BaseException:
+                        # Optional diagnostics cannot replace the selected primary failure.
+                        pass
         try:
             body.close()
         except BaseException as exc:
             if failure is None:
                 failure = exc
             else:
-                failure.add_note(f"object_storage_download_body_close_failed:{type(exc).__name__}")
+                try:
+                    failure.add_note(f"object_storage_download_body_close_failed:{type(exc).__name__}")
+                except BaseException:
+                    # Optional diagnostics cannot replace the selected primary failure.
+                    pass
         if failure is not None:
             if temporary is not None:
                 try:
                     os.unlink(temporary.name)
                 except BaseException as exc:
-                    failure.add_note(f"object_storage_download_unlink_failed:{type(exc).__name__}")
+                    try:
+                        failure.add_note(f"object_storage_download_unlink_failed:{type(exc).__name__}")
+                    except BaseException:
+                        # Optional diagnostics cannot replace the selected primary failure.
+                        pass
             raise failure
 
         assert downloaded is not None

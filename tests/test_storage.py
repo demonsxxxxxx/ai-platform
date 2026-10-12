@@ -198,6 +198,56 @@ def test_download_to_tempfile_keeps_primary_failure_and_cleans_every_resource(
     }
 
 
+@pytest.mark.parametrize("primary_type", [OSError, asyncio.CancelledError])
+@pytest.mark.parametrize("notes_mode", ["override", "cancelled", "invalid"])
+@pytest.mark.parametrize("cleanup_stage", ["temporary_close", "body_close", "unlink"])
+def test_download_cleanup_diagnostics_cannot_replace_primary_or_stop_cleanup(
+    monkeypatch, primary_type, notes_mode, cleanup_stage,
+):
+    storage, _body = _storage(b"x")
+    primary = primary_type("synthetic download failure")
+    events = []
+    if notes_mode in {"override", "cancelled"}:
+        def broken_note(_note):
+            if notes_mode == "cancelled":
+                raise asyncio.CancelledError("synthetic diagnostic cancellation")
+            raise RuntimeError("synthetic diagnostic failure")
+        primary.add_note = broken_note
+    else:
+        primary.__notes__ = "invalid notes from upstream"
+
+    class Body(_Body):
+        def read(self, _size):
+            raise primary
+
+        def close(self):
+            events.append("body_close")
+            if cleanup_stage == "body_close":
+                raise OSError("synthetic secondary close")
+
+    class Temporary:
+        name = "/synthetic/download"
+
+        def close(self):
+            events.append("temporary_close")
+            if cleanup_stage == "temporary_close":
+                raise OSError("synthetic secondary close")
+
+    def unlink(path):
+        assert path == Temporary.name
+        events.append("unlink")
+        if cleanup_stage == "unlink":
+            raise OSError("synthetic secondary unlink")
+
+    storage.client = _Client(Body(b"x"))
+    monkeypatch.setattr(storage_module.tempfile, "NamedTemporaryFile", lambda **_kwargs: Temporary())
+    monkeypatch.setattr(storage_module.os, "unlink", unlink)
+    with pytest.raises(BaseException) as caught:
+        storage.download_to_tempfile(storage_key="private/file.xlsx", max_bytes=1)
+    assert caught.value is primary
+    assert events == ["temporary_close", "body_close", "unlink"]
+
+
 @pytest.mark.parametrize("read_fails", [False, True])
 def test_download_to_tempfile_body_close_failure_removes_real_temporary_file(
     tmp_path, monkeypatch, read_fails,
