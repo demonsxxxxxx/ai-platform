@@ -125,6 +125,15 @@ class ClaudeSessionStoreAdapter:
             raise ClaudeSessionStoreTransportError("provider_session_subpath_invalid")
         return value.strip()
 
+    @staticmethod
+    def _json_size(value: Any) -> int:
+        try:
+            return len(json.dumps(
+                value, ensure_ascii=False, allow_nan=False, separators=(",", ":"),
+            ).encode("utf-8"))
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ClaudeSessionStoreTransportError("provider_session_entry_not_json") from exc
+
     def _payload(
         self,
         *,
@@ -152,16 +161,7 @@ class ClaudeSessionStoreAdapter:
             "entries": encoded_entries,
             "expected_sequence": expected_sequence,
         }
-        try:
-            encoded = json.dumps(
-                payload,
-                ensure_ascii=False,
-                allow_nan=False,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ClaudeSessionStoreTransportError("provider_session_entry_not_json") from exc
-        if len(encoded) > self._max_request_bytes:
+        if self._json_size(payload) > self._max_request_bytes:
             raise ClaudeSessionStoreTransportError("provider_session_request_too_large")
         return payload
 
@@ -250,7 +250,7 @@ class ClaudeSessionStoreAdapter:
 
     def _append_input(
         self, key: Mapping[str, Any] | str, entries: Sequence[Mapping[str, Any]],
-    ) -> tuple[str, list[dict[str, Any]]]:
+    ) -> tuple[str, list[dict[str, Any]], list[int]]:
         if not isinstance(entries, Sequence) or isinstance(entries, (str, bytes, bytearray)):
             raise ClaudeSessionStoreTransportError("provider_session_entry_batch_invalid")
         if any(not isinstance(entry, Mapping) for entry in entries):
@@ -264,31 +264,40 @@ class ClaudeSessionStoreAdapter:
             frozen = json.loads(encoded)[2]
         except (TypeError, ValueError, OverflowError) as exc:
             raise ClaudeSessionStoreTransportError("provider_session_entry_not_json") from exc
+        entry_sizes: list[int] = []
         for entry in frozen:
-            if len(json.dumps(entry, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")) > MAX_PROVIDER_SESSION_APPEND_ENTRY_BYTES:
+            entry_bytes = self._json_size(entry)
+            if entry_bytes > MAX_PROVIDER_SESSION_APPEND_ENTRY_BYTES:
                 raise ClaudeSessionStoreTransportError("provider_session_entry_too_large")
-        return encoded, frozen
+            entry_sizes.append(entry_bytes)
+        return encoded, frozen, entry_sizes
 
     def _append_chunks(
-        self, key: Mapping[str, Any] | str, entries: list[dict[str, Any]], start: int,
+        self, key: Mapping[str, Any] | str, entries: list[dict[str, Any]],
+        entry_sizes: list[int], start: int,
     ) -> list[dict[str, Any]]:
         payloads: list[dict[str, Any]] = []
         chunk: list[dict[str, Any]] = []
-        for entry in entries:
-            candidate = [*chunk, entry]
-            try:
-                if len(candidate) > MAX_PROVIDER_SESSION_APPEND_ENTRIES:
-                    raise ClaudeSessionStoreTransportError("provider_session_request_too_large")
-                self._payload(action="append", key=key, entries=candidate, expected_sequence=start)
-            except ClaudeSessionStoreTransportError as exc:
-                if str(exc) != "provider_session_request_too_large" or not chunk:
-                    raise
+        chunk_bytes = 0
+        for entry, entry_bytes in zip(entries, entry_sizes, strict=True):
+            if chunk and (
+                len(chunk) == MAX_PROVIDER_SESSION_APPEND_ENTRIES
+                or chunk_bytes + entry_bytes + 1 > self._max_request_bytes
+            ):
                 payloads.append(self._payload(action="append", key=key, entries=chunk, expected_sequence=start))
                 start += len(chunk)
-                chunk = [entry]
-                self._payload(action="append", key=key, entries=chunk, expected_sequence=start)
-            else:
-                chunk = candidate
+                chunk = []
+            if not chunk:
+                # Use the real envelope at this sequence, including digit growth.
+                chunk_bytes = self._json_size(self._payload(
+                    action="append", key=key, expected_sequence=start,
+                ))
+            # The empty envelope includes []; only entries and separating commas grow.
+            candidate_bytes = chunk_bytes + entry_bytes + (1 if chunk else 0)
+            if candidate_bytes > self._max_request_bytes:
+                raise ClaudeSessionStoreTransportError("provider_session_request_too_large")
+            chunk.append(entry)
+            chunk_bytes = candidate_bytes
         if chunk:
             payloads.append(self._payload(action="append", key=key, entries=chunk, expected_sequence=start))
         return payloads
@@ -296,7 +305,7 @@ class ClaudeSessionStoreAdapter:
     async def append(
         self, key: Mapping[str, Any] | str, entries: Sequence[Mapping[str, Any]],
     ) -> None:
-        signature, frozen = self._append_input(key, entries)
+        signature, frozen, entry_sizes = self._append_input(key, entries)
         async with self._append_lock:
             pending = self._pending_batch
             if pending is not None and pending.signature != signature:
@@ -308,7 +317,7 @@ class ClaudeSessionStoreAdapter:
             if pending is None:
                 session_id, subpath, _entries = json.loads(signature)
                 frozen_key = {"session_id": session_id, "subpath": subpath}
-                pending = _PendingAppend(signature, self._append_chunks(frozen_key, frozen, self._next_sequence))
+                pending = _PendingAppend(signature, self._append_chunks(frozen_key, frozen, entry_sizes, self._next_sequence))
                 self._pending_batch = pending
                 self._load_cache.clear()
             while pending.next_chunk < len(pending.payloads):

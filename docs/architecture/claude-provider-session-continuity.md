@@ -348,6 +348,18 @@ request-envelope limits. It validates the complete input before sending any
 chunk. A single oversize JSON entry is rejected without splitting or truncating
 its opaque SDK data; that is a platform resource limit, not an SDK guarantee.
 
+Chunk sizing reuses the compact UTF-8 JSON lengths already checked on the
+frozen entries. For each chunk it encodes the actual empty request envelope at
+that chunk's expected sequence, then adds entry lengths and separating commas.
+The envelope is recomputed after a split, including any sequence digit growth.
+Each final chunk still passes the complete request-size validator, and every
+chunk is planned before pending state or the first callback is created. A late
+invalid entry or an oversized next singleton therefore cannot write a prefix.
+The growing-prefix serialization loop is retired; only the owning differential
+test retains that loop as a byte/partition oracle. Small singleton batches can
+do more envelope encoding work; this removes repeated entry traversal without
+promising a universal latency improvement.
+
 The adapter freezes the original key/entries and chunk payloads, retains its
 confirmed-chunk offset, and retries an uncertain ACK with exactly the same
 `expected_sequence`. Already acknowledged chunks are not resent when the SDK
