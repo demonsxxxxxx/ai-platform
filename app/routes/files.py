@@ -44,6 +44,7 @@ from app.file_preview_contracts import (
 )
 from app.files.api import (
     MAX_UPLOAD_BYTES,
+    ProfileDriveFile,
     ProfileDriveTransferError,
     abort_file_upload_session,
     activate_file_upload_session,
@@ -451,7 +452,7 @@ async def _open_profile_drive_file(
     principal: AuthPrincipal,
     path: str,
     source_id: str = "profile",
-) -> tuple[object, object, int, str]:
+) -> ProfileDriveFile:
     settings = get_settings()
     try:
         jwt = await get_mcp_principal_jwt_store().get(principal)
@@ -468,25 +469,16 @@ async def _open_profile_drive_file(
             require_nonempty=True,
             not_found_status=404,
             too_large_detail="file_too_large",
+            read_timeout_seconds=settings.profile_drive_transfer_read_timeout_seconds,
+            total_timeout_seconds=settings.profile_drive_transfer_total_timeout_seconds,
         )
     except ProfileDriveTransferError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
-async def _download_profile_drive_file(
-    *,
-    client: object,
-    response: object,
-    content_length: int,
-) -> tuple[str, str, int]:
+async def _download_profile_drive_file(*, transfer: ProfileDriveFile) -> tuple[str, str, int]:
     try:
-        return await download_profile_drive_file(
-            client=client,
-            response=response,
-            content_length=content_length,
-            max_bytes=MAX_UPLOAD_BYTES,
-            too_large_detail="file_too_large",
-        )
+        return await download_profile_drive_file(transfer=transfer)
     except ProfileDriveTransferError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
@@ -850,151 +842,170 @@ async def _store_profile_drive_file(
     display_name = _normalize_upload_filename(request.path.rsplit("/", 1)[-1])
     storage = ObjectStorage()
     await _cleanup_expired_upload_sessions(storage)
-    client, upstream_response, content_length, content_type = await _open_profile_drive_file(
+    transfer = await _open_profile_drive_file(
         principal=principal,
         path=request.path,
         source_id=request.source_id,
     )
 
-    file_id = new_id("file")
-    upload_session_id = new_id("upload")
-    upload_id = f"direct_{new_id('upload_owner')}"
-    storage_key = direct_upload_storage_key(
-        tenant_id=tenant_id,
-        workspace_id=workspace_id,
-        session_id=session_id,
-        file_id=file_id,
-        upload_id=upload_id,
-    )
-    try:
-        async with transaction() as conn:
-            usage = await get_file_storage_usage(
-                conn,
-                tenant_id=tenant_id,
-                workspace_id=workspace_id,
-                user_id=principal.user_id,
+    async with transfer:
+        content_length = transfer.content_length
+        content_type = transfer.content_type
+
+        file_id = new_id("file")
+        upload_session_id = new_id("upload")
+        upload_id = f"direct_{new_id('upload_owner')}"
+        storage_key = direct_upload_storage_key(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            session_id=session_id,
+            file_id=file_id,
+            upload_id=upload_id,
+        )
+        temporary_path: str | None = None
+        abandoned_put: Event | None = None
+        object_created = False
+        committed = False
+        try:
+            with transfer.budget():
+                async with transaction() as conn:
+                    usage = await get_file_storage_usage(
+                        conn,
+                        tenant_id=tenant_id,
+                        workspace_id=workspace_id,
+                        user_id=principal.user_id,
+                    )
+                    settings = get_settings()
+                    if usage["active_uploads"] >= settings.file_upload_max_active_sessions:
+                        raise HTTPException(status_code=429, detail="upload_session_limit_exceeded")
+                    if (
+                        usage["stored_bytes"] + usage["reserved_bytes"] + content_length
+                        > settings.file_storage_quota_bytes
+                    ):
+                        raise HTTPException(status_code=413, detail="file_storage_quota_exceeded")
+                    claimed = await claim_direct_file_upload_session(
+                        conn,
+                        upload_session_id=upload_session_id,
+                        tenant_id=tenant_id,
+                        workspace_id=workspace_id,
+                        user_id=principal.user_id,
+                        session_id=session_id,
+                        file_id=file_id,
+                        original_name=display_name,
+                        content_type=content_type,
+                        expected_size_bytes=content_length,
+                        storage_key=storage_key,
+                        upload_id=upload_id,
+                    )
+                if not claimed:
+                    raise HTTPException(status_code=409, detail="profile_drive_import_conflict")
+
+                temporary_path, transferred_sha256, transferred_bytes = await _download_profile_drive_file(
+                    transfer=transfer,
+                )
+            await _run_storage(
+                _validate_upload_file,
+                filename=display_name,
+                declared_content_type=content_type,
+                path=Path(temporary_path),
             )
-            settings = get_settings()
-            if usage["active_uploads"] >= settings.file_upload_max_active_sessions:
-                raise HTTPException(status_code=429, detail="upload_session_limit_exceeded")
-            if (
-                usage["stored_bytes"] + usage["reserved_bytes"] + content_length
-                > settings.file_storage_quota_bytes
-            ):
-                raise HTTPException(status_code=413, detail="file_storage_quota_exceeded")
-            claimed = await claim_direct_file_upload_session(
-                conn,
-                upload_session_id=upload_session_id,
-                tenant_id=tenant_id,
-                workspace_id=workspace_id,
-                user_id=principal.user_id,
-                session_id=session_id,
-                file_id=file_id,
-                original_name=display_name,
-                content_type=content_type,
-                expected_size_bytes=content_length,
+            abandoned_put = Event()
+            stored = await run_storage_io(
+                _put_profile_drive_import,
+                storage,
                 storage_key=storage_key,
-                upload_id=upload_id,
-            )
-        if not claimed:
-            raise HTTPException(status_code=409, detail="profile_drive_import_conflict")
-    except BaseException:
-        await upstream_response.aclose()
-        await client.aclose()
-        raise
-
-    temporary_path: str | None = None
-    abandoned_put: Event | None = None
-    object_created = False
-    committed = False
-    try:
-        temporary_path, transferred_sha256, transferred_bytes = await _download_profile_drive_file(
-            client=client,
-            response=upstream_response,
-            content_length=content_length,
-        )
-        await _run_storage(
-            _validate_upload_file,
-            filename=display_name,
-            declared_content_type=content_type,
-            path=Path(temporary_path),
-        )
-        abandoned_put = Event()
-        stored = await run_storage_io(
-            _put_profile_drive_import,
-            storage,
-            storage_key=storage_key,
-            source_path=temporary_path,
-            content_type=content_type,
-            abandoned=abandoned_put,
-            timeout_seconds=300.0,
-            on_abandoned=abandoned_put.set,
-        )
-        object_created = True
-        if (
-            stored.size_bytes != transferred_bytes
-            or stored.sha256.casefold() != transferred_sha256.casefold()
-        ):
-            raise HTTPException(status_code=409, detail="profile_drive_import_identity_mismatch")
-
-        async with transaction() as conn:
-            reservation = await get_authorized_file_upload_session(
-                conn,
-                upload_session_id=upload_session_id,
-                tenant_id=tenant_id,
-                user_id=principal.user_id,
-                for_update=True,
-            )
-            if (
-                reservation is None
-                or reservation.get("state") != "pending"
-                or str(reservation.get("storage_key") or "") != storage_key
-                or int(reservation.get("expected_size_bytes") or -1) != stored.size_bytes
-            ):
-                raise RepositoryNotFoundError("profile_drive_import_reservation_lost")
-            await create_file(
-                conn,
-                file_id=file_id,
-                tenant_id=tenant_id,
-                workspace_id=workspace_id,
-                user_id=principal.user_id,
-                session_id=session_id,
-                original_name=display_name,
+                source_path=temporary_path,
                 content_type=content_type,
-                size_bytes=stored.size_bytes,
-                storage_key=stored.storage_key,
-                sha256=stored.sha256,
+                abandoned=abandoned_put,
+                timeout_seconds=300.0,
+                on_abandoned=abandoned_put.set,
             )
-            await complete_file_upload_session(
-                conn,
-                upload_session_id=upload_session_id,
-            )
-            await append_audit_log(
-                conn,
-                tenant_id=tenant_id,
-                user_id=principal.user_id,
-                action="profile_drive.file_imported",
-                target_type="file",
-                target_id=file_id,
-                trace_id=standard_trace_id(file_id),
-                payload_json={
-                    "workspace_id": workspace_id,
-                    "session_id": session_id,
-                    "file_id": file_id,
-                    "name": display_name,
-                    "size_bytes": stored.size_bytes,
-                },
-            )
-            file_row = await get_file(conn, tenant_id=tenant_id, file_id=file_id)
-        committed = True
-        if file_row is None:
-            raise RepositoryNotFoundError("profile_drive_import_missing")
-        return dict(file_row)
-    except asyncio.CancelledError:
-        if not committed:
-            try:
-                await asyncio.shield(
-                    _reconcile_profile_drive_import(
+            object_created = True
+            if (
+                stored.size_bytes != transferred_bytes
+                or stored.sha256.casefold() != transferred_sha256.casefold()
+            ):
+                raise HTTPException(status_code=409, detail="profile_drive_import_identity_mismatch")
+
+            async with transaction() as conn:
+                reservation = await get_authorized_file_upload_session(
+                    conn,
+                    upload_session_id=upload_session_id,
+                    tenant_id=tenant_id,
+                    user_id=principal.user_id,
+                    for_update=True,
+                )
+                if (
+                    reservation is None
+                    or reservation.get("state") != "pending"
+                    or str(reservation.get("storage_key") or "") != storage_key
+                    or int(reservation.get("expected_size_bytes") or -1) != stored.size_bytes
+                ):
+                    raise RepositoryNotFoundError("profile_drive_import_reservation_lost")
+                await create_file(
+                    conn,
+                    file_id=file_id,
+                    tenant_id=tenant_id,
+                    workspace_id=workspace_id,
+                    user_id=principal.user_id,
+                    session_id=session_id,
+                    original_name=display_name,
+                    content_type=content_type,
+                    size_bytes=stored.size_bytes,
+                    storage_key=stored.storage_key,
+                    sha256=stored.sha256,
+                )
+                await complete_file_upload_session(
+                    conn,
+                    upload_session_id=upload_session_id,
+                )
+                await append_audit_log(
+                    conn,
+                    tenant_id=tenant_id,
+                    user_id=principal.user_id,
+                    action="profile_drive.file_imported",
+                    target_type="file",
+                    target_id=file_id,
+                    trace_id=standard_trace_id(file_id),
+                    payload_json={
+                        "workspace_id": workspace_id,
+                        "session_id": session_id,
+                        "file_id": file_id,
+                        "name": display_name,
+                        "size_bytes": stored.size_bytes,
+                    },
+                )
+                file_row = await get_file(conn, tenant_id=tenant_id, file_id=file_id)
+            committed = True
+            if file_row is None:
+                raise RepositoryNotFoundError("profile_drive_import_missing")
+            return dict(file_row)
+        except asyncio.CancelledError as exc:
+            await transfer.__aexit__(type(exc), exc, exc.__traceback__)
+            if not committed:
+                try:
+                    await asyncio.shield(
+                        _reconcile_profile_drive_import(
+                            upload_session_id=upload_session_id,
+                            storage=storage,
+                            storage_key=storage_key,
+                            object_created=object_created,
+                            tenant_id=tenant_id,
+                            user_id=principal.user_id,
+                            object_write_in_flight=(
+                                abandoned_put is not None and abandoned_put.is_set()
+                            ),
+                        )
+                    )
+                except Exception:
+                    pass
+            raise
+        except Exception as exc:
+            await transfer.__aexit__(type(exc), exc, exc.__traceback__)
+            reconciled_file: dict[str, object] | None = None
+            if not committed:
+                try:
+                    reconciled_file = await _reconcile_profile_drive_import(
                         upload_session_id=upload_session_id,
                         storage=storage,
                         storage_key=storage_key,
@@ -1005,37 +1016,20 @@ async def _store_profile_drive_file(
                             abandoned_put is not None and abandoned_put.is_set()
                         ),
                     )
-                )
-            except Exception:
-                pass
-        raise
-    except Exception as exc:
-        reconciled_file: dict[str, object] | None = None
-        if not committed:
-            try:
-                reconciled_file = await _reconcile_profile_drive_import(
-                    upload_session_id=upload_session_id,
-                    storage=storage,
-                    storage_key=storage_key,
-                    object_created=object_created,
-                    tenant_id=tenant_id,
-                    user_id=principal.user_id,
-                    object_write_in_flight=(
-                        abandoned_put is not None and abandoned_put.is_set()
-                    ),
-                )
-            except Exception:
-                reconciled_file = None
-        if reconciled_file is not None:
-            return reconciled_file
-        if isinstance(exc, HTTPException):
-            raise
-        if isinstance(exc, (StorageIOBusyError, StorageIOTimeoutError)):
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
-        raise HTTPException(status_code=503, detail="profile_drive_import_failed") from exc
-    finally:
-        if temporary_path and (abandoned_put is None or not abandoned_put.is_set()):
-            Path(temporary_path).unlink(missing_ok=True)
+                except Exception:
+                    reconciled_file = None
+            if reconciled_file is not None:
+                return reconciled_file
+            if isinstance(exc, ProfileDriveTransferError):
+                raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+            if isinstance(exc, HTTPException):
+                raise
+            if isinstance(exc, (StorageIOBusyError, StorageIOTimeoutError)):
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            raise HTTPException(status_code=503, detail="profile_drive_import_failed") from exc
+        finally:
+            if temporary_path and (abandoned_put is None or not abandoned_put.is_set()):
+                Path(temporary_path).unlink(missing_ok=True)
 
 
 @router.post(

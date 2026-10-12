@@ -1881,7 +1881,8 @@ def test_executor_rejects_invalid_private_system_prompt_before_sdk_or_public_lea
     assert private_marker not in json.dumps(result)
 
 
-def test_executor_binds_sdk_mcp_evidence_and_emits_only_safe_capability_event(tmp_path, monkeypatch):
+@pytest.mark.parametrize("returned_error", [False, True])
+def test_executor_binds_sdk_mcp_evidence_and_emits_only_safe_capability_event(tmp_path, monkeypatch, returned_error):
     callbacks = []
     acknowledgements = []
 
@@ -1889,12 +1890,11 @@ def test_executor_binds_sdk_mcp_evidence_and_emits_only_safe_capability_event(tm
         claude_agent_sdk_enabled = True
 
     async def fake_run_claude_agent_sdk(**kwargs):
-        for phase in ("invocation_requested", "completed"):
-            acknowledgements.append(
-                await kwargs["on_capability_evidence"](
-                    sdk_mcp_evidence("mcp__tenant-server__search", "tool-call-1", phase)
-                )
-            )
+        for phase in ("invocation_requested", "failed" if returned_error else "completed"):
+            raw_evidence = sdk_mcp_evidence("mcp__tenant-server__search", "tool-call-1", phase)
+            if returned_error and phase == "failed":
+                raw_evidence["trust_basis"] = "tool_call_bound_error_result"
+            acknowledgements.append(await kwargs["on_capability_evidence"](raw_evidence))
         return sdk_result()
 
     def callback_sender(url, payload, token):
@@ -1914,8 +1914,11 @@ def test_executor_binds_sdk_mcp_evidence_and_emits_only_safe_capability_event(tm
     evidence = response.json()["capability_evidence"]
     assert [(item["lifecycle_phase"], item["tool_call_id"]) for item in evidence] == [
         ("invocation_requested", "tool-call-1"),
-        ("completed", "tool-call-1"),
+        ("failed" if returned_error else "completed", "tool-call-1"),
     ]
+    assert evidence[-1]["trust_basis"] == (
+        "tool_call_bound_error_result" if returned_error else "tool_call_bound_invocation"
+    )
     capability_events = [
         item
         for item in callbacks
@@ -1927,16 +1930,17 @@ def test_executor_binds_sdk_mcp_evidence_and_emits_only_safe_capability_event(tm
     } == {("session-a", "run-a", "qat-attempt-a")}
     assert [[event["type"] for event in item["events"]] for item in capability_events] == [
         ["capability_invoking", "execution_step"],
+        ["capability_failed", "execution_step_failed"] if returned_error else
         ["capability_completed", "execution_step_completed"],
     ]
     assert [item["events"][0]["payload"]["capability"] for item in capability_events] == [
         {"kind": "mcp", "name": "Tenant Search", "status": "invoking"},
-        {"kind": "mcp", "name": "Tenant Search", "status": "completed"},
+        {"kind": "mcp", "name": "Tenant Search", "status": "failed" if returned_error else "completed"},
     ]
     execution_events = [item["events"][1] for item in capability_events]
     assert [item["type"] for item in execution_events] == [
         "execution_step",
-        "execution_step_completed",
+        "execution_step_failed" if returned_error else "execution_step_completed",
     ]
     assert execution_events[0]["payload"]["step_id"] == execution_events[1]["payload"]["step_id"]
     assert set(execution_events[0]["payload"]) <= PUBLIC_EXECUTION_V2_STEP_PAYLOAD_FIELDS
@@ -3794,14 +3798,49 @@ def test_executor_execute_enforces_fractional_positive_timeout_and_cancels_runne
     ],
 )
 def test_executor_deadline_preserves_mcp_execution_uncertainty(
-    tmp_path, terminal_hook_seen, expected_error
+    tmp_path, monkeypatch, terminal_hook_seen, expected_error
 ):
     payload = task_payload()
     payload["config"]["resource_limits"] = {"max_seconds": 0.1}
 
     observed = []
+    facts_processed = asyncio.Event()
+    runner_cancelled = threading.Event()
+    deadline_task = None
+    real_wait = asyncio.wait
+
+    async def wait_after_mcp_facts(fs, *, timeout=None, return_when=asyncio.ALL_COMPLETED):
+        nonlocal deadline_task
+        if deadline_task is None and len(fs) == 1 and any(
+            isinstance(task, asyncio.Task)
+            and getattr(task.get_coro(), "cr_code", None) is executor_runner.__code__
+            for task in fs
+        ):
+            deadline_task = next(iter(fs))
+            assert timeout == payload["config"]["resource_limits"]["max_seconds"]
+            # Arrange the intended MCP state before starting the real timer.
+            # Keep the production deadline owner, timeout, and cancellation path.
+            ready = asyncio.create_task(facts_processed.wait())
+            try:
+                # Bound fixture setup independently of the executor's 0.1s budget.
+                # A runner failure must also release this setup barrier.
+                done, _ = await real_wait(
+                    {*fs, ready}, timeout=5, return_when=asyncio.FIRST_COMPLETED,
+                )
+                assert done, "MCP facts were not processed before the setup deadline"
+            except BaseException:
+                deadline_task.cancel()
+                await asyncio.gather(deadline_task, return_exceptions=True)
+                raise
+            finally:
+                ready.cancel()
+                await asyncio.gather(ready, return_exceptions=True)
+        return await real_wait(fs, timeout=timeout, return_when=return_when)
+
+    monkeypatch.setattr(executor_app.asyncio, "wait", wait_after_mcp_facts)
 
     async def executor_runner(request, workspace_root, emit_event):
+        assert asyncio.current_task() is deadline_task
         lifecycles = [("started", "invoking")]
         if terminal_hook_seen:
             lifecycles.append(("completed", "completed"))
@@ -3823,7 +3862,12 @@ def test_executor_deadline_preserves_mcp_execution_uncertainty(
             ))
             assert accepted is True
             observed.append(lifecycle)
-        await asyncio.Event().wait()
+        facts_processed.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            runner_cancelled.set()
+            raise
 
     async def callback_sender(_url, value, _token):
         # This deadline case measures cancellation after the intended facts,
@@ -3838,9 +3882,14 @@ def test_executor_deadline_preserves_mcp_execution_uncertainty(
 
     response = client.post("/v2/tasks", json=payload, headers=auth_headers())
 
+    assert deadline_task is not None
+    assert deadline_task.cancelled()
+    assert runner_cancelled.is_set()
     assert observed == (["started", "completed"] if terminal_hook_seen else ["started"])
     assert response.status_code == 200
     assert response.json()["status"] == "failed"
+    assert response.json()["requested_max_seconds"] == 0.1
+    assert response.json()["timeout_elapsed_ms"] >= 0
     assert response.json()["error_code"] == expected_error
     assert response.json()["error_message"] == (
         "MCP execution outcome requires reconciliation before retry"

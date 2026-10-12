@@ -509,11 +509,13 @@ def test_stream_only_schema_change_advances_schema_version():
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert schema_migrations.RUN_INPUTS_SCHEMA_VERSION == "2026.10.07.1"
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.10.10.1"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.10.12.1"
     assert (
         schema_migrations.TARGET_SCHEMA_VERSION
-        == schema_migrations.PROVIDER_TRANSCRIPT_REPRESENTATION_SCHEMA_VERSION
+        == schema_migrations.RUN_QUESTION_DEFAULT_ANSWER_SCHEMA_VERSION
     )
+    assert ("run_inputs", "source", "text", True) in schema_migrations.CRITICAL_COLUMNS
+    assert ("run_inputs", "chk_run_inputs_source") in schema_migrations.CRITICAL_CONSTRAINTS
     assert schema_migrations.CLAUDE_CONTEXT_CUTOVER_SCHEMA_VERSION == "2026.09.15.2"
     assert schema_migrations.CLAUDE_PROVIDER_SESSION_SCHEMA_VERSION == "2026.09.04.1"
     assert schema_migrations.FILE_UPLOAD_SESSION_SCHEMA_VERSION == "2026.09.03.1"

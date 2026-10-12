@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 
 from app.runs.application.worker_dispatch_admission import WorkerAdmissionOutcome
 from app.runs.application.attempt_lifecycle import ReconciliationAuthorityError
+from app.runs.domain.execution_spec import ExecutionSpecError
 
 
 @dataclass(frozen=True)
@@ -94,12 +95,16 @@ class WorkerDispatchBindingService:
                 ) if fence == "ready" else (None, None)
             )
 
-            async def fail(error_code: str, error_message: str, stage: str, event_payload: dict[str, Any]) -> WorkerDispatchBindingResult:
+            async def fail(
+                error_code: str, error_message: str, stage: str,
+                event_payload: dict[str, Any], *, diagnostic_reason: str | None = None,
+            ) -> WorkerDispatchBindingResult:
                 terminal = await self._fail_pre_dispatch(
                     conn, payload=payload, run_identity=run_identity,
                     v4_capabilities=capabilities, attempt_lifecycle=attempt_authority,
                     error_code=error_code, error_message=error_message,
                     event_stage=stage, event_payload=event_payload,
+                    **({"diagnostic_reason": diagnostic_reason} if diagnostic_reason is not None else {}),
                 )
                 return WorkerDispatchBindingResult(
                     payload=terminal.payload,
@@ -142,6 +147,7 @@ class WorkerDispatchBindingService:
                     "MCP runtime configuration is unavailable" if mcp_error else "Execution specification is invalid",
                     "authorization" if mcp_error else "worker",
                     {"visible_to_user": bool(mcp_error), "severity": "error", "error_code": code},
+                    diagnostic_reason=exc.code if isinstance(exc, ExecutionSpecError) else None,
                 )
             bound_attempt = await attempt_authority.bind_execution_spec(conn, execution_spec)
             if not reconciliation:
