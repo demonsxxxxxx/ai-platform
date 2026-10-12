@@ -172,6 +172,15 @@ cancels and joins signal waiters and maintenance operations, including an
 operation that has not yet finished after cancellation; claim/release and
 stop/finalize fences remain in their owning paths.
 
+After Worker reconciliation, only a terminal `WorkerOutcome` for the receipt's
+exact Run permits stop/release and receipt finalization. Nonterminal outcomes,
+including `skipped` with `stale_terminal_state`, retain settlement responsibility
+through the existing claim-fenced receipt retry. Cancellation can make a dispatch
+fence stale while the Run and its original Attempt are still nonterminal. The
+next claim must settle that Attempt or observe the already-terminal Run before
+finalizing; a stale error label is not a terminal fact. This does not replace
+the independent stale-Run maintenance fallback or relax receipt validation.
+
 For an asynchronously dispatched result, `latency_ms` measures elapsed time
 from the persisted, timezone-aware `runs.started_at` to terminal result
 projection. Execution's application projection samples the UTC observation time;
