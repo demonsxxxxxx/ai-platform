@@ -2429,3 +2429,37 @@ test("v4 frames fail closed without exact session, incarnation, and generation a
     currentGeneration: 4,
   }), false);
 });
+
+test("accepted completion preserves terminal presentation and the completion callback", () => {
+  let dismissed = 0;
+  let completed = 0;
+  const ctx = createContext([{
+    id: "assistant-read-free",
+    role: "assistant",
+    content: "Retained answer",
+    timestamp: new Date("2026-10-11T00:00:00Z"),
+    isStreaming: true,
+    parts: [],
+  }], null, () => { dismissed += 1; });
+  ctx.currentRunIdRef.current = "run-read-free";
+  ctx.options = { onStreamDone: () => {
+    completed += 1;
+  } };
+  const committed: boolean[] = [];
+
+  assert.equal(handleStreamEvent(
+    { event: "done", data: JSON.stringify({ run_id: "run-read-free" }) },
+    "assistant-read-free",
+    "evt-read-free-done",
+    "2026-10-11T00:00:00Z",
+    ctx,
+    undefined,
+    (semanticApplied) => committed.push(semanticApplied),
+  ), true);
+  assert.equal(dismissed, 1);
+  assert.equal(completed, 1);
+  assert.equal(ctx.messages()[0].content, "Retained answer");
+  assert.equal(ctx.messages()[0].isStreaming, false);
+  assert.deepEqual(ctx.connectionStatuses, ["disconnected"]);
+  assert.deepEqual(committed, [true]);
+});

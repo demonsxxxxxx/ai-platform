@@ -1,6 +1,6 @@
 # Claude Run interaction and completion
 
-The additive input protocol uses schema version `2026.10.07.1`.
+The additive input protocol uses schema version `2026.10.12.1`.
 
 Runs owns durable supplementary text and question answers. Execution owns their
 translation into the current Claude session. These inputs retain the current
@@ -34,12 +34,12 @@ PreToolUse is the single question entry; there is no second question handler in
 - `state` is `open`, `sealed`, or `inactive`. Submission to a closed, terminal,
   cancelling or non-current Attempt returns 409 `run_input_closed`.
 - Input rows contain `input_id`, `kind` (`text` or `answer`), `text`,
-  `question_id`, `answers`, `status` (`queued`, `applied`, or `closed`), `created_at`.
+  `question_id`, `answers`, `source` (`manual` or `timeout_default`), `status` (`queued`, `applied`, or `closed`), `created_at`.
   Unapplied inputs project as `closed` after their Attempt closes; persisted
   receipts remain queued/applied.
 - Question rows contain `question_id`, `questions`, `status` (`pending`,
-  `answered`, `resolved`, or `closed`), `created_at`. Each question has
-  `key`, `question`, `header`, `options: [{key, label, description}]`, `multiSelect`.
+  `answered`, `resolved`, or `closed`), `created_at`, `deadline_at`, and `default_answers`. Each question has
+  `key`, `question`, `header`, `options: [{key, label, description, recommended?}]`, `multiSelect`.
   Question keys (`q0`…`q3`) and per-question option keys (`o0`…`o7`) are stable
   ordinals inside the batch. Answers map question keys to a selected option key,
   an array of keys for multi-select, or `{text: ...}` for free text. Free text is
@@ -53,18 +53,25 @@ PreToolUse is the single question entry; there is no second question handler in
 No new SSE event is required. Chat queries this projection while the Run is
 active. A separate session/auth-bound history projection restores every loaded
 Run page on refresh and supports loading older pages; replacing the active Run
-retains prior rounds as read-only history. The active Run overrides its history
+retains prior rounds in the session-bound history projection. The active Run overrides its history
 snapshot by Run ID. Session or principal replacement aborts old reads and drops
 old projections. Persisted pre-key records use a display-only legacy mapping;
 new submissions require the current key contract. Refresh starts pagination
 again from the fresh first-page cursor and inserts gap pages in Run order while
 deduplicating cached records. Current pending questions appear above older history;
 a newly pending batch resets the history scroll position. Colliding public option
-labels use safe ordinal numbering in both cards and accepted-answer history.
-Previously accepted text inputs remain visible as read-only Run history entries;
-the web chat no longer offers a text-entry control for appending to an active Run.
-Question batches remain answerable in chat. The HTTP and callback input protocol
-remains unchanged. Text and answers are Run input facts; the existing provider
+labels use safe ordinal numbering in cards and visible answer receipts.
+The composer hides successfully applied manual inputs and resolved question
+summaries; hiding them does not remove durable inputs or cached history. Automatic
+answer receipts remain visible with their source, choice and applied status. Queued
+inputs and closed, unprocessed inputs remain visible, including an unresolved
+answer after its Run closes. The web chat no longer offers a text-entry control
+for appending to an active Run. Pending questions remain answerable cards with
+confirmation and submission feedback anchored at the bottom of the task-input
+scroll area, so reading long option lists does not require scrolling to find the
+submit action. Chat displays queued text separately from persisted conversation
+Messages. The additive question metadata and source do not change text admission. Text and
+answers are Run input facts; the existing provider
 coverage continues to count the original conversation user message and final
 assistant message. SDK SessionStore persists all native continuation/tool entries.
 
@@ -75,13 +82,21 @@ assistant message. SDK SessionStore persists all native continuation/tool entrie
 
 - `open`: establish the current Attempt's input session before SDK execution.
 - `question`: publish `{question_id, questions}` idempotently.
-- `poll`: return unapplied input commands; optionally filter by `question_id`.
+- `poll`: return unapplied input commands; optionally filter by `question_id`. When a
+  pending question reaches five minutes after its persisted `created_at`, the Runs
+  service atomically records one `timeout_default` answer: a marked recommended
+  option, or the first option when none is marked. Multi-select uses all marked
+  recommendations, or the first option. A batch containing a question without
+  options returns `error_code=run_question_needs_input` and closes that question;
+  the execution adapter interrupts and completes the Run through its normal stop
+  barrier.
 - `ack`: mark the supplied `input_ids` applied; resolve their answered questions.
 - `settle`: return the earliest unapplied text command, or atomically seal input
   admission when none remain. It must serialize against user submission on the
   owning Run so an accepted input cannot disappear into a closing SDK session.
 
-All responses contain `{state, inputs}`. Commands returned by poll are repeated
+All normal responses contain `{state, inputs}`; a question poll may also return
+`error_code=run_question_needs_input` when a no-option question expires. Commands returned by poll are repeated
 until acknowledged. A response lost after SDK query acceptance retries only the
 ACK, never the query. Pending questions survive a browser reload. Old Attempts
 cannot publish, poll, acknowledge or seal the current input session.
@@ -98,8 +113,28 @@ was. The current principal's existing administrator exemption applies to text
 and free answers; the authenticated callback receives that admitted value.
 Ordinary-user reads still reapply public redaction. Selection identities carry
 only ordinals, regardless of the submitting role. The table is Run-owned and
-cascades with Run deletion. The native question hook uses the Run deadline,
-or a one-day ceiling when execution has no configured deadline.
+cascades with Run deletion. The native question hook uses the fixed five-minute
+question deadline from the persisted question creation time. Manual and timeout
+answers serialize on the owning Run lock; the first committed answer wins. A
+timeout answer is visible through its `source` field. Authorization and approval
+controls remain unchanged. Recommendation is a strict optional boolean; when absent,
+the `(Recommended)`, `(推荐)` or `（推荐）` label suffix determines the marker before
+display redaction. Manual submissions cannot set their source. A late manual POST
+after an automatic answer returns `run_input_question_already_answered`; the web
+client refreshes the snapshot and keeps the Run open.
+
+The new source column defaults existing input rows to `manual`; no rows or tables
+are retired. Legacy question JSON without recommendation metadata remains readable
+and supports idempotent publication. Under the owning Run lock, same-identity
+republication may fill missing recommendation metadata even when the old label
+was redacted. All other canonical question/option fields must match; existing
+booleans (including `False`) cannot change, and older publishers cannot erase them
+by omission. Only question JSON changes; status, creation time, deadline and
+existing answer receipts remain intact. Stale/terminal/cancelled Attempts never
+auto-answer. The superseded
+unbounded native-question wait and one-day deadline instruction are retired.
+`run_question_needs_input` retains its safe public cause in live and replayed Run
+terminal projections and asks the user to supply the missing information.
 
 ## Completion boundary
 
@@ -138,9 +173,9 @@ are separate from production acceptance. The receive/flush ordering is checked
 against the pinned SDK; actual provider and deployment latency still require
 runtime acceptance.
 
-Deploy additive schema version `2026.10.07.1` before the API and Executor. Older
-binaries do not implement the input protocol; deploy the matching frontend,
-API and Executor together.
+Deploy additive schema version `2026.10.12.1` before the API and Executor. Deploy
+matching frontend, API and Executor together: prior executors do not consume the
+timeout signal, and prior frontends do not show automatic-answer provenance.
 
 Retire the transport-replacement/SDK-child-task close shim and one-shot-only
 Chat submission restriction. Existing Run cancellation, SessionStore native

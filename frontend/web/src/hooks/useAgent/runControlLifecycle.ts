@@ -108,13 +108,33 @@ export interface RunControlLifecycleCallbacks {
   reconnectRunControlOwner: (owner: RunControlOwner) => Promise<void>;
 }
 
+export interface RunControlReadError {
+  message: string;
+  status?: number;
+  code?: string;
+  diagnosticId?: string;
+}
+
+/** Only the shared HTTP boundary may authorize server-provided error copy. */
+function projectReadError(error: unknown): RunControlReadError {
+  return error instanceof ApiRequestError
+    ? {
+        message: error.message,
+        status: error.status,
+        code: error.code,
+        diagnosticId: error.diagnosticId,
+      }
+    : { message: "读取失败，请刷新重试。" };
+}
+
 export interface RunControlSnapshot {
   revision: number;
   owner: RunControlOwner | null;
   phase: RunControlPhase;
   playback: RunPlaybackResponse | null;
   readiness: ChatRunStatusResponse | null;
-  readError: "unavailable" | null;
+  playbackReadError: RunControlReadError | null;
+  readinessReadError: RunControlReadError | null;
   rejectionMessage: string | null;
   child: RunControlChild | null;
   canCancel: boolean;
@@ -130,7 +150,8 @@ const EMPTY_SNAPSHOT: RunControlSnapshot = {
   phase: "idle",
   playback: null,
   readiness: null,
-  readError: null,
+  playbackReadError: null,
+  readinessReadError: null,
   rejectionMessage: null,
   child: null,
   canCancel: false,
@@ -431,7 +452,8 @@ export class RunControlLifecycle {
       phase: owner.phase,
       playback: null,
       readiness: null,
-      readError: null,
+      playbackReadError: null,
+      readinessReadError: null,
       rejectionMessage: null,
       child: null,
     });
@@ -448,7 +470,8 @@ export class RunControlLifecycle {
       phase: "idle",
       playback: null,
       readiness: null,
-      readError: null,
+      playbackReadError: null,
+      readinessReadError: null,
       rejectionMessage: null,
       child: null,
     });
@@ -490,7 +513,6 @@ export class RunControlLifecycle {
       expectedOwner.phase = "loading";
       this.publishForOwner(expectedOwner, {
         phase: "loading",
-        readError: null,
         rejectionMessage: null,
       });
     }
@@ -526,7 +548,14 @@ export class RunControlLifecycle {
       phase: expectedOwner.phase,
       playback: playback ?? this.snapshot.playback,
       readiness: readiness ?? this.snapshot.readiness,
-      readError: unavailable ? "unavailable" : null,
+      playbackReadError:
+        playbackResult.status === "rejected"
+          ? projectReadError(playbackResult.reason)
+          : null,
+      readinessReadError:
+        readinessResult.status === "rejected"
+          ? projectReadError(readinessResult.reason)
+          : null,
     });
   }
 
@@ -608,7 +637,6 @@ export class RunControlLifecycle {
       phase: "created_unopened",
       child,
       rejectionMessage: null,
-      readError: null,
     });
   }
 
@@ -671,7 +699,7 @@ export class RunControlLifecycle {
           ? "retrying"
           : "resuming";
     owner.phase = phase;
-    this.publishForOwner(owner, { phase, rejectionMessage: null, readError: null });
+    this.publishForOwner(owner, { phase, rejectionMessage: null });
 
     try {
       const response = await this.requestMutation(
@@ -970,7 +998,7 @@ export class RunControlLifecycle {
       ) {
         return;
       }
-      this.publishForOwner(owner, { readiness });
+      this.publishForOwner(owner, { readiness, readinessReadError: null });
     } catch {
       // The exact operation remains persisted and unconfirmed for a later GET.
     }

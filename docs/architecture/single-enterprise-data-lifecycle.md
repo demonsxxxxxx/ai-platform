@@ -87,7 +87,7 @@ No global client lifetime, upload parallelism or premature close is introduced.
 - **Reached invariants:** company login remains identity authority; the returned employee `workId` remains `AuthPrincipal.user_id` and `users.id`; every metadata read and write binds both the authenticated `tenant_id` and user ID; client metadata cannot replace trusted principal fields; the final merged JSON value is bounded before write.
 - **Acceptance and regression proof:** focused backend tests prove tenant/user-scoped locked merge, rejection of oversized or reserved metadata, and route read-after-write behavior; focused frontend tests prove catalog-filtered server metadata and removal of browser-local favorite authority.
 - **Evidence ceiling:** source and local focused checks do not prove that a deployed PostgreSQL schema was migrated or that cross-browser persistence works on a packaged runtime.
-- **Migration and rollback:** add one non-null JSONB object column with an empty-object default and advance the schema ledger; rollback restores the previous application image while leaving the additive column installed and unused.
+- **Migration and rollback:** add one non-null JSONB object column with an empty-object default and advance the schema ledger; this individual additive change can leave the column installed and unused, but application rollback remains subject to the whole-schema compatibility checks below.
 - **Stop conditions:** stop if employee `workId` is not stably provisioned as the scoped local user, the migration becomes destructive, tenant/user predicates are absent, the final merged value cannot be bounded under lock, or Company Navigation would require Redis or browser storage as durable authority.
 
 ## Schema lifecycle and readiness
@@ -98,10 +98,13 @@ The supported upgrade command is:
 python -m app.schema_migrations apply
 ```
 
-The runner takes one PostgreSQL transaction-scoped advisory lock, creates the
-`schema_migrations` ledger when bootstrapping, applies the additive idempotent
-core schema, and records the target version plus SHA-256 checksum in the same
-transaction. New hot-table indexes are a separate resumable phase recorded in
+The runner holds a session-scoped advisory coordinator lock across both phases.
+Within the core phase it also takes a transaction-scoped advisory lock, creates
+the `schema_migrations` ledger when bootstrapping, applies the versioned core
+schema, and records the target version plus SHA-256 checksum in the same
+transaction. A matching target ledger and checksum skips the core SQL; safe
+repeated invocation does not imply that business-schema changes are additive or
+reversible. New hot-table indexes are a separate resumable phase recorded in
 `schema_index_migrations`: each is built with `CREATE INDEX CONCURRENTLY`
 outside the core transaction, catalog validity is checked before it is marked
 ready, and an interrupted or invalid build is safely retried. Concurrent API,
@@ -109,6 +112,15 @@ worker, or operator attempts serialize without holding a transaction open
 across the concurrent index build. Every committed schema change must advance
 `TARGET_SCHEMA_VERSION`; reusing a version with different SQL fails closed on
 checksum mismatch.
+
+The migration runner owns a separate autocommit coordinator connection whose
+session advisory lock spans the core transaction and concurrent-index phase.
+Failed or cancelled autocommit setup closes the connection before ownership can
+transfer to the runner. Once transferred, the runner always attempts session
+close, including when explicit advisory unlock fails. The first failure or
+cancellation remains primary; a cleanup failure is raised when no earlier
+failure exists. This does not change migration transactions, ledger checksums,
+or retry/idempotency semantics.
 
 Compose runs this command as a one-shot `migrate` service before API and worker
 startup. `python -m app.schema_migrations status`, API readiness, and worker startup all
@@ -118,9 +130,14 @@ relation existence alone is insufficient.
 
 Upgrade procedure:
 
-1. Keep the previous application image available and apply the new schema with
-   the migration command. Repeated or concurrent invocation is safe.
-2. Require a successful `status` result before starting API and workers.
+1. Follow the [release runbook](../operations/release-operations-runbook.md)
+   under explicit deployment authority. Establish the supported source/target
+   versions, inspect their retirement prerequisites and recovery limits before
+   applying the migration command. Keeping an old image does not prove rollback
+   compatibility. Repeated/concurrent invocation is serialized; it does not
+   waive cutover prerequisites.
+2. Require a successful `status` result for the intended binary before starting
+   API and workers.
 3. Deploy the matching API, worker, and frontend commit, then verify `/ready`.
 
 When a schema version adds a new deletion-outbox target, an older worker must be
@@ -135,12 +152,36 @@ remain dual-read for artifact states while all file transitions stay namespaced.
 This is the data-safety fence; worker capability heartbeat remains an optional
 availability and rollout-observability layer rather than deletion authority.
 
-Migrations in this phase are additive. Rollback means restoring the previous
-application image only after confirming it tolerates the added columns,
-indexes, ledger, and outbox tables. Do not drop or rename them during rollback.
-There is no automatic down migration. A checksum mismatch or missing critical
-contract is a stop condition requiring operator investigation, not a reason to
-bypass readiness.
+The core schema includes both additive changes and destructive cutovers:
+
+- Stream-only migration requires stopped old producers and the explicit
+  [legacy SSE retirement](../operations/redis-streams-sse-cutover-acceptance.md#explicit-legacy-state-retirement)
+  before dropping legacy publication/rebuild relations and `run_events`
+  publication columns. The cutover retires old index-ledger contracts, so the
+  old binary fails readiness after migration; an image swap cannot undo it.
+- The [Run lifecycle](run-lifecycle-boundary.md) retirement removes
+  `run_tool_permission_requests` after legacy Run settlement. Readiness requires
+  that retired relation to be absent.
+- The [Agent Profile persistence](agent-profile-persistence-boundary.md) hard
+  cut removes legacy profile columns, compatibility triggers and functions.
+  These are committed removals, not unused additive fields.
+
+`app/schema.sql` and `app/schema_migrations.py` own the actual transition and
+readiness checks. Migration-runner repeatability and a core transaction's
+failure rollback do not make a committed destructive cutover reversible. The
+core transaction can already be committed when concurrent-index work fails.
+
+Application rollback is allowed only between supported versions with evidence
+that the intended binary accepts the entire installed schema, ledger/index
+contracts and persisted data/protocols. Individual additive-column compatibility
+is insufficient. Any schema reversal requires separate reversibility evidence;
+there is no automatic down migration. Do not recreate retired tables, columns,
+or writers, edit checksums, or bypass readiness to make an old image start.
+After migration begins, use the release runbook's failure/recovery path: a
+schema-compatible corrected package or an operator-authorized restore after
+classifying the failure. This document does not establish a verified restore
+procedure or authorize deployment or recovery. A checksum mismatch or missing
+critical contract remains a stop condition requiring operator investigation.
 
 `run_diagnostics` is an additive Runs-owned relation with one row per
 `(tenant_id, run_id)`, a composite Run foreign key, a versioned JSON payload and
@@ -151,11 +192,12 @@ diagnostics remain read-only through the authorized Runs projection.
 
 OpenSandbox renewal observations add two nullable columns to `sandbox_leases`
 under a new core-schema ledger version. The existing platform `expires_at`
-retains its lease authority, and older application images ignore the added
-columns on rollback. Do not drop the columns until all renewal-receipt callers
-are retired; no legacy provider-expiry reader is retained.
+retains its lease authority. The columns alone are additive; they do not
+establish whole-schema rollback compatibility for older application images. Do
+not drop the columns until all renewal-receipt callers are retired; no legacy provider-expiry reader is retained.
 
-Before rolling back to an artifact-only worker, stop the file-delete producer.
+If whole-schema compatibility has been established for an artifact-only worker,
+stop the file-delete producer before that rollback.
 Namespaced file rows remain invisible to that worker, so rollback cannot make it
 physically delete them; however, deletion progress stops until a target-aware
 worker returns. Drain or reconcile every non-terminal file-target outbox row

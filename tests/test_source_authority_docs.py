@@ -14,6 +14,8 @@ RUNBOOK = ROOT / "docs/operations/release-operations-runbook.md"
 RELEASE_EVIDENCE_INDEX = ROOT / "docs/release-evidence/README.md"
 SOURCE_ARCHITECTURE = ROOT / "docs/architecture/source-code-architecture.md"
 CI_TEST_READINESS_GOVERNANCE = ROOT / "docs/architecture/ci-test-readiness-governance.md"
+SDK_DIAGNOSTIC_HISTORY = ROOT / "docs/agent-rules/history/github-sdk-diagnostic-examples.md"
+DATA_LIFECYCLE = ROOT / "docs/architecture/single-enterprise-data-lifecycle.md"
 SOURCE_ARCHITECTURE_ADR = ROOT / "docs/adr/0006-domain-first-modular-monolith.md"
 
 
@@ -67,6 +69,20 @@ def test_agent_rule_navigation_and_pr_template_remain_usable():
         LOCAL_TEST_EXECUTION: {
             "../architecture/ci-test-readiness-governance.md",
             "github-issue-pr-workflow.md",
+        },
+        SDK_DIAGNOSTIC_HISTORY: {"../github-issue-pr-workflow.md"},
+        SOURCE_ARCHITECTURE: {
+            "../../.github/workflows/ai-platform-trusted-governance-v2.yml",
+            "../agent-rules/github-issue-pr-workflow.md",
+            "../../.github/PULL_REQUEST_TEMPLATE.md",
+            "../../architecture-policy.json",
+            "../../schemas/architecture-policy.v1.schema.json",
+        },
+        DATA_LIFECYCLE: {
+            "../operations/release-operations-runbook.md",
+            "../operations/redis-streams-sse-cutover-acceptance.md#explicit-legacy-state-retirement",
+            "run-lifecycle-boundary.md",
+            "agent-profile-persistence-boundary.md",
         },
         MULTI_AGENT_WORKFLOW: {
             "github-issue-pr-workflow.md",
@@ -168,11 +184,41 @@ def test_source_architecture_authority_has_required_sections_and_anchors():
         "schemas/architecture-policy.v1.schema.json",
     ):
         assert authority_anchor in architecture_flat
-    assert "The gate itself MUST be introduced in a later PR" in architecture_flat
     assert "status: accepted" in adr
     assert "decision_issue: 962" in adr
     assert "API, worker, executor, and maintenance entrypoints" in adr
     assert "sandbox entrypoints" not in adr
+
+
+def test_source_architecture_distinguishes_executed_gates_from_review_evidence():
+    architecture = " ".join(read(SOURCE_ARCHITECTURE).split())
+    workflow = read(ROOT / ".github/workflows/ai-platform-trusted-governance-v2.yml")
+    for tool in ("trusted_governance.py", "code_governance.py", "architecture_governance.py"):
+        assert f"tools/{tool}" in architecture
+        assert f'python -P "$GOVERNANCE_BASE_WORKTREE/tools/{tool}"' in workflow
+    assert "exact base/head candidate" in architecture
+    assert "does not read PR bodies" in architecture
+    assert "require human review" in architecture
+    assert "reviewers must inspect or rerun" in architecture
+    assert "contract is a disposition ledger" not in architecture
+    assert "MUST be introduced in a later PR" not in architecture
+
+
+def test_sdk_diagnostic_history_does_not_restore_a_removed_rule():
+    history = " ".join(read(SDK_DIAGNOSTIC_HISTORY).split())
+    assert "historical context, not current merge gates" in history
+    assert "generic layered diagnostic rule" not in history
+
+
+def test_release_environment_reference_does_not_claim_configured_approval():
+    runbook = " ".join(read(RUNBOOK).split())
+    assert "`packaging-publish`" in runbook
+    assert "Recheck the actual environment settings" in runbook
+    assert "including protection rules and deployment branch policy" in runbook
+    assert "verify Backend and Frontend checks for the selected exact main commit" in runbook
+    assert "Publication is protected by" not in runbook
+    assert "selects the named environment" in runbook
+    assert "main-source, environment," not in runbook
 
 
 def test_ci_test_readiness_governance_separates_evidence_and_tracks_completion():
@@ -273,6 +319,7 @@ def test_decommissioned_runtime_is_not_an_active_source_authority():
         AGENTS,
         DOCS_INDEX,
         RUNBOOK,
+        RELEASE_EVIDENCE_INDEX,
         ROOT / "README.md",
         ROOT / "frontend/web/README.md",
         ROOT / "frontend/web/scripts/prd-closure-browser-smoke.mjs",
@@ -288,6 +335,7 @@ def test_decommissioned_runtime_is_not_an_active_source_authority():
     assert retired_host not in active_text
     assert retired_connection not in active_text
     assert "211_api_worker_runtime" not in active_text
+    assert "211 verified" not in active_text
 
 
 def test_release_evidence_index_is_a_contract_not_a_status_snapshot():
@@ -300,6 +348,9 @@ def test_release_evidence_index_is_a_contract_not_a_status_snapshot():
     assert "ordinary pull requests" in index.casefold()
     assert "Actions artifacts" in index
     assert "authorized runtime procedure" in index
+    index_flat = " ".join(index.split())
+    assert "runtime verification for its exact deployed subject" in index_flat
+    assert "Historical entries retain their original subject and labels" in index_flat
     assert "current overall status" not in index
 
 
@@ -326,3 +377,43 @@ def test_release_evidence_keeps_concurrency_artifacts_machine_readable():
 
     assert list(evidence_root.rglob("*.json"))
     assert not list(evidence_root.rglob("*.md"))
+
+
+def test_schema_lifecycle_documents_destructive_source_contracts():
+    lifecycle = " ".join(read(DATA_LIFECYCLE).split())
+    schema = read(ROOT / "app/schema.sql")
+    migrations = read(ROOT / "app/schema_migrations.py")
+    # These are compatibility boundaries, not an editorial wording inventory.
+    for retired_surface, source_removal in (
+        ("publication columns", "drop column if exists stream_publication_state"),
+        ("run_tool_permission_requests", "drop table if exists run_tool_permission_requests"),
+        ("compatibility triggers", "drop trigger if exists trg_agent_profile_legacy_insert_compatibility"),
+    ):
+        assert retired_surface in lifecycle
+        assert source_removal in schema
+    assert 'RETIRED_RELATIONS = ("run_tool_permission_requests",)' in migrations
+    assert "not binary rollback-compatible" in migrations
+    assert "old binary fails readiness" in lifecycle
+    assert "Migrations in this phase are additive" not in lifecycle
+    assert "Apply additive core schema" not in migrations
+
+
+def test_schema_lifecycle_separates_retry_safety_from_rollback_authority():
+    lifecycle = " ".join(read(DATA_LIFECYCLE).split())
+    migrations = read(ROOT / "app/schema_migrations.py")
+    runbook = " ".join(read(RUNBOOK).split())
+    assert "session-scoped advisory coordinator lock" in lifecycle
+    assert "transaction-scoped advisory lock" in lifecycle
+    assert "pg_advisory_xact_lock" in migrations
+    assert "pg_try_advisory_lock" in migrations
+    assert "committed destructive cutover reversible" in lifecycle
+    assert "core transaction can already be committed" in lifecycle
+    assert "only between supported versions with evidence" in lifecycle
+    assert "entire installed schema" in lifecycle
+    assert "separate reversibility evidence" in lifecycle
+    assert "no automatic down migration" in lifecycle
+    assert "explicit deployment authority" in lifecycle
+    assert "does not establish a verified restore" in lifecycle
+    assert "operator-authorized restore" in lifecycle
+    assert "operator-authorized restore" in runbook
+    assert "Do not edit migration checksums" in runbook

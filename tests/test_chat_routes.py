@@ -3464,8 +3464,6 @@ async def test_chat_stream_rejects_non_string_model_id_without_coercion(
         "S",
         (),
         {
-            "model_catalog_json": '[{"id":"True"},{"id":"123"},{"id":"1.5"}]',
-            "default_model_id": "True",
             "claude_agent_model": "",
             "anthropic_model": "",
             "openai_model": "",
@@ -3514,8 +3512,6 @@ async def test_chat_stream_maps_governed_model_to_runtime_value_and_revision(mon
         "S",
         (),
         {
-            "model_catalog_json": '[{"id":"legacy","value":"legacy"}]',
-            "default_model_id": "legacy",
             "claude_agent_model": "",
             "anthropic_model": "",
             "openai_model": "",

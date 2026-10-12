@@ -2,7 +2,7 @@
 
 Status: active source contract
 Owner: Context; native engine adaptation is owned by Execution
-Last updated: 2026-09-28
+Last updated: 2026-10-11
 
 ## Authorities
 
@@ -59,6 +59,53 @@ controlled system channel. Claude does not receive `read_session_messages`.
 
 Provider IDs, transcript entries, callback credentials and storage/runtime details
 remain private. Public Context summaries expose counts and safe provenance.
+
+## Bounded Attachment Selection
+
+Current attachments retain priority and are all preserved within the existing
+request limits. Historical attachments fill only the remaining slots in the
+eight-file continuity selection. Runs API snapshots take the newest eligible
+generation/time/ID tail after excluding current IDs; an ascending repository
+result is reversed before applying the newest-first selection contract.
+
+Pre-admission Session file selection uses 128-row keyset pages ordered by
+`created_at DESC, id DESC` on the caller's existing connection and transaction.
+It stops when enough eligible files are selected. Skill input matching and
+Unicode casefold basename deduplication retain their existing Python owner, so
+an incompatible file or a repeated name cannot consume a final selection slot.
+The existing owner/session/time index supports this access path. Exhausting
+large incompatible or duplicate histories can still require multiple pages;
+the change bounds materialized pages, not total worst-case scanning.
+
+When current attachments fill all slots, no historical page is requested.
+Explicit current IDs still receive a bounded membership query when needed to
+preserve their existing reusable-file classification. Every query retains the
+exact source Run snapshot binding and scope predicates; final locked file
+authorization remains unchanged. Keyset paging does not open a second
+transaction or claim stronger isolation than the caller supplies.
+
+## Run Playback Context Window
+
+Run Playback reads the exact scoped Run-bound executor snapshot. An unavailable
+binding produces a `degraded` window; embedded Run input and the latest unbound
+snapshot are not fallback authorities. The frontend consumes only
+`context_ref.context_window`; the backend's top-level `context_window` mirror
+is not a second frontend source.
+
+The existing playback panel displays `complete`, `trimmed`, or `degraded`,
+nonnegative history candidate/authorized/omitted counts, the legacy-history
+exclusion flag, and up to eight safe selected-file basenames. Filename checks
+retain ordinary names such as `manifest.pdf` and `100%预算.xlsx`; lineage-ID
+keyword restrictions do not apply to authorized display basenames. Path and
+control-character boundaries and explicit credential expressions remain excluded. Zero counts keep
+the window visible, including degraded fallback. These are snapshot metadata,
+not reconstructed model history or evidence that native transcript was lost.
+Missing windows, unknown status, or invalid counts produce a degraded display;
+invalid counts become zero placeholders and unsafe names are discarded. No raw snapshot, material IDs,
+Skill identifiers, runtime paths, tier/source/version provenance, or historical
+message bodies enter this projection. The superseded frontend provenance DTO,
+renderer, labels and fixtures are retired without rewriting stored snapshots.
+Run-control request ownership and supersession remain lifecycle-owned.
 
 ## Bounded Artifact Text Retrieval
 

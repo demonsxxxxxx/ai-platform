@@ -1109,3 +1109,77 @@ async def test_v4_generic_generator_failure_records_transport_exit(monkeypatch, 
     assert records[0].reason == "transport_failure"
     assert records[0].lease_released is True
     assert "private read failure" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("read_error,reason", [
+    ("stream_replay_continuity_unproven", "stream_continuity_unproven"),
+    ("stream_missing", "stream_missing"),
+])
+async def test_v4_live_retention_failure_emits_gap_without_advancing_to_unread_tail(
+    monkeypatch, read_error, reason,
+):
+    patch_authority(monkeypatch)
+    bridge = FakeBridge([open_entry()])
+
+    class RetentionFailureReader:
+        async def read_stream(self, **kwargs):
+            assert kwargs["after_redis_id"] == "1-0"
+            if read_error == "stream_missing":
+                bridge.rows.clear()
+            else:
+                bridge.rows = [entry("50-9", "evt4_unread_tail", "message.delta", {"delta": "unread"})]
+            raise StreamContractError(read_error)
+
+    _, body = await connect(bridge, reader=RetentionFailureReader())
+    assert body.count("event: stream.open\n") == 1
+    assert body.count("event: stream.gap\n") == 1
+    assert f'"reason": "{reason}"' in body
+    assert '"requested_event_id": "1-0"' in body
+    assert '"recovery": "reload_durable_state"' in body
+    assert ": heartbeat" not in body and "event: stream.end" not in body
+    assert "event: message.delta" not in body and '"delta": "unread"' not in body
+    if read_error == "stream_missing":
+        assert "id: run-a:1:0-0\nevent: stream.gap" in body
+        assert '"earliest_available_event_id": null' in body
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("read_error", ["stream_replay_continuity_unproven", "stream_missing"])
+async def test_v4_live_retention_gap_revalidates_lease_before_write(monkeypatch, read_error):
+    lease_gate = FrameLeaseGate()
+    patch_authority(monkeypatch, lease_value=lease_gate)
+    bridge = FakeBridge([open_entry()])
+
+    class ExpiredRetentionReader:
+        async def read_stream(self, **kwargs):
+            lease_gate.valid = False
+            if read_error == "stream_missing":
+                bridge.rows.clear()
+            raise StreamContractError(read_error)
+
+    response = await open_response(bridge, reader=ExpiredRetentionReader())
+    deny_lease_renewal(monkeypatch)
+    iterator = response.body_iterator
+    assert "event: stream.open" in await iterator.__anext__()
+    with pytest.raises(StopAsyncIteration):
+        await iterator.__anext__()
+    assert "gap" in bridge.calls
+
+
+@pytest.mark.asyncio
+async def test_v4_replay_stream_expiration_emits_null_bounds_gap(monkeypatch):
+    patch_authority(monkeypatch)
+    bridge = FakeBridge([open_entry()])
+
+    async def expire_before_page(**kwargs):
+        bridge.rows.clear()
+        raise StreamContractError("stream_missing")
+
+    bridge.replay_page = expire_before_page
+    _, body = await connect(bridge)
+    assert "event: stream.open" not in body
+    assert "id: run-a:1:0-0\nevent: stream.gap" in body
+    assert '"reason": "stream_missing"' in body
+    assert '"earliest_available_event_id": null' in body
+    assert '"latest_available_event_id": null' in body
