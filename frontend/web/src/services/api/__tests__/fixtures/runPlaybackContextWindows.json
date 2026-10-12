@@ -1,0 +1,106 @@
+{
+  "complete": {
+    "contract_version": "ai-platform.run-playback.v1",
+    "run_id": "run-a",
+    "after_sequence": null,
+    "next_after_sequence": 0,
+    "timeline": [],
+    "events": [],
+    "artifacts": [],
+    "steps": [],
+    "context_ref": {
+      "context_window": {
+        "status": "complete",
+        "selection_version": "conversation-turns-v1",
+        "history_candidate_count": 4,
+        "history_authorized_count": 4,
+        "history_omitted_count": 0,
+        "legacy_history_excluded": false,
+        "selected_file_names": [
+          "计划.docx",
+          "report.pdf",
+          "manifest.pdf",
+          "100%预算.xlsx"
+        ]
+      }
+    },
+    "context_window": {
+      "status": "complete",
+      "selection_version": "conversation-turns-v1",
+      "history_candidate_count": 4,
+      "history_authorized_count": 4,
+      "history_omitted_count": 0,
+      "legacy_history_excluded": false,
+      "selected_file_names": [
+        "计划.docx",
+        "report.pdf",
+        "manifest.pdf",
+        "100%预算.xlsx"
+      ]
+    }
+  },
+  "trimmed": {
+    "contract_version": "ai-platform.run-playback.v1",
+    "run_id": "run-a",
+    "after_sequence": null,
+    "next_after_sequence": 0,
+    "timeline": [],
+    "events": [],
+    "artifacts": [],
+    "steps": [],
+    "context_ref": {
+      "context_window": {
+        "status": "trimmed",
+        "selection_version": "conversation-turns-v1",
+        "history_candidate_count": 12,
+        "history_authorized_count": 4,
+        "history_omitted_count": 8,
+        "legacy_history_excluded": true,
+        "selected_file_names": [
+          "report.pdf"
+        ]
+      }
+    },
+    "context_window": {
+      "status": "trimmed",
+      "selection_version": "conversation-turns-v1",
+      "history_candidate_count": 12,
+      "history_authorized_count": 4,
+      "history_omitted_count": 8,
+      "legacy_history_excluded": true,
+      "selected_file_names": [
+        "report.pdf"
+      ]
+    }
+  },
+  "degraded": {
+    "contract_version": "ai-platform.run-playback.v1",
+    "run_id": "run-a",
+    "after_sequence": null,
+    "next_after_sequence": 0,
+    "timeline": [],
+    "events": [],
+    "artifacts": [],
+    "steps": [],
+    "context_ref": {
+      "context_window": {
+        "status": "degraded",
+        "selection_version": "conversation-turns-v1",
+        "history_candidate_count": 0,
+        "history_authorized_count": 0,
+        "history_omitted_count": 0,
+        "legacy_history_excluded": false,
+        "selected_file_names": []
+      }
+    },
+    "context_window": {
+      "status": "degraded",
+      "selection_version": "conversation-turns-v1",
+      "history_candidate_count": 0,
+      "history_authorized_count": 0,
+      "history_omitted_count": 0,
+      "legacy_history_excluded": false,
+      "selected_file_names": []
+    }
+  }
+}

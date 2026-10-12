@@ -80,6 +80,25 @@ operation still raises the original exception; no write is replayed here,
 including on ambiguous timeouts. Normal durable retry/cleanup retains ownership.
 No global client lifetime, upload parallelism or premature close is introduced.
 
+### Object-storage download resource handoff
+
+`ObjectStorage.download_to_tempfile` owns the response body and temporary path
+until the download, result construction, and both required closes succeed. Only
+then does it return the path, digest and size to the caller, which owns subsequent
+local-file cleanup. A temporary-file creation failure still closes the acquired
+response body. Before handoff, any failure attempts each acquired resource's
+close independently and removes the temporary path when one was created.
+
+The first operation or close failure remains the primary exception, including
+size-limit failures and cancellation. Secondary close or unlink failures attempt
+to add only the cleanup stage and exception type as best-effort notes. If the
+exception rejects a note, that optional diagnostic failure cannot replace the
+selected primary failure or interrupt later cleanup attempts. A close failure
+after otherwise successful reads is still a failed download and triggers local
+path cleanup; it cannot return a successful result. A failed optional note may
+leave a secondary cleanup failure unreported; best-effort cleanup does not
+establish that a resource was released when its close or unlink failed.
+
 ### Change Contract: persisted user profile metadata
 
 - **Owner:** Identity owns authenticated user profile metadata; Company Navigation owns only its `company_navigation_favorite_ids` value.
