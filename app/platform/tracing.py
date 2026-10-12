@@ -35,7 +35,9 @@ class _TerminalObservationFormatter(logging.Formatter):
                 "%(asctime)s %(message)s run_id=%(run_id)r attempt_id=%(attempt_id)r "
                 "calls=%(append_calls)d failed_calls=%(append_failed_calls)d "
                 "total_duration_ms=%(append_total_duration_ms)d max_duration_ms=%(append_max_duration_ms)d "
-                "store_active_calls=%(store_active_calls)d"
+                "store_active_calls=%(store_active_calls)d "
+                "latest_public_result_gap_ms=%(latest_public_result_gap_ms)s "
+                "append_await_in_latest_result_gap_ms=%(append_await_in_latest_result_gap_ms)s"
             ).format(record)
         return super().format(record)
 
@@ -43,6 +45,8 @@ class _TerminalObservationFormatter(logging.Formatter):
 def log_session_store_append_summary(
     *, run_id: str, attempt_id: str, calls: int, failed_calls: int,
     total_ms: int, max_ms: int, active_calls: int,
+    latest_public_result_gap_ms: int | None = None,
+    append_await_in_latest_result_gap_ms: int | None = None,
 ) -> None:
     """One payload-free aggregate; cumulative append work can overlap model work."""
     try:
@@ -51,6 +55,8 @@ def log_session_store_append_summary(
             "append_calls": calls, "append_failed_calls": failed_calls,
             "append_total_duration_ms": total_ms, "append_max_duration_ms": max_ms,
             "store_active_calls": active_calls,
+            "latest_public_result_gap_ms": latest_public_result_gap_ms,
+            "append_await_in_latest_result_gap_ms": append_await_in_latest_result_gap_ms,
         })
     except Exception:
         pass  # Observation failure cannot replace the persistence result.
