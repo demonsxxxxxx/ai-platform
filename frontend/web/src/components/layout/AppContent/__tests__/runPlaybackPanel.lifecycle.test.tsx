@@ -121,88 +121,109 @@ test("mounted RunPlaybackPanel ignores an aborted stale owner read after run rep
   }
 });
 
-test("mounted RunPlaybackPanel rejects a late read after marker and role rotation", async () => {
-  const React = await import("react");
-  const { createRoot } = await import("react-dom/client");
-  const { RunPlaybackPanel } = await import("../RunPlaybackPanel.tsx");
-  const { RunControlLifecycle } = await import(
-    "../../../../hooks/useAgent/runControlLifecycle.ts"
-  );
-  const lifecycle = new RunControlLifecycle();
-  lifecycle.configure({
-    adoptRunControlChild: async () => "superseded",
-    reconnectRunControlOwner: async () => {},
-  });
-  lifecycle.bindParent({
-    chatHistoryGeneration: 1,
-    authRevision: 1,
-    auth: {
-      incarnation: "incarnation-a",
-      sessionMarker: "marker-a",
-      tenantId: "tenant-a",
-      userId: "user-a",
-      roles: ["member"],
-      permissions: ["chat:write"],
-      isAdmin: false,
-      isActive: true,
-    },
-    sessionId: "session-a",
-    runId: "run-a",
-  });
-  const originalFetch = globalThis.fetch;
-  let resolvePlayback!: (response: Response) => void;
-  let signal: AbortSignal | null = null;
-  globalThis.fetch = ((_input, options) => {
-    signal = options?.signal as AbortSignal;
-    return new Promise<Response>((resolve) => {
-      resolvePlayback = resolve;
-    });
-  }) as typeof fetch;
-  const container = document.createElement("div");
-  const root = createRoot(container as never);
-
-  try {
-    await React.act(async () => {
-      root.render(React.createElement(RunPlaybackPanel, { lifecycle, panelKey: "run-playback:run-a" }));
-      lifecycle.open();
-      await Promise.resolve();
-    });
-    assert.ok(signal);
-    await React.act(async () => {
-      lifecycle.bindParent({
-        chatHistoryGeneration: 1,
-        authRevision: 2,
-        auth: {
-          incarnation: "incarnation-b",
-          sessionMarker: "marker-b",
-          tenantId: "tenant-a",
-          userId: "user-a",
-          roles: ["reviewer"],
-          permissions: ["chat:read"],
-          isAdmin: false,
-          isActive: true,
-        },
-        sessionId: "session-a",
-        runId: "run-a",
-      });
-    });
-    assert.equal((signal as AbortSignal).aborted, true);
-    resolvePlayback(
-      new Response(
-        JSON.stringify({ run_id: "run-a", timeline: [], events: [], artifacts: [], steps: [] }),
-      ),
+for (const rotation of ["none", "marker", "role", "marker and role"]) {
+  test(`mounted RunPlaybackPanel settles both reads with ${rotation} rotation`, async () => {
+    const React = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    const { RunPlaybackPanel } = await import("../RunPlaybackPanel.tsx");
+    const { RunControlLifecycle } = await import(
+      "../../../../hooks/useAgent/runControlLifecycle.ts"
     );
-    await React.act(async () => {
-      await Promise.resolve();
-      await Promise.resolve();
+    const lifecycle = new RunControlLifecycle();
+    lifecycle.configure({
+      adoptRunControlChild: async () => "superseded",
+      reconnectRunControlOwner: async () => {},
     });
-    assert.equal(lifecycle.getSnapshot().owner?.auth.sessionMarker, "marker-b");
-    assert.equal(lifecycle.getSnapshot().playback, null);
-  } finally {
-    globalThis.fetch = originalFetch;
-    await React.act(async () => root.unmount());
-  }
-});
+    lifecycle.bindParent({
+      chatHistoryGeneration: 1,
+      authRevision: 1,
+      auth: {
+        incarnation: "incarnation-a",
+        sessionMarker: "marker-a",
+        tenantId: "tenant-a",
+        userId: "user-a",
+        roles: ["member"],
+        permissions: ["chat:write"],
+        isAdmin: false,
+        isActive: true,
+      },
+      sessionId: "session-a",
+      runId: "run-a",
+    });
+    const originalFetch = globalThis.fetch;
+    let resolvePlayback!: (response: Response) => void;
+    let resolveReadiness!: (response: Response) => void;
+    // Await the real allSettled continuation, not only the fetch promises.
+    let pendingRead!: Promise<void>;
+    const refresh = lifecycle.refresh.bind(lifecycle);
+    lifecycle.refresh = (...args) => {
+      pendingRead = refresh(...args);
+      return pendingRead;
+    };
+    let signal: AbortSignal | null = null;
+    globalThis.fetch = ((input, options) => {
+      signal = options?.signal as AbortSignal;
+      return new Promise<Response>((resolve) => {
+        if (String(input).includes("/runs/run-a/playback")) resolvePlayback = resolve;
+        else if (String(input).includes("/sessions/session-a/status")) resolveReadiness = resolve;
+        else throw new Error(`unexpected request: ${String(input)}`);
+      });
+    }) as typeof fetch;
+    const container = document.createElement("div");
+    const root = createRoot(container as never);
+
+    try {
+      await React.act(async () => {
+        root.render(React.createElement(RunPlaybackPanel, { lifecycle, panelKey: "run-playback:run-a" }));
+        lifecycle.open();
+        await Promise.resolve();
+      });
+      assert.ok(signal);
+      assert.equal(typeof resolvePlayback, "function");
+      assert.equal(typeof resolveReadiness, "function");
+      assert.ok(pendingRead);
+      await React.act(async () => {
+        if (rotation !== "none") lifecycle.bindParent({
+          chatHistoryGeneration: 1,
+          authRevision: 2,
+          auth: {
+            incarnation: "incarnation-a",
+            sessionMarker: rotation.includes("marker") ? "marker-b" : "marker-a",
+            tenantId: "tenant-a",
+            userId: "user-a",
+            roles: rotation.includes("role") ? ["reviewer"] : ["member"],
+            permissions: ["chat:write"],
+            isAdmin: false,
+            isActive: true,
+          },
+          sessionId: "session-a",
+          runId: "run-a",
+        });
+      });
+      assert.equal((signal as AbortSignal).aborted, rotation !== "none");
+      resolvePlayback(
+        new Response(
+          JSON.stringify({ run_id: "run-a", timeline: [], events: [], artifacts: [], steps: [] }),
+        ),
+      );
+      resolveReadiness(new Response(JSON.stringify({ session_id: "session-a", run_id: "run-a", status: "running" })));
+      await React.act(async () => { await pendingRead; });
+      const snapshot = lifecycle.getSnapshot();
+      assert.equal(snapshot.owner?.auth.sessionMarker, rotation.includes("marker") ? "marker-b" : "marker-a");
+      assert.deepEqual(snapshot.owner?.auth.roles, rotation.includes("role") ? ["reviewer"] : ["member"]);
+      if (rotation === "none") {
+        assert.equal(snapshot.playback?.run_id, "run-a", "settled current reads must publish");
+        assert.equal(snapshot.readiness?.run_id, "run-a");
+      } else {
+        assert.equal(snapshot.playback, null, "settled stale playback must not publish");
+        assert.equal(snapshot.readiness, null, "settled stale readiness must not publish");
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
+      await React.act(async () => root.unmount());
+    }
+  });
+}
 
 for (const warm of [false, true]) {
   test(`mounted playback exposes ${warm ? "stale refresh" : "cold read"} failure despite successful readiness and retries GET only`, async () => {
