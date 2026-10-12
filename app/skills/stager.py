@@ -124,7 +124,6 @@ def materialize_worker_pinned_skill(
         path=target,
         version=expected_hash,
         source=pin.get("source") if isinstance(pin.get("source"), dict) else {},
-        entry={"kind": "run-snapshot", "path": str(target)},
     )
 
 

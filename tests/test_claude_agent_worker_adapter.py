@@ -69,7 +69,7 @@ from app.sandbox.domain.runtime_diagnostics import (
 from app.runtime.sandbox.workspace_manager import SandboxWorkspaceManager
 from app.skills.application import skill_markdown
 from app.skills.infrastructure.skill_markdown_yaml import load_skill_markdown_metadata
-from app.skills.pinning import build_uploaded_skill_manifest_pin
+from app.skills.pinning import build_skill_version_manifest_pin
 from app.skills.registry import BuiltinSkillRegistry, iter_skill_files
 from app.storage import StoredObject
 from app.worker import WorkerRunCancelled
@@ -512,7 +512,7 @@ def _registry_pins(root, *, skill_id, input_payload=None):
                 }
             )
         pins.append(
-            build_uploaded_skill_manifest_pin(
+            build_skill_version_manifest_pin(
                 {
                     "skill_id": skill.name,
                     "version": skill.version,
