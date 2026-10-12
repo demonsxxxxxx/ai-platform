@@ -1802,7 +1802,7 @@ test("main chat exposes event-only history failure and a read-only retry", async
   const { ApiRequestError } = await import("../../../services/api/fetch.ts");
   const shellHarness = await prepareShellHarness({ authenticated: true });
   const originals = { ...sessionApi };
-  const calls = { identity: 0, events: 0, markRead: 0, submit: 0 };
+  const calls = { identity: 0, events: 0, submit: 0 };
   sessionApi.get = async (id) => ({
     id, agent_id: "general-agent", is_active: true,
     created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", metadata: {},
@@ -1811,7 +1811,6 @@ test("main chat exposes event-only history failure and a read-only retry", async
     calls.identity += 1;
     return { session_id: sessionId, workspace_id: "default", agent_id: "general-agent", title: "Test conversation", purpose: "conversation", agent_conversation: null };
   };
-  sessionApi.markRead = async () => { calls.markRead += 1; };
   sessionApi.submitChat = async () => { calls.submit += 1; throw new Error("Unexpected task submission"); };
   sessionApi.getRunInputHistory = async (sessionId) => ({ session_id: sessionId, runs: [], has_more: false, next_before_run_id: null });
   let readEvents: typeof sessionApi.getEvents = async () => { throw new ApiRequestError("PRIVATE_EVENT_HISTORY_FAILURE", 503, "service_unavailable", undefined, "diag_0123456789abcdef"); };
@@ -1845,7 +1844,6 @@ test("main chat exposes event-only history failure and a read-only retry", async
     const button = alert.querySelector("button");
     assert.ok(button);
     assert.match(button.textContent, /重试读取历史/);
-    const markReadCount = calls.markRead;
     let rejectRetry!: (error: Error) => void;
     readEvents = () => new Promise((_, reject) => { rejectRetry = reject; });
     await React.act(async () => {
@@ -1853,7 +1851,7 @@ test("main chat exposes event-only history failure and a read-only retry", async
       button.dispatchEvent({ type: "click" });
     });
     assert.equal(calls.events, 2, "duplicate clicks share one bounded read attempt");
-    assert.equal(calls.markRead, markReadCount, "explicit retry never marks history read");
+    assert.equal(calls.submit, 0, "explicit history retry never submits a task");
     await React.act(async () => rejectRetry(new ApiRequestError("PRIVATE_RETRY_FAILURE", 999, "private/path?token=secret", undefined, "diag_private_secret")));
     const retryAlert = container.querySelector("[data-chat-history-read-error]");
     assert.ok(retryAlert);
@@ -1865,7 +1863,7 @@ test("main chat exposes event-only history failure and a read-only retry", async
       container.querySelector("[data-chat-history-read-error]")!.querySelector("button")!.dispatchEvent({ type: "click" });
     });
     assert.equal(calls.events, 3);
-    assert.equal(calls.markRead, markReadCount);
+    assert.equal(calls.submit, 0, "successful history retry stays read-only");
     assert.equal(container.querySelector("[data-chat-history-read-error]"), null, "a genuinely empty successful history is not a read error");
 
     // A pending failure from another route cannot overwrite this empty owner.
@@ -1893,7 +1891,6 @@ test("main chat exposes event-only history failure and a read-only retry", async
     // missing diagnostic metadata or disclosing its unknown private message.
     readEvents = async () => { throw new ApiRequestError("PRIVATE_STATUS_ONLY /private/path token=secret", 503); };
     const statusOnlyReadCount = calls.events;
-    const statusOnlyMarkReadCount = calls.markRead;
     await React.act(async () => {
       container.querySelector("[data-chat-history-read-error]")!.querySelector("button")!.dispatchEvent({ type: "click" });
     });
@@ -1904,7 +1901,6 @@ test("main chat exposes event-only history failure and a read-only retry", async
     assert.match(statusOnlyAlert.textContent, /HTTP 503/);
     assert.doesNotMatch(statusOnlyAlert.textContent, /PRIVATE_STATUS_ONLY|private|secret|错误代码|问题编号|diag_/);
     assert.equal(calls.events, statusOnlyReadCount + 1);
-    assert.equal(calls.markRead, statusOnlyMarkReadCount);
     assert.equal(calls.submit, 0);
   } finally {
     await React.act(async () => root.unmount());

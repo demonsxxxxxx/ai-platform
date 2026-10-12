@@ -299,8 +299,8 @@ history request token, mounted generation, auth identity/revision and Session. N
 loads, clear/reset, identity retirement and disposal invalidate the old notice
 and any captured retry callback. Failed retries do not schedule another attempt.
 
-`retryHistoryLoad` reuses the canonical loader and skips its ordinary mark-read
-mutation. It reads Session identity and events, and may restore the existing
+`retryHistoryLoad` reuses the canonical read-only loader. It reads Session
+identity and events, and may restore the existing
 read-only status/SSE convergence; it never submits or retries a task. It is
 fenced during history loading, sending, active Run ownership, uncertain task
 admission and terminal synchronization. The old history-specific write to the
