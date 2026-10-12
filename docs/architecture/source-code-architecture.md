@@ -188,6 +188,13 @@ structured logging. It MUST NOT decide authorization, lifecycle, admission,
 retention eligibility, release, or public projection. Domain-specific SQL and
 storage decisions remain in that domain's `infrastructure` package.
 
+The shared Redis lifecycle owner (`app.redis_client`) admits one close operation
+per event-loop entry. Once closing starts, existing handles and new acquisition
+remain unavailable. Failed or cancelled close retains that same client for a
+later exclusive cleanup retry; cancellation propagates unchanged. Only a
+successful close removes the entry and permits a new pool. A retry does not
+reactivate old handles or establish that interrupted physical cleanup succeeded.
+
 `bootstrap` is the composition root. It MAY import every layer to create the API,
 worker, executor, and maintenance processes. It MUST NOT contain business rules
 or be imported by a domain.
@@ -705,3 +712,16 @@ Before approving a change under `app/`, reviewers answer:
 
 Failure to name an owner is a design blocker, not a reason to place code in a
 shared module.
+
+## 14. Chat file preview compatibility
+
+Chat artifact cards and file links open platform-authorized file previews through
+`RevealPreviewHost` and `LazyDocumentPreview`. Preview requests are in-memory
+file projections; router state carries only sanitized navigation identifiers.
+The unused project execution preview and its StackBlitz/Sandpack dependencies
+are retired. Historical `reveal_project` results retain only name/path parsing
+for message navigation, owned by Chat external navigation; they must not hydrate
+project files or start an external execution environment. Backend nullable
+`project_meta` projections and historical messages remain under their API/data
+owners and are not removed by this frontend retirement. Skills ZIP export remains
+an independent, active capability.

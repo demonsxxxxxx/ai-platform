@@ -177,7 +177,7 @@ test("mcp panel gates lifecycle controls behind the AI-admin capability", () => 
   assert.match(source, /canManageMcpLifecycle\(\{/);
   assert.doesNotMatch(source, /CapabilityDistributionAdminCard/);
   assert.doesNotMatch(source, /useCapabilityDistributions/);
-  assert.match(source, /canManageMcp && !mcpGovernance\.governedUnavailable/);
+  assert.match(source, /canManageMcp && isAvailable/);
   assert.match(source, /data-mcp-admin-controls/);
   assert.match(source, /createServer/);
   assert.match(source, /updateServer/);

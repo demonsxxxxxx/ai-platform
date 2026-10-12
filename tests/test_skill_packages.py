@@ -438,3 +438,46 @@ def test_package_accepts_executable_skill_names(name):
     parsed = parse_skill_package_zip(package_zip({'SKILL.md': skill_md(name=name)}))
     assert parsed.skill_id == name
     assert is_valid_executable_skill_name(parsed.skill_id)
+
+
+@pytest.mark.parametrize("path", ["references/notes:2026.md", "references/notes-2026.md"])
+def test_executable_snapshot_path_contract_agrees_for_upload_review_and_pin(path):
+    from app.skills.pinning import SkillVersionMaterializationError, build_skill_version_manifest_pin
+
+    # Public overlay ZIP parsing deliberately retains its separate path contract.
+    parsed = parse_skill_package_zip(package_zip({"SKILL.md": skill_md(), path: "ordinary notes"}))
+    assert path in {item["relative_path"] for item in parsed.files}
+    contract = build_skill_package_contract(
+        parsed, package_sha256="zip-sha256", storage_key="skills/package.zip", uploaded_by="dev-admin"
+    )
+    version = {
+        "skill_id": parsed.skill_id,
+        "version": parsed.content_hash,
+        "content_hash": parsed.content_hash,
+        "status": "reviewed",
+        "source": {
+            "kind": "uploaded",
+            "files": parsed.files,
+            "package_contract": contract,
+            "storage_key": contract["storage_key"],
+            "package_sha256": contract["package_sha256"],
+        },
+    }
+    if ":" in path:
+        with pytest.raises(ValueError, match="skill_package_path_escape"):
+            skill_packages.validate_skill_package_snapshot_path(path)
+        with pytest.raises(ValueError, match="skill_package_path_escape"):
+            skill_packages.validate_skill_package_snapshot(
+                parsed.files, skill_id=parsed.skill_id, content_hash=parsed.content_hash
+            )
+        assert skill_packages.build_uploaded_skill_admin_trust_review(version)["status"] == "blocked"
+        with pytest.raises(SkillVersionMaterializationError, match="skill_version_not_materializable"):
+            build_skill_version_manifest_pin(version)
+    else:
+        skill_packages.validate_skill_package_snapshot_path(path)
+        summary = skill_packages.validate_skill_package_snapshot(
+            parsed.files, skill_id=parsed.skill_id, content_hash=parsed.content_hash
+        )
+        assert summary == {"file_count": 2, "size_bytes": parsed.size_bytes}
+        assert skill_packages.build_uploaded_skill_admin_trust_review(version)["status"] == "passed"
+        assert build_skill_version_manifest_pin(version)["files"] == parsed.files

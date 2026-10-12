@@ -124,3 +124,15 @@ test("a stale response cannot overwrite a retry and only the latest catalog auth
     [],
   );
 });
+
+
+test("MCP operational unavailability remains degraded with localized discovery copy", () => {
+  const catalog = parseChatMcpCatalogResponse({
+    tools: [],
+    count: 0,
+    unavailable: [{ label: "gateway", reason: "discovery_failed" }],
+  });
+  assert.equal(classifyChatMcpCatalog(catalog), "degraded");
+  assert.deepEqual(catalog.unavailable, ["tools.catalog.unavailable.discoveryFailed"]);
+  assert.deepEqual(reconcileChatMcpToolSelection(["gateway::stale"], catalog.tools, "degraded"), []);
+});

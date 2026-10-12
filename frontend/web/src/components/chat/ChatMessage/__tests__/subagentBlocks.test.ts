@@ -1,10 +1,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+// jsdom 26 ships no declarations; this mounted test uses only its runtime constructor.
+// @ts-expect-error jsdom is the pinned mounted-test runtime.
+import { JSDOM } from "jsdom";
+import { act, createElement } from "react";
+import { createRoot } from "react-dom/client";
+import "../../../../i18n";
+import {
+  closePersistentToolPanel,
+  getPersistentToolPanelState,
+} from "../items/persistentToolPanelState.tsx";
 import {
   buildSubagentPanelState,
   createSubagentPartRenderEntries,
   createSubagentPartRenderKeys,
   shouldShowSubagentPanelLoading,
+  SubagentBlock,
 } from "../SubagentBlocks.tsx";
 
 test("subagent panel subtitle shows only the start time", () => {
@@ -97,4 +108,50 @@ test("nested subagents render inline once while panel entries retain source inde
   assert.equal(shouldShowSubagentPanelLoading(true, panel.length), false);
   assert.equal(shouldShowSubagentPanelLoading(true, 0), true);
   assert.equal(shouldShowSubagentPanelLoading(false, 0), false);
+});
+
+test("running subagent stays in the message until the user opens its panel", () => {
+  const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>", {
+    url: "http://localhost/",
+  });
+  for (const key of ["window", "document", "navigator", "HTMLElement", "Node"] as const) {
+    Object.defineProperty(globalThis, key, {
+      configurable: true,
+      value: dom.window[key],
+    });
+  }
+  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", {
+    configurable: true,
+    value: true,
+  });
+  const container = dom.window.document.getElementById("root") as HTMLDivElement;
+  const root = createRoot(container);
+
+  try {
+    closePersistentToolPanel();
+    act(() => {
+      root.render(
+        createElement(SubagentBlock, {
+          agent_id: "subagent-a",
+          agent_name: "worker_agent",
+          status: "running",
+          isPending: true,
+        }),
+      );
+    });
+
+    assert.ok(container.querySelector('[data-subagent-id="subagent-a"]'));
+    assert.equal(getPersistentToolPanelState(), null);
+
+    const trigger = container.querySelector<HTMLButtonElement>(
+      '[data-subagent-trigger="subagent-a"]',
+    );
+    assert.ok(trigger);
+    act(() => trigger.click());
+    assert.equal(getPersistentToolPanelState()?.panelKey, "subagent-subagent-a");
+  } finally {
+    act(() => root.unmount());
+    closePersistentToolPanel();
+    dom.window.close();
+  }
 });
