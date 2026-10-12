@@ -1,3 +1,5 @@
+import asyncio
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -24,7 +26,7 @@ from app.bootstrap.run_attempt_lifecycle import build_run_attempt_lifecycle_serv
 from app.bootstrap.run_diagnostics import build_run_diagnostics_service
 from app.bootstrap.run_inputs import build_run_inputs_service
 from app.bootstrap.skills import configure_skill_services
-from app.bootstrap.streaming import build_run_stream_runtime
+from app.bootstrap.streaming import RunStreamRuntime, build_run_stream_runtime
 from app.db import close_pool, transaction
 from app.redis_client import close_redis_client
 from app.routes.agent_profiles import (
@@ -56,6 +58,79 @@ from app.platform.tracing import configure_terminal_stage_logging
 from app.settings import get_settings
 
 
+logger = logging.getLogger(__name__)
+_API_RESOURCE_CLOSE_TIMEOUT_SECONDS = 30.0
+
+
+async def _close_api_runtime(
+    runtime: RunStreamRuntime, *, primary_error: BaseException | None
+) -> None:
+    """Join finite resource cleanup despite repeated lifespan cancellation."""
+
+    async def close() -> None:
+        first_error: BaseException | None = None
+        for phase, operation in (
+            ("stream_runtime", runtime.aclose),
+            ("redis_client", close_redis_client),
+            ("database_pool", close_pool),
+        ):
+            try:
+                budget = asyncio.timeout(_API_RESOURCE_CLOSE_TIMEOUT_SECONDS)
+                async with budget:
+                    await operation()
+                # A close that settles after suppressing deadline cancellation
+                # still exceeded its budget; do not report timely success.
+                if budget.expired():
+                    raise TimeoutError()
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+                try:
+                    logger.warning(
+                        "API resource close failed",
+                        extra={
+                            "cleanup_phase": phase,
+                            "cleanup_error_type": type(exc).__name__,
+                        },
+                    )
+                except Exception:
+                    # Diagnostics must not interrupt resource settlement.
+                    pass
+        if first_error is not None:
+            raise first_error
+
+    # Budgets are cooperative: cancellation must settle before the next phase.
+    # Keep this owner until close ends, rather than leaving a shielded orphan.
+    cancellation: asyncio.CancelledError | None = None
+    try:
+        # Deliver any caller cancellation requested just before teardown. A
+        # cancelling() baseline alone cannot distinguish pending from handled.
+        await asyncio.sleep(0)
+    except asyncio.CancelledError as exc:
+        cancellation = exc
+    caller = asyncio.current_task()
+    initial_cancellations = caller.cancelling() if caller is not None else 0
+    cleanup_task = asyncio.create_task(close(), name="ai-platform-api-shutdown")
+    while not cleanup_task.done():
+        try:
+            await asyncio.shield(cleanup_task)
+        except asyncio.CancelledError as exc:
+            # Both tasks can become cancelled before this await resumes.
+            # A resource self-cancel must not hide a concurrent caller cancel.
+            caller_cancelled = caller is not None and caller.cancelling() > initial_cancellations
+            if not cleanup_task.cancelled() or caller_cancelled:
+                cancellation = cancellation or exc
+        except BaseException:
+            break
+    try:
+        cleanup_task.result()
+    except BaseException:
+        if primary_error is None and cancellation is None:
+            raise
+    if primary_error is None and cancellation is not None:
+        raise cancellation
+
+
 def _cors_origins(raw_value: str) -> list[str]:
     origins = [item.strip().rstrip("/") for item in raw_value.split(",") if item.strip()]
     if not origins:
@@ -77,16 +152,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         attempt_lifecycle=app.state.run_attempt_lifecycle,
         lifecycle=app.state.run_lifecycle,
     )
+    primary_error: BaseException | None = None
     try:
         yield
+    except BaseException as exc:
+        primary_error = exc
+        raise
     finally:
-        try:
-            await run_stream_runtime.aclose()
-        finally:
-            try:
-                await close_redis_client()
-            finally:
-                await close_pool()
+        await _close_api_runtime(run_stream_runtime, primary_error=primary_error)
 
 
 def create_app() -> FastAPI:

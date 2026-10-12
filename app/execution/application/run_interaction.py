@@ -11,6 +11,10 @@ RunInputState = Literal["open", "sealed", "inactive"]
 RunInputKind = Literal["text", "answer"]
 
 
+class RunQuestionNeedsInput(RuntimeError):
+    """An ordinary Run question expired without a selectable default."""
+
+
 @dataclass(frozen=True)
 class RunInputCommand:
     input_id: str
@@ -25,6 +29,7 @@ class RunInputSnapshot:
     state: RunInputState
     inputs: tuple[RunInputCommand, ...] = ()
     questions: tuple[Mapping[str, object], ...] | None = None
+    error_code: Literal["run_question_needs_input"] | None = None
 
 
 class RunInteractionProtocol(Protocol):

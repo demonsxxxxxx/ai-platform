@@ -6144,7 +6144,6 @@ async def test_create_run_producer_contract_persists_uploaded_release_policy_man
                     path=dependency_dir,
                     version=dependency_version,
                     source={"kind": "builtin", "asset_dir": "minimax-docx", "version": dependency_version},
-                    entry={"kind": "filesystem", "path": str(dependency_dir)},
                 )
             ]
 
@@ -6387,7 +6386,6 @@ async def test_create_run_prevalidates_queue_payload_before_persisting(monkeypat
     assert getattr(exc_info.value, "status_code", None) == 500
     assert getattr(exc_info.value, "detail", None) == {
         "code": "queue_payload_invalid",
-        "submission_disposition": "rejected_before_persist",
         "errors": [
             {
                 "loc": ["release_decision"],
@@ -7010,7 +7008,6 @@ async def test_copy_run_validates_queue_payload_before_snapshot_update(monkeypat
     assert getattr(exc_info.value, "status_code", None) == 500
     assert getattr(exc_info.value, "detail", None) == {
         "code": "queue_payload_invalid",
-        "submission_disposition": "rejected_before_persist",
         "errors": [
             {
                 "loc": ["skill_manifests", 0],
@@ -7160,3 +7157,50 @@ async def test_copy_run_rejects_when_original_skill_version_cannot_be_materializ
 
     assert getattr(exc_info.value, "status_code", None) == 403
     assert getattr(exc_info.value, "detail", None) == "capability_not_authorized"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    [
+        'Before password="alpha bravo charlie',
+        "Before api_key -> 'alpha bravo,charlie",
+        '{"outer":{"client_secret":"alpha\nbravo;charlie',
+        'Before password="alpha bravo charlie" after',
+    ],
+)
+async def test_get_run_redacts_unfinished_quoted_secret_in_public_result(monkeypatch, body):
+    from app.platform.public_payload import sanitize_public_text
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return {
+            "id": run_id,
+            "session_id": "ses-a",
+            **RUN_SCHEMA_FIELDS,
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "status": "succeeded",
+            "input_json": {},
+            "result_json": {"message": body, "nested": [{"note": body}]},
+            "error_code": None,
+            "error_message": None,
+        }
+
+    async def empty_rows(conn, *, tenant_id, run_id):
+        return []
+
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr(_owner_runs_infrastructure_creation_postgres, "get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.artifacts.infrastructure.records_postgres.list_run_artifacts", empty_rows)
+    monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, "list_run_events", empty_rows)
+    monkeypatch.setattr("app.runs.infrastructure.steps_postgres.list_run_steps", empty_rows)
+
+    response = await get_run("run-a", principal=principal())
+
+    expected = sanitize_public_text(body)
+    assert response.status == "succeeded"
+    assert response.result == {"message": expected, "nested": [{"note": expected}]}
+    assert all(word not in response.model_dump_json() for word in ("alpha", "bravo", "charlie"))
+    assert "[redacted-secret]" in response.model_dump_json()
+    if body.endswith(" after"):
+        assert response.result["message"].endswith(" after")

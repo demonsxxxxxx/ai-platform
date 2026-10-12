@@ -13,8 +13,24 @@ export function RunInputHistory({
 }) {
   const { t } = useTranslation();
   const containerRef = useRef<HTMLDivElement>(null);
-  const hasContent = runInputs.history.filter((run) => run.inputs.length || run.questions.length);
-  const current = hasContent.find((run) => run.run_id === runInputs.runId && !runInputs.isClosed && run.state === "open");
+  const hasContent = runInputs.history.map((projection) => {
+    const closed = projection.run_id !== runInputs.runId || runInputs.isClosed || projection.state !== "open";
+    const inputs = projection.inputs.flatMap((input) => {
+      const batch = input.kind === "answer" ? projection.questions.find((question) => question.question_id === input.question_id) : undefined;
+      const unprocessed = input.status === "closed" || (closed && (input.status === "queued" || (input.kind === "answer" && batch !== undefined && batch.status !== "resolved")));
+      const autoAnswer = input.source === "timeout_default";
+      if ((input.status === "applied" && !unprocessed && !autoAnswer) || (input.kind === "answer" && !input.answers)) return [];
+      return [{ input, batch, unprocessed }];
+    });
+    const questions = projection.questions.filter((batch) => {
+      if (batch.status === "resolved") return false;
+      if (!closed && projection.inputs.some((input) => input.kind === "answer" && input.question_id === batch.question_id && input.status === "applied")) return false;
+      return batch.status === "pending" || batch.status === "closed" ||
+        !projection.inputs.some((input) => input.kind === "answer" && input.question_id === batch.question_id);
+    });
+    return { projection, closed, inputs, questions };
+  }).filter((run) => run.inputs.length || run.questions.length);
+  const current = hasContent.find((run) => !run.closed);
   const visibleRuns = [...(current ? [current] : []), ...hasContent.filter((run) => run !== current).reverse()];
   const pendingQuestions = current?.questions.filter((batch) => batch.status === "pending").map((batch) => batch.question_id).join(",") ?? "";
   useLayoutEffect(() => {
@@ -22,7 +38,7 @@ export function RunInputHistory({
   }, [pendingQuestions, runInputs.runId]);
   if (!visibleRuns.length && !runInputs.historyIsLoading && !runInputs.historyLoadFailed && !runInputs.historyHasMore) return null;
   return (
-    <div ref={containerRef} className="mx-auto mb-2 flex max-h-[min(30dvh,18rem)] w-full max-w-[68rem] flex-col gap-2 overflow-y-auto overscroll-contain break-words px-2" data-run-input-history>
+    <div ref={containerRef} className="mx-auto mb-2 flex max-h-[min(30dvh,18rem)] w-full max-w-[68rem] flex-col gap-2 overflow-y-auto overscroll-contain scroll-pb-20 break-words px-2" data-run-input-history>
       {runInputs.historyLoadFailed ? (
         <div className="flex items-center justify-between gap-3 text-xs text-[var(--theme-warning)]" role="status" data-run-input-history-failure>
           <span>{t("chat.runInputs.historyLoadFailed", "暂时无法恢复任务输入历史，已有记录仍保留。")}</span>
@@ -37,28 +53,20 @@ export function RunInputHistory({
         </button>
       ) : null}
       {runInputs.historyIsLoading ? <p className="text-xs text-[var(--theme-text-secondary)]" role="status">{t("chat.runInputs.historyLoading", "正在恢复任务输入历史…")}</p> : null}
-      {visibleRuns.map((projection) => {
-        const isCurrent = projection.run_id === runInputs.runId;
-        const closed = !isCurrent || runInputs.isClosed || projection.state !== "open";
+      {visibleRuns.map(({ projection, closed, inputs, questions }) => {
         const controls = { ...runInputs, projection, runId: projection.run_id, isClosed: closed };
         return (
           <section className="flex flex-col gap-2" key={projection.run_id} data-run-input-history-run={projection.run_id} data-run-input-read-only={closed}>
             <p className="text-xs text-[var(--theme-text-secondary)]">{closed ? t("chat.runInputs.historyTask", "历史任务输入") : t("chat.runInputs.currentTask", "当前任务输入")}</p>
-            {projection.questions.filter((batch) =>
-              batch.status === "pending" || batch.status === "closed" ||
-              !projection.inputs.some((input) => input.kind === "answer" && input.question_id === batch.question_id),
-            ).map((batch) => (
+            {questions.map((batch) => (
               <RunQuestionCard key={batch.question_id} batch={batch} runInputs={controls} canSend={canSend && !closed} />
             ))}
-            {projection.inputs.map((input) => {
-              const batch = input.kind === "answer" ? projection.questions.find((question) => question.question_id === input.question_id) : undefined;
-              const unprocessed = input.status === "closed" || (closed && (input.status === "queued" || (input.kind === "answer" && batch !== undefined && batch.status !== "resolved")));
-              const status = unprocessed ? t("chat.runInputs.unprocessed", "任务已结束，未处理") : input.status === "queued" ? t("chat.runInputs.queued", "排队中") : t("chat.runInputs.applied", "任务已接收");
-              if (input.kind === "answer" && !input.answers) return null;
+            {inputs.map(({ input, batch, unprocessed }) => {
+              const status = unprocessed ? t("chat.runInputs.unprocessed", "任务已结束，未处理") : input.status === "applied" ? t("chat.runInputs.processed", "已处理") : t("chat.runInputs.queued", "排队中");
               return (
                 <article className="rounded-xl border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-3 py-2" data-run-input-entry={input.kind} key={input.input_id}>
                   <div className="mb-1 flex items-center justify-between gap-3 text-xs text-[var(--theme-text-secondary)]">
-                    <span>{input.kind === "text" ? t("chat.runInputs.textEntry", "补充到当前任务") : t("chat.runInputs.answerEntry", "已提交答复")}</span>
+                    <span>{input.kind === "text" ? t("chat.runInputs.textEntry", "补充到当前任务") : input.source === "timeout_default" ? t("chat.runInputs.autoAnswerEntry", "系统默认答复") : t("chat.runInputs.answerEntry", "已提交答复")}</span>
                     <span>{status}</span>
                   </div>
                   {input.kind === "text" ? <p className="whitespace-pre-wrap text-sm text-[var(--theme-text)]">{input.text}</p> : (

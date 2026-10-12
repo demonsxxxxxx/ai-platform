@@ -109,9 +109,13 @@ _AUTHORIZED_SUBJECT_EVIDENCE_SOURCE = "server_authorized_subject"
 _AUTHORIZED_SUBJECT_TRUST_BASIS = "server_derived_authorized_subject"
 SDK_HOOK_EVIDENCE_SOURCE = "claude_agent_sdk_hook"
 TOOL_CALL_TRUST_BASIS = "tool_call_bound_invocation"
+MCP_TOOL_ERROR_RESULT_TRUST_BASIS = "tool_call_bound_error_result"
 _EVIDENCE_TRUST_MATRIX = {
     "builtin": frozenset({("executor_private_payload", "attempt_bound_tool_invocation")}),
-    "mcp": frozenset({(SDK_HOOK_EVIDENCE_SOURCE, TOOL_CALL_TRUST_BASIS)}),
+    "mcp": frozenset({
+        (SDK_HOOK_EVIDENCE_SOURCE, TOOL_CALL_TRUST_BASIS),
+        (SDK_HOOK_EVIDENCE_SOURCE, MCP_TOOL_ERROR_RESULT_TRUST_BASIS),
+    }),
     "skill": frozenset({(SDK_HOOK_EVIDENCE_SOURCE, TOOL_CALL_TRUST_BASIS)}),
 }
 _AFFIRMATIVE_EXECUTION = re.compile(
@@ -216,6 +220,7 @@ class RequiredCapabilityEvidence:
         declaration: RequiredCapabilityDeclaration,
         tool_call_id: str,
         lifecycle_phase: str,
+        tool_error_result: bool = False,
     ) -> dict[str, str]:
         """Normalize one unbound private SDK-hook fact for executor binding."""
 
@@ -226,6 +231,11 @@ class RequiredCapabilityEvidence:
             raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
         if lifecycle_phase not in _EVIDENCE_LIFECYCLE_PHASES:
             raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
+        if type(tool_error_result) is not bool or (
+            tool_error_result
+            and (declaration.capability_kind != "mcp" or lifecycle_phase != "failed")
+        ):
+            raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
         lifecycle_status = dict(_EVIDENCE_LIFECYCLE_PAIRS)[lifecycle_phase]
         return {
             "schema_version": REQUIRED_CAPABILITY_EVIDENCE_SCHEMA_VERSION,
@@ -235,7 +245,7 @@ class RequiredCapabilityEvidence:
             "lifecycle_phase": lifecycle_phase,
             "lifecycle_status": lifecycle_status,
             "evidence_source": SDK_HOOK_EVIDENCE_SOURCE,
-            "trust_basis": TOOL_CALL_TRUST_BASIS,
+            "trust_basis": MCP_TOOL_ERROR_RESULT_TRUST_BASIS if tool_error_result else TOOL_CALL_TRUST_BASIS,
             "public_label": _SAFE_PUBLIC_LABEL,
             "public_status": lifecycle_status,
             "declaration_sha256": declaration.declaration_sha256,
@@ -250,6 +260,7 @@ class RequiredCapabilityEvidence:
         tool_call_id: str,
         succeeded: bool | None = None,
         lifecycle_phase: str | None = None,
+        tool_error_result: bool = False,
     ) -> RequiredCapabilityEvidence:
         """Create exact invocation evidence from one trusted SDK hook callback."""
 
@@ -274,6 +285,7 @@ class RequiredCapabilityEvidence:
             declaration=declaration,
             tool_call_id=tool_call_id,
             lifecycle_phase=lifecycle_phase,
+            tool_error_result=tool_error_result,
         )
         return cls(
             schema_version=unbound["schema_version"],
@@ -377,6 +389,8 @@ class RequiredCapabilityEvidence:
             or evidence.public_status != evidence.lifecycle_status
             or (evidence.evidence_source, evidence.trust_basis)
             not in _EVIDENCE_TRUST_MATRIX[evidence.capability_kind]
+            or (evidence.trust_basis == MCP_TOOL_ERROR_RESULT_TRUST_BASIS
+                and evidence.lifecycle_phase != "failed")
         ):
             raise RequiredToolContractError("required_tool_completion_evidence_mismatch")
         return evidence
@@ -1192,8 +1206,9 @@ def selected_capability_completion_decision(
             and invoking[0][1].tool_call_id == completed[0][1].tool_call_id
         )
         valid_allowed_failure = (
-            (declaration.capability_kind, declaration.canonical_identity)
-            in allow_terminal_failure_capabilities
+            ((declaration.capability_kind, declaration.canonical_identity)
+             in allow_terminal_failure_capabilities
+             or (len(failed) == 1 and failed[0][1].trust_basis == MCP_TOOL_ERROR_RESULT_TRUST_BASIS))
             and len(invoking) == 1
             and not completed
             and len(failed) == 1

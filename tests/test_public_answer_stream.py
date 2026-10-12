@@ -1,9 +1,6 @@
-import asyncio
-
 import pytest
 
 from app.executors.public_answer_stream import (
-    PublicAnswerCoalescer,
     PublicAnswerStreamGate,
 )
 from app.platform.public_payload import sanitize_public_text
@@ -81,7 +78,7 @@ def test_stateful_assignment_sanitizer_holds_split_secret_values_and_matches_ter
                 )
 
 
-def test_stateful_assignment_sanitizer_recovers_after_bounded_fragment_failure():
+def test_stateful_assignment_sanitizer_recovers_only_after_bounded_quote_closes():
     gate = PublicAnswerStreamGate(
         private_replacements={},
         sanitizer=sanitize_public_text,
@@ -91,15 +88,16 @@ def test_stateful_assignment_sanitizer_recovers_after_bounded_fragment_failure()
     assert gate.accept("x" * 64) == ("[content unavailable]",)
     assert gate.failed is False
     assert gate.failure_reason == "sanitizer_bound_exceeded"
-    assert gate.accept(" later") == (" ",)
+    assert gate.accept(" later") == ()
+    assert gate.accept('" safe after') == (" safe ",)
 
     finished = gate.finish(
-        final_text='access_token="' + ("x" * 64) + " later",
+        final_text='access_token="' + ("x" * 64) + ' later" safe after',
         release=True,
     )
 
-    assert finished.chunks == ("later",)
-    assert finished.final_text == "[content unavailable] later"
+    assert finished.chunks == ("after",)
+    assert finished.final_text == "[content unavailable] safe after"
 
 
 def _sanitize(value):
@@ -772,7 +770,6 @@ def test_capability_lifecycle_does_not_defer_safe_assistant_narration():
     before = gate.accept("I will inspect the workspace. ")
     gate.seal(
         {CALL_ID: "tool invocation"},
-        capability_boundary=True,
         invocation_key=("mcp", IDENTITY, CALL_ID),
     )
     during = gate.accept("Inspection is in progress. ")
@@ -906,7 +903,6 @@ def test_capability_bound_does_not_disable_long_public_timeline():
 
     parts = [gate.accept("before tool ")]
     gate.seal(
-        capability_boundary=True,
         invocation_key=("builtin", "Read", "call-one"),
     )
     parts.append(gate.accept("during " + ("x" * 64)))
@@ -1101,92 +1097,6 @@ def test_multibyte_public_answer_continues_without_byte_cutoff():
     assert gate.failed is False
 
 
-@pytest.mark.asyncio
-async def test_public_answer_coalescer_merges_only_adjacent_same_source_text():
-    emitted: list[str] = []
-
-    async def emit(value: str) -> bool:
-        emitted.append(value)
-        return True
-
-    coalescer = PublicAnswerCoalescer(emit, window_seconds=60)
-    assert await coalescer.push("one ", source_identity=("message-1", 0))
-    assert await coalescer.push("two", source_identity=("message-1", 0))
-    assert emitted == []
-
-    assert await coalescer.push("three", source_identity=("message-1", 1))
-    assert emitted == ["one two"]
-    assert await coalescer.close(flush=True)
-    assert emitted == ["one two", "three"]
-
-
-@pytest.mark.asyncio
-async def test_public_answer_coalescer_flushes_on_window_and_codepoint_limit():
-    emitted: list[str] = []
-
-    async def emit(value: str) -> bool:
-        emitted.append(value)
-        return True
-
-    coalescer = PublicAnswerCoalescer(emit, window_seconds=0)
-    assert await coalescer.push("界" * 8_193, source_identity="source")
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
-    assert emitted == ["界" * 8_192, "界"]
-    assert all(len(value) <= 8_192 for value in emitted)
-    assert await coalescer.close(flush=True)
-
-
-@pytest.mark.asyncio
-async def test_public_answer_coalescer_seals_after_rejected_emission():
-    emitted: list[str] = []
-
-    async def reject(value: str) -> bool:
-        emitted.append(value)
-        return False
-
-    coalescer = PublicAnswerCoalescer(reject, window_seconds=60)
-    assert not await coalescer.push("x" * 8_192, source_identity="source")
-    assert not await coalescer.push("late", source_identity="source")
-    assert emitted == ["x" * 8_192]
-    assert await coalescer.close(flush=True)
-
-
-@pytest.mark.asyncio
-async def test_public_answer_coalescer_rethrows_timer_emission_failure_at_barrier():
-    async def fail(_value: str) -> bool:
-        raise RuntimeError("synthetic callback failure")
-
-    coalescer = PublicAnswerCoalescer(fail, window_seconds=0)
-    assert await coalescer.push("pending", source_identity="source")
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
-
-    with pytest.raises(RuntimeError, match="synthetic callback failure"):
-        await coalescer.close(flush=True)
-
-
-@pytest.mark.asyncio
-async def test_public_answer_coalescer_reports_cancelled_inflight_emission():
-    started = asyncio.Event()
-    never_release = asyncio.Event()
-    emitted: list[str] = []
-
-    async def emit(value: str) -> bool:
-        started.set()
-        await never_release.wait()
-        emitted.append(value)
-        return True
-
-    coalescer = PublicAnswerCoalescer(emit, window_seconds=0)
-    assert await coalescer.push("pending", source_identity="source")
-    await asyncio.wait_for(started.wait(), timeout=1)
-
-    assert not await asyncio.wait_for(coalescer.close(flush=True), timeout=1)
-    assert emitted == []
-    assert not await coalescer.push("late", source_identity="source")
-
-
 def test_terminal_safe_suffix_matching_only_private_prefix_is_preserved():
     gate = PublicAnswerStreamGate(private_replacements={"report-private": "private value"}, sanitizer=_sanitize)
     source = ("answer", None)
@@ -1194,3 +1104,325 @@ def test_terminal_safe_suffix_matching_only_private_prefix_is_preserved():
     finish, tail = gate.finish_routed(final_text="", release=True)
     assert "".join(text for _owner, text in (*chunks, *tail)) == "Final user answer"
     assert finish.final_text == "Final user answer"
+
+
+@pytest.mark.parametrize(
+    "assignment",
+    [
+        'password="alpha bravo;秘密,charlie',
+        "'api_key' -> 'alpha bravo;charlie",
+        '{"outer":{"client_secret":"alpha\nbravo charlie',
+        'auth_header => "alpha \\"bravo\\" charlie\\',
+    ],
+)
+@pytest.mark.parametrize("terminal_from_stream", [False, True])
+def test_unfinished_quoted_secret_remains_raw_across_every_split_and_registry_update(
+    assignment, terminal_from_stream,
+):
+    body = "Before " + assignment
+    for split in range(1, len(body)):
+        gate = PublicAnswerStreamGate(
+            private_replacements={}, sanitizer=sanitize_public_text,
+            max_private_token_chars=128,
+        )
+        routed = list(gate.accept_routed(body[:split], source_identity="answer"))
+        gate.register_private_replacements({"unrelated_call": "private invocation"})
+        routed.extend(gate.accept_routed(body[split:], source_identity="answer"))
+        finished, tail = gate.finish_routed(
+            final_text="" if terminal_from_stream else body, release=True,
+            fallback_source_identity="answer",
+        )
+        visible = "".join(text for _owner, text in (*routed, *tail))
+        assert visible == finished.final_text == sanitize_public_text(body)
+        assert not gate.failed
+        assert all(word not in visible for word in ("alpha", "bravo", "charlie", "秘密"))
+
+
+@pytest.mark.parametrize("quote", ['"', "'"])
+@pytest.mark.parametrize("separator", [":", "=", "->", "=>"])
+def test_completed_quoted_secret_preserves_suffix_across_every_split(quote, separator):
+    body = f"Before api_key{separator}{quote}alpha \\{quote}bravo!{quote} after"
+    for split in range(1, len(body)):
+        gate = PublicAnswerStreamGate(
+            private_replacements={}, sanitizer=sanitize_public_text,
+            max_private_token_chars=128,
+        )
+        routed = list(gate.accept_routed(body[:split], source_identity="answer"))
+        gate.register_private_replacements({"alpha": "private value"})
+        routed.extend(gate.accept_routed(body[split:], source_identity="answer"))
+        finished, tail = gate.finish_routed(final_text="", release=True)
+        visible = "".join(text for _owner, text in (*routed, *tail))
+        assert visible == finished.final_text == sanitize_public_text(body)
+        assert "alpha" not in visible and "bravo" not in visible
+        assert visible.endswith(" after")
+
+
+def test_known_replacement_does_not_release_an_unfinished_quoted_value():
+    gate = PublicAnswerStreamGate(
+        private_replacements={"synthetic_call": "private invocation"},
+        sanitizer=sanitize_public_text,
+    )
+    first = gate.accept('synthetic_call Before password="alpha bravo')
+    gate.register_private_replacements({"alpha": "private value"})
+    second = gate.accept(' charlie" after')
+    finished = gate.finish(final_text="", release=True)
+    visible = "".join((*first, *second, *finished.chunks))
+    assert visible == "private invocation Before password=[redacted-secret] after"
+    assert finished.final_text == visible
+
+
+@pytest.mark.parametrize("quote", ['"', "'"])
+@pytest.mark.parametrize("tail_size", [31, 32, 33])
+def test_quoted_secret_tail_bound_preserves_prefix_and_resumes_after_real_close(quote, tail_size):
+    opening = f"password={quote}"
+    raw = opening + "a" * (tail_size - len(opening))
+    gate = PublicAnswerStreamGate(
+        private_replacements={}, sanitizer=sanitize_public_text,
+        max_private_token_chars=32,
+    )
+    chunks = list(gate.accept("Before " + raw))
+    assert len(gate._pending) <= 32
+    chunks.extend(gate.accept("\\"))
+    gate.register_private_replacements({"unrelated_call": "private invocation"})
+    chunks.extend(gate.accept(quote + " hidden continuation"))
+    assert len(gate._pending) <= 32
+    assert gate.accept(" still hidden") == ()
+    chunks.extend(gate.accept(quote + " after"))
+    finished = gate.finish(final_text="", release=True)
+    visible = "".join((*chunks, *finished.chunks))
+    assert visible == finished.final_text == "Before [content unavailable] after"
+    assert gate.projection_omissions == 1
+    assert gate.failure_reason == "sanitizer_bound_exceeded"
+    assert not gate.failed
+    assert not gate._pending and gate._discarded_quote is None
+
+
+@pytest.mark.parametrize("release", [False, True])
+@pytest.mark.parametrize("final_text", ["", 'Before password="alpha bravo charlie', "charlie"])
+def test_unclosed_oversized_quote_terminal_never_releases_discarded_continuation(release, final_text):
+    gate = PublicAnswerStreamGate(
+        private_replacements={}, sanitizer=sanitize_public_text,
+        max_private_token_chars=32,
+    )
+    before = gate.accept_routed('Before password="' + "x" * 40, source_identity="first")
+    assert gate.accept_routed(" alpha bravo charlie", source_identity="second") == ()
+    finished, tail = gate.finish_routed(final_text=final_text, release=release)
+    assert before == (("first", "Before [content unavailable]"),)
+    assert tail == () and finished.chunks == ()
+    assert finished.final_text == ("Before [content unavailable]" if release else "")
+    assert gate._discarded_quote is None
+    assert gate.accept("late hidden continuation") == ()
+
+
+def test_discarded_quote_close_routes_only_safe_suffix_to_its_actual_source():
+    gate = PublicAnswerStreamGate(
+        private_replacements={}, sanitizer=sanitize_public_text,
+        max_private_token_chars=32,
+    )
+    routed = list(gate.accept_routed('Before password="' + "x" * 40, source_identity="first"))
+    assert gate.accept_routed(" hidden\\", source_identity="second") == ()
+    gate.register_private_replacements({"unrelated_call": "private invocation"})
+    assert gate.accept_routed('" still hidden', source_identity="third") == ()
+    routed.extend(gate.accept_routed('" safe after', source_identity="fourth"))
+    finished, tail = gate.finish_routed(final_text="", release=True)
+    routed.extend(tail)
+    assert routed == [("first", "Before [content unavailable]"), ("fourth", " safe "), ("fourth", "after")]
+    assert finished.final_text == "Before [content unavailable] safe after"
+    assert not gate.failed
+
+
+@pytest.mark.parametrize("close_quote", [False, True])
+def test_quoted_secret_rewrite_across_sources_remains_fail_closed_after_registry_update(close_quote):
+    gate = PublicAnswerStreamGate(private_replacements={}, sanitizer=sanitize_public_text)
+    assert gate.accept_routed('Before password="alpha', source_identity="first") == (("first", "Before "),)
+    gate.register_private_replacements({"unrelated_call": "private invocation"})
+    assert gate.accept_routed(' bravo' + ('" after' if close_quote else ''), source_identity="second") == ()
+    finished, tail = gate.finish_routed(final_text="", release=True)
+    assert finished.final_text == "Before "
+    assert tail == ()
+    assert gate.failed and gate.failure_reason == "upstream_projection_failed"
+
+
+@pytest.mark.parametrize(
+    "label",
+    [
+        '【技能：synthetic-skill "Catalog" V8】',
+        "【技能：synthetic-skill 'Catalog' V8】",
+        '【技能：synthetic-skill \\"Catalog\\" V8】',
+        '【技能：synthetic-skill\nCatalog V8】',
+    ],
+)
+@pytest.mark.parametrize("quote", ['"', "'"])
+def test_public_label_replacement_cannot_change_raw_secret_quote_grammar(label, quote):
+    body = f"Using synthetic-skill. password={quote}alpha synthetic-skill bravo charlie{quote} after"
+    expected = f"Using {label}. password=[redacted-secret] after"
+    for split in range(1, len(body)):
+        gate = PublicAnswerStreamGate(
+            private_replacements={"synthetic-skill": label},
+            public_replacements={"synthetic-skill": label},
+            sanitizer=sanitize_public_text,
+        )
+        routed = [
+            *gate.accept_routed(body[:split], source_identity="answer"),
+            *gate.accept_routed(body[split:], source_identity="answer"),
+        ]
+        finished, tail = gate.finish_routed(final_text="", release=True)
+        visible = "".join(text for _owner, text in (*routed, *tail))
+        assert visible == finished.final_text == expected
+        assert all(word not in visible for word in ("alpha", "bravo", "charlie"))
+        assert not gate.failed
+
+
+def test_new_exact_replacement_at_terminal_keeps_raw_cross_source_ownership():
+    gate = PublicAnswerStreamGate(private_replacements={}, sanitizer=sanitize_public_text)
+    before = gate.accept_routed("Before toolu_", source_identity="first")
+    assert gate.accept_routed("private", source_identity="second") == ()
+    gate.register_private_replacements({"toolu_private": "private invocation"})
+    finished, tail = gate.finish_routed(final_text="", release=True, fallback_source_identity="third")
+    assert before == (("first", "Before "),)
+    assert tail == (("first", "private invocation"),)
+    assert finished.final_text == "Before private invocation"
+    assert not gate.failed
+
+
+def test_oversized_quote_does_not_replay_a_nonprefix_second_terminal_authority():
+    gate = PublicAnswerStreamGate(
+        private_replacements={}, sanitizer=sanitize_public_text,
+        max_private_token_chars=32,
+    )
+    raw = 'Before password="' + "x" * 40
+    assert gate.accept_routed(raw, source_identity="answer") == (("answer", "Before [content unavailable]"),)
+    finished, tail = gate.finish_routed(
+        final_text=raw + '" additional terminal prose', release=True,
+        fallback_source_identity="terminal",
+    )
+    # Completed provider blocks must arrive through accept_routed. A differing
+    # terminal value cannot replay or replace an already accepted source body.
+    assert finished.final_text == "Before [content unavailable]"
+    assert not tail
+
+
+def test_boundary_projection_omission_keeps_unfinished_quote_discard_state():
+    gate = PublicAnswerStreamGate(private_replacements={}, sanitizer=sanitize_public_text)
+    chunks = list(gate.accept("x "))
+    gate.register_private_replacements({"x prefix": "value", "x value": "value"})
+    chunks.extend(gate.accept('prefix password="alpha bravo'))
+    assert gate.failure_reason == "private_token_boundary_conflict"
+    assert gate.accept(" hidden continuation") == ()
+    chunks.extend(gate.accept(' charlie" after'))
+    finished = gate.finish(final_text="", release=True)
+    visible = "".join((*chunks, *finished.chunks))
+    assert visible == finished.final_text == "x [content unavailable] after"
+    assert not gate.failed
+
+
+@pytest.mark.parametrize("failure_call", [1, 2, 3])
+@pytest.mark.parametrize("failure_kind", ["sanitizer_failed", "sanitizer_rejected"])
+def test_each_recoverable_projection_stage_retains_omitted_quote_grammar(failure_call, failure_kind):
+    calls = 0
+
+    def sanitizer(text):
+        nonlocal calls
+        calls += 1
+        if calls == failure_call:
+            if failure_kind == "sanitizer_failed":
+                raise RuntimeError("synthetic sanitizer fault")
+            return ""
+        return sanitize_public_text(text)
+
+    gate = PublicAnswerStreamGate(private_replacements={}, sanitizer=sanitizer)
+    chunks = list(gate.accept('Before password="alpha bravo'))
+    assert gate.failure_reason == failure_kind
+    assert gate.accept(" hidden continuation") == ()
+    chunks.extend(gate.accept(' charlie" after'))
+    finished = gate.finish(final_text="", release=True)
+    assert "".join((*chunks, *finished.chunks)) == finished.final_text == "[content unavailable] after"
+    assert gate.projection_omissions == 1
+    assert not gate.failed
+
+
+def test_projected_prefix_overflow_preserves_quoted_continuation_state():
+    calls = 0
+
+    def sanitizer(text):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return 'password="' + "x" * 40
+        return sanitize_public_text(text)
+
+    gate = PublicAnswerStreamGate(
+        private_replacements={}, sanitizer=sanitizer, max_private_token_chars=32,
+    )
+    assert gate.accept("synthetic projection input ") == ("[content unavailable]",)
+    assert gate.failure_reason == "private_token_prefix_overflow"
+    assert gate.accept(" hidden continuation") == ()
+    assert gate.accept('" safe after') == (" safe ",)
+    assert gate.finish(final_text="", release=True).final_text == "[content unavailable] safe after"
+    assert not gate.failed
+
+
+def test_public_prefix_final_is_not_closure_evidence_for_a_discarded_quote():
+    gate = PublicAnswerStreamGate(
+        private_replacements={}, sanitizer=sanitize_public_text, max_private_token_chars=32,
+    )
+    assert gate.accept('Before password="' + "x" * 40) == ("Before [content unavailable]",)
+    finished = gate.finish(final_text="Before [content unavailable] hidden continuation", release=True)
+    assert finished.chunks == ()
+    assert finished.final_text == "Before [content unavailable]"
+
+
+def test_unfinished_quote_is_safe_for_every_three_chunk_split_and_single_char_chunks():
+    body = 'Before password="a b\\" c\\'
+    partitions = [list(body)]
+    partitions.extend(
+        [body[:first], body[first:second], body[second:]]
+        for first in range(1, len(body) - 1)
+        for second in range(first + 1, len(body))
+    )
+    for chunks in partitions:
+        gate = PublicAnswerStreamGate(private_replacements={}, sanitizer=sanitize_public_text)
+        routed = []
+        for chunk in chunks:
+            routed.extend(gate.accept_routed(chunk, source_identity="answer"))
+            gate.register_private_replacements({"unrelated_call": "private invocation"})
+        finished, tail = gate.finish_routed(final_text="", release=True)
+        assert "".join(text for _owner, text in (*routed, *tail)) == finished.final_text == sanitize_public_text(body)
+        assert not gate.failed
+
+
+def test_oversized_quote_prefix_and_omission_marker_are_projected_together():
+    private_token = "Before [content unavailable]"
+    gate = PublicAnswerStreamGate(
+        private_replacements={private_token: "private value"},
+        sanitizer=sanitize_public_text, max_private_token_chars=32,
+    )
+    chunks = list(gate.accept('Before password="' + "x" * 40))
+    assert chunks == ["private value"]
+    assert gate.accept(" hidden continuation") == ()
+    chunks.extend(gate.accept('" after'))
+    finished = gate.finish(final_text="", release=True)
+    visible = "".join((*chunks, *finished.chunks))
+    assert visible == finished.final_text == "private value after"
+    assert private_token not in visible
+    assert not gate.failed
+
+
+@pytest.mark.parametrize("reject_marker", [False, True])
+def test_oversized_quote_marker_projection_failure_keeps_discard_grammar(reject_marker):
+    def sanitizer(text):
+        if "[content unavailable]" in text:
+            if reject_marker:
+                return ""
+            raise RuntimeError("synthetic marker failure")
+        return sanitize_public_text(text)
+
+    gate = PublicAnswerStreamGate(private_replacements={}, sanitizer=sanitizer, max_private_token_chars=32)
+    assert gate.accept('Before password="' + "x" * 40) == ()
+    assert gate.accept(" hidden continuation") == ()
+    assert gate.accept('" safe after') == (" safe ",)
+    finished, tail = gate.finish_routed(final_text="", release=True)
+    assert tail == ((None, "after"),)
+    assert finished.final_text == " safe after"
+    assert gate.failure_reason == "sanitizer_bound_exceeded"
+    assert not gate.failed

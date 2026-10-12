@@ -893,6 +893,9 @@ def test_foundation_alpha_readiness_accepts_release_evidence_runtime_acceptance_
     assert "alert_delivery_and_trace_export_controlled_host_acceptance" in g9["open_followups"]
     assert "g9_runtime_export_and_retention_acceptance" not in readiness["decision"]["stage_acceptance_blockers"]
     assert "alert_delivery_and_trace_export_controlled_host_acceptance" in readiness["decision"]["stage_acceptance_blockers"]
+    assert "define_owned_current_runtime_alert_trace_observation_first" in readiness["operator_context"][
+        "next_recommended_slices"
+    ]
     assert "g9_runtime_export_and_retention_acceptance" not in readiness["open_followups"]
     assert "g9_runtime_export_and_retention_acceptance" not in readiness["operator_context"][
         "next_recommended_slices"
@@ -1352,7 +1355,7 @@ def test_foundation_alpha_readiness_accepts_alert_trace_export_runtime_acceptanc
     assert "alert_delivery_and_trace_export_controlled_host_acceptance" not in g9["open_followups"]
     assert "alert_delivery_and_trace_export_controlled_host_acceptance" not in readiness["decision"]["stage_acceptance_blockers"]
     assert "alert_delivery_and_trace_export_controlled_host_acceptance" not in readiness["open_followups"]
-    assert "alert_delivery_and_trace_export_controlled_host_acceptance" not in readiness["operator_context"][
+    assert "define_owned_current_runtime_alert_trace_observation_first" not in readiness["operator_context"][
         "next_recommended_slices"
     ]
     assert (
@@ -1605,6 +1608,9 @@ def test_foundation_alpha_readiness_keeps_alert_trace_blocker_without_valid_runt
     g9 = readiness["domains"]["g9_admin_runtime_observability"]
     assert "alert_delivery_and_trace_export_controlled_host_acceptance" in g9["open_followups"]
     assert "alert_delivery_and_trace_export_controlled_host_acceptance" in readiness["decision"]["stage_acceptance_blockers"]
+    assert "define_owned_current_runtime_alert_trace_observation_first" in readiness["operator_context"][
+        "next_recommended_slices"
+    ]
     assert (
         g9["evidence"]["alert_trace_export_runtime_acceptance"]["status"]
         == "missing_alert_trace_export_runtime_acceptance"
@@ -1698,7 +1704,7 @@ def test_foundation_alpha_readiness_accepts_governance_runtime_smoke_for_same_ru
         in readiness["domains"]["g6_poc_governance"]["open_followups"]
     )
     assert "signed_skill_package_or_sbom_review_evidence" not in readiness["decision"]["stage_acceptance_blockers"]
-    assert "g6_runtime_admin_dashboard_acceptance_for_governance" not in readiness["operator_context"][
+    assert "define_owned_current_runtime_governance_observation_first" not in readiness["operator_context"][
         "next_recommended_slices"
     ]
     assert (
@@ -1960,7 +1966,7 @@ def test_foundation_alpha_readiness_keeps_governance_runtime_blocker_without_val
         "open_followups"
     ]
     assert "runtime_admin_dashboard_acceptance_for_governance" in readiness["decision"]["stage_acceptance_blockers"]
-    assert "g6_runtime_admin_dashboard_acceptance_for_governance" in readiness["operator_context"][
+    assert "define_owned_current_runtime_governance_observation_first" in readiness["operator_context"][
         "next_recommended_slices"
     ]
 
