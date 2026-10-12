@@ -387,7 +387,8 @@ function normalizeCost(value: unknown): RunPlaybackCost | undefined {
   if (!source) return undefined;
 
   return compactObject({
-    estimated_cost_minor: asNumber(source.estimated_cost_minor),
+    estimated_cost_minor: typeof source.estimated_cost_minor === "number"
+      ? asNumber(source.estimated_cost_minor) : undefined,
   });
 }
 

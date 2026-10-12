@@ -7,6 +7,9 @@ from app.runs.application.admin_trajectory import (
     ADMIN_TRAJECTORY_CONTRACT_VERSION as ADMIN_TRAJECTORY_CONTRACT_VERSION,
     project_admin_trajectory_page as project_admin_trajectory_page,
 )
+from app.runs.domain.cost_observability import (
+    projected_event_cost as projected_event_cost,
+)
 from app.runs.domain.admin_projection import (
     AdminRunDetailResponse as AdminRunDetailResponse,
 )

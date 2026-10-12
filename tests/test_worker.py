@@ -7069,10 +7069,20 @@ async def test_worker_persists_g2_executor_contract_latency_and_token_placeholde
 
 @pytest.mark.asyncio
 async def test_worker_persists_sdk_usage_as_run_observability(monkeypatch):
+    from claude_agent_sdk import ResultMessage
+    from app.execution.infrastructure.harness.claude.result_usage import ClaudeResultUsage
+
     calls = []
 
     class SdkUsageAdapter:
         async def submit_run(self, payload, event_sink=None):
+            sdk_result = ResultMessage(
+                subtype="success", duration_ms=1, duration_api_ms=1, is_error=False,
+                num_turns=1, session_id="sdk-session-a", total_cost_usd=0.0123,
+                usage={"input_tokens": 101, "output_tokens": 37, "total_tokens": 138},
+            )
+            observation = ClaudeResultUsage(session_id="sdk-session-a", prompt="start")
+            observation.observe_result(sdk_result)
             return ExecutorResult(
                 status="succeeded",
                 adapter_version="adapter/1",
@@ -7083,12 +7093,7 @@ async def test_worker_persists_sdk_usage_as_run_observability(monkeypatch):
                 executor_payload={
                     "sdk_used": True,
                     "sdk_session_id": "sdk-session-a",
-                    "sdk_usage": {
-                        "input_tokens": 101,
-                        "output_tokens": 37,
-                        "total_tokens": 138,
-                        "total_cost_usd": 0.0123,
-                    },
+                    "sdk_usage": observation.project(sdk_result.usage, terminal_result=True),
                 },
             )
 

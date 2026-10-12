@@ -9,8 +9,10 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+from claude_agent_sdk import ResultMessage as InstalledResultMessage
 
 from app.execution.application.run_interaction import RunInputCommand, RunInputSnapshot
+from app.execution.domain.worker_observability import executor_observability
 from app.execution.infrastructure.harness.claude.interaction import ClaudeRunInteractionActor
 from app.executors.claude_agent_sdk_runner import run_claude_agent_sdk
 from tests.test_claude_agent_sdk_runner import _fake_sdk, _settings
@@ -46,10 +48,14 @@ class Inputs:
         return RunInputSnapshot("open", (self.answer,) if self.answer else ())
 
 
-async def test_continuations_use_one_client_and_session_then_finish_input(monkeypatch, tmp_path):
+@pytest.mark.parametrize("supplement,coverage,cost_minor", [("second", "complete", 6), ("/clear", "partial", None)])
+async def test_continuations_use_one_client_and_session_then_finish_input(
+    monkeypatch, tmp_path, supplement, coverage, cost_minor,
+):
     captured = {}
     sdk = _fake_sdk(captured, hook_invocations=[])
-    port = Inputs([RunInputCommand("one", "text", text="second"), RunInputCommand("two", "text", text="last")])
+    sdk.ResultMessage = InstalledResultMessage
+    port = Inputs([RunInputCommand("one", "text", text=supplement), RunInputCommand("two", "text", text="last")])
     clients, queries, checkpoints = [], [], []
 
     class Client:
@@ -74,10 +80,14 @@ async def test_continuations_use_one_client_and_session_then_finish_input(monkey
                 yield sdk.AssistantMessage([sdk.TextBlock(text)], message_id=f"turn-{index}")
                 for event in events[3:]:
                     yield sdk.StreamEvent(event)
-                result = sdk.ResultMessage()
-                result.result = text
-                result.uuid = f"result-{index}"
-                result.usage = {"input_tokens": 10, "output_tokens": 2}
+                result = sdk.ResultMessage(
+                    subtype="success", duration_ms=1, duration_api_ms=1,
+                    is_error=False, num_turns=1, session_id="sdk-session",
+                    result=text, uuid=f"result-{index}",
+                    usage={"input_tokens": 10, "output_tokens": 2},
+                    total_cost_usd=[0.01, 0.03, 0.06][index],
+                    terminal_reason="completed",
+                )
                 yield result
             with pytest.raises(StopAsyncIteration):
                 await anext(self.stream)
@@ -95,9 +105,12 @@ async def test_continuations_use_one_client_and_session_then_finish_input(monkey
     assert result.error is None
     assert len(clients) == 1 and clients[0].input_done.is_set()
     assert clients[0].initial["message"]["content"] == "first"
-    assert queries == [("second", "sdk-session"), ("last", "sdk-session")]
+    assert queries == [(supplement, "sdk-session"), ("last", "sdk-session")]
     assert port.acks == ["one", "two"]
-    assert result.usage == {"input_tokens": 30, "output_tokens": 6}
+    assert result.usage == {"input_tokens": 30, "output_tokens": 6, "total_cost_usd": 0.06, "cost_coverage": coverage}
+    metrics = executor_observability({"sdk_usage": result.usage}, latency_ms=1)
+    assert metrics["cost"] == {"estimated_cost_minor": cost_minor}
+    assert metrics["token_counts"] == {"input": 30, "output": 6, "total": 36}
     assert result.message.endswith("last")
     assert "AskUserQuestion" in captured["tools"]
     finals = [item for item in checkpoints if item["final"]]
