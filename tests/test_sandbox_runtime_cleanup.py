@@ -1103,10 +1103,13 @@ async def test_opensandbox_cleanup_without_canonical_attempt_retains_db_lease(mo
         "expired-authorized",
         "expired-authorized-after-rollout",
         "failed-receipt-authorized",
+        "failed-receipt-absent",
         "attempt-mismatch",
         "ambiguous-identity",
         "non-string-remote-metadata",
         "get-info-404",
+        "get-info-503",
+        "get-info-untrusted-404",
         "signed-subject-mismatch",
     ),
 )
@@ -1116,7 +1119,7 @@ async def test_production_opensandbox_cleanup_requires_authoritative_identity(
     failure_mode,
     runtime_subject,
 ):
-    from opensandbox.exceptions import SandboxApiException
+    from opensandbox.exceptions import SandboxApiException, SandboxError
 
     from app.sandbox.api import SandboxRuntimeCleanupError
     cleanup_expired_sandbox_runtime_leases = sandbox_runtime_cleanup.cleanup_expired_sandbox_runtime_leases
@@ -1194,8 +1197,16 @@ async def test_production_opensandbox_cleanup_requires_authoritative_identity(
 
     def get_info():
         remote_trace.append("get_info")
-        if failure_mode == "get-info-404":
-            raise SandboxApiException("sandbox metadata is unavailable", status_code=404)
+        if failure_mode in {"get-info-404", "failed-receipt-absent"}:
+            raise SandboxApiException(
+                "sandbox is absent",
+                status_code=404,
+                error=SandboxError(code="DOCKER::SANDBOX_NOT_FOUND", message="sandbox is absent"),
+            )
+        if failure_mode == "get-info-503":
+            raise SandboxApiException("sandbox lookup is unavailable", status_code=503)
+        if failure_mode == "get-info-untrusted-404":
+            raise RuntimeError("sandbox not found (404)")
         return {
             "id": remote.id,
             "metadata": dict(remote.metadata),
@@ -1284,7 +1295,7 @@ async def test_production_opensandbox_cleanup_requires_authoritative_identity(
         fake_release_stopped_sandbox_leases,
     )
 
-    if failure_mode == "failed-receipt-authorized":
+    if failure_mode in {"failed-receipt-authorized", "failed-receipt-absent"}:
         cleanup_failed_sandbox_executor_reconciliation_leases = sandbox_runtime_cleanup.cleanup_failed_sandbox_executor_reconciliation_leases
 
         finalized = []
@@ -1325,13 +1336,16 @@ async def test_production_opensandbox_cleanup_requires_authoritative_identity(
         )
         assert cleaned == [row]
         assert remote_trace == ["connect", "get_info"]
-        assert remote.kill_calls == 1
-        assert remote.close_calls == 1
+        expected_calls = 0 if failure_mode == "failed-receipt-absent" else 1
+        assert remote.kill_calls == expected_calls
+        assert remote.close_calls == expected_calls
         assert len(finalized) == 1
         assert finalized[0]["lease_id"] == "lease-a"
+        assert provider._leases == {}
+        assert provider._sandboxes == {}
         return
 
-    if failure_mode in {"expired-authorized", "expired-authorized-after-rollout"}:
+    if failure_mode in {"expired-authorized", "expired-authorized-after-rollout", "get-info-404"}:
         cleaned = await cleanup_expired_sandbox_runtime_leases(
             tenant_id="tenant-a",
             provider_factory=lambda _provider_name: provider,
@@ -1344,10 +1358,13 @@ async def test_production_opensandbox_cleanup_requires_authoritative_identity(
             GOVERNED_EGRESS_PROOF_LABEL: governed_egress_proof_label(proof),
         }
         assert remote_trace == ["connect", "get_info"]
-        assert remote.kill_calls == 1
-        assert remote.close_calls == 1
+        expected_calls = 0 if failure_mode == "get-info-404" else 1
+        assert remote.kill_calls == expected_calls
+        assert remote.close_calls == expected_calls
         assert len(releases) == 1
         assert releases[0]["lease_ids"] == ["lease-a"]
+        assert provider._leases == {}
+        assert provider._sandboxes == {}
         return
 
     with pytest.raises(SandboxRuntimeCleanupError) as exc_info:
