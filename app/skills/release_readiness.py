@@ -157,6 +157,8 @@ _DEPENDENCY_REVIEW_POLICY = {
     "signed_package_evidence_contract": _SIGNED_PACKAGE_EVIDENCE_CONTRACT,
     "does_not_close_g6": True,
 }
+# Archived verifier identity and checks remain necessary to read recorded evidence.
+# The producer is retired; this contract does not describe the current live endpoint.
 _DEPENDENCY_REVIEW_RUNTIME_ACCEPTANCE_CONTRACT = {
     "schema_version": DEPENDENCY_REVIEW_RUNTIME_ACCEPTANCE_SCHEMA_VERSION,
     "target": "controlled_host_api_admin_runtime",
@@ -1616,7 +1618,7 @@ def render_skill_release_readiness_markdown(readiness: dict[str, Any]) -> str:
         runtime_lines = (
             f"- Schema: `{runtime_contract.get('schema_version')}`\n"
             f"- Target: `{runtime_contract.get('target')}`\n"
-            f"- Verifier: `{runtime_contract.get('verifier_script')}`\n"
+            f"- Archived verifier (producer retired): `{runtime_contract.get('verifier_script')}`\n"
             f"- Acceptance gap: `{runtime_contract.get('acceptance_gap')}`\n"
             f"- Runtime payload required: `{runtime_contract.get('runtime_acceptance_requires_real_admin_runtime_payload')}`\n"
             f"- Required runtime checks: `{required_checks}`\n"
