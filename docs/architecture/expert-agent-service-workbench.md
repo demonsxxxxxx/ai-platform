@@ -66,6 +66,16 @@ server-side and appended to the executor system prompt.
    identity and history lifecycle owns recovery and supersession, including a
    return to the previously open task while another identity read is pending.
 
+The compatibility `sessionApi.get` read converts a failure to `null` only when the
+shared safe-error owner produces `ApiRequestError` with status 404. Public/localized
+error text is never an HTTP discriminator. Authentication, transient failures,
+protocol errors and cancellation retain their original error object; forced
+re-login classification remains owned by `authFetch`. The authoritative identity
+read continues to reject missing sessions. Existing title, history and notification
+consumers retain the nullable compatibility contract. The owning regression is
+`services/api/__tests__/session.test.ts`, selected once by the existing `test:sse`
+CI lane alongside the fetch parser and history consumers.
+
 ### Agent Market and Workspace
 
 1. The Market leads with the outcome: choose an expert and start a task.
@@ -79,6 +89,27 @@ server-side and appended to the executor system prompt.
    authority errors remain fail-closed.
 6. Agent Workspace starters are presented as ready-to-run task examples and
    keep the existing explicit-send behavior.
+
+### Public model catalog and selection
+
+The shared composer uses `ChatInputToolbar` and `ComposerModelPanel` to select
+an administrator-enabled public model. `ModelCatalogProvider` hydrates only
+`/api/agent/models/available`; its subject-scoped read remains abortable and
+rejects stale completions after login changes or unmount. `default_model_id`
+is the public catalog's administrator-selected default; the composer resolves
+its model value, falling back to the first available model when necessary.
+
+The unmounted `components/agent/ModelSelector` and its private click-away guard
+are retired. Catalog hydration has no per-user pin read, toggle, or automatic
+metadata cleanup. The generic Identity profile/metadata API, persistence, and
+historical `pinned_model_ids` values remain compatible and are not migrated or
+deleted. Shared model icons remain in use by messages and the catalog panel.
+
+`test:model-admin` keeps mounted catalog subject-isolation, denial/logout,
+and cancellation coverage. It also checks the real public API transport makes
+only the catalog GET, preserves historical metadata, and resolves the public
+default and fallback. Browser-route and Agent Market fixtures no longer stub
+the retired pin client; generic backend metadata compatibility tests remain.
 
 ### Agent Builder
 
@@ -269,3 +300,21 @@ reintroduce mandatory Skill invocation, per-Agent file-type gates,
   server-authorized definition fields, not presentation defaults. Models are
   intentionally selected from the shared governed catalog at Run admission and
   are not Agent Profile definition fields.
+
+## Independent SOP application request ownership
+
+The authenticated `/ai-apps/sop-assistant` page remains an independent RAGFlow
+application, not a platform Run or MCP invocation. Its `sopTransport` feature
+module owns initialization/answer stream readers, the shared request deadline,
+and local transport cleanup. The page owns cancellation and a request generation
+bound to the current authenticated tenant/user and non-secret browser session
+marker. Async completions recheck the current marker as well as the generation;
+the same user signing in again cannot inherit an earlier request/session. Leaving the page or changing
+that scope aborts its request and clears local conversation state; late progress,
+results, errors and completion cannot update the replacement scope.
+
+Reader cancellation only closes the local request. It is not evidence of remote
+session deletion or remote computation cancellation. Clearing the conversation
+continues to clear local messages/session selection only. Existing endpoint,
+share-token configuration, request fields and answer accumulation stay unchanged;
+this resource-lifecycle boundary does not add an upstream authorization system.

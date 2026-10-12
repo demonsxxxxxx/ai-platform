@@ -64,6 +64,17 @@ DELETE `/api/skills/{skill_name}/files/{file_path}` stores a tenant/user-scoped 
 
 Marketplace file previews continue to read released Skill snapshots and do not include tenant/user file overlays.
 
+Skill export reads the complete authenticated file list and each file's content.
+Binary file responses carry base64 in `content` with `is_binary=true`; the ZIP
+writer receives decoded bytes, not an external URL or a display placeholder.
+The retired project-preview URL-fetch parameter is removed; ZIP creation does
+not fetch secondary URLs or silently omit failed downloads.
+Empty base64 is a valid zero-byte file. A failed file read or malformed binary
+content fails the whole export instead of downloading a partial archive. Export
+completion is fenced by the initiating mounted UI/authentication generation,
+including a final check after asynchronous ZIP generation. This is a collection
+of authorized reads, not an atomic snapshot across concurrent file edits.
+
 `POST /api/skills/upload/preview` accepts a multipart ZIP package in field
 `file`, validates the package `SKILL.md`, and returns package metadata without
 persistence. It only supports one Skill package per ZIP in this backend slice.
@@ -149,6 +160,17 @@ they no longer classify fixed package names as public or internal.
 
 ## MCP Routes
 
+The browser MCP request hook owns catalog failures and lifecycle admission in
+one scoped state. Typed HTTP 403 responses remain visibly unavailable; hiding
+controls does not discard the denial. Explicit permission recovery first
+refreshes the authenticated principal and admits a new catalog read only after
+a completed refresh. A failed refresh, or a successful ordinary directory GET
+alone, cannot restore lifecycle authority. Retry never replays a mutation.
+Tenant/user, role/permission projection changes, auth refresh pauses, and
+unmount fence old reads, details, mutations, and retained callbacks. Ordinary
+operation failures retain the editor draft and show safe error copy; raw
+backend error details are not rendered. The ordinary directory remains read-only.
+
 Backed read and server lifecycle routes:
 
 - `GET /api/mcp/chat-tools`
@@ -174,6 +196,16 @@ stable `mcp_server_id::public_tool_name`
 references and bounded display metadata, never JWTs, static headers, Gateway
 internal IDs, or cache keys. Execution resolves only Server-qualified references.
 The former RAGFlow bare-ID registry path and metadata exception are deleted.
+
+Discovery failures retain HTTP-200 unavailable entries so healthy Servers remain
+usable. Public reasons stay simple: `discovery_failed`, `unsupported_transport`,
+and, for bulk principal-credential lookup, `authorization_required` only for
+missing/expired/invalid credentials. Redis, keyring and corrupted-record failures
+are discovery failures, not a request to log in again. The single-Server route
+retains its existing typed credential HTTP errors and force-relogin rules. The
+[MCP execution contract](../architecture/mcp-tool-execution.md) owns the private,
+payload-free diagnostic reason/stage logging; those fields never enter these
+catalog responses.
 
 Server lifecycle writes require a platform-admin principal. They persist only
 tenant-scoped registry metadata, allowed roles, department enablement, quotas,

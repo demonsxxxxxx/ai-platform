@@ -59,12 +59,17 @@ class WorkerEarlyFailureService:
         self, conn: Any, *, payload: Any, run_identity: dict[str, str],
         error_code: str, error_message: str, event_stage: str,
         event_payload: dict[str, Any], v4_capabilities: Any, attempt_lifecycle: Any,
+        diagnostic_reason: str | None = None,
     ) -> WorkerEarlyTerminal:
         written = await self.fail_run(
             conn, payload=payload, tenant_id=run_identity["tenant_id"],
             run_id=run_identity["run_id"], error_code=error_code,
             error_message=error_message, capabilities=v4_capabilities,
             attempt_lifecycle=attempt_lifecycle,
+            result_json=(
+                self._fail_result(error_code, event_stage, reason=diagnostic_reason)
+                if diagnostic_reason is not None else None
+            ),
         )
         if not written:
             return self._stale(payload, run_identity["run_id"])

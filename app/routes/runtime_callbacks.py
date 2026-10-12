@@ -662,7 +662,7 @@ async def run_inputs_callback(
                 operation=callback.operation,
                 question_id=callback.question_id,
                 questions=(
-                    [item.model_dump() for item in callback.questions]
+                    [item.model_dump(exclude_none=True) for item in callback.questions]
                     if callback.questions is not None
                     else None
                 ),

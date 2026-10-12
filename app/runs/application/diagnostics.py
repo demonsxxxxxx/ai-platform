@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Protocol
@@ -54,6 +55,8 @@ class RunDiagnosticsService:
     persistence: RunDiagnosticsPersistence
     normalize_runtime_diagnostics: Callable[[object], dict[str, Any]]
     runtime_diagnostics_schema_version: str
+    exception_log_fields: Callable[[BaseException], dict[str, Any]]
+    tool_operation_id: Callable[[object, object], str | None] | None = None
     clock: Callable[[], datetime] = field(
         default=lambda: datetime.now(timezone.utc),
         repr=False,
@@ -111,16 +114,20 @@ class RunDiagnosticsService:
         request_id: str | None = None,
         callback_id: str | None = None,
     ) -> None:
+        capture_phase = "factory"
+        observation_id = None
         try:
             value = (
                 runtime_diagnostics_factory()
                 if runtime_diagnostics_factory is not None
                 else runtime_diagnostics
             )
-            normalized = sanitize_runtime_diagnostics(
-                self.normalize_runtime_diagnostics(value) if normalize else value
-            )
+            capture_phase = "normalize"
+            value = self.normalize_runtime_diagnostics(value) if normalize else value
+            capture_phase = "sanitize"
+            normalized = sanitize_runtime_diagnostics(value)
             if normalized:
+                capture_phase = "build"
                 observation = build_failure_observation(
                     attempt_id=attempt_id,
                     source=source,
@@ -132,6 +139,8 @@ class RunDiagnosticsService:
                     request_id=request_id,
                     callback_id=callback_id,
                 )
+                observation_id = observation.get("observation_id")
+                capture_phase = "persist"
                 await self.persistence.append_observation(
                     conn,
                     tenant_id=tenant_id,
@@ -141,14 +150,40 @@ class RunDiagnosticsService:
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - diagnostics cannot veto the business result.
-            logger.warning(
-                "Run diagnostic capture degraded",
-                extra={
-                    "diagnostic_source": source,
-                    "diagnostic_stage": stage,
-                    "diagnostic_reason": type(exc).__name__,
-                },
-            )
+            try:
+                evidence = self.exception_log_fields(exc)
+                # These values come from owner arguments, never the private carrier.
+                correlations = {
+                    key: value for key, value in {
+                        "run_id": run_id, "attempt_id": attempt_id,
+                        "observation_id": observation_id,
+                    }.items()
+                    if type(value) is str and re.fullmatch({
+                        "run_id": r"run_[0-9a-f]{32}",
+                        "attempt_id": r"rat_[0-9a-f]{64}",
+                        "observation_id": r"obs_[0-9a-f]{32}",
+                    }[key], value)
+                }
+                labels = {
+                    key: value if type(value) is str and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", value) else "unknown"
+                    for key, value in {"diagnostic_source": source, "diagnostic_stage": stage}.items()
+                }
+                try:
+                    # Isolate default handler stderr from the active private cause.
+                    raise RuntimeError("safe failure logging context") from None
+                except RuntimeError:
+                    logger.warning(
+                        "Run diagnostic capture degraded capture_phase=%s correlations=%s "
+                        "exception_chain=%s exception_chain_end=%s",
+                        capture_phase, correlations, evidence["exception_chain"], evidence["exception_chain_end"],
+                        extra={
+                            **labels, **correlations, **evidence,
+                            "capture_phase": capture_phase,
+                            "diagnostic_reason": evidence["exception_chain"][0]["exception_type"],
+                        },
+                    )
+            except Exception:
+                pass  # Failure reporting cannot veto or replace the business result.
 
     async def capture_executor_protocol_failure(
         self,
@@ -242,6 +277,7 @@ class RunDiagnosticsService:
         return _admin_projection(
             snapshot,
             normalize_runtime_diagnostics=self.normalize_runtime_diagnostics,
+            tool_operation_id=self.tool_operation_id,
         )
 
     async def read_admin_monitor_metadata(
@@ -271,6 +307,7 @@ def _admin_projection(
     snapshot: dict[str, Any],
     *,
     normalize_runtime_diagnostics: Callable[[object], dict[str, Any]],
+    tool_operation_id: Callable[[object, object], str | None] | None = None,
 ) -> dict[str, Any]:
     diagnostic = snapshot.get("diagnostic")
     coverage = "not_collected"
@@ -312,6 +349,8 @@ def _admin_projection(
     observations = payload.get("observations")
     observations = observations if isinstance(observations, list) else []
     root, handling, details, evidence_losses = _project_observations(observations)
+    if tool_operation_id is not None:
+        _correlate_admin_tools(details, snapshot["run"].get("run_id"), tool_operation_id)
     losses = [
         *evidence_losses,
         *sanitize_run_diagnostic_losses(payload.get("losses")),
@@ -343,6 +382,30 @@ def _admin_projection(
             "omitted_observations": int(counts.get("omitted_observations") or 0),
         },
     }
+
+
+def _correlate_admin_tools(
+    details: dict[str, Any],
+    run_id: object,
+    operation_id: Callable[[object, object], str | None],
+) -> None:
+    """Enrich sanitized read projections, never persisted diagnostic evidence."""
+
+    evidence = [
+        item
+        for container in (details, *details.get("observations", []))
+        for key in ("tool_calls", "tool_lifecycles", "tool_policy_denials")
+        for item in container.get(key, [])
+    ]
+    names: dict[str, set[str]] = {}
+    for item in evidence:
+        if call_id := item.get("invocation_id"):
+            names.setdefault(call_id, set()).add(item["tool_name"])
+    for item in evidence:
+        call_id = item.get("invocation_id")
+        if call_id and len(names[call_id]) == 1:
+            if public_id := operation_id(run_id, call_id):
+                item["operation_id"] = public_id
 
 
 def _admin_run_projection(value: object) -> dict[str, Any]:
@@ -440,13 +503,14 @@ def _project_observations(
         failures = evidence.get("failure_observations")
         failures = failures if isinstance(failures, list) else []
         failure_projections = [
-            _failure_projection(raw, item, kind="handling") for item in failures
+            _failure_projection(raw, item, evidence=evidence, kind="handling")
+            for item in failures
         ]
         if root is None:
             root = (
                 failure_projections.pop(0)
                 if failure_projections
-                else _failure_projection(raw, raw)
+                else _failure_projection(raw, None, evidence=evidence)
             )
             root["kind"] = "failure"
             details.update(
@@ -467,7 +531,9 @@ def _project_observations(
                 }
             )
         handling.extend(failure_projections)
-        record_projection = _failure_projection(raw, raw, kind="handling")
+        record_projection = _failure_projection(
+            raw, None, evidence=evidence, kind="handling"
+        )
         failure_identities = {
             _projection_identity(item)
             for item in [*failure_projections, root]
@@ -495,12 +561,13 @@ def _failure_projection(
     record: dict[str, Any],
     value: object,
     *,
+    evidence: dict[str, Any],
     kind: str = "failure",
 ) -> dict[str, Any]:
     item = value if isinstance(value, dict) else {}
     exception = item.get("exception") if isinstance(item.get("exception"), dict) else {}
-    evidence = record.get("runtime_diagnostics")
-    evidence = evidence if isinstance(evidence, dict) else {}
+    # Fallbacks must use the same read-time redaction as detailed evidence,
+    # including when a retained record predates the current redaction policy.
     sdk = evidence.get("sdk") if isinstance(evidence.get("sdk"), dict) else {}
     return {
         "observation_id": record.get("observation_id"),

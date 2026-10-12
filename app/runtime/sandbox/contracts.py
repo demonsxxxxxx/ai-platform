@@ -14,6 +14,12 @@ from app.context.api import (
 )
 
 from app.control_plane_contracts import normalize_thinking_effort
+# Retained imports for runtime, callback, and executor compatibility callers.
+from app.files.api import (
+    PROFILE_DRIVE_READ_TEXT_IDENTITY as PROFILE_DRIVE_READ_TEXT_IDENTITY,
+    PROFILE_DRIVE_STAGE_IDENTITY as PROFILE_DRIVE_STAGE_IDENTITY,
+    PROFILE_DRIVE_STAGE_TOOL as PROFILE_DRIVE_STAGE_TOOL,
+)
 from app.mcp.api import assert_mcp_tool_reference
 from app.platform.postgres.limits import RUN_RESULT_MAX_BYTES, ensure_json_size
 from app.runtime.kernel_contracts import AgentEvent
@@ -33,9 +39,6 @@ EXECUTOR_AUTH_HEADER = "X-AI-Platform-Executor-Credential"
 EXECUTOR_CALLBACK_PATH = "/api/ai/runtime/callbacks/executor"
 EXECUTOR_CONTEXT_RETRIEVAL_CALLBACK_PATH = "/api/ai/runtime/callbacks/context-retrieval"
 EXECUTOR_PROVIDER_SESSION_CALLBACK_PATH = "/api/ai/runtime/callbacks/provider-session"
-PROFILE_DRIVE_STAGE_TOOL = "stage_profile_drive_file_to_workspace"
-PROFILE_DRIVE_STAGE_IDENTITY = f"mcp__ai-platform-context__{PROFILE_DRIVE_STAGE_TOOL}"
-PROFILE_DRIVE_READ_TEXT_IDENTITY = "mcp__ProfileDriveMCPServer__read_text_file"
 PROFILE_DRIVE_STAGE_MAX_BYTES = 512 * 1024 * 1024
 PROFILE_DRIVE_STAGE_LEASE_FLAG = "profile_drive_file_staging_authorized"
 _TRUSTED_CALLBACK_HOSTS = {
