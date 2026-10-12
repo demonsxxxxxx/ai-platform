@@ -298,6 +298,28 @@ thread-isolation adapter. Docker's previous application-loop SDK calls and
 shared-default-executor probes are retired; OpenSandbox keeps its existing async
 SDK lifecycle. No provider ownership checks or durable release semantics change.
 
+## ProfileDrive retrieval staging ownership
+
+The executor's `PlatformContextRetrievalClient` owns only the temporary file it
+successfully creates with exclusive open for a scoped ProfileDrive transfer.
+It closes the local output before validating the complete byte count and atomically
+replacing the target. A zero-byte response remains a valid complete transfer.
+Until that handoff succeeds, every exit, including cancellation, synchronously
+attempts removal of this owned temporary file. A failed exclusive open conveys
+no ownership; existing target files and other staging files are never cleanup
+targets. Cleanup does not scan the workspace or change file authorization.
+
+A close failure during body failure or cancellation, or an unlink failure during
+cleanup, is secondary: it cannot replace the primary error or cancellation.
+Only a stable warning label is logged, without source paths, credentials or raw
+exception details. Warning-sink failures cannot replace that primary result.
+If unlink fails, the temporary file may remain; failure is
+not reported as a successful transfer. A close failure after a successful body
+retains the existing callback-failure mapping and prevents replacement. Existing
+scope, encoding, content-length, maximum-byte checks and callback mappings remain
+unchanged. The Files upstream transfer and HTTP response/client context owners
+remain separate from this executor-local temporary-file owner.
+
 ## Task workspace and Claude project instructions
 
 Each attempt receives a platform-owned `CLAUDE.md` at the root of its assigned

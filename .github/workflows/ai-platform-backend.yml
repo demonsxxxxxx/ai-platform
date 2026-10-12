@@ -122,6 +122,7 @@ jobs:
               tests/test_context_retrieval_callback.py
               tests/test_profile_drive_contracts.py
               tests/test_profile_drive_transfer_lifecycle.py
+              tests/test_profile_drive_staging_lifecycle.py
               tests/test_context_retrieval.py
               tests/test_sandbox_document_capability.py
               tests/test_required_tool_contract.py
