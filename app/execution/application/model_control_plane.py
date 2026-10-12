@@ -92,7 +92,7 @@ class ModelManagementRepository(Protocol):
 
 
 class ModelEndpointSecurity(Protocol):
-    def validate(self, base_url: str, *, allowed_internal_hosts: str) -> Any: ...
+    def normalize(self, base_url: str) -> str: ...
 
     def fingerprint(self, api_key: str) -> str: ...
 
@@ -175,24 +175,20 @@ class ModelControlPlaneService:
             str(settings.model_connection_allowed_internal_hosts or ""),
         )
 
-    async def _discover_models(self, *, base_url: str, api_key: str) -> tuple[str, list[str]]:
+    async def _discover_models(self, *, base_url: str, api_key: str) -> list[str]:
         encryption_key, allowed_hosts = self._security_settings()
         if not encryption_key:
             raise ValueError("model_connection_encryption_key_invalid")
-        endpoint = self._security.validate(
-            base_url,
-            allowed_internal_hosts=allowed_hosts,
-        )
         response = await asyncio.to_thread(
             self._upstream.request,
-            base_url=endpoint.base_url,
+            base_url=base_url,
             allowed_internal_hosts=allowed_hosts,
             api_key=api_key,
             method="GET",
             path="/v1/models",
             provider="catalog",
         )
-        return endpoint.base_url, self._upstream.parse_model_ids(response)
+        return self._upstream.parse_model_ids(response)
 
     async def admin_projection(self) -> dict[str, Any]:
         async with self._transaction() as conn:
@@ -202,10 +198,8 @@ class ModelControlPlaneService:
             }
 
     async def discover(self, *, base_url: str, api_key: str | None) -> dict[str, Any]:
-        encryption_key, allowed_hosts = self._security_settings()
-        requested_url = self._security.validate(
-            base_url, allowed_internal_hosts=allowed_hosts
-        ).base_url
+        encryption_key, _allowed_hosts = self._security_settings()
+        requested_url = self._security.normalize(base_url)
         resolved_key = str(api_key or "").strip()
         async with self._transaction() as conn:
             current = await self._repository.active_connection(
@@ -217,13 +211,13 @@ class ModelControlPlaneService:
             if current is None or requested_url != current.base_url:
                 raise ValueError("model_connection_api_key_required")
             resolved_key = current.api_key
-        normalized_url, model_ids = await self._discover_models(
-            base_url=base_url, api_key=resolved_key
+        model_ids = await self._discover_models(
+            base_url=requested_url, api_key=resolved_key
         )
         by_value = {model["value"]: model for model in existing}
         return {
             "connection": connection,
-            "base_url": normalized_url,
+            "base_url": requested_url,
             "models": [
                 {
                     **(by_value.get(value) or {
@@ -251,10 +245,8 @@ class ModelControlPlaneService:
         models: list[dict[str, Any]],
         actor_user_id: str,
     ) -> dict[str, Any]:
-        encryption_key, allowed_hosts = self._security_settings()
-        requested_url = self._security.validate(
-            base_url, allowed_internal_hosts=allowed_hosts
-        ).base_url
+        encryption_key, _allowed_hosts = self._security_settings()
+        requested_url = self._security.normalize(base_url)
         resolved_key = str(api_key or "").strip()
         if not resolved_key:
             async with self._transaction() as conn:
@@ -264,8 +256,8 @@ class ModelControlPlaneService:
             if current is None or requested_url != current.base_url:
                 raise ValueError("model_connection_api_key_required")
             resolved_key = current.api_key
-        normalized_url, model_ids = await self._discover_models(
-            base_url=base_url, api_key=resolved_key
+        model_ids = await self._discover_models(
+            base_url=requested_url, api_key=resolved_key
         )
         discovered = set(model_ids)
         if not model_ids or len(models) != len(model_ids) or {
@@ -298,7 +290,7 @@ class ModelControlPlaneService:
         async with self._transaction() as conn:
             revision, published = await self._repository.publish_models(
                 conn,
-                base_url=normalized_url,
+                base_url=requested_url,
                 api_key=resolved_key,
                 key_fingerprint=self._security.fingerprint(resolved_key),
                 encryption_key=encryption_key,

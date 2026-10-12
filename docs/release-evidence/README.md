@@ -40,8 +40,9 @@ Runtime-bound evidence must bind its `runtime_subject_commit_sha`, source
 marker, and OCI revision labels to the observed subject. When several reviewed
 entries exist, readiness tools select evidence according to their implemented
 subject-matching rules; an older entry remains historical. Only a fresh
-authorized runtime procedure can establish `211 verified` for its exact
-deployed subject.
+authorized runtime procedure can establish runtime verification for its exact
+deployed subject. Historical entries retain their original subject and labels;
+they do not verify a different deployment.
 
 Keep diagnostics separate from reviewed evidence. A diagnostic may explain a
 failure or a fix direction, but cannot close a gate. Deletion or retention of a

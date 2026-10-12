@@ -16,7 +16,6 @@ def skill(source: Path, name: str = "qa-file-reviewer") -> BuiltinSkill:
         path=source,
         version="hash",
         source={"kind": "builtin"},
-        entry={"kind": "filesystem", "path": str(source)},
     )
 
 

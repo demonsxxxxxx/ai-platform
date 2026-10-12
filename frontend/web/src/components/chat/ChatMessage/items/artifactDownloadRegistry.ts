@@ -29,6 +29,11 @@ interface ArtifactDownloadRegistryOptions {
   settledTtlMs?: number;
 }
 
+interface ScopeRevocation {
+  contextKey?: string;
+  next?: ScopeRevocation;
+}
+
 interface RegistryEntry {
   artifactKey: string;
   contextKey: string;
@@ -134,20 +139,6 @@ function getArtifactKey(scope: ArtifactDownloadScope, artifactId: string): strin
   return `${scope.key}:${JSON.stringify(artifactId)}`;
 }
 
-function createUnavailableController(): ArtifactDownloadController {
-  return {
-    getState: () => "failed",
-    subscribe(listener) {
-      listener("failed");
-      return () => undefined;
-    },
-    async download() {
-      // The registry is at capacity with active work. Refusing this operation
-      // preserves the one-request invariant instead of evicting an active card.
-    },
-  };
-}
-
 export interface ArtifactDownloadRegistry {
   clearScope: (context: ArtifactDownloadScopeContext) => void;
   collectExpired: () => void;
@@ -171,6 +162,9 @@ export function createArtifactDownloadRegistry(
   const settledTtlMs = options.settledTtlMs ?? DEFAULT_SETTLED_TTL_MS;
   const now = options.now ?? Date.now;
   const entries = new Map<string, RegistryEntry>();
+  // Only the current tail is retained by the registry. Earlier revocations
+  // remain reachable only from controllers that have not checked them yet.
+  let scopeRevocation: ScopeRevocation = {};
 
   const dispose = (entry: RegistryEntry) => {
     entry.isDisposed = true;
@@ -185,17 +179,23 @@ export function createArtifactDownloadRegistry(
     entry.listeners.forEach((listener) => listener(entry.state));
   };
 
+  // Mounted subscribers and pending requests own their entry. GC may only
+  // reclaim entries after both owners have released it; clearScope remains
+  // the explicit authorization invalidation path.
+  const canCollect = (entry: RegistryEntry) =>
+    !entry.isInFlight && entry.listeners.size === 0;
+
   const collectExpired = () => {
     const expiredAt = now() - settledTtlMs;
     entries.forEach((entry) => {
-      if (!entry.isInFlight && entry.settledAt !== undefined && entry.settledAt <= expiredAt) {
+      if (canCollect(entry) && entry.settledAt !== undefined && entry.settledAt <= expiredAt) {
         dispose(entry);
       }
     });
   };
 
   const scheduleCleanup = (entry: RegistryEntry) => {
-    if (entry.isDisposed || entry.isInFlight || entry.settledAt === undefined) {
+    if (entry.isDisposed || !canCollect(entry) || entry.settledAt === undefined) {
       return;
     }
     if (entry.timeout) {
@@ -204,13 +204,13 @@ export function createArtifactDownloadRegistry(
     entry.timeout = setTimeout(() => {
       if (
         !entry.isDisposed &&
-        !entry.isInFlight &&
+        canCollect(entry) &&
         entry.settledAt !== undefined &&
         now() - entry.settledAt >= settledTtlMs
       ) {
         dispose(entry);
       }
-    }, settledTtlMs);
+    }, Math.max(0, settledTtlMs - (now() - entry.settledAt)));
   };
 
   const createController = (entry: RegistryEntry): ArtifactDownloadController => ({
@@ -219,10 +219,20 @@ export function createArtifactDownloadRegistry(
       if (entry.isDisposed || entry.isInvalidated) {
         return () => undefined;
       }
-      entry.listeners.add(listener);
+      if (entry.timeout) {
+        clearTimeout(entry.timeout);
+        entry.timeout = undefined;
+      }
+      // Each subscription owns a separate lease, even for the same callback.
+      const notify = (state: ArtifactDownloadState) => listener(state);
+      entry.listeners.add(notify);
       listener(entry.state);
       return () => {
-        entry.listeners.delete(listener);
+        entry.listeners.delete(notify);
+        if (entry.listeners.size === 0) {
+          entry.settledAt ??= now();
+          scheduleCleanup(entry);
+        }
       };
     },
     async download(downloadArtifact) {
@@ -271,7 +281,7 @@ export function createArtifactDownloadRegistry(
       .filter(predicate)
       .sort((left, right) => left.lastTouchedAt - right.lastTouchedAt);
     while (scopedEntries.length >= maximum) {
-      const settledEntry = scopedEntries.find((entry) => !entry.isInFlight);
+      const settledEntry = scopedEntries.find(canCollect);
       if (!settledEntry) {
         return false;
       }
@@ -281,8 +291,100 @@ export function createArtifactDownloadRegistry(
     return true;
   };
 
+  // Allocation and capacity policy have one owner for initial reads and retries.
+  const admit = (scope: ArtifactDownloadScope, artifactId: string): RegistryEntry | undefined => {
+    collectExpired();
+    const artifactKey = getArtifactKey(scope, artifactId);
+    const existing = entries.get(artifactKey);
+    if (existing) {
+      if (existing.isInvalidated) {
+        return undefined;
+      }
+      existing.lastTouchedAt = now();
+      return existing;
+    }
+    if (
+      !evictSettledEntries(
+        (entry) => entry.scopeKey === scope.key,
+        maxEntriesPerScope,
+      ) ||
+      !evictSettledEntries(() => true, maxEntries)
+    ) {
+      return undefined;
+    }
+    const entry: RegistryEntry = {
+      artifactKey,
+      contextKey: scope.contextKey,
+      isDisposed: false,
+      isInFlight: false,
+      isInvalidated: false,
+      lastTouchedAt: now(),
+      listeners: new Set(),
+      scopeKey: scope.key,
+      state: "idle",
+    };
+    entries.set(artifactKey, entry);
+    return entry;
+  };
+
+  const createAdmissionController = (
+    scope: ArtifactDownloadScope,
+    artifactId: string,
+  ): ArtifactDownloadController => {
+    let isInvalidated = false;
+    let admitted: ArtifactDownloadController | undefined;
+    let releaseEntry: (() => void) | undefined;
+    const listeners = new Set<(state: ArtifactDownloadState) => void>();
+    let revocation: ScopeRevocation | undefined = scopeRevocation;
+    const isRevoked = () => {
+      while (revocation?.next) {
+        if (revocation.contextKey === scope.contextKey) isInvalidated = true;
+        revocation = revocation.next;
+      }
+      if (isInvalidated) revocation = undefined;
+      return isInvalidated;
+    };
+    return {
+      getState: () => isRevoked() ? "failed" : admitted?.getState() ?? "failed",
+      subscribe(listener) {
+        if (isRevoked()) return () => undefined;
+        if (admitted) return admitted.subscribe(listener);
+        const notify = (state: ArtifactDownloadState) => listener(state);
+        listeners.add(notify);
+        listener("failed");
+        return () => {
+          listeners.delete(notify);
+          if (listeners.size === 0) {
+            releaseEntry?.();
+            releaseEntry = undefined;
+          }
+        };
+      },
+      async download(downloadArtifact) {
+        if (isRevoked()) return;
+        if (!admitted) {
+          const entry = admit(scope, artifactId);
+          if (!entry) return;
+          admitted = createController(entry);
+          // The admitted entry now owns explicit scope revocation.
+          revocation = undefined;
+          if (listeners.size > 0) {
+            releaseEntry = admitted.subscribe((state) => {
+              listeners.forEach((listener) => listener(state));
+            });
+          }
+        }
+        await admitted.download(downloadArtifact);
+      },
+    };
+  };
+
   return {
     clearScope(context) {
+      const nextRevocation: ScopeRevocation = {};
+      scopeRevocation.contextKey = context.key;
+      scopeRevocation.next = nextRevocation;
+      scopeRevocation = nextRevocation;
       entries.forEach((entry) => {
         if (entry.contextKey === context.key) {
           if (entry.isInFlight) {
@@ -296,41 +398,9 @@ export function createArtifactDownloadRegistry(
     },
     collectExpired,
     get(scope, artifactId) {
-      if (!scope || !artifactId) {
-        return undefined;
-      }
-      collectExpired();
-      const artifactKey = getArtifactKey(scope, artifactId);
-      const existing = entries.get(artifactKey);
-      if (existing) {
-        if (existing.isInvalidated) {
-          return createUnavailableController();
-        }
-        existing.lastTouchedAt = now();
-        return createController(existing);
-      }
-      if (
-        !evictSettledEntries(
-          (entry) => entry.scopeKey === scope.key,
-          maxEntriesPerScope,
-        ) ||
-        !evictSettledEntries(() => true, maxEntries)
-      ) {
-        return createUnavailableController();
-      }
-      const entry: RegistryEntry = {
-        artifactKey,
-        contextKey: scope.contextKey,
-        isDisposed: false,
-        isInFlight: false,
-        isInvalidated: false,
-        lastTouchedAt: now(),
-        listeners: new Set(),
-        scopeKey: scope.key,
-        state: "idle",
-      };
-      entries.set(artifactKey, entry);
-      return createController(entry);
+      if (!scope || !artifactId) return undefined;
+      const entry = admit(scope, artifactId);
+      return entry ? createController(entry) : createAdmissionController(scope, artifactId);
     },
     size(context) {
       if (!context) {

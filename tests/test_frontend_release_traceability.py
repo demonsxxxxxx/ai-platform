@@ -20,6 +20,7 @@ from tools.frontend_release_traceability import (
 
 EXPECTED_CI_VERIFY = (
     "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json "
+    "&& corepack pnpm run test:auth "
     "&& corepack pnpm run test:agent-market "
     "&& corepack pnpm run test:prd-closure-smoke-source "
     "&& corepack pnpm run test:company-rbac-browser-smoke-source "
@@ -31,6 +32,7 @@ EXPECTED_CI_VERIFY = (
     "&& corepack pnpm run test:sse "
     "&& corepack pnpm run test:document-previews "
     "&& corepack pnpm run test:pwa "
+    "&& corepack pnpm run test:browser-preferences "
     "&& eslint . && tsc -b && vite build "
     "&& node scripts/write-build-provenance.mjs"
 )

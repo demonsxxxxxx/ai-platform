@@ -34,16 +34,14 @@ from app.conversations.infrastructure.session_queries_postgres import (
 )
 from app.db import transaction
 from app.file_preview_contracts import (
-    XLSX_CONTENT_TYPE,
     XlsxPreviewResponse,
     acquire_xlsx_preview_lease,
     build_xlsx_preview,
     run_xlsx_preview_job,
-    xlsx_preview_identity_from_metadata,
-    xlsx_preview_max_bytes,
 )
 from app.files.api import (
     MAX_UPLOAD_BYTES,
+    XLSX_CONTENT_TYPE,
     ProfileDriveFile,
     ProfileDriveTransferError,
     abort_file_upload_session,
@@ -66,6 +64,8 @@ from app.files.api import (
     parse_multipart_upload_create_request,
     parse_profile_drive_file_import_request,
     retry_expired_file_upload_session,
+    xlsx_preview_identity_from_metadata,
+    xlsx_preview_max_bytes,
 )
 from app.files.infrastructure.run_bindings_postgres import create_file, get_file
 from app.identity.infrastructure.audit_postgres import append_audit_log

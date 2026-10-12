@@ -8,7 +8,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from app.context_manifest import available_context_retrieval_tools
-from app.runtime.sandbox.contracts import PROFILE_DRIVE_READ_TEXT_IDENTITY, PROFILE_DRIVE_STAGE_TOOL
+from app.files.api import PROFILE_DRIVE_READ_TEXT_IDENTITY, PROFILE_DRIVE_STAGE_TOOL
 from app.required_tool_contract import (
     declaration_from_input,
     with_sandbox_local_tool_capability_subjects,
