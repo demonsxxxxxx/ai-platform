@@ -215,6 +215,7 @@ from app.runs.application.attempt_lifecycle import (
 )
 from app.runs.application.inputs import RunInputsService as RunInputsService
 from app.runs.domain.inputs import (
+    is_recommended_question_option as is_recommended_question_option,
     RunInputClosed as RunInputClosed,
     RunInputConflict as RunInputConflict,
     RunInputError as RunInputError,

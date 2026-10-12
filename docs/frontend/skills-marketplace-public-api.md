@@ -173,6 +173,17 @@ they no longer classify fixed package names as public or internal.
 
 ## MCP Routes
 
+The browser MCP request hook owns catalog failures and lifecycle admission in
+one scoped state. Typed HTTP 403 responses remain visibly unavailable; hiding
+controls does not discard the denial. Explicit permission recovery first
+refreshes the authenticated principal and admits a new catalog read only after
+a completed refresh. A failed refresh, or a successful ordinary directory GET
+alone, cannot restore lifecycle authority. Retry never replays a mutation.
+Tenant/user, role/permission projection changes, auth refresh pauses, and
+unmount fence old reads, details, mutations, and retained callbacks. Ordinary
+operation failures retain the editor draft and show safe error copy; raw
+backend error details are not rendered. The ordinary directory remains read-only.
+
 Backed read and server lifecycle routes:
 
 - `GET /api/mcp/chat-tools`
@@ -198,6 +209,16 @@ stable `mcp_server_id::public_tool_name`
 references and bounded display metadata, never JWTs, static headers, Gateway
 internal IDs, or cache keys. Execution resolves only Server-qualified references.
 The former RAGFlow bare-ID registry path and metadata exception are deleted.
+
+Discovery failures retain HTTP-200 unavailable entries so healthy Servers remain
+usable. Public reasons stay simple: `discovery_failed`, `unsupported_transport`,
+and, for bulk principal-credential lookup, `authorization_required` only for
+missing/expired/invalid credentials. Redis, keyring and corrupted-record failures
+are discovery failures, not a request to log in again. The single-Server route
+retains its existing typed credential HTTP errors and force-relogin rules. The
+[MCP execution contract](../architecture/mcp-tool-execution.md) owns the private,
+payload-free diagnostic reason/stage logging; those fields never enter these
+catalog responses.
 
 Server lifecycle writes require a platform-admin principal. They persist only
 tenant-scoped registry metadata, allowed roles, department enablement, quotas,

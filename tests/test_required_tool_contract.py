@@ -87,6 +87,53 @@ def test_negative_explanatory_question_and_lookalike_never_create_requirement(me
     assert parse_required_tool_declaration(message) is None
 
 
+@pytest.mark.parametrize("returned_error", [False, True])
+def test_mcp_returned_error_evidence_can_close_only_its_failed_invocation(returned_error):
+    declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+        capability_kind="mcp", canonical_identity="mcp__files__list_files",
+    )
+    invocation = RequiredCapabilityEvidence.from_sdk_hook(
+        declaration=declaration, binding=_binding(), tool_call_id="call-a",
+        lifecycle_phase="invocation_requested",
+    )
+    terminal = RequiredCapabilityEvidence.from_sdk_hook(
+        declaration=declaration, binding=_binding(), tool_call_id="call-a",
+        lifecycle_phase="failed", tool_error_result=returned_error,
+    )
+    payload = asdict(terminal)
+    assert RequiredCapabilityEvidence.from_payload(payload) == terminal
+    decision = selected_capability_completion_decision(
+        declarations=[declaration], binding=_binding(), evidence=[asdict(invocation), payload],
+    )
+    assert decision.allowed is returned_error
+    assert selected_capability_completion_decision(
+        declarations=[declaration], binding=_binding(attempt_id="another-attempt"),
+        evidence=[asdict(invocation), payload],
+    ).allowed is False
+    assert selected_capability_completion_decision(
+        declarations=[declaration], binding=_binding(),
+        evidence=[asdict(invocation), {**payload, "tool_call_id": "call-b"}],
+    ).allowed is False
+    if returned_error:
+        with pytest.raises(RequiredToolContractError):
+            RequiredCapabilityEvidence.from_payload({
+                **payload, "lifecycle_phase": "completed", "lifecycle_status": "succeeded",
+                "public_status": "succeeded",
+            })
+
+
+@pytest.mark.parametrize("kind,phase", [("skill", "failed"), ("mcp", "completed"), ("mcp", "invocation_requested")])
+def test_mcp_error_result_proof_cannot_replace_other_lifecycle_evidence(kind, phase):
+    declaration = RequiredCapabilityDeclaration.from_authorized_subject(
+        capability_kind=kind, canonical_identity="synthetic-capability",
+    )
+    with pytest.raises(RequiredToolContractError):
+        RequiredCapabilityEvidence.sdk_hook_payload(
+            declaration=declaration, tool_call_id="call-a", lifecycle_phase=phase,
+            tool_error_result=True,
+        )
+
+
 def test_required_builtin_subject_preserves_existing_server_declaration():
     declaration = _declaration()
     declared_subjects = [{"identity": "Bash", "declared": True}]

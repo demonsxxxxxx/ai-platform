@@ -61,19 +61,22 @@ async def test_retention_maintenance_receipts_successful_object_delete(monkeypat
         calls.append(("purge", grace_days, limit))
         return [{"tenant_id": "default", "id": "mem-a"}]
 
+    claims = [
+        {
+            "id": "out-a",
+            "tenant_id": "default",
+            "target_type": "artifact",
+            "artifact_id": "art-a",
+            "file_id": None,
+            "storage_key": "private/a",
+            "lease_generation": 1,
+        }
+    ]
+
     async def claim(_conn, *, limit, max_attempts):
         calls.append(("claim", limit, max_attempts))
-        return [
-            {
-                "id": "out-a",
-                "tenant_id": "default",
-                "target_type": "artifact",
-                "artifact_id": "art-a",
-                "file_id": None,
-                "storage_key": "private/a",
-                "lease_generation": 1,
-            }
-        ]
+        assert limit == 1
+        return [claims.pop(0)] if claims else []
 
     async def complete(_conn, **kwargs):
         calls.append(("complete", kwargs))
@@ -110,7 +113,7 @@ async def test_retention_maintenance_receipts_successful_object_delete(monkeypat
     assert storage.deleted == ["private/a"]
     assert "private/a" not in str(calls)
     assert ("queue", 10) in calls
-    assert ("claim", 12, 5) in calls
+    assert calls.count(("claim", 1, 5)) == 2
 
 
 @pytest.mark.asyncio
@@ -121,18 +124,21 @@ async def test_retention_failure_records_only_safe_error_code(monkeypatch):
     async def empty(*_args, **_kwargs):
         return []
 
+    claims = [
+        {
+            "id": "out-a",
+            "tenant_id": "default",
+            "target_type": "artifact",
+            "artifact_id": "art-a",
+            "file_id": None,
+            "storage_key": "private/a",
+            "lease_generation": 3,
+        }
+    ]
+
     async def claim(_conn, *, limit, max_attempts):
-        return [
-            {
-                "id": "out-a",
-                "tenant_id": "default",
-                "target_type": "artifact",
-                "artifact_id": "art-a",
-                "file_id": None,
-                "storage_key": "private/a",
-                "lease_generation": 3,
-            }
-        ]
+        assert limit == 1
+        return [claims.pop(0)] if claims else []
 
     async def fail(_conn, **kwargs):
         failures.append(kwargs)
@@ -174,27 +180,30 @@ async def test_permanent_failure_does_not_starve_later_object(monkeypatch):
     async def empty(*_args, **_kwargs):
         return []
 
+    claims = [
+        {
+            "id": "out-bad",
+            "tenant_id": "default",
+            "target_type": "artifact",
+            "artifact_id": "art-bad",
+            "file_id": None,
+            "storage_key": "bad",
+            "lease_generation": 5,
+        },
+        {
+            "id": "out-good",
+            "tenant_id": "default",
+            "target_type": "file",
+            "artifact_id": None,
+            "file_id": "file-good",
+            "storage_key": "good",
+            "lease_generation": 8,
+        },
+    ]
+
     async def claim(_conn, *, limit, max_attempts):
-        return [
-            {
-                "id": "out-bad",
-                "tenant_id": "default",
-                "target_type": "artifact",
-                "artifact_id": "art-bad",
-                "file_id": None,
-                "storage_key": "bad",
-                "lease_generation": 5,
-            },
-            {
-                "id": "out-good",
-                "tenant_id": "default",
-                "target_type": "file",
-                "artifact_id": None,
-                "file_id": "file-good",
-                "storage_key": "good",
-                "lease_generation": 8,
-            },
-        ]
+        assert limit == 1
+        return [claims.pop(0)] if claims else []
 
     async def fail(_conn, **kwargs):
         failures.append(kwargs["outbox_id"])
@@ -240,18 +249,21 @@ async def test_receipt_conflict_is_retried_under_the_same_claim_generation(monke
     async def empty(*_args, **_kwargs):
         return []
 
+    claims = [
+        {
+            "id": "out-file",
+            "tenant_id": "default",
+            "target_type": "file",
+            "artifact_id": None,
+            "file_id": "file-a",
+            "storage_key": "private/file-a",
+            "lease_generation": 11,
+        }
+    ]
+
     async def claim(_conn, *, limit, max_attempts):
-        return [
-            {
-                "id": "out-file",
-                "tenant_id": "default",
-                "target_type": "file",
-                "artifact_id": None,
-                "file_id": "file-a",
-                "storage_key": "private/file-a",
-                "lease_generation": 11,
-            }
-        ]
+        assert limit == 1
+        return [claims.pop(0)] if claims else []
 
     async def complete(_conn, **_kwargs):
         return False
@@ -361,7 +373,12 @@ async def test_retention_abandoned_delete_keeps_capacity_and_cannot_receipt_new_
     async def empty(*_args, **_kwargs):
         return []
 
+    claimed_generations = set()
+
     async def claim(_conn, **_kwargs):
+        if generation in claimed_generations:
+            return []
+        claimed_generations.add(generation)
         return [{
             "id": "out-a",
             "tenant_id": "default",
@@ -459,3 +476,119 @@ async def test_retention_abandoned_delete_keeps_capacity_and_cannot_receipt_new_
         if started.is_set():
             await asyncio.wait_for(finished.wait(), timeout=1)
             await asyncio.wait_for(wait_for_capacity(), timeout=1)
+
+
+def install_pending_retention_objects(monkeypatch, count):
+    """Model claim eligibility without pretending to exercise PostgreSQL locks."""
+    rows = [
+        {
+            "id": f"out-{index}",
+            "tenant_id": "default",
+            "storage_key": f"synthetic/{index}",
+            "lease_generation": 0,
+            "attempts": 0,
+            "state": "pending",
+        }
+        for index in range(count)
+    ]
+    claim_limits = []
+
+    async def empty(*_args, **_kwargs):
+        return []
+
+    async def claim(_conn, *, limit, max_attempts):
+        claim_limits.append(limit)
+        eligible = [row for row in rows if row["state"] == "pending"][:limit]
+        for row in eligible:
+            row["state"] = "processing"
+            row["attempts"] += 1
+            row["lease_generation"] += 1
+        return [row.copy() for row in eligible]
+
+    async def complete(_conn, *, outbox_id, tenant_id, lease_generation):
+        row = next(row for row in rows if row["id"] == outbox_id)
+        assert row["tenant_id"] == tenant_id
+        assert row["state"] == "processing"
+        assert row["lease_generation"] == lease_generation
+        row["state"] = "deleted"
+        return True
+
+    monkeypatch.setattr(data_retention, "_next_cleanup_at", 0)
+    monkeypatch.setattr(data_retention, "transaction", fake_transaction)
+    monkeypatch.setattr(_owner_persistence_artifacts, "queue_expired_artifacts_for_deletion", empty)
+    monkeypatch.setattr(_owner_persistence_retention, "purge_deleted_memory_records", empty)
+    monkeypatch.setattr(_owner_persistence_object_deletions, "claim_object_deletions", claim)
+    monkeypatch.setattr(_owner_persistence_object_deletions, "complete_object_deletion", complete)
+    return rows, claim_limits
+
+
+@pytest.mark.asyncio
+async def test_retention_phase_budget_leaves_untouched_objects_unclaimed_on_reentry(monkeypatch):
+    import logging
+    from app.bootstrap.worker_maintenance import maintenance_phase_until_done
+
+    rows, claim_limits = install_pending_retention_objects(monkeypatch, 3)
+    interrupted = asyncio.Event()
+    attempted = []
+
+    async def slow_io(_operation, *, storage_key):
+        attempted.append(storage_key)
+        try:
+            await asyncio.Event().wait()
+        finally:
+            interrupted.set()
+
+    monkeypatch.setattr(data_retention, "run_storage_io", slow_io)
+    task = asyncio.create_task(maintenance_phase_until_done(
+        "data_retention",
+        lambda: data_retention.run_data_retention_maintenance(settings(), now=10, storage=RecordingStorage()),
+        0,
+        0.01,
+        logger=logging.getLogger(__name__),
+    ))
+    try:
+        await asyncio.wait_for(interrupted.wait(), timeout=1)
+        assert attempted == ["synthetic/0"]
+        assert claim_limits == [1]
+        assert [row["attempts"] for row in rows] == [1, 0, 0]
+        assert [row["state"] for row in rows] == ["processing", "pending", "pending"]
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    async def immediate_io(operation, *, storage_key):
+        return operation(storage_key=storage_key)
+
+    monkeypatch.setattr(data_retention, "run_storage_io", immediate_io)
+    storage = RecordingStorage()
+    result = await data_retention.run_data_retention_maintenance(settings(), now=40, storage=storage)
+    assert result["claimed_objects"] == result["deleted_objects"] == 2
+    assert storage.deleted == ["synthetic/1", "synthetic/2"]
+    assert [row["attempts"] for row in rows] == [1, 1, 1]
+    assert rows[0]["state"] == "processing"  # Unknown started outcome keeps its claim.
+    assert claim_limits == [1, 1, 1, 1]  # Last empty claim ends this round.
+
+
+@pytest.mark.asyncio
+async def test_retention_just_in_time_claims_keep_total_batch_limit(monkeypatch):
+    rows, claim_limits = install_pending_retention_objects(monkeypatch, 3)
+    configured = settings()
+    configured.object_delete_batch_limit = 2
+    result = await data_retention.run_data_retention_maintenance(configured, now=10, storage=RecordingStorage())
+    assert result["claimed_objects"] == result["deleted_objects"] == 2
+    assert claim_limits == [1, 1]
+    assert [row["attempts"] for row in rows] == [1, 1, 0]
+    assert rows[2]["state"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_empty_retention_claim_does_not_construct_storage(monkeypatch):
+    _rows, claim_limits = install_pending_retention_objects(monkeypatch, 0)
+
+    def forbidden_storage():
+        raise AssertionError("Empty outbox must not construct storage")
+
+    monkeypatch.setattr(data_retention, "ObjectStorage", forbidden_storage)
+    result = await data_retention.run_data_retention_maintenance(settings(), now=10)
+    assert result["claimed_objects"] == 0
+    assert claim_limits == [1]
