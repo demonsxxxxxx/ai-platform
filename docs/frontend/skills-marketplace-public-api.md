@@ -197,6 +197,16 @@ references and bounded display metadata, never JWTs, static headers, Gateway
 internal IDs, or cache keys. Execution resolves only Server-qualified references.
 The former RAGFlow bare-ID registry path and metadata exception are deleted.
 
+Discovery failures retain HTTP-200 unavailable entries so healthy Servers remain
+usable. Public reasons stay simple: `discovery_failed`, `unsupported_transport`,
+and, for bulk principal-credential lookup, `authorization_required` only for
+missing/expired/invalid credentials. Redis, keyring and corrupted-record failures
+are discovery failures, not a request to log in again. The single-Server route
+retains its existing typed credential HTTP errors and force-relogin rules. The
+[MCP execution contract](../architecture/mcp-tool-execution.md) owns the private,
+payload-free diagnostic reason/stage logging; those fields never enter these
+catalog responses.
+
 Server lifecycle writes require a platform-admin principal. They persist only
 tenant-scoped registry metadata, allowed roles, department enablement, quotas,
 credential state, bounded metadata, and a credential fingerprint. Endpoint and
