@@ -17,6 +17,7 @@ import {
 } from "../../services/api/capabilityDistribution";
 import type { AgentBuilderEditor } from "./agentBuilderAdapter";
 import { AgentAvatarPicker } from "./AgentAvatarPicker";
+import { EnterpriseSelect } from "../../components/common/EnterpriseSelect";
 
 const INPUT_CLASS =
   "w-full rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 py-2 text-sm outline-none focus:border-[var(--theme-primary)] focus:ring-1 focus:ring-[var(--theme-primary)] disabled:cursor-not-allowed disabled:opacity-60";
@@ -457,19 +458,18 @@ export function AgentBuilderEnterpriseFields({
           </p>
         <label className="mt-4 flex max-w-sm flex-col gap-2">
           <span className="text-sm font-medium">可见范围</span>
-          <select
-            className={INPUT_CLASS}
+          <EnterpriseSelect
+            aria-label="可见范围"
             disabled={disabled}
-            onChange={(event) =>
-              onChange({
-                visibility: event.target.value as AgentBuilderEditor["visibility"],
-              })
+            onChange={(visibility) =>
+              onChange({ visibility: visibility as AgentBuilderEditor["visibility"] })
             }
             value={editor.visibility}
-          >
-            <option value="tenant">全公司</option>
-            <option value="restricted">指定部门、角色或用户</option>
-          </select>
+            options={[
+              { value: "tenant", label: "全公司" },
+              { value: "restricted", label: "指定部门、角色或用户" },
+            ]}
+          />
         </label>
 
         {editor.visibility === "restricted" ? (
