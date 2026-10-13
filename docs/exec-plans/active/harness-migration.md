@@ -98,7 +98,7 @@
 - 当前 [ProfileDrive adapter](../../../app/files/infrastructure/profile_drive.py:53) 已有 60 秒默认读取时限、1800 秒默认绝对总时限、有限资源关闭预算，以及流式读取/下游背压/取消的 owning 回归。撤销 `read=None` 的 D3 疑问，不据此宣称所有第三方 close 都有硬墙钟上限。
 - [Sandbox callback authority](../../../app/sandbox/application/callback_authority.py:55) 在同一 caller 连接上 Run-before-Attempt，从 persisted Run 派生 tenant，检查 session、终态、唯一 lease、Attempt 与 token generation；[Bootstrap](../../../app/bootstrap/sandbox_callbacks.py) 负责具体 query 注入。新基线已包含 #1801，不能按旧 route-owned guard 制定迁移。
 - [Run lifecycle](../../../app/runs/application/lifecycle.py:56) 通过明确的 persistence/event/audit ports 工作，[Bootstrap](../../../app/bootstrap/run_lifecycle.py:27) 注入实际 adapters；[Copy route](../../../app/routes/runs.py:1154) 和 retry/resume 的公共编排在 caller transaction 内完成当前 principal/Profile 复验、child 和 operation receipt，提交后才进入队列。
-- 当前 [accepted 路径](../../../app/runtime/sandbox/runtime.py:861) 在记录 executor acceptance 后直接 return；terminal-first/accepted-later 的新 wake 缺口仍属独立 Runs/Execution 故障处理范围，本批不在原 feature 分支上修复，也不将此源码窗口归因于历史部署测量。
+- 固定基线f519d041的accepted路径曾在记录acceptance后直接return，存在terminal-first/accepted-later的新wake窗口；准备PR时合入的main c389fe01（#1802）已在提交后对pending终态回执有界发布wake（当前runtime.py:886–898）。本Harness PR不修改该生产flow，早期源码缺口和历史部署慢Run仍不能直接建立因果。
 - 2026-10-10 密钥/SQL/logger 模式抽样仅是历史观察；当前全仓业务安全、真实 PostgreSQL 回滚/并发、provider/host enforcement 和部署状态没有完成验收。没有依据宣布 P0 清零。
 
 ## 4. 改造批次划分
@@ -236,7 +236,7 @@ T9 的自动坏链接/状态/索引反例与作者触发修复在 B2 候选中�
 - Regression：88 个 grouped owning 用例全通过；包括 namespace 分母 red→green、调用者 omit/fail-under 环境拒入、缺/坏报告、source mutation、zero-skips、覆盖开启的超时/子进程关闭；checker 的坏链接/缺状态/漏索引与固定历史合法反例可重复。
 - Observation：最终同六 selector 的 b2cov 132 passed/0 skips，452 文件分母。先前450文件的报告和WinError206失败报告被排除；Windows SQLite 采用原生长路径、stage保持短名。完整测试/真实依赖未采集，样本百分比不是门槛。
 - Retirement/compatibility：无 superseded production path 或已删除 CLI/selector；手工文档检查说明更新为 owning detector，旧“无插件/接口”说明已修正。required aggregate 与 trusted authority unchanged；新候选不会自批准 merge。
-- Stop/review：独立 review/GitHub CI/部署未观测；不提交、推送、放宽 required 或提前运行B3–B5。新增test依赖OSV更新TLS超时，原85包报告仅保留B1历史范围。
+- Stop/review：用户本轮明确要求创建PR，授权提交/推送并创建草稿；仍不授权合并、部署、放宽required或提前运行B3–B5。独立review/GitHub CI尚待实际结果；新增test依赖OSV更新TLS超时，原85包报告仅保留B1历史范围。
 
 ### 5.5 完整suite前置核验与局部补采
 
@@ -268,3 +268,4 @@ T9 的自动坏链接/状态/索引反例与作者触发修复在 B2 候选中�
 | 2026-10-13 | 3 核验 | 既有 code/architecture 173 用例，0 失败/跳过；Windows 深路径先复现失败，再用命令级 longpaths 验证 | CI §4.5 / QUALITY_SCORE | 没有改测试断言、治理策略或全局 Git 配置；当时T9/T10未闭环 |
 | 2026-10-13 | 3 B2 | T9 detector/preflight、T10 runner采集 + locked test extra，88 grouped regression/132采样通过 | v1.3 / CI §4.6 | 分母452文件，样本非完整suite；独立review/CI、D5阈值与新test依赖审计仍待补证 |
 | 2026-10-13 | 3 B2范围 | scope机器库存、两Runs CI入口和174用例补采；必需PG/Redis探针exit6 | v1.4 / CI §4.7 | 86路径与named-node待处置；本地真实设施缺失，不削弱no-skip或虚构阈值 |
+| 2026-10-13 | PR交付 | 用户授权创建草稿PR；保留原Harness提交并合入main 11b7f521以满足受信祖先约束，补落后分支merge-base回归 | 本PR / 基线快照仍为f519d041 | 不放宽trusted检查，不改原feature工作区；新main已有#1802修复，旧测量是固定历史范围 |

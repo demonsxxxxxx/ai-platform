@@ -275,6 +275,7 @@ export function MCPServerForm({
       <div className="es-field">
         <label className="es-label">{t("mcp.form.transportType")}</label>
         <EnterpriseSelect
+          aria-label={t("mcp.form.transportType")}
           value={transport}
           onChange={(v) => setTransport(v as MCPServerCreate["transport"])}
           options={availableTransports.map((tr) => ({

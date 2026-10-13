@@ -12,6 +12,7 @@ import {
 import { PanelHeader } from "../../common/PanelHeader";
 import { SkillsPanelSkeleton } from "../../skeletons";
 import { Pagination } from "../../common/Pagination";
+import { EnterpriseSelect } from "../../common/EnterpriseSelect";
 import { SkillManagementTable } from "./SkillManagementTable";
 import { workbenchSurface } from "../../workbench/workbenchSurface";
 import {
@@ -469,17 +470,16 @@ export function SkillsList({
           </div>
           <label className="skill-catalog-page-size">
             <span>{t("skills.paginationPageSize")}</span>
-            <select
+            <EnterpriseSelect
               aria-label={t("skills.paginationPageSize")}
-              onChange={(event) => setPageSize(Number(event.target.value))}
-              value={pageSize}
-            >
-              {[10, 20, 50].map((size) => (
-                <option key={size} value={size}>
-                  {t("skills.paginationRows", { count: size })}
-                </option>
-              ))}
-            </select>
+              className="w-auto"
+              onChange={(value) => setPageSize(Number(value))}
+              value={String(pageSize)}
+              options={[10, 20, 50].map((size) => ({
+                value: String(size),
+                label: t("skills.paginationRows", { count: size }),
+              }))}
+            />
           </label>
         </div>
       )}

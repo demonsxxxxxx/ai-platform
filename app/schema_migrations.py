@@ -44,10 +44,11 @@ RUN_INPUTS_SCHEMA_VERSION = "2026.10.07.1"
 ASSISTANT_TEXT_PART_INDEX_SCHEMA_VERSION = "2026.10.09.1"
 PROVIDER_TRANSCRIPT_REPRESENTATION_SCHEMA_VERSION = "2026.10.10.1"
 RUN_QUESTION_DEFAULT_ANSWER_SCHEMA_VERSION = "2026.10.12.1"
-TARGET_SCHEMA_VERSION = RUN_QUESTION_DEFAULT_ANSWER_SCHEMA_VERSION
+TERMINAL_RECONCILIATION_RETRY_SCHEMA_VERSION = "2026.10.13.1"
+TARGET_SCHEMA_VERSION = TERMINAL_RECONCILIATION_RETRY_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
 # The Stream-only cutover retires old index contracts and is not binary rollback-compatible.
-CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = ASSISTANT_TEXT_PART_INDEX_SCHEMA_VERSION
+CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = TERMINAL_RECONCILIATION_RETRY_SCHEMA_VERSION
 RUN_ATTEMPT_FUTURE_HEARTBEAT_TOLERANCE_SECONDS = 5
 MIGRATION_LOCK_ID = 7_226_391_831_505_901_103
 INDEX_MIGRATION_LOCK_ID = 7_226_391_831_505_901_104
@@ -220,6 +221,7 @@ CRITICAL_COLUMNS = (
     ("sandbox_leases", "executor_reconciliation_status", "text", True),
     ("sandbox_leases", "executor_reconciliation_claim_token", "text", False),
     ("sandbox_leases", "executor_reconciliation_claimed_at", "timestamptz", False),
+    ("sandbox_leases", "executor_reconciliation_retry_not_before", "timestamptz", False),
     ("sandbox_leases", "executor_reconciliation_attempt_count", "int4", True),
     (
         "sandbox_leases",
@@ -698,7 +700,7 @@ CRITICAL_CONSTRAINT_DEFINITIONS = (
         "c",
         "CHECK (executor_reconciliation_status = ANY (ARRAY["
         "'waiting_terminal'::text, 'pending'::text, 'claimed'::text, "
-        "'retry'::text, 'finalized'::text, 'failed'::text]))",
+        "'retry'::text, 'cleanup_pending'::text, 'finalized'::text, 'failed'::text]))",
     ),
 )
 
@@ -880,16 +882,31 @@ CONCURRENT_INDEX_MIGRATIONS = (
     ConcurrentIndexMigration(
         "idx_sandbox_leases_executor_reconcile",
         "create index concurrently if not exists idx_sandbox_leases_executor_reconcile "
-        "on sandbox_leases(executor_reconciliation_status, updated_at asc, id asc) "
-        "where status = 'active' and executor_terminal_json is not null "
+        "on sandbox_leases((coalesce(executor_terminal_received_at, created_at)), id asc) "
+        "where status in ('active', 'released') and executor_terminal_json is not null "
         "and executor_reconciliation_context_json is not null "
         "and executor_reconciliation_status in ('pending', 'retry', 'claimed')",
         "sandbox_leases",
-        ("executor_reconciliation_status", "updated_at", "id"),
-        (False, False, False),
-        "status = 'active' and executor_terminal_json is not null "
+        ("id",),
+        (False, False),
+        "status = any array['active', 'released'] and executor_terminal_json is not null "
         "and executor_reconciliation_context_json is not null "
         "and executor_reconciliation_status = any array['pending', 'retry', 'claimed']",
+        key_expressions=("coalesce(executor_terminal_received_at, created_at)", "id"),
+    ),
+    ConcurrentIndexMigration(
+        "idx_sandbox_leases_executor_reconcile_due",
+        "create index concurrently if not exists idx_sandbox_leases_executor_reconcile_due "
+        "on sandbox_leases(executor_reconciliation_retry_not_before) "
+        "where status in ('active', 'released') and executor_terminal_json is not null "
+        "and executor_reconciliation_context_json is not null "
+        "and executor_reconciliation_status = 'retry'",
+        "sandbox_leases",
+        ("executor_reconciliation_retry_not_before",),
+        (False,),
+        "status = any array['active', 'released'] and executor_terminal_json is not null "
+        "and executor_reconciliation_context_json is not null "
+        "and executor_reconciliation_status = 'retry'",
     ),
     ConcurrentIndexMigration(
         "idx_sandbox_leases_executor_watch",

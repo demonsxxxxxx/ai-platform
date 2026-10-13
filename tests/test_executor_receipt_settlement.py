@@ -162,26 +162,34 @@ def _settlement_scenario(
                     status="quarantined", executor_reconciliation_status="failed"
                 )
                 return Cursor({"id": row["id"]})
+            if "set executor_reconciliation_status = 'cleanup_pending'" in sql:
+                assert params[1:] == (row["id"], claimed_tokens[-1])
+                assert row["executor_reconciliation_status"] == "claimed"
+                if row["executor_reconciliation_claim_token"] != params[2]:
+                    return Cursor(None)
+                calls.append(("cleanup_pending", run["status"], attempt["status"]))
+                row.update(executor_reconciliation_status="cleanup_pending", executor_reconciliation_claim_token=None)
+                return Cursor({"id": row["id"]})
             if "executor_reconciliation_status = 'finalized'" in sql:
                 assert params == (
-                    "executor_reconciled",
+                    "executor_reconciliation_cleanup",
                     row["tenant_id"],
                     row["user_id"],
                     row["run_id"],
                     row["id"],
                     row["executor_reconciliation_claim_token"],
                 )
-                assert row["executor_reconciliation_status"] == "claimed"
+                assert row["executor_reconciliation_status"] == "cleanup_pending"
                 calls.append(("finalize", run["status"], attempt["status"]))
                 row.update(
                     status="released",
                     executor_reconciliation_status="finalized",
                     executor_reconciliation_claim_token=None,
                 )
-                return Cursor({"id": row["id"]})
+                return Cursor(dict(row))
             if "from sandbox_leases" in sql:
                 assert params == (row["id"], row["executor_reconciliation_claim_token"])
-                assert row["executor_reconciliation_status"] == "claimed"
+                assert row["executor_reconciliation_status"] in {"claimed", "cleanup_pending"}
                 return Cursor({"id": row["id"]})
             raise AssertionError(sql)
 
@@ -313,6 +321,24 @@ def _settlement_scenario(
     monkeypatch.setattr(w._TEST_RUN_LIFECYCLE, "complete_run", no_complete)
     monkeypatch.setattr(w._TEST_RUN_LIFECYCLE, "cancel_run", lifecycle.cancel_run)
 
+    async def claim_cleanup(_conn, **kwargs):
+        assert row["executor_reconciliation_status"] == "cleanup_pending"
+        row["executor_reconciliation_claim_token"] = kwargs["claim_token"]
+        return [row]
+
+    async def cleanup_event(_conn, **kwargs):
+        assert kwargs["event_type"] == "sandbox_lease_released"
+        assert row["status"] == "released"
+
+    monkeypatch.setattr(r._sandbox_cleanup, "container_lease_from_persisted_row", lambda _row, **_kwargs: SimpleNamespace(provider="fake"))
+    monkeypatch.setattr(r._sandbox_cleanup, "_append_event", cleanup_event)
+    monkeypatch.setattr(r.sandbox_lease_repository, "claim_failed_sandbox_executor_reconciliation_cleanups", claim_cleanup)
+
+    async def cleanup_once():
+        return await r._sandbox_cleanup.cleanup_failed_sandbox_executor_reconciliation_leases(
+            provider_factory=lambda _provider: Provider(), transaction_factory=transaction,
+        )
+
     async def run_once():
         return await r.reconcile_pending_executor_terminals_once(
             registry=AdapterRegistry(
@@ -326,6 +352,7 @@ def _settlement_scenario(
 
     return SimpleNamespace(
         run_once=run_once,
+        cleanup_once=cleanup_once,
         run=run,
         attempt=attempt,
         receipt=row,
@@ -358,12 +385,17 @@ async def test_binding_cancel_retries_then_settles_original_attempt(monkeypatch)
     assert len(set(state.claimed_tokens)) == 2
     assert state.attempt["id"] == "attempt-a"
     assert state.run["status"] == state.attempt["status"] == "cancelled"
+    assert state.receipt["executor_reconciliation_status"] == "cleanup_pending"
+    assert state.receipt["status"] == "active"
+    assert not any(call[0] == "stop" for call in state.calls if isinstance(call, tuple))
+    assert await state.cleanup_once()
     assert state.receipt["status"] == "released"
     assert state.receipt["executor_reconciliation_status"] == "finalized"
     expected = [
         ("run_terminal", "cancelled"),
         ("attempt_terminal", "attempt-a", "cancelled"),
         ("outcome", "cancelled", None),
+        ("cleanup_pending", "cancelled", "cancelled"),
         ("stop", "cancelled", "cancelled"),
         ("finalize", "cancelled", "cancelled"),
     ]
@@ -376,6 +408,10 @@ async def test_admission_cancel_settles_before_receipt_release(monkeypatch):
     state = _settlement_scenario(monkeypatch, cancel_at="admission")
     assert await state.run_once() == 1
     assert ("outcome", "cancelled", None) in state.calls
+    assert state.receipt["executor_reconciliation_status"] == "cleanup_pending"
+    assert state.receipt["status"] == "active"
+    assert not any(call[0] == "stop" for call in state.calls if isinstance(call, tuple))
+    assert await state.cleanup_once()
     assert ("stop", "cancelled", "cancelled") in state.calls
     assert ("finalize", "cancelled", "cancelled") in state.calls
     assert state.receipt["executor_reconciliation_status"] == "finalized"
@@ -425,31 +461,15 @@ async def test_skipped_terminal_race_retries_then_uses_existing_terminal_branch(
     assert state.receipt["executor_reconciliation_status"] == "retry"
     assert not any(call[0] == "stop" for call in state.calls if isinstance(call, tuple))
 
-    class Lease:
-        def model_copy(self, *, update):
-            assert update == {"workspace_host_path": "/synthetic/workspace"}
-            return self
+    async def unexpected_collection(*_args, **_kwargs):
+        raise AssertionError("an already terminal Run must hand off its existing receipt")
 
-    class Provider:
-        async def stop(self, lease, *, reason):
-            assert isinstance(lease, Lease)
-            state.calls.append(("stop", state.run["status"], state.attempt["status"]))
-            return SimpleNamespace(status="stopped")
-
-    monkeypatch.setattr(
-        r,
-        "SandboxWorkspaceManager",
-        lambda: SimpleNamespace(
-            prepare=lambda request: SimpleNamespace(
-                workspace_host_path="/synthetic/workspace"
-            )
-        ),
-    )
-    monkeypatch.setattr(
-        r._sandbox_cleanup, "container_lease_from_persisted_row", lambda row: Lease()
-    )
-    monkeypatch.setattr(r, "_container_provider_for_lease", lambda lease: Provider())
+    monkeypatch.setattr(r, "_collect_workspace_and_convert_result", unexpected_collection)
     assert await state.run_once() == 1
+    assert state.receipt["executor_reconciliation_status"] == "cleanup_pending"
+    assert state.receipt["status"] == "active"
+    assert not any(call[0] == "stop" for call in state.calls if isinstance(call, tuple))
+    assert await state.cleanup_once()
     assert state.receipt["executor_reconciliation_status"] == "finalized"
     assert ("stop", "cancelled", "cancelled") in state.calls
     assert ("finalize", "cancelled", "cancelled") in state.calls

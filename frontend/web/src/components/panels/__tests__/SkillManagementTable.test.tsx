@@ -30,7 +30,8 @@ test("Skill workbench prioritizes governed ZIP upload and catalog status", () =>
   assert.match(table, /entry\.version/);
   assert.match(table, /entry\.id === selectedSkillId/);
   assert.doesNotMatch(table, /onPublish|publishToMarketplace|republish|unpublish/);
-  assert.match(list, /setPageSize\(Number\(event\.target\.value\)\)/);
+  assert.match(list, /setPageSize\(Number\(value\)\)/);
+  assert.match(list, /<EnterpriseSelect/);
   assert.match(list, /skills\.paginationPageSize/);
   assert.match(list, /skill-catalog-view-switcher/);
   assert.match(list, /skill-management-header/);
