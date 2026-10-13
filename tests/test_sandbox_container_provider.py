@@ -4495,6 +4495,7 @@ async def test_opensandbox_provider_stop_clears_tracking_for_authoritative_sdk_e
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("close_outcome", ("success", "failure", "cancelled"))
 @pytest.mark.parametrize("reconnect", (False, True), ids=("cached", "reconnected"))
 @pytest.mark.parametrize(
     ("status_code", "error_code"),
@@ -4502,7 +4503,7 @@ async def test_opensandbox_provider_stop_clears_tracking_for_authoritative_sdk_e
     ids=("sdk-404", "sdk-404-with-absence-code", "sdk-absence-code"),
 )
 async def test_opensandbox_provider_stop_clears_tracking_for_authoritative_not_found_from_get_info(
-    monkeypatch, reconnect, status_code, error_code,
+    monkeypatch, reconnect, status_code, error_code, close_outcome,
 ):
     from opensandbox.exceptions import SandboxApiException, SandboxError
 
@@ -4525,15 +4526,49 @@ async def test_opensandbox_provider_stop_clears_tracking_for_authoritative_not_f
 
     monkeypatch.setattr(sandbox, "get_info", get_info_not_found)
 
+    other_key = ("other-run", "other-attempt")
+    other_lease = lease.model_copy(update={"container_id": "other-sandbox", "run_id": "other-run"})
+    other_sandbox = object()
+    provider._leases[other_key] = other_lease
+    provider._sandboxes["other-sandbox"] = other_sandbox
+    close_calls = []
+
+    async def close():
+        close_calls.append(sandbox)
+        if close_outcome == "failure":
+            raise RuntimeError("private close failure")
+        if close_outcome == "cancelled":
+            raise asyncio.CancelledError()
+        sandbox.closed = True
+
+    # Tracking for another sandbox must survive both absence and retries.
+    monkeypatch.setattr(sandbox, "close", close)
+    if close_outcome == "cancelled":
+        with pytest.raises(asyncio.CancelledError):
+            await provider.stop(lease, reason="expired")
+        assert provider._leases[(lease.run_id, "qat-test-attempt")] is lease
+        assert provider._sandboxes.get(lease.container_id) is (None if reconnect else sandbox)
+        assert close_calls == [sandbox]
+        assert sandbox.killed is False
+        assert provider._sandboxes["other-sandbox"] is other_sandbox
+        assert provider._leases[other_key] is other_lease
+        return
+
     stop_result = await provider.stop(lease, reason="expired")
 
     assert stop_result.status == "not_found"
     assert stop_result.container_id == lease.container_id
     assert stop_result.message == "expired"
     assert sandbox.killed is False
-    assert sandbox.closed is False
+    assert sandbox.closed is (close_outcome == "success")
     assert (lease.run_id, "qat-test-attempt") not in provider._leases
     assert lease.container_id not in provider._sandboxes
+    assert close_calls == [sandbox]
+    repeated = await provider.stop(lease, reason="expired")
+    assert repeated.status == "not_found"
+    assert close_calls == [sandbox, sandbox]
+    assert provider._leases[other_key] is other_lease
+    assert provider._sandboxes["other-sandbox"] is other_sandbox
 
 
 @pytest.mark.asyncio

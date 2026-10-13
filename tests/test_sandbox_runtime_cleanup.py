@@ -439,11 +439,13 @@ async def test_cleanup_does_not_stop_a_terminal_receipt_with_recovery_work(
     assert cleaned == []
 
 
+@pytest.mark.parametrize("claim_lost_during_stop", (False, True))
 @pytest.mark.parametrize("lease_status", ["active", "released"])
 @pytest.mark.asyncio
 async def test_failed_reconciliation_cleanup_claims_stops_and_finalizes(
     monkeypatch,
     lease_status,
+    claim_lost_during_stop,
 ):
     cleanup_failed_sandbox_executor_reconciliation_leases = sandbox_runtime_cleanup.cleanup_failed_sandbox_executor_reconciliation_leases
 
@@ -455,6 +457,7 @@ async def test_failed_reconciliation_cleanup_claims_stops_and_finalizes(
     calls = []
     transaction_active = False
     transaction_count = 0
+    claim_active = True
 
     @asynccontextmanager
     async def fenced_transaction():
@@ -475,11 +478,13 @@ async def test_failed_reconciliation_cleanup_claims_stops_and_finalizes(
     async def has_claim(_conn, **kwargs):
         assert transaction_active is True
         calls.append(("has_claim", kwargs))
-        return True
+        return claim_active
 
     async def finalize(_conn, **kwargs):
         assert transaction_active is True
         calls.append(("finalize", kwargs))
+        if not claim_active:
+            return None
         return {**row, "status": "released", "executor_reconciliation_status": "finalized"}
 
     async def append_event(_conn, **kwargs):
@@ -488,7 +493,10 @@ async def test_failed_reconciliation_cleanup_claims_stops_and_finalizes(
 
     class Provider:
         async def stop(self, lease, *, reason):
+            nonlocal claim_active
             assert transaction_active is False
+            if claim_lost_during_stop:
+                claim_active = False
             calls.append(("stop", lease.container_id, reason))
             return StopResult(container_id=lease.container_id, status="stopped", message=reason)
 
@@ -515,15 +523,18 @@ async def test_failed_reconciliation_cleanup_claims_stops_and_finalizes(
 
     assert transaction_active is False
     assert transaction_count == 3
-    assert [call[0] for call in calls] == ["claim", "has_claim", "stop", "finalize", "event"]
+    expected_calls = ["claim", "has_claim", "stop", "finalize"]
+    if not claim_lost_during_stop:
+        expected_calls.append("event")
+    assert [call[0] for call in calls] == expected_calls
     claim_token = calls[0][1]["claim_token"]
     assert calls[0][1]["limit"] == 1
     assert calls[1][1] == {"lease_id": "lease-a", "claim_token": claim_token}
     assert calls[2] == ("stop", "exec-run-a", "executor_reconciliation_cleanup")
     assert calls[3][1]["claim_token"] == claim_token
-    assert released == [
+    assert released == ([] if claim_lost_during_stop else [
         {**row, "status": "released", "executor_reconciliation_status": "finalized"}
-    ]
+    ])
 
 
 @pytest.mark.asyncio
@@ -1338,7 +1349,7 @@ async def test_production_opensandbox_cleanup_requires_authoritative_identity(
         assert remote_trace == ["connect", "get_info"]
         expected_calls = 0 if failure_mode == "failed-receipt-absent" else 1
         assert remote.kill_calls == expected_calls
-        assert remote.close_calls == expected_calls
+        assert remote.close_calls == 1
         assert len(finalized) == 1
         assert finalized[0]["lease_id"] == "lease-a"
         assert provider._leases == {}
@@ -1360,7 +1371,7 @@ async def test_production_opensandbox_cleanup_requires_authoritative_identity(
         assert remote_trace == ["connect", "get_info"]
         expected_calls = 0 if failure_mode == "get-info-404" else 1
         assert remote.kill_calls == expected_calls
-        assert remote.close_calls == expected_calls
+        assert remote.close_calls == 1
         assert len(releases) == 1
         assert releases[0]["lease_ids"] == ["lease-a"]
         assert provider._leases == {}

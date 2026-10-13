@@ -333,6 +333,25 @@ async def renew_opensandbox_lifetime(
         raise OpenSandboxUnavailableError("OpenSandbox sandbox renewal timed out") from None
 
 
+async def read_sandbox_info_for_stop(sandbox: Any) -> tuple[Any, bool]:
+    """Return SDK info and confirmed absence, closing an absent resource's client."""
+
+    try:
+        return await _maybe_await(sandbox.get_info()), False
+    except Exception as exc:
+        if not is_authoritative_not_found_error(exc):
+            raise
+    # Close before the caller drops tracking, so cancellation remains retryable.
+    try:
+        close = getattr(sandbox, "close", None)
+        if close is not None:
+            await _maybe_await(close())
+    except Exception:
+        # Local transport failure cannot invalidate the authoritative absence.
+        pass
+    return None, True
+
+
 async def cleanup_started_sandbox(
     sandbox: Any | None,
     *,
