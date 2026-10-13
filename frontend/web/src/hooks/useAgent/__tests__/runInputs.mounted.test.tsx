@@ -830,3 +830,197 @@ test("drops delayed history pages on session or auth identity changes and preser
     env.restore();
   }
 });
+
+for (const outcome of ["accepted", "uncertain", "late-success", "closed", "read-only", "other-batch", "navigate", "identity", "resolved", "double-click", "retry-navigation", "retry-retire", "retry-unmount", "retry-cancelled-run", "timeout-before-retry", "timeout-during-retry-success", "timeout-during-retry-conflict", "timeout-during-retry-uncertain"] as const) {
+  test(`uncertain question retry preserves ownership and original answers: ${outcome}`, async () => {
+    const env = installDom();
+    const { createRoot } = await import("react-dom/client");
+    const container = env.dom.window.document.getElementById("root");
+    assert.ok(container);
+    const root = createRoot(container);
+    let mounted = true;
+    const originalGet = sessionApi.getRunInputs;
+    const originalSubmit = sessionApi.submitRunInput;
+    const persisted = questionProjection("run-question-retry");
+    let runId = persisted.run_id;
+    let canSend = true;
+    let isRunActive = true;
+    let otherBatch = false;
+    let identityKey = "synthetic-owner";
+    const submissions: RunInputSubmissionRequest[] = [];
+    const writeSignals: Array<AbortSignal | undefined> = [];
+    let resolveRetry!: () => void;
+    const retryResponse = new Promise<void>((resolve) => { resolveRetry = resolve; });
+    sessionApi.getRunInputs = async (id) => ({ ...structuredClone(persisted), run_id: id });
+    sessionApi.submitRunInput = async (_id, body, options = {}) => {
+      writeSignals.push(options.signal);
+      submissions.push(structuredClone(body));
+      if (!("question_id" in body)) throw new Error("expected_answer");
+      if (submissions.length === 1) throw new Error("synthetic_transport_uncertainty");
+      await retryResponse;
+      if (outcome === "uncertain" || outcome === "timeout-during-retry-uncertain") throw new Error("synthetic_transport_uncertainty");
+      if (outcome === "timeout-during-retry-conflict") throw new ApiRequestError("Already answered", 409, "run_input_question_already_answered");
+      persisted.inputs.push(answerRecord(body));
+      return { input_id: body.input_id, status: "applied" };
+    };
+    let latest!: RunInputsController;
+    function Probe() {
+      latest = useRunInputs({ sessionId: "session-question-retry", runId, isRunActive, identityKey });
+      const batch = latest.projection?.questions[0];
+      return batch ? createElement(RunQuestionCard, {
+        batch: otherBatch ? { ...batch, question_id: "other-question" } : batch,
+        runInputs: latest, canSend,
+      }) : null;
+    }
+    const render = async () => { await act(async () => { root.render(createElement(Probe)); await flush(); }); };
+    const retryButton = () => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "重试提交答复");
+    try {
+      await render();
+      await act(async () => { container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click(); });
+      await act(async () => { container.querySelector("form")!.dispatchEvent(new env.dom.window.Event("submit", { bubbles: true, cancelable: true })); await flush(); });
+      assert.equal(latest.pendingSubmission?.state, "uncertain");
+      assert.equal(submissions.length, 1);
+      assert.match(container.querySelector('[role="alert"]')?.textContent ?? "", /尚未确认答案是否提交成功/);
+      assert.ok(retryButton());
+      assert.equal(container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked, true);
+      assert.equal(container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.disabled, true);
+      assert.equal(container.querySelector<HTMLTextAreaElement>("textarea")!.disabled, true);
+      assert.equal(container.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled, true);
+      const applyTimeout = async () => {
+        persisted.questions[0].status = "resolved";
+        persisted.inputs = [{
+          input_id: "server-timeout-answer", kind: "answer", text: null,
+          question_id: "question-batch-1", answers: { q0: ["o1"] },
+          status: "applied", source: "timeout_default", created_at: "2026-10-07T00:05:01Z",
+        }];
+        await act(async () => { await latest.refresh(); });
+        assert.equal(latest.pendingSubmission, null);
+        assert.equal(latest.submissionError, null);
+        assert.equal(latest.lastAcceptedSubmission, null);
+        assert.equal(latest.isClosed, false);
+        assert.equal(retryButton(), undefined);
+        assert.match(container.textContent ?? "", /系统已自动选择默认答复/);
+      };
+      if (outcome === "timeout-before-retry") {
+        const staleRetry = latest.retryPendingSubmission;
+        await applyTimeout();
+        assert.equal(await staleRetry(), false);
+        assert.equal(submissions.length, 1);
+      } else if (outcome === "late-success") {
+        const body = submissions[0];
+        assert.ok("question_id" in body);
+        persisted.inputs.push(answerRecord(body));
+        await act(async () => { await latest.refresh(); });
+        assert.equal(latest.pendingSubmission, null);
+        assert.equal(retryButton(), undefined);
+        assert.equal(container.querySelector("form"), null);
+        assert.equal(submissions.length, 1);
+      } else if (["closed", "read-only", "other-batch", "navigate", "identity", "resolved"].includes(outcome)) {
+        if (outcome === "closed" || outcome === "resolved") {
+          if (outcome === "closed") persisted.state = "inactive";
+          else persisted.questions[0].status = "resolved";
+          await act(async () => { await latest.refresh(); });
+        } else {
+          if (outcome === "read-only") canSend = false;
+          if (outcome === "other-batch") otherBatch = true;
+          if (outcome === "navigate") runId = "run-replacement";
+          if (outcome === "identity") identityKey = "replacement-owner";
+          await render();
+        }
+        assert.equal(retryButton(), undefined);
+        assert.equal(container.querySelector('[role="alert"]'), null);
+        assert.equal(submissions.length, 1);
+      } else {
+        const retry = retryButton()!;
+        await act(async () => {
+          retry.click();
+          if (outcome === "double-click") retry.click();
+          await flush();
+        });
+        assert.equal(submissions.length, 2, "a retry already in flight must not be resubmitted");
+        assert.deepEqual(submissions[1], submissions[0]);
+        assert.equal(latest.pendingSubmission?.state, "submitting");
+        assert.equal(retryButton(), undefined);
+        assert.equal(container.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled, true);
+        if (outcome.startsWith("timeout-during-retry-")) {
+          await applyTimeout();
+          await act(async () => { resolveRetry(); await flush(); });
+          assert.equal(latest.pendingSubmission, null);
+          assert.equal(latest.submissionError, null);
+          assert.equal(latest.lastAcceptedSubmission, null, "late manual result must not replace the server default");
+          assert.deepEqual(latest.projection?.inputs.map((input) => input.input_id), ["server-timeout-answer"]);
+          assert.equal(latest.isClosed, false);
+          assert.equal(retryButton(), undefined);
+          assert.equal(await latest.retryPendingSubmission(), false);
+          assert.equal(submissions.length, 2);
+          return;
+        }
+        if (outcome === "retry-cancelled-run") {
+          // stopGeneration converges through authoritative terminal state;
+          // a cancellation acknowledgement alone does not close the Run.
+          isRunActive = false;
+          persisted.state = "inactive";
+          await render();
+          assert.equal(latest.isClosed, true);
+          assert.equal(retryButton(), undefined);
+          await act(async () => { resolveRetry(); await flush(); });
+          assert.equal(latest.isClosed, true);
+          assert.equal(container.querySelector("form"), null);
+          assert.equal(retryButton(), undefined);
+          assert.equal(submissions.length, 2);
+          return;
+        }
+        if (outcome === "retry-navigation" || outcome === "retry-retire" || outcome === "retry-unmount") {
+          if (outcome === "retry-navigation") {
+            runId = "run-replacement";
+            await render();
+          } else if (outcome === "retry-retire") {
+            await act(async () => { latest.retire(); });
+          } else {
+            await act(async () => { root.unmount(); });
+            mounted = false;
+          }
+          assert.equal(writeSignals[1]?.aborted, true, "retired owner must abort its retry transport");
+          const retiredView = latest;
+          await act(async () => { resolveRetry(); await flush(); });
+          assert.equal(latest, retiredView, "late retry success must not render into a retired owner");
+          assert.equal(submissions.length, 2);
+          if (outcome === "retry-navigation") {
+            assert.equal(latest.runId, "run-replacement");
+            assert.deepEqual(latest.projection?.inputs, []);
+            assert.equal(latest.pendingSubmission, null);
+            assert.equal(latest.lastAcceptedSubmission, null);
+          } else if (outcome === "retry-retire") {
+            assert.equal(latest.isClosed, true);
+            assert.equal(latest.projection, null);
+            assert.equal(latest.pendingSubmission, null);
+            assert.equal(latest.lastAcceptedSubmission, null);
+          } else {
+            assert.equal(container.childElementCount, 0);
+          }
+          return;
+        }
+        await act(async () => { resolveRetry(); await flush(); });
+        if (outcome === "uncertain") {
+          assert.equal(latest.pendingSubmission?.state, "uncertain");
+          assert.ok(retryButton());
+          assert.equal(container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked, true);
+          assert.equal(container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.disabled, true);
+          await act(async () => { retryButton()!.click(); await flush(); });
+          assert.equal(submissions.length, 3);
+          assert.deepEqual(submissions[2], submissions[0]);
+        } else {
+          assert.equal(latest.pendingSubmission, null);
+          assert.equal(retryButton(), undefined);
+          assert.equal(container.querySelector("form"), null);
+        }
+      }
+    } finally {
+      resolveRetry();
+      await act(async () => { await flush(); if (mounted) root.unmount(); });
+      sessionApi.getRunInputs = originalGet;
+      sessionApi.submitRunInput = originalSubmit;
+      env.restore();
+    }
+  });
+}
