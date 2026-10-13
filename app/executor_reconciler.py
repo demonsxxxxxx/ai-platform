@@ -309,6 +309,18 @@ async def _release_claimed_terminal_batch(
         _logger.exception("Sandbox executor terminal cancellation claim release failed")
 
 
+def _exception_diagnostic_evidence(error: BaseException) -> dict[str, Any]:
+    losses: list[dict[str, object]] = []
+    return {
+        "sdk": {
+            "exception_type": type(error).__name__,
+            "exception_message": str(error),
+            "exception_chain": exception_chain_from_error(error, losses=losses),
+        },
+        "normalization_losses": losses,
+    }
+
+
 async def _terminalize_reconciliation_failure(
     lease_row: dict[str, Any],
     *,
@@ -319,6 +331,7 @@ async def _terminalize_reconciliation_failure(
     lifecycle: RunLifecycleService,
     run_diagnostics: RunDiagnosticsService | None,
     reconciliation_error_code: str,
+    reconciliation_error: BaseException | None = None,
 ) -> None:
     tenant_id = str(lease_row["tenant_id"])
     run_id = str(lease_row["run_id"])
@@ -352,6 +365,9 @@ async def _terminalize_reconciliation_failure(
                 attempt_id=attempt_id,
                 terminal_result=lease_row.get("executor_terminal_json"),
                 reconciliation_error_code=reconciliation_error_code,
+                reconciliation_evidence_factory=(
+                    lambda: _exception_diagnostic_evidence(reconciliation_error)
+                ) if reconciliation_error is not None else None,
                 lease_id=str(lease_row["id"]),
             )
         if str(run.get("status") or "") in _TERMINAL_RUN_STATUSES:
@@ -475,6 +491,7 @@ async def _finish_terminal_reconciliation_failure(
     attempt_lifecycle: RunAttemptLifecycleService,
     lifecycle: RunLifecycleService,
     run_diagnostics: RunDiagnosticsService | None,
+    reconciliation_error: BaseException | None = None,
 ) -> None:
     await _terminalize_reconciliation_failure(
         lease_row,
@@ -485,6 +502,7 @@ async def _finish_terminal_reconciliation_failure(
         lifecycle=lifecycle,
         run_diagnostics=run_diagnostics,
         reconciliation_error_code=error_code,
+        reconciliation_error=reconciliation_error,
     )
     lease = _sandbox_cleanup.container_lease_from_persisted_row(lease_row)
     if lease is None:
@@ -639,7 +657,7 @@ async def _collect_workspace_and_convert_result(
                             "error_code": collection_code,
                             "failure_source": "sandbox_runtime",
                             "failure_stage": "workspace_collection",
-                            "sdk": {"exception_type": type(collection_error).__name__},
+                            **_exception_diagnostic_evidence(collection_error),
                         }
                         for stage, code, evidence in (
                             ("terminal_receipt", primary_code, primary_diagnostics),
@@ -669,7 +687,6 @@ async def _collect_workspace_and_convert_result(
                         },
                     )
         else:
-            exception_chain_losses: list[dict[str, object]] = []
             terminal_result = {
                 **terminal_result,
                 "status": "failed",
@@ -680,15 +697,7 @@ async def _collect_workspace_and_convert_result(
                     "error_code": "sandbox_workspace_collection_failed",
                     "failure_source": "sandbox_runtime",
                     "failure_stage": "workspace_collection",
-                    "sdk": {
-                        "exception_type": type(collection_error).__name__,
-                        "exception_message": str(collection_error),
-                        "exception_chain": exception_chain_from_error(
-                            collection_error,
-                            losses=exception_chain_losses,
-                        ),
-                    },
-                    "normalization_losses": exception_chain_losses,
+                    **_exception_diagnostic_evidence(collection_error),
                 },
             }
     abandoned = threading.Event()
@@ -1112,6 +1121,7 @@ async def reconcile_pending_executor_terminals_once(
                         lease_row,
                         claim_token=claim_token,
                         error_code=error_code,
+                        reconciliation_error=exc,
                         logger=_logger,
                         v4_capabilities=v4_capabilities,
                         attempt_lifecycle=attempt_lifecycle,
