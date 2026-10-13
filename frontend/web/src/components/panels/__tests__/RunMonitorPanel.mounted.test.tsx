@@ -219,8 +219,21 @@ test("Run Monitor reads user and Run deep-link scope", () => {
   });
 });
 
-for (const observedCost of [1, 0, null]) {
-  test(`Run Monitor mounts authorized diagnostics with estimated cost ${observedCost}`, async () => {
+const exportOwnershipCases = [
+  { reopenSameRun: false, staleFails: true },
+  { reopenSameRun: false, staleFails: false },
+  { reopenSameRun: true, staleFails: true },
+  { reopenSameRun: true, staleFails: false },
+];
+for (const scenario of [
+  ...[1, 0, null].map((observedCost) => ({ observedCost, exportOwnership: null })),
+  ...exportOwnershipCases.map((exportOwnership) => ({ observedCost: null, exportOwnership })),
+]) {
+  const { observedCost, exportOwnership } = scenario;
+  const name = exportOwnership
+    ? `Run Monitor export ownership: ${exportOwnership.reopenSameRun ? "same Run reopened" : "A to B"}, stale ${exportOwnership.staleFails ? "failure" : "success"}`
+    : `Run Monitor mounts authorized diagnostics with estimated cost ${observedCost}`;
+  test(name, async () => {
   const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", {
     url: "http://localhost/runs",
     pretendToBeVisual: true,
@@ -622,6 +635,59 @@ for (const observedCost of [1, 0, null]) {
       root.render(React.createElement(RunMonitorPanel));
     });
     await waitFor(() => container.textContent?.includes("审核季度采购合同") === true);
+
+    if (exportOwnership) {
+      type ExportResult = Awaited<ReturnType<typeof adminRunsApi.exportDiagnostics>>;
+      const pending: { runId: string; resolve: (result: ExportResult) => void; reject: (error: Error) => void }[] = [];
+      adminRunsApi.exportDiagnostics = (runId) => new Promise((resolve, reject) => {
+        pending.push({ runId, resolve, reject });
+      });
+      adminRunsApi.detail = async (runId) => ({ ...detail, run: { ...detail.run, run_id: runId } });
+      const click = async (button: Element | null | undefined) => {
+        assert.ok(button);
+        await act(async () => { button.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
+      };
+      const exportButton = () => (Array.from(container.querySelectorAll("button")) as HTMLButtonElement[])
+        .find((button) => /^(下载脱敏诊断包|正在生成…)$/u.test(button.textContent ?? ""));
+      const open = async (runId: string) => {
+        await click(container.querySelector(`button[aria-label="查看 ${runId}"]`));
+        await waitFor(() => Boolean(exportButton()));
+      };
+      const result = (runId: string): ExportResult => ({
+        blob: new Blob(["zip"]), filename: `run-diagnostics-${runId}.zip`, exportId: `export-${runId}`,
+      });
+      const downloads: string[] = [];
+      Object.defineProperty(dom.window.HTMLAnchorElement.prototype, "click", {
+        configurable: true, value: function (this: HTMLAnchorElement) { downloads.push(this.download); },
+      });
+      await click(container.querySelector('button[aria-label="暂停自动刷新"]'));
+      await open("run_running");
+      await click(exportButton());
+      assert.equal(exportButton()?.disabled, true);
+      await click(container.querySelector('button[aria-label="关闭运行详情"]'));
+      const nextRunId = exportOwnership.reopenSameRun ? "run_running" : "run_failed";
+      await open(nextRunId);
+      assert.equal(exportButton()?.disabled, false);
+      await click(exportButton());
+      assert.deepEqual(pending.map((request) => request.runId), ["run_running", nextRunId]);
+      await act(async () => {
+        if (exportOwnership.staleFails) pending[0].reject(new Error("STALE_EXPORT_ERROR"));
+        else pending[0].resolve(result("run_running"));
+      });
+      assert.doesNotMatch(container.textContent ?? "", /STALE_EXPORT_ERROR/);
+      assert.equal(exportButton()?.disabled, true, "stale finally must not clear the current export busy state");
+      assert.deepEqual(downloads, exportOwnership.staleFails ? [] : ["run-diagnostics-run_running.zip"]);
+      // The current request still owns error and busy state, and retry still downloads.
+      await act(async () => { pending[1].reject(new Error("CURRENT_EXPORT_ERROR")); });
+      assert.match(container.textContent ?? "", /CURRENT_EXPORT_ERROR/);
+      assert.equal(exportButton()?.disabled, false);
+      await click(exportButton());
+      assert.doesNotMatch(container.textContent ?? "", /CURRENT_EXPORT_ERROR/);
+      await act(async () => { pending[2].resolve(result(nextRunId)); });
+      assert.equal(exportButton()?.disabled, false);
+      assert.equal(downloads.at(-1), `run-diagnostics-${nextRunId}.zip`);
+      return;
+    }
 
     assert.equal(calls[0], "list");
     const listCallCount = calls.filter((call) => call === "list").length;
