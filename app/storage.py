@@ -113,6 +113,10 @@ async def run_storage_io(
                 slots.release()
             else:
                 def release_capacity(_task: object) -> None:
+                    # A cancelled shield detaches its outcome reader. This owner
+                    # must retrieve late failures as well as return capacity.
+                    if completion is None and not task.cancelled():
+                        task.exception()
                     slots.release()
                     admissions.release()
 
