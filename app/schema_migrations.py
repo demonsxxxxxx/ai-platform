@@ -44,7 +44,8 @@ RUN_INPUTS_SCHEMA_VERSION = "2026.10.07.1"
 ASSISTANT_TEXT_PART_INDEX_SCHEMA_VERSION = "2026.10.09.1"
 PROVIDER_TRANSCRIPT_REPRESENTATION_SCHEMA_VERSION = "2026.10.10.1"
 RUN_QUESTION_DEFAULT_ANSWER_SCHEMA_VERSION = "2026.10.12.1"
-TARGET_SCHEMA_VERSION = RUN_QUESTION_DEFAULT_ANSWER_SCHEMA_VERSION
+TERMINAL_RECONCILIATION_RETRY_SCHEMA_VERSION = "2026.10.13.1"
+TARGET_SCHEMA_VERSION = TERMINAL_RECONCILIATION_RETRY_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
 # The Stream-only cutover retires old index contracts and is not binary rollback-compatible.
 CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = ASSISTANT_TEXT_PART_INDEX_SCHEMA_VERSION
@@ -220,6 +221,7 @@ CRITICAL_COLUMNS = (
     ("sandbox_leases", "executor_reconciliation_status", "text", True),
     ("sandbox_leases", "executor_reconciliation_claim_token", "text", False),
     ("sandbox_leases", "executor_reconciliation_claimed_at", "timestamptz", False),
+    ("sandbox_leases", "executor_reconciliation_retry_not_before", "timestamptz", False),
     ("sandbox_leases", "executor_reconciliation_attempt_count", "int4", True),
     (
         "sandbox_leases",
@@ -698,7 +700,7 @@ CRITICAL_CONSTRAINT_DEFINITIONS = (
         "c",
         "CHECK (executor_reconciliation_status = ANY (ARRAY["
         "'waiting_terminal'::text, 'pending'::text, 'claimed'::text, "
-        "'retry'::text, 'finalized'::text, 'failed'::text]))",
+        "'retry'::text, 'cleanup_pending'::text, 'finalized'::text, 'failed'::text]))",
     ),
 )
 

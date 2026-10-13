@@ -48,7 +48,6 @@ from app.sandbox.api import (
     SandboxExecutorHttpError,
     exception_chain_from_error,
 )
-from app.settings import get_settings
 from app.runs.api import cancel_run_with_v4, fail_run_with_v4, finish_run_terminalization
 from app.storage import run_storage_io
 from app.worker import (
@@ -63,6 +62,8 @@ _RECONCILIATION_BATCH_SIZE = 1
 _RECONCILIATION_CLAIM_STALE_SECONDS = 300
 _RECONCILIATION_WORK_TIMEOUT_SECONDS = 240.0
 _RECONCILIATION_IDLE_SECONDS = 30.0
+_RECONCILIATION_CONCURRENCY = 2
+_RECONCILIATION_FALLBACK_SECONDS = 2.0
 _RECONCILIATION_SIGNAL_INIT_TIMEOUT_SECONDS = 5.0
 _EXECUTOR_HEARTBEAT_STALE_SECONDS = 45
 _EXECUTOR_PROBE_FAILURE_LIMIT = 3
@@ -76,86 +77,6 @@ class PermanentExecutorReconciliationError(ValueError):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
-
-
-class SandboxReconciliationStopError(RuntimeError):
-    """A verified runtime remains eligible for claim-fenced cleanup after stop failure."""
-
-
-def _sandbox_cleanup_timeout_seconds() -> float:
-    return max(
-        float(getattr(get_settings(), "sandbox_cleanup_timeout_seconds", 30) or 30),
-        0.001,
-    )
-
-
-def _consume_stopped_task(task: asyncio.Task[Any]) -> None:
-    try:
-        task.exception()
-    except BaseException:
-        pass
-
-
-async def _stop_reconciled_provider(provider: Any, lease: Any) -> Any:
-    stop_task = asyncio.create_task(provider.stop(lease, reason="executor_reconciled"))
-    try:
-        return await asyncio.wait_for(
-            asyncio.shield(stop_task),
-            timeout=_sandbox_cleanup_timeout_seconds(),
-        )
-    except asyncio.CancelledError:
-        stop_task.cancel()
-        stop_task.add_done_callback(_consume_stopped_task)
-        raise
-    except TimeoutError as exc:
-        stop_task.cancel()
-        stop_task.add_done_callback(_consume_stopped_task)
-        raise SandboxReconciliationStopError(
-            "executor_reconciliation_sandbox_stop_failed"
-        ) from exc
-    except Exception as exc:  # noqa: BLE001 - provider errors become durable cleanup retry.
-        raise SandboxReconciliationStopError(
-            "executor_reconciliation_sandbox_stop_failed"
-        ) from exc
-
-
-async def _release_reconciled_lease(
-    lease_row: dict[str, Any],
-    *,
-    provider: Any,
-    lease: Any,
-    claim_token: str,
-    transaction_factory: Any,
-) -> None:
-    async with transaction_factory() as conn:
-        claimed = await sandbox_lease_repository.has_sandbox_executor_reconciliation_claim(
-            conn,
-            lease_id=str(lease_row["id"]),
-            claim_token=claim_token,
-        )
-    if not claimed:
-        raise RuntimeError("executor_reconciliation_claim_lost")
-    with TerminalStageTiming(
-        "reconciler_provider_stop", run_id=str(lease_row["run_id"]),
-        attempt_id=str(lease_row.get("attempt_id") or ""),
-    ):
-        stop_result = await _stop_reconciled_provider(provider, lease)
-    if getattr(stop_result, "status", "failed") not in {"stopped", "not_found"}:
-        raise SandboxReconciliationStopError(
-            "executor_reconciliation_sandbox_stop_failed"
-        )
-    async with transaction_factory() as conn:
-        finalized = await sandbox_lease_repository.release_and_finalize_sandbox_executor_reconciliation(
-            conn,
-            tenant_id=str(lease_row["tenant_id"]),
-            user_id=str(lease_row["user_id"]),
-            run_id=str(lease_row["run_id"]),
-            lease_id=str(lease_row["id"]),
-            claim_token=claim_token,
-            reason="executor_reconciled",
-        )
-    if not finalized:
-        raise RuntimeError("executor_reconciliation_claim_lost")
 
 
 def _permanent_reconciliation_error(
@@ -464,7 +385,7 @@ async def _quarantine_failed_reconciliation(
         raise RuntimeError("executor_reconciliation_claim_lost")
 
 
-async def _mark_failed_reconciliation_for_cleanup(
+async def _mark_reconciliation_for_cleanup(
     lease_row: dict[str, Any],
     *,
     claim_token: str,
@@ -512,31 +433,9 @@ async def _finish_terminal_reconciliation_failure(
             error_code=error_code,
         )
         return
-    try:
-        await _release_reconciled_lease(
-            lease_row,
-            provider=_container_provider_for_lease(lease),
-            lease=lease,
-            claim_token=claim_token,
-            transaction_factory=transaction,
-        )
-    except asyncio.CancelledError:
-        raise
-    except SandboxReconciliationStopError as exc:
-        logger.exception(
-            "executor_terminal_reconciliation_cleanup_pending",
-            extra={
-                "lease_id": str(lease_row["id"]),
-                "run_id": str(lease_row["run_id"]),
-                "error_type": type(exc).__name__,
-            },
-        )
-        await _mark_failed_reconciliation_for_cleanup(
-            lease_row,
-            claim_token=claim_token,
-            error_code=error_code,
-        )
-
+    await _mark_reconciliation_for_cleanup(
+        lease_row, claim_token=claim_token, error_code=error_code,
+    )
 
 async def _reserve_reconciliation_artifact_cleanup(
     *,
@@ -1016,25 +915,16 @@ async def reconcile_pending_executor_terminals_once(
                 if run is None:
                     raise ValueError("executor_reconciliation_run_missing")
                 if str(run.get("status") or "") in _TERMINAL_RUN_STATUSES:
-                    context, _terminal_result, run_payload = _context_and_payload(
-                        lease_row
-                    )
-                    request = _reconciliation_request(lease_row, run_payload)
-                    workspace = SandboxWorkspaceManager().prepare(request)
-                    lease = _sandbox_cleanup.container_lease_from_persisted_row(lease_row)
-                    if lease is None:
+                    _context_and_payload(lease_row)
+                    if _sandbox_cleanup.container_lease_from_persisted_row(lease_row) is None:
                         raise _permanent_reconciliation_error(
                             "executor_reconciliation_runtime_handle_invalid"
                         )
-                    lease = lease.model_copy(
-                        update={"workspace_host_path": workspace.workspace_host_path}
-                    )
-                    provider = _container_provider_for_lease(lease)
                 else:
                     (
                         result,
-                        provider,
-                        lease,
+                        _provider,
+                        _lease,
                     ) = await _collect_workspace_and_convert_result(
                         lease_row,
                         registry=adapter_registry,
@@ -1071,12 +961,8 @@ async def reconcile_pending_executor_terminals_once(
                                 ),
                             )
                         continue
-                await _release_reconciled_lease(
-                    lease_row,
-                    provider=provider,
-                    lease=lease,
-                    claim_token=claim_token,
-                    transaction_factory=transaction,
+                await _mark_reconciliation_for_cleanup(
+                    lease_row, claim_token=claim_token, error_code="",
                 )
         except asyncio.CancelledError:
             await _release_claimed_terminal_batch(claimed, claim_token)
@@ -1162,6 +1048,11 @@ async def reconcile_pending_executor_terminals_once(
     return reconciled_count
 
 
+async def _next_terminal_retry_delay() -> float | None:
+    async with transaction() as conn:
+        return await sandbox_lease_repository.next_sandbox_executor_reconciliation_retry_delay(conn)
+
+
 async def run_executor_terminal_reconciler(
     stop_event: asyncio.Event,
     *,
@@ -1172,111 +1063,121 @@ async def run_executor_terminal_reconciler(
     lifecycle: RunLifecycleService,
     run_diagnostics: RunDiagnosticsService | None = None,
 ) -> None:
-    signal_cursor: ExecutorReconciliationSignalCursor | None = None
-    probe_progress = asyncio.Event()
-    maintenance_tasks: list[asyncio.Task[None]] = []
+    wake = asyncio.Event()
+    cleanup_wake = asyncio.Event()
+    active: set[asyncio.Task[int]] = set()
 
-    async def probe() -> int:
-        probe_kwargs = (
-            {"run_diagnostics": run_diagnostics}
-            if run_diagnostics is not None
-            else {}
-        )
-        probed = await probe_suspect_executor_tasks_once(**probe_kwargs)
-        if probed:
-            probe_progress.set()
-        return probed
-
-    try:
+    async def read_signals() -> None:
+        cursor: ExecutorReconciliationSignalCursor | None = None
         while not stop_event.is_set():
-            # Clear before scanning: progress arriving during the scan or wait
-            # remains visible, including when Redis is unavailable.
-            probe_progress.clear()
-            if signal_cursor is None:
-                try:
-                    # Capture the tail before PostgreSQL scan so an interleaved
-                    # signal remains visible to the following explicit XREAD.
-                    signal_cursor = await asyncio.wait_for(
+            try:
+                if cursor is None:
+                    cursor = await asyncio.wait_for(
                         initialize_executor_reconciliation_signal_cursor(),
                         timeout=_RECONCILIATION_SIGNAL_INIT_TIMEOUT_SECONDS,
                     )
-                except (ExecutorSignalUnavailable, TimeoutError):
-                    signal_cursor = None
-            reconciled = 0
+                    # A callback may commit while the initial tail is being read.
+                    wake.set()
+                signalled = await wait_for_executor_reconciliation_signal(
+                    block_ms=int(_RECONCILIATION_IDLE_SECONDS * 1000), cursor=cursor,
+                )
+                if signalled:
+                    wake.set()
+                    cleanup_wake.set()
+                await asyncio.sleep(0)
+            except (ExecutorSignalUnavailable, TimeoutError):
+                cursor = None
+                await asyncio.sleep(_RECONCILIATION_FALLBACK_SECONDS)
+
+    async def reconcile() -> int:
+        try:
+            return await reconcile_pending_executor_terminals_once(
+                registry=registry, worker_id=worker_id,
+                v4_capabilities=v4_capabilities, attempt_lifecycle=attempt_lifecycle,
+                lifecycle=lifecycle, run_diagnostics=run_diagnostics,
+            )
+        except Exception:  # noqa: BLE001 - one failed scan must not stop recovery.
+            _logger.exception("executor_terminal_reconciliation_scan_failed")
+            return 0
+
+    async def cleanup() -> None:
+        while not stop_event.is_set():
+            cleanup_wake.clear()
             try:
-                reconciled = await reconcile_pending_executor_terminals_once(
-                    registry=registry,
-                    worker_id=worker_id,
-                    v4_capabilities=v4_capabilities,
-                    attempt_lifecycle=attempt_lifecycle,
-                    lifecycle=lifecycle,
-                    run_diagnostics=run_diagnostics,
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception:  # noqa: BLE001 - one failed scan must not stop recovery.
-                _logger.exception("executor_terminal_reconciliation_scan_failed")
-            if stop_event.is_set():
-                break
-            if reconciled:
-                continue
-            if not maintenance_tasks:
-                # Each phase retains sole ownership until its operation really
-                # ends. Slow cleanup/probes must not block terminal consumption.
-                for name, operation, repeat_on_progress in (
-                    (
-                        "executor-reconciliation-cleanup",
-                        lambda: _sandbox_cleanup.cleanup_failed_sandbox_executor_reconciliation_leases(
-                            provider_factory=create_container_provider,
-                        ),
-                        False,
-                    ),
-                    ("executor-suspect-probe", probe, True),
-                ):
-                    maintenance_tasks.append(asyncio.create_task(
-                        maintenance_phase_until_done(
-                            name, operation, _RECONCILIATION_IDLE_SECONDS,
-                            _RECONCILIATION_WORK_TIMEOUT_SECONDS, logger=_logger,
-                            repeat_on_progress=repeat_on_progress,
-                        ),
-                        name=name,
-                    ))
-            waiters = {
-                asyncio.create_task(stop_event.wait()),
-                asyncio.create_task(probe_progress.wait()),
-            }
-            signal_task = None
-            if signal_cursor is not None:
-                signal_task = asyncio.create_task(
-                    wait_for_executor_reconciliation_signal(
-                        block_ms=int(_RECONCILIATION_IDLE_SECONDS * 1000),
-                        cursor=signal_cursor,
-                    ),
-                )
-                waiters.add(signal_task)
+                async with asyncio.timeout(_RECONCILIATION_WORK_TIMEOUT_SECONDS):
+                    released = await _sandbox_cleanup.cleanup_failed_sandbox_executor_reconciliation_leases(
+                        provider_factory=create_container_provider,
+                    )
+                if released:
+                    await asyncio.sleep(0)
+                    continue
+            except Exception:  # noqa: BLE001 - cleanup has its own durable retry owner.
+                _logger.exception("executor_terminal_cleanup_scan_failed")
             try:
-                done, _pending = await asyncio.wait(
-                    waiters,
-                    timeout=_RECONCILIATION_IDLE_SECONDS + (5.0 if signal_task else 0.0),
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-                if signal_task in done:
-                    try:
-                        signal_task.result()
-                    except ExecutorSignalUnavailable:
-                        signal_cursor = None
-                        # Preserve the bounded polling fallback even when cursor
-                        # initialization works but XREAD repeatedly fails.
-                        await asyncio.wait(
-                            waiters - {signal_task}, timeout=_RECONCILIATION_IDLE_SECONDS,
-                            return_when=asyncio.FIRST_COMPLETED,
-                        )
-            finally:
-                for task in waiters:
-                    if not task.done():
-                        task.cancel()
-                await asyncio.gather(*waiters, return_exceptions=True)
+                await asyncio.wait_for(cleanup_wake.wait(), _RECONCILIATION_FALLBACK_SECONDS)
+            except TimeoutError:
+                pass
+
+    async def probe() -> int:
+        probe_kwargs = ({"run_diagnostics": run_diagnostics} if run_diagnostics is not None else {})
+        probed = await probe_suspect_executor_tasks_once(**probe_kwargs)
+        if probed:
+            wake.set()
+        return probed
+
+    owned = [
+        asyncio.create_task(read_signals(), name="executor-terminal-signals"),
+        asyncio.create_task(cleanup(), name="executor-reconciliation-cleanup"),
+        asyncio.create_task(maintenance_phase_until_done(
+            "executor-suspect-probe", probe, _RECONCILIATION_IDLE_SECONDS,
+            _RECONCILIATION_WORK_TIMEOUT_SECONDS, logger=_logger,
+            repeat_on_progress=True,
+        ), name="executor-suspect-probe"),
+        asyncio.create_task(stop_event.wait(), name="executor-terminal-stop"),
+        asyncio.create_task(wake.wait(), name="executor-terminal-wake"),
+    ]
+    stop_waiter, wake_waiter = owned[-2:]
+    loop = asyncio.get_running_loop()
+    next_scan = loop.time()
+    scan_needed = True
+    try:
+        while not stop_event.is_set():
+            empty_scan = False
+            for task in tuple(active):
+                if task.done():
+                    active.remove(task)
+                    if task.result():
+                        scan_needed = True
+                        cleanup_wake.set()
+                    else:
+                        empty_scan = True
+            if wake_waiter.done():
+                wake.clear()
+                scan_needed = True
+                owned.remove(wake_waiter)
+                wake_waiter = asyncio.create_task(wake.wait(), name="executor-terminal-wake")
+                owned.append(wake_waiter)
+            if empty_scan:
+                try:
+                    async with asyncio.timeout(_RECONCILIATION_FALLBACK_SECONDS):
+                        retry_delay = await _next_terminal_retry_delay()
+                    if retry_delay is not None:
+                        next_scan = min(next_scan, loop.time() + max(retry_delay, 0.01))
+                except Exception:  # noqa: BLE001 - keep the independent fallback clock.
+                    _logger.exception("executor_terminal_retry_clock_read_failed")
+            if loop.time() >= next_scan:
+                scan_needed = True
+            if scan_needed and len(active) < _RECONCILIATION_CONCURRENCY:
+                for _ in range(_RECONCILIATION_CONCURRENCY - len(active)):
+                    active.add(asyncio.create_task(reconcile(), name="executor-terminal-completion"))
+                scan_needed = False
+                next_scan = loop.time() + _RECONCILIATION_FALLBACK_SECONDS
+            timeout = max(0.0, next_scan - loop.time()) if len(active) < _RECONCILIATION_CONCURRENCY else None
+            await asyncio.wait(
+                active | {stop_waiter, wake_waiter}, timeout=timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
     finally:
-        for task in maintenance_tasks:
+        for task in [*active, *owned]:
             task.cancel()
-        await asyncio.gather(*maintenance_tasks, return_exceptions=True)
+        await asyncio.gather(*active, *owned, return_exceptions=True)
