@@ -119,6 +119,7 @@ from app.runtime.sandbox.providers.opensandbox.startup import (
     identity_unavailable_cleanup_subject,
     is_authoritative_not_found_error,
     launch_opensandbox_startup,
+    read_sandbox_info_for_stop,
     reconcile_authoritative_identity_unavailable_cleanup,
     resolve_executor_endpoint,
     unhealthy_readiness_fields,
@@ -4362,11 +4363,8 @@ class OpenSandboxContainerProvider:
                 )
         try:
             if hasattr(sandbox, "get_info"):
-                try:
-                    info = await _maybe_await(sandbox.get_info())
-                except Exception as exc:
-                    if not is_authoritative_not_found_error(exc):
-                        raise
+                info, absent = await read_sandbox_info_for_stop(sandbox)
+                if absent:
                     self._leases.pop(cache_key, None)
                     self._sandboxes.pop(lease.container_id, None)
                     return StopResult(container_id=lease.container_id, status="not_found", message=reason)
