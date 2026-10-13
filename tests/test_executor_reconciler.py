@@ -2351,7 +2351,10 @@ async def test_reconciler_terminalizes_explicit_permanent_failure(
         return {"id": "run-a", "status": "running"}
 
     async def collect(_lease_row, **_kwargs):
-        raise failure
+        try:
+            raise OSError("synthetic reconciliation cause")
+        except OSError as cause:
+            raise failure from cause
 
     async def finish(lease_row, **kwargs):
         finished.append((lease_row["id"], kwargs))
@@ -2378,14 +2381,23 @@ async def test_reconciler_terminalizes_explicit_permanent_failure(
     assert finished[0][0] == "lease-a"
     assert finished[0][1]["claim_token"]
     assert finished[0][1]["error_code"] == expected_error
+    assert finished[0][1]["reconciliation_error"] is failure
     assert retried == []
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("diagnostics_unavailable", [False, True])
 async def test_terminal_reconciliation_failure_is_claim_fenced_and_published(
-    monkeypatch,
+    monkeypatch, diagnostics_unavailable,
 ):
     calls = []
+    try:
+        raise OSError("/private/workspace token=synthetic-token Bearer synthetic-bearer")
+    except OSError as cause:
+        try:
+            raise PermanentExecutorReconciliationError("artifact_manifest_invalid") from cause
+        except PermanentExecutorReconciliationError as error:
+            failure = error
 
     class Progress:
         did_transition = True
@@ -2407,9 +2419,24 @@ async def test_terminal_reconciliation_failure_is_claim_fenced_and_published(
         calls.append(("fail_run", kwargs))
         return Progress()
 
+    class Persistence:
+        async def append_observation(self, _conn, **kwargs):
+            if diagnostics_unavailable:
+                raise OSError("synthetic diagnostic write failure")
+            assert kwargs["observation"]["stage"] == "terminalization"
+            return {}
+
+    diagnostics = RunDiagnosticsService(
+        persistence=Persistence(),
+        normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
+        runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+        exception_log_fields=safe_exception_log_fields,
+    )
+
     class RecordingDiagnostics:
         async def capture_reconciliation_failure(self, _conn, **kwargs):
             calls.append(("diagnostics", kwargs))
+            await diagnostics.capture_reconciliation_failure(_conn, **kwargs)
 
     async def terminalize_attempt(_conn, **kwargs):
         calls.append(("terminalize_attempt", kwargs))
@@ -2454,6 +2481,7 @@ async def test_terminal_reconciliation_failure_is_claim_fenced_and_published(
         v4_capabilities=_TEST_V4_CAPABILITIES,
         run_diagnostics=RecordingDiagnostics(),
         reconciliation_error_code="artifact_manifest_invalid",
+        reconciliation_error=failure,
     )
 
     fail_call = next(value for name, value in calls if name == "fail_run")
@@ -2473,6 +2501,11 @@ async def test_terminal_reconciliation_failure_is_claim_fenced_and_published(
     assert diagnostic_call["attempt_id"] == "rat-a"
     assert diagnostic_call["terminal_result"]["error_code"] == "provider_timeout"
     assert diagnostic_call["reconciliation_error_code"] == "artifact_manifest_invalid"
+    evidence = diagnostic_call["reconciliation_evidence_factory"]()
+    assert [node["type"] for node in evidence["sdk"]["exception_chain"]] == [
+        "PermanentExecutorReconciliationError", "OSError",
+    ]
+    assert evidence["sdk"]["exception_chain"][0]["relation"] == "cause"
     terminal_call = next(
         item[1]
         for item in calls
@@ -2658,8 +2691,10 @@ async def test_terminal_reconciliation_failure_cannot_mutate_run_after_claim_los
 @pytest.mark.asyncio
 async def test_failed_reconciliation_quarantines_only_unverifiable_runtime(monkeypatch):
     calls = []
+    failure = ValueError("synthetic conversion error")
 
     async def terminalize(lease_row, **_kwargs):
+        assert _kwargs["reconciliation_error"] is failure
         calls.append(("terminalize", lease_row["id"]))
 
     async def quarantine(_conn, **kwargs):
@@ -2680,6 +2715,7 @@ async def test_failed_reconciliation_quarantines_only_unverifiable_runtime(monke
         claim_token="claim-a",
         error_code="executor_reconciliation_runtime_handle_invalid",
         logger=logging.getLogger(__name__),
+        reconciliation_error=failure,
         v4_capabilities=_TEST_V4_CAPABILITIES,
     )
 

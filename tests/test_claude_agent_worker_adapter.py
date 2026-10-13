@@ -5902,7 +5902,11 @@ async def test_reconciler_collection_failure_preserves_primary_and_retry_authori
                 return tmp_path
             if collection_mode == "cancel":
                 raise asyncio.CancelledError()
-            raise FileNotFoundError("/private/workspace secret=synthetic-token prompt=synthetic-body")
+            from app.platform.sandbox.errors import ContainerStartFailedError
+            try:
+                raise OSError("/private/workspace token=synthetic-token Bearer synthetic-bearer")
+            except OSError as cause:
+                raise ContainerStartFailedError("workspace unavailable") from cause
 
     class Lease:
         def model_copy(self, *, update):
@@ -5978,6 +5982,9 @@ async def test_reconciler_collection_failure_preserves_primary_and_retry_authori
         if status == "succeeded":
             if collection_mode != "ok":
                 assert result.result["error_code"] == "sandbox_workspace_collection_failed"
+                sdk = result.result["runtime_diagnostics"]["sdk"]
+                assert [node["type"] for node in sdk["exception_chain"]] == ["ContainerStartFailedError", "OSError"]
+                assert sdk["exception_chain"][0]["relation"] == "cause"
         else:
             assert result.result["error_code"] == error_code
             assert result.executor_payload["runtime_terminal_status"] == status
@@ -5998,7 +6005,12 @@ async def test_reconciler_collection_failure_preserves_primary_and_retry_authori
             assert admin["root"]["source"] == "sdk"
             assert admin["details"]["observations"][0]["source"] == "executor_callback"
             assert admin["details"]["sdk"]["exception_type"] == "OriginalFailure"
-        assert admin["details"]["observations"][-1]["sdk"]["exception_type"] == "FileNotFoundError"
+        secondary = admin["details"]["observations"][-1]["sdk"]
+        assert secondary["exception_type"] == "ContainerStartFailedError"
+        assert [node["type"] for node in secondary["exception_chain"]] == ["ContainerStartFailedError", "OSError"]
+        assert secondary["exception_chain"][0]["relation"] == "cause"
+        assert "collect_workspace" in secondary["exception_chain"][1]["traceback"]
+        assert "synthetic-bearer" not in repr(persistence.value)
         assert "synthetic-token" not in repr(persistence.value)
         assert "/private/workspace" not in repr(persistence.value)
     logs = [vars(record) for record in caplog.records if record.msg == "sandbox_workspace_collection_failed"]
