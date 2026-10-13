@@ -1135,8 +1135,11 @@ def child_view_callback(monkeypatch):
     async def transaction():
         yield object()
 
-    async def locked(_conn, **_kwargs):
-        return dict(tenant_id="tenant-a", workspace_id="workspace-a", user_id="user-a", session_id="session-a", agent_id="agent-a"), {}
+    async def run_identity(_conn, **_kwargs):
+        return dict(tenant_id="tenant-a", workspace_id="workspace-a", user_id="user-a", session_id="session-a", agent_id="agent-a", status="running")
+
+    async def current_lease(_conn, **_kwargs):
+        return [{"attempt_id": "attempt-a", "lease_payload_json": {"attempt_id": "attempt-a"}}]
 
     async def execute(_conn, **kwargs):
         calls.append(kwargs)
@@ -1144,7 +1147,8 @@ def child_view_callback(monkeypatch):
 
     monkeypatch.setattr(runtime_callbacks, "transaction", transaction)
     monkeypatch.setattr(runtime_callbacks, "_require_valid_callback_token", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(runtime_callbacks, "_lock_current_runtime_attempt_then_run", locked)
+    monkeypatch.setattr(_owner_runs_infrastructure_postgres, "get_run_identity", run_identity)
+    monkeypatch.setattr(_owner_sandbox_infrastructure_leases_postgres, "list_current_sandbox_runtime_leases_for_attempt", current_lease)
     monkeypatch.setattr(runtime_callbacks.context_api, "execute_provider_session_callback", execute)
     callback = ProviderSessionCallbackRequest(action="list_subkeys", run_id="run-a", attempt_id="attempt-a", callback_token_id="cbt-a", provider_session_id="provider-a")
     return callback, children, calls
@@ -1474,3 +1478,49 @@ def test_append_sizing_serializes_only_empty_envelopes_and_final_chunks(monkeypa
     assert len(calls) == 3 * len(payloads)  # Two small envelope encodings, one final payload.
     assert [size for _, size in calls if size] == [len(p["entries"]) for p in payloads]
     assert sum(size for _, size in calls) == count
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["append", "load", "list_subkeys"])
+async def test_only_provider_append_uses_cancelling_tail_authority(monkeypatch, action):
+    from contextlib import asynccontextmanager
+    from unittest.mock import AsyncMock
+    from fastapi import HTTPException
+
+    @asynccontextmanager
+    async def transaction():
+        yield object()
+
+    token_id = "cbt:run-a:attempt-a"
+    tail = AsyncMock(return_value=[{
+        "attempt_id": "attempt-a", "lease_payload_json": {
+            "attempt_id": "attempt-a", "callback_token_id": token_id,
+        },
+    }])
+    execute = AsyncMock(return_value=runtime_callbacks.context_api.ProviderSessionOperationResult(
+        action=action, accepted_entry_count=1,
+    ))
+    monkeypatch.setattr(runtime_callbacks, "transaction", transaction)
+    monkeypatch.setattr(runtime_callbacks, "get_settings", lambda: SimpleNamespace(sandbox_callback_token="secret"))
+    monkeypatch.setattr(_owner_runs_infrastructure_postgres, "get_run_identity", AsyncMock(return_value={
+        "tenant_id": "tenant-a", "session_id": "session-a", "status": "running",
+    }))
+    monkeypatch.setattr(_owner_sandbox_infrastructure_leases_postgres, "list_current_sandbox_runtime_leases_for_attempt", AsyncMock(return_value=[]))
+    monkeypatch.setattr(_owner_sandbox_infrastructure_leases_postgres, "list_cancelling_provider_tail_leases_for_attempt", tail)
+    monkeypatch.setattr(runtime_callbacks.context_api, "execute_provider_session_callback", execute)
+    callback = ProviderSessionCallbackRequest(
+        action=action, run_id="run-a", attempt_id="attempt-a", callback_token_id=token_id,
+        provider_session_id="provider-a", entries=[{"uuid": "entry-a"}] if action == "append" else [],
+        expected_sequence=1 if action == "append" else None,
+    )
+    if action == "append":
+        await runtime_callbacks.provider_session_callback(callback, callback_token=derive_callback_token("secret", token_id))
+        tail.assert_awaited_once()
+        execute.assert_awaited_once()
+    else:
+        with pytest.raises(HTTPException) as caught:
+            await runtime_callbacks.provider_session_callback(callback, callback_token=derive_callback_token("secret", token_id))
+        assert caught.value.status_code == 409
+        assert caught.value.detail == "sandbox_runtime_attempt_inactive"
+        tail.assert_not_awaited()
+        execute.assert_not_awaited()

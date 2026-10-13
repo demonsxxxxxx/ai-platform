@@ -332,7 +332,7 @@ async def test_cancel_then_tail_saves_only_original_writer_without_tool_authorit
         async with recovery_db() as conn:
             # Ordinary tool/input callback authority must stay revoked.
             with pytest.raises(HTTPException, match="sandbox_runtime_attempt_inactive"):
-                await runtime_callbacks._require_current_runtime_attempt(
+                await runtime_callbacks._recheck_callback_authority(
                     conn,
                     tenant_id="tenant",
                     run_id="run",
@@ -346,7 +346,7 @@ async def test_cancel_then_tail_saves_only_original_writer_without_tool_authorit
                 expected_sequence=3,
             )
             assert tail["next_sequence"] == 4
-            await runtime_callbacks._require_current_runtime_attempt(
+            await runtime_callbacks._recheck_callback_authority(
                 conn,
                 tenant_id="tenant",
                 run_id="run",
@@ -357,7 +357,7 @@ async def test_cancel_then_tail_saves_only_original_writer_without_tool_authorit
             with pytest.raises(
                 HTTPException, match="sandbox_runtime_owner_generation_stale"
             ):
-                await runtime_callbacks._require_current_runtime_attempt(
+                await runtime_callbacks._recheck_callback_authority(
                     conn,
                     tenant_id="tenant",
                     run_id="run",

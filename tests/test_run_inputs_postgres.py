@@ -1,5 +1,7 @@
 """Run input ownership, receipts and admission races against real PostgreSQL."""
 
+from app.sandbox.infrastructure import leases_postgres as sandbox_leases
+
 import asyncio
 import os
 from contextlib import asynccontextmanager
@@ -244,7 +246,7 @@ async def test_http_question_answer_and_supplementary_text_reach_the_same_actor(
     # The real callback route, token validation and Run lock remain in use.
     # Only the already-tested sandbox lease lookup uses a controlled fixture.
     monkeypatch.setattr(
-        runtime_callbacks.sandbox_leases,
+        sandbox_leases,
         "list_current_sandbox_runtime_leases_for_attempt", current_lease,
     )
     transport = httpx.ASGITransport(app=app)

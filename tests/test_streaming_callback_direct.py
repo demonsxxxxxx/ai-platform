@@ -94,8 +94,15 @@ async def test_callback_acknowledges_only_after_commit_and_stream_write(monkeypa
         publication_transport=Transport(),
     )
     monkeypatch.setattr(route, "transaction", transaction)
-    monkeypatch.setattr(route, "_lock_current_runtime_attempt_then_run", AsyncMock(return_value=({"tenant_id": "tenant-a"}, {})))
-    monkeypatch.setattr(route, "_require_current_runtime_attempt", AsyncMock())
+    from app.runs.infrastructure import postgres as runs_postgres
+    from app.sandbox.infrastructure import leases_postgres
+
+    monkeypatch.setattr(runs_postgres, "get_run_identity", AsyncMock(return_value={
+        "tenant_id": "tenant-a", "session_id": "session-a", "status": "running",
+    }))
+    monkeypatch.setattr(leases_postgres, "list_current_sandbox_runtime_leases_for_attempt", AsyncMock(return_value=[{
+        "attempt_id": "attempt-a", "lease_payload_json": {"attempt_id": "attempt-a"},
+    }]))
     monkeypatch.setattr(route, "get_stream_authority", AsyncMock(return_value=authority))
     monkeypatch.setattr(_owner_streaming_infrastructure_run_events_postgres, 'append_event_batch', AsyncMock(return_value={"duplicate": False}))
     monkeypatch.setattr(route, "callback_event_to_run_events", lambda _: [AgentEvent(type="message.delta")])

@@ -111,6 +111,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_sandbox_workspace_manager.py",
         "tests/test_sandbox_runtime.py",
         "tests/test_sandbox_runtime_cleanup.py",
+        "tests/test_sandbox_callback_authority.py",
         "tests/test_sandbox_cleanup_application.py",
         "tests/test_sandbox_runtime_control_layer.py",
         "tests/test_sandbox_runtime_evidence_script.py",

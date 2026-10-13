@@ -112,7 +112,18 @@ generation, timestamps, and reconciliation ownership in one migration.
    compatibility payload must carry the same value. Historical rows may be read
    through the previous payload field until they expire.
 3. Callback authority is the HMAC-bound `(run_id, attempt_id)` token plus exactly
-   one current active lease. A callback batch is persisted through the durable
+   one current active lease. Shared durable admission and rechecks are owned by
+   `sandbox.api.SandboxCallbackAuthority`, assembled in
+   `bootstrap.sandbox_callbacks` with the existing Run and lease queries. It
+   locks Run before the exact Attempt using the caller's connection and
+   transaction, derives tenant from persisted Run identity, and preserves
+   session, terminal, Attempt and token-generation fences. Only provider-session
+   append opts into the cancelling provider-tail fallback. HTTP token parsing
+   and rejection status/detail mapping remain in the callback route, as do
+   receipt persistence, renewal sequencing and post-commit publication. The old
+   route-owned guards and their misleading Attempt-before-Run name are retired;
+   there is no compatibility alias or second validator.
+   A callback batch is persisted through the durable
    `(tenant_id, run_id, attempt_id, batch_id)` receipt when the executor supplies
    `batch_id`. Terminal-only answer deltas may span multiple bounded callback
    batches; the receipt is created only after every delta batch and the final

@@ -257,7 +257,7 @@ async def test_runtime_callback_locks_run_before_exact_attempt(monkeypatch):
         list_current_leases,
     )
 
-    locked_run, lease = await runtime_callbacks._lock_current_runtime_attempt_then_run(
+    locked_run, lease = await runtime_callbacks._lock_callback_authority(
         object(),
         run_id="run-a",
         attempt_id="attempt-a",
@@ -471,7 +471,7 @@ async def test_callback_rejects_previous_generation_token_for_current_lease(monk
         current_lease,
     )
     with pytest.raises(HTTPException) as caught:
-        await runtime_callbacks._require_current_runtime_attempt(
+        await runtime_callbacks._recheck_callback_authority(
             object(), tenant_id="tenant-a", run_id="run-a",
             attempt_id="attempt-a", callback_token_id="cbt:run-a:attempt-a:g1",
         )

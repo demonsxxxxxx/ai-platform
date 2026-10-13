@@ -9,6 +9,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
 from app.bootstrap.run_inputs import RunInputsCallbackRequest
+from app.bootstrap.sandbox_callbacks import build_sandbox_callback_authority
 from app.bootstrap.execution import (
     ProviderSessionCallbackWireResponse,
     build_provider_session_callback_response,
@@ -40,7 +41,6 @@ from app.runs.api import (
     RunInputsService,
     RunDiagnosticsService,
 )
-from app.runs.infrastructure import postgres as runs_postgres
 from app.runtime.event_bridge import agent_event_to_executor_event
 from app.runtime.kernel_contracts import (
     CLAUDE_SDK_TEXT_CHECKPOINT_EVENT_TYPE,
@@ -70,7 +70,7 @@ from app.runtime.sandbox.executor_signals import (
     publish_executor_terminal_signal,
 )
 from app.runtime.sandbox.providers.opensandbox.startup import renew_opensandbox_lifetime
-from app.sandbox.infrastructure import leases_postgres as sandbox_leases
+from app.sandbox.api import SandboxCallbackAuthorityError
 from app.settings import get_settings
 from app.storage import ObjectStorage, run_storage_io
 from app.streaming.api import (
@@ -86,12 +86,12 @@ from app.streaming.infrastructure import run_events_postgres as streaming_run_ev
 from app.streaming.redis import get_stream_authority
 
 _sandbox_cleanup = build_sandbox_runtime_cleanup()
+_sandbox_callback_authority = build_sandbox_callback_authority()
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-TERMINAL_RUN_STATUSES = {"succeeded", "failed", "cancelled", "canceled"}
 _TERMINAL_EXECUTOR_CALLBACK_STATUSES = {"completed", "failed", "cancelled"}
 MAX_PROVIDER_SESSION_CALLBACK_BODY_BYTES = context_api.MAX_PROVIDER_SESSION_BATCH_BYTES + 64 * 1024
 
@@ -451,7 +451,7 @@ async def record_executor_callback(
                         status_code=409,
                         detail="sandbox_runtime_attempt_inactive",
                     )
-        await _require_current_runtime_attempt(
+        await _recheck_callback_authority(
             conn,
             tenant_id=tenant_id,
             run_id=callback.run_id,
@@ -470,7 +470,7 @@ async def record_executor_callback(
     renewal_settings = None
     if heartbeat_requested:
         async with transaction() as conn:
-            run_identity, lease = await _lock_current_runtime_attempt_then_run(
+            run_identity, lease = await _lock_callback_authority(
                 conn,
                 run_id=callback.run_id,
                 attempt_id=callback.attempt_id,
@@ -512,7 +512,7 @@ async def record_executor_callback(
                 detail="sandbox_runtime_renewal_failed",
             ) from exc
         async with transaction() as conn:
-            run_identity, lease = await _lock_current_runtime_attempt_then_run(
+            run_identity, lease = await _lock_callback_authority(
                 conn,
                 run_id=callback.run_id,
                 attempt_id=callback.attempt_id,
@@ -548,7 +548,7 @@ async def record_executor_callback(
             else nullcontext()
         ):
             async with transaction() as conn:
-                run_identity, lease = await _lock_current_runtime_attempt_then_run(
+                run_identity, lease = await _lock_callback_authority(
                     conn,
                     run_id=callback.run_id,
                     attempt_id=callback.attempt_id,
@@ -647,7 +647,7 @@ async def run_inputs_callback(
         raise HTTPException(status_code=503, detail="run_inputs_unavailable")
     try:
         async with transaction() as conn:
-            run_identity, _lease = await _lock_current_runtime_attempt_then_run(
+            run_identity, _lease = await _lock_callback_authority(
                 conn,
                 run_id=callback.run_id,
                 attempt_id=callback.attempt_id,
@@ -702,7 +702,7 @@ async def provider_session_callback(
     )
     try:
         async with transaction() as conn:
-            run_identity, _lease = await _lock_current_runtime_attempt_then_run(
+            run_identity, _lease = await _lock_callback_authority(
                 conn,
                 run_id=callback.run_id,
                 attempt_id=callback.attempt_id,
@@ -736,74 +736,23 @@ async def provider_session_callback(
         raise HTTPException(status_code=503, detail="provider_session_callback_failed") from exc
 
 
-async def _require_current_runtime_attempt(
-    conn,
-    *,
-    tenant_id: str,
-    run_id: str,
-    attempt_id: str,
-    callback_token_id: str,
-    allow_provider_tail: bool = False,
-) -> dict[str, Any]:
-    leases = await sandbox_leases.list_current_sandbox_runtime_leases_for_attempt(
-        conn,
-        tenant_id=tenant_id,
-        run_id=run_id,
-        attempt_id=attempt_id,
-    )
-    if not leases and allow_provider_tail:
-        leases = await sandbox_leases.list_cancelling_provider_tail_leases_for_attempt(
-            conn, tenant_id=tenant_id, run_id=run_id, attempt_id=attempt_id,
-        )
-    if len(leases) != 1:
-        raise HTTPException(status_code=409, detail="sandbox_runtime_attempt_inactive")
-    lease = leases[0]
-    payload = lease.get("lease_payload_json") if isinstance(lease, dict) else None
-    persisted_attempt_id = str(lease.get("attempt_id") or "") if isinstance(lease, dict) else ""
-    payload_attempt_id = str(payload.get("attempt_id") or "") if isinstance(payload, dict) else ""
-    if (persisted_attempt_id or payload_attempt_id) != attempt_id or (
-        persisted_attempt_id and payload_attempt_id and persisted_attempt_id != payload_attempt_id
-    ):
-        raise HTTPException(status_code=409, detail="sandbox_runtime_attempt_mismatch")
-    persisted_token_id = str(payload.get("callback_token_id") or "") if isinstance(payload, dict) else ""
-    if persisted_token_id and persisted_token_id != callback_token_id:
-        raise HTTPException(status_code=409, detail="sandbox_runtime_owner_generation_stale")
-    return lease
+async def _recheck_callback_authority(conn, **binding) -> dict[str, Any]:
+    try:
+        return await _sandbox_callback_authority.recheck_attempt(conn, **binding)
+    except SandboxCallbackAuthorityError as exc:
+        raise _callback_authority_http_error(exc) from exc
 
 
-async def _lock_current_runtime_attempt_then_run(
-    conn,
-    *,
-    run_id: str,
-    attempt_id: str,
-    callback_token_id: str,
-    session_id: str | None = None,
-    allow_provider_tail: bool = False,
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    run_hint = await runs_postgres.get_run_identity(conn, run_id=run_id, for_update=False)
-    if run_hint is None:
-        raise HTTPException(status_code=404, detail="run_not_found")
-    if session_id is not None and str(run_hint.get("session_id") or "") != session_id:
-        raise HTTPException(status_code=409, detail="callback_session_mismatch")
-    if str(run_hint.get("status") or "").lower() in TERMINAL_RUN_STATUSES:
-        raise HTTPException(status_code=409, detail="run_already_terminal")
-    tenant_id = str(run_hint.get("tenant_id") or "")
-    locked_run = await runs_postgres.get_run_identity(conn, run_id=run_id, for_update=True)
-    if locked_run is None or str(locked_run.get("tenant_id") or "") != tenant_id:
-        raise HTTPException(status_code=409, detail="sandbox_runtime_attempt_inactive")
-    if session_id is not None and str(locked_run.get("session_id") or "") != session_id:
-        raise HTTPException(status_code=409, detail="callback_session_mismatch")
-    if str(locked_run.get("status") or "").lower() in TERMINAL_RUN_STATUSES:
-        raise HTTPException(status_code=409, detail="run_already_terminal")
-    lease = await _require_current_runtime_attempt(
-        conn,
-        tenant_id=tenant_id,
-        run_id=run_id,
-        attempt_id=attempt_id,
-        callback_token_id=callback_token_id,
-        allow_provider_tail=allow_provider_tail,
-    )
-    return locked_run, lease
+async def _lock_callback_authority(conn, **binding) -> tuple[dict[str, Any], dict[str, Any]]:
+    try:
+        return await _sandbox_callback_authority.lock_run_then_attempt(conn, **binding)
+    except SandboxCallbackAuthorityError as exc:
+        raise _callback_authority_http_error(exc) from exc
+
+
+def _callback_authority_http_error(exc: SandboxCallbackAuthorityError) -> HTTPException:
+    detail = str(exc)
+    return HTTPException(status_code=404 if detail == "run_not_found" else 409, detail=detail)
 
 
 def _require_valid_callback_token(
@@ -873,7 +822,7 @@ async def _profile_drive_file_response(
         raise HTTPException(status_code=422, detail="context_retrieval_parameters_invalid")
 
     async with transaction() as conn:
-        run_identity, lease = await _lock_current_runtime_attempt_then_run(
+        run_identity, lease = await _lock_callback_authority(
             conn,
             run_id=request.run_id,
             attempt_id=request.attempt_id,
@@ -915,7 +864,7 @@ async def _profile_drive_file_response(
     try:
         with transfer.budget():
             async with transaction() as conn:
-                await _require_current_runtime_attempt(
+                await _recheck_callback_authority(
                     conn,
                     tenant_id=tenant_id,
                     run_id=request.run_id,
@@ -959,7 +908,7 @@ async def executor_context_retrieval_callback(
     if request.action == PROFILE_DRIVE_STAGE_TOOL:
         return await _profile_drive_file_response(request)
     async with transaction() as conn:
-        run_identity, _lease = await _lock_current_runtime_attempt_then_run(
+        run_identity, _lease = await _lock_callback_authority(
             conn,
             run_id=request.run_id,
             attempt_id=request.attempt_id,
@@ -1028,7 +977,7 @@ async def executor_context_retrieval_callback(
                 "visible_to_user": False,
             },
         )
-        await _require_current_runtime_attempt(
+        await _recheck_callback_authority(
             conn,
             tenant_id=tenant_id,
             run_id=request.run_id,
