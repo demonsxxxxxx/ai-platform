@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { PanelHeader } from "../common/PanelHeader";
+import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "../common/Table";
 import { PanelLoadingState } from "../common/PanelLoadingState";
 import { WorkbenchStateSurface } from "../workbench/WorkbenchStateSurface";
 import { workbenchSurface } from "../workbench/workbenchSurface";
@@ -1285,27 +1286,27 @@ function DesktopRunTable({
 }) {
   return (
     <div className="hidden min-w-[940px] md:block">
-      <table className="w-full border-separate border-spacing-0 text-left text-xs">
-        <thead className="sticky top-0 z-[1] bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)]">
-          <tr>
-            <th className="border-b border-[var(--theme-border)] px-3 py-2.5 font-medium">状态</th>
-            <th className="border-b border-[var(--theme-border)] px-3 py-2.5 font-medium">任务 / 运行</th>
-            <th className="border-b border-[var(--theme-border)] px-3 py-2.5 font-medium">用户 / 工作区</th>
-            <th className="border-b border-[var(--theme-border)] px-3 py-2.5 font-medium">Agent / Skill</th>
-            <th className="border-b border-[var(--theme-border)] px-3 py-2.5 font-medium">时间</th>
-            <th className="w-10 border-b border-[var(--theme-border)] px-2 py-2.5"><span className="sr-only">详情</span></th>
-          </tr>
-        </thead>
-        <tbody>
+      <Table className="w-full border-separate border-spacing-0 text-left text-xs">
+        <TableHeader className="sticky top-0 z-[1] bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)]">
+          <TableRow>
+            <TableHead className="border-b border-[var(--theme-border)] px-3 py-2.5 font-medium">状态</TableHead>
+            <TableHead className="border-b border-[var(--theme-border)] px-3 py-2.5 font-medium">任务 / 运行</TableHead>
+            <TableHead className="border-b border-[var(--theme-border)] px-3 py-2.5 font-medium">用户 / 工作区</TableHead>
+            <TableHead className="border-b border-[var(--theme-border)] px-3 py-2.5 font-medium">Agent / Skill</TableHead>
+            <TableHead className="border-b border-[var(--theme-border)] px-3 py-2.5 font-medium">时间</TableHead>
+            <TableHead className="w-10 border-b border-[var(--theme-border)] px-2 py-2.5"><span className="sr-only">详情</span></TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
           {runs.map((run) => {
             const selected = run.run_id === selectedRunId;
             return (
-              <tr
+              <TableRow
                 key={run.run_id}
                 data-selected={selected ? "true" : "false"}
                 className="group transition-colors hover:bg-[var(--theme-bg-sidebar)] data-[selected=true]:bg-[var(--theme-info-soft)]"
               >
-                <td className="border-b border-[var(--theme-border)] px-3 py-3 align-top">
+                <TableCell className="border-b border-[var(--theme-border)] px-3 py-3 align-top">
                   <StatusBadge status={run.status} />
                   {run.status === "queued" && run.queue_position ? (
                     <p className="mt-1.5 whitespace-nowrap text-[11px] text-[var(--theme-text-tertiary)]">
@@ -1320,8 +1321,8 @@ function DesktopRunTable({
                       {run.error_code}
                     </p>
                   ) : null}
-                </td>
-                <td className="max-w-[250px] border-b border-[var(--theme-border)] px-3 py-3 align-top">
+                </TableCell>
+                <TableCell className="max-w-[250px] border-b border-[var(--theme-border)] px-3 py-3 align-top">
                   <button
                     type="button"
                     onClick={() => onSelect(run.run_id)}
@@ -1341,8 +1342,8 @@ function DesktopRunTable({
                       运行 {compactIdentifier(run.run_id)}
                     </span>
                   </button>
-                </td>
-                <td className="max-w-[190px] border-b border-[var(--theme-border)] px-3 py-3 align-top">
+                </TableCell>
+                <TableCell className="max-w-[190px] border-b border-[var(--theme-border)] px-3 py-3 align-top">
                   <p className="truncate text-[var(--theme-text)]" title={userDisplayName(run)}>
                     {userDisplayName(run)}
                   </p>
@@ -1352,8 +1353,8 @@ function DesktopRunTable({
                   >
                     {workspaceDisplayName(run)}
                   </p>
-                </td>
-                <td className="max-w-[210px] border-b border-[var(--theme-border)] px-3 py-3 align-top">
+                </TableCell>
+                <TableCell className="max-w-[210px] border-b border-[var(--theme-border)] px-3 py-3 align-top">
                   <p className="truncate text-[var(--theme-text)]" title={agentDisplayName(run)}>
                     {agentDisplayName(run)}
                   </p>
@@ -1363,12 +1364,12 @@ function DesktopRunTable({
                   >
                     {skillDisplayName(run)}
                   </p>
-                </td>
-                <td className="whitespace-nowrap border-b border-[var(--theme-border)] px-3 py-3 align-top">
+                </TableCell>
+                <TableCell className="whitespace-nowrap border-b border-[var(--theme-border)] px-3 py-3 align-top">
                   <p className="text-[var(--theme-text)]">{dateTime(run.started_at ?? run.queued_at ?? run.created_at)}</p>
                   <p className="mt-1 tabular-nums text-[11px] text-[var(--theme-text-tertiary)]">{durationLabel(run)}</p>
-                </td>
-                <td className="border-b border-[var(--theme-border)] px-2 py-3 align-middle">
+                </TableCell>
+                <TableCell className="border-b border-[var(--theme-border)] px-2 py-3 align-middle">
                   <button
                     type="button"
                     onClick={() => onSelect(run.run_id)}
@@ -1378,12 +1379,12 @@ function DesktopRunTable({
                   >
                     <ChevronRight size={16} />
                   </button>
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             );
           })}
-        </tbody>
-      </table>
+        </TableBody>
+      </Table>
     </div>
   );
 }

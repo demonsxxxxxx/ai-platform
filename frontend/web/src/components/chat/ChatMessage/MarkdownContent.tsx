@@ -1,4 +1,5 @@
 import ReactMarkdown from "react-markdown";
+import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "../../common/Table";
 import toast from "react-hot-toast";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
@@ -296,12 +297,12 @@ function TableBlock({ children }: { children: React.ReactNode }) {
       </div>
       {/* Scrollable table area — toolbar is outside this so it stays fixed */}
       <div className="overflow-x-auto">
-        <table
+        <Table
           ref={tableRef}
           className="min-w-full divide-y divide-stone-200 dark:divide-stone-700"
         >
           {children}
-        </table>
+        </Table>
       </div>
     </div>
   );
@@ -566,27 +567,27 @@ export const MarkdownContent = memo(function MarkdownContent({
           // Tables with copy & export toolbar
           table: ({ children }) => <TableBlock>{children}</TableBlock>,
           thead: ({ children }) => (
-            <thead className="bg-stone-50 dark:bg-stone-800">{children}</thead>
+            <TableHeader className="bg-stone-50 dark:bg-stone-800">{children}</TableHeader>
           ),
           tbody: ({ children }) => (
-            <tbody className="divide-y divide-stone-200 dark:divide-stone-700 bg-white dark:bg-stone-900">
+            <TableBody className="divide-y divide-stone-200 dark:divide-stone-700 bg-white dark:bg-stone-900">
               {children}
-            </tbody>
+            </TableBody>
           ),
           tr: ({ children }) => (
-            <tr className="hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors">
+            <TableRow className="hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors">
               {children}
-            </tr>
+            </TableRow>
           ),
           th: ({ children }) => (
-            <th className="px-3 py-2 text-left text-xs font-semibold text-stone-700 dark:text-stone-300 uppercase tracking-wider whitespace-nowrap min-w-[60px]">
+            <TableHead className="px-3 py-2 text-left text-xs font-semibold text-stone-700 dark:text-stone-300 uppercase tracking-wider whitespace-nowrap min-w-[60px]">
               {children}
-            </th>
+            </TableHead>
           ),
           td: ({ children }) => (
-            <td className="px-3 py-2 text-sm text-stone-600 dark:text-stone-400 break-words min-w-[60px]">
+            <TableCell className="px-3 py-2 text-sm text-stone-600 dark:text-stone-400 break-words min-w-[60px]">
               {children}
-            </td>
+            </TableCell>
           ),
           // Images — click to preview with ImageViewer
           img: ({ src, alt }) => (

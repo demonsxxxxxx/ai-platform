@@ -1,17 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { installTestDom } from "../../../hooks/useAgent/__tests__/testDom.ts";
+import { installSelectTestDom } from "../../common/__tests__/selectTestDom.ts";
 import { modelAdminApi, type AdminModelState } from "../../../services/api/modelAdmin.ts";
 import { ApiRequestError } from "../../../services/api/fetch.ts";
-const dom = installTestDom();
+const dom = installSelectTestDom();
 type ReactModule = typeof import("react");
-type QueryNode = { getAttribute(name: string): string | null; textContent?: string | null; childNodes?: unknown[] };
-type Container = { querySelectorAll(selector: string): QueryNode[] };
+type QueryNode = { getAttribute(name: string): string | null; textContent?: string | null; childNodes?: ArrayLike<unknown> };
+type Container = { querySelectorAll(selector: string): ArrayLike<QueryNode> };
 type Field = { value: string; checked: boolean };
 function text(node: unknown): string {
-  const value = node as { data?: unknown; textContent?: unknown; childNodes?: unknown[] };
+  const value = node as { data?: unknown; textContent?: unknown; childNodes?: ArrayLike<unknown> };
   if (typeof value.data === "string") return value.data;
-  return typeof value.textContent === "string" && value.textContent ? value.textContent : (value.childNodes ?? []).map(text).join("");
+  return typeof value.textContent === "string" && value.textContent ? value.textContent : Array.from(value.childNodes ?? []).map(text).join("");
 }
 function props(node: object) {
   const key = Object.keys(node).find((key) => key.startsWith("__reactProps$")); assert.ok(key);
@@ -45,10 +45,10 @@ async function withControl(api: Partial<typeof modelAdminApi>, run: (view: View)
   const container = dom.document.createElement("div"); const root = createRoot(container as never);
   const render = async (canManage: boolean) => { await React.act(async () => { root.render(React.createElement(ModelAdminControl, { canManage })); }); };
   const input = (label: string) => {
-    const found = container.querySelectorAll("input").find((node) => node.getAttribute("aria-label") === label); assert.ok(found, label); return found as unknown as Field;
+    const found = Array.from(container.querySelectorAll("input")).find((node) => node.getAttribute("aria-label") === label); assert.ok(found, label); return found as unknown as Field;
   };
   const button = (attribute: string) => {
-    const found = container.querySelectorAll("button").find((node) => node.getAttribute(attribute) !== null); assert.ok(found, attribute); return found;
+    const found = Array.from(container.querySelectorAll("button")).find((node) => node.getAttribute(attribute) !== null); assert.ok(found, attribute); return found;
   };
   try {
     await render(true);

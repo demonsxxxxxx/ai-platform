@@ -12,6 +12,12 @@ import toast from "react-hot-toast";
 const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/memory" });
 Object.assign(globalThis, { window: dom.window, document: dom.window.document, localStorage: dom.window.localStorage, sessionStorage: dom.window.sessionStorage, HTMLElement: dom.window.HTMLElement, CustomEvent: dom.window.CustomEvent, IS_REACT_ACT_ENVIRONMENT: true });
 Object.defineProperty(globalThis, "navigator", { configurable: true, value: dom.window.navigator });
+Object.assign(globalThis, {
+  getComputedStyle: dom.window.getComputedStyle,
+  HTMLFormElement: dom.window.HTMLFormElement,
+  HTMLSelectElement: dom.window.HTMLSelectElement,
+  DocumentFragment: dom.window.DocumentFragment,
+});
 installBrowserAuthTestDb();
 const { act, createElement } = await import("react");
 const { createRoot } = await import("react-dom/client");
