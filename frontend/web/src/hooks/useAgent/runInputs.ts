@@ -487,6 +487,7 @@ export function useRunInputs({
     const attempt = pendingAttemptRef.current;
     if (
       !attempt ||
+      writeControllerRef.current !== null ||
       attempt.owner !== owner ||
       state.pendingSubmission?.state !== "uncertain"
     ) {

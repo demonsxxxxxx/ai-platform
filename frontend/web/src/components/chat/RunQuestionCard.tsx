@@ -44,6 +44,8 @@ export function RunQuestionCard({
 
   const pending = runInputs.pendingSubmission;
   const busy = Boolean(pending);
+  const uncertainAnswer = pending?.kind === "answer" &&
+    pending.questionId === batch.question_id && pending.state === "uncertain";
   const readOnly =
     !canSend || batch.status !== "pending" || runInputs.isClosed || runInputs.projection?.state !== "open";
   const closedUnprocessed =
@@ -192,6 +194,11 @@ export function RunQuestionCard({
               {t("chat.runInputs.answerRequired", "请回答每个问题后再提交。")}
             </p>
           ) : null}
+          {uncertainAnswer && !readOnly ? (
+            <p className="mb-2 text-xs text-[var(--theme-warning)]" role="alert">
+              {t("chat.runInputs.answerUncertain", "尚未确认答案是否提交成功，可重试提交原答案。")}
+            </p>
+          ) : null}
           {runInputs.submissionError === "rejected" ? (
             <p className="mb-2 text-xs text-[var(--theme-danger)]" role="alert">
               {t("chat.runInputs.answerRejected", "答案未被接受，选择仍保留。")}
@@ -202,7 +209,16 @@ export function RunQuestionCard({
               {t("chat.runInputs.answerRunClosed", "当前任务暂不接收答案，填写内容仍保留。")}
             </p>
           ) : null}
-          <div className="flex justify-end">
+          <div className="flex justify-end gap-2">
+            {uncertainAnswer && !readOnly ? (
+              <button
+                className="rounded-full border border-[var(--theme-primary)] px-3 py-1.5 text-xs font-medium text-[var(--theme-primary)]"
+                onClick={() => void runInputs.retryPendingSubmission()}
+                type="button"
+              >
+                {t("chat.runInputs.retryAnswer", "重试提交答复")}
+              </button>
+            ) : null}
             <button
               className="rounded-full bg-[var(--theme-primary)] px-3 py-1.5 text-xs font-medium text-white disabled:cursor-not-allowed disabled:opacity-45"
               disabled={readOnly || busy}
