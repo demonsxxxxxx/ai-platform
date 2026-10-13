@@ -288,6 +288,13 @@ Schema `2026.10.13.1` adds the nullable retry deadline and `cleanup_pending`.
 Existing terminal retries retain `updated_at + min(30, max(1, attempt_count))`
 as their first deadline. Probe retry retains its separate heartbeat/attempt clock.
 The accepted writer cannot reset either a deadline or a cleanup handoff.
+The concurrent-index ledger advances with this contract. The existing
+`idx_sandbox_leases_executor_reconcile` is rebuilt to order by receipt age and
+ID for both active and historically released receipts; its active-only,
+status/updated-at definition is retired. A separate partial retry-deadline index
+supports the next-due query without scanning finalized history. Both indexes
+have one concurrent migration owner and exact readiness catalog contracts;
+they are not duplicated in the core schema's static index registry.
 
 The inline terminal provider-stop helpers and the claimed-to-finalized release
 writer are retired from `executor_reconciler.py` and `sandbox_leases.py`, together

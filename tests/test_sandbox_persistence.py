@@ -941,6 +941,16 @@ async def test_retry_deadline_migration_preserves_legacy_backoff_and_is_idempote
         "executor_terminal_reconciliation_attempt_count = 7, updated_at = now() - interval '3 seconds'"
     )
     before = await (await conn.execute("select updated_at from sandbox_leases where id = 'lease-a'")).fetchone()
+    await conn.execute(
+        "create index idx_sandbox_leases_executor_reconcile "
+        "on sandbox_leases(executor_reconciliation_status, updated_at, id) "
+        "where status = 'active' and executor_terminal_json is not null "
+        "and executor_reconciliation_context_json is not null "
+        "and executor_reconciliation_status in ('pending', 'retry', 'claimed')"
+    )
+    terminal_indexes = [item for item in schema_migrations.CONCURRENT_INDEX_MIGRATIONS
+                        if item.name in {"idx_sandbox_leases_executor_reconcile", "idx_sandbox_leases_executor_reconcile_due"}]
+    assert not await schema_migrations._index_is_ready(conn, terminal_indexes[0])
 
     @asynccontextmanager
     async def transaction():
@@ -957,6 +967,13 @@ async def test_retry_deadline_migration_preserves_legacy_backoff_and_is_idempote
     assert result["version"] == schema_migrations.TERMINAL_RECONCILIATION_RETRY_SCHEMA_VERSION
     migrated = await (await conn.execute("select * from sandbox_leases where id = 'lease-a'")).fetchone()
     assert migrated["executor_reconciliation_retry_not_before"] == before["updated_at"] + timedelta(seconds=7)
+    for index in terminal_indexes:
+        assert await schema_migrations._index_is_ready(conn, index)
+    ledger = await (await conn.execute(
+        "select target_version from schema_index_migrations where index_name like 'idx_sandbox_leases_executor_reconcile%'"
+    )).fetchall()
+    assert len(ledger) == 2
+    assert {row["target_version"] for row in ledger} == {schema_migrations.TERMINAL_RECONCILIATION_RETRY_SCHEMA_VERSION}
     result = await schema_migrations.apply_migrations(transaction_factory=transaction, index_connection_factory=index_connection)
     assert result["status"] == "current"
     after = await (await conn.execute("select * from sandbox_leases where id = 'lease-a'")).fetchone()
