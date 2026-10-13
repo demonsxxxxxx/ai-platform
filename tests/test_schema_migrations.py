@@ -698,11 +698,13 @@ def test_stream_only_schema_change_advances_schema_version():
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert schema_migrations.RUN_INPUTS_SCHEMA_VERSION == "2026.10.07.1"
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.10.12.1"
+    assert schema_migrations.RUN_QUESTION_DEFAULT_ANSWER_SCHEMA_VERSION == "2026.10.12.1"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.10.13.1"
     assert (
         schema_migrations.TARGET_SCHEMA_VERSION
-        == schema_migrations.RUN_QUESTION_DEFAULT_ANSWER_SCHEMA_VERSION
+        == schema_migrations.TERMINAL_RECONCILIATION_RETRY_SCHEMA_VERSION
     )
+    assert ("sandbox_leases", "executor_reconciliation_retry_not_before", "timestamptz", False) in schema_migrations.CRITICAL_COLUMNS
     assert ("run_inputs", "source", "text", True) in schema_migrations.CRITICAL_COLUMNS
     assert ("run_inputs", "chk_run_inputs_source") in schema_migrations.CRITICAL_CONSTRAINTS
     assert schema_migrations.CLAUDE_CONTEXT_CUTOVER_SCHEMA_VERSION == "2026.09.15.2"
@@ -710,7 +712,7 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert schema_migrations.FILE_UPLOAD_SESSION_SCHEMA_VERSION == "2026.09.03.1"
     assert (
         schema_migrations.CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION
-        == schema_migrations.ASSISTANT_TEXT_PART_INDEX_SCHEMA_VERSION
+        == schema_migrations.TERMINAL_RECONCILIATION_RETRY_SCHEMA_VERSION
     )
     assert schema_migrations.BAOYU_TRANSLATE_RETIREMENT_SCHEMA_VERSION == "2026.09.07.1"
     assert schema_migrations.CRITICAL_RELATIONS == (
@@ -1281,7 +1283,7 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "c",
             "CHECK (executor_reconciliation_status = ANY (ARRAY["
             "'waiting_terminal'::text, 'pending'::text, 'claimed'::text, "
-            "'retry'::text, 'finalized'::text, 'failed'::text]))",
+            "'retry'::text, 'cleanup_pending'::text, 'finalized'::text, 'failed'::text]))",
         ),
     )
     assert (
@@ -1414,6 +1416,7 @@ def test_sandbox_executor_async_terminal_columns_are_additive():
         "executor_reconciliation_status text",
         "executor_reconciliation_claim_token text",
         "executor_reconciliation_claimed_at timestamptz",
+        "executor_reconciliation_retry_not_before timestamptz",
         "executor_reconciliation_attempt_count integer",
         "executor_terminal_reconciliation_attempt_count integer",
         "executor_reconciliation_error text",
@@ -1422,8 +1425,21 @@ def test_sandbox_executor_async_terminal_columns_are_additive():
         assert f"alter table sandbox_leases add column if not exists {column}" in schema
     assert (
         "check (executor_reconciliation_status in "
-        "('waiting_terminal', 'pending', 'claimed', 'retry', 'finalized', 'failed'))"
+        "('waiting_terminal', 'pending', 'claimed', 'retry', 'cleanup_pending', 'finalized', 'failed'))"
     ) in schema
+
+
+def test_terminal_retry_and_claim_indexes_have_one_catalog_owner():
+    indexes = {item.name: item for item in schema_migrations.CONCURRENT_INDEX_MIGRATIONS}
+    claim = indexes["idx_sandbox_leases_executor_reconcile"]
+    due = indexes["idx_sandbox_leases_executor_reconcile_due"]
+    assert claim.key_expressions == ("coalesce(executor_terminal_received_at, created_at)", "id")
+    assert due.column_names == ("executor_reconciliation_retry_not_before",)
+    for item in (claim, due):
+        assert "status in ('active', 'released')" in item.sql
+        assert (item.name, False) in schema_migrations.CRITICAL_INDEXES
+        assert item.name not in {static.name for static in schema_migrations.STATIC_INDEX_DEFINITIONS}
+    assert "executor_reconciliation_status = 'retry'" in due.sql
 
 
 def test_part_lookup_indexes_are_created_only_by_the_concurrent_phase():
