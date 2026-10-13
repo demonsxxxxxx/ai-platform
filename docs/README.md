@@ -104,6 +104,15 @@ cross-component failure scenarios; it does not replace them.
 Reviewed, redacted evidence remains indexed by [Release evidence](release-evidence/README.md)
 and is historical unless its exact subject has been freshly verified.
 
+## Repository improvement and dated inventories
+
+[Architecture navigation](../ARCHITECTURE.md) and [core beliefs](design-docs/core-beliefs.md)
+link the existing owners. [Source quality baseline](QUALITY_SCORE.md) records
+measurement scope, denominators and unmeasured fields; its generated reports are
+dated observations. The [active Harness plan](exec-plans/active/harness-migration.md)
+and [debt inventory](exec-plans/tech-debt-tracker.md) own this improvement's progress
+and prerequisites, not product or release authority.
+
 ## Document maintenance
 
 A retained document must have one purpose and identify whether it describes an
