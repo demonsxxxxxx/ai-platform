@@ -227,6 +227,7 @@ class RunDiagnosticsService:
         terminal_result: object,
         reconciliation_error_code: str,
         lease_id: str | None = None,
+        reconciliation_evidence_factory: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         if isinstance(terminal_result, dict):
             await self.capture_failure_result(
@@ -240,7 +241,22 @@ class RunDiagnosticsService:
                 result_json=terminal_result,
                 lease_id=lease_id,
             )
-        await self.capture_failure_result(
+
+        def build_reconciliation_diagnostics() -> dict[str, Any]:
+            evidence = (
+                reconciliation_evidence_factory()
+                if reconciliation_evidence_factory is not None else {}
+            )
+            return {
+                "schema_version": self.runtime_diagnostics_schema_version,
+                "error_code": "terminal_reconciliation_failed",
+                "failure_source": "executor_reconciler",
+                "failure_stage": "terminalization",
+                "sdk": {**evidence.get("sdk", {}), "errors": [reconciliation_error_code]},
+                "normalization_losses": evidence.get("normalization_losses", []),
+            }
+
+        await self._capture_runtime_diagnostics(
             conn,
             tenant_id=tenant_id,
             run_id=run_id,
@@ -248,15 +264,9 @@ class RunDiagnosticsService:
             source="executor_reconciler",
             stage="terminalization",
             error_code="terminal_reconciliation_failed",
-            result_json={
-                "runtime_diagnostics": {
-                    "schema_version": self.runtime_diagnostics_schema_version,
-                    "error_code": "terminal_reconciliation_failed",
-                    "failure_source": "executor_reconciler",
-                    "failure_stage": "terminalization",
-                    "sdk": {"errors": [reconciliation_error_code]},
-                }
-            },
+            runtime_diagnostics=None,
+            runtime_diagnostics_factory=build_reconciliation_diagnostics,
+            normalize=True,
             lease_id=lease_id,
         )
 

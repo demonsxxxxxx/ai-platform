@@ -557,6 +557,74 @@ async def test_reconciliation_keeps_original_failure_and_appends_classified_hand
     ) == 1
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_mode", ["none", "factory", "persist"])
+async def test_reconciliation_cause_is_private_and_diagnostic_failure_is_nonfatal(failure_mode):
+    from app.executor_reconciler import _exception_diagnostic_evidence
+
+    class Persistence(InMemoryDiagnostics):
+        async def append_observation(self, conn, **kwargs):
+            if failure_mode == "persist" and kwargs["observation"]["stage"] == "terminalization":
+                raise OSError("synthetic diagnostic persistence failure")
+            return await super().append_observation(conn, **kwargs)
+
+    persistence = Persistence()
+    service = RunDiagnosticsService(
+        persistence=persistence,
+        normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
+        runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+        exception_log_fields=safe_exception_log_fields,
+        clock=lambda: NOW,
+    )
+    try:
+        raise OSError("/private/workspace token=synthetic-token Bearer synthetic-bearer " + "x" * 30_000)
+    except OSError as cause:
+        try:
+            raise ValueError("synthetic reconciliation failure") from cause
+        except ValueError as error:
+            failure = error
+
+    def evidence_factory():
+        if failure_mode == "factory":
+            raise ValueError("synthetic extraction failure")
+        return _exception_diagnostic_evidence(failure)
+
+    terminal = {"status": "failed", "error_code": "provider_timeout", "runtime_diagnostics": runtime_diagnostics()}
+    original = deepcopy(terminal)
+    await service.capture_reconciliation_failure(
+        object(), tenant_id="tenant-a", run_id="run-a", attempt_id="attempt-a",
+        lease_id="lease-a", terminal_result=terminal,
+        reconciliation_error_code="artifact_manifest_invalid",
+        reconciliation_evidence_factory=evidence_factory,
+    )
+    assert terminal == original
+    observations = persistence.payload["observations"]
+    assert observations[0]["runtime_diagnostics"]["error_code"] == "provider_timeout"
+    assert len(observations) == (2 if failure_mode == "none" else 1)
+    if failure_mode == "none":
+        handling = observations[1]
+        assert handling["source"] == "executor_reconciler"
+        assert handling["stage"] == "terminalization"
+        assert handling["attempt_id"] == "attempt-a"
+        assert handling["lease_id"] == "lease-a"
+        sdk = handling["runtime_diagnostics"]["sdk"]
+        assert sdk["errors"] == ["artifact_manifest_invalid"]
+        assert [node["type"] for node in sdk["exception_chain"]] == ["ValueError", "OSError"]
+        assert sdk["exception_chain"][0]["relation"] == "cause"
+        assert "test_reconciliation_cause" in sdk["exception_chain"][1]["traceback"]
+        assert json_size_bytes(persistence.payload) <= RUN_DIAGNOSTICS_MAX_BYTES
+        assert handling["runtime_diagnostics"]["normalization_losses"]
+        from app.run_projection import public_chat_terminal_projection
+        public = public_chat_terminal_projection({
+            "id": "run-a", "status": "failed", "error_code": "terminal_reconciliation_failed",
+            "result_json": {"runtime_diagnostics": {"sdk": _exception_diagnostic_evidence(failure)["sdk"]}},
+        })
+        assert "exception_chain" not in json.dumps(public)
+        for private in ("synthetic-token", "synthetic-bearer", "/private/workspace"):
+            assert private not in json.dumps(persistence.payload)
+            assert private not in json.dumps(public)
+
+
 def test_run_budget_keeps_the_first_and_latest_observations():
     payload = None
     observation_ids = []
