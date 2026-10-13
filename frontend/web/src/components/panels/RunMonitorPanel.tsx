@@ -1457,6 +1457,7 @@ export function RunMonitorPanel() {
   const listRequestSequence = useRef(0);
   const detailRequestSequence = useRef(0);
   const diagnosticsRequestSequence = useRef(0);
+  const diagnosticsExportSequence = useRef(0);
   const selectedRunIdRef = useRef<string | null>(scope.runId);
   const refreshButtonRef = useRef<HTMLButtonElement>(null);
 
@@ -1547,9 +1548,14 @@ export function RunMonitorPanel() {
     return () => window.clearInterval(timer);
   }, [autoRefresh, loadRuns]);
 
+  useEffect(() => () => {
+    diagnosticsExportSequence.current += 1;
+  }, []);
+
   const exportDiagnostics = useCallback(async () => {
     const runId = selectedRunIdRef.current;
     if (!runId) return;
+    const requestId = ++diagnosticsExportSequence.current;
     setDiagnosticsExporting(true);
     setDiagnosticsExportError(null);
     try {
@@ -1564,13 +1570,18 @@ export function RunMonitorPanel() {
       anchor.remove();
       window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
     } catch (error) {
-      setDiagnosticsExportError(error instanceof Error ? error.message : "诊断包生成失败");
+      if (requestId === diagnosticsExportSequence.current) {
+        setDiagnosticsExportError(error instanceof Error ? error.message : "诊断包生成失败");
+      }
     } finally {
-      setDiagnosticsExporting(false);
+      if (requestId === diagnosticsExportSequence.current) setDiagnosticsExporting(false);
     }
   }, []);
 
   const selectRun = useCallback((runId: string) => {
+    // Navigation retires UI ownership, not an already requested download.
+    diagnosticsExportSequence.current += 1;
+    setDiagnosticsExporting(false);
     selectedRunIdRef.current = runId;
     setSelectedRunId(runId);
     setDetail(null);
@@ -1581,6 +1592,7 @@ export function RunMonitorPanel() {
   }, [loadDetail, loadDiagnostics]);
 
   const closeDetail = useCallback(() => {
+    diagnosticsExportSequence.current += 1;
     detailRequestSequence.current += 1;
     diagnosticsRequestSequence.current += 1;
     selectedRunIdRef.current = null;
