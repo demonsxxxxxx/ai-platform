@@ -227,3 +227,8 @@ from app.runs.domain.inputs import (
 from app.runs.application.attempt_lifecycle import (
     ReconciliationAuthorityError as ReconciliationAuthorityError,
 )
+
+from app.runs.application.worker_terminal_completion import (
+    WorkerOutcome as WorkerOutcome,
+    WorkerTerminalCompletionService as WorkerTerminalCompletionService,
+)

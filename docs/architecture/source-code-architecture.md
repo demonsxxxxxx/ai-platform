@@ -128,13 +128,23 @@ API. Runs owns locked Worker admission, snapshot validation, dispatch binding,
 result commit, and exception/cancellation terminal transactions in
 `runs.application.worker_dispatch_admission`, `worker_locked_authorization`,
 `worker_locked_snapshot`, `worker_dispatch_binding`, `worker_result_commit`, and
-`worker_execution_terminal`. Bootstrap binds concrete repositories and other
+`worker_execution_terminal`. `worker_terminal_completion` is the shared
+completion use case for inline results and durable receipt recovery, reusing
+the same atomic `worker_result_commit` and publishing only after commit.
+`bootstrap.worker_run_preparation` composes the unchanged admission/binding
+order for both ingress paths. `bootstrap.executor_terminal_reconciliation`
+restores the receipt and enters completion without constructing a queue envelope
+or calling `worker.process_run_payload`; it never resubmits the executor.
+Both ingress paths require their process runtime services to be configured
+(including Agent Profile authority) before entry; receipt recovery does not
+initialize global services or depend on an earlier queue slot.
+Bootstrap binds concrete repositories and other
 context services, including the complete dispatch admission and binding graphs.
 Worker supplies per-Run authority and transaction scope to those assembled
 operations; it does not choose Context projectors, specification compilers,
 placeholder lease writers, or early-failure collaborators.
-Worker orchestrates dispatch and publishes committed events
-only after each transaction exits; the former Worker capability/early-failure
+Worker orchestrates queue dispatch; shared preparation and completion publish
+committed events only after each transaction exits; the former Worker capability/early-failure
 helpers and `Locked*Ports` callback bags have no compatibility owner.
 Result persistence rolls back artifacts, Skill snapshots, messages, and events
 when any terminal CAS loses authority. Worker interruption cleanup covers only
