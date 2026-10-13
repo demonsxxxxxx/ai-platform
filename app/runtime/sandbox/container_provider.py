@@ -4367,6 +4367,16 @@ class OpenSandboxContainerProvider:
                 except Exception as exc:
                     if not is_authoritative_not_found_error(exc):
                         raise
+                    # Absence settles the remote resource, but the connected SDK
+                    # client still owns local transports. Do not clear tracking
+                    # before close: cancellation must leave cleanup retryable.
+                    try:
+                        close = getattr(sandbox, "close", None)
+                        if close is not None:
+                            await _maybe_await(close())
+                    except Exception:
+                        # A local transport failure cannot invalidate confirmed absence.
+                        pass
                     self._leases.pop(cache_key, None)
                     self._sandboxes.pop(lease.container_id, None)
                     return StopResult(container_id=lease.container_id, status="not_found", message=reason)
