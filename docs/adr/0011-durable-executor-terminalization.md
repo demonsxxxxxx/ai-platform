@@ -10,7 +10,7 @@ An executor can persist a terminal callback while its parent run remains active.
 
 ## Decision
 
-1. PostgreSQL is authoritative for executor terminal receipts, reconciliation snapshots, attempts and run terminal state. Redis only wakes live consumers.
+1. PostgreSQL is authoritative for executor terminal receipts, reconciliation snapshots, attempts and Run terminal state. The private Redis reconciliation signal only wakes reconcilers; it is not receipt or terminal authority. Public Run-event live/replay transport is separately owned by [ADR 0013](0013-redis-stream-only-sse.md) and uses Redis Stream.
 2. Reconciliation snapshots use `ai-platform.executor-reconciliation-snapshot.v2` with separate `execution_payload` and `metadata`. Legacy snapshots remain readable.
 3. Reconciliation metadata never flows into `RunPayload` construction. Snapshot readers validate the version and explicitly select the execution payload.
 4. A pending executor terminal receipt is an ownership proof. Stale-run cleanup must not terminalize a run with such a receipt.

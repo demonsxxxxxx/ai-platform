@@ -723,6 +723,11 @@ and retirement completeness require human review under the
 does not read PR bodies. The retirement checklist is a review index; reviewers
 must inspect or rerun its referenced inventory, not treat filled fields as proof.
 
+Architecture findings include a `remediation` string in JSON and a corresponding
+text hint. These describe how to restore the owning boundary; they do not change
+finding codes, exception eligibility, trusted authority, or exit status. Rerun the
+same exact authority/base/head range after fixing the reported responsibility.
+
 Machine configuration is a policy input, not a manual progress ledger.
 [`architecture-policy.json`](../../architecture-policy.json) and
 [`schemas/architecture-policy.v1.schema.json`](../../schemas/architecture-policy.v1.schema.json)
