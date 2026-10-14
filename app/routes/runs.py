@@ -6,7 +6,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import UUID4
 
-from app.agent_apps.api import AgentProfileAuthority
+from app.agent_apps.api import AgentProfileAuthority, agent_type_requires_profile_admission
 from app.agent_apps.infrastructure import catalog_postgres as agent_apps_catalog
 from app.artifacts.infrastructure import records_postgres as artifacts_records
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
@@ -888,6 +888,8 @@ async def create_run(
                         conn,
                         **authorization_kwargs,
                     )
+                if agent_type_requires_profile_admission(skill.get("agent_type")):
+                    raise HTTPException(status_code=409, detail="agent_profile_admission_required")
                 executor_type = str(skill["executor_type"])
                 input_modes = list(skill.get("input_modes") or [])
             reusable_file_rows = []

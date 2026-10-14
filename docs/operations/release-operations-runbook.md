@@ -10,8 +10,18 @@ application install or upgrade.
 ## What CI publishes
 
 The Packaging workflow runs on main pushes and confirmed manual main
-runs, independently of the Backend and Frontend checks. Before requesting a
-formal version, verify those required checks passed for the selected main commit.
+runs, independently of the Backend and Frontend checks. Only formal version
+publication additionally requires machine-verified `backend required` and
+`frontend required` success for that exact main commit. The gate reads the
+repository-owned Backend/Frontend workflows and their latest run attempts,
+not matching check names from arbitrary producers. Missing, ambiguous, failed,
+cancelled, unfinished, changing, or unreadable evidence blocks tag reservation.
+A newer failed run cannot fall back to an older success; unfinished overlapping
+runs and newer unsuccessful retries also block. Retry publication after the
+required main checks finish successfully. PR trusted governance remains the
+accepted-base PR gate; its different SHA is not presented as main test evidence.
+Automatic images and temporary packages remain independent of this Release-only
+test gate.
 Packaging verifies the two application image subjects, binds their complete
 `linux/amd64` registry digests, and creates one package from the manifest.
 Only an explicit version attaches `ai-platform-internal-test.tar.gz` to an immutable
@@ -34,9 +44,9 @@ Publication jobs reference the `packaging-publish` environment, but its name
 does not establish approval protection. Recheck the actual environment settings,
 including protection rules and deployment branch policy, before relying on any
 approval gate; repository/main restrictions and workflow qualification checks
-still apply. The operator must
-verify Backend and Frontend checks for the selected exact main commit before
-requesting a formal version; environment selection is not evidence of that check.
+still apply. Formal publication verifies existing Backend and Frontend success
+for the selected exact main commit automatically; environment selection is not
+evidence of that check, and qualification does not rerun the test workflows.
 The workflow creates a unique versioned Release only after all qualification
 steps pass and then verifies that GitHub reports it immutable. A mutable or incomplete Release
 is not a deployment input.
