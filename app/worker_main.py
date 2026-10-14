@@ -178,6 +178,23 @@ def _fenced_transaction_factory(fence_guard: _ReconciliationFenceGuard):
     return fenced_transaction
 
 
+def configure_worker_services() -> None:
+    """Bind every worker port before any runtime or background task starts."""
+    configure_file_upload_services()
+    configure_model_services()
+    configure_skill_markdown()
+    configure_context_services()
+    configure_mcp_runtime()
+    configure_agent_profile_runtime()
+
+
+def _worker_role(settings: object) -> str:
+    role = getattr(settings, "worker_role", "integrated")
+    if role not in {"integrated", "execution", "finalizer"}:
+        raise ValueError(f"invalid worker role: {role}")
+    return role
+
+
 def default_worker_id() -> str:
     return f"{socket.gethostname()}:{uuid.uuid4().hex[:12]}"
 
@@ -188,10 +205,11 @@ def worker_runtime_heartbeat_path() -> Path:
     return Path(os.environ.get("TMPDIR") or "/tmp") / "ai-platform-worker-runtime-heartbeat.json"
 
 
-def write_worker_runtime_heartbeat(worker_id: str) -> None:
+def write_worker_runtime_heartbeat(worker_id: str, *, role: str = "integrated") -> None:
     payload = {
         "schema_version": "ai-platform.worker-runtime-heartbeat.v1",
         "worker_id": worker_id,
+        "worker_role": role,
         "runtime_commit": os.environ.get("AI_PLATFORM_RUNTIME_COMMIT", "unknown"),
         "pid": os.getpid(),
         "observed_at": datetime.now(timezone.utc).isoformat(),
@@ -202,9 +220,11 @@ def write_worker_runtime_heartbeat(worker_id: str) -> None:
     temporary.replace(heartbeat_path)
 
 
-async def _worker_runtime_heartbeat_until_done(worker_id: str, interval_seconds: float = 5.0) -> None:
+async def _worker_runtime_heartbeat_until_done(
+    worker_id: str, interval_seconds: float = 5.0, *, role: str = "integrated"
+) -> None:
     while True:
-        write_worker_runtime_heartbeat(worker_id)
+        write_worker_runtime_heartbeat(worker_id, role=role)
         await asyncio.sleep(interval_seconds)
 
 
@@ -571,6 +591,8 @@ async def cleanup_expired_file_upload_sessions() -> int:
 
 
 def _worker_cleanup_phases(settings: object) -> dict[str, Callable[[], Any]]:
+    if _worker_role(settings) == "execution":
+        return {}
     return {
         "sandbox_cleanup": cleanup_expired_sandbox_leases,
         "memory_cleanup": lambda: cleanup_expired_memory_records_for_worker(settings),
@@ -586,7 +608,7 @@ def _worker_recovery_phases(
     attempt_lifecycle: RunAttemptLifecycleService,
     lifecycle: RunLifecycleService,
 ) -> dict[str, Callable[[], Any]]:
-    return {
+    phases = {
         "queue_reclaim": lambda: queue.reclaim_expired_leases(
             visibility_timeout_seconds=int(getattr(settings, "queue_lease_visibility_timeout_seconds", 900))
         ),
@@ -597,6 +619,13 @@ def _worker_recovery_phases(
             lifecycle=lifecycle,
         ),
     }
+
+    role = _worker_role(settings)
+    if role == "execution":
+        phases.pop("stale_run_reconciliation")
+    elif role == "finalizer":
+        phases.pop("queue_reclaim")
+    return phases
 
 
 async def run_worker_recovery_maintenance(
@@ -863,11 +892,11 @@ async def run_once(
     attempt_lifecycle: RunAttemptLifecycleService,
     lifecycle: RunLifecycleService,
 ) -> WorkerOutcome:
-    configure_context_services()
-    configure_mcp_runtime()
-    configure_agent_profile_runtime()
+    configure_worker_services()
     resolved_worker_id = worker_id or default_worker_id()
     settings = get_settings()
+    if _worker_role(settings) == "finalizer":
+        raise ValueError("finalizer workers cannot execute a single queue run")
     if run_initial_maintenance:
         await run_worker_recovery_maintenance(
             settings,
@@ -1033,6 +1062,10 @@ async def _supervise_worker_tasks(
             raise RuntimeError(f"worker task exited unexpectedly: {task.get_name()}")
 
 
+async def _noop_close() -> None:
+    pass
+
+
 async def _close_worker_runtime(
     worker_runtime: Any,
     tasks: list[asyncio.Task[None]],
@@ -1048,7 +1081,7 @@ async def _close_worker_runtime(
         await asyncio.gather(*tasks, return_exceptions=True)
         errors: list[BaseException] = []
         for phase, operation in (
-            ("stream_runtime", worker_runtime.aclose),
+            ("stream_runtime", worker_runtime.aclose if worker_runtime is not None else _noop_close),
             ("runtime_clients", _close_runtime_clients),
         ):
             try:
@@ -1087,64 +1120,14 @@ async def run_forever(
     attempt_lifecycle: RunAttemptLifecycleService,
     lifecycle: RunLifecycleService,
 ) -> None:
-    configure_context_services()
-    configure_mcp_runtime()
-    await require_schema_current()
-    worker_runtime = build_worker_v4_runtime(transaction, lifecycle)
-    registry = AdapterRegistry()
-    worker_id = default_worker_id()
-    settings = get_settings()
-    reconciler_stop = asyncio.Event()
-    reconciler_task = asyncio.create_task(
-        run_executor_terminal_reconciler(
-            reconciler_stop,
-            registry=registry,
-            worker_id=worker_id,
-            v4_capabilities=worker_runtime.capabilities,
-            attempt_lifecycle=attempt_lifecycle,
-            lifecycle=lifecycle,
-            run_diagnostics=build_run_diagnostics_service(),
-        ),
-        name="ai-platform-executor-terminal-reconciler",
+    # Compatibility entrypoint for callers providing lifecycle services.
+    await _run_worker_process(
+        worker_count=1,
+        poll_timeout_seconds=poll_timeout_seconds,
+        idle_sleep_seconds=idle_sleep_seconds,
+        attempt_lifecycle=attempt_lifecycle,
+        lifecycle=lifecycle,
     )
-    heartbeat_task = asyncio.create_task(
-        _worker_runtime_heartbeat_until_done(f"{socket.gethostname()}:{os.getpid()}"),
-        name="ai-platform-worker-runtime-heartbeat",
-    )
-    maintenance_task = asyncio.create_task(
-        _maintenance_until_done(
-            settings,
-            _worker_maintenance_interval_seconds(settings),
-            worker_runtime.capabilities,
-            attempt_lifecycle,
-            lifecycle,
-        ),
-        name="ai-platform-worker-maintenance",
-    )
-    background_tasks = [
-        reconciler_task,
-        heartbeat_task,
-        maintenance_task,
-    ]
-    worker_task = asyncio.create_task(
-        _run_worker_slot(
-            worker_id=worker_id,
-            poll_timeout_seconds=poll_timeout_seconds,
-            idle_sleep_seconds=idle_sleep_seconds,
-            v4_capabilities=worker_runtime.capabilities,
-            attempt_lifecycle=attempt_lifecycle,
-            lifecycle=lifecycle,
-            registry=registry,
-        ),
-        name="ai-platform-worker-1",
-    )
-    try:
-        await _supervise_worker_tasks([worker_task], background_tasks)
-    finally:
-        reconciler_stop.set()
-        await _close_worker_runtime(
-            worker_runtime, [worker_task, *background_tasks], primary_error=sys.exception()
-        )
 
 
 async def _run_worker_slot(
@@ -1193,71 +1176,76 @@ async def run_worker_pool(
     poll_timeout_seconds: int = 5,
     idle_sleep_seconds: float = 0.5,
 ) -> None:
-    attempt_lifecycle = build_run_attempt_lifecycle_service()
-    lifecycle = build_run_lifecycle_service()
-    resolved_worker_count = max(int(worker_count), 1)
-    if resolved_worker_count == 1:
-        await run_forever(
-            poll_timeout_seconds=poll_timeout_seconds,
-            idle_sleep_seconds=idle_sleep_seconds,
-            attempt_lifecycle=attempt_lifecycle,
-            lifecycle=lifecycle,
-        )
-        return
+    # Both public continuous entrypoints share this process owner.
+    await _run_worker_process(
+        worker_count=worker_count,
+        poll_timeout_seconds=poll_timeout_seconds,
+        idle_sleep_seconds=idle_sleep_seconds,
+    )
 
-    configure_context_services()
-    configure_mcp_runtime()
-    await require_schema_current()
+
+async def _run_worker_process(
+    *,
+    worker_count: int,
+    poll_timeout_seconds: int = 5,
+    idle_sleep_seconds: float = 0.5,
+    attempt_lifecycle: RunAttemptLifecycleService | None = None,
+    lifecycle: RunLifecycleService | None = None,
+) -> None:
+    configure_worker_services()
     settings = get_settings()
-    process_worker_id = f"{socket.gethostname()}:{os.getpid()}"
-    worker_runtime = build_worker_v4_runtime(transaction, lifecycle)
+    role = _worker_role(settings)
+    worker_runtime = None
+    tasks: list[asyncio.Task[None]] = []
+    background_tasks: list[asyncio.Task[None]] = []
     reconciler_stop = asyncio.Event()
-    reconciler_task = asyncio.create_task(
-        run_executor_terminal_reconciler(
-            reconciler_stop,
-            registry=AdapterRegistry(),
-            worker_id=process_worker_id,
-            v4_capabilities=worker_runtime.capabilities,
-            attempt_lifecycle=attempt_lifecycle,
-            lifecycle=lifecycle,
-            run_diagnostics=build_run_diagnostics_service(),
-        ),
-        name="ai-platform-executor-terminal-reconciler",
-    )
-    maintenance_task = asyncio.create_task(
-        _maintenance_until_done(
-            settings,
-            _worker_maintenance_interval_seconds(settings),
-            worker_runtime.capabilities,
-            attempt_lifecycle,
-            lifecycle,
-        ),
-        name="ai-platform-worker-maintenance",
-    )
-    heartbeat_task = asyncio.create_task(
-        _worker_runtime_heartbeat_until_done(process_worker_id),
-        name="ai-platform-worker-runtime-heartbeat",
-    )
-    tasks = [
-        asyncio.create_task(
-            _run_worker_slot(
-                worker_id=default_worker_id(),
-                poll_timeout_seconds=poll_timeout_seconds,
-                idle_sleep_seconds=idle_sleep_seconds,
-                v4_capabilities=worker_runtime.capabilities,
-                attempt_lifecycle=attempt_lifecycle,
-                lifecycle=lifecycle,
-            ),
-            name=f"ai-platform-worker-{index + 1}",
-        )
-        for index in range(resolved_worker_count)
-    ]
-    background_tasks = [
-        reconciler_task,
-        maintenance_task,
-        heartbeat_task,
-    ]
     try:
+        await require_schema_current()
+        attempt_lifecycle = attempt_lifecycle or build_run_attempt_lifecycle_service()
+        lifecycle = lifecycle or build_run_lifecycle_service()
+        worker_runtime = build_worker_v4_runtime(transaction, lifecycle)
+        process_worker_id = f"{socket.gethostname()}:{os.getpid()}"
+        if role in {"integrated", "finalizer"}:
+            background_tasks.append(asyncio.create_task(
+                run_executor_terminal_reconciler(
+                    reconciler_stop,
+                    registry=AdapterRegistry(),
+                    worker_id=process_worker_id,
+                    v4_capabilities=worker_runtime.capabilities,
+                    attempt_lifecycle=attempt_lifecycle,
+                    lifecycle=lifecycle,
+                    run_diagnostics=build_run_diagnostics_service(),
+                    concurrency=getattr(settings, "worker_finalizer_concurrency", 2),
+                ),
+                name="ai-platform-executor-terminal-reconciler",
+            ))
+        background_tasks.append(asyncio.create_task(
+            _maintenance_until_done(
+                settings,
+                _worker_maintenance_interval_seconds(settings),
+                worker_runtime.capabilities,
+                attempt_lifecycle,
+                lifecycle,
+            ),
+            name="ai-platform-worker-maintenance",
+        ))
+        background_tasks.append(asyncio.create_task(
+            _worker_runtime_heartbeat_until_done(process_worker_id, role=role),
+            name="ai-platform-worker-runtime-heartbeat",
+        ))
+        if role in {"integrated", "execution"}:
+            for index in range(max(int(worker_count), 1)):
+                tasks.append(asyncio.create_task(
+                    _run_worker_slot(
+                        worker_id=default_worker_id(),
+                        poll_timeout_seconds=poll_timeout_seconds,
+                        idle_sleep_seconds=idle_sleep_seconds,
+                        v4_capabilities=worker_runtime.capabilities,
+                        attempt_lifecycle=attempt_lifecycle,
+                        lifecycle=lifecycle,
+                    ),
+                    name=f"ai-platform-worker-{index + 1}",
+                ))
         await _supervise_worker_tasks(tasks, background_tasks)
     finally:
         reconciler_stop.set()
@@ -1267,13 +1255,21 @@ async def run_worker_pool(
 
 
 async def run_once_and_close(timeout_seconds: int) -> WorkerOutcome:
-    configure_file_upload_services()
-    configure_mcp_runtime()
-    await require_schema_current()
-    lifecycle = build_run_lifecycle_service()
-    worker_runtime = build_worker_v4_runtime(transaction, lifecycle)
-    attempt_lifecycle = build_run_attempt_lifecycle_service()
+    configure_worker_services()
+    role = _worker_role(get_settings())
+    if role == "finalizer":
+        raise ValueError("finalizer workers do not support --once")
+    worker_runtime = None
+    tasks: list[asyncio.Task[None]] = []
     try:
+        await require_schema_current()
+        lifecycle = build_run_lifecycle_service()
+        worker_runtime = build_worker_v4_runtime(transaction, lifecycle)
+        attempt_lifecycle = build_run_attempt_lifecycle_service()
+        tasks.append(asyncio.create_task(
+            _worker_runtime_heartbeat_until_done(f"{socket.gethostname()}:{os.getpid()}", role=role),
+            name="ai-platform-worker-runtime-heartbeat",
+        ))
         return await run_once(
             timeout_seconds=timeout_seconds,
             v4_capabilities=worker_runtime.capabilities,
@@ -1281,7 +1277,7 @@ async def run_once_and_close(timeout_seconds: int) -> WorkerOutcome:
             lifecycle=lifecycle,
         )
     finally:
-        await _close_worker_runtime(worker_runtime, [], primary_error=sys.exception())
+        await _close_worker_runtime(worker_runtime, tasks, primary_error=sys.exception())
 
 
 def main() -> None:
@@ -1291,14 +1287,13 @@ def main() -> None:
     parser.add_argument("--timeout", type=int, default=5, help="Queue lease timeout in seconds")
     args = parser.parse_args()
 
-    configure_file_upload_services()
-    configure_model_services()
-    configure_skill_markdown()
+    settings = get_settings()
+    if args.once and _worker_role(settings) == "finalizer":
+        parser.error("--once is not supported for finalizer workers")
     if args.once:
         outcome = asyncio.run(run_once_and_close(timeout_seconds=args.timeout))
         print(outcome)
         return
-    settings = get_settings()
     asyncio.run(run_worker_pool(worker_count=settings.worker_concurrency, poll_timeout_seconds=args.timeout))
 
 
