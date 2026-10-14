@@ -1026,13 +1026,16 @@
 }
 
 /* Select — Radix owns keyboard, focus and popup positioning. */
+:where(.enterprise-field-control.es-select-btn) {
+  width: 100%;
+}
+
 .enterprise-field-control.es-select-btn {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 0.375rem;
   height: 2.375rem;
-  width: 100%;
   padding: 0 0.625rem;
   font-size: 0.875rem;
   text-align: left;

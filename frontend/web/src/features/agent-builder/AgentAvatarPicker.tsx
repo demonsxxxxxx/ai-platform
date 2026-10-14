@@ -74,7 +74,7 @@ export function AgentAvatarPicker({
           换一批
         </button>
       </div>
-      <div className="mt-2 grid grid-cols-4 gap-2 sm:grid-cols-8">
+      <div className="mt-2 grid grid-cols-4 gap-2">
         {visibleSeeds.map((seed, index) => {
           const selected = seed === effectiveSeed;
           return (
