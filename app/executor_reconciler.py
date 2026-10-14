@@ -50,11 +50,8 @@ from app.sandbox.api import (
 )
 from app.runs.api import cancel_run_with_v4, fail_run_with_v4, finish_run_terminalization
 from app.storage import run_storage_io
-from app.worker import (
-    WorkerV4Capabilities,
-    publish_run_event,
-    reconcile_executor_terminal_result,
-)
+from app.bootstrap.executor_terminal_reconciliation import reconcile_executor_terminal_result
+from app.streaming.api import WorkerV4Capabilities, publish_run_event
 
 _sandbox_cleanup = build_sandbox_runtime_cleanup()
 

@@ -302,7 +302,7 @@ def _settlement_scenario(
         if cancel_at == "terminal_after_collection":
             run["status"] = "cancelled"
             attempt["status"] = "cancelled"
-        outcome = await w.worker_module.reconcile_executor_terminal_result(**kwargs)
+        outcome = await w.reconciliation_module.reconcile_executor_terminal_result(**kwargs)
         calls.append(("outcome", outcome.status, outcome.error_code))
         if lose_retry_claim:
             row["executor_reconciliation_claim_token"] = "replacement-claim"
