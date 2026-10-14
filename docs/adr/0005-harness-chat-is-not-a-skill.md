@@ -6,6 +6,13 @@ status: accepted
 
 Design ID: `ai-platform.skillless-harness-chat.v1`
 
+The distinction between Harness chat and Skills remains accepted.
+[ADR 0008](0008-agent-sdk-autonomous-skill-dispatch.md) owns autonomous Skill-set
+use; [ADR 0015](0015-agent-autonomy-and-effect-boundaries.md) distinguishes new
+Run admission from accepted-Run replay. Repository builtin retirement and its
+recovery restrictions are owned by [ADR 0014](0014-retire-repository-skill-assets.md).
+The original v2 rollout below is historical, not a current release procedure.
+
 ## Context
 
 The platform previously represented ordinary conversation as the
@@ -48,7 +55,8 @@ Skills or forcing typed file materialization. A specialized file Skill may
 still require eager bounded materialization under the run workspace `inputs/`
 directory.
 
-Agent Profiles configure one or more authorized Skills by name. Publication and
+Agent Profiles configure one or more authorized Skills by stable ID reference.
+Publication and
 admission resolve the current authorized versions; each accepted Run still owns
 an exact immutable Skill binding.
 
@@ -81,6 +89,8 @@ release, manifest, profile, model, or MCP conflicts.
   remain valid during the compatibility window.
 
 ## Rollout and rollback
+
+Historical v2 rollout; later retirement and recovery restrictions above apply.
 
 Roll forward in this order: apply schema version `2026.08.12.1`; deploy every
 worker that can consume both v1 Skill payloads and v2 Harness payloads; then

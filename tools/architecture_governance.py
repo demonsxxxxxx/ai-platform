@@ -141,6 +141,23 @@ class Finding:
     exemptible: bool = True
     details: dict[str, Any] = field(default_factory=dict)
 
+    @property
+    def remediation(self) -> str:
+        return {
+            "cross_domain_internal_import": "Call the owning context through api.py/events.py; keep concrete adapters in bootstrap wiring.",
+            "layer_dependency_forbidden": "Move the dependency inward or inject the infrastructure adapter from bootstrap.",
+            "layer_external_dependency_forbidden": "Keep framework and SDK dependencies in the owning infrastructure or transport layer.",
+            "unapproved_app_root_module": "Place the module in its owning context and role layer; do not extend the legacy root allowlist.",
+            "unapproved_app_package": "Use a declared owning context instead of extending a legacy package.",
+            "unlayered_domain_module": "Move the module into its owning domain/application/infrastructure/transport layer.",
+            "generic_module_name": "Name and place the module by its stable responsibility owner.",
+            "delivery_label_module": "Remove delivery or evidence labels from the production module name.",
+            "frozen_hot_file_growth": "Extract responsibilities into the owning context; keep the frozen file at or below both its base size and policy ceiling.",
+        }.get(
+            self.code,
+            "Restore the declared owner, dependency or registry contract in docs/architecture/source-code-architecture.md#12-executable-governance; rerun the same authority/base/head range.",
+        )
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "code": self.code,
@@ -149,6 +166,7 @@ class Finding:
             "line": self.line,
             "message": self.message,
             "path": self.path,
+            "remediation": self.remediation,
         }
 
 
@@ -2809,11 +2827,13 @@ def _render_text(evaluation: Evaluation) -> str:
     for finding in evaluation.findings:
         location = f"{finding.path}:{finding.line}" if finding.line else finding.path
         lines.append(f"- {finding.code} [{location}]: {finding.message}")
+        lines.append(f"  remediation: {finding.remediation}")
     if evaluation.exempted_findings:
         lines.append("exempted findings:")
         for finding in evaluation.exempted_findings:
             location = f"{finding.path}:{finding.line}" if finding.line else finding.path
             lines.append(f"- {finding.code} [{location}]: {finding.message}")
+            lines.append(f"  remediation: {finding.remediation}")
     return "\n".join(lines)
 
 
