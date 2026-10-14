@@ -25,9 +25,9 @@ class TestEventTarget {
     this.listeners.get(type)?.delete(listener);
   }
 
-  dispatchEvent(event: { type: string }) {
+  dispatchEvent(event: { type: string; defaultPrevented?: boolean }) {
     this.listeners.get(event.type)?.forEach((listener) => listener(event));
-    return true;
+    return !event.defaultPrevented;
   }
 }
 
@@ -253,7 +253,10 @@ Object.assign(globalThis, {
   HTMLIFrameElement: class TestIFrameElement extends TestElement {},
   SVGElement: TestElement,
   CustomEvent: class {
-    constructor(readonly type: string, readonly init?: { detail?: unknown }) {}
+    readonly detail: unknown;
+    defaultPrevented = false;
+    constructor(readonly type: string, readonly init?: { detail?: unknown; cancelable?: boolean }) { this.detail = init?.detail; }
+    preventDefault() { if (this.init?.cancelable) this.defaultPrevented = true; }
   },
   IS_REACT_ACT_ENVIRONMENT: true,
 });
@@ -1838,6 +1841,7 @@ async function mountAuthTransportHarness(initialStatus = 200) {
   const transport = {
     me: (_init: RequestInit): Response | Promise<Response> => initialStatus === 200 ? principal() : json({ detail: "unauthorized" }, initialStatus),
     logout: (): Response | Promise<Response> => new Response(null, { status: 204 }),
+    refresh: (): Response | Promise<Response> => json({ detail: "auth_context_missing" }, 401),
   };
   globalThis.fetch = (async (input: RequestInfo | URL, init: RequestInit = {}) => {
     const url = String(input);
@@ -1847,6 +1851,7 @@ async function mountAuthTransportHarness(initialStatus = 200) {
       return json(readyAuthContext(JSON.parse(String(init.body)) as AuthContextBootstrapRequest));
     }
     if (url === "/api/ai/auth/me") return transport.me(init);
+    if (url === "/api/ai/auth/refresh") return transport.refresh();
     if (url === "/api/ai/auth/logout") return transport.logout();
     if (url === "/company/GetADName") return json([{ token: "synthetic-company-jwt" }]);
     if (["/api/ai/auth/login", "/api/ai/auth/ad-login", "/api/ai/auth/oauth/test/callback"].includes(url)) return json({});
@@ -1876,7 +1881,7 @@ async function mountAuthTransportHarness(initialStatus = 200) {
 test("real transport initialization ordinary 401 converges without server logout", async () => {
   const mounted = await mountAuthTransportHarness(401);
   try {
-    assert.deepEqual(mounted.calls.map(({ url }) => url), ["/api/ai/auth/bootstrap", "/api/ai/auth/me"]);
+    assert.deepEqual(mounted.calls.map(({ url }) => url), ["/api/ai/auth/bootstrap", "/api/ai/auth/me", "/api/ai/auth/refresh"]);
     assert.deepEqual(mounted.events, []);
     assert.equal(mounted.auth.isAuthenticated, false);
     assert.equal(mounted.auth.isLoading, false);
@@ -1892,7 +1897,7 @@ test("real transport ordinary hydration 401 stays with the refresh owner", async
     await mounted.React.act(async () => {
       assert.deepEqual(await mounted.auth.refreshUser(), { status: "failed" });
     });
-    assert.deepEqual(mounted.calls.map(({ url, init }) => [init.method ?? "GET", url]), [["GET", "/api/ai/auth/me"]]);
+    assert.deepEqual(mounted.calls.map(({ url, init }) => [init.method ?? "GET", url]), [["GET", "/api/ai/auth/me"], ["POST", "/api/ai/auth/refresh"]]);
     assert.deepEqual(mounted.events, []);
     assert.equal(mounted.auth.isAuthenticated, false);
     assert.equal(mounted.auth.isLoading, false);
@@ -1917,7 +1922,7 @@ for (const operation of ["login", "AD", "OAuth"] as const) {
         });
         const mutation = operation === "login" ? "/api/ai/auth/login" : operation === "AD" ? "/api/ai/auth/ad-login" : "/api/ai/auth/oauth/test/callback";
         assert.deepEqual(mounted.calls.filter(({ url }) => url !== "/api/ai/auth/bootstrap" && url !== "/company/GetADName").map(({ url, init }) => [init.method ?? "GET", url]), [
-          ["POST", mutation], ["GET", "/api/ai/auth/me"], ["POST", "/api/ai/auth/logout"],
+          ["POST", mutation], ["GET", "/api/ai/auth/me"], ["POST", "/api/ai/auth/refresh"], ["POST", "/api/ai/auth/logout"],
         ]);
         assert.deepEqual(mounted.events, []);
         assert.equal(mounted.auth.isAuthenticated, false);
@@ -2042,3 +2047,28 @@ test("real transport unmount aborts hydration without recovery or replay", async
     assert.deepEqual(mounted.calls.map(({ url }) => url), ["/api/ai/auth/me"]);
   } finally { await mounted.cleanup(); }
 });
+
+for (const authorizationChanged of [false, true]) {
+  test("mounted provider " + (authorizationChanged ? "fences changed permissions" : "keeps owners during credential-only refresh"), async () => {
+    const mounted = await mountAuthTransportHarness();
+    const { refreshTokens } = await import("../../services/api/tokenManager.ts");
+    const originalMarker = storage.get("ai_platform_session_present");
+    let cacheClears = 0;
+    const unregister = registerAuthScopedCacheClearer(() => { cacheClears++; });
+    mounted.transport.refresh = async () => mounted.json({
+      principal: { ...(await mounted.principal().json()),
+        ...(authorizationChanged ? { roles: ["user"], permissions: ["agent:use"], is_admin: false } : {}) },
+      authorization_changed: authorizationChanged,
+    });
+    try {
+      await mounted.React.act(async () => { await refreshTokens(); });
+      assert.equal(mounted.auth.isAuthenticated, true);
+      assert.equal(mounted.auth.isLoading, false);
+      assert.equal(storage.get("ai_platform_session_present"), originalMarker);
+      assert.equal(cacheClears, authorizationChanged ? 1 : 0);
+      assert.deepEqual(mounted.auth.user?.roles, authorizationChanged ? ["user"] : ["admin"]);
+      assert.deepEqual(mounted.events, []);
+      assert.equal(mounted.calls.filter(({ url }) => url === "/api/ai/auth/logout").length, 0);
+    } finally { unregister(); await mounted.cleanup(); }
+  });
+}

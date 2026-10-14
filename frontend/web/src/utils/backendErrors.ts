@@ -1,6 +1,8 @@
 import type { TFunction } from "i18next";
 
 const SAFE_BACKEND_ERROR_COPY: Record<string, string> = {
+  auth_refresh_unavailable: "认证服务暂时不可用，请稍后重试。",
+  auth_refresh_in_progress: "身份刷新仍在处理中，请稍后重试。",
   company_login_failed:
     "公司账号登录失败，请检查账号或密码；如仍无法登录，请联系管理员确认账号已开通。",
 };

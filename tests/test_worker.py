@@ -280,6 +280,13 @@ async def test_worker_injects_current_jwt_into_existing_mcp_capability_plan(monk
             assert (principal.tenant_id, principal.user_id) == ("tenant-a", "user-a")
             return "current.jwt"
 
+        async def credential_subject(self, principal):
+            assert (principal.tenant_id, principal.user_id) == ("tenant-a", "user-a")
+            return {
+                "tenant_id": principal.tenant_id, "user_id": principal.user_id,
+                "grant_id": "synthetic-grant", "subject_epoch": 1,
+            }
+
     async def runtime_target(_conn, *, tenant_id, server_name):
         assert (tenant_id, server_name) == ("tenant-a", "gateway")
         return {"transport": "streamable_http", "credential_envelope": "sealed"}
@@ -345,6 +352,10 @@ async def test_worker_injects_current_jwt_into_existing_mcp_capability_plan(monk
                 "X-Static-Key": "configured",
                 "JWT-Authorization": "Bearer current.jwt",
             },
+            "credential_subject": {
+                "tenant_id": "tenant-a", "user_id": "user-a",
+                "grant_id": "synthetic-grant", "subject_epoch": 1,
+            },
         }
     }
     injected_subject = injected.input["_runtime_tool_policy_subjects"][0]
@@ -357,6 +368,7 @@ async def test_worker_injects_current_jwt_into_existing_mcp_capability_plan(monk
     ][0]
     assert "mcp_server_config" not in persisted_subject
     assert "current.jwt" not in json.dumps(persisted)
+    assert "synthetic-grant" not in json.dumps(persisted)
 
 
 def test_worker_preserves_only_typed_safe_executor_failures():
@@ -8751,6 +8763,13 @@ def _install_task6_worker_fakes(
         async def get(self, principal):
             assert (principal.tenant_id, principal.user_id) == ("tenant-a", "user-a")
             return "current.jwt"
+
+        async def credential_subject(self, principal):
+            assert (principal.tenant_id, principal.user_id) == ("tenant-a", "user-a")
+            return {
+                "tenant_id": principal.tenant_id, "user_id": principal.user_id,
+                "grant_id": "synthetic-grant", "subject_epoch": 1,
+            }
 
     async def get_mcp_server_runtime_target(_conn, *, tenant_id, server_name):
         calls.append(("mcp_runtime_target", tenant_id, server_name))

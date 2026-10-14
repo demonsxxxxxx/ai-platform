@@ -1,3 +1,4 @@
+from app.identity.application.principal_projection import PrincipalResponse as PrincipalResponse
 from app.identity.application.worker_distribution import (
     WorkerCapabilityDecision as WorkerCapabilityDecision,
     WorkerDistributionAuthority as WorkerDistributionAuthority,
@@ -22,6 +23,7 @@ from app.identity.application.profile_metadata import (
 )
 
 __all__ = [
+    "PrincipalResponse",
     "WorkerCapabilityAuditService",
     "WorkerCapabilityDecision",
     "WorkerDistributionAuthority",
