@@ -334,6 +334,9 @@ local function valid_v2(record)
     and type(record["incarnation_digest"]) == "string"
     and epoch(record["generation"]) and record["generation"] >= 1
     and epoch(record["operation_epoch"])
+    and (record["successful_refresh_epoch"] == nil
+      or (epoch(record["successful_refresh_epoch"])
+        and record["successful_refresh_epoch"] <= record["operation_epoch"]))
     and epoch(record["tenant_user_subject_epoch"])
     and type(record["operation_token"]) == "string"
     and type(record["operation_kind"]) == "string"
@@ -776,6 +779,7 @@ return cjson.encode({
   status = "principal", principal = context["principal"],
   subject_epoch = context["tenant_user_subject_epoch"],
   operation_epoch = context["operation_epoch"],
+  successful_refresh_epoch = context["successful_refresh_epoch"] or 0,
   expires_at = math.floor(tonumber(redis_time[1]) + ttl / 1000)
 })
 """
@@ -813,6 +817,8 @@ if operation_kind == "refresh" then
   if context["principal"] == cjson.null then return cjson.encode({status = "missing"}) end
   if context["lease_until"] > now then return cjson.encode({status = "refresh_busy"}) end
 end
+-- A login/logout attempt fences completion evidence from the prior authority.
+if operation_kind ~= "refresh" then context["successful_refresh_epoch"] = 0 end
 context["operation_epoch"] = context["operation_epoch"] + 1
 context["operation_token"] = operation_token
 context["operation_kind"] = operation_kind
@@ -822,6 +828,7 @@ if not ttl then return cjson.encode({status = "missing"}) end
 redis.call("SET", context_key, cjson.encode(context), "PX", ttl)
 return cjson.encode({
   status = "begun", operation_epoch = context["operation_epoch"],
+  successful_refresh_epoch = context["successful_refresh_epoch"] or 0,
   principal = context["principal"], subject_epoch = context["tenant_user_subject_epoch"],
   expires_at = math.floor(now + ttl / 1000)
 })
@@ -889,6 +896,11 @@ if KEYS[3] then
     or not epoch(credential_deadline) or credential_deadline <= now
   then return cjson.encode({status = "expired"}) end
   redis.call("SET", KEYS[3], ARGV[7], "PX", math.min(ttl, math.floor((credential_deadline - now) * 1000)))
+end
+-- Only an atomic credential-bearing refresh commit proves successful renewal.
+-- Failure cleanup commits the previous principal without a credential.
+if KEYS[3] and context["operation_kind"] == "refresh" and principal ~= cjson.null then
+  context["successful_refresh_epoch"] = operation_epoch
 end
 context["principal"] = principal
 if authorization_changed then
@@ -1007,6 +1019,7 @@ class AuthOperation:
     principal: dict[str, object] | None = None
     subject_epoch: int | None = None
     expires_at: int | None = None
+    successful_refresh_epoch: int = 0
 
 
 @dataclass(frozen=True)
@@ -1663,6 +1676,7 @@ async def begin_auth_operation_for_cookie(
         principal=_valid_snapshot(result["principal"]) if isinstance(result.get("principal"), dict) else None,
         subject_epoch=result.get("subject_epoch"),
         expires_at=result.get("expires_at"),
+        successful_refresh_epoch=result.get("successful_refresh_epoch", 0),
     )
 
 

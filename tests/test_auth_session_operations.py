@@ -91,6 +91,8 @@ class FakeAuthRedis:
             and cls._is_valid_epoch(record.get("generation"))
             and record["generation"] >= 1
             and cls._is_valid_epoch(record.get("operation_epoch"))
+            and cls._is_valid_epoch(record.get("successful_refresh_epoch", 0))
+            and record.get("successful_refresh_epoch", 0) <= record["operation_epoch"]
             and cls._is_valid_epoch(record.get("tenant_user_subject_epoch"))
             and isinstance(record.get("operation_token"), str)
             and isinstance(record.get("operation_kind"), str)
@@ -529,6 +531,7 @@ class FakeAuthRedis:
                     "status": "principal", "principal": context["principal"],
                     "subject_epoch": context["tenant_user_subject_epoch"],
                     "operation_epoch": context["operation_epoch"],
+                    "successful_refresh_epoch": context.get("successful_refresh_epoch", 0),
                     "expires_at": int(self.values[str(context_key)][1]),
                 })
 
@@ -556,6 +559,8 @@ class FakeAuthRedis:
                         return json.dumps({"status": "missing"})
                     if context["lease_until"] > now_value:
                         return json.dumps({"status": "refresh_busy"})
+                if kind != "refresh":
+                    context["successful_refresh_epoch"] = 0
                 context["operation_epoch"] += 1
                 context["operation_token"] = str(token)
                 context["operation_kind"] = str(kind)
@@ -565,6 +570,7 @@ class FakeAuthRedis:
                 return json.dumps(
                     {
                         "status": "begun", "operation_epoch": context["operation_epoch"],
+                    "successful_refresh_epoch": context.get("successful_refresh_epoch", 0),
                         "principal": context["principal"],
                         "subject_epoch": context["tenant_user_subject_epoch"],
                         "expires_at": int(expires_at),
@@ -614,6 +620,8 @@ class FakeAuthRedis:
                         return json.dumps({"status": "expired"})
                     self._set(str(args[2]), str(envelope),
                               min(self.values[str(context_key)][1], float(deadline)))
+                if numkeys == 3 and context["operation_kind"] == "refresh" and principal is not None:
+                    context["successful_refresh_epoch"] = epoch
                 context["principal"] = principal
                 context["tenant_user_subject_epoch"] += int(changed)
                 context["operation_token"] = ""
@@ -2653,6 +2661,137 @@ async def test_parallel_refresh_merges_and_old_mcp_connection_reads_new_jwt(monk
     finally:
         release.set()
         await asyncio.gather(first, second, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lifetime", [86400, 300])
+async def test_refresh_reuses_completion_between_snapshot_and_lease(monkeypatch, lifetime):
+    import httpx
+    from app import auth
+
+    redis, _settings, cookie, _principal, _store, record = await install_refresh_grant(
+        monkeypatch, lifetime=lifetime,
+    )
+    monkeypatch.setattr("app.principal_authority.authority_checked_at_now", lambda: "2026-10-14T00:00:00+00:00")
+    # At the absolute deadline cap, another refresh cannot increase JWT exp.
+    if lifetime == 300:
+        await auth.refresh_company_session(cookie)
+    initial = await auth_sessions.browser_auth_grant(cookie)
+    deadlines = {key: value[1] for key, value in redis.values.items()}
+    paused, resume = asyncio.Event(), asyncio.Event()
+    begin = auth.begin_auth_operation_for_cookie
+    delayed_task = None
+    calls = 0
+
+    async def delayed_begin(*args, **kwargs):
+        if asyncio.current_task() is delayed_task:
+            paused.set()
+            await resume.wait()
+        return await begin(*args, **kwargs)
+
+    async def user_info(_work_id, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise httpx.ConnectError("synthetic duplicate authority lookup")
+        return record
+
+    monkeypatch.setattr(auth, "begin_auth_operation_for_cookie", delayed_begin)
+    monkeypatch.setattr("app.principal_authority.fetch_company_user_info", user_info)
+    delayed_task = asyncio.create_task(auth.refresh_company_session(cookie))
+    try:
+        await asyncio.wait_for(paused.wait(), 2)
+        winner = await auth.refresh_company_session(cookie)
+        completed = await auth_sessions.browser_auth_grant(cookie)
+        if lifetime == 300:
+            assert completed["principal"] == initial["principal"]
+        resume.set()
+        follower = await asyncio.wait_for(delayed_task, 2)
+        assert follower == winner
+        assert calls == 1
+        final = await auth_sessions.browser_auth_grant(cookie)
+        assert final["subject_epoch"] == initial["subject_epoch"]
+        assert final["expires_at"] == initial["expires_at"]
+        for key, deadline in deadlines.items():
+            assert redis.values[key][1] <= deadline
+    finally:
+        resume.set()
+        await asyncio.gather(delayed_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("intervening", ["failed-refresh", "same-user-login", "changed-authorization"])
+async def test_refresh_completion_evidence_does_not_cross_authority_fences(monkeypatch, intervening):
+    import httpx
+    from fastapi import HTTPException
+    from app import auth
+
+    _redis, _settings, cookie, _principal, _store, record = await install_refresh_grant(monkeypatch)
+    initial = await auth_sessions.browser_auth_grant(cookie)
+    paused, resume = asyncio.Event(), asyncio.Event()
+    begin = auth.begin_auth_operation_for_cookie
+    delayed_task = None
+    calls = 0
+
+    async def delayed_begin(*args, **kwargs):
+        if asyncio.current_task() is delayed_task:
+            paused.set()
+            await resume.wait()
+        return await begin(*args, **kwargs)
+
+    async def user_info(_work_id, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if intervening == "failed-refresh" and calls == 1:
+            raise httpx.ConnectError("synthetic temporary outage")
+        return record
+
+    monkeypatch.setattr(auth, "begin_auth_operation_for_cookie", delayed_begin)
+    monkeypatch.setattr("app.principal_authority.fetch_company_user_info", user_info)
+    delayed_task = asyncio.create_task(auth.refresh_company_session(
+        cookie, expected_subject_epoch=initial["subject_epoch"],
+    ))
+    try:
+        await asyncio.wait_for(paused.wait(), 2)
+        if intervening == "same-user-login":
+            login = await begin(cookie, "ad-login")
+            assert await auth_sessions.commit_auth_operation(login, initial["principal"]) == "committed"
+        elif intervening == "changed-authorization":
+            record["role"] = "developer"
+            assert (await auth.refresh_company_session(cookie))[1] is True
+        else:
+            with pytest.raises(HTTPException) as unavailable:
+                await auth.refresh_company_session(cookie)
+            assert unavailable.value.status_code == 503
+            assert (await auth_sessions.browser_auth_grant(cookie))["successful_refresh_epoch"] == 0
+        resume.set()
+        if intervening == "failed-refresh":
+            assert (await asyncio.wait_for(delayed_task, 2))[1] is False
+            assert calls == 2
+        else:
+            with pytest.raises(HTTPException) as fenced:
+                await asyncio.wait_for(delayed_task, 2)
+            assert fenced.value.status_code == 409
+            assert calls == int(intervening == "changed-authorization")
+    finally:
+        resume.set()
+        await asyncio.gather(delayed_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_legacy_context_without_refresh_completion_marker_can_refresh(monkeypatch):
+    from app.auth import refresh_company_session
+
+    redis, _settings, cookie, _principal, _store, _record = await install_refresh_grant(monkeypatch)
+    key = next(key for key in redis.values if key.startswith("ai-platform:auth-context:"))
+    raw, deadline = redis.values[key]
+    context = json.loads(raw)
+    context.pop("successful_refresh_epoch", None)
+    redis.values[key] = (json.dumps(context), deadline)
+    assert (await auth_sessions.browser_auth_grant(cookie))["successful_refresh_epoch"] == 0
+    await refresh_company_session(cookie)
+    assert (await auth_sessions.browser_auth_grant(cookie))["successful_refresh_epoch"] > 0
+    assert redis.values[key][1] == deadline
 
 
 @pytest.mark.asyncio

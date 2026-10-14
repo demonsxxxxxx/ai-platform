@@ -340,10 +340,12 @@ async def refresh_company_session(
                 snapshot = current["principal"]
                 if (snapshot["tenant_id"], snapshot["user_id"]) != subject:
                     raise AuthContextError("auth_operation_superseded", 409)
-                if (snapshot.get("company_jwt_expires_at") or 0) > max(
-                    int(time.time()), initial_principal.get("company_jwt_expires_at") or 0,
-                ):
-                    return AuthPrincipal(**snapshot), current["subject_epoch"] != initial["subject_epoch"]
+                if expected_subject_epoch is not None and current["subject_epoch"] != expected_subject_epoch:
+                    raise AuthContextError("auth_operation_superseded", 409)
+                if (current["subject_epoch"] == initial["subject_epoch"]
+                    and current.get("successful_refresh_epoch", 0) > initial.get("successful_refresh_epoch", 0)
+                    and (snapshot.get("company_jwt_expires_at") or 0) > int(time.time())):
+                    return AuthPrincipal(**snapshot), False
         previous = operation.principal
         if (previous is None or (previous["tenant_id"], previous["user_id"]) != subject
             or (expected_subject_epoch is not None and operation.subject_epoch != expected_subject_epoch)):
@@ -353,6 +355,13 @@ async def refresh_company_session(
             or type(operation.expires_at) is not int or operation.expires_at <= int(time.time())
             or type(operation.subject_epoch) is not int):
             raise PrincipalAuthorityDenied()
+        # The lease can become available after a peer commits but before our
+        # begin call. Completion evidence is independent of JWT exp and clock
+        # precision, and cannot cross a login or changed authorization epoch.
+        if (operation.subject_epoch == initial["subject_epoch"]
+            and operation.successful_refresh_epoch > initial.get("successful_refresh_epoch", 0)
+            and (previous.get("company_jwt_expires_at") or 0) > int(time.time())):
+            return AuthPrincipal(**previous), False
         principal = AuthPrincipal(**previous)
         refreshed, token = await issue_refreshed_company_jwt(principal, expires_at=operation.expires_at)
         snapshot = principal_snapshot(refreshed)
