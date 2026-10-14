@@ -23,8 +23,8 @@ cannot recover the Agent-kernel work timeline required by the product. The v4
 contract extends the existing authorities without adding a second Run, job,
 terminal, cursor, or authorization plane.
 
-ADR 0009 remains accepted historical context for the v3 cutover and transport
-mechanics. This ADR supersedes only its active wire and event-set decisions.
+ADR 0009 remains historical context for the v3 cutover. This ADR supersedes its
+wire and event-set decisions; ADR 0013 owns current publication and recovery.
 
 ## Decision
 
@@ -33,12 +33,11 @@ SSE v4 uses one strict, generated protocol authority at
 library Python `TypedDict` definitions for the internal and public contracts
 and TypeScript types for public application and transport-control events.
 
-The release-atomic B3 cutover makes v4 the only production wire. Producers,
-durable publication, successor recovery, the SSE gateway, and the frontend
-consumer are composed against the v4 contract. Runtime negotiation, feature-
-flag selection, dual publication, and same-incarnation reconstruction are not
-supported. Historical v3 source remains only where explicitly retained as a
-compatibility artifact with no active production import path.
+SSE v4 is the only production wire. Producers, the SSE gateway and frontend
+consumer use the generated v4 contract; publication and recovery follow
+ADR 0013. Runtime negotiation, feature-flag selection, dual publication and
+same-incarnation reconstruction are not supported. Retained historical decoders
+serve stored business facts and authorized hydration, not live v3 producers.
 
 Public application events use
 `ai-platform.public-run-stream-event.v4`. Each event requires a stable event
@@ -50,9 +49,12 @@ Run-local business order and is separate from the Redis SSE cursor and semantic
 require a non-null public `message_id`; Agent progress, artifact, policy, and Run
 events may use null.
 
-The closed Agent-kernel registry is:
+The schema owns the closed Agent-kernel registry, including the subsequently
+accepted [Assistant-part extension](../architecture/redis-streams-sse-wire-protocol.md#change-contract-incremental-assistant-parts-and-final-selection):
 
 - `message.started`, `message.delta`, `message.completed`;
+- `message.part.delta`, `message.part.classified` for incremental public text
+  and explicit answer/work classification under a stable `part_id`;
 - `commentary.delta` for disclosure-safe, tool-using Assistant progress that is
   presented as work activity and never appended to the terminal answer;
 - `thinking.started`, `thinking.delta`, `thinking.completed`, `model.completed`;
@@ -91,10 +93,11 @@ synthesized from `seq`.
 
 The internal canonical envelope uses
 `ai-platform.stream-event.v4` and adds tenant scope, current attempt identity,
-projection version, and a strict source descriptor for the committed Run
-row, stream authority, or terminal intent. It is browser-inaccessible. The
-browser-generated TypeScript module contains no tenant, attempt, source, or
-internal projection fields.
+projection version, and a strict source descriptor: `run_event` for a committed
+Run event or `stream_authority` for transport authority. Independent terminal
+intents are retired under ADR 0013 and are not a current source kind. The internal
+envelope is browser-inaccessible. The browser-generated TypeScript module contains
+no tenant, attempt, source, or internal projection fields.
 
 Unknown event names, unknown envelope fields, unknown payload fields, invalid
 bounds, and v3/v4 cross-version values fail closed. Callback receipt protocol
@@ -105,8 +108,15 @@ v2.1 remains unchanged and separately versioned.
 The v4 schema represents recoverable Agent work while retaining the platform's
 existing durability and authorization boundaries. Generated Python and
 TypeScript contracts cannot silently drift from the schema, and transport
-controls do not consume application ordering. Committed public `run_events`
-are published through claim-token-fenced, transaction-external Redis I/O.
+controls do not consume application ordering. Current publication, gaps and
+hydration follow ADR 0013; part-event and answer-receipt compatibility follows
+the linked wire extension.
+
+### Historical publication and recovery (superseded by ADR 0013)
+
+The following records the original implementation, not a current recovery path.
+Committed public `run_events` are published through claim-token-fenced,
+transaction-external Redis I/O.
 Missing terminal streams recover by building an inactive successor incarnation,
 verifying its persisted receipt and source fingerprint, and atomically
 activating it under the current Run and Attempt authority. A historical pending
@@ -127,6 +137,14 @@ interprets v4 cursors or values as v3.
 
 ## Rollback
 
-Rollback uses the prior reviewed immutable v3 image set and does not interpret
-v4 cursors or event values as v3. Existing durable authorities remain the
+The original v3-image rollback below is historical and superseded by
+[ADR 0013](0013-redis-stream-only-sse.md#retirement-and-compatibility).
+After transport retirement, an older binary is not a compatible recovery path.
+The [part extension](../architecture/redis-streams-sse-wire-protocol.md#change-contract-incremental-assistant-parts-and-final-selection)
+also requires updated readers while part facts or v2 answer receipts remain.
+Use the [release runbook](../operations/release-operations-runbook.md) for current
+recovery; this record authorizes no image or database rollback.
+
+Original decision: rollback uses the prior reviewed immutable v3 image set and
+does not interpret v4 cursors or event values as v3. Existing durable authorities remain the
 source of truth while the coordinated v4 cutover is drained or terminalized.

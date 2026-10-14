@@ -24,9 +24,10 @@ too late, its revocation wording implied an unimplementable commit-time zero-fra
 guarantee, and its mid-run Redis policy did not distinguish degraded live
 transport from bounded execution authority.
 
-ADR 0004 and design ID `ai-platform.redis-streams-sse-event-channel.v2.1` are the
-current implementation authority. ADR 0003 preserves the superseded v2
-correction, and this file preserves the accepted v1
+ADR 0004 subsequently superseded v2; the current v4 event model belongs to
+[ADR 0012](0012-recoverable-agent-kernel-event-stream-v4.md), and current
+publication/recovery belongs to [ADR 0013](0013-redis-stream-only-sse.md).
+ADR 0003 preserves the superseded v2 correction. This file preserves the v1
 identity and audit history; it does not silently change v1 semantics or authorize
 implementation. No v1 parser, PostgreSQL polling loop, delta-write path, runtime
 feature flag, or fallback may treat this historical text as a runnable option.

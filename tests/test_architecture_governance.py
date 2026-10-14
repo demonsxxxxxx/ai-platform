@@ -968,6 +968,28 @@ def test_frozen_hot_file_growth_is_a_candidate_bound_finding(
     assert finding.exemptible is True
     assert finding.details["base_lines"] == 1
     assert finding.details["head_lines"] == 2
+    assert "Extract responsibilities" in finding.as_dict()["remediation"]
+    assert f"remediation: {finding.remediation}" in architecture_governance._render_text(evaluation)
+
+
+def test_frozen_hot_file_cannot_regrow_after_a_reduction(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, _ = governance_repo
+    _write(repo, "app/worker.py", "BASELINE = True\nOLD_ONE = True\nOLD_TWO = True\n")
+    authority = _commit(repo, "original frozen size")
+    _write(repo, "app/worker.py", "BASELINE = True\n")
+    base = _commit(repo, "extract old responsibilities")
+    _write(repo, "app/worker.py", "BASELINE = True\nNEW_RESPONSIBILITY = True\n")
+    head = _commit(repo, "regrow below the original size")
+
+    evaluation = _evaluate(repo, authority, base, head)
+
+    assert evaluation.exit_code == 2
+    finding = next(item for item in evaluation.findings if item.code == "frozen_hot_file_growth")
+    assert finding.details["base_lines"] == 1
+    assert finding.details["head_lines"] == 2
+    assert finding.details["policy_max_lines"] > 2
 
 
 @pytest.mark.parametrize(
