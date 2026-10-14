@@ -268,6 +268,12 @@ GitHub checks bound to the actual base and head.
   durable-type Worker dispatch/reconciliation, valid non-Profile null pins, and
   admitted Profile Run pins distinct from Session creation provenance. The
   explicit Agent and Skill CI selector includes this regression.
+  The existing `test_conversations_persistence.py` owner-Run lookup and
+  `test_runs_persistence.py` queued-Run lock assertions replace the old
+  direct-to-Session SQL shape with the durable Agent-type join, retaining the
+  full tenant, workspace, user, Session, and Agent scope and Run-only row lock.
+  Both suites remain in the existing repository-worker-streaming CI shard;
+  no selector is removed or weakened for this identity projection migration.
 - **Limits and stop conditions:** this change does not convert historical
   unpinned Profile Sessions or Runs into admitted Profile work. Replay of such
   legacy Runs is rejected by the Profile authority before creating a copy,
