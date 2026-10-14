@@ -13,7 +13,9 @@ from app.context.infrastructure.provider_epochs import PostgresProviderEpochRepo
 from app.execution.infrastructure.harness.claude.session_images import provider_session_image_fields
 from app.persistence import object_deletions
 from app.storage import StoredObject
-from tests.test_provider_session_recovery_postgres import recovery_db, PROVIDER_ID, INITIAL
+from tests.test_provider_session_recovery_postgres import INITIAL, PROVIDER_ID, recovery_db as _recovery_db
+
+recovery_db = _recovery_db
 
 
 class ImageStorage:
