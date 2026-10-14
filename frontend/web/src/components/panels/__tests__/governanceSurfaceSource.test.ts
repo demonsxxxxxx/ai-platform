@@ -75,8 +75,10 @@ test("mcp panel gives AI admins lifecycle controls while keeping the ordinary di
   assert.doesNotMatch(source, /mcp\.lifecycleUnavailable/);
   assert.doesNotMatch(source, /mcp\.credentialsUnavailable/);
   assert.match(source, /roleQuotaCount/);
-  assert.doesNotMatch(source, /enabledToolCount/);
-  assert.doesNotMatch(source, /mcp\.card\.tools/);
+  assert.match(source, /useMcpToolDiscovery/);
+  assert.match(source, /data-mcp-tool-count/);
+  assert.match(source, /data-mcp-server-row/);
+  assert.match(source, /MCPToolDrawer/);
   assert.doesNotMatch(
     source,
     /MCPServerCard|EditorSidebar/,
@@ -132,7 +134,10 @@ test("mcp panel gives AI admins lifecycle controls while keeping the ordinary di
   );
   assert.match(ordinaryCatalog, /data-ordinary-mcp-catalog/);
   assert.match(ordinaryCatalog, /mcp\.available\.empty/);
-  assert.match(ordinaryCatalog, /mcpApi\.discoverTools/);
+  const discovery = readFileSync(join(root, "src/components/mcp/useMcpToolDiscovery.ts"), "utf8");
+  assert.match(discovery, /mcpApi\.discoverTools/);
+  assert.match(ordinaryCatalog, /discovery\.toolsByServer/);
+  assert.doesNotMatch(ordinaryCatalog, /listError \|\| toolsUnavailable|collectOrdinaryMcpTools/);
   assert.doesNotMatch(
     ordinaryCatalog,
     /allowed_roles|role_quotas|credential|transport|server\.enabled|can_edit/,

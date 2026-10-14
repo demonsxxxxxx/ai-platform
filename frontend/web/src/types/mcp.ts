@@ -93,5 +93,6 @@ export interface MCPToolDiscoveryResponse {
   server_name: string;
   tools: MCPToolInfo[];
   count: number;
+  unavailable_reason: string | null;
   error?: string;
 }

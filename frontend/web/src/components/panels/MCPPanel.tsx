@@ -4,13 +4,13 @@ import {
   Edit3,
   FolderOpen,
   Plus,
+  RefreshCw,
   Search,
   Server,
   ToggleLeft,
   ToggleRight,
   Trash2,
   X,
-  Wrench,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import toast from "react-hot-toast";
@@ -28,6 +28,9 @@ import { useMCP } from "../../hooks/useMcp";
 import { Permission } from "../../types";
 import type { MCPServerCreate, MCPServerResponse } from "../../types";
 import { MCPServerForm } from "../mcp/MCPServerForm";
+import { MCPToolDrawer } from "../mcp/MCPToolDrawer";
+import { useMcpToolDiscovery } from "../mcp/useMcpToolDiscovery";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../common/Table";
 import { canManageMcpLifecycle, isAiAdminUser } from "./capabilityAdmin";
 import { resolveMcpGovernanceState } from "./mcpGovernanceState";
 import { OrdinaryMcpCatalog } from "./OrdinaryMcpCatalog";
@@ -60,6 +63,7 @@ export function MCPPanel() {
   const [editorOpen, setEditorOpen] = useState(false);
   const [editorDetailsLoading, setEditorDetailsLoading] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<MCPServerResponse | null>(null);
+  const [toolTarget, setToolTarget] = useState<{ name: string; scope: string } | null>(null);
   const editorDialogRef = useRef<HTMLElement>(null);
   const editorPreviousFocusRef = useRef<HTMLElement | null>(null);
   const editorLoadingRef = useRef(false);
@@ -89,6 +93,7 @@ export function MCPPanel() {
   });
 
   const {
+    catalogRequest,
     servers,
     total,
     isLoading,
@@ -105,7 +110,7 @@ export function MCPPanel() {
   } = useMCP({
     enabled: isAuthenticated,
     paused: authLoading,
-    identityScope: JSON.stringify([user?.tenant_id, user?.id, user?.roles, user?.permissions, user?.is_admin, authorityRevision]),
+    identityScope: JSON.stringify([user?.tenant_id, user?.id, user?.roles, user?.permissions, user?.is_admin, user?.department_id, authorityRevision]),
     listParams,
     allAuthorizedCatalog: !isAiAdmin,
     canManageServers: canManageMcp,
@@ -138,6 +143,13 @@ export function MCPPanel() {
   });
   const lifecycleAvailability = mcpGovernance.lifecycleAvailability;
   const canManageMcpUi = canManageMcp && isAvailable;
+  const discoveryEnabled = isAuthenticated && !authLoading && !isLoading && isAvailable && !catalogError;
+  const discovery = useMcpToolDiscovery(servers, JSON.stringify(catalogRequest), discoveryEnabled);
+  const toolsScope = JSON.stringify([catalogRequest, authLoading, permissionDenied, isAvailable]);
+  const selectedToolServer = toolTarget?.scope === toolsScope ? servers.find((server) => server.name === toolTarget.name) : undefined;
+  useEffect(() => {
+    setToolTarget((target) => target?.scope === toolsScope ? target : null);
+  }, [toolsScope]);
 
   const openEditor = async (server: MCPServerResponse | null) => {
     if (!canManageMcpUi) return;
@@ -154,6 +166,7 @@ export function MCPPanel() {
     } else {
       setEditorServer(null);
     }
+    setToolTarget(null);
     setEditorOpen(true);
   };
 
@@ -261,6 +274,7 @@ export function MCPPanel() {
         servers={servers}
         isLoading={directoryIsLoading}
         listError={catalogError}
+        discovery={discovery}
         onRetry={retryCatalog}
       />
     );
@@ -314,7 +328,7 @@ export function MCPPanel() {
           }
           actions={mcpGovernance.pageState === "forbidden" ? (
             <button type="button" className="btn-secondary" data-mcp-retry onClick={retryCatalog}>
-              {t("common.retry")}
+              {t("mcp.catalogUnavailable.retry")}
             </button>
           ) : undefined}
           capabilities={[
@@ -354,22 +368,17 @@ export function MCPPanel() {
         searchValue={searchQuery}
         onSearchChange={setSearchQuery}
         searchPlaceholder={t("mcp.searchPlaceholder")}
-      />
-      {canManageMcpUi ? (
-        <div className="flex justify-end px-4 pt-3" data-mcp-admin-controls>
-          <button
-            type="button"
-            onClick={openCreate}
-            className="btn-primary inline-flex min-h-11 items-center justify-center gap-2"
-            aria-label={t("mcp.admin.addServer")}
-            title={t("mcp.admin.addServer")}
-          >
-            <Plus size={18} />
-            <span className="hidden sm:inline">{t("mcp.admin.addServer")}</span>
+        searchAccessory={<>
+          <button type="button" className="btn-secondary inline-flex min-h-11 items-center gap-2" data-mcp-refresh-tools onClick={discovery.refresh} disabled={!discoveryEnabled || Array.from(discovery.statusByServer.values()).includes("loading")} aria-label={t("mcp.tools.refresh")} title={t("mcp.tools.refresh")}>
+            <RefreshCw size={16} /><span className="hidden sm:inline">{t("mcp.tools.refresh")}</span>
           </button>
-        </div>
-      ) : null}
-
+          {canManageMcpUi ? <div data-mcp-admin-controls>
+            <button type="button" onClick={openCreate} className="btn-primary inline-flex min-h-11 items-center justify-center gap-2" aria-label={t("mcp.admin.addServer")} title={t("mcp.admin.addServer")}>
+              <Plus size={18} /><span className="hidden sm:inline">{t("mcp.admin.addServer")}</span>
+            </button>
+          </div> : null}
+        </>}
+      />
       {error && (
         <div className="mx-4 mt-4 flex items-start gap-2 rounded-lg bg-[var(--theme-danger-soft)] p-3 text-sm text-[var(--theme-danger)] ring-1 ring-[var(--theme-danger-ring)]">
           <AlertCircle size={16} className="mt-0.5 shrink-0" />
@@ -383,7 +392,7 @@ export function MCPPanel() {
             surface="mcp-directory"
             title={t("mcp.catalogUnavailable.title")}
             description={t("mcp.catalogUnavailable.description")}
-            actions={<button type="button" className="btn-secondary" data-mcp-retry onClick={retryCatalog}>{t("common.retry")}</button>}
+            actions={<button type="button" className="btn-secondary" data-mcp-retry onClick={retryCatalog}>{t("mcp.catalogUnavailable.retry")}</button>}
             className="max-w-none text-left"
           />
         </div>
@@ -421,79 +430,53 @@ export function MCPPanel() {
             ) : null}
           </div>
         ) : (
-          <div className={workbenchSurface.catalog.cardGrid}>
-            {servers.map((server) => {
-              const roleCount = server.allowed_roles?.length ?? 0;
-              const quotaCount = roleQuotaCount(server);
-              return (
-                <article
-                  key={server.name}
-                  className={workbenchSurface.catalog.entryCard}
-                >
-                      <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <Wrench size={16} className="shrink-0 text-[var(--theme-text-secondary)]" />
-                        <h3 className={`truncate ${workbenchSurface.catalog.title}`}>
-                          {server.name}
-                        </h3>
-                      </div>
-                      <p className={`mt-1 ${workbenchSurface.catalog.body}`}>
-                        {server.is_system
-                          ? t("mcp.card.system")
-                          : t("mcp.card.user")}
-                        {" · "}
-                        {transportLabel(server.transport)}
-                      </p>
-                    </div>
-                      </div>
-
-                      {canManageMcpUi ? (
-                        <div className="mt-3 flex items-center justify-end gap-1" data-mcp-admin-controls>
-                          <button type="button" onClick={async () => { const updated = await toggleServer(server.name); if (updated) toast.success(t(updated.enabled ? "mcp.admin.enableSuccess" : "mcp.admin.disableSuccess")); }} className="btn-icon min-h-11 min-w-11" aria-label={server.enabled ? t("mcp.admin.disableServer") : t("mcp.admin.enableServer")} title={server.enabled ? t("mcp.admin.disableServer") : t("mcp.admin.enableServer")} disabled={isLoading}>
+          <div className="overflow-x-auto rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)]">
+            <Table className="w-full min-w-[960px] text-left text-sm [&_th]:px-4 [&_th]:py-3 [&_th]:text-xs [&_th]:font-medium [&_th]:text-[var(--theme-text-secondary)] [&_td]:px-4 [&_td]:py-3 [&_td]:align-top" aria-label={t("mcp.title")}>
+              <TableHeader className="border-b border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)]">
+                <TableRow>
+                  <TableHead>{t("mcp.form.serverName")}</TableHead>
+                  <TableHead>{t("mcp.tools.accountCount")}</TableHead>
+                  <TableHead>{t("mcp.card.statusLabel")}</TableHead>
+                  <TableHead>{t("mcp.tools.discoveryStatus")}</TableHead>
+                  <TableHead>{t("mcp.form.transportType")}</TableHead>
+                  <TableHead>{t("mcp.directory.accessScope")}</TableHead>
+                  <TableHead>{t("mcp.directory.actions")}</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody className="divide-y divide-[var(--theme-border)]">
+                {servers.map((server) => {
+                  const status = discovery.statusByServer.get(server.name) ?? "idle";
+                  const quotaCount = roleQuotaCount(server);
+                  return <TableRow key={server.name} data-mcp-server-row={server.name}>
+                    <TableCell className="max-w-64">
+                      <p className="break-words font-semibold">{server.name}</p>
+                      <p className="mt-1 text-xs text-[var(--theme-text-secondary)]">{t(server.is_system ? "mcp.card.system" : "mcp.card.user")}</p>
+                    </TableCell>
+                    <TableCell data-mcp-tool-count>{status === "ready" ? t("mcp.tools.count", { count: discovery.toolsByServer.get(server.name)?.length ?? 0 }) : "—"}</TableCell>
+                    <TableCell><span className={server.enabled ? "text-[var(--theme-accent)]" : "text-[var(--theme-text-secondary)]"}>{t(server.enabled ? "mcp.card.statusEnabled" : "mcp.card.statusDisabled")}</span></TableCell>
+                    <TableCell><span className={status === "unavailable" ? "text-[var(--theme-danger)]" : "text-[var(--theme-text-secondary)]"}>{t(`mcp.discovery.${status}`)}</span></TableCell>
+                    <TableCell>{transportLabel(server.transport)}</TableCell>
+                    <TableCell className="max-w-64">
+                      <p title={server.allowed_departments?.join("、")}>{server.allowed_departments?.length ? t("mcp.directory.departments", { count: server.allowed_departments.length }) : t("mcp.directory.allDepartments")}</p>
+                      <p className="mt-1 break-words text-xs text-[var(--theme-text-secondary)]">{t("mcp.directory.roles", { roles: server.allowed_roles?.length ? server.allowed_roles.join("、") : t("mcp.directory.allRoles") })}</p>
+                      {quotaCount > 0 ? <p className="mt-1 text-xs text-[var(--theme-text-secondary)]">{t("mcp.card.roleQuotaCount")}：{quotaCount}</p> : null}
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-1">
+                        <button type="button" className="btn-secondary min-h-11 whitespace-nowrap" data-mcp-view-tools onClick={() => setToolTarget({ name: server.name, scope: toolsScope })}>{t("mcp.tools.view")}</button>
+                        {canManageMcpUi ? <div className="flex items-center gap-1" data-mcp-admin-controls>
+                          <button type="button" data-mcp-admin-toggle onClick={async () => { const updated = await toggleServer(server.name); if (updated) toast.success(t(updated.enabled ? "mcp.admin.enableSuccess" : "mcp.admin.disableSuccess")); }} className="btn-icon min-h-11 min-w-11" aria-label={server.enabled ? t("mcp.admin.disableServer") : t("mcp.admin.enableServer")} title={server.enabled ? t("mcp.admin.disableServer") : t("mcp.admin.enableServer")} disabled={isLoading}>
                             {server.enabled ? <ToggleRight size={18} /> : <ToggleLeft size={18} />}
                           </button>
-                          <button type="button" onClick={() => void openEditor(server)} className="btn-icon min-h-11 min-w-11" aria-label={t("mcp.admin.editServer")} title={t("mcp.admin.editServer")} disabled={isLoading || editorDetailsLoading}>
-                            <Edit3 size={18} />
-                          </button>
-                          <button type="button" onClick={() => setDeleteTarget(server)} className="btn-icon min-h-11 min-w-11 hover:bg-[var(--theme-danger-soft)] hover:text-[var(--theme-danger)]" aria-label={t("mcp.admin.deleteServer")} title={t("mcp.admin.deleteServer")} disabled={isLoading}>
-                            <Trash2 size={18} />
-                          </button>
-                        </div>
-                      ) : null}
-
-                  <dl className="mt-4 grid grid-cols-3 gap-2 text-xs">
-                    <div className={workbenchSurface.catalog.metricTile}>
-                      <dt className={workbenchSurface.catalog.label}>
-                        {t("mcp.card.statusLabel")}
-                      </dt>
-                      <dd className="mt-1 font-medium text-[var(--theme-text)]">
-                        {server.enabled
-                          ? t("mcp.card.statusEnabled")
-                          : t("mcp.card.statusDisabled")}
-                      </dd>
-                    </div>
-                    <div className={workbenchSurface.catalog.metricTile}>
-                      <dt className={workbenchSurface.catalog.label}>
-                        {t("mcp.card.roleCount", { count: roleCount })}
-                      </dt>
-                      <dd className="mt-1 font-medium text-[var(--theme-text)]">
-                        {roleCount || t("mcp.form.allRoles")}
-                      </dd>
-                    </div>
-                    <div className={workbenchSurface.catalog.metricTile}>
-                      <dt className={workbenchSurface.catalog.label}>
-                        {t("mcp.card.roleQuotaCount")}
-                      </dt>
-                      <dd className="mt-1 font-medium text-[var(--theme-text)]">
-                        {quotaCount}
-                      </dd>
-                    </div>
-                  </dl>
-
-                </article>
-              );
-            })}
+                          <button type="button" data-mcp-admin-edit onClick={() => void openEditor(server)} className="btn-icon min-h-11 min-w-11" aria-label={t("mcp.admin.editServer")} title={t("mcp.admin.editServer")} disabled={isLoading || editorDetailsLoading}><Edit3 size={18} /></button>
+                          <button type="button" data-mcp-admin-delete onClick={() => { setToolTarget(null); setDeleteTarget(server); }} className="btn-icon min-h-11 min-w-11 hover:bg-[var(--theme-danger-soft)] hover:text-[var(--theme-danger)]" aria-label={t("mcp.admin.deleteServer")} title={t("mcp.admin.deleteServer")} disabled={isLoading}><Trash2 size={18} /></button>
+                        </div> : null}
+                      </div>
+                    </TableCell>
+                  </TableRow>;
+                })}
+              </TableBody>
+            </Table>
           </div>
         )}
       </div>
@@ -508,6 +491,7 @@ export function MCPPanel() {
           />
         </div>
       )}
+      {selectedToolServer ? <MCPToolDrawer key={selectedToolServer.name} serverName={selectedToolServer.name} status={discovery.statusByServer.get(selectedToolServer.name) ?? "idle"} tools={discovery.toolsByServer.get(selectedToolServer.name) ?? []} onRefresh={discovery.refresh} onClose={() => setToolTarget(null)} /> : null}
       {editorOpen && canManageMcpUi ? (
         <div className="fixed inset-0 z-[300] flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label={editorServer ? t("mcp.admin.editServer") : t("mcp.admin.addServer")}>
           <div className="absolute inset-0 bg-[var(--theme-overlay-strong)]" onClick={closeEditor} />

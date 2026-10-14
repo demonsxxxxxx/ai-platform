@@ -1,8 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
 import { Server, Wrench } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { mcpApi } from "../../services/api/mcp";
-import type { MCPServerResponse, MCPToolInfo } from "../../types";
+import type { MCPServerResponse } from "../../types";
+import type { useMcpToolDiscovery } from "../mcp/useMcpToolDiscovery";
 import { PanelHeader } from "../common/PanelHeader";
 import { workbenchSurface } from "../workbench/workbenchSurface";
 import { projectOrdinaryMcpCatalogItem } from "./ordinaryCatalogPolicy";
@@ -11,117 +10,8 @@ interface OrdinaryMcpCatalogProps {
   servers: MCPServerResponse[];
   isLoading: boolean;
   listError: string | null;
+  discovery: ReturnType<typeof useMcpToolDiscovery>;
   onRetry?: () => void;
-}
-
-export const ORDINARY_MCP_TOOL_DISCOVERY_CONCURRENCY = 6;
-
-export interface OrdinaryMcpToolDiscoveryResult {
-  toolsByServer: Record<string, MCPToolInfo[]>;
-  unavailable: boolean;
-}
-
-export interface OrdinaryMcpToolDiscoveryState {
-  generation: number;
-  serverSetKey: string;
-  toolsByServer: Record<string, MCPToolInfo[]>;
-  toolsLoading: boolean;
-  toolsUnavailable: boolean;
-}
-
-/** Builds the stable identity used to match discovery state to the current server set. */
-// eslint-disable-next-line react-refresh/only-export-components -- shared with pure discovery coverage.
-export function buildOrdinaryMcpServerSetKey(serverNames: string[]): string {
-  return Array.from(new Set(serverNames.filter(Boolean))).sort().join("\u0000");
-}
-
-/** Collects all public tool descriptions with a bounded number of active requests. */
-// eslint-disable-next-line react-refresh/only-export-components -- shared with pure discovery coverage.
-export async function collectOrdinaryMcpTools(
-  serverNames: string[],
-  discoverTools: (serverName: string) => Promise<{ tools: MCPToolInfo[]; unavailable_reason?: string | null }>,
-  shouldContinue: () => boolean = () => true,
-): Promise<OrdinaryMcpToolDiscoveryResult> {
-  const uniqueServerNames = Array.from(new Set(serverNames)).filter(Boolean);
-  const toolsByServer: Record<string, MCPToolInfo[]> = {};
-  let unavailable = false;
-  let nextIndex = 0;
-  const workerCount = Math.min(
-    ORDINARY_MCP_TOOL_DISCOVERY_CONCURRENCY,
-    uniqueServerNames.length,
-  );
-
-  await Promise.all(
-    Array.from({ length: workerCount }, async () => {
-      while (true) {
-        if (!shouldContinue()) return;
-        if (nextIndex >= uniqueServerNames.length) return;
-        const serverName = uniqueServerNames[nextIndex];
-        nextIndex += 1;
-        try {
-          const response = await discoverTools(serverName);
-          if (response.unavailable_reason) {
-            unavailable = true;
-          } else {
-            toolsByServer[serverName] = response.tools;
-          }
-        } catch {
-          unavailable = true;
-        }
-      }
-    }),
-  );
-
-  return { toolsByServer, unavailable };
-}
-
-/** Starts a new atomic ordinary MCP tool-discovery generation. */
-// eslint-disable-next-line react-refresh/only-export-components -- shared with pure discovery coverage.
-export function beginOrdinaryMcpToolDiscovery(
-  generation: number,
-  serverNames: string[],
-): OrdinaryMcpToolDiscoveryState {
-  return {
-    generation,
-    serverSetKey: buildOrdinaryMcpServerSetKey(serverNames),
-    toolsByServer: {},
-    toolsLoading: serverNames.length > 0,
-    toolsUnavailable: false,
-  };
-}
-
-/** Publishes a completed tool-discovery result only for its active generation. */
-// eslint-disable-next-line react-refresh/only-export-components -- shared with pure discovery coverage.
-export function publishOrdinaryMcpToolDiscovery(
-  state: OrdinaryMcpToolDiscoveryState,
-  generation: number,
-  result: OrdinaryMcpToolDiscoveryResult,
-): OrdinaryMcpToolDiscoveryState {
-  if (state.generation !== generation) return state;
-  return {
-    generation,
-    serverSetKey: state.serverSetKey,
-    toolsByServer: result.toolsByServer,
-    toolsLoading: false,
-    toolsUnavailable: result.unavailable,
-  };
-}
-
-/** Hides discovery output that belongs to a different current server set. */
-// eslint-disable-next-line react-refresh/only-export-components -- shared with pure discovery coverage.
-export function resolveVisibleOrdinaryMcpToolDiscovery(
-  state: OrdinaryMcpToolDiscoveryState,
-  serverNames: string[],
-): OrdinaryMcpToolDiscoveryState {
-  const serverSetKey = buildOrdinaryMcpServerSetKey(serverNames);
-  if (state.serverSetKey === serverSetKey) return state;
-  return {
-    generation: state.generation,
-    serverSetKey,
-    toolsByServer: {},
-    toolsLoading: false,
-    toolsUnavailable: false,
-  };
 }
 
 /** Read-only MCP directory for ordinary company accounts. */
@@ -129,57 +19,15 @@ export function OrdinaryMcpCatalog({
   servers,
   isLoading,
   listError,
+  discovery,
   onRetry,
 }: OrdinaryMcpCatalogProps) {
   const { t } = useTranslation();
-  const discoveryGenerationRef = useRef(0);
-  const [toolDiscovery, setToolDiscovery] =
-    useState<OrdinaryMcpToolDiscoveryState>(() =>
-      beginOrdinaryMcpToolDiscovery(0, []),
-    );
-  const serverNames = useMemo(
-    () => Array.from(new Set(servers.map((server) => server.name))).sort(),
-    [servers],
-  );
-
-  useEffect(() => {
-    const generation = discoveryGenerationRef.current + 1;
-    discoveryGenerationRef.current = generation;
-    setToolDiscovery(beginOrdinaryMcpToolDiscovery(generation, serverNames));
-    const isCurrentGeneration = () =>
-      discoveryGenerationRef.current === generation;
-    const invalidateGeneration = () => {
-      if (isCurrentGeneration()) discoveryGenerationRef.current += 1;
-    };
-    if (serverNames.length === 0) return invalidateGeneration;
-
-    void collectOrdinaryMcpTools(serverNames, mcpApi.discoverTools, isCurrentGeneration)
-      .then((result) => {
-        if (discoveryGenerationRef.current !== generation) return;
-        setToolDiscovery((current) =>
-          publishOrdinaryMcpToolDiscovery(current, generation, result),
-        );
-      })
-      .catch(() => {
-        if (discoveryGenerationRef.current !== generation) return;
-        setToolDiscovery((current) =>
-          publishOrdinaryMcpToolDiscovery(current, generation, {
-            toolsByServer: {},
-            unavailable: true,
-          }),
-        );
-      });
-    return invalidateGeneration;
-  }, [serverNames]);
-
-  const { toolsByServer, toolsLoading, toolsUnavailable } =
-    resolveVisibleOrdinaryMcpToolDiscovery(toolDiscovery, serverNames);
-
   const catalog = servers
     .map((server) =>
       projectOrdinaryMcpCatalogItem({
         name: server.name,
-        tools: toolsByServer[server.name] ?? [],
+        tools: discovery.toolsByServer.get(server.name) ?? [],
       }),
     )
     .filter((server) => server.name.length > 0);
@@ -192,18 +40,18 @@ export function OrdinaryMcpCatalog({
         icon={<Server size={20} className="text-theme-text-secondary" />}
       />
       <div className={workbenchSurface.catalog.content}>
-        {isLoading || toolsLoading ? (
+        {isLoading ? (
           <div className={workbenchSurface.catalog.emptyState}>
             <p className={workbenchSurface.catalog.emptyTitle}>
               {t("mcp.available.loading")}
             </p>
           </div>
-        ) : listError || toolsUnavailable ? (
+        ) : listError ? (
           <div className={workbenchSurface.catalog.emptyState}>
             <p className={workbenchSurface.catalog.emptyTitle}>
               {t("mcp.available.unavailable")}
             </p>
-            {listError && onRetry ? <button type="button" className="btn-secondary mt-3" data-mcp-retry onClick={onRetry}>{t("common.retry")}</button> : null}
+            {listError && onRetry ? <button type="button" className="btn-secondary mt-3" data-mcp-retry onClick={onRetry}>{t("mcp.catalogUnavailable.retry")}</button> : null}
           </div>
         ) : catalog.length === 0 ? (
           <div className={workbenchSurface.catalog.emptyState}>
@@ -221,10 +69,16 @@ export function OrdinaryMcpCatalog({
                 <div className="flex items-center gap-2">
                   <Server size={16} className="text-theme-text-secondary" />
                   <h2 className={workbenchSurface.catalog.title}>{server.name}</h2>
+                  {discovery.statusByServer.get(server.name) === "ready" ? <span className="ml-auto text-xs text-[var(--theme-text-secondary)]">{t("mcp.tools.count", { count: server.tools.length })}</span> : null}
                 </div>
-                {server.tools.length === 0 ? (
+                {discovery.statusByServer.get(server.name) !== "ready" ? (
+                  <div className="mt-3 text-sm text-[var(--theme-text-secondary)]">
+                    <p>{t(discovery.statusByServer.get(server.name) === "loading" ? "mcp.available.loading" : "mcp.available.unavailable")}</p>
+                    {discovery.statusByServer.get(server.name) === "unavailable" ? <button type="button" className="btn-secondary mt-3" onClick={discovery.refresh}>{t("mcp.tools.retry")}</button> : null}
+                  </div>
+                ) : server.tools.length === 0 ? (
                   <p className={`mt-3 ${workbenchSurface.catalog.body}`}>
-                    {t("mcp.card.noTools")}
+                    {t("mcp.tools.empty")}
                   </p>
                 ) : (
                   <ul className="mt-3 space-y-3">
