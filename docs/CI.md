@@ -132,9 +132,9 @@ Backend preflight 新增第一方文档检查，从完整 PR base SHA / push-bef
 "$harness_python" tools/check_documentation.py
 ```
 
-检查 actual Markdown 链接/图片、heading anchor（含 Unicode、重复标题和显式 HTML id）、
-顶部可见状态与从既有入口的导航可达性。代码示例不是链接，历史资料与完整母本会
-明确列为 excluded。坏链接/坏 anchor/越出仓库、缺状态、漏索引、clean checkout
+检查 actual Markdown 链接/图片、heading anchor（含 Unicode、重复标题和显式 HTML id）。
+文档状态与导航由作者负责，不要求固定 Status/状态 字段、行号或索引条目。代码示例不是链接，历史资料与完整母本会
+明确列为 excluded。坏链接/坏 anchor/越出仓库、clean checkout
 比较范围的合成反例由 tests/test_check_documentation.py 保护。
 删除/移动目标仍须 owning caller inventory，外部网址不联网检查；本检查不证明文档
 业务内容与运行状态相符。作者在文档变更时触发园丁修复，经正常 review 合并。

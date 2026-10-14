@@ -283,7 +283,7 @@ The author of a relevant source migration refreshes the inventory and explains
 changed denominators/edges in the PR. Review follows the normal
 [delivery workflow](agent-rules/github-issue-pr-workflow.md); generated output cannot
 approve its own checker or relax required gates. The changed-document checker runs
-in candidate backend preflight against a full comparison SHA. Its link/status/index
+in candidate backend preflight against a full comparison SHA. Its link
 negative tests and author-triggered repair procedure live with
 [local test execution](agent-rules/local-test-execution.md#documentation-gardening).
 T9 candidate source validation is implemented; independent review and observed CI

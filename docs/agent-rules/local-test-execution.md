@@ -106,8 +106,10 @@ thresholds and trusted enforcement are separate acceptance work.
 
 The author of a documentation change runs `python tools/check_documentation.py`
 from its worktree. It checks changed tracked/untracked first-party Markdown for
-rendered local links/images and heading anchors, visible status, and reachability
-from the existing repository/documentation navigation. External URLs are not fetched.
+rendered local links/images and heading anchors. External URLs are not fetched.
+Document purpose/status and navigation remain editorial responsibilities; no fixed
+header text, line position or index entry is required by this check. The authority-map
+regression reuses this link validator for its existing direct-owner file-link scope.
 Historical release evidence, completed plans, agent-rule history and the immutable
 Harness blueprint are explicitly reported as outside this current-source check.
 Preserve their fixed-source provenance; inspect their owner when editing history.
@@ -117,7 +119,7 @@ common ancestor with HEAD before checking branch changes. Incoming main-only
 changes are not attributed to a behind-main PR, and a clean checkout does not
 silently inspect only uncommitted files. A manual run
 with equal comparison/head may report zero selected documents, not whole-repo proof.
-Failures give the source and repair direction. Repair affected links/status/navigation
+Failures give the source and repair direction. Repair affected links
 with the owning document, run this checker and its regressions, and use the ordinary
 [delivery workflow](github-issue-pr-workflow.md). No extra calendar bot, review ledger
 or second architecture authority is introduced. Renaming or deleting a target still

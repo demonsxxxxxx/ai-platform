@@ -141,13 +141,13 @@
 
 - 文档 owner 核对短入口、架构/设计/产品索引和开发/调试/发布说明，保留历史来源；抽样至少 3 份合同与代码比对。现有 `docs/README.md`、source architecture、ADR 和 runbook 为等价复用候选，不照搬外部 Types/Providers taxonomy。
 - 明确 `ARCHITECTURE.md` 等模板路径的映射及是否需要索引，不另写冲突合同。建立 `docs/QUALITY_SCORE.md`，逐域/层列测量范围、分母、命令、基线和差距；差异范围 governance 报告不能充当全仓质量分数。
-- 落实文档 link/必填状态/索引检查与园丁任务的 owner、触发、修复流程；验证坏链接和缺项确能失败。路径等价复用或其他范围调整须获计划确认。
+- 落实文档 link 检查及园丁任务的 owner、触发、修复流程；状态与索引说明由编辑负责，验证坏链接确能失败。路径等价复用或其他范围调整须获计划确认。
 
 ### 阶段 3 · 门禁审计与缺口交付（B2）
 
 - 门禁 owner 按 §5.1 逐项验证现有检测，补齐真实缺口；更新 CI 说明中的完整命令、失败含义和修复指引。非 Tauri 三问/desktop Release 不适用，保留现有发布权威。
 - hook、coverage、豁免记录及结构/文档门禁未落实的项不得标“已有流水线=完成”。每个新增/复用门禁用合成违规证明能阻断；报告 advisory 与 hard gate 的区别。
-- 验收包括干净环境安装→构建→测试、越层/文件大小/非结构化日志/死链/索引缺失负例以及可执行修复信息。豁免必须有原因、期限和独立审查，不能改弱 required checks。
+- 验收包括干净环境安装→构建→测试、越层/文件大小/非结构化日志/死链负例以及可执行修复信息。豁免必须有原因、期限和独立审查，不能改弱 required checks。
 
 ### 阶段 4 · 分域实施（B3→B4→B5）
 
@@ -181,7 +181,7 @@
 | T6 重复逻辑 | 对实际重复体做前后行为/度量核验，同域共享 import 不算重复 | 各 context / 4 | 两段重复证据与收敛后 caller/测试闭环 |
 | T7 依赖方向 | 复用 architecture policy、governance 和现有反例测试 | 门禁 owner / 3–4 | 越层违规被拒、合法边通过，B3–B5 事务与导入检查 |
 | T8 可靠性 | 逐路径查验 timeout/retry/cancellation/cleanup owner；保护既有错误和身份 | Execution/Sandbox/Platform / 3–5 | 超时、部分失败、取消、接管等 owning 回归，不从有限抽样推全仓通过 |
-| T9、§2.4 文档防腐 | link/状态/索引检查及园丁流程；现有 source-authority 测试只覆盖其实际职责 | 文档/门禁 owner / 2–3 | 坏链接/缺状态/漏索引负例失败，园丁修复经正常 review |
+| T9、§2.4 文档防腐 | link 检查与状态/索引说明的编辑责任及园丁流程；现有 source-authority 测试只覆盖其实际职责 | 文档/门禁 owner / 2–3 | 坏链接负例失败，园丁修复经正常 review |
 | T10 覆盖率、阶段 3/5 | 整体+关键域基线/阈值和覆盖门禁待落实 | 测试/门禁 owner / 3、5 | 可复算报告、阈值违规被挡，不把测试数当覆盖率 |
 | 阶段 3：基础门禁、hook、豁免 | 现有 lint/type/build/test/依赖镜像扫描按实际工作流复用；pre-commit/pre-push、豁免期限与可复现性补查 | 门禁 owner / 3 | 干净环境完整链、完整命令及负例；不以“更强”免除其他要求 |
 | 阶段 4/5：测试分层、故障注入、连续全量 | 分片复用 runner、真实依赖/no-skip、端到端核心旅程和 ≥3 反例 | 测试 owner / 4–5 | 保护先就绪、3 次完整范围通过、P0 回归/清零与 P1 处置 |
@@ -207,7 +207,7 @@
 | 计划/债务 | 本文与同级 tech-debt-tracker，完成后按 §14 归档 |
 | 提示词/会话记录 | 不写真实私有 prompt、环境或 credentials；只保留获准的脱敏任务事实 |
 
-T9 的自动坏链接/状态/索引反例与作者触发修复在 B2 候选中已落实；T10 已能显式采集 app 语句/分支，完整测试范围/阈值与可信阻断仍未完成。这些不因候选配置或样本覆盖率存在就标记阶段验收通过。本批新增诊断/文档、runner 选项和 backend preflight；无 superseded production surface。无 coverage 的 CLI/v1 证据保持兼容，required/trusted 检查不删除；B3–B7 的接口/测试/selector 退出仍在真正迁移时处理。
+T9 的自动坏链接反例与作者触发修复在 B2 候选中已落实；T10 已能显式采集 app 语句/分支，完整测试范围/阈值与可信阻断仍未完成。这些不因候选配置或样本覆盖率存在就标记阶段验收通过。本批新增诊断/文档、runner 选项和 backend preflight；无 superseded production surface。无 coverage 的 CLI/v1 证据保持兼容，required/trusted 检查不删除；B3–B7 的接口/测试/selector 退出仍在真正迁移时处理。
 
 ### 5.3 本轮门禁核验结果与具体未闭环项
 
@@ -231,9 +231,9 @@ T9 的自动坏链接/状态/索引反例与作者触发修复在 B2 候选中�
 ### 5.4 B2 变更合同与观测限制
 
 - Owner：repository documentation 与 local-test-stage；达到 backend preflight/required 边界，执行现有高风险 CI review 合同。
-- Change：文档 detector 检查真实 rendered Markdown、本地 link/anchor、可见状态与既有导航；coverage 是 runner 显式可选项，默认行为/v1 envelope 不变。只在 test extra 增加 pytest-cov/coverage（tomli 带 Python 版本 marker），已有包版本不升级。
+- Change：文档 detector 检查真实 rendered Markdown、本地 link/anchor；状态/导航说明不设固定字段、行号或索引门禁；coverage 是 runner 显式可选项，默认行为/v1 envelope 不变。只在 test extra 增加 pytest-cov/coverage（tomli 带 Python 版本 marker），已有包版本不升级。
 - Invariants：显式 selector、worktree lock、PYTEST_* 净化、stage deadline、Windows Job、原始失败/skip/timeout 分类保持。Coverage 清理自己的控制环境、使用 stage-owned config/data/report，完整 app 文件分母、Python source 前后 digest 和报告摘要绑定证据。无效/缺失/缺源范围的报告不能把测试绿转成成功证据。
-- Regression：88 个 grouped owning 用例全通过；包括 namespace 分母 red→green、调用者 omit/fail-under 环境拒入、缺/坏报告、source mutation、zero-skips、覆盖开启的超时/子进程关闭；checker 的坏链接/缺状态/漏索引与固定历史合法反例可重复。
+- Regression：88 个 grouped owning 用例全通过；包括 namespace 分母 red→green、调用者 omit/fail-under 环境拒入、缺/坏报告、source mutation、zero-skips、覆盖开启的超时/子进程关闭；checker 的坏链接与固定历史合法反例可重复。
 - Observation：最终同六 selector 的 b2cov 132 passed/0 skips，452 文件分母。先前450文件的报告和WinError206失败报告被排除；Windows SQLite 采用原生长路径、stage保持短名。完整测试/真实依赖未采集，样本百分比不是门槛。
 - Retirement/compatibility：无 superseded production path 或已删除 CLI/selector；手工文档检查说明更新为 owning detector，旧“无插件/接口”说明已修正。required aggregate 与 trusted authority unchanged；新候选不会自批准 merge。
 - Stop/review：用户本轮明确要求创建PR，授权提交/推送并创建草稿；仍不授权合并、部署、放宽required或提前运行B3–B5。独立review/GitHub CI尚待实际结果；新增test依赖OSV更新TLS超时，原85包报告仅保留B1历史范围。

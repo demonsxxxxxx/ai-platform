@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check changed first-party documentation links, status and index reachability."""
+"""Check changed first-party documentation links."""
 
 from __future__ import annotations
 
@@ -59,34 +59,41 @@ def local_target(root: Path, document: Path, href: str) -> tuple[Path, str] | No
     return target, unquote(parsed.fragment)
 
 
+def check_document_links(
+    root: Path, document: Path, *, check_anchors: bool = True, require_files: bool = False,
+) -> tuple[list[str], set[Path]]:
+    """Share rendered-link validation with the authority-map regression.
+
+    Authority owners require file targets; ordinary Markdown may link directories.
+    Anchor validation is opt-in for that existing file-link-only contract.
+    """
+    root, document = root.resolve(), document.resolve()
+    relative = document.relative_to(root).as_posix()
+    findings, targets = [], set()
+    links, _ = markdown_facts(document.read_text(encoding="utf-8"))
+    for line, href in links:
+        target = local_target(root, document, href)
+        if target is None:
+            continue
+        path, anchor = target
+        if not path.is_relative_to(root):
+            findings.append(f"{relative}:{line}: link_outside_repository: use a fixed external history reference or a repository target")
+        elif not path.exists() or (require_files and not path.is_file()):
+            findings.append(f"{relative}:{line}: link_target_missing: repair or retire the link to {href}")
+        else:
+            targets.add(path)
+            if check_anchors and anchor and path.suffix == ".md" and path.is_file():
+                _, anchors = markdown_facts(path.read_text(encoding="utf-8"))
+                if anchor not in anchors:
+                    findings.append(f"{relative}:{line}: link_anchor_missing: repair the heading reference {href}")
+    return findings, targets
+
+
 def check_documents(root: Path, paths: list[str]) -> tuple[list[str], list[str]]:
     """Return actionable findings and explicitly excluded snapshot/history paths."""
     root = root.resolve()
     findings = []
     excluded = []
-    facts = {}
-
-    def read_facts(path: Path):
-        if path not in facts:
-            text = path.read_text(encoding="utf-8")
-            facts[path] = (text, *markdown_facts(text))
-        return facts[path]
-
-    reachable = set()
-    pending = [root / "docs/README.md", root / "AGENTS.md", root / "README.md"]
-    while pending:
-        document = pending.pop().resolve()
-        if document in reachable or not document.is_relative_to(root) or not document.is_file() or document.suffix != ".md":
-            continue
-        reachable.add(document)
-        if historical(document.relative_to(root).as_posix()):
-            continue
-        _, links, _ = read_facts(document)
-        for _, href in links:
-            target = local_target(root, document, href)
-            if target and target[0].suffix == ".md":
-                pending.append(target[0])
-
     for relative in sorted(set(paths)):
         document = (root / relative).resolve()
         if not document.is_relative_to(root) or document.suffix != ".md" or not (relative in ENTRYPOINTS or relative.startswith("docs/")):
@@ -98,24 +105,8 @@ def check_documents(root: Path, paths: list[str]) -> tuple[list[str], list[str]]
         if not document.is_file():
             findings.append(f"{relative}: document_missing: restore the document or update its consumers")
             continue
-        text, links, _ = read_facts(document)
-        if relative not in ENTRYPOINTS:
-            status_text = "\n".join(token.content for token in MarkdownIt().parse(text) if token.type == "inline" and (token.map or [0])[0] < 80)
-            if not re.search(r"(?:Status|状态)\s*[:：]\s*\S", status_text):
-                findings.append(f"{relative}: document_status_missing: name active/proposed/dated status near the top")
-            if document not in reachable:
-                findings.append(f"{relative}: document_unindexed: link it through docs/README.md or an existing navigable owner")
-        for line, href in links:
-            target = local_target(root, document, href)
-            if target is None:
-                continue
-            path, anchor = target
-            if not path.is_relative_to(root):
-                findings.append(f"{relative}:{line}: link_outside_repository: use a fixed external history reference or a repository target")
-            elif not path.exists():
-                findings.append(f"{relative}:{line}: link_target_missing: repair or retire the link to {href}")
-            elif anchor and path.suffix == ".md" and path.is_file() and anchor not in read_facts(path)[2]:
-                findings.append(f"{relative}:{line}: link_anchor_missing: repair the heading reference {href}")
+        link_findings, _ = check_document_links(root, document)
+        findings.extend(link_findings)
     return findings, excluded
 
 

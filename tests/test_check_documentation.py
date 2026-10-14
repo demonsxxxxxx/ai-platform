@@ -47,6 +47,21 @@ def test_reference_links_unicode_duplicates_and_inline_code_headings(tmp_path):
     assert checker.check_documents(tmp_path, ["docs/owner.md"]) == ([], [])
 
 
+def test_shared_link_validator_keeps_authority_file_scope(tmp_path):
+    documents(tmp_path, {
+        "docs/README.md": "[owner][ref]\n\n[ref]: owner.md#missing\n\n`[example](missing.md)`\n",
+        "docs/owner.md": "# Owner\n",
+    })
+    document = tmp_path / "docs/README.md"
+    assert checker.check_document_links(tmp_path, document, check_anchors=False, require_files=True) == ([], {tmp_path / "docs/owner.md"})
+    findings, _ = checker.check_document_links(tmp_path, document)
+    assert len(findings) == 1 and "link_anchor_missing" in findings[0]
+    document.write_text("[directory](.)\n", encoding="utf-8")
+    assert checker.check_document_links(tmp_path, document)[0] == []
+    findings, _ = checker.check_document_links(tmp_path, document, require_files=True)
+    assert len(findings) == 1 and "link_target_missing" in findings[0]
+
+
 def test_code_examples_are_not_links_and_fixed_history_is_preserved(tmp_path):
     documents(tmp_path, {
         "docs/README.md": "[owner](owner.md)\n",
@@ -59,15 +74,9 @@ def test_code_examples_are_not_links_and_fixed_history_is_preserved(tmp_path):
     assert excluded == ["docs/HARNESS-RULES.md", "docs/release-evidence/old.md"]
 
 
-def test_missing_status_and_navigation_fail_independently(tmp_path):
+def test_unindexed_document_does_not_require_status_or_navigation_metadata(tmp_path):
     documents(tmp_path, {"docs/README.md": "# Index\n", "docs/orphan.md": "# Orphan\n"})
-    findings, _ = checker.check_documents(tmp_path, ["docs/orphan.md"])
-    assert len(findings) == 2
-    assert any("document_status_missing" in finding for finding in findings)
-    assert any("document_unindexed" in finding for finding in findings)
-    documents(tmp_path, {"docs/orphan.md": "# Orphan\n\nStatus: proposed\n"})
-    findings, _ = checker.check_documents(tmp_path, ["docs/orphan.md"])
-    assert len(findings) == 1 and "document_unindexed" in findings[0]
+    assert checker.check_documents(tmp_path, ["docs/orphan.md"]) == ([], [])
     documents(tmp_path, {"docs/README.md": "[orphan](orphan.md)\n"})
     assert checker.check_documents(tmp_path, ["docs/orphan.md"]) == ([], [])
 
@@ -89,10 +98,10 @@ def test_invalid_scope_or_missing_document_fails(tmp_path, path):
     assert "document_path_invalid" in findings[0] or "document_missing" in findings[0]
 
 
-def test_status_inside_a_code_example_does_not_satisfy_metadata(tmp_path):
-    documents(tmp_path, {"docs/README.md": "[owner](owner.md)\n", "docs/owner.md": "# Owner\n\n```md\nStatus: example only\n```\n"})
-    findings, _ = checker.check_documents(tmp_path, ["docs/owner.md"])
-    assert len(findings) == 1 and "document_status_missing" in findings[0]
+@pytest.mark.parametrize("metadata", ["", "This is an active contract.", "\n" * 85 + "Status: active", "```md\nStatus: example only\n```"])
+def test_status_format_and_position_are_not_a_document_gate(tmp_path, metadata):
+    documents(tmp_path, {"docs/README.md": "[owner](owner.md)\n", "docs/owner.md": "# Owner\n\n" + metadata})
+    assert checker.check_documents(tmp_path, ["docs/owner.md"]) == ([], [])
 
 
 def test_commit_comparison_finds_documents_in_a_clean_checkout(tmp_path):
@@ -137,9 +146,9 @@ def test_behind_main_comparison_uses_the_fork_point_not_incoming_base_changes(tm
 
 
 def test_cli_fails_for_real_violations_without_network(tmp_path):
-    documents(tmp_path, {"docs/README.md": "# Index\n", "docs/new.md": "# New\n"})
+    documents(tmp_path, {"docs/README.md": "# Index\n", "docs/new.md": "# New\n[broken](missing.md)\n"})
     subprocess.run(["git", "init", "-b", "main"], cwd=tmp_path, check=True, capture_output=True)
     completed = subprocess.run([sys.executable, str(ROOT / "tools/check_documentation.py"), "docs/new.md"], cwd=tmp_path, capture_output=True, text=True, timeout=15)
     assert completed.returncode == 1
-    assert "document_status_missing" in completed.stdout
-    assert "document_unindexed" in completed.stdout
+    assert "document_status_missing" not in completed.stdout
+    assert "link_target_missing" in completed.stdout
