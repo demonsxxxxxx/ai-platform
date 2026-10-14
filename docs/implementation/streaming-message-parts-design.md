@@ -1,6 +1,6 @@
 # Agent 流式消息与最终交付架构
 
-状态：PR #1651 的公开片段合同及 issue #1657 的 completed-block 来源实现。部署、真实 provider 时序、网络刷新和浏览器首字验收需要独立证据。
+状态：已接受的 SSE v4 公开片段扩展；PR #1651 记录片段合同，issue #1657 记录 completed-block 来源实现。部署、真实 provider 时序、网络刷新和浏览器首字验收需要独立证据。
 外层 SSE v4、授权、重放和 Run 终态继续由
 [wire contract](../architecture/redis-streams-sse-wire-protocol.md)、
 [execution control](../architecture/redis-streams-sse-execution-control.md) 和

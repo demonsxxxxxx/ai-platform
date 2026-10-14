@@ -12,8 +12,10 @@ remote transport constraints; Execution owns the Claude adapter; bootstrap
 assembles concrete adapters. Existing Run/Attempt/lease and callback authorities
 remain unchanged. No new host relay, service, database catalog, or dependency.
 
-The current installed baseline is claude-agent-sdk 0.2.130, bundled Claude Code
-2.1.222. Official contracts: [MCP](https://code.claude.com/docs/en/agent-sdk/mcp),
+Dependency versions are owned by [pyproject.toml](../../pyproject.toml) and
+[uv.lock](../../uv.lock); the bundled CLI comes from that locked SDK package.
+The SDK 0.2.130 / CLI 2.1.222 pair records the original repair baseline, not an
+independent dependency pin. Official contracts: [MCP](https://code.claude.com/docs/en/agent-sdk/mcp),
 [permissions](https://code.claude.com/docs/en/agent-sdk/permissions),
 [hooks](https://code.claude.com/docs/en/agent-sdk/hooks), and
 [Python API](https://code.claude.com/docs/en/agent-sdk/python).
@@ -49,10 +51,13 @@ last-write-wins credential replacement policy.
    Expose only selected Tool definitions using the SDK's in-process MCP Server
    support; preserve model-visible input schemas, annotations, result content,
    structured result data and `isError`. Remote `outputSchema` remains on the
-   typed Tool at the MCP boundary; SDK 0.2.130 does not forward it to the model.
-   Because that bridge also drops the optional
-   `structuredContent` field, the adapter carries it as a bounded JSON text
-   content item while retaining the typed field for direct MCP callers.
+   typed Tool exposed by the platform's in-process Server. The platform adapter
+   also appends `structuredContent` as a bounded JSON text content item while
+   retaining the typed field. This compatibility representation preserves the
+   structured value when an SDK bridge omits optional result fields, as observed
+   with SDK 0.2.130. Forwarding through a later SDK and model interpretation
+   require their own adapter/provider acceptance; a dependency change alone does
+   not prove that the compatibility representation can be retired.
    Forward calls to the original remote names. Do not expose
    unselected siblings or use a Server-wide wildcard permission grant.
 3. Each discovery task owns and closes its remote session. Close SDK query streams,
