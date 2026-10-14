@@ -15,7 +15,10 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
 from starlette.responses import JSONResponse
 
-from app.agent_apps.api import AgentProfileAuthority, pin_agent_skill_set
+from app.agent_apps.api import (
+    AgentProfileAuthority, agent_type_requires_profile_admission, pin_agent_skill_set,
+    resolve_session_profile_admission_identity,
+)
 from app.agent_apps.infrastructure import catalog_postgres as agent_apps_catalog
 from app.agent_apps.infrastructure import (
     principal_catalog_postgres as agent_apps_principal_catalog,
@@ -1128,6 +1131,8 @@ async def create_chat_session(
         )
         if agent is None:
             raise HTTPException(status_code=409, detail="agent_inactive")
+        if agent_type_requires_profile_admission(agent.get("agent_type")):
+            raise HTTPException(status_code=409, detail="agent_profile_admission_required")
         await conversations_session_queries.ensure_workspace(conn, tenant_id=principal.tenant_id, workspace_id=request.workspace_id)
         await identity_postgres.ensure_user(conn, tenant_id=principal.tenant_id, user_id=principal.user_id, display_name=principal.display_name)
         session_id = await conversations_postgres.create_session(
@@ -1491,26 +1496,18 @@ async def chat_stream(
                         )
                     )
 
-            session_profile_revision = (
-                continuation_session.get("admitted_agent_profile_revision")
-                if isinstance(continuation_session, dict)
-                else None
-            )
-            if request.session_id and isinstance(session_profile_revision, int) and session_profile_revision > 0:
-                session_profile_agent_id = str(continuation_session.get("agent_id") or "")
-                session_profile_hash = continuation_session.get("admitted_agent_profile_hash")
-                if not isinstance(session_profile_hash, str) or not session_profile_hash:
-                    raise HTTPException(status_code=409, detail="agent_profile_session_mismatch")
-                if (
-                    selected_agent_profile is not None
-                    and selected_agent_profile.agent_id != session_profile_agent_id
-                ):
-                    raise HTTPException(status_code=409, detail="agent_profile_session_mismatch")
-                selected_agent_profile = SelectedAgentProfileRequest(
-                    agent_id=session_profile_agent_id,
+            try:
+                profile_agent_id, session_profile_revision = resolve_session_profile_admission_identity(
+                    continuation_session,
+                    session_id=request.session_id,
+                    selected_agent_id=(selected_agent_profile.agent_id if selected_agent_profile is not None else None),
                 )
-            elif request.session_id and selected_agent_profile is not None:
-                raise HTTPException(status_code=409, detail="agent_profile_session_mismatch")
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail="agent_profile_session_mismatch") from exc
+            if profile_agent_id is not None:
+                selected_agent_profile = SelectedAgentProfileRequest(
+                    agent_id=profile_agent_id,
+                )
 
             if selected_agent_profile is not None:
                 admitted_agent_profile = await _agent_profile_authority.resolve_for_admission(
@@ -1741,6 +1738,8 @@ async def chat_stream(
                     **authorization_kwargs,
                 )
             if execution_kind == RUN_EXECUTION_KIND_SKILL:
+                if admitted_agent_profile is None and agent_type_requires_profile_admission(skill.get("agent_type")):
+                    raise HTTPException(status_code=409, detail="agent_profile_admission_required")
                 executor_type = str(skill.get("executor_type") or "")
                 input_modes = list(skill.get("input_modes") or [])
             if (

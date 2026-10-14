@@ -1,6 +1,8 @@
 import app.identity.infrastructure.audit_postgres as _owner_identity_infrastructure_audit_postgres
 from contextlib import asynccontextmanager
 
+import pytest
+
 from fastapi.testclient import TestClient
 
 from app.main import create_app
@@ -140,82 +142,139 @@ def test_retired_generic_settings_routes_are_absent(monkeypatch):
         assert response.status_code == 404
 
 
-def test_feedback_projection_and_admin_workflow_are_safe(monkeypatch):
+RETIRED_ENDPOINTS = [
+    ("GET", "/api/feedback/?skip=10&limit=5", "feedback:read", "feedback_unavailable"),
+    ("GET", "/api/feedback/stats", "feedback:read", "feedback_unavailable"),
+    ("PUT", "/api/feedback/feedback-example", "feedback:admin", "feedback_unavailable"),
+    ("DELETE", "/api/feedback/feedback-example", "feedback:admin", "feedback_unavailable"),
+    ("GET", "/api/notifications/active", "notification:read", "notifications_unavailable"),
+    ("POST", "/api/notifications/announcement-example/dismiss", "notification:read", "notifications_unavailable"),
+    ("GET", "/api/notifications/admin?skip=10&limit=5", "notification:admin", "notifications_unavailable"),
+    ("POST", "/api/notifications/", "notification:admin", "notifications_unavailable"),
+    ("PUT", "/api/notifications/announcement-example", "notification:admin", "notifications_unavailable"),
+    ("DELETE", "/api/notifications/announcement-example", "notification:admin", "notifications_unavailable"),
+    ("POST", "/api/notifications/announcement-example/replay", "notification:admin", "notifications_unavailable"),
+]
+
+
+def install_unavailable_route_guards(monkeypatch):
     calls = install_workbench_route_fakes(monkeypatch)
+
+    @asynccontextmanager
+    async def unexpected_transaction():
+        raise AssertionError("Retired feedback/announcement endpoints must not open a transaction")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr("app.routes.workbench_projections.transaction", unexpected_transaction)
+    return calls
+
+
+@pytest.mark.parametrize("method,path,permission,detail", RETIRED_ENDPOINTS)
+def test_unimplemented_endpoints_reject_without_claiming_data_or_queueing(
+    monkeypatch, method, path, permission, detail,
+):
+    calls = install_unavailable_route_guards(monkeypatch)
     client = TestClient(create_app())
-
-    listing = client.get("/api/feedback/?limit=5", headers=user_headers())
-    assert listing.status_code == 200
-    body = listing.json()
-    assert body["total"] >= 1
-    assert body["items"][0]["assignment_state"] == "unassigned"
-    assert body["items"][0]["audit_history"] == []
-    assert body["stats"]["total_count"] >= 1
-    assert_no_sensitive_material(body)
-
-    denied = client.put(
-        "/api/feedback/fb-1",
-        json={"assignment_state": "closed", "private_payload": "sk-live-secret-value"},
-        headers=user_headers("feedback:read"),
-    )
-    assert denied.status_code == 403
-    assert denied.json()["detail"] == "missing_permission:feedback:admin"
-
-    updated = client.put(
-        "/api/feedback/fb-1",
-        json={"assignee_id": "reviewer-a", "status": "closed", "labels": ["bug", "resolved"]},
-        headers=admin_headers(),
-    )
-    assert updated.status_code == 200
-    assert updated.json()["status"] == "queued"
-    assert updated.json()["audit_id"] == "audit-workbench-contract"
-    assert_no_sensitive_material(updated.json())
-    assert_no_sensitive_material(calls)
+    # The retired endpoints do not consume payloads, echo sensitive material, or
+    # pretend a summary audit row is an accepted command for some future worker.
+    payload = {"comment": "sk-live-secret-value", "audience": {"tenant_id": "other-tenant"}}
+    for tenant_id in ("tenant-a", "tenant-b"):
+        for headers in (user_headers(permission), admin_headers("")):
+            headers["X-AI-Tenant-ID"] = tenant_id
+            response = client.request(method, path, headers=headers, json=payload)
+            assert response.status_code == 501
+            assert response.json() == {"detail": detail}
+            assert_no_sensitive_material(response.json())
+    assert calls == []
 
 
-def test_notifications_public_and_admin_projection(monkeypatch):
-    calls = install_workbench_route_fakes(monkeypatch)
+@pytest.mark.parametrize("method,path,permission,detail", RETIRED_ENDPOINTS)
+def test_unimplemented_endpoints_preserve_auth_and_permission_boundaries(
+    monkeypatch, method, path, permission, detail,
+):
+    calls = install_unavailable_route_guards(monkeypatch)
     client = TestClient(create_app())
+    anonymous = client.request(method, path)
+    if path == "/api/notifications/active":
+        assert anonymous.status_code == 200
+        assert anonymous.json() == {"notifications": []}
+    else:
+        assert anonymous.status_code == 401
+        assert anonymous.json() == {"detail": "missing_authenticated_principal"}
 
-    public_response = client.get("/api/notifications/active", headers=user_headers())
-    assert public_response.status_code == 200
-    public_body = public_response.json()
-    assert public_body[0]["id"] == "platform-announcement"
-    assert public_body[0]["read_state"] == "unread"
-    assert "audience" not in public_body[0]
-    assert_no_sensitive_material(public_body)
-
-    admin_list = client.get("/api/notifications/admin?limit=10", headers=admin_headers())
-    assert admin_list.status_code == 200
-    admin_body = admin_list.json()
-    assert admin_body["items"][0]["audience"] == {"tenant_id": "default", "departments": []}
-    assert admin_body["items"][0]["audit_history"] == []
-
-    denied = client.post(
-        "/api/notifications/",
-        json={"title_i18n": {"en": "Secret"}, "token_secret": "gateway-token-secret"},
-        headers=user_headers("notification:read"),
-    )
+    denied = client.request(method, path, headers=user_headers(""))
     assert denied.status_code == 403
-    assert denied.json()["detail"] == "missing_permission:notification:admin"
+    assert denied.json() == {"detail": f"missing_permission:{permission}"}
+    assert calls == []
 
-    created = client.post(
-        "/api/notifications/",
-        json={
-            "title_i18n": {"en": "Maintenance"},
-            "content_i18n": {"en": "Window"},
-            "audience": {"tenant_id": "default", "departments": ["qa"], "token_secret": "gateway-token-secret"},
-            "expires_at": "2026-06-30T00:00:00Z",
-            "replay": True,
-        },
-        headers=admin_headers(),
+
+@pytest.mark.parametrize("method,path,permission,detail", RETIRED_ENDPOINTS)
+def test_unimplemented_endpoints_preserve_deployment_tenant_scope(
+    monkeypatch, method, path, permission, detail,
+):
+    calls = install_unavailable_route_guards(monkeypatch)
+    settings = Settings(frontend_poc_auth_enabled=True).model_copy(
+        update={"deployment_environment": "production", "default_tenant_id": "tenant-a"}
     )
-    assert created.status_code == 200
-    assert created.json()["operation"] == "create"
-    assert created.json()["audit_id"] == "audit-workbench-contract"
-    assert_no_sensitive_material(created.json())
+    monkeypatch.setattr("app.auth.get_settings", lambda: settings)
+    client = TestClient(create_app())
+    headers = admin_headers()
+    headers["X-AI-Tenant-ID"] = "tenant-b"
+    response = client.request(method, path, headers=headers)
+    assert response.status_code == 403
+    assert response.json() == {"detail": "tenant_scope_not_allowed"}
+    assert calls == []
 
-    replay = client.post("/api/notifications/platform-announcement/replay", headers=admin_headers())
-    assert replay.status_code == 200
-    assert replay.json()["operation"] == "replay"
-    assert_no_sensitive_material(calls)
+
+@pytest.mark.parametrize(
+    "method,path,permission,field",
+    [
+        ("PUT", "/api/feedback/bad%20id", "feedback:admin", "feedback_id"),
+        ("DELETE", "/api/feedback/bad%20id", "feedback:admin", "feedback_id"),
+        ("POST", "/api/notifications/bad%20id/dismiss", "notification:read", "notification_id"),
+        ("PUT", "/api/notifications/bad%20id", "notification:admin", "notification_id"),
+        ("DELETE", "/api/notifications/bad%20id", "notification:admin", "notification_id"),
+        ("POST", "/api/notifications/bad%20id/replay", "notification:admin", "notification_id"),
+    ],
+)
+def test_retired_mutations_validate_ids_after_permission(monkeypatch, method, path, permission, field):
+    calls = install_unavailable_route_guards(monkeypatch)
+    client = TestClient(create_app())
+    denied = client.request(method, path, headers=user_headers(""))
+    assert denied.status_code == 403
+    assert denied.json() == {"detail": f"missing_permission:{permission}"}
+    invalid = client.request(method, path, headers=admin_headers())
+    assert invalid.status_code == 400
+    assert invalid.json() == {"detail": f"{field} contains unsupported characters"}
+    assert calls == []
+
+
+def test_repeat_announcement_dismiss_never_acknowledges_or_recreates_demo_popup(monkeypatch):
+    calls = install_unavailable_route_guards(monkeypatch)
+    client = TestClient(create_app())
+    for user_id in ("ordinary-a", "ordinary-b"):
+        headers = {**user_headers(), "X-AI-User-ID": user_id}
+        for _ in range(2):
+            read = client.get("/api/notifications/active", headers=headers)
+            assert read.status_code == 501
+            assert read.json() == {"detail": "notifications_unavailable"}
+            dismiss = client.post("/api/notifications/platform-announcement/dismiss", headers=headers)
+            assert dismiss.status_code == 501
+            assert dismiss.json() == {"detail": "notifications_unavailable"}
+    assert calls == []
+
+
+def test_anonymous_announcement_compat_does_not_swallow_invalid_auth(monkeypatch):
+    from fastapi import HTTPException
+    from app.routes import workbench_projections
+
+    calls = install_unavailable_route_guards(monkeypatch)
+
+    async def invalid_principal(request):
+        raise HTTPException(status_code=401, detail="invalid_session")
+
+    monkeypatch.setattr(workbench_projections, "require_principal", invalid_principal)
+    response = TestClient(create_app()).get("/api/notifications/active")
+    assert response.status_code == 401
+    assert response.json() == {"detail": "invalid_session"}
+    assert calls == []

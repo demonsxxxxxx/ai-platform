@@ -1,8 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import {
-  Bell,
   History,
   ListTree,
   MessageSquarePlus,
@@ -11,8 +10,6 @@ import {
 } from "lucide-react";
 
 import { useTheme } from "../../../contexts/ThemeContext";
-import { notificationPublicApi } from "../../../services/api/notificationPublic";
-import { NotificationDialog } from "../../notification/NotificationDialog";
 import type { TabType } from "./types";
 
 interface WorkbenchMenuPosition {
@@ -46,23 +43,11 @@ export function WorkbenchMenuHost({
   const { t } = useTranslation();
   const { theme, toggleTheme } = useTheme();
   const [menuOpen, setMenuOpen] = useState(false);
-  const [notifDialogOpen, setNotifDialogOpen] = useState(false);
-  const [activeNotifCount, setActiveNotifCount] = useState(0);
   const [menuPosition, setMenuPosition] = useState<WorkbenchMenuPosition>({
     bottom: 8,
     right: 8,
   });
   const menuRef = useRef<HTMLDivElement>(null);
-
-  const refreshNotifCount = useCallback(() => {
-    notificationPublicApi
-      .getActive()
-      .then((items) => setActiveNotifCount(items.length));
-  }, []);
-
-  useEffect(() => {
-    refreshNotifCount();
-  }, [refreshNotifCount]);
 
   useEffect(() => {
     const handleOpen = (event: Event) => {
@@ -160,24 +145,6 @@ export function WorkbenchMenuHost({
                 <button
                   className="flex w-full items-center gap-3 px-3 py-2.5 text-left text-sm text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-primary-light)] hover:text-[var(--theme-text)]"
                   onClick={() => {
-                    setNotifDialogOpen(true);
-                    setMenuOpen(false);
-                  }}
-                  type="button"
-                >
-                  <span className="flex w-5 shrink-0 items-center justify-center">
-                    <Bell size={16} />
-                  </span>
-                  <span className="truncate">{t("nav.notifications")}</span>
-                  {activeNotifCount > 0 ? (
-                    <span className="ml-auto flex h-3.5 min-w-[14px] items-center justify-center rounded-full bg-red-500 px-1 text-[9px] font-bold leading-none text-white">
-                      {activeNotifCount > 99 ? "99+" : activeNotifCount}
-                    </span>
-                  ) : null}
-                </button>
-                <button
-                  className="flex w-full items-center gap-3 px-3 py-2.5 text-left text-sm text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-primary-light)] hover:text-[var(--theme-text)]"
-                  onClick={() => {
                     toggleTheme();
                     setMenuOpen(false);
                   }}
@@ -199,11 +166,6 @@ export function WorkbenchMenuHost({
             document.body,
           )
         : null}
-      <NotificationDialog
-        isOpen={notifDialogOpen}
-        onClose={() => setNotifDialogOpen(false)}
-        onDismissed={refreshNotifCount}
-      />
     </>
   );
 }

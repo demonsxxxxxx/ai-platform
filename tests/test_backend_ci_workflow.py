@@ -38,6 +38,7 @@ TRUSTED_WORKFLOW_IMPORTS = (
 )
 AGENT_SKILL_CONTRACT_TESTS = (
     "tests/test_agent_profile_authority.py",
+    "tests/test_agent_profile_unpinned_admission.py",
     "tests/test_agent_apps_worker_profile_snapshot.py",
     "tests/test_agent_profile_lifecycle.py",
     "tests/test_agent_profile_routes.py",
@@ -207,6 +208,9 @@ BACKEND_TEST_SHARDS = {
         "tests/test_admin_part_messages.py",
         "tests/test_admin_runtime_routes.py",
         "tests/test_auth_principal.py",
+        "tests/test_workbench_projection_routes.py",
+        "tests/test_lambchat_frontend_compat.py::test_notifications_have_one_workbench_route_owner",
+        "tests/test_lambchat_frontend_compat.py::test_frontend_bootstrap_endpoints_match_retained_contracts",
         "tests/test_artifact_permissions.py",
         "tests/test_two_user_artifact_isolation.py",
         "tests/test_auth_routes.py",
@@ -223,6 +227,8 @@ BACKEND_TEST_SHARDS = {
         "tests/test_executor_signals.py",
         "tests/test_run_attempt_lifecycle_domain.py",
         "tests/test_run_terminalization_domain.py",
+        "tests/test_run_lifecycle.py",
+        "tests/test_run_lifecycle_postgres.py",
         "tests/test_projection_redaction.py",
         "tests/test_executor_receipt_settlement.py",
         "tests/test_executor_terminal_reconciliation.py",
@@ -278,10 +284,15 @@ BACKEND_TEST_SHARDS = {
         "tests/test_trusted_governance.py",
         "tests/test_code_governance.py",
         "tests/test_source_authority_docs.py",
+        "tests/test_frontend_projection_audit.py::test_feedback_and_announcements_have_no_active_browser_api_or_projection_allowlist",
+        "tests/test_check_documentation.py",
+        "tests/test_run_test_stage.py",
+        "tests/test_source_quality_inventory.py",
         "tests/test_ci_image_scope.py",
         "tests/test_require_zero_junit_skips.py",
         "tests/test_packaging_contract.py",
         "tests/test_packaging_publish_workflow.py",
+        "tests/test_release_required_checks.py",
         "tests/test_trivy_failure_evidence.py",
         "tests/test_release_image_manifest.py",
         "tests/test_authenticated_smoke_redirects.py",
@@ -1023,6 +1034,18 @@ def test_frontend_ruff_requirement_resolver_rejects_noncanonical_declarations(
 
     with pytest.raises(RuntimeError, match=message):
         resolver(["pytest>=8.2.0", *dependencies])
+
+
+def test_documentation_preflight_uses_exact_diff_and_keeps_required_gate():
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    job = workflow["jobs"]["backend-preflight"]
+    assert job["env"]["DOCUMENTATION_BASE_REF"] == "${{ github.event.pull_request.base.sha || github.event.before || github.sha }}"
+    checkout = next(step for step in job["steps"] if step["name"] == "Checkout exact backend preflight source")
+    assert checkout["with"]["fetch-depth"] == 0
+    step = next(step for step in job["steps"] if step["name"] == "Check changed first-party documentation")
+    assert step["run"] == 'uv run --locked --extra test python tools/check_documentation.py --base-ref "$DOCUMENTATION_BASE_REF"'
+    assert "continue-on-error" not in step and "if" not in step
+    assert "backend-preflight" in workflow["jobs"]["required"]["needs"]
 
 
 def test_backend_preflight_uses_exact_candidate_source_without_duplicate_governance():

@@ -1,6 +1,7 @@
 import { Suspense, lazy } from "react";
 import { buildFrontendGovernanceSmokeAttributes } from "../../governance/frontendGovernanceState";
 import { GovernedRouteWorkbench } from "../../workbench/GovernedRouteWorkbench";
+import { WorkbenchUnavailablePanel } from "../../workbench/WorkbenchUnavailablePanel";
 import type { RouteUnavailableConfig, TabType } from "./types";
 
 const SkillsHubPanel = lazy(() =>
@@ -44,16 +45,6 @@ const WorkbenchUsersProjectionPanel = lazy(() =>
     default: m.WorkbenchUsersProjectionPanel,
   })),
 );
-const WorkbenchFeedbackProjectionPanel = lazy(() =>
-  import("../../workbench/WorkbenchProjectionPages").then((m) => ({
-    default: m.WorkbenchFeedbackProjectionPanel,
-  })),
-);
-const WorkbenchNotificationsProjectionPanel = lazy(() =>
-  import("../../workbench/WorkbenchProjectionPages").then((m) => ({
-    default: m.WorkbenchNotificationsProjectionPanel,
-  })),
-);
 
 const panelMap: Record<
   string,
@@ -65,10 +56,8 @@ const panelMap: Record<
   users: WorkbenchUsersProjectionPanel,
   roles: RolesPanel,
   mcp: MCPPanel,
-  feedback: WorkbenchFeedbackProjectionPanel,
   models: ModelCatalogPanel,
   runs: RunMonitorPanel,
-  notifications: WorkbenchNotificationsProjectionPanel,
   memory: MemoryPanel,
 };
 
@@ -103,6 +92,17 @@ export function TabContent({
           activeTab={activeTab}
           config={routeUnavailable}
         />
+      </main>
+    );
+  }
+
+  if (activeTab === "feedback" || activeTab === "notifications") {
+    return (
+      <main
+        className="flex-1 overflow-hidden bg-[var(--theme-workbench-canvas)]"
+        data-authenticated-workbench-page={activeTab}
+      >
+        <WorkbenchUnavailablePanel feature={activeTab} />
       </main>
     );
   }

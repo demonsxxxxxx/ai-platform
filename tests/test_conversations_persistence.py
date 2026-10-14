@@ -227,12 +227,17 @@ async def test_owner_run_lookup_closes_on_session_delete_and_locks_only_the_run_
         for_update=True,
     ) == run
     active_sql, active_params = conn.calls[-1]
-    assert active_sql.startswith("select runs.* from runs join sessions")
+    assert active_sql.startswith("select runs.*, agents.agent_type from runs")
+    assert "left join agents on agents.id = runs.agent_id and agents.tenant_id = runs.tenant_id" in active_sql
+    assert "join sessions on sessions.id = runs.session_id" in active_sql
     assert "sessions.tenant_id = runs.tenant_id" in active_sql
     assert "sessions.workspace_id = runs.workspace_id" in active_sql
     assert "sessions.user_id = runs.user_id" in active_sql
     assert "sessions.agent_id = runs.agent_id" in active_sql
     assert "sessions.status = 'active'" in active_sql
+    assert "where runs.tenant_id = %s" in active_sql
+    assert "runs.id = %s" in active_sql
+    assert "runs.user_id = %s" in active_sql
     assert active_sql.endswith("for update of runs")
     assert active_params == ("tenant-a", "run-a", "user-a")
 

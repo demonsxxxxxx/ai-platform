@@ -43,6 +43,7 @@ current SHAs, exceptions, and evidence results belong in the issue/PR.
 | Browser-local theme and sidebar preferences | [Browser preferences](frontend/browser-local-preferences.md) |
 | Shared tables and ordinary single-select controls | [Table and Select components](frontend/shared-table-select-components.md) |
 | Chat display and public terminal errors | [Chat projection](architecture/chat-run-lifecycle-and-public-error-projection.md) |
+| Retired feedback and announcement entrypoints | [Unavailable contract](frontend/feedback-announcements-unavailable.md) |
 | Dependency locks, image builds, and publication | [Packaging](architecture/docker-packaging.md) |
 
 Do not duplicate these rules in an overview. When two current documents conflict,
@@ -109,6 +110,15 @@ remain the detailed deployed checks. The system matrix complements them with
 cross-component failure scenarios; it does not replace them.
 Reviewed, redacted evidence remains indexed by [Release evidence](release-evidence/README.md)
 and is historical unless its exact subject has been freshly verified.
+
+## Repository improvement and dated inventories
+
+[Architecture navigation](../ARCHITECTURE.md) and [core beliefs](design-docs/core-beliefs.md)
+link the existing owners. [Source quality baseline](QUALITY_SCORE.md) records
+measurement scope, denominators and unmeasured fields; its generated reports are
+dated observations. The [active Harness plan](exec-plans/active/harness-migration.md)
+and [debt inventory](exec-plans/tech-debt-tracker.md) own this improvement's progress
+and prerequisites, not product or release authority.
 
 ## Document maintenance
 

@@ -5029,6 +5029,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
             revision=7,
             content_hash="a" * 64,
             skill={
+                "agent_type": "profile",
                 "skill_id": "profile-specialist",
                 "skill_version": profile_manifest["content_hash"],
                 "executor_type": "claude-agent-worker",
@@ -5036,6 +5037,7 @@ async def test_new_profile_submit_commits_after_user_and_profile_admission_befor
             },
             skills=(
                 {
+                    "agent_type": "profile",
                     "skill_id": "profile-specialist",
                     "skill_version": profile_manifest["content_hash"],
                     "executor_type": "claude-agent-worker",
@@ -5769,6 +5771,7 @@ async def test_first_selector_free_profile_submit_keeps_the_persisted_non_genera
             revision=7,
             content_hash="a" * 64,
             skill={
+                "agent_type": "profile",
                 "skill_id": "profile-specialist",
                 "skill_version": "version-profile",
                 "executor_type": "claude-agent-worker",

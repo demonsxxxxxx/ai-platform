@@ -120,7 +120,6 @@ function mockBootstrapSource(isAdmin) {
       });
       if (url.pathname === "/api/auth/profile") return json({ metadata: {} });
       if (url.pathname.includes("session")) return json({ sessions: [], total: 0, runs: [], events: [] });
-      if (url.pathname.includes("notification")) return json([]);
       if (url.pathname.includes("mcp")) return json({ servers: [] });
       if (url.pathname.startsWith("/api/")) return json({ items: [], total: 0, governance });
       return originalFetch(input, init);
