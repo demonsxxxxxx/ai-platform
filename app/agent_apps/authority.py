@@ -33,8 +33,8 @@ from app.agent_apps.api import (
     safe_agent_avatar_ref,
     safe_agent_avatar_seed,
     agent_profile_repository,
+    agent_type_requires_profile_admission,
 )
-from app.agent_apps.domain.profile_definition import agent_type_requires_profile_admission
 from app.auth import AuthPrincipal, is_ai_admin, normalize_roles
 from app.chat_session_projection import session_response
 from app.control_plane_contracts import standard_trace_id
