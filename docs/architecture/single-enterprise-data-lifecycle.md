@@ -26,12 +26,23 @@ compatibility owner and are removed atomically; password login and Worker
 current-authority revalidation continue to use the existing user-info endpoint.
 
 [ADR 0007](../adr/0007-fixed-browser-authentication-day.md) owns the browser
-authentication lifetime: signed token, server authentication context and company
-authority freshness use one absolute, non-sliding 86,400-second day. Policy/source
-metadata is retained; expiry and policy mismatch fail closed. The former
-15-minute browser freshness description is superseded. Company permissions in a
-valid authenticated snapshot may remain effective for that accepted window;
-Worker reauthorization does not imply instant upstream-company revocation.
+authentication lifetime: the signed platform token and server authentication
+context retain one absolute, non-sliding 86,400-second day. A company-compatible
+JWT has an independent 28,800-second lifetime capped by that context's remaining
+authority. An expired JWT is rejected; a still-authenticated browser context may
+renew it after a fresh company eligibility and permission check. The refresh
+endpoint never accepts client-provided identity or an expired JWT as its grant.
+Company username, department, and original role stay in the server-owned auth
+snapshot, independently of the platform `roles` projection.
+
+Refresh atomically commits the updated principal and encrypted MCP credential
+under the context operation fence. Credential-only rotation preserves current
+subject ownership; permission or department changes fence old owners. Logout,
+identity replacement, and context expiry invalidate renewal. Legacy contexts
+without the additional company fields recover those fields from the trusted
+company user-info endpoint before renewal; they never infer company roles from
+platform `admin/user`. Worker reauthorization does not imply instant
+upstream-company revocation.
 
 The per-connection SSE authorization lease is a separate mechanism described in
 [Streaming execution control](redis-streams-sse-execution-control.md). Its short

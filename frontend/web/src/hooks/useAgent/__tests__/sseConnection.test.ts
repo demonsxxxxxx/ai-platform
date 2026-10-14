@@ -1805,7 +1805,7 @@ test("fails closed when a current 401 has no refresh marker or refresh fails", a
       name: "refresh failure",
       getRefreshToken: () => "refresh-marker",
       refreshAccessToken: async () => {
-        throw new Error("refresh failed");
+        throw new ApiRequestError("session expired", 401, "auth_context_stale");
       },
       expectedFailure: "refresh_failed" as const,
     },
@@ -1847,7 +1847,31 @@ test("fails closed when a current 401 has no refresh marker or refresh fails", a
   else delete (globalThis as { window?: Window }).window;
 });
 
-test("production cookie-session SSE 401 never probes auth or opens a refreshed stream", async () => {
+
+
+test("SSE refresh network failure preserves the current session without replay", async () => {
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const events: string[] = [];
+  Object.defineProperty(globalThis, "window", { configurable: true, value: {
+    dispatchEvent: (event: Event) => { events.push(event.type); return true; },
+  } });
+  const { context } = createTokenRefreshContext();
+  let calls = 0;
+  try {
+    await assert.rejects(connectToSSE("session-old", "run-old", "assistant-old", context, false,
+      async (_input, init) => { calls++; await init.onopen?.(new Response(null, { status: 401 })); },
+      { getValidAccessToken: async () => "access", getRefreshToken: () => "marker",
+        refreshAccessToken: async () => { throw new TypeError("synthetic network outage"); } }),
+      (error: unknown) => error instanceof Error && !isNonRetryableSSEAuthenticationError(error));
+    assert.equal(calls, 1);
+    assert.deepEqual(events, []);
+  } finally {
+    if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow);
+    else delete (globalThis as { window?: Window }).window;
+  }
+});
+
+test("production cookie-session SSE refreshes once and opens one replacement stream", async () => {
   const originalFetch = Object.getOwnPropertyDescriptor(globalThis, "fetch");
   const originalLocalStorage = Object.getOwnPropertyDescriptor(
     globalThis,
@@ -1864,7 +1888,10 @@ test("production cookie-session SSE 401 never probes auth or opens a refreshed s
     configurable: true,
     value: async () => {
       authProbeCalls += 1;
-      return new Response(JSON.stringify({ user_id: "stale-user" }), {
+      return new Response(JSON.stringify({
+        principal: { user_id: "user-a", tenant_id: "default", display_name: "User A",
+          roles: ["user"], permissions: ["agent:use"] }, authorization_changed: false,
+      }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       });
@@ -1908,13 +1935,13 @@ test("production cookie-session SSE 401 never probes auth or opens a refreshed s
       },
     );
 
-    assert.equal(streamCalls, 1);
-    assert.equal(authProbeCalls, 0);
+    assert.equal(streamCalls, 2);
+    assert.equal(authProbeCalls, 1);
     assert.equal(
       markerStore.get("ai_platform_session_present"),
       "session-marker",
     );
-    assert.deepEqual(events, ["auth:force-relogin"]);
+    assert.deepEqual(events, ["auth:session-refreshed", "auth:force-relogin"]);
   } finally {
     if (originalFetch) Object.defineProperty(globalThis, "fetch", originalFetch);
     else delete (globalThis as { fetch?: typeof fetch }).fetch;

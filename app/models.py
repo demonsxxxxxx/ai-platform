@@ -885,6 +885,7 @@ class PrincipalResponse(BaseModel):
     authz_policy_version: int = 0
     authority_source: str = ""
     authority_checked_at: str = ""
+    company_refresh_required: bool = False
 
 
 class CapabilitySuggestionResponse(BaseModel):

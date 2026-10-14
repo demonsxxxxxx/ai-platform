@@ -1,3 +1,4 @@
+import asyncio
 from dataclasses import dataclass, field
 import base64
 import hashlib
@@ -8,9 +9,13 @@ import time
 from datetime import datetime, timezone
 from typing import Iterable, Mapping
 
+import httpx
 from fastapi import HTTPException, Request, status
 
-from app.auth_sessions import AuthContextError, principal_for_context, principal_for_cookie
+from app.auth_sessions import (
+    AuthContextError, begin_auth_operation_for_cookie, browser_auth_grant,
+    commit_auth_operation, principal_for_context, principal_for_cookie, principal_snapshot,
+)
 from app.settings import get_settings
 
 
@@ -22,6 +27,7 @@ RUNTIME_OPERATOR_ROLE = "runtime_operator"
 AUDITOR_ROLE = "auditor"
 BREAK_GLASS_ADMIN_ROLE = "break_glass_admin"
 COMPANY_AUTHZ_POLICY_VERSION = 1
+AUTH_REJECTED_HEADER = "X-Auth-Rejected-Before-Execution"
 FORCE_RELOGIN_HEADER = "X-Force-Relogin"
 
 ADMIN_ROLE_ALIASES = {"admin", "developer", PLATFORM_ADMIN_ROLE, BREAK_GLASS_ADMIN_ROLE}
@@ -51,6 +57,9 @@ class AuthPrincipal:
     authority_source: str = ""
     authority_checked_at: str = ""
     company_jwt_expires_at: int | None = None
+    company_username: str = ""
+    company_department: str = ""
+    company_role: str = ""
 
 
 def authority_checked_at_now() -> str:
@@ -113,6 +122,11 @@ def principal_to_response(principal: AuthPrincipal) -> dict[str, object]:
         "authz_policy_version": principal.authz_policy_version,
         "authority_source": principal.authority_source or principal.source,
         "authority_checked_at": principal.authority_checked_at,
+        "company_refresh_required": principal.source == "company-login" and (
+            principal.company_jwt_expires_at is None or not all((
+                principal.company_username, principal.company_department, principal.company_role,
+            ))
+        ),
     }
 
 
@@ -150,6 +164,9 @@ def sign_principal_session(principal: AuthPrincipal) -> str:
         "authority_source": principal.authority_source,
         "authority_checked_at": principal.authority_checked_at,
         "company_jwt_expires_at": principal.company_jwt_expires_at,
+        "company_username": principal.company_username,
+        "company_department": principal.company_department,
+        "company_role": principal.company_role,
         "iat": now,
         "exp": now + int(settings.ai_session_max_age_seconds),
     }
@@ -219,8 +236,16 @@ def verify_principal_session(token: str) -> AuthPrincipal:
             if raw_company_jwt_expires_at is not None
             else None
         ),
+        **_company_snapshot_fields(payload),
     )
 
+
+def _company_snapshot_fields(snapshot: Mapping[str, object]) -> dict[str, str]:
+    """Keep original company claims separate from the platform role projection."""
+    fields = ("company_username", "company_department", "company_role")
+    if any(not isinstance(snapshot.get(name, ""), str) for name in fields):
+        raise HTTPException(status_code=401, detail="invalid_session")
+    return {name: str(snapshot.get(name, "")) for name in fields}
 
 def _enforce_deployment_scope(principal: AuthPrincipal, settings: object) -> AuthPrincipal:
     if getattr(settings, "deployment_environment", "development") != "production":
@@ -283,7 +308,111 @@ def _enforce_company_authority_freshness(
     return principal
 
 
+async def refresh_company_session(
+    cookie_value: str, *, expected_user: tuple[str, str] | None = None,
+    expected_subject_epoch: int | None = None,
+) -> tuple[AuthPrincipal, bool]:
+    """Renew a company credential under a live, absolute browser grant and CAS."""
+    from app.mcp.api import McpRuntimeContextError, get_mcp_principal_jwt_store
+    from app.principal_authority import (
+        CompanyLoginJwtUnavailable, PrincipalAuthorityDenied, issue_refreshed_company_jwt,
+    )
+
+    operation = None
+    committed = False
+    try:
+        initial = await browser_auth_grant(cookie_value)
+        initial_principal = initial["principal"]
+        subject = (initial_principal["tenant_id"], initial_principal["user_id"])
+        if expected_user is not None and subject != expected_user:
+            raise AuthContextError("auth_operation_superseded", 409)
+        if expected_subject_epoch is not None and initial["subject_epoch"] != expected_subject_epoch:
+            raise AuthContextError("auth_operation_superseded", 409)
+        wait_deadline = time.monotonic() + 5
+        while True:
+            try:
+                operation = await begin_auth_operation_for_cookie(cookie_value, "refresh")
+                break
+            except AuthContextError as exc:
+                if exc.code != "auth_refresh_in_progress" or time.monotonic() >= wait_deadline:
+                    raise
+                await asyncio.sleep(0.05)
+                current = await browser_auth_grant(cookie_value)
+                snapshot = current["principal"]
+                if (snapshot["tenant_id"], snapshot["user_id"]) != subject:
+                    raise AuthContextError("auth_operation_superseded", 409)
+                if (snapshot.get("company_jwt_expires_at") or 0) > max(
+                    int(time.time()), initial_principal.get("company_jwt_expires_at") or 0,
+                ):
+                    return AuthPrincipal(**snapshot), current["subject_epoch"] != initial["subject_epoch"]
+        previous = operation.principal
+        if (previous is None or (previous["tenant_id"], previous["user_id"]) != subject
+            or (expected_subject_epoch is not None and operation.subject_epoch != expected_subject_epoch)):
+            raise AuthContextError("auth_operation_superseded", 409)
+        if (previous["source"] != "company-login"
+            or previous["authz_policy_version"] != COMPANY_AUTHZ_POLICY_VERSION
+            or type(operation.expires_at) is not int or operation.expires_at <= int(time.time())
+            or type(operation.subject_epoch) is not int):
+            raise PrincipalAuthorityDenied()
+        principal = AuthPrincipal(**previous)
+        refreshed, token = await issue_refreshed_company_jwt(principal, expires_at=operation.expires_at)
+        snapshot = principal_snapshot(refreshed)
+        authorization_fields = (
+            "department_id", "authz_policy_version", "company_role", "company_username",
+            "company_department", "roles", "permissions",
+        )
+        changed = any(previous.get(name, "") != snapshot.get(name, "") for name in authorization_fields)
+        credential = get_mcp_principal_jwt_store().prepare(
+            refreshed, token, refresh_cookie=cookie_value,
+            subject_epoch=operation.subject_epoch + int(changed), refresh_expires_at=operation.expires_at,
+        )
+        result = await commit_auth_operation(
+            operation, snapshot, credential=credential, credential_expires_at=operation.expires_at,
+        )
+        if result != "committed":
+            raise AuthContextError("auth_operation_superseded", 409)
+        committed = True
+        return refreshed, changed
+    except PrincipalAuthorityDenied as exc:
+        if operation is not None:
+            try:
+                revoked = await commit_auth_operation(operation, None)
+            except AuthContextError as fenced:
+                raise HTTPException(status_code=fenced.status_code, detail=fenced.code) from fenced
+            if revoked != "committed":
+                raise HTTPException(status_code=409, detail="auth_operation_superseded")
+            committed = True
+        raise HTTPException(
+            status_code=401, detail="auth_refresh_authority_denied",
+            headers={FORCE_RELOGIN_HEADER: "true"},
+        ) from exc
+    except AuthContextError as exc:
+        status_code = 401 if exc.code in {"auth_context_stale", "auth_context_missing"} else exc.status_code
+        raise HTTPException(status_code=status_code, detail=exc.code) from exc
+    except (CompanyLoginJwtUnavailable, McpRuntimeContextError) as exc:
+        raise HTTPException(status_code=503, detail="auth_refresh_unavailable") from exc
+    except (OSError, TimeoutError, ValueError, httpx.HTTPError) as exc:
+        raise HTTPException(status_code=503, detail="auth_refresh_unavailable") from exc
+    finally:
+        if operation is not None and not committed:
+            # Only this lease may be released; a newer login/logout is never rolled back.
+            try:
+                await commit_auth_operation(operation, operation.principal)
+            except Exception:
+                pass
+
+
 async def require_principal(request: Request) -> AuthPrincipal:
+    """Mark authentication rejection before endpoint business execution."""
+    try:
+        return await _require_principal(request)
+    except HTTPException as exc:
+        if exc.status_code == 401:
+            exc.headers = {**(exc.headers or {}), AUTH_REJECTED_HEADER: "true"}
+        raise
+
+
+async def _require_principal(request: Request) -> AuthPrincipal:
     settings = get_settings()
     principal = principal_from_trusted_headers(request.headers)
     if principal is None:
@@ -326,6 +455,7 @@ async def require_principal(request: Request) -> AuthPrincipal:
                         if snapshot.get("company_jwt_expires_at") is not None
                         else None
                     ),
+                    **_company_snapshot_fields(snapshot),
                 )
                 return _enforce_deployment_scope(
                     _enforce_company_authority_freshness(browser_principal, settings),

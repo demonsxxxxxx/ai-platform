@@ -100,7 +100,6 @@ class LiveMcpCatalogService:
         server_id: str,
         jwt: str,
     ) -> LiveMcpServerResult:
-        del user_id  # JWT ownership is enforced by the caller's principal store.
         stage = "target_resolution"
         try:
             target = await self._target_resolver(tenant_id, server_id)
@@ -116,6 +115,7 @@ class LiveMcpCatalogService:
                 target.endpoint,
                 static_headers=target.static_headers,
                 jwt_authorization=f"Bearer {jwt}",
+                credential_subject={"tenant_id": tenant_id, "user_id": user_id},
             )
             stage = "tool_projection"
             tools = tuple(

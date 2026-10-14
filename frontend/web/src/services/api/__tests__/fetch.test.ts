@@ -8,6 +8,7 @@ import { parseSessionRunInputs, sessionApi } from "../session.ts";
 
 import { AUTH_SESSION_MARKER_KEY } from "../token.ts";
 import { authenticatedRequest } from "../authenticatedRequest.ts";
+import { AuthSessionChangedError, refreshTokens } from "../tokenManager.ts";
 
 function installFetchAuthStubs({
   fetchImpl,
@@ -645,4 +646,145 @@ test("authFetch rechecks owner after an ordinary 401 error-body read", async () 
     assertSafeError(await pending);
     assert.deepEqual(env.events, []);
   } finally { env.restore(); }
+});
+
+function refreshSuccess() {
+  return new Response(JSON.stringify({
+    principal: { user_id: "user-a", tenant_id: "default", display_name: "User A",
+      roles: ["user"], permissions: ["agent:use"] }, authorization_changed: false,
+  }), { status: 200 });
+}
+
+for (const method of ["GET", "POST"]) {
+  test("refresh replays " + method + " once after proven pre-execution rejection", async () => {
+    const calls: { url: string; init?: RequestInit }[] = [];
+    const stubs = installFetchAuthStubs({
+      initialLocalStorage: { [AUTH_SESSION_MARKER_KEY]: "owner-a" },
+      fetchImpl: async (input, init) => {
+        calls.push({ url: String(input), init });
+        if (String(input).endsWith("/auth/refresh")) return refreshSuccess();
+        if (calls.length === 1) return new Response(JSON.stringify({ detail: "company_login_expired" }),
+          { status: 401, headers: { "X-Force-Relogin": "true", "X-Auth-Rejected-Before-Execution": "true" } });
+        return new Response(JSON.stringify({ ok: true }));
+      },
+    });
+    try {
+      assert.deepEqual(await authFetch("/api/resource", { method, ...(method === "POST" ? { body: '{"value":1}' } : {}) }), { ok: true });
+      assert.deepEqual(calls.map((call) => call.url), ["/api/resource", "/api/ai/auth/refresh", "/api/resource"]);
+      assert.equal(calls[0].init?.body, calls[2].init?.body);
+      assert.deepEqual(stubs.events, ["auth:session-refreshed"]);
+      assert.ok(calls.every((call) => call.init?.credentials === "include" && !new Headers(call.init?.headers).has("Authorization")));
+    } finally { stubs.restore(); }
+  });
+}
+
+test("an ambiguous mutation may renew credentials but is never replayed", async () => {
+  const calls: string[] = [];
+  const stubs = installFetchAuthStubs({
+    initialLocalStorage: { [AUTH_SESSION_MARKER_KEY]: "owner-a" },
+    fetchImpl: async (input) => {
+      calls.push(String(input));
+      return String(input).endsWith("/auth/refresh") ? refreshSuccess()
+        : new Response(JSON.stringify({ detail: "unauthorized" }), { status: 401 });
+    },
+  });
+  try {
+    await assert.rejects(authFetch("/api/write", { method: "POST", body: "{}" }), ApiRequestError);
+    assert.deepEqual(calls, ["/api/write", "/api/ai/auth/refresh"]);
+    assert.deepEqual(stubs.events, ["auth:session-refreshed"]);
+  } finally { stubs.restore(); }
+});
+
+test("a repeated read rejection terminates after one refresh and one replay", async () => {
+  const calls: string[] = [];
+  const stubs = installFetchAuthStubs({
+    initialLocalStorage: { [AUTH_SESSION_MARKER_KEY]: "owner-a" },
+    fetchImpl: async (input) => {
+      calls.push(String(input));
+      return String(input).endsWith("/auth/refresh") ? refreshSuccess()
+        : new Response(JSON.stringify({ detail: "unauthorized" }), { status: 401 });
+    },
+  });
+  try {
+    await assert.rejects(authFetch("/api/read"), ApiRequestError);
+    assert.deepEqual(calls, ["/api/read", "/api/ai/auth/refresh", "/api/read"]);
+    assert.deepEqual(stubs.events, ["auth:session-refreshed", FORCE_RELOGIN_EVENT]);
+  } finally { stubs.restore(); }
+});
+
+for (const unavailable of ["network", "503"]) {
+  test("temporary refresh " + unavailable + " preserves current identity", async () => {
+    const stubs = installFetchAuthStubs({
+      initialLocalStorage: { [AUTH_SESSION_MARKER_KEY]: "owner-a" },
+      fetchImpl: async (input) => {
+        if (String(input).endsWith("/auth/refresh")) {
+          if (unavailable === "network") throw new TypeError("synthetic network outage");
+          return new Response(JSON.stringify({ detail: "auth_refresh_unavailable" }), { status: 503 });
+        }
+        return new Response(JSON.stringify({ detail: "unauthorized" }), { status: 401 });
+      },
+    });
+    try {
+      await assert.rejects(authFetch("/api/read"));
+      assert.deepEqual(stubs.events, []);
+      assert.equal(stubs.store.get(AUTH_SESSION_MARKER_KEY), "owner-a");
+    } finally { stubs.restore(); }
+  });
+}
+
+test("parallel refresh merges while one cancelled waiter cannot cancel its peer", async () => {
+  const entered = deferred<void>(), release = deferred<Response>();
+  let calls = 0;
+  const stubs = installFetchAuthStubs({
+    initialLocalStorage: { [AUTH_SESSION_MARKER_KEY]: "owner-a" },
+    fetchImpl: async () => { calls++; entered.resolve(); return release.promise; },
+  });
+  try {
+    const controller = new AbortController();
+    const first = refreshTokens(controller.signal).catch((error: unknown) => error);
+    await entered.promise;
+    const second = refreshTokens();
+    controller.abort(new DOMException("caller cancelled", "AbortError"));
+    assert.equal((await first as Error).name, "AbortError");
+    release.resolve(refreshSuccess());
+    assert.equal((await second).access_token, "owner-a");
+    assert.equal(calls, 1);
+    assert.deepEqual(stubs.events, ["auth:session-refreshed"]);
+  } finally { stubs.restore(); }
+});
+
+test("logout or account replacement during refresh prevents publication and replay", async () => {
+  const entered = deferred<void>(), release = deferred<Response>();
+  const calls: string[] = [];
+  const stubs = installFetchAuthStubs({
+    initialLocalStorage: { [AUTH_SESSION_MARKER_KEY]: "owner-a" },
+    fetchImpl: async (input) => {
+      calls.push(String(input));
+      if (String(input).endsWith("/auth/refresh")) { entered.resolve(); return release.promise; }
+      return new Response(JSON.stringify({ detail: "unauthorized" }), { status: 401 });
+    },
+  });
+  try {
+    const pending = authFetch("/api/read").catch((error: unknown) => error);
+    await entered.promise;
+    stubs.store.set(AUTH_SESSION_MARKER_KEY, "owner-b");
+    release.resolve(refreshSuccess());
+    assert.ok(await pending instanceof AuthSessionChangedError);
+    assert.deepEqual(calls, ["/api/read", "/api/ai/auth/refresh"]);
+    assert.deepEqual(stubs.events, []);
+    assert.equal(stubs.store.get(AUTH_SESSION_MARKER_KEY), "owner-b");
+  } finally { stubs.restore(); }
+});
+
+test("an expired platform context signals login recovery without refreshing or replaying", async () => {
+  let calls = 0;
+  const stubs = installFetchAuthStubs({
+    initialLocalStorage: { [AUTH_SESSION_MARKER_KEY]: "owner-a" },
+    fetchImpl: async () => { calls++; return new Response(JSON.stringify({ detail: "auth_context_stale" }), { status: 409 }); },
+  });
+  try {
+    await assert.rejects(authFetch("/api/read"), (error: unknown) => error instanceof ApiRequestError && error.status === 401);
+    assert.equal(calls, 1);
+    assert.deepEqual(stubs.events, [FORCE_RELOGIN_EVENT]);
+  } finally { stubs.restore(); }
 });

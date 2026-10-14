@@ -9,6 +9,8 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import timedelta
 from typing import Any, Mapping
 
+from types import SimpleNamespace
+
 import httpx
 from mcp import ClientSession
 from mcp.client.sse import sse_client
@@ -17,6 +19,8 @@ from mcp.types import ListToolsResult, PaginatedRequestParams
 from pydantic import ValidationError
 
 from app.mcp.domain.errors import McpToolDiscoveryError
+
+from app.mcp.domain.errors import McpRuntimeContextError
 from app.mcp.domain.headers import MCP_JWT_AUTHORIZATION_HEADER, normalize_static_mcp_headers
 from app.mcp.infrastructure.catalog import (
     MCP_DISCOVERY_PAGE_LIMIT,
@@ -131,6 +135,13 @@ async def open_mcp_session(
     headers = _mcp_headers(
         target, static_headers=raw_headers, jwt_authorization=jwt
     )
+    credential_subject = config.get("credential_subject")
+    if credential_subject is not None and (not isinstance(credential_subject, dict)
+        or set(credential_subject) - {"tenant_id", "user_id", "grant_id", "subject_epoch", "legacy_jwt_id"}
+        or not isinstance(credential_subject.get("tenant_id"), str)
+        or not isinstance(credential_subject.get("user_id"), str)):
+        raise McpToolDiscoveryError("authorization_required")
+    credential_principal = SimpleNamespace(**credential_subject) if credential_subject is not None else None
     origin = httpx.URL(target.endpoint)
     pinned = httpx.URL(target.connect_url)
     guard_failure = None
@@ -152,6 +163,15 @@ async def open_mcp_session(
         request.url = request.url.copy_with(host=pinned.host)
         request.headers["Host"] = target.host_header
         request.extensions["sni_hostname"] = target.sni_hostname
+        if credential_principal is not None:
+            from app.mcp.api import read_mcp_principal_jwt
+            try:
+                current_jwt = await read_mcp_principal_jwt(credential_principal)
+            except McpRuntimeContextError as exc:
+                fail("authorization_required" if exc.status_code == 401 else "transport_failure")
+            except Exception:
+                fail("transport_failure")
+            request.headers[MCP_JWT_AUTHORIZATION_HEADER] = f"Bearer {current_jwt}"
 
     async def bound_response(response):
         # HTTPX closes responses rejected by hooks, including unread bodies.
@@ -257,12 +277,14 @@ class McpToolDiscoveryAdapter:
     async def discover_definitions(
         self, endpoint: str, *, static_headers: Mapping[str, str] | None = None,
         jwt_authorization: str,
+        credential_subject: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], ...]:
         try:
             # One deadline owns DNS, handshake, all pages and transport cleanup.
             async with asyncio.timeout(self._timeout_seconds):
                 async with open_mcp_session({
                     "type": self._transport, "url": endpoint,
+                    "credential_subject": credential_subject,
                     "headers": {
                         **normalize_static_mcp_headers(static_headers),
                         MCP_JWT_AUTHORIZATION_HEADER: jwt_authorization,

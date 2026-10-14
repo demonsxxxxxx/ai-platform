@@ -30,7 +30,9 @@ import {
   type TerminalRunStatus,
 } from "./runLifecycle";
 import type { ChatRunStatusResponse } from "../../services/api/session";
-import { ApiRequestError, notifyForcedRelogin } from "../../services/api/fetch";
+import {
+  ApiRequestError, apiRequestErrorFromResponse, isRefreshableAuthRejection, notifyForcedRelogin,
+} from "../../services/api/fetch";
 import { formatSafeDiagnosticLog } from "../../utils/backendErrors";
 
 /**
@@ -832,7 +834,11 @@ export async function connectToSSE(
                 "auth_incarnation_changed",
               );
             }
-            if (response.headers.get("X-Force-Relogin") === "true") {
+            const authError = await apiRequestErrorFromResponse(response, 401);
+            if (!isCurrentStream() || !streamAuthMarkerIsCurrent()) {
+              throw new NonRetryableSSEAuthenticationError("auth_incarnation_changed");
+            }
+            if (!isRefreshableAuthRejection(authError, response.headers.get("X-Force-Relogin") === "true")) {
               notifyForcedRelogin();
               throw new NonRetryableSSEAuthenticationError("forced_relogin");
             }
@@ -851,10 +857,17 @@ export async function connectToSSE(
               );
             }
             try {
-              await refreshCurrentAccessToken();
-            } catch {
-              notifyForcedRelogin();
-              throw new NonRetryableSSEAuthenticationError("refresh_failed");
+              await refreshCurrentAccessToken(streamAbortController.signal);
+            } catch (error) {
+              if (!isCurrentStream()) return;
+              if (!streamAuthMarkerIsCurrent()) {
+                throw new NonRetryableSSEAuthenticationError("auth_incarnation_changed");
+              }
+              if (error instanceof ApiRequestError && (error.status === 401 || error.status === 403)) {
+                notifyForcedRelogin();
+                throw new NonRetryableSSEAuthenticationError("refresh_failed");
+              }
+              throw new NonRetryableSSEConnectionError("auth_refresh_unavailable");
             }
             // Refresh is asynchronous. A session switch, clear, unmount, or
             // replacement stream can happen while it is pending; an old

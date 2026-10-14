@@ -511,6 +511,11 @@ def _mcp_server_options(
             "url": endpoint,
             "headers": dict(raw_headers),
         }
+        if "credential_subject" in config:
+            subject = config["credential_subject"]
+            if not isinstance(subject, dict) or subject.get("user_id") is None or subject.get("tenant_id") is None:
+                raise ValueError("invalid MCP credential subject")
+            candidate["credential_subject"] = dict(subject)
         existing = servers.get(server_id)
         if existing is not None and existing != candidate:
             raise ValueError("conflicting MCP server registration")
