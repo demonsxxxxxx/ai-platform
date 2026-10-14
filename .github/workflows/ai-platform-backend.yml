@@ -497,6 +497,7 @@ jobs:
           timeout --signal=TERM --kill-after=30s 10m \
             uv run --locked --extra test python -m pytest \
               tests/test_agent_profile_authority.py \
+              tests/test_agent_profile_unpinned_admission.py \
               tests/test_agent_apps_worker_profile_snapshot.py \
               tests/test_agent_profile_lifecycle.py \
               tests/test_agent_profile_routes.py \

@@ -578,11 +578,13 @@ async def test_queued_run_lock_requires_run_session_scope_to_match():
 
     sql, params = conn.calls[0]
     assert sql.startswith("select runs.id")
-    assert "from runs join sessions" in sql
+    assert "agents.agent_type" in sql
+    assert "from runs join agents on agents.id = runs.agent_id and agents.tenant_id = runs.tenant_id" in sql
+    assert "join sessions on sessions.id = runs.session_id" in sql
     assert "where runs.tenant_id = %s" in sql
     assert "runs.id = %s" in sql
     assert "runs.status = 'queued'" in sql
-    assert "for update of runs" in sql
+    assert sql.endswith("for update of runs")
     assert "sessions.id = runs.session_id" in sql
     assert "sessions.tenant_id = runs.tenant_id" in sql
     assert "sessions.workspace_id = runs.workspace_id" in sql

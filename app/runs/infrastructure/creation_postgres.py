@@ -210,8 +210,9 @@ async def get_authorized_run(
     lock_clause = "for update of runs" if for_update else ""
     cursor = await conn.execute(
         f"""
-        select runs.*
+        select runs.*, agents.agent_type
         from runs
+        left join agents on agents.id = runs.agent_id and agents.tenant_id = runs.tenant_id
         join sessions on sessions.id = runs.session_id
           and sessions.tenant_id = runs.tenant_id
           and sessions.workspace_id = runs.workspace_id
