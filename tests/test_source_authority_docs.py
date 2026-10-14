@@ -1,8 +1,9 @@
 import re
 from pathlib import Path
-from urllib.parse import unquote, urlsplit
 
 import pytest
+
+from tools.check_documentation import check_document_links
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,15 +28,8 @@ def read(path: Path) -> str:
 
 
 def local_link_targets(document: Path, root: Path) -> set[Path]:
-    targets = set()
-    for link in re.findall(r"\[[^\]\n]*\]\(([^)\s]+)\)", read(document)):
-        url = urlsplit(link.strip("<>"))
-        if url.scheme or url.netloc:
-            continue
-        target = (document.parent / unquote(url.path)).resolve() if url.path else document.resolve()
-        assert target.is_relative_to(root.resolve()), f"{document}: {link} escapes the repository; use a repository-local owner link"
-        assert target.is_file(), f"{document}: {link} is missing; update the link or restore its owning document"
-        targets.add(target)
+    findings, targets = check_document_links(root, document, check_anchors=False, require_files=True)
+    assert not findings, "\n".join(findings)
     return targets
 
 
@@ -54,7 +48,7 @@ def test_local_link_check_rejects_missing_and_escaping_targets(tmp_path: Path, l
     document = root / "README.md"
     document.write_text(f"[owner]({link})\n", encoding="utf-8")
 
-    with pytest.raises(AssertionError, match="missing|escapes the repository"):
+    with pytest.raises(AssertionError, match="link_target_missing|link_outside_repository"):
         local_link_targets(document, root)
 
 
@@ -260,7 +254,12 @@ def test_release_environment_reference_does_not_claim_configured_approval():
     assert "`packaging-publish`" in runbook
     assert "Recheck the actual environment settings" in runbook
     assert "including protection rules and deployment branch policy" in runbook
-    assert "verify Backend and Frontend checks for the selected exact main commit" in runbook
+    assert (
+        "Formal publication verifies existing Backend and Frontend success "
+        "for the selected exact main commit automatically"
+    ) in runbook
+    assert "environment selection is not evidence of that check" in runbook
+    assert "qualification does not rerun the test workflows" in runbook
     assert "Publication is protected by" not in runbook
     assert "selects the named environment" in runbook
     assert "main-source, environment," not in runbook
