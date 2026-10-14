@@ -1259,6 +1259,8 @@ def _is_valid_v2_context_record(record: object) -> bool:
         and _is_valid_epoch(record.get("generation"))
         and int(record["generation"]) >= 1
         and _is_valid_epoch(record.get("operation_epoch"))
+        and _is_valid_epoch(record.get("successful_refresh_epoch", 0))
+        and record.get("successful_refresh_epoch", 0) <= record["operation_epoch"]
         and _is_valid_epoch(record.get("tenant_user_subject_epoch"))
         and isinstance(record.get("operation_token"), str)
         and isinstance(record.get("operation_kind"), str)

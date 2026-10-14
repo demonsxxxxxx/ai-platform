@@ -71,6 +71,12 @@ platform `roles` remain the platform permission projection.
 A refresh commits the principal and encrypted MCP credential under the existing
 context operation fence. Credential-only rotation preserves the principal's
 subject epoch; changed authorization facts invalidate old authority owners.
+Successful credential-bearing refresh commits record their operation epoch for
+concurrent request deduplication, including when JWT expiry is already capped at
+the context deadline. This optional context-local field defaults to zero for old
+records and expires with the context. Login/logout attempts clear it; failed
+refresh cleanup never creates completion evidence. Only the same subject epoch
+may reuse completion; changed authorization is rechecked or fenced.
 Neither a browser request nor an MCP request extends the context deadline.
 MCP credential reads and request dispatch obtain the current credential under
 the same bounded grant, including for an already-open selected-tool session.

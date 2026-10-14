@@ -570,7 +570,7 @@ class FakeAuthRedis:
                 return json.dumps(
                     {
                         "status": "begun", "operation_epoch": context["operation_epoch"],
-                    "successful_refresh_epoch": context.get("successful_refresh_epoch", 0),
+                        "successful_refresh_epoch": context.get("successful_refresh_epoch", 0),
                         "principal": context["principal"],
                         "subject_epoch": context["tenant_user_subject_epoch"],
                         "expires_at": int(expires_at),
@@ -2632,10 +2632,14 @@ async def test_refresh_rechecks_permissions_and_fences_existing_mcp_execution(mo
 
 
 @pytest.mark.asyncio
-async def test_parallel_refresh_merges_and_old_mcp_connection_reads_new_jwt(monkeypatch):
+@pytest.mark.parametrize("lifetime", [86400, 300])
+async def test_parallel_refresh_merges_and_old_mcp_connection_reads_new_jwt(monkeypatch, lifetime):
     from app.auth import refresh_company_session
 
-    redis, _settings, cookie, principal, store, record = await install_refresh_grant(monkeypatch)
+    redis, _settings, cookie, principal, store, record = await install_refresh_grant(monkeypatch, lifetime=lifetime)
+    monkeypatch.setattr("app.principal_authority.authority_checked_at_now", lambda: "2026-10-14T00:00:00+00:00")
+    if lifetime == 300:
+        await refresh_company_session(cookie)
     execution = SimpleNamespace(**await store.credential_subject(principal))
     redis.now += 2
     entered, release = asyncio.Event(), asyncio.Event()
