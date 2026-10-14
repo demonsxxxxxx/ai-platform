@@ -16,6 +16,7 @@ from app.context.domain.conversation_authority import (
 from app.context.domain.provider_sessions import (
     MAX_PROVIDER_SESSION_ENTRIES,
     MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES,
+    MAX_PROVIDER_SESSION_STRUCTURED_TRANSCRIPT_BYTES,
     ProviderSessionConflictError,
     ProviderSessionScope,
     normalize_provider_entry_batch,
@@ -100,6 +101,7 @@ class CallbackConnection:
     """Small PostgreSQL-shaped fake for the real callback epoch lock helper."""
 
     def __init__(self):
+        self.session_status = "active"
         self.epoch = {
             "current_epoch_id": None,
             "active_run_id": "run-current",
@@ -110,6 +112,7 @@ class CallbackConnection:
             "next_sequence": 1,
             "entry_count": 0,
             "transcript_bytes": 0,
+            "structured_bytes": 0,
             "coverage_source_sha256": None,
             "writer_run_id": None,
             "writer_attempt_id": None,
@@ -134,6 +137,8 @@ class CallbackConnection:
         values = tuple(params)
         assert sql.count("%s") == len(values), sql
         normalized = sql.strip().lower()
+        if normalized.startswith("select status from sessions"):
+            return Cursor({"status": self.session_status})
         if normalized.startswith("select head.current_epoch_id, head.active_run_id, head.active_attempt_id"):
             return Cursor(copy.deepcopy(self.epoch))
         if normalized.startswith("select attempt.owner_generation, attempt.execution_spec_sha256"):
@@ -311,6 +316,7 @@ async def test_ready_epoch_requires_exact_source_digest_and_count_before_resume(
     head = {"active_run_id": "run-current", "current_epoch_id": "pe-old",
             "next_epoch_number": 2, "state": "ready", "coverage_source_sha256": receipt["source_sha256"],
             "coverage_message_count": 0, "entry_count": 1, "transcript_bytes": 100,
+            "structured_bytes": 100,
             "writer_run_id": None, "writer_attempt_id": None, "writer_owner_generation": None,
             "provider_session_id": "b4f6b554-ef0a-45c3-8db0-2710293a1685"}
     result = await provider_epochs.prepare_provider_epoch(
@@ -336,6 +342,7 @@ async def test_ready_epoch_requires_exact_source_digest_and_count_before_resume(
         {"coverage_message_count": 0},
         {"entry_count": MAX_PROVIDER_SESSION_ENTRIES},
         {"transcript_bytes": MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES},
+        {"structured_bytes": MAX_PROVIDER_SESSION_STRUCTURED_TRANSCRIPT_BYTES},
     ],
 )
 async def test_existing_conversation_requires_new_conversation_when_native_epoch_is_unusable(
@@ -359,6 +366,7 @@ async def test_existing_conversation_requires_new_conversation_when_native_epoch
         "coverage_message_count": 1,
         "entry_count": 1,
         "transcript_bytes": 100,
+        "structured_bytes": 100,
         "writer_run_id": None,
         "writer_attempt_id": None,
         "writer_owner_generation": None,
@@ -428,7 +436,7 @@ async def test_uuidless_batch_response_loss_reuses_db_receipt_not_uuid(monkeypat
     async def locked(_conn, **_kwargs):
         return (
             {"id": "pe-a", "next_sequence": conn.epoch_next, "entry_count": len(conn.entries),
-             "transcript_bytes": 100},
+             "transcript_bytes": 100, "structured_bytes": 100},
             {"owner_generation": 1},
             {"source_sha256": source_receipt()["source_sha256"]},
         )
@@ -459,6 +467,16 @@ async def _lock_callback_epoch(conn):
         attempt_id="attempt-a",
         provider_session_id="b4f6b554-ef0a-45c3-8db0-2710293a1685",
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["deleted", "archived"])
+async def test_callback_epoch_rejects_inactive_session_before_claiming_writer(status):
+    conn = CallbackConnection()
+    conn.session_status = status
+    with pytest.raises(ProviderSessionConflictError, match="provider_session_epoch_unavailable"):
+        await _lock_callback_epoch(conn)
+    assert conn.turn_receipt_inserts == 0 and conn.epoch["writer_run_id"] is None
 
 
 @pytest.mark.asyncio

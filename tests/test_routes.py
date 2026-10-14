@@ -1674,8 +1674,9 @@ async def test_upload_file_rejects_cross_user_session(monkeypatch):
         assert user_id == "user-a"
         assert display_name == "User A"
 
-    async def fake_get_authorized_session(conn, *, tenant_id, user_id, session_id):
+    async def fake_get_authorized_session(conn, *, tenant_id, user_id, session_id, workspace_id):
         assert user_id == "user-a"
+        assert workspace_id == "default"
         return None
 
     class FakeUpload:
@@ -5808,6 +5809,7 @@ async def test_create_run_reuses_snapshot_authorized_session_file_without_rebind
         "workspace_id": "default",
         "user_id": "user-a",
         "session_id": "ses-existing",
+        "input_modes": ["docx"],
     }
     assert calls["run_file_ids"] == ["file-prior"]
     assert calls["queue_file_ids"] == ["file-prior"]
@@ -6144,7 +6146,6 @@ async def test_create_run_producer_contract_persists_uploaded_release_policy_man
                     path=dependency_dir,
                     version=dependency_version,
                     source={"kind": "builtin", "asset_dir": "minimax-docx", "version": dependency_version},
-                    entry={"kind": "filesystem", "path": str(dependency_dir)},
                 )
             ]
 

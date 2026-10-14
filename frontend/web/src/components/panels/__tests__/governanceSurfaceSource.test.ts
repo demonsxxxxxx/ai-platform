@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { resolveGroupAvailability } from "../../governance/groupAvailability";
@@ -75,15 +75,17 @@ test("mcp panel gives AI admins lifecycle controls while keeping the ordinary di
   assert.doesNotMatch(source, /mcp\.lifecycleUnavailable/);
   assert.doesNotMatch(source, /mcp\.credentialsUnavailable/);
   assert.match(source, /roleQuotaCount/);
-  assert.doesNotMatch(source, /enabledToolCount/);
-  assert.doesNotMatch(source, /mcp\.card\.tools/);
+  assert.match(source, /useMcpToolDiscovery/);
+  assert.match(source, /data-mcp-tool-count/);
+  assert.match(source, /data-mcp-server-row/);
+  assert.match(source, /MCPToolDrawer/);
   assert.doesNotMatch(
     source,
     /MCPServerCard|EditorSidebar/,
   );
   assert.match(source, /MCPServerForm/);
   assert.match(source, /ConfirmDialog/);
-  assert.match(source, /canManageMcp && !mcpGovernance\.governedUnavailable/);
+  assert.match(source, /canManageMcp && isAvailable/);
   assert.match(source, /data-mcp-admin-controls/);
   assert.match(source, /if \(!isAiAdmin\)/);
   assert.match(source, /allAuthorizedCatalog: !isAiAdmin/);
@@ -132,7 +134,10 @@ test("mcp panel gives AI admins lifecycle controls while keeping the ordinary di
   );
   assert.match(ordinaryCatalog, /data-ordinary-mcp-catalog/);
   assert.match(ordinaryCatalog, /mcp\.available\.empty/);
-  assert.match(ordinaryCatalog, /mcpApi\.discoverTools/);
+  const discovery = readFileSync(join(root, "src/components/mcp/useMcpToolDiscovery.ts"), "utf8");
+  assert.match(discovery, /mcpApi\.discoverTools/);
+  assert.match(ordinaryCatalog, /discovery\.toolsByServer/);
+  assert.doesNotMatch(ordinaryCatalog, /listError \|\| toolsUnavailable|collectOrdinaryMcpTools/);
   assert.doesNotMatch(
     ordinaryCatalog,
     /allowed_roles|role_quotas|credential|transport|server\.enabled|can_edit/,
@@ -189,4 +194,16 @@ test("tool selector cannot toggle system disabled MCP tools", () => {
   );
   assert.match(source, /aria-disabled=\{tool\.system_disabled/);
   assert.doesNotMatch(source, /onClick=\{\(\) => onToggleTool\(tool\.name\)\}/);
+});
+
+test("MCP governance has no orphaned tool-permission inbox state owner", () => {
+  assert.equal(
+    existsSync(join(root, "src/components/panels/adminToolPermissionInboxState.ts")),
+    false,
+  );
+});
+
+test("governance surfaces retain the shared state owner without an unused unavailable wrapper", () => {
+  assert.equal(existsSync(join(root, "src/components/workbench/WorkbenchStateSurface.tsx")), true);
+  assert.equal(existsSync(join(root, "src/components/workbench/WorkbenchUnavailableState.tsx")), false);
 });

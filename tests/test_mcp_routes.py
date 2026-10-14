@@ -20,10 +20,9 @@ from app.mcp.application.live_catalog import (
     LiveMcpServerResult,
     LiveMcpTool,
 )
-from app.mcp.domain.errors import McpRuntimeContextError
+from app.mcp.domain.errors import McpRuntimeContextError, McpToolDiscoveryError
 from app.mcp.domain.headers import normalize_static_mcp_headers
 from app.mcp.domain.tool_references import build_mcp_tool_reference
-from app.mcp.infrastructure.catalog import McpToolDiscoveryError
 from app.mcp.infrastructure.runtime import (
     McpPrincipalJwtStore,
     open_mcp_server_credentials,
@@ -334,6 +333,43 @@ async def test_live_catalog_gateway_failure_does_not_return_previous_tools(monke
     assert failed.tools == ()
     assert failed.unavailable_reason == "discovery_failed"
 
+
+
+@pytest.mark.parametrize("reason", [
+    "invalid_endpoint", "protocol_error", "response_too_large",
+    "unsupported_content_encoding", "transport_failure", "connection_failed",
+    "page_limit_exceeded", "authorization_required",
+])
+@pytest.mark.asyncio
+async def test_live_catalog_keeps_typed_discovery_reason_private(reason):
+    async def discover(*_args, **_kwargs):
+        raise McpToolDiscoveryError(reason)
+
+    result = await _live_catalog_service(SimpleNamespace(discover_definitions=discover)).list_server_tools(
+        tenant_id="default", user_id="alice", server_id="gateway", jwt="synthetic.jwt",
+    )
+
+    assert result.tools == ()
+    assert result.unavailable_reason == "discovery_failed"
+    assert result.failure.stage == "tool_discovery"
+    assert result.failure.reason == reason
+    assert result.failure.error_type == "McpToolDiscoveryError"
+
+
+@pytest.mark.parametrize("stage", ["target_resolution", "tool_discovery"])
+@pytest.mark.asyncio
+async def test_live_catalog_cancellation_propagates_without_unavailable_result(stage):
+    async def cancelled(*_args, **_kwargs):
+        raise asyncio.CancelledError()
+
+    catalog = _live_catalog_service(SimpleNamespace(discover_definitions=cancelled))
+    if stage == "target_resolution":
+        catalog._target_resolver = cancelled
+
+    with pytest.raises(asyncio.CancelledError):
+        await catalog.list_server_tools(
+            tenant_id="default", user_id="alice", server_id="gateway", jwt="synthetic.jwt",
+        )
 
 def headers(
     roles: str = "user",
@@ -1739,3 +1775,150 @@ def test_mcp_status_mutations_map_distribution_errors_without_audit_or_partial_c
     assert [name for name, _ in calls][-1] == (
         "archive_distribution_failed" if method == "delete" else "set_distribution_status_failed"
     )
+
+
+@pytest.mark.parametrize("path", ["/api/mcp/chat-tools", "/api/mcp/ragflow/tools"])
+@pytest.mark.parametrize(("stage", "error", "reason", "error_type"), [
+    ("target_resolution", McpRuntimeContextError("mcp_server_credentials_invalid"),
+     "mcp_server_credentials_invalid", "McpRuntimeContextError"),
+    ("tool_discovery", McpToolDiscoveryError("invalid_endpoint"), "invalid_endpoint", "McpToolDiscoveryError"),
+    ("tool_discovery", RuntimeError("https://private.example/?token=secret JWT-Authorization: synthetic.jwt"),
+     "unexpected_error", "Exception"),
+    ("catalog", RuntimeError("https://private.example/?token=secret JWT-Authorization: synthetic.jwt"),
+     "unexpected_error", "Exception"),
+    ("tool_discovery", McpToolDiscoveryError("https://private.example/?token=secret"),
+     "unexpected_error", "McpToolDiscoveryError"),
+    ("target_resolution", McpRuntimeContextError("JWT-Authorization: synthetic.jwt"),
+     "unexpected_error", "McpRuntimeContextError"),
+    ("tool_projection", KeyError("private tool input"), "unexpected_error", "Exception"),
+])
+def test_mcp_routes_log_private_failure_without_changing_public_unavailable(
+    monkeypatch, caplog, path, stage, error, reason, error_type,
+):
+    from app.routes import mcp
+
+    install_mcp_route_fakes(monkeypatch)
+
+    async def target(*_args):
+        if stage == "target_resolution":
+            raise error
+        return SimpleNamespace(endpoint="https://private.example/mcp", static_headers={"X-Secret": "synthetic-secret"})
+
+    async def discover(*_args, **_kwargs):
+        if stage == "tool_discovery":
+            raise error
+        return ({"name": "valid-tool"},)  # Missing description fails in projection.
+
+    monkeypatch.setattr(mcp, "LIVE_MCP_CATALOG", LiveMcpCatalogService(
+        target_resolver=target, discovery=SimpleNamespace(discover_definitions=discover),
+    ))
+    if stage == "catalog":
+        async def unexpected(**_kwargs):
+            raise error
+        monkeypatch.setattr(mcp, "LIVE_MCP_CATALOG", SimpleNamespace(list_server_tools=unexpected))
+    response = TestClient(create_app()).get(path, headers=headers())
+
+    assert response.status_code == 200
+    assert response.headers.get("X-Force-Relogin") is None
+    body = response.json()
+    assert body["tools"] == []
+    if path.endswith("chat-tools"):
+        assert body["unavailable"] == [{"label": "ragflow", "reason": "discovery_failed"}]
+    else:
+        assert body["unavailable_reason"] == "discovery_failed"
+    records = [record for record in caplog.records if record.name == "app.routes.mcp"]
+    assert len(records) == 1
+    record = records[0]
+    assert (record.stage, record.reason, record.error_type) == (stage, reason, error_type)
+    assert (record.tenant_id, record.server_id) == ("default", "ragflow")
+    assert record.trace_id.startswith("trace_")
+    assert record.exc_info is None and record.stack_info is None
+    assert reason in record.getMessage()  # Visible under the default logging formatter too.
+    encoded = response.text + repr(record.__dict__)
+    for private in ("private.example", "JWT-Authorization", "synthetic.jwt", "synthetic-secret", "private tool input"):
+        assert private not in encoded
+    assert "failure" not in body and "trace_id" not in body
+
+
+@pytest.mark.parametrize(("code", "status", "public_reason", "relogin"), [
+    ("mcp_principal_jwt_missing", 401, "authorization_required", True),
+    ("mcp_principal_jwt_expired", 401, "authorization_required", True),
+    ("mcp_principal_jwt_unavailable", 503, "discovery_failed", False),
+    ("mcp_principal_jwt_corrupt", 503, "discovery_failed", False),
+    ("mcp_context_keyring_invalid", 503, "discovery_failed", False),
+    ("mcp_context_key_not_configured", 503, "discovery_failed", False),
+])
+def test_mcp_jwt_operational_failures_are_not_authentication_failures(
+    monkeypatch, caplog, code, status, public_reason, relogin,
+):
+    from app.routes import mcp
+
+    install_mcp_route_fakes(monkeypatch)
+
+    async def unavailable(_principal):
+        raise McpRuntimeContextError(code, status_code=status)
+
+    monkeypatch.setattr(mcp, "get_mcp_principal_jwt_store", lambda: SimpleNamespace(get=unavailable))
+    client = TestClient(create_app())
+    bulk = client.get("/api/mcp/chat-tools", headers=headers())
+    single = client.get("/api/mcp/ragflow/tools", headers=headers())
+
+    assert bulk.status_code == 200
+    assert bulk.json() == {"tools": [], "count": 0, "unavailable": [{"label": "ragflow", "reason": public_reason}]}
+    assert bulk.headers.get("X-Force-Relogin") is None
+    assert single.status_code == status
+    assert single.json() == {"detail": code}
+    assert single.headers.get("X-Force-Relogin") == ("true" if relogin else None)
+    records = [record for record in caplog.records if record.name == "app.routes.mcp"]
+    assert len(records) == 2
+    assert all(record.stage == "principal_jwt" and record.reason == code for record in records)
+    assert all(record.error_type == "McpRuntimeContextError" for record in records)
+    assert records[0].trace_id != records[1].trace_id
+
+
+@pytest.mark.asyncio
+async def test_mcp_route_discovery_cancellation_is_not_logged_as_failure(monkeypatch, caplog):
+    from app.routes import mcp
+
+    async def cancelled(**_kwargs):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(mcp, "LIVE_MCP_CATALOG", SimpleNamespace(list_server_tools=cancelled))
+    principal = AuthPrincipal(tenant_id="default", user_id="alice", display_name="Alice", source="test")
+    with pytest.raises(asyncio.CancelledError):
+        await mcp._discover_server_tools(
+            principal=principal, server_id="gateway", jwt="synthetic.jwt", trace_id="trace_test",
+        )
+    assert not [record for record in caplog.records if record.name == "app.routes.mcp"]
+
+
+def test_mcp_bulk_discovery_logs_each_failure_once_with_request_correlation(monkeypatch, caplog):
+    from app.routes import mcp
+
+    install_mcp_route_fakes(monkeypatch, seed_registry_ragflow=False, tool_rows=[
+        {"server_id": server, "tool_id": "healthy-tool"}
+        for server in ("gateway-a", "gateway-b", "gateway-c")
+    ])
+
+    async def target(_tenant, server):
+        return SimpleNamespace(endpoint=server, static_headers={})
+
+    async def discover(endpoint, **_kwargs):
+        if endpoint != "gateway-c":
+            raise McpToolDiscoveryError("protocol_error")
+        return ({"name": "healthy-tool", "description": "Healthy tool."},)
+
+    monkeypatch.setattr(mcp, "LIVE_MCP_CATALOG", LiveMcpCatalogService(
+        target_resolver=target, discovery=SimpleNamespace(discover_definitions=discover),
+    ))
+    response = TestClient(create_app()).get("/api/mcp/chat-tools", headers=headers())
+
+    assert response.status_code == 200
+    assert [tool["tool_id"] for tool in response.json()["tools"]] == ["gateway-c::healthy-tool"]
+    assert response.json()["unavailable"] == [
+        {"label": server, "reason": "discovery_failed"} for server in ("gateway-a", "gateway-b")
+    ]
+    records = [record for record in caplog.records if record.name == "app.routes.mcp"]
+    assert len(records) == 2
+    assert {record.server_id for record in records} == {"gateway-a", "gateway-b"}
+    assert len({record.trace_id for record in records}) == 1

@@ -3,23 +3,14 @@ import { useNavigate } from "react-router-dom";
 
 import { AppShell } from "../../components/layout/AppContent/AppShell";
 import { SessionSidebar } from "../../components/panels/SessionSidebar";
-import { SIDEBAR_COLLAPSED_STORAGE_KEY } from "../../hooks/useAuth";
-import { authApi } from "../../services/api";
+import { useSidebarPreference } from "../../hooks/useSidebarPreference";
 
 /** Keep the administrative editor inside the same persistent application shell. */
 export function AgentBuilderShell({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
-    const saved = localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY);
-    return saved !== null ? saved === "true" : false;
-  });
+  const [sidebarCollapsed, handleSetSidebarCollapsed] = useSidebarPreference();
 
-  const handleSetSidebarCollapsed = useCallback((collapsed: boolean) => {
-    setSidebarCollapsed(collapsed);
-    localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, String(collapsed));
-    authApi.updateMetadata({ sidebarCollapsed: String(collapsed) }).catch(() => {});
-  }, []);
   const handleSelectSession = useCallback(
     (_sessionId: string) => {
       setMobileSidebarOpen(false);

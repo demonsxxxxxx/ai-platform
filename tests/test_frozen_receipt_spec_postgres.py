@@ -17,6 +17,7 @@ from app.runs.application.attempt_lifecycle import RunAttemptLifecycleService
 from app.runs.infrastructure import postgres
 from app.sandbox.api import SandboxReconciliationReceiptAuthority
 from app.sandbox.infrastructure.leases_postgres import lock_scoped_reconciliation_receipt
+from tests.support.db_transactions import event_loop_policy as event_loop_policy
 from tests.support.frozen_receipts import RESTORE, SCOPE, frozen_spec
 
 
@@ -342,9 +343,8 @@ async def test_full_schema_lost_claim_cannot_adopt_new_receipt_owner_or_write_te
         assert await sandbox_leases.retry_sandbox_executor_reconciliation(
             conn, lease_id="lease-a", claim_token="claim-a", error="test-owner-loss",
         )
-        # Advance only the existing retry eligibility clock, as other real-PG
-        # reconciliation tests do; claim ownership uses production SQL.
-        await conn.execute("update sandbox_leases set updated_at=now()-interval '1 minute'")
+        # Advance the explicit retry deadline; production SQL still owns the new claim.
+        await conn.execute("update sandbox_leases set executor_reconciliation_retry_not_before=now()-interval '1 minute' where id='lease-a'")
         claimed = await sandbox_leases.claim_sandbox_executor_reconciliations(
             conn, claim_token="claim-new", stale_after_seconds=300, limit=1,
         )

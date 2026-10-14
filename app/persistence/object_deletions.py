@@ -30,8 +30,8 @@ async def claim_object_deletions(
           from object_deletion_outbox outbox
           where (
               (
-                outbox.target_type = 'artifact'
-                and outbox.state in ('pending', 'failed', 'processing')
+                outbox.target_type in ('artifact', 'provider_image')
+                and outbox.state in ('pending', 'failed', 'processing', 'provider_image_pending', 'provider_image_failed', 'provider_image_processing')
               )
               or (
                 outbox.target_type = 'file'
@@ -59,6 +59,14 @@ async def claim_object_deletions(
                     and files.lifecycle_state = 'delete_pending'
                 )
               )
+              or (
+                outbox.target_type = 'provider_image'
+                and exists (
+                  select 1 from provider_session_images image
+                  where image.tenant_id = outbox.tenant_id and image.id = outbox.provider_image_id
+                    and image.storage_key = outbox.storage_key and image.lifecycle_state = 'delete_pending'
+                )
+              )
             )
           order by outbox.created_at asc, outbox.id asc
           limit %s
@@ -67,6 +75,7 @@ async def claim_object_deletions(
         update object_deletion_outbox outbox
         set state = case
               when outbox.target_type = 'file' then 'file_dead_letter'
+              when outbox.target_type = 'provider_image' then 'provider_image_dead_letter'
               else 'dead_letter'
             end,
             dead_letter_at = coalesce(dead_letter_at, now()),
@@ -86,10 +95,10 @@ async def claim_object_deletions(
           where attempts >= %s
             and (
               (
-                target_type = 'artifact'
+                target_type in ('artifact', 'provider_image')
                 and (
-                  (state in ('pending', 'failed') and available_at <= now())
-                  or (state = 'processing' and leased_at <= now() - interval '5 minutes')
+                  (state in ('pending', 'failed', 'provider_image_pending', 'provider_image_failed') and available_at <= now())
+                  or (state in ('processing', 'provider_image_processing') and leased_at <= now() - interval '5 minutes')
                 )
               )
               or (
@@ -110,6 +119,7 @@ async def claim_object_deletions(
         update object_deletion_outbox
         set state = case
               when target_type = 'file' then 'file_dead_letter'
+              when target_type = 'provider_image' then 'provider_image_dead_letter'
               else 'dead_letter'
             end,
             dead_letter_at = coalesce(dead_letter_at, now()),
@@ -126,25 +136,33 @@ async def claim_object_deletions(
           select id
           from object_deletion_outbox
           where ((
-              target_type = 'artifact'
+              target_type in ('artifact', 'provider_image')
               and (
                 (
-                  (state in ('pending', 'failed') and available_at <= now())
-                  or (state = 'processing' and leased_at <= now() - interval '5 minutes')
+                  (state in ('pending', 'failed', 'provider_image_pending', 'provider_image_failed') and available_at <= now())
+                  or (state in ('processing', 'provider_image_processing') and leased_at <= now() - interval '5 minutes')
                 )
                 and attempts < %s
                 or (
-                  state = 'deleted'
+                  state in ('deleted', 'provider_image_deleted')
                   and updated_at <= now() - interval '1 day'
-                  and exists (
+                  and (exists (
                     select 1
                     from artifacts
-                    where artifacts.id = object_deletion_outbox.artifact_id
+                    where object_deletion_outbox.target_type = 'artifact'
+                      and artifacts.id = object_deletion_outbox.artifact_id
                       and artifacts.tenant_id = object_deletion_outbox.tenant_id
                       and artifacts.storage_key = object_deletion_outbox.storage_key
                       and artifacts.lifecycle_state = 'delete_pending'
                       and artifacts.manifest_json @> '{"provisional_reconciliation_cleanup":true}'::jsonb
-                  )
+                  ) or exists (
+                    select 1 from provider_session_images image
+                    where object_deletion_outbox.target_type = 'provider_image'
+                      and image.id = object_deletion_outbox.provider_image_id
+                      and image.tenant_id = object_deletion_outbox.tenant_id
+                      and image.storage_key = object_deletion_outbox.storage_key
+                      and image.lifecycle_state = 'delete_pending' and image.provisional
+                  ))
                 )
               )
             ) or (
@@ -177,6 +195,15 @@ async def claim_object_deletions(
                   and files.storage_key = object_deletion_outbox.storage_key
                   and files.lifecycle_state = 'delete_pending'
               )
+            ) or (
+              target_type = 'provider_image'
+              and exists (
+                select 1 from provider_session_images image
+                where image.tenant_id = object_deletion_outbox.tenant_id
+                  and image.id = object_deletion_outbox.provider_image_id
+                  and image.storage_key = object_deletion_outbox.storage_key
+                  and image.lifecycle_state = 'delete_pending'
+              )
             )
           )
           order by available_at asc, created_at asc, id asc
@@ -186,10 +213,11 @@ async def claim_object_deletions(
         update object_deletion_outbox
         set state = case
               when target_type = 'file' then 'file_processing'
+              when target_type = 'provider_image' then 'provider_image_processing'
               else 'processing'
             end,
             attempts = case
-              when state = 'deleted' then 1
+              when state in ('deleted', 'provider_image_deleted') then 1
               else attempts + 1
             end,
             lease_generation = lease_generation + 1,
@@ -214,11 +242,11 @@ async def complete_object_deletion(
     cursor = await conn.execute(
         """
         with claimed as materialized (
-          select id, tenant_id, target_type, artifact_id, file_id, storage_key
+          select id, tenant_id, target_type, artifact_id, file_id, provider_image_id, storage_key
           from object_deletion_outbox
           where id = %s and tenant_id = %s
             and (
-              (target_type = 'artifact' and state = 'processing')
+              (target_type in ('artifact', 'provider_image') and state in ('processing', 'provider_image_processing'))
               or (target_type = 'file' and state = 'file_processing')
             )
             and lease_generation = %s
@@ -252,14 +280,26 @@ async def complete_object_deletion(
             and files.storage_key = claimed.storage_key
             and files.lifecycle_state = 'delete_pending'
           returning files.id
+        ), updated_image as (
+          update provider_session_images image
+          set lifecycle_state = case when image.provisional then 'delete_pending' else 'deleted' end,
+              deleted_at = case when image.provisional then null else coalesce(image.deleted_at, now()) end
+          from claimed
+          where claimed.target_type = 'provider_image' and image.id = claimed.provider_image_id
+            and image.tenant_id = claimed.tenant_id and image.storage_key = claimed.storage_key
+            and image.lifecycle_state = 'delete_pending'
+          returning image.id
         ), updated_target as (
           select id from updated_artifact
           union all
           select id from updated_file
+          union all
+          select id from updated_image
         )
         update object_deletion_outbox outbox
         set state = case
               when claimed.target_type = 'file' then 'file_deleted'
+              when claimed.target_type = 'provider_image' then 'provider_image_deleted'
               else 'deleted'
             end,
             receipt_at = now(),
@@ -298,6 +338,8 @@ async def fail_object_deletion(
         """
         update object_deletion_outbox
         set state = case
+              when target_type = 'provider_image' and attempts >= %s then 'provider_image_dead_letter'
+              when target_type = 'provider_image' then 'provider_image_failed'
               when target_type = 'file' and attempts >= %s then 'file_dead_letter'
               when target_type = 'file' then 'file_failed'
               when attempts >= %s then 'dead_letter'
@@ -319,13 +361,14 @@ async def fail_object_deletion(
             updated_at = now()
         where id = %s and tenant_id = %s
           and (
-            (target_type = 'artifact' and state = 'processing')
+            (target_type in ('artifact', 'provider_image') and state in ('processing', 'provider_image_processing'))
             or (target_type = 'file' and state = 'file_processing')
           )
           and lease_generation = %s
         returning state
         """,
         (
+            resolved_max_attempts,
             resolved_max_attempts,
             resolved_max_attempts,
             error_code[:120],
@@ -356,6 +399,7 @@ async def requeue_dead_letter_object_deletion(
         update object_deletion_outbox outbox
         set state = case
               when outbox.target_type = 'file' then 'file_pending'
+              when outbox.target_type = 'provider_image' then 'provider_image_pending'
               else 'pending'
             end,
             attempts = 0,
@@ -388,6 +432,14 @@ async def requeue_dead_letter_object_deletion(
                   and files.tenant_id = outbox.tenant_id
                   and files.storage_key = outbox.storage_key
                   and files.lifecycle_state = 'delete_pending'
+              )
+            )
+            or (
+              outbox.target_type = 'provider_image' and outbox.state = 'provider_image_dead_letter'
+              and exists (
+                select 1 from provider_session_images image
+                where image.id = outbox.provider_image_id and image.tenant_id = outbox.tenant_id
+                  and image.storage_key = outbox.storage_key and image.lifecycle_state = 'delete_pending'
               )
             )
           )

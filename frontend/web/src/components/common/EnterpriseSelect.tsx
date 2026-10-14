@@ -1,6 +1,7 @@
-import { useState, useRef, useEffect, useLayoutEffect } from "react";
-import { createPortal } from "react-dom";
-import { ChevronDown, Check } from "lucide-react";
+import type { ComponentProps } from "react";
+import * as Select from "@radix-ui/react-select";
+import { Check, ChevronDown, ChevronUp } from "lucide-react";
+import { clsx } from "clsx";
 
 export interface EnterpriseSelectOption {
   value: string;
@@ -8,15 +9,17 @@ export interface EnterpriseSelectOption {
   disabled?: boolean;
 }
 
-interface EnterpriseSelectProps {
+type EnterpriseSelectProps = Omit<
+  ComponentProps<typeof Select.Trigger>,
+  "value" | "onChange" | "children" | "defaultValue"
+> & {
   value: string;
   onChange: (value: string) => void;
   options: EnterpriseSelectOption[];
-  disabled?: boolean;
   placeholder?: string;
-  className?: string;
-}
+};
 
+/** shadcn/ui Select composition, styled with the workbench's existing theme. */
 export function EnterpriseSelect({
   value,
   onChange,
@@ -24,102 +27,62 @@ export function EnterpriseSelect({
   disabled = false,
   placeholder,
   className,
+  name,
+  ...triggerProps
 }: EnterpriseSelectProps) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  const dropdownRef = useRef<HTMLDivElement>(null);
-  const [dropdownStyle, setDropdownStyle] = useState<React.CSSProperties>({});
-
-  const selected = options.find((o) => o.value === value);
-  const displayText = selected
-    ? selected.label
-    : placeholder ?? options[0]?.label ?? "";
-
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: MouseEvent) => {
-      const target = e.target as Node;
-      if (
-        ref.current &&
-        !ref.current.contains(target) &&
-        dropdownRef.current &&
-        !dropdownRef.current.contains(target)
-      ) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [open]);
-
-  useLayoutEffect(() => {
-    if (!open || !ref.current) return;
-    const rect = ref.current.getBoundingClientRect();
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    const w = Math.max(rect.width, 160);
-    const left = Math.max(16, Math.min(rect.left, vw - w - 16));
-
-    const spaceBelow = vh - rect.bottom - 16;
-    const spaceAbove = rect.top - 16;
-    const preferBelow = spaceBelow >= 200 || spaceBelow >= spaceAbove;
-
-    setDropdownStyle({
-      position: "fixed",
-      top: preferBelow ? rect.bottom + 4 : undefined,
-      bottom: preferBelow ? undefined : vh - rect.top + 4,
-      left,
-      width: w,
-      zIndex: 9999,
-    });
-  }, [open]);
+  const selected = options.find((option) => option.value === value);
 
   return (
-    <div ref={ref} className={`relative ${className ?? ""}`}>
-      <button
-        type="button"
-        disabled={disabled}
-        onClick={() => !disabled && setOpen((v) => !v)}
-        className="enterprise-field-control es-select-btn"
+    <Select.Root value={value} onValueChange={onChange} disabled={disabled} name={name}>
+      <Select.Trigger
+        {...triggerProps}
+        className={clsx("enterprise-field-control es-select-btn", className)}
+        data-slot="select-trigger"
       >
-        <span className="truncate">{displayText}</span>
-        <ChevronDown
-          size={15}
-          className="shrink-0 text-[var(--theme-text-secondary)] transition-transform duration-200"
-          style={{ transform: open ? "rotate(180deg)" : undefined }}
-        />
-      </button>
-
-      {open &&
-        createPortal(
-          <div
-            ref={dropdownRef}
-            className="enterprise-select-dropdown"
-            style={dropdownStyle}
-          >
-            {options.map((opt) => (
-              <button
-                key={opt.value}
-                type="button"
-                disabled={opt.disabled}
-                onClick={() => {
-                  if (opt.disabled) return;
-                  onChange(opt.value);
-                  setOpen(false);
-                }}
-                className={`enterprise-select-option ${
-                  opt.value === value ? "active" : ""
-                } ${opt.disabled ? "disabled" : ""}`}
+        <Select.Value placeholder={placeholder} data-slot="select-value">
+          {selected?.label ?? placeholder ?? value}
+        </Select.Value>
+        <Select.Icon asChild>
+          <ChevronDown aria-hidden="true" size={15} className="shrink-0 text-[var(--theme-text-secondary)]" />
+        </Select.Icon>
+      </Select.Trigger>
+      <Select.Portal>
+        <Select.Content
+          className="enterprise-select-dropdown z-[9999] min-w-[var(--radix-select-trigger-width)] max-h-[var(--radix-select-content-available-height)]"
+          data-slot="select-content"
+          position="popper"
+          sideOffset={4}
+          collisionPadding={16}
+          onEscapeKeyDown={(event) => event.stopPropagation()}
+          onKeyDown={(event) => {
+            if (event.key === "Tab") event.stopPropagation();
+          }}
+        >
+          <Select.ScrollUpButton className="flex justify-center py-1">
+            <ChevronUp aria-hidden="true" size={15} />
+          </Select.ScrollUpButton>
+          <Select.Viewport>
+            {options.map((option) => (
+              <Select.Item
+                key={option.value}
+                value={option.value}
+                disabled={option.disabled}
+                className="enterprise-select-option"
+                data-slot="select-item"
+                data-value={option.value}
               >
-                {opt.value === value && (
-                  <Check size={14} className="enterprise-select-option-check" />
-                )}
-                <span className="enterprise-select-option-label">{opt.label}</span>
-              </button>
+                <Select.ItemIndicator>
+                  <Check aria-hidden="true" size={14} className="enterprise-select-option-check" />
+                </Select.ItemIndicator>
+                <Select.ItemText>{option.label}</Select.ItemText>
+              </Select.Item>
             ))}
-          </div>,
-          document.body,
-        )}
-    </div>
+          </Select.Viewport>
+          <Select.ScrollDownButton className="flex justify-center py-1">
+            <ChevronDown aria-hidden="true" size={15} />
+          </Select.ScrollDownButton>
+        </Select.Content>
+      </Select.Portal>
+    </Select.Root>
   );
 }

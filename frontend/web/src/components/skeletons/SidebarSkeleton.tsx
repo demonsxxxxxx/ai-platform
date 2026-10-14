@@ -1,4 +1,4 @@
-import { SIDEBAR_COLLAPSED_STORAGE_KEY } from "../../hooks/useAuth";
+import { SIDEBAR_COLLAPSED_STORAGE_KEY } from "../../hooks/useSidebarPreference";
 
 /** Sidebar skeleton — matches real SessionSidebar layout */
 export function SidebarSkeleton() {

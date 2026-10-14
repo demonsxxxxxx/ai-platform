@@ -12,8 +12,10 @@ remote transport constraints; Execution owns the Claude adapter; bootstrap
 assembles concrete adapters. Existing Run/Attempt/lease and callback authorities
 remain unchanged. No new host relay, service, database catalog, or dependency.
 
-The current installed baseline is claude-agent-sdk 0.2.130, bundled Claude Code
-2.1.222. Official contracts: [MCP](https://code.claude.com/docs/en/agent-sdk/mcp),
+Dependency versions are owned by [pyproject.toml](../../pyproject.toml) and
+[uv.lock](../../uv.lock); the bundled CLI comes from that locked SDK package.
+The SDK 0.2.130 / CLI 2.1.222 pair records the original repair baseline, not an
+independent dependency pin. Official contracts: [MCP](https://code.claude.com/docs/en/agent-sdk/mcp),
 [permissions](https://code.claude.com/docs/en/agent-sdk/permissions),
 [hooks](https://code.claude.com/docs/en/agent-sdk/hooks), and
 [Python API](https://code.claude.com/docs/en/agent-sdk/python).
@@ -49,10 +51,16 @@ last-write-wins credential replacement policy.
    Expose only selected Tool definitions using the SDK's in-process MCP Server
    support; preserve model-visible input schemas, annotations, result content,
    structured result data and `isError`. Remote `outputSchema` remains on the
-   typed Tool at the MCP boundary; SDK 0.2.130 does not forward it to the model.
-   Because that bridge also drops the optional
-   `structuredContent` field, the adapter carries it as a bounded JSON text
-   content item while retaining the typed field for direct MCP callers.
+   typed Tool exposed by the platform's in-process Server. The platform adapter
+   also appends `structuredContent` as a bounded JSON text content item while
+   retaining the typed field. This compatibility representation preserves the
+   structured value when an SDK bridge omits optional result fields, as observed
+   with SDK 0.2.130. Forwarding through a later SDK and model interpretation
+   require their own adapter/provider acceptance; a dependency change alone does
+   not prove that the compatibility representation can be retired.
+   With SDK 0.2.165 / CLI 2.1.294, the loopback check confirms a JSON tool-result
+   string containing that structured value. Acceptance checks the JSON value,
+   not the previous `[structuredContent]` text marker.
    Forward calls to the original remote names. Do not expose
    unselected siblings or use a Server-wide wildcard permission grant.
 3. Each discovery task owns and closes its remote session. Close SDK query streams,
@@ -68,6 +76,15 @@ last-write-wins credential replacement policy.
    acknowledged before dispatch. These labels exclude private identities,
    arguments, runtime paths and results; the existing event acknowledgement and
    execution-evidence checks remain required. Known failed calls to platform-authorized read-only tools may recover.
+   A complete remote `CallToolResult(isError=true)` may also end a potentially
+   write-capable call as a known failure when the adapter uniquely matches the
+   canonical tool and original argument digest to an admitted native call ID,
+   and that call's failure hook and receipts are acknowledged. The private
+   evidence retains `lifecycle_phase=failed` with
+   `trust_basis=tool_call_bound_error_result`; it never claims tool success or
+   absence of partial writes. Other authorized calls may continue. Error text,
+   model claims and remote read-only hints do not supply this evidence. Identical
+   concurrent calls whose response cannot be uniquely joined remain uncertain.
    For write-capable calls after admission, a missing terminal hook is
    `mcp_execution_outcome_unknown`; a completed hook whose durable callback or
    public receipt is incomplete is `mcp_execution_succeeded_receipt_incomplete`.
@@ -76,8 +93,9 @@ last-write-wins credential replacement policy.
    deadline preserve that uncertainty after an observed MCP invocation.
    Retry and resume reject either error code at the locked Runs control
    boundary and in the public readiness/manifest projections.
-   A failed external write, identity conflict or unacknowledged receipt also
-   denies subsequent external writes in the current SDK turn. Admission rechecks
+   A failed external write without a uniquely bound returned-error receipt,
+   identity conflict or unacknowledged receipt also denies subsequent external
+   writes in the current SDK turn. Admission rechecks
    after awaited receipts to cover concurrent failures. Ordinary concurrent
    writes remain available before an uncertain outcome is observed; authorized
    read-only tools remain available for reconciliation when their receipts work.
@@ -111,7 +129,20 @@ last-write-wins credential replacement policy.
    permission to run arbitrary commands in the API or Worker.
 5. Use the MCP reference validator for Sandbox `mcp_tool_ids`, detect duplicate
    names within a page as well as across pages, and preserve discovery failure
-   state in the ordinary-user MCP directory.
+   state in the ordinary-user MCP directory. The live catalog retains a private,
+   payload-free failure (allowlisted reason, fixed exception category and the
+   target-resolution, transport-selection, discovery or projection stage).
+   Both discovery routes emit it once through their existing logger with tenant,
+   Server and a fresh catalog-request trace ID; concurrent Server failures share
+   that trace. Unknown errors retain only `unexpected_error` and a fixed class
+   category. No exception text, traceback, endpoint, header, JWT or tool input is
+   included. Ordinary per-Server responses keep `discovery_failed` (or the
+   existing `unsupported_transport`) and never serialize the private diagnostic.
+   Bulk JWT lookup maps only missing, expired or invalid principal credentials
+   to `authorization_required`; operational/configuration failures return
+   `discovery_failed` and retain their typed reason in the private log. The single
+   Server route keeps its typed HTTP error and existing force-relogin header
+   rules. Cancellation propagates without an unavailable result or failure log.
 
 ## Runnable checks
 
@@ -177,6 +208,15 @@ and absence of secrets in public events. That stage remains unclaimed until run.
 
 ## Retirement and compatibility disposition
 
+- Replace the administrator's state/role/quota-only cards with a compact Server
+  table and current-account live tool count/detail view. Retire the ordinary-only
+  discovery helpers, whole-directory failure replacement, old card selectors and
+  role-count/empty-tool copy. Both projections use the MCP-owned discovery hook;
+  mounted regressions retain lifecycle authority checks and cover count, empty,
+  partial failure, refresh and supersession. Registry/API payloads, credentials,
+  distribution policy and tool execution remain compatible; no stored tool
+  catalog or alternative discovery endpoint is introduced.
+
 - Replace whole-remote-Server SDK registration for selected external tools with
   an Executor-local selected tool surface; no parallel direct-registration path.
 - Retire raw platform names in SDK allow rules and exact raw-name lookup at the
@@ -200,6 +240,22 @@ and absence of secrets in public events. That stage remains unclaimed until run.
   remain compatible and no parallel retry path remains. The installed CLI MCP
   regression now runs in the Sandbox CI shard; its selected catalog also
   includes the platform-owned `attach_file` tool.
+- Replace the catalog's unobserved catch and the bulk-only fallback logger with
+  one private failure projection consumed by both discovery routes. Retire the
+  blanket JWT-error-to-authorization mapping; the bulk response shape and known
+  authentication reasons remain compatible. `McpToolDiscoveryError` now belongs
+  to MCP domain errors and all explicit import consumers use that owner; the
+  transport/parser still raise the same type and reason. No database, credential
+  format, transport behavior or public diagnostic field is added.
+- Replace unconditional uncertainty for an admitted write-capable MCP's failed
+  hook with call-bound proof of a complete returned error result. Unproven failed
+  hooks retain the existing uncertainty path; no name/error-text whitelist or
+  parallel execution path remains. Existing v1 evidence fields are unchanged;
+  the added MCP-only failed-result trust basis is consumed by SDK, Sandbox and
+  Worker together. Legacy hook evidence remains conservative. The Runner,
+  registration, shared evidence, Sandbox binding and Worker selectors cover
+  failure recovery, ambiguous joins, missing callbacks and transport exceptions;
+  the installed CLI selector now exercises possibly writable remote error results.
 - Platform-owned response/context public labels complete existing Tool subjects;
   no production path, canonical identity or wire schema is superseded.
 - Update the owning MCP section in `docs/frontend/skills-marketplace-public-api.md`

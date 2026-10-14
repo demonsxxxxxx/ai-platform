@@ -7,6 +7,9 @@ from app.runs.application.admin_trajectory import (
     ADMIN_TRAJECTORY_CONTRACT_VERSION as ADMIN_TRAJECTORY_CONTRACT_VERSION,
     project_admin_trajectory_page as project_admin_trajectory_page,
 )
+from app.runs.domain.cost_observability import (
+    projected_event_cost as projected_event_cost,
+)
 from app.runs.domain.admin_projection import (
     AdminRunDetailResponse as AdminRunDetailResponse,
 )
@@ -215,6 +218,7 @@ from app.runs.application.attempt_lifecycle import (
 )
 from app.runs.application.inputs import RunInputsService as RunInputsService
 from app.runs.domain.inputs import (
+    is_recommended_question_option as is_recommended_question_option,
     RunInputClosed as RunInputClosed,
     RunInputConflict as RunInputConflict,
     RunInputError as RunInputError,
@@ -222,4 +226,9 @@ from app.runs.domain.inputs import (
 
 from app.runs.application.attempt_lifecycle import (
     ReconciliationAuthorityError as ReconciliationAuthorityError,
+)
+
+from app.runs.application.worker_terminal_completion import (
+    WorkerOutcome as WorkerOutcome,
+    WorkerTerminalCompletionService as WorkerTerminalCompletionService,
 )

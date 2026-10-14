@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { installTestDom } from "../../../hooks/useAgent/__tests__/testDom.ts";
+import { installSelectTestDom } from "../../common/__tests__/selectTestDom.ts";
 import { modelAdminApi } from "../../../services/api/modelAdmin.ts";
 import type { AdminModelEntry, AdminModelState } from "../../../services/api/modelAdmin.ts";
 import type { ModelAdminControlState } from "../ModelAdminControl.tsx";
 import { ApiRequestError } from "../../../services/api/fetch.ts";
 
-const dom = installTestDom();
+const dom = installSelectTestDom();
 
 type ReactModule = typeof import("react");
 type QueryNode = {
@@ -16,7 +16,7 @@ type QueryNode = {
 };
 type QueryContainer = {
   textContent: string | null;
-  querySelectorAll(selector: string): Array<QueryNode>;
+  querySelectorAll(selector: string): ArrayLike<QueryNode>;
 };
 type InputElement = {
   checked: boolean;
@@ -56,19 +56,27 @@ function state(overrides: Partial<AdminModelState> = {}): AdminModelState {
 }
 
 function inputByLabel(container: QueryContainer, label: string): InputElement {
-  const input = container
-    .querySelectorAll("input")
+  const input = Array.from(container
+    .querySelectorAll("input"))
     .find((candidate) => candidate.getAttribute("aria-label") === label);
   assert.ok(input, `expected input ${label}`);
   return input as unknown as InputElement;
 }
 
-function selectByLabel(container: QueryContainer, label: string): InputElement {
-  const select = container
-    .querySelectorAll("select")
+function selectByLabel(container: QueryContainer, label: string): HTMLElement {
+  const select = Array.from(container.querySelectorAll('[data-slot="select-trigger"]'))
     .find((candidate) => candidate.getAttribute("aria-label") === label);
   assert.ok(select, `expected select ${label}`);
-  return select as unknown as InputElement;
+  return select as unknown as HTMLElement;
+}
+
+async function changeMountedSelect(React: ReactModule, trigger: HTMLElement, value: string) {
+  await React.act(async () => {
+    trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+  });
+  const option = document.querySelector<HTMLElement>(`[data-slot="select-item"][data-value="${value}"]`);
+  assert.ok(option, `expected option ${value}`);
+  await React.act(async () => option.click());
 }
 
 function changeMountedInput(input: InputElement, value: string): void {
@@ -96,7 +104,7 @@ function nodeText(node: unknown): string {
 }
 
 function renderedParagraphText(container: QueryContainer): string {
-  return container.querySelectorAll("p").map(nodeText).join(" ");
+  return Array.from(container.querySelectorAll("p")).map(nodeText).join(" ");
 }
 
 async function waitFor(
@@ -205,14 +213,14 @@ test("Model admin discovery is a draft and only publication changes the active c
       "admin view should omit explanatory and duplicate catalog surfaces",
     );
 
-    const publishButton = container.querySelectorAll("button")
+    const publishButton = Array.from(container.querySelectorAll("button"))
       .find((button) => button.getAttribute("data-model-admin-publish") !== null);
     assert.ok(publishButton);
     await React.act(async () => {
       changeMountedInput(inputByLabel(container, "openai/gpt-5 最大输入 Token"), "64000");
     });
     await React.act(async () => {
-      publishButton.dispatchEvent({ type: "click", bubbles: true });
+      publishButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       await Promise.resolve();
     });
     await waitFor(
@@ -240,11 +248,11 @@ test("Model admin discovery is a draft and only publication changes the active c
       true,
       "changing the connection must require discovery before publication",
     );
-    const discoverButton = container.querySelectorAll("button")
+    const discoverButton = Array.from(container.querySelectorAll("button"))
       .find((button) => button.getAttribute("data-model-admin-discover") !== null);
     assert.ok(discoverButton);
     await React.act(async () => {
-      discoverButton.dispatchEvent({ type: "click", bubbles: true });
+      discoverButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       await Promise.resolve();
     });
     await waitFor(
@@ -269,13 +277,9 @@ test("Model admin discovery is a draft and only publication changes the active c
       changeMountedInput(checkbox, checkbox.value);
     });
     const statusSelect = selectByLabel(container, "筛选模型状态");
-    await React.act(async () => {
-      changeMountedInput(statusSelect, "unavailable");
-    });
+    await changeMountedSelect(React, statusSelect, "unavailable");
     assert.match(nodeText(container), /没有匹配的模型/);
-    await React.act(async () => {
-      changeMountedInput(statusSelect, "all");
-    });
+    await changeMountedSelect(React, statusSelect, "all");
 
     const enabled = inputByLabel(container, "启用 GPT-5");
     const actionBar = container.querySelectorAll("[data-model-admin-action-bar]")[0];
@@ -290,13 +294,13 @@ test("Model admin discovery is a draft and only publication changes the active c
     });
     assert.match(nodeText(actionBar), /已启用 1 \/ 1/);
     for (const label of ["openai/gpt-5 最大输入 Token", "openai/gpt-5 最大输出 Token"]) {
-      const field = container.querySelectorAll("input")
+      const field = Array.from(container.querySelectorAll("input"))
         .find((candidate) => candidate.getAttribute("aria-label") === label);
       assert.equal(field?.getAttribute("placeholder"), "必填");
       assert.equal(field?.getAttribute("aria-required"), "true");
     }
     await React.act(async () => {
-      publishButton.dispatchEvent({ type: "click", bubbles: true });
+      publishButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     assert.equal(calls.publish.length, 1, "missing limits must not reach the publish API");
     assert.match(nodeText(actionBar), /请填写 GPT-5 的最大输入和输出 Token/);
@@ -310,7 +314,7 @@ test("Model admin discovery is a draft and only publication changes the active c
     assert.match(nodeText(actionBar), /有未保存的修改/);
     assert.match(nodeText(publishButton), /保存并生效/);
     await React.act(async () => {
-      publishButton.dispatchEvent({ type: "click", bubbles: true });
+      publishButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       await Promise.resolve();
     });
     await waitFor(
@@ -334,7 +338,7 @@ test("Model admin discovery is a draft and only publication changes the active c
       );
     };
     await React.act(async () => {
-      discoverButton.dispatchEvent({ type: "click", bubbles: true });
+      discoverButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       await Promise.resolve();
     });
     await waitFor(

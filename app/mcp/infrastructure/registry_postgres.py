@@ -109,19 +109,6 @@ async def list_runtime_mcp_server_registry(
     return [_dynamic_server_projection(dict(row)) for row in await cursor.fetchall()]
 
 
-async def list_runtime_tenant_mcp_server_registry(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    include_disabled: bool = True,
-) -> list[dict[str, Any]]:
-    return await list_runtime_mcp_server_registry(
-        conn,
-        tenant_id=tenant_id,
-        include_disabled=include_disabled,
-    )
-
-
 async def list_runtime_mcp_server_registry_names(
     conn: AsyncConnection,
     *,

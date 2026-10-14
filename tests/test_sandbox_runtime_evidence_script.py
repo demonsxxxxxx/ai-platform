@@ -652,7 +652,8 @@ def test_platform_runtime_evidence_rejects_hidden_or_invalid_latency_split(tmp_p
     assert "non-negative" in failed_negative.message
 
 
-def test_platform_runtime_hardening_requires_isolation_cleanup_and_fallback_evidence(tmp_path):
+@pytest.mark.parametrize("cleanup_value", [False, None, "confirmed", "missing"])
+def test_platform_runtime_hardening_requires_isolation_cleanup_and_fallback_evidence(tmp_path, cleanup_value):
     verifier = load_verifier()
     evidence = tmp_path / "evidence.json"
     hardening = {
@@ -733,7 +734,10 @@ def test_platform_runtime_hardening_requires_isolation_cleanup_and_fallback_evid
     assert blocked.message == "hardening evidence blocked: resource_limits.bounded_error_projection_observer"
 
     broken = dict(hardening)
-    broken["cleanup"] = {**hardening["cleanup"], "ephemeral_container_removed": False}
+    broken["cleanup"] = {**hardening["cleanup"], "ephemeral_container_removed": cleanup_value,
+                         "ephemeral_container_cleanup": {"result": "confirmed"}}
+    if cleanup_value == "missing":
+        broken["cleanup"].pop("ephemeral_container_removed")
     evidence.write_text(json.dumps({"run_id": "run-a", "hardening": broken}), encoding="utf-8")
     failed = verifier.check_platform_hardening_evidence(evidence, run_id="run-a")
     assert failed.passed is False
@@ -1332,7 +1336,8 @@ def test_run_platform_runtime_probe_records_timings_and_hardening(tmp_path):
     }
     assert recorder.timings["sandbox_container_cold_start_latency_ms"] == 2
     assert recorder.hardening["workspace_isolation"]["workspace_container_path"] == "/workspace"
-    assert recorder.hardening["cleanup"]["ephemeral_container_removed"] is True
+    assert recorder.hardening["cleanup"]["ephemeral_container_removed"] is False
+    assert recorder.hardening["cleanup"]["ephemeral_container_cleanup"] == {"result": "unverified"}
     assert recorder.hardening["cached_lease_revalidation"] == {
         "evidence_class": "source_regression_guard",
         "cached_lease_revalidates_scope_labels": True,
@@ -2175,7 +2180,8 @@ def test_generated_default_hardening_payload_does_not_pass_full_runtime_hardenin
 
     assert failed.passed is False
     assert (
-        "resource_timeout.max_seconds_enforced" in failed.message
+        "cleanup.ephemeral_container_removed" in failed.message
+        or "resource_timeout.max_seconds_enforced" in failed.message
         or "resource_limits.docker_inspection_verified" in failed.message
         or "resource_limits.over_limit_probe_kind" in failed.message
         or "egress_policy.default_deny_outbound" in failed.message
@@ -3448,7 +3454,10 @@ def test_run_platform_runtime_probe_captures_executor_container_inspect(monkeypa
     )
 
     assert result["status"] == "accepted"
-    assert calls == [("docker", "inspect", "executor-exec-run-a")]
+    assert calls == [
+        ("docker", "inspect", "executor-exec-run-a"),
+        ("docker", "ps", "--all", "--quiet", "--no-trunc", "--filter", "id=exec-run-a"),
+    ]
     assert recorder.hardening["resource_limits"]["docker_inspection_verified"] is True
     assert recorder.hardening["security_options"]["no_new_privileges"] is True
     assert recorder.hardening["security_options"]["capabilities_dropped"] is True
@@ -3602,6 +3611,7 @@ def test_run_platform_runtime_probe_captures_egress_network_inspect(monkeypatch,
     assert calls == [
         ("docker", "inspect", "executor-exec-run-a"),
         ("docker", "network", "inspect", "ai-platform-sandbox-egress"),
+        ("docker", "ps", "--all", "--quiet", "--no-trunc", "--filter", "id=exec-run-a"),
     ]
     assert recorder.hardening["egress_policy"]["probe_source"] == "docker_network_inspect"
     assert recorder.hardening["egress_policy"]["network_inspection_verified"] is True
@@ -4870,3 +4880,180 @@ def test_live_skill_mount_inspector_proves_mount_only_and_native_pairing_without
             assert failed_health["sidecar"]["primary_authenticated_health"] is False
             primary.health_succeeds = True
         assert token not in json.dumps(result)
+
+
+@pytest.mark.parametrize("primary_failure", [False, True])
+@pytest.mark.parametrize("remove_result", [0, 1, "timeout"])
+@pytest.mark.parametrize("readback", ["absent", "present", "failure", "timeout"])
+def test_cancel_probe_cleanup_requires_successful_absence_readback(
+    primary_failure, remove_result, readback,
+):
+    generator = load_generator()
+    calls = []
+    observation = {}
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        operation = cmd[1]
+        result, output = 0, ""
+        if operation == "create":
+            output = "owned-container-id\n"
+        elif operation == "stop" and primary_failure:
+            raise RuntimeError("primary stop failure")
+        elif operation == "rm":
+            assert cmd == ["docker", "rm", "-f", "owned-container-id"]
+            if remove_result == "timeout":
+                raise subprocess.TimeoutExpired(cmd, 30)
+            result = remove_result
+        elif operation == "ps":
+            assert cmd == ["docker", "ps", "--all", "--quiet", "--no-trunc", "--filter", "id=owned-container-id"]
+            if readback == "timeout":
+                raise subprocess.TimeoutExpired(cmd, 30)
+            result = 1 if readback == "failure" else 0
+            output = "owned-container-id\n" if readback == "present" else ""
+        return subprocess.CompletedProcess(cmd, result, output, "")
+
+    arguments = dict(run_id="run-a", docker_cmd=("docker",), cancel_image="test-image",
+                     run=fake_run, cleanup_evidence=observation)
+    if primary_failure:
+        with pytest.raises(RuntimeError, match="^primary stop failure$"):
+            generator.run_cancel_probe(**arguments)
+    elif readback != "absent":
+        with pytest.raises(RuntimeError, match="^cancel probe cleanup (failed|unverified)$"):
+            generator.run_cancel_probe(**arguments)
+    else:
+        assert generator.run_cancel_probe(**arguments) == "owned-container-id"
+    assert observation == {
+        "result": "confirmed" if readback == "absent" else "failed" if readback == "present" else "unverified",
+        "remove_command_succeeded": remove_result == 0,
+        "post_cleanup_query_succeeded": readback in {"absent", "present"},
+    }
+    assert [cmd[1] for cmd in calls] == ["create", "start", "stop", "rm", "ps"]
+
+
+@pytest.mark.parametrize("primary_failure", [False, True])
+@pytest.mark.parametrize("readback", ["absent", "present", "failure", "timeout"])
+def test_platform_probe_records_cleanup_readback_even_after_primary_failure(
+    monkeypatch, tmp_path, primary_failure, readback,
+):
+    from types import SimpleNamespace
+
+    generator = load_generator()
+    calls = []
+
+    class FakeRuntime:
+        def __init__(self, **kwargs):
+            self.record_lease = kwargs["record_lease"]
+            self.release_lease = kwargs["release_lease"]
+
+        async def submit(self, request):
+            lease = SimpleNamespace(
+                run_id=request.run_id, tenant_id=request.tenant_id,
+                workspace_id=request.workspace_id, user_id=request.user_id,
+                session_id=request.session_id, container_id="owned-platform-id",
+                container_name="owned-platform-name", executor_url="http://executor.test",
+                labels={}, provider="docker",
+            )
+            lease_id = await self.record_lease(lease, request, SimpleNamespace(workspace_container_path="/workspace"))
+            if primary_failure:
+                raise RuntimeError("primary runtime failure")
+            await self.release_lease(lease, "dispatch_completed", lease_id)
+            return SimpleNamespace(status="accepted", run_id=request.run_id, executor_response={}, timings={})
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[1] == "inspect":
+            return subprocess.CompletedProcess(cmd, 0, "[{}]", "")
+        assert cmd == ["docker", "ps", "--all", "--quiet", "--no-trunc", "--filter", "id=owned-platform-id"]
+        if readback == "timeout":
+            raise subprocess.TimeoutExpired(cmd, 30)
+        return subprocess.CompletedProcess(cmd, 1 if readback == "failure" else 0,
+                                           "owned-platform-id\n" if readback == "present" else "", "")
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.SandboxRuntime", FakeRuntime)
+    recorder = generator.EvidenceRecorder(run_id="run-a", executor_url="http://executor.test", callback_token="synthetic")
+    arguments = dict(recorder=recorder, sandbox_provider="docker", sandbox_executor_image="test-image",
+                     workspace_root=str(tmp_path), callback_url="http://callback.test/callback", run=fake_run)
+    if primary_failure:
+        with pytest.raises(RuntimeError, match="^primary runtime failure$"):
+            generator.run_platform_runtime_probe(**arguments)
+    else:
+        assert generator.run_platform_runtime_probe(**arguments)["status"] == "accepted"
+    path = tmp_path / "evidence.json"
+    recorder.write(path)
+    cleanup = json.loads(path.read_text())["hardening"]["cleanup"]
+    assert cleanup["ephemeral_container_removed"] is (readback == "absent")
+    assert cleanup["ephemeral_container_cleanup"]["result"] == (
+        "confirmed" if readback == "absent" else "failed" if readback == "present" else "unverified"
+    )
+    assert cleanup["cancel_probe_container_removed"] is False
+    assert cleanup["cancel_probe_cleanup"] == {"result": "unverified"}
+    assert [cmd[1] for cmd in calls] == ["inspect", "ps"]
+
+
+@pytest.mark.parametrize("primary_failure", [False, True])
+def test_cancel_probe_existing_contract_never_hides_cleanup_or_primary_failure(primary_failure):
+    generator = load_generator()
+
+    def fake_run(cmd, **kwargs):
+        if cmd[1] == "create":
+            return subprocess.CompletedProcess(cmd, 0, "owned-id\n", "")
+        if cmd[1] == "stop" and primary_failure:
+            raise RuntimeError("original stop failure")
+        if cmd[1] == "rm":
+            if primary_failure:
+                raise subprocess.TimeoutExpired(cmd, 30)
+            return subprocess.CompletedProcess(cmd, 1, "", "cleanup failed")
+        if cmd[1] == "ps":
+            return subprocess.CompletedProcess(cmd, 0, "owned-id\n", "")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    with pytest.raises(RuntimeError, match="^original stop failure$" if primary_failure else "^cancel probe cleanup failed$"):
+        generator.run_cancel_probe(run_id="run-a", docker_cmd=("docker",), cancel_image="test-image", run=fake_run)
+
+
+@pytest.mark.parametrize("readback", ["absent", "present", "failure", "invalid"])
+def test_main_persists_real_cancel_cleanup_and_does_not_report_failed_cleanup_success(
+    monkeypatch, tmp_path, capsys, readback,
+):
+    from types import SimpleNamespace
+
+    generator = load_generator()
+    real_cancel_probe = generator.run_cancel_probe
+
+    def fake_run(cmd, **kwargs):
+        if cmd[1] == "create":
+            return subprocess.CompletedProcess(cmd, 0, "owned-id\n", "")
+        if cmd[1] == "rm":
+            return subprocess.CompletedProcess(cmd, 1, "", "remove failed")
+        if cmd[1] == "ps":
+            return subprocess.CompletedProcess(cmd, 1 if readback == "failure" else 0,
+                                               None if readback == "invalid" else "owned-id\n" if readback == "present" else "", "")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    def fake_platform_probe(**kwargs):
+        recorder = kwargs["recorder"]
+        recorder.executed_task = True
+        recorder.record_callback({"run_id": "run-a", "status": "running"}, "synthetic")
+        recorder.record_callback({"run_id": "run-a", "status": "completed"}, "synthetic")
+
+    monkeypatch.setattr(generator, "run_platform_runtime_probe", fake_platform_probe)
+    monkeypatch.setattr(generator, "run_cancel_probe", lambda **kwargs: real_cancel_probe(**kwargs, run=fake_run))
+    monkeypatch.setattr(generator, "start_callback_server", lambda **kwargs: (
+        SimpleNamespace(shutdown=lambda: None, server_close=lambda: None), "http://callback.test/callback",
+    ))
+    path = tmp_path / "evidence.json"
+    exit_code = generator.main([
+        "--runtime-mode", "platform", "--sandbox-provider", "docker", "--executor-url", "http://executor.test",
+        "--evidence-file", str(path), "--run-id", "run-a", "--callback-token", "synthetic", "--json",
+    ])
+    output = json.loads(capsys.readouterr().out)
+    evidence = json.loads(path.read_text())
+    assert exit_code == (0 if readback == "absent" else 1)
+    assert output["cancel_stops_container"] is (readback == "absent")
+    assert evidence["hardening"]["cleanup"]["cancel_probe_container_removed"] is (readback == "absent")
+    assert evidence["hardening"]["cleanup"]["cancel_probe_cleanup"] == {
+        "result": "confirmed" if readback == "absent" else "failed" if readback == "present" else "unverified",
+        "remove_command_succeeded": False,
+        "post_cleanup_query_succeeded": readback in {"absent", "present"},
+    }

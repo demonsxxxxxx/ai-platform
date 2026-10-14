@@ -16,10 +16,10 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.types import ListToolsResult, PaginatedRequestParams
 from pydantic import ValidationError
 
+from app.mcp.domain.errors import McpToolDiscoveryError
 from app.mcp.domain.headers import MCP_JWT_AUTHORIZATION_HEADER, normalize_static_mcp_headers
 from app.mcp.infrastructure.catalog import (
     MCP_DISCOVERY_PAGE_LIMIT,
-    McpToolDiscoveryError,
     _canonical_live_definition,
     _ValidatedDiscoveryTarget,
     _validated_discovery_target,

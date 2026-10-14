@@ -1,7 +1,6 @@
 import { useRef, useEffect, useCallback, useLayoutEffect } from "react";
 import { useNavigate, useParams, useLocation, useNavigationType } from "react-router-dom";
 import type { TabType } from "./types.ts";
-import { shouldBlockSessionSelection } from "../../../utils/sessionSelectionGuard.ts";
 import type { SessionConfig } from "../../../hooks/useAgent/types.ts";
 import {
   shouldResetExternalNavigateFlag,
@@ -576,10 +575,6 @@ export function useSessionSync({
     async (selectedSessionId: string) => {
       const currentPathname =
         typeof window !== "undefined" ? window.location.pathname : "";
-
-      if (shouldBlockSessionSelection(currentPathname)) {
-        return;
-      }
 
       const requestId = ++selectSessionRequestIdRef.current;
       if (

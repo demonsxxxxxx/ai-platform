@@ -46,7 +46,7 @@ LINUX_FRONTEND_PYTEST_COMMAND = (
 WORKFLOW_STEP_COMMANDS = {
     "Verify static frontend Python contracts": STATIC_FRONTEND_PYTEST_COMMAND,
     "Verify static frontend deploy helper": "python tools/deploy_frontend_static.py --help",
-    "Install Linux contract test dependencies": "python -m pip install pytest",
+    "Install Linux contract test dependencies": "python tools/frontend_ci_dependencies.py --subset linux-contracts",
     "Verify Linux frontend healthcheck contract": LINUX_FRONTEND_PYTEST_COMMAND,
 }
 WORKFLOW_STEP_JOBS = {
@@ -57,7 +57,7 @@ WORKFLOW_STEP_JOBS = {
 }
 WORKFLOW_COMMANDS = [
     "corepack pnpm install --frozen-lockfile",
-    "python -m pip install pytest pyyaml",
+    "python tools/frontend_ci_dependencies.py --subset windows-contracts",
     STATIC_FRONTEND_PYTEST_COMMAND,
     LINUX_FRONTEND_PYTEST_COMMAND,
     "corepack pnpm run ci:verify",
@@ -74,7 +74,7 @@ WORKFLOW_COMMANDS = [
 ]
 WORKFLOW_COMMAND_JOBS = {
     "corepack pnpm install --frozen-lockfile": "frontend",
-    "python -m pip install pytest pyyaml": "frontend",
+    "python tools/frontend_ci_dependencies.py --subset windows-contracts": "frontend",
     STATIC_FRONTEND_PYTEST_COMMAND: "frontend",
     LINUX_FRONTEND_PYTEST_COMMAND: "frontend-image",
     "corepack pnpm run ci:verify": "frontend",

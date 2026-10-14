@@ -19,6 +19,7 @@ from app.platform.postgres.errors import RepositoryConflictError
 from app.platform.postgres.values import _coerce_int
 from app.platform.public_payload import sanitize_public_payload
 from app.platform.public_payload import sanitize_public_text
+from app.runs.domain.cost_observability import projected_event_cost
 from app.runs.infrastructure.creation_postgres import ACTIVE_RUN_STATUSES
 from app.runs.application.admin_run_monitor import build_admin_runtime_health
 from app.runs.infrastructure.postgres import get_latest_run_attempt, get_run
@@ -227,7 +228,26 @@ async def get_admin_runtime_observability_summary(
             coalesce(sum(input_token_count), 0) as run_input_token_count,
             coalesce(sum(output_token_count), 0) as run_output_token_count,
             coalesce(sum(total_token_count), 0) as run_total_token_count,
-            coalesce(sum(estimated_cost_minor), 0) as run_estimated_cost_minor
+            case when count(*) <> count(case
+                when result_json #>> '{runtime_private_payload,sdk_usage,cost_coverage}' in ('partial', 'unavailable') then null
+                when result_json #>> '{runtime_private_payload,sdk_usage,cost_coverage}' = 'complete' then
+                  case when jsonb_typeof(result_json #> '{cost,estimated_cost_minor}') = 'number'
+                    and result_json #>> '{cost,estimated_cost_minor}' ~ '^[0-9]{1,10}$'
+                  then case when (result_json #>> '{cost,estimated_cost_minor}')::numeric <= 2147483647
+                    then (result_json #>> '{cost,estimated_cost_minor}')::integer else null end
+                  else null end
+                else estimated_cost_minor
+              end)
+              then null else coalesce(sum(case
+                when result_json #>> '{runtime_private_payload,sdk_usage,cost_coverage}' in ('partial', 'unavailable') then null
+                when result_json #>> '{runtime_private_payload,sdk_usage,cost_coverage}' = 'complete' then
+                  case when jsonb_typeof(result_json #> '{cost,estimated_cost_minor}') = 'number'
+                    and result_json #>> '{cost,estimated_cost_minor}' ~ '^[0-9]{1,10}$'
+                  then case when (result_json #>> '{cost,estimated_cost_minor}')::numeric <= 2147483647
+                    then (result_json #>> '{cost,estimated_cost_minor}')::integer else null end
+                  else null end
+                else estimated_cost_minor
+              end), 0) end as run_estimated_cost_minor
           from runs
           where tenant_id = %s
         ),
@@ -299,7 +319,8 @@ async def get_admin_runtime_observability_summary(
             "output": _coerce_int(row.get("output_token_count")),
             "total": _coerce_int(row.get("total_token_count")),
         },
-        "estimated_cost_minor": _coerce_int(row.get("estimated_cost_minor")),
+        "estimated_cost_minor": (None if row.get("estimated_cost_minor") is None
+                                 else _coerce_int(row["estimated_cost_minor"])),
     }
 
 
@@ -461,7 +482,7 @@ async def get_admin_run_detail(conn: AsyncConnection, *, tenant_id: str, run_id:
                     "output": int(item.get("output_token_count") or 0),
                     "total": int(item.get("total_token_count") or 0),
                 },
-                "cost": {"estimated_cost_minor": int(item.get("estimated_cost_minor") or 0)},
+                **projected_event_cost(item),
                 "payload": (
                     sanitized_payload
                     if isinstance(

@@ -88,6 +88,18 @@ replacements. Synchronous storage workers continue holding their existing slots
 until their actual I/O ends. Shutdown joins owned phase tasks; these cooperative
 budgets are not a hard process-kill or provider-stop guarantee.
 
+Executor terminal completion now uses two owned slots per Worker process and
+one PostgreSQL claim per slot. Redis cursor initialization and notification
+waiting cannot delay database scans. Completion drains ready work on progress;
+empty scans wait until a persisted retry deadline or the independent two-second
+fallback. An accepted context committed after the terminal callback publishes
+another bounded wake. Eligible terminal receipts share age ordering rather than
+permanent pending-before-retry priority. A settled Run hands off durable
+`cleanup_pending` work to the existing Sandbox cleanup owner; provider stop and
+its retry consume the separate cleanup slot. Shutdown keeps cancellation-resistant
+work owned and joins it. Receipt validation, existing Attempt ownership and
+business result commit remain on their current paths.
+
 The one-shot entry performs a bounded critical recovery pass before leasing,
 then keeps cleanup and periodic recovery alive throughout that invocation. It
 cancels and joins maintenance on idle return, invalid lease, failure, or normal

@@ -4,13 +4,12 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
+from app.bootstrap.context_snapshot import build_context_snapshot_recorder
 from app.artifacts.infrastructure import records_postgres as artifacts_records_postgres
 from app.context.infrastructure import postgres as context_postgres
-from app.context.infrastructure import snapshot_postgres as context_snapshot_postgres
 from app.context.infrastructure import sources_postgres as context_sources_postgres
 from app.platform.postgres import errors as platform_errors
 from app.runs.infrastructure import creation_postgres as runs_creation_postgres
-from app.streaming.infrastructure import run_events_postgres as streaming_run_events_postgres
 
 from app.context.api import (
     ProviderSessionScope,
@@ -18,11 +17,10 @@ from app.context.api import (
     read_provider_coverage,
     make_authority_receipt,
 )
-from app.context.file_continuity import snapshot_file_ids
+from app.context.file_continuity import MAX_PRIMARY_FILE_IDS, snapshot_file_ids
 from app.context_manifest import (
     CONTEXT_MANIFEST_SCHEMA_VERSION,
     ContextPlanner,
-    public_context_manifest_projection,
 )
 from app.control_plane_contracts import CONTEXT_SNAPSHOT_SCHEMA_VERSION, sanitize_public_payload
 from app.office_execution_tier import route_office_execution_tier
@@ -579,7 +577,7 @@ async def record_initial_context_snapshot(
     include_session_files: bool = True,
 ) -> dict[str, Any]:
     included_message_ids = list(dict.fromkeys(message_ids or []))
-    included_file_ids = list(file_ids or [])
+    included_file_ids = list(dict.fromkeys(file_ids or []))
     included_artifact_ids: list[str] = []
     source_run_ids: list[str] = []
     source_artifacts: list[dict[str, Any]] = []
@@ -627,7 +625,8 @@ async def record_initial_context_snapshot(
             source_sha256=coverage["source_sha256"],
             current_message_id=included_message_ids[0] if included_message_ids else None,
         )
-        if include_session_files:
+        remaining_history_slots = max(0, MAX_PRIMARY_FILE_IDS - len(included_file_ids))
+        if include_session_files and remaining_history_slots:
             session_files = await context_sources_postgres.list_session_context_files(
                 conn,
                 tenant_id=tenant_id,
@@ -635,13 +634,14 @@ async def record_initial_context_snapshot(
                 user_id=user_id,
                 session_id=session_id,
                 run_id=run_id,
-                limit=8,
+                limit=remaining_history_slots,
+                excluded_file_ids=included_file_ids,
             )
             included_file_ids = snapshot_file_ids(
                 current_file_ids=included_file_ids,
                 historical_file_ids=[
                     str(row.get("id") or "")
-                    for row in session_files
+                    for row in reversed(session_files)
                     if isinstance(row, dict) and row.get("id")
                 ],
             )
@@ -779,7 +779,7 @@ async def record_initial_context_snapshot(
         "long_term_memory_enabled": False,
         "retention_days": int(memory_policy.get("retention_days") or 90),
     }
-    snapshot = await context_snapshot_postgres.create_context_snapshot(
+    return await build_context_snapshot_recorder().record(
         conn,
         tenant_id=tenant_id,
         workspace_id=workspace_id,
@@ -787,61 +787,11 @@ async def record_initial_context_snapshot(
         session_id=session_id,
         run_id=run_id,
         trace_id=trace_id,
-        context_kind="executor",
+        source=source,
         included_message_ids=included_message_ids,
         included_file_ids=included_file_ids,
         included_artifact_ids=included_artifact_ids,
-        included_memory_record_ids=[],
-        redaction_summary_json={
-            "input_payload_stored": False,
-            "raw_skill_selector_stored": False,
-            "long_term_memory_read": False,
-            **memory_policy_summary,
-        },
-        payload_json=summary,
-        conversation_authority_json=conversation_authority,
+        summary=summary,
+        memory_policy_summary=memory_policy_summary,
+        conversation_authority=conversation_authority,
     )
-    public_manifest = public_context_manifest_projection(summary["context_manifest"])
-    context_ref = {
-        "schema_version": CONTEXT_SNAPSHOT_SCHEMA_VERSION,
-        "context_snapshot_id": snapshot["id"],
-        "source": source,
-        "message_count": len(included_message_ids),
-        "file_count": len(included_file_ids),
-        "memory_record_count": 0,
-        "memory_policy": {
-            "source": memory_policy_summary["memory_policy_source"],
-            "memory_enabled": memory_policy_summary["memory_enabled"],
-            "long_term_memory_enabled": memory_policy_summary["long_term_memory_enabled"],
-            "retention_days": memory_policy_summary["retention_days"],
-        },
-        "referenced_materials": summary["referenced_materials"],
-        "used_context_summary": summary["used_context_summary"],
-        "latest_artifact_version": summary["latest_artifact_version"],
-        "execution_tier": summary["execution_tier"],
-        "context_pack_version": summary["context_pack_version"],
-        "context_pack_generated_at": summary["context_pack_generated_at"],
-        "context_manifest": public_manifest,
-        "context_window": public_manifest["context_window"],
-    }
-    await context_snapshot_postgres.update_run_context_snapshot_ref(
-        conn,
-        tenant_id=tenant_id,
-        run_id=run_id,
-        context_snapshot_id=str(snapshot["id"]),
-        context_snapshot=context_ref,
-    )
-    await streaming_run_events_postgres.append_event(
-        conn,
-        tenant_id=tenant_id,
-        run_id=run_id,
-        trace_id=trace_id,
-        event_type="context_snapshot_created",
-        stage="context",
-        message="已记录运行上下文快照",
-        payload={
-            "visible_to_user": False,
-            **context_ref,
-        },
-    )
-    return context_ref

@@ -2119,6 +2119,7 @@ async def generate_title(
 
 @router.post("/sessions/{session_id}/mark-read")
 async def mark_read(session_id: str) -> dict[str, bool]:
+    """Acknowledge older clients without persisting or authorizing unread state."""
     return {"success": True}
 
 
@@ -2367,11 +2368,12 @@ async def chat_session_stream(
                         through_redis_id=replay_tail,
                     )
                 except StreamContractError as exc:
-                    if str(exc) != "stream_replay_continuity_unproven":
+                    if str(exc) not in {"stream_replay_continuity_unproven", "stream_missing"}:
                         raise
                     exit_reason = "stream_contract_failure"
                     frame = await gap_frame(
-                        reason="stream_continuity_unproven",
+                        reason=("stream_missing" if str(exc) == "stream_missing"
+                                else "stream_continuity_unproven"),
                         requested_event_id=after,
                         requested_stream_incarnation=authority.stream_incarnation,
                     )
@@ -2396,15 +2398,30 @@ async def chat_session_stream(
             while True:
                 if not await authorize_frame():
                     return
-                entries = await bridge.read_stream(
-                    tenant_scope_value=authority.tenant_scope,
-                    run_id=run_id,
-                    attempt_id=authority.attempt_id,
-                    stream_incarnation=authority.stream_incarnation,
-                    after_redis_id=after,
-                    count=128,
-                    block_ms=5000,
-                )
+                try:
+                    entries = await bridge.read_stream(
+                        tenant_scope_value=authority.tenant_scope,
+                        run_id=run_id,
+                        attempt_id=authority.attempt_id,
+                        stream_incarnation=authority.stream_incarnation,
+                        after_redis_id=after,
+                        count=128,
+                        block_ms=5000,
+                    )
+                except StreamContractError as exc:
+                    if str(exc) not in {"stream_replay_continuity_unproven", "stream_missing"}:
+                        raise
+                    exit_reason = "stream_contract_failure"
+                    frame = await gap_frame(
+                        reason=("stream_missing" if str(exc) == "stream_missing"
+                                else "stream_continuity_unproven"),
+                        requested_event_id=after,
+                        requested_stream_incarnation=authority.stream_incarnation,
+                    )
+                    if not await authorize_frame():
+                        return
+                    yield frame
+                    return
                 if not entries:
                     if not await authorize_frame():
                         return

@@ -368,7 +368,7 @@ def test_temporary_internal_test_package_is_run_bound_and_short_lived():
     assert _workflow_text().count('release create "$RELEASE_TAG"') == 1
 
 
-def test_publish_permissions_are_job_scoped_and_environment_protected():
+def test_publish_permissions_are_job_scoped_and_environment_selected():
     workflow = _workflow()
     assert workflow["permissions"] == {"contents": "read"}
 

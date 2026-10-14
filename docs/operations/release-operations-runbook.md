@@ -9,7 +9,7 @@ application install or upgrade.
 
 ## What CI publishes
 
-The protected Packaging workflow runs on main pushes and confirmed manual main
+The Packaging workflow runs on main pushes and confirmed manual main
 runs, independently of the Backend and Frontend checks. Only formal version
 publication additionally requires machine-verified `backend required` and
 `frontend required` success for that exact main commit. The gate reads the
@@ -40,9 +40,15 @@ evidence separates the complete HIGH/CRITICAL inventory (including findings
 without fixes) from the fixable HIGH/CRITICAL blocking gate; a passing gate does
 not mean the complete inventory is empty.
 
-Publication is protected by the `packaging-publish` environment. The workflow
-creates a unique versioned Release only after all qualification steps pass and
-then verifies that GitHub reports it immutable. A mutable or incomplete Release
+Publication jobs reference the `packaging-publish` environment, but its name
+does not establish approval protection. Recheck the actual environment settings,
+including protection rules and deployment branch policy, before relying on any
+approval gate; repository/main restrictions and workflow qualification checks
+still apply. Formal publication verifies existing Backend and Frontend success
+for the selected exact main commit automatically; environment selection is not
+evidence of that check, and qualification does not rerun the test workflows.
+The workflow creates a unique versioned Release only after all qualification
+steps pass and then verifies that GitHub reports it immutable. A mutable or incomplete Release
 is not a deployment input.
 
 For a new named version such as `v0.1.1`, run the Packaging workflow on `main`
@@ -52,8 +58,8 @@ that does not already exist; publishing never replaces an existing version.
 A blank version keeps manual runs audit-only, with no Git tag or Release.
 Automatic main pushes also create no Git tag or Release. Both image builds
 still refresh their runtime stages on every attempt so cached APT/APK layers
-cannot retain fixed vulnerabilities. The normal main-source, environment,
-scan, signature, and attestation gates still apply.
+cannot retain fixed vulnerabilities. The workflow still selects the named environment; main-source, scan, signature,
+and attestation gates still apply.
 
 For a daily test package, open the successful main Packaging run's Actions
 artifacts and download `ai-platform-internal-test-<commit>-<run>-<attempt>`.
@@ -257,6 +263,17 @@ API readiness, OpenSandbox checks, two advancing Worker heartbeat samples,
 restart counts, no active work, and no volume deletion. A configured browser
 origin must be the browser-visible frontend origin. The local lifecycle example
 defaults to `18001`.
+
+The separately invoked POC diagnostic (`tools/verify_poc_gate.py`) is not the
+package deployment procedure or a substitute for exact-package acceptance. Its
+runtime-config check verifies Worker SDK enablement only. Model readiness uses
+the database-backed public default and its paired capacities, then checks that
+the diagnostic's newly admitted upload Run has model identity, a resolvable
+pinned connection revision and paired capacities. A later catalog publication
+must not invalidate that Run's older pin. Environment model defaults are not an
+expected public catalog. This diagnostic still accepts a Worker-started running
+Run (or its documented turn-limit outcome); it does not prove successful model
+completion, upstream reachability or production capacity enforcement.
 
 The old repository deployment wrappers and implicit "latest" selection are
 retired. Use the package command above; do not reconstruct release metadata or

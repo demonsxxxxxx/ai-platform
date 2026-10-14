@@ -9,7 +9,6 @@ import toast from "react-hot-toast";
 import type { BackendSession } from "../../services/api/session";
 import { sessionApi } from "../../services/api";
 import { SessionMenu } from "./SessionMenu";
-import { shouldBlockSessionSelection } from "../../utils/sessionSelectionGuard";
 
 interface SessionItemProps {
   session: BackendSession;
@@ -151,9 +150,6 @@ export function SessionItem({
       <div
         onTouchStart={handleItemTouchStart}
         onClick={() => {
-          if (shouldBlockSessionSelection(window.location.pathname)) {
-            return;
-          }
           if (!isEditing) {
             onSelect();
           }

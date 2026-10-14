@@ -1189,36 +1189,6 @@ def _is_valid_v2_context_record(record: object) -> bool:
     )
 
 
-def _is_valid_v2_authority(record: object) -> bool:
-    if not isinstance(record, dict):
-        return False
-    ticket_digest = record.get("rotation_ticket_digest")
-    ticket_generation = record.get("rotation_ticket_generation")
-    ticket_deadline = record.get("rotation_ticket_deadline")
-    ticket_absent = (
-        ticket_digest is None
-        and ticket_generation is None
-        and ticket_deadline is None
-    )
-    ticket_valid = (
-        _is_b64url(ticket_digest, length=43)
-        and _is_valid_epoch(ticket_generation)
-        and int(ticket_generation) >= 1
-        and _is_valid_epoch(record.get("generation"))
-        and int(ticket_generation) == int(record["generation"])
-        and _is_valid_lease(ticket_deadline)
-    )
-    return (
-        record.get("schema_version") == AUTH_CONTEXT_V2_SCHEMA_VERSION
-        and _is_b64url(record.get("incarnation_digest"), length=43)
-        and _is_valid_epoch(record.get("generation"))
-        and int(record["generation"]) >= 1
-        and isinstance(record.get("context_handle"), str)
-        and bool(_V1_CONTEXT_HANDLE_RE.fullmatch(record["context_handle"]))
-        and (ticket_absent or ticket_valid)
-    )
-
-
 def _decode_script_result(raw_result: object) -> dict[str, Any]:
     if isinstance(raw_result, bytes):
         raw_result = raw_result.decode("utf-8", errors="replace")

@@ -6,8 +6,6 @@ from app.platform.postgres.errors import RepositoryConflictError
 from app.platform.postgres.limits import PersistenceSizeLimitError
 from app.platform.postgres.limits import ensure_json_size
 from app.platform.postgres.limits import ensure_text_size
-from datetime import datetime
-from datetime import timezone
 from typing import Any
 import json
 import uuid
@@ -33,21 +31,6 @@ def _require_text_size(value: str, *, max_bytes: int, code: str) -> None:
 
 def dumps_json(value: dict[str, Any]) -> str:
     return json.dumps(value, ensure_ascii=False)
-
-
-def _parse_iso_datetime(value: Any) -> datetime | None:
-    if not isinstance(value, str) or not value.strip():
-        return None
-    text = value.strip()
-    if text.endswith("Z"):
-        text = f"{text[:-1]}+00:00"
-    try:
-        parsed = datetime.fromisoformat(text)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
 
 
 def _coerce_int(value: Any) -> int:

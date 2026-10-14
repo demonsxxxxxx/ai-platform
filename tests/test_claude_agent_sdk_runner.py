@@ -1,3 +1,5 @@
+from app.platform.tracing import safe_exception_log_fields
+
 from tests.support.terminal_timing import terminal_stage_logs as terminal_stage_logs
 import asyncio
 import json
@@ -58,24 +60,18 @@ def test_sdk_timeout_is_unbounded_by_default_and_bounded_when_configured():
     assert (
         _sdk_run_timeout_seconds(
             types.SimpleNamespace(),
-            sandbox_brokered=True,
-            full_access=False,
         )
         is None
     )
     assert (
         _sdk_run_timeout_seconds(
             types.SimpleNamespace(claude_agent_sdk_timeout_seconds=45),
-            sandbox_brokered=True,
-            full_access=False,
         )
         == 45.0
     )
     assert (
         _sdk_run_timeout_seconds(
             types.SimpleNamespace(claude_agent_sdk_timeout_seconds=0),
-            sandbox_brokered=True,
-            full_access=True,
         )
         is None
     )
@@ -262,6 +258,7 @@ def _client_sdk(module, captured):
         def __init__(self, options):
             super().__init__(options)
             self.options = options
+            captured["client_options"] = options
             captured["client_mcp_server_types_at_construction"] = {
                 name: config.get("type") if isinstance(config, dict) else None
                 for name, config in getattr(options, "mcp_servers", {}).items()
@@ -317,7 +314,9 @@ def _fake_sdk(
             self.parent_tool_use_id = None
 
     class MirrorErrorMessage:
-        pass
+        def __init__(self, *, key=None, error="synthetic mirror failure"):
+            self.key = key
+            self.error = error
 
     class ResultMessage:
         session_id = "sdk-session"
@@ -926,6 +925,28 @@ def _scripted_sdk(
                         + event["delta"]["text"]
                     )
                 yield StreamEvent(value)
+            elif kind == "mcp_call":
+                from mcp.types import CallToolRequest, CallToolRequestParams
+
+                hook_input = {
+                    "tool_name": value["tool_name"],
+                    "tool_use_id": value["call_id"],
+                    "tool_input": value["arguments"],
+                }
+                await invoke_hook(("PreToolUse", hook_input, value["call_id"]))
+                admission = captured["hook_results"][-1][1]["hookSpecificOutput"]
+                if admission["permissionDecision"] != "allow":
+                    continue
+                server = captured["client_options"].mcp_servers[value["server"]]["instance"]
+                reply = await server.request_handlers[CallToolRequest](CallToolRequest(
+                    method="tools/call",
+                    params=CallToolRequestParams(name=value["name"], arguments=value["arguments"]),
+                ))
+                captured.setdefault("mcp_results", []).append(reply.root)
+                if value.get("omit_terminal_hook"):
+                    continue
+                terminal = "PostToolUseFailure" if reply.root.isError else "PostToolUse"
+                await invoke_hook((terminal, hook_input, value["call_id"]))
             elif kind in {"hook", "cancel_hook"}:
                 if kind == "cancel_hook":
                     hook_task = asyncio.create_task(invoke_hook(value))
@@ -2863,13 +2884,13 @@ async def test_sdk_disconnects_before_selected_mcp_session_closes(
     async def list_tools(_session):
         return [types.SimpleNamespace(name="search")]
 
-    def prepare(subjects, configs, callback_wrapper=None):
+    def prepare(subjects, configs, callback_wrapper=None, *, failure_observer=None):
         return ClaudeMcpRegistration(
             subjects,
             configs,
             session_factory=session_factory,
             list_tools=list_tools,
-            callback_wrapper=callback_wrapper,
+            callback_wrapper=callback_wrapper, failure_observer=failure_observer,
         )
 
     monkeypatch.setitem(
@@ -5627,10 +5648,11 @@ async def test_sdk_structured_output_does_not_control_plain_text_terminal(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("character", ["a", "界"])
 async def test_sdk_preserves_gate_output_across_8192_candidate_boundary(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, character
 ):
-    answer = "a" * 8_182 + " token-count "
+    answer = character * 8_182 + " token-count "
     captured, candidates, deltas = {}, [], []
     monkeypatch.setitem(
         sys.modules,
@@ -5675,14 +5697,21 @@ async def test_sdk_preserves_gate_output_across_8192_candidate_boundary(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("callback_outcome", ["reject", "raise", "cancel"])
 async def test_sdk_rejected_part_candidate_cannot_be_reported_as_success(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, callback_outcome
 ):
     captured, candidates, deltas = {}, [], []
 
     def reject_part_batch(batch):
         candidates.extend(batch)
-        return not any(event.event_type == "message.part.delta" for event in batch)
+        if any(event.event_type == "message.part.delta" for event in batch):
+            if callback_outcome == "raise":
+                raise RuntimeError("synthetic answer callback failure")
+            if callback_outcome == "cancel":
+                raise asyncio.CancelledError("synthetic answer callback cancellation")
+            return False
+        return True
 
     monkeypatch.setitem(
         sys.modules,
@@ -6031,7 +6060,7 @@ async def test_sdk_terminal_snapshots_preserve_shared_fields_and_release_semanti
 
     assert result.used_sdk is True
     assert result.session_id == "sdk-session"
-    assert result.usage == {"input_tokens": 7, "output_tokens": 3}
+    assert result.usage == {"input_tokens": 7, "output_tokens": 3, "cost_coverage": "unavailable"}
     assert result.used_skills == []
     assert result.used_skills_source == ""
     assert result.capability_evidence == []
@@ -6413,6 +6442,8 @@ async def test_sdk_provider_session_options_are_exclusive_and_eager(
     summaries = [record for record in caplog.records if record.msg == "run_session_store_append_summary"]
     assert len(summaries) == 1
     assert summaries[0].append_calls == 1 and summaries[0].store_active_calls == 0
+    assert isinstance(getattr(summaries[0], "latest_public_result_gap_ms", None), int)
+    assert isinstance(getattr(summaries[0], "append_await_in_latest_result_gap_ms", None), int)
 
 
 
@@ -6521,7 +6552,8 @@ async def test_sdk_provider_session_preflight_failure_is_private_and_fail_closed
 
     assert result.error == "claude_agent_sdk_provider_session_failed"
     assert result.message == ""
-    assert "private callback details" not in repr(result)
+    assert "private callback details" not in repr((result.message, result.error, result.turn_diagnostics))
+    assert result.runtime_diagnostics["sdk"]["exception_message"] == "private callback details"
     assert captured == {}
 
 
@@ -6554,7 +6586,9 @@ async def test_sdk_mirror_error_is_a_private_fail_closed_provider_failure(monkey
 
     assert result.error == "claude_agent_sdk_provider_session_failed"
     assert result.message == ""
-    assert "MirrorError" not in repr(result)
+    assert result.runtime_diagnostics["failure_source"] == "provider_session_mirror"
+    assert result.runtime_diagnostics["sdk"]["errors"] == "synthetic mirror failure"
+    assert "synthetic mirror failure" not in repr((result.message, result.error, result.turn_diagnostics))
     assert "entry-1" not in repr(result)
 
 
@@ -6718,6 +6752,83 @@ async def test_protocol_close_includes_late_skill_outcome_without_sticky_failure
 
 
 
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first_result", ["returned_error", "timeout", "missing_hook", "unacknowledged"])
+async def test_returned_mcp_error_only_fails_current_call(monkeypatch, tmp_path, first_result):
+    from contextlib import asynccontextmanager
+    from mcp.types import CallToolResult, TextContent, Tool
+    from app.execution.infrastructure.claude_mcp import ClaudeMcpRegistration
+
+    captured, calls, events = {}, [], []
+    first = {**_subject(server_id="files", tool_name="list_files"), "write_capable": True}
+    next_tool = {**_subject(server_id="projects", tool_name="update"), "write_capable": True}
+
+    def prepare(subjects, configs, callback_wrapper=None, *, failure_observer=None):
+        @asynccontextmanager
+        async def session_factory(config):
+            names = [item["mcp_tool"] for item in subjects.values()
+                     if item.get("mcp_server") in configs
+                     and configs[item["mcp_server"]] == config]
+            async def call_tool(name, arguments):
+                calls.append((name, arguments))
+                if name == "list_files" and first_result == "timeout":
+                    raise TimeoutError("synthetic response missing")
+                return CallToolResult(
+                    content=[TextContent(type="text", text='{"status":"access_denied"}'
+                                        if name == "list_files" else "updated")],
+                    isError=name == "list_files",
+                )
+            yield types.SimpleNamespace(names=names, call_tool=call_tool)
+        async def list_tools(session):
+            return [Tool(name=name, inputSchema={"type": "object"}) for name in session.names]
+        return ClaudeMcpRegistration(
+            subjects, configs, session_factory=session_factory, list_tools=list_tools,
+            callback_wrapper=callback_wrapper, failure_observer=failure_observer,
+        )
+
+    steps = [("mcp_call", {
+        "tool_name": item["identity"], "server": item["mcp_server"], "name": item["mcp_tool"],
+        "arguments": {"private": "restricted" if item is first else "another operation"},
+        "call_id": call_id,
+        "omit_terminal_hook": item is first and first_result == "missing_hook",
+    }) for item, call_id in [(first, "list-denied"), (next_tool, "update-next")]]
+    steps.append(("assistant", "Handled the tool error."))
+    async def acknowledge(evidence):
+        return not (first_result == "unacknowledged" and evidence["lifecycle_phase"] == "failed")
+    async def publish(candidates):
+        events.extend(candidate.as_agent_event_fields() for candidate in candidates)
+        return True
+
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", _scripted_sdk(captured, steps))
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _sandbox_brokered_settings)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.prepare_claude_mcp", prepare)
+    result = await run_claude_agent_sdk(
+        prompt="Continue after a directory refuses access", cwd=tmp_path, skill_id="general-chat",
+        run_id="run-a", attempt_id="attempt-a", execution_policy="sandbox_brokered",
+        tool_policy_subjects=[first, next_tool], on_capability_evidence=acknowledge,
+        on_agent_event=publish,
+    )
+    admissions = [value["hookSpecificOutput"]["permissionDecision"]
+                  for kind, value in captured["hook_results"] if kind == "PreToolUse"]
+    if first_result == "returned_error":
+        assert admissions == ["allow", "allow"], captured["hook_results"]
+        assert [name for name, _arguments in calls] == ["list_files", "update"]
+        assert result.error is None
+        assert result.capability_evidence[1]["lifecycle_phase"] == "failed"
+        assert result.capability_evidence[1]["trust_basis"] == "tool_call_bound_error_result"
+        assert "tool.failed" in [event["type"] for event in events]
+        assert "tool.denied" not in [event["type"] for event in events]
+    elif first_result == "missing_hook":
+        assert admissions == ["allow", "allow"]
+        assert result.error == "mcp_execution_outcome_unknown"
+    else:
+        assert admissions == ["allow", "deny"]
+        assert [name for name, _arguments in calls] == ["list_files"]
+        assert result.error == "mcp_execution_outcome_unknown"
+    assert "restricted" not in json.dumps(events)
+    assert "access_denied" not in json.dumps(events)
 
 
 @pytest.mark.asyncio
@@ -6969,3 +7080,200 @@ async def test_terminal_timing_covers_sdk_result_to_final_eof(monkeypatch, tmp_p
     assert records[0].terminal_phase_duration_ms == 1750
     assert records[0].terminal_phase_outcome == {"success": "ok", "failure": "error", "cancel": "cancelled"}[ending]
     assert "private" not in repr(vars(records[0]))
+
+
+async def _persist_sdk_failure_diagnostics(result):
+    """Exercise the real worker projection and Runs private capture boundary."""
+    from app.execution.application.worker_terminal_projection import project_worker_terminal_result
+    from app.runs.application.diagnostics import RunDiagnosticsService
+    from app.sandbox.api import SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION, normalize_sdk_runtime_diagnostics
+
+    observations = []
+
+    async def append_observation(_conn, **kwargs):
+        observations.append(kwargs["observation"])
+
+    projected = project_worker_terminal_result(
+        types.SimpleNamespace(
+            result={"error_code": result.error, "message": result.message},
+            executor_payload={"runtime_diagnostics": result.runtime_diagnostics},
+            schema_version="synthetic.v1", adapter_version="synthetic.v1",
+            executor_type="claude", executor_version="synthetic", capabilities=[],
+        ),
+        [], trace_id="synthetic-trace", latency_ms=None, invoked_skill_ids=lambda _: set(),
+    )
+    service = RunDiagnosticsService(
+        exception_log_fields=safe_exception_log_fields,
+        persistence=types.SimpleNamespace(append_observation=append_observation),
+        normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
+        runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+    )
+    public = await service.capture_failure_result(
+        object(), tenant_id="synthetic-tenant", run_id="synthetic-run",
+        attempt_id="synthetic-attempt", source="worker_executor", stage="terminalization",
+        error_code=result.error, result_json=projected.result_payload,
+    )
+    assert "runtime_diagnostics" not in public
+    assert len(observations) == 1
+    assert observations[0]["attempt_id"] == "synthetic-attempt"
+    return public, observations[0]["runtime_diagnostics"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", [
+    "provider_session_callback_rejected", "provider_session_response_too_large",
+    "provider_session_callback_timeout", "provider_session_callback_unavailable",
+    "provider_session_response_invalid", "provider_session_sequence_conflict",
+])
+async def test_sdk_preload_cause_reaches_private_persistence(monkeypatch, tmp_path, reason):
+    from app.execution.infrastructure.harness.claude.session_store import ClaudeSessionStoreTransportError
+
+    class Store:
+        async def load(self, _key):
+            try:
+                raise TimeoutError("synthetic transport cause https://callback.invalid/path token=synthetic-secret")
+            except TimeoutError as cause:
+                raise ClaudeSessionStoreTransportError(reason) from cause
+
+    captured = {}
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", _fake_sdk(captured, hook_invocations=[]))
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+    result = await run_claude_agent_sdk(
+        prompt="private-prompt-sentinel", cwd=tmp_path, skill_id=None,
+        session_id="private-session-sentinel", session_store=Store(),
+        provider_session_resume_required=False,
+    )
+    assert result.error == "claude_agent_sdk_provider_session_failed"
+    assert result.message == "" and captured == {}
+    assert result.turn_diagnostics["retryable"] is False
+    public, private = await _persist_sdk_failure_diagnostics(result)
+    assert private["failure_source"] == "provider_session_preload"
+    assert private["sdk"]["exception_message"] == reason
+    chain = private["sdk"]["exception_chain"]
+    assert [item["type"] for item in chain] == ["ClaudeSessionStoreTransportError", "TimeoutError"]
+    assert chain[0]["relation"] == "cause"
+    assert "synthetic transport cause" in chain[1]["message"]
+    for secret in ("callback.invalid", "synthetic-secret", "private-session-sentinel", "private-prompt-sentinel"):
+        assert secret not in json.dumps(private)
+    assert reason not in json.dumps(public)
+    assert "synthetic transport cause" not in json.dumps(public)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("session_id", "resume", "entries", "source"), [
+    (None, False, None, "provider_session_identity"),
+    ("private-session-sentinel", None, None, "provider_session_resume_choice"),
+    ("private-session-sentinel", False, [{"text": "private-transcript-sentinel"}], "provider_session_resume_mismatch"),
+])
+async def test_sdk_session_guard_diagnostics_are_value_free(monkeypatch, tmp_path, session_id, resume, entries, source):
+    class Store:
+        async def load(self, _key):
+            return entries
+
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", _fake_sdk({}, hook_invocations=[]))
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+    result = await run_claude_agent_sdk(
+        prompt="private-prompt-sentinel", cwd=tmp_path, skill_id=None,
+        session_id=session_id, session_store=Store(), provider_session_resume_required=resume,
+    )
+    assert result.error == "claude_agent_sdk_provider_session_failed"
+    assert result.runtime_diagnostics["failure_source"] == source
+    assert not result.runtime_diagnostics.get("sdk")
+    for secret in ("private-session-sentinel", "private-transcript-sentinel", "private-prompt-sentinel"):
+        assert secret not in json.dumps(result.runtime_diagnostics)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("oversized", [False, True])
+async def test_sdk_final_mirror_failure_preserves_bounded_error_after_eof(monkeypatch, tmp_path, oversized):
+    from app.sandbox.domain.runtime_diagnostics import SDK_RUNTIME_DIAGNOSTICS_MAX_BYTES
+
+    captured = {}
+    sdk = _fake_sdk(captured, hook_invocations=[])
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+    tail_started, release_tail, closed = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    class Store:
+        accepted_final_sequence = 1
+
+        async def load(self, _key):
+            return None
+
+        async def append(self, _key, _entries):
+            pass
+
+    class Client(sdk.ClaudeSDKClient):
+        async def receive_messages(self):
+            await self.options.session_store.append("private-session-sentinel", [{"text": "private-transcript-sentinel"}])
+            terminal = sdk.ResultMessage()
+            terminal.session_id = "private-session-sentinel"
+            yield terminal
+            tail_started.set()
+            await release_tail.wait()
+            yield sdk.MirrorErrorMessage(
+                key={"session_id": "private-session-sentinel", "subpath": "private-subpath-sentinel"},
+                error="final flush rejected https://callback.invalid/path token=synthetic-secret " + ("x" * 20000 if oversized else ""),
+            )
+            closed.set()
+
+    task = asyncio.create_task(run_claude_agent_sdk(
+        prompt="private-prompt-sentinel", cwd=tmp_path, skill_id=None,
+        session_id="private-session-sentinel", session_store=Store(),
+        provider_session_resume_required=False, client_fn=Client,
+    ))
+    try:
+        await asyncio.wait_for(tail_started.wait(), 2)
+        assert not task.done()
+        release_tail.set()
+        result = await asyncio.wait_for(task, 2)
+    finally:
+        release_tail.set()
+        await asyncio.gather(task, return_exceptions=True)
+    assert closed.is_set()
+    assert result.error == "claude_agent_sdk_provider_session_failed"
+    assert result.message == "" and not result.received_structured_terminal
+    assert result.provider_final_sequence is None
+    assert result.response_files == [] and result.response_file_descriptors == []
+    assert len(json.dumps(result.runtime_diagnostics).encode()) <= SDK_RUNTIME_DIAGNOSTICS_MAX_BYTES
+    public, private = await _persist_sdk_failure_diagnostics(result)
+    assert private["failure_source"] == "provider_session_mirror"
+    if oversized:
+        assert private["sdk"]["errors"]["truncated"] is True
+        assert private["sdk"]["errors"]["size_bytes"] > 20000
+    else:
+        assert private["sdk"]["errors"].startswith("final flush rejected")
+    for secret in ("callback.invalid", "synthetic-secret", "private-session-sentinel", "private-subpath-sentinel", "private-transcript-sentinel", "private-prompt-sentinel"):
+        assert secret not in json.dumps(private)
+    assert "final flush rejected" not in json.dumps(public)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("required", [False, True])
+async def test_sdk_response_registration_keeps_private_cause_only_when_required(monkeypatch, tmp_path, required):
+    def fail_registration(*_args, **_kwargs):
+        try:
+            raise ValueError("synthetic decorator cause token=synthetic-secret")
+        except ValueError as cause:
+            raise RuntimeError("synthetic response registration failed") from cause
+
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", _fake_sdk({}, hook_invocations=[]))
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner._build_response_mcp_server", fail_registration)
+    result = await run_claude_agent_sdk(
+        prompt="hello", cwd=tmp_path, skill_id=None, execution_policy="sandbox_brokered",
+        tool_policy_subjects=internal_response_tool_policy_subjects() if required else [],
+    )
+    if not required:
+        assert result.error is None
+        assert not result.runtime_diagnostics
+        return
+    assert result.error == "claude_agent_sdk_tool_admission_failed"
+    assert result.message == ""
+    public, private = await _persist_sdk_failure_diagnostics(result)
+    assert private["failure_source"] == "response_file_registration"
+    assert private["sdk"]["exception_message"] == "synthetic response registration failed"
+    assert [item["type"] for item in private["sdk"]["exception_chain"]] == ["RuntimeError", "ValueError"]
+    assert "synthetic decorator cause" in json.dumps(private)
+    assert "synthetic-secret" not in json.dumps(private)
+    assert "synthetic response registration failed" not in json.dumps(public)

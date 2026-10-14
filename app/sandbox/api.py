@@ -1,5 +1,10 @@
 """Public in-process contracts owned by the Sandbox bounded context."""
 
+from app.sandbox.application.callback_authority import (
+    SandboxCallbackAuthority as SandboxCallbackAuthority,
+    SandboxCallbackAuthorityError as SandboxCallbackAuthorityError,
+)
+
 from app.sandbox.application.reconciliation_receipt import (
     SandboxReconciliationReceiptAuthority as SandboxReconciliationReceiptAuthority,
 )

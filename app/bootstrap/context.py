@@ -25,11 +25,15 @@ from app.context.application.provider_sessions import (
     configure_provider_session_use_cases,
 )
 from app.context.infrastructure.provider_epochs import PostgresProviderEpochRepository
+from app.execution.infrastructure.harness.claude.session_images import provider_session_image_fields
 
 
 def configure_context_services() -> None:
     configure_provider_session_use_cases(
-        ProviderSessionUseCases(PostgresProviderEpochRepository())
+        ProviderSessionUseCases(
+            PostgresProviderEpochRepository(), image_fields=provider_session_image_fields,
+            storage_factory=ObjectStorage, storage_io=run_storage_io,
+        )
     )
 
 

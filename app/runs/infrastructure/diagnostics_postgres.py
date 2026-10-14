@@ -218,7 +218,16 @@ class PostgresRunDiagnosticsRepository:
               runs.input_token_count,
               runs.output_token_count,
               runs.total_token_count,
-              runs.estimated_cost_minor,
+              case
+                when runs.result_json #>> '{runtime_private_payload,sdk_usage,cost_coverage}' in ('partial', 'unavailable') then null
+                when runs.result_json #>> '{runtime_private_payload,sdk_usage,cost_coverage}' = 'complete' then
+                  case when jsonb_typeof(runs.result_json #> '{cost,estimated_cost_minor}') = 'number'
+                    and runs.result_json #>> '{cost,estimated_cost_minor}' ~ '^[0-9]{1,10}$'
+                  then case when (runs.result_json #>> '{cost,estimated_cost_minor}')::numeric <= 2147483647
+                    then (runs.result_json #>> '{cost,estimated_cost_minor}')::integer else null end
+                  else null end
+                else runs.estimated_cost_minor
+              end as estimated_cost_minor,
               runs.model_value,
               runs.copied_from_run_id,
               runs.trace_id is not null as trace_id_recorded

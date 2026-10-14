@@ -23,7 +23,7 @@ import {
   buildRunPlaybackLoadingViewModel,
   buildRunPlaybackPanelViewModel,
   type RunPlaybackArtifactItem,
-  type RunPlaybackContextProvenanceViewModel,
+  type RunPlaybackContextWindowViewModel,
   type RunPlaybackDisplayStatus,
   type RunPlaybackPanelSummary,
   type RunPlaybackPanelViewModel,
@@ -38,6 +38,7 @@ import { updatePersistentToolPanel } from "../../chat/ChatMessage/items/persiste
 import {
   type RunControlLifecycle,
   type RunControlPhase,
+  type RunControlReadError,
   type RunControlSnapshot,
 } from "../../../hooks/useAgent/runControlLifecycle";
 
@@ -79,6 +80,9 @@ export function RunPlaybackPanel({ lifecycle, panelKey }: RunPlaybackPanelProps)
     >
       <SummaryBlock summary={viewModel.summary} />
       <RunControlActions lifecycle={lifecycle} snapshot={snapshot} />
+      {snapshot.playback && (
+        <ReadFailureNotice lifecycle={lifecycle} snapshot={snapshot} />
+      )}
       {viewModel.failureGuidance ? (
         <div className="shrink-0 border-b border-[var(--theme-border)] px-3 py-3 dark:border-stone-800 sm:px-4">
           <FailureGuidanceCard guidance={viewModel.failureGuidance} />
@@ -90,14 +94,17 @@ export function RunPlaybackPanel({ lifecycle, panelKey }: RunPlaybackPanelProps)
         {viewModel.state === "error" && (
           <ErrorBlock
             message={viewModel.errorMessage}
-            onRetry={() => lifecycle.open()}
+            readFailure={snapshot.rejectionMessage ? null : snapshot.playbackReadError}
+            readinessFailure={snapshot.readinessReadError}
+            onRetry={() => void lifecycle.refresh()}
+            disabled={snapshot.isBusy}
           />
         )}
         {viewModel.state === "empty" && <EmptyBlock />}
         {viewModel.state === "ready" && (
           <div className="space-y-4">
-            <ContextProvenanceSection
-              contextProvenance={viewModel.contextProvenance}
+            <ContextWindowSection
+              contextWindow={viewModel.contextWindow}
             />
             <TimelineSection items={viewModel.timeline} />
             <ArtifactsSection artifacts={viewModel.artifacts} />
@@ -121,13 +128,59 @@ function getViewModel(
       new Error(snapshot.rejectionMessage),
     );
   }
-  if (snapshot.readError) {
+  if (snapshot.playbackReadError) {
     return buildRunPlaybackErrorViewModel(
       runId,
-      new Error(snapshot.readError),
+      new Error(snapshot.playbackReadError.message),
     );
   }
   return buildRunPlaybackLoadingViewModel(runId);
+}
+
+/** Safe HTTP metadata already projected at the API boundary, shared by cold and stale reads. */
+function ReadErrorDetails({ error }: { error: RunControlReadError | null }) {
+  const { t } = useTranslation();
+  if (!error) return null;
+  const details = [
+    error.status !== undefined ? `HTTP ${error.status}` : null,
+    error.code ? `${t("runPlayback.readErrorCode")}: ${error.code}` : null,
+    error.diagnosticId ? `${t("runPlayback.diagnosticId")}: ${error.diagnosticId}` : null,
+  ].filter(Boolean);
+  return details.length ? (
+    <p className="mt-1 break-words text-xs">{details.join(" · ")}</p>
+  ) : null;
+}
+
+function ReadFailureNotice({
+  lifecycle,
+  snapshot,
+}: {
+  lifecycle: RunControlLifecycle;
+  snapshot: RunControlSnapshot;
+}) {
+  const { t } = useTranslation();
+  if (!snapshot.playbackReadError && !snapshot.readinessReadError) return null;
+  return (
+    <div role="alert" className="shrink-0 border-b border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
+      {snapshot.playbackReadError && (
+        <div>
+          <p>{t("runPlayback.stalePlayback")} {snapshot.playbackReadError.message}</p>
+          <ReadErrorDetails error={snapshot.playbackReadError} />
+        </div>
+      )}
+      {snapshot.readinessReadError && (
+        <div>
+          <p>{t("runPlayback.readinessReadFailed")} {snapshot.readinessReadError.message}</p>
+          <ReadErrorDetails error={snapshot.readinessReadError} />
+        </div>
+      )}
+      <RunControlButton
+        label={t("runPlayback.actions.refresh")}
+        disabled={snapshot.isBusy}
+        onClick={() => void lifecycle.refresh()}
+      />
+    </div>
+  );
 }
 
 function RunControlActions({
@@ -291,99 +344,62 @@ function SummaryBlock({ summary }: { summary: RunPlaybackPanelSummary }) {
   );
 }
 
-function ContextProvenanceSection({
-  contextProvenance,
+function ContextWindowSection({
+  contextWindow,
 }: {
-  contextProvenance: RunPlaybackContextProvenanceViewModel | null;
+  contextWindow: RunPlaybackContextWindowViewModel | null;
 }) {
   const { t } = useTranslation();
-  if (!contextProvenance) {
+  if (!contextWindow) {
     return null;
   }
-
-  const detailFields = [
-    {
-      label: t("runPlayback.context.executionTier"),
-      value: contextProvenance.executionTier,
-    },
-    {
-      label: t("runPlayback.context.contextPackVersion"),
-      value: contextProvenance.contextPackVersion,
-    },
-    {
-      label: t("runPlayback.context.generatedAt"),
-      value: contextProvenance.contextPackGeneratedAt,
-    },
-    {
-      label: t("runPlayback.context.latestArtifactVersion"),
-      value: contextProvenance.latestArtifactVersion,
-    },
-    {
-      label: t("runPlayback.context.source"),
-      value: contextProvenance.source,
-    },
-  ].filter((field) => field.value);
 
   return (
     <PanelSection
       icon={<ClipboardList size={14} />}
       title={t("runPlayback.context.title")}
-      count={
-        contextProvenance.referencedMaterials.length +
-        contextProvenance.inputKeys.length
-      }
+      count={contextWindow.selectedFileNames.length}
     >
-      <div className="rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-2.5 py-2 dark:border-stone-800 dark:bg-stone-900">
-        {detailFields.length > 0 && (
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-            {detailFields.map((field) => (
-              <div key={field.label} className="min-w-0">
-                <div className="text-[10px] font-medium uppercase text-stone-400 dark:text-stone-500">
-                  {field.label}
-                </div>
-                <div
-                  className="mt-0.5 truncate text-xs text-stone-700 dark:text-stone-200"
-                  title={field.value ?? undefined}
-                >
-                  {field.value}
-                </div>
-              </div>
-            ))}
-          </div>
+      <div
+        data-run-context-window={contextWindow.status}
+        className="rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-2.5 py-2 dark:border-stone-800 dark:bg-stone-900"
+      >
+        <div role="status" className="text-xs font-medium text-stone-700 dark:text-stone-200">
+          {t(`runPlayback.context.status.${contextWindow.status}`)}
+        </div>
+        {contextWindow.status === "degraded" && (
+          <p className="mt-1 text-xs text-stone-500">
+            {t("runPlayback.context.degradedDescription")}
+          </p>
         )}
-        {contextProvenance.referencedMaterials.length > 0 && (
+        <dl className="mt-2 flex flex-wrap gap-1.5">
+          {contextWindow.historyCounts.map((item) => (
+            <div
+              key={item.label}
+              className="inline-flex items-center gap-1 rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] px-2 py-1 text-[11px] text-stone-600 dark:border-stone-800 dark:bg-stone-950/50 dark:text-stone-300"
+            >
+              <dt>{t(`runPlayback.context.counts.${item.label}`)}</dt>
+              <dd className="font-semibold tabular-nums">{item.value}</dd>
+            </div>
+          ))}
+        </dl>
+        {contextWindow.legacyHistoryExcluded && (
+          <p className="mt-2 text-xs text-stone-500">
+            {t("runPlayback.context.legacyHistoryExcluded")}
+          </p>
+        )}
+        {contextWindow.selectedFileNames.length > 0 && (
           <div className="mt-2 min-w-0">
             <div className="text-[10px] font-medium uppercase text-stone-400 dark:text-stone-500">
-              {t("runPlayback.context.referencedMaterials")}
+              {t("runPlayback.context.selectedFiles")}
             </div>
-            <div className="mt-1 flex flex-wrap gap-1.5">
-              {contextProvenance.referencedMaterials.map((item) => (
-                <span
-                  key={item.label}
-                  className="inline-flex items-center gap-1 rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] px-2 py-1 text-[11px] text-stone-600 dark:border-stone-800 dark:bg-stone-950/50 dark:text-stone-300"
-                >
-                  <span>{t(`runPlayback.context.counts.${item.label}`)}</span>
-                  <span className="font-semibold tabular-nums">{item.value}</span>
-                </span>
+            <ul className="mt-1 flex flex-wrap gap-1.5">
+              {contextWindow.selectedFileNames.map((name) => (
+                <li key={name} className="break-all rounded-md bg-[var(--theme-bg-sidebar)] px-1.5 py-0.5 text-[11px] text-stone-600 dark:bg-stone-800 dark:text-stone-300">
+                  {name}
+                </li>
               ))}
-            </div>
-          </div>
-        )}
-        {contextProvenance.inputKeys.length > 0 && (
-          <div className="mt-2 min-w-0">
-            <div className="text-[10px] font-medium uppercase text-stone-400 dark:text-stone-500">
-              {t("runPlayback.context.inputKeys")}
-            </div>
-            <div className="mt-1 flex flex-wrap gap-1.5">
-              {contextProvenance.inputKeys.map((key) => (
-                <span
-                  key={key}
-                  className="rounded-md bg-[var(--theme-bg-sidebar)] px-1.5 py-0.5 text-[10px] font-medium text-stone-600 dark:bg-stone-800 dark:text-stone-300"
-                >
-                  {key}
-                </span>
-              ))}
-            </div>
+            </ul>
           </div>
         )}
       </div>
@@ -403,14 +419,20 @@ function LoadingBlock() {
 
 function ErrorBlock({
   message,
+  readFailure,
+  readinessFailure,
   onRetry,
+  disabled,
 }: {
   message: string | null;
+  readFailure: RunControlReadError | null;
+  readinessFailure: RunControlReadError | null;
   onRetry: () => void;
+  disabled: boolean;
 }) {
   const { t } = useTranslation();
   return (
-    <div className="rounded-md border border-red-200 bg-red-50 p-3 dark:border-red-900/50 dark:bg-red-950/30">
+    <div role="alert" className="rounded-md border border-red-200 bg-red-50 p-3 dark:border-red-900/50 dark:bg-red-950/30">
       <div className="flex items-start gap-2">
         <AlertTriangle
           size={16}
@@ -423,11 +445,19 @@ function ErrorBlock({
           <div className="mt-1 text-xs text-red-600 dark:text-red-300/80">
             {message || t("runPlayback.errorFallback")}
           </div>
+          <ReadErrorDetails error={readFailure} />
+          {readinessFailure && (
+            <div className="mt-2 text-xs">
+              <p>{t("runPlayback.readinessReadFailed")} {readinessFailure.message}</p>
+              <ReadErrorDetails error={readinessFailure} />
+            </div>
+          )}
         </div>
       </div>
       <button
         type="button"
         onClick={onRetry}
+        disabled={disabled}
         className="mt-3 inline-flex h-8 items-center gap-2 rounded-md border border-red-200 bg-[var(--theme-bg-card)] px-2.5 text-xs font-medium text-red-700 transition-colors hover:bg-red-50 dark:border-red-900/60 dark:bg-red-950/20 dark:text-red-300 dark:hover:bg-red-950/40"
       >
         <RefreshCw size={13} />

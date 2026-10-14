@@ -116,6 +116,30 @@ def test_terminal_projection_uses_native_skill_evidence_and_public_artifact_fiel
     assert projection.terminal_event_kwargs["trace_id"] == "trace-1"
 
 
+def test_private_sdk_usage_carrier_projects_only_existing_numeric_metrics():
+    result = ExecutorResult(
+        status="succeeded", adapter_version="v1", executor_type="claude-agent-worker",
+        executor_version="v1", capabilities={}, result={"message": "done"},
+        executor_payload={"sdk_usage": {
+            "input_tokens": 3, "total_cost_usd": 0.125, "cost_coverage": "complete",
+            "model_usage": {"private-provider-model": {"inputTokens": 3, "costUSD": 0.125}},
+        }},
+    )
+    projection = project_worker_terminal_result(
+        result, [], trace_id="trace", latency_ms=1, invoked_skill_ids=lambda _: set(),
+    )
+    assert projection.result_payload["cost"] == {"estimated_cost_minor": 13}
+    assert projection.terminal_event_kwargs["estimated_cost_minor"] == 13
+    from app.platform.public_payload import sanitize_public_payload
+    assert projection.result_payload["runtime_private_payload"] == {
+        "sdk_usage": {"cost_coverage": "complete"},
+    }
+    public = sanitize_public_payload(projection.result_payload)
+    for private in ("sdk_usage", "private-provider-model", "total_cost_usd", "model_usage", "cost_coverage"):
+        assert private not in str(public)
+        assert private not in str(projection.terminal_event_kwargs)
+
+
 @pytest.mark.parametrize(
     "legacy_metadata",
     [
@@ -148,3 +172,18 @@ def test_terminal_projection_accepts_current_and_legacy_executor_metadata(legacy
             assert key not in projection.result_payload
     assert result.result == {"message": "Historical answer", **legacy_metadata}
     assert result.executor_payload == legacy_metadata
+
+
+def test_provider_result_cannot_forge_platform_cost_coverage_marker():
+    from app.platform.public_payload import sanitize_public_payload
+    result = ExecutorResult(
+        status="succeeded", adapter_version="v1", executor_type="stub", executor_version="v1",
+        capabilities={}, result={"message": "done", "runtime_private_payload": {
+            "sdk_usage": {"cost_coverage": "complete"}, "raw_secret": "PRIVATE_MARKER",
+        }}, executor_payload={},
+    )
+    projection = project_worker_terminal_result(
+        result, [], trace_id="trace", latency_ms=1, invoked_skill_ids=lambda _: set(),
+    )
+    assert "runtime_private_payload" not in projection.result_payload
+    assert "PRIVATE_MARKER" not in str(sanitize_public_payload(projection.result_payload))

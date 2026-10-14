@@ -3,6 +3,8 @@ from app.bootstrap.sandbox_cleanup import build_sandbox_runtime_cleanup
 import asyncio
 import hashlib
 import hmac
+import os
+import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -55,9 +57,20 @@ async def fake_transaction():
     yield FakeConnection()
 
 
+@pytest.fixture
+def tmp_path(tmp_path):
+    if os.name != "nt":
+        yield tmp_path
+        return
+    # Runtime scope suffixes exceed Windows MAX_PATH under the stage evidence root.
+    with tempfile.TemporaryDirectory(prefix="sbr-") as directory:
+        path = Path(directory) / "case"
+        path.mkdir()
+        yield path
+
+
 def _short_sandbox_workspace_root(tmp_path: Path) -> Path:
-    short_id = hashlib.sha256(str(tmp_path).encode("utf-8")).hexdigest()[:8]
-    return Path(".pytest-tmp") / f"sandbox-runtime-{short_id}"
+    return tmp_path / "runtime"
 
 
 def request(**overrides) -> SandboxRuntimeRequest:
@@ -400,7 +413,7 @@ async def test_runtime_workspace_transfer_failure_is_terminal_and_cleans_up(tmp_
 
 
 @pytest.mark.asyncio
-async def test_runtime_opensandbox_workspace_stage_failure_stops_and_releases_once_without_residue(monkeypatch):
+async def test_runtime_opensandbox_workspace_stage_failure_stops_and_releases_once_without_residue(tmp_path, monkeypatch):
     calls: list[str] = []
     owned: set[str] = set()
 
@@ -441,7 +454,7 @@ async def test_runtime_opensandbox_workspace_stage_failure_stops_and_releases_on
 
     monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
     runtime = SandboxRuntime(
-        workspace_root=Path(".pytest-tmp") / "r675-runtime-stage",
+        workspace_root=_short_sandbox_workspace_root(tmp_path),
         provider=TrustedOpenSandboxProvider(executor_url="http://executor.test"),
         execute_task=lambda *_args, **_kwargs: pytest.fail("stage failure must not dispatch"),
         callback_token_resolver=lambda _token_id: "secret-token",
@@ -1105,7 +1118,7 @@ async def test_runtime_validation_cleanup_failure_keeps_persistent_lease_fail_cl
 
 @pytest.mark.asyncio
 async def test_runtime_submit_threads_context_manifest_and_scope_to_executor(
-    tmp_path_factory,
+    tmp_path,
     monkeypatch,
 ):
     sent = []
@@ -1122,7 +1135,7 @@ async def test_runtime_submit_threads_context_manifest_and_scope_to_executor(
     monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
 
     runtime = SandboxRuntime(
-        workspace_root=tmp_path_factory.mktemp("r"),
+        workspace_root=_short_sandbox_workspace_root(tmp_path),
         provider=FakeContainerProvider(executor_url="http://executor.test"),
         execute_task=execute,
         callback_token_resolver=lambda token_id: "secret-token",
@@ -1367,6 +1380,176 @@ async def test_runtime_preserves_typed_executor_http_error_and_cleanup_order(tmp
         ("stop", "dispatch_failed"),
         ("release", "dispatch_failed", "lease-http-error"),
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["pending", "claimed", "retry", "cleanup_pending", "finalized", "waiting_terminal"])
+@pytest.mark.parametrize("signal_unavailable", [False, True, "timeout", "cancelled"])
+@pytest.mark.parametrize("commit_fails", [False, True])
+async def test_runtime_wakes_ready_terminal_after_acceptance_commit(
+    tmp_path, monkeypatch, state, signal_unavailable, commit_fails,
+):
+    from app.runtime.sandbox import runtime as runtime_module
+    from app.runtime.sandbox.executor_signals import ExecutorSignalUnavailable
+
+    events = []
+    in_transaction = False
+
+    class StubSettings:
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+        sandbox_lease_ttl_seconds = 733
+
+    @asynccontextmanager
+    async def transaction():
+        nonlocal in_transaction
+        in_transaction = True
+        try:
+            yield FakeConnection()
+            if commit_fails and events[-1:] == ["accepted"]:
+                events.append("rollback")
+                raise RuntimeError("synthetic acceptance commit failure")
+        finally:
+            in_transaction = False
+        events.append("commit")
+
+    async def create_lease(_conn, **_kwargs):
+        return {"id": "lease-created-a"}
+
+    async def accept(_conn, **kwargs):
+        assert in_transaction
+        events.append("accepted")
+        return {
+            "id": kwargs["lease_id"],
+            "executor_reconciliation_status": state,
+            "executor_terminal_json": (
+                {"status": "succeeded", "run_id": "run-a"}
+                if state != "waiting_terminal" else None
+            ),
+        }
+
+    async def publish():
+        assert not in_transaction, "the ready wake must follow the committed context"
+        events.append("wake")
+        if signal_unavailable == "timeout":
+            await asyncio.Event().wait()
+        if signal_unavailable == "cancelled":
+            raise asyncio.CancelledError
+        if signal_unavailable:
+            raise ExecutorSignalUnavailable("synthetic redis outage")
+
+    async def execute(_executor_url, task_request):
+        return {"status": "accepted", "session_id": task_request.session_id, "run_id": task_request.run_id}
+
+    monkeypatch.setattr(runtime_module, "get_settings", lambda: StubSettings())
+    monkeypatch.setattr(runtime_module, "_EXECUTOR_TERMINAL_SIGNAL_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(runtime_module, "transaction", transaction)
+    monkeypatch.setattr(runtime_module.sandbox_lease_repository, "create_sandbox_lease", create_lease)
+    monkeypatch.setattr(runtime_module.sandbox_lease_repository, "record_sandbox_executor_accepted", accept)
+    monkeypatch.setattr(runtime_module, "publish_executor_terminal_signal", publish, raising=False)
+    provider = FakeContainerProvider(executor_url="http://executor.test")
+    runtime = SandboxRuntime(
+        workspace_root=_short_sandbox_workspace_root(tmp_path),
+        provider=provider,
+        execute_task=execute,
+        callback_token_resolver=lambda _token_id: "secret-token",
+    )
+
+    if commit_fails:
+        with pytest.raises(RuntimeError, match="synthetic acceptance commit failure"):
+            await runtime.submit(request(attempt_id="a"))
+        assert "rollback" in events
+        assert "wake" not in events
+        return
+    if signal_unavailable == "cancelled" and state == "pending":
+        with pytest.raises(asyncio.CancelledError):
+            await runtime.submit(request(attempt_id="a"))
+        assert events[-3:] == ["accepted", "commit", "wake"]
+        assert len(await provider.list_runtime_containers({})) == 1
+        return
+    result = await runtime.submit(request(attempt_id="a"))
+
+    assert result.status == "accepted"
+    accepted_at = events.index("accepted")
+    assert events[accepted_at + 1] == "commit"
+    assert events.count("wake") == (1 if state == "pending" else 0)
+    if state == "pending":
+        assert events[accepted_at + 2] == "wake"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("interruption", ["cancel_requested", "worker_interrupted"])
+async def test_accepted_terminal_keeps_runtime_through_worker_execution_owner(tmp_path, monkeypatch, interruption):
+    from app.runtime.sandbox import runtime as runtime_module
+    from app.execution.application.adapter_run import WorkerRunCancelled, submit_run_until_cancelled
+
+    notifying = asyncio.Event()
+    stops = []
+    accepted = []
+
+    class Settings:
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "synthetic-token"
+        sandbox_lease_ttl_seconds = 600
+
+    class Provider(FakeContainerProvider):
+        async def stop(self, lease, *, reason):
+            stops.append(reason)
+            return await super().stop(lease, reason=reason)
+
+    async def create(_conn, **_kwargs):
+        return {"id": "lease-a"}
+
+    async def accept(_conn, **_kwargs):
+        accepted.append("context")
+        return {"id": "lease-a", "executor_reconciliation_status": "pending", "executor_terminal_json": {"status": "succeeded"}}
+
+    async def publish():
+        notifying.set()
+        await asyncio.Event().wait()
+
+    async def execute(_url, task_request):
+        return {"status": "accepted", "session_id": task_request.session_id, "run_id": task_request.run_id}
+
+    monkeypatch.setattr(runtime_module, "get_settings", lambda: Settings())
+    monkeypatch.setattr(runtime_module, "transaction", fake_transaction)
+    monkeypatch.setattr(runtime_module.sandbox_lease_repository, "create_sandbox_lease", create)
+    monkeypatch.setattr(runtime_module.sandbox_lease_repository, "record_sandbox_executor_accepted", accept)
+    monkeypatch.setattr(runtime_module, "publish_executor_terminal_signal", publish)
+    provider = Provider(executor_url="http://executor.test")
+    runtime = SandboxRuntime(workspace_root=tmp_path, provider=provider, execute_task=execute, callback_token_resolver=lambda _id: "synthetic-token")
+    owner = RunExecutionOwner("run-a")
+
+    class Adapter:
+        async def submit_run(self, _payload, *, event_sink, execution_owner):
+            return await runtime.submit(request(attempt_id="a"), execution_owner=execution_owner)
+
+    async def cancel_requested():
+        return notifying.is_set() and interruption == "cancel_requested"
+
+    async def event_sink(**_kwargs):
+        pass
+
+    task = asyncio.create_task(submit_run_until_cancelled(
+        Adapter(), SimpleNamespace(run_id="run-a"), owner_factory=RunExecutionOwner,
+        event_sink=event_sink, cancel_requested=cancel_requested,
+        execution_owner=owner, poll_interval_seconds=0.01,
+    ))
+    try:
+        await asyncio.wait_for(notifying.wait(), 0.5)
+        if interruption == "worker_interrupted":
+            task.cancel()
+        expected = WorkerRunCancelled if interruption == "cancel_requested" else asyncio.CancelledError
+        with pytest.raises(expected):
+            await asyncio.wait_for(task, 0.5)
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    assert accepted == ["context"]
+    assert owner.done
+    assert stops == []
+    assert len(await provider.list_runtime_containers({})) == 1
 
 
 @pytest.mark.asyncio

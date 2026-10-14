@@ -735,6 +735,10 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
                     claim_token="owner-claim",
                     error="test_owner_released",
                 )
+                # Keep this retry ineligible while testing the other ready receipt.
+                await conn.execute(
+                    "update sandbox_leases set executor_reconciliation_retry_not_before = now() + interval '1 hour' where id = 'lease-a'"
+                )
         finally:
             await contender.close()
 
@@ -779,7 +783,7 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
                 conn,
                 lease_id="lease-pending",
                 claim_token="pending-claim",
-                error="test_pending_priority_complete",
+                error="test_ready_pending_complete",
             )
 
         @asynccontextmanager
@@ -796,8 +800,8 @@ async def test_expired_terminal_receipt_survives_cleanup_and_historical_release(
             ignore_terminal_publish,
         )
 
-        # Advance the fixture past the durable reconciler's bounded retry delay.
-        await conn.execute("update sandbox_leases set updated_at = now() - interval '31 seconds' where id = 'lease-a'")
+        # Advance the fixture's explicit terminal retry deadline, not lease updates.
+        await conn.execute("update sandbox_leases set executor_reconciliation_retry_not_before = now() - interval '31 seconds' where id = 'lease-a'")
         from tests.test_streaming_v4_postgres_integration import _callback_capabilities
 
         assert await reconcile_pending_executor_terminals_once(

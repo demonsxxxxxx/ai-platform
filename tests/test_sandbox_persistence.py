@@ -10,6 +10,7 @@ import pytest
 import app.streaming.infrastructure.run_events_postgres as _repo_owner_app_streaming_infrastructure_run_events_postgres
 from app.platform.postgres.sandbox_leases import SandboxExecutorTerminalConflictError, SandboxLeaseReleaseScopeMismatchError, create_sandbox_lease, fence_sandbox_lease_release, list_expired_active_sandbox_leases, record_opensandbox_renewal_receipt, record_sandbox_executor_heartbeat, record_sandbox_executor_terminal
 from app.sandbox.infrastructure.leases_postgres import renew_sandbox_lease
+from tests.support.db_transactions import event_loop_policy as event_loop_policy
 from tests.support.repository_fixtures import RecordingConnection, SingleRowConnection, SingleRowCursor, _run_control_postgres_dsn
 
 sandbox_runtime_cleanup = build_sandbox_runtime_cleanup()
@@ -904,7 +905,7 @@ async def test_executor_acceptance_terminal_order_converges_in_postgres(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("reconciliation_status", ["pending", "claimed", "retry", "failed", "finalized"])
+@pytest.mark.parametrize("reconciliation_status", ["pending", "claimed", "retry", "cleanup_pending", "failed", "finalized"])
 async def test_executor_acceptance_does_not_reset_reconciliation_in_postgres(
     executor_acceptance_database, reconciliation_status,
 ):
@@ -924,3 +925,202 @@ async def test_executor_acceptance_does_not_reset_reconciliation_in_postgres(
     assert recorded["executor_status"] == "completed"
     assert recorded["executor_reconciliation_status"] == reconciliation_status
     assert recorded["executor_reconciliation_claim_token"] == "claim-a"
+
+
+@pytest.mark.asyncio
+async def test_retry_deadline_migration_preserves_legacy_backoff_and_is_idempotent(executor_acceptance_database):
+    from contextlib import asynccontextmanager
+    from app import schema_migrations
+
+    conn = executor_acceptance_database
+    schema = (await (await conn.execute("select current_schema() as name")).fetchone())["name"]
+    await conn.execute("alter table sandbox_leases drop column executor_reconciliation_retry_not_before")
+    await conn.execute(
+        "update sandbox_leases set executor_terminal_json = '{}'::jsonb, "
+        "executor_reconciliation_context_json = '{}'::jsonb, executor_reconciliation_status = 'retry', "
+        "executor_terminal_reconciliation_attempt_count = 7, updated_at = now() - interval '3 seconds'"
+    )
+    before = await (await conn.execute("select updated_at from sandbox_leases where id = 'lease-a'")).fetchone()
+    await conn.execute(
+        "create index idx_sandbox_leases_executor_reconcile "
+        "on sandbox_leases(executor_reconciliation_status, updated_at, id) "
+        "where status = 'active' and executor_terminal_json is not null "
+        "and executor_reconciliation_context_json is not null "
+        "and executor_reconciliation_status in ('pending', 'retry', 'claimed')"
+    )
+    terminal_indexes = [item for item in schema_migrations.CONCURRENT_INDEX_MIGRATIONS
+                        if item.name in {"idx_sandbox_leases_executor_reconcile", "idx_sandbox_leases_executor_reconcile_due"}]
+    assert not await schema_migrations._index_is_ready(conn, terminal_indexes[0])
+
+    @asynccontextmanager
+    async def transaction():
+        async with conn.transaction():
+            yield conn
+
+    async def index_connection():
+        return await psycopg.AsyncConnection.connect(
+            _run_control_postgres_dsn(), autocommit=True, row_factory=dict_row,
+            options=f"-c search_path={schema}",
+        )
+
+    result = await schema_migrations.apply_migrations(transaction_factory=transaction, index_connection_factory=index_connection)
+    assert result["version"] == schema_migrations.TARGET_SCHEMA_VERSION
+    migrated = await (await conn.execute("select * from sandbox_leases where id = 'lease-a'")).fetchone()
+    assert migrated["executor_reconciliation_retry_not_before"] == before["updated_at"] + timedelta(seconds=7)
+    for index in terminal_indexes:
+        assert await schema_migrations._index_is_ready(conn, index)
+    ledger = await (await conn.execute(
+        "select target_version from schema_index_migrations where index_name like 'idx_sandbox_leases_executor_reconcile%'"
+    )).fetchall()
+    assert len(ledger) == 2
+    assert {row["target_version"] for row in ledger} == {schema_migrations.CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION}
+    result = await schema_migrations.apply_migrations(transaction_factory=transaction, index_connection_factory=index_connection)
+    assert result["status"] == "current"
+    after = await (await conn.execute("select * from sandbox_leases where id = 'lease-a'")).fetchone()
+    assert after["executor_reconciliation_retry_not_before"] == migrated["executor_reconciliation_retry_not_before"]
+
+
+@pytest.mark.asyncio
+async def test_terminal_retry_deadline_survives_lease_updates_and_is_claim_fenced(executor_acceptance_database):
+    from app.platform.postgres import sandbox_leases as repository
+
+    conn = executor_acceptance_database
+    await conn.execute(
+        "update sandbox_leases set executor_terminal_json = '{}'::jsonb, "
+        "executor_reconciliation_context_json = '{}'::jsonb, "
+        "executor_reconciliation_status = 'claimed', executor_reconciliation_claim_token = 'claim-a', "
+        "executor_terminal_reconciliation_attempt_count = 2"
+    )
+    assert await repository.retry_sandbox_executor_reconciliation(
+        conn, lease_id="lease-a", claim_token="claim-a", error="transient",
+    )
+    delay = await repository.next_sandbox_executor_reconciliation_retry_delay(conn)
+    assert 0 < delay <= 2
+    row = await (await conn.execute("select * from sandbox_leases where id = 'lease-a'")).fetchone()
+    due = row["executor_reconciliation_retry_not_before"]
+    await conn.execute("update sandbox_leases set updated_at = now() + interval '1 day'")
+    assert not await repository.claim_sandbox_executor_reconciliations(
+        conn, claim_token="early", limit=1, stale_after_seconds=300,
+    )
+    assert not await repository.retry_sandbox_executor_reconciliation(
+        conn, lease_id="lease-a", claim_token="stale", error="must not overwrite",
+    )
+    row = await (await conn.execute("select * from sandbox_leases where id = 'lease-a'")).fetchone()
+    assert row["executor_reconciliation_retry_not_before"] == due
+    await conn.execute("update sandbox_leases set executor_reconciliation_retry_not_before = now() - interval '1 second'")
+    claimed = await repository.claim_sandbox_executor_reconciliations(
+        conn, claim_token="ready", limit=1, stale_after_seconds=300,
+    )
+    assert [row["id"] for row in claimed] == ["lease-a"]
+    assert claimed[0]["executor_reconciliation_retry_not_before"] is None
+    assert claimed[0]["executor_terminal_reconciliation_attempt_count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_due_retry_precedes_new_pending_and_concurrent_claims_skip_locked(executor_acceptance_database):
+    from app.platform.postgres import sandbox_leases as repository
+
+    conn = executor_acceptance_database
+    await conn.execute(
+        "update sandbox_leases set executor_terminal_json = '{}'::jsonb, "
+        "executor_reconciliation_context_json = '{}'::jsonb, executor_reconciliation_status = 'retry', "
+        "executor_terminal_received_at = now() - interval '2 minutes', "
+        "executor_reconciliation_retry_not_before = now() - interval '1 second'"
+    )
+    await conn.execute(
+        "insert into sandbox_leases(id, tenant_id, workspace_id, user_id, session_id, run_id, sandbox_mode, "
+        "executor_terminal_json, executor_reconciliation_context_json, executor_reconciliation_status, executor_terminal_received_at) "
+        "select 'lease-b', tenant_id, workspace_id, user_id, session_id, run_id, sandbox_mode, "
+        "'{}'::jsonb, '{}'::jsonb, 'pending', now() from sandbox_leases where id = 'lease-a'"
+    )
+    schema = (await (await conn.execute("select current_schema() as name")).fetchone())["name"]
+    async with await psycopg.AsyncConnection.connect(_run_control_postgres_dsn(), autocommit=True, row_factory=dict_row) as other:
+        await other.execute(psycopg_sql.SQL("set search_path to {}").format(psycopg_sql.Identifier(schema)))
+        async with conn.transaction():
+            first = await repository.claim_sandbox_executor_reconciliations(
+                conn, claim_token="first", limit=1, stale_after_seconds=300,
+            )
+            assert [row["id"] for row in first] == ["lease-a"]
+            async with other.transaction():
+                second = await repository.claim_sandbox_executor_reconciliations(
+                    other, claim_token="second", limit=1, stale_after_seconds=300,
+                )
+                assert [row["id"] for row in second] == ["lease-b"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_status", ["failed", "cleanup_pending"])
+async def test_terminal_cleanup_handoff_and_retry_remain_durable(executor_acceptance_database, legacy_status):
+    from app.platform.postgres import sandbox_leases as repository
+
+    conn = executor_acceptance_database
+    await conn.execute(
+        "update sandbox_leases set executor_terminal_json = '{}'::jsonb, "
+        "executor_reconciliation_status = 'claimed', executor_reconciliation_claim_token = 'terminal-a'"
+    )
+    assert not await repository.mark_sandbox_executor_reconciliation_cleanup_pending(
+        conn, lease_id="lease-a", claim_token="wrong", error="",
+    )
+    assert await repository.mark_sandbox_executor_reconciliation_cleanup_pending(
+        conn, lease_id="lease-a", claim_token="terminal-a", error="",
+    )
+    row = await (await conn.execute("select * from sandbox_leases where id = 'lease-a'")).fetchone()
+    assert row["executor_reconciliation_status"] == "cleanup_pending"
+    assert row["status"] == "active" and row["released_at"] is None
+    await conn.execute("update sandbox_leases set executor_reconciliation_status = %s", (legacy_status,))
+    kwargs = dict(tenant_id=None, limit=1, stale_after_seconds=300)
+    claimed = await repository.claim_failed_sandbox_executor_reconciliation_cleanups(conn, claim_token="cleanup-a", **kwargs)
+    assert [row["id"] for row in claimed] == ["lease-a"]
+    assert await repository.release_failed_sandbox_executor_reconciliation_cleanup_claim(
+        conn, lease_id="lease-a", claim_token="cleanup-a", error="stop_failed",
+    )
+    assert not await repository.claim_failed_sandbox_executor_reconciliation_cleanups(conn, claim_token="too-early", **kwargs)
+    await conn.execute("update sandbox_leases set executor_reconciliation_retry_not_before = now() - interval '1 second'")
+    assert await repository.claim_failed_sandbox_executor_reconciliation_cleanups(conn, claim_token="cleanup-b", **kwargs)
+    finalize = dict(tenant_id="tenant-a", user_id="user-a", run_id="run-a", lease_id="lease-a", reason="executor_reconciliation_cleanup")
+    assert await repository.finalize_failed_sandbox_executor_reconciliation_cleanup(conn, claim_token="cleanup-a", **finalize) is None
+    released = await repository.finalize_failed_sandbox_executor_reconciliation_cleanup(conn, claim_token="cleanup-b", **finalize)
+    assert released["status"] == "released"
+    assert released["executor_reconciliation_status"] == "finalized"
+    assert released["executor_reconciliation_retry_not_before"] is None
+
+
+@pytest.mark.asyncio
+async def test_ready_terminal_commit_wakes_real_redis_and_is_claimable_in_postgres(monkeypatch, executor_acceptance_database):
+    import os
+    from redis.asyncio import Redis
+    from app.runtime.sandbox import executor_signals
+    from app.platform.postgres import sandbox_leases as repository
+
+    url = os.getenv("AI_PLATFORM_SSE_REDIS_TEST_URL", "").strip()
+    if not url:
+        pytest.skip("AI_PLATFORM_SSE_REDIS_TEST_URL is not configured")
+    key = f"ai-platform:test:executor-terminal:{uuid.uuid4().hex}"
+    client = Redis.from_url(url, decode_responses=True)
+    monkeypatch.setattr(executor_signals, "_EXECUTOR_RECONCILIATION_SIGNAL_KEY", key)
+    monkeypatch.setattr(executor_signals, "get_redis_client", lambda: Redis.from_url(url, decode_responses=True))
+    conn = executor_acceptance_database
+    scope = dict(tenant_id="tenant-a", run_id="run-a", attempt_id="attempt-a", lease_id="lease-a")
+    try:
+        await repository.record_sandbox_executor_terminal(
+            conn, **scope, executor_status="completed", terminal_result={"run_id": "run-a", "status": "succeeded"},
+        )
+        await executor_signals.publish_executor_terminal_signal()
+        cursor = await executor_signals.initialize_executor_reconciliation_signal_cursor()
+        assert not await repository.claim_sandbox_executor_reconciliations(
+            conn, claim_token="before-context", limit=1, stale_after_seconds=300,
+        )
+        async with conn.transaction():
+            ready = await repository.record_sandbox_executor_accepted(conn, **scope, reconciliation_context={"adapter_name": "test"})
+            assert ready["executor_reconciliation_status"] == "pending"
+        await executor_signals.publish_executor_terminal_signal()
+        # The accepted wake is retained even if the consumer was not in XREAD yet.
+        assert await asyncio.wait_for(executor_signals.wait_for_executor_reconciliation_signal(block_ms=1000, cursor=cursor), 2)
+        claimed = await repository.claim_sandbox_executor_reconciliations(
+            conn, claim_token="after-context", limit=1, stale_after_seconds=300,
+        )
+        assert [row["id"] for row in claimed] == ["lease-a"]
+        assert [fields for _entry, fields in await client.xrange(key)] == [{"wake": "1"}, {"wake": "1"}]
+    finally:
+        await client.delete(key)
+        await client.aclose()
