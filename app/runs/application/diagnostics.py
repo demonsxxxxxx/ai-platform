@@ -6,9 +6,15 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Protocol
 
+from app.runs.domain.run_performance import (
+    BROWSER_LATENCY_MEASUREMENT,
+    BROWSER_LATENCY_MAX_MS,
+    browser_latency_ms,
+    build_run_investigation,
+)
 from app.runs.domain.diagnostics import (
     RUN_DIAGNOSTICS_SCHEMA_VERSION,
     build_executor_protocol_diagnostics,
@@ -31,6 +37,23 @@ class RunDiagnosticsPersistence(Protocol):
         tenant_id: str,
         run_id: str,
         observation: dict[str, Any],
+    ) -> dict[str, Any]: ...
+
+    async def append_browser_latency(
+        self, conn: Any, *, tenant_id: str, run_id: str,
+        measurement: dict[str, Any],
+    ) -> dict[str, Any]: ...
+
+    async def get_admin_monitor_report(
+        self, conn: Any, *, tenant_id: str, from_at: datetime, to_at: datetime,
+        user_id: str | None = None, agent_id: str | None = None,
+        model_id: str | None = None, model_gateway_revision: int | None = None,
+        status: str | None = None, comparison_run_id: str | None = None,
+        order: str = "slow", limit: int = 50,
+    ) -> dict[str, Any]: ...
+
+    async def get_admin_investigation_events(
+        self, conn: Any, *, tenant_id: str, run_id: str,
     ) -> dict[str, Any]: ...
 
     async def get_admin_snapshot(
@@ -270,6 +293,113 @@ class RunDiagnosticsService:
             lease_id=lease_id,
         )
 
+    async def record_browser_latency(
+        self, conn: Any, *, tenant_id: str, run_id: str, duration_ms: int,
+    ) -> None:
+        if type(duration_ms) is not int or not 0 <= duration_ms <= BROWSER_LATENCY_MAX_MS:
+            raise ValueError("invalid_browser_latency")
+        await self.persistence.append_browser_latency(
+            conn, tenant_id=tenant_id, run_id=run_id,
+            measurement={
+                "measurement": BROWSER_LATENCY_MEASUREMENT,
+                "duration_ms": duration_ms, "visibility": "visible",
+                "received_at": self.clock().isoformat(),
+            },
+        )
+
+    def _monitor_window(
+        self, hours: int, from_at: datetime | None, to_at: datetime | None,
+    ) -> tuple[datetime, datetime]:
+        now = self.clock()
+        if type(hours) is not int or not 1 <= hours <= 168:
+            raise ValueError("invalid_monitor_window")
+        if from_at is None and to_at is None:
+            return now - timedelta(hours=hours), now
+        if (
+            from_at is None or to_at is None
+            or from_at.utcoffset() is None or to_at.utcoffset() is None
+            or not timedelta(0) < to_at - from_at <= timedelta(days=7)
+            or to_at > now
+        ):
+            raise ValueError("invalid_monitor_window")
+        return from_at, to_at
+
+    async def read_monitor(
+        self, conn: Any, *, tenant_id: str, hours: int = 24,
+        from_at: datetime | None = None, to_at: datetime | None = None,
+        user_id: str | None = None, agent_id: str | None = None,
+        model_id: str | None = None, model_gateway_revision: int | None = None,
+        status: str | None = None, order: str = "slow", limit: int = 50,
+    ) -> dict[str, Any]:
+        if order not in {"slow", "recent"} or type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError("invalid_monitor_query")
+        start, end = self._monitor_window(hours, from_at, to_at)
+        report = await self.persistence.get_admin_monitor_report(
+            conn, tenant_id=tenant_id, from_at=start, to_at=end, user_id=user_id,
+            agent_id=agent_id, model_id=model_id, model_gateway_revision=model_gateway_revision,
+            status=status, order=order, limit=limit,
+        )
+        metadata = await self.read_admin_monitor_metadata(
+            conn, tenant_id=tenant_id,
+            run_ids=[str(row.get("run_id") or "") for row in report["runs"]],
+        )
+        metrics = ("total_ms", "queue_ms", "execution_ms", "server_first_text_ms", "browser_first_text_ms")
+        report["runs"] = [
+            {
+                **row, **metadata.get(str(row.get("run_id") or ""), {}),
+                "latency": {name: row.get(name) for name in metrics},
+            }
+            for row in report["runs"]
+        ]
+        report["latency"] = {
+            name: report.get("latency", {}).get(name, {"sample_count": 0, "p50": None, "p95": None, "p99": None})
+            for name in metrics
+        }
+        counts = report["counts"]
+        settled = counts["succeeded"] + counts["failed"]
+        report["success_rate"] = counts["succeeded"] / settled if settled else None
+        return report
+
+    async def read_admin_investigation(
+        self, conn: Any, *, tenant_id: str, run_id: str, hours: int = 24,
+        from_at: datetime | None = None, to_at: datetime | None = None,
+        user_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        start, end = self._monitor_window(hours, from_at, to_at)
+        snapshot = await self.persistence.get_admin_snapshot(conn, tenant_id=tenant_id, run_id=run_id)
+        if snapshot is None:
+            return None
+        run = snapshot["run"]
+        diagnostic = snapshot.get("diagnostic")
+        payload = diagnostic.get("payload_json") if isinstance(diagnostic, dict) else None
+        browser = payload.get("browser_latency") if isinstance(payload, dict) else None
+        evidence = await self.persistence.get_admin_investigation_events(conn, tenant_id=tenant_id, run_id=run_id)
+        investigation = build_run_investigation(
+            run, evidence["events"], attempts=snapshot.get("attempts", []),
+            browser_measurement=browser, first_text_at=evidence.get("first_public_text_at"),
+            observed_at=self.clock(),
+        )
+        comparison: dict[str, Any] = {
+            "window": {"from_at": start, "to_at": end}, "sample_count": 0,
+            "latency": {}, "normal_run_id": None,
+            "scope": "same_agent_skill_profile_model_configuration",
+            "missing_reason": "model_identity_unknown",
+        }
+        if run.get("model_id") and run.get("model_gateway_revision") is not None:
+            reference = await self.persistence.get_admin_monitor_report(
+                conn, tenant_id=tenant_id, from_at=start, to_at=end,
+                user_id=user_id, comparison_run_id=run_id, limit=1,
+            )
+            comparison.update(
+                sample_count=reference["counts"]["total"], latency=reference["latency"],
+                normal_run_id=reference["runs"][0]["run_id"] if reference["runs"] else None,
+                missing_reason=None if reference["runs"] else "no_comparable_successful_run",
+            )
+        return {
+            "run_id": run_id, **investigation,
+            "events_truncated": evidence["events_truncated"], "comparison": comparison,
+        }
+
     async def read_admin(
         self,
         conn: Any,
@@ -358,6 +488,8 @@ def _admin_projection(
 
     observations = payload.get("observations")
     observations = observations if isinstance(observations, list) else []
+    if not observations and browser_latency_ms(payload.get("browser_latency")) is not None:
+        coverage = "not_collected"
     root, handling, details, evidence_losses = _project_observations(observations)
     if tool_operation_id is not None:
         _correlate_admin_tools(details, snapshot["run"].get("run_id"), tool_operation_id)
@@ -373,6 +505,10 @@ def _admin_projection(
         "coverage": coverage,
         "run": _admin_run_projection(snapshot["run"]),
         "root": root,
+        "browser_latency": {
+            "measurement": BROWSER_LATENCY_MEASUREMENT,
+            "duration_ms": browser_latency_ms(payload.get("browser_latency")),
+        } if browser_latency_ms(payload.get("browser_latency")) is not None else None,
         "handling": handling,
         "losses": losses,
         "attempts": _admin_attempt_projections(snapshot.get("attempts")),

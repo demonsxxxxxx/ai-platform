@@ -809,6 +809,55 @@ test("queued submit clears chat-queue when the current SSE v4 stream opens", asy
   }
 });
 
+for (const transition of ["current", "auth-change", "unmount"] as const) {
+  test(`browser DOM observation binds only live authorized admission: ${transition}`, async () => {
+    const harness = await loadReactHarness();
+    const { sessionApi } = await import("../../../services/api/session.ts");
+    const { watchBrowserRunText } = await import("../browserRunLatency.ts");
+    // @ts-expect-error jsdom is the pinned mounted-test runtime.
+    const { JSDOM } = await import("jsdom");
+    const textDom = new JSDOM("<!doctype html><body><div data-browser-run-id='run-browser-observed' data-browser-session-id='session-browser-observed'><div id='answer'><p>公开正文</p></div></div></body>", { pretendToBeVisual: true });
+    const originalSubmit = sessionApi.submitChat;
+    const originalTitle = sessionApi.generateTitle;
+    const originalReport = sessionApi.reportBrowserRunLatency;
+    const originalFetch = dom.window.fetch;
+    const documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
+    let submissionId = "";
+    const reports: unknown[][] = [];
+    sessionApi.submitChat = (async (...args) => {
+      submissionId = String(args[7]);
+      return { session_id: "session-browser-observed", run_id: "run-browser-observed", status: "queued", submission_id: submissionId };
+    }) as typeof sessionApi.submitChat;
+    sessionApi.generateTitle = async (sessionId) => ({ title: "Observed", session_id: sessionId });
+    sessionApi.reportBrowserRunLatency = async (...args) => { reports.push(args); return { recorded: true }; };
+    dom.window.fetch = async () => completedSseResponse();
+    let dispose: (() => void) | undefined;
+    try {
+      await harness.act(async () => { await harness.hook.sendMessage("测量首段正文"); });
+      await settle(harness.act);
+      assert.ok(submissionId);
+      if (transition === "auth-change") await harness.rotateAuthScope("user-b", "tenant-b");
+      if (transition === "unmount") await harness.unmount();
+      Object.defineProperty(globalThis, "document", { configurable: true, value: textDom.window.document });
+      const node = textDom.window.document.getElementById("answer") as HTMLElement;
+      Object.defineProperty(node, "getClientRects", { value: () => [{ width: 30, height: 20 }] });
+      dispose = watchBrowserRunText(node);
+      await Promise.resolve();
+      assert.equal(reports.length, transition === "current" ? 1 : 0);
+      if (reports.length) assert.deepEqual(reports[0].slice(0, 2), [submissionId, "run-browser-observed"]);
+    } finally {
+      dispose?.();
+      if (documentDescriptor) Object.defineProperty(globalThis, "document", documentDescriptor);
+      textDom.window.close();
+      sessionApi.submitChat = originalSubmit;
+      sessionApi.generateTitle = originalTitle;
+      sessionApi.reportBrowserRunLatency = originalReport;
+      dom.window.fetch = originalFetch;
+      await harness.cleanup();
+    }
+  });
+}
+
 test("pending enqueue retains the created session for draft handoff", async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");

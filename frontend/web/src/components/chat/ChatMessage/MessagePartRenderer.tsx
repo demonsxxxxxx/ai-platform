@@ -1,5 +1,6 @@
 import { clsx } from "clsx";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { watchBrowserRunText } from "../../../hooks/useAgent/browserRunLatency";
 import {
   AlertTriangle,
   Ban,
@@ -65,21 +66,28 @@ export function MessagePartRenderer({
   withinWorkDetails?: boolean;
 }) {
   const { t } = useTranslation();
+  const textNodeRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (part.type !== "text" || !part.content.trim() || withinWorkDetails) return;
+    return watchBrowserRunText(textNodeRef.current);
+  }, [part, withinWorkDetails]);
 
   if (part.type === "text") {
     return (
-      <MarkdownContent
-        content={part.content}
-        isStreaming={isStreaming && isLast}
-        headingAnchorContext={
-          messageId !== undefined && partIndex !== undefined
-            ? {
-                messageId,
-                partIndex,
-              }
-            : undefined
-        }
-      />
+      <div ref={textNodeRef}>
+        <MarkdownContent
+          content={part.content}
+          isStreaming={isStreaming && isLast}
+          headingAnchorContext={
+            messageId !== undefined && partIndex !== undefined
+              ? {
+                  messageId,
+                  partIndex,
+                }
+              : undefined
+          }
+        />
+      </div>
     );
   }
 

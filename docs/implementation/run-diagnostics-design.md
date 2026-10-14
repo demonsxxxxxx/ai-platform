@@ -180,11 +180,11 @@ Chat admission 先解析显式、继承及 Agent Profile 注入的 MCP 工具，
 
 Run Monitor 的列表和详情概览从既有 Session、User、Workspace、Agent Profile 与 Skill 权威投影标题和名称，并按当前公共文本规则再次脱敏、有界截断。技术 ID 仍作为查询键和可折叠排障信息返回，但不作为默认视觉标题；该投影不新增一套名称或任务状态权威。
 
-详情的执行记录从已持久化的公开事件重建：按消息身份拼接每条可见 Agent 正文和过程说明，再对整条文本脱敏；工具开始/终态按调用身份合并为逐次动作，只展示受控名称、状态、耗时与脱敏概要。调用身份用于同一调用的诊断证据关联，仅在折叠技术信息中显示，不作为视觉标题。状态心跳不作为新的执行步骤；失败概览将首条留存观察关联到 Attempt 和可用的运行环境，分开展示其来源错误、脱敏异常摘要、后续处理和 Run 终态错误，并同步提示证据裁剪。这里的“首条留存”仍非根因证明。管理员投影不开放 SDK 推理、原始命令/参数/结果或私有流元数据；服务端在完成消息拼接后从详情事件中移除私有事件及 `__stream_v4`。
+详情将交付正文与完整公开事件回放放在折叠区域；消息仍由后端按持久身份拼接并整体脱敏。工具阶段按已知 Attempt 和公开调用身份关联，不将身份未知的历史开始/终态拼成一次调用。主要调查只使用一条阶段时间线和一处执行诊断，显示首条留存异常、来源、后续处理与裁剪说明；“首条留存”仍非根因证明。管理员投影不开放 SDK 推理、原始命令/参数/结果或私有流元数据；服务端在完成消息拼接后从详情事件中移除私有事件及 `__stream_v4`。
 
 Run Monitor 的执行健康由管理详情的 `runtime_health` 单独投影：使用最高 ordinal 的 Attempt 和同租户、Run、Attempt 且当前 owner generation 匹配的活动真实 Sandbox lease。lease 查询携带仅供服务端比较的 `lease_owner_generation`，再与最新 Attempt 的 generation 精确核对；两次 READ COMMITTED 查询之间发生 owner 转移时返回未知，不能只信任先前查询的匹配布尔值。该内部字段不进入管理响应。多个匹配环境、缺少/无效/未来心跳或缺少 lease expiry 返回未知；Executor 已接纳后必须使用其独立心跳，不用新鲜 Sandbox 心跳掩盖陈旧 Executor 心跳。心跳超过 45 秒或运行 lease 已过期显示陈旧，但不改变 Run 状态；已留存 Executor 终态而 Run 仍运行显示等待平台收尾。排队和已终态 Run 不显示活动执行健康。
 
-页面将 `queue_worker` 标为队列派发责任，将队列心跳/租约时间标为历史事实，与本次观测的 Sandbox/Executor 心跳分开展示。当前开放 Attempt 的展示耗时使用已有开始时间到服务端观测时间；缺少开始时间仍为未知。新增投影只含状态、Attempt 关联及明确时间/来源，不含私有 runtime handle、回调凭据或执行载荷；缺少该字段的旧 API 响应在新页面显示健康未知。它不创建新的生命周期状态、心跳写入或重试路径。
+页面将队列心跳/租约时间标为历史事实，与本次观测的 Sandbox/Executor 心跳分开展示。Attempt 未结束时不伪造最终耗时；缺少开始时间仍为未知。新增投影只含状态、Attempt 关联及明确时间/来源，不含私有 runtime handle、回调凭据或执行载荷；缺少该字段的旧 API 响应在新页面显示健康未知。它不创建新的生命周期状态、心跳写入或重试路径。
 
 SDK 输出校验的 `projection_failure`（原因、阶段、位置、可用的首个拒绝帧 `frame_shape` 及最多四个按序的前序已接收帧 `preceding_frames`）经过既有字段白名单后，保留到管理响应的逐条观察、首个可用断点汇总及同快照诊断包；Run Monitor 显示输出校验断点。前序帧只保留事件、block、delta 类型和消息/open-block/index 关系的固定标签，不含 guard；两个边界都拒绝超长序列、额外字段、原始正文、提示词、工具参数、索引值或原始标识。缺少 `frame_shape` 或 `preceding_frames` 的历史记录继续显示已有原因，不推断当时的拒绝条件；新诊断也不能单独证明上游哪一层生成了异常序列。
 
@@ -193,6 +193,36 @@ SDK 输出校验的 `projection_failure`（原因、阶段、位置、可用的�
 单 Run 记录有界，首版直接获取一份快照；不引入另一套诊断事件流。前端在现有 RunMonitor 详情按需加载，运行中按现有有界轮询策略刷新；切换或关闭详情时递增请求序列并核对当前 Run，旧响应不会写入新详情。普通用户接口和 SSE 不加入私有观察。
 
 `GET /admin/runs/{run_id}` 内部恢复 `result.runtime_diagnostics` 的代码已删除；历史数据仅由独立诊断查询中的 Runs legacy reader 转换。已部署的外部客户端如仍消费旧字段，需要在发布前按第 8 节另行确认退出或提供只读形状适配。
+
+### 5.1.1 性能范围与单次调查
+
+监控页使用 `GET /admin/runs/monitor`，默认最近 24 小时，也可选 1 小时或 7 天；后端接收成对的有时区 `from_at` / `to_at`，限制窗口最多 168 小时。范围按 Run 的 `created_at ∈ [from_at, to_at)` 定义，限定当前租户，可按用户、Agent、模型 ID 与冻结 gateway revision、状态筛选。聚合覆盖整个选中范围，每个 Run 至多一个样本；有界任务列表最多 100 条，页面请求 50 条，可按总耗时或创建时间排序，不能用列表前 50 条推算总体。每项百分位显示自己的有效样本数；成功率是成功 /（成功 + 失败），取消和未结束单独列出。
+
+`run_lifecycle.v1` 的五项指标：
+
+| 指标 | 来源与定义 |
+| --- | --- |
+| `total_ms` | 已终态 Run 的 `finished_at - created_at` |
+| `queue_ms` | Run 的 `started_at - queued_at`，尚未开始为 null |
+| `execution_ms` | 已终态 Run 的 `finished_at - started_at`，含结果收尾与落库 |
+| `server_first_text_ms` | 第一条可见、非空白 `message.delta` / `message.part.delta` 的平台入库时间减 `created_at` |
+| `browser_first_text_ms` | 发起提交的聊天页使用 `performance.now()` 测得提交开始到可见文档中首段公开正文 DOM 可用的时间 |
+
+负区间、缺少时间和窗口观察终点之后的时间不作为样本；真实 0 保留。服务端首文本不是供应商 TTFT，浏览器 DOM 可用不是物理绘制完成，二者起点也不同。历史 Run 不补造浏览器测量。旧 Worker/调和 `latency_ms` 起点不一致，不进入新统计；`model.completed.duration_ms` 是 SDK 整体报告，含工具等待，不改名为纯模型耗时。
+
+`GET /admin/runs/{run_id}/investigation` 将 Run 生命周期、Attempt、最近 500 条可见模型/工具回执与首段公开文本串成一条调查时间线，返回来源、时间和关联 ID、截断/未绑定计数。条形位置使用平台接收/入库时间；SDK 报告耗时与回执跨度分开，重叠区间不求和、不把最长阶段当成根因。工具证据需同时匹配 Attempt 与调用身份；未知尝试不猜测配对。供应商内部、上下文构建和网络传输细分尚未采集，页面明示缺口。完整公开记录仍通过既有分页 trajectory 查询。
+
+正常对照沿用概览的固定时间窗口，只选择同 Agent、执行类型、冻结 Profile revision、完整 Skill 快照集合（ID、版本、content hash、依赖）及模型 ID / value / gateway revision 的成功 Run，排除本次 Run。主 Skill 有身份但没有冻结快照时不建立基线。返回同类各指标 P50/P95/P99、有效样本及最接近总耗时 P50 的任务入口；模型配置缺失或无可比成功任务明确返回缺口。它不能控制任务输入复杂度，也不证明供应商根因。
+
+浏览器测量只提交 `POST /chat/submissions/{submission_id}/latency` 的 `run_id` 和有界整数 `duration_ms`。服务端复用 principal-scoped submission resolver，验证已授权 Run 与 outcome 一致，并要求已有非空白公开文本证据。新槽位 `browser_latency.measurement=browser_dom_commit.v1` 位于既有 Run 私有诊断 JSON，按行锁 first-wins；不存正文、Cookie、客户端绝对时间、私有 payload，不推动 Run/Attempt 状态。浏览器按 mounted/session/auth/submission 身份退休观察；历史加载、新标签页、取消、身份更替或卸载不能生成新提交计时。可选采集失败不影响聊天；浏览器数据始终是客户端观测，不是业务权威。
+
+可选浏览器槽位不得排挤故障证据：写入已满记录会拒绝，之后合并故障时先丢弃超预算的浏览器槽位再执行既有故障预算降级。只有浏览器测量的记录仍对故障标记 `not_collected`，不创造异常或“完整故障采集”。
+
+新 monitor/investigation GET 只读取数据库，使用事务内 5 秒 statement timeout，不调用队列、provider 或资源清理。旧 `admin_runtime_overview` 的历史事件百分位及清理分支仍由既有 CLI/运维入口消费，本页不调用；D07 的维护迁移仍是独立范围。
+
+页面退役重复的 Worker 概览、Agent/工具日志、Attempt 独立主区、第二条语义时间线、协议事件分页与无消费者的 `summarizeAdminRuns` / `buildAdminRunEventDiagnostics` 投影。`adminRunTimeline` 仅保留当前动作摘要及仍被工具阶段消费的身份索引；SDK/协议/逐条观察、产物、回放和技术关联折叠展示，证据状态、失败处理、导出和键盘焦点保护保留。
+
+回归拥有者是 `tests/test_run_performance{,_routes,_postgres}.py`、前端 `test:run-monitor`、`test:sse` 中的 browser helper 和 mounted submission 测试。真实 PostgreSQL测试使用既有隔离 schema 夹具，未配置 `AI_PLATFORM_S0A_SCHEMA_TEST_DSN` 时显式 skip；mock、JSDOM 和类型检查不能代替 SQL 执行、查询计划、真实浏览器绘制或正式环境验收。
 
 ### 5.2 导出接口
 
