@@ -33,10 +33,9 @@ export const LibreChatComposerBox = forwardRef<
   HTMLDivElement,
   HTMLAttributes<HTMLDivElement> & {
     dragging?: boolean;
-    mentionActive?: boolean;
   }
 >(function LibreChatComposerBox(
-  { children, className, style, dragging, mentionActive, ...props },
+  { children, className, style, dragging, ...props },
   ref,
 ) {
   return (
@@ -49,7 +48,6 @@ export const LibreChatComposerBox = forwardRef<
         dragging && "border-2 border-dashed shadow-lg",
         className,
       )}
-      data-mention-active={mentionActive || undefined}
       style={{
         backgroundColor: "var(--theme-workbench-panel)",
         borderColor: dragging ? "var(--theme-primary)" : "var(--theme-border)",

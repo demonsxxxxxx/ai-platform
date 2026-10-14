@@ -17,3 +17,11 @@ test("browser auth source files do not log tokens or authorization secrets", () 
     /console\.(?:log|info|debug|warn|error)\([^)]*(?:access_token|refresh_token|authorization|bearer)/i,
   );
 });
+
+test("browser session helpers do not expose the retired local JWT authority", () => {
+  const tokenSource = readFileSync(new URL("../token.ts", import.meta.url), "utf8");
+  const barrel = readFileSync(new URL("../../api.ts", import.meta.url), "utf8");
+  for (const source of [tokenSource, barrel]) {
+    assert.doesNotMatch(source, /\b(?:decodeToken|isTokenExpired|isAuthenticated)\b/);
+  }
+});

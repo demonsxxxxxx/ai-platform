@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { resolveGroupAvailability } from "../../governance/groupAvailability";
@@ -189,4 +189,11 @@ test("tool selector cannot toggle system disabled MCP tools", () => {
   );
   assert.match(source, /aria-disabled=\{tool\.system_disabled/);
   assert.doesNotMatch(source, /onClick=\{\(\) => onToggleTool\(tool\.name\)\}/);
+});
+
+test("MCP governance has no orphaned tool-permission inbox state owner", () => {
+  assert.equal(
+    existsSync(join(root, "src/components/panels/adminToolPermissionInboxState.ts")),
+    false,
+  );
 });
