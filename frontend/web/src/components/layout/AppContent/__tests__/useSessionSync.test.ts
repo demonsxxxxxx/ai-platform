@@ -230,3 +230,14 @@ test("session selection does not issue page-level scroll resets", () => {
 
   assert.doesNotMatch(source, /window\.scrollTo/);
 });
+
+test("sidebar history selection uses request ownership instead of the dormant global guard", () => {
+  const sync = readFileSync(resolve(__dirname, "../useSessionSync.ts"), "utf8");
+  const item = readFileSync(resolve(__dirname, "../../../sidebar/SessionItem.tsx"), "utf8");
+  assert.match(sync, /const owner = beginHistoryLoad\(selectedSessionId\)/);
+  assert.match(sync, /requestId !== selectSessionRequestIdRef\.current/);
+  assert.match(sync, /!isCurrentHistoryLoad\(owner\)/);
+  for (const source of [sync, item]) {
+    assert.doesNotMatch(source, /shouldBlockSessionSelection|sessionSelectionGuard/);
+  }
+});

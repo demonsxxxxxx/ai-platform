@@ -197,3 +197,8 @@ test("MCP governance has no orphaned tool-permission inbox state owner", () => {
     false,
   );
 });
+
+test("governance surfaces retain the shared state owner without an unused unavailable wrapper", () => {
+  assert.equal(existsSync(join(root, "src/components/workbench/WorkbenchStateSurface.tsx")), true);
+  assert.equal(existsSync(join(root, "src/components/workbench/WorkbenchUnavailableState.tsx")), false);
+});
