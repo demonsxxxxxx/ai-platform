@@ -184,6 +184,20 @@ unmount fence old reads, details, mutations, and retained callbacks. Ordinary
 operation failures retain the editor draft and show safe error copy; raw
 backend error details are not rendered. The ordinary directory remains read-only.
 
+The administrator directory presents Server enablement separately from live tool
+discovery. Counts and the searchable tool-detail drawer come from
+`GET /api/mcp/{name}/tools` with the current account's credential; they are not a
+Gateway-wide total or evidence of tool execution. Successful empty discovery
+shows zero. Failed, unqueried, disabled, unconfigured, or unsupported Servers do
+not show a successful count. Disabled, unconfigured and unsupported registry
+rows do not start browser discovery requests. Refresh queries the current page
+with bounded concurrency, without storing a tool catalog. Each Server retains
+its own failure state, so ordinary users can still see healthy Server tools.
+The tool view shares the registry request scope and epoch: authentication pauses,
+principal/department changes, pagination, reads and mutations fence old results
+and details. Tool details show only public names and descriptions; they do not
+expose connection material or execute tools.
+
 Backed read and server lifecycle routes:
 
 - `GET /api/mcp/chat-tools`

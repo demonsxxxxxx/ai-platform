@@ -200,6 +200,15 @@ and absence of secrets in public events. That stage remains unclaimed until run.
 
 ## Retirement and compatibility disposition
 
+- Replace the administrator's state/role/quota-only cards with a compact Server
+  table and current-account live tool count/detail view. Retire the ordinary-only
+  discovery helpers, whole-directory failure replacement, old card selectors and
+  role-count/empty-tool copy. Both projections use the MCP-owned discovery hook;
+  mounted regressions retain lifecycle authority checks and cover count, empty,
+  partial failure, refresh and supersession. Registry/API payloads, credentials,
+  distribution policy and tool execution remain compatible; no stored tool
+  catalog or alternative discovery endpoint is introduced.
+
 - Replace whole-remote-Server SDK registration for selected external tools with
   an Executor-local selected tool surface; no parallel direct-registration path.
 - Retire raw platform names in SDK allow rules and exact raw-name lookup at the
