@@ -26,14 +26,28 @@ by replacing characters outside `[a-zA-Z0-9_-]` with `_`.
 
 ## Principal credential lifetime
 
-The principal JWT store holds one encrypted company credential per tenant/user;
-its key and authenticated envelope preserve that binding. `put` sets Redis TTL
-from the credential expiration. `get` validates the captured credential and
-returns the existing expired-credential error when its deadline has passed.
-Redis TTL owns reclamation: an expired read must not delete the shared key,
-because a concurrent login may already have replaced it with a valid credential.
-This does not change browser authentication lifetime, logout, or the existing
-last-write-wins credential replacement policy.
+The principal JWT store holds one encrypted company-compatible credential per
+tenant/user; its key and authenticated envelope preserve that binding. A login
+may attach its signed browser-context renewal grant and subject epoch. The
+record's Redis TTL is then bounded by the original browser authority deadline,
+not extended by credential rotation. Records without a renewal grant retain
+their existing credential-expiration TTL and cannot renew themselves. Legacy
+execution bindings stay tied to the original credential and cannot adopt a
+new browser grant or a credential installed by a later login.
+
+Expired credentials are never returned. A bounded renewal validates the current
+context, user, subject ownership, and company eligibility, then atomically
+replaces the principal and encrypted credential under the existing operation
+fence. Failed or revoked grants cannot issue a token. A credential-only rotation
+preserves subject ownership; authorization changes retire old owners. An expired
+read must not delete a shared key, since a concurrent login may already have
+replaced it. Selected-tool transports obtain the latest authorized JWT before
+each HTTP dispatch, including within an already-open MCP session. Transport
+failures and potentially executed tool effects do not authorize tool replay.
+
+This preserves the absolute browser authentication lifetime and tenant/user
+credential binding. Context-backed login writes and refreshes cannot overwrite
+a credential after their context operation has been superseded.
 
 ## Implementation
 
@@ -143,32 +157,6 @@ last-write-wins credential replacement policy.
    `discovery_failed` and retain their typed reason in the private log. The single
    Server route keeps its typed HTTP error and existing force-relogin header
    rules. Cancellation propagates without an unavailable result or failure log.
-
-## Principal credential lifetime
-
-The principal JWT store holds one encrypted company-compatible credential per
-tenant/user; its key and authenticated envelope preserve that binding. A login
-may attach its signed browser-context renewal grant and subject epoch. The
-record's Redis TTL is then bounded by the original browser authority deadline,
-not extended by credential rotation. Records without a renewal grant retain
-their existing credential-expiration TTL and cannot renew themselves. Legacy
-execution bindings stay tied to the original credential and cannot adopt a
-new browser grant or a credential installed by a later login.
-
-Expired credentials are never returned. A bounded renewal validates the current
-context, user, subject ownership, and company eligibility, then atomically
-replaces the principal and encrypted credential under the existing operation
-fence. Failed or revoked grants cannot issue a token. A credential-only rotation
-preserves subject ownership; authorization changes retire old owners. An expired
-read must not delete a shared key, since a concurrent login may already have
-replaced it. Selected-tool transports obtain the latest authorized JWT before
-each HTTP dispatch, including within an already-open MCP session. Transport
-failures and potentially executed tool effects do not authorize tool replay.
-
-This preserves the absolute browser authentication lifetime and tenant/user
-credential binding. Context-backed login writes and refreshes cannot overwrite
-a credential after their context operation has been superseded.
-
 
 ## Runnable checks
 
