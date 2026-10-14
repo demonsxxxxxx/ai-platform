@@ -150,6 +150,8 @@ placeholder lease writers, or early-failure collaborators.
 Worker orchestrates queue dispatch; shared preparation and completion publish
 committed events only after each transaction exits; the former Worker capability/early-failure
 helpers and `Locked*Ports` callback bags have no compatibility owner.
+The unused `fail_run_for_worker` boolean wrapper is retired; failure handling
+uses the Runs terminal completion service and its bound attempt authority.
 Result persistence rolls back artifacts, Skill snapshots, messages, and events
 when any terminal CAS loses authority. Worker interruption cleanup covers only
 its SDK placeholder lease, marks release after transaction commit, and leaves

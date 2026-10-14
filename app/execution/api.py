@@ -59,7 +59,6 @@ from app.execution.application.worker_attempt_lifecycle import (
     WorkerExecutorReconciliation,
     WorkerQueueLease,
     bind_worker_attempt_lifecycle,
-    fail_run_for_worker,
 )
 from app.execution.application.worker_failure_diagnostics import (
     executor_exception_failure,
@@ -164,7 +163,6 @@ __all__ = [
     "context_file_failure_log_extra",
     "collect_workspace_artifacts",
     "bind_worker_attempt_lifecycle",
-    "fail_run_for_worker",
     "executor_exception_failure",
     "executor_observability",
     "run_elapsed_ms",
