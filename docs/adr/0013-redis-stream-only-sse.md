@@ -1,12 +1,12 @@
 # ADR 0013: Redis Stream-only SSE v4
 
-Status: accepted architecture; candidate implementation, release and External Acceptance require separate evidence
+Status: accepted architecture and source contract; CI, release and External Acceptance require separate evidence
 
 Date: 2026-09-11
 
 Design ID: `ai-platform.redis-streams-sse-event-channel.v4`
 
-Supersedes the publication and recovery architecture in [ADR 0012](0012-recoverable-agent-kernel-event-stream-v4.md) and the live fan-out architecture in [ADR 0009](0009-redis-streams-sse-v3-live-fanout.md). The v4 public event set and existing business authorities remain in force.
+Supersedes the publication and recovery architecture in [ADR 0012](0012-recoverable-agent-kernel-event-stream-v4.md) and the live fan-out architecture in [ADR 0009](0009-redis-streams-sse-v3-live-fanout.md). The v4 event model and existing business authorities remain in force. The generated schema and the accepted [Assistant-part extension](../architecture/redis-streams-sse-wire-protocol.md#change-contract-incremental-assistant-parts-and-final-selection) own the current event set and answer-receipt compatibility.
 
 ## Decision
 
@@ -25,7 +25,7 @@ The authenticated callback route commits its complete public projection and call
 
 Committed Worker and Run events use the existing business lifecycle entry points. Run terminal publication derives deterministic terminal/end identities from the committed Run fact. A transport failure cannot roll back that Run or suppress its final answer. A later invocation can reuse the Redis receipt, but no background publication scan promises eventual SSE delivery.
 
-Cancellation and terminal events check the existing callback receipt against their strictly preceding callback sequence. Conversely, a callback directly publishes any preceding committed Run event before appending its own batch. The bounded predecessor lookup and separate Redis receipts preserve order and exact retry without another publisher, claim or scheduling state.
+Cancellation and terminal events check the existing callback receipt against their strictly preceding callback sequence. Conversely, a callback directly publishes the latest committed Run event preceding its batch before appending that batch. The bounded predecessor lookup and separate Redis receipts preserve order and exact retry without another publisher, claim or scheduling state.
 
 A missing or trimmed Stream produces a gap and authorized hydration. It is never rebuilt, and no successor authority is created. `Last-Event-ID` remains bound to the Run and incarnation accepted by the browser reducer.
 

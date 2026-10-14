@@ -456,6 +456,22 @@ test("slash command menu is anchored outside the clipped textarea region", () =>
   );
 });
 
+test("composer styles and primitive keep only the governed command menu surface", () => {
+  const styles = readFileSync(join(root, "src/styles/chat.css"), "utf8");
+  const composer = readFileSync(join(root, "src/librechat-ui/Composer.tsx"), "utf8");
+  const featureMenu = readFileSync(
+    join(root, "src/components/selectors/FeatureMenu.tsx"),
+    "utf8",
+  );
+
+  assert.match(styles, /\.composer-command-surface\s*\{/);
+  assert.match(styles, /\.composer-command-list\s*\{/);
+  assert.match(featureMenu, /className="feature-menu-group"/);
+  assert.match(styles, /\.feature-menu-group \+ \.feature-menu-group::before/);
+  assert.doesNotMatch(styles, /mention-popup|mention-skeleton|feature-menu-divider/);
+  assert.doesNotMatch(composer, /mentionActive|data-mention-active/);
+});
+
 test("composer user-facing copy avoids backend implementation jargon", () => {
   const chatInput = readFileSync(
     join(root, "src/components/chat/ChatInput.tsx"),

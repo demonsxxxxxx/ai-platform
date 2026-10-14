@@ -2,7 +2,7 @@ import { useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { RunInputAnswer, RunInputQuestionBatch } from "../../services/api/session";
 import type { RunInputsController } from "../../hooks/useAgent/types";
-import { presentRunInputOption } from "./runInputPresentation";
+import { presentRunInputAnswer, presentRunInputOption } from "./runInputPresentation";
 
 interface QuestionDraft {
   selected: string[];
@@ -44,19 +44,25 @@ export function RunQuestionCard({
 
   const pending = runInputs.pendingSubmission;
   const busy = Boolean(pending);
+  const uncertainAnswer = pending?.kind === "answer" &&
+    pending.questionId === batch.question_id && pending.state === "uncertain";
   const readOnly =
     !canSend || batch.status !== "pending" || runInputs.isClosed || runInputs.projection?.state !== "open";
   const closedUnprocessed =
     (runInputs.isClosed || runInputs.projection?.state !== "open") &&
     (batch.status === "pending" || batch.status === "answered");
   const displayStatus = closedUnprocessed ? "closed" : batch.status;
-  const alreadySubmitted = runInputs.projection?.inputs.some(
+  const submittedInput = runInputs.projection?.inputs.find(
     (input) => input.kind === "answer" && input.question_id === batch.question_id,
   );
+  const alreadySubmitted = Boolean(submittedInput);
+  const automaticAnswer = submittedInput?.source === "timeout_default";
   if (alreadySubmitted || displayStatus !== "pending") {
     const status = closedUnprocessed
       ? t("chat.runInputs.answerClosedUnprocessed", "当前任务输入已关闭，问题未完成处理。")
-      : displayStatus === "resolved"
+      : automaticAnswer
+        ? t("chat.runInputs.answerAutoSelected", "超过5分钟未收到答复，系统已自动选择默认答复。")
+        : displayStatus === "resolved"
         ? t("chat.runInputs.answerResolved", "问题已处理。")
         : alreadySubmitted || batch.status === "answered"
         ? t("chat.runInputs.answerWaiting", "答案已提交，等待当前任务继续。")
@@ -84,6 +90,11 @@ export function RunQuestionCard({
       <div className="mb-2 text-xs font-semibold text-[var(--theme-primary)]">
         {t("chat.runInputs.questionTitle", "当前任务需要你的答复")}
       </div>
+      {batch.deadline_at ? (
+        <p className="mb-2 text-xs text-[var(--theme-text-secondary)]" role="status">
+          {t("chat.runInputs.defaultAnswerNotice", "5分钟未提交时，系统会选择推荐项；没有推荐项时选择第一项。没有可选项的问题会结束任务并提示补充信息。")}
+        </p>
+      ) : null}
       <form
         onSubmit={(event) => {
           event.preventDefault();
@@ -108,6 +119,13 @@ export function RunQuestionCard({
                 <p className="mb-2 text-sm font-medium text-[var(--theme-text)]">
                   {question.question}
                 </p>
+                {batch.default_answers?.[question.key] !== undefined ? (
+                  <p className="mb-2 text-xs text-[var(--theme-text-secondary)]" data-run-question-default>
+                    {t("chat.runInputs.defaultChoice", "到期默认答复：{{answer}}", {
+                      answer: presentRunInputAnswer(question.key, batch.default_answers[question.key], batch).answer,
+                    })}
+                  </p>
+                ) : null}
                 {question.options.length > 0 ? (
                   <div className="space-y-1.5">
                     {question.options.map((option) => {
@@ -170,31 +188,47 @@ export function RunQuestionCard({
             );
           })}
         </div>
-        {answerAttempted && runInputs.submissionError === "answer_required" ? (
-          <p className="mt-2 text-xs text-[var(--theme-danger)]" role="alert">
-            {t("chat.runInputs.answerRequired", "请回答每个问题后再提交。")}
-          </p>
-        ) : null}
-        {runInputs.submissionError === "rejected" ? (
-          <p className="mt-2 text-xs text-[var(--theme-danger)]" role="alert">
-            {t("chat.runInputs.answerRejected", "答案未被接受，选择仍保留。")}
-          </p>
-        ) : null}
-        {runInputs.isClosed ? (
-          <p className="mt-2 text-xs text-[var(--theme-warning)]" role="status">
-            {t("chat.runInputs.answerRunClosed", "当前任务暂不接收答案，填写内容仍保留。")}
-          </p>
-        ) : null}
-        <div className="mt-3 flex justify-end">
-          <button
-            className="rounded-full bg-[var(--theme-primary)] px-3 py-1.5 text-xs font-medium text-white disabled:cursor-not-allowed disabled:opacity-45"
-            disabled={readOnly || busy}
-            type="submit"
-          >
-            {pending?.kind === "answer" && pending.questionId === batch.question_id && pending.state === "submitting"
-              ? t("chat.runInputs.submittingAnswer", "正在提交…")
-              : t("chat.runInputs.submitAnswer", "提交答复")}
-          </button>
+        <div className="sticky bottom-0 z-10 -mx-3 -mb-3 mt-3 rounded-b-2xl border-t border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-3 py-3">
+          {answerAttempted && runInputs.submissionError === "answer_required" ? (
+            <p className="mb-2 text-xs text-[var(--theme-danger)]" role="alert">
+              {t("chat.runInputs.answerRequired", "请回答每个问题后再提交。")}
+            </p>
+          ) : null}
+          {uncertainAnswer && !readOnly ? (
+            <p className="mb-2 text-xs text-[var(--theme-warning)]" role="alert">
+              {t("chat.runInputs.answerUncertain", "尚未确认答案是否提交成功，可重试提交原答案。")}
+            </p>
+          ) : null}
+          {runInputs.submissionError === "rejected" ? (
+            <p className="mb-2 text-xs text-[var(--theme-danger)]" role="alert">
+              {t("chat.runInputs.answerRejected", "答案未被接受，选择仍保留。")}
+            </p>
+          ) : null}
+          {runInputs.isClosed ? (
+            <p className="mb-2 text-xs text-[var(--theme-warning)]" role="status">
+              {t("chat.runInputs.answerRunClosed", "当前任务暂不接收答案，填写内容仍保留。")}
+            </p>
+          ) : null}
+          <div className="flex justify-end gap-2">
+            {uncertainAnswer && !readOnly ? (
+              <button
+                className="rounded-full border border-[var(--theme-primary)] px-3 py-1.5 text-xs font-medium text-[var(--theme-primary)]"
+                onClick={() => void runInputs.retryPendingSubmission()}
+                type="button"
+              >
+                {t("chat.runInputs.retryAnswer", "重试提交答复")}
+              </button>
+            ) : null}
+            <button
+              className="rounded-full bg-[var(--theme-primary)] px-3 py-1.5 text-xs font-medium text-white disabled:cursor-not-allowed disabled:opacity-45"
+              disabled={readOnly || busy}
+              type="submit"
+            >
+              {pending?.kind === "answer" && pending.questionId === batch.question_id && pending.state === "submitting"
+                ? t("chat.runInputs.submittingAnswer", "正在提交…")
+                : t("chat.runInputs.submitAnswer", "提交答复")}
+            </button>
+          </div>
         </div>
       </form>
     </section>

@@ -26,8 +26,10 @@ import {
 import type { Message } from "../../types";
 import { APP_ROUTE_PATHS } from "../../appRouteManifest";
 import { useAuth } from "../../hooks/useAuth";
+import { getAccessToken } from "../../services/api/token";
 import { readWordReviewStream } from "./wordReviewStream";
 import { resolveInternalAiApplication } from "./aiApplicationCatalog";
+import { getSopRagflowConfig, streamSopAnswer, type SopRagflowConfig } from "./sopTransport";
 import "./wordReviewApplication.css";
 
 const SOP_SUGGESTIONS = [
@@ -55,174 +57,6 @@ function reviewStatusLabel(status: WordReviewStatus): string {
     timeout: "已超时",
     unknown: "状态未知",
   }[status];
-}
-
-const SOP_RAGFLOW_API_BASE = "http://10.56.0.211:8080";
-const SOP_RAGFLOW_SHARE_URL =
-  import.meta.env?.VITE_RAGFLOW_SOP_SHARE_URL?.trim() || "";
-const SOP_REQUEST_TIMEOUT = 120_000;
-
-interface SopRagflowConfig {
-  chatId: string;
-  auth: string;
-}
-
-function getSopRagflowConfig(): SopRagflowConfig | null {
-  try {
-    const shareUrl = new URL(SOP_RAGFLOW_SHARE_URL);
-    const chatId = shareUrl.searchParams.get("shared_id")?.trim() || "";
-    const auth = shareUrl.searchParams.get("auth")?.trim() || "";
-    return chatId && auth ? { chatId, auth } : null;
-  } catch {
-    return null;
-  }
-}
-
-function parseSopSseBlock(block: string): Record<string, unknown> | null {
-  const data = block
-    .split(/\r?\n/)
-    .filter((line) => line.trimStart().startsWith("data:"))
-    .map((line) => line.trimStart().slice(5).trim())
-    .filter(Boolean)
-    .join("\n");
-  if (!data || data === "[DONE]") return null;
-  try {
-    const event: unknown = JSON.parse(data);
-    if (!event || typeof event !== "object") return null;
-    const record = event as Record<string, unknown>;
-    if (typeof record.code === "number" && record.code !== 0) {
-      throw new Error(
-        typeof record.message === "string"
-          ? record.message
-          : "公司知识库返回错误。",
-      );
-    }
-    return record.data && typeof record.data === "object"
-      ? (record.data as Record<string, unknown>)
-      : null;
-  } catch (error) {
-    if (error instanceof SyntaxError) return null;
-    throw error;
-  }
-}
-
-async function createSopSession(
-  config: SopRagflowConfig,
-  signal: AbortSignal,
-): Promise<string> {
-  const response = await fetch(
-    `${SOP_RAGFLOW_API_BASE}/api/v1/chatbots/${encodeURIComponent(config.chatId)}/completions`,
-    {
-      method: "POST",
-      headers: {
-        Accept: "text/event-stream",
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${config.auth}`,
-      },
-      body: JSON.stringify({ question: "初始化会话", stream: true }),
-      signal,
-    },
-  );
-  if (!response.ok) {
-    throw new Error(`公司知识库会话创建失败：${response.status}`);
-  }
-  const blocks = (await response.text()).split(/\n\n|\r\n\r\n/);
-  for (const block of blocks) {
-    const payload = parseSopSseBlock(block);
-    if (typeof payload?.session_id === "string" && payload.session_id) {
-      return payload.session_id;
-    }
-  }
-  throw new Error("公司知识库未返回会话 ID。");
-}
-
-async function streamSopAnswer(
-  question: string,
-  sessionId: string,
-  onAnswer: (answer: string) => void,
-): Promise<{ answer: string; sessionId: string }> {
-  const config = getSopRagflowConfig();
-  if (!config) throw new Error("公司知识库访问配置未提供。");
-
-  const controller = new AbortController();
-  const timer = globalThis.setTimeout(
-    () => controller.abort(),
-    SOP_REQUEST_TIMEOUT,
-  );
-  try {
-    const activeSessionId =
-      sessionId || (await createSopSession(config, controller.signal));
-    const response = await fetch(
-      `${SOP_RAGFLOW_API_BASE}/api/v1/chatbots/${encodeURIComponent(config.chatId)}/completions`,
-      {
-        method: "POST",
-        headers: {
-          Accept: "text/event-stream",
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${config.auth}`,
-        },
-        body: JSON.stringify({
-          question,
-          stream: true,
-          session_id: activeSessionId,
-          quote: true,
-          reference_metadata: {
-            include: true,
-            fields: [
-              "doc_code",
-              "version",
-              "effective_date",
-              "department",
-              "document_type",
-            ],
-          },
-        }),
-        signal: controller.signal,
-      },
-    );
-    if (!response.ok) {
-      throw new Error(`公司知识库请求失败：${response.status}`);
-    }
-    if (!response.body) throw new Error("公司知识库未返回流式响应。");
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let answer = "";
-    let nextSessionId = activeSessionId;
-    let buffer = "";
-    const acceptBlock = (block: string) => {
-      const payload = parseSopSseBlock(block);
-      if (!payload) return;
-      if (typeof payload.session_id === "string") {
-        nextSessionId = payload.session_id;
-      }
-      if (typeof payload.answer === "string") {
-        answer = payload.final ? payload.answer : answer + payload.answer;
-        onAnswer(answer);
-      }
-    };
-
-    while (true) {
-      const chunk = await reader.read();
-      buffer += decoder.decode(chunk.value || new Uint8Array(), {
-        stream: !chunk.done,
-      });
-      const blocks = buffer.split(/\n\n|\r\n\r\n/);
-      buffer = blocks.pop() || "";
-      blocks.forEach(acceptBlock);
-      if (chunk.done) break;
-    }
-    if (buffer.trim()) acceptBlock(buffer);
-    if (!answer) throw new Error("公司知识库未返回回答内容。");
-    return { answer, sessionId: nextSessionId };
-  } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") {
-      throw new Error("公司知识库回答超时，请稍后重试。");
-    }
-    throw error;
-  } finally {
-    globalThis.clearTimeout(timer);
-  }
 }
 
 function formatTime(value: Date): string {
@@ -311,13 +145,31 @@ function MessageBubble({ message }: { message: Message }) {
   );
 }
 
-function KnowledgeBaseApplication() {
+export function KnowledgeBaseApplication({ config = getSopRagflowConfig() }: { config?: SopRagflowConfig | null }) {
+  const { user, isAuthenticated } = useAuth();
+  const authMarker = getAccessToken();
+  const scope = JSON.stringify([user?.tenant_id ?? "", user?.id ?? "", isAuthenticated, authMarker]);
+  const generation = useRef(0);
+  const requestRef = useRef<AbortController | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [sessionId, setSessionId] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [draft, setDraft] = useState("");
   const [localError, setLocalError] = useState("");
-  const configured = getSopRagflowConfig() !== null;
+  useLayoutEffect(() => {
+    generation.current += 1;
+    setMessages([]);
+    setSessionId("");
+    setDraft("");
+    setLocalError("");
+    setIsLoading(false);
+    return () => {
+      generation.current += 1;
+      requestRef.current?.abort();
+      requestRef.current = null;
+    };
+  }, [scope]);
+  const configured = config !== null;
 
   const clearMessages = () => {
     if (isLoading) return;
@@ -329,12 +181,21 @@ function KnowledgeBaseApplication() {
   const submit = async (event?: FormEvent) => {
     event?.preventDefault();
     const text = draft.trim();
-    if (!text || isLoading) return;
-    if (!configured) {
+    if (!text || requestRef.current || !isAuthenticated || !authMarker || getAccessToken() !== authMarker) return;
+    if (!config) {
       setLocalError("公司知识库访问配置未提供。");
       return;
     }
 
+    const controller = new AbortController();
+    requestRef.current = controller;
+    const owner = generation.current;
+    const ownsRequest = () => {
+      const current = generation.current === owner && requestRef.current === controller &&
+        isAuthenticated && getAccessToken() === authMarker && !controller.signal.aborted;
+      if (!current) controller.abort();
+      return current;
+    };
     const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const userMessage: Message = {
       id: `sop-user-${requestId}`,
@@ -357,12 +218,14 @@ function KnowledgeBaseApplication() {
     setMessages((current) => [...current, userMessage, assistantMessage]);
     try {
       const result = await streamSopAnswer(text, sessionId, (answer) => {
+        if (!ownsRequest()) return;
         setMessages((current) =>
           current.map((message) =>
             message.id === assistantId ? { ...message, content: answer } : message,
           ),
         );
-      });
+      }, config, controller.signal);
+      if (!ownsRequest()) return;
       setSessionId(result.sessionId);
       setMessages((current) =>
         current.map((message) =>
@@ -372,6 +235,7 @@ function KnowledgeBaseApplication() {
         ),
       );
     } catch (error) {
+      if (!ownsRequest()) return;
       const message =
         error instanceof Error ? error.message : "SOP 问询失败，请稍后重试。";
       setLocalError(message);
@@ -383,7 +247,10 @@ function KnowledgeBaseApplication() {
         ),
       );
     } finally {
-      setIsLoading(false);
+      if (ownsRequest()) {
+        requestRef.current = null;
+        setIsLoading(false);
+      }
     }
   };
 

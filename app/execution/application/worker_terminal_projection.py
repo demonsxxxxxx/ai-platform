@@ -129,7 +129,7 @@ def project_worker_terminal_result(
             | ({"runtime_diagnostics": result.executor_payload["runtime_diagnostics"]}
                if "runtime_diagnostics" in result.executor_payload else {})
         ).items()
-        if key not in {"skill_manifests", "used_skills", "used_skills_source", "inferred_used_skills"}
+        if key not in {"skill_manifests", "used_skills", "used_skills_source", "inferred_used_skills", "runtime_private_payload"}
     }
     if "used_skills" in result.result or "used_skills" in result.executor_payload:
         persisted_result["used_skills"] = skill_snapshot["used_skills"]

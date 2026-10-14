@@ -194,7 +194,9 @@ an upgraded database exposes one write contract.
 - Profile admission cannot override Run-owned model selection.
 - Skill and MCP identifiers are accepted only from the immutable authorized
   profile definition.
-- Conversation and Run pins cannot silently advance to another publication.
+- Conversation provenance and accepted Run snapshots are never rewritten by a
+  later publication. New Run admission independently resolves the current
+  publication as specified in section 5.
 - Recovery snapshots cannot substitute for private Profile reauthorization.
 - Database errors do not trigger alternate write paths.
 - Deployment applies the schema before starting application processes built for

@@ -854,13 +854,54 @@ def test_run_lifecycle_boundary_document_freezes_explicit_composition() -> None:
 
     for required in (
         "RunLifecycleService",
-        "StreamingEventLedgerWriter",
-        "AuditLedgerWriter",
-        "SandboxRuntimeClient",
+        "RunLifecyclePersistence",
+        "RunEventWriter",
+        "RunAuditWriter",
+        "logical roles, not the current Python port names",
+        "same PostgreSQL connection and transaction",
+        "Sandbox cleanup remains Sandbox-owned",
         "A route, transport helper, or admission helper MUST NOT import",
         "`ContextVar`, thread-local, request-local, or connection attributes",
     ):
-        assert required in source
+        assert required in " ".join(source.split())
+    assert "app.platform.postgres.audit" not in source
+    assert "platform audit-ledger adapter" not in source
+    assert "Identity-owned audit-ledger adapter" in source
+
+    # Verify the documented current ports and adapters exist and are the ones
+    # wired by bootstrap. This is source composition evidence, not runtime proof.
+    lifecycle = ast.parse((REPO_ROOT / "app/runs/application/lifecycle.py").read_text())
+    classes = {node.name: node for node in lifecycle.body if isinstance(node, ast.ClassDef)}
+    service = classes["RunLifecycleService"]
+    constructor = next(node for node in service.body if isinstance(node, ast.FunctionDef) and node.name == "__init__")
+    annotations = {arg.arg: ast.unparse(arg.annotation) for arg in constructor.args.kwonlyargs}
+    for parameter, port in {
+        "persistence": "RunLifecyclePersistence",
+        "append_event": "RunEventWriter",
+        "append_audit_log": "RunAuditWriter",
+    }.items():
+        assert port in classes and annotations[parameter] == port
+
+    composition = ast.parse((REPO_ROOT / "app/bootstrap/run_lifecycle.py").read_text())
+    imports = {
+        alias.asname or alias.name: (node.module, alias.name)
+        for node in composition.body if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+    }
+    factory = next(node for node in composition.body if isinstance(node, ast.FunctionDef) and node.name == "build_run_lifecycle_service")
+    call = next(node for node in ast.walk(factory) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "RunLifecycleService")
+    arguments = {keyword.arg: ast.unparse(keyword.value) for keyword in call.keywords}
+    for parameter, symbol, module in (
+        ("persistence", "PostgresRunLifecyclePersistence", "app.runs.infrastructure.lifecycle_postgres"),
+        ("append_event", "append_event", "app.streaming.infrastructure.run_events_postgres"),
+        ("append_audit_log", "append_audit_log", "app.identity.infrastructure.audit_postgres"),
+    ):
+        assert arguments[parameter] == (f"{symbol}()" if parameter == "persistence" else symbol)
+        assert imports[symbol] == (module, symbol)
+        path = REPO_ROOT / (module.replace(".", "/") + ".py")
+        assert f"../../{path.relative_to(REPO_ROOT).as_posix()}" in source
+        adapter = ast.parse(path.read_text())
+        assert symbol in {node.name for node in adapter.body if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))}
 
 
 def test_undeclared_root_to_domain_internal_import_remains_forbidden(
@@ -927,6 +968,28 @@ def test_frozen_hot_file_growth_is_a_candidate_bound_finding(
     assert finding.exemptible is True
     assert finding.details["base_lines"] == 1
     assert finding.details["head_lines"] == 2
+    assert "Extract responsibilities" in finding.as_dict()["remediation"]
+    assert f"remediation: {finding.remediation}" in architecture_governance._render_text(evaluation)
+
+
+def test_frozen_hot_file_cannot_regrow_after_a_reduction(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, _ = governance_repo
+    _write(repo, "app/worker.py", "BASELINE = True\nOLD_ONE = True\nOLD_TWO = True\n")
+    authority = _commit(repo, "original frozen size")
+    _write(repo, "app/worker.py", "BASELINE = True\n")
+    base = _commit(repo, "extract old responsibilities")
+    _write(repo, "app/worker.py", "BASELINE = True\nNEW_RESPONSIBILITY = True\n")
+    head = _commit(repo, "regrow below the original size")
+
+    evaluation = _evaluate(repo, authority, base, head)
+
+    assert evaluation.exit_code == 2
+    finding = next(item for item in evaluation.findings if item.code == "frozen_hot_file_growth")
+    assert finding.details["base_lines"] == 1
+    assert finding.details["head_lines"] == 2
+    assert finding.details["policy_max_lines"] > 2
 
 
 @pytest.mark.parametrize(

@@ -1,3 +1,4 @@
+import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "../common/Table";
 /* eslint-disable react-refresh/only-export-components -- catalog notice mapping is tested with this selector */
 import { useContext, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
@@ -29,7 +30,6 @@ interface ToolSelectorProps {
   onToggleTool: (toolName: string) => void;
   onToggleCategory: (category: ToolCategory, enabled: boolean) => void;
   onToggleAll: (enabled: boolean) => void;
-  isLoading?: boolean;
   enabledCount: number;
   totalCount: number;
   isOpen?: boolean;
@@ -464,28 +464,28 @@ export function ToolSelector({
                                   </div>
                                   {/* Table Body */}
                                   <div className="bg-[var(--theme-workbench-panel)]">
-                                    <table className="w-full text-xs sm:text-xs">
-                                      <thead>
-                                        <tr className="border-b border-[var(--theme-border)]">
-                                          <th className="px-2.5 sm:px-3 py-1.5 text-left font-medium text-[var(--theme-text-secondary)] uppercase tracking-wide w-auto">
+                                    <Table className="w-full text-xs sm:text-xs">
+                                      <TableHeader>
+                                        <TableRow className="border-b border-[var(--theme-border)]">
+                                          <TableHead className="px-2.5 sm:px-3 py-1.5 text-left font-medium text-[var(--theme-text-secondary)] uppercase tracking-wide w-auto">
                                             {t("tools.table.name")}
-                                          </th>
-                                          <th className="px-2.5 sm:px-3 py-1.5 text-left font-medium text-[var(--theme-text-secondary)] uppercase tracking-wide w-16 sm:w-20">
+                                          </TableHead>
+                                          <TableHead className="px-2.5 sm:px-3 py-1.5 text-left font-medium text-[var(--theme-text-secondary)] uppercase tracking-wide w-16 sm:w-20">
                                             {t("tools.table.type")}
-                                          </th>
-                                          <th className="px-2.5 sm:px-3 py-1.5 text-left font-medium text-[var(--theme-text-secondary)] uppercase tracking-wide">
+                                          </TableHead>
+                                          <TableHead className="px-2.5 sm:px-3 py-1.5 text-left font-medium text-[var(--theme-text-secondary)] uppercase tracking-wide">
                                             {t("tools.table.description")}
-                                          </th>
-                                        </tr>
-                                      </thead>
-                                      <tbody>
+                                          </TableHead>
+                                        </TableRow>
+                                      </TableHeader>
+                                      <TableBody>
                                         {tool.parameters!.map(
                                           (param: ToolParamInfo) => (
-                                            <tr
+                                            <TableRow
                                               key={param.name}
                                               className={`border-b border-[var(--theme-border)] last:border-b-0 hover:bg-[var(--theme-bg-sidebar)] transition-colors`}
                                             >
-                                              <td className="px-2.5 sm:px-3 py-1.5">
+                                              <TableCell className="px-2.5 sm:px-3 py-1.5">
                                                 <div className="flex items-center gap-1">
                                                   <code className="px-1.5 py-0.5 rounded bg-[var(--theme-bg-sidebar)] text-[var(--theme-text)] font-mono font-medium">
                                                     {param.name}
@@ -496,20 +496,20 @@ export function ToolSelector({
                                                     </span>
                                                   )}
                                                 </div>
-                                              </td>
-                                              <td className="px-2.5 sm:px-3 py-1.5">
+                                              </TableCell>
+                                              <TableCell className="px-2.5 sm:px-3 py-1.5">
                                                 <span className="px-1.5 py-0.5 rounded bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)] font-mono text-xs">
                                                   {param.type}
                                                 </span>
-                                              </td>
-                                              <td className="px-2.5 sm:px-3 py-1.5 text-[var(--theme-text-secondary)] leading-relaxed">
+                                              </TableCell>
+                                              <TableCell className="px-2.5 sm:px-3 py-1.5 text-[var(--theme-text-secondary)] leading-relaxed">
                                                 {param.description || "-"}
-                                              </td>
-                                            </tr>
+                                              </TableCell>
+                                            </TableRow>
                                           ),
                                         )}
-                                      </tbody>
-                                    </table>
+                                      </TableBody>
+                                    </Table>
                                   </div>
                                 </div>
                               </div>

@@ -20,21 +20,24 @@ from tools.frontend_release_traceability import (
 
 EXPECTED_CI_VERIFY = (
     "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json "
+    "&& corepack pnpm run test:auth "
     "&& corepack pnpm run test:agent-market "
     "&& corepack pnpm run test:prd-closure-smoke-source "
     "&& corepack pnpm run test:company-rbac-browser-smoke-source "
     "&& corepack pnpm run test:skill-admin-ui "
     "&& corepack pnpm run test:run-monitor "
+    "&& corepack pnpm run test:run-playback "
     "&& corepack pnpm run test:profile-drive "
     "&& corepack pnpm run test:control-plane-ui "
     "&& corepack pnpm run test:model-admin "
     "&& corepack pnpm run test:sse "
     "&& corepack pnpm run test:document-previews "
     "&& corepack pnpm run test:pwa "
+    "&& corepack pnpm run test:browser-preferences "
     "&& eslint . && tsc -b && vite build "
     "&& node scripts/write-build-provenance.mjs"
 )
-EXPECTED_PYTHON_DEPENDENCIES = "python -m pip install pytest pyyaml"
+EXPECTED_PYTHON_DEPENDENCIES = "python tools/frontend_ci_dependencies.py --subset windows-contracts"
 FRONTEND_HEALTHCHECK_FILE_PATHS = (
     "/usr/share/nginx/html/index.html",
     "/usr/share/nginx/html/manifest.json",
@@ -121,7 +124,7 @@ def test_frontend_release_traceability_records_ci_contract_without_local_paths()
     assert trace["workflow"]["enforced_step_commands"] == {
         "Verify static frontend Python contracts": EXPECTED_WORKFLOW_PYTEST,
         "Verify static frontend deploy helper": "python tools/deploy_frontend_static.py --help",
-        "Install Linux contract test dependencies": "python -m pip install pytest",
+        "Install Linux contract test dependencies": "python tools/frontend_ci_dependencies.py --subset linux-contracts",
         "Verify Linux frontend healthcheck contract": EXPECTED_LINUX_WORKFLOW_PYTEST,
     }
     assert trace["workflow"]["missing_step_commands"] == []
@@ -958,3 +961,30 @@ def pytest_generate_tests(metafunc):
                 {"dirty": "unknown"},
             ],
         )
+
+
+def test_monitor_and_playback_cost_contracts_have_distinct_ci_owners() -> None:
+    scripts = json.loads(Path("frontend/web/package.json").read_text())["scripts"]
+    assert scripts["test:run-monitor"].split() == [
+        "tsx", "--test",
+        "src/services/api/__tests__/adminRuns.test.ts",
+        "src/services/api/__tests__/adminUsers.test.ts",
+        "src/components/panels/__tests__/RunMonitorPanel.mounted.test.tsx",
+        "src/components/workbench/__tests__/AdminUserDiagnosticsDrawer.mounted.test.tsx",
+        "src/components/governance/__tests__/workbenchAccessPolicy.test.ts",
+        "src/components/panels/SidebarParts/__tests__/navigationState.test.ts",
+        "src/__tests__/appRouteManifest.test.ts",
+        "src/__tests__/App.test.tsx",
+    ]
+    assert scripts["test:run-playback"].split() == [
+        "tsx", "--test",
+        "src/services/api/__tests__/runPlayback.test.ts",
+        "src/components/layout/AppContent/__tests__/runPlaybackPanelState.test.ts",
+        "src/components/layout/AppContent/__tests__/RunPlaybackPanel.mounted.test.tsx",
+        "src/components/chat/__tests__/contextUiAffordances.test.ts",
+        "src/hooks/useAgent/__tests__/runControlLifecycle.test.ts",
+        "src/hooks/useAgent/runControlLifecycle.test.ts",
+    ]
+    ci_commands = [command.strip() for command in scripts["ci:verify"].split("&&")]
+    assert ci_commands.count("corepack pnpm run test:run-monitor") == 1
+    assert ci_commands.count("corepack pnpm run test:run-playback") == 1

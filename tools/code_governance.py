@@ -6,6 +6,7 @@ import argparse
 import importlib.util
 import json
 import re
+import shlex
 import subprocess
 import sys
 from collections.abc import Iterable, Sequence
@@ -169,12 +170,29 @@ class Violation:
     path: str | None = None
     details: dict[str, Any] = field(default_factory=dict)
 
+    @property
+    def remediation(self) -> str:
+        if self.code == "ruff_unavailable":
+            return "Prepare locked test dependencies with uv sync --locked --extra test, then rerun using that Python interpreter."
+        if self.code == "ruff_failed":
+            command = shlex.join(self.details["command"])
+            return f"Run {command} with the locked test interpreter and fix the reported diagnostics; candidate Ruff ignores cannot bypass this check."
+        return {
+            "functional_hot_file_growth": "Review the added responsibility and extract it into its owner when appropriate; this size signal is advisory.",
+            "hot_file_growth": "Review the added responsibility and reuse the owning implementation; this size signal is advisory.",
+            "production_file_count": "Explain the reached responsibilities and split independently deliverable changes when appropriate; this count is advisory.",
+            "production_net_loc": "Review reuse and remove unnecessary additions; this size signal is advisory.",
+            "test_hot_file_growth": "Keep tests with their behavior owner and avoid duplicating fixtures; this size signal is advisory.",
+            "test_loc_review": "Explain the regression scenarios and fixture reuse; test volume alone does not block the change.",
+        }.get(self.code, "Review the owning contract in docs/architecture/ci-test-readiness-governance.md and rerun the same base/head range.")
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "code": self.code,
             "details": self.details,
             "message": self.message,
             "path": self.path,
+            "remediation": self.remediation,
         }
 
 
@@ -733,7 +751,7 @@ def _render_text(evaluation: Evaluation) -> str:
 
 def _violation_text(item: Violation) -> str:
     location = f" [{item.path}]" if item.path else ""
-    return f"- {item.code}{location}: {item.message}"
+    return f"- {item.code}{location}: {item.message}\n  remediation: {item.remediation}"
 
 
 def _error_payload(error: GovernanceError) -> dict[str, Any]:

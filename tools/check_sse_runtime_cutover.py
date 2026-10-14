@@ -21,6 +21,8 @@ V4_PUBLICATION_CALLS = frozenset(
 )
 V4_PUBLICATION_OWNER_MANIFEST = frozenset(
     {
+        ('app/bootstrap/worker_run_preparation.py', 'prepare_worker_run'),
+        ('app/bootstrap/worker_terminal_completion.py', 'build_worker_terminal_completion_service'),
         ('app/executor_reconciler.py', '_terminalize_reconciliation_failure'),
         ('app/routes/admin_runs.py', 'admin_run_cancel'),
         ('app/routes/runs.py', 'cancel_run'),

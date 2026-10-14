@@ -81,3 +81,22 @@ test("DOCX preview falls back to Mammoth after a renderer failure", async () => 
   assert.deepEqual(result, { kind: "html", html: "<p>Fallback</p>" });
   assert.equal(container.innerHTML, "");
 });
+
+test("DOCX preview retains normal links and removes executable protocols", async () => {
+  const hrefs = ["https://example.test/doc", "mailto:reader@example.test", "tel:+12345678", "#chapter", "javascript:alert(1)", "data:text/html,test", "vbscript:msgbox(1)"];
+  const links = hrefs.map(href => ({
+    href: href as string | null,
+    getAttribute() { return this.href; },
+    removeAttribute() { this.href = null; },
+  }));
+  const container = {
+    innerHTML: "", textContent: "",
+    querySelectorAll: () => links,
+  } as unknown as HTMLElement;
+  await renderDocxPreviewHtml({
+    arrayBuffer: new ArrayBuffer(8), container,
+    renderAsync: async (_input, output) => { output.innerHTML = "<p>Links</p>"; },
+    convertToHtml: async () => { throw new Error("Unexpected fallback"); },
+  });
+  assert.deepEqual(links.map(link => link.href), [...hrefs.slice(0, 4), null, null, null]);
+});

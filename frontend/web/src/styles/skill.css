@@ -249,17 +249,17 @@
   font-weight: 600;
 }
 
-.skill-catalog-page-size select {
+.skill-catalog-page-size [data-slot="select-trigger"] {
   min-height: 2rem;
   border: 1px solid var(--theme-border);
   border-radius: 6px;
   background: var(--theme-workbench-panel);
-  padding: 0 1.8rem 0 0.55rem;
+  padding: 0 0.55rem;
   color: var(--theme-text);
   font-size: 0.75rem;
 }
 
-.skill-catalog-page-size select:focus-visible {
+.skill-catalog-page-size [data-slot="select-trigger"]:focus-visible {
   outline: 2px solid var(--theme-primary);
   outline-offset: 2px;
 }

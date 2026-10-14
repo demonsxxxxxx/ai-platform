@@ -900,6 +900,7 @@ async def create_run(
                     workspace_id=request.workspace_id,
                     user_id=user_id,
                     session_id=request.session_id,
+                    input_modes=input_modes,
                 )
             primary_file_ids = primary_file_ids_for_run(
                 requested_file_ids=request.file_ids,

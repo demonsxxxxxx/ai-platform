@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -103,4 +103,11 @@ test("Agent workspace exposes global history beside task history and keeps both 
   assert.match(source, /全部对话/);
   assert.match(source, /任务历史/);
   assert.match(source, /onSelectGlobalSession\(session\)/);
+});
+
+test("session history has no detached preview with its own event projection", () => {
+  assert.equal(
+    existsSync(join(process.cwd(), "src/components/sidebar/SessionPreviewDialog.tsx")),
+    false,
+  );
 });

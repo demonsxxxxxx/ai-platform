@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 
+from app.context import api as context_api
 from app.identity.infrastructure import audit_postgres as identity_audit_postgres
 from app.persistence import artifacts as persistence_artifacts
 from app.persistence import object_deletions as persistence_object_deletions
@@ -120,6 +121,9 @@ async def run_data_retention_maintenance(
     memory_limit = int(getattr(settings, "memory_physical_purge_limit", 50))
     grace_days = int(getattr(settings, "memory_physical_purge_grace_days", 7))
     async with transaction() as conn:
+        await context_api.queue_provider_session_images_for_deletion(
+            conn, limit=object_delete_batch_limit,
+        )
         queued = await persistence_artifacts.queue_expired_artifacts_for_deletion(
             conn,
             limit=artifact_selection_limit,
@@ -154,17 +158,25 @@ async def run_data_retention_maintenance(
                 },
             )
 
-    async with transaction() as conn:
-        claimed = await persistence_object_deletions.claim_object_deletions(
-            conn,
-            limit=object_delete_batch_limit,
-            max_attempts=object_delete_max_attempts,
-        )
-
-    object_storage = storage or (ObjectStorage() if claimed else None)
+    object_storage = storage
+    claimed_objects = 0
     deleted_objects = 0
     failed_objects = 0
-    for item in claimed:
+    # Claim only the object about to enter I/O. Preclaiming the full batch burns
+    # retries for untouched tail items when the maintenance budget cancels us.
+    for _ in range(max(1, min(object_delete_batch_limit, 200))):
+        async with transaction() as conn:
+            claimed = await persistence_object_deletions.claim_object_deletions(
+                conn,
+                limit=1,
+                max_attempts=object_delete_max_attempts,
+            )
+        if not claimed:
+            break
+        item = claimed[0]
+        claimed_objects += 1
+        if object_storage is None:
+            object_storage = ObjectStorage()
         try:
             assert object_storage is not None
             await run_storage_io(
@@ -212,7 +224,7 @@ async def run_data_retention_maintenance(
         "status": "completed",
         "queued_artifacts": len(queued),
         "purged_memory": len(purged_memory),
-        "claimed_objects": len(claimed),
+        "claimed_objects": claimed_objects,
         "deleted_objects": deleted_objects,
         "failed_objects": failed_objects,
     }

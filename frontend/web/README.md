@@ -92,6 +92,23 @@ Current platform-facing contract areas:
   `/api/ai/memory/*` and `/api/ai/admin/memory/*` through public/admin
   projections.
 
+## Run question submission recovery
+
+`RunQuestionCard` exposes an explicit retry when the current question answer
+submission is uncertain. `useRunInputs` retains the original request and input ID;
+retry reuses that request rather than rebuilding the answer from the draft.
+Answer editing and ordinary submission remain locked until reconciliation.
+Only the matching, editable pending question offers retry, never a submitting,
+closed, resolved, historical, or unrelated question. The existing in-flight
+write controller blocks duplicate retry clicks before React renders. Navigation
+and identity changes retain their existing ownership retirement behavior.
+A server timeout/default answer clears the pending manual retry; late retry
+responses cannot replace that authoritative answer or reopen its question.
+
+The mounted `runInputs.mounted.test.tsx` regressions in `test:sse` use synthetic
+API responses to cover uncertainty, repeat clicks, response loss, read-only
+questions, and navigation without contacting the model provider.
+
 ## Migration Boundaries
 
 This import is intentionally source-first:

@@ -1,5 +1,7 @@
 import importlib.metadata
 import json
+import subprocess
+import sys
 from pathlib import Path
 import tomllib
 from unittest.mock import patch
@@ -8,6 +10,7 @@ import pytest
 import yaml
 
 from tests.support.yaml_contracts import load_unique_yaml
+from tools import frontend_ci_dependencies
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,7 +28,7 @@ PYTEST_COMMAND = (
 LINUX_PYTEST_COMMAND = (
     "python -m pytest tests/test_frontend_linux_contracts.py -q --basetemp .pytest-tmp"
 )
-PYTHON_TEST_DEPENDENCIES = "python -m pip install pytest pyyaml"
+PYTHON_TEST_DEPENDENCIES = "python tools/frontend_ci_dependencies.py --subset windows-contracts"
 JSONSCHEMA_CONTRACT_START = "          import importlib.metadata"
 JSONSCHEMA_CONTRACT_END = "          '@ | python -"
 BACKEND_OWNED_STATIC_SUITES = {
@@ -95,7 +98,7 @@ def test_frontend_ci_workflow_derives_and_verifies_jsonschema_from_lock_authorit
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    assert "python -m pip install pytest pyyaml jsonschema" not in workflow
+    assert "python -m pip install pytest" not in workflow
     assert 'python -c "import jsonschema"' in workflow
     assert 'f"jsonschema=={locked_jsonschema}"' in workflow
 
@@ -134,6 +137,25 @@ def test_frontend_ci_workflow_derives_and_verifies_jsonschema_from_lock_authorit
         verify_installed(expected_locked_version)
 
 
+def test_frontend_ci_runs_browser_auth_owner_regressions():
+    scripts = json.loads(PACKAGE.read_text(encoding="utf-8"))["scripts"]
+    assert "corepack pnpm run test:auth" in scripts["ci:verify"].split(" && ")
+    assert scripts["test:auth"].split() == [
+        "tsx", "--test",
+        "src/hooks/__tests__/browserAuthCoordinator.test.ts",
+        "src/hooks/__tests__/browserAuthStorage.test.ts",
+        "src/hooks/__tests__/useAuth.test.ts",
+        "src/hooks/__tests__/useAuthProvider.test.tsx",
+        "src/services/api/__tests__/auth.test.ts",
+        "src/services/api/__tests__/token.test.ts",
+        "src/services/api/__tests__/authLogging.test.ts",
+        "src/services/api/__tests__/download.test.ts",
+        "src/services/api/__tests__/authenticatedRequest.test.ts",
+    ]
+    for selector in scripts["test:auth"].split()[2:]:
+        assert (PACKAGE.parent / selector).is_file()
+
+
 def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability():
     workflow = WORKFLOW.read_text(encoding="utf-8")
     backend_workflow = BACKEND_WORKFLOW.read_text(encoding="utf-8")
@@ -143,6 +165,18 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
         in test_sse.split(" && ")
     )
     assert "src/hooks/useAgent/__tests__/historyLoader.test.ts" in test_sse
+    for selector in (
+        "src/components/chat/__tests__/composerCommandParity.test.ts",
+        "src/components/layout/AppContent/__tests__/useSessionSync.test.ts",
+        "src/components/layout/AppContent/__tests__/chatViewMessageListKey.test.ts",
+        "src/hooks/__tests__/useSession.test.ts",
+        "src/hooks/useAgent/__tests__/runControlLifecycle.test.ts",
+        "src/hooks/useAgent/runControlLifecycle.test.ts",
+        "src/hooks/useAgent/__tests__/runLifecycle.test.ts",
+        "src/hooks/useAgent/__tests__/stopGenerationRunCancel.test.ts",
+        "src/services/api/__tests__/session.test.ts",
+    ):
+        assert test_sse.split().count(selector) == 1
     assert "group: ai-platform-frontend-${{ github.event.pull_request.number || github.run_id }}" in workflow
     assert "cancel-in-progress: ${{ github.event_name == 'pull_request' }}" in workflow
     contract = _workflow_contract()
@@ -218,6 +252,7 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     assert "unexpected_disposition" in image_job
     for step_name in [
         "Set up Python for Linux contracts",
+        "Set up uv for Linux contracts",
         "Install Linux contract test dependencies",
         "Verify Linux frontend healthcheck contract",
         "Resolve image source repository",
@@ -320,7 +355,7 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     expected_linux_steps = (
         "      - name: Install Linux contract test dependencies\n"
         "        if: steps.image-scope.outputs.build == 'true'\n"
-        "        run: python -m pip install pytest\n\n"
+        "        run: python tools/frontend_ci_dependencies.py --subset linux-contracts\n\n"
         "      - name: Verify Linux frontend healthcheck contract\n"
         "        if: steps.image-scope.outputs.build == 'true'\n"
         f"        run: {LINUX_PYTEST_COMMAND}"
@@ -365,3 +400,85 @@ def test_frontend_required_contract_accepts_only_all_success() -> None:
     assert callable(require_successful_results)
 
     require_successful_results({"frontend": "success", "frontend-image": "success"})
+
+
+@pytest.mark.parametrize("subset", ["windows-contracts", "linux-contracts"])
+def test_frontend_dependency_subset_uses_locked_export_and_checks_installed_versions(
+    subset: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with LOCK.open("rb") as handle:
+        packages = tomllib.load(handle)["package"]
+    versions = {package["name"]: package["version"] for package in packages}
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        if command[0] == "uv":
+            Path(command[-1]).write_text("pytest==" + versions["pytest"], encoding="utf-8")
+        else:
+            assert Path(command[5]).is_file()
+
+    monkeypatch.setattr(subprocess, "run", run)
+    with patch.object(importlib.metadata, "version", side_effect=versions.__getitem__) as version:
+        frontend_ci_dependencies.install_dependencies(subset)
+    export, install = [call[0] for call in calls]
+    assert export[:-1] == [
+        "uv", "export", "--locked", "--extra", "test", "--no-emit-project",
+        "--no-hashes", "--output-file",
+    ]
+    assert install[:5] == [sys.executable, "-m", "pip", "install", "--constraint"]
+    assert install[5] == export[-1]
+    expected = ("pytest", "pyyaml") if subset == "windows-contracts" else ("pytest",)
+    assert tuple(install[6:]) == expected
+    assert [call.args[0] for call in version.call_args_list] == list(expected)
+    assert all(kwargs["check"] and kwargs["cwd"] == ROOT for _, kwargs in calls)
+    assert not Path(export[-1]).exists()
+
+
+@pytest.mark.parametrize("failure", ["export", "install", "missing", "mismatch"])
+def test_frontend_dependency_installation_fails_closed(failure: str) -> None:
+    def run(command, **kwargs):
+        if (command[0] == "uv") == (failure == "export") and failure in {"export", "install"}:
+            raise subprocess.CalledProcessError(1, command)
+
+    with patch.object(subprocess, "run", side_effect=run) as execute:
+        with patch.object(importlib.metadata, "version") as version:
+            if failure == "missing":
+                version.side_effect = importlib.metadata.PackageNotFoundError("pytest")
+            else:
+                version.return_value = "0.0.0"
+            with pytest.raises((subprocess.CalledProcessError, RuntimeError)):
+                frontend_ci_dependencies.install_dependencies("linux-contracts")
+    assert execute.call_count == (1 if failure == "export" else 2)
+
+
+@pytest.mark.parametrize("packages", [[], [{"name": "pytest"}], [
+    {"name": "pytest", "version": "1"}, {"name": "pytest", "version": "2"},
+]])
+def test_frontend_dependency_installation_rejects_ambiguous_lock(packages, tmp_path: Path) -> None:
+    (tmp_path / "uv.lock").write_text("", encoding="utf-8")
+    with patch.object(tomllib, "load", return_value={"package": packages}):
+        with patch.object(subprocess, "run") as execute:
+            with pytest.raises(RuntimeError, match="exactly one version for pytest"):
+                frontend_ci_dependencies.install_dependencies("linux-contracts", root=tmp_path)
+    execute.assert_not_called()
+
+
+def test_frontend_uv_bootstrap_matches_existing_authority_and_precedes_each_subset() -> None:
+    workflow = _workflow_contract()
+    with (ROOT / "pyproject.toml").open("rb") as handle:
+        required = tomllib.load(handle)["tool"]["uv"]["required-version"]
+    assert required == "==" + workflow["env"]["UV_VERSION"]
+    backend = _workflow_contract(BACKEND_WORKFLOW)
+    assert backend["env"]["UV_VERSION"] == workflow["env"]["UV_VERSION"]
+    for job, setup_name, install_name in [
+        ("frontend", "Set up uv for frontend contracts", "Install Python test dependencies"),
+        ("frontend-image", "Set up uv for Linux contracts", "Install Linux contract test dependencies"),
+    ]:
+        steps = workflow["jobs"][job]["steps"]
+        setup = next(step for step in steps if step["name"] == setup_name)
+        install = next(step for step in steps if step["name"] == install_name)
+        assert setup["uses"] == "astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d"
+        assert setup["with"]["version"] == "${{ env.UV_VERSION }}"
+        assert steps.index(setup) < steps.index(install)
+        assert setup.get("if") == install.get("if")

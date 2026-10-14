@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "../../common/Table";
 
 import type {
   SkillCatalogEntry,
@@ -143,18 +144,19 @@ export function SkillManagementTable({
   }, [openActionName]);
 
   return (
-    <div
+    <Table
       aria-label={t("skills.managementTable.listLabel")}
       className="skill-management-table skill-management-table--master"
       data-skill-management-table
       role="table"
     >
-      <div
+      <TableHeader>
+      <TableRow
         className={`skill-management-table__head ${canBatch ? "skill-management-table__head--selectable" : ""}`}
         role="row"
       >
         {canBatch ? (
-          <span className="skill-management-table__select">
+          <TableHead className="skill-management-table__select">
             <input
               aria-label={
                 allSelectableSelected
@@ -165,17 +167,18 @@ export function SkillManagementTable({
               onChange={onSelectAll}
               type="checkbox"
             />
-          </span>
+          </TableHead>
         ) : null}
-        <span role="columnheader">{t("skills.managementTable.skill")}</span>
-        <span role="columnheader">{t("skills.managementTable.runtimeStatus")}</span>
-        <span className="skill-management-table__distribution" role="columnheader">{t("skills.managementTable.catalogStatus")}</span>
-        <span className="skill-management-table__package" role="columnheader">{t("skills.managementTable.package")}</span>
-        <span className="skill-management-table__updated" role="columnheader">{t("skills.managementTable.updatedAt")}</span>
-        <span aria-label={t("skills.managementTable.actions")} role="columnheader" />
-      </div>
+        <TableHead role="columnheader">{t("skills.managementTable.skill")}</TableHead>
+        <TableHead role="columnheader">{t("skills.managementTable.runtimeStatus")}</TableHead>
+        <TableHead className="skill-management-table__distribution" role="columnheader">{t("skills.managementTable.catalogStatus")}</TableHead>
+        <TableHead className="skill-management-table__package" role="columnheader">{t("skills.managementTable.package")}</TableHead>
+        <TableHead className="skill-management-table__updated" role="columnheader">{t("skills.managementTable.updatedAt")}</TableHead>
+        <TableHead aria-label={t("skills.managementTable.actions")} role="columnheader" />
+      </TableRow>
+      </TableHeader>
 
-      <div role="rowgroup">
+      <TableBody role="rowgroup">
         {entries.map((entry) => {
           const actionName = entry.actionName;
           const canAct = actionName !== null && entry.runtimeSkill !== null;
@@ -190,7 +193,7 @@ export function SkillManagementTable({
             entry.catalogStatus === "internal" ? Boxes : Store;
           const SkillIcon = skillIcon(entry.displayName);
           return (
-            <div
+            <TableRow
             aria-selected={entry.id === selectedSkillId}
             className={`skill-management-table__row ${canBatch ? "skill-management-table__row--selectable" : ""} ${entry.id === selectedSkillId ? "skill-management-table__row--selected" : ""}`}
             data-catalog-status={entry.catalogStatus}
@@ -210,7 +213,7 @@ export function SkillManagementTable({
             tabIndex={0}
           >
             {canBatch && actionName ? (
-              <div className="skill-management-table__select" role="cell">
+              <TableCell className="skill-management-table__select" role="cell">
                 <input
                   aria-label={t("skills.managementTable.selectSkill", { name: entry.displayName })}
                   checked={selectedNames.has(actionName)}
@@ -218,12 +221,12 @@ export function SkillManagementTable({
                   onChange={() => onSelectSkill(actionName)}
                   type="checkbox"
                 />
-              </div>
+              </TableCell>
             ) : canBatch ? (
-              <span aria-hidden="true" role="cell" />
+              <TableCell aria-hidden="true" role="cell" />
             ) : null}
 
-            <div
+            <TableCell
               className="skill-management-table__identity"
               data-label={t("skills.managementTable.skill")}
               role="cell"
@@ -266,9 +269,9 @@ export function SkillManagementTable({
                   </div>
                 ) : null}
               </div>
-            </div>
+            </TableCell>
 
-            <div className="skill-management-table__runtime" data-label={t("skills.managementTable.runtimeStatus")} role="cell">
+            <TableCell className="skill-management-table__runtime" data-label={t("skills.managementTable.runtimeStatus")} role="cell">
               <span
                 className={`skill-management-table__status ${
                   entry.runtimeEnabled
@@ -287,9 +290,9 @@ export function SkillManagementTable({
                       ? t("skills.managementTable.enabled")
                       : t("skills.managementTable.disabled")}
               </span>
-            </div>
+            </TableCell>
 
-            <div
+            <TableCell
               className="skill-management-table__distribution min-w-0"
               data-label={t("skills.managementTable.catalogStatus")}
               role="cell"
@@ -308,9 +311,9 @@ export function SkillManagementTable({
                   {entry.publishedCatalogName}
                 </span>
               ) : null}
-            </div>
+            </TableCell>
 
-            <div
+            <TableCell
               className="skill-management-table__package"
               data-label={t("skills.managementTable.package")}
               role="cell"
@@ -321,17 +324,17 @@ export function SkillManagementTable({
               >
                 {entry.version || "-"}
               </span>
-            </div>
+            </TableCell>
 
-            <div
+            <TableCell
               className="skill-management-table__updated text-xs text-[var(--theme-text-secondary)]"
               data-label={t("skills.managementTable.updatedAt")}
               role="cell"
             >
               {updatedDateLabel(entry.updatedAt ?? undefined)}
-            </div>
+            </TableCell>
 
-            <div
+            <TableCell
               className="skill-management-table__actions"
               data-label={t("skills.managementTable.actions")}
               role="cell"
@@ -450,11 +453,11 @@ export function SkillManagementTable({
                   )}
                 </span>
               ) : null}
-            </div>
-            </div>
+            </TableCell>
+            </TableRow>
           );
         })}
-      </div>
-    </div>
+      </TableBody>
+    </Table>
   );
 }

@@ -15,8 +15,9 @@ slices. Exact progress and exception dispositions remain in issue/PR.
 CI, test classification, runtime readiness, historical evidence, and external
 acceptance are governed by
 [`ci-test-readiness-governance.md`](ci-test-readiness-governance.md). That
-contract is a disposition ledger; it does not convert a planned deletion or a
-green source check into deployment or runtime proof.
+contract defines evidence and retirement requirements, not a project status
+ledger. Current dispositions belong in the active issue/PR; neither a planned
+deletion nor a green source check establishes deployment or runtime proof.
 
 ## 1. Architectural objective
 
@@ -120,21 +121,37 @@ admission. MCP owns authorized tool registration and runtime subject projection
 in `mcp.domain`; Identity owns distribution decisions and capability audits.
 Agent Apps owns locked Profile reauthorization and snapshot comparison. Context
 owns scoped Worker snapshot/attachment projections and file materialization,
-composed by `bootstrap.context`. Artifacts owns public manifest/download
+composed by `bootstrap.context`. `context.application.snapshot_recording` owns
+the initial snapshot, Run reference, and private event write sequence, composed
+by `bootstrap.context_snapshot`. It uses the admitting caller's connection and
+transaction so Run creation and snapshot binding commit or roll back together;
+material selection remains in `context_builder`. Artifacts owns public manifest/download
 projections; Sandbox owns executor failure classification; Execution owns Worker
 failure, usage, required-tool, and Skill evidence projection through its public
 API. Runs owns locked Worker admission, snapshot validation, dispatch binding,
 result commit, and exception/cancellation terminal transactions in
 `runs.application.worker_dispatch_admission`, `worker_locked_authorization`,
 `worker_locked_snapshot`, `worker_dispatch_binding`, `worker_result_commit`, and
-`worker_execution_terminal`. Bootstrap binds concrete repositories and other
+`worker_execution_terminal`. `worker_terminal_completion` is the shared
+completion use case for inline results and durable receipt recovery, reusing
+the same atomic `worker_result_commit` and publishing only after commit.
+`bootstrap.worker_run_preparation` composes the unchanged admission/binding
+order for both ingress paths. `bootstrap.executor_terminal_reconciliation`
+restores the receipt and enters completion without constructing a queue envelope
+or calling `worker.process_run_payload`; it never resubmits the executor.
+Both ingress paths require their process runtime services to be configured
+(including Agent Profile authority) before entry; receipt recovery does not
+initialize global services or depend on an earlier queue slot.
+Bootstrap binds concrete repositories and other
 context services, including the complete dispatch admission and binding graphs.
 Worker supplies per-Run authority and transaction scope to those assembled
 operations; it does not choose Context projectors, specification compilers,
 placeholder lease writers, or early-failure collaborators.
-Worker orchestrates dispatch and publishes committed events
-only after each transaction exits; the former Worker capability/early-failure
+Worker orchestrates queue dispatch; shared preparation and completion publish
+committed events only after each transaction exits; the former Worker capability/early-failure
 helpers and `Locked*Ports` callback bags have no compatibility owner.
+The unused `fail_run_for_worker` boolean wrapper is retired; failure handling
+uses the Runs terminal completion service and its bound attempt authority.
 Result persistence rolls back artifacts, Skill snapshots, messages, and events
 when any terminal CAS loses authority. Worker interruption cleanup covers only
 its SDK placeholder lease, marks release after transaction commit, and leaves
@@ -175,6 +192,18 @@ The immutable admitted execution specification, durable attempt authority, and
 their mixed-version migration are defined by
 [`execution-spec-and-attempt-lifecycle.md`](execution-spec-and-attempt-lifecycle.md).
 
+Streaming owns event contracts: `streaming.events` exposes the public event sets
+from `streaming.domain.protocol_v4` and the durable envelope version from
+`streaming.domain.run_events`. The root control-plane module does not define
+another event taxonomy or placeholder event envelope. Retiring an unused Python
+record does not retire persisted events, public v4 schemas, or Context snapshot
+versions and their readers.
+
+The legacy `capabilities` record carries only the internal Harness routing
+identity and label consumed by Intent and Run selection/recovery. It is not a
+public response or an authorization/visibility authority; those decisions stay
+with the owning contexts.
+
 ### 2.2 Kernel and platform limits
 
 `kernel` is a dependency leaf for framework-neutral primitives used by at least
@@ -187,6 +216,13 @@ wrap connection pools, transactions, Redis clients, object-storage clients, and
 structured logging. It MUST NOT decide authorization, lifecycle, admission,
 retention eligibility, release, or public projection. Domain-specific SQL and
 storage decisions remain in that domain's `infrastructure` package.
+
+The shared Redis lifecycle owner (`app.redis_client`) admits one close operation
+per event-loop entry. Once closing starts, existing handles and new acquisition
+remain unavailable. Failed or cancelled close retains that same client for a
+later exclusive cleanup retry; cancellation propagates unchanged. Only a
+successful close removes the entry and permits a new pool. A retry does not
+reactivate old handles or establish that interrupted physical cleanup succeeded.
 
 `bootstrap` is the composition root. It MAY import every layer to create the API,
 worker, executor, and maintenance processes. It MUST NOT contain business rules
@@ -596,10 +632,12 @@ ledger. It names the target owner for future bounded migrations.
 | Queue consumers, `app/worker.py`, `app/worker_main.py`, model/executor selection | `execution` plus `bootstrap.worker` |
 | `app/executors/**` and Harness SDK translation | `execution.infrastructure.harness` |
 | `app/context/**`, memory selection and context continuity | `context` |
-| `app/attachments/**` and file parser contracts | byte classification belongs to `files`; Skill requirements belong to `skills`; run attachment admission is orchestrated by `runs` through both public APIs |
+| `app/context/domain/provider_media.py`, `app/context/infrastructure/provider_images.py` | Context owns lossless private image references, persistence and object-deletion ownership |
+| `app/execution/infrastructure/harness/claude/session_images.py` | Claude Harness adapter owns recognition of SDK-specific image fields |
+| `app/file_parser_contracts.py` and `app/file_preview_contracts.py` | `files` owns the separately authorized, bounded XLSX presentation preview; it is not a Run admission or attachment-staging parser |
 | Upload/file authorization and file lifecycle persistence | `files` |
 | Artifact records, lineage, and expiry eligibility | `artifacts`; shared byte client remains `platform.object_storage` |
-| `app/persistence/object_deletions.py` and shared file/artifact outbox transitions | `object_lifecycle` |
+| `app/persistence/object_deletions.py` and shared file/artifact/provider-image outbox transitions | `object_lifecycle` |
 | `app/data_retention.py` and maintenance scheduling | `bootstrap.maintenance` orchestrating `object_lifecycle`, `artifacts`, and `context` public APIs |
 | `app/streaming/**`, run-event repositories and SSE projection | `streaming` |
 | `app/mcp/**` and MCP sections of the global repository | `mcp` |
@@ -613,6 +651,17 @@ ledger. It names the target owner for future bounded migrations.
 | `app/routes/**` | each context's `transport/http`; shared root router assembly only in `bootstrap.api` |
 | readiness, audit, acceptance, baseline and evidence generators in `app/` | supported runtime health belongs to its domain; source/release/evidence tools move to `tools/` or `scripts/`; obsolete POCs are deleted |
 | fake providers, deterministic adapters, and executor stubs | `tests/support` unless the capability is explicitly supported and registered in production |
+
+The former `app/attachments` typed-admission package is retired without a
+replacement registry or migration of its parser/Skill-selection policy into
+Files, Skills, or Runs. Retirement follows the current source inventory: there
+are no production callers outside the package.
+[ADR 0010](../adr/0010-sandbox-owned-attachment-content-processing.md) remains
+proposed design context, not retirement authority. The current Context call chain
+owns authorized raw-file staging and metadata delivery, including the existing
+identity, resource, and declared-XLSX package-safety checks. The independent XLSX
+presentation preview retains its parser core and dependencies. Existing Skill
+authorization and persisted historical failure projections remain unchanged.
 
 ## 11. Test architecture
 
@@ -647,39 +696,51 @@ acceptance procedure in the repository authority documents.
 
 ## 12. Executable governance
 
-The architecture decision is followed by a separate, independently reviewed
-gate. The gate MUST use the trusted exact-base/exact-head mechanism already
-used by repository governance and initially enforce new changes rather than
-pretend the legacy tree is clean.
+The current [trusted governance workflow](../../.github/workflows/ai-platform-trusted-governance-v2.yml)
+executes accepted-base `tools/trusted_governance.py` validation, then accepted-base
+`tools/code_governance.py` and `tools/architecture_governance.py` against the exact
+base/head candidate. Candidate code cannot certify its own governance changes.
+The architecture checker evaluates new or changed surfaces against trusted
+policy; it does not certify the whole legacy tree as clean.
 
-The first gate version MUST check:
+Current machine checks cover:
 
-1. forbidden dependency edges among domain, application, infrastructure,
-   transport, platform, bootstrap, and compat layers;
-2. cross-domain imports limited to `api.py`, `events.py`, and `kernel` types;
-3. no new unapproved `app/` root modules or generic dumping modules;
-4. no new domain responsibility or unexplained growth in frozen hot files;
-5. production registries exclude test doubles and arbitrary dynamic imports;
-6. governed protocol constants and registry keys have one declared owner;
-7. moved/deleted public, dynamic, or persisted surfaces name their proof tier;
-8. architecture exceptions bind exact paths and candidate scope, state a
-   reason/owner/removal condition, expire, and cannot exempt security or
-   authority violations.
+1. new forbidden dependency edges and cross-domain internal imports;
+2. new/restored unapproved root modules, undeclared packages/layers, and
+   forbidden generic names or delivery-label tokens at new module locations;
+3. frozen hot-file no-growth and absolute ceilings, with only the implemented
+   identity-preserving import-contraction allowance;
+4. declared production registry keys, concrete constructor identities and
+   settings selectors, excluding test doubles and arbitrary dynamic imports;
+5. declared governed-symbol owners and prohibited duplicate definitions;
+6. candidate-bound architecture exceptions with exact paths, owner, reason,
+   expiry and removal condition, without exemptions for non-exemptible findings.
 
-Machine configuration for the gate is a policy input, not a manual progress
-ledger. The follow-up owns the root `architecture-policy.json` plus
-`schemas/architecture-policy.v1.schema.json`. The policy enumerates target
-packages/layers, allowed public cross-domain modules, approved root modules,
-governed symbol owners, canonical registry module/key/settings-selector owners,
-and frozen hot files. A candidate-only
+Deletion proof tiers, compatibility consumers, business-responsibility placement,
+and retirement completeness require human review under the
+[delivery workflow](../agent-rules/github-issue-pr-workflow.md) and
+[PR template](../../.github/PULL_REQUEST_TEMPLATE.md). The architecture checker
+does not read PR bodies. The retirement checklist is a review index; reviewers
+must inspect or rerun its referenced inventory, not treat filled fields as proof.
+
+Architecture findings include a `remediation` string in JSON and a corresponding
+text hint. These describe how to restore the owning boundary; they do not change
+finding codes, exception eligibility, trusted authority, or exit status. Rerun the
+same exact authority/base/head range after fixing the reported responsibility.
+
+Machine configuration is a policy input, not a manual progress ledger.
+[`architecture-policy.json`](../../architecture-policy.json) and
+[`schemas/architecture-policy.v1.schema.json`](../../schemas/architecture-policy.v1.schema.json)
+declare target packages/layers, public cross-domain modules, root allowances,
+governed symbol and registry owners, and frozen hot files. A candidate-only
 `.architecture-governance-exception.json` binds an exception to exact base/head,
 paths, owner, reason, and removal condition. The checker applies an exception
 only when the candidate adds or changes that file. An exception inherited
 unchanged from the base is inactive: it cannot exempt new findings and cannot
 lock later candidates after its original merge. Candidates SHOULD delete an
 inherited inactive exception when they are otherwise performing an authority-only
-cleanup. The gate itself MUST be introduced in a later PR so the candidate that
-defines it cannot certify its own correctness.
+cleanup. Governance changes still require independent review and accepted-base
+validation; modifying candidate policy or checker code cannot self-authorize them.
 
 The trusted authority must validate before candidate evaluation. A stale root
 allowance is permitted when its module has been deleted, but a candidate cannot
@@ -718,3 +779,44 @@ project files or start an external execution environment. Backend nullable
 `project_meta` projections and historical messages remain under their API/data
 owners and are not removed by this frontend retirement. Skills ZIP export remains
 an independent, active capability.
+
+`ToolResultPanel` owns explicit UI dismissal: custom headers receive its close
+callback so X, Escape, overlay and mobile swipe all clear sidebar history before
+closing. Registry replacement, Back restoration and unmount remain separate from
+explicit dismissal; conversation/auth revocation retains its existing store owner.
+Pending mobile swipe dismissal belongs to the logical registry key. Replacing
+content in the same mounted host cancels its timer and drag state before the
+replacement can receive the old close action.
+`useSidebarPanel` reserves desktop layout space only for an open, non-fullscreen
+sidebar. Center/fullscreen panels keep their open-owned interactions without a
+layout lease; reference counting preserves other preview/editor sidebar leases.
+
+
+### XLSX identity and retained preview execution
+
+`files/domain/xlsx_preview.py` owns pure XLSX metadata identity, parser
+registration and bounded parser policy. Metadata readers in `run_projection`,
+`routes/frontend_projections`, and `routes/files` use `files.api`; importing
+that public boundary must not load the parser, bootstrap, preview runtime,
+openpyxl, or construct a preview semaphore/executor. Parser selection remains
+extension **or** MIME; public preview eligibility remains extension **and**
+MIME, including authoritative filename conflict rejection and storage-key
+basename fallback. The unconnected Attachments typed-admission package is
+retired; current raw-file delivery does not depend on its classification policy.
+
+This is the identity/policy slice, not preview execution retirement.
+`file_preview_contracts.py` still owns wire v2 DTOs, public projection, bounded
+execution, admission, cancellation/reaper ownership and its existing logger.
+`file_parser_contracts.py` still owns its three Pydantic input/evidence/result
+models, preprocessing error and ZIP/OPC/XML/openpyxl core. Both approved
+root allowances and their runtime CI selectors remain required. The image-only
+configuration contract is also retained with its actual preview caller.
+
+A later preview ownership change must establish a canonical transport and
+parser-contract boundary under the dependency rules in §3 before retiring these
+roots. It must not add application-to-Pydantic, canonical-to-legacy, or
+API-to-transport imports, or bypass those rules with an unowned callback graph.
+That follow-up must preserve the current process-wide two-slot admission,
+physical completion/reaper policy, callable identities and public JSON/error
+contracts. Presentation preview remains separately authorized; this does not
+introduce Run attachment preprocessing or expand parser admission.

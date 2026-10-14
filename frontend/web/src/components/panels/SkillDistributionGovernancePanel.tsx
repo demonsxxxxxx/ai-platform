@@ -3,6 +3,7 @@ import { RefreshCw, Save, ShieldCheck } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { useAuth } from "../../hooks/useAuth";
+import { EnterpriseSelect } from "../common/EnterpriseSelect";
 
 import { RoleSelector } from "../mcp/RoleSelector";
 import { DepartmentDirectorySelector } from "./DepartmentDirectorySelector";
@@ -334,25 +335,23 @@ export function SkillDistributionGovernancePanel({
                 </label>
                 <label className="es-field">
                   <span className="es-label">{t("skills.governance.status.label")}</span>
-                  <select
-                    className="enterprise-field-control es-input"
+                  <EnterpriseSelect
+                    aria-label={t("skills.governance.status.label")}
                     data-skill-distribution-status
                     disabled={saving}
-                    onChange={(event) =>
+                    onChange={(status) =>
                       setDraft((current) =>
                         current
-                          ? {
-                              ...current,
-                              status: event.target.value as CapabilityDistributionStatus,
-                            }
+                          ? { ...current, status: status as CapabilityDistributionStatus }
                           : current,
                       )
                     }
                     value={draft.status}
-                  >
-                    <option value="active">{t("skills.governance.status.active")}</option>
-                    <option value="disabled">{t("skills.governance.status.disabled")}</option>
-                  </select>
+                    options={[
+                      { value: "active", label: t("skills.governance.status.active") },
+                      { value: "disabled", label: t("skills.governance.status.disabled") },
+                    ]}
+                  />
                 </label>
               </div>
 

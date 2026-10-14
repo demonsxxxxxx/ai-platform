@@ -41,6 +41,18 @@ function diagnosticValue(value: unknown): string {
   }
 }
 
+function sdkErrorItems(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value;
+  if (value === null || typeof value !== "object") return [];
+  const envelope = value as Record<string, unknown>;
+  if (!Object.hasOwn(envelope, "mcp_session_failures") || !Array.isArray(envelope.mcp_session_failures)) return [];
+  const reported = Object.hasOwn(envelope, "sdk_reported_errors") ? envelope.sdk_reported_errors : undefined;
+  return [
+    ...(Array.isArray(reported) ? reported : reported == null ? [] : [reported]),
+    ...envelope.mcp_session_failures,
+  ];
+}
+
 function sdkHttpStatus(value: unknown): number | null {
   return typeof value === "number" && Number.isInteger(value) && value >= 100 && value <= 599 ? value : null;
 }
@@ -110,9 +122,7 @@ export function RunDiagnosticsSection({
     );
   }
   const apiErrorStatus = sdkHttpStatus(diagnostics.details.sdk.api_error_status);
-  const sdkErrors = Array.isArray(diagnostics.details.sdk.errors)
-    ? diagnostics.details.sdk.errors
-    : [];
+  const sdkErrors = sdkErrorItems(diagnostics.details.sdk.errors);
   const observationEvidence = diagnostics.details.observations ?? [];
   const toolEvidence = observationEvidence.length
     ? observationEvidence.flatMap((observation) => [
@@ -305,6 +315,11 @@ export function RunDiagnosticsSection({
                         item.reason ?? item.last_stage ?? item.state,
                       ) || "未提供结果摘要"}
                     </p>
+                    {item.last_stage === "failed" ? (
+                      <p data-sdk-tool-abort className="mt-0.5 text-[var(--theme-text-secondary)]">
+                        SDK 报告工具 abort：{typeof item.is_interrupt === "boolean" ? (item.is_interrupt ? "是" : "否") : "未知（未采集）"}；不代表用户取消或 Run 取消状态。
+                      </p>
+                    ) : null}
                     {item.invocation_id ? (
                       <details className="mt-1 text-[var(--theme-text-tertiary)]">
                         <summary className="cursor-pointer">调用编号</summary>

@@ -8,6 +8,7 @@ import pytest
 from mcp.types import ListToolsResult, Tool
 
 from app.mcp.application.live_catalog import LiveMcpCatalogService
+from app.mcp.domain.errors import McpToolDiscoveryError
 from app.mcp.infrastructure import client, catalog
 from app.mcp.infrastructure import runtime as mcp_runtime
 from app.mcp.infrastructure.runtime import McpRuntimeContextError
@@ -72,9 +73,9 @@ async def test_cancellation_closes_real_mcp_sessions(monkeypatch, transport):
 async def test_discovery_rejects_names_instead_of_silently_renaming(bad_name):
     async def list_tools(**_kwargs):
         return ListToolsResult(tools=[Tool(name="tool", inputSchema={}), Tool(name=bad_name, inputSchema={})])
-    with pytest.raises(catalog.McpToolDiscoveryError, match="protocol_error"):
+    with pytest.raises(McpToolDiscoveryError, match="protocol_error"):
         await client.list_mcp_tools(SimpleNamespace(list_tools=list_tools))
-    with pytest.raises(catalog.McpToolDiscoveryError, match="protocol_error"):
+    with pytest.raises(McpToolDiscoveryError, match="protocol_error"):
         catalog._canonical_live_definition({"name": bad_name})
 
 
@@ -122,7 +123,7 @@ async def test_transport_rejects_unsafe_responses_before_followup(monkeypatch, c
     monkeypatch.setattr(client.httpx, "AsyncClient", lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs))
     config = subject()["mcp_server_config"]
     config["type"] = transport
-    with pytest.raises(catalog.McpToolDiscoveryError):
+    with pytest.raises(McpToolDiscoveryError):
         async with asyncio.timeout(3):
             async with client.open_mcp_session(config, timeout_seconds=1, max_response_bytes=64):
                 pytest.fail("unsafe response admitted")

@@ -996,7 +996,8 @@ async def test_get_admin_runtime_admission_summary_disables_saturation_when_limi
 
 
 @pytest.mark.asyncio
-async def test_get_admin_runtime_observability_summary_coerces_nulls_to_defaults():
+@pytest.mark.parametrize("estimated_cost", [None, 0, 17])
+async def test_get_admin_runtime_observability_summary_preserves_cost_and_defaults_counters(estimated_cost):
     class SummaryCursor:
         def __init__(self, row):
             self.row = row
@@ -1026,7 +1027,7 @@ async def test_get_admin_runtime_observability_summary_coerces_nulls_to_defaults
                     "input_token_count": None,
                     "output_token_count": None,
                     "total_token_count": None,
-                    "estimated_cost_minor": None,
+                    "estimated_cost_minor": estimated_cost,
                 }
             )
 
@@ -1043,8 +1044,11 @@ async def test_get_admin_runtime_observability_summary_coerces_nulls_to_defaults
         "error_categories": {},
         "latency_ms": {"avg": None, "max": None, "p50": None, "p95": None, "p99": None},
         "token_counts": {"input": 0, "output": 0, "total": 0},
-        "estimated_cost_minor": 0,
+        "estimated_cost_minor": estimated_cost,
     }
+
+    if estimated_cost is not None:
+        assert type(summary["estimated_cost_minor"]) is int
 
 
 @pytest.mark.asyncio

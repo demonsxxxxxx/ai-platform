@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import windows from "../../../../services/api/__tests__/fixtures/runPlaybackContextWindows.json";
 
-import type { RunPlaybackResponse } from "../../../../services/api/runPlayback.ts";
+import { normalizeRunPlayback, type RunPlaybackResponse } from "../../../../services/api/runPlayback.ts";
 import {
   buildRunPlaybackErrorViewModel,
   buildRunPlaybackLoadingViewModel,
@@ -96,29 +97,14 @@ test("buildRunPlaybackPanelViewModel exposes only public display fields", () => 
     artifacts: [],
     steps: [],
     context_ref: {
-      context_snapshot_id: "ctx-private",
-      source: "stored_context_snapshot",
-      referenced_materials: {
-        file_count: 2,
-        message_count: 1,
-        memory_record_count: 3,
-        artifact_count: 4,
-        file_ids: ["file-private"],
+      context_window: {
+        status: "trimmed",
+        history_candidate_count: 12,
+        history_authorized_count: 4,
+        history_omitted_count: 8,
+        legacy_history_excluded: true,
+        selected_file_names: ["report.pdf"],
       },
-      used_context_summary: {
-        source: "stored_context_snapshot",
-        input_keys: ["attachments", "message", "storage_key"],
-        file_count: 2,
-        message_count: 1,
-        memory_record_count: 3,
-        artifact_count: 4,
-        raw_path: "/workspace/private",
-      },
-      execution_tier: "document_worker",
-      latest_artifact_version: "v7",
-      context_pack_version: "v3",
-      context_pack_generated_at: "2026-06-12T01:23:45Z",
-      storage_key: "private/context.json",
     },
   } as unknown as RunPlaybackResponse);
 
@@ -173,19 +159,15 @@ test("buildRunPlaybackPanelViewModel exposes only public display fields", () => 
       createdAt: null,
     },
   ]);
-  assert.deepEqual(viewModel.contextProvenance, {
-    source: "stored_context_snapshot",
-    executionTier: "document_worker",
-    contextPackVersion: "v3",
-    contextPackGeneratedAt: "2026-06-12T01:23:45Z",
-    latestArtifactVersion: "v7",
-    referencedMaterials: [
-      { label: "files", value: 2 },
-      { label: "messages", value: 1 },
-      { label: "memory", value: 3 },
-      { label: "artifacts", value: 4 },
+  assert.deepEqual(viewModel.contextWindow, {
+    status: "trimmed",
+    historyCounts: [
+      { label: "candidate", value: 12 },
+      { label: "authorized", value: 4 },
+      { label: "omitted", value: 8 },
     ],
-    inputKeys: ["attachments", "message"],
+    legacyHistoryExcluded: true,
+    selectedFileNames: ["report.pdf"],
   });
   assert.equal(viewModel.failureGuidance, null);
 
@@ -263,7 +245,7 @@ test("loading, error, and empty view models do not throw", () => {
     },
     timeline: [],
     artifacts: [],
-    contextProvenance: null,
+    contextWindow: null,
     failureGuidance: null,
     errorMessage: null,
   });
@@ -283,11 +265,11 @@ test("loading, error, and empty view models do not throw", () => {
       },
       timeline: [],
       artifacts: [],
-      contextProvenance: null,
+      contextWindow: null,
       failureGuidance: {
-        whatHappened: "无法刷新任务的最新状态。",
-        retained: "当前连接无法确认已完成内容；后台任务可能仍在继续。",
-        nextAction: "恢复网络后请先刷新或重新连接，确认状态前不要重复提交。",
+        whatHappened: "无法读取运行回放。",
+        retained: "回放暂时无法显示；这不代表后台任务已失败或停止。",
+        nextAction: "请刷新回放重试；刷新只读取已有结果，不会重新提交任务。",
         problemNumber: "run-error",
       },
       errorMessage: "Network failed",
@@ -305,7 +287,7 @@ test("loading, error, and empty view models do not throw", () => {
   assert.equal(empty.state, "empty");
   assert.deepEqual(empty.timeline, []);
   assert.deepEqual(empty.artifacts, []);
-  assert.equal(empty.contextProvenance, null);
+  assert.equal(empty.contextWindow, null);
   assert.equal(empty.failureGuidance, null);
 });
 
@@ -363,5 +345,20 @@ test("queued and running playback do not render failure guidance", () => {
     });
 
     assert.equal(viewModel.failureGuidance, null);
+  }
+});
+
+
+test("backend window-only payload remains visible even when all degraded counts are zero", () => {
+  for (const payload of Object.values(windows)) {
+    const view = buildRunPlaybackPanelViewModel(normalizeRunPlayback(payload));
+    const expected = payload.context_ref.context_window;
+    assert.equal(view.state, "ready");
+    assert.equal(view.contextWindow?.status, expected.status);
+    assert.deepEqual(view.contextWindow?.historyCounts.map(({ value }) => value), [
+      expected.history_candidate_count, expected.history_authorized_count, expected.history_omitted_count,
+    ]);
+    assert.deepEqual(view.contextWindow?.selectedFileNames, expected.selected_file_names);
+    assert.equal(view.contextWindow?.legacyHistoryExcluded, expected.legacy_history_excluded);
   }
 });

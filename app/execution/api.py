@@ -59,7 +59,6 @@ from app.execution.application.worker_attempt_lifecycle import (
     WorkerExecutorReconciliation,
     WorkerQueueLease,
     bind_worker_attempt_lifecycle,
-    fail_run_for_worker,
 )
 from app.execution.application.worker_failure_diagnostics import (
     executor_exception_failure,
@@ -78,6 +77,7 @@ from app.execution.application.claude_agent_events import (
     ClaudeAgentEventCandidate,
     ClaudeSdkAgentEventAdapter,
     runtime_terminal_payload,
+    public_tool_operation_id as public_tool_operation_id,
 )
 from app.execution.domain.model_text_checkpoint import ModelTextCheckpoint as ModelTextCheckpoint
 from app.execution.application.stale_terminalization import (
@@ -107,7 +107,7 @@ from typing import Any
 
 from app.execution.application.model_control_plane import configured_model_control_plane
 from app.execution.application.provider_sessions import claude_provider_session_dispatch
-from app.execution.application.run_interaction import RunInteractionProtocol
+from app.execution.application.run_interaction import RunInteractionProtocol, RunQuestionNeedsInput
 from app.execution.application.model_selection import (
     RunModelSelection as RunModelSelection,
 )
@@ -147,6 +147,7 @@ __all__ = [
     "runtime_terminal_payload",
     "RunModelSelection",
     "RunInteractionProtocol",
+    "RunQuestionNeedsInput",
     "SkillInvocationEvidenceBinder",
     "WorkerRunCancelled",
     "artifact_content_type",
@@ -162,7 +163,6 @@ __all__ = [
     "context_file_failure_log_extra",
     "collect_workspace_artifacts",
     "bind_worker_attempt_lifecycle",
-    "fail_run_for_worker",
     "executor_exception_failure",
     "executor_observability",
     "run_elapsed_ms",

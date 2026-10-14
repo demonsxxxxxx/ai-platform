@@ -14,6 +14,7 @@ from inspect import isawaitable
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
+from app.context.api import MAX_PROVIDER_SESSION_CALLBACK_RESPONSE_BYTES
 from app.context_manifest import truncate_utf8_text
 from app.bootstrap.claude_mcp import prepare_claude_mcp
 from app.context.retrieval import (
@@ -50,7 +51,6 @@ from app.executors.claude.capability_policy import (
 from app.executors.claude.prompts import (
     build_skill_prompt as build_skill_prompt,
     context_pack_prompt_section as _prompt_context_pack_prompt_section,
-    translation_target_language as _prompt_translation_target_language,
 )
 from app.bootstrap.claude_client import (
     prepare_claude_client_close,
@@ -58,11 +58,13 @@ from app.bootstrap.claude_client import (
     prepare_claude_run_interaction,
     prepare_claude_text_sources,
     prepare_claude_typed_observations,
+    prepare_claude_result_usage,
 )
 from app.execution.api import (
     ClaudeSdkAgentEventAdapter,
     ModelTextCheckpoint,
     RunInteractionProtocol,
+    RunQuestionNeedsInput,
 )
 from app.executors.public_answer_stream import (
     PublicAnswerStreamGate,
@@ -70,6 +72,7 @@ from app.executors.public_answer_stream import (
 from app.required_tool_contract import (
     MCP_EXECUTION_OUTCOME_UNKNOWN,
     MCP_EXECUTION_SUCCEEDED_RECEIPT_INCOMPLETE,
+    MCP_TOOL_ERROR_RESULT_TRUST_BASIS,
     REQUIRED_CAPABILITY_DECLARATION_INPUT_KEY,
     SANDBOX_EFFECTFUL_TOOL_IDENTITIES,
     SANDBOX_LOCAL_TOOL_IDENTITIES,
@@ -103,9 +106,6 @@ from app.skills.execution_profiles import (
 from app.tool_policy import evaluate_tool_policy
 
 _context_pack_prompt_section = _prompt_context_pack_prompt_section
-_translation_target_language = _prompt_translation_target_language
-
-
 _SDK_ENV_ALLOWLIST = {
     "PATH",
     "PATHEXT",
@@ -125,22 +125,12 @@ _SDK_AVAILABLE_TOOLS = [*_SDK_BASE_AVAILABLE_TOOLS, *_SDK_SUBAGENT_TOOLS]
 _SDK_AUTO_ALLOWED_TOOLS = {"Read", "Glob", "LS"}
 _SDK_PLATFORM_DISALLOWED_TOOLS = ["Write", "Edit", "NotebookEdit"]
 _SDK_LOCAL_READ_ONLY_TOOLS = ("Read", "Glob", "LS")
-_SDK_BROKERED_BUILTIN_TOOLS = (
-    "Bash",
-    "Write",
-    "Edit",
-    "NotebookEdit",
-    "Agent",
-    "WebFetch",
-    "WebSearch",
-)
 _SDK_SELECTED_SKILL_NOT_AUTHORIZED = "claude_agent_sdk_selected_skill_not_authorized"
 _SDK_TURN_LIMIT_EXCEEDED = "claude_agent_sdk_turn_limit_exceeded"
 _SDK_CANCELLED = "claude_agent_sdk_cancelled"
 _SDK_TIMEOUT = "claude_agent_sdk_timeout"
 _SDK_MISSING_STRUCTURED_TERMINAL = "claude_agent_sdk_missing_structured_terminal"
 _SDK_DELIVERY_MANIFEST_INVALID = "claude_agent_sdk_delivery_manifest_invalid"
-_MAX_PUBLIC_DELTA_CHARS = 8_192
 _SDK_TOOL_ADMISSION_FAILED = "claude_agent_sdk_tool_admission_failed"
 _SDK_EXECUTION_RECEIPT_INCOMPLETE = "claude_agent_sdk_execution_receipt_incomplete"
 _SDK_UPSTREAM_ERROR = "claude_agent_sdk_upstream_error"
@@ -194,7 +184,6 @@ _UPSTREAM_ERROR_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _SDK_PROJECT_SETTING_FILES = (".claude/settings.json", ".claude/settings.local.json")
-_SDK_FULL_ACCESS_MIN_TIMEOUT_SECONDS = 1800.0
 _DELIVERY_MANIFEST_MAX_FILES = 128
 _DELIVERY_MANIFEST_MAX_PATH_CHARS = 1_024
 _DELIVERY_MANIFEST_MAX_DISPLAY_NAME_CHARS = 255
@@ -203,12 +192,7 @@ _SDK_CLEANUP_TIMEOUT_SECONDS = 30.0
 _logger = logging.getLogger(__name__)
 
 
-def _sdk_run_timeout_seconds(
-    settings: object,
-    *,
-    sandbox_brokered: bool,
-    full_access: bool,
-) -> float | None:
+def _sdk_run_timeout_seconds(settings: object) -> float | None:
     """Return the bounded SDK execution time, or None for unbounded runs.
 
     A configured value <= 0 disables the internal SDK execution deadline
@@ -1116,7 +1100,6 @@ _WORKSPACE_SEARCH_MAX_OUTPUT_LINES = 1_000
 _WORKSPACE_SEARCH_MAX_OUTPUT_BYTES = 256 * 1024
 _WORKSPACE_GREP_MAX_HEAD_LIMIT = 1_000
 _WORKSPACE_SEARCH_OUTPUT_NOTICE = "[ai-platform filtered or truncated search output]"
-_GLOB_PARENT_COMPONENT = re.compile(r"(?:^|[/,{(|])\.\.(?=$|[/,})|])")
 _NATIVE_TOOL_PROXY_SCRIPT = (
     Path(__file__).resolve().parents[1] / "runtime" / "sandbox" / "native_tool_proxy.py"
 )
@@ -1454,7 +1437,7 @@ def _filtered_workspace_search_output(
             "numFiles": len(filtered_filenames),
             "filenames": filtered_filenames,
             "truncated": tool_response.get("truncated") is True,
-            # SDK 0.2.130 accepts these fields as optional. Recompute them from
+            # Recompute the SDK's optional count fields from
             # the visible result so private paths never survive as counts.
             "totalMatches": len(filtered_filenames),
             "countIsComplete": True,
@@ -1645,11 +1628,24 @@ async def run_claude_agent_sdk(
     capability_evidence_rejected = False
     actual_mcp_invocation_observed = False
     mcp_execution_states: dict[tuple[str, str], str] = {}
+    mcp_confirmed_error_results: set[tuple[str, str]] = set()
     mcp_execution_conflicted = False
     capability_invocation_states: dict[tuple[str, str, str], str] = {}
     governed_builtin_invocation_states: dict[tuple[str, str], str] = {}
     observed_read_only_invocation_states: dict[tuple[str, str], str] = {}
     runtime_tool_calls: dict[tuple[str, str], dict[str, Any]] = {}
+    mcp_session_failures: list[dict[str, Any]] = []
+    mcp_session_failure_count = 0
+    mcp_session_invalid_code_count = 0
+
+    def observe_mcp_session_failure(observation: dict[str, Any]) -> None:
+        nonlocal mcp_session_failure_count, mcp_session_invalid_code_count
+        mcp_session_failure_count = min(mcp_session_failure_count + 1, 1_000_000_000)
+        if "code" not in observation:
+            mcp_session_invalid_code_count = min(mcp_session_invalid_code_count + 1, 1_000_000_000)
+        mcp_session_failures.append(dict(observation))
+        del mcp_session_failures[:-_MAX_RUNTIME_DIAGNOSTIC_DETAIL_ENTRIES]
+
     read_only_lifecycle_denials_finalized = False
     answer_stream_gate: PublicAnswerStreamGate | None = None
     agent_event_adapter: ClaudeSdkAgentEventAdapter | None = None
@@ -1714,6 +1710,23 @@ async def run_claude_agent_sdk(
         ):
             if value not in (None, "", []):
                 sdk[key] = _runtime_diagnostic_value(value)
+        if mcp_session_failures:
+            # Keep existing SDK errors alongside bounded, preprojected observations.
+            # This evidence belongs to this runner attempt, never a native invocation.
+            sdk["errors"] = {
+                **({"sdk_reported_errors": sdk["errors"]} if "errors" in sdk else {}),
+                "mcp_session_failures": list(mcp_session_failures),
+            }
+            if mcp_session_failure_count > len(mcp_session_failures):
+                normalization_losses.append({
+                    "field": "sdk.errors.mcp_session_failures", "reason": "truncated",
+                    "original": mcp_session_failure_count, "retained": len(mcp_session_failures),
+                })
+            if mcp_session_invalid_code_count:
+                normalization_losses.append({
+                    "field": "sdk.errors.mcp_session_failures.code", "reason": "invalid_field",
+                    "count": mcp_session_invalid_code_count,
+                })
         if exception is not None:
             sdk.update(
                 {
@@ -1825,6 +1838,16 @@ async def run_claude_agent_sdk(
             },
         )
         entry["last_stage"] = stage
+        # A repeated lifecycle fact carries no new failure observation.
+        if stage != "failed" or failure is not None:
+            entry.pop("is_interrupt", None)
+        if (
+            stage == "failed"
+            and isinstance(failure, dict)
+            and failure.get("hook_event_name") == "PostToolUseFailure"
+            and type(failure.get("is_interrupt")) is bool
+        ):
+            entry["is_interrupt"] = failure["is_interrupt"]
         if tool_input is not None:
             entry["tool_input"] = _runtime_diagnostic_value(tool_input)
         if failure is not None:
@@ -1862,6 +1885,7 @@ async def run_claude_agent_sdk(
     except Exception as exc:
         raise ClaudeAgentSdkNotAvailable(str(exc)) from exc
 
+    main_transcript = None
     provider_session_store = track_claude_session_store(session_store)
     if provider_session_store is not None:
         provider_session_options: dict[str, Any] = {
@@ -1874,16 +1898,25 @@ async def run_claude_agent_sdk(
                 used_sdk=True,
                 error=error_code,
                 turn_diagnostics=turn_diagnostics(error_code),
+                runtime_diagnostics=runtime_diagnostics(
+                    error_code,
+                    failure_source="provider_session_identity",
+                ),
             )
         try:
             main_transcript = await provider_session_store.load(session_id)
-        except Exception:  # noqa: BLE001 - provider details stay private.
+        except Exception as exc:  # noqa: BLE001 - provider details stay private.
             main_transcript = None
             error_code = _SDK_PROVIDER_SESSION_FAILED
             return ClaudeAgentSdkRunResult(
                 used_sdk=True,
                 error=error_code,
                 turn_diagnostics=turn_diagnostics(error_code),
+                runtime_diagnostics=runtime_diagnostics(
+                    error_code,
+                    failure_source="provider_session_preload",
+                    exception=exc,
+                ),
             )
         if type(provider_session_resume_required) is not bool:
             error_code = _SDK_PROVIDER_SESSION_FAILED
@@ -1891,6 +1924,10 @@ async def run_claude_agent_sdk(
                 used_sdk=True,
                 error=error_code,
                 turn_diagnostics=turn_diagnostics(error_code),
+                runtime_diagnostics=runtime_diagnostics(
+                    error_code,
+                    failure_source="provider_session_resume_choice",
+                ),
             )
         # The platform selected resume from exact coverage; SDK load only checks
         # that the frozen choice matches the actual opaque store.
@@ -1900,6 +1937,10 @@ async def run_claude_agent_sdk(
                 used_sdk=True,
                 error=error_code,
                 turn_diagnostics=turn_diagnostics(error_code),
+                runtime_diagnostics=runtime_diagnostics(
+                    error_code,
+                    failure_source="provider_session_resume_mismatch",
+                ),
             )
         provider_session_options[
             "resume" if provider_session_resume_required else "session_id"
@@ -2095,6 +2136,7 @@ async def run_claude_agent_sdk(
         if context_retrieval_server is not None
         else {}
     )
+    response_registration_exception: BaseException | None = None
     try:
         response_server = _build_response_mcp_server(
             sdk,
@@ -2104,8 +2146,9 @@ async def run_claude_agent_sdk(
             diagnostic_counters=diagnostic_counters,
             callback_wrapper=callback_tracker.wrap,
         )
-    except Exception:  # noqa: BLE001 - optional response attachments stay unavailable.
+    except Exception as exc:  # noqa: BLE001 - optional response attachments stay unavailable.
         response_server = None
+        response_registration_exception = exc
     diagnostic_counters["attachment_tool_registered"] = int(response_server is not None)
     internal_response_subjects = (
         {
@@ -2124,6 +2167,7 @@ async def run_claude_agent_sdk(
             runtime_diagnostics=runtime_diagnostics(
                 error_code,
                 failure_source="response_file_registration",
+                exception=response_registration_exception,
             ),
         )
     internal_platform_subjects = {
@@ -2154,7 +2198,8 @@ async def run_claude_agent_sdk(
             _mcp_server_options(authorized_subjects) if sandbox_brokered else {}
         )
         mcp_registration = prepare_claude_mcp(
-            authorized_subjects if sandbox_brokered else {}, mcp_servers, callback_tracker.wrap
+            authorized_subjects if sandbox_brokered else {}, mcp_servers, callback_tracker.wrap,
+            failure_observer=observe_mcp_session_failure,
         )
         allowed_tools = [
             mcp_registration.sdk_names.get(name, name) for name in allowed_tools
@@ -2221,10 +2266,8 @@ async def run_claude_agent_sdk(
     )
     if sandbox_brokered and internal_platform_subjects:
         strict_tool_lifecycle_names.add("MCP")
-    sandbox_bash_lifecycle_governed = "Bash" in strict_tool_lifecycle_names
     governed_builtin_lifecycle_rejected = False
     read_only_lifecycle_rejected = False
-    actual_sandbox_bash_invocation_observed = False
     private_capability_tokens = {
         identity
         for kind, identity in capability_plan.available
@@ -2337,11 +2380,7 @@ async def run_claude_agent_sdk(
             )
 
     sdk_prompt = prompt
-    timeout_seconds = _sdk_run_timeout_seconds(
-        settings,
-        sandbox_brokered=sandbox_brokered,
-        full_access=full_access,
-    )
+    timeout_seconds = _sdk_run_timeout_seconds(settings)
 
     agent_event_adapter = (
         ClaudeSdkAgentEventAdapter(
@@ -2416,6 +2455,7 @@ async def run_claude_agent_sdk(
         tool_call_id: str,
         lifecycle_phase: str,
         skill_metadata: dict[str, Any] | None = None,
+        tool_error_result: bool = False,
     ) -> bool:
         """Record one bounded actual-call fact without tool input or output."""
 
@@ -2455,7 +2495,6 @@ async def run_claude_agent_sdk(
                 )
             answer_stream_gate.seal(
                 lifecycle_replacements,
-                capability_boundary=True,
                 invocation_key=invocation_key,
             )
         try:
@@ -2466,6 +2505,7 @@ async def run_claude_agent_sdk(
                 ),
                 tool_call_id=tool_call_id,
                 lifecycle_phase=lifecycle_phase,
+                tool_error_result=tool_error_result,
             )
             acknowledged = (
                 await on_capability_evidence(dict(evidence))
@@ -2526,7 +2566,6 @@ async def run_claude_agent_sdk(
     ) -> bool:
         """Report a private actual-tool fact and enforce strict evidence where needed."""
 
-        nonlocal actual_sandbox_bash_invocation_observed
         nonlocal governed_builtin_lifecycle_rejected
 
         name = str(tool_name or "").strip()
@@ -2541,9 +2580,6 @@ async def run_claude_agent_sdk(
         is_read_only_tool = name in read_only_tool_lifecycle_names
         lifecycle_required = is_required_builtin or name in strict_tool_lifecycle_names
         lifecycle_observed = lifecycle_required or is_read_only_tool
-        is_sandbox_bash = sandbox_bash_lifecycle_governed and name == "Bash"
-        if is_sandbox_bash:
-            actual_sandbox_bash_invocation_observed = True
         if (
             not name
             or not call_id
@@ -2580,7 +2616,6 @@ async def run_claude_agent_sdk(
         if lifecycle_observed and lifecycle == "started":
             answer_stream_gate.seal(
                 {call_id: replacement_for_private_token(call_id)},
-                capability_boundary=True,
                 invocation_key=gate_key,
             )
         if on_tool_lifecycle is None:
@@ -2809,8 +2844,10 @@ async def run_claude_agent_sdk(
             or capability_evidence_rejected
             or agent_event_callback_failed
             or any(
-                state == "failed" and authorized_subjects.get(identity, {}).get("write_capable") is not False
-                for (identity, _call_id), state in mcp_execution_states.items()
+                state == "failed"
+                and (identity, call_id) not in mcp_confirmed_error_results
+                and authorized_subjects.get(identity, {}).get("write_capable") is not False
+                for (identity, call_id), state in mcp_execution_states.items()
             )
         )
 
@@ -2834,6 +2871,13 @@ async def run_claude_agent_sdk(
                 )
             except asyncio.CancelledError:
                 raise
+            except RunQuestionNeedsInput as exc:
+                if not result_ready.done():
+                    result_ready.set_exception(exc)
+                return {"hookSpecificOutput": {
+                    "hookEventName": "PreToolUse", "permissionDecision": "deny",
+                    "permissionDecisionReason": "run_question_needs_input",
+                }}
             except Exception:  # noqa: BLE001 - fail closed without exposing input.
                 return {
                     "hookSpecificOutput": {
@@ -3008,6 +3052,7 @@ async def run_claude_agent_sdk(
                 ):
                     mcp_execution_conflicted = True
                 mcp_execution_states[execution_key] = "admitted"
+                mcp_registration.track_tool_call(identity, resolved_tool_call_id, hook_input.get("tool_input"))
         # A concurrent write may fail while this admission awaits its receipts.
         # Recheck immediately before returning authority to dispatch the call.
         if output["permissionDecision"] == "allow" and external_write and external_write_outcome_unconfirmed():
@@ -3080,6 +3125,7 @@ async def run_claude_agent_sdk(
                 failure=hook_input if lifecycle_phase == "failed" else None,
             )
             evidence_acknowledged = False
+            tool_error_result = False
             if identity in internal_platform_subjects:
                 evidence_acknowledged = await record_tool_lifecycle(
                     tool_name="MCP",
@@ -3092,11 +3138,14 @@ async def run_claude_agent_sdk(
                     mcp_execution_conflicted = True
                 else:
                     mcp_execution_states[execution_key] = lifecycle_phase
+                tool_error_result = mcp_registration.consume_tool_error_result(identity, call_id)
+                tool_error_result = tool_error_result and lifecycle_phase == "failed"
                 evidence_acknowledged = await record_capability_evidence(
                     capability_kind="mcp",
                     canonical_identity=identity,
                     tool_call_id=call_id,
                     lifecycle_phase=lifecycle_phase,
+                    tool_error_result=tool_error_result,
                 )
             if agent_event_adapter is not None and evidence_acknowledged is True:
                 candidates = agent_event_adapter.accept_hook(
@@ -3109,6 +3158,8 @@ async def run_claude_agent_sdk(
                 if not candidates and not agent_event_callback_failed:
                     mcp_execution_conflicted = True
                 evidence_acknowledged = await publish_agent_candidates(candidates)
+            if tool_error_result and evidence_acknowledged is True:
+                mcp_confirmed_error_results.add((identity, call_id))
             return {}
 
         return handler
@@ -3362,6 +3413,7 @@ async def run_claude_agent_sdk(
         can_use_tool=callback_tracker.wrap(can_use_tool),
         hooks=hooks,
         include_partial_messages=False,
+        max_buffer_size=MAX_PROVIDER_SESSION_CALLBACK_RESPONSE_BYTES,
         setting_sources=["project"],
         **provider_session_options,
         **thinking_options,
@@ -3377,6 +3429,9 @@ async def run_claude_agent_sdk(
     received_structured_terminal = False
     continuation_usage: dict[str, Any] = {}
     continuation_turns = 0
+    result_usage = prepare_claude_result_usage(
+        session_id=session_id, prompt=sdk_prompt, resumed_entries=main_transcript,
+    )
 
     def mcp_execution_conflict_observed() -> bool:
         return mcp_execution_conflicted or bool(
@@ -3390,8 +3445,9 @@ async def run_claude_agent_sdk(
         if mcp_execution_conflict_observed():
             return MCP_EXECUTION_OUTCOME_UNKNOWN
         write_states = [
-            state for (identity, _call_id), state in mcp_execution_states.items()
+            state for (identity, call_id), state in mcp_execution_states.items()
             if authorized_subjects.get(identity, {}).get("write_capable") is not False
+            and (identity, call_id) not in mcp_confirmed_error_results
         ]
         if not write_states:
             return None
@@ -3416,7 +3472,7 @@ async def run_claude_agent_sdk(
             message=message,
             answer_receipt=answer_receipt,
             session_id=result_session_id,
-            usage=usage,
+            usage=result_usage.project(usage or continuation_usage, terminal_result=terminal_result_message is not None),
             error=error,
             terminal_reason=terminal_reason,
             received_structured_terminal=received_structured_terminal,
@@ -3458,7 +3514,7 @@ async def run_claude_agent_sdk(
             ).declaration_sha256
             recoverable_failure = kind == "skill" or (
                 kind == "mcp" and authorized_subjects.get(identity, {}).get("write_capable") is False
-            )
+            ) or any(item.get("trust_basis") == MCP_TOOL_ERROR_RESULT_TRUST_BASIS for item in matching)
             phases = [item.get("lifecycle_phase") for item in matching]
             statuses = [item.get("lifecycle_status") for item in matching]
             terminal_valid = (
@@ -3530,7 +3586,7 @@ async def run_claude_agent_sdk(
                     )
                 ):
                     raise
-                # SDK 0.2.130 reports the CLI's intentional nonzero exit as an
+                # The SDK reports the CLI's intentional nonzero exit as an
                 # error frame before final flush/EOF. Retain the error Result
                 # and drain the public stream's remainder to that same EOF.
                 terminal_stream_error = exc
@@ -3544,11 +3600,14 @@ async def run_claude_agent_sdk(
                 aclosing(observed_model_messages(raw_responses)) as responses,
             ):
                 async for message in responses:
+                    if provider_session_store is not None:
+                        provider_session_store.observe_public_message(is_result=isinstance(message, ResultMessage))
                     if stop_requested:
                         # Drain the public stream through its final mirror flush,
                         # without processing more output or supplementary inputs.
                         continue
                     if isinstance(message, ResultMessage):
+                        result_usage.observe_result(message)
                         permission_denials = getattr(message, "permission_denials", None)
                         if isinstance(permission_denials, list):
                             diagnostic_counters["tool_admission_denials"] += len(permission_denials)
@@ -3576,10 +3635,11 @@ async def run_claude_agent_sdk(
                             command = await interaction_actor.settle_at_result()
                             if command is not None:
                                 continuation_usage = _merge_sdk_usage(
-                                    continuation_usage, message.usage or message.model_usage or {}
+                                    continuation_usage, message.usage or {}
                                 )
                                 continuation_turns += _bounded_diagnostic_counter(message.num_turns)
                                 diagnostic_counters["result_messages"] += 1
+                                result_usage.observe_input(command.text or "")
                                 await interaction_actor.apply_text_at_result(
                                     client, command, session_id=message.session_id
                                 )
@@ -3855,6 +3915,11 @@ async def run_claude_agent_sdk(
                     error=error_code,
                     terminal_reason=terminal_reason,
                     received_structured_terminal=False,
+                    runtime_diagnostics_snapshot=lambda: runtime_diagnostics(
+                        error_code,
+                        failure_source="provider_session_mirror",
+                        sdk_errors=getattr(message, "error", None),
+                    ),
                 )
             if agent_event_adapter is not None and isinstance(
                 message,
@@ -3965,7 +4030,7 @@ async def run_claude_agent_sdk(
                 )
                 result_session_id = message.session_id
                 permission_denials = getattr(message, "permission_denials", None)
-                usage = _merge_sdk_usage(continuation_usage, message.usage or message.model_usage or {})
+                usage = _merge_sdk_usage(continuation_usage, message.usage or {})
                 sdk_terminal_reason = getattr(message, "terminal_reason", None)
                 resolved_terminal_reason = (
                     str(sdk_terminal_reason).strip()
@@ -4450,6 +4515,16 @@ async def run_claude_agent_sdk(
         ):
             raise consume_cancellation
         raise
+    except RunQuestionNeedsInput:
+        await stop_execution()
+        close_failed_terminal("run_question_needs_input")
+        error_code = mcp_execution_receipt_error() or "run_question_needs_input"
+        return assemble_run_result(
+            message="", error=error_code,
+            runtime_diagnostics_snapshot=lambda: runtime_diagnostics(
+                error_code, failure_source="run_question_timeout", terminal_reason=terminal_reason,
+            ),
+        )
     except TimeoutError:
         result_ready.cancel()
         await stop_execution()

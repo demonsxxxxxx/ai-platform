@@ -289,6 +289,195 @@ async def test_concurrent_migrations_serialize_and_apply_schema_once():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("setup_fails", [False, True])
+@pytest.mark.parametrize("close_fails", [False, True])
+async def test_index_connection_factory_transfers_only_initialized_connection(
+    monkeypatch, setup_fails, close_fails,
+):
+    setup_error = RuntimeError("autocommit failed")
+    calls = []
+
+    class Connection:
+        async def set_autocommit(self, value):
+            assert value is True
+            calls.append("autocommit")
+            if setup_fails:
+                raise setup_error
+
+        async def close(self):
+            calls.append("close")
+            if close_fails:
+                raise RuntimeError("close failed")
+
+    connection = Connection()
+
+    async def connect():
+        return connection
+
+    monkeypatch.setattr(schema_migrations, "connect", connect)
+    if setup_fails:
+        with pytest.raises(RuntimeError) as caught:
+            await schema_migrations._default_index_connection_factory()
+        assert caught.value is setup_error
+        assert calls == ["autocommit", "close"]
+    else:
+        assert await schema_migrations._default_index_connection_factory() is connection
+        assert calls == ["autocommit"]
+
+
+@pytest.mark.asyncio
+async def test_index_connection_factory_closes_on_setup_cancellation(monkeypatch):
+    entered = asyncio.Event()
+    calls = []
+
+    class Connection:
+        async def set_autocommit(self, value):
+            entered.set()
+            await asyncio.Future()
+
+        async def close(self):
+            calls.append("close")
+            raise RuntimeError("close failed")
+
+    async def connect():
+        return Connection()
+
+    monkeypatch.setattr(schema_migrations, "connect", connect)
+    task = asyncio.create_task(schema_migrations._default_index_connection_factory())
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    task.cancel("setup stopped")
+    with pytest.raises(asyncio.CancelledError, match="setup stopped"):
+        await task
+    assert task.cancelled()
+    assert calls == ["close"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_phase", [None, "lock", "core", "indexes"])
+@pytest.mark.parametrize("unlock_fails", [False, True])
+@pytest.mark.parametrize("close_fails", [False, True])
+async def test_migration_coordinator_preserves_first_failure_and_always_closes(
+    monkeypatch, failure_phase, unlock_fails, close_fails,
+):
+    state = SharedMigrationState()
+    primary = RuntimeError("migration failed")
+    unlock_error = RuntimeError("unlock failed")
+    close_error = RuntimeError("close failed")
+    calls = []
+
+    class Connection(FakeIndexConnection):
+        async def execute(self, statement, params=None):
+            if "pg_try_advisory_lock" in statement and failure_phase == "lock":
+                raise primary
+            if "pg_advisory_unlock" in statement:
+                calls.append("unlock")
+                if unlock_fails:
+                    raise unlock_error
+            return await super().execute(statement, params)
+
+        async def close(self):
+            calls.append("close")
+            await super().close()
+            if close_fails:
+                raise close_error
+
+    connection = Connection(state)
+
+    async def connection_factory():
+        return connection
+
+    @asynccontextmanager
+    async def core_transaction():
+        if failure_phase == "core":
+            raise primary
+        async with transaction_factory(state)() as conn:
+            yield conn
+
+    original_apply_indexes = schema_migrations._apply_concurrent_indexes
+
+    async def apply_indexes(conn):
+        if failure_phase == "indexes":
+            raise primary
+        return await original_apply_indexes(conn)
+
+    monkeypatch.setattr(schema_migrations, "_apply_concurrent_indexes", apply_indexes)
+    expected = primary if failure_phase else unlock_error if unlock_fails else close_error if close_fails else None
+    if expected is None:
+        result = await schema_migrations.apply_migrations(
+            transaction_factory=core_transaction,
+            index_connection_factory=connection_factory,
+        )
+        assert result["status"] == "applied"
+    else:
+        with pytest.raises(RuntimeError) as caught:
+            await schema_migrations.apply_migrations(
+                transaction_factory=core_transaction,
+                index_connection_factory=connection_factory,
+            )
+        assert caught.value is expected
+    assert calls == (["close"] if failure_phase == "lock" else ["unlock", "close"])
+    assert not state.index_lock.locked()
+    assert not state.lock.locked()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_phase", ["lock", "core", "indexes", "unlock"])
+async def test_migration_coordinator_closes_after_task_cancellation(monkeypatch, cancel_phase):
+    state = SharedMigrationState()
+    entered = asyncio.Event()
+    calls = []
+
+    async def wait_for_cancellation():
+        entered.set()
+        await asyncio.Future()
+
+    class Connection(FakeIndexConnection):
+        async def execute(self, statement, params=None):
+            if "pg_try_advisory_lock" in statement and cancel_phase == "lock":
+                await wait_for_cancellation()
+            if "pg_advisory_unlock" in statement:
+                calls.append("unlock")
+                if cancel_phase == "unlock":
+                    await wait_for_cancellation()
+                raise RuntimeError("unlock failed")
+            return await super().execute(statement, params)
+
+        async def close(self):
+            calls.append("close")
+            await super().close()
+            raise RuntimeError("close failed")
+
+    async def connection_factory():
+        return Connection(state)
+
+    @asynccontextmanager
+    async def core_transaction():
+        if cancel_phase == "core":
+            await wait_for_cancellation()
+        async with transaction_factory(state)() as conn:
+            yield conn
+
+    async def apply_indexes(conn):
+        if cancel_phase == "indexes":
+            await wait_for_cancellation()
+        return False
+
+    monkeypatch.setattr(schema_migrations, "_apply_concurrent_indexes", apply_indexes)
+    task = asyncio.create_task(schema_migrations.apply_migrations(
+        transaction_factory=core_transaction,
+        index_connection_factory=connection_factory,
+    ))
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    task.cancel("migration stopped")
+    with pytest.raises(asyncio.CancelledError, match="migration stopped"):
+        await task
+    assert task.cancelled()
+    assert calls == (["close"] if cancel_phase == "lock" else ["unlock", "close"])
+    assert not state.index_lock.locked()
+    assert not state.lock.locked()
+
+
+@pytest.mark.asyncio
 async def test_schema_upgrade_blocks_future_open_attempt_heartbeat_before_schema_write():
     state = SharedMigrationState()
     state.run_attempt_heartbeat_contract_supported = True
@@ -509,17 +698,21 @@ def test_stream_only_schema_change_advances_schema_version():
 
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert schema_migrations.RUN_INPUTS_SCHEMA_VERSION == "2026.10.07.1"
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.10.10.1"
+    assert schema_migrations.RUN_QUESTION_DEFAULT_ANSWER_SCHEMA_VERSION == "2026.10.12.1"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.10.14.1"
     assert (
         schema_migrations.TARGET_SCHEMA_VERSION
-        == schema_migrations.PROVIDER_TRANSCRIPT_REPRESENTATION_SCHEMA_VERSION
+        == schema_migrations.PROVIDER_SESSION_IMAGES_SCHEMA_VERSION
     )
+    assert ("sandbox_leases", "executor_reconciliation_retry_not_before", "timestamptz", False) in schema_migrations.CRITICAL_COLUMNS
+    assert ("run_inputs", "source", "text", True) in schema_migrations.CRITICAL_COLUMNS
+    assert ("run_inputs", "chk_run_inputs_source") in schema_migrations.CRITICAL_CONSTRAINTS
     assert schema_migrations.CLAUDE_CONTEXT_CUTOVER_SCHEMA_VERSION == "2026.09.15.2"
     assert schema_migrations.CLAUDE_PROVIDER_SESSION_SCHEMA_VERSION == "2026.09.04.1"
     assert schema_migrations.FILE_UPLOAD_SESSION_SCHEMA_VERSION == "2026.09.03.1"
     assert (
         schema_migrations.CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION
-        == schema_migrations.ASSISTANT_TEXT_PART_INDEX_SCHEMA_VERSION
+        == schema_migrations.PROVIDER_SESSION_IMAGES_SCHEMA_VERSION
     )
     assert schema_migrations.BAOYU_TRANSLATE_RETIREMENT_SCHEMA_VERSION == "2026.09.07.1"
     assert schema_migrations.CRITICAL_RELATIONS == (
@@ -551,6 +744,7 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "provider_session_heads",
         "provider_session_epochs",
         "provider_session_entries",
+        "provider_session_images",
         "provider_session_append_receipts",
         "provider_turn_receipts",
         "conversation_context_checkpoints",
@@ -1050,7 +1244,8 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "'pending'::text, 'processing'::text, 'failed'::text, "
             "'dead_letter'::text, 'deleted'::text, 'file_pending'::text, "
             "'file_processing'::text, 'file_failed'::text, 'file_dead_letter'::text, "
-            "'file_deleted'::text]))",
+            "'file_deleted'::text, 'provider_image_pending'::text, 'provider_image_processing'::text, "
+            "'provider_image_failed'::text, 'provider_image_dead_letter'::text, 'provider_image_deleted'::text]))",
         ),
         (
             "object_deletion_outbox",
@@ -1058,7 +1253,10 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "c",
             "CHECK (target_type = 'artifact'::text AND (state = ANY (ARRAY["
             "'pending'::text, 'processing'::text, 'failed'::text, 'dead_letter'::text, "
-            "'deleted'::text])) OR target_type = 'file'::text AND (state = ANY (ARRAY["
+            "'deleted'::text])) OR target_type = 'provider_image'::text AND (state = ANY (ARRAY["
+            "'provider_image_pending'::text, 'provider_image_processing'::text, 'provider_image_failed'::text, "
+            "'provider_image_dead_letter'::text, 'provider_image_deleted'::text])) "
+            "OR target_type = 'file'::text AND (state = ANY (ARRAY["
             "'file_pending'::text, 'file_processing'::text, 'file_failed'::text, "
             "'file_dead_letter'::text, 'file_deleted'::text])))",
         ),
@@ -1067,8 +1265,11 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "chk_object_deletion_outbox_target",
             "c",
             "CHECK (target_type = 'artifact'::text AND artifact_id IS NOT NULL "
-            "AND file_id IS NULL OR target_type = 'file'::text AND artifact_id IS NULL "
-            "AND file_id IS NOT NULL)",
+            "AND file_id IS NULL AND provider_image_id IS NULL "
+            "OR target_type = 'file'::text AND artifact_id IS NULL "
+            "AND file_id IS NOT NULL AND provider_image_id IS NULL "
+            "OR target_type = 'provider_image'::text AND artifact_id IS NULL AND file_id IS NULL "
+            "AND provider_image_id IS NOT NULL)",
         ),
         (
             "object_deletion_outbox",
@@ -1090,7 +1291,7 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "c",
             "CHECK (executor_reconciliation_status = ANY (ARRAY["
             "'waiting_terminal'::text, 'pending'::text, 'claimed'::text, "
-            "'retry'::text, 'finalized'::text, 'failed'::text]))",
+            "'retry'::text, 'cleanup_pending'::text, 'finalized'::text, 'failed'::text]))",
         ),
     )
     assert (
@@ -1223,6 +1424,7 @@ def test_sandbox_executor_async_terminal_columns_are_additive():
         "executor_reconciliation_status text",
         "executor_reconciliation_claim_token text",
         "executor_reconciliation_claimed_at timestamptz",
+        "executor_reconciliation_retry_not_before timestamptz",
         "executor_reconciliation_attempt_count integer",
         "executor_terminal_reconciliation_attempt_count integer",
         "executor_reconciliation_error text",
@@ -1231,8 +1433,21 @@ def test_sandbox_executor_async_terminal_columns_are_additive():
         assert f"alter table sandbox_leases add column if not exists {column}" in schema
     assert (
         "check (executor_reconciliation_status in "
-        "('waiting_terminal', 'pending', 'claimed', 'retry', 'finalized', 'failed'))"
+        "('waiting_terminal', 'pending', 'claimed', 'retry', 'cleanup_pending', 'finalized', 'failed'))"
     ) in schema
+
+
+def test_terminal_retry_and_claim_indexes_have_one_catalog_owner():
+    indexes = {item.name: item for item in schema_migrations.CONCURRENT_INDEX_MIGRATIONS}
+    claim = indexes["idx_sandbox_leases_executor_reconcile"]
+    due = indexes["idx_sandbox_leases_executor_reconcile_due"]
+    assert claim.key_expressions == ("coalesce(executor_terminal_received_at, created_at)", "id")
+    assert due.column_names == ("executor_reconciliation_retry_not_before",)
+    for item in (claim, due):
+        assert "status in ('active', 'released')" in item.sql
+        assert (item.name, False) in schema_migrations.CRITICAL_INDEXES
+        assert item.name not in {static.name for static in schema_migrations.STATIC_INDEX_DEFINITIONS}
+    assert "executor_reconciliation_status = 'retry'" in due.sql
 
 
 def test_part_lookup_indexes_are_created_only_by_the_concurrent_phase():

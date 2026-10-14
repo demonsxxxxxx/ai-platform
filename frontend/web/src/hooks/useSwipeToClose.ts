@@ -4,11 +4,13 @@
  * Only triggers from the drag handle — swiping on content area never closes the panel.
  */
 
-import { useEffect, useRef, useCallback, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, useCallback, type RefObject } from "react";
 
 interface UseSwipeToCloseOptions {
   onClose: () => void;
   enabled?: boolean;
+  /** Logical panel identity; replacing content retires any pending gesture. */
+  ownerKey?: string;
   threshold?: number;
   velocityThreshold?: number;
   dragHandleRef?: RefObject<HTMLElement | null>;
@@ -17,6 +19,7 @@ interface UseSwipeToCloseOptions {
 export function useSwipeToClose({
   onClose,
   enabled = true,
+  ownerKey,
   threshold = 100,
   velocityThreshold = 0.5,
   dragHandleRef,
@@ -29,6 +32,22 @@ export function useSwipeToClose({
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
   const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useLayoutEffect(() => {
+    const element = elementRef.current;
+    return () => {
+      if (closeTimerRef.current !== null) {
+        clearTimeout(closeTimerRef.current);
+        closeTimerRef.current = null;
+      }
+      isDragging.current = false;
+      if (element) {
+        element.style.transform = "";
+        element.style.transition = "";
+      }
+    };
+  }, [enabled, ownerKey]);
+
 
   const handleTouchStart = useCallback(
     (e: TouchEvent) => {

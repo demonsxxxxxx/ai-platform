@@ -402,7 +402,7 @@ async def test_cleanup_expired_sandbox_runtime_leases_stops_runtime_before_relea
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("reconciliation_status", ["pending", "claimed", "retry"])
+@pytest.mark.parametrize("reconciliation_status", ["pending", "claimed", "retry", "cleanup_pending"])
 async def test_cleanup_does_not_stop_a_terminal_receipt_with_recovery_work(
     monkeypatch,
     reconciliation_status,
@@ -439,22 +439,27 @@ async def test_cleanup_does_not_stop_a_terminal_receipt_with_recovery_work(
     assert cleaned == []
 
 
+@pytest.mark.parametrize("claim_lost_during_stop", (False, True))
+@pytest.mark.parametrize("reconciliation_status", ["failed", "cleanup_pending"])
 @pytest.mark.parametrize("lease_status", ["active", "released"])
 @pytest.mark.asyncio
 async def test_failed_reconciliation_cleanup_claims_stops_and_finalizes(
     monkeypatch,
     lease_status,
+    claim_lost_during_stop,
+    reconciliation_status,
 ):
     cleanup_failed_sandbox_executor_reconciliation_leases = sandbox_runtime_cleanup.cleanup_failed_sandbox_executor_reconciliation_leases
 
     row = expired_lease_row(
         status=lease_status,
-        executor_terminal_json={"run_id": "run-a", "status": "failed"},
-        executor_reconciliation_status="failed",
+        executor_terminal_json={"run_id": "run-a", "status": "succeeded"},
+        executor_reconciliation_status=reconciliation_status,
     )
     calls = []
     transaction_active = False
     transaction_count = 0
+    claim_active = True
 
     @asynccontextmanager
     async def fenced_transaction():
@@ -475,11 +480,13 @@ async def test_failed_reconciliation_cleanup_claims_stops_and_finalizes(
     async def has_claim(_conn, **kwargs):
         assert transaction_active is True
         calls.append(("has_claim", kwargs))
-        return True
+        return claim_active
 
     async def finalize(_conn, **kwargs):
         assert transaction_active is True
         calls.append(("finalize", kwargs))
+        if not claim_active:
+            return None
         return {**row, "status": "released", "executor_reconciliation_status": "finalized"}
 
     async def append_event(_conn, **kwargs):
@@ -488,7 +495,10 @@ async def test_failed_reconciliation_cleanup_claims_stops_and_finalizes(
 
     class Provider:
         async def stop(self, lease, *, reason):
+            nonlocal claim_active
             assert transaction_active is False
+            if claim_lost_during_stop:
+                claim_active = False
             calls.append(("stop", lease.container_id, reason))
             return StopResult(container_id=lease.container_id, status="stopped", message=reason)
 
@@ -515,15 +525,18 @@ async def test_failed_reconciliation_cleanup_claims_stops_and_finalizes(
 
     assert transaction_active is False
     assert transaction_count == 3
-    assert [call[0] for call in calls] == ["claim", "has_claim", "stop", "finalize", "event"]
+    expected_calls = ["claim", "has_claim", "stop", "finalize"]
+    if not claim_lost_during_stop:
+        expected_calls.append("event")
+    assert [call[0] for call in calls] == expected_calls
     claim_token = calls[0][1]["claim_token"]
     assert calls[0][1]["limit"] == 1
     assert calls[1][1] == {"lease_id": "lease-a", "claim_token": claim_token}
     assert calls[2] == ("stop", "exec-run-a", "executor_reconciliation_cleanup")
     assert calls[3][1]["claim_token"] == claim_token
-    assert released == [
+    assert released == ([] if claim_lost_during_stop else [
         {**row, "status": "released", "executor_reconciliation_status": "finalized"}
-    ]
+    ])
 
 
 @pytest.mark.asyncio
@@ -652,6 +665,48 @@ async def test_failed_reconciliation_cleanup_stop_timeout_closes_transactions(mo
     assert transaction_count == 3
     assert len(released_claims) == 1
     assert released_claims[0]["error"] == "executor_reconciliation_sandbox_stop_failed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shutdown", [False, True])
+async def test_reconciliation_cleanup_owns_resistant_provider_until_it_really_stops(monkeypatch, shutdown):
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    release = asyncio.Event()
+    finished = asyncio.Event()
+
+    class Provider:
+        async def stop(self, _lease, **_kwargs):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                await release.wait()
+            finally:
+                finished.set()
+
+    monkeypatch.setattr(
+        "app.bootstrap.sandbox_cleanup.get_settings",
+        lambda: SimpleNamespace(sandbox_cleanup_timeout_seconds=0.01),
+    )
+    task = asyncio.create_task(sandbox_runtime_cleanup._stop_failed_reconciliation_lease(Provider(), object()))
+    try:
+        await asyncio.wait_for(started.wait(), 0.5)
+        if shutdown:
+            task.cancel()
+        await asyncio.wait_for(cancelled.wait(), 0.5)
+        assert not task.done() and not finished.is_set()
+        task.cancel()  # A second shutdown request must not detach provider I/O.
+        await asyncio.sleep(0)
+        assert not task.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+    assert finished.is_set()
 
 
 @pytest.mark.asyncio
@@ -1103,10 +1158,13 @@ async def test_opensandbox_cleanup_without_canonical_attempt_retains_db_lease(mo
         "expired-authorized",
         "expired-authorized-after-rollout",
         "failed-receipt-authorized",
+        "failed-receipt-absent",
         "attempt-mismatch",
         "ambiguous-identity",
         "non-string-remote-metadata",
         "get-info-404",
+        "get-info-503",
+        "get-info-untrusted-404",
         "signed-subject-mismatch",
     ),
 )
@@ -1116,7 +1174,7 @@ async def test_production_opensandbox_cleanup_requires_authoritative_identity(
     failure_mode,
     runtime_subject,
 ):
-    from opensandbox.exceptions import SandboxApiException
+    from opensandbox.exceptions import SandboxApiException, SandboxError
 
     from app.sandbox.api import SandboxRuntimeCleanupError
     cleanup_expired_sandbox_runtime_leases = sandbox_runtime_cleanup.cleanup_expired_sandbox_runtime_leases
@@ -1194,8 +1252,16 @@ async def test_production_opensandbox_cleanup_requires_authoritative_identity(
 
     def get_info():
         remote_trace.append("get_info")
-        if failure_mode == "get-info-404":
-            raise SandboxApiException("sandbox metadata is unavailable", status_code=404)
+        if failure_mode in {"get-info-404", "failed-receipt-absent"}:
+            raise SandboxApiException(
+                "sandbox is absent",
+                status_code=404,
+                error=SandboxError(code="DOCKER::SANDBOX_NOT_FOUND", message="sandbox is absent"),
+            )
+        if failure_mode == "get-info-503":
+            raise SandboxApiException("sandbox lookup is unavailable", status_code=503)
+        if failure_mode == "get-info-untrusted-404":
+            raise RuntimeError("sandbox not found (404)")
         return {
             "id": remote.id,
             "metadata": dict(remote.metadata),
@@ -1284,7 +1350,7 @@ async def test_production_opensandbox_cleanup_requires_authoritative_identity(
         fake_release_stopped_sandbox_leases,
     )
 
-    if failure_mode == "failed-receipt-authorized":
+    if failure_mode in {"failed-receipt-authorized", "failed-receipt-absent"}:
         cleanup_failed_sandbox_executor_reconciliation_leases = sandbox_runtime_cleanup.cleanup_failed_sandbox_executor_reconciliation_leases
 
         finalized = []
@@ -1325,13 +1391,16 @@ async def test_production_opensandbox_cleanup_requires_authoritative_identity(
         )
         assert cleaned == [row]
         assert remote_trace == ["connect", "get_info"]
-        assert remote.kill_calls == 1
+        expected_calls = 0 if failure_mode == "failed-receipt-absent" else 1
+        assert remote.kill_calls == expected_calls
         assert remote.close_calls == 1
         assert len(finalized) == 1
         assert finalized[0]["lease_id"] == "lease-a"
+        assert provider._leases == {}
+        assert provider._sandboxes == {}
         return
 
-    if failure_mode in {"expired-authorized", "expired-authorized-after-rollout"}:
+    if failure_mode in {"expired-authorized", "expired-authorized-after-rollout", "get-info-404"}:
         cleaned = await cleanup_expired_sandbox_runtime_leases(
             tenant_id="tenant-a",
             provider_factory=lambda _provider_name: provider,
@@ -1344,10 +1413,13 @@ async def test_production_opensandbox_cleanup_requires_authoritative_identity(
             GOVERNED_EGRESS_PROOF_LABEL: governed_egress_proof_label(proof),
         }
         assert remote_trace == ["connect", "get_info"]
-        assert remote.kill_calls == 1
+        expected_calls = 0 if failure_mode == "get-info-404" else 1
+        assert remote.kill_calls == expected_calls
         assert remote.close_calls == 1
         assert len(releases) == 1
         assert releases[0]["lease_ids"] == ["lease-a"]
+        assert provider._leases == {}
+        assert provider._sandboxes == {}
         return
 
     with pytest.raises(SandboxRuntimeCleanupError) as exc_info:

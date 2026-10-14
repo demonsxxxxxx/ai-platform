@@ -1695,3 +1695,34 @@ async def test_real_long_part_append_uses_bounded_index_lookups():
                 assert any(bool(node.get("Index Name")) for node in nodes(plan)), json.dumps(plan)
                 assert all(node.get("Node Type") not in {"Seq Scan", "Sort", "Aggregate"} for node in nodes(plan)), json.dumps(plan)
                 assert sum(node.get("Rows Removed by Filter", 0) for node in nodes(plan)) <= 2, plan
+
+
+@pytest.mark.asyncio
+async def test_assembled_callback_authority_holds_real_run_attempt_and_lease_locks():
+    from app.bootstrap.sandbox_callbacks import build_sandbox_callback_authority
+
+    async with _schema(with_current_attempt=True) as (dsn, schema_name, (tenant, run, attempt)):
+        token_id = callback_token_id_for_binding(CallbackTokenBinding(
+            run_id=run, attempt_id=attempt, owner_generation=_CURRENT_OWNER_GENERATION,
+        ))
+        async with _connection_factory(dsn, schema_name) as conn:
+            identity, lease = await build_sandbox_callback_authority().lock_run_then_attempt(
+                conn, run_id=run, attempt_id=attempt, callback_token_id=token_id,
+                session_id=f"s_{run[2:]}",
+            )
+            assert identity["tenant_id"] == tenant and lease["id"] == "lease"
+            for table, identifier in (("runs", run), ("run_attempts", attempt), ("sandbox_leases", "lease")):
+                async with _connection_factory(dsn, schema_name) as observer:
+                    with pytest.raises(psycopg.errors.LockNotAvailable):
+                        async with observer.transaction():
+                            await observer.execute(
+                                sql.SQL("select id from {} where id = %s for update nowait").format(sql.Identifier(table)),
+                                (identifier,),
+                            )
+        # The application did not own or extend the caller's transaction.
+        async with _connection_factory(dsn, schema_name) as observer:
+            for table, identifier in (("runs", run), ("run_attempts", attempt), ("sandbox_leases", "lease")):
+                await observer.execute(
+                    sql.SQL("select id from {} where id = %s for update nowait").format(sql.Identifier(table)),
+                    (identifier,),
+                )
