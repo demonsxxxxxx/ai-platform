@@ -472,6 +472,7 @@ jobs:
     runs-on: ubuntu-24.04
     environment: packaging-publish
     permissions:
+      actions: read
       contents: write
       packages: read
     steps:
@@ -644,6 +645,9 @@ jobs:
           fi
           RELEASE_TAG="$REQUESTED_RELEASE_VERSION"
           test -x "$GH_CLI_BIN"
+          python tools/release_required_checks.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --source-commit "$GITHUB_SHA"
           current_main="$(
             "$GH_CLI_BIN" api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" \
               --jq '.object.sha'
