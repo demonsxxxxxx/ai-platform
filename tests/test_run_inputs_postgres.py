@@ -1,5 +1,7 @@
 """Run input ownership, receipts and admission races against real PostgreSQL."""
 
+from app.sandbox.infrastructure import leases_postgres as sandbox_leases
+
 import asyncio
 import os
 from contextlib import asynccontextmanager
@@ -15,6 +17,7 @@ from psycopg.rows import dict_row
 
 from app.bootstrap.run_inputs import build_run_inputs_service
 from app.runs.domain.inputs import RunInputClosed, RunInputConflict, RunInputError
+from tests.support.db_transactions import event_loop_policy  # noqa: F401
 
 
 QUESTIONS = [{
@@ -192,12 +195,14 @@ async def test_submission_and_sealing_serialize_on_the_owning_run(inputs_db, sub
 
 
 @pytest.mark.parametrize(
-    "question_text, question_count",
-    [("Which sections?", 1), ("Q" * 4_001, 1), ("𠀀" * 15_998, 4)],
-    ids=["short", "long", "four-long-unicode"],
+    "question_text, question_count, recommended, automatic, legacy_redacted",
+    [("Which sections?", 1, False, False, False), ("Q" * 4_001, 1, False, False, False),
+     ("𠀀" * 15_998, 4, False, False, False), ("Which sections?", 1, True, False, False),
+     ("Which sections?", 1, True, True, False), ("Which sections?", 1, True, True, True)],
+    ids=["short", "long", "four-long-unicode", "recommended", "timeout-recommended", "legacy-redacted-timeout"],
 )
 async def test_http_question_answer_and_supplementary_text_reach_the_same_actor(
-    inputs_db, monkeypatch, question_text, question_count,
+    inputs_db, monkeypatch, question_text, question_count, recommended, automatic, legacy_redacted,
 ):
     from app.auth import require_principal
     from app.execution.infrastructure.harness.claude.interaction import ClaudeRunInteractionActor
@@ -206,8 +211,12 @@ async def test_http_question_answer_and_supplementary_text_reach_the_same_actor(
     from app.execution.infrastructure.run_inputs_http import RunInputCallbackClient
 
     connect, service = inputs_db
+    option_labels = ["Intro", "Results (Recommended)" if recommended else "Results"]
+    if legacy_redacted:
+        option_labels[1] = "Results /app/private (Recommended)"
     questions = [
-        {**QUESTIONS[0], "question": question_text if question_count == 1 else f"{index}:{question_text}"}
+        {**QUESTIONS[0], "question": question_text if question_count == 1 else f"{index}:{question_text}",
+         "options": [{"label": label, "description": ""} for label in option_labels]}
         for index in range(question_count)
     ]
     app = FastAPI()
@@ -237,7 +246,7 @@ async def test_http_question_answer_and_supplementary_text_reach_the_same_actor(
     # The real callback route, token validation and Run lock remain in use.
     # Only the already-tested sandbox lease lookup uses a controlled fixture.
     monkeypatch.setattr(
-        runtime_callbacks.sandbox_leases,
+        sandbox_leases,
         "list_current_sandbox_runtime_leases_for_attempt", current_lease,
     )
     transport = httpx.ASGITransport(app=app)
@@ -267,13 +276,25 @@ async def test_http_question_answer_and_supplementary_text_reach_the_same_actor(
                 await conn.execute("update runs set cancel_requested_at=null")
 
             await actor.open()
+            if legacy_redacted:
+                from uuid import NAMESPACE_URL, uuid5
+                from app.execution.infrastructure.harness.claude.interaction import _project_questions
+
+                legacy = _project_questions(questions, service.sanitize_text)
+                legacy[0]["options"][1].pop("recommended")
+                legacy_id = str(uuid5(NAMESPACE_URL, "ai-platform:run-question:run:attempt:native-question"))
+                await port.publish_question(question_id=legacy_id, questions=legacy)
+                async with connect() as conn, conn.transaction():
+                    await conn.execute("update run_input_questions set created_at=now()-interval '290 seconds'")
+                legacy_row = (await browser.get("/api/ai/runs/run/inputs")).json()["questions"][0]
             question_task = asyncio.create_task(actor.resolve_native_question(
                 tool_call_id="native-question", tool_input={"questions": questions},
             ))
             async with asyncio.timeout(2):
                 while True:
                     restored = (await browser.get("/api/ai/runs/run/inputs")).json()
-                    if restored["questions"]:
+                    if restored["questions"] and (not legacy_redacted or
+                            restored["questions"][0]["questions"][0]["options"][1].get("recommended") is True):
                         break
                     await asyncio.sleep(0.01)
             history = await browser.get("/api/ai/sessions/session/run-inputs?limit=1")
@@ -283,14 +304,28 @@ async def test_http_question_answer_and_supplementary_text_reach_the_same_actor(
             question_id = restored["questions"][0]["question_id"]
             assert restored["questions"][0]["status"] == "pending"
             assert not question_task.done()
-            submission = {"input_id": str(uuid4()), "question_id": question_id,
-                          "answers": {f"q{index}": ["o0", "o1"] for index, item in enumerate(questions)}}
-            submitted = await browser.post("/api/ai/runs/run/inputs", json=submission)
-            assert submitted.status_code == 200 and submitted.json()["status"] == "queued"
+            if legacy_redacted:
+                assert restored["questions"][0]["created_at"] == legacy_row["created_at"]
+                assert restored["questions"][0]["deadline_at"] == legacy_row["deadline_at"]
+                assert "/app/" not in str(restored)
+            if recommended:
+                assert restored["questions"][0]["questions"][0]["options"][1]["recommended"] is True
+            if automatic:
+                async with connect() as conn, conn.transaction():
+                    await conn.execute("update run_input_questions set created_at=now()-interval '301 seconds'")
+            else:
+                submission = {"input_id": str(uuid4()), "question_id": question_id,
+                              "answers": {f"q{index}": ["o0", "o1"] for index, item in enumerate(questions)}}
+                forged = await browser.post("/api/ai/runs/run/inputs", json={**submission, "source": "timeout_default"})
+                assert forged.status_code == 422
+                submitted = await browser.post("/api/ai/runs/run/inputs", json=submission)
+                assert submitted.status_code == 200 and submitted.json()["status"] == "queued"
             updated = await asyncio.wait_for(question_task, 2)
-            assert updated == {"questions": questions, "answers": {item["question"]: ["Intro", "Results"] for item in questions}}
+            expected_labels = [option_labels[1]] if automatic else option_labels
+            assert updated == {"questions": questions, "answers": {item["question"]: expected_labels for item in questions}}
             received = (await browser.get("/api/ai/runs/run/inputs")).json()
             assert received["questions"][0]["status"] == "answered"
+            assert received["inputs"][0]["source"] == ("timeout_default" if automatic else "manual")
             await actor.acknowledge_native_question("native-question")
             resolved = (await browser.get("/api/ai/runs/run/inputs")).json()
             assert resolved["questions"][0]["status"] == "resolved"
@@ -467,3 +502,207 @@ async def test_question_answers_require_exact_opaque_keys_and_complete_valid_val
         with pytest.raises(RunInputError):
             await submit(service, conn, input_id=str(uuid4()), question_id="invalid-answer", answers=answers)
         assert (await callback(service, conn, "poll", question_id="invalid-answer"))["inputs"] == []
+
+
+@pytest.mark.parametrize("multi", [False, True])
+async def test_question_timeout_persists_one_default_receipt_and_ack_resolves_it(inputs_db, multi):
+    connect, service = inputs_db
+    questions = [{"question": "Continue?", "header": "Next", "multiSelect": multi,
+                  "options": [{"label": "First", "description": ""},
+                              {"label": "Second (Recommended)", "description": ""}]}]
+    async with connect() as conn, conn.transaction():
+        await callback(service, conn, "open")
+        await callback(service, conn, "question", question_id="timeout", questions=questions)
+        before = await callback(service, conn, "poll", question_id="timeout")
+        assert before["inputs"] == []
+        projection = await service.get_projection(conn, tenant_id="tenant", user_id="owner", run_id="run")
+        batch = projection["questions"][0]
+        assert (batch["deadline_at"] - batch["created_at"]).total_seconds() == 300
+        expected = {"q0": ["o1"] if multi else "o1"}
+        assert batch["default_answers"] == expected
+        await conn.execute("update run_input_questions set created_at=now()-interval '301 seconds'")
+        # Retrying publication must preserve the original deadline and receipt.
+        await callback(service, conn, "question", question_id="timeout", questions=questions)
+        first = await callback(service, conn, "poll", question_id="timeout")
+        assert first["inputs"][0]["answers"] == expected
+        assert first["inputs"][0]["source"] == "timeout_default"
+        assert await callback(service, conn, "poll", question_id="timeout") == first
+        with pytest.raises(RunInputConflict, match="run_input_question_already_answered"):
+            await submit(service, conn, input_id=str(uuid4()), question_id="timeout",
+                         answers={"q0": ["o0"] if multi else "o0"})
+        await callback(service, conn, "ack", input_ids=[first["inputs"][0]["input_id"]])
+        projection = await service.get_projection(conn, tenant_id="tenant", user_id="owner", run_id="run")
+        assert projection["questions"][0]["status"] == "resolved"
+        assert projection["inputs"][0]["status"] == "applied"
+        assert projection["inputs"][0]["source"] == "timeout_default"
+
+
+async def test_free_text_question_timeout_closes_without_inventing_an_answer(inputs_db):
+    connect, service = inputs_db
+    questions = [{"question": "What is missing?", "header": "Details", "options": [], "multiSelect": False}]
+    async with connect() as conn, conn.transaction():
+        await callback(service, conn, "open")
+        await callback(service, conn, "question", question_id="free", questions=questions)
+        await conn.execute("update run_input_questions set created_at=now()-interval '301 seconds'")
+        expected = {"state": "open", "inputs": [], "error_code": "run_question_needs_input"}
+        assert await callback(service, conn, "poll", question_id="free") == expected
+        assert await callback(service, conn, "poll", question_id="free") == expected
+        projection = await service.get_projection(conn, tenant_id="tenant", user_id="owner", run_id="run")
+        assert projection["inputs"] == [] and projection["questions"][0]["status"] == "closed"
+        assert projection["questions"][0]["default_answers"] is None
+
+
+@pytest.mark.parametrize("manual_first", [False, True])
+async def test_manual_and_timeout_answers_serialize_on_owning_run(inputs_db, manual_first):
+    connect, service = inputs_db
+    async with connect() as conn, conn.transaction():
+        await callback(service, conn, "open")
+        await callback(service, conn, "question", question_id="race", questions=QUESTIONS)
+        await conn.execute("update run_input_questions set created_at=now()-interval '301 seconds'")
+    manual_id = str(uuid4())
+    async with connect() as first, connect() as second:
+        async with first.transaction():
+            if manual_first:
+                await submit(service, first, input_id=manual_id, question_id="race", answers={"q0": ["o1"]})
+                task = asyncio.create_task(callback(service, second, "poll", question_id="race"))
+            else:
+                await callback(service, first, "poll", question_id="race")
+                task = asyncio.create_task(submit(service, second, input_id=manual_id,
+                                                 question_id="race", answers={"q0": ["o1"]}))
+            try:
+                async with asyncio.timeout(2):
+                    while True:
+                        row = await (await first.execute("select wait_event_type from pg_stat_activity where pid=%s",
+                                                        (second.info.backend_pid,))).fetchone()
+                        if row and row["wait_event_type"] == "Lock":
+                            break
+                        await asyncio.sleep(0.01)
+                assert not task.done()
+            except BaseException:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+                raise
+        if manual_first:
+            receipt = (await asyncio.wait_for(task, 2))["inputs"][0]
+            assert receipt["input_id"] == manual_id and receipt["source"] == "manual"
+        else:
+            with pytest.raises(RunInputConflict, match="run_input_question_already_answered"):
+                await asyncio.wait_for(task, 2)
+        await second.rollback()
+    async with connect() as conn:
+        projection = await service.get_projection(conn, tenant_id="tenant", user_id="owner", run_id="run")
+        assert len(projection["inputs"]) == 1
+        assert projection["inputs"][0]["answers"] == {"q0": ["o1" if manual_first else "o0"]}
+
+
+@pytest.mark.parametrize("closed_by", ["cancel", "terminal", "new-attempt", "sealed"])
+async def test_question_timeout_cannot_bypass_closed_or_stale_attempt(inputs_db, closed_by):
+    connect, service = inputs_db
+    async with connect() as conn, conn.transaction():
+        await callback(service, conn, "open")
+        await callback(service, conn, "question", question_id="stale", questions=QUESTIONS)
+        await conn.execute("update run_input_questions set created_at=now()-interval '301 seconds'")
+        if closed_by == "cancel":
+            await conn.execute("update runs set cancel_requested_at=now()")
+        elif closed_by == "terminal":
+            await conn.execute("update runs set status='failed'")
+        elif closed_by == "new-attempt":
+            await conn.execute("insert into run_attempts (id,tenant_id,run_id,status,ordinal) values ('next','tenant','run','running',2)")
+        else:
+            await callback(service, conn, "settle")
+        if closed_by == "sealed":
+            assert (await callback(service, conn, "poll", question_id="stale"))["inputs"] == []
+        else:
+            with pytest.raises(RunInputClosed):
+                await callback(service, conn, "poll", question_id="stale")
+        assert (await (await conn.execute("select count(*) as n from run_inputs")).fetchone())["n"] == 0
+
+
+async def test_source_migration_backfills_legacy_receipts_and_rejects_invalid_sources(inputs_db):
+    connect, service = inputs_db
+    async with connect() as conn, conn.transaction():
+        await callback(service, conn, "open")
+        await submit(service, conn, input_id=str(uuid4()), text="legacy input")
+        await conn.execute("alter table run_inputs drop constraint chk_run_inputs_source")
+        await conn.execute("alter table run_inputs drop column source")
+        source = (Path(__file__).resolve().parents[1] / "app/schema.sql").read_text()
+        start = source.index("alter table run_inputs add column if not exists source")
+        end = source.index("create index if not exists idx_run_inputs_queued", start)
+        await conn.execute(source[start:end])
+        await conn.execute(source[start:end])
+        row = await (await conn.execute("select text,source from run_inputs")).fetchone()
+        assert row == {"text": "legacy input", "source": "manual"}
+        for invalid in ("invented", "timeout_default"):
+            with pytest.raises(psycopg.errors.CheckViolation):
+                async with conn.transaction():
+                    await conn.execute("update run_inputs set source=%s", (invalid,))
+
+
+async def test_legacy_recommendation_json_keeps_idempotent_publication_and_deadline(inputs_db):
+    from psycopg.types.json import Jsonb
+    from app.runs.domain.inputs import canonicalize_questions
+
+    connect, service = inputs_db
+    questions = [{"question": "Continue?", "header": "Next", "multiSelect": False,
+                  "options": [{"label": "First", "description": ""},
+                              {"label": "Second (Recommended)", "description": ""}]}]
+    async with connect() as conn, conn.transaction():
+        await callback(service, conn, "open")
+        initial = await callback(service, conn, "question", question_id="legacy", questions=questions)
+        legacy = canonicalize_questions(questions, sanitize_text=service.sanitize_text)
+        legacy[0]["options"][1].pop("recommended")
+        await conn.execute("update run_input_questions set questions=%s", (Jsonb(legacy),))
+        restored = await callback(service, conn, "question", question_id="legacy", questions=questions)
+        assert restored == initial
+        assert restored["question"]["default_answers"] == {"q0": "o1"}
+
+
+@pytest.mark.parametrize("status", ["pending", "answered", "resolved"])
+async def test_redacted_legacy_recommendation_completion_preserves_question_and_answer_facts(inputs_db, status):
+    from psycopg.types.json import Jsonb
+    from app.execution.infrastructure.harness.claude.interaction import _project_questions
+
+    connect, service = inputs_db
+    native = [{"question": "Continue?", "header": "Next", "multiSelect": False,
+               "options": [{"label": "First", "description": ""},
+                           {"label": "Results /app/private (Recommended)", "description": ""}]}]
+    incoming = _project_questions(native, service.sanitize_text)
+    legacy = _project_questions(native, service.sanitize_text)
+    legacy[0]["options"][1].pop("recommended")
+    assert legacy[0]["options"][1]["label"] == "Option 2"
+    async with connect() as conn, conn.transaction():
+        await callback(service, conn, "open")
+        await callback(service, conn, "question", question_id="private-legacy", questions=legacy)
+        if status != "pending":
+            answer = await submit(service, conn, input_id=str(uuid4()), question_id="private-legacy", answers={"q0": "o0"})
+            if status == "resolved":
+                await callback(service, conn, "ack", input_ids=[answer["input_id"]])
+        before = await (await conn.execute("select * from run_input_questions")).fetchone()
+        restored = await callback(service, conn, "question", question_id="private-legacy", questions=incoming)
+        assert restored["question"]["status"] == status
+        assert restored["question"]["created_at"] == before["created_at"]
+        assert restored["question"]["default_answers"] == {"q0": "o1"}
+        after = await (await conn.execute("select * from run_input_questions")).fetchone()
+        assert after == {**before, "questions": incoming}
+        assert await callback(service, conn, "question", question_id="private-legacy", questions=incoming) == restored
+        assert await callback(service, conn, "question", question_id="private-legacy", questions=legacy) == restored
+        if status != "pending":
+            assert (await service.get_projection(conn, tenant_id="tenant", user_id="owner", run_id="run"))["inputs"][0]["answers"] == {"q0": "o0"}
+        else:
+            await conn.execute("update run_input_questions set created_at=now()-interval '301 seconds'")
+            assert (await callback(service, conn, "poll", question_id="private-legacy"))["inputs"][0]["answers"] == {"q0": "o1"}
+        # Explicit False and changed public identities must never be overwritten.
+        incoming[0]["options"][1]["recommended"] = False
+        await conn.execute("update run_input_questions set questions=%s", (Jsonb(incoming),))
+        restored_false = await callback(service, conn, "question", question_id="private-legacy", questions=legacy)
+        assert restored_false["question"]["default_answers"] == {"q0": "o0"}
+        incoming[0]["options"][1]["recommended"] = True
+        with pytest.raises(RunInputConflict, match="run_input_question_id_conflict"):
+            await callback(service, conn, "question", question_id="private-legacy", questions=incoming)
+        incoming[0]["options"][1]["recommended"] = False
+        incoming[0]["options"][1]["description"] = "Changed question fact"
+        with pytest.raises(RunInputConflict, match="run_input_question_id_conflict"):
+            await callback(service, conn, "question", question_id="private-legacy", questions=incoming)
+        stored = await (await conn.execute("select questions from run_input_questions")).fetchone()
+        assert stored["questions"][0]["options"][1]["recommended"] is False
+        assert stored["questions"][0]["options"][1]["description"] == ""

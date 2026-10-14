@@ -12,9 +12,10 @@ from app.control_plane_contracts import (
     sanitize_public_text,
     standard_trace_id,
 )
-from app.file_preview_contracts import xlsx_preview_identity_from_metadata
+from app.files.api import xlsx_preview_identity_from_metadata
 from app.streaming.events import EVENT_ENVELOPE_SCHEMA_VERSION
 from app.runs.api import (
+    projected_event_cost,
     CHAT_PUBLIC_PROJECTION_VERSION as CHAT_PUBLIC_PROJECTION_VERSION,
     PUBLIC_TERMINAL_DETAIL_MESSAGES as PUBLIC_TERMINAL_DETAIL_MESSAGES,
     PUBLIC_TERMINAL_ERROR_CODE_ALIASES as PUBLIC_TERMINAL_ERROR_CODE_ALIASES,
@@ -638,7 +639,7 @@ def _ordinary_run_event_response(run_id: str, row: dict[str, object]) -> dict[st
             "output": _bounded_nonnegative_int(row.get("output_token_count")),
             "total": _bounded_nonnegative_int(row.get("total_token_count")),
         },
-        "cost": {"estimated_cost_minor": _bounded_nonnegative_int(row.get("estimated_cost_minor"))},
+        **projected_event_cost(row, ordinary=True),
         "payload": payload,
         "created_at": row.get("created_at"),
     }
@@ -693,7 +694,7 @@ def run_event_response(run_id: str, row: dict[str, object], principal: AuthPrinc
             "output": int(row.get("output_token_count") or 0),
             "total": int(row.get("total_token_count") or 0),
         },
-        "cost": {"estimated_cost_minor": int(row.get("estimated_cost_minor") or 0)},
+        **projected_event_cost(row),
         "payload": payload,
         "created_at": row.get("created_at"),
     }

@@ -3,6 +3,11 @@ import importlib
 
 import pytest
 
+# Shared provider factories need the same isolated runtime identity fixture.
+from test_sandbox_container_provider import (
+    fixed_runtime_identity_test_seams as fixed_runtime_identity_test_seams,
+)
+
 from app.runtime.sandbox.providers.opensandbox.startup import (
     OpenSandboxStartupEvidence,
     OpenSandboxStartupFailure,

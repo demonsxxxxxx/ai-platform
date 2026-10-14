@@ -2,15 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { MCPToolInfo } from "../../../types";
-import {
-  beginOrdinaryMcpToolDiscovery,
-  buildOrdinaryMcpServerSetKey,
-  collectOrdinaryMcpTools,
-  ORDINARY_MCP_TOOL_DISCOVERY_CONCURRENCY,
-  publishOrdinaryMcpToolDiscovery,
-  resolveVisibleOrdinaryMcpToolDiscovery,
-} from "../OrdinaryMcpCatalog.tsx";
+import { collectMcpTools, MCP_TOOL_DISCOVERY_CONCURRENCY } from "../../mcp/useMcpToolDiscovery";
 
+function response(name: string, tools: MCPToolInfo[] = [tool(name)]) {
+  return { server_name: name, tools, count: tools.length, unavailable_reason: null };
+}
 function tool(serverName: string): MCPToolInfo {
   return {
     name: `${serverName}-tool`,
@@ -24,38 +20,41 @@ test("ordinary MCP discovery bounds in-flight requests across a large catalog", 
   let inFlight = 0;
   let maxInFlight = 0;
 
-  const result = await collectOrdinaryMcpTools(serverNames, async (serverName) => {
+  const result = await collectMcpTools(serverNames, async (serverName) => {
     inFlight += 1;
     maxInFlight = Math.max(maxInFlight, inFlight);
     await new Promise((resolve) => setTimeout(resolve, 1));
     inFlight -= 1;
-    return { tools: [tool(serverName)] };
+    return response(serverName);
   });
 
-  assert.equal(maxInFlight, ORDINARY_MCP_TOOL_DISCOVERY_CONCURRENCY);
-  assert.equal(result.unavailable, false);
-  assert.equal(Object.keys(result.toolsByServer).length, 24);
+  assert.equal(maxInFlight, MCP_TOOL_DISCOVERY_CONCURRENCY);
+  assert.equal(result.unavailableServers.size, 0);
+  assert.equal(result.toolsByServer.size, 24);
 });
 
 test("HTTP-200 discovery failure stays unavailable while other servers retain their tools", async () => {
-  const result = await collectOrdinaryMcpTools(["failed", "healthy"], async (serverName) =>
-    serverName === "failed"
-      ? { tools: [], unavailable_reason: "discovery_failed" }
-      : { tools: [tool(serverName)] },
+  const result = await collectMcpTools(["failed", "healthy"], async (name) =>
+    name === "failed" ? { ...response(name, []), unavailable_reason: "discovery_failed" } : response(name),
   );
-  assert.equal(result.unavailable, true);
-  assert.deepEqual(result.toolsByServer, { healthy: [tool("healthy")] });
+  assert.deepEqual(Array.from(result.unavailableServers), ["failed"]);
+  assert.deepEqual(result.toolsByServer.get("healthy"), [tool("healthy")]);
+  assert.equal(result.toolsByServer.has("failed"), false);
 });
 
-test("an older ordinary MCP tool generation cannot publish after a newer one", () => {
-  const prior = beginOrdinaryMcpToolDiscovery(1, ["old"]);
-  const current = beginOrdinaryMcpToolDiscovery(2, ["new"]);
-  const published = publishOrdinaryMcpToolDiscovery(current, prior.generation, {
-    toolsByServer: { old: [tool("old")] },
-    unavailable: false,
-  });
-
-  assert.deepEqual(published, current);
+test("malformed, mismatched and duplicate catalogs cannot supply a successful count", async () => {
+  for (const invalid of [
+    { ...response("bad"), count: 2 },
+    { ...response("bad"), server_name: "other" },
+    { ...response("bad"), unavailable_reason: undefined },
+    { ...response("bad"), tools: null },
+    response("bad", [tool("bad"), tool("bad")]),
+    { ...response("bad"), tools: [{ ...tool("bad"), description: undefined }] },
+  ]) {
+    const result = await collectMcpTools(["bad"], async () => invalid as ReturnType<typeof response>);
+    assert.equal(result.toolsByServer.has("bad"), false);
+    assert.equal(result.unavailableServers.has("bad"), true);
+  }
 });
 
 test("cancelled ordinary discovery does not dequeue after its active workers finish", async () => {
@@ -64,51 +63,35 @@ test("cancelled ordinary discovery does not dequeue after its active workers fin
   const resolvers: Array<(tools: MCPToolInfo[]) => void> = [];
   let activeGeneration = true;
 
-  const pending = collectOrdinaryMcpTools(
+  const pending = collectMcpTools(
     serverNames,
     async (serverName) => {
       started.push(serverName);
-      return { tools: await new Promise<MCPToolInfo[]>((resolve) => resolvers.push(resolve)) };
+      return response(serverName, await new Promise<MCPToolInfo[]>((resolve) => resolvers.push(resolve)));
     },
     () => activeGeneration,
   );
 
-  assert.equal(started.length, ORDINARY_MCP_TOOL_DISCOVERY_CONCURRENCY);
+  assert.equal(started.length, MCP_TOOL_DISCOVERY_CONCURRENCY);
   activeGeneration = false;
   resolvers.forEach((resolve, index) => resolve([tool(`active-${index}`)]));
   await pending;
 
-  assert.equal(started.length, ORDINARY_MCP_TOOL_DISCOVERY_CONCURRENCY);
+  assert.equal(started.length, MCP_TOOL_DISCOVERY_CONCURRENCY);
 });
 
-test("an empty ordinary MCP catalog clears tools, unavailable state, and loading", () => {
-  const loading = beginOrdinaryMcpToolDiscovery(4, ["stale"]);
-  const empty = beginOrdinaryMcpToolDiscovery(5, []);
-
-  assert.equal(loading.toolsLoading, true);
-  assert.deepEqual(empty, {
-    generation: 5,
-    serverSetKey: buildOrdinaryMcpServerSetKey([]),
-    toolsByServer: {},
-    toolsLoading: false,
-    toolsUnavailable: false,
-  });
+test("successful zero tools and an empty server set are not failures", async () => {
+  const empty = await collectMcpTools([], async () => { throw new Error("must not discover"); });
+  assert.equal(empty.toolsByServer.size, 0);
+  assert.equal(empty.unavailableServers.size, 0);
+  const zero = await collectMcpTools(["zero"], async (name) => response(name, []));
+  assert.deepEqual(zero.toolsByServer.get("zero"), []);
+  assert.equal(zero.unavailableServers.size, 0);
 });
 
-test("a mismatched ordinary server set synchronously masks prior discovery state", () => {
-  const prior = {
-    ...beginOrdinaryMcpToolDiscovery(8, ["old-server"]),
-    toolsByServer: { "old-server": [tool("old-server")] },
-    toolsLoading: true,
-    toolsUnavailable: true,
-  };
-  const visible = resolveVisibleOrdinaryMcpToolDiscovery(prior, ["new-server"]);
-
-  assert.deepEqual(visible, {
-    generation: 8,
-    serverSetKey: buildOrdinaryMcpServerSetKey(["new-server"]),
-    toolsByServer: {},
-    toolsLoading: false,
-    toolsUnavailable: false,
-  });
+test("server names cannot collide with object prototype properties", async () => {
+  const result = await collectMcpTools(["constructor", "__proto__"], async (name) => response(name));
+  assert.equal(result.toolsByServer.size, 2);
+  assert.deepEqual(result.toolsByServer.get("constructor"), [tool("constructor")]);
+  assert.deepEqual(result.toolsByServer.get("__proto__"), [tool("__proto__")]);
 });

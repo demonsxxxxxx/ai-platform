@@ -173,6 +173,7 @@ def test_size_signals_are_advisory_across_multiple_responsibilities(
         "deploy/ai-platform",
     ]
     assert _payload(evaluation)["policy"]["size_and_hot_file_gates"] == "advisory"
+    assert all("advisory" in item["remediation"] for item in _payload(evaluation)["advisories"])
 
 
 def test_multiple_production_subsystems_are_reported_without_blocking(
@@ -444,6 +445,9 @@ def test_ruff_failure_is_reported(governance_repo: tuple[Path, str], monkeypatch
 
     assert evaluation.ruff["status"] == "failed"
     assert "ruff_failed" in _codes(evaluation)
+    violation = next(item for item in evaluation.violations if item.code == "ruff_failed")
+    assert "python -m ruff check --isolated -- app/alpha.py tests/test_alpha.py" in violation.as_dict()["remediation"]
+    assert f"remediation: {violation.remediation}" in code_governance._render_text(evaluation)
 
 
 @pytest.mark.parametrize(

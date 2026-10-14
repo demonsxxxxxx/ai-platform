@@ -2,7 +2,7 @@
 
 Status: source candidate; deployment and external acceptance are separate
 Owner: Context + Execution + Runs
-Last updated: 2026-10-09
+Last updated: 2026-10-14
 
 ## Decision
 
@@ -63,10 +63,10 @@ This change is limited to:
   check described below;
 - owning tests and these architecture documents.
 
-No frontend, SSE wire, public message schema, provider callback request/response
-schema, or deployment change is in scope. The cancellation
-drain qualification is limited to native append persistence; current tool,
-input and history-load authorization remains unchanged.
+No frontend, SSE wire, public message schema, or deployment change is in scope.
+The private provider callback has the opt-in child read extension described
+below; its request body, action names and append ACK shape are unchanged. The
+cancellation drain qualification remains limited to native append persistence.
 
 ### Preserved invariants
 
@@ -168,7 +168,7 @@ Current Run authority
 
 Claude SessionStore
   <-> authenticated host callback
-  <-> ordered opaque PostgreSQL provider entries
+  <-> ordered PostgreSQL provider entries + private MinIO image payloads
 ```
 
 The provider transcript is the only model-facing conversation history. Context
@@ -190,10 +190,121 @@ A mismatch reports `provider_session_integrity_mismatch`; absent complete
 append receipt coverage reports `provider_session_integrity_unavailable`.
 Neither condition silently resumes a prefix or fabricates replacement receipts.
 
-New appends also store their original canonical representation in the nullable
+### Private image persistence
+
+The pinned Python SDK is `claude-agent-sdk==0.2.165`, with bundled CLI
+`2.1.294`. PostgreSQL remains the owner of ordered entry structure, scope,
+sequence, original batch digest, and turn receipts. Only recognized image
+payload strings are stored in MinIO; entire entries/transcripts are not blobs.
+The Execution adapter locates the SDK's typed base64 image blocks and the
+native Read `toolUseResult.file.base64` copy. Unknown JSON shapes and ordinary
+text remain inline. Identical image strings within one append share one object.
+
+Context stores the exact UTF-8 bytes of each encoded image string, without
+base64 re-encoding, conversion, resizing or recompression. The entry's private
+`image-payloads-v1` sidecar records the JSON leaf path, image ID, size and digest;
+its PostgreSQL JSON/JSONB representation contains the structure with empty
+image leaves. Restore verifies object bytes and fills every leaf before checking
+the unchanged full-entry batch digest and transcript byte count. The SDK receives
+deep-equal original entries, never image IDs, storage keys or URLs. A missing or
+corrupt object fails continuity; it cannot become a placeholder or summary.
+Legacy inline entries and their existing receipts are read without backfill.
+
+The callback uses two short transactions. The first validates authority,
+recognizes already committed ACK retries, rejects sequence/capacity conflicts,
+and reserves upload cleanup before object I/O. MinIO I/O uses the existing
+bounded storage executor outside those locks. The second validates the current
+scope, active Session, Run/Attempt, writer generation, live lease and sequence;
+image promotion, entry insertion, original receipt and both byte counters commit
+together. Load also rechecks the image metadata snapshot. A committed ACK retry
+requires no object upload. Outstanding uncommitted images per epoch are capped
+at 128 objects and 64 MiB; durable deletion receipts release that reservation
+budget. Cancellation may only persist the existing qualified tail writer.
+
+Limits are separate: 8 MiB per encoded image, 128 extracted fields per batch,
+16 MiB per raw entry, 32 MiB per append batch and 64 MiB per restored transcript.
+The image-free entry remains at most 256 KiB and accumulated structured entries
+at most 8 MiB; the 4096-entry cap remains. CLI stdout buffering and private
+callback response limits accommodate the bounded restored transcript. Public
+assistant-text limits are unchanged. These are resource limits, not a promise
+that every model accepts an image of that size.
+
+`provider_session_images` owns private object metadata and survives parent
+session/epoch deletion. The existing deletion outbox owns each provisional
+upload before it starts; uncertain/failed writes remain eligible for cleanup,
+including repeated deletion after a late write. Session deletion queues active
+images in bounded batches, with the existing maintenance loop handling the
+remainder and physically removed parents. Images use the disjoint
+`provider_image_*` outbox states, preventing old artifact/file workers from
+claiming them. No public File/Artifact row or new cleanup worker is introduced.
+
+Compatibility disposition: the previous raw 256 KiB / 2 MiB / 8 MiB private
+limits and all-inline writer are superseded. Inline history remains a read
+format, not a second writer. Schema/readiness and concurrent-index authority
+advance to `2026.10.14.1`. Old binaries cannot restore externalized entries or
+process the new deletion target; an image swap is not a supported rollback.
+Deploy matching API/Worker/Sandbox binaries after migration under the release
+runbook. No migration rewrites historical hashes, failed Runs or dirty epochs.
+
+### Bounded child restore view
+
+The adapter requests `X-AI-Platform-Provider-Read-View: children-v1` only on the
+existing `list_subkeys` action. An opted-in host may attach `child_entries`, a
+typed mapping from every returned child subpath to its ordered entry list.
+The mapping comes from that callback's already verified whole-epoch rows, not
+another query or a main-only integrity check. Main entries remain in their
+ordinary preload response. The response's existing `next_sequence` must match
+the adapter's main preload; the host still binds the exact provider UUID,
+epoch, frozen context, Run, Attempt, writer generation and live lease.
+
+Context's `transport/provider_session_responses.py` owns the response model,
+typed-result projection, normal JSON encoder and measurement of the actual
+`JSONResponse` bytes it returns. The existing `bootstrap/execution.py` composes
+that boundary alongside the SessionStore adapter; the legacy callback route
+delegates without assembling or encoding a second response. The old
+`runtime/sandbox/contracts.py` model import remains an alias to this same class
+for the identified router and contract-test consumers. The shared fixed header,
+read-view value and cap have one owner in Context's native-session contract and
+are exposed through its in-process API; it does not export transport internals.
+The 64 MiB + 64 KiB wire cap includes both subpaths and child
+entries. Transcript byte accounting alone excludes path/envelope overhead and
+cannot establish this bound. If the entire mapping does not fit, the host
+omits the whole optional field and returns the ordinary subpath response.
+It never truncates entries, children or paths to fit the cap.
+
+The adapter installs a complete, shape-checked mapping atomically under its
+existing append lock in its existing per-instance load cache. Cached child
+reads consume this one authorized snapshot and yield to delivered task
+cancellation. They do not perform additional remote authorization requests;
+bytes already delivered cannot be recalled when host revocation precedes
+delivery of the executor's cancel signal. Every actual callback and later
+tool/input/model operation retains its current authority checks. The successful
+terminal coverage transaction still requires the exact live writer, no Run
+cancellation, a new current-turn main append and the accepted final sequence.
+The narrowly scoped cancellation-tail append exception is unchanged.
+
+Nonempty append invalidates the read cache when its pending batch is established
+and after each acknowledged chunk. An uncertain ACK retains the original
+pending batch and blocks all reads; a view cannot reset the write cursor or
+manufacture an append receipt. Instances never share this cache across Runs,
+Attempts or provider epochs. No server cache, persistent snapshot ledger,
+SDK override or second prompt-history owner is introduced.
+
+Compatibility disposition: old clients send no opt-in and receive exactly the
+original response fields, including the original null/default values. Old hosts
+ignore the new header and return ordinary subpaths. Absence of `child_entries`
+therefore retains the original per-child load path, also needed for valid
+histories whose aggregate wire envelope exceeds the cap. A present malformed
+view or a changed sequence fails closed; HTTP denial or timeout is not retried
+as version negotiation. These are two wire sizes for the same authorized native
+store, not two continuity implementations. With a fitting view, ordinary SDK
+resume does two whole-epoch verifications regardless of child count: main
+preload and child enumeration. Oversized views retain the prior n+2 bound.
+
+New appends also store their canonical structured representation in the nullable
 `entry_canonical_json` JSON column, in the same transaction as JSONB and the
-existing receipt. Loading compares its PostgreSQL JSONB value with `entry_json`,
-then verifies and restores the original representation. JSONB alone changes
+existing full-entry receipt. Loading compares its PostgreSQL JSONB value with `entry_json`,
+then restores images and verifies the original full representation. JSONB alone changes
 scientific notation and negative zero, so reserializing it cannot always prove
 the original append digest or byte count. This preserves ACK retry identity and
 the existing transcript byte budget without a new digest format.
@@ -293,6 +404,18 @@ request-envelope limits. It validates the complete input before sending any
 chunk. A single oversize JSON entry is rejected without splitting or truncating
 its opaque SDK data; that is a platform resource limit, not an SDK guarantee.
 
+Chunk sizing reuses the compact UTF-8 JSON lengths already checked on the
+frozen entries. For each chunk it encodes the actual empty request envelope at
+that chunk's expected sequence, then adds entry lengths and separating commas.
+The envelope is recomputed after a split, including any sequence digit growth.
+Each final chunk still passes the complete request-size validator, and every
+chunk is planned before pending state or the first callback is created. A late
+invalid entry or an oversized next singleton therefore cannot write a prefix.
+The growing-prefix serialization loop is retired; only the owning differential
+test retains that loop as a byte/partition oracle. Small singleton batches can
+do more envelope encoding work; this removes repeated entry traversal without
+promising a universal latency improvement.
+
 The adapter freezes the original key/entries and chunk payloads, retains its
 confirmed-chunk offset, and retries an uncertain ACK with exactly the same
 `expected_sequence`. Already acknowledged chunks are not resent when the SDK
@@ -309,3 +432,26 @@ batch: host dirty-epoch/recovery policy applies. This change does not alter UUID
 uniqueness, entry normalization, schema, resource caps or retention. It retires
 the assumption that one SDK append must equal one host callback; old single-
 chunk callbacks keep the same request/receipt shape.
+
+### Private failure provenance
+
+Native SessionStore preload exceptions and SDK `MirrorErrorMessage.error` are
+captured in the existing bounded `runtime_diagnostics` carrier. Preload preserves
+the observed exception and standard cause/context chain; mirror capture reads
+only the SDK error string, never its SessionKey or transcript entries. Missing
+session identity, invalid frozen resume choice, and resume-state mismatch use
+fixed, value-free diagnostic sources. Public provider-session failure codes,
+new-conversation guidance, and the final mirror/receipt/sequence barriers do not
+change. Local callback rejection records the transport's observed fixed reason;
+it does not imply knowledge of an uncollected HTTP response body.
+
+The Sandbox diagnostic normalizer owns the existing size budgets; Runs owns
+private persistence and its existing credential/URL/path redaction. Arbitrary
+SDK exception strings remain administrator-private evidence under that contract:
+pattern redaction cannot guarantee removal of arbitrary business text or unknown
+secrets embedded by a provider. No prompt, callback configuration, SessionKey,
+transcript, or request payload is deliberately added to these observations.
+Oversized SDK error values retain the existing truncation summary rather than an
+unbounded copy. Required response attachment tool registration failures likewise
+retain the constructor exception through this same diagnostic path; optional
+registration failure still leaves attachments unavailable without failing a turn.

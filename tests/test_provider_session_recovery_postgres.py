@@ -10,6 +10,7 @@ from uuid import uuid4
 
 import psycopg
 import pytest
+from tests.support.db_transactions import event_loop_policy as event_loop_policy
 from fastapi import HTTPException
 from psycopg import sql
 from psycopg.rows import dict_row
@@ -56,7 +57,8 @@ async def recovery_db():
         async with connect() as conn:
             await conn.execute("""
                 create table sessions(tenant_id text, workspace_id text, user_id text,
-                  id text, agent_id text, unique(tenant_id,workspace_id,user_id,id,agent_id));
+                  id text, agent_id text, status text not null default 'active',
+                  unique(tenant_id,workspace_id,user_id,id,agent_id));
                 create table runs(tenant_id text, id text, status text,
                   cancel_requested_at timestamptz, primary key(tenant_id,id));
                 create table run_attempts(tenant_id text, id text, run_id text, status text,
@@ -66,7 +68,8 @@ async def recovery_db():
                 create table sandbox_leases(id text primary key, tenant_id text,
                   run_id text, attempt_id text, status text, released_at timestamptz,
                   expires_at timestamptz, created_at timestamptz default now(), lease_payload_json jsonb);
-                insert into sessions values('tenant','workspace','user','session','agent');
+                insert into sessions(tenant_id,workspace_id,user_id,id,agent_id)
+                  values('tenant','workspace','user','session','agent');
                 insert into runs values('tenant','run','running',null);
             """)
             source = (
@@ -141,6 +144,7 @@ async def operation(conn, action, *, subpath=None, **kwargs):
         subpath=subpath,
         entries=kwargs.get("entries", []),
         expected_sequence=kwargs.get("expected_sequence"),
+        include_child_entries=kwargs.get("include_child_entries", False),
     )
 
 
@@ -331,7 +335,7 @@ async def test_cancel_then_tail_saves_only_original_writer_without_tool_authorit
         async with recovery_db() as conn:
             # Ordinary tool/input callback authority must stay revoked.
             with pytest.raises(HTTPException, match="sandbox_runtime_attempt_inactive"):
-                await runtime_callbacks._require_current_runtime_attempt(
+                await runtime_callbacks._recheck_callback_authority(
                     conn,
                     tenant_id="tenant",
                     run_id="run",
@@ -345,7 +349,7 @@ async def test_cancel_then_tail_saves_only_original_writer_without_tool_authorit
                 expected_sequence=3,
             )
             assert tail["next_sequence"] == 4
-            await runtime_callbacks._require_current_runtime_attempt(
+            await runtime_callbacks._recheck_callback_authority(
                 conn,
                 tenant_id="tenant",
                 run_id="run",
@@ -356,7 +360,7 @@ async def test_cancel_then_tail_saves_only_original_writer_without_tool_authorit
             with pytest.raises(
                 HTTPException, match="sandbox_runtime_owner_generation_stale"
             ):
-                await runtime_callbacks._require_current_runtime_attempt(
+                await runtime_callbacks._recheck_callback_authority(
                     conn,
                     tenant_id="tenant",
                     run_id="run",
@@ -493,3 +497,248 @@ async def test_chunked_append_legal_cancel_tail_and_restart_cannot_adopt_dirty_e
     with pytest.raises(ProviderSessionConflictError, match="epoch_unavailable"):
         await restarted.load(key)
     assert restarted.accepted_final_sequence is None
+
+
+async def test_child_read_view_is_opt_in_complete_and_uses_one_verified_scan(
+    recovery_db, monkeypatch
+):
+    child_a_first = [{"type": "assistant", "uuid": "child-a-first", "value": 1}]
+    child_b = [{"type": "assistant", "uuid": "child-b", "value": 2}]
+    child_a_last = [{"type": "agent_metadata", "agentType": "synthetic"}]
+    main_tail = [{"type": "assistant", "uuid": "main-tail", "value": 3}]
+    async with recovery_db() as conn:
+        for sequence, path, entries in (
+            (3, "subagents/agent-a", child_a_first),
+            (4, "", main_tail),
+            (5, "subagents/agent-b", child_b),
+            (6, "subagents/agent-a", child_a_last),
+        ):
+            await operation(
+                conn, "append", subpath=path, entries=entries,
+                expected_sequence=sequence,
+            )
+        plain = await operation(conn, "list_subkeys")
+        assert "child_entries" not in plain
+        main = await operation(conn, "load", include_child_entries=True)
+        assert "child_entries" not in main
+        assert main["entries"] == INITIAL + main_tail
+        verified = provider_epochs._verified_provider_entries
+        scans = 0
+
+        async def count_verified(*args, **kwargs):
+            nonlocal scans
+            scans += 1
+            return await verified(*args, **kwargs)
+
+        monkeypatch.setattr(provider_epochs, "_verified_provider_entries", count_verified)
+        view = await operation(conn, "list_subkeys", include_child_entries=True)
+        assert scans == 1
+        assert view["next_sequence"] == 7
+        assert view["subpaths"] == ["subagents/agent-a", "subagents/agent-b"]
+        assert set(view["child_entries"]) == set(view["subpaths"])
+        assert "" not in view["child_entries"]
+        assert view["child_entries"] == {
+            "subagents/agent-a": child_a_first + child_a_last,
+            "subagents/agent-b": child_b,
+        }
+
+
+async def test_opted_in_empty_child_read_view_is_complete(recovery_db):
+    async with recovery_db() as conn:
+        result = await operation(conn, "list_subkeys", include_child_entries=True)
+        assert result["subpaths"] == []
+        assert result["child_entries"] == {}
+        assert result["next_sequence"] == 3
+
+
+@pytest.mark.parametrize("corrupt,error", [
+    ("delete from provider_session_entries where sequence=3",
+     "provider_session_integrity_mismatch"),
+    ("update provider_session_entries set entry_json='{}'::jsonb where sequence=3",
+     "provider_session_integrity_mismatch"),
+    ("update provider_session_entries set subpath='subagents/changed' where sequence=3",
+     "provider_session_integrity_mismatch"),
+    ("delete from provider_session_append_receipts where expected_sequence=3",
+     "provider_session_integrity_unavailable"),
+    ("update provider_session_append_receipts set batch_sha256=repeat('f',64) where expected_sequence=3",
+     "provider_session_integrity_mismatch"),
+    ("update provider_session_epochs set next_sequence=3",
+     "provider_session_integrity_mismatch"),
+])
+async def test_child_read_view_does_not_bypass_child_or_receipt_integrity(
+    recovery_db, corrupt, error
+):
+    async with recovery_db() as conn:
+        await operation(
+            conn, "append", subpath="subagents/agent-a",
+            entries=[{"type": "assistant", "uuid": "child-integrity"}],
+            expected_sequence=3,
+        )
+        await conn.execute(corrupt)
+        with pytest.raises(ProviderSessionConflictError, match=error):
+            await operation(conn, "list_subkeys", include_child_entries=True)
+
+
+@pytest.mark.parametrize("revoke", [
+    "update provider_session_epochs set state='dirty'",
+    "update provider_session_heads set active_attempt_id='other-attempt'",
+    "update run_attempts set owner_generation=3",
+    "update sandbox_leases set expires_at=now()-interval '1 second'",
+    "update sandbox_leases set status='released',released_at=now()",
+    "update runs set status='cancelled'",
+])
+async def test_child_read_view_retains_current_epoch_and_attempt_fences(
+    recovery_db, revoke
+):
+    async with recovery_db() as conn:
+        await conn.execute(revoke)
+        with pytest.raises(ProviderSessionConflictError):
+            await operation(conn, "list_subkeys", include_child_entries=True)
+
+
+async def test_child_read_view_cannot_use_cancel_tail_authority(recovery_db):
+    async with recovery_db() as conn:
+        await request_cancel(conn)
+        with pytest.raises(ProviderSessionConflictError):
+            await operation(conn, "list_subkeys", include_child_entries=True)
+        tail = await operation(
+            conn, "append", entries=[{"type": "last-prompt", "lastPrompt": "TAIL"}],
+            expected_sequence=3,
+        )
+        assert tail["next_sequence"] == 4
+
+
+class _ProviderReadHttpBridge:
+    """Replace only HTTP with real callback SQL over this test's PostgreSQL schema."""
+
+    def __init__(self, connect):
+        self.connect = connect
+        self.requests = []
+        self.scans = {"entries": 0, "receipts": 0}
+
+    def client(self, **_kwargs):
+        bridge = self
+
+        class Client:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            @asynccontextmanager
+            async def stream(self, method, _url, *, json, headers):
+                assert method == "POST"
+                payload = json
+                bridge.requests.append((payload["action"], dict(headers)))
+                opted_in = headers.get("X-AI-Platform-Provider-Read-View") == "children-v1"
+                async with bridge.connect() as conn:
+                    class RecordingConnection:
+                        async def execute(self, query, *args, **kwargs):
+                            query_text = str(query)
+                            if "from provider_session_entries " in query_text:
+                                bridge.scans["entries"] += 1
+                            if "from provider_session_append_receipts " in query_text:
+                                bridge.scans["receipts"] += 1
+                            return await conn.execute(query, *args, **kwargs)
+
+                    response = await operation(
+                        RecordingConnection(), payload["action"],
+                        subpath=payload["subpath"], entries=payload["entries"],
+                        expected_sequence=payload["expected_sequence"],
+                        include_child_entries=opted_in,
+                    )
+                yield _ProviderReadHttpResponse(response)
+
+        return Client()
+
+
+class _ProviderReadHttpResponse:
+    status_code = 200
+
+    def __init__(self, payload):
+        self.payload = payload
+
+    async def aiter_bytes(self):
+        yield json.dumps(self.payload, ensure_ascii=False, separators=(",", ":")).encode()
+
+
+@pytest.mark.parametrize("child_count", [0, 8, 64])
+async def test_real_sdk_child_materialization_uses_two_complete_pg_scans(
+    recovery_db, monkeypatch, tmp_path, child_count
+):
+    """Use real SDK restore functions and adapter, without CLI/auth-file materialization."""
+    from claude_agent_sdk._internal.session_resume import _load_candidate, _materialize_subkeys
+    from app.execution.infrastructure.harness.claude.session_store import ClaudeSessionStoreAdapter
+
+    expected = {}
+    async with recovery_db() as conn:
+        sequence = 3
+        for i in range(child_count):
+            path = f"subagents/agent-{i}"
+            entries = [
+                {"type": "assistant", "uuid": f"child-{i}", "content": f"CHILD-{i}"},
+                {"type": "agent_metadata", "agentType": f"synthetic-{i}"},
+            ]
+            expected[path] = entries
+            await operation(conn, "append", subpath=path, entries=entries,
+                            expected_sequence=sequence)
+            sequence += len(entries)
+    bridge = _ProviderReadHttpBridge(recovery_db)
+    monkeypatch.setattr(
+        "app.execution.infrastructure.harness.claude.session_store.httpx.AsyncClient",
+        bridge.client,
+    )
+    adapter = ClaudeSessionStoreAdapter(
+        callback_url="https://callback.example.test", callback_token="synthetic",
+        callback_token_id="synthetic", run_id="run", attempt_id="attempt",
+        provider_session_id=PROVIDER_ID,
+    )
+    assert await adapter.load(PROVIDER_ID) == INITIAL
+    assert await _load_candidate(adapter, "synthetic-project", PROVIDER_ID, 60) == (PROVIDER_ID, INITIAL)
+    project = tmp_path / "p"  # Keep SDK child filenames below Windows MAX_PATH.
+    project.mkdir(parents=True)
+    await _materialize_subkeys(adapter, tmp_path, project, "synthetic-project", PROVIDER_ID, 60)
+    assert [action for action, _headers in bridge.requests] == ["load", "list_subkeys"]
+    assert "X-AI-Platform-Provider-Read-View" not in bridge.requests[0][1]
+    assert bridge.requests[1][1]["X-AI-Platform-Provider-Read-View"] == "children-v1"
+    assert bridge.scans == {"entries": 2, "receipts": 2}
+    assert adapter.accepted_final_sequence == 2 + child_count * 2
+    for path, entries in expected.items():
+        target = project / PROVIDER_ID / path
+        restored = [json.loads(line) for line in target.with_suffix(".jsonl").read_text().splitlines()]
+        assert restored == entries[:1]
+        assert json.loads(target.with_suffix(".meta.json").read_text()) == {
+            "agentType": entries[1]["agentType"]
+        }
+    assert len(list(project.rglob("*.jsonl"))) == child_count
+
+
+async def test_real_pg_sequence_change_before_child_view_is_not_adopted(
+    recovery_db, monkeypatch
+):
+    from app.execution.infrastructure.harness.claude.session_store import (
+        ClaudeSessionStoreAdapter, ClaudeSessionStoreTransportError,
+    )
+
+    bridge = _ProviderReadHttpBridge(recovery_db)
+    monkeypatch.setattr(
+        "app.execution.infrastructure.harness.claude.session_store.httpx.AsyncClient",
+        bridge.client,
+    )
+    adapter = ClaudeSessionStoreAdapter(
+        callback_url="https://callback.example.test", callback_token="synthetic",
+        callback_token_id="synthetic", run_id="run", attempt_id="attempt",
+        provider_session_id=PROVIDER_ID,
+    )
+    assert await adapter.load(PROVIDER_ID) == INITIAL
+    async with recovery_db() as conn:
+        await operation(
+            conn, "append", subpath="subagents/agent-a",
+            entries=[{"type": "assistant", "uuid": "changed-after-preload"}],
+            expected_sequence=3,
+        )
+    with pytest.raises(ClaudeSessionStoreTransportError, match="sequence_conflict"):
+        await adapter.list_subkeys({"session_id": PROVIDER_ID})
+    assert adapter.accepted_final_sequence == 2
+    assert (PROVIDER_ID, "subagents/agent-a") not in adapter._load_cache

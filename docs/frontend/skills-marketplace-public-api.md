@@ -135,10 +135,23 @@ authority for immutable version upload, review, promote, rollout policy, and
 rollback. Marketplace routes remain projections and tenant-distribution
 controls; they cannot create an active version or redirect a release policy.
 
+Admin upload checks executable snapshot paths before opening a transaction or
+storing the package. Upload admission, immutable upload review, and manifest pinning
+share the same materializable path eligibility, including rejection of colons in
+any file-path component. Public overlay ZIP import/editor path rules are unchanged;
+existing immutable versions and content hashes are never rewritten by this check.
+
 Tenant promote and rollback select a release policy and mark the verified target
 released; they do not deprecate the globally shared previous version. Repeating
 promotion of the current version (including a rollout-percentage update) preserves
-the previous track and rollback target. Global deprecation or disabling is an
+the previous track and rollback target. Below 100% rollout, a nonempty selected
+previous track must already be user-runnable (`released` or legacy `active`) before
+any policy, status, distribution, or audit write. A reviewed previous track fails
+with 409 `skill_version_not_materializable`; draft and inactive tracks retain their
+existing error classifications. The request does not implicitly release previous,
+change its identity, or change the requested percentage. At 100%, previous remains
+historical metadata and is not revalidated; without a previous track, current
+selection retains its existing behavior. Global deprecation or disabling is an
 explicit version-status action and is blocked while any active tenant policy
 selects that version, including its previous track below 100% rollout, or while
 the global catalog fallback pointer still references it. The current management
@@ -159,6 +172,31 @@ is retired. Admin dependency responses report declared IDs and availability;
 they no longer classify fixed package names as public or internal.
 
 ## MCP Routes
+
+The browser MCP request hook owns catalog failures and lifecycle admission in
+one scoped state. Typed HTTP 403 responses remain visibly unavailable; hiding
+controls does not discard the denial. Explicit permission recovery first
+refreshes the authenticated principal and admits a new catalog read only after
+a completed refresh. A failed refresh, or a successful ordinary directory GET
+alone, cannot restore lifecycle authority. Retry never replays a mutation.
+Tenant/user, role/permission projection changes, auth refresh pauses, and
+unmount fence old reads, details, mutations, and retained callbacks. Ordinary
+operation failures retain the editor draft and show safe error copy; raw
+backend error details are not rendered. The ordinary directory remains read-only.
+
+The administrator directory presents Server enablement separately from live tool
+discovery. Counts and the searchable tool-detail drawer come from
+`GET /api/mcp/{name}/tools` with the current account's credential; they are not a
+Gateway-wide total or evidence of tool execution. Successful empty discovery
+shows zero. Failed, unqueried, disabled, unconfigured, or unsupported Servers do
+not show a successful count. Disabled, unconfigured and unsupported registry
+rows do not start browser discovery requests. Refresh queries the current page
+with bounded concurrency, without storing a tool catalog. Each Server retains
+its own failure state, so ordinary users can still see healthy Server tools.
+The tool view shares the registry request scope and epoch: authentication pauses,
+principal/department changes, pagination, reads and mutations fence old results
+and details. Tool details show only public names and descriptions; they do not
+expose connection material or execute tools.
 
 Backed read and server lifecycle routes:
 
@@ -185,6 +223,16 @@ stable `mcp_server_id::public_tool_name`
 references and bounded display metadata, never JWTs, static headers, Gateway
 internal IDs, or cache keys. Execution resolves only Server-qualified references.
 The former RAGFlow bare-ID registry path and metadata exception are deleted.
+
+Discovery failures retain HTTP-200 unavailable entries so healthy Servers remain
+usable. Public reasons stay simple: `discovery_failed`, `unsupported_transport`,
+and, for bulk principal-credential lookup, `authorization_required` only for
+missing/expired/invalid credentials. Redis, keyring and corrupted-record failures
+are discovery failures, not a request to log in again. The single-Server route
+retains its existing typed credential HTTP errors and force-relogin rules. The
+[MCP execution contract](../architecture/mcp-tool-execution.md) owns the private,
+payload-free diagnostic reason/stage logging; those fields never enter these
+catalog responses.
 
 Server lifecycle writes require a platform-admin principal. They persist only
 tenant-scoped registry metadata, allowed roles, department enablement, quotas,

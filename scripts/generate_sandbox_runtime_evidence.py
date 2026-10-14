@@ -201,7 +201,6 @@ def _configured_platform_runtime_model(settings: object) -> str:
         "claude_agent_model",
         "anthropic_model",
         "openai_model",
-        "default_model_id",
     ):
         value = str(getattr(settings, attr, "") or "").strip()
         if value:
@@ -1173,7 +1172,6 @@ def _stage_inspection_skill(
                 path=source,
                 version=version,
                 source={"kind": "verifier", "version": version},
-                entry={"kind": "filesystem"},
             )
         ],
     )
@@ -2315,6 +2313,7 @@ def _platform_hardening_evidence(
     docker_network_inspect: dict[str, Any] | None = None,
     runtime_probe_results: dict[str, Any] | None = None,
     callbacks: list[dict[str, object]] | None = None,
+    cleanup_observation: dict[str, object] | None = None,
 ) -> dict[str, object]:
     limits = resource_limits if isinstance(resource_limits, dict) else {}
     resource_probe = _runtime_probe_section(runtime_probe_results, "resource_limits")
@@ -2379,8 +2378,10 @@ def _platform_hardening_evidence(
         },
         "cleanup": {
             "evidence_class": "live_platform_probe",
-            "ephemeral_container_removed": True,
-            "cancel_probe_container_removed": True,
+            "ephemeral_container_removed": (cleanup_observation or {}).get("result") == "confirmed",
+            "ephemeral_container_cleanup": cleanup_observation or {"result": "unverified"},
+            "cancel_probe_container_removed": False,
+            "cancel_probe_cleanup": {"result": "unverified"},
             "active_lease_released": bool(recorded_lease_id and recorded_lease_id == released_lease_id),
         },
         "resource_timeout": {
@@ -2688,7 +2689,23 @@ def run_platform_runtime_probe(
             settings.sandbox_workspace_root = original_workspace_root
             container_provider.reset_container_provider_cache()
 
-    result = asyncio.run(probe())
+    cleanup_observation: dict[str, object] = {"result": "unverified"}
+    try:
+        result = asyncio.run(probe())
+    finally:
+        if sandbox_provider == "docker" and captured.get("container_id"):
+            cleanup_observation = _observe_docker_container_cleanup(
+                str(captured["container_id"]), docker_cmd=docker_cmd, run=run,
+            )
+        recorder.hardening["cleanup"] = {
+            "evidence_class": "live_platform_probe",
+            "ephemeral_container_removed": cleanup_observation.get("result") == "confirmed",
+            "ephemeral_container_cleanup": cleanup_observation,
+            "cancel_probe_container_removed": False,
+            "cancel_probe_cleanup": {"result": "unverified"},
+            "active_lease_released": bool(captured.get("recorded_lease_id"))
+            and captured.get("recorded_lease_id") == captured.get("released_lease_id"),
+        }
     recorder.runtime_mode = "platform"
     recorder.sandbox_provider = sandbox_provider
     recorder.executed_task = True
@@ -2739,6 +2756,7 @@ def run_platform_runtime_probe(
         else None,
         runtime_probe_results=derived_runtime_probe_results,
         callbacks=recorder.callbacks,
+        cleanup_observation=cleanup_observation,
     )
     recorder.provider_lifecycle = _opensandbox_provider_lifecycle_evidence(
         recorder=recorder,
@@ -2912,12 +2930,38 @@ def _inspect_docker_network(
     return dict(payload[0])
 
 
+def _observe_docker_container_cleanup(
+    container_id: str,
+    *,
+    docker_cmd: tuple[str, ...],
+    run: Callable[..., Any],
+) -> dict[str, object]:
+    # inspect failures cannot distinguish a missing container from a failed daemon.
+    # Enumerate all states, using the ID returned by this run, and require success.
+    try:
+        completed = _run_docker(
+            [*docker_cmd, "ps", "--all", "--quiet", "--no-trunc", "--filter", f"id={container_id}"],
+            run=run, timeout=30, check=False,
+        )
+        output = getattr(completed, "stdout", None)
+        if getattr(completed, "returncode", 1) != 0 or not isinstance(output, str):
+            return {"result": "unverified", "post_cleanup_query_succeeded": False}
+        remaining = bool(output.strip())
+        return {
+            "result": "failed" if remaining else "confirmed",
+            "post_cleanup_query_succeeded": True,
+        }
+    except Exception:
+        return {"result": "unverified", "post_cleanup_query_succeeded": False}
+
+
 def run_cancel_probe(
     *,
     run_id: str,
     docker_cmd: tuple[str, ...],
     cancel_image: str,
     run: Callable[..., Any] = subprocess.run,
+    cleanup_evidence: dict[str, object] | None = None,
 ) -> str:
     safe_run_id = _safe_run_id(run_id)
     container_name = f"ai-platform-sandbox-verifier-{safe_run_id}"
@@ -2936,6 +2980,8 @@ def run_cancel_probe(
         "sleep 300",
     ]
     container_id = ""
+    observation = cleanup_evidence if cleanup_evidence is not None else {}
+    observation.update({"result": "unverified", "remove_command_succeeded": False})
     try:
         completed = _run_docker(create_cmd, run=run, timeout=60, check=True)
         container_id = str(getattr(completed, "stdout", "")).strip()
@@ -2946,7 +2992,15 @@ def run_cancel_probe(
         return container_id
     finally:
         if container_id:
-            _run_docker([*docker_cmd, "rm", "-f", container_id], run=run, timeout=30, check=False)
+            primary_failed = sys.exc_info()[0] is not None
+            try:
+                removed = _run_docker([*docker_cmd, "rm", "-f", container_id], run=run, timeout=30, check=False)
+                observation["remove_command_succeeded"] = getattr(removed, "returncode", 1) == 0
+            except Exception:
+                observation["remove_command_succeeded"] = False
+            observation.update(_observe_docker_container_cleanup(container_id, docker_cmd=docker_cmd, run=run))
+            if observation["result"] != "confirmed" and not primary_failed:
+                raise RuntimeError(f"cancel probe cleanup {observation['result']}")
 
 
 def _wait_for_callbacks(recorder: EvidenceRecorder, timeout_seconds: float) -> bool:
@@ -3165,7 +3219,16 @@ def main(argv: list[str] | None = None) -> int:
             if not _wait_for_callbacks(recorder, args.callback_timeout):
                 messages.append("required callbacks not observed")
         if not args.skip_live_submit and not args.skip_cancel_probe:
-            container_id = run_cancel_probe(run_id=args.run_id, docker_cmd=docker_cmd, cancel_image=args.cancel_image)
+            cleanup = recorder.hardening.setdefault("cleanup", {})
+            observation: dict[str, object] = {"result": "unverified"}
+            cleanup["cancel_probe_cleanup"] = observation
+            try:
+                container_id = run_cancel_probe(
+                    run_id=args.run_id, docker_cmd=docker_cmd,
+                    cancel_image=args.cancel_image, cleanup_evidence=observation,
+                )
+            finally:
+                cleanup["cancel_probe_container_removed"] = observation.get("result") == "confirmed"
             recorder.cancel_stops_container = True
             recorder.cancelled_container_id = container_id
     except Exception as exc:

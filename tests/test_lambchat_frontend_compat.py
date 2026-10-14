@@ -168,6 +168,10 @@ async def test_session_action_service_enforces_tenant_owner_admin_and_terminal_d
     monkeypatch.setattr(
         _owner_conversations_infrastructure_postgres, 'mark_session_deleted', mark_session_deleted
     )
+    from unittest.mock import AsyncMock
+
+    queued_images = AsyncMock(return_value=[])
+    monkeypatch.setattr(session_actions.context_api, "queue_provider_session_images_for_deletion", queued_images)
 
     owner = AuthPrincipal(
         user_id="user-a", display_name="A", tenant_id="default", roles=["user"]
@@ -225,6 +229,10 @@ async def test_session_action_service_enforces_tenant_owner_admin_and_terminal_d
     )
     assert admin_deleted["already_deleted"] is False
     assert ("delete", "default", "ses-other") in writes
+    assert [call.kwargs for call in queued_images.await_args_list] == [
+        {"tenant_id": "default", "session_id": "ses-owner", "limit": 200},
+        {"tenant_id": "default", "session_id": "ses-other", "limit": 200},
+    ]
 
     with pytest.raises(session_actions.SessionActionNotFoundError):
         await session_actions.delete_session(
@@ -499,6 +507,22 @@ async def test_session_action_fork_copies_only_authorized_message_prefix_without
             )
     assert len(created) == 2
     assert len(copied) == 3
+
+
+def test_read_mark_compatibility_route_keeps_its_noop_acknowledgement(monkeypatch):
+    def unexpected_transaction():
+        raise AssertionError("legacy read-mark must not read or persist unread state")
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", unexpected_transaction)
+    client = TestClient(create_app())
+
+    for session_id in ("session-older-client", "session-not-present"):
+        response = client.post(
+            f"/api/sessions/{session_id}/mark-read", headers=action_headers()
+        )
+        assert response.status_code == 200
+        assert response.json() == {"success": True}
 
 
 def test_lambchat_session_action_routes_are_thin_service_adapters(monkeypatch):
@@ -892,6 +916,8 @@ def test_notifications_have_one_workbench_route_owner(monkeypatch):
 
 
 def test_lambchat_model_catalog_is_empty_without_governed_connection(monkeypatch):
+    monkeypatch.setenv("DEFAULT_MODEL_ID", "retired-env-model")
+    monkeypatch.setenv("MODEL_CATALOG_JSON", '[{"id":"retired-env-model"}]')
     monkeypatch.setattr(
         "app.execution.infrastructure.model_management.list_public_models",
         AsyncMock(return_value=None),

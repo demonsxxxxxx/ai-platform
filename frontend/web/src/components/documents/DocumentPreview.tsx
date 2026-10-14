@@ -46,7 +46,9 @@ export default function DocumentPreview(props: DocumentPreviewProps) {
           </div>
         </div>
       }
-      customHeader={<DocumentPreviewToolbar {...state} />}
+      customHeader={({ onClose }) => (
+        <DocumentPreviewToolbar {...state} onClose={onClose} />
+      )}
     >
       <DocumentPreviewContent {...state} />
     </ToolResultPanel>

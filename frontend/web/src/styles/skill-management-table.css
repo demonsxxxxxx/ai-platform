@@ -1,9 +1,28 @@
 .skill-management-table {
+  display: block;
+  border-collapse: collapse;
+  text-align: left;
   width: 100%;
   overflow-x: auto;
   border: 1px solid var(--theme-border);
   border-radius: 8px;
   background: var(--theme-workbench-panel);
+}
+
+.skill-management-table > thead,
+.skill-management-table > tbody {
+  display: block;
+  width: 100%;
+}
+
+.skill-management-table__head > th {
+  padding: 0;
+  font-weight: inherit;
+  text-align: inherit;
+}
+
+.skill-management-table__row > td {
+  padding: 0;
 }
 
 .skill-management-table__head,

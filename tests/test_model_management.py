@@ -81,10 +81,22 @@ def test_catalog_capacity_pair_and_anthropic_proxy_contract():
 
     headers = {
         "anthropic-version": "2023-06-01",
-        "anthropic-beta": "interleaved-thinking-2025-05-14,claude-code-20250219,claude-code-20250219",
+        "anthropic-beta": (
+            "claude-code-20250219,interleaved-thinking-2025-05-14,"
+            "thinking-token-count-2026-05-13,context-management-2025-06-27,"
+            "prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,"
+            "mid-conversation-tool-changes-2026-07-01,effort-2025-11-24,"
+            "thinking-display-updates-2026-08-18"
+        ),
     }
     normalized = _runtime_proxy_headers("anthropic", "v1/messages", headers)
-    assert normalized["anthropic-beta"] == "claude-code-20250219,interleaved-thinking-2025-05-14"
+    assert normalized["anthropic-beta"] == (
+        "claude-code-20250219,context-management-2025-06-27,"
+        "effort-2025-11-24,interleaved-thinking-2025-05-14,"
+        "mid-conversation-system-2026-04-07,mid-conversation-tool-changes-2026-07-01,"
+        "prompt-caching-scope-2026-01-05,thinking-display-updates-2026-08-18,"
+        "thinking-token-count-2026-05-13"
+    )
     for invalid in (
         {"anthropic-version": "2024-01-01"},
         {"anthropic-version": "2023-06-01", "anthropic-beta": "unknown-beta"},
@@ -819,7 +831,9 @@ async def test_run_model_resolution_without_gateway_returns_none() -> None:
 
 
 @pytest.mark.asyncio
-async def test_chat_model_resolution_fails_without_governed_connection() -> None:
+async def test_chat_model_resolution_fails_without_governed_connection(monkeypatch) -> None:
+    monkeypatch.setenv("DEFAULT_MODEL_ID", "retired-env-model")
+    monkeypatch.setenv("MODEL_CATALOG_JSON", '[{"id":"retired-env-model"}]')
     conn = _ResolveConnection(row=None)
     with pytest.raises(ValueError, match="model_connection_not_configured"):
         await model_selection.resolve_chat_model_selection(

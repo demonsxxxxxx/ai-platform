@@ -9,8 +9,10 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+from claude_agent_sdk import ResultMessage as InstalledResultMessage
 
 from app.execution.application.run_interaction import RunInputCommand, RunInputSnapshot
+from app.execution.domain.worker_observability import executor_observability
 from app.execution.infrastructure.harness.claude.interaction import ClaudeRunInteractionActor
 from app.executors.claude_agent_sdk_runner import run_claude_agent_sdk
 from tests.test_claude_agent_sdk_runner import _fake_sdk, _settings
@@ -46,10 +48,14 @@ class Inputs:
         return RunInputSnapshot("open", (self.answer,) if self.answer else ())
 
 
-async def test_continuations_use_one_client_and_session_then_finish_input(monkeypatch, tmp_path):
+@pytest.mark.parametrize("supplement,coverage,cost_minor", [("second", "complete", 6), ("/clear", "partial", None)])
+async def test_continuations_use_one_client_and_session_then_finish_input(
+    monkeypatch, tmp_path, supplement, coverage, cost_minor,
+):
     captured = {}
     sdk = _fake_sdk(captured, hook_invocations=[])
-    port = Inputs([RunInputCommand("one", "text", text="second"), RunInputCommand("two", "text", text="last")])
+    sdk.ResultMessage = InstalledResultMessage
+    port = Inputs([RunInputCommand("one", "text", text=supplement), RunInputCommand("two", "text", text="last")])
     clients, queries, checkpoints = [], [], []
 
     class Client:
@@ -74,10 +80,14 @@ async def test_continuations_use_one_client_and_session_then_finish_input(monkey
                 yield sdk.AssistantMessage([sdk.TextBlock(text)], message_id=f"turn-{index}")
                 for event in events[3:]:
                     yield sdk.StreamEvent(event)
-                result = sdk.ResultMessage()
-                result.result = text
-                result.uuid = f"result-{index}"
-                result.usage = {"input_tokens": 10, "output_tokens": 2}
+                result = sdk.ResultMessage(
+                    subtype="success", duration_ms=1, duration_api_ms=1,
+                    is_error=False, num_turns=1, session_id="sdk-session",
+                    result=text, uuid=f"result-{index}",
+                    usage={"input_tokens": 10, "output_tokens": 2},
+                    total_cost_usd=[0.01, 0.03, 0.06][index],
+                    terminal_reason="completed",
+                )
                 yield result
             with pytest.raises(StopAsyncIteration):
                 await anext(self.stream)
@@ -95,9 +105,12 @@ async def test_continuations_use_one_client_and_session_then_finish_input(monkey
     assert result.error is None
     assert len(clients) == 1 and clients[0].input_done.is_set()
     assert clients[0].initial["message"]["content"] == "first"
-    assert queries == [("second", "sdk-session"), ("last", "sdk-session")]
+    assert queries == [(supplement, "sdk-session"), ("last", "sdk-session")]
     assert port.acks == ["one", "two"]
-    assert result.usage == {"input_tokens": 30, "output_tokens": 6}
+    assert result.usage == {"input_tokens": 30, "output_tokens": 6, "total_cost_usd": 0.06, "cost_coverage": coverage}
+    metrics = executor_observability({"sdk_usage": result.usage}, latency_ms=1)
+    assert metrics["cost"] == {"estimated_cost_minor": cost_minor}
+    assert metrics["token_counts"] == {"input": 30, "output": 6, "total": 36}
     assert result.message.endswith("last")
     assert "AskUserQuestion" in captured["tools"]
     finals = [item for item in checkpoints if item["final"]]
@@ -243,14 +256,75 @@ async def test_stop_interrupts_native_client_and_releases_question_waiter(monkey
     assert interrupted.is_set() and disconnected.is_set()
 
 
-@pytest.mark.parametrize("private_labels", [False, True])
+async def test_unanswerable_timeout_interrupts_sdk_and_joins_question_finalizers(monkeypatch, tmp_path):
+    captured = {}
+    sdk = _fake_sdk(captured, hook_invocations=[])
+    port = Inputs()
+    interrupted, disconnected, reader_finalized = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def expired(**_kwargs):
+        return RunInputSnapshot("open", error_code="run_question_needs_input")
+
+    port.poll = expired
+
+    class Client:
+        def __init__(self, _options):
+            self.stream = None
+
+        async def connect(self, stream):
+            self.stream = stream
+            await anext(stream)
+
+        async def receive_messages(self):
+            try:
+                hook = captured["hooks"]["PreToolUse"][0].hooks[0]
+                await hook({"tool_name": "AskUserQuestion", "tool_use_id": "free-text", "tool_input": {
+                    "questions": [{"question": "Details?", "header": "Next", "options": [], "multiSelect": False}],
+                }}, "free-text", {})
+                # A denial alone leaves the SDK running. The timeout must interrupt it.
+                await asyncio.Event().wait()
+                yield sdk.ResultMessage()
+            finally:
+                reader_finalized.set()
+
+        async def interrupt(self):
+            interrupted.set()
+
+        async def disconnect(self):
+            await self.stream.aclose()
+            disconnected.set()
+
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", sdk)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", _settings)
+    result = await asyncio.wait_for(run_claude_agent_sdk(
+        prompt="ask", cwd=tmp_path, skill_id=None, run_id="run", attempt_id="attempt",
+        interaction_client=port, client_fn=Client,
+    ), 2)
+    assert result.error == "run_question_needs_input"
+    assert interrupted.is_set() and disconnected.is_set() and reader_finalized.is_set()
+    from app.execution.api import claude_sdk_failure_message
+    assert "information" in claude_sdk_failure_message(result)
+    assert port.acks == []
+
+
+@pytest.mark.parametrize("private_labels,expired", [(False, False), (True, False), (False, True)],
+                         ids=["ordinary", "private-labels", "needs-input-timeout"])
 async def test_installed_cli_waits_for_native_answer_and_continues_in_one_session(
-    monkeypatch, tmp_path, private_labels,
+    monkeypatch, tmp_path, private_labels, expired,
 ):
     from app.executors import claude_agent_sdk_runner as runner
 
     port = Inputs()
     task = None
+    if expired:
+        from app.execution.infrastructure.run_inputs_http import RunInputCallbackClient
+
+        async def expired_snapshot(**_kwargs):
+            return RunInputCallbackClient._snapshot({
+                "state": "open", "inputs": [], "error_code": "run_question_needs_input",
+            })
+
+        port.poll = expired_snapshot
     with local_mcp_peers() as peer:
         peer.sdk_tool = "AskUserQuestion"
         peer.tool_input = {"questions": [{
@@ -286,6 +360,12 @@ async def test_installed_cli_waits_for_native_answer_and_continues_in_one_sessio
                 interaction_client=port,
             ))
             await asyncio.wait_for(port.question_ready.wait(), 10)
+            if expired:
+                result = await asyncio.wait_for(task, 10)
+                assert result.error == "run_question_needs_input"
+                assert port.acks == []
+                assert "run_question_needs_input" in json.dumps(result.runtime_diagnostics)
+                return
             assert not task.done() and len(peer.models) == 1
             assert "AskUserQuestion" in {item["name"] for item in peer.models[0]["tools"]}
             question_id = port.questions[0][0]

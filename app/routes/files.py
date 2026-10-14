@@ -2,6 +2,7 @@ import asyncio
 import codecs
 import hashlib
 import io
+import logging
 import re
 import unicodedata
 import zipfile
@@ -34,16 +35,14 @@ from app.conversations.infrastructure.session_queries_postgres import (
 )
 from app.db import transaction
 from app.file_preview_contracts import (
-    XLSX_CONTENT_TYPE,
     XlsxPreviewResponse,
     acquire_xlsx_preview_lease,
     build_xlsx_preview,
     run_xlsx_preview_job,
-    xlsx_preview_identity_from_metadata,
-    xlsx_preview_max_bytes,
 )
 from app.files.api import (
     MAX_UPLOAD_BYTES,
+    XLSX_CONTENT_TYPE,
     ProfileDriveFile,
     ProfileDriveTransferError,
     abort_file_upload_session,
@@ -66,6 +65,8 @@ from app.files.api import (
     parse_multipart_upload_create_request,
     parse_profile_drive_file_import_request,
     retry_expired_file_upload_session,
+    xlsx_preview_identity_from_metadata,
+    xlsx_preview_max_bytes,
 )
 from app.files.infrastructure.run_bindings_postgres import create_file, get_file
 from app.identity.infrastructure.audit_postgres import append_audit_log
@@ -84,9 +85,11 @@ from app.persistence.file_deletions import (
 from app.persistence.object_deletions import ObjectDeletionStateError
 from app.platform.postgres.errors import RepositoryNotFoundError
 from app.platform.postgres.values import new_id
+from app.platform.storage_io_completion import StorageIOCompletion
 from app.runs.infrastructure.creation_postgres import get_authorized_run
 from app.settings import get_settings
 from app.storage import (
+    DownloadedObject,
     ObjectStorage,
     ObjectStorageSizeLimitError,
     StorageIOBusyError,
@@ -1099,6 +1102,7 @@ async def upload_file(
                     tenant_id=tenant_id,
                     user_id=principal.user_id,
                     session_id=session_id,
+                    workspace_id=workspace_id,
                 )
                 if session is None:
                     raise RepositoryNotFoundError("session_not_found")
@@ -1367,6 +1371,7 @@ async def initiate_multipart_upload(
                 tenant_id=tenant_id,
                 user_id=principal.user_id,
                 session_id=session_id,
+                workspace_id=workspace_id,
             ) is None:
                 raise RepositoryNotFoundError("session_not_found")
             usage = await get_file_storage_usage(
@@ -1524,6 +1529,42 @@ async def upload_multipart_part(
     return {"etag": etag}
 
 
+async def _download_multipart_completion_file(
+    storage: ObjectStorage,
+    *,
+    storage_key: str,
+) -> DownloadedObject:
+    # A request wait ending does not stop the physical download. Retain its
+    # outcome until either this caller takes the tempfile or failure reclaims it.
+    completion = StorageIOCompletion()
+    try:
+        return await _run_storage(
+            storage.download_to_tempfile,
+            storage_key=storage_key,
+            max_bytes=MAX_UPLOAD_BYTES,
+            completion=completion,
+        )
+    except BaseException:
+        await completion.settle()
+        try:
+            downloaded = completion.result()
+        except BaseException:
+            # Not submitted or the physical downloader failed and owns cleanup.
+            pass
+        else:
+            try:
+                Path(downloaded.path).unlink(missing_ok=True)
+            except OSError as exc:
+                try:
+                    logging.getLogger(__name__).warning(
+                        "multipart_completion_temp_cleanup_failed",
+                        extra={"error_type": type(exc).__name__},
+                    )
+                except Exception:
+                    pass
+        raise
+
+
 @router.post("/files/uploads/{upload_session_id}/complete", response_model=UploadFileResponse)
 async def complete_multipart_upload(
     upload_session_id: str,
@@ -1581,10 +1622,9 @@ async def complete_multipart_upload(
     except Exception as exc:
         completion_error = exc
     try:
-        downloaded = await _run_storage(
-            storage.download_to_tempfile,
+        downloaded = await _download_multipart_completion_file(
+            storage,
             storage_key=row["storage_key"],
-            max_bytes=MAX_UPLOAD_BYTES,
         )
     except ObjectStorageSizeLimitError as exc:
         await _run_storage(storage.delete_object, storage_key=row["storage_key"])

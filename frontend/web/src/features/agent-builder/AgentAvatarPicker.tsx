@@ -5,6 +5,7 @@ import { AgentIdentityAvatar } from "../../components/agent/AgentIdentityAvatar"
 import { AGENT_AVATAR_STYLE_OPTIONS } from "../../components/agent/agentAvatar";
 import type { AgentProfileAvatarRef } from "../../types/agentProfile";
 import { uuid } from "../../utils/uuid";
+import { EnterpriseSelect } from "../../components/common/EnterpriseSelect";
 
 const CANDIDATE_COUNT = 8;
 
@@ -48,18 +49,17 @@ export function AgentAvatarPicker({
           name={name}
           size="sm"
         />
-        <select
+        <EnterpriseSelect
           aria-label="选择头像风格"
-          className="min-h-10 min-w-0 flex-1 rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 text-sm text-[var(--theme-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)]"
-          onChange={(event) => onChange({ avatarRef: event.currentTarget.value as AgentProfileAvatarRef })}
+          className="min-h-10 min-w-0 flex-1"
+          disabled={disabled}
+          onChange={(value) => onChange({ avatarRef: value as AgentProfileAvatarRef })}
           value={avatarRef}
-        >
-          {AGENT_AVATAR_STYLE_OPTIONS.map((option) => (
-            <option key={option.ref} value={option.ref}>
-              {option.label} - {option.description}
-            </option>
-          ))}
-        </select>
+          options={AGENT_AVATAR_STYLE_OPTIONS.map((option) => ({
+            value: option.ref,
+            label: `${option.label} - ${option.description}`,
+          }))}
+        />
       </div>
 
       <div className="mt-4 flex items-center justify-between gap-3">

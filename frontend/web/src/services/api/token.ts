@@ -103,44 +103,6 @@ export function clearTokens(): void {
 }
 
 /**
- * 检查是否已登录
- */
-export function isAuthenticated(): boolean {
-  return !!getAccessToken();
-}
-
-/**
- * 解码 JWT token（不验证签名，仅用于读取内容）
- */
-export function decodeToken(token: string): Record<string, unknown> | null {
-  try {
-    if (token === "1" || token === "cookie-session") {
-      return null;
-    }
-    const base64Url = token.split(".")[1];
-    const base64 = base64Url.replace(/-/g, "+").replace(/_/g, "/");
-    const jsonPayload = decodeURIComponent(
-      atob(base64)
-        .split("")
-        .map((c) => "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2))
-        .join(""),
-    );
-    return JSON.parse(jsonPayload);
-  } catch {
-    return null;
-  }
-}
-
-/**
- * 检查 token 是否过期
- */
-export function isTokenExpired(token: string): boolean {
-  const payload = decodeToken(token);
-  if (!payload || !payload.exp) return false;
-  return (payload.exp as number) * 1000 < Date.now();
-}
-
-/**
  * 获取登录后重定向路径
  */
 export function getRedirectPath(): string | null {

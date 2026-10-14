@@ -11,9 +11,8 @@ import pytest
 from mcp.types import LATEST_PROTOCOL_VERSION
 
 from app.mcp.application.live_catalog import LiveMcpCatalogService
-from app.mcp.domain.errors import McpRuntimeContextError
+from app.mcp.domain.errors import McpRuntimeContextError, McpToolDiscoveryError
 from app.mcp.infrastructure import catalog, client
-from app.mcp.infrastructure.catalog import McpToolDiscoveryError
 from app.mcp.infrastructure.client import McpToolDiscoveryAdapter
 
 

@@ -824,3 +824,48 @@ def test_sdk_error_attribution_is_safe_and_stable_after_reprojection(error_code,
 def test_public_failed_terminal_taxonomy_is_idempotent_and_kind_fenced(detail_code):
     projection = public_terminal_projection("failed", detail_code)
     assert projection["detail_code"] == ("run_failed" if detail_code == "run_cancelled" else detail_code)
+
+
+@pytest.mark.parametrize("event_type", ["run_succeeded", "run_failed", "run_cancelled"])
+@pytest.mark.parametrize("amount", [None, 0, 17])
+def test_terminal_cost_json_observation_wins_over_stale_integer_column(event_type, amount):
+    event = run_event_response("run-a", {
+        "id": "event-a", "schema_version": "ai-platform.event-envelope.v1",
+        "sequence": 1, "event_type": event_type, "stage": "worker",
+        "message": "safe", "estimated_cost_minor": 99,
+        "input_token_count": 3, "output_token_count": 5, "total_token_count": 8,
+        "payload_json": {"cost": {"estimated_cost_minor": amount},
+                         "runtime_private_payload": {"sdk_usage": {"cost_coverage": "partial" if amount is None else "complete"}}},
+    }, principal=principal())
+    assert event["token_counts"] == {"input": 3, "output": 5, "total": 8}
+    if amount is None:
+        assert "cost" not in event
+    else:
+        assert event["cost"] == {"estimated_cost_minor": amount}
+
+
+@pytest.mark.parametrize("old_json", [{}, {"cost": {}}, {"cost": {"estimated_cost_minor": None}}, {"cost": {"estimated_cost_minor": 0}}])
+def test_unmarked_legacy_cost_never_changes_integer_column_authority(old_json):
+    from app.runs.api import projected_event_cost
+    from app.runs.domain.cost_observability import projected_estimated_cost_minor
+    assert projected_estimated_cost_minor(97, old_json) == 97
+    assert projected_event_cost({"estimated_cost_minor": 97, "payload_json": old_json}) == {
+        "cost": {"estimated_cost_minor": 97},
+    }
+
+
+@pytest.mark.parametrize("value,expected", [(True, 0), ("12", 0), (-1, 0), (100_000_001, 100_000_000)])
+def test_ordinary_event_cost_retains_legacy_integer_and_cap_boundary(value, expected):
+    from app.runs.api import projected_event_cost
+    assert projected_event_cost({"estimated_cost_minor": value}, ordinary=True) == {
+        "cost": {"estimated_cost_minor": expected},
+    }
+
+
+@pytest.mark.parametrize("bad_amount", [None, True, -1, "12", 1.5, 2**31])
+def test_marked_complete_malformed_cost_is_unknown_not_stale_column(bad_amount):
+    from app.runs.api import projected_event_cost
+    assert projected_event_cost({"estimated_cost_minor": 97, "payload_json": {
+        "cost": {"estimated_cost_minor": bad_amount},
+        "runtime_private_payload": {"sdk_usage": {"cost_coverage": "complete"}},
+    }}) == {}

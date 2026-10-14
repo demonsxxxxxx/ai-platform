@@ -29,6 +29,7 @@ from app.identity.infrastructure import postgres as identity_postgres
 from app.mcp import api as mcp_repository
 from app.mcp.api import (
     LiveMcpServerResult,
+    McpCatalogFailure,
     McpRuntimeContextError,
     get_live_mcp_catalog,
     get_mcp_principal_jwt_store,
@@ -455,6 +456,43 @@ async def _public_projected_servers(principal: AuthPrincipal) -> list[dict[str, 
     ]
 
 
+def _log_catalog_failure(
+    failure: McpCatalogFailure, *, principal: AuthPrincipal,
+    server_id: str | None, trace_id: str,
+) -> None:
+    logger.warning(
+        "mcp_tool_discovery_failed stage=%s reason=%s error_type=%s "
+        "tenant_id=%r server_id=%r trace_id=%s",
+        failure.stage, failure.reason, failure.error_type,
+        principal.tenant_id, server_id, trace_id,
+        extra={
+            "tenant_id": principal.tenant_id, "server_id": server_id,
+            "trace_id": trace_id, "stage": failure.stage,
+            "reason": failure.reason, "error_type": failure.error_type,
+        },
+    )
+
+
+async def _discover_server_tools(
+    *, principal: AuthPrincipal, server_id: str, jwt: str, trace_id: str,
+) -> LiveMcpServerResult:
+    try:
+        result = await LIVE_MCP_CATALOG.list_server_tools(
+            tenant_id=principal.tenant_id, user_id=principal.user_id,
+            server_id=server_id, jwt=jwt,
+        )
+    except Exception as exc:  # noqa: BLE001 - one server cannot fail the catalog.
+        result = LiveMcpServerResult(
+            server_id, (), "discovery_failed",
+            McpCatalogFailure.from_error(exc, stage="catalog"),
+        )
+    if result.failure is not None:
+        _log_catalog_failure(
+            result.failure, principal=principal, server_id=server_id, trace_id=trace_id,
+        )
+    return result
+
+
 async def _chat_tool_catalog(principal: AuthPrincipal) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     """Fetch the current user's effective tools from every usable MCP server."""
 
@@ -479,31 +517,28 @@ async def _chat_tool_catalog(principal: AuthPrincipal) -> tuple[list[dict[str, A
     server_ids = [str(row.get("name") or "") for row in authorized if row.get("name")]
     if not server_ids:
         return [], []
+    trace_id = standard_trace_id()
     try:
         jwt = await get_mcp_principal_jwt_store().get(principal)
-    except McpRuntimeContextError:
-        return [], [{"label": server_id, "reason": "authorization_required"} for server_id in server_ids]
+    except McpRuntimeContextError as exc:
+        _log_catalog_failure(
+            McpCatalogFailure.from_error(exc, stage="principal_jwt"),
+            principal=principal, server_id=None, trace_id=trace_id,
+        )
+        reason = (
+            "authorization_required" if exc.code in {
+                "mcp_principal_jwt_missing", "mcp_principal_jwt_expired",
+                "mcp_jwt_invalid", "mcp_jwt_expired_or_missing",
+            } else "discovery_failed"
+        )
+        return [], [{"label": server_id, "reason": reason} for server_id in server_ids]
     semaphore = asyncio.Semaphore(MCP_CHAT_DISCOVERY_CONCURRENCY)
 
     async def discover(server_id: str) -> LiveMcpServerResult:
         async with semaphore:
-            try:
-                return await LIVE_MCP_CATALOG.list_server_tools(
-                    tenant_id=principal.tenant_id,
-                    user_id=principal.user_id,
-                    server_id=server_id,
-                    jwt=jwt,
-                )
-            except Exception as exc:  # noqa: BLE001 - one server cannot fail the catalog.
-                logger.warning(
-                    "mcp_chat_tool_discovery_failed",
-                    extra={
-                        "tenant_id": principal.tenant_id,
-                        "server_id": server_id,
-                        "error_type": type(exc).__name__,
-                    },
-                )
-                return LiveMcpServerResult(server_id, (), "discovery_failed")
+            return await _discover_server_tools(
+                principal=principal, server_id=server_id, jwt=jwt, trace_id=trace_id,
+            )
 
     results = await asyncio.gather(*(discover(server_id) for server_id in server_ids))
     tools = [tool.public_payload() for result in results for tool in result.tools]
@@ -875,15 +910,17 @@ async def discover_mcp_tools(
 
     safe_name = _safe_name(name)
     await _public_server_access(principal=principal, name=safe_name)
+    trace_id = standard_trace_id()
     try:
         jwt = await get_mcp_principal_jwt_store().get(principal)
     except McpRuntimeContextError as exc:
+        _log_catalog_failure(
+            McpCatalogFailure.from_error(exc, stage="principal_jwt"),
+            principal=principal, server_id=safe_name, trace_id=trace_id,
+        )
         raise _mcp_runtime_http_error(exc) from exc
-    result = await LIVE_MCP_CATALOG.list_server_tools(
-        tenant_id=principal.tenant_id,
-        user_id=principal.user_id,
-        server_id=safe_name,
-        jwt=jwt,
+    result = await _discover_server_tools(
+        principal=principal, server_id=safe_name, jwt=jwt, trace_id=trace_id,
     )
     tools = [
         {

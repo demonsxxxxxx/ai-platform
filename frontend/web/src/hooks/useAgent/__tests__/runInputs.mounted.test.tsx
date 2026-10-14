@@ -15,6 +15,7 @@ import type {
   SessionRunInputsResponse,
 } from "../../../services/api/session.ts";
 import { sessionApi } from "../../../services/api/session.ts";
+import { ApiRequestError } from "../../../services/api/fetch.ts";
 import { useRunInputs } from "../runInputs.ts";
 import type { RunInputsController } from "../types.ts";
 
@@ -491,6 +492,167 @@ test("answers indistinguishable redacted options by key and distinguishes free t
   }
 });
 
+test("labels a server-selected timeout answer and keeps the current Run open", async () => {
+  const env = installDom();
+  const { createRoot } = await import("react-dom/client");
+  const container = env.dom.window.document.getElementById("root");
+  assert.ok(container);
+  const root = createRoot(container);
+  const originalGet = sessionApi.getRunInputs;
+  const projection = questionProjection("run-auto", { status: "resolved" });
+  projection.inputs = [{
+    input_id: "auto-answer", kind: "answer", text: null, question_id: "question-batch-1",
+    answers: { q0: ["o0"] }, status: "applied", source: "timeout_default",
+    created_at: "2026-10-07T00:05:01Z",
+  }];
+  sessionApi.getRunInputs = async () => structuredClone(projection);
+  let latest: RunInputsController | null = null;
+  function Probe() {
+    latest = useRunInputs({ sessionId: "session-auto", runId: "run-auto", isRunActive: true });
+    return latest.projection ? createElement(RunInputHistory, { runInputs: latest, canSend: true }) : null;
+  }
+  try {
+    await act(async () => { root.render(createElement(Probe)); await flush(); });
+    assert.equal((latest as unknown as RunInputsController).isClosed, false);
+    assert.match(container.textContent ?? "", /系统默认答复/);
+    assert.match(container.textContent ?? "", /Brief/);
+    assert.match(container.textContent ?? "", /已处理/);
+    assert.doesNotMatch(container.textContent ?? "", /排队中/);
+  } finally {
+    await act(async () => root.unmount());
+    sessionApi.getRunInputs = originalGet;
+    env.restore();
+  }
+});
+
+for (const response of ["conflict", "uncertain"] as const) {
+  test(`reconciles ${response} manual answers with a server timeout answer`, async () => {
+    const env = installDom();
+    const { createRoot } = await import("react-dom/client");
+    const container = env.dom.window.document.getElementById("root");
+    assert.ok(container);
+    const root = createRoot(container);
+    const originalGet = sessionApi.getRunInputs;
+    const originalSubmit = sessionApi.submitRunInput;
+    let persisted = questionProjection("run-race");
+    let writes = 0;
+    sessionApi.getRunInputs = async () => structuredClone(persisted);
+    sessionApi.submitRunInput = async () => {
+      writes += 1;
+      persisted = questionProjection("run-race", { status: "resolved" });
+      persisted.inputs = [{ input_id: "server-default", kind: "answer", text: null,
+        question_id: "question-batch-1", answers: { q0: ["o0"] }, status: "applied",
+        source: "timeout_default", created_at: "2026-10-07T00:05:01Z" }];
+      if (response === "conflict") throw new ApiRequestError("Already answered", 409, "run_input_question_already_answered");
+      throw new Error("response lost");
+    };
+    let latest: RunInputsController | null = null;
+    function Probe() {
+      latest = useRunInputs({ sessionId: "session-race", runId: "run-race", isRunActive: true });
+      return createElement(RunInputHistory, { runInputs: latest, canSend: true });
+    }
+    const controls = () => latest as unknown as RunInputsController;
+    try {
+      await act(async () => { root.render(createElement(Probe)); await flush(); });
+      await act(async () => { assert.equal(await controls().submitAnswers("question-batch-1", { q0: ["o1"] }), false); await flush(); });
+      assert.equal(controls().isClosed, false);
+      assert.equal(controls().pendingSubmission, null);
+      assert.equal(controls().submissionError, null);
+      assert.equal(controls().lastAcceptedSubmission, null, "server choice must not be reported as accepted manual input");
+      assert.match(container.textContent ?? "", /系统默认答复/);
+      assert.equal(await controls().retryPendingSubmission(), false);
+      assert.equal(writes, 1);
+    } finally {
+      await act(async () => root.unmount());
+      sessionApi.getRunInputs = originalGet;
+      sessionApi.submitRunInput = originalSubmit;
+      env.restore();
+    }
+  });
+}
+
+for (const noOptions of [false, true]) {
+  test(`shows server deadline policy and default choice with noOptions=${noOptions}`, async () => {
+    const env = installDom();
+    const { createRoot } = await import("react-dom/client");
+    const container = env.dom.window.document.getElementById("root");
+    assert.ok(container);
+    const root = createRoot(container);
+    const originalGet = sessionApi.getRunInputs;
+    const originalSubmit = sessionApi.submitRunInput;
+    const projection = questionProjection("run-deadline");
+    projection.questions[0].deadline_at = "2026-10-07T00:05:00Z";
+    projection.questions[0].default_answers = noOptions ? null : { q0: ["o1"] };
+    if (noOptions) projection.questions[0].questions[0].options = [];
+    let writes = 0;
+    sessionApi.getRunInputs = async () => structuredClone(projection);
+    sessionApi.submitRunInput = async () => { writes += 1; throw new Error("unexpected client default"); };
+    function Probe() {
+      const controls = useRunInputs({ sessionId: "session-deadline", runId: "run-deadline", isRunActive: true });
+      return createElement(RunInputHistory, { runInputs: controls, canSend: true });
+    }
+    try {
+      await act(async () => { root.render(createElement(Probe)); await flush(); });
+      assert.match(container.textContent ?? "", /5分钟未提交/);
+      assert.doesNotMatch(container.textContent ?? "", /q0|o1/);
+      assert.equal(writes, 0, "browser must not submit a default even when the timestamp is past");
+      if (noOptions) {
+        assert.equal(container.querySelectorAll("input").length, 0);
+        assert.ok(container.querySelector("textarea[aria-label]"));
+        assert.equal(container.querySelector("[data-run-question-default]"), null);
+      } else {
+        assert.match(container.querySelector("[data-run-question-default]")?.textContent ?? "", /Detailed/);
+      }
+    } finally {
+      await act(async () => root.unmount());
+      sessionApi.getRunInputs = originalGet;
+      sessionApi.submitRunInput = originalSubmit;
+      env.restore();
+    }
+  });
+}
+
+for (const scenario of [
+  { name: "accepted answer", state: "open", status: "applied", questionStatus: "answered", visible: false },
+  { name: "processed history", state: "inactive", status: "applied", questionStatus: "resolved", visible: false },
+  { name: "queued input", state: "open", status: "queued", questionStatus: "answered", visible: true },
+  { name: "closed input", state: "inactive", status: "closed", questionStatus: "closed", visible: true },
+  { name: "unprocessed answer", state: "inactive", status: "applied", questionStatus: "answered", visible: true },
+] as const) {
+  test(`task input echoes hide successful receipts and preserve ${scenario.name}`, async () => {
+    const env = installDom();
+    const { createRoot } = await import("react-dom/client");
+    const container = env.dom.window.document.getElementById("root");
+    assert.ok(container);
+    const root = createRoot(container);
+    const originalGet = sessionApi.getRunInputs;
+    const projection = questionProjection("run-echo", { state: scenario.state, status: scenario.questionStatus });
+    projection.inputs = [
+      { input_id: "text-echo", kind: "text", text: "synthetic continuation", question_id: null, answers: null, status: scenario.status, created_at: "2026-10-07T00:00:01Z" },
+      { input_id: "answer-echo", kind: "answer", text: null, question_id: "question-batch-1", answers: { q0: ["o0"] }, status: scenario.status, created_at: "2026-10-07T00:00:02Z" },
+    ];
+    sessionApi.getRunInputs = async () => structuredClone(projection);
+    let latest: RunInputsController | null = null;
+    function Probe() {
+      latest = useRunInputs({ sessionId: "session-echo", runId: projection.run_id, isRunActive: projection.state === "open" });
+      return createElement(RunInputHistory, { runInputs: latest, canSend: true });
+    }
+    try {
+      await act(async () => { root.render(createElement(Probe)); await flush(); });
+      const controls = latest as unknown as RunInputsController;
+      assert.equal(controls.history[0].inputs.length, 2, "hiding an echo must not discard the Run input projection");
+      assert.equal(Boolean(container.querySelector("[data-run-input-entry]")), scenario.visible);
+      assert.equal(Boolean(container.querySelector("[data-run-input-history]")), scenario.visible);
+      assert.doesNotMatch(container.textContent ?? "", /任务已接收/);
+      if (scenario.visible) assert.match(container.textContent ?? "", scenario.status === "queued" ? /排队中/ : /未处理/);
+    } finally {
+      await act(async () => root.unmount());
+      sessionApi.getRunInputs = originalGet;
+      env.restore();
+    }
+  });
+}
+
 function completedProjection(runId: string, text: string): RunInputsProjection {
   const projection = questionProjection(runId, { state: "inactive", status: "resolved" });
   projection.inputs = [
@@ -500,7 +662,7 @@ function completedProjection(runId: string, text: string): RunInputsProjection {
   return projection;
 }
 
-test("restores and pages completed Run input history through the next Run and a remount", async () => {
+test("retains completed Run input history across pagination and remount without echoing it in the composer", async () => {
   const env = installDom();
   const { createRoot } = await import("react-dom/client");
   const container = env.dom.window.document.getElementById("root");
@@ -528,37 +690,40 @@ test("restores and pages completed Run input history through the next Run and a 
     return createElement(RunInputHistory, { runInputs: latest, canSend: true });
   }
   const controls = () => latest as RunInputsController;
+  const historyText = () => controls().history.flatMap((run) => run.inputs).map((input) => input.text ?? "").join(" ");
   const render = async () => { await act(async () => { root.render(createElement(Probe)); await flush(); }); };
   try {
     await render();
-    assert.match(container.textContent ?? "", /previous continuation/);
-    assert.match(container.textContent ?? "", /current continuation/);
-    assert.match(container.textContent ?? "", /Brief、Detailed/);
+    assert.match(historyText(), /previous continuation/);
+    assert.match(historyText(), /current continuation/);
+    assert.doesNotMatch(container.textContent ?? "", /previous continuation|current continuation|Brief、Detailed/);
     assert.doesNotMatch(container.textContent ?? "", /q0|o0|o1/);
-    assert.equal(container.querySelector('[data-run-input-history-run="run-previous"]')?.getAttribute("data-run-input-read-only"), "true");
+    assert.equal(container.querySelector('[data-run-input-history-run="run-previous"]'), null);
     await act(async () => { assert.equal(await controls().loadMoreHistory(), true); });
     assert.equal(requested.at(-1), "run-previous");
-    assert.match(container.textContent ?? "", /older continuation/);
+    assert.match(historyText(), /older continuation/);
     assert.equal(controls().historyHasMore, false);
-    const historyRegion = container.querySelector<HTMLDivElement>("[data-run-input-history]");
-    assert.ok(historyRegion);
-    historyRegion.scrollTop = 200;
+    assert.equal(container.querySelector("[data-run-input-history]"), null, "processed receipts must not leave an empty task-input area");
     runId = "run-next";
     await render();
-    assert.match(container.textContent ?? "", /older continuation/);
-    assert.match(container.textContent ?? "", /current continuation/);
+    assert.match(historyText(), /older continuation/);
+    assert.match(historyText(), /current continuation/);
+    assert.doesNotMatch(container.textContent ?? "", /older continuation|current continuation/);
     assert.equal(controls().history.filter((run) => run.run_id === "run-next").length, 1);
     assert.equal(container.querySelector('[data-run-input-history-run="run-current"] input'), null);
     assert.equal(container.querySelector('[data-run-input-history-run="run-next"] input')?.hasAttribute("disabled"), false);
     assert.equal(container.querySelector("[data-run-input-history-run]")?.getAttribute("data-run-input-history-run"), "run-next");
-    assert.equal(historyRegion.scrollTop, 0, "a new pending question must be visible before older history");
+    const historyRegion = container.querySelector<HTMLDivElement>("[data-run-input-history]");
+    assert.ok(historyRegion);
+    assert.equal(historyRegion.scrollTop, 0, "a new pending question must be visible without processed receipts");
     await act(async () => root.unmount());
     root = createRoot(container);
     await render();
-    assert.match(container.textContent ?? "", /current continuation/);
-    assert.match(container.textContent ?? "", /previous continuation/);
+    assert.match(historyText(), /current continuation/);
+    assert.match(historyText(), /previous continuation/);
     await act(async () => { await controls().loadMoreHistory(); });
-    assert.match(container.textContent ?? "", /older continuation/);
+    assert.match(historyText(), /older continuation/);
+    assert.doesNotMatch(container.textContent ?? "", /older continuation|current continuation|previous continuation/);
   } finally {
     await act(async () => root.unmount());
     sessionApi.getRunInputs = originalGet;
@@ -647,14 +812,17 @@ test("drops delayed history pages on session or auth identity changes and preser
     resolveOld({ session_id: "session-old", runs: [completedProjection("run-private-old", "old private continuation")], has_more: false, next_before_run_id: null });
     resolveAuth({ session_id: "session-new", runs: [completedProjection("run-private-auth", "auth private continuation")], has_more: false, next_before_run_id: null });
     await act(async () => flush());
-    assert.match(container.textContent ?? "", /safe continuation/);
-    assert.doesNotMatch(container.textContent ?? "", /private continuation/);
+    assert.equal(controls().history.some((run) => run.run_id === "run-safe"), true);
+    assert.equal(controls().history.some((run) => run.run_id === "run-private-old" || run.run_id === "run-private-auth"), false);
+    assert.doesNotMatch(container.textContent ?? "", /safe continuation|private continuation/);
     fail = true;
     await act(async () => { assert.equal(await controls().refreshHistory(), false); });
     assert.equal(controls().historyLoadFailed, true);
-    assert.match(container.textContent ?? "", /safe continuation/);
+    assert.equal(controls().history.some((run) => run.run_id === "run-safe"), true);
+    assert.doesNotMatch(container.textContent ?? "", /safe continuation/);
     assert.ok(container.querySelector("[data-run-input-history-failure]"));
     await act(async () => { controls().retire(); });
+    assert.equal(controls().history.length, 0);
     assert.doesNotMatch(container.textContent ?? "", /safe continuation/);
   } finally {
     await act(async () => root.unmount());
@@ -662,3 +830,197 @@ test("drops delayed history pages on session or auth identity changes and preser
     env.restore();
   }
 });
+
+for (const outcome of ["accepted", "uncertain", "late-success", "closed", "read-only", "other-batch", "navigate", "identity", "resolved", "double-click", "retry-navigation", "retry-retire", "retry-unmount", "retry-cancelled-run", "timeout-before-retry", "timeout-during-retry-success", "timeout-during-retry-conflict", "timeout-during-retry-uncertain"] as const) {
+  test(`uncertain question retry preserves ownership and original answers: ${outcome}`, async () => {
+    const env = installDom();
+    const { createRoot } = await import("react-dom/client");
+    const container = env.dom.window.document.getElementById("root");
+    assert.ok(container);
+    const root = createRoot(container);
+    let mounted = true;
+    const originalGet = sessionApi.getRunInputs;
+    const originalSubmit = sessionApi.submitRunInput;
+    const persisted = questionProjection("run-question-retry");
+    let runId = persisted.run_id;
+    let canSend = true;
+    let isRunActive = true;
+    let otherBatch = false;
+    let identityKey = "synthetic-owner";
+    const submissions: RunInputSubmissionRequest[] = [];
+    const writeSignals: Array<AbortSignal | undefined> = [];
+    let resolveRetry!: () => void;
+    const retryResponse = new Promise<void>((resolve) => { resolveRetry = resolve; });
+    sessionApi.getRunInputs = async (id) => ({ ...structuredClone(persisted), run_id: id });
+    sessionApi.submitRunInput = async (_id, body, options = {}) => {
+      writeSignals.push(options.signal);
+      submissions.push(structuredClone(body));
+      if (!("question_id" in body)) throw new Error("expected_answer");
+      if (submissions.length === 1) throw new Error("synthetic_transport_uncertainty");
+      await retryResponse;
+      if (outcome === "uncertain" || outcome === "timeout-during-retry-uncertain") throw new Error("synthetic_transport_uncertainty");
+      if (outcome === "timeout-during-retry-conflict") throw new ApiRequestError("Already answered", 409, "run_input_question_already_answered");
+      persisted.inputs.push(answerRecord(body));
+      return { input_id: body.input_id, status: "applied" };
+    };
+    let latest!: RunInputsController;
+    function Probe() {
+      latest = useRunInputs({ sessionId: "session-question-retry", runId, isRunActive, identityKey });
+      const batch = latest.projection?.questions[0];
+      return batch ? createElement(RunQuestionCard, {
+        batch: otherBatch ? { ...batch, question_id: "other-question" } : batch,
+        runInputs: latest, canSend,
+      }) : null;
+    }
+    const render = async () => { await act(async () => { root.render(createElement(Probe)); await flush(); }); };
+    const retryButton = () => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "重试提交答复");
+    try {
+      await render();
+      await act(async () => { container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click(); });
+      await act(async () => { container.querySelector("form")!.dispatchEvent(new env.dom.window.Event("submit", { bubbles: true, cancelable: true })); await flush(); });
+      assert.equal(latest.pendingSubmission?.state, "uncertain");
+      assert.equal(submissions.length, 1);
+      assert.match(container.querySelector('[role="alert"]')?.textContent ?? "", /尚未确认答案是否提交成功/);
+      assert.ok(retryButton());
+      assert.equal(container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked, true);
+      assert.equal(container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.disabled, true);
+      assert.equal(container.querySelector<HTMLTextAreaElement>("textarea")!.disabled, true);
+      assert.equal(container.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled, true);
+      const applyTimeout = async () => {
+        persisted.questions[0].status = "resolved";
+        persisted.inputs = [{
+          input_id: "server-timeout-answer", kind: "answer", text: null,
+          question_id: "question-batch-1", answers: { q0: ["o1"] },
+          status: "applied", source: "timeout_default", created_at: "2026-10-07T00:05:01Z",
+        }];
+        await act(async () => { await latest.refresh(); });
+        assert.equal(latest.pendingSubmission, null);
+        assert.equal(latest.submissionError, null);
+        assert.equal(latest.lastAcceptedSubmission, null);
+        assert.equal(latest.isClosed, false);
+        assert.equal(retryButton(), undefined);
+        assert.match(container.textContent ?? "", /系统已自动选择默认答复/);
+      };
+      if (outcome === "timeout-before-retry") {
+        const staleRetry = latest.retryPendingSubmission;
+        await applyTimeout();
+        assert.equal(await staleRetry(), false);
+        assert.equal(submissions.length, 1);
+      } else if (outcome === "late-success") {
+        const body = submissions[0];
+        assert.ok("question_id" in body);
+        persisted.inputs.push(answerRecord(body));
+        await act(async () => { await latest.refresh(); });
+        assert.equal(latest.pendingSubmission, null);
+        assert.equal(retryButton(), undefined);
+        assert.equal(container.querySelector("form"), null);
+        assert.equal(submissions.length, 1);
+      } else if (["closed", "read-only", "other-batch", "navigate", "identity", "resolved"].includes(outcome)) {
+        if (outcome === "closed" || outcome === "resolved") {
+          if (outcome === "closed") persisted.state = "inactive";
+          else persisted.questions[0].status = "resolved";
+          await act(async () => { await latest.refresh(); });
+        } else {
+          if (outcome === "read-only") canSend = false;
+          if (outcome === "other-batch") otherBatch = true;
+          if (outcome === "navigate") runId = "run-replacement";
+          if (outcome === "identity") identityKey = "replacement-owner";
+          await render();
+        }
+        assert.equal(retryButton(), undefined);
+        assert.equal(container.querySelector('[role="alert"]'), null);
+        assert.equal(submissions.length, 1);
+      } else {
+        const retry = retryButton()!;
+        await act(async () => {
+          retry.click();
+          if (outcome === "double-click") retry.click();
+          await flush();
+        });
+        assert.equal(submissions.length, 2, "a retry already in flight must not be resubmitted");
+        assert.deepEqual(submissions[1], submissions[0]);
+        assert.equal(latest.pendingSubmission?.state, "submitting");
+        assert.equal(retryButton(), undefined);
+        assert.equal(container.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled, true);
+        if (outcome.startsWith("timeout-during-retry-")) {
+          await applyTimeout();
+          await act(async () => { resolveRetry(); await flush(); });
+          assert.equal(latest.pendingSubmission, null);
+          assert.equal(latest.submissionError, null);
+          assert.equal(latest.lastAcceptedSubmission, null, "late manual result must not replace the server default");
+          assert.deepEqual(latest.projection?.inputs.map((input) => input.input_id), ["server-timeout-answer"]);
+          assert.equal(latest.isClosed, false);
+          assert.equal(retryButton(), undefined);
+          assert.equal(await latest.retryPendingSubmission(), false);
+          assert.equal(submissions.length, 2);
+          return;
+        }
+        if (outcome === "retry-cancelled-run") {
+          // stopGeneration converges through authoritative terminal state;
+          // a cancellation acknowledgement alone does not close the Run.
+          isRunActive = false;
+          persisted.state = "inactive";
+          await render();
+          assert.equal(latest.isClosed, true);
+          assert.equal(retryButton(), undefined);
+          await act(async () => { resolveRetry(); await flush(); });
+          assert.equal(latest.isClosed, true);
+          assert.equal(container.querySelector("form"), null);
+          assert.equal(retryButton(), undefined);
+          assert.equal(submissions.length, 2);
+          return;
+        }
+        if (outcome === "retry-navigation" || outcome === "retry-retire" || outcome === "retry-unmount") {
+          if (outcome === "retry-navigation") {
+            runId = "run-replacement";
+            await render();
+          } else if (outcome === "retry-retire") {
+            await act(async () => { latest.retire(); });
+          } else {
+            await act(async () => { root.unmount(); });
+            mounted = false;
+          }
+          assert.equal(writeSignals[1]?.aborted, true, "retired owner must abort its retry transport");
+          const retiredView = latest;
+          await act(async () => { resolveRetry(); await flush(); });
+          assert.equal(latest, retiredView, "late retry success must not render into a retired owner");
+          assert.equal(submissions.length, 2);
+          if (outcome === "retry-navigation") {
+            assert.equal(latest.runId, "run-replacement");
+            assert.deepEqual(latest.projection?.inputs, []);
+            assert.equal(latest.pendingSubmission, null);
+            assert.equal(latest.lastAcceptedSubmission, null);
+          } else if (outcome === "retry-retire") {
+            assert.equal(latest.isClosed, true);
+            assert.equal(latest.projection, null);
+            assert.equal(latest.pendingSubmission, null);
+            assert.equal(latest.lastAcceptedSubmission, null);
+          } else {
+            assert.equal(container.childElementCount, 0);
+          }
+          return;
+        }
+        await act(async () => { resolveRetry(); await flush(); });
+        if (outcome === "uncertain") {
+          assert.equal(latest.pendingSubmission?.state, "uncertain");
+          assert.ok(retryButton());
+          assert.equal(container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked, true);
+          assert.equal(container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.disabled, true);
+          await act(async () => { retryButton()!.click(); await flush(); });
+          assert.equal(submissions.length, 3);
+          assert.deepEqual(submissions[2], submissions[0]);
+        } else {
+          assert.equal(latest.pendingSubmission, null);
+          assert.equal(retryButton(), undefined);
+          assert.equal(container.querySelector("form"), null);
+        }
+      }
+    } finally {
+      resolveRetry();
+      await act(async () => { await flush(); if (mounted) root.unmount(); });
+      sessionApi.getRunInputs = originalGet;
+      sessionApi.submitRunInput = originalSubmit;
+      env.restore();
+    }
+  });
+}

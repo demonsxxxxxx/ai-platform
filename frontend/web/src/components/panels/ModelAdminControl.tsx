@@ -1,3 +1,4 @@
+import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "../common/Table";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { DatabaseZap, RefreshCw, Save, Search, PlugZap, RotateCcw } from "lucide-react";
 import {
@@ -6,6 +7,7 @@ import {
   type AdminModelState,
 } from "../../services/api/modelAdmin";
 import { ApiRequestError } from "../../services/api/fetch";
+import { EnterpriseSelect } from "../common/EnterpriseSelect";
 
 const STATUS_FILTERS = [
   ["all", "状态：全部"],
@@ -270,10 +272,16 @@ export function ModelAdminControl({
       setPublishError("连接已修改，请先获取当前地址的模型，再保存配置。"); return;
     }
     if (!enabled.length) { setPublishError("请至少启用一个模型。"); return; }
-    const invalid = enabled.find((model) => !validTokenLimit(model.max_input_tokens)
-      || !validTokenLimit(model.max_output_tokens));
+    const invalid = available.find((model) => {
+      if (!model.enabled && model.max_input_tokens === undefined
+        && model.max_output_tokens === undefined) return false;
+      return !validTokenLimit(model.max_input_tokens) || !validTokenLimit(model.max_output_tokens);
+    });
     if (invalid) {
-      setPublishError(`请填写 ${invalid.label} 的最大输入和输出 Token（1–10,000,000）。`); return;
+      setPublishError(invalid.enabled
+        ? `请填写 ${invalid.label} 的最大输入和输出 Token（1–10,000,000）。`
+        : `请填写 ${invalid.label}（${invalid.value}）的最大输入和输出 Token（1–10,000,000 的整数），或将两项同时留空。`);
+      return;
     }
     if (enabled.filter((model) => model.is_default).length !== 1) {
       setPublishError("请在已启用模型中指定唯一默认模型。"); return;
@@ -421,16 +429,13 @@ export function ModelAdminControl({
                 value={query}
               />
             </label>
-            <select
+            <EnterpriseSelect
               aria-label="筛选模型状态"
-              className="h-10 rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg)] px-3 text-sm outline-none focus:border-[var(--theme-primary)] sm:w-40"
-              onChange={(event) => setStatusFilter(event.target.value)}
+              className="h-10 sm:w-40"
+              onChange={setStatusFilter}
               value={statusFilter}
-            >
-              {STATUS_FILTERS.map(([value, label]) => (
-                <option key={value} value={value}>{label}</option>
-              ))}
-            </select>
+              options={STATUS_FILTERS.map(([value, label]) => ({ value, label }))}
+            />
           </div>
           <span className="shrink-0 text-xs text-[var(--theme-text-secondary)]">
             显示 {visibleDraft.length} / {draft.length} 个模型
@@ -438,21 +443,21 @@ export function ModelAdminControl({
         </div>
 
         <div className="min-w-0 overflow-x-auto lg:min-h-0 lg:flex-1 lg:overflow-auto" data-model-admin-table-scroll>
-          <table className="w-full min-w-[880px] table-fixed text-left text-sm">
-            <thead className="sticky top-0 z-10 bg-[var(--theme-workbench-panel)] text-xs text-[var(--theme-text-secondary)]">
-              <tr>
-                <th className="w-24 px-4 py-3 font-medium">启用</th>
-                <th className="w-[28%] px-4 py-3 font-medium">显示名称 / 上游模型 ID</th>
-                <th className="w-40 px-4 py-3 font-medium">最大输入 Token</th>
-                <th className="w-40 px-4 py-3 font-medium">最大输出 Token</th>
-                <th className="w-28 px-4 py-3 font-medium">状态</th>
-                <th className="w-20 px-4 py-3 text-center font-medium">默认</th>
-              </tr>
-            </thead>
-            <tbody>
+          <Table className="w-full min-w-[880px] table-fixed text-left text-sm">
+            <TableHeader className="sticky top-0 z-10 bg-[var(--theme-workbench-panel)] text-xs text-[var(--theme-text-secondary)]">
+              <TableRow>
+                <TableHead className="w-24 px-4 py-3 font-medium">启用</TableHead>
+                <TableHead className="w-[28%] px-4 py-3 font-medium">显示名称 / 上游模型 ID</TableHead>
+                <TableHead className="w-40 px-4 py-3 font-medium">最大输入 Token</TableHead>
+                <TableHead className="w-40 px-4 py-3 font-medium">最大输出 Token</TableHead>
+                <TableHead className="w-28 px-4 py-3 font-medium">状态</TableHead>
+                <TableHead className="w-20 px-4 py-3 text-center font-medium">默认</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {visibleDraft.map((model) => (
-                <tr key={model.id} className="border-t border-[var(--theme-border)] first:border-t-0">
-                  <td className="px-4 py-3">
+                <TableRow key={model.id} className="border-t border-[var(--theme-border)] first:border-t-0">
+                  <TableCell className="px-4 py-3">
                     <label className="inline-flex cursor-pointer items-center">
                       <input
                         aria-label={`启用 ${model.label}`}
@@ -467,8 +472,8 @@ export function ModelAdminControl({
                       />
                       <span className="relative h-5 w-9 rounded-full bg-[var(--theme-border)] transition-colors after:absolute after:left-0.5 after:top-0.5 after:h-4 after:w-4 after:rounded-full after:bg-white after:transition-transform peer-checked:bg-[var(--theme-primary)] peer-checked:after:translate-x-4 peer-focus-visible:outline-none peer-focus-visible:ring-2 peer-focus-visible:ring-[var(--theme-primary)] peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-[var(--theme-workbench-panel)] peer-disabled:cursor-not-allowed peer-disabled:opacity-50" />
                     </label>
-                  </td>
-                  <td className="px-4 py-3">
+                  </TableCell>
+                  <TableCell className="px-4 py-3">
                     <div className="flex min-w-0 items-center gap-3">
                       <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[#eef2ff] text-[#5967e8]" aria-hidden="true">
                         <DatabaseZap size={16} />
@@ -484,36 +489,36 @@ export function ModelAdminControl({
                         <p className="truncate text-xs text-[var(--theme-text-secondary)]">{model.value}</p>
                       </div>
                     </div>
-                  </td>
-                  <td className="px-4 py-3">
+                  </TableCell>
+                  <TableCell className="px-4 py-3">
                     <input
                       aria-label={`${model.value} 最大输入 Token`}
                       className="h-9 w-full rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg)] px-2 disabled:opacity-60"
-                      disabled={!model.enabled || busy !== null}
+                      disabled={!model.available || busy !== null}
                       min={1}
                       max={10000000}
                       onChange={(event) => updateDraft(model.id, { max_input_tokens: event.target.value ? Number(event.target.value) : undefined })}
-                      placeholder={model.enabled ? "必填" : "—"}
+                      placeholder={model.enabled ? "必填" : "可同时留空"}
                       aria-required={model.enabled}
                       type="number"
                       value={model.max_input_tokens ?? ""}
                     />
-                  </td>
-                  <td className="px-4 py-3">
+                  </TableCell>
+                  <TableCell className="px-4 py-3">
                     <input
                       aria-label={`${model.value} 最大输出 Token`}
                       className="h-9 w-full rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg)] px-2 disabled:opacity-60"
-                      disabled={!model.enabled || busy !== null}
+                      disabled={!model.available || busy !== null}
                       min={1}
                       max={10000000}
                       onChange={(event) => updateDraft(model.id, { max_output_tokens: event.target.value ? Number(event.target.value) : undefined })}
-                      placeholder={model.enabled ? "必填" : "—"}
+                      placeholder={model.enabled ? "必填" : "可同时留空"}
                       aria-required={model.enabled}
                       type="number"
                       value={model.max_output_tokens ?? ""}
                     />
-                  </td>
-                  <td className="px-4 py-3">
+                  </TableCell>
+                  <TableCell className="px-4 py-3">
                     <span className={`inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs ${
                       model.available
                         ? "bg-[var(--theme-success-soft)] text-[var(--theme-success)]"
@@ -522,8 +527,8 @@ export function ModelAdminControl({
                       <span className="h-1.5 w-1.5 rounded-full bg-current" aria-hidden="true" />
                       {model.available ? "已发现" : "上游缺失"}
                     </span>
-                  </td>
-                  <td className="px-4 py-3 text-center">
+                  </TableCell>
+                  <TableCell className="px-4 py-3 text-center">
                     <input
                       aria-label={`设为默认 ${model.label}`}
                       checked={model.is_default}
@@ -532,18 +537,18 @@ export function ModelAdminControl({
                       onChange={() => updateDraft(model.id, { is_default: true })}
                       type="radio"
                     />
-                  </td>
-                </tr>
+                  </TableCell>
+                </TableRow>
               ))}
               {!visibleDraft.length ? (
-                <tr>
-                  <td className="px-4 py-12 text-center text-sm text-[var(--theme-text-secondary)]" colSpan={6}>
+                <TableRow>
+                  <TableCell className="px-4 py-12 text-center text-sm text-[var(--theme-text-secondary)]" colSpan={6}>
                     {draft.length ? "没有匹配的模型" : busy === "load" ? "正在加载模型配置" : "请先获取候选模型"}
-                  </td>
-                </tr>
+                  </TableCell>
+                </TableRow>
               ) : null}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         </div>
       </div>
       <div className="sticky bottom-0 z-10 flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 py-2 lg:static" data-model-admin-action-bar>

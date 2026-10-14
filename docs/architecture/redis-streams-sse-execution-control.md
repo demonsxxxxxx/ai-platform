@@ -174,8 +174,9 @@ lock is held across Redis I/O.
 Run-terminal and cancellation publishers use committed business facts directly.
 They do not stage independent terminal intents or persist delivery disposition.
 Before writing a callback batch, the same application path loads and directly
-publishes any preceding committed Run event. This closes the opposite race in
-which a later callback would otherwise overtake a delayed cancellation request.
+publishes the latest committed Run event preceding that batch. This closes the
+opposite race in which a later callback would otherwise overtake a delayed
+cancellation request.
 The lookup is bounded to events before that batch; no scan or retry task owns it.
 Callback receipts never overwrite the separate Run-event receipt.
 

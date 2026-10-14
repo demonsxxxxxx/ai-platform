@@ -51,13 +51,6 @@ class SandboxCleanupPersistenceError(RuntimeError):
     """Cancellation cleanup receipts could not commit durably."""
 
 
-def _consume_cleanup_stop_task(task: asyncio.Task[Any]) -> None:
-    try:
-        task.exception()
-    except BaseException:
-        pass
-
-
 def _sandbox_lease_release_message(reason: str) -> str:
     if reason == "expired":
         return "已释放过期 Sandbox 租约"
@@ -111,15 +104,24 @@ class SandboxRuntimeCleanup:
                 timeout=self._sandbox_cleanup_timeout_seconds(),
             )
         except asyncio.CancelledError:
-            stop_task.cancel()
-            stop_task.add_done_callback(_consume_cleanup_stop_task)
             raise
         except TimeoutError:
-            stop_task.cancel()
-            stop_task.add_done_callback(_consume_cleanup_stop_task)
             return None
         except Exception:  # noqa: BLE001 - the claim is released for bounded cleanup retry.
             return None
+        finally:
+            if not stop_task.done():
+                stop_task.cancel()
+            # Keep the sole cleanup slot until the external operation really ends.
+            joined = asyncio.gather(stop_task, return_exceptions=True)
+            cancelled = False
+            while not joined.done():
+                try:
+                    await asyncio.shield(joined)
+                except asyncio.CancelledError:
+                    cancelled = True
+            if cancelled:
+                raise asyncio.CancelledError
 
     async def stop_sandbox_leases(
         self,
@@ -289,7 +291,7 @@ class SandboxRuntimeCleanup:
         *,
         tenant_id: str | None = None,
         provider_factory: ProviderFactory,
-        stale_after_seconds: int = 45,
+        stale_after_seconds: int = 300,
         transaction_factory: TransactionFactory | None = None,
     ) -> list[dict[str, Any]]:
         """Retry one verified runtime cleanup without holding DB locks across provider I/O."""

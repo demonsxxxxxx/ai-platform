@@ -1,6 +1,6 @@
 /**
  * API service for backend communication
- * 支持JWT认证的API服务
+ * 使用同源 cookie session 的浏览器 API 服务
  *
  * 此文件作为统一导出入口，所有 API 模块拆分在 ./api/ 目录下
  */
@@ -14,9 +14,6 @@ export {
   getRefreshToken,
   setTokens,
   clearTokens,
-  isAuthenticated,
-  decodeToken,
-  isTokenExpired,
   getRedirectPath,
   clearRedirectPath,
 } from "./api/token";

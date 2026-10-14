@@ -219,6 +219,8 @@ def _sanitize_queue_insight(value: object) -> dict[str, object]:
 
 def _sanitize_observability_summary(value: object) -> dict[str, object]:
     summary = _sanitize_dict(value)
+    if isinstance(value, dict) and "estimated_cost_minor" in value and value["estimated_cost_minor"] is None:
+        summary["estimated_cost_minor"] = None
     error_types = summary.get("error_types") if isinstance(summary.get("error_types"), dict) else {}
     summary["error_types"] = {
         sanitized_key: _coerce_int(count)

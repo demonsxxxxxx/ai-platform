@@ -361,16 +361,6 @@ async def _persist_login_principal(conn: Any, principal: AuthPrincipal) -> None:
     )
 
 
-async def _login_principal(request: LoginRequest) -> AuthPrincipal:
-    """Resolve and persist the explicit Bearer compatibility login principal."""
-
-    principal, company_jwt = await _resolve_login_principal(request)
-    async with transaction() as conn:
-        await _persist_login_principal(conn, principal)
-    await _store_mcp_login_jwt(principal, company_jwt)
-    return principal
-
-
 @router.get("/auth/me", response_model=PrincipalResponse)
 async def me(principal: AuthPrincipal = Depends(require_principal)) -> PrincipalResponse:
     return PrincipalResponse.model_validate(principal_to_response(principal))
