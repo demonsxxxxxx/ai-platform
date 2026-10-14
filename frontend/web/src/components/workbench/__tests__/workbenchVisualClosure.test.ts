@@ -393,7 +393,7 @@ test("phase 1c logged-in route surfaces expose shared governance smoke attribute
   );
 });
 
-test("safe projection pages render a full workbench instead of thin lists", () => {
+test("user projection renders a full workbench instead of a thin list", () => {
   const projectionPages = read("src/components/workbench/WorkbenchProjectionPages.tsx");
   const zh = JSON.parse(read("src/i18n/locales/zh.json"));
 
@@ -414,12 +414,9 @@ test("safe projection pages render a full workbench instead of thin lists", () =
   assert.match(projectionPages, /workbench\.projections\.currentTask/);
   assert.match(projectionPages, /workbench\.projections\.governance\.summaryTitle/);
   assert.match(projectionPages, /workbench\.projections\.users\.directoryTitle/);
-  assert.match(projectionPages, /workbench\.projections\.feedback\.queueTitle/);
-  assert.match(projectionPages, /workbench\.projections\.notifications\.streamTitle/);
   assert.equal(zh.workbench.projections.currentTask, "当前任务");
   assert.equal(zh.workbench.projections.governance.summaryTitle, "读写治理摘要");
   assert.ok(zh.workbench.projections.users.roleLabels.admin);
-  assert.ok(zh.workbench.projections.feedback.status.open);
   assert.doesNotMatch(projectionPages, /bg-\[var\(--theme-bg\)\]/);
   assert.doesNotMatch(projectionPages, /bg-\[var\(--theme-bg-card\)\]/);
   assert.doesNotMatch(projectionPages, /text-stone-(?:700|800|900)/);
@@ -430,21 +427,6 @@ test("safe projection pages render a full workbench instead of thin lists", () =
   assert.match(projectionPages, /var\(--theme-warning-soft\)/);
   assert.match(projectionPages, /var\(--theme-danger-soft\)/);
   assert.doesNotMatch(projectionPages, /<div className="mt-3">\{children\}<\/div>/);
-});
-
-test("notification projection metrics use the same visible rows as the stream", () => {
-  const projectionPages = read("src/components/workbench/WorkbenchProjectionPages.tsx");
-
-  assert.match(projectionPages, /const visibleNotifications = dedupeNotifications\(combined\);/);
-  assert.match(projectionPages, /const unreadCount = visibleNotifications\.filter/);
-  assert.match(projectionPages, /const activeCount = visibleNotifications\.filter/);
-  assert.match(projectionPages, /value: visibleNotifications\.length/);
-  assert.match(projectionPages, /\{visibleNotifications\.length === 0 \?/);
-  assert.match(projectionPages, /visibleNotifications\.map\(\(item\) =>/);
-  assert.doesNotMatch(projectionPages, /const unreadCount = combined\.filter/);
-  assert.doesNotMatch(projectionPages, /const activeCount = combined\.filter/);
-  assert.doesNotMatch(projectionPages, /value: combined\.length/);
-  assert.doesNotMatch(projectionPages, /dedupeNotifications\(combined\)\.map/);
 });
 
 test("skills marketplace cards stay dense and enterprise-workbench sized", () => {

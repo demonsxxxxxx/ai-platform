@@ -35,16 +35,9 @@ test("retired chat feedback and unowned browser smokes are absent", () => {
     "tagsHint",
     "tagsPlaceholder",
   ]);
-  const feedbackProjection = zh.workbench.phaseTwo.feedback;
-  assert.equal(feedbackProjection.capabilities.capture.title, "历史反馈投影");
-  assert.match(
-    feedbackProjection.capabilities.capture.description,
-    /当前聊天界面不采集新的消息级反馈/,
-  );
-  assert.match(
-    feedbackProjection.details.publicProjection,
-    /当前聊天界面不提供消息级反馈入口/,
-  );
+  assert.equal(zh.workbench.phaseTwo.feedback, undefined);
+  assert.equal(zh.workbench.projections.feedback, undefined);
+  assert.match(zh.workbench.unavailable.feedback.description, /尚未实现/);
 });
 
 test("skills and MCP surfaces avoid obsolete department availability placeholders", () => {

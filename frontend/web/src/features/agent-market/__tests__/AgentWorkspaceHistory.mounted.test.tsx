@@ -51,7 +51,6 @@ const { authApi } = await import("../../../services/api/auth");
 const { sessionApi } = await import("../../../services/api/session");
 const { agentProfileApi } = await import("../../../services/api/agentProfile");
 const { modelPublicApi } = await import("../../../services/api/modelPublic");
-const { notificationPublicApi } = await import("../../../services/api/notificationPublic");
 const { Permission } = await import("../../../types/auth");
 const { default: toast } = await import("react-hot-toast");
 const { default: i18n } = await import("../../../i18n");
@@ -114,7 +113,7 @@ async function deleteTask(scope: HTMLElement, title: string) {
 }
 
 async function mountWorkspace(overrides: Partial<typeof sessionApi> = {}) {
-  const originals = { session: { ...sessionApi }, profile: { ...agentProfileApi }, auth: { ...authApi }, models: { ...modelPublicApi }, notifications: { ...notificationPublicApi } };
+  const originals = { session: { ...sessionApi }, profile: { ...agentProfileApi }, auth: { ...authApi }, models: { ...modelPublicApi } };
   const originalToastError = toast.error;
   const toastErrors: string[] = [];
   toast.error = (message) => { toastErrors.push(String(message)); return "test-toast"; };
@@ -124,7 +123,6 @@ async function mountWorkspace(overrides: Partial<typeof sessionApi> = {}) {
     email: `${account}@example.test`, roles: [], permissions: [Permission.CHAT_READ, Permission.CHAT_WRITE],
     is_admin: false, is_active: true, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" });
   modelPublicApi.listAvailable = async () => ({ models: [{ id: "model-default", value: "model-default", label: "Default" }], count: 1, enabled_count: 1, default_model_id: "model-default" });
-  notificationPublicApi.getActive = async () => [];
   agentProfileApi.getPublished = async () => profile;
   agentProfileApi.listConversations = async () => ({ sessions: [projection("session-a"), projection("session-b"), projection("session-c")], next_cursor: null });
   Object.assign(sessionApi, {
@@ -155,7 +153,7 @@ async function mountWorkspace(overrides: Partial<typeof sessionApi> = {}) {
     await React.act(async () => root.unmount()); container.remove();
     toast.error = originalToastError;
     Object.assign(sessionApi, originals.session); Object.assign(agentProfileApi, originals.profile);
-    Object.assign(authApi, originals.auth); Object.assign(modelPublicApi, originals.models); Object.assign(notificationPublicApi, originals.notifications);
+    Object.assign(authApi, originals.auth); Object.assign(modelPublicApi, originals.models);
     throw error;
   }
   const globalHistory = () => container.querySelector<HTMLElement>("[data-workbench-global-history]")!;
@@ -169,7 +167,7 @@ async function mountWorkspace(overrides: Partial<typeof sessionApi> = {}) {
       await React.act(async () => root.unmount()); container.remove();
       toast.error = originalToastError;
       Object.assign(sessionApi, originals.session); Object.assign(agentProfileApi, originals.profile);
-      Object.assign(authApi, originals.auth); Object.assign(modelPublicApi, originals.models); Object.assign(notificationPublicApi, originals.notifications);
+      Object.assign(authApi, originals.auth); Object.assign(modelPublicApi, originals.models);
     },
   };
 }
