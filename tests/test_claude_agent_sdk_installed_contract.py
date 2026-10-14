@@ -5,9 +5,9 @@ from inspect import signature
 from pathlib import Path
 
 
-def test_installed_claude_agent_sdk_02130_contract(tmp_path):
+def test_installed_claude_agent_sdk_02165_contract(tmp_path):
     installed_version = version("claude-agent-sdk")
-    assert installed_version == "0.2.130"
+    assert installed_version == "0.2.165"
 
     import claude_agent_sdk as sdk
     from claude_agent_sdk._internal.transport.subprocess_cli import (
@@ -62,6 +62,9 @@ def test_installed_claude_agent_sdk_02130_contract(tmp_path):
         check=False,
     )
     assert cli_check.returncode == 0, cli_check.stderr
+    assert "2.1.294" in cli_check.stdout
+    assert issubclass(sdk.ResultError, sdk.ProcessError)
+    assert hasattr(sdk, "ConversationResetMessage")
 
     bootstrap_options = sdk.ClaudeAgentOptions(
         cwd=str(tmp_path),

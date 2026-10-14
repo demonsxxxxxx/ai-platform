@@ -632,10 +632,12 @@ ledger. It names the target owner for future bounded migrations.
 | Queue consumers, `app/worker.py`, `app/worker_main.py`, model/executor selection | `execution` plus `bootstrap.worker` |
 | `app/executors/**` and Harness SDK translation | `execution.infrastructure.harness` |
 | `app/context/**`, memory selection and context continuity | `context` |
+| `app/context/domain/provider_media.py`, `app/context/infrastructure/provider_images.py` | Context owns lossless private image references, persistence and object-deletion ownership |
+| `app/execution/infrastructure/harness/claude/session_images.py` | Claude Harness adapter owns recognition of SDK-specific image fields |
 | `app/file_parser_contracts.py` and `app/file_preview_contracts.py` | `files` owns the separately authorized, bounded XLSX presentation preview; it is not a Run admission or attachment-staging parser |
 | Upload/file authorization and file lifecycle persistence | `files` |
 | Artifact records, lineage, and expiry eligibility | `artifacts`; shared byte client remains `platform.object_storage` |
-| `app/persistence/object_deletions.py` and shared file/artifact outbox transitions | `object_lifecycle` |
+| `app/persistence/object_deletions.py` and shared file/artifact/provider-image outbox transitions | `object_lifecycle` |
 | `app/data_retention.py` and maintenance scheduling | `bootstrap.maintenance` orchestrating `object_lifecycle`, `artifacts`, and `context` public APIs |
 | `app/streaming/**`, run-event repositories and SSE projection | `streaming` |
 | `app/mcp/**` and MCP sections of the global repository | `mcp` |

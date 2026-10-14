@@ -58,6 +58,9 @@ last-write-wins credential replacement policy.
    with SDK 0.2.130. Forwarding through a later SDK and model interpretation
    require their own adapter/provider acceptance; a dependency change alone does
    not prove that the compatibility representation can be retired.
+   With SDK 0.2.165 / CLI 2.1.294, the loopback check confirms a JSON tool-result
+   string containing that structured value. Acceptance checks the JSON value,
+   not the previous `[structuredContent]` text marker.
    Forward calls to the original remote names. Do not expose
    unselected siblings or use a Server-wide wildcard permission grant.
 3. Each discovery task owns and closes its remote session. Close SDK query streams,

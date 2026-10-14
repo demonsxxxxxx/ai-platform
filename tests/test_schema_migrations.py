@@ -699,10 +699,10 @@ def test_stream_only_schema_change_advances_schema_version():
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert schema_migrations.RUN_INPUTS_SCHEMA_VERSION == "2026.10.07.1"
     assert schema_migrations.RUN_QUESTION_DEFAULT_ANSWER_SCHEMA_VERSION == "2026.10.12.1"
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.10.13.1"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.10.14.1"
     assert (
         schema_migrations.TARGET_SCHEMA_VERSION
-        == schema_migrations.TERMINAL_RECONCILIATION_RETRY_SCHEMA_VERSION
+        == schema_migrations.PROVIDER_SESSION_IMAGES_SCHEMA_VERSION
     )
     assert ("sandbox_leases", "executor_reconciliation_retry_not_before", "timestamptz", False) in schema_migrations.CRITICAL_COLUMNS
     assert ("run_inputs", "source", "text", True) in schema_migrations.CRITICAL_COLUMNS
@@ -712,7 +712,7 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert schema_migrations.FILE_UPLOAD_SESSION_SCHEMA_VERSION == "2026.09.03.1"
     assert (
         schema_migrations.CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION
-        == schema_migrations.TERMINAL_RECONCILIATION_RETRY_SCHEMA_VERSION
+        == schema_migrations.PROVIDER_SESSION_IMAGES_SCHEMA_VERSION
     )
     assert schema_migrations.BAOYU_TRANSLATE_RETIREMENT_SCHEMA_VERSION == "2026.09.07.1"
     assert schema_migrations.CRITICAL_RELATIONS == (
@@ -744,6 +744,7 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
         "provider_session_heads",
         "provider_session_epochs",
         "provider_session_entries",
+        "provider_session_images",
         "provider_session_append_receipts",
         "provider_turn_receipts",
         "conversation_context_checkpoints",
@@ -1243,7 +1244,8 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "'pending'::text, 'processing'::text, 'failed'::text, "
             "'dead_letter'::text, 'deleted'::text, 'file_pending'::text, "
             "'file_processing'::text, 'file_failed'::text, 'file_dead_letter'::text, "
-            "'file_deleted'::text]))",
+            "'file_deleted'::text, 'provider_image_pending'::text, 'provider_image_processing'::text, "
+            "'provider_image_failed'::text, 'provider_image_dead_letter'::text, 'provider_image_deleted'::text]))",
         ),
         (
             "object_deletion_outbox",
@@ -1251,7 +1253,10 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "c",
             "CHECK (target_type = 'artifact'::text AND (state = ANY (ARRAY["
             "'pending'::text, 'processing'::text, 'failed'::text, 'dead_letter'::text, "
-            "'deleted'::text])) OR target_type = 'file'::text AND (state = ANY (ARRAY["
+            "'deleted'::text])) OR target_type = 'provider_image'::text AND (state = ANY (ARRAY["
+            "'provider_image_pending'::text, 'provider_image_processing'::text, 'provider_image_failed'::text, "
+            "'provider_image_dead_letter'::text, 'provider_image_deleted'::text])) "
+            "OR target_type = 'file'::text AND (state = ANY (ARRAY["
             "'file_pending'::text, 'file_processing'::text, 'file_failed'::text, "
             "'file_dead_letter'::text, 'file_deleted'::text])))",
         ),
@@ -1260,8 +1265,11 @@ def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
             "chk_object_deletion_outbox_target",
             "c",
             "CHECK (target_type = 'artifact'::text AND artifact_id IS NOT NULL "
-            "AND file_id IS NULL OR target_type = 'file'::text AND artifact_id IS NULL "
-            "AND file_id IS NOT NULL)",
+            "AND file_id IS NULL AND provider_image_id IS NULL "
+            "OR target_type = 'file'::text AND artifact_id IS NULL "
+            "AND file_id IS NOT NULL AND provider_image_id IS NULL "
+            "OR target_type = 'provider_image'::text AND artifact_id IS NULL AND file_id IS NULL "
+            "AND provider_image_id IS NOT NULL)",
         ),
         (
             "object_deletion_outbox",

@@ -18,6 +18,9 @@ from app.context.application.provider_sessions import (
     prepare_provider_epoch,
     commit_provider_turn,
     execute_provider_session_callback,
+    prepare_provider_session_media,
+    transfer_provider_session_media,
+    queue_provider_session_images_for_deletion,
 )
 from app.context.application.worker_attachment_projection import (
     manifest_with_worker_attachment_metadata as manifest_with_worker_attachment_metadata,
@@ -268,4 +271,7 @@ __all__ = [
     "normalize_provider_subpath",
     "provider_session_id_for_scope",
     "execute_provider_session_callback",
+    "prepare_provider_session_media",
+    "transfer_provider_session_media",
+    "queue_provider_session_images_for_deletion",
 ]

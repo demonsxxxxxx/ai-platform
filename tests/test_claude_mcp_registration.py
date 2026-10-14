@@ -321,12 +321,10 @@ async def test_installed_claude_cli_selected_mcp_end_to_end(monkeypatch, tmp_pat
         ]
         if not remote_error:
             assert any(
-                part.get("text", "").startswith("[structuredContent]")
-                and '"sequence":7' in part.get("text", "")
+                isinstance(content, str)
+                and json.JSONDecoder().raw_decode(content)[0] == {"sequence": 7}
                 for content in tool_result_texts
-                for part in content
-                if isinstance(part, dict)
-            )
+            ), tool_result_texts
         assert peer.calls == [{"name": RAW_TOOL, "arguments": {"query": "synthetic"}}], (
             result.turn_diagnostics, result.runtime_diagnostics,
             [block for request in peer.models for message in request.get("messages", [])

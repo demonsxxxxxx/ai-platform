@@ -78,6 +78,8 @@ BACKEND_TEST_SHARDS = {
         "tests/test_execution_pinned_skill_materialization.py",
         "tests/test_claude_agent_worker_file_continuity.py",
         "tests/test_provider_session_transport.py",
+        "tests/test_provider_session_images.py",
+        "tests/test_claude_image_session_store.py",
         "tests/test_context_file_content.py",
         "tests/test_context_file_continuity.py",
         "tests/test_file_parser_contracts.py",
@@ -253,6 +255,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_skill_release_lifecycle_postgres.py",
         "tests/test_run_inputs_postgres.py",
         "tests/test_provider_session_recovery_postgres.py",
+        "tests/test_provider_session_images_postgres.py",
         "tests/test_frozen_receipt_spec_postgres.py",
         "tests/test_schema.py::test_schema_declares_attempt_identity_state_and_fences",
     ),
@@ -419,6 +422,10 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     assert len(all_selectors) == len(set(all_selectors))
     assert "image: ${{ matrix.redis_image }}" in tests_job
     assert "image: ${{ matrix.postgres_image }}" in tests_job
+    assert '"19014:9000"' in tests_job
+    assert '--health-cmd "mc ready local"' in tests_job
+    assert "matrix.shard == 'schema-migrations' && 'bitnamilegacy/minio:2025.4.22-debian-12-r1'" in tests_job
+    assert "AI_PLATFORM_PROVIDER_IMAGE_MINIO_URL:" in tests_job
     assert '"54329:5432"' in tests_job
     assert '"6379:6379"' in tests_job
     assert '--health-cmd "redis-cli ping"' in tests_job

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 from claude_agent_sdk._internal import transcript_mirror_batcher
 from claude_agent_sdk._internal.query import Query
+from claude_agent_sdk.client import _hooks_to_internal_format
 from claude_agent_sdk._internal.transcript_mirror_batcher import TranscriptMirrorBatcher
 from claude_agent_sdk import ProcessError, ResultMessage as InstalledResultMessage
 
@@ -85,7 +86,7 @@ async def test_installed_query_error_exit_keeps_error_result_and_final_flush(
     async def connect_inner(client, _prompt, actual_prompt):
         client._transport = transport
         query = Query(transport, is_streaming_mode=True,
-                      hooks=client._convert_hooks_to_internal_format(client.options.hooks))
+                      hooks=_hooks_to_internal_format(client.options.hooks))
         client._query = query
 
         async def mirror_error(_key, _error):
@@ -260,7 +261,7 @@ async def test_stop_settles_pending_session_store_tail_before_terminal_result(
     async def connect_inner(client, _prompt, actual_prompt):
         client._transport = transport
         query = Query(transport, is_streaming_mode=True,
-                      hooks=client._convert_hooks_to_internal_format(client.options.hooks))
+                      hooks=_hooks_to_internal_format(client.options.hooks))
         client._query = query
 
         async def mirror_error(_key, _error):
@@ -394,7 +395,7 @@ async def test_runner_completes_after_final_mirror_before_slow_teardown(
         assert client._custom_transport is None
         client._transport = transport
         query = Query(transport, is_streaming_mode=True,
-                      hooks=client._convert_hooks_to_internal_format(client.options.hooks))
+                      hooks=_hooks_to_internal_format(client.options.hooks))
         client._query = query
 
         async def mirror_error(_key, _error):

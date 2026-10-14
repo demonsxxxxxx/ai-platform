@@ -312,15 +312,21 @@ async def test_claim_and_receipt_queries_bind_a_monotonic_lease_generation():
     assert conn.calls[1][1] == (4, 7)
     assert "lease_generation = lease_generation + 1" in conn.calls[2][0]
     assert "target_type, artifact_id, file_id" in conn.calls[2][0]
-    assert "state in ('pending', 'failed', 'processing')" in conn.calls[0][0]
+    assert "outbox.target_type in ('artifact', 'provider_image')" in conn.calls[0][0]
+    for state in ("pending", "failed", "processing",
+                  "provider_image_pending", "provider_image_failed", "provider_image_processing"):
+        assert f"'{state}'" in conn.calls[0][0]
+    assert "provider_session_images image" in conn.calls[0][0]
+    assert "image.id = outbox.provider_image_id" in conn.calls[0][0]
     assert (
         "state in ('file_pending', 'file_failed', 'file_processing')"
         in conn.calls[0][0]
     )
     assert "then 'file_processing'" in conn.calls[2][0]
-    assert "state = 'deleted'" in conn.calls[2][0]
+    assert "then 'provider_image_processing'" in conn.calls[2][0]
+    assert "state in ('deleted', 'provider_image_deleted')" in conn.calls[2][0]
     assert "provisional_reconciliation_cleanup" in conn.calls[2][0]
-    assert "when state = 'deleted' then 1" in conn.calls[2][0]
+    assert "when state in ('deleted', 'provider_image_deleted') then 1" in conn.calls[2][0]
 
     completion = ScriptedConnection({"id": "out-a"})
     assert await object_deletions.complete_object_deletion(
@@ -332,9 +338,11 @@ async def test_claim_and_receipt_queries_bind_a_monotonic_lease_generation():
     complete_sql, complete_params = completion.calls[0]
     assert "and lease_generation = %s" in complete_sql
     assert "updated_artifact" in complete_sql and "updated_file" in complete_sql
+    assert "updated_image" in complete_sql
     assert "provisional_reconciliation_cleanup" in complete_sql
     assert "exists (select 1 from updated_target)" in complete_sql
     assert "then 'file_deleted'" in complete_sql
+    assert "then 'provider_image_deleted'" in complete_sql
     assert complete_params == ("out-a", "tenant-a", 9)
 
     failure = ScriptedConnection({"state": "file_failed"})
