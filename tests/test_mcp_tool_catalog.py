@@ -12,7 +12,7 @@ from mcp.types import LATEST_PROTOCOL_VERSION
 
 from app.mcp.application.live_catalog import LiveMcpCatalogService
 from app.mcp.domain.errors import McpRuntimeContextError, McpToolDiscoveryError
-from app.mcp.infrastructure import catalog, client
+from app.mcp.infrastructure import catalog, client, runtime as mcp_runtime
 from app.mcp.infrastructure.client import McpToolDiscoveryAdapter
 
 
@@ -113,7 +113,7 @@ async def test_streamable_http_discovery_uses_sdk_handshake_and_preserves_bound_
     None, {}, {"readOnlyHint": None}, {"readOnlyHint": True}, {"readOnlyHint": False},
     {"destructiveHint": True}, {"readOnlyHint": True, "custom": {"nested": [1, "value"]}},
 ])
-async def test_sdk_discovery_preserves_schemas_and_advisory_annotations(mock_transport, annotations):
+async def test_sdk_discovery_preserves_schemas_and_advisory_annotations(monkeypatch, mock_transport, annotations):
     schema = {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}
     async def page(request, _params):
         return _rpc_response(request, {"tools": [{
@@ -132,6 +132,12 @@ async def test_sdk_discovery_preserves_schemas_and_advisory_annotations(mock_tra
 
     async def target(*_args):
         return SimpleNamespace(endpoint="https://mcp.example/tools", static_headers={}, transport="http")
+
+    async def current_credential(principal):
+        assert (principal.tenant_id, principal.user_id) == ("tenant", "user")
+        return "user.jwt"
+
+    monkeypatch.setattr(mcp_runtime, "get_mcp_principal_jwt_store", lambda: SimpleNamespace(get=current_credential))
     service = LiveMcpCatalogService(target_resolver=target, discovery=McpToolDiscoveryAdapter())
     public = await service.list_server_tools(tenant_id="tenant", user_id="user", server_id="gateway", jwt="user.jwt")
     assert public.unavailable_reason is None

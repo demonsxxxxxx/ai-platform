@@ -25,6 +25,7 @@ from app.auth_sessions import (
     principal_snapshot,
 )
 from app.db import transaction
+from app.identity.api import PrincipalResponse
 from app.identity.infrastructure.audit_postgres import append_audit_log
 from app.identity.infrastructure.postgres import ensure_user
 from app.mcp.api import McpRuntimeContextError, get_mcp_principal_jwt_store
@@ -32,7 +33,6 @@ from app.models import (
     AuthContextBootstrapRequest,
     LoginRequest,
     OAuthCallbackRequest,
-    PrincipalResponse,
 )
 from app.principal_authority import (
     CompanyLoginJwtUnavailable,
@@ -243,7 +243,7 @@ async def login(request: LoginRequest, http_request: Request) -> PrincipalRespon
         principal, company_jwt, refresh_cookie=_context_cookie_from_request(http_request),
         operation_epoch=operation.epoch,
     )
-    return PrincipalResponse.model_validate(principal_to_response(principal))
+    return PrincipalResponse(**principal_to_response(principal))
 
 
 @router.post("/auth/ad-login", response_model=PrincipalResponse)
@@ -282,7 +282,7 @@ async def ad_login(request: dict[str, Any], http_request: Request) -> PrincipalR
         principal, company_jwt.strip(), refresh_cookie=_context_cookie_from_request(http_request),
         operation_epoch=operation.epoch,
     )
-    return PrincipalResponse.model_validate(principal_to_response(principal))
+    return PrincipalResponse(**principal_to_response(principal))
 
 
 async def _resolve_login_principal(
@@ -398,7 +398,7 @@ async def refresh(http_request: Request, response: Response) -> dict[str, Any]:
 
 @router.get("/auth/me", response_model=PrincipalResponse)
 async def me(principal: AuthPrincipal = Depends(require_principal)) -> PrincipalResponse:
-    return PrincipalResponse.model_validate(principal_to_response(principal))
+    return PrincipalResponse(**principal_to_response(principal))
 
 
 @router.post("/auth/company-credential-handoff")

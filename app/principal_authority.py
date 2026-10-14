@@ -94,7 +94,7 @@ class PrincipalAuthorityDenied(Exception):
 
 
 class CompanyLoginJwtUnavailable(Exception):
-    """Report missing server-side verification configuration without accepting a token."""
+    """Report unavailable company authority or signing configuration without accepting a token."""
 
 
 _REQUIRED_COMPANY_JWT_CLAIMS = (
@@ -351,7 +351,9 @@ async def issue_refreshed_company_jwt(
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code in {401, 403, 404}:
             raise PrincipalAuthorityDenied() from None
-        raise
+        raise CompanyLoginJwtUnavailable() from exc
+    except (httpx.HTTPError, OSError, TimeoutError, ValueError) as exc:
+        raise CompanyLoginJwtUnavailable() from exc
     roles, department_id = _normalize_company_record(
         expected_work_id=principal.user_id, tenant_id=principal.tenant_id,
         raw_user_info=raw, settings=effective_settings,

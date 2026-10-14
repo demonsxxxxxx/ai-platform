@@ -9,7 +9,6 @@ import time
 from datetime import datetime, timezone
 from typing import Iterable, Mapping
 
-import httpx
 from fastapi import HTTPException, Request, status
 
 from app.auth_sessions import (
@@ -391,7 +390,7 @@ async def refresh_company_session(
         raise HTTPException(status_code=status_code, detail=exc.code) from exc
     except (CompanyLoginJwtUnavailable, McpRuntimeContextError) as exc:
         raise HTTPException(status_code=503, detail="auth_refresh_unavailable") from exc
-    except (OSError, TimeoutError, ValueError, httpx.HTTPError) as exc:
+    except (OSError, TimeoutError, ValueError) as exc:
         raise HTTPException(status_code=503, detail="auth_refresh_unavailable") from exc
     finally:
         if operation is not None and not committed:

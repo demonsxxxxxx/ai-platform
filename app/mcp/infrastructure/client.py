@@ -22,6 +22,7 @@ from app.mcp.domain.errors import McpToolDiscoveryError
 
 from app.mcp.domain.errors import McpRuntimeContextError
 from app.mcp.domain.headers import MCP_JWT_AUTHORIZATION_HEADER, normalize_static_mcp_headers
+from app.mcp.infrastructure import runtime as mcp_runtime
 from app.mcp.infrastructure.catalog import (
     MCP_DISCOVERY_PAGE_LIMIT,
     _canonical_live_definition,
@@ -164,9 +165,8 @@ async def open_mcp_session(
         request.headers["Host"] = target.host_header
         request.extensions["sni_hostname"] = target.sni_hostname
         if credential_principal is not None:
-            from app.mcp.api import read_mcp_principal_jwt
             try:
-                current_jwt = await read_mcp_principal_jwt(credential_principal)
+                current_jwt = await mcp_runtime.get_mcp_principal_jwt_store().get(credential_principal)
             except McpRuntimeContextError as exc:
                 fail("authorization_required" if exc.status_code == 401 else "transport_failure")
             except Exception:

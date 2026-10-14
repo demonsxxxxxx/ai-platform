@@ -2113,6 +2113,7 @@ test("a scheduled reconnect converges non-retryable auth without another status 
   let streamCalls = 0;
   let refreshCalls = 0;
   let unavailableCalls = 0;
+  const unavailable = createDeferred<void>();
   const context = {
     abortControllerRef: { current: null },
     isConnectingRef: { current: false },
@@ -2147,15 +2148,11 @@ test("a scheduled reconnect converges non-retryable auth without another status 
     setSandboxError: () => undefined,
     onRunStatusUnavailable: () => {
       unavailableCalls += 1;
+      unavailable.resolve();
       return true;
     },
   } satisfies SSEConnectionContext & {
     isReconnectFromHistoryRef: { current: boolean };
-  };
-  const flushAsync = async () => {
-    for (let index = 0; index < 20; index += 1) {
-      await Promise.resolve();
-    }
   };
 
   try {
@@ -2199,7 +2196,8 @@ test("a scheduled reconnect converges non-retryable auth without another status 
     });
 
     t.mock.timers.tick(1_000);
-    await flushAsync();
+    await unavailable.promise;
+    assert.equal(context.reconnectTimeoutRef.current, null);
     assert.equal(statusCalls, 1);
     assert.equal(connectCalls, 1);
     assert.equal(streamCalls, 2);
@@ -2207,7 +2205,7 @@ test("a scheduled reconnect converges non-retryable auth without another status 
     assert.equal(unavailableCalls, 1);
 
     t.mock.timers.tick(60_000);
-    await flushAsync();
+    await Promise.resolve();
     assert.equal(statusCalls, 1);
     assert.equal(connectCalls, 1);
     assert.equal(streamCalls, 2);

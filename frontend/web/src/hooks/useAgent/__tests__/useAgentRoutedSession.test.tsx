@@ -5056,8 +5056,15 @@ test(`useAgent expires cookie-session stream ownership with ${sessionMarker ? "a
   let statusCalls = 0;
   let streamCalls = 0;
   let refreshProbeCalls = 0;
+  let refreshCalls = 0;
   const fetchWithExpiredSession: typeof fetch = async (input) => {
     const url = String(input);
+    if (url.includes("/api/ai/auth/refresh")) {
+      refreshCalls += 1;
+      return new Response(JSON.stringify({ detail: "auth_context_missing" }), {
+        status: 401,
+      });
+    }
     if (url.includes("/api/ai/auth/me")) {
       refreshProbeCalls += 1;
       return new Response("{}", { status: 200 });
@@ -5121,6 +5128,7 @@ test(`useAgent expires cookie-session stream ownership with ${sessionMarker ? "a
     await settle(harness.act);
 
     assert.equal(refreshProbeCalls, 0);
+    assert.equal(refreshCalls, sessionMarker ? 1 : 0);
     assert.equal(streamCalls, 1);
     assert.equal(statusCalls, 0);
     assert.equal(harness.hook.currentRunId, null);
