@@ -2481,16 +2481,6 @@ def _container_sandbox_executor_image(inspected: dict[str, Any]) -> str | None:
     return value or None
 
 
-def _container_file_commit(docker: list[str], name: str, path: str) -> str:
-    result = _run([*docker, "exec", name, "cat", path])
-    if path.endswith(".json"):
-        payload = json.loads(result.stdout)
-        if "git" in payload:
-            return str(payload.get("git", {}).get("commit") or "")
-        return str(payload.get("source_tree_commit_sha") or "")
-    return result.stdout.strip()
-
-
 def _http_json(url: str) -> dict[str, Any]:
     with urlopen(url, timeout=bounded_parity_attempt_timeout(HTTP_PROBE_TIMEOUT_SECONDS)) as response:
         return json.loads(response.read().decode("utf-8"))

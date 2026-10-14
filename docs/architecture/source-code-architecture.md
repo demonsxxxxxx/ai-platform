@@ -121,7 +121,11 @@ admission. MCP owns authorized tool registration and runtime subject projection
 in `mcp.domain`; Identity owns distribution decisions and capability audits.
 Agent Apps owns locked Profile reauthorization and snapshot comparison. Context
 owns scoped Worker snapshot/attachment projections and file materialization,
-composed by `bootstrap.context`. Artifacts owns public manifest/download
+composed by `bootstrap.context`. `context.application.snapshot_recording` owns
+the initial snapshot, Run reference, and private event write sequence, composed
+by `bootstrap.context_snapshot`. It uses the admitting caller's connection and
+transaction so Run creation and snapshot binding commit or roll back together;
+material selection remains in `context_builder`. Artifacts owns public manifest/download
 projections; Sandbox owns executor failure classification; Execution owns Worker
 failure, usage, required-tool, and Skill evidence projection through its public
 API. Runs owns locked Worker admission, snapshot validation, dispatch binding,
@@ -146,6 +150,8 @@ placeholder lease writers, or early-failure collaborators.
 Worker orchestrates queue dispatch; shared preparation and completion publish
 committed events only after each transaction exits; the former Worker capability/early-failure
 helpers and `Locked*Ports` callback bags have no compatibility owner.
+The unused `fail_run_for_worker` boolean wrapper is retired; failure handling
+uses the Runs terminal completion service and its bound attempt authority.
 Result persistence rolls back artifacts, Skill snapshots, messages, and events
 when any terminal CAS loses authority. Worker interruption cleanup covers only
 its SDK placeholder lease, marks release after transaction commit, and leaves

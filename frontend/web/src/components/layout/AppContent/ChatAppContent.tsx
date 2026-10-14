@@ -602,7 +602,6 @@ export function ChatAppContent({
   const {
     tools,
     serverSelectedToolIds,
-    isLoading: toolsLoading,
     totalCount: totalToolsCount,
     catalogState: mcpCatalogState,
     refreshTools,
@@ -1374,7 +1373,6 @@ export function ChatAppContent({
             onToggleTool={exposedMcpControls.onToggleTool}
             onToggleCategory={exposedMcpControls.onToggleCategory}
             onToggleAll={exposedMcpControls.onToggleAll}
-            toolsLoading={agentConversationControlsLocked ? false : toolsLoading}
             enabledToolsCount={
               agentConversationControlsLocked ? 0 : effectiveEnabledToolsCount
             }

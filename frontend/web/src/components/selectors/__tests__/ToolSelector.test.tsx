@@ -48,3 +48,18 @@ test("renders bounded Chinese catalog states and exposes retry only for errors",
   ]);
   assert.equal(getChatMcpCatalogNotice(catalog("ready")), null);
 });
+
+test("MCP loading state has one catalog context owner across the composer", () => {
+  const selector = readFileSync(new URL("../ToolSelector.tsx", import.meta.url), "utf8");
+  assert.match(selector, /useContext\(ChatMcpCatalogContext\)/);
+  assert.doesNotMatch(selector, /isLoading\??:/);
+  for (const path of [
+    "../../chat/ChatInput.tsx",
+    "../../chat/chatInputTypes.ts",
+    "../../layout/AppContent/ChatView.tsx",
+    "../../layout/AppContent/ChatAppContent.tsx",
+  ]) {
+    const source = readFileSync(new URL(path, import.meta.url), "utf8");
+    assert.doesNotMatch(source, /\btoolsLoading\b/, path);
+  }
+});

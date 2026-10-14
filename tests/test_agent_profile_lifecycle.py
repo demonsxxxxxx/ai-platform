@@ -1967,7 +1967,6 @@ async def test_profile_admission_adds_authorized_skill_backing_mcp_without_clien
     assert admission.mcp_tool_ids == ("skill-a-search", "skill-b-search")
 
 
-@pytest.mark.parametrize("bound", [False, True], ids=["new", "continued"])
 @pytest.mark.parametrize(
     ("request_payload", "query_agent_id"),
     [
@@ -2027,7 +2026,6 @@ async def test_profile_admission_adds_authorized_skill_backing_mcp_without_clien
 @pytest.mark.asyncio
 async def test_profile_authority_rejects_incompatible_client_selectors_after_profile_resolution(
     monkeypatch,
-    bound,
     request_payload,
     query_agent_id,
 ):
@@ -2066,25 +2064,13 @@ async def test_profile_authority_rejects_incompatible_client_selectors_after_pro
     monkeypatch.setattr(authority, "_validate_definition", validate)
 
     with pytest.raises(HTTPException) as caught:
-        if bound:
-            await authority.resolve_for_admission(
-                object(),
-                principal=_principal(),
-                selection=SelectedAgentProfileRequest(agent_id="agt_support"),
-                submitted_request=request,
-                query_agent_id=query_agent_id,
-            )
-        else:
-            await authority.resolve_for_admission(
-                object(),
-                principal=_principal(),
-                selection=SelectedAgentProfileRequest(
-                    agent_id="agt_support",
-
-                ),
-                submitted_request=request,
-                query_agent_id=query_agent_id,
-            )
+        await authority.resolve_for_admission(
+            object(),
+            principal=_principal(),
+            selection=SelectedAgentProfileRequest(agent_id="agt_support"),
+            submitted_request=request,
+            query_agent_id=query_agent_id,
+        )
 
     assert (caught.value.status_code, caught.value.detail) == (400, "agent_profile_selector_conflict")
     assert storage_reads == ["current"]
