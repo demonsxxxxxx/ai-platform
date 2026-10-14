@@ -12,6 +12,13 @@ import pytest
 from app import data_retention, storage as storage_module
 
 
+@pytest.fixture(autouse=True)
+def mock_provider_image_selection(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(data_retention.context_api, "queue_provider_session_images_for_deletion", AsyncMock(return_value=[]))
+
+
 @asynccontextmanager
 async def fake_transaction():
     yield object()

@@ -172,7 +172,6 @@ interface ChatViewProps {
   onToggleTool: (name: string) => void;
   onToggleCategory: (category: ToolCategory, enabled: boolean) => void;
   onToggleAll: (enabled: boolean) => void;
-  toolsLoading: boolean;
   enabledToolsCount: number;
   totalToolsCount: number;
   skills: SkillResponse[];
@@ -245,7 +244,6 @@ export function ChatView({
   onToggleTool,
   onToggleCategory,
   onToggleAll,
-  toolsLoading,
   enabledToolsCount,
   totalToolsCount,
   taskSkills,
@@ -927,7 +925,6 @@ export function ChatView({
     onToggleTool,
     onToggleCategory,
     onToggleAll,
-    toolsLoading,
     enabledToolsCount,
     totalToolsCount,
     skills: taskSkills,

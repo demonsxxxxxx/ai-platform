@@ -166,6 +166,10 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     )
     assert "src/hooks/useAgent/__tests__/historyLoader.test.ts" in test_sse
     for selector in (
+        "src/components/chat/__tests__/composerCommandParity.test.ts",
+        "src/components/layout/AppContent/__tests__/useSessionSync.test.ts",
+        "src/components/layout/AppContent/__tests__/chatViewMessageListKey.test.ts",
+        "src/hooks/__tests__/useSession.test.ts",
         "src/hooks/useAgent/__tests__/runControlLifecycle.test.ts",
         "src/hooks/useAgent/runControlLifecycle.test.ts",
         "src/hooks/useAgent/__tests__/runLifecycle.test.ts",

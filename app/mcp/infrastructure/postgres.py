@@ -69,21 +69,6 @@ async def list_mcp_server_registry(
     )
 
 
-async def list_tenant_mcp_server_registry(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    include_disabled: bool = True,
-) -> list[dict[str, Any]]:
-    from app.mcp.infrastructure import registry_postgres
-
-    return await registry_postgres.list_runtime_tenant_mcp_server_registry(
-        conn,
-        tenant_id=tenant_id,
-        include_disabled=include_disabled,
-    )
-
-
 async def list_mcp_server_registry_names(
     conn: AsyncConnection,
     *,

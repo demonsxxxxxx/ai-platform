@@ -50,6 +50,45 @@ def _metrics(usage):
     return executor_observability({"sdk_usage": usage}, latency_ms=1)
 
 
+def test_resumed_cost_state_is_subtracted_once_without_mutating_transcript():
+    import copy
+
+    entries = [
+        {"type": "cost-state", "sessionId": "session", "totalCostUSD": 0.125, "modelUsage": _model_usage()},
+        {"type": "cost-state", "sessionId": "session", "totalCostUSD": 0.25, "modelUsage": _model_usage(multiplier=2)},
+        {"type": "cost-state", "sessionId": "child", "totalCostUSD": 99, "modelUsage": _model_usage()},
+    ]
+    unchanged = copy.deepcopy(entries)
+    observation = ClaudeResultUsage(session_id="session", prompt="continue", resumed_entries=entries)
+    observation.observe_result(_sdk_result(cost=0.375, models=_model_usage(multiplier=3)))
+    value = observation.project({}, terminal_result=True)
+    assert value["total_cost_usd"] == 0.125 and value["cost_coverage"] == "complete"
+    assert value["model_usage"]["private-model"]["inputTokens"] == 11
+    assert value["model_usage"]["private-model"]["costUSD"] == 0.125
+    assert value["input_tokens"] == 11 and entries == unchanged
+    observation.observe_result(_sdk_result(cost=0.5, models=_model_usage(multiplier=4)))
+    assert observation.project({}, terminal_result=True)["total_cost_usd"] == 0.25
+
+
+@pytest.mark.parametrize("cost,models", [(None, {}), (-1, _model_usage()), (0.25, {}), (0.25, {"bad": []})])
+def test_invalid_resume_baseline_never_counts_historical_cost(cost, models):
+    observation = ClaudeResultUsage(session_id="session", prompt="continue", resumed_entries=[
+        {"type": "cost-state", "sessionId": "session", "totalCostUSD": cost, "modelUsage": models},
+    ])
+    observation.observe_result(_sdk_result(cost=0.5, usage={"input_tokens": 3}, models=_model_usage()))
+    assert observation.project({"input_tokens": 3}, terminal_result=True) == {
+        "input_tokens": 3, "cost_coverage": "unavailable",
+    }
+
+
+def test_zero_cost_state_is_a_valid_empty_baseline():
+    observation = ClaudeResultUsage(session_id="session", prompt="continue", resumed_entries=[
+        {"type": "cost-state", "sessionId": "session", "totalCostUSD": 0, "modelUsage": {}},
+    ])
+    observation.observe_result(_sdk_result(cost=0.125, models=_model_usage()))
+    assert observation.project({}, terminal_result=True)["cost_coverage"] == "complete"
+
+
 def test_real_sdk_cumulative_cost_replaces_snapshot_without_adding_turns():
     observation = ClaudeResultUsage(session_id="session", prompt="start")
     observation.observe_result(_sdk_result(cost=0.125, usage={"input_tokens": 5}, models=_model_usage()))

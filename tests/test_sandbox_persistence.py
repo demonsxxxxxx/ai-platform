@@ -964,7 +964,7 @@ async def test_retry_deadline_migration_preserves_legacy_backoff_and_is_idempote
         )
 
     result = await schema_migrations.apply_migrations(transaction_factory=transaction, index_connection_factory=index_connection)
-    assert result["version"] == schema_migrations.TERMINAL_RECONCILIATION_RETRY_SCHEMA_VERSION
+    assert result["version"] == schema_migrations.TARGET_SCHEMA_VERSION
     migrated = await (await conn.execute("select * from sandbox_leases where id = 'lease-a'")).fetchone()
     assert migrated["executor_reconciliation_retry_not_before"] == before["updated_at"] + timedelta(seconds=7)
     for index in terminal_indexes:
@@ -973,7 +973,7 @@ async def test_retry_deadline_migration_preserves_legacy_backoff_and_is_idempote
         "select target_version from schema_index_migrations where index_name like 'idx_sandbox_leases_executor_reconcile%'"
     )).fetchall()
     assert len(ledger) == 2
-    assert {row["target_version"] for row in ledger} == {schema_migrations.TERMINAL_RECONCILIATION_RETRY_SCHEMA_VERSION}
+    assert {row["target_version"] for row in ledger} == {schema_migrations.CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION}
     result = await schema_migrations.apply_migrations(transaction_factory=transaction, index_connection_factory=index_connection)
     assert result["status"] == "current"
     after = await (await conn.execute("select * from sandbox_leases where id = 'lease-a'")).fetchone()

@@ -1479,3 +1479,100 @@ async def test_record_initial_context_snapshot_requires_source_artifacts_same_te
     assert snapshot_call["included_artifact_ids"] == []
     assert snapshot_call["payload_json"]["referenced_materials"]["artifact_count"] == 0
     assert context_ref["referenced_materials"]["artifact_count"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_stage", [None, "snapshot", "projection", "run_ref", "event"])
+async def test_snapshot_recorder_keeps_one_connection_and_propagates_original_failure(failure_stage):
+    from app.context.api import ContextSnapshotRecorder
+
+    conn = object()
+    calls = []
+    cause = OSError("synthetic persistence cause")
+    failure = _owner_platform_postgres_errors.RepositoryConflictError("synthetic_snapshot_failure")
+    failure.__cause__ = cause
+    private_manifest = {"private": "source identities"}
+    public_manifest = {"context_window": {"used": 1}}
+    summary = {
+        "context_manifest": private_manifest,
+        "referenced_materials": {"message_count": 1},
+        "used_context_summary": {"source": "chat_stream"},
+        "latest_artifact_version": None,
+        "execution_tier": "sdk_only_writing",
+        "context_pack_version": "v1",
+        "context_pack_generated_at": "2026-10-14T00:00:00Z",
+    }
+    authority = {"source_sha256": "a" * 64}
+
+    def observe(operation, connection=conn, **kwargs):
+        assert connection is conn
+        calls.append((operation, kwargs))
+        if failure_stage == operation:
+            raise failure
+
+    async def create_snapshot(connection, **kwargs):
+        observe("snapshot", connection, **kwargs)
+        return {"id": "ctx-one"}
+
+    def project_manifest(manifest):
+        assert manifest is private_manifest
+        observe("projection")
+        return public_manifest
+
+    async def bind_run(connection, **kwargs):
+        observe("run_ref", connection, **kwargs)
+
+    async def append_event(connection, **kwargs):
+        observe("event", connection, **kwargs)
+
+    recorder = ContextSnapshotRecorder(
+        create_snapshot=create_snapshot,
+        bind_run_snapshot=bind_run,
+        append_event=append_event,
+        public_manifest=project_manifest,
+        schema_version="snapshot-v1",
+    )
+    arguments = dict(
+        tenant_id="tenant-a", workspace_id="workspace-a", user_id="user-a",
+        session_id="session-a", run_id="run-a", trace_id="trace-a", source="chat_stream",
+        included_message_ids=["msg-a"], included_file_ids=["file-a"],
+        included_artifact_ids=["artifact-a"], summary=summary,
+        memory_policy_summary={
+            "memory_policy_source": "default", "memory_enabled": True,
+            "long_term_memory_enabled": False, "retention_days": 90,
+        },
+        conversation_authority=authority,
+    )
+    stages = ["snapshot", "projection", "run_ref", "event"]
+    if failure_stage:
+        with pytest.raises(_owner_platform_postgres_errors.RepositoryConflictError) as raised:
+            await recorder.record(conn, **arguments)
+        assert raised.value is failure
+        assert raised.value.__cause__ is cause
+        assert [stage for stage, _ in calls] == stages[:stages.index(failure_stage) + 1]
+        return
+
+    result = await recorder.record(conn, **arguments)
+    assert [stage for stage, _ in calls] == stages
+    snapshot = calls[0][1]
+    assert snapshot["payload_json"] is summary
+    assert snapshot["conversation_authority_json"] is authority
+    for field in ("tenant_id", "workspace_id", "user_id", "session_id", "run_id", "trace_id"):
+        assert snapshot[field] == arguments[field]
+    assert snapshot["included_message_ids"] == ["msg-a"]
+    assert snapshot["included_file_ids"] == ["file-a"]
+    assert snapshot["included_artifact_ids"] == ["artifact-a"]
+    assert snapshot["included_memory_record_ids"] == []
+    assert calls[2][1] == {
+        "tenant_id": "tenant-a", "run_id": "run-a",
+        "context_snapshot_id": "ctx-one", "context_snapshot": result,
+    }
+    event = calls[3][1]
+    assert event["tenant_id"] == "tenant-a"
+    assert event["run_id"] == "run-a"
+    assert event["trace_id"] == "trace-a"
+    assert event["event_type"] == "context_snapshot_created"
+    assert event["payload"] == {"visible_to_user": False, **result}
+    assert result["context_manifest"] is public_manifest
+    assert result["context_snapshot_id"] == "ctx-one"
+    assert "private" not in result["context_manifest"]

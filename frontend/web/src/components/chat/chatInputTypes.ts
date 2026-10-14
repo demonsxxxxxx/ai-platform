@@ -62,7 +62,6 @@ export interface ChatInputProps {
   onToggleTool?: (toolName: string) => void;
   onToggleCategory?: (category: ToolCategory, enabled: boolean) => void;
   onToggleAll?: (enabled: boolean) => void;
-  toolsLoading?: boolean;
   enabledToolsCount?: number;
   totalToolsCount?: number;
   skills?: PublicSkillResponse[];

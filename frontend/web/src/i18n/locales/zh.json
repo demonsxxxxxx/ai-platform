@@ -988,14 +988,42 @@
       "unavailable": "暂时无法加载可用工具"
     },
     "card": {
-      "noTools": "未发现工具",
-      "roleCount": "{{count}} 个角色",
       "roleQuotaCount": "角色配额",
-      "statusLabel": "服务状态",
-      "statusEnabled": "运行中",
+      "statusLabel": "启用状态",
+      "statusEnabled": "已启用",
       "statusDisabled": "已停用",
       "system": "系统",
       "user": "用户"
+    },
+    "discovery": {
+      "idle": "未查询",
+      "loading": "正在发现工具…",
+      "ready": "发现成功",
+      "unavailable": "发现失败",
+      "disabled": "已停用，未查询",
+      "not_configured": "连接未配置",
+      "unsupported_transport": "传输方式不受支持"
+    },
+    "directory": {
+      "actions": "操作",
+      "accessScope": "访问范围",
+      "departments": "指定部门（{{count}} 个）",
+      "allDepartments": "不限部门",
+      "allRoles": "所有角色",
+      "roles": "角色：{{roles}}"
+    },
+    "tools": {
+      "title": "{{name}} · 工具目录",
+      "accountScope": "展示当前账户可发现的工具；刷新时实时查询服务器。",
+      "accountCount": "当前账户工具数",
+      "count": "{{count}} 个工具",
+      "discoveryStatus": "工具发现",
+      "view": "查看工具",
+      "refresh": "刷新工具",
+      "retry": "重试发现",
+      "search": "搜索工具名称或描述",
+      "empty": "当前账户未发现工具",
+      "noMatches": "没有匹配的工具"
     },
     "confirmDelete": "删除 MCP 服务器",
     "confirmDeleteMessage": "确定要删除 MCP 服务器 \"{{name}}\" 吗？此操作不可撤销。",
@@ -1102,6 +1130,7 @@
       "title": "MCP 工具受治理"
     },
     "catalogUnavailable": {
+      "retry": "重试加载",
       "description": "MCP 工具目录会保持可见用于发现。服务生命周期、凭证轮换和工具策略写入由管理员治理。",
       "title": "MCP 工具目录受治理"
     },

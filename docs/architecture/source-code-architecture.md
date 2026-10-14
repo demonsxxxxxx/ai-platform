@@ -121,21 +121,37 @@ admission. MCP owns authorized tool registration and runtime subject projection
 in `mcp.domain`; Identity owns distribution decisions and capability audits.
 Agent Apps owns locked Profile reauthorization and snapshot comparison. Context
 owns scoped Worker snapshot/attachment projections and file materialization,
-composed by `bootstrap.context`. Artifacts owns public manifest/download
+composed by `bootstrap.context`. `context.application.snapshot_recording` owns
+the initial snapshot, Run reference, and private event write sequence, composed
+by `bootstrap.context_snapshot`. It uses the admitting caller's connection and
+transaction so Run creation and snapshot binding commit or roll back together;
+material selection remains in `context_builder`. Artifacts owns public manifest/download
 projections; Sandbox owns executor failure classification; Execution owns Worker
 failure, usage, required-tool, and Skill evidence projection through its public
 API. Runs owns locked Worker admission, snapshot validation, dispatch binding,
 result commit, and exception/cancellation terminal transactions in
 `runs.application.worker_dispatch_admission`, `worker_locked_authorization`,
 `worker_locked_snapshot`, `worker_dispatch_binding`, `worker_result_commit`, and
-`worker_execution_terminal`. Bootstrap binds concrete repositories and other
+`worker_execution_terminal`. `worker_terminal_completion` is the shared
+completion use case for inline results and durable receipt recovery, reusing
+the same atomic `worker_result_commit` and publishing only after commit.
+`bootstrap.worker_run_preparation` composes the unchanged admission/binding
+order for both ingress paths. `bootstrap.executor_terminal_reconciliation`
+restores the receipt and enters completion without constructing a queue envelope
+or calling `worker.process_run_payload`; it never resubmits the executor.
+Both ingress paths require their process runtime services to be configured
+(including Agent Profile authority) before entry; receipt recovery does not
+initialize global services or depend on an earlier queue slot.
+Bootstrap binds concrete repositories and other
 context services, including the complete dispatch admission and binding graphs.
 Worker supplies per-Run authority and transaction scope to those assembled
 operations; it does not choose Context projectors, specification compilers,
 placeholder lease writers, or early-failure collaborators.
-Worker orchestrates dispatch and publishes committed events
-only after each transaction exits; the former Worker capability/early-failure
+Worker orchestrates queue dispatch; shared preparation and completion publish
+committed events only after each transaction exits; the former Worker capability/early-failure
 helpers and `Locked*Ports` callback bags have no compatibility owner.
+The unused `fail_run_for_worker` boolean wrapper is retired; failure handling
+uses the Runs terminal completion service and its bound attempt authority.
 Result persistence rolls back artifacts, Skill snapshots, messages, and events
 when any terminal CAS loses authority. Worker interruption cleanup covers only
 its SDK placeholder lease, marks release after transaction commit, and leaves
@@ -616,10 +632,12 @@ ledger. It names the target owner for future bounded migrations.
 | Queue consumers, `app/worker.py`, `app/worker_main.py`, model/executor selection | `execution` plus `bootstrap.worker` |
 | `app/executors/**` and Harness SDK translation | `execution.infrastructure.harness` |
 | `app/context/**`, memory selection and context continuity | `context` |
+| `app/context/domain/provider_media.py`, `app/context/infrastructure/provider_images.py` | Context owns lossless private image references, persistence and object-deletion ownership |
+| `app/execution/infrastructure/harness/claude/session_images.py` | Claude Harness adapter owns recognition of SDK-specific image fields |
 | `app/file_parser_contracts.py` and `app/file_preview_contracts.py` | `files` owns the separately authorized, bounded XLSX presentation preview; it is not a Run admission or attachment-staging parser |
 | Upload/file authorization and file lifecycle persistence | `files` |
 | Artifact records, lineage, and expiry eligibility | `artifacts`; shared byte client remains `platform.object_storage` |
-| `app/persistence/object_deletions.py` and shared file/artifact outbox transitions | `object_lifecycle` |
+| `app/persistence/object_deletions.py` and shared file/artifact/provider-image outbox transitions | `object_lifecycle` |
 | `app/data_retention.py` and maintenance scheduling | `bootstrap.maintenance` orchestrating `object_lifecycle`, `artifacts`, and `context` public APIs |
 | `app/streaming/**`, run-event repositories and SSE projection | `streaming` |
 | `app/mcp/**` and MCP sections of the global repository | `mcp` |
@@ -704,6 +722,11 @@ and retirement completeness require human review under the
 [PR template](../../.github/PULL_REQUEST_TEMPLATE.md). The architecture checker
 does not read PR bodies. The retirement checklist is a review index; reviewers
 must inspect or rerun its referenced inventory, not treat filled fields as proof.
+
+Architecture findings include a `remediation` string in JSON and a corresponding
+text hint. These describe how to restore the owning boundary; they do not change
+finding codes, exception eligibility, trusted authority, or exit status. Rerun the
+same exact authority/base/head range after fixing the reported responsibility.
 
 Machine configuration is a policy input, not a manual progress ledger.
 [`architecture-policy.json`](../../architecture-policy.json) and

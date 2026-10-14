@@ -168,6 +168,10 @@ async def test_session_action_service_enforces_tenant_owner_admin_and_terminal_d
     monkeypatch.setattr(
         _owner_conversations_infrastructure_postgres, 'mark_session_deleted', mark_session_deleted
     )
+    from unittest.mock import AsyncMock
+
+    queued_images = AsyncMock(return_value=[])
+    monkeypatch.setattr(session_actions.context_api, "queue_provider_session_images_for_deletion", queued_images)
 
     owner = AuthPrincipal(
         user_id="user-a", display_name="A", tenant_id="default", roles=["user"]
@@ -225,6 +229,10 @@ async def test_session_action_service_enforces_tenant_owner_admin_and_terminal_d
     )
     assert admin_deleted["already_deleted"] is False
     assert ("delete", "default", "ses-other") in writes
+    assert [call.kwargs for call in queued_images.await_args_list] == [
+        {"tenant_id": "default", "session_id": "ses-owner", "limit": 200},
+        {"tenant_id": "default", "session_id": "ses-other", "limit": 200},
+    ]
 
     with pytest.raises(session_actions.SessionActionNotFoundError):
         await session_actions.delete_session(

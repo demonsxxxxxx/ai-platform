@@ -30,7 +30,6 @@ interface ToolSelectorProps {
   onToggleTool: (toolName: string) => void;
   onToggleCategory: (category: ToolCategory, enabled: boolean) => void;
   onToggleAll: (enabled: boolean) => void;
-  isLoading?: boolean;
   enabledCount: number;
   totalCount: number;
   isOpen?: boolean;

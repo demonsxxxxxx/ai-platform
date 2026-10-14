@@ -97,7 +97,6 @@ export const ChatInput = memo(function ChatInput({
   onToggleTool,
   onToggleCategory,
   onToggleAll,
-  toolsLoading: _toolsLoading,
   enabledToolsCount = 0,
   totalToolsCount = 0,
   skills = [],

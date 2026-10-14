@@ -147,7 +147,8 @@ def test_worker_runtime_heartbeat_uses_runtime_owned_tmpdir(monkeypatch, tmp_pat
 async def test_worker_runtime_heartbeat_refreshes_until_cancelled(monkeypatch):
     calls: list[str] = []
 
-    def fake_write(worker_id: str):
+    def fake_write(worker_id: str, *, role: str):
+        assert role == "integrated"
         calls.append(worker_id)
 
     async def fake_sleep(_seconds: float):
@@ -2694,25 +2695,15 @@ async def test_run_worker_slot_continues_after_transient_run_once_error(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_run_worker_pool_clamps_invalid_worker_count_to_one(monkeypatch):
+async def test_run_worker_pool_delegates_to_single_process_owner(monkeypatch):
     calls = []
 
-    async def fake_run_forever(
-        poll_timeout_seconds=5,
-        idle_sleep_seconds=0.5,
-        *,
-        attempt_lifecycle=None,
-        lifecycle=None,
-    ):
-        assert attempt_lifecycle is not None
-        assert lifecycle is not None
-        calls.append(("run_forever", poll_timeout_seconds, idle_sleep_seconds))
+    async def process(**kwargs):
+        calls.append(kwargs)
 
-    monkeypatch.setattr("app.worker_main.run_forever", fake_run_forever)
-
+    monkeypatch.setattr(worker_main, "_run_worker_process", process)
     await worker_main.run_worker_pool(worker_count=0, poll_timeout_seconds=4, idle_sleep_seconds=0.75)
-
-    assert calls == [("run_forever", 4, 0.75)]
+    assert calls == [{"worker_count": 0, "poll_timeout_seconds": 4, "idle_sleep_seconds": 0.75}]
 
 
 def test_worker_main_once_closes_database_pool(monkeypatch, capsys):
@@ -2786,8 +2777,6 @@ def test_worker_main_uses_configured_worker_concurrency(monkeypatch):
     worker_main.main()
 
     assert calls == [
-        ("configure_model_services",),
-        ("configure_skill_markdown",),
         ("run_worker_pool", 10, 9),
     ]
 

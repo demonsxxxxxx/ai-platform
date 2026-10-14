@@ -22,7 +22,7 @@ contracts remain authoritative. This overview links rather than reproduces them.
 | Process/resource | Observed entry or boundary | Responsibility | Current limitation to verify |
 | --- | --- | --- | --- |
 | API | `app/main.py`, `app/routes/chat.py` | Authenticated admission, queries and public transport | Submission orchestration remains in route code |
-| Worker | `app/worker_main.py`, `app/worker.py` | Queue lease, reauthorization, execution preparation and dispatch | Single/pool entrypoints share fail-fast task supervision; maintenance phases run independently |
+| Worker | `app/worker_main.py`, `app/worker.py` | Queue lease, reauthorization, execution preparation and dispatch | Single/pool compatibility entrypoints delegate to one role-aware process supervisor; maintenance phases run independently |
 | Sandbox controller | `app/runtime/sandbox/runtime.py` | Resource acquire, stage, validate, dispatch and cleanup | Provider calls also exist in routes/reconciler |
 | Executor | `app/runtime/sandbox/executor_app.py` | One scoped Engine execution and callback delivery | Callback admission and durable acknowledgement need clear internal semantics |
 | Engine | `app/executors/claude_agent_sdk_runner.py` | SDK-specific model/tool loop and event normalization | SDK types must not become public protocol authority |
@@ -48,6 +48,32 @@ bridges/clients remain externally owned. Each resource phase has a cooperative
 including finite cancellation settlement, before continuing. This is not a hard
 wall-clock bound or a guarantee that a failed third-party close succeeded;
 noncooperative resource code can still delay shutdown.
+
+Worker role composition is selected by `WORKER_ROLE`: `integrated` (the default),
+`execution`, or `finalizer`. `WORKER_CONCURRENCY` retains its default of 10 queue
+execution slots; `WORKER_FINALIZER_CONCURRENCY` defaults to 2 independent receipt
+reconciliation slots. Neither setting changes admission budgets or completion
+transaction semantics. No new broker, queue or preparation-result state exists.
+
+- Execution owns queue dispatch/acknowledgement/reclaim and queue-message plus
+  durable Attempt heartbeats while dispatch is owned.
+- Finalizer owns receipt reconciliation, signal consumption, suspect probing,
+  stale/cancel recovery, failed-executor cleanup, expired sandbox leases, memory,
+  data retention and expired upload-session cleanup.
+- Integrated runs both sets. Every continuous process checks schema readiness,
+  emits its own runtime heartbeat and owns one client/runtime shutdown. The v1
+  heartbeat keeps its existing fields with additive `worker_role` metadata;
+  it reports only this process, never the readiness of a companion role. Separate
+  processes must retain separate runtime temporary directories/heartbeat files.
+
+The six worker bindings (Files, Model, Skill Markdown, Context, MCP and Agent
+Profile) are configured before schema checks and runtime task creation, including
+programmatic entrypoints. `run_forever` and `run_worker_pool` remain compatibility
+entrypoints for current tests and callers; neither owns a second task tree.
+`--once` remains a queue-execution diagnostic entrypoint with role-filtered
+maintenance and client cleanup; finalizer rejects it before claiming work.
+Default Compose topology is unchanged. A split deployment must supply both roles;
+this source change does not deploy that topology or attest to its peer health.
 
 Worker supervision observes background-task failure or unexpected exit while a
 Run is still executing. Shutdown cancels and drains owned tasks before closing
