@@ -1794,6 +1794,30 @@ alter table provider_session_heads add constraint fk_provider_head_current_epoch
 ) references provider_session_epochs(tenant_id, workspace_id, user_id, session_id, agent_id, engine, id)
   deferrable initially deferred;
 
+-- Images retain their deletion owner after a session/epoch cascade.
+create table if not exists provider_session_images (
+  id text primary key, tenant_id text not null, workspace_id text not null,
+  user_id text not null, session_id text not null, agent_id text not null,
+  epoch_id text not null, run_id text not null, attempt_id text not null,
+  owner_generation bigint not null check (owner_generation > 0),
+  storage_key text not null unique,
+  sha256 text not null check (sha256 ~ '^[0-9a-f]{64}$'),
+  size_bytes bigint not null check (size_bytes > 0 and size_bytes <= 8388608),
+  lifecycle_state text not null default 'delete_pending'
+    check (lifecycle_state in ('active', 'delete_pending', 'deleted')),
+  provisional boolean not null default true,
+  created_at timestamptz not null default now(), deleted_at timestamptz,
+  constraint chk_provider_image_provisional check (not provisional or lifecycle_state = 'delete_pending')
+);
+create index if not exists idx_provider_image_epoch on provider_session_images(epoch_id);
+create index if not exists idx_provider_image_cleanup
+  on provider_session_images(created_at, id) where lifecycle_state = 'active';
+
+alter table provider_session_epochs add column if not exists structured_bytes bigint;
+update provider_session_epochs set structured_bytes = transcript_bytes where structured_bytes is null;
+alter table provider_session_epochs alter column structured_bytes set default 0;
+alter table provider_session_epochs alter column structured_bytes set not null;
+
 create table if not exists provider_session_entries (
   id text primary key,
   tenant_id text not null, workspace_id text not null, user_id text not null,
@@ -1819,6 +1843,15 @@ create index if not exists idx_provider_entry_view
 -- alone loses scientific notation and the sign of zero. Legacy rows stay null:
 -- reconstructing original bytes from them would manufacture integrity evidence.
 alter table provider_session_entries add column if not exists entry_canonical_json json;
+alter table provider_session_entries add column if not exists image_references jsonb not null default '[]'::jsonb;
+alter table provider_session_entries add column if not exists image_format text;
+alter table provider_session_entries drop constraint if exists chk_provider_entry_images;
+alter table provider_session_entries add constraint chk_provider_entry_images check (
+  jsonb_typeof(image_references) = 'array'
+  and jsonb_array_length(image_references) <= 128
+  and ((image_references = '[]'::jsonb and image_format is null)
+    or (image_references <> '[]'::jsonb and image_format is not null and image_format = 'image-payloads-v1'))
+);
 
 create table if not exists provider_session_append_receipts (
   epoch_id text not null references provider_session_epochs(id) on delete cascade,
@@ -2633,6 +2666,7 @@ create table if not exists object_deletion_outbox (
   updated_at timestamptz not null default now(),
   unique (tenant_id, artifact_id)
 );
+alter table object_deletion_outbox add column if not exists provider_image_id text references provider_session_images(id);
 alter table object_deletion_outbox add column if not exists target_type text not null default 'artifact';
 alter table object_deletion_outbox add column if not exists file_id text references files(id);
 alter table object_deletion_outbox add column if not exists lease_generation bigint not null default 0;
@@ -2659,19 +2693,27 @@ where target_type = 'file'
 alter table object_deletion_outbox add constraint chk_object_deletion_outbox_state
   check (state in (
     'pending', 'processing', 'failed', 'dead_letter', 'deleted',
-    'file_pending', 'file_processing', 'file_failed', 'file_dead_letter', 'file_deleted'
+    'file_pending', 'file_processing', 'file_failed', 'file_dead_letter', 'file_deleted',
+    'provider_image_pending', 'provider_image_processing', 'provider_image_failed',
+    'provider_image_dead_letter', 'provider_image_deleted'
   ));
 alter table object_deletion_outbox drop constraint if exists chk_object_deletion_outbox_target;
 alter table object_deletion_outbox add constraint chk_object_deletion_outbox_target
   check (
-    (target_type = 'artifact' and artifact_id is not null and file_id is null)
-    or (target_type = 'file' and artifact_id is null and file_id is not null)
+    (target_type = 'artifact' and artifact_id is not null and file_id is null and provider_image_id is null)
+    or (target_type = 'file' and artifact_id is null and file_id is not null and provider_image_id is null)
+    or (target_type = 'provider_image' and artifact_id is null and file_id is null and provider_image_id is not null)
   );
 alter table object_deletion_outbox add constraint chk_object_deletion_outbox_target_state
   check (
     (
       target_type = 'artifact'
       and state in ('pending', 'processing', 'failed', 'dead_letter', 'deleted')
+    )
+    or (
+      target_type = 'provider_image'
+      and state in ('provider_image_pending', 'provider_image_processing', 'provider_image_failed',
+                    'provider_image_dead_letter', 'provider_image_deleted')
     )
     or (
       target_type = 'file'

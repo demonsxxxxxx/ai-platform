@@ -16,7 +16,16 @@ from app.context.domain.conversation_authority import (
     initial_source_digest,
     validate_authority_receipt,
 )
+from app.context.domain.provider_media import (
+    PROVIDER_MEDIA_FORMAT, ProviderMediaTransfer, ProviderMediaProjection, restore_provider_images,
+)
+from app.context.infrastructure.provider_images import (
+    reserve_provider_images, promote_provider_images, queue_provider_images_for_deletion,
+)
 from app.context.domain.provider_sessions import (
+    MAX_PROVIDER_SESSION_STRUCTURED_ENTRY_BYTES,
+    MAX_PROVIDER_SESSION_STRUCTURED_TRANSCRIPT_BYTES,
+    provider_entry_json_bytes,
     MAX_PROVIDER_SESSION_ENTRIES,
     MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES,
     ProviderSessionConflictError,
@@ -269,11 +278,19 @@ async def _locked_callback_epoch(
     except (ValueError, TypeError, AttributeError) as exc:
         raise ProviderSessionConflictError("provider_session_identity_mismatch") from exc
     values = _scope_values(scope)
+    # Serialize deletion with both phases; a deleted session cannot gain new images.
+    cursor = await conn.execute(
+        "select status from sessions where tenant_id = %s and id = %s for update",
+        (scope.tenant_id, scope.session_id),
+    )
+    session = await cursor.fetchone()
+    if session is None or session["status"] != "active":
+        raise ProviderSessionConflictError("provider_session_epoch_unavailable")
     cursor = await conn.execute(
         """
         select head.current_epoch_id, head.active_run_id, head.active_attempt_id,
                epoch.id, epoch.provider_session_id, epoch.state, epoch.next_sequence,
-               epoch.entry_count, epoch.transcript_bytes, epoch.coverage_source_sha256,
+               epoch.entry_count, epoch.transcript_bytes, epoch.structured_bytes, epoch.coverage_source_sha256,
                epoch.writer_run_id, epoch.writer_attempt_id, epoch.writer_owner_generation
         from provider_session_heads head
         join provider_session_epochs epoch on epoch.tenant_id = head.tenant_id
@@ -394,21 +411,93 @@ async def _locked_callback_epoch(
     return dict(epoch), dict(attempt), private
 
 
+async def _matching_append_receipt(conn, *, epoch, expected_sequence, digest, count,
+                                   run_id, attempt_id, owner_generation):
+    if type(expected_sequence) is not int or expected_sequence < 1:
+        raise ProviderSessionConflictError("provider_session_append_sequence_invalid")
+    if expected_sequence == epoch["next_sequence"]:
+        return None
+    cursor = await conn.execute(
+        "select batch_sha256, entry_count, last_sequence, run_id, attempt_id, owner_generation "
+        "from provider_session_append_receipts where epoch_id = %s and expected_sequence = %s",
+        (epoch["id"], expected_sequence),
+    )
+    previous = await cursor.fetchone()
+    if previous is None or (
+        previous["batch_sha256"], previous["entry_count"], previous["run_id"],
+        previous["attempt_id"], previous["owner_generation"]
+    ) != (digest, count, run_id, attempt_id, owner_generation):
+        raise ProviderSessionConflictError("provider_session_append_conflict")
+    return previous
+
+
+def _check_append_capacity(epoch, *, count, batch_bytes, structured_bytes):
+    if (epoch["entry_count"] + count > MAX_PROVIDER_SESSION_ENTRIES
+        or epoch["transcript_bytes"] + batch_bytes > MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES
+        or epoch["structured_bytes"] + structured_bytes > MAX_PROVIDER_SESSION_STRUCTURED_TRANSCRIPT_BYTES):
+        raise ProviderSessionConflictError("provider_session_transcript_too_large")
+
+
+async def prepare_callback_media(
+    conn: AsyncConnection, *, projection: ProviderMediaProjection | None,
+    tenant_id: str, workspace_id: str, user_id: str, session_id: str, agent_id: str,
+    run_id: str, attempt_id: str, provider_session_id: str, action: str,
+    entries: list[dict], subpath: str | None, expected_sequence: int | None,
+) -> ProviderMediaTransfer:
+    scope = ProviderSessionScope(tenant_id, workspace_id, user_id, session_id, agent_id)
+    epoch, attempt, _private = await _locked_callback_epoch(
+        conn, scope=scope, run_id=run_id, attempt_id=attempt_id,
+        provider_session_id=provider_session_id, allow_cancel_tail=action == "append",
+    )
+    if action == "append":
+        batch, batch_bytes = normalize_provider_entry_batch(entries, subpath=subpath)
+        digest = batch_digest(normalize_provider_subpath(subpath), [item.entry for item in batch])
+        previous = await _matching_append_receipt(
+            conn, epoch=epoch, expected_sequence=expected_sequence, digest=digest, count=len(batch),
+            run_id=run_id, attempt_id=attempt_id, owner_generation=attempt["owner_generation"],
+        )
+        if previous is not None:
+            return ProviderMediaTransfer(epoch["id"], epoch["next_sequence"], attempt["owner_generation"], [])
+        if projection is None:
+            raise ProviderSessionConflictError("provider_session_integrity_mismatch")
+        _check_append_capacity(epoch, count=len(batch), batch_bytes=batch_bytes,
+                               structured_bytes=sum(provider_entry_json_bytes(entry) for entry in projection.entries))
+    return await reserve_provider_images(
+        conn, scope=scope, epoch=epoch, attempt=attempt, run_id=run_id,
+        attempt_id=attempt_id, projection=projection,
+    )
+
+
 async def callback_provider_epoch(
     conn: AsyncConnection, *, tenant_id: str, workspace_id: str, user_id: str,
     session_id: str, agent_id: str, run_id: str, attempt_id: str,
     provider_session_id: str, action: str, subpath: str | None,
     entries: list[dict[str, Any]], expected_sequence: int | None,
     include_child_entries: bool = False,
+    media: ProviderMediaTransfer | None = None,
 ) -> dict[str, Any]:
     scope = ProviderSessionScope(tenant_id, workspace_id, user_id, session_id, agent_id)
     epoch, attempt, private = await _locked_callback_epoch(
         conn, scope=scope, run_id=run_id, attempt_id=attempt_id,
         provider_session_id=provider_session_id, allow_cancel_tail=action == "append",
     )
+    if media is not None and (
+        not media.completed or media.epoch_id != epoch["id"]
+        or media.owner_generation != attempt["owner_generation"]
+        or (action != "append" and media.next_sequence != epoch["next_sequence"])
+    ):
+        raise ProviderSessionConflictError("provider_session_image_snapshot_conflict")
     path = normalize_provider_subpath(subpath) or ""
     if action in {"load", "list_subkeys"}:
-        rows = await _verified_provider_entries(conn, epoch=epoch)
+        if media is not None:
+            current = await reserve_provider_images(
+                conn, scope=scope, epoch=epoch, attempt=attempt, run_id=run_id,
+                attempt_id=attempt_id, projection=None,
+            )
+            if ({obj["id"]: obj for obj in current.objects}
+                != {obj["id"]: obj for obj in media.objects}):
+                raise ProviderSessionConflictError("provider_session_image_snapshot_conflict")
+        rows = await _verified_provider_entries(conn, epoch=epoch, media=media)
         if action == "list_subkeys":
             result = {"action": action,
                       "subpaths": sorted({row["subpath"] for row in rows if row["subpath"]}),
@@ -430,32 +519,43 @@ async def callback_provider_epoch(
         digest = batch_digest(path, [item.entry for item in batch])
     except ValueError as exc:
         raise ProviderSessionConflictError(str(exc)) from exc
-    if expected_sequence != epoch["next_sequence"]:
-        cursor = await conn.execute(
-            "select batch_sha256, entry_count, last_sequence, run_id, attempt_id, owner_generation from provider_session_append_receipts where epoch_id = %s and expected_sequence = %s",
-            (epoch["id"], expected_sequence),
-        )
-        previous = await cursor.fetchone()
-        if previous is None or (
-            previous["batch_sha256"], previous["entry_count"], previous["run_id"],
-            previous["attempt_id"], previous["owner_generation"]
-        ) != (digest, len(batch), run_id, attempt_id, attempt["owner_generation"]):
-            raise ProviderSessionConflictError("provider_session_append_conflict")
+    previous = await _matching_append_receipt(
+        conn, epoch=epoch, expected_sequence=expected_sequence, digest=digest, count=len(batch),
+        run_id=run_id, attempt_id=attempt_id, owner_generation=attempt["owner_generation"],
+    )
+    if previous is not None:
         return {"action": action, "entry_count": len(batch), "last_sequence": previous["last_sequence"],
                 "next_sequence": epoch["next_sequence"]}
-    if (epoch["entry_count"] + len(batch) > MAX_PROVIDER_SESSION_ENTRIES
-        or epoch["transcript_bytes"] + batch_bytes > MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES):
-        raise ProviderSessionConflictError("provider_session_transcript_too_large")
+    projection = media.projection if media is not None else None
+    stored_entries = projection.entries if projection is not None else [item.entry for item in batch]
+    references = projection.references if projection is not None else [[] for _ in batch]
+    if len(stored_entries) != len(batch) or len(references) != len(batch):
+        raise ProviderSessionConflictError("provider_session_integrity_mismatch")
+    structured_bytes = 0
+    for entry, refs, original in zip(stored_entries, references, batch, strict=True):
+        restored = restore_provider_images(entry, refs, values=media.values if media else {})
+        if _canonical(restored) != _canonical(original.entry):
+            raise ProviderSessionConflictError("provider_session_integrity_mismatch")
+        size = provider_entry_json_bytes(entry)
+        if size > MAX_PROVIDER_SESSION_STRUCTURED_ENTRY_BYTES:
+            raise ProviderSessionConflictError("provider_session_entry_too_large")
+        structured_bytes += size
+    _check_append_capacity(epoch, count=len(batch), batch_bytes=batch_bytes, structured_bytes=structured_bytes)
+    if media is not None:
+        await promote_provider_images(conn, transfer=media, scope=scope, run_id=run_id, attempt_id=attempt_id)
     for offset, item in enumerate(batch):
-        canonical = _canonical(item.entry).decode("utf-8")
+        canonical = _canonical(stored_entries[offset]).decode("utf-8")
+        refs = references[offset]
         await conn.execute(
             """
             insert into provider_session_entries (
               id, tenant_id, workspace_id, user_id, session_id, agent_id, engine,
-              epoch_id, subpath, sequence, sdk_entry_uuid, entry_json, entry_canonical_json
-            ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::json)
+              epoch_id, subpath, sequence, sdk_entry_uuid, entry_json, entry_canonical_json,
+              image_references, image_format
+            ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::json, %s::jsonb, %s)
             """, (f"pse_{uuid.uuid4().hex}", *_scope_values(scope), epoch["id"], path,
-                  expected_sequence + offset, item.sdk_entry_uuid, canonical, canonical),
+                  expected_sequence + offset, item.sdk_entry_uuid, canonical, canonical,
+                  json.dumps(refs), PROVIDER_MEDIA_FORMAT if refs else None),
         )
     last = expected_sequence + len(batch) - 1
     await conn.execute(
@@ -470,15 +570,16 @@ async def callback_provider_epoch(
     await conn.execute(
         """
         update provider_session_epochs set next_sequence = %s, entry_count = entry_count + %s,
-          transcript_bytes = transcript_bytes + %s, updated_at = now() where id = %s
-        """, (last + 1, len(batch), batch_bytes, epoch["id"]),
+          transcript_bytes = transcript_bytes + %s, structured_bytes = structured_bytes + %s,
+          updated_at = now() where id = %s
+        """, (last + 1, len(batch), batch_bytes, structured_bytes, epoch["id"]),
     )
     return {"action": action, "entry_count": len(batch), "last_sequence": last,
             "next_sequence": last + 1}
 
 
 async def _verified_provider_entries(
-    conn: AsyncConnection, *, epoch: Mapping[str, Any],
+    conn: AsyncConnection, *, epoch: Mapping[str, Any], media: ProviderMediaTransfer | None = None,
 ) -> list[dict[str, Any]]:
     """Verify the native transcript being restored against existing append receipts.
 
@@ -488,7 +589,7 @@ async def _verified_provider_entries(
     receipt is invented from potentially incomplete history.
     """
     cursor = await conn.execute(
-        "select sequence, subpath, entry_json, entry_canonical_json::text as entry_canonical_json, "
+        "select sequence, subpath, entry_json, image_references, image_format, entry_canonical_json::text as entry_canonical_json, "
         "(entry_canonical_json is null or entry_canonical_json::jsonb = entry_json) as canonical_matches "
         "from provider_session_entries "
         "where epoch_id = %s order by sequence asc limit %s",
@@ -513,6 +614,7 @@ async def _verified_provider_entries(
     receipts = list(await cursor.fetchall())
     expected = 1
     total_bytes = 0
+    structured_bytes = 0
     try:
         for receipt in receipts:
             count = receipt.get("entry_count")
@@ -541,6 +643,12 @@ async def _verified_provider_entries(
                     if (row.get("canonical_matches") is not True
                         or _canonical(entry).decode("utf-8") != original):
                         raise ProviderSessionConflictError("provider_session_integrity_mismatch")
+                structured_bytes += provider_entry_json_bytes(entry)
+                refs = row["image_references"]
+                if refs:
+                    if row["image_format"] != PROVIDER_MEDIA_FORMAT or original is None:
+                        raise ProviderSessionConflictError("provider_session_integrity_mismatch")
+                    entry = restore_provider_images(entry, refs, values=media.values if media else {})
                 entries.append(entry)
             batch, batch_bytes = normalize_provider_entry_batch(entries, subpath=path)
             if any(item.entry != original for item, original in zip(batch, entries)):
@@ -561,7 +669,8 @@ async def _verified_provider_entries(
         raise ProviderSessionConflictError("provider_session_integrity_mismatch") from exc
     if expected != epoch["next_sequence"]:
         raise ProviderSessionConflictError("provider_session_integrity_unavailable")
-    if type(epoch.get("transcript_bytes")) is not int or total_bytes != epoch["transcript_bytes"]:
+    if (type(epoch.get("structured_bytes")) is not int or structured_bytes != epoch["structured_bytes"]
+        or type(epoch.get("transcript_bytes")) is not int or total_bytes != epoch["transcript_bytes"]):
         raise ProviderSessionConflictError("provider_session_integrity_mismatch")
     return rows
 
@@ -591,7 +700,7 @@ async def prepare_provider_epoch(
         """
         select head.current_epoch_id, head.next_epoch_number, head.active_run_id,
                epoch.provider_session_id, epoch.state, epoch.coverage_source_sha256,
-               epoch.coverage_message_count, epoch.entry_count, epoch.transcript_bytes,
+               epoch.coverage_message_count, epoch.entry_count, epoch.transcript_bytes, epoch.structured_bytes,
                epoch.writer_run_id, epoch.writer_attempt_id, epoch.writer_owner_generation
         from provider_session_heads head
         left join provider_session_epochs epoch on epoch.id = head.current_epoch_id
@@ -631,7 +740,8 @@ async def prepare_provider_epoch(
             or head["coverage_source_sha256"] != digest
             or head["coverage_message_count"] != count
             or head["entry_count"] > MAX_PROVIDER_SESSION_ENTRIES - 128
-            or head["transcript_bytes"] > MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES - 2 * 1024 * 1024
+            or head["transcript_bytes"] > MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES - 16 * 1024 * 1024
+            or head["structured_bytes"] > MAX_PROVIDER_SESSION_STRUCTURED_TRANSCRIPT_BYTES - 2 * 1024 * 1024
         ):
             raise ProviderSessionConflictError("provider_session_requires_new_conversation")
         epoch_id = head["current_epoch_id"]
@@ -832,6 +942,8 @@ async def commit_provider_turn(
 
 
 class PostgresProviderEpochRepository:
+    prepare_callback_media = staticmethod(prepare_callback_media)
+    queue_images_for_deletion = staticmethod(queue_provider_images_for_deletion)
     callback_epoch = staticmethod(callback_provider_epoch)
     claim_lineage = staticmethod(claim_provider_lineage)
     read_coverage = staticmethod(read_provider_coverage)

@@ -13,6 +13,7 @@ from fastapi import HTTPException
 
 from app.execution.infrastructure.harness.claude.session_store import (
     MAX_PROVIDER_SESSION_RESPONSE_BYTES,
+    MAX_PROVIDER_SESSION_APPEND_ENTRY_BYTES,
     ClaudeSessionStoreAdapter,
     ClaudeSessionStoreTransportError,
 )
@@ -23,6 +24,15 @@ from app.runtime.sandbox.callback_tokens import (
     derive_callback_token,
 )
 from app.runtime.sandbox.contracts import ProviderSessionCallbackRequest
+
+
+@pytest.fixture(autouse=True)
+def no_image_io(monkeypatch):
+    """Transport tests mock Context; real media fencing is covered with PostgreSQL."""
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(runtime_callbacks.context_api, "prepare_provider_session_media", AsyncMock(return_value=None))
+    monkeypatch.setattr(runtime_callbacks.context_api, "transfer_provider_session_media", AsyncMock(return_value=None))
 
 
 class _FakeResponse:
@@ -119,7 +129,7 @@ async def test_uuidless_append_retry_after_lost_response_keeps_sequence_and_batc
 
 
 def test_session_store_response_bound_includes_transcript_envelope():
-    assert MAX_PROVIDER_SESSION_RESPONSE_BYTES == 8 * 1024 * 1024 + 64 * 1024
+    assert MAX_PROVIDER_SESSION_RESPONSE_BYTES == 64 * 1024 * 1024 + 64 * 1024
 
 
 def test_provider_session_response_legacy_import_is_canonical_transport_contract():
@@ -1237,7 +1247,8 @@ async def test_real_sdk_cached_child_cancellation_cleans_materialization(monkeyp
     materialized = tmp_path / "resume"
     materialized.mkdir()
     monkeypatch.setattr(session_resume.tempfile, "mkdtemp", lambda **_kwargs: str(materialized))
-    options = ClaudeAgentOptions(session_store=adapter, resume=session_id, cwd=str(tmp_path))
+    # The synthetic project identity need not repeat the long pytest output path.
+    options = ClaudeAgentOptions(session_store=adapter, resume=session_id, cwd=tmp_path.anchor)
     task = asyncio.create_task(session_resume.materialize_resume_session(options))
     with pytest.raises(asyncio.CancelledError):
         await task
@@ -1355,7 +1366,7 @@ async def test_append_sequence_growth_rejects_late_singleton_before_any_request(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("bad,error,subpath", [
-    ({"body": "x" * (256 * 1024)}, "entry_too_large", None),
+    ({"body": "x" * MAX_PROVIDER_SESSION_APPEND_ENTRY_BYTES}, "entry_too_large", None),
     ({"number": float("nan")}, "entry_not_json", None),
     ({"number": float("inf")}, "entry_not_json", None),
     ({"number": -float("inf")}, "entry_not_json", None),
@@ -1515,7 +1526,7 @@ async def test_only_provider_append_uses_cancelling_tail_authority(monkeypatch, 
     )
     if action == "append":
         await runtime_callbacks.provider_session_callback(callback, callback_token=derive_callback_token("secret", token_id))
-        tail.assert_awaited_once()
+        assert tail.await_count == 2  # Before I/O and before commit.
         execute.assert_awaited_once()
     else:
         with pytest.raises(HTTPException) as caught:

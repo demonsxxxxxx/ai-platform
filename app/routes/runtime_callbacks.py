@@ -598,6 +598,8 @@ _PROVIDER_SESSION_LIMIT_ERRORS = frozenset(
         "provider_session_entry_too_large",
         "provider_session_entry_batch_too_large",
         "provider_session_transcript_too_large",
+        "provider_session_image_too_large",
+        "provider_session_image_count_exceeded",
     }
 )
 _PROVIDER_SESSION_CONFLICT_ERRORS = frozenset(
@@ -611,6 +613,9 @@ _PROVIDER_SESSION_CONFLICT_ERRORS = frozenset(
         "provider_session_owner_invalid",
         "provider_session_writer_conflict",
         "provider_session_entry_conflict",
+        "provider_session_image_snapshot_conflict",
+        "provider_session_image_reservation_expired",
+        "provider_session_image_upload_pending",
     }
 )
 
@@ -709,21 +714,32 @@ async def provider_session_callback(
                 callback_token_id=callback.callback_token_id,
                 allow_provider_tail=callback.action == "append",
             )
-            result = await context_api.execute_provider_session_callback(
-                conn,
-                tenant_id=str(run_identity.get("tenant_id") or ""),
-                workspace_id=str(run_identity.get("workspace_id") or ""),
-                user_id=str(run_identity.get("user_id") or ""),
-                session_id=str(run_identity.get("session_id") or ""),
-                agent_id=str(run_identity.get("agent_id") or ""),
-                run_id=callback.run_id,
-                attempt_id=callback.attempt_id,
-                provider_session_id=callback.provider_session_id,
-                action=callback.action,
-                entries=callback.entries,
-                subpath=callback.subpath,
+            binding = {
+                "tenant_id": str(run_identity.get("tenant_id") or ""),
+                "workspace_id": str(run_identity.get("workspace_id") or ""),
+                "user_id": str(run_identity.get("user_id") or ""),
+                "session_id": str(run_identity.get("session_id") or ""),
+                "agent_id": str(run_identity.get("agent_id") or ""),
+            }
+            operation = dict(
+                **binding, run_id=callback.run_id, attempt_id=callback.attempt_id,
+                provider_session_id=callback.provider_session_id, action=callback.action,
+                entries=callback.entries, subpath=callback.subpath,
                 expected_sequence=callback.expected_sequence,
                 **({"include_child_entries": True} if include_children else {}),
+            )
+            media = await context_api.prepare_provider_session_media(conn, **operation)
+        await context_api.transfer_provider_session_media(media)
+        async with transaction() as conn:
+            final_identity, _lease = await _lock_callback_authority(
+                conn, run_id=callback.run_id, attempt_id=callback.attempt_id,
+                callback_token_id=callback.callback_token_id,
+                allow_provider_tail=callback.action == "append",
+            )
+            if any(str(final_identity.get(key) or "") != value for key, value in binding.items()):
+                raise context_api.ProviderSessionConflictError("provider_session_scope_invalid")
+            result = await context_api.execute_provider_session_callback(
+                conn, **operation, **({"media": media} if media is not None else {}),
             )
             return build_provider_session_callback_response(
                 result, include_child_entries=include_children,

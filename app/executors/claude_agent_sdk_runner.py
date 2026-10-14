@@ -14,6 +14,7 @@ from inspect import isawaitable
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
+from app.context.api import MAX_PROVIDER_SESSION_CALLBACK_RESPONSE_BYTES
 from app.context_manifest import truncate_utf8_text
 from app.bootstrap.claude_mcp import prepare_claude_mcp
 from app.context.retrieval import (
@@ -1436,7 +1437,7 @@ def _filtered_workspace_search_output(
             "numFiles": len(filtered_filenames),
             "filenames": filtered_filenames,
             "truncated": tool_response.get("truncated") is True,
-            # SDK 0.2.130 accepts these fields as optional. Recompute them from
+            # Recompute the SDK's optional count fields from
             # the visible result so private paths never survive as counts.
             "totalMatches": len(filtered_filenames),
             "countIsComplete": True,
@@ -1884,6 +1885,7 @@ async def run_claude_agent_sdk(
     except Exception as exc:
         raise ClaudeAgentSdkNotAvailable(str(exc)) from exc
 
+    main_transcript = None
     provider_session_store = track_claude_session_store(session_store)
     if provider_session_store is not None:
         provider_session_options: dict[str, Any] = {
@@ -3411,6 +3413,7 @@ async def run_claude_agent_sdk(
         can_use_tool=callback_tracker.wrap(can_use_tool),
         hooks=hooks,
         include_partial_messages=False,
+        max_buffer_size=MAX_PROVIDER_SESSION_CALLBACK_RESPONSE_BYTES,
         setting_sources=["project"],
         **provider_session_options,
         **thinking_options,
@@ -3426,7 +3429,9 @@ async def run_claude_agent_sdk(
     received_structured_terminal = False
     continuation_usage: dict[str, Any] = {}
     continuation_turns = 0
-    result_usage = prepare_claude_result_usage(session_id=session_id, prompt=sdk_prompt)
+    result_usage = prepare_claude_result_usage(
+        session_id=session_id, prompt=sdk_prompt, resumed_entries=main_transcript,
+    )
 
     def mcp_execution_conflict_observed() -> bool:
         return mcp_execution_conflicted or bool(
@@ -3581,7 +3586,7 @@ async def run_claude_agent_sdk(
                     )
                 ):
                     raise
-                # SDK 0.2.130 reports the CLI's intentional nonzero exit as an
+                # The SDK reports the CLI's intentional nonzero exit as an
                 # error frame before final flush/EOF. Retain the error Result
                 # and drain the public stream's remainder to that same EOF.
                 terminal_stream_error = exc

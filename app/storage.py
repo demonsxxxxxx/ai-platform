@@ -146,6 +146,10 @@ class ObjectStorage:
             config=Config(signature_version="s3v4"),
         )
 
+    def close(self) -> None:
+        """Release client connections after all operations on this instance finish."""
+        self.client.close()
+
     def ensure_bucket(self) -> None:
         # This client/configuration lives for one storage instance. Cache only a
         # successful confirmation, never permission errors or creation conflicts.

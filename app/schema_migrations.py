@@ -45,10 +45,11 @@ ASSISTANT_TEXT_PART_INDEX_SCHEMA_VERSION = "2026.10.09.1"
 PROVIDER_TRANSCRIPT_REPRESENTATION_SCHEMA_VERSION = "2026.10.10.1"
 RUN_QUESTION_DEFAULT_ANSWER_SCHEMA_VERSION = "2026.10.12.1"
 TERMINAL_RECONCILIATION_RETRY_SCHEMA_VERSION = "2026.10.13.1"
-TARGET_SCHEMA_VERSION = TERMINAL_RECONCILIATION_RETRY_SCHEMA_VERSION
+PROVIDER_SESSION_IMAGES_SCHEMA_VERSION = "2026.10.14.1"
+TARGET_SCHEMA_VERSION = PROVIDER_SESSION_IMAGES_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
 # The Stream-only cutover retires old index contracts and is not binary rollback-compatible.
-CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = TERMINAL_RECONCILIATION_RETRY_SCHEMA_VERSION
+CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = PROVIDER_SESSION_IMAGES_SCHEMA_VERSION
 RUN_ATTEMPT_FUTURE_HEARTBEAT_TOLERANCE_SECONDS = 5
 MIGRATION_LOCK_ID = 7_226_391_831_505_901_103
 INDEX_MIGRATION_LOCK_ID = 7_226_391_831_505_901_104
@@ -81,6 +82,7 @@ CRITICAL_RELATIONS = (
     "provider_session_heads",
     "provider_session_epochs",
     "provider_session_entries",
+    "provider_session_images",
     "provider_session_append_receipts",
     "provider_turn_receipts",
     "conversation_context_checkpoints",
@@ -186,6 +188,7 @@ CRITICAL_COLUMNS = (
     ("object_deletion_outbox", "target_type", "text", True),
     ("object_deletion_outbox", "artifact_id", "text", False),
     ("object_deletion_outbox", "file_id", "text", False),
+    ("object_deletion_outbox", "provider_image_id", "text", False),
     ("object_deletion_outbox", "state", "text", True),
     ("object_deletion_outbox", "lease_generation", "int8", True),
     ("object_deletion_outbox", "dead_letter_at", "timestamptz", False),
@@ -256,6 +259,7 @@ CRITICAL_COLUMNS = (
     ("provider_session_epochs", "session_id", "text", True),
     ("provider_session_epochs", "provider_session_id", "uuid", True),
     ("provider_session_epochs", "next_sequence", "int8", True),
+    ("provider_session_epochs", "structured_bytes", "int8", True),
     ("provider_session_epochs", "state", "text", True),
     ("provider_session_epochs", "coverage_source_sha256", "text", False),
     ("provider_session_epochs", "writer_owner_generation", "int8", False),
@@ -272,6 +276,23 @@ CRITICAL_COLUMNS = (
     ("provider_session_entries", "sdk_entry_uuid", "text", False),
     ("provider_session_entries", "entry_json", "jsonb", True),
     ("provider_session_entries", "entry_canonical_json", "json", False),
+    ("provider_session_entries", "image_references", "jsonb", True),
+    ("provider_session_entries", "image_format", "text", False),
+    ("provider_session_images", "id", "text", True),
+    ("provider_session_images", "tenant_id", "text", True),
+    ("provider_session_images", "workspace_id", "text", True),
+    ("provider_session_images", "user_id", "text", True),
+    ("provider_session_images", "session_id", "text", True),
+    ("provider_session_images", "agent_id", "text", True),
+    ("provider_session_images", "epoch_id", "text", True),
+    ("provider_session_images", "run_id", "text", True),
+    ("provider_session_images", "attempt_id", "text", True),
+    ("provider_session_images", "storage_key", "text", True),
+    ("provider_session_images", "sha256", "text", True),
+    ("provider_session_images", "lifecycle_state", "text", True),
+    ("provider_session_images", "owner_generation", "int8", True),
+    ("provider_session_images", "size_bytes", "int8", True),
+    ("provider_session_images", "provisional", "bool", True),
     ("provider_session_entries", "created_at", "timestamptz", True),
     ("provider_session_append_receipts", "epoch_id", "text", True),
     ("provider_session_append_receipts", "expected_sequence", "int8", True),
@@ -282,6 +303,11 @@ CRITICAL_COLUMNS = (
     ("provider_turn_receipts", "committed_coverage_sha256", "text", False),
 )
 CRITICAL_CONSTRAINTS = (
+    ("provider_session_entries", "chk_provider_entry_images"),
+    ("provider_session_images", "provider_session_images_pkey"),
+    ("provider_session_images", "provider_session_images_storage_key_key"),
+    ("provider_session_images", "chk_provider_image_provisional"),
+    ("object_deletion_outbox", "object_deletion_outbox_provider_image_id_fkey"),
     ("users", "chk_users_metadata_json_object"),
     ("runs", "fk_runs_model_gateway_revision"),
     ("runs", "chk_runs_model_token_limits"),
@@ -660,7 +686,8 @@ CRITICAL_CONSTRAINT_DEFINITIONS = (
         "'pending'::text, 'processing'::text, 'failed'::text, "
         "'dead_letter'::text, 'deleted'::text, 'file_pending'::text, "
         "'file_processing'::text, 'file_failed'::text, 'file_dead_letter'::text, "
-        "'file_deleted'::text]))",
+        "'file_deleted'::text, 'provider_image_pending'::text, 'provider_image_processing'::text, "
+        "'provider_image_failed'::text, 'provider_image_dead_letter'::text, 'provider_image_deleted'::text]))",
     ),
     (
         "object_deletion_outbox",
@@ -668,7 +695,10 @@ CRITICAL_CONSTRAINT_DEFINITIONS = (
         "c",
         "CHECK (target_type = 'artifact'::text AND (state = ANY (ARRAY["
         "'pending'::text, 'processing'::text, 'failed'::text, 'dead_letter'::text, "
-        "'deleted'::text])) OR target_type = 'file'::text AND (state = ANY (ARRAY["
+        "'deleted'::text])) OR target_type = 'provider_image'::text AND (state = ANY (ARRAY["
+        "'provider_image_pending'::text, 'provider_image_processing'::text, 'provider_image_failed'::text, "
+        "'provider_image_dead_letter'::text, 'provider_image_deleted'::text])) "
+        "OR target_type = 'file'::text AND (state = ANY (ARRAY["
         "'file_pending'::text, 'file_processing'::text, 'file_failed'::text, "
         "'file_dead_letter'::text, 'file_deleted'::text])))",
     ),
@@ -677,8 +707,11 @@ CRITICAL_CONSTRAINT_DEFINITIONS = (
         "chk_object_deletion_outbox_target",
         "c",
         "CHECK (target_type = 'artifact'::text AND artifact_id IS NOT NULL "
-        "AND file_id IS NULL OR target_type = 'file'::text AND artifact_id IS NULL "
-        "AND file_id IS NOT NULL)",
+        "AND file_id IS NULL AND provider_image_id IS NULL "
+        "OR target_type = 'file'::text AND artifact_id IS NULL "
+        "AND file_id IS NOT NULL AND provider_image_id IS NULL "
+        "OR target_type = 'provider_image'::text AND artifact_id IS NULL AND file_id IS NULL "
+        "AND provider_image_id IS NOT NULL)",
     ),
     (
         "object_deletion_outbox",
@@ -739,6 +772,21 @@ class StaticIndexDefinition:
 
 
 CONCURRENT_INDEX_MIGRATIONS = (
+    ConcurrentIndexMigration(
+        "idx_object_deletion_provider_image_claim",
+        "create index concurrently if not exists idx_object_deletion_provider_image_claim "
+        "on object_deletion_outbox(state, available_at, created_at, id) "
+        "where target_type = 'provider_image'",
+        "object_deletion_outbox", ("state", "available_at", "created_at", "id"),
+        (False, False, False, False), "target_type = 'provider_image'",
+    ),
+    ConcurrentIndexMigration(
+        "uq_object_deletion_provider_image",
+        "create unique index concurrently if not exists uq_object_deletion_provider_image "
+        "on object_deletion_outbox(tenant_id, provider_image_id) where provider_image_id is not null",
+        "object_deletion_outbox", ("tenant_id", "provider_image_id"),
+        (False, False), "provider_image_id is not null", unique=True,
+    ),
     ConcurrentIndexMigration(
         'idx_run_events_v4_message_facts',
         "create index concurrently if not exists idx_run_events_v4_message_facts "
