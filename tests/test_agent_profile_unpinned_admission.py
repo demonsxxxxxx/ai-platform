@@ -9,11 +9,11 @@ import pytest
 from fastapi import HTTPException
 
 from app.agent_apps.api import (
-    AgentProfileAuthority,
     agent_type_requires_profile_admission,
     locked_agent_profile_identity_valid,
     resolve_session_profile_admission_identity,
 )
+from app.agent_apps.authority import AgentProfileAuthority
 from app.auth import AuthPrincipal
 from app.models import ChatSessionRequest, ChatStreamRequest, CreateRunRequest
 from app.routes import chat as chat_routes
@@ -92,7 +92,7 @@ async def test_generic_chat_rejects_unpinned_profile_identity_before_files_or_ru
     monkeypatch.setattr(chat_routes.runs_capability_admission, "authorize_selected_run_capabilities", AsyncMock(return_value={
         "agent_id": "agt-restricted", "agent_type": "profile", "skill_id": "independent-skill",
     }))
-    monkeypatch.setattr(chat_routes, "_persist_pre_persistence_rejection", AsyncMock())
+    monkeypatch.setattr(chat_routes, "_persist_pre_persistence_rejection", AsyncMock(return_value=None))
     file_selection, create_run = forbidden_write(), forbidden_write()
     monkeypatch.setattr(chat_routes, "select_authorized_run_file_snapshot", file_selection)
     monkeypatch.setattr(chat_routes.conversations_postgres, "create_session", forbidden_write())
