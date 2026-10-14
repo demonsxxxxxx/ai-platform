@@ -260,7 +260,12 @@ def test_release_environment_reference_does_not_claim_configured_approval():
     assert "`packaging-publish`" in runbook
     assert "Recheck the actual environment settings" in runbook
     assert "including protection rules and deployment branch policy" in runbook
-    assert "verify Backend and Frontend checks for the selected exact main commit" in runbook
+    assert (
+        "Formal publication verifies existing Backend and Frontend success "
+        "for the selected exact main commit automatically"
+    ) in runbook
+    assert "environment selection is not evidence of that check" in runbook
+    assert "qualification does not rerun the test workflows" in runbook
     assert "Publication is protected by" not in runbook
     assert "selects the named environment" in runbook
     assert "main-source, environment," not in runbook
