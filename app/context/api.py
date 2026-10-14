@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import secrets
 
+from app.context.application.snapshot_recording import (
+    ContextSnapshotRecorder as ContextSnapshotRecorder,
+)
+
 from app.context.domain.conversation_authority import (
     make_authority_receipt as make_authority_receipt,
     validate_authority_receipt as validate_authority_receipt,
@@ -225,6 +229,7 @@ async def materialize_worker_context_snapshot(
     return result
 
 __all__ = [
+    "ContextSnapshotRecorder",
     "CONTEXT_FILE_ERROR_CODES",
     "CONTEXT_FILE_FAILURE_SCHEMA_VERSION",
     "ContextFileContentError",
