@@ -86,8 +86,6 @@ from app.models import (
     SelectedSkillRequest,
 )
 from app.persistence import chat_submissions as persistence_chat_submissions
-from app.runs.api import RunDiagnosticsService
-from app.runs.transport.browser_latency import BrowserRunLatencyInput
 from app.platform.postgres import errors as platform_errors
 from app.platform.postgres import values as platform_values
 from app.platform.postgres.errors import (
@@ -200,12 +198,7 @@ class _ChatSubmissionNoStoreRoute(APIRoute):
             except HTTPException as exc:
                 response = await http_exception_handler(request, exc)
             except RequestValidationError as exc:
-                # Browser observations never echo rejected fields or values.
-                response = (
-                    JSONResponse({"detail": "invalid_browser_latency"}, status_code=422)
-                    if self.name == "record_chat_submission_latency"
-                    else await request_validation_exception_handler(request, exc)
-                )
+                response = await request_validation_exception_handler(request, exc)
             except Exception as exc:
                 diagnostic_id = _new_submission_diagnostic_id()
                 _log_safe_submission_exception(
@@ -1575,7 +1568,6 @@ async def chat_stream(
                     tenant_id=principal.tenant_id,
                     tool_ids=runs_capability_admission.extract_run_mcp_tool_ids(run_input),
                     principal_department_id=principal.department_id,
-                    principal_department_ids=principal.department_ids,
                     principal_roles=principal.roles,
                     is_admin=is_ai_admin(principal),
                     permissions=principal.permissions,
@@ -1623,7 +1615,6 @@ async def chat_stream(
                         tenant_id=principal.tenant_id,
                         actor_user_id=principal.user_id,
                         department_id=principal.department_id,
-                        department_ids=principal.department_ids,
                         roles=principal.roles,
                         is_admin=is_ai_admin(principal),
                         permissions=principal.permissions,
@@ -1704,7 +1695,6 @@ async def chat_stream(
                     "skill_id": resolved_skill_id,
                     "normalized_input": run_input,
                     "principal_department_id": principal.department_id,
-                    "principal_department_ids": principal.department_ids,
                     "principal_roles": principal.roles,
                     "is_admin": is_ai_admin(principal),
                     "permissions": principal.permissions,
@@ -1802,7 +1792,7 @@ async def chat_stream(
                     rollout_key=principal.user_id,
                     mcp_tool_ids_for_skill=runs_capability_admission.run_mcp_tool_ids_for_skill,
                     conflict_error=RepositoryConflictError,
-                    department_id=principal.department_id, department_ids=principal.department_ids, roles=principal.roles, permissions=principal.permissions,
+                    department_id=principal.department_id, roles=principal.roles, permissions=principal.permissions,
                 )
             elif admitted_agent_profile is not None:
                 skill_version, release_decision_payload, skill_manifests = None, {}, []
@@ -1815,7 +1805,7 @@ async def chat_stream(
                     input_payload=run_input,
                     tenant_id=principal.tenant_id,
                     rollout_key=principal.user_id,
-                    department_id=principal.department_id, department_ids=principal.department_ids, roles=principal.roles, permissions=principal.permissions,
+                    department_id=principal.department_id, roles=principal.roles, permissions=principal.permissions,
                 )
                 skill_manifests = admission.skill_manifests
                 skill_version = admission.skill_version
@@ -2334,37 +2324,6 @@ async def retry_chat_submission_admission(
         raise HTTPException(status_code=exc.status_code, detail=exc.detail, headers=headers) from exc
 
 
-async def record_chat_submission_latency(
-    submission_id: UUID,
-    observation: BrowserRunLatencyInput,
-    request: Request,
-    response: Response,
-    principal: AuthPrincipal = Depends(require_principal),
-) -> dict[str, bool]:
-    """Store one client-reported DOM observation under its admitted Run only."""
-    response.headers["Cache-Control"] = _CHAT_SUBMISSION_RESOLUTION_CACHE_CONTROL
-    resolved = await _resolve_chat_submission(principal=principal, submission_id=str(submission_id))
-    run_id = resolved.outcome.run_id if resolved and resolved.outcome and resolved.run_status else None
-    if run_id is None or run_id != observation.run_id:
-        raise HTTPException(status_code=404, detail="chat_submission_not_found")
-    diagnostics = getattr(request.app.state, "run_diagnostics_service", None)
-    if not isinstance(diagnostics, RunDiagnosticsService):
-        raise RuntimeError("run_diagnostics_service_unavailable")
-    async with transaction() as conn:
-        await diagnostics.record_browser_latency(
-            conn, tenant_id=principal.tenant_id, run_id=run_id,
-            duration_ms=observation.duration_ms,
-        )
-    return {"recorded": True}
-
-
-router.add_api_route(
-    "/chat/submissions/{submission_id}/latency",
-    record_chat_submission_latency,
-    methods=["POST"],
-    response_model=dict[str, bool],
-    route_class_override=_ChatSubmissionNoStoreRoute,
-)
 router.add_api_route(
     "/chat/submissions/{submission_id}",
     get_chat_submission,

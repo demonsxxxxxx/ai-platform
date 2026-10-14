@@ -92,7 +92,8 @@ def test_investigation_missing_run_is_tenant_scoped(monitor_client):
 
 
 @pytest.mark.parametrize("case", ["valid", "missing-submission", "missing-run", "wrong-run"])
-def test_browser_latency_uses_principal_submission_and_authorized_outcome(monitor_client, monkeypatch, case):
+@pytest.mark.parametrize("prefix", ["/api/ai", "/api"])
+def test_browser_latency_uses_principal_submission_and_authorized_outcome(monitor_client, monkeypatch, case, prefix):
     client, diagnostics = monitor_client
     scopes = []
     async def get_submission(conn, **kwargs):
@@ -106,7 +107,7 @@ def test_browser_latency_uses_principal_submission_and_authorized_outcome(monito
         return None if case == "missing-run" else {"status": "running"}
     monkeypatch.setattr("app.routes.chat.persistence_chat_submissions.get_chat_submission", get_submission)
     monkeypatch.setattr("app.routes.chat.runs_creation.get_authorized_run", get_run)
-    response = client.post(f"/api/ai/chat/submissions/{SUBMISSION}/latency", headers=headers("user"), json={
+    response = client.post(f"{prefix}/chat/submissions/{SUBMISSION}/latency", headers=headers("user"), json={
         "run_id": "run-other" if case == "wrong-run" else "run-a", "duration_ms": 1200,
     })
     assert response.headers["cache-control"] == "private, no-store"
@@ -118,6 +119,26 @@ def test_browser_latency_uses_principal_submission_and_authorized_outcome(monito
         assert diagnostics.calls == [{"tenant_id": "default", "run_id": "run-a", "duration_ms": 1200}]
     else:
         assert response.status_code == 404 and diagnostics.calls == []
+
+
+def test_browser_latency_storage_failure_stays_masked_and_no_store(monitor_client, monkeypatch):
+    from types import SimpleNamespace
+    client, diagnostics = monitor_client
+    async def resolve(**kwargs):
+        return SimpleNamespace(outcome=SimpleNamespace(run_id="run-a"), run_status="running")
+    async def fail(*args, **kwargs):
+        raise ValueError("PRIVATE_STORAGE_MARKER")
+    monkeypatch.setattr("app.routes.chat._resolve_chat_submission", resolve)
+    monkeypatch.setattr(RecordingDiagnostics, "record_browser_latency", fail)
+    # A new app binds the current resolver into the transport builder.
+    app = create_app()
+    app.state.run_diagnostics_service = diagnostics
+    with_client = TestClient(app)
+    response = with_client.post(f"/api/chat/submissions/{SUBMISSION}/latency", headers=headers("user"), json={"run_id": "run-a", "duration_ms": 1200})
+    assert response.status_code == 500 and response.headers["cache-control"] == "private, no-store"
+    assert response.json()["detail"]["code"] == "chat_submission_internal_error"
+    assert "PRIVATE_STORAGE_MARKER" not in response.text
+    with_client.close()
 
 
 @pytest.mark.parametrize("body", [

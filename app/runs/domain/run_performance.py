@@ -11,7 +11,6 @@ from app.runs.domain.diagnostics import (
     serialize_run_diagnostics_payload,
     sanitize_run_diagnostic_text,
 )
-from app.streaming.api import V4_METADATA_KEY
 
 BROWSER_LATENCY_MEASUREMENT = "browser_dom_commit.v1"
 BROWSER_LATENCY_MAX_MS = 24 * 60 * 60 * 1_000
@@ -185,15 +184,13 @@ def build_run_investigation(
         event_type = event.get("type", event.get("event_type"))
         payload = event.get("payload", event.get("payload_json"))
         payload = payload if isinstance(payload, Mapping) else {}
-        metadata = payload.get(V4_METADATA_KEY)
-        metadata = metadata if isinstance(metadata, Mapping) else {}
-        attempt_id = metadata.get("attempt_id")
+        attempt_id = event.get("attempt_id")
         if isinstance(attempt_id, str) and attempt_id and attempt_id not in owned_attempts:
             unbound_event_count += 1
             continue
         attempt_id = attempt_id if isinstance(attempt_id, str) and attempt_id in owned_attempts else None
         event_id = str(event.get("event_id", event.get("id")) or "") or None
-        cause = metadata.get("causation_event_id")
+        cause = event.get("causation_event_id")
         cause = cause if isinstance(cause, str) else None
         recorded_at = event.get("created_at")
         duration = payload.get("duration_ms")

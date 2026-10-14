@@ -1,5 +1,8 @@
 """Public in-process contracts owned by the Runs bounded context."""
 
+from app.runs.transport.browser_latency import (
+    BrowserRunLatencyInput as BrowserRunLatencyInput,
+)
 from app.runs.application.admin_run_monitor import (
     build_admin_worker_execution as build_admin_worker_execution,
 )

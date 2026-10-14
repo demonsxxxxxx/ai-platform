@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Protocol
 
+from app.streaming.api import V4_METADATA_KEY
 from app.runs.domain.run_performance import (
     BROWSER_LATENCY_MEASUREMENT,
     BROWSER_LATENCY_MAX_MS,
@@ -374,8 +376,14 @@ class RunDiagnosticsService:
         payload = diagnostic.get("payload_json") if isinstance(diagnostic, dict) else None
         browser = payload.get("browser_latency") if isinstance(payload, dict) else None
         evidence = await self.persistence.get_admin_investigation_events(conn, tenant_id=tenant_id, run_id=run_id)
+        events = []
+        for row in evidence["events"]:
+            payload = row.get("payload", row.get("payload_json"))
+            metadata = payload.get(V4_METADATA_KEY) if isinstance(payload, Mapping) else None
+            metadata = metadata if isinstance(metadata, Mapping) else {}
+            events.append({**row, "attempt_id": metadata.get("attempt_id"), "causation_event_id": metadata.get("causation_event_id")})
         investigation = build_run_investigation(
-            run, evidence["events"], attempts=snapshot.get("attempts", []),
+            run, events, attempts=snapshot.get("attempts", []),
             browser_measurement=browser, first_text_at=evidence.get("first_public_text_at"),
             observed_at=self.clock(),
         )

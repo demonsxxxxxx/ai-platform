@@ -39,10 +39,10 @@ def browser(duration=2500, **changes):
 def event(kind, second, *, attempt="attempt-a", operation="op-a", **payload):
     return {
         "event_id": f"event-{kind}-{second}-{attempt}", "type": kind,
+        "attempt_id": attempt, "causation_event_id": None,
         "created_at": NOW + timedelta(seconds=second), "visible_to_user": True,
         "payload": {
             "operation_id": operation, "display_name": "文件读取", **payload,
-            "__stream_v4": {"attempt_id": attempt},
         },
     }
 
@@ -189,6 +189,25 @@ def service(persistence):
         persistence=persistence, normalize_runtime_diagnostics=lambda value: value,
         runtime_diagnostics_schema_version="test", exception_log_fields=lambda error: {}, clock=lambda: OBSERVED,
     )
+
+
+@pytest.mark.asyncio
+async def test_application_normalizes_stream_identities_before_domain_investigation():
+    class RawEvents(Persistence):
+        async def get_admin_snapshot(self, conn, **kwargs):
+            snapshot = await super().get_admin_snapshot(conn, **kwargs)
+            snapshot["attempts"] = [{"attempt_id": "attempt-a"}]
+            return snapshot
+
+        async def get_admin_investigation_events(self, conn, **kwargs):
+            raw = event("tool.completed", 20, attempt="must-not-trust-row", duration_ms=9000)
+            raw["payload"]["__stream_v4"] = {"attempt_id": "attempt-a", "causation_event_id": "start-event"}
+            return {"events": [raw], "events_truncated": False, "first_public_text_at": None}
+
+    result = await service(RawEvents()).read_admin_investigation(object(), tenant_id="tenant-a", run_id="run-a")
+    tool = next(row for row in result["stages"] if row["source"] == "sdk_tool_hooks")
+    assert tool["attempt_id"] == "attempt-a" and tool["causation_event_id"] == "start-event"
+    assert result["unbound_event_count"] == 0
 
 
 @pytest.mark.asyncio
