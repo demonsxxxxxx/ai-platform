@@ -319,7 +319,8 @@ async def test_reconciler_scans_while_signal_initialization_is_blocked(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_reconciler_holds_bounded_slots_and_joins_resistant_completion_on_shutdown(monkeypatch):
+@pytest.mark.parametrize("concurrency", [1, 2, 4])
+async def test_reconciler_holds_bounded_slots_and_joins_resistant_completion_on_shutdown(monkeypatch, concurrency):
     from app import executor_reconciler
 
     stop = asyncio.Event()
@@ -332,13 +333,13 @@ async def test_reconciler_holds_bounded_slots_and_joins_resistant_completion_on_
     async def reconcile(**_kwargs):
         nonlocal calls, cancellations
         calls += 1
-        if calls == 2:
+        if calls == concurrency:
             started.set()
         try:
             await asyncio.Event().wait()
         except asyncio.CancelledError:
             cancellations += 1
-            if cancellations == 2:
+            if cancellations == concurrency:
                 cancelled.set()
             await release.wait()
         return 1
@@ -349,11 +350,11 @@ async def test_reconciler_holds_bounded_slots_and_joins_resistant_completion_on_
     monkeypatch.setattr(executor_reconciler, "reconcile_pending_executor_terminals_once", reconcile)
     monkeypatch.setattr(executor_reconciler._sandbox_cleanup, "cleanup_failed_sandbox_executor_reconciliation_leases", no_work)
     monkeypatch.setattr(executor_reconciler, "probe_suspect_executor_tasks_once", no_work)
-    task = asyncio.create_task(run_executor_terminal_reconciler(stop))
+    task = asyncio.create_task(run_executor_terminal_reconciler(stop, concurrency=concurrency))
     try:
         await asyncio.wait_for(started.wait(), 0.5)
         await asyncio.sleep(0.02)
-        assert calls == 2
+        assert calls == concurrency
         stop.set()
         await asyncio.wait_for(cancelled.wait(), 0.5)
         assert not task.done()
@@ -363,7 +364,7 @@ async def test_reconciler_holds_bounded_slots_and_joins_resistant_completion_on_
         release.set()
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
-    assert calls == 2
+    assert calls == concurrency
 
 
 @pytest.mark.asyncio
@@ -388,21 +389,19 @@ async def test_reconciler_retries_at_due_time_without_notification_or_fallback_d
     async def no_work(**_kwargs):
         return 0
 
-    monkeypatch.setattr(executor_reconciler, "_RECONCILIATION_CONCURRENCY", 1)
     monkeypatch.setattr(executor_reconciler, "_RECONCILIATION_FALLBACK_SECONDS", 1.0)
     monkeypatch.setattr(executor_reconciler, "initialize_executor_reconciliation_signal_cursor", unavailable)
     monkeypatch.setattr(executor_reconciler, "_next_terminal_retry_delay", retry_delay)
     monkeypatch.setattr(executor_reconciler, "reconcile_pending_executor_terminals_once", reconcile)
     monkeypatch.setattr(executor_reconciler._sandbox_cleanup, "cleanup_failed_sandbox_executor_reconciliation_leases", no_work)
     monkeypatch.setattr(executor_reconciler, "probe_suspect_executor_tasks_once", no_work)
-    await asyncio.wait_for(run_executor_terminal_reconciler(stop), 0.5)
+    await asyncio.wait_for(run_executor_terminal_reconciler(stop, concurrency=1), 0.5)
     assert 0.02 <= scans[1] - scans[0] <= 0.25
 
 
 @pytest.mark.asyncio
 async def test_reconciler_drains_backlog_without_waiting_for_maintenance(monkeypatch):
     from app import executor_reconciler
-    monkeypatch.setattr(executor_reconciler, "_RECONCILIATION_CONCURRENCY", 1)
 
     stop_event = asyncio.Event()
     scans = 0
@@ -433,7 +432,7 @@ async def test_reconciler_drains_backlog_without_waiting_for_maintenance(monkeyp
         unexpected,
     )
 
-    await run_executor_terminal_reconciler(stop_event)
+    await run_executor_terminal_reconciler(stop_event, concurrency=1)
 
     assert scans == 3
 
@@ -442,7 +441,6 @@ async def test_reconciler_drains_backlog_without_waiting_for_maintenance(monkeyp
 async def test_reconciler_signal_failure_retains_bounded_polling_fallback(monkeypatch):
     from time import monotonic
     from app import executor_reconciler
-    monkeypatch.setattr(executor_reconciler, "_RECONCILIATION_CONCURRENCY", 1)
 
     stop_event = asyncio.Event()
     scans = 0
@@ -471,7 +469,7 @@ async def test_reconciler_signal_failure_retains_bounded_polling_fallback(monkey
     monkeypatch.setattr(executor_reconciler._sandbox_cleanup, "cleanup_failed_sandbox_executor_reconciliation_leases", no_work)
     monkeypatch.setattr(executor_reconciler, "probe_suspect_executor_tasks_once", no_work)
     monkeypatch.setattr(executor_reconciler, "wait_for_executor_reconciliation_signal", unavailable)
-    await asyncio.wait_for(run_executor_terminal_reconciler(stop_event), timeout=1)
+    await asyncio.wait_for(run_executor_terminal_reconciler(stop_event, concurrency=1), timeout=1)
     assert 2 <= scans <= 3
     assert failed_at is not None and rescanned_at is not None
     assert 0.04 <= rescanned_at - failed_at <= 0.2
@@ -483,7 +481,6 @@ async def test_terminal_signal_is_consumed_while_maintenance_is_blocked(
     monkeypatch, slow_phase,
 ):
     from app import executor_reconciler
-    monkeypatch.setattr(executor_reconciler, "_RECONCILIATION_CONCURRENCY", 1)
 
     stop_event = asyncio.Event()
     maintenance_started = asyncio.Event()
@@ -529,7 +526,7 @@ async def test_terminal_signal_is_consumed_while_maintenance_is_blocked(
         blocked if slow_phase == "probe" else no_work,
     )
     monkeypatch.setattr(executor_reconciler, "wait_for_executor_reconciliation_signal", signal)
-    task = asyncio.create_task(run_executor_terminal_reconciler(stop_event))
+    task = asyncio.create_task(run_executor_terminal_reconciler(stop_event, concurrency=1))
     try:
         await asyncio.wait_for(terminal_scanned.wait(), timeout=1)
         await asyncio.wait_for(task, timeout=1)
@@ -543,7 +540,6 @@ async def test_terminal_signal_is_consumed_while_maintenance_is_blocked(
 @pytest.mark.asyncio
 async def test_terminal_reconciler_shutdown_joins_cancellation_resistant_maintenance(monkeypatch):
     from app import executor_reconciler
-    monkeypatch.setattr(executor_reconciler, "_RECONCILIATION_CONCURRENCY", 1)
 
     stop_event = asyncio.Event()
     started = asyncio.Event()
@@ -576,7 +572,7 @@ async def test_terminal_reconciler_shutdown_joins_cancellation_resistant_mainten
     monkeypatch.setattr(executor_reconciler._sandbox_cleanup, "cleanup_failed_sandbox_executor_reconciliation_leases", cleanup)
     monkeypatch.setattr(executor_reconciler, "probe_suspect_executor_tasks_once", no_probe)
     monkeypatch.setattr(executor_reconciler, "wait_for_executor_reconciliation_signal", signal)
-    task = asyncio.create_task(run_executor_terminal_reconciler(stop_event))
+    task = asyncio.create_task(run_executor_terminal_reconciler(stop_event, concurrency=1))
     try:
         await asyncio.wait_for(cancelled.wait(), timeout=1)
         assert not task.done()
@@ -1887,7 +1883,6 @@ async def test_reconciler_waits_when_no_terminal_or_probe_progress(monkeypatch):
 @pytest.mark.asyncio
 async def test_reconciler_observes_signal_written_during_empty_database_scan(monkeypatch):
     from app import executor_reconciler
-    monkeypatch.setattr(executor_reconciler, "_RECONCILIATION_CONCURRENCY", 1)
     from app.runtime.sandbox import executor_signals
 
     class SignalRedis:
@@ -1971,7 +1966,7 @@ async def test_reconciler_observes_signal_written_during_empty_database_scan(mon
         no_probe,
     )
 
-    await run_executor_terminal_reconciler(stop_event, worker_id="worker-a")
+    await run_executor_terminal_reconciler(stop_event, concurrency=1, worker_id="worker-a")
 
     assert "4-0" in client.xread_after_ids
     assert scan_count == 2
@@ -1982,7 +1977,6 @@ async def test_reconciler_observes_signal_written_during_empty_database_scan(mon
 @pytest.mark.parametrize("redis_available", [True, False])
 async def test_reconciler_immediately_processes_terminal_persisted_by_probe(monkeypatch, redis_available):
     from app import executor_reconciler
-    monkeypatch.setattr(executor_reconciler, "_RECONCILIATION_CONCURRENCY", 1)
 
     stop_event = asyncio.Event()
     next_probe_started = asyncio.Event()
@@ -2046,7 +2040,7 @@ async def test_reconciler_immediately_processes_terminal_persisted_by_probe(monk
     )
 
     await asyncio.wait_for(
-        run_executor_terminal_reconciler(stop_event, worker_id="worker-a"), timeout=1,
+        run_executor_terminal_reconciler(stop_event, concurrency=1, worker_id="worker-a"), timeout=1,
     )
 
     assert calls.count("reconcile") == 2
@@ -2207,7 +2201,6 @@ async def test_reconciler_cursor_failure_uses_polling_without_uncursored_xread(
     monkeypatch,
 ):
     from app import executor_reconciler
-    monkeypatch.setattr(executor_reconciler, "_RECONCILIATION_CONCURRENCY", 1)
 
     stop_event = asyncio.Event()
     calls: list[str] = []
@@ -2257,7 +2250,7 @@ async def test_reconciler_cursor_failure_uses_polling_without_uncursored_xread(
         unexpected_wait,
     )
 
-    await run_executor_terminal_reconciler(stop_event, worker_id="worker-a")
+    await run_executor_terminal_reconciler(stop_event, concurrency=1, worker_id="worker-a")
 
     assert set(calls) == {"cursor", "reconcile", "cleanup", "probe"}
     assert calls.count("reconcile") == 1
@@ -2266,7 +2259,6 @@ async def test_reconciler_cursor_failure_uses_polling_without_uncursored_xread(
 @pytest.mark.asyncio
 async def test_reconciler_bounds_signal_init_without_delaying_database_scan(monkeypatch):
     from app import executor_reconciler
-    monkeypatch.setattr(executor_reconciler, "_RECONCILIATION_CONCURRENCY", 1)
 
     stop_event = asyncio.Event()
     cursor_started = asyncio.Event()
@@ -2301,7 +2293,7 @@ async def test_reconciler_bounds_signal_init_without_delaying_database_scan(monk
         reconcile,
     )
 
-    await run_executor_terminal_reconciler(stop_event, worker_id="worker-a")
+    await run_executor_terminal_reconciler(stop_event, concurrency=1, worker_id="worker-a")
 
     assert cursor_started.is_set()
     assert cursor_cancelled.is_set()

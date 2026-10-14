@@ -59,7 +59,6 @@ _RECONCILIATION_BATCH_SIZE = 1
 _RECONCILIATION_CLAIM_STALE_SECONDS = 300
 _RECONCILIATION_WORK_TIMEOUT_SECONDS = 240.0
 _RECONCILIATION_IDLE_SECONDS = 30.0
-_RECONCILIATION_CONCURRENCY = 2
 _RECONCILIATION_FALLBACK_SECONDS = 2.0
 _RECONCILIATION_SIGNAL_INIT_TIMEOUT_SECONDS = 5.0
 _EXECUTOR_HEARTBEAT_STALE_SECONDS = 45
@@ -1059,7 +1058,9 @@ async def run_executor_terminal_reconciler(
     attempt_lifecycle: RunAttemptLifecycleService,
     lifecycle: RunLifecycleService,
     run_diagnostics: RunDiagnosticsService | None = None,
+    concurrency: int = 2,
 ) -> None:
+    concurrency = max(int(concurrency), 1)
     wake = asyncio.Event()
     cleanup_wake = asyncio.Event()
     active: set[asyncio.Task[int]] = set()
@@ -1164,12 +1165,12 @@ async def run_executor_terminal_reconciler(
                     _logger.exception("executor_terminal_retry_clock_read_failed")
             if loop.time() >= next_scan:
                 scan_needed = True
-            if scan_needed and len(active) < _RECONCILIATION_CONCURRENCY:
-                for _ in range(_RECONCILIATION_CONCURRENCY - len(active)):
+            if scan_needed and len(active) < concurrency:
+                for _ in range(concurrency - len(active)):
                     active.add(asyncio.create_task(reconcile(), name="executor-terminal-completion"))
                 scan_needed = False
                 next_scan = loop.time() + _RECONCILIATION_FALLBACK_SECONDS
-            timeout = max(0.0, next_scan - loop.time()) if len(active) < _RECONCILIATION_CONCURRENCY else None
+            timeout = max(0.0, next_scan - loop.time()) if len(active) < concurrency else None
             await asyncio.wait(
                 active | {stop_waiter, wake_waiter}, timeout=timeout,
                 return_when=asyncio.FIRST_COMPLETED,
