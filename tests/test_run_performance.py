@@ -14,7 +14,7 @@ from app.runs.domain.run_performance import (
     merge_browser_latency,
 )
 from app.runs.application.diagnostics import RunDiagnosticsService
-from app.runs.transport.browser_latency import BrowserRunLatencyInput
+from app.conversations.transport.submission_latency import BrowserRunLatencyInput
 
 NOW = datetime(2026, 10, 14, 8, tzinfo=timezone.utc)
 OBSERVED = NOW + timedelta(hours=1)

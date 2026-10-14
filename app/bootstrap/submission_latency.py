@@ -2,6 +2,7 @@
 from fastapi import APIRouter
 
 from app.auth import require_principal
+from app.bootstrap.submission_diagnostics import log_safe_submission_exception
 from app.conversations.transport.submission_latency import build_submission_latency_router
 from app.routes import chat
 
@@ -11,4 +12,5 @@ def build_chat_submission_latency_router() -> APIRouter:
         resolve_submission=chat._resolve_chat_submission,
         transaction_factory=chat.transaction,
         principal_dependency=require_principal,
+        log_exception=log_safe_submission_exception,
     )

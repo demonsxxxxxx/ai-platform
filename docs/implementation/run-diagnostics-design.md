@@ -216,7 +216,7 @@ SDK 输出校验的 `projection_failure`（原因、阶段、位置、可用的�
 
 浏览器测量只提交 `POST /chat/submissions/{submission_id}/latency` 的 `run_id` 和有界整数 `duration_ms`。服务端复用 principal-scoped submission resolver，验证已授权 Run 与 outcome 一致，并要求已有非空白公开文本证据。新槽位 `browser_latency.measurement=browser_dom_commit.v1` 位于既有 Run 私有诊断 JSON，按行锁 first-wins；不存正文、Cookie、客户端绝对时间、私有 payload，不推动 Run/Attempt 状态。浏览器按 mounted/session/auth/submission 身份退休观察；历史加载、新标签页、取消、身份更替或卸载不能生成新提交计时。可选采集失败不影响聊天；浏览器数据始终是客户端观测，不是业务权威。
 
-浏览器入口归属 `Conversations.transport.submission_latency`，由 Bootstrap 复用既有主体范围 submission resolver 并注册 `/api/ai` 与现有浏览器 `/api` 别名；请求契约通过 Runs 公共 API 暴露。冻结的 `app/routes/chat.py` 不增加接口或校验职责。Streaming 元数据只在 Runs application 层转换为 Attempt/causation 身份，再交给不依赖 Streaming 的领域计算。
+浏览器入口归属 `Conversations.transport.submission_latency`，由 Bootstrap 复用既有主体范围 submission resolver 并注册 `/api/ai` 与现有浏览器 `/api` 别名；HTTP 请求校验留在会话 Transport，Runs 只接收已校验的整数观测。冻结的 `app/routes/chat.py` 不增加接口或校验职责。Streaming 元数据只在 Runs application 层转换为 Attempt/causation 身份，再交给不依赖 Streaming 的领域计算。
 
 可选浏览器槽位不得排挤故障证据：写入已满记录会拒绝，之后合并故障时先丢弃超预算的浏览器槽位再执行既有故障预算降级。只有浏览器测量的记录仍对故障标记 `not_collected`，不创造异常或“完整故障采集”。
 
