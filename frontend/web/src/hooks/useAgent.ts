@@ -187,8 +187,7 @@ interface HistoryLoadFailure {
 type HistoryLoadFailurePhase =
   | "session_projection"
   | "identity_validation"
-  | "event_history"
-  | "feedback";
+  | "event_history";
 
 /** Reuse the API safe-copy/code boundary; never retain an arbitrary exception. */
 function projectHistoryReadError(error: unknown): HistoryReadError {

@@ -43,6 +43,7 @@ current SHAs, exceptions, and evidence results belong in the issue/PR.
 | Browser-local theme and sidebar preferences | [Browser preferences](frontend/browser-local-preferences.md) |
 | Shared tables and ordinary single-select controls | [Table and Select components](frontend/shared-table-select-components.md) |
 | Chat display and public terminal errors | [Chat projection](architecture/chat-run-lifecycle-and-public-error-projection.md) |
+| Retired feedback and announcement entrypoints | [Unavailable contract](frontend/feedback-announcements-unavailable.md) |
 | Dependency locks, image builds, and publication | [Packaging](architecture/docker-packaging.md) |
 
 Do not duplicate these rules in an overview. When two current documents conflict,
