@@ -63,7 +63,7 @@ ACL and must never create a second department authority.
 | --- | --- | --- |
 | Users, sessions, runs, private Run diagnostics, messages, artifact metadata, ACL and audit facts | PostgreSQL | Durable business facts and authorization evidence. Private diagnostics use a separate tenant/Run-scoped bounded record and are not public answer data. |
 | Queue entries, leases and bounded SSE transport | Redis | Ephemeral coordination only; it is not the terminal record. |
-| Uploaded files, generated artifacts and Skill packages | MinIO/S3 | Object bytes live here; PostgreSQL stores keys, digests, sizes, schemas and bounded summaries. |
+| Uploaded files, generated artifacts, Skill packages and private provider image payloads | MinIO/S3 | Object bytes live here; PostgreSQL stores keys, digests, sizes, schemas and bounded summaries. Provider session entry structure and original receipts remain in PostgreSQL; image payloads are restored losslessly under the [native continuity contract](claude-provider-session-continuity.md#private-image-persistence). |
 | Executor workspace | Sandbox filesystem | Attempt-scoped temporary copy; never a durable authority. |
 | Canonical v4 `message.delta` | PostgreSQL public Run-event ledger | Persists as one safe committed event with semantic identity/sequence, then publishes through the bounded Redis transport. |
 | Legacy `assistant_delta` projection | Legacy ingress suppressed after V4 answer projection is accepted | It must not become a second durable answer producer. The ban on a PostgreSQL browser fallback does not forbid canonical v4 event persistence. |
@@ -181,6 +181,13 @@ cannot delete its object bytes without a matching file receipt. New workers
 remain dual-read for artifact states while all file transitions stay namespaced.
 This is the data-safety fence; worker capability heartbeat remains an optional
 availability and rollout-observability layer rather than deletion authority.
+Private provider images similarly use `provider_image_pending`,
+`provider_image_processing`, `provider_image_failed`, `provider_image_dead_letter`
+and `provider_image_deleted`. Their metadata survives Session/epoch removal so
+physical deletion retains an owner. Upload reservations are created before I/O
+and only promoted with the entry transaction; unresolved uploads retain repeated
+cleanup to catch late writes. The shared maintenance loop queues orphaned and
+soft-deleted-session images without treating them as public Files or Artifacts.
 
 The core schema includes both additive changes and destructive cutovers:
 

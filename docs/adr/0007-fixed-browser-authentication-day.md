@@ -18,8 +18,11 @@ after 15 minutes.
 
 ## Decision
 
-1. All three clocks are fixed at exactly 86,400 seconds in source and Compose.
-   They are not operator-configurable deployment settings.
+1. The platform session-token lifetime (`ai_session_max_age_seconds`), Redis
+   context lifetime (`auth_context_max_age_seconds`), and company-authority
+   freshness window (`company_authority_freshness_seconds`) are fixed at exactly
+   86,400 seconds in source and Compose, not operator-configurable. These platform
+   clocks do not extend the validity of an independently issued company JWT.
 2. The lifetime is absolute and non-sliding. Authenticated reads, profile
    updates, and token rotation preserve the remaining server-side TTL rather
    than extending it.

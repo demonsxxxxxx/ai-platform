@@ -1,5 +1,8 @@
 import re
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +24,51 @@ SOURCE_ARCHITECTURE_ADR = ROOT / "docs/adr/0006-domain-first-modular-monolith.md
 
 def read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
+
+
+def local_link_targets(document: Path, root: Path) -> set[Path]:
+    targets = set()
+    for link in re.findall(r"\[[^\]\n]*\]\(([^)\s]+)\)", read(document)):
+        url = urlsplit(link.strip("<>"))
+        if url.scheme or url.netloc:
+            continue
+        target = (document.parent / unquote(url.path)).resolve() if url.path else document.resolve()
+        assert target.is_relative_to(root.resolve()), f"{document}: {link} escapes the repository; use a repository-local owner link"
+        assert target.is_file(), f"{document}: {link} is missing; update the link or restore its owning document"
+        targets.add(target)
+    return targets
+
+
+def test_authority_map_and_direct_owners_have_resolvable_local_file_links():
+    owners = local_link_targets(DOCS_INDEX, ROOT)
+    for owner in sorted(owners):
+        if owner.suffix == ".md":
+            local_link_targets(owner, ROOT)
+
+
+@pytest.mark.parametrize("link", ["missing.md", "../outside.md", "%2e%2e/outside.md"])
+def test_local_link_check_rejects_missing_and_escaping_targets(tmp_path: Path, link: str):
+    root = tmp_path / "repository"
+    root.mkdir()
+    (tmp_path / "outside.md").write_text("outside\n", encoding="utf-8")
+    document = root / "README.md"
+    document.write_text(f"[owner]({link})\n", encoding="utf-8")
+
+    with pytest.raises(AssertionError, match="missing|escapes the repository"):
+        local_link_targets(document, root)
+
+
+def test_local_link_check_preserves_fragments_and_skips_external_urls(tmp_path: Path):
+    document = tmp_path / "README.md"
+    owner = tmp_path / "owner with spaces.md"
+    owner.write_text("# Owner\n", encoding="utf-8")
+    document.write_text(
+        "[self](#owner)\n[owner](owner%20with%20spaces.md#owner)\n"
+        "[web](https://example.test/missing.md)\n[web](//example.test/missing.md)\n",
+        encoding="utf-8",
+    )
+
+    assert local_link_targets(document, tmp_path) == {document, owner}
 
 
 def test_documentation_index_names_the_only_durable_authority_surfaces():
@@ -92,10 +140,7 @@ def test_agent_rule_navigation_and_pr_template_remain_usable():
     for document, expected_links in required_links.items():
         links = set(re.findall(r"\[[^\]\n]*\]\(([^)\s]+)\)", read(document)))
         assert expected_links <= links, document
-        for link in links:
-            target = (document.parent / link.split("#", 1)[0]).resolve()
-            assert target.is_relative_to(ROOT.resolve()), (document, link)
-            assert target.is_file(), (document, link)
+        local_link_targets(document, ROOT)
 
     template = read(PULL_REQUEST_TEMPLATE)
     assert "docs/agent-rules/github-issue-pr-workflow.md" in template

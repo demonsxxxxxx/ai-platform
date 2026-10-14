@@ -58,12 +58,16 @@ Accepted rationale is recorded in [ADR 0001](adr/0001-agent-app-revision-authori
 [ADR 0006](adr/0006-domain-first-modular-monolith.md),
 [ADR 0007](adr/0007-fixed-browser-authentication-day.md),
 [ADR 0008](adr/0008-agent-sdk-autonomous-skill-dispatch.md),
-[ADR 0012](adr/0012-recoverable-agent-kernel-event-stream-v4.md), and
-[ADR 0013](adr/0013-redis-stream-only-sse.md).
-ADR 0012 owns the v4 event model; ADR 0013 supersedes its publication/recovery
-architecture with the sole Redis Stream transport. Earlier streaming designs
-are history, not selectable fallback runtimes. Keep historical decisions and
-release evidence intact.
+[ADR 0012](adr/0012-recoverable-agent-kernel-event-stream-v4.md),
+[ADR 0013](adr/0013-redis-stream-only-sse.md), and
+[ADR 0015](adr/0015-agent-autonomy-and-effect-boundaries.md).
+ADR 0015 supersedes ADR 0001's conversation-wide execution pin: ordinary new
+Runs resolve the current publication, while accepted-Run replay keeps its snapshot.
+ADR 0012 owns the v4 event model; the schema and accepted Assistant-part extension
+own its current event set. ADR 0013 supersedes publication/recovery from ADR 0012
+and Pub/Sub fan-out from ADR 0009 with the sole Redis Stream transport. Earlier
+streaming designs and their rollback recipes are history, not selectable fallback
+runtimes. Keep historical decisions and release evidence intact.
 
 [SDK 0.2.130 upgrade](architecture/claude-agent-sdk-0.2.130-upgrade.md) is a
 historical upgrade record. It is not the current dependency or capacity table;
@@ -88,9 +92,10 @@ and execution progress belongs in the active task or PR.
 [Run 故障诊断 PRD](implementation/run-diagnostics-prd.md) defines administrator
 self-service diagnosis and redacted export requirements. Its
 [technical proposal](implementation/run-diagnostics-design.md) records the active
-candidate for field preservation, persistence, admin query and retirement of
-superseded mappings, plus the remaining export and runtime-acceptance work.
-Source completion, deployment and production acceptance remain separate evidence.
+candidate for field preservation, persistence, admin query, audited single-Run
+diagnostic export and retirement of superseded mappings. Real-dependency,
+performance and production acceptance remain separate from source completion
+and deployment evidence.
 
 [AGENTS](../AGENTS.md), [PR workflow](agent-rules/github-issue-pr-workflow.md),
 [local test execution](agent-rules/local-test-execution.md), and
@@ -112,3 +117,6 @@ active contract, a proposed migration, or a dated observation. Preserve public
 anchors or update their consumers when moving material. Keep one detailed owner
 per requirement, and link to it from indexes. Do not copy per-PR approval claims,
 current work status, or repeated implementation checklists into durable policy.
+Shared-contract changes use the [delivery workflow](agent-rules/github-issue-pr-workflow.md)
+for caller inventories, regression selectors, and retirement/compatibility
+proof; the index points to the contract owner rather than redefining that process.

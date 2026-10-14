@@ -88,6 +88,18 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      minio:
+        image: ${{ matrix.shard == 'schema-migrations' && 'bitnamilegacy/minio:2025.4.22-debian-12-r1' || '' }}
+        env:
+          MINIO_ROOT_USER: synthetic-provider-images
+          MINIO_ROOT_PASSWORD: synthetic-provider-images-local-test-only
+        ports:
+          - "19014:9000"
+        options: >-
+          --health-cmd "mc ready local"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     strategy:
       fail-fast: false
       matrix:
@@ -113,6 +125,8 @@ jobs:
               tests/test_execution_pinned_skill_materialization.py
               tests/test_claude_agent_worker_file_continuity.py
               tests/test_provider_session_transport.py
+              tests/test_provider_session_images.py
+              tests/test_claude_image_session_store.py
               tests/test_context_file_content.py
               tests/test_context_file_continuity.py
               tests/test_file_parser_contracts.py
@@ -304,6 +318,7 @@ jobs:
               tests/test_skill_release_lifecycle_postgres.py
               tests/test_run_inputs_postgres.py
               tests/test_provider_session_recovery_postgres.py
+              tests/test_provider_session_images_postgres.py
               tests/test_frozen_receipt_spec_postgres.py
               tests/test_schema.py::test_schema_declares_attempt_identity_state_and_fences
           - shard: v4-durable-streaming
@@ -363,6 +378,7 @@ jobs:
     env:
       BACKEND_TEST_SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
       AI_PLATFORM_S0A_SCHEMA_TEST_DSN: ${{ matrix.postgres_url }}
+      AI_PLATFORM_PROVIDER_IMAGE_MINIO_URL: ${{ matrix.shard == 'schema-migrations' && 'http://127.0.0.1:19014' || '' }}
       AI_PLATFORM_SSE_REDIS_TEST_URL: ${{ matrix.redis_url }}
     steps:
       - name: Checkout exact backend test source

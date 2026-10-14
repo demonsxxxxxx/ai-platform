@@ -13,7 +13,7 @@ not describe storage, routes, frameworks, or current runtime state.
 **Agent App**
 : The published enterprise-expert product backed by an Agent Profile Revision.
   It is discoverable only to an authorized principal and may create new work
-  only while that exact publication remains authorized.
+  only while its current publication remains authorized.
 
 **Agent Workspace**
 : The dedicated user experience for one Agent App. Entering it does not create
@@ -22,19 +22,23 @@ not describe storage, routes, frameworks, or current runtime state.
   resolves and binds the governed execution model to each admitted Agent Run.
 
 **Agent Conversation**
-: A user-owned conversation pinned to one Agent App identity, Agent Profile
-  Revision, and content hash when the user explicitly starts it. Later profile
-  revisions never migrate that conversation.
+: A user-owned conversation bound to one Agent App identity when the user
+  explicitly starts it. Its initial Profile revision and content hash remain
+  provenance; later publications do not rewrite that record. Ordinary new turns
+  resolve the current publication rather than executing the initial revision.
 
 **Agent Run**
-: One admitted execution attempt for an Agent Conversation. Every new run,
-  retry, resume, or copy must reauthorize the current principal and the pinned
-  capabilities before any work is dispatched.
+: One admitted execution for an Agent Conversation, with its own immutable
+  Profile, Skill-version, dependency, and model snapshot. A new Run resolves the
+  current authorized publication and capabilities. Worker dispatch and
+  retry/resume/copy retain the accepted Run snapshot and recheck current
+  principal, publication and capability authorization before dispatch.
 
 **Agent Skill Set**
-: The immutable set of exact governed Skill versions an Agent Profile Revision
-  is authorized to make available to its execution SDK. Membership grants
-  availability, not an obligation to invoke a Skill.
+: The stable, tenant-authorized Skill references configured by an Agent Profile
+  Revision. Admission resolves and freezes their current versions and dependency
+  closure in the Run snapshot. Membership grants availability, not an obligation
+  to invoke a Skill.
 
 **Attachment Context**
 : The user-owned files currently authorized and available to an Agent
@@ -43,8 +47,8 @@ not describe storage, routes, frameworks, or current runtime state.
 
 **Builder Test Conversation**
 : An administrator-owned Agent Conversation created only for a controlled test.
-  Its runs use the normal governed execution path and its records remain
-  explicitly distinguishable from ordinary-user conversations.
+  Its runs use the normal governed execution path but reject a changed tested
+  revision. Its records remain distinguishable from ordinary-user conversations.
 
 ## Capability Truth
 

@@ -10,6 +10,7 @@ from uuid import uuid4
 
 import psycopg
 import pytest
+from tests.support.db_transactions import event_loop_policy as event_loop_policy
 from fastapi import HTTPException
 from psycopg import sql
 from psycopg.rows import dict_row
@@ -56,7 +57,8 @@ async def recovery_db():
         async with connect() as conn:
             await conn.execute("""
                 create table sessions(tenant_id text, workspace_id text, user_id text,
-                  id text, agent_id text, unique(tenant_id,workspace_id,user_id,id,agent_id));
+                  id text, agent_id text, status text not null default 'active',
+                  unique(tenant_id,workspace_id,user_id,id,agent_id));
                 create table runs(tenant_id text, id text, status text,
                   cancel_requested_at timestamptz, primary key(tenant_id,id));
                 create table run_attempts(tenant_id text, id text, run_id text, status text,
@@ -66,7 +68,8 @@ async def recovery_db():
                 create table sandbox_leases(id text primary key, tenant_id text,
                   run_id text, attempt_id text, status text, released_at timestamptz,
                   expires_at timestamptz, created_at timestamptz default now(), lease_payload_json jsonb);
-                insert into sessions values('tenant','workspace','user','session','agent');
+                insert into sessions(tenant_id,workspace_id,user_id,id,agent_id)
+                  values('tenant','workspace','user','session','agent');
                 insert into runs values('tenant','run','running',null);
             """)
             source = (
@@ -693,7 +696,7 @@ async def test_real_sdk_child_materialization_uses_two_complete_pg_scans(
     )
     assert await adapter.load(PROVIDER_ID) == INITIAL
     assert await _load_candidate(adapter, "synthetic-project", PROVIDER_ID, 60) == (PROVIDER_ID, INITIAL)
-    project = tmp_path / "projects" / "synthetic-project"
+    project = tmp_path / "p"  # Keep SDK child filenames below Windows MAX_PATH.
     project.mkdir(parents=True)
     await _materialize_subkeys(adapter, tmp_path, project, "synthetic-project", PROVIDER_ID, 60)
     assert [action for action, _headers in bridge.requests] == ["load", "list_subkeys"]

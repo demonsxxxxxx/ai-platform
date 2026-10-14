@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 
+from app.context import api as context_api
 from app.identity.infrastructure import audit_postgres as identity_audit_postgres
 from app.persistence import artifacts as persistence_artifacts
 from app.persistence import object_deletions as persistence_object_deletions
@@ -120,6 +121,9 @@ async def run_data_retention_maintenance(
     memory_limit = int(getattr(settings, "memory_physical_purge_limit", 50))
     grace_days = int(getattr(settings, "memory_physical_purge_grace_days", 7))
     async with transaction() as conn:
+        await context_api.queue_provider_session_images_for_deletion(
+            conn, limit=object_delete_batch_limit,
+        )
         queued = await persistence_artifacts.queue_expired_artifacts_for_deletion(
             conn,
             limit=artifact_selection_limit,

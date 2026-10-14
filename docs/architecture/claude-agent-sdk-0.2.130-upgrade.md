@@ -88,23 +88,25 @@ token aggregation is retained, while the official `total_cost_usd` and
 across turns. Per-model rows keep only bounded numeric token/cost fields and
 bounded private model keys. They are not exposed in public Run results/events.
 
-This interpretation is version-bound: Python SDK 0.2.130 bundles CLI 2.1.222.
 The [official cost contract](https://code.claude.com/docs/en/agent-sdk/cost-tracking)
-distinguishes turn usage from call-cumulative cost/model usage and documents
-changed resume accounting in CLI 2.1.277. At this repository's fixed version,
-each new executor CLI process, including native resume, starts these totals at
-zero. Revalidate that boundary when upgrading; do not infer it from a runtime
-version string or apply it to a newer binary without conformance evidence.
-SDK prices are client-side estimates, not authoritative billing data.
+distinguishes turn usage from cumulative cost/model usage. The historical
+0.2.130 / CLI 2.1.222 zero-per-process assumption is superseded by the current
+0.2.165 / CLI 2.1.294 pair: native resume restores totals from the transcript's
+last matching `cost-state` record. The harness subtracts that immutable preload
+baseline from subsequent cost/model snapshots before projecting this Run.
+It does not modify the stored record or calculate prices itself. Real bundled-CLI
+checks cover both that representation and legacy transcripts without cost-state,
+which start at zero. An invalid baseline makes cost unavailable while retaining
+normal per-turn token usage. SDK prices remain client-side estimates, not billing
+authority; another CLI upgrade must requalify this accounting boundary.
 
 The single private `cost_coverage` marker is `complete`, `partial`, or
 `unavailable`. Missing/invalid latest cost does not erase an earlier observation.
 An execution-crash result can contain false zeroes; earlier observations remain
 partial. Missing final results, cumulative regressions, changed session identity,
 or initial/supplemental `/clear`, `/reset`, or `/new` commands never manufacture
-a complete Run total. This older SDK drops conversation-reset messages, so the
-adapter observes inputs and result identity instead. It does not alter user
-input or reconstruct accounting across resets. A legitimate zero on an intact
+a complete Run total. The adapter observes reset inputs and result identity;
+it does not alter user input or reconstruct accounting across resets. A legitimate zero on an intact
 call remains a complete zero. Optional telemetry failure cannot fail a Run.
 Cancellation still propagates directly without assembling a returned result;
 this observer does not persist a partial cost on that cancellation path.
