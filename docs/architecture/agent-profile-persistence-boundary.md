@@ -270,6 +270,8 @@ GitHub checks bound to the actual base and head.
   explicit Agent and Skill CI selector includes this regression.
 - **Limits and stop conditions:** this change does not convert historical
   unpinned Profile Sessions or Runs into admitted Profile work. Replay of such
-  legacy Runs may still be persisted before the Worker rejects dispatch. Stop
+  legacy Runs is rejected by the Profile authority before creating a copy,
+  retry, or resume child. The authorized source read supplies same-tenant Agent
+  type; missing pins cannot select the ordinary non-Profile replay path. Stop
   rather than silently replacing a caller's Skill, inventing Profile pins, or
   weakening the existing Profile publication and ACL owners.
