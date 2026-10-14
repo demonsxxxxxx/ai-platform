@@ -873,39 +873,6 @@ def check_artifact_preview_isolation(api_url: str, artifact_rows: list[dict[str,
     return Gate("artifact_preview_isolation", ok, {"checked_artifacts": len(results), "results": results})
 
 
-def _artifact_rows_from_run_evidence(run_evidence: dict[str, Any]) -> list[dict[str, str]]:
-    artifacts = run_evidence.get("artifacts")
-    if isinstance(artifacts, list):
-        return [
-            {
-                "artifact_id": str(item.get("artifact_id") or ""),
-                "artifact_type": str(item.get("artifact_type") or ""),
-                "content_type": _normalized_content_type(item.get("content_type")),
-            }
-            for item in artifacts
-            if isinstance(item, dict)
-        ]
-    artifact_ids = run_evidence.get("artifact_ids") if isinstance(run_evidence.get("artifact_ids"), list) else []
-    artifact_types = run_evidence.get("artifact_types") if isinstance(run_evidence.get("artifact_types"), list) else []
-    artifact_content_types = (
-        run_evidence.get("artifact_content_types")
-        if isinstance(run_evidence.get("artifact_content_types"), list)
-        else []
-    )
-    rows: list[dict[str, str]] = []
-    for index, artifact_id in enumerate(artifact_ids):
-        rows.append(
-            {
-                "artifact_id": str(artifact_id or ""),
-                "artifact_type": str(artifact_types[index] if index < len(artifact_types) else ""),
-                "content_type": _normalized_content_type(
-                    artifact_content_types[index] if index < len(artifact_content_types) else ""
-                ),
-            }
-        )
-    return rows
-
-
 def _compact_key(value: object) -> str:
     return "".join(ch for ch in str(value).lower() if ch.isalnum())
 

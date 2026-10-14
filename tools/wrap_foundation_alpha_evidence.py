@@ -12,7 +12,6 @@ ENTRY_SCHEMA_VERSION = "ai-platform.release-evidence-entry.v1"
 GATE = "Foundation Alpha POC"
 B1_MEMORY_CONTEXT_VERIFIER = "tools/verify_b1_memory_context_workflow.py"
 B1_MEMORY_CONTEXT_ACCEPTANCE_GAP = "controlled_host_memory_enabled_document_workflow_smoke"
-B1_MEMORY_CONTEXT_SCHEMA = "ai-platform.b1-memory-context-workflow-smoke.v1"
 
 # Retired governance and alert/trace identities are retained only to wrap archived
 # output. Registry membership does not imply an executable producer exists.
