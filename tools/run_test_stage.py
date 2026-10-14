@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -52,6 +54,7 @@ class StagePlan:
     selectors: tuple[str, ...]
     timeout_seconds: int
     require_zero_skips: bool
+    coverage: bool
     run_id: str
     run_root: Path
     basetemp: Path
@@ -442,6 +445,18 @@ def _build_plan(arguments: argparse.Namespace) -> StagePlan:
                 f"test selector does not name an existing Python test file: {source}",
                 EXIT_INVALID_PLAN,
             )
+    if arguments.coverage:
+        app_root = top_level / "app"
+        if not app_root.is_dir() or not app_root.resolve().is_relative_to(top_level):
+            raise StageError(
+                "invalid_test_plan", "coverage_source_missing",
+                "coverage requires the worktree app source directory", EXIT_INVALID_PLAN,
+            )
+        if importlib.util.find_spec("pytest_cov") is None:
+            raise StageError(
+                "infrastructure_failure", "coverage_plugin_missing",
+                "prepare the locked test extra containing pytest-cov", EXIT_INFRASTRUCTURE,
+            )
     run_id = f"{datetime.now(UTC):%Y%m%dT%H%M%S}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
     run_root = top_level / ".pytest-tmp" / "test-runs" / run_id / arguments.stage
     return StagePlan(
@@ -451,6 +466,7 @@ def _build_plan(arguments: argparse.Namespace) -> StagePlan:
         selectors=selectors,
         timeout_seconds=arguments.timeout_seconds,
         require_zero_skips=arguments.require_zero_skips,
+        coverage=arguments.coverage,
         run_id=run_id,
         run_root=run_root,
         basetemp=run_root / "basetemp",
@@ -644,6 +660,60 @@ def _pytest_environment() -> tuple[dict[str, str], tuple[str, ...]]:
     return environment, removed
 
 
+def _coverage_source_digest(plan: StagePlan) -> str:
+    paths = set((plan.repo_root / "app").rglob("*.py"))
+    paths.update((plan.repo_root / "tests").rglob("*.py"))
+    digest = hashlib.sha256()
+    for path in sorted(paths):
+        if not path.resolve().is_relative_to(plan.repo_root):
+            raise StageError(
+                "invalid_test_plan", "coverage_source_outside_worktree",
+                "coverage source must stay inside the worktree", EXIT_INVALID_PLAN,
+            )
+        digest.update(_relative(path, plan.repo_root).encode("utf-8") + b"\0")
+        digest.update(path.read_bytes() + b"\0")
+    return digest.hexdigest()
+
+
+def _coverage_observation(plan: StagePlan, source_digest: str) -> dict[str, object]:
+    observation: dict[str, object] = {
+        "scope": "app", "branch": True, "status": "missing",
+        "source_sha256": source_digest,
+        "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+    }
+    path = plan.run_root / "coverage.json"
+    if not path.is_file():
+        return observation
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        totals = data["totals"]
+        keys = ("covered_lines", "num_statements", "covered_branches", "num_branches")
+        if any(type(totals[key]) is not int or totals[key] < 0 for key in keys):
+            raise ValueError("invalid coverage counts")
+        if totals["covered_lines"] > totals["num_statements"] or totals["covered_branches"] > totals["num_branches"]:
+            raise ValueError("invalid coverage counts")
+        if data["meta"]["branch_coverage"] is not True or not isinstance(data["files"], dict) or not data["files"]:
+            raise ValueError("invalid coverage scope")
+        measured_sources = set()
+        for filename in data["files"]:
+            source = (plan.repo_root / filename).resolve()
+            if source.suffix != ".py" or not source.is_relative_to(plan.repo_root / "app"):
+                raise ValueError("invalid coverage path")
+            measured_sources.add(source)
+        if measured_sources != {path.resolve() for path in (plan.repo_root / "app").rglob("*.py")}:
+            raise ValueError("incomplete coverage source inventory")
+        observation.update(
+            status="recorded", totals={key: totals[key] for key in keys},
+            measured_files=len(measured_sources),
+            report_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+        )
+        if _coverage_source_digest(plan) != source_digest:
+            observation["status"] = "source_changed"
+    except (OSError, ValueError, TypeError, KeyError, StageError):
+        observation["status"] = "invalid"
+    return observation
+
+
 def _run_stage(plan: StagePlan) -> int:
     plan.run_root.mkdir(parents=True, exist_ok=False)
     command = [
@@ -661,6 +731,28 @@ def _run_stage(plan: StagePlan) -> int:
     started_at = _utc_now()
     started = time.monotonic()
     environment, removed_pytest_variables = _pytest_environment()
+    coverage_digest = None
+    removed_coverage_variables = []
+    if plan.coverage:
+        coverage_digest = _coverage_source_digest(plan)
+        config = plan.run_root / "coverage.ini"
+        config.write_text(
+            "[run]\nrelative_files = True\n[report]\ninclude_namespace_packages = True\n",
+            encoding="utf-8",
+        )
+        removed_coverage_variables = sorted(
+            name for name in environment if name.startswith(("COVERAGE_", "COV_CORE_"))
+        )
+        for name in removed_coverage_variables:
+            environment.pop(name)
+        coverage_data = str(plan.run_root / ".coverage")
+        # SQLite needs the Windows native prefix for deeply nested test worktrees.
+        environment["COVERAGE_FILE"] = "\\\\?\\" + coverage_data if os.name == "nt" else coverage_data
+        command.extend([
+            f"--cov={plan.repo_root / 'app'}", "--cov-branch",
+            f"--cov-config={config}", "--cov-report=term:skip-covered",
+            f"--cov-report=json:{plan.run_root / 'coverage.json'}",
+        ])
     process = _execute_process(
         command,
         plan,
@@ -673,6 +765,12 @@ def _run_stage(plan: StagePlan) -> int:
         counts,
         require_zero_skips=plan.require_zero_skips,
     )
+    coverage = _coverage_observation(plan, coverage_digest) if coverage_digest is not None else None
+    if result.returncode == 0 and coverage and coverage["status"] != "recorded":
+        result = ClassifiedResult(
+            EXIT_INFRASTRUCTURE, "failed", "infrastructure_failure",
+            f"coverage_report_{coverage['status']}",
+        )
     evidence: dict[str, object] = {
         "schema_version": REPORT_SCHEMA_VERSION,
         "run_id": plan.run_id,
@@ -701,6 +799,14 @@ def _run_stage(plan: StagePlan) -> int:
             "evidence": _relative(plan.evidence, plan.repo_root),
         },
     }
+    if coverage is not None:
+        evidence["coverage"] = coverage
+        evidence["environment"]["removed_coverage_variables"] = removed_coverage_variables
+        evidence["paths"].update({
+            "coverage": _relative(plan.run_root / "coverage.json", plan.repo_root),
+            "coverage_data": _relative(plan.run_root / ".coverage", plan.repo_root),
+            "coverage_config": _relative(plan.run_root / "coverage.ini", plan.repo_root),
+        })
     _write_json(plan.evidence, evidence)
     print(
         f"[local-test-stage] evidence={_relative(plan.evidence, plan.repo_root)}",
@@ -730,6 +836,7 @@ def _parser() -> argparse.ArgumentParser:
         default=DEFAULT_TIMEOUT_SECONDS,
     )
     parser.add_argument("--require-zero-skips", action="store_true")
+    parser.add_argument("--coverage", action="store_true", help="record app line/branch coverage in this stage's evidence")
     parser.add_argument("selectors", nargs="+")
     return parser
 

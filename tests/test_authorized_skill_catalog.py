@@ -1027,6 +1027,7 @@ def _worker_dispatch_fixture(execution_input: dict[str, Any]):
         "user_id": "user-a",
         "session_id": "session-a",
         "agent_id": "general-agent",
+        "agent_type": "chat",
         "admitted_agent_profile_revision": None,
         "admitted_agent_profile_hash": None,
         "session_admitted_agent_profile_revision": None,

@@ -27,11 +27,13 @@ jobs:
     timeout-minutes: 10
     env:
       BACKEND_PREFLIGHT_SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+      DOCUMENTATION_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before || github.sha }}
     steps:
       - name: Checkout exact backend preflight source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.BACKEND_PREFLIGHT_SOURCE_COMMIT }}
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Verify exact backend preflight source
@@ -56,6 +58,9 @@ jobs:
 
       - name: Compile backend sources
         run: python -m compileall -q app tools scripts
+
+      - name: Check changed first-party documentation
+        run: uv run --locked --extra test python tools/check_documentation.py --base-ref "$DOCUMENTATION_BASE_REF"
 
       - name: Enforce SSE v4 release-atomic cutover
         run: python tools/check_sse_runtime_cutover.py
@@ -285,6 +290,8 @@ jobs:
               tests/test_executor_signals.py
               tests/test_run_attempt_lifecycle_domain.py
               tests/test_run_terminalization_domain.py
+              tests/test_run_lifecycle.py
+              tests/test_run_lifecycle_postgres.py
               tests/test_projection_redaction.py
               tests/test_executor_receipt_settlement.py
               tests/test_executor_terminal_reconciliation.py
@@ -352,10 +359,14 @@ jobs:
               tests/test_code_governance.py
               tests/test_source_authority_docs.py
               tests/test_frontend_projection_audit.py::test_feedback_and_announcements_have_no_active_browser_api_or_projection_allowlist
+              tests/test_check_documentation.py
+              tests/test_run_test_stage.py
+              tests/test_source_quality_inventory.py
               tests/test_ci_image_scope.py
               tests/test_require_zero_junit_skips.py
               tests/test_packaging_contract.py
               tests/test_packaging_publish_workflow.py
+              tests/test_release_required_checks.py
               tests/test_trivy_failure_evidence.py
               tests/test_release_image_manifest.py
               tests/test_authenticated_smoke_redirects.py
@@ -490,6 +501,7 @@ jobs:
           timeout --signal=TERM --kill-after=30s 10m \
             uv run --locked --extra test python -m pytest \
               tests/test_agent_profile_authority.py \
+              tests/test_agent_profile_unpinned_admission.py \
               tests/test_agent_apps_worker_profile_snapshot.py \
               tests/test_agent_profile_lifecycle.py \
               tests/test_agent_profile_routes.py \
