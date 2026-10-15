@@ -129,6 +129,10 @@ for (const file of [
       assert.equal(attachments.length, 1);
       await view.render(createElement(AttachmentPreviewHost));
       await act(async () => attachment.openAttachmentPreview(attachments[0], "chat-input"));
+      // A completed fetch does not mean the lazy document renderer has committed.
+      for (let attempt = 0; attempt < 100 && !document.querySelector('[data-slot="table"]'); attempt++) {
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
+      }
       assert.ok(requests.includes(`/api/ai/files/${fileId}/preview`), "completed upload must request the owned preview endpoint");
       assert.equal(attachments[0].downloadUrl, `/api/ai/files/${fileId}/download`);
       assert.equal(requests.some((url) => url.endsWith("/download")), false, "preview does not fetch the workbook download bytes");
