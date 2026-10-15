@@ -334,6 +334,9 @@ local function valid_v2(record)
     and type(record["incarnation_digest"]) == "string"
     and epoch(record["generation"]) and record["generation"] >= 1
     and epoch(record["operation_epoch"])
+    and (record["successful_refresh_epoch"] == nil
+      or (epoch(record["successful_refresh_epoch"])
+        and record["successful_refresh_epoch"] <= record["operation_epoch"]))
     and epoch(record["tenant_user_subject_epoch"])
     and type(record["operation_token"]) == "string"
     and type(record["operation_kind"]) == "string"
@@ -769,7 +772,16 @@ if authority == false or context == false
 then
   return cjson.encode({status = "stale"})
 end
-return cjson.encode({status = "principal", principal = context["principal"]})
+local ttl = ttl_consistent(authority_key, context_key)
+if not ttl then return cjson.encode({status = "stale"}) end
+local redis_time = redis.call("TIME")
+return cjson.encode({
+  status = "principal", principal = context["principal"],
+  subject_epoch = context["tenant_user_subject_epoch"],
+  operation_epoch = context["operation_epoch"],
+  successful_refresh_epoch = context["successful_refresh_epoch"] or 0,
+  expires_at = math.floor(tonumber(redis_time[1]) + ttl / 1000)
+})
 """
 
 
@@ -801,6 +813,12 @@ then return cjson.encode({status = "stale"}) end
 if context["operation_epoch"] >= MAX_EPOCH then return cjson.encode({status = "corrupt"}) end
 local redis_time = redis.call("TIME")
 local now = tonumber(redis_time[1]) + (tonumber(redis_time[2]) / 1000000)
+if operation_kind == "refresh" then
+  if context["principal"] == cjson.null then return cjson.encode({status = "missing"}) end
+  if context["lease_until"] > now then return cjson.encode({status = "refresh_busy"}) end
+end
+-- A login/logout attempt fences completion evidence from the prior authority.
+if operation_kind ~= "refresh" then context["successful_refresh_epoch"] = 0 end
 context["operation_epoch"] = context["operation_epoch"] + 1
 context["operation_token"] = operation_token
 context["operation_kind"] = operation_kind
@@ -808,7 +826,12 @@ context["lease_until"] = now + lease_seconds
 local ttl = pttl_live(context_key)
 if not ttl then return cjson.encode({status = "missing"}) end
 redis.call("SET", context_key, cjson.encode(context), "PX", ttl)
-return cjson.encode({status = "begun", operation_epoch = context["operation_epoch"]})
+return cjson.encode({
+  status = "begun", operation_epoch = context["operation_epoch"],
+  successful_refresh_epoch = context["successful_refresh_epoch"] or 0,
+  principal = context["principal"], subject_epoch = context["tenant_user_subject_epoch"],
+  expires_at = math.floor(now + ttl / 1000)
+})
 """
 
 
@@ -847,15 +870,66 @@ local ok, principal = pcall(cjson.decode, principal_json)
 if not ok or (principal ~= cjson.null and type(principal) ~= "table") then
   return cjson.encode({status = "corrupt"})
 end
+local authorization_changed = true
+if context["operation_kind"] == "refresh" and principal ~= cjson.null then
+  local previous = context["principal"]
+  if type(previous) ~= "table" or previous["user_id"] ~= principal["user_id"]
+    or previous["tenant_id"] ~= principal["tenant_id"]
+  then return cjson.encode({status = "superseded"}) end
+  authorization_changed = false
+  for _, name in ipairs({"department_id", "authz_policy_version", "company_role",
+                        "company_username", "company_department", "roles", "permissions"}) do
+    local old = previous[name]
+    local new = principal[name]
+    if name == "company_role" or name == "company_username" or name == "company_department" then
+      old = old or ""
+      new = new or ""
+    end
+    if cjson.encode(old) ~= cjson.encode(new) then authorization_changed = true end
+  end
+end
+local ttl = pttl_live(context_key)
+if not ttl then return cjson.encode({status = "missing"}) end
+if KEYS[3] then
+  local credential_deadline = tonumber(ARGV[8])
+  if type(ARGV[7]) ~= "string" or ARGV[7] == ""
+    or not epoch(credential_deadline) or credential_deadline <= now
+  then return cjson.encode({status = "expired"}) end
+  redis.call("SET", KEYS[3], ARGV[7], "PX", math.min(ttl, math.floor((credential_deadline - now) * 1000)))
+end
+-- Only an atomic credential-bearing refresh commit proves successful renewal.
+-- Failure cleanup commits the previous principal without a credential.
+if KEYS[3] and context["operation_kind"] == "refresh" and principal ~= cjson.null then
+  context["successful_refresh_epoch"] = operation_epoch
+end
 context["principal"] = principal
-context["tenant_user_subject_epoch"] = context["tenant_user_subject_epoch"] + 1
+if authorization_changed then
+  context["tenant_user_subject_epoch"] = context["tenant_user_subject_epoch"] + 1
+end
 context["operation_token"] = ""
 context["operation_kind"] = ""
 context["lease_until"] = 0
-local ttl = pttl_live(context_key)
-if not ttl then return cjson.encode({status = "missing"}) end
 redis.call("SET", context_key, cjson.encode(context), "PX", ttl)
 return cjson.encode({status = "committed", tenant_user_subject_epoch = context["tenant_user_subject_epoch"]})
+"""
+
+
+V2_STORE_CREDENTIAL_SCRIPT = """
+-- ai-platform:auth-context-store-credential:v2
+""" + V2_LUA_HELPERS + """
+local authority = decode(redis.call("GET", KEYS[1]))
+local context = decode(redis.call("GET", KEYS[2]))
+local ttl = ttl_consistent(KEYS[1], KEYS[2])
+if not ttl or not same_authority(authority, context, ARGV[1], tonumber(ARGV[2]), ARGV[3])
+  or context["operation_epoch"] ~= tonumber(ARGV[4])
+  or context["tenant_user_subject_epoch"] ~= tonumber(ARGV[5])
+  or context["operation_token"] ~= ""
+  or type(context["principal"]) ~= "table"
+  or context["principal"]["tenant_id"] ~= ARGV[6]
+  or context["principal"]["user_id"] ~= ARGV[7]
+then return cjson.encode({status = "superseded"}) end
+redis.call("SET", KEYS[3], ARGV[8], "PX", ttl)
+return cjson.encode({status = "stored"})
 """
 
 
@@ -942,6 +1016,10 @@ class AuthOperation:
     kind: str
     incarnation_digest: str | None = None
     generation: int | None = None
+    principal: dict[str, object] | None = None
+    subject_epoch: int | None = None
+    expires_at: int | None = None
+    successful_refresh_epoch: int = 0
 
 
 @dataclass(frozen=True)
@@ -1181,6 +1259,8 @@ def _is_valid_v2_context_record(record: object) -> bool:
         and _is_valid_epoch(record.get("generation"))
         and int(record["generation"]) >= 1
         and _is_valid_epoch(record.get("operation_epoch"))
+        and _is_valid_epoch(record.get("successful_refresh_epoch", 0))
+        and record.get("successful_refresh_epoch", 0) <= record["operation_epoch"]
         and _is_valid_epoch(record.get("tenant_user_subject_epoch"))
         and isinstance(record.get("operation_token"), str)
         and isinstance(record.get("operation_kind"), str)
@@ -1214,6 +1294,8 @@ def _raise_for_store_status(operation: str, status: str) -> None:
         raise AuthContextError("auth_context_stale", 409)
     if status == "rebootstrap_required":
         raise AuthContextError("auth_context_rebootstrap_required", 409)
+    if status == "refresh_busy":
+        raise AuthContextError("auth_refresh_in_progress", 409)
     if status == "missing":
         raise AuthContextError("auth_context_missing", 401)
     if status == "superseded":
@@ -1593,7 +1675,53 @@ async def begin_auth_operation_for_cookie(
         kind=kind,
         incarnation_digest=parsed.incarnation_digest,
         generation=parsed.generation,
+        principal=_valid_snapshot(result["principal"]) if isinstance(result.get("principal"), dict) else None,
+        subject_epoch=result.get("subject_epoch"),
+        expires_at=result.get("expires_at"),
+        successful_refresh_epoch=result.get("successful_refresh_epoch", 0),
     )
+
+
+async def browser_auth_grant(cookie_value: str, settings: Any | None = None) -> dict[str, Any]:
+    """Read the current signed browser grant without accepting an expired JWT."""
+    current_settings = settings or get_settings()
+    parsed = parse_auth_context_cookie(cookie_value, current_settings)
+    if not isinstance(parsed, V2AuthContextIdentity):
+        raise AuthContextError("auth_context_stale", 409)
+    result = await _eval(
+        V2_PRINCIPAL_SNAPSHOT_SCRIPT,
+        [_authority_key(parsed.incarnation_digest), _context_key(parsed.context_handle)],
+        [parsed.incarnation_digest, parsed.generation, parsed.context_handle],
+    )
+    if result.get("status") != "principal":
+        _raise_for_store_status("principal", str(result.get("status") or ""))
+    raw_principal = result.get("principal")
+    if raw_principal is None:
+        raise AuthContextError("auth_context_missing", 401)
+    principal = _valid_snapshot(raw_principal)
+    if principal is None:
+        raise AuthContextError("auth_context_unavailable", 503)
+    if not _is_valid_epoch(result.get("subject_epoch")) or not _is_valid_epoch(result.get("expires_at")):
+        raise AuthContextError("auth_context_unavailable", 503)
+    return {**result, "principal": principal}
+
+
+async def store_auth_context_credential(
+    cookie_value: str, *, credential: tuple[str, str], operation_epoch: int,
+    subject_epoch: int, tenant_id: str, user_id: str,
+) -> None:
+    """Fence a post-login credential write against later login/logout operations."""
+    parsed = parse_auth_context_cookie(cookie_value, get_settings())
+    if not isinstance(parsed, V2AuthContextIdentity):
+        raise AuthContextError("auth_context_stale", 409)
+    result = await _eval(
+        V2_STORE_CREDENTIAL_SCRIPT,
+        [_authority_key(parsed.incarnation_digest), _context_key(parsed.context_handle), credential[0]],
+        [parsed.incarnation_digest, parsed.generation, parsed.context_handle, operation_epoch,
+         subject_epoch, tenant_id, user_id, credential[1]],
+    )
+    if result.get("status") != "stored":
+        _raise_for_store_status("credential", str(result.get("status") or ""))
 
 
 def principal_snapshot(principal: Any) -> dict[str, object]:
@@ -1610,6 +1738,9 @@ def principal_snapshot(principal: Any) -> dict[str, object]:
         "authz_policy_version": int(principal.authz_policy_version),
         "authority_source": str(principal.authority_source or principal.source),
         "authority_checked_at": str(principal.authority_checked_at),
+        "company_username": str(getattr(principal, "company_username", "")),
+        "company_department": str(getattr(principal, "company_department", "")),
+        "company_role": str(getattr(principal, "company_role", "")),
     }
     company_jwt_expires_at = getattr(principal, "company_jwt_expires_at", None)
     if company_jwt_expires_at is not None:
@@ -1620,8 +1751,11 @@ def principal_snapshot(principal: Any) -> dict[str, object]:
 async def commit_auth_operation(
     operation: AuthOperation,
     principal: Mapping[str, object] | None,
+    *,
+    credential: tuple[str, str] | None = None,
+    credential_expires_at: int | None = None,
 ) -> str:
-    """Commit a principal only if the operation lease still owns its context."""
+    """Commit principal and optional credential only under the current context lease."""
 
     if operation.incarnation_digest is not None or operation.generation is not None:
         if (
@@ -1637,6 +1771,7 @@ async def commit_auth_operation(
             [
                 _authority_key(operation.incarnation_digest),
                 _context_key(operation.context_handle),
+                *([credential[0]] if credential else []),
             ],
             [
                 operation.incarnation_digest,
@@ -1645,6 +1780,7 @@ async def commit_auth_operation(
                 operation.epoch,
                 operation.token,
                 json.dumps(principal, ensure_ascii=False, separators=(",", ":")),
+                *([credential[1], credential_expires_at] if credential else []),
             ],
         )
         status = str(result.get("status") or "")
@@ -1708,6 +1844,9 @@ def _valid_snapshot(value: object) -> dict[str, object] | None:
         or company_jwt_expires_at <= 0
     ):
         return None
+    company_fields = ("company_username", "company_department", "company_role")
+    if any(not isinstance(value.get(name, ""), str) for name in company_fields):
+        return None
     snapshot = {
         "user_id": value["user_id"],
         "display_name": value["display_name"],
@@ -1719,6 +1858,7 @@ def _valid_snapshot(value: object) -> dict[str, object] | None:
         "authz_policy_version": policy_version,
         "authority_source": authority_source,
         "authority_checked_at": authority_checked_at,
+        **{name: value.get(name, "") for name in company_fields},
     }
     if company_jwt_expires_at is not None:
         snapshot["company_jwt_expires_at"] = company_jwt_expires_at

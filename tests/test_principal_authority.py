@@ -3,12 +3,15 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
+from app.auth import AuthPrincipal
 from app.principal_authority import (
     AI_ADMIN_PERMISSIONS,
     AI_USER_PERMISSIONS,
     CURRENT_PRINCIPAL_DENIAL_REASON,
+    CompanyLoginJwtUnavailable,
     PrincipalAuthorityDenied,
     fetch_company_user_info,
+    issue_refreshed_company_jwt,
     resolve_current_principal,
     resolve_login_principal,
 )
@@ -33,6 +36,36 @@ def _adapter(result):
         return result
 
     return fetch
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [401, 403, 404, 500, 503])
+async def test_refresh_issuer_classifies_company_http_failure(status_code):
+    request = httpx.Request("GET", "https://company.test/api/userManage/user-a/info")
+    failure = httpx.HTTPStatusError(
+        "synthetic company failure", request=request,
+        response=httpx.Response(status_code, request=request),
+    )
+    expected = PrincipalAuthorityDenied if status_code in {401, 403, 404} else CompanyLoginJwtUnavailable
+    with pytest.raises(expected):
+        await issue_refreshed_company_jwt(
+            AuthPrincipal(user_id="user-a", display_name="User A", tenant_id="tenant-a"),
+            expires_at=1, user_info_adapter=_adapter(failure), settings=_settings(),
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [
+    httpx.ConnectError("synthetic company outage"),
+    httpx.ReadTimeout("synthetic company timeout"),
+    ValueError("synthetic malformed company JSON"),
+])
+async def test_refresh_issuer_reports_unavailable_company_transport(failure):
+    with pytest.raises(CompanyLoginJwtUnavailable):
+        await issue_refreshed_company_jwt(
+            AuthPrincipal(user_id="user-a", display_name="User A", tenant_id="tenant-a"),
+            expires_at=1, user_info_adapter=_adapter(failure), settings=_settings(),
+        )
 
 
 @pytest.mark.asyncio

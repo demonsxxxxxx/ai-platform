@@ -91,6 +91,8 @@ class FakeAuthRedis:
             and cls._is_valid_epoch(record.get("generation"))
             and record["generation"] >= 1
             and cls._is_valid_epoch(record.get("operation_epoch"))
+            and cls._is_valid_epoch(record.get("successful_refresh_epoch", 0))
+            and record.get("successful_refresh_epoch", 0) <= record["operation_epoch"]
             and cls._is_valid_epoch(record.get("tenant_user_subject_epoch"))
             and isinstance(record.get("operation_token"), str)
             and isinstance(record.get("operation_kind"), str)
@@ -170,7 +172,7 @@ class FakeAuthRedis:
             and record["lease_until"] == 0
         )
 
-    async def eval(self, script: str, _numkeys: int, *args: object) -> str:
+    async def eval(self, script: str, numkeys: int, *args: object) -> str:
         self._require_available()
         with self.lock:
             if "ai-platform:auth-context-bootstrap:v2" in script:
@@ -525,7 +527,13 @@ class FakeAuthRedis:
                     or not self._v2_ttl_consistent(str(authority_key), str(context_key), now_value)
                 ):
                     return json.dumps({"status": "stale"})
-                return json.dumps({"status": "principal", "principal": context["principal"]})
+                return json.dumps({
+                    "status": "principal", "principal": context["principal"],
+                    "subject_epoch": context["tenant_user_subject_epoch"],
+                    "operation_epoch": context["operation_epoch"],
+                    "successful_refresh_epoch": context.get("successful_refresh_epoch", 0),
+                    "expires_at": int(self.values[str(context_key)][1]),
+                })
 
             if "ai-platform:auth-context-begin:v2" in script:
                 authority_key, context_key, digest, generation, handle, lease_seconds, token, kind = args
@@ -546,6 +554,13 @@ class FakeAuthRedis:
                     return json.dumps({"status": "stale"})
                 if context["operation_epoch"] >= AUTH_CONTEXT_MAX_EPOCH:
                     return json.dumps({"status": "corrupt"})
+                if kind == "refresh":
+                    if context["principal"] is None:
+                        return json.dumps({"status": "missing"})
+                    if context["lease_until"] > now_value:
+                        return json.dumps({"status": "refresh_busy"})
+                if kind != "refresh":
+                    context["successful_refresh_epoch"] = 0
                 context["operation_epoch"] += 1
                 context["operation_token"] = str(token)
                 context["operation_kind"] = str(kind)
@@ -553,11 +568,18 @@ class FakeAuthRedis:
                 _raw, expires_at = self.values[str(context_key)]
                 self._set(str(context_key), json.dumps(context), expires_at)
                 return json.dumps(
-                    {"status": "begun", "operation_epoch": context["operation_epoch"]}
+                    {
+                        "status": "begun", "operation_epoch": context["operation_epoch"],
+                        "successful_refresh_epoch": context.get("successful_refresh_epoch", 0),
+                        "principal": context["principal"],
+                        "subject_epoch": context["tenant_user_subject_epoch"],
+                        "expires_at": int(expires_at),
+                    }
                 )
 
             if "ai-platform:auth-context-commit:v2" in script:
-                authority_key, context_key, digest, generation, handle, epoch, token, principal_json = args
+                authority_key, context_key = args[:2]
+                digest, generation, handle, epoch, token, principal_json = args[numkeys:numkeys + 6]
                 now_value = self.now
                 authority_raw = self._get(str(authority_key), now_value)
                 context_raw = self._get(str(context_key), now_value)
@@ -582,8 +604,26 @@ class FakeAuthRedis:
                     return json.dumps({"status": "corrupt"})
                 if context["tenant_user_subject_epoch"] >= AUTH_CONTEXT_MAX_EPOCH:
                     return json.dumps({"status": "corrupt"})
+                changed = True
+                if context["operation_kind"] == "refresh" and principal is not None:
+                    previous = context["principal"]
+                    if (not isinstance(previous, dict)
+                        or previous.get("user_id") != principal.get("user_id")
+                        or previous.get("tenant_id") != principal.get("tenant_id")):
+                        return json.dumps({"status": "superseded"})
+                    fields = ("department_id", "authz_policy_version", "company_role",
+                              "company_username", "company_department", "roles", "permissions")
+                    changed = any(previous.get(name, "") != principal.get(name, "") for name in fields)
+                if numkeys == 3:
+                    envelope, deadline = args[numkeys + 6:numkeys + 8]
+                    if not envelope or int(deadline) <= now_value:
+                        return json.dumps({"status": "expired"})
+                    self._set(str(args[2]), str(envelope),
+                              min(self.values[str(context_key)][1], float(deadline)))
+                if numkeys == 3 and context["operation_kind"] == "refresh" and principal is not None:
+                    context["successful_refresh_epoch"] = epoch
                 context["principal"] = principal
-                context["tenant_user_subject_epoch"] += 1
+                context["tenant_user_subject_epoch"] += int(changed)
                 context["operation_token"] = ""
                 context["operation_kind"] = ""
                 context["lease_until"] = 0
@@ -595,6 +635,26 @@ class FakeAuthRedis:
                         "tenant_user_subject_epoch": context["tenant_user_subject_epoch"],
                     }
                 )
+
+            if "ai-platform:auth-context-store-credential:v2" in script:
+                authority_key, context_key, credential_key = args[:3]
+                digest, generation, handle, epoch, subject_epoch, tenant_id, user_id, envelope = args[3:]
+                authority_raw = self._get(str(authority_key), self.now)
+                context_raw = self._get(str(context_key), self.now)
+                if authority_raw is None or context_raw is None:
+                    return json.dumps({"status": "superseded"})
+                authority, context = json.loads(authority_raw), json.loads(context_raw)
+                principal = context.get("principal")
+                if (not self._v2_records_match(authority, context, digest, generation, handle)
+                    or not self._v2_ttl_consistent(str(authority_key), str(context_key), self.now)
+                    or context["operation_epoch"] != epoch
+                    or context["tenant_user_subject_epoch"] != subject_epoch
+                    or context["operation_token"] != ""
+                    or not isinstance(principal, dict)
+                    or (principal["tenant_id"], principal["user_id"]) != (tenant_id, user_id)):
+                    return json.dumps({"status": "superseded"})
+                self._set(str(credential_key), str(envelope), self.values[str(context_key)][1])
+                return json.dumps({"status": "stored"})
 
             if "ai-platform:auth-oauth-state-issue:v2" in script:
                 (
@@ -873,6 +933,7 @@ def install_auth_context_dependencies(monkeypatch, redis: FakeAuthRedis, setting
         return "audit-id"
 
     monkeypatch.setattr("app.auth_sessions.get_redis", lambda: redis)
+    monkeypatch.setattr("app.auth_sessions.get_settings", lambda: settings)
     monkeypatch.setattr("app.auth.get_settings", lambda: settings)
     monkeypatch.setattr("app.routes.auth.get_settings", lambda: settings)
     monkeypatch.setattr("app.routes.lambchat_compat.get_settings", lambda: settings)
@@ -904,6 +965,11 @@ def test_browser_principal_snapshot_strictly_preserves_authority_metadata():
         incomplete = dict(snapshot)
         incomplete.pop(field)
         assert auth_sessions._valid_snapshot(incomplete) is None
+    without_expiry = dict(snapshot)
+    without_expiry.pop("company_jwt_expires_at")
+    assert auth_sessions._valid_snapshot(without_expiry) == without_expiry
+    for invalid_expiry in (True, "invalid", 0, -1):
+        assert auth_sessions._valid_snapshot({**snapshot, "company_jwt_expires_at": invalid_expiry}) is None
 
     password_login_snapshot = dict(snapshot)
     password_login_snapshot.pop("company_jwt_expires_at")
@@ -2466,3 +2532,397 @@ def test_browser_login_rejects_untrusted_tenant_substitution(monkeypatch):
     )
     assert response.status_code == 422
     assert "set-cookie" not in response.headers
+
+
+async def install_refresh_grant(monkeypatch, *, lifetime=86400, legacy=False):
+    from app.mcp.infrastructure import runtime
+    from app.auth import refresh_company_session
+    from app.principal_authority import resolve_company_login_jwt
+    import jwt
+
+    redis = FakeAuthRedis()
+    settings = auth_settings(
+        ai_session_max_age_seconds=lifetime,
+        company_login_jwt_secret="synthetic-company-refresh-secret-at-least-32-bytes",
+        company_login_jwt_issuer="test-company", company_login_jwt_audience="test-mcp",
+        mcp_encryption_keys_json=json.dumps({"current": "11" * 32}),
+        mcp_encryption_current_key_id="current",
+    )
+    install_auth_context_dependencies(monkeypatch, redis, settings)
+    monkeypatch.setattr("app.principal_authority.get_settings", lambda: settings)
+    monkeypatch.setattr(runtime, "get_settings", lambda: settings)
+    monkeypatch.setattr(runtime, "get_redis_client", lambda: redis)
+    monkeypatch.setattr(runtime, "_grant_reader", auth_sessions.browser_auth_grant)
+    monkeypatch.setattr(runtime, "_credential_writer", auth_sessions.store_auth_context_credential)
+    monkeypatch.setattr(runtime, "_credential_refresher", refresh_company_session)
+    store = runtime.McpPrincipalJwtStore(clock=lambda: redis.now)
+    monkeypatch.setattr("app.mcp.api.get_mcp_principal_jwt_store", lambda: store)
+    created = await auth_sessions.bootstrap_auth_context_v2("A" * 43, "I" * 43, 1, "", settings)
+    cookie = auth_sessions.auth_context_v2_cookie_for_identity(created.identity, settings)
+    now = int(redis.now)
+    claims = {"workid": "user-a", "username": "account.a", "cnname": "User A",
+              "depart": "QA", "role": "Analyst", "iat": now - 20,
+              "nbf": now - 20, "exp": now + 1, "iss": "test-company", "aud": "test-mcp"}
+    token = jwt.encode(claims, settings.company_login_jwt_secret, algorithm="HS256")
+    principal = resolve_company_login_jwt(token, settings=settings)
+    snapshot = auth_sessions.principal_snapshot(principal)
+    if legacy:
+        for name in ("company_username", "company_department", "company_role"):
+            snapshot.pop(name)
+    operation = await auth_sessions.begin_auth_operation_for_cookie(cookie, "ad-login")
+    assert await auth_sessions.commit_auth_operation(operation, snapshot) == "committed"
+    await store.put(principal, token, refresh_cookie=cookie, operation_epoch=operation.epoch)
+    record = {"workId": "user-a", "username": "account.a", "cnname": "User A",
+              "department": "QA", "role": "Analyst", "active": True}
+
+    async def user_info(_work_id, **_kwargs):
+        return record
+
+    monkeypatch.setattr("app.principal_authority.fetch_company_user_info", user_info)
+    return redis, settings, cookie, principal, store, record
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lifetime", [86400, 300])
+async def test_company_refresh_signs_compatible_bounded_jwt_without_sliding_grant(monkeypatch, lifetime):
+    import jwt
+    from app.auth import refresh_company_session
+
+    redis, settings, cookie, principal, store, _record = await install_refresh_grant(monkeypatch, lifetime=lifetime)
+    before = await auth_sessions.browser_auth_grant(cookie)
+    context_deadlines = {key: value[1] for key, value in redis.values.items()}
+    refreshed, changed = await refresh_company_session(cookie)
+    token = await store.get(principal)
+    claims = jwt.decode(token, settings.company_login_jwt_secret, algorithms=["HS256"],
+                        issuer="test-company", audience="test-mcp", leeway=0)
+    assert claims["workid"] == "user-a"
+    assert claims["role"] == "Analyst"  # Never replace the company role with platform "user".
+    assert claims["username"] == "account.a" and claims["depart"] == "QA"
+    assert claims["exp"] == min(before["expires_at"], claims["iat"] + 28800)
+    assert claims["nbf"] == claims["iat"]
+    assert changed is False and refreshed.roles == ["user"]
+    after = await auth_sessions.browser_auth_grant(cookie)
+    assert after["expires_at"] == before["expires_at"]
+    assert after["subject_epoch"] == before["subject_epoch"]
+    for key, deadline in context_deadlines.items():
+        assert redis.values[key][1] <= deadline
+    with pytest.raises(jwt.InvalidSignatureError):
+        jwt.decode(token, "wrong-synthetic-secret-at-least-32-bytes", algorithms=["HS256"],
+                   issuer="test-company", audience="test-mcp")
+    with pytest.raises(jwt.ExpiredSignatureError):
+        expired = jwt.encode({**claims, "exp": int(time.time()) - 1}, settings.company_login_jwt_secret, algorithm="HS256")
+        jwt.decode(expired, settings.company_login_jwt_secret, algorithms=["HS256"],
+                   issuer="test-company", audience="test-mcp", leeway=0)
+
+
+@pytest.mark.asyncio
+async def test_refresh_rechecks_permissions_and_fences_existing_mcp_execution(monkeypatch):
+    from app.auth import refresh_company_session
+    from app.mcp.domain.errors import McpRuntimeContextError
+
+    _redis, _settings, cookie, principal, store, record = await install_refresh_grant(monkeypatch)
+    execution = SimpleNamespace(**await store.credential_subject(principal))
+    record["role"] = "developer"
+    refreshed, changed = await refresh_company_session(cookie)
+    assert changed and refreshed.roles == ["admin"] and "mcp:admin" in refreshed.permissions
+    assert (await auth_sessions.browser_auth_grant(cookie))["subject_epoch"] == 2
+    with pytest.raises(McpRuntimeContextError) as fenced:
+        await store.get(execution)
+    assert fenced.value.status_code == 401
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lifetime", [86400, 300])
+async def test_parallel_refresh_merges_and_old_mcp_connection_reads_new_jwt(monkeypatch, lifetime):
+    from app.auth import refresh_company_session
+
+    redis, _settings, cookie, principal, store, record = await install_refresh_grant(monkeypatch, lifetime=lifetime)
+    monkeypatch.setattr("app.principal_authority.authority_checked_at_now", lambda: "2026-10-14T00:00:00+00:00")
+    if lifetime == 300:
+        await refresh_company_session(cookie)
+    execution = SimpleNamespace(**await store.credential_subject(principal))
+    redis.now += 2
+    entered, release = asyncio.Event(), asyncio.Event()
+    calls = 0
+
+    async def user_info(_work_id, **_kwargs):
+        nonlocal calls
+        calls += 1
+        entered.set()
+        await release.wait()
+        return record
+
+    monkeypatch.setattr("app.principal_authority.fetch_company_user_info", user_info)
+    first = asyncio.create_task(refresh_company_session(cookie))
+    await asyncio.wait_for(entered.wait(), 2)
+    second = asyncio.create_task(refresh_company_session(cookie))
+    try:
+        await asyncio.sleep(0.01)
+        release.set()
+        results = await asyncio.wait_for(asyncio.gather(first, second), 3)
+        assert calls == 1 and all(not changed for _, changed in results)
+        assert await store.get(execution) == await store.get(principal)
+    finally:
+        release.set()
+        await asyncio.gather(first, second, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lifetime", [86400, 300])
+async def test_refresh_reuses_completion_between_snapshot_and_lease(monkeypatch, lifetime):
+    import httpx
+    from app import auth
+
+    redis, _settings, cookie, _principal, _store, record = await install_refresh_grant(
+        monkeypatch, lifetime=lifetime,
+    )
+    monkeypatch.setattr("app.principal_authority.authority_checked_at_now", lambda: "2026-10-14T00:00:00+00:00")
+    # At the absolute deadline cap, another refresh cannot increase JWT exp.
+    if lifetime == 300:
+        await auth.refresh_company_session(cookie)
+    initial = await auth_sessions.browser_auth_grant(cookie)
+    deadlines = {key: value[1] for key, value in redis.values.items()}
+    paused, resume = asyncio.Event(), asyncio.Event()
+    begin = auth.begin_auth_operation_for_cookie
+    delayed_task = None
+    calls = 0
+
+    async def delayed_begin(*args, **kwargs):
+        if asyncio.current_task() is delayed_task:
+            paused.set()
+            await resume.wait()
+        return await begin(*args, **kwargs)
+
+    async def user_info(_work_id, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise httpx.ConnectError("synthetic duplicate authority lookup")
+        return record
+
+    monkeypatch.setattr(auth, "begin_auth_operation_for_cookie", delayed_begin)
+    monkeypatch.setattr("app.principal_authority.fetch_company_user_info", user_info)
+    delayed_task = asyncio.create_task(auth.refresh_company_session(cookie))
+    try:
+        await asyncio.wait_for(paused.wait(), 2)
+        winner = await auth.refresh_company_session(cookie)
+        completed = await auth_sessions.browser_auth_grant(cookie)
+        if lifetime == 300:
+            assert completed["principal"] == initial["principal"]
+        resume.set()
+        follower = await asyncio.wait_for(delayed_task, 2)
+        assert follower == winner
+        assert calls == 1
+        final = await auth_sessions.browser_auth_grant(cookie)
+        assert final["subject_epoch"] == initial["subject_epoch"]
+        assert final["expires_at"] == initial["expires_at"]
+        for key, deadline in deadlines.items():
+            assert redis.values[key][1] <= deadline
+    finally:
+        resume.set()
+        await asyncio.gather(delayed_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("intervening", ["failed-refresh", "same-user-login", "changed-authorization"])
+async def test_refresh_completion_evidence_does_not_cross_authority_fences(monkeypatch, intervening):
+    import httpx
+    from fastapi import HTTPException
+    from app import auth
+
+    _redis, _settings, cookie, _principal, _store, record = await install_refresh_grant(monkeypatch)
+    initial = await auth_sessions.browser_auth_grant(cookie)
+    paused, resume = asyncio.Event(), asyncio.Event()
+    begin = auth.begin_auth_operation_for_cookie
+    delayed_task = None
+    calls = 0
+
+    async def delayed_begin(*args, **kwargs):
+        if asyncio.current_task() is delayed_task:
+            paused.set()
+            await resume.wait()
+        return await begin(*args, **kwargs)
+
+    async def user_info(_work_id, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if intervening == "failed-refresh" and calls == 1:
+            raise httpx.ConnectError("synthetic temporary outage")
+        return record
+
+    monkeypatch.setattr(auth, "begin_auth_operation_for_cookie", delayed_begin)
+    monkeypatch.setattr("app.principal_authority.fetch_company_user_info", user_info)
+    delayed_task = asyncio.create_task(auth.refresh_company_session(
+        cookie, expected_subject_epoch=initial["subject_epoch"],
+    ))
+    try:
+        await asyncio.wait_for(paused.wait(), 2)
+        if intervening == "same-user-login":
+            login = await begin(cookie, "ad-login")
+            assert await auth_sessions.commit_auth_operation(login, initial["principal"]) == "committed"
+        elif intervening == "changed-authorization":
+            record["role"] = "developer"
+            assert (await auth.refresh_company_session(cookie))[1] is True
+        else:
+            with pytest.raises(HTTPException) as unavailable:
+                await auth.refresh_company_session(cookie)
+            assert unavailable.value.status_code == 503
+            assert (await auth_sessions.browser_auth_grant(cookie))["successful_refresh_epoch"] == 0
+        resume.set()
+        if intervening == "failed-refresh":
+            assert (await asyncio.wait_for(delayed_task, 2))[1] is False
+            assert calls == 2
+        else:
+            with pytest.raises(HTTPException) as fenced:
+                await asyncio.wait_for(delayed_task, 2)
+            assert fenced.value.status_code == 409
+            assert calls == int(intervening == "changed-authorization")
+    finally:
+        resume.set()
+        await asyncio.gather(delayed_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_legacy_context_without_refresh_completion_marker_can_refresh(monkeypatch):
+    from app.auth import refresh_company_session
+
+    redis, _settings, cookie, _principal, _store, _record = await install_refresh_grant(monkeypatch)
+    key = next(key for key in redis.values if key.startswith("ai-platform:auth-context:"))
+    raw, deadline = redis.values[key]
+    context = json.loads(raw)
+    context.pop("successful_refresh_epoch", None)
+    redis.values[key] = (json.dumps(context), deadline)
+    assert (await auth_sessions.browser_auth_grant(cookie))["successful_refresh_epoch"] == 0
+    await refresh_company_session(cookie)
+    assert (await auth_sessions.browser_auth_grant(cookie))["successful_refresh_epoch"] > 0
+    assert redis.values[key][1] == deadline
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation_kind", ["logout", "login"])
+@pytest.mark.parametrize("denied", [False, True])
+async def test_late_refresh_cannot_overwrite_newer_auth_operation(monkeypatch, operation_kind, denied):
+    from app.auth import refresh_company_session
+    from fastapi import HTTPException
+
+    redis, _settings, cookie, _principal, _store, record = await install_refresh_grant(monkeypatch)
+    entered, release = asyncio.Event(), asyncio.Event()
+    before_credentials = {key: value for key, value in redis.values.items() if "mcp:" in key}
+
+    async def user_info(_work_id, **_kwargs):
+        entered.set()
+        await release.wait()
+        return {**record, "active": False} if denied else record
+
+    monkeypatch.setattr("app.principal_authority.fetch_company_user_info", user_info)
+    pending = asyncio.create_task(refresh_company_session(cookie))
+    await asyncio.wait_for(entered.wait(), 2)
+    replacement = None if operation_kind == "logout" else auth_sessions.principal_snapshot(
+        AuthPrincipal("user-b", "User B", "default", source="company-login",
+                      authority_source="company-user-info", authority_checked_at=authority_checked_at_now()))
+    newer = await auth_sessions.begin_auth_operation_for_cookie(cookie, operation_kind)
+    assert await auth_sessions.commit_auth_operation(newer, replacement) == "committed"
+    release.set()
+    with pytest.raises(HTTPException) as fenced:
+        await asyncio.wait_for(pending, 2)
+    assert fenced.value.status_code == 409
+    assert await auth_sessions.principal_for_cookie(cookie) == replacement
+    assert {key: value for key, value in redis.values.items() if "mcp:" in key} == before_credentials
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("denied", [True, False])
+async def test_refresh_distinguishes_revoked_account_from_temporary_outage(monkeypatch, denied):
+    from app.auth import refresh_company_session
+    from fastapi import HTTPException
+    import httpx
+
+    _redis, _settings, cookie, _principal, _store, record = await install_refresh_grant(monkeypatch)
+    before = await auth_sessions.browser_auth_grant(cookie)
+
+    async def user_info(_work_id, **_kwargs):
+        if denied:
+            return {**record, "active": False}
+        raise httpx.ConnectError("synthetic network outage")
+
+    monkeypatch.setattr("app.principal_authority.fetch_company_user_info", user_info)
+    with pytest.raises(HTTPException) as failed:
+        await refresh_company_session(cookie)
+    assert failed.value.status_code == (401 if denied else 503)
+    snapshot = await auth_sessions.principal_for_cookie(cookie)
+    assert snapshot is None if denied else snapshot == before["principal"]
+    if not denied:
+        assert (await auth_sessions.browser_auth_grant(cookie))["subject_epoch"] == before["subject_epoch"]
+
+
+@pytest.mark.asyncio
+async def test_legacy_grant_can_recover_company_claims_but_expired_grant_cannot_refresh(monkeypatch):
+    from app.auth import refresh_company_session
+    from fastapi import HTTPException
+
+    redis, _settings, cookie, _principal, _store, _record = await install_refresh_grant(monkeypatch, legacy=True)
+    from app.auth import principal_to_response
+    current = AuthPrincipal(**(await auth_sessions.browser_auth_grant(cookie))["principal"])
+    assert principal_to_response(current)["company_refresh_required"] is True
+    refreshed, changed = await refresh_company_session(cookie)
+    assert changed and refreshed.company_role == "Analyst"
+    assert principal_to_response(refreshed)["company_refresh_required"] is False
+    from dataclasses import replace
+    assert principal_to_response(replace(refreshed, company_jwt_expires_at=None))["company_refresh_required"] is True
+    redis.now += 86401
+    with pytest.raises(HTTPException) as expired:
+        await refresh_company_session(cookie)
+    assert expired.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_mcp_expired_credential_renews_from_live_grant_before_dispatch(monkeypatch):
+    redis, _settings, cookie, principal, store, _record = await install_refresh_grant(monkeypatch)
+    redis.now += 2
+    execution = SimpleNamespace(**await store.credential_subject(principal))
+    token = await store.get(execution)
+    assert token and (await auth_sessions.browser_auth_grant(cookie))["principal"]["company_jwt_expires_at"] > redis.now
+
+
+def test_refresh_http_boundary_rejects_anonymous_and_body_identity(monkeypatch):
+    redis = FakeAuthRedis()
+    install_auth_context_dependencies(monkeypatch, redis)
+    client = TestClient(create_app())
+    bootstrap(client)
+    assert client.post("/api/ai/auth/refresh", json={}).status_code == 401
+    assert client.post("/api/ai/auth/refresh", json={"user_id": "attacker", "role": "admin"}).status_code == 422
+    assert client.post("/api/ai/auth/refresh", json={}, headers={"Sec-Fetch-Site": "cross-site"}).status_code == 403
+
+@pytest.mark.asyncio
+async def test_refresh_http_success_keeps_jwt_private_and_rejection_precedes_business(monkeypatch):
+    from dataclasses import replace
+    from fastapi import Depends, FastAPI
+    from app.auth import require_principal
+
+    _redis, _settings, cookie, principal, _store, _record = await install_refresh_grant(monkeypatch)
+    expired = replace(principal, company_jwt_expires_at=int(time.time()) - 1)
+    operation = await auth_sessions.begin_auth_operation_for_cookie(cookie, "ad-login")
+    assert await auth_sessions.commit_auth_operation(operation, auth_sessions.principal_snapshot(expired)) == "committed"
+    app = FastAPI()
+    executions = []
+
+    @app.post("/mutation")
+    async def mutation(current=Depends(require_principal)):
+        executions.append(current.user_id)
+        return {"ok": True}
+
+    client = TestClient(app)
+    client.cookies.set("ai_platform_auth_context", cookie)
+    rejection = client.post("/mutation")
+    assert rejection.status_code == 401
+    assert rejection.headers["X-Auth-Rejected-Before-Execution"] == "true"
+    assert executions == []
+    auth_client = TestClient(create_app())
+    auth_client.cookies.set("ai_platform_auth_context", cookie)
+    renewed = auth_client.post("/api/ai/auth/refresh", json={})
+    assert renewed.status_code == 200 and renewed.headers["cache-control"] == "no-store"
+    assert set(renewed.json()) == {"principal", "authorization_changed"}
+    assert "company_role" not in renewed.json()["principal"] and "jwt" not in renewed.text.lower()
+    assert "set-cookie" not in renewed.headers
+    assert client.post("/mutation").status_code == 200
+    assert executions == ["user-a"]
