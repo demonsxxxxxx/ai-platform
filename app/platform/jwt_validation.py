@@ -11,6 +11,14 @@ class JwtValidationError(ValueError):
     """Collapse third-party JWT failures at the platform adapter boundary."""
 
 
+def encode_hs256_jwt(claims: dict[str, Any], *, secret: str) -> str:
+    """Sign server-owned claims using the receiver's existing HS256 contract."""
+    try:
+        return jwt.encode(claims, secret, algorithm="HS256")
+    except (PyJWTError, TypeError, ValueError) as exc:
+        raise JwtValidationError() from exc
+
+
 def decode_hs256_jwt(
     token: str,
     *,

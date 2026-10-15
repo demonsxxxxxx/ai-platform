@@ -336,7 +336,9 @@ def test_login_returns_ai_role_without_mutating_context_cookie(monkeypatch):
     stored_jwt = {}
 
     class JwtStore:
-        async def put(self, principal, jwt):
+        async def put(self, principal, jwt, **grant):
+            assert grant["refresh_cookie"].startswith("v2.")
+            assert grant["operation_epoch"] >= 1
             stored_jwt.update(
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
@@ -403,7 +405,9 @@ def test_ad_login_verifies_company_jwt_without_requerying_user_info(monkeypatch)
 
     stored = {}
 
-    async def fake_store(principal, company_jwt):
+    async def fake_store(principal, company_jwt, **grant):
+        assert grant["refresh_cookie"].startswith("v2.")
+        assert grant["operation_epoch"] >= 1
         stored["user_id"] = principal.user_id
         stored["jwt"] = company_jwt
 
@@ -432,6 +436,7 @@ def test_ad_login_verifies_company_jwt_without_requerying_user_info(monkeypatch)
         "authz_policy_version": COMPANY_AUTHZ_POLICY_VERSION,
         "authority_source": "company-login-jwt",
         "authority_checked_at": response.json()["authority_checked_at"],
+        "company_refresh_required": False,
     }
     assert response.json() == expected_principal
     current_response = client.get("/api/ai/auth/me")

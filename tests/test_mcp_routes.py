@@ -100,6 +100,14 @@ async def test_principal_jwt_store_encrypts_overwrites_and_uses_jwt_exp(monkeypa
     assert first not in backend.values[key]
     assert backend.expirations[key] == 900
     assert await store.get(principal) == first
+    legacy_execution = SimpleNamespace(**await store.credential_subject(principal))
+    bound_key, bound_envelope = store.prepare(
+        principal, first, refresh_cookie="v2.synthetic", subject_epoch=1, refresh_expires_at=now[0] + 86400,
+    )
+    backend.values[bound_key] = bound_envelope
+    with pytest.raises(McpRuntimeContextError) as transplanted:
+        await store.get(legacy_execution)
+    assert transplanted.value.status_code == 401
 
     await store.put(principal, second)
 
@@ -107,6 +115,9 @@ async def test_principal_jwt_store_encrypts_overwrites_and_uses_jwt_exp(monkeypa
     assert second not in backend.values[key]
     assert backend.expirations[key] == 600
     assert await store.get(principal) == second
+    with pytest.raises(McpRuntimeContextError) as legacy_fenced:
+        await store.get(legacy_execution)
+    assert legacy_fenced.value.status_code == 401
     other = AuthPrincipal(
         tenant_id="tenant-a",
         user_id="user-b",
@@ -237,12 +248,14 @@ class _LiveCatalogDiscovery:
         *,
         static_headers,
         jwt_authorization,
+        credential_subject,
     ):
         self.calls.append(
             {
                 "endpoint": endpoint,
                 "static_headers": dict(static_headers),
                 "jwt_authorization": jwt_authorization,
+                "credential_subject": credential_subject,
             }
         )
         return self.definitions

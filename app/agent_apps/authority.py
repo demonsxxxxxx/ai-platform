@@ -33,6 +33,7 @@ from app.agent_apps.api import (
     safe_agent_avatar_ref,
     safe_agent_avatar_seed,
     agent_profile_repository,
+    agent_type_requires_profile_admission,
 )
 from app.auth import AuthPrincipal, is_ai_admin, normalize_roles
 from app.chat_session_projection import session_response
@@ -1381,6 +1382,8 @@ class AgentProfileAuthority:
         snapshot = runs_replay_postgres.copied_run_execution_snapshot(input_json)
         revision, content_hash = runs_replay_postgres.admitted_agent_profile_pins_for_copy(run, snapshot)
         if revision is None:
+            if agent_type_requires_profile_admission(run.get("agent_type")):
+                raise platform_errors.RepositoryConflictError("agent_profile_admission_required")
             return
         profile_snapshot = snapshot.get("agent_profile")
         pinned_skill_set = (

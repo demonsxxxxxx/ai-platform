@@ -911,8 +911,8 @@ def test_notifications_have_one_workbench_route_owner(monkeypatch):
 
     assert anonymous_notifications.status_code == 200
     assert anonymous_notifications.json() == {"notifications": []}
-    assert authenticated_notifications.status_code == 200
-    assert authenticated_notifications.json()[0]["id"] == "platform-announcement"
+    assert authenticated_notifications.status_code == 501
+    assert authenticated_notifications.json() == {"detail": "notifications_unavailable"}
 
 
 def test_lambchat_model_catalog_is_empty_without_governed_connection(monkeypatch):

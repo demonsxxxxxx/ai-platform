@@ -38,6 +38,7 @@ TRUSTED_WORKFLOW_IMPORTS = (
 )
 AGENT_SKILL_CONTRACT_TESTS = (
     "tests/test_agent_profile_authority.py",
+    "tests/test_agent_profile_unpinned_admission.py",
     "tests/test_agent_apps_worker_profile_snapshot.py",
     "tests/test_agent_profile_lifecycle.py",
     "tests/test_agent_profile_routes.py",
@@ -207,6 +208,9 @@ BACKEND_TEST_SHARDS = {
         "tests/test_admin_part_messages.py",
         "tests/test_admin_runtime_routes.py",
         "tests/test_auth_principal.py",
+        "tests/test_workbench_projection_routes.py",
+        "tests/test_lambchat_frontend_compat.py::test_notifications_have_one_workbench_route_owner",
+        "tests/test_lambchat_frontend_compat.py::test_frontend_bootstrap_endpoints_match_retained_contracts",
         "tests/test_artifact_permissions.py",
         "tests/test_two_user_artifact_isolation.py",
         "tests/test_auth_routes.py",
@@ -270,6 +274,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_streaming_answer_receipt.py",
         "tests/test_streaming_v4_postgres_integration.py",
         "tests/test_streaming_v4_redis_integration.py",
+        "tests/test_auth_refresh_redis_integration.py",
         "tests/test_streaming_v4_transport.py",
     ),
     "release-governance-policy": (
@@ -279,6 +284,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_trusted_governance.py",
         "tests/test_code_governance.py",
         "tests/test_source_authority_docs.py",
+        "tests/test_frontend_projection_audit.py::test_feedback_and_announcements_have_no_active_browser_api_or_projection_allowlist",
         "tests/test_check_documentation.py",
         "tests/test_run_test_stage.py",
         "tests/test_source_quality_inventory.py",
@@ -286,6 +292,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_require_zero_junit_skips.py",
         "tests/test_packaging_contract.py",
         "tests/test_packaging_publish_workflow.py",
+        "tests/test_release_required_checks.py",
         "tests/test_trivy_failure_evidence.py",
         "tests/test_release_image_manifest.py",
         "tests/test_authenticated_smoke_redirects.py",

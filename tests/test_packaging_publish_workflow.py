@@ -9,6 +9,7 @@ import pytest
 import yaml
 
 from tests.support.yaml_contracts import load_unique_yaml
+from tests.test_release_required_checks import FakeApi
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -166,6 +167,9 @@ def test_requested_release_version_is_strict_literal_input(version, valid):
     [
         ("v0.1.0", "", ["main", "tag", "create", "view"], True),
         ("", "", [], False),
+        ("v0.1.0", "required_failed", [], False),
+        ("v0.1.0", "required_unavailable", [], False),
+        ("v0.1.0", "required_wrong_sha", [], False),
         ("v0.1.0", "main_moved", ["main"], False),
         ("v0.1.0", "main_unavailable", ["main"], False),
         ("v01.0.0", "", [], False),
@@ -184,10 +188,34 @@ def test_release_publication_fails_closed_without_reusing_version(
     )
     gh = tmp_path / "gh"
     log = tmp_path / "calls.jsonl"
+    api = FakeApi()
+    api.verify()
+    snapshots = {endpoint: api(endpoint) for endpoint in list(api.calls)}
+    if failure in {"required_failed", "required_wrong_sha"}:
+        for payload in snapshots.values():
+            if "workflow_runs" in payload:
+                for run in payload["workflow_runs"]:
+                    if failure == "required_failed":
+                        run["conclusion"] = "failure"
+                    else:
+                        run["head_sha"] = "b" * 40
+    api_file = tmp_path / "api.json"
+    api_file.write_text(json.dumps(snapshots), encoding="utf-8")
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "release_required_checks.py").write_text(
+        (ROOT / "tools" / "release_required_checks.py").read_text(), encoding="utf-8"
+    )
     gh.write_text(
         f"#!{sys.executable}\n"
         "import json, os, sys\n"
         "args = sys.argv[1:]\n"
+        "if args[:2] == ['api', '--hostname']:\n"
+        "    with open(os.environ['GH_TEST_LOG'], 'a') as log:\n"
+        "        log.write(json.dumps({'kind': 'checks', 'args': args}) + '\\n')\n"
+        "    if os.environ['GH_TEST_FAILURE'] == 'required_unavailable': sys.exit(1)\n"
+        "    with open(os.environ['GH_TEST_API']) as source: payload = json.load(source)\n"
+        "    print(json.dumps(payload[args[-1]]))\n"
+        "    sys.exit(0)\n"
         "if args[:2] == ['api', '--method']:\n"
         "    kind = 'tag'\n"
         "elif args[0] == 'api':\n"
@@ -219,7 +247,8 @@ def test_release_publication_fails_closed_without_reusing_version(
         env={
             **os.environ,
             "GH_CLI_BIN": str(gh), "GH_TEST_LOG": str(log),
-            "GH_TEST_FAILURE": failure, "GITHUB_REPOSITORY": "example/repository",
+            "GH_TEST_FAILURE": failure, "GITHUB_REPOSITORY": "demonsxxxxxx/ai-platform",
+            "GH_TEST_API": str(api_file), "GH_TOKEN": "synthetic-test-token",
             "GITHUB_SHA": source, "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1",
             "REQUESTED_RELEASE_VERSION": version,
             "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF": "refs/heads/main",
@@ -231,12 +260,20 @@ def test_release_publication_fails_closed_without_reusing_version(
     )
     calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
     assert (result.returncode == 0) is success, result.stderr
-    assert [call["kind"] for call in calls] == expected_calls
-    for call in calls:
+    publication_calls = [call for call in calls if call["kind"] != "checks"]
+    assert [call["kind"] for call in publication_calls] == expected_calls
+    if failure.startswith("required_"):
+        assert calls and not publication_calls
+    if publication_calls:
+        first_publication = next(index for index, call in enumerate(calls) if call["kind"] != "checks")
+        assert first_publication > 0
+        assert all(call["kind"] == "checks" for call in calls[:first_publication])
+        assert all(call["kind"] != "checks" for call in calls[first_publication:])
+    for call in publication_calls:
         args = call["args"]
         if call["kind"] == "tag":
             assert args == [
-                "api", "--method", "POST", "repos/example/repository/git/refs",
+                "api", "--method", "POST", "repos/demonsxxxxxx/ai-platform/git/refs",
                 "-f", f"ref=refs/tags/{version}", "-f", f"sha={source}", "--silent",
             ]
         elif call["kind"] == "create":
@@ -354,7 +391,7 @@ def test_publish_permissions_are_job_scoped_and_environment_selected():
         "group": "ai-platform-packaging-deployment-release",
         "cancel-in-progress": "false",
     }
-    assert manifest["permissions"] == {"contents": "write", "packages": "read"}
+    assert manifest["permissions"] == {"actions": "read", "contents": "write", "packages": "read"}
     assert manifest["environment"] == "packaging-publish"
     assert "attestations" not in manifest["permissions"]
     assert "id-token" not in manifest["permissions"]
@@ -841,7 +878,7 @@ def test_release_manifest_authenticates_private_ghcr_before_local_bundle_verific
         step for step in steps if step.get("name") == "Reverify downloaded provenance bundles"
     )
 
-    assert manifest["permissions"] == {"contents": "write", "packages": "read"}
+    assert manifest["permissions"] == {"actions": "read", "contents": "write", "packages": "read"}
     assert "attestations" not in manifest["permissions"]
     assert names.index("Log in to GHCR for assembly") < names.index(
         "Reverify downloaded provenance bundles"
@@ -1123,3 +1160,18 @@ def test_ready_manifest_requires_both_subject_records_and_is_uploaded_as_run_evi
         "release-image-evidence-${{ github.sha }}-${{ github.run_id }}-"
         "${{ github.run_attempt }}"
     ) in text
+
+
+def test_formal_release_requires_exact_commit_tests_before_tag_reservation():
+    workflow = _workflow()
+    steps = workflow["jobs"]["release-manifest"]["steps"]
+    publish = next(step for step in steps if step["name"] == "Publish explicit versioned Release")
+    command = "python tools/release_required_checks.py"
+    assert command in publish["run"]
+    assert '--source-commit "$GITHUB_SHA"' in publish["run"]
+    assert '--repository "$GITHUB_REPOSITORY"' in publish["run"]
+    assert publish["run"].index(command) < publish["run"].index('current_main=')
+    assert publish["run"].index('current_main=') < publish["run"].index('--method POST')
+    assert "inputs.release_version != ''" in publish["if"]
+    assert [step["name"] for step in steps if command in step.get("run", "")] == [publish["name"]]
+    assert "actions" not in workflow["jobs"]["publish"]["permissions"]

@@ -1249,7 +1249,6 @@
     "adminMarketplace": "管理员技能商店",
     "apps": "公司导航",
     "chat": "对话",
-    "feedback": "反馈",
     "files": "文件",
     "marketplace": "技能商店",
     "mcp": "MCP 工具",
@@ -1257,7 +1256,6 @@
     "models": "模型",
     "runs": "运行监控",
     "more": "更多",
-    "notifications": "通知公告",
     "pluginMarket": "插件市场",
     "roles": "角色治理",
     "settings": "设置",
@@ -1270,13 +1268,11 @@
   "navDesc": {
     "apps": "打开公司内部系统与常用网站",
     "chat": "与 AI 助手对话",
-    "feedback": "查看和管理用户反馈",
     "marketplace": "发现和安装技能",
     "mcp": "管理 MCP 服务器连接",
     "memory": "查看和管理 AI 记忆内容",
     "models": "配置和管理 AI 模型",
     "runs": "查看最近 Chat、Run 与 Worker 状态",
-    "notifications": "管理系统公告通知",
     "roles": "角色治理与审批",
     "settings": "应用和系统设置",
     "skillManagement": "仅管理员管理技能、发布、启停和安装策略",
@@ -1284,14 +1280,8 @@
     "users": "管理用户账户和访问权限"
   },
   "notification": {
-    "dismiss": "关闭",
-    "noNotifications": "暂无通知",
     "taskCompleted": "任务已完成",
-    "taskFailed": "任务失败",
-    "typeInfo": "信息",
-    "typeMaintenance": "维护",
-    "typeSuccess": "成功",
-    "typeWarning": "警告"
+    "taskFailed": "任务失败"
   },
   "passwordInput": {
     "hidePassword": "隐藏密码",
@@ -1457,8 +1447,8 @@
       "title": "AI 对话"
     },
     "feedback": {
-      "description": "查看和管理用户反馈。跟踪功能请求、错误报告和用户满意度，推动产品改进。",
-      "title": "用户反馈"
+      "title": "反馈功能不可用",
+      "description": "反馈功能尚未实现，目前不可用。"
     },
     "files": {
       "description": "受治理的文件工作台入口，用于查看已揭示文件和产物；后端文件投影可用前保持降级状态。",
@@ -1489,8 +1479,8 @@
       "title": "运行监控"
     },
     "notifications": {
-      "description": "管理系统公告和通知。获取平台新闻、警报和重要消息的实时更新。",
-      "title": "通知中心"
+      "title": "公告功能不可用",
+      "description": "公告功能尚未实现，目前不可用。"
     },
     "roles": {
       "description": "配置角色和细粒度权限。定义团队、资源和管​​理功能的访问控制策略。",
@@ -2264,54 +2254,6 @@
         },
         "description": "用户目录已接入企业工作台安全投影；新增、停用和角色分配继续受管理员权限与审计约束。",
         "title": "公司用户目录"
-      },
-      "feedback": {
-        "capabilities": {
-          "audit": {
-            "description": "处理记录和状态变更保持审计约束。",
-            "title": "处理审计"
-          },
-          "capture": {
-            "description": "处理台读取已有反馈记录的受治理聚合投影；当前聊天界面不采集新的消息级反馈。",
-            "title": "历史反馈投影"
-          },
-          "triage": {
-            "description": "分派、关闭和标签治理不从旧反馈后台读取。",
-            "title": "分派处理"
-          }
-        },
-        "details": {
-          "adminProjection": "管理员控制：反馈汇总、分派、关闭和标签治理按工作台投影分层展示。",
-          "auditProjection": "审计边界：处理状态和负责人变更需要事件链路，旧反馈后台不作为页面来源。",
-          "nextContract": "已接入合同：反馈聚合和分派状态可安全读取；处理写入继续受权限治理。",
-          "publicProjection": "当前状态：独立反馈台读取已有反馈记录的受治理聚合数据；当前聊天界面不提供消息级反馈入口。"
-        },
-        "description": "反馈入口已作为统一处理台读取安全投影；分派、关闭和标签写入继续由权限与审计控制。",
-        "title": "反馈处理台"
-      },
-      "notifications": {
-        "capabilities": {
-          "admin": {
-            "description": "公告创建、定向和失效继续受管理员通知投影约束。",
-            "title": "公告管理"
-          },
-          "banner": {
-            "description": "运行时通知仍通过当前消息/对话提示展示。",
-            "title": "运行时提示"
-          },
-          "inbox": {
-            "description": "统一通知收件箱读取已发布通知和已读状态投影。",
-            "title": "统一收件箱"
-          }
-        },
-        "details": {
-          "adminProjection": "管理员控制：公告创建、定向、失效和重发按通知管理权限分层。",
-          "auditProjection": "审计边界：发布、撤回和已读范围需要事件记录，旧通知管理面板不作为页面来源。",
-          "nextContract": "已接入合同：运行时通知、统一收件箱和公告管理读取分层；写入继续治理。",
-          "publicProjection": "当前状态：顶部通知入口和通知公告页读取受治理的运行时提示。"
-        },
-        "description": "通知公告已读取可审计的运行时提示与公告投影；发布、撤回和范围变更继续受管理员治理。",
-        "title": "通知公告"
       }
     },
     "projections": {
@@ -2397,63 +2339,6 @@
           "tenant_admin": "企业管理员",
           "user": "普通用户"
         }
-      },
-      "feedback": {
-        "title": "反馈",
-        "subtitle": "来自受治理工作台合同的反馈汇总台。",
-        "taskTitle": "处理用户反馈队列",
-        "taskDescription": "读取运行反馈、分派状态和评论摘要；状态变更与归档继续保留在受审计写入流程。",
-        "queueTitle": "反馈队列",
-        "queueDescription": "按当前工作台权限展示可跟进的运行反馈。",
-        "empty": "当前投影中没有可见反馈。",
-        "positive": "正向反馈",
-        "negative": "需要跟进",
-        "user": "用户",
-        "session": "会话",
-        "run": "运行",
-        "total": "总数",
-        "up": "正向",
-        "down": "负向",
-        "totalDetail": "当前工作台反馈",
-        "downDetail": "待分派或跟进",
-        "status": {
-          "closed": "已关闭",
-          "open": "待处理",
-          "resolved": "已解决",
-          "triaged": "已分诊"
-        },
-        "assignment": {
-          "assigned": "已分派",
-          "needs_assignment": "待分派",
-          "unassigned": "未分派"
-        }
-      },
-      "notifications": {
-        "title": "通知公告",
-        "subtitle": "运行时通知和受治理的公告投影。",
-        "taskTitle": "查看通知公告流",
-        "taskDescription": "合并运行时通知与管理员公告读取投影；发布、撤回和范围变更继续由通知管理权限控制。",
-        "streamTitle": "通知流",
-        "streamDescription": "展示当前账号可见的运行提示、公告和已读状态。",
-        "empty": "当前投影中没有可见通知。",
-        "total": "通知总数",
-        "totalDetail": "运行时与公告投影",
-        "unread": "未读",
-        "unreadDetail": "当前账号状态",
-        "active": "生效中",
-        "activeDetail": "可展示通知",
-        "readState": {
-          "active": "生效中",
-          "inactive": "已停用",
-          "read": "已读",
-          "unread": "未读"
-        },
-        "type": {
-          "announcement": "公告",
-          "info": "信息",
-          "runtime": "运行时",
-          "system": "系统"
-        }
       }
     },
     "governedRoute": {
@@ -2492,7 +2377,17 @@
       "filesPartial": "部分会话文件暂不可用。",
       "filesUnavailable": "会话文件暂不可用。"
     },
-    "phase2Unavailable": "产物、已选上下文和运行详情在当前工作区启用前保持只读。"
+    "phase2Unavailable": "产物、已选上下文和运行详情在当前工作区启用前保持只读。",
+    "unavailable": {
+      "feedback": {
+        "title": "反馈功能不可用",
+        "description": "反馈功能尚未实现，目前不可用。"
+      },
+      "notifications": {
+        "title": "公告功能不可用",
+        "description": "公告功能尚未实现，目前不可用。"
+      }
+    }
   },
   "governance": {
     "adminOnly": "仅管理员",

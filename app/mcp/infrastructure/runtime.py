@@ -29,16 +29,25 @@ _MCP_PRINCIPAL_JWT_AAD_PREFIX = b"ai-platform:mcp-principal-jwt:v1:"
 _MCP_SERVER_CREDENTIAL_AAD_PREFIX = b"ai-platform:mcp-server-credential:v1:"
 _settings_provider: Callable[[], Any] | None = None
 _redis_provider: Callable[[], Any] | None = None
+_grant_reader: Callable[..., Any] | None = None
+_credential_writer: Callable[..., Any] | None = None
+_credential_refresher: Callable[..., Any] | None = None
 
 
 def configure_runtime_dependencies(
     *,
     settings_provider: Callable[[], Any],
     redis_provider: Callable[[], Any],
+    grant_reader: Callable[..., Any] | None = None,
+    credential_writer: Callable[..., Any] | None = None,
+    credential_refresher: Callable[..., Any] | None = None,
 ) -> None:
-    global _settings_provider, _redis_provider
+    global _settings_provider, _redis_provider, _grant_reader, _credential_writer, _credential_refresher
     _settings_provider = settings_provider
     _redis_provider = redis_provider
+    _grant_reader = grant_reader
+    _credential_writer = credential_writer
+    _credential_refresher = credential_refresher
 
 
 def get_settings() -> Any:
@@ -77,6 +86,9 @@ class _PrincipalJwtRecord:
     user_id: str
     jwt: str = field(repr=False)
     jwt_exp: int
+    refresh_cookie: str | None = field(default=None, repr=False)
+    subject_epoch: int | None = None
+    refresh_expires_at: int | None = None
 
 
 class McpPrincipalJwtStore:
@@ -88,64 +100,140 @@ class McpPrincipalJwtStore:
     def _now(self) -> int:
         return int(self.clock())
 
-    async def put(self, principal: McpPrincipal, jwt: str) -> None:
+    def prepare(
+        self, principal: McpPrincipal, jwt: str, *, refresh_cookie: str | None = None,
+        subject_epoch: int | None = None, refresh_expires_at: int | None = None,
+    ) -> tuple[str, str]:
+        """Prepare a bound encrypted credential for an atomic auth-context commit."""
         binding = McpContextPrincipal.from_principal(principal)
-        now = self._now()
-        token = str(jwt or "").strip()
-        payload = _jwt_payload(token, now=now)
+        payload = _jwt_payload(jwt, now=self._now())
         record = _PrincipalJwtRecord(
-            tenant_id=binding.tenant_id,
-            user_id=binding.user_id,
-            jwt=token,
-            jwt_exp=int(payload["exp"]),
+            tenant_id=binding.tenant_id, user_id=binding.user_id, jwt=jwt,
+            jwt_exp=int(payload["exp"]), refresh_cookie=refresh_cookie,
+            subject_epoch=subject_epoch, refresh_expires_at=refresh_expires_at,
         )
+        return _principal_jwt_key(binding), _seal_principal_jwt(record)
+
+    async def put(
+        self, principal: McpPrincipal, jwt: str, *, refresh_cookie: str | None = None,
+        operation_epoch: int | None = None,
+    ) -> None:
+        binding = McpContextPrincipal.from_principal(principal)
+        token = str(jwt or "").strip()
         try:
+            if refresh_cookie:
+                if _grant_reader is None or _credential_writer is None:
+                    raise McpRuntimeContextError("mcp_principal_jwt_unavailable", status_code=503)
+                grant = await _grant_reader(refresh_cookie)
+                snapshot = grant["principal"]
+                if (snapshot["tenant_id"], snapshot["user_id"]) != (binding.tenant_id, binding.user_id):
+                    raise McpRuntimeContextError("mcp_principal_jwt_missing", status_code=401)
+                credential = self.prepare(
+                    principal, token, refresh_cookie=refresh_cookie,
+                    subject_epoch=grant["subject_epoch"], refresh_expires_at=grant["expires_at"],
+                )
+                await _credential_writer(
+                    refresh_cookie, credential=credential,
+                    operation_epoch=operation_epoch if operation_epoch is not None else grant["operation_epoch"],
+                    subject_epoch=grant["subject_epoch"], tenant_id=binding.tenant_id, user_id=binding.user_id,
+                )
+                return
+            payload = _jwt_payload(token, now=self._now())
+            key, envelope = self.prepare(principal, token)
             client = get_redis_client()
-            await client.set(
-                _principal_jwt_key(binding),
-                _seal_principal_jwt(record),
-                ex=record.jwt_exp - now,
-            )
+            try:
+                await client.set(key, envelope, ex=int(payload["exp"]) - self._now())
+            finally:
+                await client.aclose()
         except McpRuntimeContextError:
             raise
         except Exception as exc:
-            raise McpRuntimeContextError(
-                "mcp_principal_jwt_unavailable",
-                status_code=503,
-            ) from exc
-        finally:
-            if "client" in locals():
-                await client.aclose()
+            raise McpRuntimeContextError("mcp_principal_jwt_unavailable", status_code=503) from exc
 
-    async def get(self, principal: McpPrincipal) -> str:
-        binding = McpContextPrincipal.from_principal(principal)
-        key = _principal_jwt_key(binding)
+    async def _read_record(self, binding: McpContextPrincipal) -> _PrincipalJwtRecord:
         try:
             client = get_redis_client()
-            value = await client.get(key)
+            value = await client.get(_principal_jwt_key(binding))
         except Exception as exc:
-            raise McpRuntimeContextError(
-                "mcp_principal_jwt_unavailable",
-                status_code=503,
-            ) from exc
+            raise McpRuntimeContextError("mcp_principal_jwt_unavailable", status_code=503) from exc
         finally:
             if "client" in locals():
                 await client.aclose()
         if not isinstance(value, str) or not value:
             raise McpRuntimeContextError("mcp_principal_jwt_missing", status_code=401)
-        record = _open_principal_jwt(value, binding)
-        now = self._now()
-        if record.jwt_exp <= now:
-            # Redis TTL owns expiry. This read may predate a concurrent put;
-            # deleting the shared user key here could erase a fresh credential.
-            raise McpRuntimeContextError("mcp_principal_jwt_expired", status_code=401)
+        return _open_principal_jwt(value, binding)
+
+    async def credential_subject(self, principal: McpPrincipal) -> dict[str, Any]:
+        """Bind an execution transport to the granting context and subject revision."""
+        binding = McpContextPrincipal.from_principal(principal)
+        record = await self._read_record(binding)
+        subject: dict[str, Any] = {"tenant_id": binding.tenant_id, "user_id": binding.user_id}
+        if record.refresh_cookie:
+            subject.update(
+                grant_id=hashlib.sha256(record.refresh_cookie.encode("utf-8")).hexdigest(),
+                subject_epoch=record.subject_epoch,
+            )
+        else:
+            subject["legacy_jwt_id"] = hashlib.sha256(record.jwt.encode("utf-8")).hexdigest()
+        return subject
+
+    @staticmethod
+    def _assert_execution_subject(principal: McpPrincipal, record: _PrincipalJwtRecord) -> None:
+        legacy_jwt_id = getattr(principal, "legacy_jwt_id", None)
+        if legacy_jwt_id is not None and (
+            record.refresh_cookie
+            or hashlib.sha256(record.jwt.encode("utf-8")).hexdigest() != legacy_jwt_id
+        ):
+            raise McpRuntimeContextError("mcp_principal_jwt_missing", status_code=401)
+        expected_grant = getattr(principal, "grant_id", None)
+        if expected_grant is not None and (
+            not record.refresh_cookie
+            or hashlib.sha256(record.refresh_cookie.encode("utf-8")).hexdigest() != expected_grant
+            or record.subject_epoch != getattr(principal, "subject_epoch", None)
+        ):
+            raise McpRuntimeContextError("mcp_principal_jwt_missing", status_code=401)
+
+    async def get(self, principal: McpPrincipal) -> str:
+        binding = McpContextPrincipal.from_principal(principal)
+        record = await self._read_record(binding)
+        self._assert_execution_subject(principal, record)
+        if record.refresh_cookie:
+            if _grant_reader is None:
+                raise McpRuntimeContextError("mcp_principal_jwt_unavailable", status_code=503)
+            try:
+                grant = await _grant_reader(record.refresh_cookie)
+            except Exception as exc:
+                status = getattr(exc, "status_code", 503)
+                raise McpRuntimeContextError(
+                    "mcp_principal_jwt_missing" if status in {401, 409} else "mcp_principal_jwt_unavailable",
+                    status_code=401 if status in {401, 409} else 503,
+                ) from exc
+            snapshot = grant["principal"]
+            if ((snapshot["tenant_id"], snapshot["user_id"]) != (binding.tenant_id, binding.user_id)
+                or grant["subject_epoch"] != record.subject_epoch
+                or not record.refresh_expires_at or record.refresh_expires_at <= self._now()):
+                raise McpRuntimeContextError("mcp_principal_jwt_missing", status_code=401)
+        if record.jwt_exp <= self._now():
+            if not record.refresh_cookie or _credential_refresher is None:
+                # Never delete: a concurrent login may already have installed a new credential.
+                raise McpRuntimeContextError("mcp_principal_jwt_expired", status_code=401)
+            try:
+                await _credential_refresher(
+                    record.refresh_cookie, expected_user=(binding.tenant_id, binding.user_id),
+                    expected_subject_epoch=record.subject_epoch,
+                )
+            except Exception as exc:
+                status = getattr(exc, "status_code", 503)
+                raise McpRuntimeContextError(
+                    "mcp_principal_jwt_expired" if status == 401 else "mcp_principal_jwt_unavailable",
+                    status_code=401 if status == 401 else 503,
+                ) from exc
+            record = await self._read_record(binding)
+            self._assert_execution_subject(principal, record)
         try:
-            payload = _jwt_payload(record.jwt, now=now)
+            payload = _jwt_payload(record.jwt, now=self._now())
         except McpRuntimeContextError as exc:
-            raise McpRuntimeContextError(
-                "mcp_principal_jwt_corrupt",
-                status_code=503,
-            ) from exc
+            raise McpRuntimeContextError("mcp_principal_jwt_corrupt", status_code=503) from exc
         if int(payload["exp"]) != record.jwt_exp:
             raise McpRuntimeContextError("mcp_principal_jwt_corrupt", status_code=503)
         return record.jwt
@@ -232,8 +320,10 @@ async def attach_mcp_server_configs(
                 raise
             configs.clear()
     if jwt:
+        credential_subject = await get_mcp_principal_jwt_store().credential_subject(principal)
         for config in configs.values():
             config["headers"][MCP_JWT_AUTHORIZATION_HEADER] = f"Bearer {jwt}"
+            config["credential_subject"] = credential_subject
 
     subjects: list[object] = []
     for raw_subject in raw_subjects:
@@ -351,6 +441,9 @@ def _seal_principal_jwt(record: _PrincipalJwtRecord) -> str:
             "user_id": record.user_id,
             "jwt": record.jwt,
             "jwt_exp": record.jwt_exp,
+            "refresh_cookie": record.refresh_cookie,
+            "subject_epoch": record.subject_epoch,
+            "refresh_expires_at": record.refresh_expires_at,
         },
         ensure_ascii=True,
         separators=(",", ":"),
@@ -392,7 +485,16 @@ def _open_principal_jwt(
             user_id=assert_safe_mcp_principal_user_id(str(payload.get("user_id") or "")),
             jwt=str(payload.get("jwt") or ""),
             jwt_exp=int(payload.get("jwt_exp") or 0),
+            refresh_cookie=payload.get("refresh_cookie"),
+            subject_epoch=payload.get("subject_epoch"),
+            refresh_expires_at=payload.get("refresh_expires_at"),
         )
+        if record.refresh_cookie is not None and (
+            not isinstance(record.refresh_cookie, str) or not record.refresh_cookie.startswith("v2.")
+            or type(record.subject_epoch) is not int or record.subject_epoch < 1
+            or type(record.refresh_expires_at) is not int or record.refresh_expires_at <= 0
+        ):
+            raise ValueError("principal JWT refresh binding is invalid")
         if (record.tenant_id, record.user_id) != (
             principal.tenant_id,
             principal.user_id,

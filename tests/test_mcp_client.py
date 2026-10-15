@@ -28,6 +28,11 @@ async def test_catalog_dispatches_the_configured_transport(monkeypatch, transpor
                 static_headers={"X-Static-Key": "synthetic"}, transport=transport,
             )
 
+        async def current_credential(principal):
+            assert principal.tenant_id == "tenant" and principal.user_id == "user"
+            return "synthetic.jwt"
+
+        monkeypatch.setattr(mcp_runtime, "get_mcp_principal_jwt_store", lambda: SimpleNamespace(get=current_credential))
         service = LiveMcpCatalogService(
             target_resolver=target, discovery=client.McpToolDiscoveryAdapter(),
             sse_discovery=client.McpToolDiscoveryAdapter(transport="sse"),
@@ -240,3 +245,50 @@ async def test_runtime_does_not_hide_database_or_corrupt_credential_failures(mon
     })
     with pytest.raises(error):
         await mcp_runtime.attach_mcp_server_configs(object(), principal=principal, run_payload=payload)
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["http", "sse"])
+async def test_open_mcp_session_updates_jwt_on_each_dispatch_without_replaying_tools(monkeypatch, transport):
+    with local_mcp_peers() as peer:
+        allow_local_peer(monkeypatch, peer.url)
+        token = "first.synthetic.jwt"
+        bound = {"tenant_id": "tenant", "user_id": "user", "grant_id": "grant-a", "subject_epoch": 1}
+
+        async def current_credential(principal):
+            assert vars(principal) == bound
+            return token
+
+        monkeypatch.setattr(mcp_runtime, "get_mcp_principal_jwt_store", lambda: SimpleNamespace(get=current_credential))
+        config = subject(url=peer.url + ("/sse" if transport == "sse" else "/mcp"))["mcp_server_config"]
+        config.update(type=transport, credential_subject=bound)
+        async with asyncio.timeout(5):
+            async with client.open_mcp_session(config, timeout_seconds=2) as session:
+                await client.list_mcp_tools(session)
+                token = "rotated.synthetic.jwt"
+                await session.call_tool(RAW_TOOL, {"query": "synthetic"})
+        tool_requests = [headers for method, headers in peer.requests if method == "tools/call"]
+        assert len(peer.calls) == len(tool_requests) == 1
+        assert {key.lower(): value for key, value in tool_requests[0].items()}["jwt-authorization"] == "Bearer rotated.synthetic.jwt"
+        assert {key.lower(): value for key, value in peer.requests[0][1].items()}["jwt-authorization"] == "Bearer first.synthetic.jwt"
+
+
+@pytest.mark.asyncio
+async def test_mcp_revoked_execution_credential_stops_before_tool_dispatch(monkeypatch):
+    with local_mcp_peers() as peer:
+        allow_local_peer(monkeypatch, peer.url)
+        revoked = False
+
+        async def current_credential(_principal):
+            if revoked:
+                raise McpRuntimeContextError("mcp_principal_jwt_missing", status_code=401)
+            return "synthetic.jwt"
+
+        monkeypatch.setattr(mcp_runtime, "get_mcp_principal_jwt_store", lambda: SimpleNamespace(get=current_credential))
+        config = subject(url=peer.url + "/mcp")["mcp_server_config"]
+        config["credential_subject"] = {"tenant_id": "tenant", "user_id": "user"}
+        with pytest.raises(catalog.McpToolDiscoveryError, match="authorization_required"):
+            async with asyncio.timeout(4):
+                async with client.open_mcp_session(config, timeout_seconds=1) as session:
+                    revoked = True
+                    await session.call_tool(RAW_TOOL, {"query": "synthetic"})
+        assert peer.calls == []

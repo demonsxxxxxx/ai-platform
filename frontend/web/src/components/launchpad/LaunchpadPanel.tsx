@@ -34,6 +34,8 @@ import {
 
 import { useAuth } from "../../hooks/useAuth";
 import { authApi } from "../../services/api/auth";
+import { ApiRequestError } from "../../services/api/fetch";
+import { AuthSessionChangedError } from "../../services/api/tokenManager";
 import { buildFrontendGovernanceSmokeAttributes } from "../governance/frontendGovernanceState";
 import { workbenchSurface } from "../workbench/workbenchSurface";
 import {
@@ -350,13 +352,16 @@ export function LaunchpadPanel() {
         setFavoritesOwnerId(requestOwnerId);
         setFavoritesReady(true);
       })
-      .catch(() => {
+      .catch((error: unknown) => {
+        if (error instanceof AuthSessionChangedError
+          || (error instanceof ApiRequestError && error.status === 401)) return;
         if (
           !controller.signal.aborted &&
           currentUserIdRef.current === requestOwnerId
         ) {
           setFavoriteIds([]);
-          toast.error(t("launchpad.favoriteLoadFailed"));
+          toast.error(error instanceof ApiRequestError && error.status === 403
+            ? error.message : t("launchpad.favoriteLoadFailed"));
         }
       });
     return () => controller.abort();
@@ -408,9 +413,12 @@ export function LaunchpadPanel() {
           entryIds,
         ),
       );
-    } catch {
+    } catch (error) {
+      if (error instanceof AuthSessionChangedError
+        || (error instanceof ApiRequestError && error.status === 401)) return;
       if (currentUserIdRef.current === requestOwnerId) {
-        toast.error(t("launchpad.favoriteSaveFailed"));
+        toast.error(error instanceof ApiRequestError && error.status === 403
+          ? error.message : t("launchpad.favoriteSaveFailed"));
       }
     } finally {
       if (currentUserIdRef.current === requestOwnerId) {

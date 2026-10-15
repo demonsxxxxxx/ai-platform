@@ -17,14 +17,8 @@ const retainedKeys = {
   users: ["user"],
   feedback: [],
   notification: [
-    "dismiss",
-    "noNotifications",
     "taskCompleted",
     "taskFailed",
-    "typeInfo",
-    "typeMaintenance",
-    "typeSuccess",
-    "typeWarning",
   ],
   mcpCard: [
     "noTools",
@@ -84,7 +78,7 @@ function assertSubset(
 
 test("retired legacy panel clients and barrel exports are absent", () => {
   const barrel = source("src/services/api.ts");
-  for (const client of ["user", "settings", "health", "notification", "feedback"]) {
+  for (const client of ["user", "settings", "health", "notification", "notificationPublic", "feedback"]) {
     assert.equal(
       existsSync(join(root, `src/services/api/${client}.ts`)),
       false,
@@ -96,7 +90,6 @@ test("retired legacy panel clients and barrel exports are absent", () => {
   }
 
   for (const activeClient of [
-    "src/services/api/notificationPublic.ts",
     "src/services/api/workbench.ts",
   ]) {
     assert.equal(existsSync(join(root, activeClient)), true, activeClient);

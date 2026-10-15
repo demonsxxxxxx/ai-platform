@@ -140,7 +140,6 @@ test("authenticated workbench popovers avoid legacy heavy overlays", () => {
     "src/components/chat/AgentOptionButton.tsx",
     "src/components/chat/ChatInputShortcuts.tsx",
     "src/components/layout/UserMenu.tsx",
-    "src/components/notification/NotificationDialog.tsx",
     "src/components/selectors/SkillSelector.tsx",
     "src/components/selectors/ToolSelector.tsx",
   ];

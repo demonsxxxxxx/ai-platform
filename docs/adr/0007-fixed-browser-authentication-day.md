@@ -27,9 +27,10 @@ after 15 minutes.
    updates, and token rotation preserve the remaining server-side TTL rather
    than extending it.
 3. A token whose expiration is equal to the current time is expired.
-4. The browser does not replay failed writes or silently renew an expired
-   company-authority snapshot. When the 24-hour authority expires, the user
-   authenticates again.
+4. Within that absolute day, an expired company JWT may be renewed after a
+   current company-authority check. An authentication rejection is replayed
+   at most once; writes require proof that business execution never started.
+   When the 24-hour context expires, the user authenticates again.
 5. Company-derived roles and permissions already captured by a valid session
    may remain effective for up to 24 hours. Immediate revocation requires a
    separate explicit revocation mechanism and is outside this decision.
@@ -50,9 +51,50 @@ after 15 minutes.
   unexpected reauthentication defect.
 - Sliding Redis or token renewal: active sessions could remain valid without a
   bounded authentication ceremony.
-- Transparent refresh and request replay: with equal clocks there is no valid
-  refresh window, while replaying writes introduces duplicate-submission and
-  concurrency risks.
+- Unbounded refresh or replay of ambiguous writes: these can extend authority
+  indefinitely or duplicate business effects.
+
+## Browser refresh extension
+
+The browser may recover an expired company JWT within its existing absolute
+86,400-second authentication context. The JWT lifetime is independently bounded
+at 28,800 seconds and never exceeds the remaining context lifetime. Expired
+JWTs remain invalid; renewal issues a newly signed company-compatible JWT.
+
+The refresh endpoint authenticates the signed HttpOnly context and its current
+server-side principal, not the expired JWT or browser-supplied identity fields.
+It rechecks company user eligibility and permissions before signing. Anonymous,
+logged-out, replaced, policy-incompatible, or expired contexts cannot renew.
+Company username, department, and original role are server-owned snapshot fields;
+platform `roles` remain the platform permission projection.
+
+A refresh commits the principal and encrypted MCP credential under the existing
+context operation fence. Credential-only rotation preserves the principal's
+subject epoch; changed authorization facts invalidate old authority owners.
+Successful credential-bearing refresh commits record their operation epoch for
+concurrent request deduplication, including when JWT expiry is already capped at
+the context deadline. This optional context-local field defaults to zero for old
+records and expires with the context. Login/logout attempts clear it; failed
+refresh cleanup never creates completion evidence. Only the same subject epoch
+may reuse completion; changed authorization is rechecked or fenced.
+Neither a browser request nor an MCP request extends the context deadline.
+MCP credential reads and request dispatch obtain the current credential under
+the same bounded grant, including for an already-open selected-tool session.
+
+Browser requests share a single refresh, retry an authentication rejection at
+most once, and fence cancellation, logout, and identity replacement. Login,
+logout, bootstrap, and refresh requests cannot recursively refresh. Only a
+rejection before business execution permits automatic replay; ambiguous writes,
+transport failures, and already-started MCP tool effects are never replayed.
+Network or service failures preserve the local session presentation; exhausted
+or revoked refresh authority enters the existing login recovery path.
+
+The amended decision 4 permits transparent recovery only within this bounded
+grant. The absolute non-sliding day, expired-token
+rejection, company-authority checks, and other decisions remain in force.
+No company login-service or AD change is required. The platform backend is an
+authorized issuer of company-compatible credentials; shared signing settings
+remain server-only and must match the receiving services.
 
 ## Evidence boundary
 

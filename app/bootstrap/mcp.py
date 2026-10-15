@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from app.auth import normalize_roles
+from app.auth import normalize_roles, refresh_company_session
+from app.auth_sessions import browser_auth_grant, store_auth_context_credential
 from app.capability_distribution import CapabilityAccessContext, CapabilityDistributionSubject, resolve_capability_access
 
 from dataclasses import dataclass
@@ -60,6 +61,9 @@ class _McpRuntimeServices:
         mcp_runtime.configure_runtime_dependencies(
             settings_provider=get_settings,
             redis_provider=get_redis_client,
+            grant_reader=browser_auth_grant,
+            credential_writer=store_auth_context_credential,
+            credential_refresher=refresh_company_session,
         )
         self.selection_authorization = McpSelectionAuthorization(
             get_tool=mcp_postgres.get_mcp_tool_registry_entry,
