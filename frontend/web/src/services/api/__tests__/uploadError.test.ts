@@ -145,6 +145,8 @@ test(
       ).promise;
 
       assert.equal(result.key, "file-1");
+      assert.equal(result.url, "/api/ai/files/file-1/preview");
+      assert.equal(result.downloadUrl, "/api/ai/files/file-1/download");
       assert.deepEqual(progress, [[100, 1, 1]]);
       assert.equal(urls.some((url) => url.includes("/api/upload/file")), false);
     } finally {

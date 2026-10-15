@@ -50,6 +50,7 @@ export interface UploadConfig {
 export interface UploadResult {
   key: string;
   url: string;
+  downloadUrl?: string;
   name: string;
   type: FileCategory;
   mimeType: string;

@@ -379,6 +379,7 @@ export function startFileUploadTask({
         mimeType: result.mimeType,
         size: result.size,
         url: result.url,
+        downloadUrl: result.downloadUrl,
       };
       onAttachmentsChange((previous) =>
         previous.map((attachment) =>

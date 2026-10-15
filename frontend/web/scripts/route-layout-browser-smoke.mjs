@@ -276,6 +276,13 @@ async function runCase(viewport, scenario) {
       }))()`);
       throw new Error(`route_mount_failed:${viewport.name}:${scenario.name}:${JSON.stringify(diagnostic)}:${String(error)}`);
     }
+    if (scenario.name === "builder") {
+      await browser.client.evaluate(`(() => {
+        const button = [...document.querySelectorAll('button')].find((node) => node.textContent.trim() === '新建专家');
+        if (!button) throw new Error('builder_new_button_missing');
+        button.click();
+      })()`);
+    }
     await browser.client.waitFor(
       `(${JSON.stringify(scenario.requiredSelectors ?? [])}).every((selector) => {
         const element = document.querySelector(selector);
@@ -343,7 +350,13 @@ async function runCase(viewport, scenario) {
         const bar = document.querySelector('[data-model-admin-action-bar]').getBoundingClientRect();
         const config = document.querySelector('[data-model-admin-control] > div:first-child').getBoundingClientRect();
         const shell = document.querySelector('[data-model-catalog-shell]');
+        const filterControl = document.querySelector('[aria-label="筛选模型状态"]');
+        const filter = filterControl.getBoundingClientRect();
+        const search = document.querySelector('[aria-label="搜索模型"]').getBoundingClientRect();
         return {
+          filterGroupWidth: filterControl.parentElement.getBoundingClientRect().width,
+          filterWidth: filter.width,
+          searchWidth: search.width,
           rows: table.querySelectorAll('tbody tr').length,
           enabledCount: table.querySelectorAll('tbody input[type=checkbox]:checked').length,
           missingLimitHintVisible: document.querySelector('[aria-label="deepseek-v4-flash-cc 最大输入 Token"]')?.getAttribute('placeholder') === '必填',
@@ -359,11 +372,34 @@ async function runCase(viewport, scenario) {
           actionBelowTable: bar.top >= tableRect.bottom - 2,
         };
       })()`);
-      if (modelLayout.rows !== 29 || modelLayout.enabledCount !== 3 || !modelLayout.missingLimitHintVisible || !modelLayout.publishErrorVisible || modelLayout.publishRequestCount !== 0 || !modelLayout.actionVisible || !modelLayout.headerOpaque ||
+      if ((viewport.width >= 640 && (Math.abs(modelLayout.filterWidth - 160) > 1 || Math.abs(modelLayout.searchWidth - Math.min(384, modelLayout.filterGroupWidth - 172)) > 1)) ||
+        modelLayout.rows !== 29 || modelLayout.enabledCount !== 3 || !modelLayout.missingLimitHintVisible || !modelLayout.publishErrorVisible || modelLayout.publishRequestCount !== 0 || !modelLayout.actionVisible || !modelLayout.headerOpaque ||
         (viewport.width >= 1024 && (!modelLayout.tableScrollable || !modelLayout.headerPinned || !modelLayout.actionBelowTable || !modelLayout.configVisible || modelLayout.actionBottomGap > 48 || modelLayout.shellScrollTop !== 0)) ||
         (viewport.width < 1024 && layout.scrollHeight <= layout.clientHeight + 1)
       ) {
         throw new Error(`model_layout_failed:${viewport.name}:${JSON.stringify(modelLayout)}`);
+      }
+    }
+    let avatarLayout = null;
+    if (scenario.name === "builder") {
+      avatarLayout = await browser.client.evaluate(`(() => {
+        const picker = document.querySelector('[data-agent-avatar-picker]');
+        const candidates = [...picker.querySelectorAll('button[aria-pressed]')].map((button) => {
+          const frame = button.getBoundingClientRect();
+          const avatar = button.querySelector('[data-agent-avatar-ref]').getBoundingClientRect();
+          return {
+            left: avatar.left, right: avatar.right, top: avatar.top, bottom: avatar.bottom,
+            contained: avatar.left >= frame.left - 1 && avatar.right <= frame.right + 1 && avatar.top >= frame.top - 1 && avatar.bottom <= frame.bottom + 1,
+          };
+        });
+        return {
+          count: candidates.length,
+          contained: candidates.every((candidate) => candidate.contained),
+          overlapping: candidates.some((candidate, index) => candidates.slice(index + 1).some((other) => candidate.left < other.right && candidate.right > other.left && candidate.top < other.bottom && candidate.bottom > other.top)),
+        };
+      })()`);
+      if (avatarLayout.count !== 8 || !avatarLayout.contained || avatarLayout.overlapping) {
+        throw new Error(`avatar_layout_failed:${viewport.name}:${JSON.stringify(avatarLayout)}`);
       }
     }
     let overlay = null;
@@ -380,8 +416,11 @@ async function runCase(viewport, scenario) {
         `${viewport.name}:skill-distribution-save`,
       );
     }
+    if (scenario.name === "builder") {
+      await browser.client.evaluate(`document.querySelector('[data-agent-avatar-picker]').scrollIntoView({ block: 'center' })`);
+    }
     const screenshot = await captureScreenshot(browser.client, evidenceDir, `${viewport.name}-${scenario.name}`);
-    return { viewport: viewport.name, route: scenario.path, layout, reachable, modelLayout, overlay, screenshot };
+    return { viewport: viewport.name, route: scenario.path, layout, reachable, modelLayout, avatarLayout, overlay, screenshot };
   } finally {
     await browser.close();
   }
