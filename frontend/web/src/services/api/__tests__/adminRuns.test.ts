@@ -8,6 +8,8 @@ import {
   fetchAdminRunDetail,
   fetchAdminRunTrajectory,
   fetchAdminRuns,
+  fetchAdminRunMonitor,
+  fetchAdminRunInvestigation,
   type AdminRunsApiClient,
 } from "../adminRuns";
 
@@ -171,4 +173,31 @@ test("admin Run diagnostic export uses an authenticated POST and returns a bound
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("Run performance queries pin the window and frozen model scope and reject old event metrics", async () => {
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  let valid = true;
+  const client: AdminRunsApiClient = { async request<T>(url: string, init?: RequestInit): Promise<T> {
+    calls.push({ url, init });
+    return { measurement: valid ? "run_lifecycle.v1" : "event_latency", runs: [], models: [], window: {}, counts: {}, latency: {} } as T;
+  } };
+  await fetchAdminRunMonitor({ hours: 168, fromAt: "2026-04-01T00:00:00Z", toAt: "2026-04-02T00:00:00Z", agentId: "agent/a", modelId: "model-a", modelGatewayRevision: 3, status: "failed", order: "slow", limit: 50 }, client);
+  const url = new URL(calls[0].url, "http://localhost");
+  assert.equal(url.pathname, "/api/ai/admin/runs/monitor");
+  assert.deepEqual(Object.fromEntries(url.searchParams), { hours: "168", from_at: "2026-04-01T00:00:00Z", to_at: "2026-04-02T00:00:00Z", agent_id: "agent/a", model_id: "model-a", model_gateway_revision: "3", status: "failed", order: "slow", limit: "50" });
+  assert.equal(calls[0].init?.method, "GET");
+  valid = false;
+  await assert.rejects(fetchAdminRunMonitor({}, client), /admin_run_monitor_response_invalid/);
+});
+
+test("Run investigation encodes identity and rejects another Run's evidence", async () => {
+  const calls: string[] = [];
+  const client: AdminRunsApiClient = { async request<T>(url: string): Promise<T> {
+    calls.push(url);
+    return { run_id: "run/a", timeline_source: "platform_receipts", stages: [], comparison: {} } as T;
+  } };
+  await fetchAdminRunInvestigation("run/a", { hours: 24, userId: "user/a" }, client);
+  assert.equal(calls[0], "/api/ai/admin/runs/run%2Fa/investigation?hours=24&user_id=user%2Fa");
+  await assert.rejects(fetchAdminRunInvestigation("run/b", {}, client), /admin_run_investigation_response_invalid/);
 });

@@ -243,21 +243,21 @@ export function RunDiagnosticsSection({
             </div>
           ) : null}
           {diagnostics.details.projection_failure ? (
-            <div className="rounded-md border border-[var(--theme-border)] p-3" data-projection-failure-evidence>
-              <h4 className="text-xs font-medium text-[var(--theme-text)]">输出校验断点</h4>
+            <details className="rounded-md border border-[var(--theme-border)] p-3" data-projection-failure-evidence>
+              <summary className="cursor-pointer text-xs font-medium text-[var(--theme-text)]">输出校验断点</summary>
               <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-[var(--theme-text-secondary)]">
                 {diagnosticJson(diagnostics.details.projection_failure)}
               </pre>
-            </div>
+            </details>
           ) : null}
           {protocolEvidence ? (
-            <div
+            <details
               className="rounded-md border border-[var(--theme-border)] p-3"
               data-executor-protocol-evidence
             >
-              <h4 className="text-xs font-medium text-[var(--theme-text)]">
+              <summary className="cursor-pointer text-xs font-medium text-[var(--theme-text)]">
                 终态协议证据
-              </h4>
+              </summary>
               <div className="mt-2 space-y-3 text-[11px]">
                 <div>
                   <p className="font-medium text-[var(--theme-text-secondary)]">
@@ -299,11 +299,11 @@ export function RunDiagnosticsSection({
                   </pre>
                 </div>
               </div>
-            </div>
+            </details>
           ) : null}
           {toolEvidence.length ? (
-            <div className="rounded-md border border-[var(--theme-border)] p-3">
-              <h4 className="text-xs font-medium text-[var(--theme-text)]">工具证据</h4>
+            <details className="rounded-md border border-[var(--theme-border)] p-3">
+              <summary className="cursor-pointer text-xs font-medium text-[var(--theme-text)]">工具证据</summary>
               <ul className="mt-2 space-y-2">
                 {toolEvidence.map((item, index) => (
                   <li key={`${diagnosticValue(item.invocation_id)}-${index}`} className="text-[11px]">
@@ -329,11 +329,11 @@ export function RunDiagnosticsSection({
                   </li>
                 ))}
               </ul>
-            </div>
+            </details>
           ) : null}
           {observationEvidence.length ? (
-            <div className="rounded-md border border-[var(--theme-border)] p-3">
-              <h4 className="text-xs font-medium text-[var(--theme-text)]">逐条观测证据</h4>
+            <details className="rounded-md border border-[var(--theme-border)] p-3">
+              <summary className="cursor-pointer text-xs font-medium text-[var(--theme-text)]">逐条观测证据</summary>
               <div className="mt-2 space-y-2">
                 {observationEvidence.map((observation, index) => (
                   <details key={`${observation.observation_id ?? "observation"}-${index}`}>
@@ -367,7 +367,7 @@ export function RunDiagnosticsSection({
                   </details>
                 ))}
               </div>
-            </div>
+            </details>
           ) : null}
           {diagnostics.handling.length ? (
             <div className="rounded-md border border-[var(--theme-border)] p-3">
@@ -386,8 +386,8 @@ export function RunDiagnosticsSection({
             </div>
           ) : null}
           {diagnostics.losses.length ? (
-            <div className="rounded-md bg-[var(--theme-warning-soft)] p-3 text-[11px] text-[var(--theme-warning)]">
-              <p className="font-medium">诊断损失记录：{diagnostics.losses.length} 项</p>
+            <details className="rounded-md bg-[var(--theme-warning-soft)] p-3 text-[11px] text-[var(--theme-warning)]">
+              <summary className="cursor-pointer font-medium">诊断损失记录：{diagnostics.losses.length} 项</summary>
               <ul className="mt-1 space-y-0.5 font-mono">
                 {diagnostics.losses.map((item, index) => (
                   <li key={`${item.field}-${item.reason}-${index}`} data-run-diagnostic-loss>
@@ -396,11 +396,11 @@ export function RunDiagnosticsSection({
                   </li>
                 ))}
               </ul>
-            </div>
+            </details>
           ) : null}
           {diagnostics.attempts.length ? (
-            <div className="rounded-md border border-[var(--theme-border)] p-3">
-              <h4 className="text-xs font-medium text-[var(--theme-text)]">执行尝试</h4>
+            <details className="rounded-md border border-[var(--theme-border)] p-3">
+              <summary className="cursor-pointer text-xs font-medium text-[var(--theme-text)]">执行尝试的技术记录</summary>
               <div className="mt-2 space-y-2">
                 {diagnostics.attempts.map((attempt) => (
                   <div key={attempt.attempt_id} className="flex items-start justify-between gap-3 text-[11px]">
@@ -420,7 +420,7 @@ export function RunDiagnosticsSection({
                   </div>
                 ))}
               </div>
-            </div>
+            </details>
           ) : null}
           <div className="rounded-md bg-[var(--theme-bg-sidebar)] px-3 py-2 text-[11px] text-[var(--theme-text-tertiary)]">
             保留 {diagnostics.counts.retained_observations} 条观测

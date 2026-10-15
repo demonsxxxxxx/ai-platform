@@ -844,3 +844,19 @@ test("builds the message fork url", () => {
     "/api/sessions/session-1/messages/message-1/fork",
   );
 });
+
+test("browser timing reports only Run identity and elapsed time under its submission", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
+  globalThis.fetch = async (input, init) => {
+    calls.push({ input, init });
+    return new Response(JSON.stringify({ recorded: true }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+  try {
+    await sessionApi.reportBrowserRunLatency("submission/a", "run-a", 1200);
+    assert.equal(calls[0].input, "/api/chat/submissions/submission%2Fa/latency");
+    assert.equal(calls[0].init?.method, "POST");
+    assert.equal(calls[0].init?.credentials, "include");
+    assert.deepEqual(JSON.parse(String(calls[0].init?.body)), { run_id: "run-a", duration_ms: 1200 });
+  } finally { globalThis.fetch = originalFetch; }
+});

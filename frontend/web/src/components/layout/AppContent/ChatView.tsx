@@ -884,12 +884,18 @@ export function ChatView({
     (index: number, message: (typeof messages)[number]) => (
       <AssistantUiMessageContentContext.Provider
         value={
-          <ChatMessage
-            message={message}
-            artifactDownloadScopeContext={artifactDownloadScopeContext}
-            isLastMessage={index === messages.length - 1}
-            onOpenPreview={handleOpenPreview}
-          />
+          <div
+            className="contents"
+            data-browser-run-id={message.role === "assistant" ? message.runId : undefined}
+            data-browser-session-id={sessionId ?? undefined}
+          >
+            <ChatMessage
+              message={message}
+              artifactDownloadScopeContext={artifactDownloadScopeContext}
+              isLastMessage={index === messages.length - 1}
+              onOpenPreview={handleOpenPreview}
+            />
+          </div>
         }
       >
         <ThreadPrimitive.Unstable_MessageById
@@ -900,6 +906,7 @@ export function ChatView({
     ),
     [
       artifactDownloadScopeContext,
+      sessionId,
       messages.length,
       handleOpenPreview,
     ],
