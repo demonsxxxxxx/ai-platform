@@ -934,6 +934,13 @@ export const sessionApi = {
     });
   },
 
+  async reportBrowserRunLatency(submissionId: string, runId: string, durationMs: number): Promise<{ recorded: boolean }> {
+    return authFetch(`${buildChatSubmissionUrl(submissionId)}/latency`, {
+      method: "POST",
+      body: JSON.stringify({ run_id: runId, duration_ms: durationMs }),
+    });
+  },
+
   async getChatSubmission(submissionId: string): Promise<ChatSubmissionResolution> {
     return authFetch(buildChatSubmissionUrl(submissionId), { cache: "no-store" });
   },

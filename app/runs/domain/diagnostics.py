@@ -876,6 +876,10 @@ def _validated_payload(value: object) -> dict[str, Any]:
 def _fit_payload(payload: dict[str, Any]) -> None:
     if len(_json_bytes(payload)) <= RUN_DIAGNOSTICS_MAX_BYTES:
         return
+    # Optional client timing must never displace subsequently captured fault evidence.
+    payload.pop("browser_latency", None)
+    if len(_json_bytes(payload)) <= RUN_DIAGNOSTICS_MAX_BYTES:
+        return
     payload["coverage"] = "partial"
     _upsert_budget_loss(
         payload,

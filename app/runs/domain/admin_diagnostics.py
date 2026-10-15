@@ -184,6 +184,7 @@ class AdminRunDiagnosticsResponse(TypedDict):
     ]
     run: AdminRunDiagnosticRun
     root: AdminRunDiagnosticObservation | None
+    browser_latency: NotRequired[dict[str, str | int] | None]
     handling: list[AdminRunDiagnosticObservation]
     losses: list[AdminRunDiagnosticLoss]
     attempts: list[AdminRunDiagnosticAttempt]

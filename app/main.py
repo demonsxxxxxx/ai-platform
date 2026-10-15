@@ -26,6 +26,7 @@ from app.bootstrap.run_attempt_lifecycle import build_run_attempt_lifecycle_serv
 from app.bootstrap.run_diagnostics import build_run_diagnostics_service
 from app.bootstrap.run_inputs import build_run_inputs_service
 from app.bootstrap.skills import configure_skill_services
+from app.bootstrap.submission_latency import build_chat_submission_latency_router
 from app.bootstrap.streaming import RunStreamRuntime, build_run_stream_runtime
 from app.db import close_pool, transaction
 from app.redis_client import close_redis_client
@@ -188,6 +189,8 @@ def create_app() -> FastAPI:
     app.include_router(agent_profiles_router, prefix="/api/ai")
     app.include_router(chat_sessions_router, prefix="/api/ai")
     app.include_router(chat_router, prefix="/api/ai")
+    submission_latency_router = build_chat_submission_latency_router()
+    app.include_router(submission_latency_router, prefix="/api/ai")
     app.include_router(context_router, prefix="/api/ai")
     app.include_router(files_router, prefix="/api/ai")
     app.include_router(runs_router, prefix="/api/ai")
@@ -210,4 +213,5 @@ def create_app() -> FastAPI:
     app.include_router(mcp_router, prefix="/api")
     app.include_router(chat_sessions_router, prefix="/api")
     app.include_router(chat_router, prefix="/api")
+    app.include_router(submission_latency_router, prefix="/api")
     return app
