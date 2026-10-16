@@ -966,7 +966,8 @@ def pytest_generate_tests(metafunc):
 def test_monitor_and_playback_cost_contracts_have_distinct_ci_owners() -> None:
     scripts = json.loads(Path("frontend/web/package.json").read_text())["scripts"]
     assert scripts["test:run-monitor"].split() == [
-        "tsx", "--test",
+        "tsx", "--import", "./scripts/lobe-ui-test-setup.mjs",
+        "--test", "--test-concurrency=2",
         "src/services/api/__tests__/adminRuns.test.ts",
         "src/services/api/__tests__/adminUsers.test.ts",
         "src/components/panels/__tests__/RunMonitorPanel.mounted.test.tsx",
@@ -977,7 +978,8 @@ def test_monitor_and_playback_cost_contracts_have_distinct_ci_owners() -> None:
         "src/__tests__/App.test.tsx",
     ]
     assert scripts["test:run-playback"].split() == [
-        "tsx", "--test",
+        "tsx", "--import", "./scripts/lobe-ui-test-setup.mjs",
+        "--test", "--test-concurrency=2",
         "src/services/api/__tests__/runPlayback.test.ts",
         "src/components/layout/AppContent/__tests__/runPlaybackPanelState.test.ts",
         "src/components/layout/AppContent/__tests__/RunPlaybackPanel.mounted.test.tsx",

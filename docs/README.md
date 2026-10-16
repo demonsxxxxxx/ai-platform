@@ -100,7 +100,8 @@ diagnostic export and retirement of superseded mappings. Real-dependency,
 performance and production acceptance remain separate from source completion
 and deployment evidence.
 
-[AGENTS](../AGENTS.md), [PR workflow](agent-rules/github-issue-pr-workflow.md),
+[AGENTS](../AGENTS.md), [frontend implementation and checks](../frontend/web/AGENTS.md),
+[PR workflow](agent-rules/github-issue-pr-workflow.md),
 [local test execution](agent-rules/local-test-execution.md), and
 [multi-agent workflow](agent-rules/multi-agent-context-workflow.md) own repository
 work, verification, and handoff. This cleanup does not add another approval system.
