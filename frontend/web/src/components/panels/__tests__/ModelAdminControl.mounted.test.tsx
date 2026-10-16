@@ -1,28 +1,18 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { after } from "node:test";
 import { installSelectTestDom } from "../../common/__tests__/selectTestDom.ts";
+import { createLobeTestRoot } from "../../common/__tests__/lobeUiTestRoot.tsx";
 import { modelAdminApi } from "../../../services/api/modelAdmin.ts";
 import type { AdminModelEntry, AdminModelState } from "../../../services/api/modelAdmin.ts";
 import type { ModelAdminControlState } from "../ModelAdminControl.tsx";
 import { ApiRequestError } from "../../../services/api/fetch.ts";
 
 const dom = installSelectTestDom();
+after(() => dom.close());
 
 type ReactModule = typeof import("react");
-type QueryNode = {
-  childNodes?: unknown[];
-  getAttribute(name: string): string | null;
-  textContent?: string | null;
-};
-type QueryContainer = {
-  textContent: string | null;
-  querySelectorAll(selector: string): ArrayLike<QueryNode>;
-};
-type InputElement = {
-  checked: boolean;
-  value: string;
-  dispatchEvent(event: { type: string; bubbles?: boolean }): boolean;
-};
+type QueryContainer = HTMLElement;
+type InputElement = HTMLInputElement;
 
 type ModelOverrides = Partial<AdminModelEntry>;
 
@@ -63,31 +53,32 @@ function inputByLabel(container: QueryContainer, label: string): InputElement {
   return input as unknown as InputElement;
 }
 
-function selectByLabel(container: QueryContainer, label: string): HTMLElement {
-  const select = Array.from(container.querySelectorAll('[data-slot="select-trigger"]'))
-    .find((candidate) => candidate.getAttribute("aria-label") === label);
-  assert.ok(select, `expected select ${label}`);
-  return select as unknown as HTMLElement;
+function buttonByLabel(container: QueryContainer, label: string): HTMLElement {
+  const button = Array.from(container.querySelectorAll("button, [role=radio]")).find((node) => node.getAttribute("aria-label") === label);
+  assert.ok(button, `expected control ${label}`);
+  return button as HTMLElement;
 }
 
-async function changeMountedSelect(React: ReactModule, trigger: HTMLElement, value: string) {
+function selectByLabel(container: QueryContainer, label: string): HTMLElement {
+  const fieldLabel = Array.from(container.querySelectorAll("label[for]")).find((node) => node.textContent === label);
+  const select = document.getElementById(fieldLabel?.getAttribute("for") ?? "");
+  assert.ok(select, `expected select ${label}`);
+  return select;
+}
+
+async function changeMountedSelect(React: ReactModule, trigger: HTMLElement, label: string) {
+  await React.act(async () => { trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })); });
+  const option = Array.from(document.querySelectorAll<HTMLElement>("[role=option]")).find((node) => node.textContent?.trim() === label);
+  assert.ok(option, `expected option ${label}`);
   await React.act(async () => {
-    trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    option.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType: "mouse", button: 0 }));
+    option.dispatchEvent(new PointerEvent("click", { bubbles: true, pointerType: "mouse", detail: 1 }));
   });
-  const option = document.querySelector<HTMLElement>(`[data-slot="select-item"][data-value="${value}"]`);
-  assert.ok(option, `expected option ${value}`);
-  await React.act(async () => option.click());
 }
 
 function changeMountedInput(input: InputElement, value: string): void {
-  input.value = value;
-  const propsKey = Object.keys(input).find((key) => key.startsWith("__reactProps$"));
-  assert.ok(propsKey, "expected mounted React input props");
-  const props = (input as unknown as Record<string, unknown>)[propsKey] as {
-    onChange?: (event: { target: InputElement }) => void;
-  };
-  assert.ok(props.onChange, "expected mounted input change handler");
-  props.onChange({ target: input });
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
 function nodeText(node: unknown): string {
@@ -122,7 +113,6 @@ async function waitFor(
 
 test("Model admin discovery is a draft and only publication changes the active catalog", async () => {
   const React = await import("react");
-  const { createRoot } = await import("react-dom/client");
   const { ModelAdminControl } = await import("../ModelAdminControl.tsx");
 
   const original = {
@@ -178,7 +168,7 @@ test("Model admin discovery is a draft and only publication changes the active c
   };
 
   const container = dom.document.createElement("div");
-  const root = createRoot(container as never);
+  const root = await createLobeTestRoot(container);
   try {
     await React.act(async () => {
       root.render(React.createElement(ModelAdminControl, {
@@ -272,26 +262,18 @@ test("Model admin discovery is a draft and only publication changes the active c
     await React.act(async () => {
       changeMountedInput(inputByLabel(container, "openai/gpt-5 最大输入 Token"), "");
       changeMountedInput(inputByLabel(container, "openai/gpt-5 最大输出 Token"), "");
-      const checkbox = inputByLabel(container, "启用 GPT-5");
-      checkbox.checked = false;
-      changeMountedInput(checkbox, checkbox.value);
+      buttonByLabel(container, "启用 GPT-5").click();
     });
     const statusSelect = selectByLabel(container, "筛选模型状态");
-    await changeMountedSelect(React, statusSelect, "unavailable");
+    await changeMountedSelect(React, statusSelect, "状态：上游缺失");
     assert.match(nodeText(container), /没有匹配的模型/);
-    await changeMountedSelect(React, statusSelect, "all");
+    await changeMountedSelect(React, statusSelect, "状态：全部");
 
-    const enabled = inputByLabel(container, "启用 GPT-5");
     const actionBar = container.querySelectorAll("[data-model-admin-action-bar]")[0];
     assert.ok(actionBar);
     assert.match(nodeText(actionBar), /已启用 0 \/ 1/);
-    enabled.checked = true;
-    const defaultInput = inputByLabel(container, "设为默认 GPT-5");
-    defaultInput.checked = true;
-    await React.act(async () => {
-      changeMountedInput(enabled, enabled.value);
-      changeMountedInput(defaultInput, defaultInput.value);
-    });
+    await React.act(async () => { buttonByLabel(container, "启用 GPT-5").click(); });
+    await React.act(async () => { buttonByLabel(container, "设为默认 GPT-5").click(); });
     assert.match(nodeText(actionBar), /已启用 1 \/ 1/);
     for (const label of ["openai/gpt-5 最大输入 Token", "openai/gpt-5 最大输出 Token"]) {
       const field = Array.from(container.querySelectorAll("input"))

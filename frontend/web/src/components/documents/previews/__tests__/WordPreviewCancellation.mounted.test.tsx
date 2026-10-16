@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
-import test, { after } from "node:test";
+import test, { after, before } from "node:test";
 import { act } from "react";
-import { createRoot } from "react-dom/client";
-// @ts-expect-error jsdom is the pinned mounted-test runtime.
-import { JSDOM } from "jsdom";
+import i18n from "../../../../i18n";
+import { createLobeTestRoot } from "../../../common/__tests__/lobeUiTestRoot";
+import { installSelectTestDom } from "../../../common/__tests__/selectTestDom";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -40,17 +40,28 @@ const hooks = registerHooks({
   },
 });
 after(() => hooks.deregister());
+// Component/provider imports are setup cost, outside the cancellation deadline.
+before(async () => {
+  const environment = installSelectTestDom();
+  const root = await createLobeTestRoot(document.createElement("div"));
+  await import("../WordPreview.tsx");
+  await act(async () => { root.render(null); });
+  await act(async () => root.unmount());
+  environment.close();
+});
 const t = (key: string) => key;
 
 type Scenario = "legacy" | "docx";
 async function runScenario(scenario: Scenario, cancelled: boolean) {
-  const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>");
+  const environment = installSelectTestDom();
+  const dom = { window };
+  document.body.innerHTML = "<div id='root'></div>";
   const saved = new Map<string, PropertyDescriptor | undefined>();
   const install = (key: string, value: unknown) => {
     saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, key, { value, configurable: true, writable: true });
   };
-  for (const key of ["window", "document", "DOMParser", "Node", "Element", "HTMLElement", "MutationObserver"]) install(key, dom.window[key]);
+  for (const key of ["window", "document", "DOMParser", "Node", "Element", "HTMLElement", "MutationObserver"] as const) install(key, dom.window[key]);
   install("IS_REACT_ACT_ENVIRONMENT", true);
   install("ResizeObserver", class { observe() {} disconnect() {} });
   const completion = deferred<string>();
@@ -63,7 +74,7 @@ async function runScenario(scenario: Scenario, cancelled: boolean) {
     renderedCurrent: () => renderedCurrent.resolve(),
   });
   const host = document.getElementById("root")!;
-  const root = createRoot(host);
+  const root = await createLobeTestRoot(host);
   const { default: WordPreview } = await import("../WordPreview.tsx");
   const oldError = console.error;
   const errors: unknown[][] = [];
@@ -98,7 +109,7 @@ async function runScenario(scenario: Scenario, cancelled: boolean) {
       assert.match(host.textContent!, /Current document B/);
       assert.doesNotMatch(host.textContent!, /documents.wordConversionError|Obsolete document A/);
       assert.ok(host.querySelector("section.docx"));
-      assert.ok(host.querySelector("button[aria-label='imageViewer.zoomIn']"));
+      assert.ok(host.querySelector(`button[aria-label="${i18n.t("imageViewer.zoomIn")}"]`));
     } else {
       assert.match(host.textContent!, /documents.wordConversionError/);
       assert.equal(host.querySelector("section.docx"), null);
@@ -109,7 +120,7 @@ async function runScenario(scenario: Scenario, cancelled: boolean) {
   } finally {
     console.error = oldError;
     await act(async () => root.unmount());
-    dom.window.close();
+    environment.close();
     for (const [key, descriptor] of saved) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor);
       else Reflect.deleteProperty(globalThis, key);

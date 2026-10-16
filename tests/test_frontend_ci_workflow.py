@@ -141,7 +141,8 @@ def test_frontend_ci_runs_browser_auth_owner_regressions():
     scripts = json.loads(PACKAGE.read_text(encoding="utf-8"))["scripts"]
     assert "corepack pnpm run test:auth" in scripts["ci:verify"].split(" && ")
     assert scripts["test:auth"].split() == [
-        "tsx", "--test",
+        "tsx", "--import", "./scripts/lobe-ui-test-setup.mjs",
+        "--test", "--test-concurrency=2",
         "src/hooks/__tests__/browserAuthCoordinator.test.ts",
         "src/hooks/__tests__/browserAuthStorage.test.ts",
         "src/hooks/__tests__/useAuth.test.ts",
@@ -151,8 +152,9 @@ def test_frontend_ci_runs_browser_auth_owner_regressions():
         "src/services/api/__tests__/authLogging.test.ts",
         "src/services/api/__tests__/download.test.ts",
         "src/services/api/__tests__/authenticatedRequest.test.ts",
+        "src/components/auth/__tests__/PasswordInput.test.tsx",
     ]
-    for selector in scripts["test:auth"].split()[2:]:
+    for selector in scripts["test:auth"].split()[5:]:
         assert (PACKAGE.parent / selector).is_file()
 
 
@@ -161,7 +163,8 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     backend_workflow = BACKEND_WORKFLOW.read_text(encoding="utf-8")
     test_sse = json.loads(PACKAGE.read_text(encoding="utf-8"))["scripts"]["test:sse"]
     assert (
-        "tsx --test src/hooks/useAgent/__tests__/useAgentRoutedSession.test.tsx"
+        "tsx --import ./scripts/lobe-ui-test-setup.mjs --test --test-concurrency=2 "
+        "src/hooks/useAgent/__tests__/useAgentRoutedSession.test.tsx"
         in test_sse.split(" && ")
     )
     assert "src/hooks/useAgent/__tests__/historyLoader.test.ts" in test_sse
@@ -188,7 +191,7 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     jobs = contract["jobs"]
     assert isinstance(jobs, dict)
     assert jobs["frontend"]["runs-on"] == "windows-latest"
-    assert jobs["frontend"]["timeout-minutes"] == "15"
+    assert jobs["frontend"]["timeout-minutes"] == "30"
     frontend_steps = jobs["frontend"]["steps"]
     store_step = next(
         step for step in frontend_steps if step.get("name") == "Resolve pnpm store"

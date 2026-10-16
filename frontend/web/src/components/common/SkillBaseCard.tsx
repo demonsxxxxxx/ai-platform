@@ -1,5 +1,5 @@
 import { type ReactNode } from "react";
-import { Checkbox } from "./Checkbox";
+import { Checkbox } from "@lobehub/ui/base-ui";
 
 export interface SkillBaseCardProps {
   title: string;
@@ -76,11 +76,11 @@ export function SkillBaseCard({
           }`}
         >
           <Checkbox
-            size="lg"
+            size={24}
             checked={selected}
             onChange={() => onSelect()}
             className="shadow-sm sm:opacity-0 sm:group-hover:opacity-100"
-          />
+          onClick={(event) => event.stopPropagation()} />
         </div>
       )}
 

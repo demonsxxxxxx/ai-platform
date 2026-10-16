@@ -14,7 +14,7 @@ import {
   type CSSProperties,
 } from "react";
 import { useNavigate } from "react-router-dom";
-import toast from "react-hot-toast";
+import { toast } from "@lobehub/ui/base-ui";
 import { useTranslation } from "react-i18next";
 import { useInView } from "react-intersection-observer";
 import { sessionApi, type BackendSession } from "../../services/api";

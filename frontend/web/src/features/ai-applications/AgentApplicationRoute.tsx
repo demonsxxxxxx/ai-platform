@@ -1,6 +1,6 @@
+import { Button, Checkbox, Progress, Spin, TabsIndicator, TabsList, TabsPanel, TabsRoot, TabsTab, Tag, TextArea, toast } from "@lobehub/ui/base-ui";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import toast from "react-hot-toast";
 import {
   AlertCircle,
   ArrowLeft,
@@ -59,6 +59,12 @@ function reviewStatusLabel(status: WordReviewStatus): string {
   }[status];
 }
 
+function reviewStatusColor(status: WordReviewStatus): string | undefined {
+  if (status === "completed") return "success";
+  if (["failed", "timeout"].includes(status)) return "error";
+  if (["uploading", "queued", "running"].includes(status)) return "warning";
+}
+
 function formatTime(value: Date): string {
   return value.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
 }
@@ -81,15 +87,15 @@ function AppFrame({
     <main className="flex h-full min-h-0 flex-col overflow-hidden bg-[#f5f8fb] text-[#122235]">
       <header className="shrink-0 border-b border-[#dce5ed] bg-white">
         <div className="mx-auto flex min-h-[72px] w-full max-w-[1440px] items-center gap-4 px-5 sm:px-8">
-          <button
-            type="button"
+          <Button type="text"
+            htmlType="button"
             onClick={() => navigate(APP_ROUTE_PATHS.apps)}
             className="flex size-9 shrink-0 items-center justify-center rounded-lg text-[#5d7389] transition-colors hover:bg-[#eef4f8] hover:text-[#244b6c]"
             aria-label="返回 AI 应用"
             title="返回 AI 应用"
           >
             <ArrowLeft size={19} />
-          </button>
+          </Button>
           <span className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-[#e8f5f5] text-[#188b8d]">
             <Icon size={21} strokeWidth={1.9} />
           </span>
@@ -272,14 +278,14 @@ export function KnowledgeBaseApplication({ config = getSopRagflowConfig() }: { c
               <h2 className="text-sm font-bold text-[#1b344b]">问询对话</h2>
               <p className="mt-1 text-xs text-[#8294a5]">回答将基于已授权的公司知识库内容</p>
             </div>
-            <button
-              type="button"
+            <Button type="text"
+              htmlType="button"
               onClick={clearMessages}
               disabled={messages.length === 0 || isLoading}
               className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs text-[#72869a] hover:bg-[#f2f6f9] disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Trash2 size={14} /> 清空
-            </button>
+            </Button>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto px-5 py-6 sm:px-8">
             {messages.length === 0 ? (
@@ -289,15 +295,15 @@ export function KnowledgeBaseApplication({ config = getSopRagflowConfig() }: { c
                 <p className="mt-2 max-w-[520px] text-sm leading-6 text-[#718598]">我已接入公司知识库，可以帮助您查询制度、审批流程、操作指引和规范要求。</p>
                 <div className="mt-8 grid w-full gap-2 sm:grid-cols-2">
                   {SOP_SUGGESTIONS.map((suggestion) => (
-                    <button
+                    <Button type="text"
                       key={suggestion}
-                      type="button"
+                      htmlType="button"
                       onClick={() => setDraft(suggestion)}
                       className="flex min-h-12 items-center gap-2 rounded-lg border border-[#dfe8ee] px-3 text-left text-xs leading-5 text-[#49657c] transition-colors hover:border-[#8fc9c3] hover:bg-[#f2fbf8]"
                     >
                       <MessageCircle size={15} className="shrink-0 text-[#26a58c]" />
                       {suggestion}
-                    </button>
+                    </Button>
                   ))}
                 </div>
               </div>
@@ -310,7 +316,7 @@ export function KnowledgeBaseApplication({ config = getSopRagflowConfig() }: { c
           <form onSubmit={submit} className="shrink-0 border-t border-[#edf1f4] bg-[#fbfcfd] p-4 sm:p-5">
             {localError && <p className="mb-2 text-xs text-[#c35b50]">{localError}</p>}
             <div className="flex items-end gap-2 rounded-lg border border-[#d4e0e8] bg-white p-2 focus-within:border-[#55aaa0] focus-within:ring-2 focus-within:ring-[#d9f0ed]">
-              <textarea
+              <TextArea
                 value={draft}
                 onChange={(event) => setDraft(event.target.value.slice(0, 1000))}
                 onKeyDown={(event) => {
@@ -321,17 +327,18 @@ export function KnowledgeBaseApplication({ config = getSopRagflowConfig() }: { c
                 }}
                 rows={2}
                 placeholder="请输入制度、流程或审批相关问题…"
-                className="min-h-10 flex-1 resize-none border-0 bg-transparent px-2 py-1.5 text-sm text-[#23394c] outline-none placeholder:text-[#a3b0bb]"
+                aria-label="制度或流程问题"
+                variant="borderless" className="min-w-0 flex-1"
+                classNames={{ input: "min-h-10 px-2 py-1.5 text-sm" }}
               />
-              <button
-                type="submit"
+              <Button type="primary"
+                htmlType="submit" size="large" loading={isLoading}
+                icon={<Send size={17} />}
                 disabled={!draft.trim() || isLoading}
-                className="flex size-9 shrink-0 items-center justify-center rounded-md bg-[#238f85] text-white transition-colors hover:bg-[#19766e] disabled:cursor-not-allowed disabled:bg-[#c4d8d6]"
+                className="shrink-0"
                 aria-label="发送问题"
                 title="发送问题"
-              >
-                {isLoading ? <Loader2 size={17} className="animate-spin" /> : <Send size={17} />}
-              </button>
+              />
             </div>
             <p className="mt-2 text-[11px] text-[#9aa9b6]">Enter 发送，Shift + Enter 换行</p>
           </form>
@@ -1472,20 +1479,19 @@ function WordReviewApplication() {
                 <p>上传需要审核的 Word 文档</p>
               </div>
               {tasks.length > 0 && (
-                <button
-                  type="button"
-                  className="secondary-button"
+                <Button type="default"
+                  htmlType="button"
                   onClick={clearTaskList}
                   disabled={isLoading || uploading}
                 >
                   <Trash2 size={14} />
                   清空列表
-                </button>
+                </Button>
               )}
             </div>
 
-            <button
-              type="button"
+            <Button type="text"
+              htmlType="button"
               className="review-upload"
               onClick={() => fileInputRef.current?.click()}
               onDragOver={(event) => event.preventDefault()}
@@ -1497,7 +1503,7 @@ function WordReviewApplication() {
               <UploadCloud size={34} strokeWidth={1.5} />
               <strong>拖拽 Word 文档到这里</strong>
               <span>或点击选择 DOCX 文件</span>
-            </button>
+            </Button>
             <input
               ref={fileInputRef}
               type="file"
@@ -1523,15 +1529,15 @@ function WordReviewApplication() {
                           : `已上传${formatFileSize(task.size) ? ` · ${formatFileSize(task.size)}` : ""}`}
                       </span>
                     </div>
-                    <button
-                      type="button"
-                      className="icon-button"
+                    <Button type="text"
+                      htmlType="button"
+                      size="small"
                       onClick={() => removeTask(task)}
                       disabled={isLoading && task.status !== "uploading"}
                       aria-label={`移除${task.name}`}
                     >
                       <X size={15} />
-                    </button>
+                    </Button>
                   </div>
                 ))}
               </div>
@@ -1539,24 +1545,23 @@ function WordReviewApplication() {
 
             {tasks.find((task) => task.error)?.error && <p className="task-error">{tasks.find((task) => task.error)?.error}</p>}
             <div className="primary-actions">
-              <button
-                type="button"
-                className="primary-button"
+              <Button type="primary"
+                htmlType="button"
+                loading={isLoading}
                 onClick={startReadyTasks}
                 disabled={isLoading || uploading || !tasks.some((task) => task.status === "ready")}
               >
-                {isLoading ? <Loader2 size={16} className="animate-spin" /> : <Play size={16} />}
+                <Play size={16} />
                 开始审核
-              </button>
-              <button
-                type="button"
-                className="secondary-button"
+              </Button>
+              <Button type="default"
+                htmlType="button"
                 onClick={retryFailedTasks}
                 disabled={isLoading || uploading || !tasks.some((task) => ["failed", "timeout"].includes(task.status) && task.fileId)}
               >
                 <RotateCcw size={15} />
                 重试失败任务
-              </button>
+              </Button>
             </div>
             <p className="upload-reminder">
               <Clock3 size={13} />
@@ -1564,42 +1569,31 @@ function WordReviewApplication() {
             </p>
           </div>
 
-          <div className="task-panel">
+          <TabsRoot className="task-panel" value={activeTab} onValueChange={(value) => setActiveTab(value as typeof activeTab)}>
             <div className="panel-header">
               <div>
                 <h2>处理记录</h2>
                 <span className="panel-subtitle">共 {tasks.length} 条审核记录</span>
               </div>
               {tasks.length > 0 && (
-                <button
-                  type="button"
-                  className="secondary-button"
+                <Button type="default"
+                  htmlType="button"
                   onClick={clearTaskList}
                   disabled={isLoading}
                 >
                   <RotateCcw size={14} />
                   重新开始
-                </button>
+                </Button>
               )}
             </div>
 
-            <div className="task-tabs">
-              <button
-                type="button"
-                className={activeTab === "current" ? "is-active" : ""}
-                onClick={() => setActiveTab("current")}
-              >
-                当前任务 <span className="task-tab-count">({tasks.length})</span>
-              </button>
-              <button
-                type="button"
-                className={activeTab === "history" ? "is-active" : ""}
-                onClick={() => setActiveTab("history")}
-              >
-                历史记录 <span className="task-tab-count">({history.length})</span>
-              </button>
-            </div>
+            <TabsList className="mb-4" variant="point" aria-label="处理记录">
+              <TabsTab value="current" variant="point">当前任务 <span className="task-tab-count">({tasks.length})</span></TabsTab>
+              <TabsTab value="history" variant="point">历史记录 <span className="task-tab-count">({history.length})</span></TabsTab>
+              <TabsIndicator variant="point" />
+            </TabsList>
 
+            <TabsPanel value={activeTab}>
             {activeTab === "current" ? (
               tasks.length === 0 ? (
                 <div className="empty-state">
@@ -1615,9 +1609,9 @@ function WordReviewApplication() {
                         <div className="task-content">
                           <div className="task-title-row">
                             <span className="task-name" title={task.name}>{task.name}</span>
-                            <span className={`status-tag is-${task.status}`}>{reviewStatusLabel(task.status)}</span>
+                            <Tag color={reviewStatusColor(task.status)} shape="round" size="small">{reviewStatusLabel(task.status)}</Tag>
                           </div>
-                          <div className="progress-track"><span style={{ width: `${Math.max(0, Math.min(100, task.progress))}%` }} /></div>
+                          <Progress percent={task.progress} size={6} showInfo={false} status={task.status === "completed" ? "success" : ["failed", "timeout"].includes(task.status) ? "exception" : "normal"} aria-label={`${task.name}处理进度`} />
                           <div className="task-meta">
                             <span>Word文档审核</span>
                             {formatFileSize(task.size) && <span>{formatFileSize(task.size)}</span>}
@@ -1634,9 +1628,9 @@ function WordReviewApplication() {
                               {task.files.map((file) => (
                                 <span key={`${file.path}-${file.fileKey}-${file.name}`} className="result-file-group">
                                   {viewUrl(file) && <a className="result-file" href={viewUrl(file)} target="_blank" rel="noreferrer"><ExternalLink size={12} />在线查看</a>}
-                                  <button type="button" className="result-file" onClick={() => void downloadResultFile(file, task.taskId)}>
+                                  <Button type="text" htmlType="button" className="result-file" onClick={() => void downloadResultFile(file, task.taskId)}>
                                     <ExternalLink size={12} />{file.label}
-                                  </button>
+                                  </Button>
                                 </span>
                               ))}
                             </div>
@@ -1644,36 +1638,36 @@ function WordReviewApplication() {
                         </div>
                       </div>
                       <div className="task-actions">
-                        {task.status === "ready" && <button type="button" className="primary-button" onClick={() => void runReview(task)}><Play size={13} />开始审核</button>}
-                        {(["failed", "timeout"].includes(task.status) && task.fileId) && <button type="button" className="secondary-button" onClick={() => void runReview(task)}><RotateCcw size={13} />重试</button>}
-                        {["queued", "running"].includes(task.status) && <button type="button" className="secondary-button" onClick={() => void cancelTask(task)}><X size={13} />中断任务</button>}
-                        <button type="button" className="secondary-button" onClick={() => removeTask(task)} disabled={["uploading", "queued", "running"].includes(task.status)}><X size={13} />移除</button>
+                        {task.status === "ready" && <Button type="primary" size="small" htmlType="button" onClick={() => void runReview(task)}><Play size={13} />开始审核</Button>}
+                        {(["failed", "timeout"].includes(task.status) && task.fileId) && <Button type="default" size="small" htmlType="button" onClick={() => void runReview(task)}><RotateCcw size={13} />重试</Button>}
+                        {["queued", "running"].includes(task.status) && <Button type="default" size="small" htmlType="button" onClick={() => void cancelTask(task)}><X size={13} />中断任务</Button>}
+                        <Button type="default" size="small" htmlType="button" onClick={() => removeTask(task)} disabled={["uploading", "queued", "running"].includes(task.status)}><X size={13} />移除</Button>
                       </div>
                     </article>
                   ))}
                 </div>
               )
             ) : historyLoading && history.length === 0 ? (
-              <div className="empty-state"><Loader2 size={26} className="animate-spin" /><span>正在加载历史记录…</span></div>
+              <div className="empty-state"><Spin size={24} /><span>正在加载历史记录…</span></div>
             ) : history.length === 0 ? (
               <div className="empty-state"><span className="empty-state-icon"><Clock3 size={26} /></span><span>暂无历史记录</span></div>
             ) : (
               <>
                 <div className="history-tools">
-                  <label className="history-select-all"><input type="checkbox" checked={allVisibleHistorySelected} onChange={(event) => togglePageHistorySelection(event.target.checked)} />选择本页</label>
+                  <label className="history-select-all"><Checkbox checked={allVisibleHistorySelected} onChange={(checked) => togglePageHistorySelection(checked)} />选择本页</label>
                   <span className="history-count">已选 {selectedHistory.length} 条</span>
-                  <button type="button" className="secondary-button" onClick={() => setSelectedHistoryIds([])} disabled={selectedHistoryIds.length === 0}>清空选择</button>
-                  <button type="button" className="primary-button" onClick={() => void batchDownloadHistory(downloadResultFile)} disabled={selectedHistory.length === 0}><ExternalLink size={14} />批量下载</button>
+                  <Button type="default" htmlType="button" onClick={() => setSelectedHistoryIds([])} disabled={selectedHistoryIds.length === 0}>清空选择</Button>
+                  <Button type="primary" htmlType="button" onClick={() => void batchDownloadHistory(downloadResultFile)} disabled={selectedHistory.length === 0}><ExternalLink size={14} />批量下载</Button>
                 </div>
                 {historyError && <p className="task-error">{historyError}</p>}
                 <div className="task-list">
                   {visibleHistory.map((item) => (
                     <article key={item.id} className={`task-card history-card is-${item.status}`}>
                       <div className="task-main history-card-main">
-                        <input type="checkbox" checked={selectedHistoryIds.includes(item.id)} disabled={item.files.length === 0} onChange={(event) => toggleHistorySelection(item, event.target.checked)} aria-label={`选择${item.name}`} />
+                        <Checkbox checked={selectedHistoryIds.includes(item.id)} disabled={item.files.length === 0} onChange={(checked) => toggleHistorySelection(item, checked)} aria-label={`选择${item.name}`} />
                         <div className="file-icon"><FileText size={20} /></div>
                         <div className="task-content">
-                          <div className="task-title-row"><span className="task-name" title={item.name}>{item.name}</span><span className={`status-tag is-${item.status}`}>{reviewStatusLabel(item.status)}</span></div>
+                          <div className="task-title-row"><span className="task-name" title={item.name}>{item.name}</span><Tag color={reviewStatusColor(item.status)} shape="round" size="small">{reviewStatusLabel(item.status)}</Tag></div>
                           <div className="task-meta">
                             <span>Word文档审核</span>
                             {formatFileSize(item.size) && <span>{formatFileSize(item.size)}</span>}
@@ -1687,8 +1681,8 @@ function WordReviewApplication() {
                         <div className="task-actions">
                           {item.files.map((file) => (
                             <span key={`${file.path}-${file.fileKey}-${file.name}`} className="result-file-group">
-                              {viewUrl(file) && <a className="secondary-button" href={viewUrl(file)} target="_blank" rel="noreferrer"><ExternalLink size={13} />在线查看</a>}
-                              <button type="button" className="secondary-button" onClick={() => void downloadResultFile(file, item.taskId)}><ExternalLink size={13} />{file.label}</button>
+                              {viewUrl(file) && <Button type="default" size="small" href={viewUrl(file)} target="_blank" rel="noreferrer"><ExternalLink size={13} />在线查看</Button>}
+                              <Button type="default" size="small" htmlType="button" onClick={() => void downloadResultFile(file, item.taskId)}><ExternalLink size={13} />{file.label}</Button>
                             </span>
                           ))}
                         </div>
@@ -1697,13 +1691,14 @@ function WordReviewApplication() {
                   ))}
                 </div>
                 <div className="history-pagination">
-                  <button type="button" className="secondary-button" onClick={() => setHistoryPage((page) => Math.max(1, page - 1))} disabled={historyPage <= 1}>上一页</button>
+                  <Button type="default" htmlType="button" onClick={() => setHistoryPage((page) => Math.max(1, page - 1))} disabled={historyPage <= 1}>上一页</Button>
                   <span>第 {historyPage} / {pageCount} 页</span>
-                  <button type="button" className="secondary-button" onClick={() => setHistoryPage((page) => Math.min(pageCount, page + 1))} disabled={historyPage >= pageCount}>下一页</button>
+                  <Button type="default" htmlType="button" onClick={() => setHistoryPage((page) => Math.min(pageCount, page + 1))} disabled={historyPage >= pageCount}>下一页</Button>
                 </div>
               </>
             )}
-          </div>
+            </TabsPanel>
+          </TabsRoot>
         </section>
       </div>
     </AppFrame>

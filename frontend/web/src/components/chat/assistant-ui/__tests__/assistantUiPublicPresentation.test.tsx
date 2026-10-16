@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-// jsdom 26 ships no declarations; this test uses only its runtime constructor.
-// @ts-expect-error jsdom is the pinned mounted-test runtime.
-import { JSDOM } from "jsdom";
+import { installSelectTestDom } from "../../../common/__tests__/selectTestDom";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { createLobeTestRoot } from "../../../common/__tests__/lobeUiTestRoot";
 import type { MessagePart } from "../../../../types";
 import { MessagePartRenderer } from "../../ChatMessage/MessagePartRenderer";
 import { MessageWorkActivity } from "../../ChatMessage/MessageWorkActivity";
@@ -29,30 +27,10 @@ function activateNativeButton(
   button.click();
 }
 
-test("chat work disclosure collapses on completion and keeps answer content outside", () => {
-  const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>", {
-    url: "http://localhost/",
-  });
-  for (const key of [
-    "window",
-    "document",
-    "navigator",
-    "HTMLElement",
-    "Node",
-    "Event",
-    "KeyboardEvent",
-  ] as const) {
-    Object.defineProperty(globalThis, key, {
-      configurable: true,
-      value: dom.window[key],
-    });
-  }
-  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", {
-    configurable: true,
-    value: true,
-  });
-  const container = dom.window.document.getElementById("root") as HTMLDivElement;
-  const root = createRoot(container);
+test("chat work disclosure collapses on completion and keeps answer content outside", async () => {
+  const environment = installSelectTestDom();
+  const container = document.createElement("div");
+  const root = await createLobeTestRoot(container);
   const thinking: Extract<MessagePart, { type: "thinking" }> = {
     type: "thinking",
     content: "公开思考摘要",
@@ -169,7 +147,7 @@ test("chat work disclosure collapses on completion and keeps answer content outs
       .filter(Boolean);
     assert.equal(controlledIds.length, 2);
     controlledIds.forEach((id) => {
-      assert.equal(dom.window.document.getElementById(id)?.hidden, true);
+      assert.equal(document.getElementById(id)?.hidden, true);
     });
     assert.equal(container.querySelector("[data-public-thinking]"), null);
     const answer = [...container.querySelectorAll("p")].find((node) =>
@@ -181,40 +159,20 @@ test("chat work disclosure collapses on completion and keeps answer content outs
     act(() => activateNativeButton(toggle, "Enter"));
     assert.equal(toggle.getAttribute("aria-expanded"), "true");
     controlledIds.forEach((id) => {
-      assert.equal(dom.window.document.getElementById(id)?.hidden, false);
+      assert.equal(document.getElementById(id)?.hidden, false);
     });
     assert.doesNotMatch(container.textContent || "", /公开思考摘要/);
   } finally {
     closePersistentToolPanel();
     act(() => root.unmount());
-    dom.window.close();
+    environment.close();
   }
 });
 
-test("generic public tools expose distinct safe failed and denied states", () => {
-  const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>", {
-    url: "http://localhost/",
-  });
-  for (const key of [
-    "window",
-    "document",
-    "navigator",
-    "HTMLElement",
-    "Node",
-    "Event",
-    "KeyboardEvent",
-  ] as const) {
-    Object.defineProperty(globalThis, key, {
-      configurable: true,
-      value: dom.window[key],
-    });
-  }
-  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", {
-    configurable: true,
-    value: true,
-  });
-  const container = dom.window.document.getElementById("root") as HTMLDivElement;
-  const root = createRoot(container);
+test("generic public tools expose distinct safe failed and denied states", async () => {
+  const environment = installSelectTestDom();
+  const container = document.createElement("div");
+  const root = await createLobeTestRoot(container);
   const parts: MessagePart[] = [
     {
       type: "tool",
@@ -291,6 +249,6 @@ test("generic public tools expose distinct safe failed and denied states", () =>
   } finally {
     closePersistentToolPanel();
     act(() => root.unmount());
-    dom.window.close();
+    environment.close();
   }
 });

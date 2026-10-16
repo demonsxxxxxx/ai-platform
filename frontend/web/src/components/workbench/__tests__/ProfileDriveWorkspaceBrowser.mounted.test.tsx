@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-// jsdom is the pinned mounted-test runtime and does not ship declarations here.
-// @ts-expect-error jsdom runtime import.
-import { JSDOM } from "jsdom";
+import { installSelectTestDom } from "../../common/__tests__/selectTestDom";
+import { createLobeTestRoot } from "../../common/__tests__/lobeUiTestRoot";
 import {
   PROFILE_DRIVE_CONNECTION_CHANGED_EVENT,
 } from "../../../services/api/profileDrive";
@@ -32,40 +31,12 @@ function changeInput(input: HTMLInputElement, value: string) {
 }
 
 test("expands ProfileDrive folders and imports a file into the current workspace", async () => {
-  const dom = new JSDOM(
-    "<!doctype html><html><body><div id='root'></div></body></html>",
-    { url: "http://localhost/chat/session-a", pretendToBeVisual: true },
-  );
-  const globalValues: Record<string, unknown> = {
-    window: dom.window,
-    document: dom.window.document,
-    navigator: dom.window.navigator,
-    HTMLElement: dom.window.HTMLElement,
-    Node: dom.window.Node,
-    Event: dom.window.Event,
-    MouseEvent: dom.window.MouseEvent,
-    IS_REACT_ACT_ENVIRONMENT: true,
-  };
-  const previousDescriptors = new Map(
-    Object.keys(globalValues).map((key) => [
-      key,
-      Object.getOwnPropertyDescriptor(globalThis, key),
-    ]),
-  );
-  for (const [key, value] of Object.entries(globalValues)) {
-    Object.defineProperty(globalThis, key, {
-      configurable: true,
-      writable: true,
-      value,
-    });
-  }
-
-  const [{ act, createElement }, { createRoot }, { ProfileDriveWorkspaceBrowser }] =
-    await Promise.all([
-      import("react"),
-      import("react-dom/client"),
-      import("../ProfileDriveWorkspaceBrowser"),
-    ]);
+  const fixture = installSelectTestDom();
+  const dom = { window };
+  document.body.innerHTML = '<div id="root"></div>';
+  const [{ act, createElement }, { ProfileDriveWorkspaceBrowser }] = await Promise.all([
+    import("react"), import("../ProfileDriveWorkspaceBrowser"),
+  ]);
   const originalFetch = globalThis.fetch;
   const requests: Array<{ url: string; init: RequestInit }> = [];
   let importRequestCount = 0;
@@ -229,7 +200,7 @@ test("expands ProfileDrive folders and imports a file into the current workspace
 
   const container = dom.window.document.getElementById("root");
   assert.ok(container);
-  const root = createRoot(container);
+  const root = await createLobeTestRoot(container);
   const imported: Array<{ file_id: string; preview_url: string | null }> = [];
   const addedPaths: Array<{ source_id: string; path: string }> = [];
   const stagedFile = {
@@ -549,49 +520,21 @@ test("expands ProfileDrive folders and imports a file into the current workspace
   } finally {
     await act(async () => root.unmount());
     globalThis.fetch = originalFetch;
-    for (const [key, descriptor] of previousDescriptors) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else Reflect.deleteProperty(globalThis, key);
-    }
-    dom.window.close();
+
+
+
+
+    fixture.close();
   }
 });
 
 test("mounts the public drive with source-correct expansion and import", async () => {
-  const dom = new JSDOM(
-    "<!doctype html><html><body><div id='root'></div></body></html>",
-    { url: "http://localhost/chat/session-a", pretendToBeVisual: true },
-  );
-  const globalValues: Record<string, unknown> = {
-    window: dom.window,
-    document: dom.window.document,
-    navigator: dom.window.navigator,
-    HTMLElement: dom.window.HTMLElement,
-    Node: dom.window.Node,
-    Event: dom.window.Event,
-    MouseEvent: dom.window.MouseEvent,
-    IS_REACT_ACT_ENVIRONMENT: true,
-  };
-  const previousDescriptors = new Map(
-    Object.keys(globalValues).map((key) => [
-      key,
-      Object.getOwnPropertyDescriptor(globalThis, key),
-    ]),
-  );
-  for (const [key, value] of Object.entries(globalValues)) {
-    Object.defineProperty(globalThis, key, {
-      configurable: true,
-      writable: true,
-      value,
-    });
-  }
-
-  const [{ act, createElement }, { createRoot }, { ProfileDriveWorkspaceBrowser }] =
-    await Promise.all([
-      import("react"),
-      import("react-dom/client"),
-      import("../ProfileDriveWorkspaceBrowser"),
-    ]);
+  const fixture = installSelectTestDom();
+  const dom = { window };
+  document.body.innerHTML = '<div id="root"></div>';
+  const [{ act, createElement }, { ProfileDriveWorkspaceBrowser }] = await Promise.all([
+    import("react"), import("../ProfileDriveWorkspaceBrowser"),
+  ]);
   const originalFetch = globalThis.fetch;
   const bodies: Array<Record<string, unknown>> = [];
   const pendingStatusResolvers: Array<(response: Response) => void> = [];
@@ -705,7 +648,7 @@ test("mounts the public drive with source-correct expansion and import", async (
 
   const container = dom.window.document.getElementById("root");
   assert.ok(container);
-  const root = createRoot(container);
+  const root = await createLobeTestRoot(container);
   try {
     await act(async () => {
       root.render(
@@ -877,10 +820,10 @@ test("mounts the public drive with source-correct expansion and import", async (
   } finally {
     await act(async () => root.unmount());
     globalThis.fetch = originalFetch;
-    for (const [key, descriptor] of previousDescriptors) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else Reflect.deleteProperty(globalThis, key);
-    }
-    dom.window.close();
+
+
+
+
+    fixture.close();
   }
 });

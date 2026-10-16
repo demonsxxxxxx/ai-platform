@@ -1,3 +1,4 @@
+import { Button } from "@lobehub/ui/base-ui";
 import { clsx } from "clsx";
 import {
   Fragment,
@@ -86,8 +87,8 @@ export function MessageWorkActivity({
     return (
       <Fragment key={partKeys[index] ?? `${messageId}:${index}`}>
         {index === firstWorkActivityIndex && (
-          <button
-            type="button"
+          <Button type="text"
+            htmlType="button"
             data-message-work-details-toggle
             aria-expanded={expanded}
             aria-controls={controlledWorkActivityIds}
@@ -139,7 +140,7 @@ export function MessageWorkActivity({
                 expanded && "rotate-180",
               )}
             />
-          </button>
+          </Button>
         )}
         {isWorkActivity ? (
           <div id={workActivityRegionIds[index]} hidden={!expanded}>

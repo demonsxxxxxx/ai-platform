@@ -1,19 +1,9 @@
-import {
-  useEffect,
-  useId,
-  useMemo,
-  useRef,
-  useState,
-  type KeyboardEvent,
-} from "react";
+import { Button, Input, Tag, SelectRoot, SelectTrigger, SelectPortal, SelectPositioner, SelectPopup, SelectList, SelectItem, SelectItemText, SelectItemIndicator } from "@lobehub/ui/base-ui";
+import { useId, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Check, ChevronDown, Search, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
-
 import type { DepartmentDirectoryNode } from "../../services/api/capabilityDistribution";
-import {
-  flattenDepartmentDirectory,
-  resolveDepartmentSelection,
-} from "./departmentDirectorySelection";
+import { flattenDepartmentDirectory, resolveDepartmentSelection } from "./departmentDirectorySelection";
 
 const MAX_SELECTED_DEPARTMENTS = 128;
 
@@ -35,310 +25,79 @@ export function DepartmentDirectorySelector({
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const listboxId = useId();
   const selectionStatusId = useId();
-  const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
-  const searchRef = useRef<HTMLInputElement>(null);
-  const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  const options = useMemo(
-    () => (directory ? flattenDepartmentDirectory(directory) : []),
-    [directory],
-  );
-  const resolution = useMemo(
-    () => resolveDepartmentSelection(selectedAuthorityIds, directory),
-    [directory, selectedAuthorityIds],
-  );
+  const optionRefs = useRef<Array<HTMLElement | null>>([]);
+  const options = useMemo(() => directory ? flattenDepartmentDirectory(directory) : [], [directory]);
+  const resolution = useMemo(() => resolveDepartmentSelection(selectedAuthorityIds, directory), [directory, selectedAuthorityIds]);
   const filtered = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
-    if (!normalized) return options;
-    return options.filter((option) =>
-      `${option.name} ${option.path}`.toLocaleLowerCase().includes(normalized),
-    );
+    return normalized ? options.filter((option) => `${option.name} ${option.path}`.toLocaleLowerCase().includes(normalized)) : options;
   }, [options, query]);
-
-  useEffect(() => {
-    if (!open) return;
-    const closeOnOutsideClick = (event: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(event.target as Node)) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", closeOnOutsideClick);
-    return () => document.removeEventListener("mousedown", closeOnOutsideClick);
-  }, [open]);
-
-  useEffect(() => {
-    if (open) searchRef.current?.focus();
-  }, [open]);
-
-  const closeAndRestoreFocus = () => {
-    setOpen(false);
+  const remove = (id: string) => {
+    if (disabled) return;
+    onChange(selectedAuthorityIds.filter((item) => item !== id));
     triggerRef.current?.focus();
   };
-
-  const focusOption = (start: number, direction: 1 | -1) => {
-    if (filtered.length === 0) return;
-    for (let offset = 0; offset < filtered.length; offset += 1) {
-      const index = (start + offset * direction + filtered.length) % filtered.length;
-      const option = optionRefs.current[index];
-      if (option && !option.disabled) {
-        option.focus();
-        return;
-      }
-    }
+  const focusOption = (direction: 1 | -1) => {
+    const candidates = optionRefs.current.filter((item) => item && item.getAttribute("aria-disabled") !== "true");
+    (direction === 1 ? candidates[0] : candidates.at(-1))?.focus();
   };
-
-  const onSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      closeAndRestoreFocus();
-    } else if (event.key === "ArrowDown") {
-      event.preventDefault();
-      focusOption(0, 1);
-    } else if (event.key === "ArrowUp") {
-      event.preventDefault();
-      focusOption(filtered.length - 1, -1);
-    }
-  };
-
-  const onOptionKeyDown = (
-    event: KeyboardEvent<HTMLButtonElement>,
-    index: number,
-  ) => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      closeAndRestoreFocus();
-    } else if (event.key === "ArrowDown") {
-      event.preventDefault();
-      focusOption(index + 1, 1);
-    } else if (event.key === "ArrowUp") {
-      event.preventDefault();
-      focusOption(index - 1, -1);
-    } else if (event.key === "Home") {
-      event.preventDefault();
-      focusOption(0, 1);
-    } else if (event.key === "End") {
-      event.preventDefault();
-      focusOption(filtered.length - 1, -1);
-    }
-  };
-
-  const remove = (authorityId: string) => {
-    onChange(selectedAuthorityIds.filter((item) => item !== authorityId));
-    triggerRef.current?.focus();
-  };
-
-  const toggle = (authorityId: string) => {
-    if (
-      !selectedAuthorityIds.includes(authorityId) &&
-      selectedAuthorityIds.length >= MAX_SELECTED_DEPARTMENTS
-    ) {
-      return;
-    }
-    onChange(
-      selectedAuthorityIds.includes(authorityId)
-        ? selectedAuthorityIds.filter((item) => item !== authorityId)
-        : [...selectedAuthorityIds, authorityId],
-    );
-  };
-
   return (
-    <div
-      className="department-selector"
-      data-department-directory-selector
-      data-skill-distribution-departments
-      ref={rootRef}
+    <SelectRoot multiple value={selectedAuthorityIds} open={open} disabled={disabled || directory === null} onOpenChange={setOpen}
+      onValueChange={(ids) => {
+        if (!disabled && directory !== null && ids.length <= MAX_SELECTED_DEPARTMENTS) onChange(ids);
+      }}
     >
-      <div
-        className="department-selector__selection"
-        data-department-selection-overflow
-      >
-        {resolution.resolved.map((option) => (
-          <span className="department-selector__chip" key={option.directoryId}>
-            <span className="truncate" title={option.path}>
-              {option.name}
-            </span>
-            {!disabled ? (
-              <button
-                aria-label={t("skills.governance.departmentSelector.remove", {
-                  name: option.name,
-                })}
-                onClick={() => remove(option.authorityId)}
-                title={t("skills.governance.departmentSelector.removeShort")}
-                type="button"
-              >
-                <X aria-hidden="true" size={13} />
-              </button>
-            ) : null}
-          </span>
-        ))}
-        {resolution.unresolvedAuthorityIds.map((authorityId) => (
-          <span
-            className="department-selector__chip department-selector__chip--unresolved"
-            key={authorityId}
-          >
-            <AlertTriangle aria-hidden="true" size={13} />
-            <span className="truncate" title={authorityId}>
-              {authorityId}
-            </span>
-            {!disabled ? (
-              <button
-                aria-label={t("skills.governance.departmentSelector.removeUnresolved", {
-                  name: authorityId,
-                })}
-                onClick={() => remove(authorityId)}
-                title={t("skills.governance.departmentSelector.removeShort")}
-                type="button"
-              >
-                <X aria-hidden="true" size={13} />
-              </button>
-            ) : null}
-          </span>
-        ))}
-        {selectedAuthorityIds.length === 0 ? (
-          <span className="department-selector__placeholder">
-            {t("skills.governance.departments.all")}
-          </span>
-        ) : null}
-        <button
-          aria-controls={listboxId}
-          aria-describedby={selectionStatusId}
-          aria-expanded={open}
-          aria-haspopup="listbox"
-          aria-label={t("skills.governance.departmentSelector.selectAllowed")}
-          className="department-selector__trigger"
-          disabled={disabled || directory === null}
-          onClick={() => setOpen((current) => !current)}
-          onKeyDown={(event) => {
-            if (!open && ["ArrowDown", "Enter", " "].includes(event.key)) {
-              event.preventDefault();
-              setOpen(true);
-            }
-          }}
-          ref={triggerRef}
-          title={t("skills.governance.departmentSelector.select")}
-          type="button"
-        >
-          <ChevronDown
-            aria-hidden="true"
-            className={open ? "rotate-180" : undefined}
-            size={16}
-          />
-        </button>
-      </div>
-
-      {open ? (
-        <div className="department-selector__menu">
-          <div className="department-selector__search">
-            <Search aria-hidden="true" size={15} />
-            <input
-              aria-label={t("skills.governance.departmentSelector.search")}
-              onChange={(event) => setQuery(event.target.value)}
-              onKeyDown={onSearchKeyDown}
-              placeholder={t("skills.governance.departmentSelector.searchPlaceholder")}
-              ref={searchRef}
-              type="search"
-              value={query}
-            />
-          </div>
-          <div
-            aria-label={t("skills.governance.departmentSelector.directory")}
-            aria-describedby={selectionStatusId}
-            aria-multiselectable="true"
-            className="department-selector__options"
-            id={listboxId}
-            role="listbox"
-          >
-            {filtered.map((option, index) => {
-              const checked = selectedAuthorityIds.includes(option.authorityId);
-              const atSelectionLimit =
-                !checked && selectedAuthorityIds.length >= MAX_SELECTED_DEPARTMENTS;
-              const unavailable = !option.selectable || atSelectionLimit;
-              const unavailableReason = !option.selectable
-                ? t("skills.governance.departmentSelector.duplicateReason")
-                : atSelectionLimit
-                  ? t("skills.governance.departmentSelector.limitReason")
-                  : null;
-              return (
-                <button
-                  aria-disabled={unavailable}
-                  disabled={disabled}
-                  aria-label={
-                    unavailableReason
-                      ? `${option.path}，${unavailableReason}`
-                      : option.path
-                  }
-                  aria-selected={checked}
-                  className="department-selector__option"
-                  key={option.directoryId}
-                  onClick={() => {
-                    if (!disabled && !unavailable) toggle(option.authorityId);
-                  }}
-                  onKeyDown={(event) => onOptionKeyDown(event, index)}
-                  ref={(element) => {
-                    optionRefs.current[index] = element;
-                  }}
-                  role="option"
-                  style={{ paddingLeft: `${0.75 + option.depth * 1.1}rem` }}
-                  title={
-                    !option.selectable
-                      ? t("skills.governance.departmentSelector.duplicateReason")
-                      : atSelectionLimit
-                        ? t("skills.governance.departmentSelector.maxDepartments")
-                        : option.path
-                  }
-                  type="button"
-                >
-                  <span aria-hidden="true" className="department-selector__check">
-                    {checked ? <Check size={13} /> : null}
-                  </span>
-                  <span className="min-w-0 flex-1 truncate text-left">
-                    {option.name}
-                  </span>
-                  {!option.selectable ? (
-                    <span className="text-[11px] text-[var(--theme-warning)]">
-                      {t("skills.governance.departmentSelector.duplicate")}
-                    </span>
-                  ) : null}
-                </button>
-              );
-            })}
-            {filtered.length === 0 ? (
-              <p className="px-3 py-4 text-center text-xs text-[var(--theme-text-secondary)]">
-                {t("skills.governance.departmentSelector.empty")}
-              </p>
-            ) : null}
-          </div>
+      <div className="space-y-1.5" data-department-directory-selector data-skill-distribution-departments>
+        <div className="flex flex-wrap items-center gap-1.5" data-department-selection-overflow>
+          {resolution.resolved.map((option) => <Tag key={option.directoryId} className="max-w-full">
+            <span className="max-w-60 truncate" title={option.path}>{option.name}</span>
+            {!disabled ? <Button type="text" size="small" aria-label={t("skills.governance.departmentSelector.remove", { name: option.name })}
+              title={t("skills.governance.departmentSelector.removeShort")} onClick={() => remove(option.authorityId)}><X size={13} /></Button> : null}
+          </Tag>)}
+          {resolution.unresolvedAuthorityIds.map((id) => <Tag key={id} color="warning" className="max-w-full" icon={<AlertTriangle size={13} />}>
+            <span className="max-w-60 truncate" title={id}>{id}</span>
+            {!disabled ? <Button type="text" size="small" aria-label={t("skills.governance.departmentSelector.removeUnresolved", { name: id })}
+              title={t("skills.governance.departmentSelector.removeShort")} onClick={() => remove(id)}><X size={13} /></Button> : null}
+          </Tag>)}
+          {selectedAuthorityIds.length === 0 ? <span className="text-sm text-[var(--theme-text-secondary)]">{t("skills.governance.departments.all")}</span> : null}
+          <SelectTrigger size="small" ref={triggerRef} style={{ width: 36 }} aria-describedby={selectionStatusId}
+            aria-label={t("skills.governance.departmentSelector.selectAllowed")} title={t("skills.governance.departmentSelector.select")}
+          ><Button type="default" size="small" icon={<ChevronDown size={16} />} /></SelectTrigger>
         </div>
-      ) : null}
-
-      {loadError ? (
-        <p className="mt-1.5 text-xs text-[var(--theme-danger)]" role="alert">
-          {loadError}
-        </p>
-      ) : null}
-      {!resolution.authoritative && selectedAuthorityIds.length > 0 ? (
-        <p
-          className="mt-1.5 text-xs text-[var(--theme-warning)]"
-          id={selectionStatusId}
-          role="status"
-        >
-          {t("skills.governance.departmentSelector.unresolvedWarning")}
-        </p>
-      ) : selectedAuthorityIds.length >= MAX_SELECTED_DEPARTMENTS ? (
-        <p
-          className="mt-1.5 text-xs text-[var(--theme-text-secondary)]"
-          id={selectionStatusId}
-          role="status"
-        >
-          {t("skills.governance.departmentSelector.limitReached")}
-        </p>
-      ) : (
-        <span className="sr-only" id={selectionStatusId}>
-          {t("skills.governance.departmentSelector.selectionHelp")}
-        </span>
-      )}
-    </div>
+        {loadError ? <p className="text-xs text-[var(--theme-danger)]" role="alert">{loadError}</p> : null}
+        {!resolution.authoritative && selectedAuthorityIds.length > 0 ? <p id={selectionStatusId} className="text-xs text-[var(--theme-warning)]" role="status">{t("skills.governance.departmentSelector.unresolvedWarning")}</p> :
+          selectedAuthorityIds.length >= MAX_SELECTED_DEPARTMENTS ? <p id={selectionStatusId} className="text-xs text-[var(--theme-text-secondary)]" role="status">{t("skills.governance.departmentSelector.limitReached")}</p> :
+          <span className="sr-only" id={selectionStatusId}>{t("skills.governance.departmentSelector.selectionHelp")}</span>}
+      </div>
+      <SelectPortal>
+        <SelectPositioner side="bottom" align="start" sideOffset={6}>
+          <SelectPopup finalFocus={triggerRef} data-department-directory-popup style={{ minWidth: 280, maxWidth: "calc(100vw - 32px)" }} onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setOpen(false); } }}>
+            <div className="p-2">
+              <Input autoFocus prefix={<Search size={15} />} type="search" value={query} onChange={(event) => setQuery(event.target.value)}
+                aria-label={t("skills.governance.departmentSelector.search")} placeholder={t("skills.governance.departmentSelector.searchPlaceholder")}
+                onKeyDown={(event) => { if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); focusOption(event.key === "ArrowDown" ? 1 : -1); } }}
+              />
+            </div>
+            <SelectList aria-label={t("skills.governance.departmentSelector.directory")} aria-describedby={selectionStatusId} className="max-h-64 overflow-y-auto">
+              {filtered.map((option, index) => {
+                const atLimit = !selectedAuthorityIds.includes(option.authorityId) && selectedAuthorityIds.length >= MAX_SELECTED_DEPARTMENTS;
+                const reason = !option.selectable ? t("skills.governance.departmentSelector.duplicateReason") : atLimit ? t("skills.governance.departmentSelector.limitReason") : null;
+                return <SelectItem key={option.directoryId} value={option.authorityId} disabled={disabled || !option.selectable || atLimit}
+                  aria-label={reason ? `${option.path}，${reason}` : option.path} title={reason ?? option.path}
+                  ref={(element) => { optionRefs.current[index] = element; }} style={{ paddingLeft: `${0.75 + option.depth * 1.1}rem` }}
+                >
+                  <SelectItemIndicator><Check size={13} /></SelectItemIndicator>
+                  <SelectItemText>{option.name}</SelectItemText>
+                  {!option.selectable ? <span className="text-[11px] text-[var(--theme-warning)]">{t("skills.governance.departmentSelector.duplicate")}</span> : null}
+                </SelectItem>;
+              })}
+              {filtered.length === 0 ? <p className="p-4 text-center text-xs">{t("skills.governance.departmentSelector.empty")}</p> : null}
+            </SelectList>
+          </SelectPopup>
+        </SelectPositioner>
+      </SelectPortal>
+    </SelectRoot>
   );
 }

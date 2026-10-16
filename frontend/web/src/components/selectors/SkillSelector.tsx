@@ -1,5 +1,5 @@
+import { Button, Input, ModalRoot, ModalPortal, ModalBackdrop, ModalPopup, ModalTitle } from "@lobehub/ui/base-ui";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import {
@@ -43,7 +43,6 @@ export function SkillSelector({
   const isOpen = externalIsOpen ?? internalOpen;
   const setIsOpen = externalOnOpenChange ?? setInternalOpen;
   const [searchQuery, setSearchQuery] = useState("");
-  const dialogRef = useRef<HTMLDivElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const titleId = useId();
@@ -51,20 +50,6 @@ export function SkillSelector({
     onClose: () => setIsOpen(false),
     enabled: isOpen,
   });
-
-  useEffect(() => {
-    if (!isOpen) return;
-    const priorOverflow = document.body.style.overflow;
-    const internalTrigger = triggerRef.current;
-    document.body.style.overflow = "hidden";
-    requestAnimationFrame(() => searchInputRef.current?.focus());
-    return () => {
-      document.body.style.overflow = priorOverflow;
-      if (!externalOnOpenChange) {
-        requestAnimationFrame(() => internalTrigger?.focus());
-      }
-    };
-  }, [externalOnOpenChange, isOpen]);
 
   useEffect(() => {
     if (isOpen && searchSeed !== undefined) setSearchQuery(searchSeed);
@@ -95,49 +80,11 @@ export function SkillSelector({
     ? t("nav.skillManagement")
     : t("skillSelector.viewSkills", "View Skills");
 
-  const handleDialogKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      setIsOpen(false);
-      return;
-    }
-    if (event.key !== "Tab") return;
-
-    const focusable = Array.from(
-      dialogRef.current?.querySelectorAll<HTMLElement>(
-        'button:not([disabled]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
-      ) ?? [],
-    ).filter((element) => element.getClientRects().length > 0);
-    if (focusable.length === 0) {
-      event.preventDefault();
-      dialogRef.current?.focus();
-      return;
-    }
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
-  };
-
   const modal = (
     <div
-      ref={(node) => {
-        dialogRef.current = node;
-        swipeRef.current = node;
-      }}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby={titleId}
-      tabIndex={-1}
-      className="flex min-h-[40vh] max-h-[85dvh] w-full flex-col overflow-hidden rounded-t-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] shadow-[0_8px_24px_rgba(18,38,63,0.12)] sm:min-h-0 sm:w-[min(640px,calc(100vw-2rem))] sm:max-h-[80vh] sm:rounded-lg"
+      ref={(node) => { swipeRef.current = node; }}
+      className="flex min-h-[40vh] max-h-[85dvh] w-full flex-col overflow-hidden sm:min-h-0 sm:max-h-[80vh]"
       data-composer-skill-selector
-      onClick={(event) => event.stopPropagation()}
-      onKeyDown={handleDialogKeyDown}
     >
       <div className="relative flex items-center justify-between border-b border-[var(--theme-border)] px-4 py-3 sm:px-5 sm:py-4">
         <div className="absolute left-1/2 top-2 h-1 w-10 -translate-x-1/2 rounded-full bg-[var(--theme-border)] sm:hidden" />
@@ -146,12 +93,9 @@ export function SkillSelector({
             <Sparkles size={17} className="text-[var(--theme-text-secondary)]" />
           </div>
           <div className="min-w-0">
-            <h2
-              id={titleId}
-              className="truncate text-sm font-semibold text-[var(--theme-text)] sm:text-base"
-            >
+            <ModalTitle id={titleId}>
               {t("skillSelector.taskTitle", "Choose a Skill")}
-            </h2>
+            </ModalTitle>
             <p
               className="truncate text-xs text-[var(--theme-text-secondary)]"
               data-composer-skill-selection-summary={selectionSummary}
@@ -167,30 +111,25 @@ export function SkillSelector({
             </p>
           </div>
         </div>
-        <button
-          type="button"
+        <Button type="text"
+          htmlType="button"
           onClick={() => setIsOpen(false)}
-          className="inline-flex size-11 items-center justify-center rounded-lg text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)] sm:size-9"
+          size="large" icon={<X size={18} />}
           aria-label={t("common.close", "Close")}
-        >
-          <X size={18} />
-        </button>
+        />
       </div>
 
       <div className="border-b border-[var(--theme-border)] bg-[var(--theme-bg)] px-4 py-3 sm:px-5">
-        <div className="relative">
-          <Search
-            size={16}
-            className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--theme-text-secondary)]"
-          />
-          <input
+        <div>
+          <Input
+            prefix={<Search size={16} />}
             ref={searchInputRef}
             type="search"
             aria-label={t("skills.searchPlaceholder", "Search Skills")}
             value={searchQuery}
             onChange={(event) => setSearchQuery(event.target.value)}
             placeholder={t("skills.searchPlaceholder", "Search Skills")}
-            className="panel-search h-10"
+            size="large" className="w-full"
             data-composer-skill-search
           />
         </div>
@@ -207,9 +146,10 @@ export function SkillSelector({
               selectedSkill?.name === skill.name &&
               selectedSkill?.expected_version === skill.expected_version;
             return (
-              <button
+              <Button type="text"
                 key={skill.name}
-                type="button"
+                style={{ height: "auto", padding: 12, alignItems: "flex-start" }}
+                htmlType="button"
                 onClick={() => {
                   onSelectSkill(skill);
                   setIsOpen(false);
@@ -248,7 +188,7 @@ export function SkillSelector({
                 <span className="flex size-6 shrink-0 items-center justify-center text-[var(--theme-primary)]">
                   {selected && <Check size={17} />}
                 </span>
-              </button>
+              </Button>
             );
           })
         )}
@@ -264,8 +204,8 @@ export function SkillSelector({
           {t("skillSelector.singleSelectionHint", "Only one Skill can run this task")}
         </span>
         <span className="flex-1" />
-        <button
-          type="button"
+        <Button type="text"
+          htmlType="button"
           onClick={() => {
             setIsOpen(false);
             navigate("/skills");
@@ -274,48 +214,29 @@ export function SkillSelector({
         >
           <ArrowRight size={14} />
           {skillsLinkLabel}
-        </button>
-        <button
-          type="button"
+        </Button>
+        <Button type="primary"
+          htmlType="button"
           onClick={() => setIsOpen(false)}
-          className="h-11 rounded-lg bg-[var(--theme-primary)] px-3 text-xs font-medium text-[var(--theme-primary-foreground)] transition-colors hover:bg-[var(--theme-primary-hover)] sm:h-9"
         >
           {t("skillSelector.done", "Done")}
-        </button>
+        </Button>
       </div>
     </div>
   );
 
-  if (externalOnOpenChange) {
-    return isOpen
-      ? createPortal(
-          <>
-            <div
-              data-yields-sidebar
-              className="fixed inset-0 z-[300] bg-[var(--theme-overlay)] animate-fade-in"
-              onClick={() => setIsOpen(false)}
-            />
-            <div
-              className="fixed inset-x-0 bottom-0 z-[301] animate-slide-up sm:inset-0 sm:flex sm:items-center sm:justify-center sm:p-4 sm:animate-scale-in"
-              onClick={() => setIsOpen(false)}
-            >
-              {modal}
-            </div>
-          </>,
-          document.body,
-        )
-      : null;
-  }
-
   return (
-    <button
-      ref={triggerRef}
-      type="button"
-      onClick={() => setIsOpen(true)}
-      className="chat-tool-btn"
-      aria-label={t("skillSelector.taskTitle", "Choose a Skill")}
-    >
-      <Sparkles size={18} />
-    </button>
+    <>
+      {!externalOnOpenChange ? <Button type="text" size="large" ref={triggerRef} onClick={() => setIsOpen(true)}
+        aria-label={t("skillSelector.taskTitle", "Choose a Skill")} icon={<Sparkles size={18} />} /> : null}
+      <ModalRoot open={isOpen} onOpenChange={setIsOpen}>
+        <ModalPortal>
+          <ModalBackdrop />
+          <ModalPopup width="min(40rem, 100vw)" className="!items-end sm:!items-center"
+            aria-labelledby={titleId} initialFocus={searchInputRef} finalFocus={externalOnOpenChange ? true : triggerRef}
+          >{modal}</ModalPopup>
+        </ModalPortal>
+      </ModalRoot>
+    </>
   );
 }

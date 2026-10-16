@@ -9,8 +9,7 @@ import {
   memo,
   type SetStateAction,
 } from "react";
-import toast from "react-hot-toast";
-import { Ban } from "lucide-react";
+import { toast } from "@lobehub/ui/base-ui";
 import { useTranslation } from "react-i18next";
 import { ImageViewer } from "../common";
 import { ConfirmDialog } from "../common/ConfirmDialog";
@@ -959,6 +958,7 @@ export const ChatInput = memo(function ChatInput({
               <div className="relative">
                 <LibreChatComposerTextarea
                   ref={textareaRef}
+                  aria-label={t("chat.messageInput", "消息")}
                   value={input}
                 onChange={(e) => {
                   const nextValue = e.target.value;
@@ -1073,21 +1073,7 @@ export const ChatInput = memo(function ChatInput({
 
             setStopConfirmOpen(false);
             setIsStopSubmitting(false);
-            toast.custom(() => (
-              <div
-                className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium"
-                style={{
-                  background:
-                    "color-mix(in srgb, var(--theme-primary) 10%, transparent)",
-                  border:
-                    "1px solid color-mix(in srgb, var(--theme-primary) 20%, transparent)",
-                  color: "var(--theme-primary)",
-                }}
-              >
-                <Ban size={16} className="shrink-0" />
-                <span>{t("chat.runStatus.event.cancelRequested")}</span>
-              </div>
-            ));
+            toast.info({ description: t("chat.runStatus.event.cancelRequested"), hideCloseButton: true });
           })();
         }}
         onCancel={() => {

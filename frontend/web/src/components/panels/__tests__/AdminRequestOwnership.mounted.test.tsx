@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-// @ts-expect-error jsdom runtime import.
-import { JSDOM } from "jsdom";
+import { installSelectTestDom } from "../../common/__tests__/selectTestDom";
+import { createLobeTestRoot } from "../../common/__tests__/lobeUiTestRoot";
 import type { ReactNode } from "react";
 import type { User } from "../../../types/auth";
 import type { MemoryPolicy } from "../../../services/api/memory";
@@ -9,20 +9,14 @@ import { capabilityDistributionApi, type CapabilityDistribution } from "../../..
 import { authApi } from "../../../services/api/auth";
 import { roleApi } from "../../../services/api/role";
 import { installBrowserAuthTestDb } from "../../../hooks/__tests__/browserAuthTestDb";
-import toast from "react-hot-toast";
 
-const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/memory" });
-Object.assign(globalThis, { window: dom.window, document: dom.window.document, localStorage: dom.window.localStorage, sessionStorage: dom.window.sessionStorage, HTMLElement: dom.window.HTMLElement, CustomEvent: dom.window.CustomEvent, IS_REACT_ACT_ENVIRONMENT: true });
-Object.defineProperty(globalThis, "navigator", { configurable: true, value: dom.window.navigator });
-Object.assign(globalThis, {
-  getComputedStyle: dom.window.getComputedStyle,
-  HTMLFormElement: dom.window.HTMLFormElement,
-  HTMLSelectElement: dom.window.HTMLSelectElement,
-  DocumentFragment: dom.window.DocumentFragment,
-});
+const fixture = installSelectTestDom();
+Object.assign(globalThis, { localStorage: window.localStorage, sessionStorage: window.sessionStorage });
+test.after(() => fixture.close());
 installBrowserAuthTestDb();
+const { toast } = await import("@lobehub/ui/base-ui");
 const { act, createElement } = await import("react");
-const { createRoot } = await import("react-dom/client");
+
 const { AuthProvider, useAuth } = await import("../../../hooks/useAuth");
 const { MemoryPanel } = await import("../MemoryPanel");
 const { SkillDistributionGovernancePanel } = await import("../SkillDistributionGovernancePanel");
@@ -57,7 +51,10 @@ function reactProps(node: Element) {
   return (node as unknown as Record<string, unknown>)[key] as { onChange?: (event: { target: { value: string; checked?: boolean } }) => void; onClick?: () => void };
 }
 async function change(node: HTMLInputElement, value: string) {
-  await act(async () => { reactProps(node).onChange?.({ target: { value } }); });
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!.call(node, value);
+    node.dispatchEvent(new window.Event("input", { bubbles: true }));
+  });
 }
 async function click(node: HTMLButtonElement) { await act(async () => { node.click(); }); }
 
@@ -69,15 +66,15 @@ async function harness(child: ReactNode, fetcher?: (request: Request) => Promise
   authApi.bootstrapAuthContext = async request => ({ status: "ready", protocol_version: 2, generation: request!.generation });
   authApi.getCurrentUser = async () => user;
   roleApi.list = async () => ({ roles: [], total: 0, skip: 0, limit: 200 });
-  toast.success = ((message: unknown) => { notices.push(`success:${String(message)}`); return "test"; }) as typeof toast.success;
-  toast.error = ((message: unknown) => { notices.push(`error:${String(message)}`); return "test"; }) as typeof toast.error;
+  toast.success = (message) => { notices.push(`success:${String(message)}`); return { id: "test", close() {}, update() {} }; };
+  toast.error = (message) => { notices.push(`error:${String(message)}`); return { id: "test", close() {}, update() {} }; };
   globalThis.fetch = (async (url, init = {}) => {
     const request = { url: new URL(String(url), "http://localhost"), init }; calls.push(request);
     if (fetcher) return fetcher(request);
     throw new Error(`Unexpected request ${request.url.pathname}`);
   }) as typeof fetch;
   function Probe({ children }: { children: ReactNode }) { auth = useAuth(); return children; }
-  const container = document.createElement("div"); document.body.append(container); const root = createRoot(container);
+  const container = document.createElement("div"); document.body.append(container); const root = await createLobeTestRoot(container);
   const render = async (next: ReactNode) => { await act(async () => { root.render(createElement(AuthProvider, null, createElement(Probe, { children: next }))); }); };
   await render(child);
   assert.equal(auth.isAuthenticated, true, "real AuthProvider must authenticate synthetic principal");
@@ -109,10 +106,10 @@ test("ACL late save cannot replace B draft, finish B save, or claim B success", 
     const saveA = view.container.querySelector<HTMLButtonElement>("[data-skill-distribution-save]")!;
     await click(saveA); await click(saveA); assert.deepEqual(writes, ["a"]);
     await view.render(acl("b"));
-    assert.equal(view.container.querySelector<HTMLInputElement>("[data-skill-distribution-visible]")!.checked, false);
+    assert.equal(view.container.querySelector("[data-skill-distribution-visible]")!.getAttribute("aria-checked"), "false");
     await click(view.container.querySelector("[data-skill-distribution-save]")!);
     await act(async () => a.resolve(distribution("a", true)));
-    assert.equal(view.container.querySelector<HTMLInputElement>("[data-skill-distribution-visible]")!.checked, false);
+    assert.equal(view.container.querySelector("[data-skill-distribution-visible]")!.getAttribute("aria-checked"), "false");
     assert.equal(view.container.querySelector<HTMLButtonElement>("[data-skill-distribution-save]")!.disabled, true);
     assert.doesNotMatch(view.container.textContent!, /已保存/);
     await act(async () => b.resolve(distribution("b", false)));
@@ -141,7 +138,7 @@ test("ACL latest refresh owns list and unmounted save cannot alter replacement e
     await act(async () => { callback(); callback(); });
     await act(async () => currentLoad.resolve([distribution("a", false)]));
     await act(async () => oldLoad.resolve([distribution("a", true)]));
-    assert.equal(view.container.querySelector<HTMLInputElement>("[data-skill-distribution-visible]")!.checked, false);
+    assert.equal(view.container.querySelector("[data-skill-distribution-visible]")!.getAttribute("aria-checked"), "false");
     await click(view.container.querySelector("[data-skill-distribution-save]")!);
     await view.render(null); await view.render(acl("b"));
     await act(async () => saved.resolve(distribution("a")));
@@ -155,8 +152,32 @@ test("open department choices become disabled during save", async () => {
   try {
     await click(view.container.querySelector('button[aria-haspopup="listbox"]')!);
     await view.render(createElement(DepartmentDirectorySelector, { ...props, disabled: true }));
-    const option = view.container.querySelector<HTMLButtonElement>('[role="option"]')!;
-    assert.equal(option.disabled, true); await click(option); assert.equal(changes, 0);
+    const option = document.querySelector<HTMLElement>('[role="option"]')!;
+    assert.equal(option.getAttribute("aria-disabled"), "true");
+    await act(async () => option.click()); assert.equal(changes, 0);
+  } finally { await view.close(); }
+});
+
+test("department Escape closes only its popup without changing selection", async () => {
+  let changes = 0; let hostEscapes = 0;
+  const view = await harness(createElement("div", {
+    onKeyDown: (event: { key: string }) => { if (event.key === "Escape") hostEscapes++; },
+  }, createElement(DepartmentDirectorySelector, {
+    directory: [{ authorityId: "d", directoryId: "1", name: "d", path: "d", children: [], reason: null, selectable: true }],
+    loadError: null, selectedAuthorityIds: [], onChange: () => { changes++; },
+  })));
+  try {
+    const trigger = view.container.querySelector<HTMLButtonElement>('button[aria-haspopup="listbox"]')!;
+    await click(trigger);
+    const search = document.querySelector<HTMLInputElement>('[role="listbox"] input, input[type="search"]')!;
+    assert.ok(search);
+    await act(async () => {
+      search.focus();
+      search.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    });
+    assert.equal(trigger.getAttribute("aria-expanded"), "false");
+    assert.equal(hostEscapes, 0);
+    assert.equal(changes, 0);
   } finally { await view.close(); }
 });
 
@@ -231,7 +252,7 @@ test("ACL A-B-A navigation rejects the earlier A receipt rather than replacing t
     await view.render(acl("b")); await view.render(acl("a"));
     await act(async () => { view.container.querySelector<HTMLInputElement>("[data-skill-distribution-visible]")!.click(); });
     await act(async () => save.resolve(distribution("a", true)));
-    assert.equal(view.container.querySelector<HTMLInputElement>("[data-skill-distribution-visible]")!.checked, false);
+    assert.equal(view.container.querySelector("[data-skill-distribution-visible]")!.getAttribute("aria-checked"), "false");
     assert.doesNotMatch(view.container.textContent!, /已保存/);
   }, { update: () => save.promise });
 });

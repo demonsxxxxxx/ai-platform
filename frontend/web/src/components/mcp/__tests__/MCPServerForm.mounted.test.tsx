@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { installSelectTestDom } from "../../common/__tests__/selectTestDom";
+import { createLobeTestRoot } from "../../common/__tests__/lobeUiTestRoot";
 import type { MCPServerCreate, MCPServerResponse } from "../../../types";
 
 const dom = installSelectTestDom();
+test.after(() => dom.close());
 const { act, createElement } = await import("react");
-const { createRoot } = await import("react-dom/client");
 const { MCPServerForm } = await import("../MCPServerForm");
 await import("../../../i18n");
 
@@ -18,7 +19,7 @@ for (const integrationKind of ["mcp", "enterprise_gateway"] as const) {
   test(`MCP form preserves ${integrationKind} on edit and validates its identity headers`, async () => {
     const container = dom.document.createElement("div");
     dom.document.body.append(container);
-    const root = createRoot(container);
+    const root = await createLobeTestRoot(container);
     const saved: MCPServerCreate[] = [];
     const server: MCPServerResponse = {
       name: "synthetic", transport: "streamable_http", enabled: true,

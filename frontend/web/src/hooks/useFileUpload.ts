@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { useTranslation } from "react-i18next";
-import toast from "react-hot-toast";
+import { toast } from "@lobehub/ui/base-ui";
 import { uploadApi, UploadRequestError } from "../services/api/upload";
 import { compressImageFile } from "../utils/imageCompression";
 import {

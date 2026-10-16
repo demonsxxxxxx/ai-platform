@@ -1,6 +1,7 @@
+import { Button } from "@lobehub/ui/base-ui";
 import { useTranslation } from "react-i18next";
 import { Power, Zap, Trash2, X } from "lucide-react";
-import { LoadingSpinner } from "../../common/LoadingSpinner";
+import { Spin } from "@lobehub/ui/base-ui";
 
 interface BatchActionBarProps {
   selectedCount: number;
@@ -37,7 +38,7 @@ export function BatchActionBar({
         )}
         {canWrite && (
           <>
-            <button
+            <Button type="text"
               onClick={() => onBatchToggle(false)}
               disabled={batchLoading}
               className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-medium text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-hover)] hover:text-[var(--theme-text)] disabled:opacity-40 disabled:pointer-events-none"
@@ -46,8 +47,8 @@ export function BatchActionBar({
               <span className="hidden sm:inline">
                 {t("skills.card.disable")}
               </span>
-            </button>
-            <button
+            </Button>
+            <Button type="text"
               onClick={() => onBatchToggle(true)}
               disabled={batchLoading}
               className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-medium text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-hover)] hover:text-[var(--theme-text)] disabled:opacity-40 disabled:pointer-events-none"
@@ -56,25 +57,25 @@ export function BatchActionBar({
               <span className="hidden sm:inline">
                 {t("skills.card.enable")}
               </span>
-            </button>
+            </Button>
           </>
         )}
         {canDelete && (
-          <button
+          <Button type="text"
             onClick={onBatchDelete}
             disabled={batchLoading}
             className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-medium text-[var(--theme-danger)] transition-colors hover:bg-[var(--theme-danger-soft)] disabled:opacity-40 disabled:pointer-events-none"
           >
-            {batchLoading ? <LoadingSpinner size="xs" /> : <Trash2 size={13} />}
+            {batchLoading ? <Spin size={12} /> : <Trash2 size={13} />}
             <span className="hidden sm:inline">{t("common.delete")}</span>
-          </button>
+          </Button>
         )}
-        <button
+        <Button type="text"
           onClick={onClearSelection}
           className="inline-flex items-center justify-center w-6 h-6 rounded-lg text-[var(--theme-text-tertiary)] transition-colors hover:bg-[var(--theme-hover)] hover:text-[var(--theme-text-secondary)]"
         >
           <X size={13} />
-        </button>
+        </Button>
       </div>
     </div>
   );

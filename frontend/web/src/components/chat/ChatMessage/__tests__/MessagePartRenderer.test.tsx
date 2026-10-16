@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { act, createElement, useLayoutEffect } from "react";
-// jsdom is the pinned mounted-test runtime and does not ship declarations here.
-// @ts-expect-error jsdom runtime import.
-import { JSDOM } from "jsdom";
+import { installSelectTestDom } from "../../../common/__tests__/selectTestDom";
+import { createLobeTestRoot, createLobeServerTestRoot } from "../../../common/__tests__/lobeUiTestRoot";
 import { clearAuthScopedCaches } from "../../../../services/api/authCacheInvalidation.ts";
 import { AttachmentPreviewHost } from "../../AttachmentPreviewHost.tsx";
 import { getAttachmentPreviewState, openAttachmentPreview } from "../../attachmentPreviewStore.ts";
@@ -11,7 +10,7 @@ import { claimChatPreviewSession } from "../../chatPreviewSession.ts";
 import { BlockPreviewPortal } from "../items/McpBlockPreview.tsx";
 import { getBlockPreview, openBlockPreview } from "../items/blockPreviewStore.ts";
 import { getSidebarHistoryLength, goBackSidebar } from "../items/sidebarHistoryStore.ts";
-import { renderToStaticMarkup } from "react-dom/server";
+const renderToStaticMarkup = await createLobeServerTestRoot();
 import type { MessagePart } from "../../../../types";
 import { clearAllLoadingStates } from "../../../../hooks/useAgent/messageParts.ts";
 import { PUBLIC_TERMINAL_PRESENTATION_DEFINITIONS } from "../../../../hooks/useAgent/publicTerminalPresentation.ts";
@@ -536,32 +535,10 @@ async function withPreviewOwnerDom(run: (harness: {
   body: () => string;
   act: typeof import("react").act;
 }) => Promise<void>) {
-  const dom = new JSDOM("<!doctype html><div id='root'></div>", {
-    url: "http://localhost/", pretendToBeVisual: true,
-  });
-  const values: Record<string, unknown> = {
-    window: dom.window, document: dom.window.document,
-    localStorage: dom.window.localStorage, sessionStorage: dom.window.sessionStorage,
-    navigator: dom.window.navigator, HTMLElement: dom.window.HTMLElement,
-    Element: dom.window.Element, Node: dom.window.Node, CustomEvent: dom.window.CustomEvent,
-    ResizeObserver: class { observe() {} unobserve() {} disconnect() {} },
-    requestAnimationFrame: (callback: FrameRequestCallback) => dom.window.setTimeout(() => callback(Date.now()), 0),
-    cancelAnimationFrame: (handle: number) => dom.window.clearTimeout(handle),
-    IS_REACT_ACT_ENVIRONMENT: true,
-  };
-  const previous = new Map(Object.keys(values).map((key) => [
-    key, Object.getOwnPropertyDescriptor(globalThis, key),
-  ]));
-  for (const [key, value] of Object.entries(values)) {
-    Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
-  }
-  dom.window.matchMedia = () => ({
-    matches: false, addEventListener() {}, removeEventListener() {},
-    addListener() {}, removeListener() {}, dispatchEvent: () => false,
-    media: "", onchange: null,
-  });
-  const { createRoot } = await import("react-dom/client");
-  let root = createRoot(dom.window.document.getElementById("root")!);
+  const environment = installSelectTestDom();
+  const dom = { window };
+  document.body.innerHTML = "<div id='root'></div>";
+  let root = await createLobeTestRoot(document.getElementById("root")!);
   function PreviewOwner({ ownerKey, attachment }: { ownerKey: string; attachment: boolean }) {
     useLayoutEffect(() => { claimChatPreviewSession(ownerKey); }, [ownerKey]);
     return createElement(attachment ? AttachmentPreviewHost : BlockPreviewPortal);
@@ -574,7 +551,7 @@ async function withPreviewOwnerDom(run: (harness: {
       },
       async remount() {
         await act(async () => { root.unmount(); });
-        root = createRoot(dom.window.document.getElementById("root")!);
+        root = await createLobeTestRoot(document.getElementById("root")!);
       },
       body: () => dom.window.document.body.textContent ?? "",
       act,
@@ -582,11 +559,7 @@ async function withPreviewOwnerDom(run: (harness: {
   } finally {
     await act(async () => { root.unmount(); });
     clearAuthScopedCaches();
-    for (const [key, descriptor] of previous) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else Reflect.deleteProperty(globalThis, key);
-    }
-    dom.window.close();
+    environment.close();
   }
 }
 

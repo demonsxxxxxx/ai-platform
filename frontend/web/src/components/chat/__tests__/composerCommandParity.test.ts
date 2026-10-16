@@ -466,8 +466,9 @@ test("composer styles and primitive keep only the governed command menu surface"
 
   assert.match(styles, /\.composer-command-surface\s*\{/);
   assert.match(styles, /\.composer-command-list\s*\{/);
-  assert.match(featureMenu, /className="feature-menu-group"/);
-  assert.match(styles, /\.feature-menu-group \+ \.feature-menu-group::before/);
+  assert.match(featureMenu, /<DropdownMenu/);
+  assert.match(featureMenu, /type: "group", key: "enhance"/);
+  assert.doesNotMatch(styles, /feature-menu-/);
   assert.doesNotMatch(styles, /mention-popup|mention-skeleton|feature-menu-divider/);
   assert.doesNotMatch(composer, /mentionActive|data-mention-active/);
 });

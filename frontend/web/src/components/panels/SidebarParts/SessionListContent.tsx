@@ -1,3 +1,4 @@
+import { Skeleton, Button } from "@lobehub/ui/base-ui";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ChevronDown,
@@ -16,7 +17,7 @@ import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate } from "react-router-dom";
 import { AgentIdentityAvatar } from "../../agent/AgentIdentityAvatar";
 import { UserMenu } from "../../layout/UserMenu";
-import { LoadingSpinner } from "../../common/LoadingSpinner";
+import { Spin } from "@lobehub/ui/base-ui";
 import type { BackendSession } from "../../../services/api";
 import {
   formatUnreadCount,
@@ -200,8 +201,8 @@ export function SessionListContent({
       const isExpanded = expandedAgentGroups.has(group.key);
       return (
         <div key={group.key} data-agent-history-group>
-          <button
-            type="button"
+          <Button type="text"
+            htmlType="button"
             aria-expanded={isExpanded}
             onClick={() => toggleAgentGroup(group.key)}
             className="group flex h-10 w-full items-center gap-2 rounded-lg px-[9px] text-left transition-colors hover:bg-[var(--theme-sidebar-panel-muted)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)]"
@@ -226,7 +227,7 @@ export function SessionListContent({
                 isExpanded ? "" : "-rotate-90"
               }`}
             />
-          </button>
+          </Button>
           {isExpanded ? (
             <div className="ml-3 border-l border-[var(--theme-border)]/70 pl-1">
               {group.sessions.map((session) =>
@@ -259,9 +260,9 @@ export function SessionListContent({
           key={i}
           className="flex h-10 items-center gap-2 rounded-lg px-[9px]"
         >
-          <div
-            className="skeleton-line h-[13px] flex-1 rounded-md"
-            style={{
+          <Skeleton animated="sweep"
+            className="h-[13px] flex-1 rounded-md"
+            style={{ height: undefined,
               width: i === 0 ? "70%" : i === 1 ? "85%" : i === 2 ? "55%" : "65%",
             }}
           />
@@ -276,7 +277,7 @@ export function SessionListContent({
         <div ref={loadMoreRef} className="flex justify-center py-2">
           {isLoadingMore ? (
             <div className="flex items-center gap-2 text-[var(--theme-text-tertiary)]">
-              <LoadingSpinner size="xs" />
+              <Spin size={12} />
               <span className="text-xs">{t("common.loading")}</span>
             </div>
           ) : null}
@@ -408,7 +409,7 @@ export function SessionListContent({
             {APP_NAME}
           </span>
         </div>
-        <button
+        <Button type="text"
           onClick={onCollapse}
           className="flex h-8 w-8 cursor-w-resize items-center justify-center rounded-lg text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-sidebar-panel-muted)] hover:text-[var(--theme-text)] rtl:cursor-e-resize"
           title={t("sidebar.collapseSidebar")}
@@ -426,7 +427,7 @@ export function SessionListContent({
               fill="currentColor"
             />
           </svg>
-        </button>
+        </Button>
       </div>
 
       {/* Primary navigation */}
@@ -437,7 +438,7 @@ export function SessionListContent({
         {!navigationOnly ? <div
           className={agentHistoryInMainPanel ? "space-y-1 xl:hidden" : "space-y-1"}
         >
-          <button
+          <Button type="text"
             onClick={onNewSession}
             className="sidebar-nav-btn group flex h-9 w-full items-center gap-3 rounded-md px-[9px] text-sm font-medium transition-colors focus:outline-none"
           >
@@ -448,10 +449,10 @@ export function SessionListContent({
             <kbd className="hidden items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium text-[var(--theme-text-tertiary)] opacity-0 transition-opacity group-hover:opacity-100 sm:inline-flex">
               {t("sidebar.newChatShortcut")}
             </kbd>
-          </button>
+          </Button>
 
           {!hideSessionDiscovery ? (
-            <button
+            <Button type="text"
               onClick={onOpenSearch}
               className="sidebar-nav-btn group flex h-9 w-full items-center gap-3 rounded-md px-[9px] text-sm transition-colors focus:outline-none"
             >
@@ -465,7 +466,7 @@ export function SessionListContent({
               >
                 ⌘K
               </kbd>
-            </button>
+            </Button>
           ) : null}
         </div> : null}
 
@@ -481,7 +482,7 @@ export function SessionListContent({
             .map(({ key, icon: Icon, label, onClick }) => {
               const isActive = activeNavItem === key;
               return (
-                <button
+                <Button type="text"
                   key={key}
                   onClick={onClick}
                   aria-current={isActive ? "page" : undefined}
@@ -491,7 +492,7 @@ export function SessionListContent({
                 >
                   <Icon size={19} />
                   <span className="min-w-0 truncate">{label}</span>
-                </button>
+                </Button>
               );
             })}
         </LibreChatPanelSection>
@@ -504,7 +505,7 @@ export function SessionListContent({
             ({ key, icon: Icon, label, onClick }) => {
             const isActive = activeNavItem === key;
             return (
-              <button
+              <Button type="text"
                 key={key}
                 onClick={onClick}
                 aria-current={isActive ? "page" : undefined}
@@ -514,7 +515,7 @@ export function SessionListContent({
               >
                 <Icon size={19} />
                 <span className="min-w-0 truncate">{label}</span>
-              </button>
+              </Button>
             );
             },
           )}
@@ -546,7 +547,7 @@ export function SessionListContent({
                   className="mb-2 grid grid-cols-2 rounded-md bg-[var(--theme-sidebar-panel-muted)] p-0.5"
                   role="group"
                 >
-                  <button
+                  <Button type="text"
                     aria-pressed={mobileHistoryView === "tasks"}
                     className={`rounded px-2 py-1.5 text-xs font-medium transition-colors ${
                       mobileHistoryView === "tasks"
@@ -554,11 +555,11 @@ export function SessionListContent({
                         : "text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)]"
                     }`}
                     onClick={() => setMobileHistoryView("tasks")}
-                    type="button"
+                    htmlType="button"
                   >
                     任务历史
-                  </button>
-                  <button
+                  </Button>
+                  <Button type="text"
                     aria-pressed={mobileHistoryView === "all"}
                     className={`rounded px-2 py-1.5 text-xs font-medium transition-colors ${
                       mobileHistoryView === "all"
@@ -566,10 +567,10 @@ export function SessionListContent({
                         : "text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)]"
                     }`}
                     onClick={() => setMobileHistoryView("all")}
-                    type="button"
+                    htmlType="button"
                   >
                     全部对话
-                  </button>
+                  </Button>
                 </div>
                 {mobileHistoryView === "tasks"
                   ? renderHistoryCatalog(
@@ -602,7 +603,7 @@ export function SessionListContent({
 
       <div className="mt-auto flex items-center justify-between border-t border-[var(--theme-border)] px-3 py-3">
         <div className="min-w-0 flex-1"><UserMenu showLabel /></div>
-          <button
+          <Button type="text"
             aria-label="设置"
             className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-sidebar-panel-muted)] hover:text-[var(--theme-text)]"
             onClick={(event) => {
@@ -617,10 +618,10 @@ export function SessionListContent({
               );
             }}
             title="设置"
-            type="button"
+            htmlType="button"
           >
             <Settings aria-hidden="true" size={17} />
-          </button>
+          </Button>
         </div>
 
     </div>

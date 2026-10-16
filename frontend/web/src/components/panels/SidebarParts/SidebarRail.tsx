@@ -1,3 +1,4 @@
+import { Button } from "@lobehub/ui/base-ui";
 import {
   MessageSquarePlus,
   Search,
@@ -281,7 +282,7 @@ export function SidebarRail({
       </div>
       <div className="mt-auto flex flex-col items-center border-t border-[var(--theme-border)] py-2">
         <UserMenu />
-        <button
+        <Button type="text"
           aria-label="设置"
           className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-sidebar-panel-muted)] hover:text-[var(--theme-text)]"
           onClick={(event) => {
@@ -296,10 +297,10 @@ export function SidebarRail({
             );
           }}
           title="设置"
-          type="button"
+          htmlType="button"
         >
           <Settings aria-hidden="true" size={17} />
-        </button>
+        </Button>
       </div>
     </nav>
   );

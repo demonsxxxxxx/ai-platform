@@ -1,7 +1,9 @@
-import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from "react";
+import { Button } from "@lobehub/ui/base-ui";
+import { forwardRef, type ButtonHTMLAttributes, type ComponentProps, type ReactNode } from "react";
 
 interface LibreChatRailButtonProps
-  extends ButtonHTMLAttributes<HTMLButtonElement> {
+  extends Omit<ComponentProps<typeof Button>, "type" | "htmlType"> {
+  type?: ButtonHTMLAttributes<HTMLButtonElement>["type"];
   itemKey?: string;
   active?: boolean;
   children: ReactNode;
@@ -12,18 +14,19 @@ export const LibreChatRailButton = forwardRef<
   HTMLButtonElement,
   LibreChatRailButtonProps
 >(function LibreChatRailButton(
-  { itemKey, active = false, children, className = "", ...props },
+  { itemKey, active = false, children, className = "", type = "button", ...props },
   ref,
 ) {
   return (
-    <button
+    <Button type="text"
       {...props}
+      htmlType={type}
+      size="large"
+      icon={<>{children}</>}
       ref={ref}
       data-active={active ? "true" : "false"}
       data-workbench-rail-item={itemKey}
-      className={`sidebar-rail-btn workbench-rail-btn mx-1 flex h-10 w-10 touch-manipulation items-center justify-center rounded-md text-[var(--theme-text-secondary)] transition-colors ${className}`}
-    >
-      {children}
-    </button>
+      className={`sidebar-rail-btn workbench-rail-btn mx-1 touch-manipulation ${className}`}
+    />
   );
 });

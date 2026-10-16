@@ -1,3 +1,4 @@
+import { Button } from "@lobehub/ui/base-ui";
 import {
   createContext,
   useMemo,
@@ -13,7 +14,7 @@ import {
 import { useTranslation } from "react-i18next";
 import { ListTree } from "lucide-react";
 import { ThreadPrimitive } from "@assistant-ui/react";
-import toast from "react-hot-toast";
+import { toast } from "@lobehub/ui/base-ui";
 import { useAuth } from "../../../hooks/useAuth";
 import { ChatMessage } from "../../chat/ChatMessage";
 import { AssistantUiProjection } from "../../chat/assistant-ui/AssistantUiProjection";
@@ -980,7 +981,7 @@ export function ChatView({
         <div
           className={`absolute right-3 sm:right-4 z-50 flex flex-col gap-1.5 ${FLOATING_SCROLL_BUTTON_OFFSET_CLASS}`}
         >
-          <button
+          <Button type="text"
             onClick={scrollToTop}
             className="flex items-center rounded-full border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-2 text-[var(--theme-text-secondary)] shadow-[0_4px_12px_rgba(18,38,63,0.03)] transition-colors duration-200 hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)] active:scale-95 dark:bg-stone-900 dark:hover:bg-stone-800"
             aria-label={t("chat.scrollToTop", "Scroll to top")}
@@ -997,12 +998,12 @@ export function ChatView({
                 clipRule="evenodd"
               />
             </svg>
-          </button>
+          </Button>
         </div>
       )}
 
       {messages.length > 0 && !isNearBottom && (
-        <button
+        <Button type="text"
           onClick={scrollToBottom}
           className={`absolute left-1/2 z-50 flex items-center rounded-full border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-2 text-[var(--theme-text-secondary)] shadow-[0_4px_12px_rgba(18,38,63,0.03)] transition-colors duration-200 hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)] active:scale-95 dark:bg-stone-900 dark:hover:bg-stone-800 ${FLOATING_SCROLL_BUTTON_OFFSET_CLASS} -translate-x-1/2`}
           aria-label={t("chat.scrollToBottom", "Scroll to bottom")}
@@ -1019,7 +1020,7 @@ export function ChatView({
               clipRule="evenodd"
             />
           </svg>
-        </button>
+        </Button>
       )}
 
       {visibleConnectionStatus && activeConnectionOwner && (
@@ -1051,8 +1052,8 @@ export function ChatView({
             </p>
           </div>
           {onRetryHistoryLoad && (
-            <button
-              type="button"
+            <Button type="text"
+              htmlType="button"
               disabled={
                 isLoading || isLoadingHistory || currentRunId !== null ||
                 hasVisibleStreamingMessage || terminalResultSynchronizing || canRetryPendingSubmission
@@ -1061,21 +1062,21 @@ export function ChatView({
               className="rounded-md border border-[var(--theme-border)] px-3 py-1.5 disabled:opacity-50"
             >
               {t("chat.retryHistoryRead")}
-            </button>
+            </Button>
           )}
         </div>
       )}
       {canRetryPendingSubmission && (
         <div className="mx-auto mb-2 flex max-w-[68rem] px-2">
-          <button
-            type="button"
+          <Button type="text"
+            htmlType="button"
             onClick={() => void onRetryPendingSubmission()}
             className="rounded-md border border-[var(--theme-border)] px-3 py-1.5 text-sm text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)]"
           >
             {t("chat.runTerminal.statusUnavailable", {
               defaultValue: t("chat.requestFailed"),
             })}
-          </button>
+          </Button>
         </div>
       )}
       {messages.length === 0 && agentEmptyProfile?.starter_prompts.length ? (
@@ -1087,24 +1088,24 @@ export function ChatView({
             可以直接开始的任务
           </p>
           {agentEmptyProfile.starter_prompts.map((prompt) => (
-            <button
+            <Button type="text"
               className="min-w-0 rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 py-2 text-left text-sm text-[var(--theme-text)] hover:border-[var(--theme-primary)]"
               key={prompt}
               disabled={!canSendInCurrentView || isLoading}
               onClick={() => setComposerInput(prompt)}
-              type="button"
+              htmlType="button"
             >
               {prompt}
-            </button>
+            </Button>
           ))}
         </div>
       ) : null}
       {runInputs?.loadFailed ? (
         <div className="mx-auto mb-2 flex w-full max-w-[68rem] items-center justify-between gap-3 rounded-xl border border-[var(--theme-warning-ring)] bg-[var(--theme-warning-soft)] px-3 py-2 text-xs text-[var(--theme-warning)]" role="status" data-run-input-read-failure>
           <span>{t("chat.runInputs.loadFailed", "暂时无法读取任务输入状态，显示的记录可能尚未更新。")}</span>
-          <button className="shrink-0 underline" onClick={() => void runInputs.refresh()} type="button">
+          <Button type="text" className="shrink-0 underline" onClick={() => void runInputs.refresh()} htmlType="button">
             {t("common.retry", "重试")}
-          </button>
+          </Button>
         </div>
       ) : null}
       {runInputs ? <RunInputHistory runInputs={runInputs} canSend={canSendInCurrentView} /> : null}

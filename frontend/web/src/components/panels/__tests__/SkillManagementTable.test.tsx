@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 
-import { installTestDom } from "../../../hooks/useAgent/__tests__/testDom.ts";
+import { installSelectTestDom } from "../../common/__tests__/selectTestDom.ts";
+import { createLobeTestRoot } from "../../common/__tests__/lobeUiTestRoot.tsx";
 import { buildSkillCatalogEntries } from "../SkillsPanel/skillCatalogEntries.ts";
 
-const dom = installTestDom();
+const dom = installSelectTestDom();
+after(() => dom.close());
 
 test("Skill workbench prioritizes governed ZIP upload and catalog status", () => {
   const table = readFileSync(
@@ -31,7 +33,7 @@ test("Skill workbench prioritizes governed ZIP upload and catalog status", () =>
   assert.match(table, /entry\.id === selectedSkillId/);
   assert.doesNotMatch(table, /onPublish|publishToMarketplace|republish|unpublish/);
   assert.match(list, /setPageSize\(Number\(value\)\)/);
-  assert.match(list, /<EnterpriseSelect/);
+  assert.match(list, /<LobeSelectField/);
   assert.match(list, /skills\.paginationPageSize/);
   assert.match(list, /skill-catalog-view-switcher/);
   assert.match(list, /skill-management-header/);
@@ -40,7 +42,7 @@ test("Skill workbench prioritizes governed ZIP upload and catalog status", () =>
   assert.match(panel, /setPage=\{setCatalogPage\}/);
   assert.match(panel, /setPageSize=\{actions\.setPageSize\}/);
   assert.match(list, /<SkillManagementTable/);
-  assert.match(list, /adminRelease \? "btn-primary" : "btn-secondary"/);
+  assert.match(list, /type=\{adminRelease \? "primary" : "default"\}/);
   assert.match(list, /skills\.zipUploadAction/);
   assert.doesNotMatch(list, /GitHub|importFromGitHub/);
   assert.match(list, /resolveSkillCatalogMetrics\(metricsCatalogEntries\)/);
@@ -54,13 +56,16 @@ test("Skill workbench prioritizes governed ZIP upload and catalog status", () =>
   assert.doesNotMatch(list, /<SkillCard/);
 });
 
-test("master list lets the overflow menu escape and opens the final row upwards", () => {
+test("management action menus use the library portal instead of row-specific positioning", () => {
   const css = readFileSync(
-    join(process.cwd(), "src/styles/skill-management-table.css"),
-    "utf8",
+    join(process.cwd(), "src/styles/skill-management-table.css"), "utf8",
   );
-  assert.match(css, /\.skill-management-table--master\s*\{\s*overflow: visible;/);
-  assert.match(css, /\.skill-management-table__row:last-child:not\(:first-child\) \.skill-management-table__action-menu-panel\s*\{\s*top: auto;\s*bottom:/);
+  const source = readFileSync(
+    join(process.cwd(), "src/components/panels/SkillsPanel/SkillManagementTable.tsx"), "utf8",
+  );
+  assert.match(source, /<DropdownMenu/);
+  assert.doesNotMatch(css, /action-menu-panel|last-child|position:\s*absolute/);
+  assert.doesNotMatch(source, /openActionMenuRef|addEventListener/);
 });
 
 test("management rows expose a focused update action, governed overflow actions, and a read-only state", () => {
@@ -71,15 +76,15 @@ test("management rows expose a focused update action, governed overflow actions,
 
   assert.match(source, /skills\.managementTable\.updateVersionSkill/);
   assert.match(source, /MoreHorizontal/);
-  assert.match(source, /role="menu"/);
-  assert.match(source, /role="menuitem"/);
+  assert.match(source, /<DropdownMenu/);
+  assert.match(source, /popupProps=/);
   assert.match(source, /setOpenActionName/);
   assert.match(source, /onToggle\(actionName\)/);
   assert.match(source, /onEdit\(entry\.runtimeSkill!\)/);
   assert.match(source, /onExportZip\(actionName\)/);
   assert.match(source, /onDelete\(actionName\)/);
   assert.match(source, /!hasActions/);
-  assert.match(source, /data-catalog-status=\{entry\.catalogStatus\}/);
+  assert.match(source, /"data-catalog-status": entry\.catalogStatus/);
   assert.match(source, /skills\.managementTable\.internalRuntime/);
   assert.match(source, /skills\.managementTable\.internalDependency/);
   assert.match(source, /className="block truncate font-mono/);
@@ -88,11 +93,11 @@ test("management rows expose a focused update action, governed overflow actions,
   assert.match(source, /skills\.managementTable\.readOnly/);
   assert.match(
     source,
-    /data-label=\{t\("skills\.managementTable\.actions"\)\}/,
+    /"data-label": t\("skills\.managementTable\.actions"\)/,
   );
   assert.doesNotMatch(source, /[\u4e00-\u9fff]/);
-  assert.match(source, /role="table"/);
-  assert.match(source, /role="columnheader"/);
+  assert.match(source, /dataSource=\{entries\}/);
+  assert.match(source, /columns=\{/);
   assert.match(source, /isInteractiveRowTarget\(event\.target, event\.currentTarget\)/);
   assert.match(source, /target\.closest\(INTERACTIVE_ROW_TARGET\)/);
 });
@@ -143,7 +148,6 @@ test("Chinese management table translations stay complete", () => {
 
 test("archive menu action keyboard activation does not select its containing row", async () => {
   const React = await import("react");
-  const { createRoot } = await import("react-dom/client");
   const { SkillManagementTable } = await import(
     "../SkillsPanel/SkillManagementTable.tsx"
   );
@@ -168,7 +172,7 @@ test("archive menu action keyboard activation does not select its containing row
     [],
   );
   const container = dom.document.createElement("div");
-  const root = createRoot(container as never);
+  const root = await createLobeTestRoot(container);
   let archiveCalls = 0;
   let detailSelectionCalls = 0;
 
@@ -201,33 +205,20 @@ test("archive menu action keyboard activation does not select its containing row
       );
     });
 
+    assert.ok(container.querySelector("table"));
+    assert.ok(container.querySelectorAll("th").length >= 4);
+    const archiveLabel = (await import("../../../i18n")).default.t("skills.managementTable.delete");
     for (const key of ["Enter", " "]) {
-      const menuButton = container
-        .querySelectorAll("button")
-        .find((button) => button.getAttribute("aria-haspopup") === "menu");
+      const menuButton = container.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]');
       assert.ok(menuButton, "row action menu must render");
+      await React.act(async () => { menuButton.click(); });
+      const archiveItem = Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find((item) => item.textContent?.trim() === archiveLabel);
+      assert.ok(archiveItem, "archive action must render in the library portal");
+      assert.equal(container.querySelector("table")!.contains(archiveItem), false);
       await React.act(async () => {
-        menuButton.dispatchEvent({ type: "click", bubbles: true });
-      });
-      const archiveButton = container
-        .querySelectorAll("button")
-        .find((button) =>
-          `${button.className} ${button.getAttribute("class") ?? ""}`.includes(
-            "skill-management-table__archive-action",
-          ),
-        );
-      assert.ok(archiveButton, "archive action must render in the open menu");
-      const keydown: {
-        type: string;
-        key: string;
-        bubbles: boolean;
-        defaultPrevented?: boolean;
-      } = { type: "keydown", key, bubbles: true };
-      await React.act(async () => {
-        archiveButton.dispatchEvent(keydown);
-        if (keydown.defaultPrevented !== true) {
-          archiveButton.dispatchEvent({ type: "click", bubbles: true });
-        }
+        archiveItem.focus();
+        archiveItem.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+        archiveItem.dispatchEvent(new KeyboardEvent("keyup", { key, bubbles: true, cancelable: true }));
       });
     }
 

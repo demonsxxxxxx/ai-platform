@@ -1,3 +1,4 @@
+import { Button, Input } from "@lobehub/ui/base-ui";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   type LucideIcon,
@@ -565,15 +566,13 @@ export function WorkbenchUsersProjectionPanel() {
                   {t("workbench.projections.users.directoryDescription")}
                 </p>
               </div>
-              <div className="relative min-w-0 md:w-72">
-                <Search
-                  size={17}
-                  className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--theme-text-tertiary)]"
-                />
-                <input
+              <div className="min-w-0 md:w-72">
+                <Input
+                  prefix={<Search size={17} />}
                   value={searchQuery}
                   onChange={(event) => setSearchQuery(event.target.value)}
-                  className="panel-search h-10 pl-9"
+                  size="large" className="w-full"
+                  aria-label={t("workbench.projections.users.search")}
                   placeholder={t("workbench.projections.users.search")}
                 />
               </div>
@@ -622,15 +621,15 @@ export function WorkbenchUsersProjectionPanel() {
                         failed: user.failed_run_count,
                       })}
                     </span>
-                    <button
-                      type="button"
+                    <Button type="default"
+                      htmlType="button"
                       data-user-run-debug={user.user_id}
-                      className="btn-secondary inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs"
+                      className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs"
                       onClick={() => void openDiagnostics(user)}
                     >
                       <Bug size={14} />
                       {t("workbench.projections.users.auditDebug")}
-                    </button>
+                    </Button>
                   </div>
                 </article>
               ))

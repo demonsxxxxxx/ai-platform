@@ -1,3 +1,4 @@
+import { Button } from "@lobehub/ui/base-ui";
 import { Server, Wrench } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { MCPServerResponse } from "../../types";
@@ -51,7 +52,7 @@ export function OrdinaryMcpCatalog({
             <p className={workbenchSurface.catalog.emptyTitle}>
               {t("mcp.available.unavailable")}
             </p>
-            {listError && onRetry ? <button type="button" className="btn-secondary mt-3" data-mcp-retry onClick={onRetry}>{t("mcp.catalogUnavailable.retry")}</button> : null}
+            {listError && onRetry ? <Button type="default" htmlType="button" className="mt-3" data-mcp-retry onClick={onRetry}>{t("mcp.catalogUnavailable.retry")}</Button> : null}
           </div>
         ) : catalog.length === 0 ? (
           <div className={workbenchSurface.catalog.emptyState}>
@@ -74,7 +75,7 @@ export function OrdinaryMcpCatalog({
                 {discovery.statusByServer.get(server.name) !== "ready" ? (
                   <div className="mt-3 text-sm text-[var(--theme-text-secondary)]">
                     <p>{t(discovery.statusByServer.get(server.name) === "loading" ? "mcp.available.loading" : "mcp.available.unavailable")}</p>
-                    {discovery.statusByServer.get(server.name) === "unavailable" ? <button type="button" className="btn-secondary mt-3" onClick={discovery.refresh}>{t("mcp.tools.retry")}</button> : null}
+                    {discovery.statusByServer.get(server.name) === "unavailable" ? <Button type="default" htmlType="button" className="mt-3" onClick={discovery.refresh}>{t("mcp.tools.retry")}</Button> : null}
                   </div>
                 ) : server.tools.length === 0 ? (
                   <p className={`mt-3 ${workbenchSurface.catalog.body}`}>

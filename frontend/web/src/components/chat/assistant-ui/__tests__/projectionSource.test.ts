@@ -1,13 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-// jsdom 26 ships no declarations; the harness uses only its runtime constructor.
-// @ts-expect-error jsdom is the sole pinned test runtime dependency.
-import { JSDOM } from "jsdom";
+import { installSelectTestDom } from "../../../common/__tests__/selectTestDom";
+import { createLobeTestRoot } from "../../../common/__tests__/lobeUiTestRoot";
 import { act, createElement, useEffect, useState, type ReactNode } from "react";
 import { adaptPublicRunStreamEventV4 } from "../publicEventAdapter";
 import { acceptV4TerminalFence, handlePublicRunStreamEventV4Result, type EventHandlerContext } from "../../../../hooks/useAgent/eventHandlers";
 import { processMessageEvent } from "../../../../hooks/useAgent/eventProcessor";
-import { createRoot, type Root } from "react-dom/client";
+type Root = Awaited<ReturnType<typeof createLobeTestRoot>>;
 import { ThreadPrimitive } from "@assistant-ui/react";
 import { AssistantUiProjection } from "../AssistantUiProjection";
 import { AssistantUiMessageFrame } from "../MessageFrame";
@@ -31,38 +30,15 @@ const handlePublicRunStreamEventV4 = (
   return result.kind === "applied" || result.kind === "deferred";
 };
 
-function setupDom(): { container: HTMLDivElement; root: Root; cleanup: () => void } {
-  const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>", {
-    url: "http://localhost/",
-  });
-  const windowKeys = ["window", "document", "navigator", "HTMLElement", "Node", "Event", "KeyboardEvent"] as const;
-  for (const key of windowKeys) {
-    Object.defineProperty(globalThis, key, { configurable: true, value: dom.window[key] });
-  }
-  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true, writable: true });
-  class TestResizeObserver {
-    observe(): void {}
-    unobserve(): void {}
-    disconnect(): void {}
-  }
-  Object.defineProperty(globalThis, "ResizeObserver", { configurable: true, value: TestResizeObserver });
-  Object.defineProperty(globalThis, "MutationObserver", { configurable: true, value: dom.window.MutationObserver });
-  Object.defineProperty(dom.window.HTMLElement.prototype, "scrollTo", { configurable: true, value: () => undefined });
-  Object.defineProperty(globalThis, "cancelAnimationFrame", { configurable: true, value: () => undefined });
-  Object.defineProperty(globalThis, "requestAnimationFrame", {
-    configurable: true,
-    value: (callback: FrameRequestCallback) => { callback(Date.now()); return 0; },
-  });
-  const container = dom.window.document.getElementById("root") as HTMLDivElement;
-  const root = createRoot(container);
-  return {
-    container,
-    root,
-    cleanup: () => {
-      act(() => { root.unmount(); });
-      dom.window.close();
-    },
-  };
+async function setupDom() {
+  const environment = installSelectTestDom();
+  HTMLElement.prototype.scrollTo = () => {};
+  const container = document.createElement("div");
+  const root = await createLobeTestRoot(container);
+  return { container, root, cleanup: () => {
+    act(() => root.unmount());
+    environment.close();
+  } };
 }
 
 function renderProjection(
@@ -144,8 +120,8 @@ function message(parts: MessagePart[]): Message {
   };
 }
 
-test("mounted projection uses the production canonical tool lifecycle", () => {
-  const dom = setupDom();
+test("mounted projection uses the production canonical tool lifecycle", async () => {
+  const dom = await setupDom();
   const actions = {
     sendMessage: async () => undefined,
     cancel: async () => undefined,
@@ -200,8 +176,8 @@ test("mounted projection uses the production canonical tool lifecycle", () => {
   }
 });
 
-test("mounted artifact card exposes only its safe accessible label", () => {
-  const dom = setupDom();
+test("mounted artifact card exposes only its safe accessible label", async () => {
+  const dom = await setupDom();
   const actions = { sendMessage: async () => undefined, cancel: async () => undefined, reconnect: async () => undefined, loadHistory: async () => undefined };
   try {
     renderProjection(dom.root, message([{
@@ -225,7 +201,7 @@ test("mounted artifact card exposes only its safe accessible label", () => {
 });
 
 test("mounted production fence owner accepts its matching end once and rejects a foreign end", async () => {
-  const dom = setupDom();
+  const dom = await setupDom();
   const terminalEvent = adaptPublicRunStreamEventV4({
     eventHeader: "run.succeeded",
     transportCursor: "run-1:1:1-0",
@@ -322,8 +298,8 @@ test("mounted production fence owner accepts its matching end once and rejects a
   }
 });
 
-test("mounted adapter-to-reducer artifact failure exposes a safe accessible label", () => {
-  const dom = setupDom();
+test("mounted adapter-to-reducer artifact failure exposes a safe accessible label", async () => {
+  const dom = await setupDom();
   const adapted = adaptPublicRunStreamEventV4({
     eventHeader: "artifact.failed",
     transportCursor: "run-1:1:3-0",
@@ -357,8 +333,8 @@ test("mounted adapter-to-reducer artifact failure exposes a safe accessible labe
   }
 });
 
-test("mounted projection renders the production subagent lifecycle with hierarchy, metadata, and keyboard state", () => {
-  const dom = setupDom();
+test("mounted projection renders the production subagent lifecycle with hierarchy, metadata, and keyboard state", async () => {
+  const dom = await setupDom();
   const actions = { sendMessage: async () => undefined, cancel: async () => undefined, reconnect: async () => undefined, loadHistory: async () => undefined };
   try {
     const parent = adaptPublicRunStreamEventV4({

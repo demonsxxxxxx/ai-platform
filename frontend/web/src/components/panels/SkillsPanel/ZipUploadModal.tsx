@@ -1,8 +1,9 @@
+import { Button } from "@lobehub/ui/base-ui";
 import { useTranslation } from "react-i18next";
 import { Archive, Check, UploadCloud, FileArchive, Upload } from "lucide-react";
-import { LoadingSpinner } from "../../common/LoadingSpinner";
+import { Spin } from "@lobehub/ui/base-ui";
 import { EditorSidebar } from "../../common/EditorSidebar";
-import { Checkbox } from "../../common/Checkbox";
+import { Checkbox } from "@lobehub/ui/base-ui";
 import type { AdminSkillCatalogItem } from "../../../services/api/skill";
 import { canSelectZipSkill, type ZipSkillPreview } from "./zipSelection";
 import type { AdminSkillReleasePhase } from "./useSkillsActions";
@@ -101,21 +102,21 @@ export function ZipUploadModal({
       width="wide"
       footer={
         <div className="flex justify-end gap-2">
-          <button
+          <Button type="default"
             onClick={() => setShowZipModal(false)}
             disabled={zipUploading || zipPreviewing}
-            className="btn-secondary disabled:opacity-50"
+            className="disabled:opacity-50"
           >
             {t("common.cancel")}
-          </button>
+          </Button>
           {zipSkills.length > 0 && (
-            <button
+            <Button type="primary"
               onClick={onZipUpload}
               disabled={zipUploading || selectedZipSkills.length === 0}
-              className="btn-primary disabled:opacity-50"
+              className="disabled:opacity-50"
             >
               {zipUploading ? (
-                <LoadingSpinner size="sm" color="text-white" />
+                <Spin size={16} />
               ) : (
                 <Upload size={16} />
               )}
@@ -128,7 +129,7 @@ export function ZipUploadModal({
                     )
                   : t("skills.importSkills")} ({selectedZipSkills.length})
               </span>
-            </button>
+            </Button>
           )}
         </div>
       }
@@ -193,7 +194,7 @@ export function ZipUploadModal({
 
         {zipPreviewing && (
           <div className="flex items-center justify-center gap-2 py-3 text-sm text-[var(--theme-text-secondary)]">
-            <LoadingSpinner size="sm" />
+            <Spin size={16} />
             {t("skills.preview")}
           </div>
         )}
@@ -275,7 +276,7 @@ export function ZipUploadModal({
                 </span>
               </div>
               {!adminRelease && (
-                <button
+                <Button type="text"
                   onClick={() => {
                     const selectable = zipSkills
                       .filter((s) => s.already_exists)
@@ -291,7 +292,7 @@ export function ZipUploadModal({
                   {selectedZipSkills.length === selectableCount
                     ? t("common.deselectAll")
                     : t("common.selectAll")}
-                </button>
+                </Button>
               )}
             </div>
             <p className="text-xs leading-5 text-[var(--theme-text-secondary)]">
@@ -355,13 +356,13 @@ export function ZipUploadModal({
                     }`}
                   >
                     <Checkbox
-                      size="sm"
+                      size={18}
                       checked={selected}
                       onChange={() =>
                         canSelectSkill && onZipSkillToggle(skill.name)
                       }
                       disabled={!canSelectSkill}
-                    />
+                    onClick={(event) => event.stopPropagation()} />
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
                         <p

@@ -1,3 +1,4 @@
+import { Button, Input } from "@lobehub/ui/base-ui";
 /**
  * Session item component with inline title editing.
  */
@@ -5,7 +6,7 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { MoreHorizontal } from "lucide-react";
-import toast from "react-hot-toast";
+import { toast } from "@lobehub/ui/base-ui";
 import type { BackendSession } from "../../services/api/session";
 import { sessionApi } from "../../services/api";
 import { SessionMenu } from "./SessionMenu";
@@ -163,7 +164,7 @@ export function SessionItem({
         {/* Title - editable or display */}
         <div className="min-w-0 flex-1">
           {isEditing ? (
-            <input
+            <Input
               ref={inputRef}
               type="text"
               value={editTitle}
@@ -194,7 +195,7 @@ export function SessionItem({
           </span>
         )}
         {!isEditing && (
-          <button
+          <Button type="text"
             ref={menuButtonRef}
             onClick={handleMenuClick}
             className="flex-shrink-0 rounded p-1 text-[var(--theme-text-tertiary)] opacity-0 transition-all hover:bg-[var(--theme-hover)] hover:text-[var(--theme-text)] group-hover:opacity-100"
@@ -205,7 +206,7 @@ export function SessionItem({
               size={14}
               className="text-current"
             />
-          </button>
+          </Button>
         )}
       </div>
 

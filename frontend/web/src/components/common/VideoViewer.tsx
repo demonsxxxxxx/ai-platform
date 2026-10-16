@@ -1,5 +1,7 @@
+import { Button } from "@lobehub/ui/base-ui";
 import { useEffect, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
+import { useAppElement } from "@lobehub/ui/es/ThemeProvider/index";
 import { useTranslation } from "react-i18next";
 import { X, Download } from "lucide-react";
 
@@ -12,6 +14,7 @@ interface VideoViewerProps {
 
 export function VideoViewer({ src, isOpen, onClose, title }: VideoViewerProps) {
   const { t } = useTranslation();
+  const appElement = useAppElement();
   const videoRef = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
@@ -59,33 +62,33 @@ export function VideoViewer({ src, isOpen, onClose, title }: VideoViewerProps) {
       onClick={handleBackgroundClick}
     >
       <div className="flex items-center justify-between px-3 sm:px-6 py-3 bg-black/80 shrink-0">
-        <button
-          type="button"
+        <Button type="text"
+          htmlType="button"
           onClick={onClose}
-          className="flex items-center justify-center w-10 h-10 rounded-lg hover:bg-white/10 transition-colors cursor-pointer"
+          size="large"
+          icon={<X size={20} className="text-white/70" />}
           aria-label={t("common.close")}
-        >
-          <X size={20} className="text-white/70" />
-        </button>
+        />
         {title && (
           <span className="text-sm text-white/70 truncate max-w-[60vw] hidden sm:block">
             {title}
           </span>
         )}
-        <button
-          type="button"
+        <Button type="text"
+          htmlType="button"
           onClick={() => {
             const a = document.createElement("a");
             a.href = src;
             a.download = "";
             a.click();
           }}
-          className="flex items-center gap-1.5 rounded-lg px-3 h-10 text-sm font-medium transition-colors cursor-pointer hover:bg-white/10 text-white/70"
+          size="large"
+          className="text-white/70"
+          icon={<Download size={18} className="text-white/70" />}
           aria-label={t("imageViewer.download")}
         >
-          <Download size={18} className="text-white/70" />
           <span className="hidden sm:inline">{t("imageViewer.download")}</span>
-        </button>
+        </Button>
       </div>
 
       <div className="flex-1 overflow-hidden flex items-center justify-center">
@@ -101,6 +104,6 @@ export function VideoViewer({ src, isOpen, onClose, title }: VideoViewerProps) {
         </video>
       </div>
     </div>,
-    document.body,
+    appElement ?? document.body,
   );
 }

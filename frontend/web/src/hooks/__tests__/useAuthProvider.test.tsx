@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import test, { beforeEach } from "node:test";
+import test, { after, beforeEach } from "node:test";
+import { installSelectTestDom } from "../../components/common/__tests__/selectTestDom";
+import { createLobeTestRoot } from "../../components/common/__tests__/lobeUiTestRoot";
 import { installBrowserAuthTestDb } from "./browserAuthTestDb.ts";
 
 import {
@@ -10,271 +12,26 @@ import { ApiRequestError } from "../../services/api/fetch.ts";
 import { registerAuthScopedCacheClearer } from "../../services/api/authCacheInvalidation.ts";
 import type { User } from "../../types/auth.ts";
 
-type Listener = (event: { type: string }) => void;
-
-class TestEventTarget {
-  private readonly listeners = new Map<string, Set<Listener>>();
-
-  addEventListener(type: string, listener: Listener) {
-    const listeners = this.listeners.get(type) || new Set<Listener>();
-    listeners.add(listener);
-    this.listeners.set(type, listeners);
-  }
-
-  removeEventListener(type: string, listener: Listener) {
-    this.listeners.get(type)?.delete(listener);
-  }
-
-  dispatchEvent(event: { type: string; defaultPrevented?: boolean }) {
-    this.listeners.get(event.type)?.forEach((listener) => listener(event));
-    return !event.defaultPrevented;
-  }
-}
-
-class TestNode extends TestEventTarget {
-  parentNode: TestNode | null = null;
-  childNodes: TestNode[] = [];
-  nodeValue: string | null = null;
-  textContent = "";
-
-  get firstChild() {
-    return this.childNodes[0] || null;
-  }
-
-  get lastChild() {
-    return this.childNodes[this.childNodes.length - 1] || null;
-  }
-
-  appendChild(child: TestNode) {
-    child.parentNode = this;
-    this.childNodes.push(child);
-    return child;
-  }
-
-  insertBefore(child: TestNode, reference: TestNode | null) {
-    child.parentNode = this;
-    const index = reference ? this.childNodes.indexOf(reference) : -1;
-    if (index < 0) this.childNodes.push(child);
-    else this.childNodes.splice(index, 0, child);
-    return child;
-  }
-
-  removeChild(child: TestNode) {
-    const index = this.childNodes.indexOf(child);
-    if (index >= 0) this.childNodes.splice(index, 1);
-    child.parentNode = null;
-    return child;
-  }
-
-  contains(node: TestNode | null): boolean {
-    return node === this || this.childNodes.some((child) => child.contains(node));
-  }
-}
-
-class TestElement extends TestNode {
-  readonly nodeType = 1;
-  readonly namespaceURI = "http://www.w3.org/1999/xhtml";
-  readonly style = Object.assign({}, {
-    setProperty: (name: string, value: string) => {
-      (this.style as unknown as Record<string, unknown>)[name] = value;
-    },
-    removeProperty: (name: string) => {
-      delete (this.style as unknown as Record<string, unknown>)[name];
-    },
-  }) as unknown as CSSStyleDeclaration;
-  readonly attributes = new Map<string, string>();
-  ownerDocument!: TestDocument;
-  className = "";
-  id = "";
-  value = "";
-  checked = false;
-  private readonly classes = new Set<string>();
-  readonly classList = {
-    add: (...names: string[]) => names.forEach((name) => this.classes.add(name)),
-    remove: (...names: string[]) => names.forEach((name) => this.classes.delete(name)),
-    contains: (name: string) => this.classes.has(name),
-    toggle: (name: string, force?: boolean) => {
-      const next = force ?? !this.classes.has(name);
-      if (next) this.classes.add(name);
-      else this.classes.delete(name);
-      return next;
-    },
-  };
-
-  constructor(readonly tagName: string) {
-    super();
-  }
-
-  get nodeName() {
-    return this.tagName.toUpperCase();
-  }
-
-  setAttribute(name: string, value: string) {
-    this.attributes.set(name, value);
-  }
-
-  removeAttribute(name: string) {
-    this.attributes.delete(name);
-  }
-
-  getAttribute(name: string) {
-    return this.attributes.get(name) || null;
-  }
-
-  hasAttribute(name: string) {
-    return this.attributes.has(name);
-  }
-}
-
-class TestText extends TestNode {
-  readonly nodeType = 3;
-  readonly nodeName = "#text";
-  ownerDocument!: TestDocument;
-
-  constructor(value: string) {
-    super();
-    this.nodeValue = value;
-    this.textContent = value;
-  }
-
-  get data() {
-    return this.nodeValue || "";
-  }
-
-  set data(value: string) {
-    this.nodeValue = value;
-    this.textContent = value;
-  }
-}
-
-class TestDocument extends TestNode {
-  readonly nodeType = 9;
-  readonly nodeName = "#document";
-  readonly documentElement: TestElement;
-  readonly head: TestElement;
-  readonly body: TestElement;
-  activeElement: TestElement | null;
-  hidden = false;
-  visibilityState = "visible";
-  defaultView: typeof window | null = null;
-
-  constructor() {
-    super();
-    this.documentElement = this.createElement("html");
-    this.head = this.createElement("head");
-    this.body = this.createElement("body");
-    this.documentElement.appendChild(this.head);
-    this.documentElement.appendChild(this.body);
-    this.appendChild(this.documentElement);
-    this.activeElement = this.body;
-  }
-
-  createElement(tagName: string) {
-    const element = new TestElement(tagName);
-    element.ownerDocument = this;
-    if (tagName.toLowerCase() === "style") {
-      element.appendChild(this.createTextNode(""));
-    }
-    return element;
-  }
-
-  createElementNS(_namespace: string, tagName: string) {
-    return this.createElement(tagName);
-  }
-
-  createTextNode(value: string) {
-    const text = new TestText(value);
-    text.ownerDocument = this;
-    return text;
-  }
-}
-
-const document = new TestDocument();
+const dom = installSelectTestDom();
+const document = dom.document;
+const windowTarget = window;
 const storage = new Map<string, string>();
 const sessionStorageValues = new Map<string, string>();
-const windowTarget = new TestEventTarget() as TestEventTarget & {
-  document: TestDocument;
-  location: { href: string; pathname: string; search: string; hash: string };
-  localStorage: Storage;
-  sessionStorage: Storage;
-  clearTimeout: typeof clearTimeout;
-  setTimeout: typeof setTimeout;
-  matchMedia: (query: string) => MediaQueryList;
-};
-windowTarget.document = document;
-windowTarget.location = { href: "http://test.local/", pathname: "/", search: "", hash: "" };
-windowTarget.localStorage = {
-  getItem: (key) => storage.get(key) || null,
-  setItem: (key, value) => storage.set(key, value),
-  removeItem: (key) => storage.delete(key),
-  clear: () => storage.clear(),
-  key: (index) => [...storage.keys()][index] || null,
-  get length() {
-    return storage.size;
-  },
-};
-windowTarget.sessionStorage = {
-  getItem: (key) => sessionStorageValues.get(key) || null,
-  setItem: (key, value) => sessionStorageValues.set(key, value),
-  removeItem: (key) => sessionStorageValues.delete(key),
-  clear: () => sessionStorageValues.clear(),
-  key: (index) => [...sessionStorageValues.keys()][index] || null,
-  get length() {
-    return sessionStorageValues.size;
-  },
-};
-windowTarget.clearTimeout = clearTimeout;
-windowTarget.setTimeout = setTimeout;
-windowTarget.matchMedia = (query: string) => ({
-  matches: false,
-  media: query,
-  onchange: null,
-  addListener() {},
-  removeListener() {},
-  addEventListener() {},
-  removeEventListener() {},
-  dispatchEvent: () => true,
-});
-Object.assign(windowTarget, {
-  Element: TestElement,
-  HTMLElement: TestElement,
-  HTMLIFrameElement: class TestIFrameElement extends TestElement {},
-  Node: TestNode,
-});
-document.defaultView = windowTarget as unknown as typeof window;
-Object.assign(globalThis, {
-  window: windowTarget,
-  document,
-  localStorage: windowTarget.localStorage,
-  sessionStorage: windowTarget.sessionStorage,
-  Node: TestNode,
-  Element: TestElement,
-  HTMLElement: TestElement,
-  HTMLIFrameElement: class TestIFrameElement extends TestElement {},
-  SVGElement: TestElement,
-  CustomEvent: class {
-    readonly detail: unknown;
-    defaultPrevented = false;
-    constructor(readonly type: string, readonly init?: { detail?: unknown; cancelable?: boolean }) { this.detail = init?.detail; }
-    preventDefault() { if (this.init?.cancelable) this.defaultPrevented = true; }
-  },
-  IS_REACT_ACT_ENVIRONMENT: true,
-});
-Object.defineProperty(globalThis, "navigator", {
-  configurable: true,
-  value: {
-    userAgent: "node",
-    locks: {
-      async request<T>(
-        _name: string,
-        _options: { mode: "exclusive" },
-        callback: () => Promise<T>,
-      ): Promise<T> {
-        return callback();
-      },
-    },
-  },
-});
+for (const [name, values] of [["localStorage", storage], ["sessionStorage", sessionStorageValues]] as const) {
+  Object.defineProperty(windowTarget, name, { configurable: true, value: {
+    getItem: (key: string) => values.get(key) || null,
+    setItem: (key: string, value: string) => values.set(key, value),
+    removeItem: (key: string) => values.delete(key),
+    clear: () => values.clear(),
+    key: (index: number) => [...values.keys()][index] || null,
+    get length() { return values.size; },
+  } });
+}
+Object.assign(globalThis, { localStorage: windowTarget.localStorage, sessionStorage: windowTarget.sessionStorage });
+Object.defineProperty(navigator, "locks", { configurable: true, value: {
+  async request<T>(_name: string, _options: { mode: "exclusive" }, callback: () => Promise<T>): Promise<T> { return callback(); },
+} });
+after(() => dom.close());
 
 // Each mounted scenario has its own durable V2 coordinator store.
 beforeEach(() => installBrowserAuthTestDb());
@@ -371,32 +128,23 @@ async function mountAuthHarness(
   };
 }
 
-function findElements(root: TestNode, tagName: string): TestElement[] {
-  const matches: TestElement[] = [];
-  const visit = (node: TestNode) => {
-    if (node instanceof TestElement && node.tagName === tagName) matches.push(node);
-    node.childNodes.forEach(visit);
-  };
-  visit(root);
-  return matches;
+function findElements<T extends keyof HTMLElementTagNameMap>(root: ParentNode, tagName: T): HTMLElementTagNameMap[T][] {
+  return Array.from(root.querySelectorAll(tagName));
 }
 
-function reactProps(element: TestElement): Record<string, (...args: never[]) => unknown> {
-  const key = Object.keys(element).find((name) => name.startsWith("__reactProps$"));
-  assert.ok(key, `React props are attached to <${element.tagName}>`);
-  return (element as unknown as Record<string, Record<string, (...args: never[]) => unknown>>)[key];
+function setInputValue(field: HTMLInputElement, value: string) {
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, value);
+  field.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
 async function mountAuthPageHarness(
   configure: (api: typeof import("../../services/api/auth.ts").authApi) => void,
 ) {
   const React = await import("react");
-  const { createRoot } = await import("react-dom/client");
   const { AuthProvider, useAuth } = await import("../useAuth.tsx");
-  const { ThemeProvider } = await import("../../contexts/ThemeContext.tsx");
   const { AuthPage } = await import("../../components/auth/AuthPage.tsx");
   const { authApi } = await import("../../services/api/auth.ts");
-  const toast = (await import("react-hot-toast")).default;
+  const { toast } = await import("@lobehub/ui/base-ui");
   const originals = {
     bootstrapAuthContext: authApi.bootstrapAuthContext,
     getCurrentUser: authApi.getCurrentUser,
@@ -437,11 +185,11 @@ async function mountAuthPageHarness(
   const errorToasts: unknown[] = [];
   toast.success = ((message: unknown) => {
     successToasts.push(message);
-    return "test-toast";
+    return { id: "test-toast", close() {}, update() {} };
   }) as typeof toast.success;
   toast.error = ((message: unknown) => {
     errorToasts.push(message);
-    return "test-error-toast";
+    return { id: "test-error-toast", close() {}, update() {} };
   }) as typeof toast.error;
   function Probe() {
     snapshot = useAuth();
@@ -458,24 +206,10 @@ async function mountAuthPageHarness(
   }
 
   const container = document.createElement("div");
-  const root = createRoot(container as never);
+  const root = await createLobeTestRoot(container);
   await React.act(async () => {
-    root.render(
-      React.createElement(
-        ThemeProvider,
-        null,
-        React.createElement(
-          AuthProvider,
-          null,
-          React.createElement(
-            React.Fragment,
-            null,
-            React.createElement(Probe),
-            React.createElement(AuthPageGate),
-          ),
-        ),
-      ),
-    );
+    root.render(React.createElement(AuthProvider, null,
+      React.createElement(React.Fragment, null, React.createElement(Probe), React.createElement(AuthPageGate))));
     for (let index = 0; index < 8; index += 1) await Promise.resolve();
   });
 
@@ -518,7 +252,6 @@ async function mountOAuthCallbackHarness(
   configure: (api: typeof import("../../services/api/auth.ts").authApi) => void,
 ) {
   const React = await import("react");
-  const { createRoot } = await import("react-dom/client");
   const { MemoryRouter, useLocation } = await import("react-router-dom");
   const { AuthProvider } = await import("../useAuth.tsx");
   const { OAuthCallback } = await import("../../components/auth/OAuthCallback.tsx");
@@ -553,7 +286,7 @@ async function mountOAuthCallbackHarness(
   }
 
   const container = document.createElement("div");
-  const root = createRoot(container as never);
+  const root = await createLobeTestRoot(container);
   await React.act(async () => {
     root.render(
       React.createElement(
@@ -604,7 +337,7 @@ async function mountOAuthCallbackHarness(
     },
     async logout() {
       await React.act(async () => {
-        windowTarget.dispatchEvent({ type: "auth:logout" });
+        windowTarget.dispatchEvent(new Event("auth:logout"));
         await Promise.resolve();
       });
     },
@@ -721,14 +454,9 @@ test("cross-tab marker replacement clears principal and caches before hydrating 
     await mounted.React.act(async () => {
       storage.set("ai_platform_session_present", "marker-b");
       windowTarget.dispatchEvent(
-        Object.assign(
-          { type: "storage" },
-          {
-            key: "ai_platform_session_present",
-            oldValue: "test-session-marker",
-            newValue: "marker-b",
-          },
-        ),
+        new windowTarget.StorageEvent("storage", {
+          key: "ai_platform_session_present", oldValue: "test-session-marker", newValue: "marker-b",
+        }),
       );
       await Promise.resolve();
     });
@@ -768,14 +496,9 @@ test("current cross-tab replacement hydration failure removes the replacement ma
     await mounted.React.act(async () => {
       storage.set("ai_platform_session_present", "marker-b-failed");
       windowTarget.dispatchEvent(
-        Object.assign(
-          { type: "storage" },
-          {
-            key: "ai_platform_session_present",
-            oldValue: "test-session-marker",
-            newValue: "marker-b-failed",
-          },
-        ),
+        new windowTarget.StorageEvent("storage", {
+          key: "ai_platform_session_present", oldValue: "test-session-marker", newValue: "marker-b-failed",
+        }),
       );
       await Promise.resolve();
       await Promise.resolve();
@@ -1274,16 +997,12 @@ test("AuthPage silently stops a deferred login that loses auth ownership", async
     assert.ok(usernameInput && passwordInput && form);
 
     await mounted.React.act(async () => {
-      usernameInput.value = "admin-b";
-      reactProps(usernameInput).onChange?.({ target: usernameInput } as never);
-      passwordInput.value = "safe-test";
-      reactProps(passwordInput).onChange?.({ target: passwordInput } as never);
+      setInputValue(usernameInput, "admin-b");
+      setInputValue(passwordInput, "safe-test");
       await Promise.resolve();
     });
     await mounted.React.act(async () => {
-      reactProps(form).onSubmit?.({
-        preventDefault() {},
-      } as never);
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -1632,14 +1351,12 @@ test("AuthPage projects unknown transport diagnostics to existing localized gene
     assert.ok(usernameInput && passwordInput && form);
 
     await mounted.React.act(async () => {
-      usernameInput.value = "admin-b";
-      reactProps(usernameInput).onChange?.({ target: usernameInput } as never);
-      passwordInput.value = "safe-test";
-      reactProps(passwordInput).onChange?.({ target: passwordInput } as never);
+      setInputValue(usernameInput, "admin-b");
+      setInputValue(passwordInput, "safe-test");
       await Promise.resolve();
     });
     await mounted.React.act(async () => {
-      reactProps(form).onSubmit?.({ preventDefault() {} } as never);
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -1680,14 +1397,12 @@ test("AuthPage renders actionable localized copy when secure browser auth coordi
     assert.ok(usernameInput && passwordInput && form);
 
     await mounted.React.act(async () => {
-      usernameInput.value = "admin-b";
-      reactProps(usernameInput).onChange?.({ target: usernameInput } as never);
-      passwordInput.value = "safe-test";
-      reactProps(passwordInput).onChange?.({ target: passwordInput } as never);
+      setInputValue(usernameInput, "admin-b");
+      setInputValue(passwordInput, "safe-test");
       await Promise.resolve();
     });
     await mounted.React.act(async () => {
-      reactProps(form).onSubmit?.({ preventDefault() {} } as never);
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
       await Promise.resolve();
       await Promise.resolve();
     });

@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import test, { afterEach, beforeEach } from "node:test";
-// jsdom 26 is the pinned mounted-test runtime and does not ship declarations.
-// @ts-expect-error jsdom runtime import.
-import { JSDOM } from "jsdom";
+import { installSelectTestDom } from "../../../components/common/__tests__/selectTestDom";
+import { createLobeTestRoot } from "../../../components/common/__tests__/lobeUiTestRoot";
 import { act, createElement } from "react";
 
 import { RunQuestionCard } from "../../../components/chat/RunQuestionCard.tsx";
@@ -28,64 +27,9 @@ beforeEach(() => {
 afterEach(() => { sessionApi.getRunInputHistory = originalHistoryApi; });
 
 function installDom() {
-  const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", {
-    url: "http://localhost/",
-    pretendToBeVisual: true,
-  });
-  const window = dom.window;
-  const values: Record<string, unknown> = {
-    window,
-    document: window.document,
-    navigator: window.navigator,
-    HTMLElement: window.HTMLElement,
-    Element: window.Element,
-    Node: window.Node,
-    HTMLInputElement: window.HTMLInputElement,
-    HTMLTextAreaElement: window.HTMLTextAreaElement,
-    Event: window.Event,
-    InputEvent: window.InputEvent,
-    CustomEvent: window.CustomEvent,
-    localStorage: window.localStorage,
-    sessionStorage: window.sessionStorage,
-    indexedDB: globalThis.indexedDB,
-    requestAnimationFrame: (callback: FrameRequestCallback) =>
-      window.setTimeout(() => callback(Date.now()), 0),
-    cancelAnimationFrame: (handle: number) => window.clearTimeout(handle),
-    IS_REACT_ACT_ENVIRONMENT: true,
-  };
-  const previous = new Map(
-    Object.keys(values).map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]),
-  );
-  for (const [key, value] of Object.entries(values)) {
-    Object.defineProperty(globalThis, key, {
-      configurable: true,
-      writable: true,
-      value,
-    });
-  }
-  Object.defineProperty(window, "matchMedia", {
-    configurable: true,
-    value: () => ({
-      matches: false,
-      media: "",
-      onchange: null,
-      addEventListener() {},
-      removeEventListener() {},
-      addListener() {},
-      removeListener() {},
-      dispatchEvent: () => false,
-    }),
-  });
-  return {
-    dom,
-    restore() {
-      for (const [key, descriptor] of previous) {
-        if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-        else Reflect.deleteProperty(globalThis, key);
-      }
-      dom.window.close();
-    },
-  };
+  const environment = installSelectTestDom();
+  document.body.innerHTML = "<div id='root'></div>";
+  return { dom: { window }, restore: environment.close };
 }
 
 function questionProjection(
@@ -136,10 +80,9 @@ async function flush() {
 
 test("restores Run questions after remount and submits multi-select answers to that Run", async () => {
   const env = installDom();
-  const { createRoot } = await import("react-dom/client");
   const container = env.dom.window.document.getElementById("root");
   assert.ok(container);
-  let root = createRoot(container);
+  let root = await createLobeTestRoot(container);
   const originalGet = sessionApi.getRunInputs;
   const originalSubmit = sessionApi.submitRunInput;
   let persisted = questionProjection("run-question");
@@ -218,7 +161,7 @@ test("restores Run questions after remount and submits multi-select answers to t
     });
 
     await act(async () => root.unmount());
-    root = createRoot(container);
+    root = await createLobeTestRoot(container);
     await act(async () => {
       root.render(createElement(Probe));
       await flush();
@@ -235,10 +178,9 @@ test("restores Run questions after remount and submits multi-select answers to t
 
 test("retries uncertain text submissions with the same input ID to the same Run", async () => {
   const env = installDom();
-  const { createRoot } = await import("react-dom/client");
   const container = env.dom.window.document.getElementById("root");
   assert.ok(container);
-  const root = createRoot(container);
+  const root = await createLobeTestRoot(container);
   const originalGet = sessionApi.getRunInputs;
   const originalSubmit = sessionApi.submitRunInput;
   const persisted: RunInputsProjection = {
@@ -317,10 +259,9 @@ test("retries uncertain text submissions with the same input ID to the same Run"
 
 test("ignores late reads and writes owned by a previous session", async () => {
   const env = installDom();
-  const { createRoot } = await import("react-dom/client");
   const container = env.dom.window.document.getElementById("root");
   assert.ok(container);
-  const root = createRoot(container);
+  const root = await createLobeTestRoot(container);
   const originalGet = sessionApi.getRunInputs;
   const originalSubmit = sessionApi.submitRunInput;
   let resolveOldRead!: (value: RunInputsProjection) => void;
@@ -394,10 +335,9 @@ test("ignores late reads and writes owned by a previous session", async () => {
 
 test("retries failed final reads and can refresh stale input history after completion", async () => {
   const env = installDom();
-  const { createRoot } = await import("react-dom/client");
   const container = env.dom.window.document.getElementById("root");
   assert.ok(container);
-  const root = createRoot(container);
+  const root = await createLobeTestRoot(container);
   const originalGet = sessionApi.getRunInputs;
   let active = true;
   let offline = false;
@@ -444,10 +384,9 @@ test("retries failed final reads and can refresh stale input history after compl
 
 test("answers indistinguishable redacted options by key and distinguishes free text from option keys", async () => {
   const env = installDom();
-  const { createRoot } = await import("react-dom/client");
   const container = env.dom.window.document.getElementById("root");
   assert.ok(container);
-  const root = createRoot(container);
+  const root = await createLobeTestRoot(container);
   const originalGet = sessionApi.getRunInputs;
   const originalSubmit = sessionApi.submitRunInput;
   const projection = questionProjection("run-private");
@@ -494,10 +433,9 @@ test("answers indistinguishable redacted options by key and distinguishes free t
 
 test("labels a server-selected timeout answer and keeps the current Run open", async () => {
   const env = installDom();
-  const { createRoot } = await import("react-dom/client");
   const container = env.dom.window.document.getElementById("root");
   assert.ok(container);
-  const root = createRoot(container);
+  const root = await createLobeTestRoot(container);
   const originalGet = sessionApi.getRunInputs;
   const projection = questionProjection("run-auto", { status: "resolved" });
   projection.inputs = [{
@@ -528,10 +466,9 @@ test("labels a server-selected timeout answer and keeps the current Run open", a
 for (const response of ["conflict", "uncertain"] as const) {
   test(`reconciles ${response} manual answers with a server timeout answer`, async () => {
     const env = installDom();
-    const { createRoot } = await import("react-dom/client");
     const container = env.dom.window.document.getElementById("root");
     assert.ok(container);
-    const root = createRoot(container);
+    const root = await createLobeTestRoot(container);
     const originalGet = sessionApi.getRunInputs;
     const originalSubmit = sessionApi.submitRunInput;
     let persisted = questionProjection("run-race");
@@ -574,10 +511,9 @@ for (const response of ["conflict", "uncertain"] as const) {
 for (const noOptions of [false, true]) {
   test(`shows server deadline policy and default choice with noOptions=${noOptions}`, async () => {
     const env = installDom();
-    const { createRoot } = await import("react-dom/client");
     const container = env.dom.window.document.getElementById("root");
     assert.ok(container);
-    const root = createRoot(container);
+    const root = await createLobeTestRoot(container);
     const originalGet = sessionApi.getRunInputs;
     const originalSubmit = sessionApi.submitRunInput;
     const projection = questionProjection("run-deadline");
@@ -621,10 +557,9 @@ for (const scenario of [
 ] as const) {
   test(`task input echoes hide successful receipts and preserve ${scenario.name}`, async () => {
     const env = installDom();
-    const { createRoot } = await import("react-dom/client");
     const container = env.dom.window.document.getElementById("root");
     assert.ok(container);
-    const root = createRoot(container);
+    const root = await createLobeTestRoot(container);
     const originalGet = sessionApi.getRunInputs;
     const projection = questionProjection("run-echo", { state: scenario.state, status: scenario.questionStatus });
     projection.inputs = [
@@ -664,10 +599,9 @@ function completedProjection(runId: string, text: string): RunInputsProjection {
 
 test("retains completed Run input history across pagination and remount without echoing it in the composer", async () => {
   const env = installDom();
-  const { createRoot } = await import("react-dom/client");
   const container = env.dom.window.document.getElementById("root");
   assert.ok(container);
-  let root = createRoot(container);
+  let root = await createLobeTestRoot(container);
   const originalGet = sessionApi.getRunInputs;
   let runId = "run-current";
   const previous = completedProjection("run-previous", "previous continuation");
@@ -717,7 +651,7 @@ test("retains completed Run input history across pagination and remount without 
     assert.ok(historyRegion);
     assert.equal(historyRegion.scrollTop, 0, "a new pending question must be visible without processed receipts");
     await act(async () => root.unmount());
-    root = createRoot(container);
+    root = await createLobeTestRoot(container);
     await render();
     assert.match(historyText(), /current continuation/);
     assert.match(historyText(), /previous continuation/);
@@ -733,10 +667,9 @@ test("retains completed Run input history across pagination and remount without 
 
 test("refresh traverses a disjoint history gap in order even when its first page overlaps a live projection", async () => {
   const env = installDom();
-  const { createRoot } = await import("react-dom/client");
   const container = env.dom.window.document.getElementById("root");
   assert.ok(container);
-  const root = createRoot(container);
+  const root = await createLobeTestRoot(container);
   const originalGet = sessionApi.getRunInputs;
   let refreshed = false;
   const ids = (values: string[]) => values.map((id) => completedProjection(id, `${id} continuation`));
@@ -777,10 +710,9 @@ test("refresh traverses a disjoint history gap in order even when its first page
 
 test("drops delayed history pages on session or auth identity changes and preserves history after read failure", async () => {
   const env = installDom();
-  const { createRoot } = await import("react-dom/client");
   const container = env.dom.window.document.getElementById("root");
   assert.ok(container);
-  const root = createRoot(container);
+  const root = await createLobeTestRoot(container);
   const originalGet = sessionApi.getRunInputs;
   let sessionId = "session-old";
   let identityKey = "tenant-old:user-old";
@@ -834,10 +766,9 @@ test("drops delayed history pages on session or auth identity changes and preser
 for (const outcome of ["accepted", "uncertain", "late-success", "closed", "read-only", "other-batch", "navigate", "identity", "resolved", "double-click", "retry-navigation", "retry-retire", "retry-unmount", "retry-cancelled-run", "timeout-before-retry", "timeout-during-retry-success", "timeout-during-retry-conflict", "timeout-during-retry-uncertain"] as const) {
   test(`uncertain question retry preserves ownership and original answers: ${outcome}`, async () => {
     const env = installDom();
-    const { createRoot } = await import("react-dom/client");
     const container = env.dom.window.document.getElementById("root");
     assert.ok(container);
-    const root = createRoot(container);
+    const root = await createLobeTestRoot(container);
     let mounted = true;
     const originalGet = sessionApi.getRunInputs;
     const originalSubmit = sessionApi.submitRunInput;

@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-// jsdom 26 ships no declarations; this test uses only its runtime constructor.
-// @ts-expect-error jsdom is the pinned mounted-test runtime.
-import { JSDOM } from "jsdom";
+import { installSelectTestDom } from "../../common/__tests__/selectTestDom";
 import { act } from "react";
 import type { SubmissionOutcome } from "../../../hooks/useAgent/types";
 import type {
@@ -11,51 +9,10 @@ import type {
 } from "../chatInputTypes";
 
 function installDom() {
-  const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>", {
-    url: "http://localhost/",
-  });
-  const window = dom.window;
-  Object.defineProperties(globalThis, {
-    window: { configurable: true, value: window },
-    document: { configurable: true, value: window.document },
-    navigator: { configurable: true, value: window.navigator },
-    HTMLElement: { configurable: true, value: window.HTMLElement },
-    Element: { configurable: true, value: window.Element },
-    Node: { configurable: true, value: window.Node },
-    HTMLTextAreaElement: {
-      configurable: true,
-      value: window.HTMLTextAreaElement,
-    },
-    Event: { configurable: true, value: window.Event },
-    InputEvent: { configurable: true, value: window.InputEvent },
-    CustomEvent: { configurable: true, value: window.CustomEvent },
-    localStorage: { configurable: true, value: window.localStorage },
-    sessionStorage: { configurable: true, value: window.sessionStorage },
-    requestAnimationFrame: {
-      configurable: true,
-      value: (callback: FrameRequestCallback) =>
-        window.setTimeout(() => callback(Date.now()), 0),
-    },
-    cancelAnimationFrame: {
-      configurable: true,
-      value: (handle: number) => window.clearTimeout(handle),
-    },
-    IS_REACT_ACT_ENVIRONMENT: { configurable: true, value: true },
-  });
-  Object.defineProperty(window, "matchMedia", {
-    configurable: true,
-    value: () => ({
-      matches: false,
-      media: "",
-      onchange: null,
-      addEventListener() {},
-      removeEventListener() {},
-      addListener() {},
-      removeListener() {},
-      dispatchEvent: () => false,
-    }),
-  });
-  return dom;
+  const fixture = installSelectTestDom();
+  document.body.innerHTML = '<div id="root"></div>';
+  Object.assign(globalThis, { localStorage: window.localStorage, sessionStorage: window.sessionStorage });
+  return { window, close: fixture.close };
 }
 
 function deferredSubmission() {
@@ -68,12 +25,12 @@ function deferredSubmission() {
 
 test("keeps drafts local across remounts, submissions, and session scopes", async () => {
   const dom = installDom();
-  const { createRoot } = await import("react-dom/client");
+  const { createLobeTestRoot } = await import("../../common/__tests__/lobeUiTestRoot");
   const { ChatInput } = await import("../ChatInput");
   const { AuthProvider } = await import("../../../hooks/useAuth");
   const rootNode = document.getElementById("root");
   assert.ok(rootNode);
-  const root = createRoot(rootNode);
+  const root = await createLobeTestRoot(rootNode);
   const snapshotRef: { current: ChatInputDraftSnapshot } = {
     current: {
       value: "",

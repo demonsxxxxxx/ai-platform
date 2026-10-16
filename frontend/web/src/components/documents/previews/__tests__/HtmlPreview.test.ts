@@ -2,12 +2,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-// jsdom 26 ships no declarations; this test uses only its runtime constructor.
-// @ts-expect-error jsdom is the pinned mounted-test runtime.
-import { JSDOM } from "jsdom";
+import { installSelectTestDom } from "../../../common/__tests__/selectTestDom";
 
 test("html preview removes external resources and pins the inert srcdoc origin", async () => {
-  const dom = new JSDOM("<!doctype html><html><body></body></html>");
+  installSelectTestDom();
+  const dom = { window };
   Object.assign(globalThis, {
     window: dom.window,
     document: dom.window.document,
@@ -74,7 +73,8 @@ test("html artifact preview keeps source viewing available as the safe fallback"
 
 test("empty HTML renders the sandboxed document and keeps source controls available", async () => {
   const React = await import("react");
-  const { renderToStaticMarkup } = await import("react-dom/server");
+  const { createLobeServerTestRoot } = await import("../../../common/__tests__/lobeUiTestRoot");
+  const renderToStaticMarkup = await createLobeServerTestRoot();
   const { default: HtmlPreview } = await import("../HtmlPreview.tsx");
   const html = renderToStaticMarkup(React.createElement(HtmlPreview, { content: "" }));
   const preview = new DOMParser().parseFromString(html, "text/html");

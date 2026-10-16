@@ -1,6 +1,6 @@
 # Frontend third-party component notices
 
-`src/components/common/Table.tsx` and `EnterpriseSelect.tsx` adapt the composition patterns from [shadcn/ui](https://github.com/shadcn-ui/ui), specifically its Table and Select components. The adaptations retain ai-platform's existing styles and use `@radix-ui/react-select` for Select behavior. Radix's dependency license is distributed with the package.
+The former `src/components/common/Table.tsx` and `EnterpriseSelect.tsx` adaptations of [shadcn/ui](https://github.com/shadcn-ui/ui) have been retired. Their MIT attribution is retained below for source history. Current UI dependencies, including Lobe UI and assistant-ui's transitive Radix packages, distribute their own license notices with their packages.
 
 ## shadcn/ui
 

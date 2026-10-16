@@ -1,5 +1,5 @@
 import type { AdminRunLatency, AdminRunMonitorResponse } from "../../services/api/adminRuns";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../common/Table";
+import { Table } from "@lobehub/ui/base-ui";
 import { formatDateTimeShort } from "../../utils/datetime";
 import { formatRunDuration, RUN_LATENCY_LABELS } from "./runPerformance";
 
@@ -20,25 +20,47 @@ export function RunPerformanceSummary({ report }: { report: AdminRunMonitorRespo
         <span>成功率 {report.success_rate == null ? "无已完成样本" : `${(report.success_rate * 100).toFixed(1)}%`}<span className="ml-1 text-[var(--theme-text-tertiary)]">（成功 / 成功与失败）</span></span>
       </div>
       <div className="overflow-x-auto px-4 py-3">
-        <Table className="w-full text-left text-xs">
-          <TableHeader><TableRow className="text-[var(--theme-text-tertiary)]">
-            <TableHead className="py-2 font-normal">指标</TableHead>
-            <TableHead className="py-2 font-normal">P50</TableHead>
-            <TableHead className="py-2 font-normal">P95</TableHead>
-            <TableHead className="py-2 font-normal">P99</TableHead>
-            <TableHead className="py-2 text-right font-normal">有效样本</TableHead>
-          </TableRow></TableHeader>
-          <TableBody>{(Object.keys(RUN_LATENCY_LABELS) as Array<keyof AdminRunLatency>).map((name) => {
-            const metric = report.latency[name];
-            return <TableRow key={name} className="border-t border-[var(--theme-border)]" data-latency-metric={name}>
-              <TableCell className="py-2 pr-3 text-[var(--theme-text-secondary)]">{RUN_LATENCY_LABELS[name]}</TableCell>
-              <TableCell className="py-2 tabular-nums">{formatRunDuration(metric?.p50)}</TableCell>
-              <TableCell className="py-2 tabular-nums">{formatRunDuration(metric?.p95)}</TableCell>
-              <TableCell className="py-2 tabular-nums">{formatRunDuration(metric?.p99)}</TableCell>
-              <TableCell className="py-2 text-right tabular-nums text-[var(--theme-text-secondary)]">{metric?.sample_count ?? 0}</TableCell>
-            </TableRow>;
-          })}</TableBody>
-        </Table>
+        <Table
+ size="small" pagination={false}
+ dataSource={(Object.keys(RUN_LATENCY_LABELS) as Array<keyof AdminRunLatency>)}
+ rowKey={(name) => name}
+onRow={(name) => {  return ({"className": "border-t border-[var(--theme-border)]",
+"data-latency-metric": name}); }}
+ columns={[
+{ key: "metric", title: "指标",
+render: (_value, name) => (<>
+{RUN_LATENCY_LABELS[name]}
+</>) },
+{ key: "p50", title: "P50",
+render: (_value, name) =>  {
+const metric = report.latency[name];
+return (<>
+{formatRunDuration(metric?.p50)}
+</>);
+} },
+{ key: "p95", title: "P95",
+render: (_value, name) =>  {
+const metric = report.latency[name];
+return (<>
+{formatRunDuration(metric?.p95)}
+</>);
+} },
+{ key: "p99", title: "P99",
+render: (_value, name) =>  {
+const metric = report.latency[name];
+return (<>
+{formatRunDuration(metric?.p99)}
+</>);
+} },
+{ key: "sampleCount", title: "有效样本",
+render: (_value, name) =>  {
+const metric = report.latency[name];
+return (<>
+{metric?.sample_count ?? 0}
+</>);
+} }
+]}
+/>
       </div>
       <p className="border-t border-[var(--theme-border)] px-4 py-2 text-[11px] leading-5 text-[var(--theme-text-tertiary)]">
         每个任务只计一次；总耗时只统计已结束任务。缺失观测不按 0 计算。浏览器数据来自发起任务的聊天页，不代表屏幕绘制完成。

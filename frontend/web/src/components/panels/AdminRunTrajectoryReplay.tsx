@@ -1,3 +1,4 @@
+import { Button } from "@lobehub/ui/base-ui";
 import { useCallback, useEffect, useState } from "react";
 import {
   adminRunsApi,
@@ -103,11 +104,11 @@ export function AdminRunTrajectoryReplay({
         逐条查看已保存的公开消息、工具动作与结果、阶段观察和错误；回放不会再次执行工具。Agent 完整输出在消息完成时显示，工具观察仅含安全概要；内部失败证据见下方执行诊断。
       </p>
       <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
-        <button type="button" className="rounded-md border border-[var(--theme-border)] px-2.5 py-1.5 disabled:opacity-40" disabled={position === 0} onClick={() => { setPlaying(false); setPosition((value) => Math.max(0, value - 1)); }}>上一步</button>
-        <button type="button" className="rounded-md border border-[var(--theme-border)] px-2.5 py-1.5 disabled:opacity-40" disabled={position >= events.length} onClick={() => { setPlaying(false); setPosition((value) => Math.min(value + 1, events.length)); }}>下一步</button>
-        <button type="button" className="rounded-md border border-[var(--theme-border)] px-2.5 py-1.5 disabled:opacity-40" disabled={!events.length || position >= events.length} onClick={() => setPlaying((value) => !value)}>{playing ? "暂停" : "自动播放"}</button>
+        <Button type="text" htmlType="button" className="rounded-md border border-[var(--theme-border)] px-2.5 py-1.5 disabled:opacity-40" disabled={position === 0} onClick={() => { setPlaying(false); setPosition((value) => Math.max(0, value - 1)); }}>上一步</Button>
+        <Button type="text" htmlType="button" className="rounded-md border border-[var(--theme-border)] px-2.5 py-1.5 disabled:opacity-40" disabled={position >= events.length} onClick={() => { setPlaying(false); setPosition((value) => Math.min(value + 1, events.length)); }}>下一步</Button>
+        <Button type="text" htmlType="button" className="rounded-md border border-[var(--theme-border)] px-2.5 py-1.5 disabled:opacity-40" disabled={!events.length || position >= events.length} onClick={() => setPlaying((value) => !value)}>{playing ? "暂停" : "自动播放"}</Button>
         <span className="text-[var(--theme-text-secondary)]">{position} / {events.length} 条</span>
-        <button type="button" className="rounded-md border border-[var(--theme-border)] px-2.5 py-1.5 disabled:opacity-40" disabled={loading} onClick={() => void loadMore()}>{loading ? "读取中" : hasMore ? "加载后续事件" : "读取新事件"}</button>
+        <Button type="text" htmlType="button" className="rounded-md border border-[var(--theme-border)] px-2.5 py-1.5 disabled:opacity-40" disabled={loading} onClick={() => void loadMore()}>{loading ? "读取中" : hasMore ? "加载后续事件" : "读取新事件"}</Button>
       </div>
       {error ? <p role="alert" className="mt-2 text-xs text-[var(--theme-danger)]">事件读取失败；已显示的记录仍可查看。</p> : null}
       {loading && !events.length ? <p className="mt-2 text-xs text-[var(--theme-text-tertiary)]">正在读取事件</p> : null}

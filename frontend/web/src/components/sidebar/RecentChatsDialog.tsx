@@ -1,5 +1,5 @@
+import { Skeleton, Button, PopoverRoot, PopoverPortal, PopoverPositioner, PopoverPopup } from "@lobehub/ui/base-ui";
 import { useCallback, useEffect, useState } from "react";
-import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { MessageSquareText } from "lucide-react";
 import { sessionApi } from "../../services/api/session";
@@ -25,10 +25,7 @@ export function RecentChatsDialog({
   const { t } = useTranslation();
   const [sessions, setSessions] = useState<BackendSession[]>([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [position, setPosition] = useState<{ top: number; left: number }>({
-    top: 0,
-    left: 0,
-  });
+
 
   const loadSessions = useCallback(async () => {
     setIsLoading(true);
@@ -47,67 +44,13 @@ export function RecentChatsDialog({
     if (isOpen) loadSessions();
   }, [isOpen, loadSessions]);
 
-  useEffect(() => {
-    if (!isOpen || !anchorEl) return;
-    const rect = anchorEl.getBoundingClientRect();
-    const panelWidth = 280;
-    const panelMaxHeight = 480;
-    let top = rect.bottom + 2;
-    let left = rect.right + 2;
-
-    if (left + panelWidth > window.innerWidth) {
-      left = rect.left - panelWidth - 2;
-    }
-    if (top + panelMaxHeight > window.innerHeight) {
-      top = window.innerHeight - panelMaxHeight - 8;
-    }
-
-    setPosition({ top, left });
-  }, [isOpen, anchorEl]);
-
-  useEffect(() => {
-    if (!isOpen) return;
-    const handler = (e: MouseEvent) => {
-      const target = e.target as Node;
-      if (
-        anchorEl?.contains(target) ||
-        document.getElementById("recent-chats-popover")?.contains(target)
-      ) {
-        return;
-      }
-      onClose();
-    };
-    const timer = setTimeout(() => {
-      document.addEventListener("click", handler);
-    }, 0);
-    return () => {
-      clearTimeout(timer);
-      document.removeEventListener("click", handler);
-    };
-  }, [isOpen, onClose, anchorEl]);
-
-  useEffect(() => {
-    if (isOpen) {
-      const handler = (e: KeyboardEvent) => {
-        if (e.key === "Escape") onClose();
-      };
-      document.addEventListener("keydown", handler);
-      return () => document.removeEventListener("keydown", handler);
-    }
-  }, [isOpen, onClose]);
-
-  if (!isOpen || !anchorEl) return null;
-
-  return createPortal(
-    <div
-      id="recent-chats-popover"
-      className="fixed z-[301] w-[280px] overflow-hidden rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] shadow-[0_8px_24px_rgba(18,38,63,0.12)] animate-scale-in"
-      style={{
-        top: position.top,
-        left: position.left,
-        maxHeight: "480px",
-      }}
-    >
+  return (
+    <PopoverRoot open={isOpen && !!anchorEl} onOpenChange={(open) => { if (!open) onClose(); }}>
+      <PopoverPortal>
+        <PopoverPositioner anchor={anchorEl} placement="rightTop">
+          <PopoverPopup id="recent-chats-popover" aria-label={t("sidebar.recentChats")} finalFocus={() => anchorEl}
+            className="overflow-hidden" style={{ width: 280, maxWidth: "calc(100vw - 16px)", maxHeight: 480, padding: 0 }}
+          >
       {/* Header */}
       <div className="flex items-center gap-2 border-b border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-4 pt-3 pb-2 shrink-0">
         <span className="flex size-6 items-center justify-center rounded-lg bg-[var(--theme-bg-sidebar)] text-[var(--theme-primary)] ring-1 ring-[var(--theme-border)]">
@@ -125,13 +68,13 @@ export function RecentChatsDialog({
             {Array.from({ length: 6 }).map((_, i) => (
               <div key={i} className="flex items-center gap-3 px-0 py-2.5">
                 <div className="flex-1 min-w-0 space-y-1.5">
-                  <div
-                    className="skeleton-line h-[13px] rounded-md"
-                    style={{ width: i % 2 === 0 ? "75%" : "60%" }}
+                  <Skeleton animated="sweep"
+                    className="h-[13px] rounded-md"
+                    style={{ height: undefined,  width: i % 2 === 0 ? "75%" : "60%" }}
                   />
-                  <div
-                    className="skeleton-line h-[11px] rounded-md !opacity-50"
-                    style={{ width: "40%" }}
+                  <Skeleton animated="sweep"
+                    className="h-[11px] rounded-md !opacity-50"
+                    style={{ height: undefined,  width: "40%" }}
                   />
                 </div>
               </div>
@@ -143,8 +86,9 @@ export function RecentChatsDialog({
           </div>
         ) : (
           sessions.map((session) => (
-            <button
+            <Button type="text"
               key={session.id}
+              style={{ height: "auto", padding: "10px 16px" }}
               onClick={() => {
                 onSelectSession(session.id);
                 onClose();
@@ -174,11 +118,13 @@ export function RecentChatsDialog({
                   {session.unread_count}
                 </span>
               )}
-            </button>
+            </Button>
           ))
         )}
       </div>
-    </div>,
-    document.body,
+          </PopoverPopup>
+        </PopoverPositioner>
+      </PopoverPortal>
+    </PopoverRoot>
   );
 }

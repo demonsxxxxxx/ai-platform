@@ -1,3 +1,4 @@
+import { TextArea } from "@lobehub/ui/base-ui";
 import {
   forwardRef,
   type HTMLAttributes,
@@ -88,17 +89,18 @@ export const LibreChatComposerTextarea = forwardRef<
   TextareaHTMLAttributes<HTMLTextAreaElement>
 >(function LibreChatComposerTextarea({ className, style, ...props }, ref) {
   return (
-    <textarea
+    <TextArea
       {...props}
       ref={ref}
-      className={clsx(
-        "w-full resize-none overflow-y-auto bg-transparent pt-2.5",
-        "text-[15px] leading-6 outline-none disabled:opacity-50",
+      variant="borderless"
+      className="w-full"
+      style={{ padding: 0 }}
+      classNames={{ input: clsx(
+        "min-h-[52px] overflow-y-auto pt-2.5 text-[15px] leading-6",
         "[&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]",
-        "min-h-[52px]",
         className,
-      )}
-      style={{ color: "var(--theme-text)", paddingLeft: 2, ...style }}
+      ) }}
+      styles={{ input: style }}
     />
   );
 });

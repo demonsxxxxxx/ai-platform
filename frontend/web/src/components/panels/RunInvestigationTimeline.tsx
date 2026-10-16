@@ -1,8 +1,9 @@
+import { Button } from "@lobehub/ui/base-ui";
 import { useState } from "react";
 import type {
   AdminRunDiagnosticsResponse, AdminRunInvestigation, AdminRunLatency,
 } from "../../services/api/adminRuns";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../common/Table";
+import { Table } from "@lobehub/ui/base-ui";
 import { indexToolDiagnosticEvidence } from "./adminRunTimeline";
 import { formatRunDuration, RUN_LATENCY_LABELS } from "./runPerformance";
 
@@ -33,7 +34,7 @@ export function RunInvestigationTimeline({
     <section className="p-4" data-run-investigation>
       <h3 className="text-xs font-semibold text-[var(--theme-text)]">阶段调查</h3>
       {error ? <p role="alert" className="mt-2 text-xs text-[var(--theme-danger)]">{error}</p> : <p className="mt-2 text-xs text-[var(--theme-text-secondary)]">{loading ? "正在读取调查证据" : "调查证据尚未读取"}</p>}
-      {error ? <button type="button" className="btn-secondary mt-2 text-xs" onClick={onRetry}>重试调查查询</button> : null}
+      {error ? <Button type="default" htmlType="button" className="mt-2 text-xs" onClick={onRetry}>重试调查查询</Button> : null}
     </section>
   );
   const total = Math.max(investigation.total_ms ?? investigation.elapsed_ms ?? 0, 1);
@@ -76,7 +77,7 @@ export function RunInvestigationTimeline({
           const left = stage.offset_ms == null ? null : Math.min(100, Math.max(0, stage.offset_ms / total * 100));
           const width = left == null ? 0 : Math.min(100 - left, Math.max(1, (stage.receipt_duration_ms ?? 0) / total * 100));
           return <li key={stage.stage_id}>
-            <button type="button" onClick={() => setSelectedStageId(stage.stage_id)} aria-pressed={selectedStageId === stage.stage_id}
+            <Button type="text" htmlType="button" onClick={() => setSelectedStageId(stage.stage_id)} aria-pressed={selectedStageId === stage.stage_id}
               aria-label={`调查阶段 ${stage.label}`} data-stage-id={stage.stage_id}
               className="w-full rounded-md border border-[var(--theme-border)] p-2 text-left transition-colors hover:bg-[var(--theme-bg-sidebar)] aria-pressed:bg-[var(--theme-info-soft)]">
               <div className="flex items-center justify-between gap-2 text-xs">
@@ -89,7 +90,7 @@ export function RunInvestigationTimeline({
                 {left == null ? <div className="h-full w-full border-b border-dashed border-[var(--theme-border)]" /> : <div className="relative h-full rounded bg-[var(--theme-info)] opacity-60" style={{ left: `${left}%`, width: `${width}%` }} />}
               </div>
               <p className="mt-1 text-[10px] text-[var(--theme-text-tertiary)]">{SOURCE_LABELS[stage.source]}{stage.offset_ms == null ? " · 起点未采集" : ` · 自提交 ${formatRunDuration(stage.offset_ms)}`}{stage.source === "sdk_tool_hooks" && !stage.attempt_id ? " · 尝试身份未知" : ""}</p>
-            </button>
+            </Button>
           </li>;
         })}
       </ol>
@@ -113,26 +114,50 @@ export function RunInvestigationTimeline({
       <div className="mt-4 border-t border-[var(--theme-border)] pt-3" data-run-comparison>
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h4 className="text-xs font-semibold">同类成功任务对照</h4>
-          {baseline.normal_run_id ? <button type="button" className="btn-secondary text-xs" onClick={() => onSelectRun(baseline.normal_run_id!)}>调查正常对照任务</button> : null}
+          {baseline.normal_run_id ? <Button type="default" htmlType="button" className="text-xs" onClick={() => onSelectRun(baseline.normal_run_id!)}>调查正常对照任务</Button> : null}
         </div>
         <p className="mt-1 text-[11px] leading-5 text-[var(--theme-text-tertiary)]">
           同 Agent 版本、冻结的 Skill 版本与依赖集合、模型配置；使用相同统计窗口，排除当前任务。任务复杂度仍可能不同。
         </p>
         {baseline.missing_reason ? <p className="mt-2 text-xs text-[var(--theme-text-secondary)]">{baseline.missing_reason === "model_identity_unknown" ? "该任务没有完整模型配置快照，无法建立可比基线。" : "当前窗口没有同类成功任务，不能推断正常耗时。"}</p> : (
           <div className="mt-2 overflow-x-auto">
-            <Table className="w-full text-left text-xs">
-              <TableHeader><TableRow><TableHead className="py-2 font-normal">指标</TableHead><TableHead className="py-2 font-normal">本次</TableHead><TableHead className="py-2 font-normal">同类 P50</TableHead><TableHead className="py-2 font-normal">同类 P95</TableHead><TableHead className="py-2 text-right font-normal">样本</TableHead></TableRow></TableHeader>
-              <TableBody>{(Object.keys(RUN_LATENCY_LABELS) as Array<keyof AdminRunLatency>).map((name) => {
-                const metric = baseline.latency[name];
-                return <TableRow key={name} className="border-t border-[var(--theme-border)]">
-                  <TableCell className="py-2 pr-2 text-[var(--theme-text-secondary)]">{RUN_LATENCY_LABELS[name]}</TableCell>
-                  <TableCell className={`py-2 tabular-nums ${investigation[name] != null && metric?.p95 != null && investigation[name]! > metric.p95 ? "text-[var(--theme-warning)]" : ""}`}>{formatRunDuration(investigation[name])}</TableCell>
-                  <TableCell className="py-2 tabular-nums">{formatRunDuration(metric?.p50)}</TableCell>
-                  <TableCell className="py-2 tabular-nums">{formatRunDuration(metric?.p95)}</TableCell>
-                  <TableCell className="py-2 text-right tabular-nums">{metric?.sample_count ?? 0}</TableCell>
-                </TableRow>;
-              })}</TableBody>
-            </Table>
+            <Table
+ size="small" pagination={false}
+ dataSource={(Object.keys(RUN_LATENCY_LABELS) as Array<keyof AdminRunLatency>)}
+ rowKey={(name) => name}
+onRow={(_record) => {  return ({"className": "border-t border-[var(--theme-border)]"}); }}
+ columns={[
+{ key: "metric", title: "指标",
+render: (_value, name) => (<>
+{RUN_LATENCY_LABELS[name]}
+</>) },
+{ key: "current", title: "本次",
+render: (_value, name) => (<>
+{formatRunDuration(investigation[name])}
+</>) },
+{ key: "p50", title: "同类 P50",
+render: (_value, name) =>  {
+const metric = baseline.latency[name];
+return (<>
+{formatRunDuration(metric?.p50)}
+</>);
+} },
+{ key: "p95", title: "同类 P95",
+render: (_value, name) =>  {
+const metric = baseline.latency[name];
+return (<>
+{formatRunDuration(metric?.p95)}
+</>);
+} },
+{ key: "sampleCount", title: "样本",
+render: (_value, name) =>  {
+const metric = baseline.latency[name];
+return (<>
+{metric?.sample_count ?? 0}
+</>);
+} }
+]}
+/>
           </div>
         )}
       </div>

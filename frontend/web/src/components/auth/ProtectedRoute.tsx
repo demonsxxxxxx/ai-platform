@@ -5,7 +5,7 @@
 
 import { type ReactNode, useEffect } from "react";
 import { Navigate, useLocation } from "react-router-dom";
-import toast from "react-hot-toast";
+import { toast } from "@lobehub/ui/base-ui";
 import { useTranslation } from "react-i18next";
 import { useAuth } from "../../hooks/useAuth";
 import { Permission } from "../../types";

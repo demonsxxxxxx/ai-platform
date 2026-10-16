@@ -41,7 +41,9 @@ current SHAs, exceptions, and evidence results belong in the issue/PR.
 | SSE bytes, identity, replay, and client acceptance | [SSE wire](architecture/redis-streams-sse-wire-protocol.md) |
 | Stream admission, direct publication, leases, and hydration | [SSE execution control](architecture/redis-streams-sse-execution-control.md) |
 | Browser-local theme and sidebar preferences | [Browser preferences](frontend/browser-local-preferences.md) |
-| Shared tables and ordinary single-select controls | [Table and Select components](frontend/shared-table-select-components.md) |
+| General React UI library direction and staged migration | [Lobe UI adoption](frontend/lobe-ui-adoption.md) |
+| LobeHub-derived visual rules and style sample acceptance | [Visual guidelines](frontend/lobehub-visual-guidelines.md) |
+| Current shared tables and ordinary single-select controls | [Table and Select components](frontend/shared-table-select-components.md) |
 | Chat display and public terminal errors | [Chat projection](architecture/chat-run-lifecycle-and-public-error-projection.md) |
 | Retired feedback and announcement entrypoints | [Unavailable contract](frontend/feedback-announcements-unavailable.md) |
 | Dependency locks, image builds, and publication | [Packaging](architecture/docker-packaging.md) |
@@ -98,7 +100,8 @@ diagnostic export and retirement of superseded mappings. Real-dependency,
 performance and production acceptance remain separate from source completion
 and deployment evidence.
 
-[AGENTS](../AGENTS.md), [PR workflow](agent-rules/github-issue-pr-workflow.md),
+[AGENTS](../AGENTS.md), [frontend implementation and checks](../frontend/web/AGENTS.md),
+[PR workflow](agent-rules/github-issue-pr-workflow.md),
 [local test execution](agent-rules/local-test-execution.md), and
 [multi-agent workflow](agent-rules/multi-agent-context-workflow.md) own repository
 work, verification, and handoff. This cleanup does not add another approval system.

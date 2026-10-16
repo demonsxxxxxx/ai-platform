@@ -1,7 +1,7 @@
-import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "../common/Table";
+import { Button, Input, ModalRoot, ModalPortal, ModalBackdrop, ModalPopup, ModalTitle } from "@lobehub/ui/base-ui";
+import { Table } from "@lobehub/ui/base-ui";
 /* eslint-disable react-refresh/only-export-components -- catalog notice mapping is tested with this selector */
-import { useContext, useEffect, useMemo, useState } from "react";
-import { createPortal } from "react-dom";
+import { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import {
@@ -16,8 +16,8 @@ import {
   Info,
   Plus,
 } from "lucide-react";
-import { Checkbox } from "../common/Checkbox";
-import type { ToolState, ToolCategory, ToolParamInfo } from "../../types";
+import { Checkbox } from "@lobehub/ui/base-ui";
+import type { ToolState, ToolCategory } from "../../types";
 import { useSwipeToClose } from "../../hooks/useSwipeToClose";
 import {
   canSelectChatMcpTools,
@@ -95,6 +95,7 @@ export function ToolSelector({
   const { catalogState, retryTools } = useContext(ChatMcpCatalogContext);
   const catalogNotice = getChatMcpCatalogNotice(catalogState);
   const catalogAllowsSelection = canSelectChatMcpTools(catalogState.status);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const [internalOpen, setInternalOpen] = useState(false);
   const isOpen = externalIsOpen ?? internalOpen;
   const setIsOpen = externalOnOpenChange ?? setInternalOpen;
@@ -107,18 +108,6 @@ export function ToolSelector({
     onClose: () => setIsOpen(false),
     enabled: isOpen,
   });
-
-  // 锁定滚动
-  useEffect(() => {
-    if (isOpen) {
-      document.body.style.overflow = "hidden";
-    } else {
-      document.body.style.overflow = "";
-    }
-    return () => {
-      document.body.style.overflow = "";
-    };
-  }, [isOpen]);
 
   useEffect(() => {
     if (!isOpen || searchSeed === undefined) return;
@@ -198,13 +187,11 @@ export function ToolSelector({
   };
 
   // Keep the modal subtree mounted when search or expansion state changes.
-  const modalContent = isOpen ? (
+  const modalContent = (
     <div
-      ref={swipeRef as React.RefObject<HTMLDivElement>}
-      className="w-full min-h-[40vh] max-h-[85vh] max-h-[85dvh] flex flex-col overflow-hidden rounded-t-lg border border-[var(--theme-border)] shadow-[0_8px_24px_rgba(18,38,63,0.12)] sm:w-[40%] sm:min-w-[600px] sm:max-h-[80vh] sm:rounded-lg"
+      ref={(node) => { swipeRef.current = node; }}
+      className="flex min-h-[40vh] max-h-[85dvh] w-full flex-col overflow-hidden sm:min-h-0 sm:max-h-[80vh]"
       data-composer-mcp-selector
-      style={{ background: "var(--theme-workbench-panel)" }}
-      onClick={(e) => e.stopPropagation()}
     >
       {/* Header */}
       <div
@@ -221,9 +208,7 @@ export function ToolSelector({
             />
           </div>
           <div>
-            <h2 className="text-sm sm:text-base font-semibold text-[var(--theme-text)]">
-              {t("tools.title")}
-            </h2>
+            <ModalTitle>{t("tools.title")}</ModalTitle>
             <p className="text-xs sm:text-xs text-[var(--theme-text-secondary)]">
               {t("tools.selected", {
                 enabled: enabledCount,
@@ -232,36 +217,37 @@ export function ToolSelector({
             </p>
           </div>
         </div>
-        <button
+        <Button type="text"
+          aria-label={t("common.close")}
           onClick={() => setIsOpen(false)}
           className="p-2 rounded-lg text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)] active:bg-[var(--theme-bg-sidebar)] transition-colors"
         >
           <X size={18} />
-        </button>
+        </Button>
       </div>
 
       {/* Actions */}
       <div className="flex items-center gap-2 px-4 sm:px-5 py-2 sm:py-2.5 border-b border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)]">
-        <button
-          type="button"
+        <Button type="text"
+          htmlType="button"
           disabled={!catalogAllowsSelection}
           onClick={() => onToggleAll(true)}
           className="px-3 py-2 sm:py-1.5 text-xs font-medium text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)] hover:bg-[var(--theme-workbench-panel)] active:bg-[var(--theme-workbench-panel)] rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-50"
         >
           {t("tools.selectAll")}
-        </button>
+        </Button>
         <div className="w-px h-4 bg-[var(--theme-border)]" />
-        <button
-          type="button"
+        <Button type="text"
+          htmlType="button"
           disabled={!catalogAllowsSelection}
           onClick={() => onToggleAll(false)}
           className="px-3 py-2 sm:py-1.5 text-xs font-medium text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)] hover:bg-[var(--theme-workbench-panel)] active:bg-[var(--theme-workbench-panel)] rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-50"
         >
           {t("tools.deselectAll")}
-        </button>
+        </Button>
         <div className="flex-1" />
-        <button
-          type="button"
+        <Button type="text"
+          htmlType="button"
           onClick={() => {
             setIsOpen(false);
             navigate("/mcp");
@@ -270,14 +256,16 @@ export function ToolSelector({
         >
           <Plus size={14} />
           <span>{t("tools.add")}</span>
-        </button>
+        </Button>
       </div>
 
       <div className="border-b border-[var(--theme-border)] bg-[var(--theme-bg)] px-4 py-3 sm:px-5">
-        <input
+        <Input
           type="text"
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
+          autoFocus
+          aria-label={t("tools.searchPlaceholder", "Search tools")}
           placeholder={t("tools.searchPlaceholder", "Search tools")}
           className="h-10 w-full rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 text-sm text-[var(--theme-text)] outline-none transition-colors placeholder:text-[var(--theme-text-secondary)] focus:border-[var(--theme-primary)] focus:ring-2 focus:ring-[var(--theme-primary-light)]"
         />
@@ -303,13 +291,13 @@ export function ToolSelector({
               </p>
             ))}
             {catalogNotice.retryable && retryTools ? (
-              <button
-                type="button"
+              <Button type="text"
+                htmlType="button"
                 onClick={retryTools}
                 className="mt-3 px-3 py-2 text-xs font-medium text-[var(--theme-primary)] hover:bg-[var(--theme-bg-sidebar)] rounded-lg transition-colors"
               >
                 {t("tools.catalog.retry")}
-              </button>
+              </Button>
             ) : null}
           </div>
         )}
@@ -360,7 +348,7 @@ export function ToolSelector({
                       !catalogAllowsSelection ||
                       categoryTools.every((tool) => tool.system_disabled)
                     }
-                  />
+                  onClick={(event) => event.stopPropagation()} />
                 </div>
 
                 {/* Tools List */}
@@ -395,7 +383,7 @@ export function ToolSelector({
                               aria-disabled={tool.system_disabled || undefined}
                             >
                               {/* Expand button for tools with params */}
-                              <button
+                              <Button type="text"
                                 onClick={(e) => toggleToolExpand(tool.name, e)}
                                 className={`p-1 -ml-1 rounded transition-all duration-200 touch-manip ${
                                   hasParams
@@ -413,7 +401,7 @@ export function ToolSelector({
                                 ) : (
                                   <div className="w-[14px] h-[14px]" />
                                 )}
-                              </button>
+                              </Button>
 
                               <div className="flex-1 min-w-0">
                                 <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
@@ -445,7 +433,7 @@ export function ToolSelector({
                                 checked={tool.enabled}
                                 onChange={() => handleToolToggle(tool)}
                                 disabled={!catalogAllowsSelection || tool.system_disabled}
-                              />
+                              onClick={(event) => event.stopPropagation()} />
                             </div>
 
                             {/* Parameters - Conditional Render */}
@@ -464,29 +452,15 @@ export function ToolSelector({
                                   </div>
                                   {/* Table Body */}
                                   <div className="bg-[var(--theme-workbench-panel)]">
-                                    <Table className="w-full text-xs sm:text-xs">
-                                      <TableHeader>
-                                        <TableRow className="border-b border-[var(--theme-border)]">
-                                          <TableHead className="px-2.5 sm:px-3 py-1.5 text-left font-medium text-[var(--theme-text-secondary)] uppercase tracking-wide w-auto">
-                                            {t("tools.table.name")}
-                                          </TableHead>
-                                          <TableHead className="px-2.5 sm:px-3 py-1.5 text-left font-medium text-[var(--theme-text-secondary)] uppercase tracking-wide w-16 sm:w-20">
-                                            {t("tools.table.type")}
-                                          </TableHead>
-                                          <TableHead className="px-2.5 sm:px-3 py-1.5 text-left font-medium text-[var(--theme-text-secondary)] uppercase tracking-wide">
-                                            {t("tools.table.description")}
-                                          </TableHead>
-                                        </TableRow>
-                                      </TableHeader>
-                                      <TableBody>
-                                        {tool.parameters!.map(
-                                          (param: ToolParamInfo) => (
-                                            <TableRow
-                                              key={param.name}
-                                              className={`border-b border-[var(--theme-border)] last:border-b-0 hover:bg-[var(--theme-bg-sidebar)] transition-colors`}
-                                            >
-                                              <TableCell className="px-2.5 sm:px-3 py-1.5">
-                                                <div className="flex items-center gap-1">
+                                    <Table
+ size="small" pagination={false}
+ dataSource={tool.parameters!}
+ rowKey={(param) => param.name}
+onRow={(_record) => {  return ({"className": `border-b border-[var(--theme-border)] last:border-b-0 hover:bg-[var(--theme-bg-sidebar)] transition-colors`}); }}
+ columns={[
+{ key: "name", title: t("tools.table.name"),
+render: (_value, param) => (<>
+<div className="flex items-center gap-1">
                                                   <code className="px-1.5 py-0.5 rounded bg-[var(--theme-bg-sidebar)] text-[var(--theme-text)] font-mono font-medium">
                                                     {param.name}
                                                   </code>
@@ -496,20 +470,19 @@ export function ToolSelector({
                                                     </span>
                                                   )}
                                                 </div>
-                                              </TableCell>
-                                              <TableCell className="px-2.5 sm:px-3 py-1.5">
-                                                <span className="px-1.5 py-0.5 rounded bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)] font-mono text-xs">
+</>) },
+{ key: "type", title: t("tools.table.type"),
+render: (_value, param) => (<>
+<span className="px-1.5 py-0.5 rounded bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)] font-mono text-xs">
                                                   {param.type}
                                                 </span>
-                                              </TableCell>
-                                              <TableCell className="px-2.5 sm:px-3 py-1.5 text-[var(--theme-text-secondary)] leading-relaxed">
-                                                {param.description || "-"}
-                                              </TableCell>
-                                            </TableRow>
-                                          ),
-                                        )}
-                                      </TableBody>
-                                    </Table>
+</>) },
+{ key: "description", title: t("tools.table.description"),
+render: (_value, param) => (<>
+{param.description || "-"}
+</>) }
+]}
+/>
                                   </div>
                                 </div>
                               </div>
@@ -533,87 +506,30 @@ export function ToolSelector({
 
       {/* Footer */}
       <div className="px-4 sm:px-5 py-3 sm:py-3.5 border-t border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] pb-[max(0.75rem,env(safe-area-inset-bottom))]">
-        <button
+        <Button type="primary" block
           onClick={() => setIsOpen(false)}
-          className="w-full py-2.5 px-4 bg-[var(--theme-primary)] text-[var(--theme-primary-foreground)] rounded-lg font-medium text-sm hover:bg-[var(--theme-primary-hover)] active:bg-[var(--theme-primary-hover)] transition-colors"
         >
           {t("tools.done")}
-        </button>
+        </Button>
       </div>
     </div>
-  ) : null;
-
-  // When controlled externally, only render the modal — no trigger button
-  if (externalOnOpenChange) {
-    return isOpen
-      ? createPortal(
-          <>
-            <div
-              data-yields-sidebar
-              className="fixed inset-0 z-[300] bg-[var(--theme-overlay)] animate-fade-in"
-              onClick={() => setIsOpen(false)}
-            />
-            <div
-              className="fixed z-[301] sm:inset-0 sm:flex sm:items-center sm:justify-center sm:p-4 inset-x-0 bottom-0 animate-slide-up sm:animate-scale-in"
-              onClick={() => setIsOpen(false)}
-            >
-              {modalContent}
-            </div>
-          </>,
-          document.body,
-        )
-      : null;
-  }
-
-  // 空状态：没有工具时显示禁用状态的图标（仅非外部控制模式）
-  if (totalCount === 0) {
-    return (
-      <div className="relative" onClick={(e) => e.stopPropagation()}>
-        <div
-          className="flex items-center justify-center rounded-full p-2 border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)] cursor-not-allowed opacity-60"
-          title={t("tools.noTools")}
-        >
-          <Wrench size={18} />
-        </div>
-      </div>
-    );
-  }
+  );
 
   return (
-    <div className="relative" onClick={(e) => e.stopPropagation()}>
-      {/* Trigger - ChatGPT style circular button */}
-      <button
-        type="button"
-        onClick={(e) => {
-          e.preventDefault();
-          setIsOpen(true);
-        }}
-        className="chat-tool-btn"
-        title={`${enabledCount}/${totalCount} ${t("tools.toolsEnabled")}`}
-      >
-        <Wrench size={18} />
-      </button>
-
-      {/* Modal */}
-      {isOpen &&
-        createPortal(
-          <>
-            <div
-              data-yields-sidebar
-              className="fixed inset-0 z-[300] bg-[var(--theme-overlay)] animate-fade-in"
-              onClick={() => setIsOpen(false)}
-            />
-
-            {/* Modal Content - Desktop: centered, Mobile: bottom sheet */}
-            <div
-              className="fixed z-[301] sm:inset-0 sm:flex sm:items-center sm:justify-center sm:p-4 inset-x-0 bottom-0 animate-slide-up sm:animate-scale-in"
-              onClick={() => setIsOpen(false)}
-            >
-              {modalContent}
-            </div>
-          </>,
-          document.body,
-        )}
-    </div>
+    <>
+      {!externalOnOpenChange ? (
+        <Button type="text" size="large" disabled={totalCount === 0}
+          ref={triggerRef} onClick={() => setIsOpen(true)}
+          aria-label={t("tools.title")} title={totalCount === 0 ? t("tools.noTools") : `${enabledCount}/${totalCount} ${t("tools.toolsEnabled")}`}
+          icon={<Wrench size={18} />}
+        />
+      ) : null}
+    <ModalRoot open={isOpen} onOpenChange={setIsOpen}>
+      <ModalPortal>
+        <ModalBackdrop data-composer-mcp-backdrop />
+        <ModalPopup finalFocus={externalOnOpenChange ? undefined : triggerRef} width="min(40rem, 100vw)" className="!items-end sm:!items-center">{modalContent}</ModalPopup>
+      </ModalPortal>
+    </ModalRoot>
+    </>
   );
 }

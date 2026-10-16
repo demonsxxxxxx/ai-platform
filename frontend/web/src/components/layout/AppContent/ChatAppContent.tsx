@@ -1,7 +1,8 @@
+import { Button } from "@lobehub/ui/base-ui";
 /* eslint-disable react-refresh/only-export-components -- behavioral seams stay with the canonical Chat owner */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import toast from "react-hot-toast";
+import { toast } from "@lobehub/ui/base-ui";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { History } from "lucide-react";
 import { BlockPreviewPortal } from "../../chat/ChatMessage/items/McpBlockPreview";
@@ -1449,9 +1450,9 @@ export function ChatAppContent({
           <div className="flex items-center justify-center gap-3 px-4 pb-2 text-sm text-[var(--theme-warning)]">
             <span>历史会话暂时无法加载。</span>
             {onAgentWorkspaceHistoryRetry ? (
-              <button className="underline" onClick={onAgentWorkspaceHistoryRetry} type="button">
+              <Button type="text" className="underline" onClick={onAgentWorkspaceHistoryRetry} htmlType="button">
                 重试
-              </button>
+              </Button>
             ) : null}
           </div>
         ) : null}

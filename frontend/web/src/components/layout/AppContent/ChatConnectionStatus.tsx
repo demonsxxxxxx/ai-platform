@@ -1,3 +1,4 @@
+import { Button } from "@lobehub/ui/base-ui";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { LoaderCircle, WifiOff } from "lucide-react";
 
@@ -80,14 +81,14 @@ export function ChatConnectionStatus({
         )}
         <span className="min-w-0 flex-1">{label}</span>
         {status === "disconnected" && (
-          <button
-            type="button"
+          <Button type="text"
+            htmlType="button"
             className="shrink-0 rounded-lg border border-current/25 bg-white/70 px-2.5 py-1 text-xs font-medium transition-colors hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 disabled:cursor-wait disabled:opacity-60 dark:bg-stone-900/60 dark:hover:bg-stone-900"
             disabled={isReconnectPending}
             onClick={() => void handleReconnect()}
           >
             {isReconnectPending ? reconnectingLabel : reconnectLabel}
-          </button>
+          </Button>
         )}
       </div>
     </div>

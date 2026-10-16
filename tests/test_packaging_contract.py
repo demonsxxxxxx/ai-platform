@@ -12,7 +12,7 @@ FRONTEND_WORKFLOW = ROOT / ".github" / "workflows" / "ai-platform-frontend.yml"
 
 PYTHON_VERSION = "3.13.14"
 NODE_VERSION = "22.23.2"
-NODE_MIN_VERSION = "22.13.0"
+NODE_MIN_VERSION = "22.22.0"
 PNPM_VERSION = "10.32.1"
 UV_VERSION = "0.12.1"
 

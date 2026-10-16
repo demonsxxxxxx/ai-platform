@@ -1,3 +1,4 @@
+import { Button } from "@lobehub/ui/base-ui";
 import {
   FileText,
   ToggleLeft,
@@ -132,7 +133,7 @@ export function SkillCard({
         hasWriteActions ? (
           <div className="flex items-center gap-1">
             {canWrite && (
-              <button
+              <Button type="text"
                 onClick={(e) => {
                   e.stopPropagation();
                   onToggle(skill.name);
@@ -157,11 +158,11 @@ export function SkillCard({
                 ) : (
                   <ToggleLeft size={15} />
                 )}
-              </button>
+              </Button>
             )}
 
             {canEdit && (
-              <button
+              <Button type="text"
                 onClick={(e) => {
                   e.stopPropagation();
                   onEdit(skill);
@@ -171,11 +172,11 @@ export function SkillCard({
                 aria-label={t("skills.card.edit")}
               >
                 <Edit3 size={13} />
-              </button>
+              </Button>
             )}
 
             {canExportSkill && onExportZip && (
-              <button
+              <Button type="text"
                 onClick={(e) => {
                   e.stopPropagation();
                   onExportZip(skill.name);
@@ -185,13 +186,13 @@ export function SkillCard({
                 aria-label={t("skills.exportZip")}
               >
                 <Archive size={13} />
-              </button>
+              </Button>
             )}
 
             <div className="ml-auto" />
 
             {canDelete && (
-              <button
+              <Button type="text"
                 onClick={(e) => {
                   e.stopPropagation();
                   onDelete(skill.name);
@@ -201,7 +202,7 @@ export function SkillCard({
                 aria-label={t("skills.card.delete")}
               >
                 <Trash2 size={14} />
-              </button>
+              </Button>
             )}
           </div>
         ) : undefined

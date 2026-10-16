@@ -1,3 +1,4 @@
+import { Button } from "@lobehub/ui/base-ui";
 import { useState } from "react";
 import { ChevronDown, FolderOpen, X } from "lucide-react";
 import type { TreeNode } from "./SkillForm.types";
@@ -24,8 +25,8 @@ export function FileTreeItem({
   if (node.type === "folder") {
     return (
       <div>
-        <button
-          type="button"
+        <Button type="text"
+          htmlType="button"
           onClick={() => setExpanded(!expanded)}
           className="w-full flex items-center gap-1.5 py-[4px] text-[13px] text-left text-stone-500 dark:text-stone-400 hover:bg-stone-100/80 dark:hover:bg-white/5 transition-colors duration-100 select-none"
           style={{ paddingLeft: `${indent}px`, paddingRight: "8px" }}
@@ -41,7 +42,7 @@ export function FileTreeItem({
             className="shrink-0 text-stone-400 dark:text-stone-500"
           />
           <span className="truncate">{node.name}</span>
-        </button>
+        </Button>
         {expanded &&
           node.children.map((child, i) => (
             <FileTreeItem
@@ -60,8 +61,8 @@ export function FileTreeItem({
 
   const isActive = node.fileIndex === activeFileIndex;
   return (
-    <button
-      type="button"
+    <Button type="text"
+      htmlType="button"
       onClick={() => node.fileIndex !== undefined && onSelect(node.fileIndex)}
       className={`w-full flex items-center gap-2 py-[5px] text-[13px] text-left group transition-colors duration-100 ${
         isActive
@@ -100,6 +101,6 @@ export function FileTreeItem({
           <X size={10} />
         </span>
       )}
-    </button>
+    </Button>
   );
 }

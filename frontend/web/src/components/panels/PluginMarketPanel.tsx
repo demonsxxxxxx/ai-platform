@@ -1,3 +1,4 @@
+import { Button, Input } from "@lobehub/ui/base-ui";
 import {
   Eye,
   EyeOff,
@@ -155,8 +156,8 @@ function AuthenticationDialog({
 
   return createPortal(
     <div className="fixed inset-0 z-[300] flex items-center justify-center p-4">
-      <button
-        type="button"
+      <Button type="text"
+        htmlType="button"
         aria-label="关闭本地文件服务器认证"
         className="absolute inset-0 cursor-default bg-[var(--theme-overlay-strong)]"
         onClick={resetAndClose}
@@ -200,7 +201,7 @@ function AuthenticationDialog({
                   className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--theme-text-tertiary)]"
                   size={17}
                 />
-                <input
+                <Input
                   ref={passwordRef}
                   id="file-server-password"
                   type={showPassword ? "text" : "password"}
@@ -212,8 +213,8 @@ function AuthenticationDialog({
                   className="h-11 w-full rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-canvas)] pl-10 pr-11 text-sm text-[var(--theme-text)] outline-none transition-colors placeholder:text-[var(--theme-text-tertiary)] focus:border-[var(--theme-primary)] focus:ring-2 focus:ring-[var(--theme-primary)]/15"
                   placeholder="输入域账号密码"
                 />
-                <button
-                  type="button"
+                <Button type="text"
+                  htmlType="button"
                   aria-label={showPassword ? "隐藏密码" : "显示密码"}
                   title={showPassword ? "隐藏密码" : "显示密码"}
                   onClick={() => setShowPassword((visible) => !visible)}
@@ -224,7 +225,7 @@ function AuthenticationDialog({
                   ) : (
                     <Eye aria-hidden="true" size={17} />
                   )}
-                </button>
+                </Button>
               </div>
             </div>
 
@@ -248,23 +249,23 @@ function AuthenticationDialog({
           </div>
 
           <div className="flex justify-end gap-2 border-t border-[var(--theme-border)] bg-[var(--theme-workbench-canvas)] px-5 py-3">
-            <button
-              type="button"
+            <Button type="default"
+              htmlType="button"
               disabled={isSubmitting}
-              className="btn-secondary min-h-10 px-4 text-sm"
+              className="min-h-10 px-4 text-sm"
               onClick={resetAndClose}
             >
               取消
-            </button>
-            <button
-              type="submit"
+            </Button>
+            <Button type="primary"
+              htmlType="submit"
               disabled={isSubmitting}
-              aria-busy={isSubmitting}
-              className="btn-primary inline-flex min-h-10 items-center justify-center gap-2 px-4 text-sm"
+              loading={isSubmitting}
+              className="inline-flex min-h-10 items-center justify-center gap-2 px-4 text-sm"
             >
               <KeyRound aria-hidden="true" size={16} />
               {isSubmitting ? "认证中..." : "提交认证"}
-            </button>
+            </Button>
           </div>
         </form>
       </div>
@@ -329,9 +330,9 @@ export function PluginMarketPanel() {
             ["all", "全部"],
             ["enterprise", "企业资源"],
           ] as const).map(([value, label]) => (
-            <button
+            <Button type="text"
               key={value}
-              type="button"
+              htmlType="button"
               aria-pressed={category === value}
               onClick={() => setCategory(value)}
               className={`min-h-8 rounded px-3 text-xs font-medium transition-colors ${
@@ -341,7 +342,7 @@ export function PluginMarketPanel() {
               }`}
             >
               {label}
-            </button>
+            </Button>
           ))}
         </div>
       </div>
@@ -411,14 +412,14 @@ export function PluginMarketPanel() {
                   />
                   用户级受控访问
                 </span>
-                <button
-                  type="button"
+                <Button type="primary"
+                  htmlType="button"
                   onClick={() => setAuthOpen(true)}
-                  className="btn-primary inline-flex min-h-10 items-center justify-center gap-2 px-4 text-sm"
+                  className="inline-flex min-h-10 items-center justify-center gap-2 px-4 text-sm"
                 >
                   <KeyRound aria-hidden="true" size={16} />
                   认证
-                </button>
+                </Button>
               </div>
             </article>
           </div>
@@ -431,16 +432,16 @@ export function PluginMarketPanel() {
             <p className={workbenchSurface.catalog.emptyDescription}>
               尝试更换搜索词或清除筛选条件。
             </p>
-            <button
-              type="button"
-              className="btn-secondary mt-4 min-h-10 px-4 text-sm"
+            <Button type="default"
+              htmlType="button"
+              className="mt-4 min-h-10 px-4 text-sm"
               onClick={() => {
                 setQuery("");
                 setCategory("all");
               }}
             >
               清除筛选
-            </button>
+            </Button>
           </div>
         )}
       </div>

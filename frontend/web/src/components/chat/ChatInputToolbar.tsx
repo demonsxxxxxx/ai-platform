@@ -1,3 +1,4 @@
+import { Button } from "@lobehub/ui/base-ui";
 import { useRef, useCallback, useEffect } from "react";
 import {
   ArrowUp,
@@ -103,24 +104,21 @@ export function ChatInputToolbar({
     <div className="flex min-h-11 max-w-full items-end justify-between gap-2 px-3 pb-2 pt-1">
       <div className="min-w-0 flex-1">
         {showModelSelector && onSelectModel && availableModels.length > 0 ? (
-          <button
-            type="button"
+          <Button type={activePanel === "model" ? "primary" : "default"} size="large"
+            htmlType="button"
             data-composer-model-trigger
             onClick={() =>
               onActivePanelChange(activePanel === "model" ? null : "model")
             }
-            className={`flex h-9 w-full min-w-0 max-w-[min(20rem,55vw)] items-center gap-2 rounded-lg border px-2.5 text-sm font-medium transition-colors sm:w-fit ${
-              activePanel === "model"
-                ? "border-[var(--theme-primary)] bg-[var(--theme-primary-light)] text-[var(--theme-primary)]"
-                : "border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] text-[var(--theme-text)] hover:border-[var(--theme-ring)]"
-            }`}
+            className="min-w-0"
+            style={{ maxWidth: "min(20rem, 100%)" }}
+            icon={<Boxes size={17} />}
             aria-label={t(
               "composerCommand.modelSelector.title",
               "选择模型",
             )}
             aria-expanded={activePanel === "model"}
           >
-            <Boxes size={17} className="shrink-0" />
             <span className="truncate">
               {currentModel?.label ??
                 t("composerCommand.modelSelector.title", "选择模型")}
@@ -131,7 +129,7 @@ export function ChatInputToolbar({
                 activePanel === "model" ? "rotate-180" : ""
               }`}
             />
-          </button>
+          </Button>
         ) : null}
       </div>
 
@@ -165,90 +163,36 @@ export function ChatInputToolbar({
           />
         ) : null}
         {uploadCategories.length > 0 ? (
-          <button
-            type="button"
-            className="chat-tool-btn"
+          <Button type="text"
+            htmlType="button"
+            size="large" icon={<Paperclip size={19} />}
             onClick={openFilePicker}
             aria-label={t("chat.attachFile", "添加附件")}
             title={t("chat.attachFile", "添加附件")}
-          >
-            <Paperclip size={19} />
-          </button>
+          />
         ) : null}
 
         {!canSend ? (
-          <button
-            type="button"
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              onNoPermissionClick();
-            }}
-            className="flex items-center justify-center rounded-full p-2 cursor-pointer transition-all duration-200 hover:scale-105"
-            style={{
-              backgroundColor: "var(--theme-primary-light)",
-              color: "var(--theme-text-secondary)",
-            }}
-            title={t("chat.noPermission")}
-          >
-            <Lock size={18} />
-          </button>
+          <Button type="text" shape="circle" size="large" htmlType="button"
+            onClick={(event) => { event.preventDefault(); event.stopPropagation(); onNoPermissionClick(); }}
+            aria-label={t("chat.noPermission")} title={t("chat.noPermission")} icon={<Lock size={18} />}
+          />
         ) : isLoading ? (
           canStop ? (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                onStopClick();
-              }}
-              className="chat-tool-btn-active flex items-center justify-center rounded-full p-2 transition-all duration-300 hover:scale-105 active:scale-95"
-              style={{
-                borderColor: "color-mix(in srgb, #fbbf24 40%, transparent)",
-                background: "color-mix(in srgb, #fbbf24 10%, transparent)",
-                color: "#fbbf24",
-              }}
-              title={t("chat.stop")}
-            >
-              <Square size={16} fill="currentColor" />
-            </button>
+            <Button type="default" shape="circle" size="large" htmlType="button"
+              onClick={(event) => { event.preventDefault(); event.stopPropagation(); onStopClick(); }}
+              aria-label={t("chat.stop")} title={t("chat.stop")} icon={<Square size={16} fill="currentColor" />}
+            />
           ) : (
-            <button
-              type="button"
-              disabled
-              aria-busy="true"
-              className="chat-tool-btn flex items-center justify-center rounded-full p-2 opacity-60"
-              title={t("chat.generating", "生成中")}
-            >
-              <Square size={16} />
-            </button>
+            <Button type="default" shape="circle" size="large" htmlType="button" disabled loading
+              aria-label={t("chat.generating", "生成中")} title={t("chat.generating", "生成中")} icon={<Square size={16} />}
+            />
           )
         ) : (
-          <button
-            type="submit"
-            disabled={!canSubmit}
-            className={`flex items-center justify-center rounded-full p-2 transition-all duration-300 ${
-              canSubmit ? "hover:scale-105 active:scale-95" : ""
-            }`}
-            style={{
-              backgroundColor: canSubmit
-                ? "var(--theme-send-bg)"
-                : "transparent",
-              border: canSubmit
-                ? "1px solid var(--theme-send-bg)"
-                : "1px solid var(--theme-border)",
-              color: canSubmit
-                ? "var(--theme-send-fg)"
-                : "var(--theme-text-secondary)",
-            }}
-            title={
-              hasUploadingAttachment
-                ? t("chat.waitingForUpload", "请等待文件上传完成")
-                : t("chat.send")
-            }
-          >
-            <ArrowUp size={18} />
-          </button>
+          <Button type={canSubmit ? "primary" : "default"} shape="circle" size="large" htmlType="submit" disabled={!canSubmit}
+            aria-label={t("chat.send")} icon={<ArrowUp size={18} />}
+            title={hasUploadingAttachment ? t("chat.waitingForUpload", "请等待文件上传完成") : t("chat.send")}
+          />
         )}
       </div>
     </div>

@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { after } from "node:test";
 import { installSelectTestDom } from "./selectTestDom.ts";
+import { createLobeTestRoot } from "./lobeUiTestRoot.tsx";
 
 const dom = installSelectTestDom();
+after(() => dom.close());
 const React = await import("react");
-const { createRoot } = await import("react-dom/client");
-const { EnterpriseSelect } = await import("../EnterpriseSelect.tsx");
+const { LobeSelectField } = await import("../../lobe-ui/LobeSelectField.tsx");
 
 const options = [
   { value: "a", label: "Alpha" },
@@ -16,14 +17,14 @@ const options = [
 async function mount(disabled = false) {
   const container = document.createElement("div");
   document.body.append(container);
-  const root = createRoot(container);
+  const root = await createLobeTestRoot(container);
   const changes: string[] = [];
   let submissions = 0;
   function Probe() {
     const [value, setValue] = React.useState("a");
     return React.createElement("form", { onSubmit: (event: React.FormEvent) => {
       event.preventDefault(); submissions += 1;
-    } }, React.createElement(EnterpriseSelect, {
+    } }, React.createElement(LobeSelectField, {
       "aria-label": "Synthetic choice", name: "choice", value, options, disabled,
       onChange: (next) => { changes.push(next); setValue(next); },
     }));
@@ -32,7 +33,7 @@ async function mount(disabled = false) {
   const trigger = container.querySelector<HTMLButtonElement>('[role="combobox"]')!;
   async function key(target: HTMLElement, value: string) {
     await React.act(async () => {
-      target.dispatchEvent(new KeyboardEvent("keydown", { key: value, bubbles: true }));
+      target.dispatchEvent(new KeyboardEvent("keydown", { key: value, bubbles: true, cancelable: true }));
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
   }
@@ -49,11 +50,11 @@ test("keyboard selects an enabled option exactly once, closes and restores focus
     assert.ok(list);
     assert.equal(view.trigger.getAttribute("aria-controls"), list.id);
     await view.key(document.activeElement as HTMLElement, "End");
-    assert.equal(document.activeElement?.getAttribute("data-value"), "b");
+    assert.equal(document.activeElement?.textContent?.trim(), "Beta");
     await view.key(document.activeElement as HTMLElement, "Enter");
     assert.deepEqual(view.changes, ["b"]);
     assert.equal(view.trigger.textContent?.trim(), "Beta");
-    assert.equal(document.querySelector('[role="listbox"]'), null);
+    assert.equal(view.trigger.getAttribute("aria-expanded"), "false");
     assert.equal(document.activeElement, view.trigger);
     assert.equal(new dom.FormData(view.container.querySelector("form")!).get("choice"), "b");
     assert.equal(view.submissions(), 0);
@@ -65,7 +66,7 @@ test("Escape dismisses without changing the value or submitting the parent form"
   try {
     await view.key(view.trigger, "ArrowDown");
     await view.key(document.activeElement as HTMLElement, "Escape");
-    assert.equal(document.querySelector('[role="listbox"]'), null);
+    assert.equal(view.trigger.getAttribute("aria-expanded"), "false");
     assert.deepEqual(view.changes, []);
     assert.equal(document.activeElement, view.trigger);
     assert.equal(view.submissions(), 0);
@@ -82,7 +83,7 @@ test("Escape closes the select without closing its host editor", async () => {
   try {
     await view.key(view.trigger, "ArrowDown");
     await view.key(document.activeElement as HTMLElement, "Escape");
-    assert.equal(document.querySelector('[role="listbox"]'), null);
+    assert.equal(view.trigger.getAttribute("aria-expanded"), "false");
     assert.equal(editorCloseRequests, 0);
     assert.equal(document.activeElement, view.trigger);
   } finally {
@@ -91,16 +92,36 @@ test("Escape closes the select without closing its host editor", async () => {
   }
 });
 
+test("closed select keeps its accessible label and lets Escape reach its host editor", async () => {
+  const view = await mount();
+  let editorCloseRequests = 0;
+  const listener = (event: KeyboardEvent) => { if (event.key === "Escape") editorCloseRequests += 1; };
+  document.addEventListener("keydown", listener);
+  try {
+    assert.equal(view.trigger.labels?.[0]?.textContent, "Synthetic choice");
+    await view.key(view.trigger, "Escape");
+    assert.equal(editorCloseRequests, 1);
+    assert.equal(view.trigger.getAttribute("aria-expanded"), "false");
+  } finally {
+    document.removeEventListener("keydown", listener);
+    await view.close();
+  }
+});
+
 test("disabled choices and disabled triggers cannot change the selection", async () => {
   const view = await mount();
   try {
     await view.key(view.trigger, "ArrowDown");
-    const blocked = document.querySelector<HTMLElement>('[data-value="blocked"]')!;
+    const blocked = Array.from(document.querySelectorAll<HTMLElement>('[role="option"]')).find((node) => node.textContent?.trim() === "Blocked")!;
     assert.equal(blocked.getAttribute("aria-disabled"), "true");
     await React.act(async () => blocked.click());
     assert.deepEqual(view.changes, []);
     await view.key(document.activeElement as HTMLElement, "ArrowDown");
-    assert.equal(document.activeElement?.getAttribute("data-value"), "b");
+    assert.equal(document.activeElement, blocked);
+    await view.key(blocked, "Enter");
+    assert.deepEqual(view.changes, []);
+    await view.key(blocked, "ArrowDown");
+    assert.equal(document.activeElement?.textContent?.trim(), "Beta");
   } finally { await view.close(); }
   const disabledView = await mount(true);
   try {

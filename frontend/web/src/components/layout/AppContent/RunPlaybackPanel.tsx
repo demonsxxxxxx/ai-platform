@@ -1,3 +1,4 @@
+import { Button } from "@lobehub/ui/base-ui";
 import { useEffect, useSyncExternalStore, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
@@ -15,7 +16,7 @@ import {
   RefreshCw,
   XCircle,
 } from "lucide-react";
-import { LoadingSpinner } from "../../common";
+import { Spin } from "@lobehub/ui/base-ui";
 import type { CollapsibleStatus } from "../../common";
 import { FailureGuidanceCard } from "../../common/FailureGuidanceCard";
 import {
@@ -285,15 +286,15 @@ function RunControlButton({
   onClick: () => void;
 }) {
   return (
-    <button
-      type="button"
+    <Button type="text"
+      htmlType="button"
       aria-label={label}
       disabled={disabled}
       onClick={onClick}
       className="inline-flex h-8 items-center rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-2.5 text-xs font-medium text-stone-700 transition-colors hover:bg-[var(--theme-bg-sidebar)] disabled:cursor-not-allowed disabled:opacity-60 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-200 dark:hover:bg-stone-800"
     >
       {label}
-    </button>
+    </Button>
   );
 }
 
@@ -411,7 +412,7 @@ function LoadingBlock() {
   const { t } = useTranslation();
   return (
     <div className="flex items-center gap-2 rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] px-3 py-2 text-sm text-stone-500 dark:border-stone-800 dark:bg-stone-950/50 dark:text-stone-400">
-      <LoadingSpinner size="sm" />
+      <Spin size={16} />
       <span>{t("runPlayback.loading")}</span>
     </div>
   );
@@ -454,15 +455,15 @@ function ErrorBlock({
           )}
         </div>
       </div>
-      <button
-        type="button"
+      <Button type="text"
+        htmlType="button"
         onClick={onRetry}
         disabled={disabled}
         className="mt-3 inline-flex h-8 items-center gap-2 rounded-md border border-red-200 bg-[var(--theme-bg-card)] px-2.5 text-xs font-medium text-red-700 transition-colors hover:bg-red-50 dark:border-red-900/60 dark:bg-red-950/20 dark:text-red-300 dark:hover:bg-red-950/40"
       >
         <RefreshCw size={13} />
         {t("runPlayback.actions.refresh")}
-      </button>
+      </Button>
     </div>
   );
 }
@@ -580,26 +581,26 @@ function ArtifactRow({ artifact }: { artifact: RunPlaybackArtifactItem }) {
       {(artifact.downloadUrl || previewRequest) && (
         <div className="mt-2 flex flex-wrap gap-1.5 pl-6">
           {previewRequest && (
-            <button
-              type="button"
+            <Button type="text"
+              htmlType="button"
               onClick={handlePreview}
               aria-label={`${t("runPlayback.preview")} ${artifact.label}`}
               className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[var(--theme-border)] px-2 text-[11px] font-medium text-stone-600 transition-colors hover:bg-[var(--theme-bg-sidebar)] dark:border-stone-700 dark:text-stone-300 dark:hover:bg-stone-800"
             >
               <ExternalLink size={12} />
               {t("runPlayback.preview")}
-            </button>
+            </Button>
           )}
           {artifact.downloadUrl && (
-            <button
-              type="button"
+            <Button type="text"
+              htmlType="button"
               onClick={handleDownload}
               aria-label={`${t("runPlayback.download")} ${artifact.label}`}
               className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[var(--theme-border)] px-2 text-[11px] font-medium text-stone-600 transition-colors hover:bg-[var(--theme-bg-sidebar)] dark:border-stone-700 dark:text-stone-300 dark:hover:bg-stone-800"
             >
               <Download size={12} />
               {t("runPlayback.download")}
-            </button>
+            </Button>
           )}
         </div>
       )}
@@ -662,7 +663,7 @@ function StatusIcon({
 }) {
   const className = getStatusIconClass(status);
   if (status === "running" || status === "loading") {
-    return <LoadingSpinner size="xs" className="mt-0.5 shrink-0" />;
+    return <Spin size={12} className="mt-0.5 shrink-0" />;
   }
   if (status === "success") {
     return <CheckCircle size={14} className={`mt-0.5 shrink-0 ${className}`} />;

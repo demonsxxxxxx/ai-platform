@@ -1,3 +1,4 @@
+import { Button } from "@lobehub/ui/base-ui";
 import { useEffect, useState, type ReactNode } from "react";
 import { PanelRightClose, PanelRightOpen } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -44,8 +45,8 @@ export function LibreChatShell({
         <div className={libreChatSurface.thread}>
           {rightPanel && (
             <div className="absolute right-3 top-2 z-[60] flex sm:right-4">
-              <button
-                type="button"
+              <Button type="text"
+                htmlType="button"
                 data-librechat-context-toggle
                 aria-controls="librechat-context-panel"
                 aria-expanded={contextOpen}
@@ -55,7 +56,7 @@ export function LibreChatShell({
                 className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-sidebar-panel-muted)] hover:text-[var(--theme-text)]"
               >
                 <ContextIcon size={18} aria-hidden="true" />
-              </button>
+              </Button>
             </div>
           )}
           <div
@@ -76,8 +77,8 @@ export function LibreChatShell({
 
         {rightPanel && contextOpen && (
           <>
-            <button
-              type="button"
+            <Button type="text"
+              htmlType="button"
               aria-label={t("common.close", "关闭")}
               title={t("common.close", "关闭")}
               className="fixed inset-0 z-40 bg-black/20 xl:hidden"
