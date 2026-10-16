@@ -412,6 +412,13 @@ local function ttl_consistent(authority_key, context_key)
   if math.abs(authority_ttl - context_ttl) > 1000 then return nil end
   return math.min(authority_ttl, context_ttl)
 end
+
+local function grant_expires_at(authority_key, context_key)
+  return math.floor(math.min(
+    redis.call("PEXPIRETIME", authority_key),
+    redis.call("PEXPIRETIME", context_key)
+  ) / 1000)
+end
 """
 
 
@@ -774,13 +781,12 @@ then
 end
 local ttl = ttl_consistent(authority_key, context_key)
 if not ttl then return cjson.encode({status = "stale"}) end
-local redis_time = redis.call("TIME")
 return cjson.encode({
   status = "principal", principal = context["principal"],
   subject_epoch = context["tenant_user_subject_epoch"],
   operation_epoch = context["operation_epoch"],
   successful_refresh_epoch = context["successful_refresh_epoch"] or 0,
-  expires_at = math.floor(tonumber(redis_time[1]) + ttl / 1000)
+  expires_at = grant_expires_at(authority_key, context_key)
 })
 """
 
@@ -830,7 +836,7 @@ return cjson.encode({
   status = "begun", operation_epoch = context["operation_epoch"],
   successful_refresh_epoch = context["successful_refresh_epoch"] or 0,
   principal = context["principal"], subject_epoch = context["tenant_user_subject_epoch"],
-  expires_at = math.floor(now + ttl / 1000)
+  expires_at = grant_expires_at(authority_key, context_key)
 })
 """
 

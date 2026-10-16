@@ -78,6 +78,9 @@ records and expires with the context. Login/logout attempts clear it; failed
 refresh cleanup never creates completion evidence. Only the same subject epoch
 may reuse completion; changed authorization is rechecked or fenced.
 Neither a browser request nor an MCP request extends the context deadline.
+Grant snapshots and operation leases derive their returned `expires_at` from the
+earlier absolute Redis expiry of the authority and context keys, converting
+milliseconds to seconds once. The projection does not rewrite either key.
 MCP credential reads and request dispatch obtain the current credential under
 the same bounded grant, including for an already-open selected-tool session.
 
