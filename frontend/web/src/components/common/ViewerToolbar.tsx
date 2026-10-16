@@ -1,3 +1,4 @@
+import { Button } from "@lobehub/ui/base-ui";
 import { ZoomIn, ZoomOut, RotateCcw, RotateCw, Shrink } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -28,9 +29,6 @@ export function ViewerToolbar({
   const { t } = useTranslation();
   const scalePercentage = Math.round(scale * 100);
 
-  const buttonClass =
-    "flex h-10 items-center justify-center gap-1.5 rounded-lg px-2.5 text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)] cursor-pointer";
-  const iconClass = "text-[var(--theme-text-secondary)]";
   const labelClass = "hidden sm:inline text-xs";
 
   return (
@@ -38,25 +36,27 @@ export function ViewerToolbar({
       {showRotation && (
         <>
           <div className="flex items-center rounded-lg transition-colors">
-            <button
-              type="button"
+            <Button type="text"
+              htmlType="button"
               onClick={onRotateLeft}
-              className={buttonClass}
+              size="large"
+              style={{ paddingInline: 8 }}
+              icon={<RotateCcw size={18} />}
               aria-label={t("imageViewer.rotateLeft")}
             >
-              <RotateCcw size={18} className={iconClass} />
               <span className={labelClass}>{t("imageViewer.rotateLeft")}</span>
-            </button>
+            </Button>
 
-            <button
-              type="button"
+            <Button type="text"
+              htmlType="button"
               onClick={onRotateRight}
-              className={buttonClass}
+              size="large"
+              style={{ paddingInline: 8 }}
+              icon={<RotateCw size={18} />}
               aria-label={t("imageViewer.rotateRight")}
             >
-              <RotateCw size={18} className={iconClass} />
               <span className={labelClass}>{t("imageViewer.rotateRight")}</span>
-            </button>
+            </Button>
           </div>
 
           <div className="mx-0.5 h-5 w-px bg-[var(--theme-border)] sm:mx-1 sm:h-6" />
@@ -64,45 +64,48 @@ export function ViewerToolbar({
       )}
 
       <div className="flex items-center rounded-lg transition-colors">
-        <button
-          type="button"
+        <Button type="text"
+          htmlType="button"
           onClick={onZoomOut}
           disabled={scale <= minScale}
-          className={`${buttonClass} disabled:cursor-not-allowed disabled:opacity-50`}
+          size="large"
+          style={{ paddingInline: 8 }}
+          icon={<ZoomOut size={18} />}
           aria-label={t("imageViewer.zoomOut")}
         >
-          <ZoomOut size={18} className={iconClass} />
           <span className={labelClass}>{t("imageViewer.zoomOut")}</span>
-        </button>
+        </Button>
 
         <span className="min-w-[48px] text-center text-xs font-medium tabular-nums text-[var(--theme-text-secondary)] sm:min-w-[52px] sm:text-sm">
           {scalePercentage}%
         </span>
 
-        <button
-          type="button"
+        <Button type="text"
+          htmlType="button"
           onClick={onZoomIn}
           disabled={scale >= maxScale}
-          className={`${buttonClass} disabled:cursor-not-allowed disabled:opacity-50`}
+          size="large"
+          style={{ paddingInline: 8 }}
+          icon={<ZoomIn size={18} />}
           aria-label={t("imageViewer.zoomIn")}
         >
-          <ZoomIn size={18} className={iconClass} />
           <span className={labelClass}>{t("imageViewer.zoomIn")}</span>
-        </button>
+        </Button>
       </div>
 
       <div className="mx-0.5 h-5 w-px bg-[var(--theme-border)] sm:mx-1 sm:h-6" />
 
       <div className="flex items-center rounded-lg transition-colors">
-        <button
-          type="button"
+        <Button type="text"
+          htmlType="button"
           onClick={onReset}
-          className={buttonClass}
+          size="large"
+          style={{ paddingInline: 8 }}
+          icon={<Shrink size={18} />}
           aria-label={t("imageViewer.reset")}
         >
-          <Shrink size={18} className={iconClass} />
           <span className={labelClass}>{t("imageViewer.reset")}</span>
-        </button>
+        </Button>
       </div>
     </div>
   );

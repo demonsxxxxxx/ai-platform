@@ -1,23 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-// jsdom 26 ships no declarations; this test uses only its runtime constructor.
-// @ts-expect-error jsdom is the pinned mounted-test runtime.
-import { JSDOM } from "jsdom";
+import { installSelectTestDom } from "../../../common/__tests__/selectTestDom";
+import { createLobeTestRoot } from "../../../common/__tests__/lobeUiTestRoot";
 
-const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://test.local/" });
-const { document } = dom.window;
-Object.assign(globalThis, {
-  window: dom.window,
-  document,
-  Node: dom.window.Node,
-  HTMLElement: dom.window.HTMLElement,
-  IS_REACT_ACT_ENVIRONMENT: true,
-});
+installSelectTestDom();
 
 test("mounted RunPlaybackPanel ignores an aborted stale owner read after run replacement", async () => {
   const React = await import("react");
-  const { createRoot } = await import("react-dom/client");
   const { RunPlaybackPanel } = await import("../RunPlaybackPanel.tsx");
   const { RunControlLifecycle } = await import(
     "../../../../hooks/useAgent/runControlLifecycle.ts"
@@ -64,7 +54,7 @@ test("mounted RunPlaybackPanel ignores an aborted stale owner read after run rep
   }) as typeof fetch;
 
   const container = document.createElement("div");
-  const root = createRoot(container as never);
+  const root = await createLobeTestRoot(container);
   try {
     await React.act(async () => {
       root.render(
@@ -113,7 +103,7 @@ test("mounted RunPlaybackPanel ignores an aborted stale owner read after run rep
     const snapshot = lifecycle.getSnapshot();
     assert.equal(snapshot.owner?.runId, "run-b");
     assert.equal(snapshot.playback, null, "stale run A must not publish over run B");
-    const panel = container.firstChild as HTMLElement;
+    const panel = container.querySelector("[data-run-playback-panel]") as HTMLElement;
     assert.equal(panel.getAttribute("aria-busy"), "false");
   } finally {
     globalThis.fetch = originalFetch;
@@ -124,7 +114,6 @@ test("mounted RunPlaybackPanel ignores an aborted stale owner read after run rep
 for (const rotation of ["none", "marker", "role", "marker and role"]) {
   test(`mounted RunPlaybackPanel settles both reads with ${rotation} rotation`, async () => {
     const React = await import("react");
-    const { createRoot } = await import("react-dom/client");
     const { RunPlaybackPanel } = await import("../RunPlaybackPanel.tsx");
     const { RunControlLifecycle } = await import(
       "../../../../hooks/useAgent/runControlLifecycle.ts"
@@ -170,7 +159,7 @@ for (const rotation of ["none", "marker", "role", "marker and role"]) {
       });
     }) as typeof fetch;
     const container = document.createElement("div");
-    const root = createRoot(container as never);
+    const root = await createLobeTestRoot(container);
 
     try {
       await React.act(async () => {
@@ -228,7 +217,6 @@ for (const rotation of ["none", "marker", "role", "marker and role"]) {
 for (const warm of [false, true]) {
   test(`mounted playback exposes ${warm ? "stale refresh" : "cold read"} failure despite successful readiness and retries GET only`, async () => {
     const React = await import("react");
-    const { createRoot } = await import("react-dom/client");
     const { RunPlaybackPanel } = await import("../RunPlaybackPanel.tsx");
     const { RunControlLifecycle } = await import("../../../../hooks/useAgent/runControlLifecycle.ts");
     const lifecycle = new RunControlLifecycle();
@@ -257,7 +245,7 @@ for (const warm of [false, true]) {
       } : { session_id: "session-a", run_id: "run-a", status: "running" }));
     }) as typeof fetch;
     const container = document.createElement("div");
-    const root = createRoot(container);
+    const root = await createLobeTestRoot(container);
     try {
       await React.act(async () => { root.render(React.createElement(RunPlaybackPanel, { lifecycle, panelKey: "run-playback:run-a" })); await lifecycle.refresh(); });
       const previous = lifecycle.getSnapshot().playback;

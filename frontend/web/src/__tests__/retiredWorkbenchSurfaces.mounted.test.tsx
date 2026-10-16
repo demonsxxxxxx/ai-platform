@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { register } from "node:module";
 import test from "node:test";
-// @ts-expect-error jsdom runtime import.
-import { JSDOM } from "jsdom";
+import { installSelectTestDom } from "../components/common/__tests__/selectTestDom";
 import type { ComponentProps, ReactNode } from "react";
 import type { User } from "../types/auth";
 import { installBrowserAuthTestDb } from "../hooks/__tests__/browserAuthTestDb";
@@ -10,35 +9,8 @@ import { installBrowserAuthTestDb } from "../hooks/__tests__/browserAuthTestDb";
 register(new URL("./retiredWorkbenchRouteLoader.mjs", import.meta.url), import.meta.url);
 await new Promise<void>((resolve) => setImmediate(resolve));
 
-const dom = new JSDOM("<!doctype html><html><body></body></html>", {
-  url: "http://localhost/",
-  pretendToBeVisual: true,
-});
-Object.assign(globalThis, {
-  window: dom.window,
-  document: dom.window.document,
-  localStorage: dom.window.localStorage,
-  sessionStorage: dom.window.sessionStorage,
-  Node: dom.window.Node,
-  HTMLElement: dom.window.HTMLElement,
-  HTMLInputElement: dom.window.HTMLInputElement,
-  HTMLTextAreaElement: dom.window.HTMLTextAreaElement,
-  HTMLSelectElement: dom.window.HTMLSelectElement,
-  CustomEvent: dom.window.CustomEvent,
-  requestAnimationFrame: dom.window.requestAnimationFrame.bind(dom.window),
-  cancelAnimationFrame: dom.window.cancelAnimationFrame.bind(dom.window),
-  IS_REACT_ACT_ENVIRONMENT: true,
-});
-Object.defineProperty(globalThis, "navigator", { configurable: true, value: dom.window.navigator });
-Object.defineProperty(dom.window, "matchMedia", {
-  configurable: true,
-  value: (media: string) => ({
-    matches: false,
-    media,
-    addEventListener() {},
-    removeEventListener() {},
-  }),
-});
+const fixture = installSelectTestDom();
+test.after(() => fixture.close());
 installBrowserAuthTestDb();
 
 const { act, createElement } = await import("react");
@@ -48,6 +20,7 @@ const { AuthProvider, useAuth } = await import("../hooks/useAuth");
 const { authApi } = await import("../services/api/auth");
 const { ApiRequestError } = await import("../services/api/fetch");
 const { ThemeProvider } = await import("../contexts/ThemeContext");
+const { LobeUiProvider } = await import("../contexts/LobeUiProvider");
 const { THEME_STORAGE_KEY } = await import("../utils/themeDom");
 const { WorkbenchMenuHost } = await import("../components/layout/AppContent/WorkbenchMenuHost");
 const { default: App } = await import("../App");
@@ -140,7 +113,7 @@ async function mounted(child: ReactNode) {
 }
 
 function buttons() {
-  return Array.from(document.body.querySelectorAll<HTMLButtonElement>("button"));
+  return Array.from(document.body.querySelectorAll<HTMLElement>('button, [role="menuitem"]'));
 }
 function buttonLabels() {
   return buttons().map((button) => button.textContent?.trim());
@@ -149,7 +122,7 @@ async function openMenu() {
   await act(async () => {
     window.dispatchEvent(new CustomEvent("workbench-menu-open", { detail: { bottom: 12, right: 12 } }));
   });
-  // The outside-click listener is intentionally installed after the opening event.
+  // Portal positioning completes after the opening state is committed.
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 }
 async function clickLabel(label: string) {
@@ -271,7 +244,7 @@ test("real workbench menu preserves theme, new chat, outline, and playback acros
     onToggleOutline: () => actions.push("outline"),
   };
   const tree = (overrides: Partial<typeof props> = {}) => createElement(ThemeProvider, null,
-    createElement(WorkbenchMenuHost, { ...props, ...overrides }),
+    createElement(LobeUiProvider, null, createElement(WorkbenchMenuHost, { ...props, ...overrides })),
   );
   const view = await mounted(tree());
   try {
@@ -299,7 +272,10 @@ test("real workbench menu preserves theme, new chat, outline, and playback acros
     await openMenu();
     assert.deepEqual(buttonLabels(), [i18n.t("theme.switchToDark")], "existing action eligibility remains intact");
     assertNoAnnouncementSurface(network.calls);
-    await act(async () => document.body.click());
+    await act(async () => {
+      document.body.dispatchEvent(new window.MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+      document.body.click();
+    });
     assert.deepEqual(buttonLabels(), [], "outside click still closes the menu");
     await view.render(tree({ newSessionActionLabel: "开始新任务" }));
     await openMenu();

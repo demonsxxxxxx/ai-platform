@@ -170,12 +170,12 @@ test("expert management follows the directory and first-class configuration layo
   assert.match(workbenchSource, /没有匹配的 Skill/);
   assert.match(workbenchSource, /line-clamp-2/);
   assert.match(enterpriseFieldsSource, /AgentAvatarPicker/);
-  assert.match(enterpriseFieldsSource, /role="combobox"/);
-  assert.match(enterpriseFieldsSource, /role="listbox"/);
+  assert.match(enterpriseFieldsSource, /<AutoComplete/);
+  assert.match(enterpriseFieldsSource, /filter=\{null\}/);
   assert.match(enterpriseFieldsSource, /filterMarketTagSuggestions/);
   assert.doesNotMatch(enterpriseFieldsSource, /<datalist/);
   assert.match(avatarPickerSource, /头像风格/);
-  assert.match(avatarPickerSource, /<EnterpriseSelect/);
+  assert.match(avatarPickerSource, /<LobeSelectField/);
   assert.match(avatarPickerSource, /aria-label="选择头像风格"/);
   assert.match(avatarPickerSource, /AGENT_AVATAR_STYLE_OPTIONS\.map/);
   assert.match(avatarPickerSource, /换一批/);

@@ -1,3 +1,4 @@
+import { Button } from "@lobehub/ui/base-ui";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { usePageTitle } from "../../hooks/usePageTitle";
@@ -21,7 +22,7 @@ export function NotFoundPage() {
         </p>
 
         {/* Button */}
-        <button
+        <Button type="text"
           onClick={() => navigate("/agent-market")}
           className="inline-flex items-center gap-2 px-6 py-4 bg-stone-900 dark:bg-stone-100 hover:bg-stone-800 dark:hover:bg-stone-200 text-white dark:text-stone-900 text-sm font-medium rounded-full transition-colors"
         >
@@ -40,7 +41,7 @@ export function NotFoundPage() {
             />
           </svg>
           {t("errors.backToHome")}
-        </button>
+        </Button>
       </div>
     </div>
   );

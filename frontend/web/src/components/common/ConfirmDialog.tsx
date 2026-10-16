@@ -1,8 +1,6 @@
-import { useEffect, useRef } from "react";
-import { createPortal } from "react-dom";
+import { Modal } from "@lobehub/ui/base-ui";
 import { AlertTriangle } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { LoadingSpinner } from "./LoadingSpinner";
 
 interface ConfirmDialogProps {
   isOpen: boolean;
@@ -28,119 +26,28 @@ export function ConfirmDialog({
   loading = false,
 }: ConfirmDialogProps) {
   const { t } = useTranslation();
-  const confirmButtonRef = useRef<HTMLButtonElement>(null);
-
-  // Use default values from translations if not provided
-  const confirmLabel = confirmText || t("common.confirm");
-  const cancelLabel = cancelText || t("common.cancel");
-
-  useEffect(() => {
-    if (isOpen) {
-      // Focus the confirm button when dialog opens
-      confirmButtonRef.current?.focus();
-      // Prevent body scroll
-      document.body.style.overflow = "hidden";
-    } else {
-      document.body.style.overflow = "";
-    }
-    return () => {
-      document.body.style.overflow = "";
-    };
-  }, [isOpen]);
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (!isOpen) return;
-      if (e.key === "Escape" && !loading) {
-        onCancel();
-      }
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, onCancel, loading]);
-
-  if (!isOpen) return null;
-
-  const variantStyles = {
-    danger: {
-      icon: "text-red-500 dark:text-red-400",
-      confirmButton:
-        "btn-danger border-red-300 bg-red-600 text-white hover:bg-red-700 dark:border-red-700 dark:bg-red-600 dark:text-white dark:hover:bg-red-700",
-      confirmIcon: AlertTriangle,
-    },
-    warning: {
-      icon: "text-amber-500 dark:text-amber-400",
-      confirmButton:
-        "btn-primary bg-amber-500 hover:bg-amber-600 dark:bg-amber-600 dark:hover:bg-amber-700 text-white",
-      confirmIcon: AlertTriangle,
-    },
-    info: {
-      icon: "text-[var(--theme-primary)]",
-      confirmButton: "btn-primary shadow-sm",
-      confirmIcon: AlertTriangle,
-    },
-  };
-  const ConfirmIcon = variantStyles[variant].confirmIcon;
-
-  return createPortal(
-    <div
-      data-yields-sidebar
-      className="fixed inset-0 z-[300] flex items-center justify-center p-4"
+  return (
+    <Modal
+      open={isOpen}
+      title={title}
+      width={400}
+      draggable={false}
+      closable={false}
+      keyboard={!loading}
+      maskClosable={!loading}
+      onCancel={() => { if (!loading) onCancel(); }}
+      onOk={onConfirm}
+      confirmLoading={loading}
+      okText={confirmText || t("common.confirm")}
+      cancelText={cancelText || t("common.cancel")}
+      cancelButtonProps={{ disabled: loading }}
+      okButtonProps={{ autoFocus: true, disabled: loading, danger: variant === "danger" }}
+      classNames={{ wrapper: "workbench-modal" }}
     >
-      {/* Backdrop */}
-      <div
-        className="absolute inset-0 bg-[var(--theme-overlay-strong)]"
-        onClick={loading ? undefined : onCancel}
-      />
-
-      {/* Dialog */}
-      <div className="enterprise-modal-shell relative z-10 w-full max-w-sm animate-in fade-in zoom-in-95 duration-200">
-        {/* Content */}
-        <div className="p-5">
-          <div className="flex items-start gap-3">
-            <div
-              className={`flex-shrink-0 mt-0.5 ${variantStyles[variant].icon}`}
-            >
-              <AlertTriangle size={22} />
-            </div>
-            <div className="flex-1 min-w-0">
-              <h3 className="text-base font-semibold text-stone-900 dark:text-stone-100">
-                {title}
-              </h3>
-              <p className="mt-1.5 text-sm text-stone-600 dark:text-stone-400 leading-relaxed">
-                {message}
-              </p>
-            </div>
-          </div>
-        </div>
-
-        {/* Actions */}
-        <div className="enterprise-modal-footer flex-wrap justify-end">
-          <button
-            onClick={onCancel}
-            disabled={loading}
-            className="btn-secondary disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {cancelLabel}
-          </button>
-          <button
-            ref={confirmButtonRef}
-            onClick={onConfirm}
-            disabled={loading}
-            className={`inline-flex items-center justify-center gap-2 disabled:opacity-70 ${variantStyles[variant].confirmButton}`}
-          >
-            {loading ? (
-              <span className="inline-flex h-4 w-4 items-center justify-center">
-                <LoadingSpinner size="sm" color="text-current" />
-              </span>
-            ) : (
-              <ConfirmIcon size={16} className="shrink-0" />
-            )}
-            {confirmLabel}
-          </button>
-        </div>
+      <div className="flex items-start gap-3">
+        <AlertTriangle aria-hidden="true" size={22} className={variant === "danger" ? "shrink-0 text-[var(--theme-danger)]" : variant === "warning" ? "shrink-0 text-amber-500" : "shrink-0 text-[var(--theme-primary)]"} />
+        <p className="text-sm leading-relaxed text-[var(--theme-text-secondary)]">{message}</p>
       </div>
-    </div>,
-    document.body,
+    </Modal>
   );
 }

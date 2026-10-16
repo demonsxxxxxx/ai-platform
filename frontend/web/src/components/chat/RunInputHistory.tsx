@@ -1,3 +1,4 @@
+import { Button } from "@lobehub/ui/base-ui";
 import { useLayoutEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import type { RunInputsController } from "../../hooks/useAgent/types";
@@ -42,15 +43,15 @@ export function RunInputHistory({
       {runInputs.historyLoadFailed ? (
         <div className="flex items-center justify-between gap-3 text-xs text-[var(--theme-warning)]" role="status" data-run-input-history-failure>
           <span>{t("chat.runInputs.historyLoadFailed", "暂时无法恢复任务输入历史，已有记录仍保留。")}</span>
-          <button className="shrink-0 underline" onClick={() => void runInputs.refreshHistory()} type="button">
+          <Button type="text" className="shrink-0 underline" onClick={() => void runInputs.refreshHistory()} htmlType="button">
             {t("common.retry", "重试")}
-          </button>
+          </Button>
         </div>
       ) : null}
       {runInputs.historyHasMore ? (
-        <button className="self-center text-xs text-[var(--theme-text-secondary)] underline disabled:opacity-50" disabled={runInputs.historyIsLoading} onClick={() => void runInputs.loadMoreHistory()} type="button" data-run-input-load-more>
+        <Button type="text" className="self-center text-xs text-[var(--theme-text-secondary)] underline disabled:opacity-50" disabled={runInputs.historyIsLoading} onClick={() => void runInputs.loadMoreHistory()} htmlType="button" data-run-input-load-more>
           {t("chat.runInputs.loadEarlier", "读取更早的任务输入")}
-        </button>
+        </Button>
       ) : null}
       {runInputs.historyIsLoading ? <p className="text-xs text-[var(--theme-text-secondary)]" role="status">{t("chat.runInputs.historyLoading", "正在恢复任务输入历史…")}</p> : null}
       {visibleRuns.map(({ projection, closed, inputs, questions }) => {

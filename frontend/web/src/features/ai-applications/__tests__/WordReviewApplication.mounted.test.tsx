@@ -1,19 +1,18 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { after } from "node:test";
 import { registerHooks } from "node:module";
-// @ts-expect-error jsdom runtime import.
-import { JSDOM } from "jsdom";
+import { installSelectTestDom } from "../../../components/common/__tests__/selectTestDom";
+import { createLobeTestRoot } from "../../../components/common/__tests__/lobeUiTestRoot";
 import type { User } from "../../../types/auth";
 import { authApi } from "../../../services/api/auth";
 import { installBrowserAuthTestDb } from "../../../hooks/__tests__/browserAuthTestDb";
 // Styles are the only non-runtime module replaced; the route/controller are real.
 registerHooks({ load(url, context, nextLoad) { return url.endsWith(".css") ? { format: "module", source: "export {};", shortCircuit: true } : nextLoad(url, context); } });
-const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/apps/word-review" });
-Object.assign(globalThis, { window: dom.window, document: dom.window.document, localStorage: dom.window.localStorage, sessionStorage: dom.window.sessionStorage, HTMLElement: dom.window.HTMLElement, CustomEvent: dom.window.CustomEvent, IS_REACT_ACT_ENVIRONMENT: true });
-Object.defineProperty(globalThis, "navigator", { configurable: true, value: dom.window.navigator });
+const dom = installSelectTestDom();
+Object.assign(globalThis, { localStorage: window.localStorage, sessionStorage: window.sessionStorage });
+after(() => dom.close());
 installBrowserAuthTestDb();
 const { act, createElement, useLayoutEffect } = await import("react");
-const { createRoot } = await import("react-dom/client");
 const { MemoryRouter, Routes, Route } = await import("react-router-dom");
 const { AuthProvider, useAuth } = await import("../../../hooks/useAuth");
 const { AgentApplicationRoute } = await import("../AgentApplicationRoute");
@@ -24,7 +23,7 @@ function stream(text = "") { return new ReadableStream<Uint8Array>({ start(c) { 
 const success = 'data: {"task_id":"task-a","files":[{"name":"result.docx","path":"result.docx"}]}\r\n\r\ndata: [DONE]\r\n\r\n';
 function principal(id = "user-a", tenant = "tenant-a"): User { return { id, tenant_id: tenant, username: id, email: "synthetic@example.test", roles: [], permissions: [], is_active: true, created_at: "", updated_at: "" }; }
 function docx() { return new File([new Uint8Array([0x50, 0x4b, 0x03, 0x04]), "[Content_Types].xml word/document.xml"], "synthetic.docx"); }
-function props(node: Element) { const key = Object.keys(node).find(key => key.startsWith("__reactProps$")); assert.ok(key); return (node as unknown as Record<string, unknown>)[key] as { onChange?: (event: { target: { files: File[]; value: string } }) => void; onClick?: () => void }; }
+function props(node: Element) { const key = Object.keys(node).find(key => key.startsWith("__reactProps$")); assert.ok(key); return (node as unknown as Record<string, unknown>)[key] as { onChange?: (event: { target: { files: File[]; value: string } }) => void; onClick?: (event: MouseEvent) => void }; }
 function button(container: HTMLElement, label: string) { const found = Array.from(container.querySelectorAll("button")).find(node => node.textContent?.trim() === label); assert.ok(found, `Missing button ${label}: ${container.textContent}`); return found; }
 const historyValues = () => Object.keys(localStorage).filter(key => key.startsWith("wordReviewHistory")).map(key => JSON.parse(localStorage.getItem(key)!));
 
@@ -35,8 +34,8 @@ async function harness(options: { review?: Fetcher; history?: Fetcher; cancel?: 
   localStorage.clear(); window.confirm = () => true;
   authApi.bootstrapAuthContext = async request => ({ status: "ready", protocol_version: 2, generation: request.generation });
   authApi.getCurrentUser = async () => user;
-  class Xhr extends EventTarget {
-    upload = new EventTarget(); status = 200; responseText = '{"file_id":"file-a"}'; timeout = 0;
+  class Xhr extends window.EventTarget {
+    upload = new window.EventTarget(); status = 200; responseText = '{"file_id":"file-a"}'; timeout = 0;
     open(method: string, url: string) { assert.equal(method, "POST"); assert.ok(url.endsWith("/api/upload")); }
     send() { uploads++; queueMicrotask(() => this.dispatchEvent(new Event("load"))); }
     abort() { this.dispatchEvent(new Event("abort")); }
@@ -50,7 +49,7 @@ async function harness(options: { review?: Fetcher; history?: Fetcher; cancel?: 
     if (url.includes("/stats/")) return json({ total: 0, daily: [] });
     throw new Error(`Unexpected synthetic request ${url}`);
   }) as typeof fetch;
-  const container = document.createElement("div"); document.body.append(container); const root = createRoot(container);
+  const container = document.createElement("div"); document.body.append(container); const root = await createLobeTestRoot(container);
   function Probe() { const currentAuth = useAuth(); auth = currentAuth; useLayoutEffect(() => { options.onScopeCommit?.(currentAuth.user); }, [currentAuth.user]); return createElement(MemoryRouter, { initialEntries: ["/apps/word-review"] }, createElement(Routes, null, createElement(Route, { path: "/apps/:appKey", element: createElement(AgentApplicationRoute) }))); }
   await act(async () => { root.render(createElement(AuthProvider, null, createElement(Probe))); });
   assert.equal(auth.isAuthenticated, true);
@@ -63,6 +62,31 @@ async function harness(options: { review?: Fetcher; history?: Fetcher; cancel?: 
     async close() { if (!unmounted) { unmounted = true; await act(async () => root.unmount()); container.remove(); } globalThis.fetch = old.fetch; globalThis.XMLHttpRequest = old.xhr; authApi.bootstrapAuthContext = old.bootstrap; authApi.getCurrentUser = old.user; window.confirm = old.confirm; },
   };
 }
+
+test("review library tabs support keyboard navigation and keep task progress accessible", async () => {
+  const view = await harness();
+  try {
+    await view.select();
+    const current = view.container.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')!;
+    assert.match(current.textContent!, /当前任务/);
+    const progress = view.container.querySelector('[role="progressbar"]')!;
+    assert.equal(progress.getAttribute("aria-label"), "synthetic.docx处理进度");
+    assert.equal(progress.getAttribute("aria-valuenow"), "18");
+    await act(async () => {
+      current.focus();
+      current.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    });
+    const history = document.activeElement as HTMLButtonElement;
+    assert.match(history.textContent!, /历史记录/);
+    await act(async () => { history.click(); });
+    assert.equal(history.getAttribute("aria-selected"), "true");
+    assert.match(view.container.querySelector('[role="tabpanel"]')!.textContent!, /暂无历史记录/);
+    await act(async () => { history.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true })); });
+    assert.equal(document.activeElement, current);
+    await act(async () => { current.click(); });
+    assert.ok(view.container.querySelector(".task-card.is-ready"));
+  } finally { await view.close(); }
+});
 
 test("real Word route fails empty EOF and DONE-without-files instead of persisting success", async () => {
   for (const text of ["", "data: [DONE]\n\n"]) {
@@ -77,7 +101,7 @@ test("real Word route accepts fragmented terminal result and suppresses duplicat
   const view = await harness({ review: () => new Response(new ReadableStream({ start(c) { for (const byte of bytes) c.enqueue(Uint8Array.of(byte)); c.close(); } })) });
   try {
     await view.select(); const start = props(button(view.container, "开始审核")).onClick!;
-    await act(async () => { start(); start(); });
+    await act(async () => { start(new MouseEvent("click", { cancelable: true })); start(new MouseEvent("click", { cancelable: true })); });
     assert.equal(view.calls.filter(call => call.url.endsWith("/api/chat/stream")).length, 1);
     assert.ok(view.container.querySelector(".task-card.is-completed")); assert.equal(historyValues()[0][0].files[0].name, "result.docx");
   } finally { await view.close(); }

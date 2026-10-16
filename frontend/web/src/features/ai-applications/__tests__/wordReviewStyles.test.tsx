@@ -17,14 +17,19 @@ const sharedCss = readFileSync(
   new URL("../../../styles/components.css", import.meta.url), "utf8",
 );
 
-test("loading and leaving Word Review preserves unrelated headers and generic controls", () => {
-  const header = renderToStaticMarkup(createElement(PanelHeader, {
+test("loading and leaving Word Review preserves unrelated headers and generic controls", async () => {
+  await import("../../../i18n");
+  const [{ ThemeProvider }, { LobeUiProvider }] = await Promise.all([
+    import("../../../contexts/ThemeContext"), import("../../../contexts/LobeUiProvider"),
+  ]);
+  const header = renderToStaticMarkup(createElement(ThemeProvider, null,
+    createElement(LobeUiProvider, null, createElement(PanelHeader, {
     title: "MCP",
     subtitle: "Tool catalog",
     searchValue: "",
     onSearchChange: () => {},
     searchPlaceholder: "Search",
-  }));
+  }))));
   const controls = `
     <button class="primary-button">Primary</button>
     <button class="secondary-button">Secondary</button>
@@ -59,9 +64,9 @@ test("loading and leaving Word Review preserves unrelated headers and generic co
     addStyles(wordReviewCss);
     assert.deepEqual(snapshotOtherRoute(), before, "route CSS must not change unrelated elements");
 
-    // The owning application keeps the styles that leaked to the other route.
+    // Domain layout remains scoped; library control styles are no longer duplicated.
     assert.equal(dom.window.getComputedStyle(document.querySelector(".review-page .panel-header")).display, "flex");
-    assert.equal(dom.window.getComputedStyle(document.querySelector(".review-page .primary-button")).backgroundColor, "rgb(79, 70, 229)");
+    assert.equal(dom.window.getComputedStyle(document.querySelector(".review-page .primary-button")).backgroundColor, dom.window.getComputedStyle(document.querySelector("#other-route .primary-button")).backgroundColor);
     assert.equal(dom.window.getComputedStyle(document.querySelector(".review-page .empty-state")).display, "flex");
 
     document.querySelector(".review-page").remove();

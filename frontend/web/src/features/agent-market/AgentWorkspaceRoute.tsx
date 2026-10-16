@@ -1,3 +1,4 @@
+import { Button } from "@lobehub/ui/base-ui";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
@@ -253,20 +254,20 @@ export function AgentWorkspaceRoute() {
           </p>
           {phase === "error" ? (
             <div className="mt-4 flex justify-center gap-3">
-              <button
-                className="btn-primary"
+              <Button type="primary"
+                className=""
                 onClick={() => setProfileRetry((current) => current + 1)}
-                type="button"
+                htmlType="button"
               >
                 重新加载
-              </button>
-              <button
-                className="btn-secondary"
+              </Button>
+              <Button type="default"
+                className=""
                 onClick={() => navigate("/agent-market")}
-                type="button"
+                htmlType="button"
               >
                 返回市场
-              </button>
+              </Button>
             </div>
           ) : null}
         </div>

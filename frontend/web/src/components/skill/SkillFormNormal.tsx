@@ -1,7 +1,9 @@
+import { Button, Input, TextArea } from "@lobehub/ui/base-ui";
+import { useId } from "react";
 import { useTranslation } from "react-i18next";
 import { Maximize2, X, Plus, Save, Tag, Pencil } from "lucide-react";
-import { Toggle } from "./Toggle";
-import { LoadingSpinner } from "../common/LoadingSpinner";
+import { Switch } from "@lobehub/ui/base-ui";
+import { Spin } from "@lobehub/ui/base-ui";
 import { FileTabs } from "./FileTabs";
 import { SkillEditor } from "./SkillEditor";
 import { BinaryFilePreview } from "./BinaryFilePreview";
@@ -10,6 +12,7 @@ import type { SkillFormActions } from "./SkillForm.types";
 
 export function SkillFormNormal(a: SkillFormActions) {
   const { t } = useTranslation();
+  const editorPanelId = useId();
   const submitLabel = a.isEditing
     ? t("skills.form.saveChanges")
     : t("skills.form.createSkill");
@@ -25,41 +28,14 @@ export function SkillFormNormal(a: SkillFormActions) {
               <label className="block text-xs font-medium text-[var(--theme-text-secondary)]">
                 {t("skills.form.name")}
               </label>
-              <div className="relative">
-                <input
-                  type="text"
-                  value={a.name}
-                  disabled={a.isEditing}
-                  onChange={(e) => a.setName(e.target.value)}
-                  placeholder={t("skills.form.namePlaceholder")}
-                  className="w-full rounded-lg border border-[var(--theme-border)] px-3 py-2 font-mono text-sm text-[var(--theme-text)] placeholder:text-stone-400 dark:placeholder:text-stone-500 transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-50 bg-[var(--theme-bg)] hover:border-[var(--skill-border-strong)]"
-                />
-                {a.isEditing && (
-                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 rounded-md bg-[var(--theme-bg-card)]/80 p-1">
-                    <svg
-                      className="h-4 w-4 text-stone-400 dark:text-stone-500"
-                      viewBox="0 0 16 16"
-                      fill="none"
-                    >
-                      <rect
-                        x="2"
-                        y="2"
-                        width="12"
-                        height="12"
-                        rx="3"
-                        stroke="currentColor"
-                        strokeWidth="1.2"
-                      />
-                      <path
-                        d="M6 8h4M8 6v4"
-                        stroke="currentColor"
-                        strokeWidth="1.2"
-                        strokeLinecap="round"
-                      />
-                    </svg>
-                  </span>
-                )}
-              </div>
+              <Input
+                type="text" size="large" aria-label={t("skills.form.name")}
+                aria-invalid={Boolean(a.errors.name)}
+                value={a.name} disabled={a.isEditing}
+                onChange={(event) => a.setName(event.target.value)}
+                placeholder={t("skills.form.namePlaceholder")}
+                className="w-full" classNames={{ input: "font-mono" }}
+              />
               {a.errors.name && (
                 <p className="text-xs text-red-500">{a.errors.name}</p>
               )}
@@ -75,12 +51,13 @@ export function SkillFormNormal(a: SkillFormActions) {
               <label className="block text-xs font-medium text-[var(--theme-text-secondary)]">
                 {t("skills.form.description")}
               </label>
-              <textarea
+              <TextArea
                 value={a.description}
                 onChange={(e) => a.setDescription(e.target.value)}
                 placeholder={t("skills.form.descriptionPlaceholder")}
                 rows={3}
-                className="w-full resize-none rounded-lg border border-[var(--theme-border)] px-3 py-2 text-sm leading-6 text-[var(--theme-text)] placeholder:text-stone-400 dark:placeholder:text-stone-500 transition-all duration-150 bg-[var(--theme-bg)] hover:border-[var(--skill-border-strong)]"
+                aria-label={t("skills.form.description")} aria-invalid={Boolean(a.errors.description)}
+                className="w-full" classNames={{ input: "leading-6" }}
               />
               {a.errors.description && (
                 <p className="text-xs text-red-500">{a.errors.description}</p>
@@ -100,12 +77,13 @@ export function SkillFormNormal(a: SkillFormActions) {
                 <p className="mt-2 text-xs leading-5 text-[var(--theme-text-secondary)]/80">
                   {t("adminMarketplace.tagsHint")}
                 </p>
-                <input
+                <Input
                   type="text"
                   value={a.tagsInput}
                   onChange={(e) => a.setTagsInput(e.target.value)}
                   placeholder={t("adminMarketplace.tagsPlaceholder")}
-                  className="mt-3 w-full rounded-lg border border-[var(--theme-border)] px-3 py-2 text-sm text-[var(--theme-text)] placeholder:text-stone-400 dark:placeholder:text-stone-500 transition-all duration-150 bg-[var(--theme-bg-card)] hover:border-[var(--skill-border-strong)]"
+                  size="large" aria-label={t("adminMarketplace.tags")} aria-invalid={Boolean(a.errors.tags)}
+                  className="mt-3 w-full"
                 />
                 <div className="mt-3 flex flex-wrap gap-2">
                   {normalizeTags(a.tagsInput).map((tag) => (
@@ -114,14 +92,12 @@ export function SkillFormNormal(a: SkillFormActions) {
                       className="skill-tag-chip skill-tag-chip--active"
                     >
                       {tag}
-                      <button
-                        type="button"
+                      <Button type="text"
+                        htmlType="button"
                         onClick={() => a.removeTag(tag)}
-                        className="skill-tag-chip-remove"
+                        size="small" icon={<X size={11} />}
                         aria-label={`Remove tag ${tag}`}
-                      >
-                        <X size={11} />
-                      </button>
+                      />
                     </span>
                   ))}
                   {normalizeTags(a.tagsInput).length === 0 && (
@@ -149,11 +125,10 @@ export function SkillFormNormal(a: SkillFormActions) {
                 </p>
               </div>
               <div className="shrink-0">
-                <Toggle
-                  checked={a.enabled}
-                  onChange={a.setEnabled}
-                  label={t("skills.form.enabled")}
-                />
+                <label className="inline-flex items-center gap-2.5">
+                  <Switch checked={a.enabled} onChange={a.setEnabled} />
+                  <span className="text-sm">{t("skills.form.enabled")}</span>
+                </label>
               </div>
             </div>
           </div>
@@ -168,27 +143,26 @@ export function SkillFormNormal(a: SkillFormActions) {
                   {t("skills.form.files", "Files")}
                 </p>
                 <div className="flex items-center gap-1 shrink-0">
-                  <button
-                    type="button"
+                  <Button type="text"
+                    htmlType="button"
                     onClick={a.addFile}
-                    className="flex h-9 w-9 items-center justify-center rounded-lg text-stone-400 transition-colors duration-150 hover:bg-[var(--theme-bg-card)] hover:text-[var(--theme-text)]"
-                    title={t("skills.form.addFile", "Add file")}
-                  >
-                    <Plus size={15} />
-                  </button>
-                  <button
-                    type="button"
+                    icon={<Plus size={15} />}
+                    aria-label={t("skills.form.addFile")}
+                    title={t("skills.form.addFile")}
+                  />
+                  <Button type="text"
+                    htmlType="button"
                     onClick={() => a.toggleFullscreen(true)}
-                    className="flex h-9 w-9 items-center justify-center rounded-lg text-stone-400 transition-colors duration-150 hover:bg-[var(--theme-bg-card)] hover:text-[var(--theme-text)]"
+                    icon={<Maximize2 size={15} />}
+                    aria-label={t("skills.form.fullscreenEditor")}
                     title={t("skills.form.fullscreenEditor")}
-                  >
-                    <Maximize2 size={15} />
-                  </button>
+                  />
                 </div>
               </div>
 
               <div className="skill-file-tabs min-w-0 overflow-hidden rounded-lg px-1 py-1">
                 <FileTabs
+                  panelId={editorPanelId}
                   files={a.files}
                   activeFileIndex={a.activeFileIndex}
                   onSelect={a.setActiveFileIndex}
@@ -201,7 +175,7 @@ export function SkillFormNormal(a: SkillFormActions) {
                 <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.16em] text-[var(--theme-text-secondary)]/80">
                   {t("skills.form.filePath")}
                 </label>
-                <input
+                <Input
                   type="text"
                   value={a.files[a.activeFileIndex]?.path || ""}
                   readOnly={!a.files[a.activeFileIndex]?.loaded || a.files[a.activeFileIndex]?.binary}
@@ -209,14 +183,15 @@ export function SkillFormNormal(a: SkillFormActions) {
                     a.updateFilePath(a.activeFileIndex, e.target.value)
                   }
                   placeholder={t("skills.form.filePathPlaceholder")}
-                  className="w-full bg-transparent font-mono text-xs text-[var(--theme-text)] placeholder:text-stone-400 dark:placeholder:text-stone-500 focus:outline-none"
+                  variant="borderless" size="small" aria-label={t("skills.form.filePath")}
+                  className="w-full" classNames={{ input: "font-mono text-xs" }}
                 />
               </div>
             </div>
           </div>
 
           {/* Editor / Binary Preview */}
-          <div className="flex-1 min-h-0 p-3 sm:p-4">
+          <div id={editorPanelId} role="tabpanel" aria-labelledby={`${editorPanelId}-tab-${a.activeFileIndex}`} className="flex-1 min-h-0 p-3 sm:p-4">
             {(() => {
               const currentPath = a.files[a.activeFileIndex]?.path || "";
               const binaryInfo = a.binaryFiles?.[currentPath];
@@ -226,25 +201,7 @@ export function SkillFormNormal(a: SkillFormActions) {
                 return (
                   <div className="flex h-full min-h-[18rem] sm:min-h-[24rem] items-center justify-center rounded-lg bg-[var(--theme-bg)]">
                     <div className="flex flex-col items-center gap-3">
-                      <svg
-                        className="h-6 w-6 animate-spin text-[var(--theme-text-secondary)]"
-                        viewBox="0 0 24 24"
-                      >
-                        <circle
-                          className="opacity-25"
-                          cx="12"
-                          cy="12"
-                          r="10"
-                          stroke="currentColor"
-                          strokeWidth="4"
-                          fill="none"
-                        />
-                        <path
-                          className="opacity-75"
-                          fill="currentColor"
-                          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-                        />
-                      </svg>
+                      <Spin size={24} aria-label={t("common.loading")} />
                       <span className="text-sm text-[var(--theme-text-secondary)]">
                         {currentPath.split("/").pop()}
                       </span>
@@ -281,14 +238,14 @@ export function SkillFormNormal(a: SkillFormActions) {
                     filePath={a.files[a.activeFileIndex]?.path}
                     readOnly
                   />
-                  <button
-                    type="button"
+                  <Button type="text"
+                    htmlType="button"
                     onClick={() => a.toggleFullscreen(true)}
                     className="absolute right-3 bottom-3 flex items-center gap-1.5 rounded-lg bg-[var(--theme-primary)] px-2.5 py-1.5 text-xs font-medium text-white shadow-md transition-all duration-150 hover:scale-105 active:scale-95"
                   >
                     <Pencil size={12} />
                     {t("skills.form.editFullscreen", "Edit")}
-                  </button>
+                  </Button>
                 </div>
               );
             })()}
@@ -303,26 +260,26 @@ export function SkillFormNormal(a: SkillFormActions) {
 
       {/* Bottom action bar */}
       <div className="skill-action-bar shrink-0 flex items-center justify-end gap-2 px-1 pt-3">
-        <button
-          type="button"
+        <Button type="text"
+          htmlType="button"
           onClick={a.onCancel}
           disabled={a.isLoading}
           className="rounded-lg px-4 py-2 text-sm text-[var(--theme-text)] hover:bg-stone-50 dark:hover:bg-stone-800 disabled:opacity-50 transition-colors duration-150"
         >
           {t("common.cancel")}
-        </button>
-        <button
-          type="submit"
+        </Button>
+        <Button type="text"
+          htmlType="submit"
           disabled={a.isLoading}
           className="rounded-lg bg-[var(--theme-primary)] px-5 py-2 text-sm font-medium text-white hover:bg-[var(--theme-primary-hover)] disabled:opacity-50 transition-colors duration-150 dark:text-stone-950 inline-flex items-center gap-2"
         >
           <span className="inline-flex h-4 w-4 items-center justify-center">
-            {a.isLoading ? <LoadingSpinner size="sm" /> : <Save size={16} />}
+            {a.isLoading ? <Spin size={16} /> : <Save size={16} />}
           </span>
           <span className={a.isLoading ? "loading-text" : ""}>
             {submitLabel}
           </span>
-        </button>
+        </Button>
       </div>
     </>
   );

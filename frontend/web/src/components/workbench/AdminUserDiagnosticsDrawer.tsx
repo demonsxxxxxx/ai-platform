@@ -1,3 +1,4 @@
+import { Button, DrawerRoot, DrawerPortal, DrawerBackdrop, DrawerPopup, DrawerHeader, DrawerTitle, DrawerContent } from "@lobehub/ui/base-ui";
 import { ExternalLink, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -24,39 +25,20 @@ export function AdminUserDiagnosticsDrawer({
   const { t } = useTranslation();
 
   return (
-    <div className="fixed inset-0 z-[300]">
-      <button
-        type="button"
-        className="absolute inset-0 cursor-default bg-[var(--theme-overlay-strong)]"
-        aria-label={t("workbench.projections.users.closeDiagnostics")}
-        onClick={onClose}
-      />
-      <aside
-        data-admin-user-diagnostics={user.user_id}
-        role="dialog"
-        aria-modal="true"
-        aria-label={t("workbench.projections.users.auditDebug")}
-        className="absolute inset-y-0 right-0 w-full overflow-y-auto bg-[var(--theme-workbench-panel)] shadow-xl md:w-[46rem]"
-      >
-        <div className="sticky top-0 z-10 flex items-start justify-between gap-3 border-b border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-5 py-4">
-          <div className="min-w-0">
-            <h2 className="truncate text-base font-semibold text-[var(--theme-text)]">
-              {user.display_name || user.user_id}
-            </h2>
-            <p className="mt-1 font-mono text-xs text-[var(--theme-text-secondary)]">
-              {user.user_id}
-            </p>
-          </div>
-          <button
-            type="button"
-            className="btn-icon"
-            aria-label={t("workbench.projections.users.closeDiagnostics")}
-            onClick={onClose}
-          >
-            <X size={18} />
-          </button>
-        </div>
-
+    <DrawerRoot open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DrawerPortal>
+        <DrawerBackdrop />
+        <DrawerPopup placement="right" width="min(46rem, 100vw)"
+          data-admin-user-diagnostics={user.user_id} aria-label={t("workbench.projections.users.auditDebug")}
+        >
+          <DrawerHeader>
+            <div className="min-w-0">
+              <DrawerTitle>{user.display_name || user.user_id}</DrawerTitle>
+              <p className="mt-1 font-mono text-xs text-[var(--theme-text-secondary)]">{user.user_id}</p>
+            </div>
+            <Button type="text" autoFocus aria-label={t("workbench.projections.users.closeDiagnostics")} onClick={onClose} icon={<X size={18} />} />
+          </DrawerHeader>
+          <DrawerContent>
         {loading ? (
           <div className="p-5 text-sm text-[var(--theme-text-secondary)]">
             {t("workbench.projections.users.diagnosticsLoading")}
@@ -168,7 +150,9 @@ export function AdminUserDiagnosticsDrawer({
             </section>
           </div>
         ) : null}
-      </aside>
-    </div>
+          </DrawerContent>
+        </DrawerPopup>
+      </DrawerPortal>
+    </DrawerRoot>
   );
 }

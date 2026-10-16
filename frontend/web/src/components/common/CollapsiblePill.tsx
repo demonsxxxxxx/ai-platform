@@ -1,7 +1,8 @@
+import { Button } from "@lobehub/ui/base-ui";
 import { clsx } from "clsx";
 import { useState } from "react";
 import { Ban, CheckCircle, XCircle, ChevronRight } from "lucide-react";
-import { LoadingSpinner } from "./LoadingSpinner";
+import { Spin } from "@lobehub/ui/base-ui";
 
 export type CollapsibleStatus =
   | "idle"
@@ -54,8 +55,8 @@ function StatusIndicator({
 }) {
   if (status === "loading") {
     return (
-      <LoadingSpinner
-        size="xs"
+      <Spin
+        size={12}
         className="shrink-0"
         color={getSpinnerColor(variant)}
       />
@@ -207,7 +208,7 @@ export function CollapsiblePill({
 
   return (
     <div className="my-1 min-w-0 max-w-full">
-      <button
+      <Button type="text"
         onClick={handleToggle}
         aria-expanded={canExpand ? isExpanded : undefined}
         className={clsx(
@@ -239,7 +240,7 @@ export function CollapsiblePill({
             )}
           />
         )}
-      </button>
+      </Button>
 
       {isExpanded && hasChildren && (
         <div className="mt-1 animate-[fade-in_150ms_ease-out]">{children}</div>

@@ -3,12 +3,13 @@ import test from "node:test";
 import { register } from "node:module";
 // Node mounts test content; actual stylesheet geometry is covered by browser smoke.
 register(`data:text/javascript,${encodeURIComponent('export async function load(url, context, nextLoad) { if (url.endsWith(".css")) return { format: "module", source: "", shortCircuit: true }; return nextLoad(url, context); }')}`, import.meta.url);
-// @ts-expect-error jsdom runtime import.
-import { JSDOM } from "jsdom";
+import { installSelectTestDom } from "../../common/__tests__/selectTestDom";
+import { createLobeTestRoot } from "../../common/__tests__/lobeUiTestRoot";
 import type { ReactNode } from "react";
 import type { MessageAttachment } from "../../../types";
 
-const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/" });
+installSelectTestDom();
+const dom = { window };
 const mediaListeners = new Set<(event: { matches: boolean }) => void>();
 const frames = new Map<number, FrameRequestCallback>();
 let nextFrame = 0;
@@ -29,7 +30,6 @@ window.matchMedia = (() => ({
 })) as unknown as typeof window.matchMedia;
 
 const { act, createElement, StrictMode } = await import("react");
-const { createRoot } = await import("react-dom/client");
 const { default: i18n } = await import("i18next");
 const { initReactI18next } = await import("react-i18next");
 await i18n.use(initReactI18next).init({ lng: "en", resources: { en: { translation: {} } } });
@@ -71,7 +71,7 @@ async function harness(fetchHandler?: typeof fetch) {
   attachment.closeAttachmentPreview(); history.clearSidebarHistory(); registry.clearToolPanelRegistry();
   await viewport(1200);
   const container = document.createElement("div"); document.body.append(container);
-  const root = createRoot(container);
+  const root = await createLobeTestRoot(container);
   return {
     async render(children: ReactNode) {
       await act(async () => { root.render(children); });
@@ -130,14 +130,14 @@ for (const file of [
       await view.render(createElement(AttachmentPreviewHost));
       await act(async () => attachment.openAttachmentPreview(attachments[0], "chat-input"));
       // A completed fetch does not mean the lazy document renderer has committed.
-      for (let attempt = 0; attempt < 100 && !document.querySelector('[data-slot="table"]'); attempt++) {
+      for (let attempt = 0; attempt < 100 && !document.querySelector("table"); attempt++) {
         await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
       }
       assert.ok(requests.includes(`/api/ai/files/${fileId}/preview`), "completed upload must request the owned preview endpoint");
       assert.equal(attachments[0].downloadUrl, `/api/ai/files/${fileId}/download`);
       assert.equal(requests.some((url) => url.endsWith("/download")), false, "preview does not fetch the workbook download bytes");
       assert.match(document.body.textContent ?? "", /Alpha/);
-      assert.ok(document.querySelector('[data-slot="table"]'), "file data renders through the shared Table");
+      assert.ok(document.querySelector("table th[scope=col]"), "file data retains semantic document table headers");
     } finally { await view.close(); }
   });
 }

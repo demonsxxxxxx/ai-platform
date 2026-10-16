@@ -7,6 +7,7 @@
  * and React state updates (side effects).
  */
 
+import { toast } from "@lobehub/ui/base-ui";
 import type { Message, MessagePart } from "../../types";
 import { uuid } from "../../utils/uuid";
 import i18n from "../../i18n";
@@ -420,9 +421,7 @@ function dismissQueueToast(ctx: EventHandlerContext): void {
     ctx.dismissQueueToast();
     return;
   }
-  void import("react-hot-toast").then(({ default: toast }) => {
-    toast.dismiss("chat-queue");
-  });
+  toast.dismiss("chat-queue");
 }
 
 /**
@@ -744,10 +743,8 @@ export function handlePublicRunStreamEventV4(
     if (ctx.dismissQueueToast) {
       ctx.dismissQueueToast();
     } else {
-      void import("react-hot-toast").then(({ default: toast }) => {
-        toast.dismiss("chat-queue");
-        toast.success(i18n.t("chat.queueStart"), { duration: 2000 });
-      });
+      toast.dismiss("chat-queue");
+        toast.success({ description: i18n.t("chat.queueStart"), duration: 2000, hideCloseButton: true });
     }
     commitV4Event();
     return true;
@@ -1147,10 +1144,8 @@ export function handleStreamEvent(
       if (ctx.dismissQueueToast) {
         ctx.dismissQueueToast();
       } else {
-        void import("react-hot-toast").then(({ default: toast }) => {
-          toast.dismiss("chat-queue");
-          toast.success(i18n.t("chat.queueStart"), { duration: 2000 });
-        });
+        toast.dismiss("chat-queue");
+          toast.success({ description: i18n.t("chat.queueStart"), duration: 2000, hideCloseButton: true });
       }
       commitAcceptedEvent();
       return true;

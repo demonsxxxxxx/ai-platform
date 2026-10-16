@@ -1,6 +1,6 @@
+import { Button } from "@lobehub/ui/base-ui";
 import ReactMarkdown from "react-markdown";
-import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "../../common/Table";
-import toast from "react-hot-toast";
+import { toast } from "@lobehub/ui/base-ui";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import remarkMath from "remark-math";
@@ -162,7 +162,7 @@ function CodeBlock({
           </span>
         </div>
         {/* Copy button */}
-        <button
+        <Button type="text"
           onClick={handleCopy}
           className={clsx(
             "flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-all touch-manipulation",
@@ -186,7 +186,7 @@ function CodeBlock({
               <span className="hidden xs:inline">{t("chat.message.copy")}</span>
             </>
           )}
-        </button>
+        </Button>
       </div>
 
       {/* Code content */}
@@ -275,7 +275,7 @@ function TableBlock({ children }: { children: React.ReactNode }) {
           "opacity-100 sm:opacity-0 sm:group-hover/table:opacity-100 transition-opacity duration-150",
         )}
       >
-        <button
+        <Button type="text"
           onClick={handleCopy}
           className={clsx(
             "flex items-center gap-1 rounded px-1.5 py-1 text-xs font-medium transition-colors",
@@ -286,23 +286,23 @@ function TableBlock({ children }: { children: React.ReactNode }) {
           title={copied ? t("chat.message.copied") : t("chat.message.copy")}
         >
           {copied ? <Check size={13} /> : <Copy size={13} />}
-        </button>
-        <button
+        </Button>
+        <Button type="text"
           onClick={handleExport}
           className="flex items-center gap-1 rounded px-1.5 py-1 text-xs font-medium text-stone-500 hover:text-stone-700 hover:bg-stone-200/60 dark:text-stone-400 dark:hover:text-stone-200 dark:hover:bg-stone-700/50 transition-colors"
           title={t("chat.message.exportCsv", "Export CSV")}
         >
           <Download size={13} />
-        </button>
+        </Button>
       </div>
       {/* Scrollable table area — toolbar is outside this so it stays fixed */}
       <div className="overflow-x-auto">
-        <Table
+        <table
           ref={tableRef}
           className="min-w-full divide-y divide-stone-200 dark:divide-stone-700"
         >
           {children}
-        </Table>
+        </table>
       </div>
     </div>
   );
@@ -459,8 +459,8 @@ export const MarkdownContent = memo(function MarkdownContent({
             if (href) {
               if (isAllowedAuthenticatedArtifactFileUrl(href)) {
                 return (
-                  <button
-                    type="button"
+                  <Button type="text"
+                    htmlType="button"
                     className="align-baseline p-0 bg-transparent border-0 text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 hover:underline transition-colors cursor-pointer"
                     onClick={(e) => {
                       e.preventDefault();
@@ -469,7 +469,7 @@ export const MarkdownContent = memo(function MarkdownContent({
                     }}
                   >
                     {children}
-                  </button>
+                  </Button>
                 );
               }
 
@@ -567,27 +567,27 @@ export const MarkdownContent = memo(function MarkdownContent({
           // Tables with copy & export toolbar
           table: ({ children }) => <TableBlock>{children}</TableBlock>,
           thead: ({ children }) => (
-            <TableHeader className="bg-stone-50 dark:bg-stone-800">{children}</TableHeader>
+            <thead className="bg-stone-50 dark:bg-stone-800">{children}</thead>
           ),
           tbody: ({ children }) => (
-            <TableBody className="divide-y divide-stone-200 dark:divide-stone-700 bg-white dark:bg-stone-900">
+            <tbody className="divide-y divide-stone-200 dark:divide-stone-700 bg-white dark:bg-stone-900">
               {children}
-            </TableBody>
+            </tbody>
           ),
           tr: ({ children }) => (
-            <TableRow className="hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors">
+            <tr className="hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors">
               {children}
-            </TableRow>
+            </tr>
           ),
           th: ({ children }) => (
-            <TableHead className="px-3 py-2 text-left text-xs font-semibold text-stone-700 dark:text-stone-300 uppercase tracking-wider whitespace-nowrap min-w-[60px]">
+            <th scope="col" className="px-3 py-2 text-left text-xs font-semibold text-stone-700 dark:text-stone-300 uppercase tracking-wider whitespace-nowrap min-w-[60px]">
               {children}
-            </TableHead>
+            </th>
           ),
           td: ({ children }) => (
-            <TableCell className="px-3 py-2 text-sm text-stone-600 dark:text-stone-400 break-words min-w-[60px]">
+            <td className="px-3 py-2 text-sm text-stone-600 dark:text-stone-400 break-words min-w-[60px]">
               {children}
-            </TableCell>
+            </td>
           ),
           // Images — click to preview with ImageViewer
           img: ({ src, alt }) => (

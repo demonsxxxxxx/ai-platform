@@ -1,11 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-// jsdom 26 ships no declarations; this mounted harness uses its runtime only.
-// @ts-expect-error jsdom is the pinned browser test runtime.
-import { JSDOM } from "jsdom";
+import { installSelectTestDom } from "../../../common/__tests__/selectTestDom";
+import { createLobeTestRoot } from "../../../common/__tests__/lobeUiTestRoot";
 import { act, createElement } from "react";
-import { createRoot, type Root } from "react-dom/client";
 
 import { ChatConnectionStatus } from "../ChatConnectionStatus.tsx";
 
@@ -20,48 +18,18 @@ function deferred(): {
   return { promise, resolve };
 }
 
-function setupDom(): {
-  container: HTMLDivElement;
-  root: Root;
-  cleanup: () => void;
-} {
-  const dom = new JSDOM(
-    '<!doctype html><html><body><div id="root"></div></body></html>',
-    { url: "http://localhost/" },
-  );
-  for (const key of [
-    "window",
-    "document",
-    "navigator",
-    "HTMLElement",
-    "Node",
-    "Event",
-    "MouseEvent",
-  ] as const) {
-    Object.defineProperty(globalThis, key, {
-      configurable: true,
-      value: dom.window[key],
-    });
-  }
-  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", {
-    configurable: true,
-    value: true,
-    writable: true,
-  });
-  const container = dom.window.document.getElementById("root") as HTMLDivElement;
-  const root = createRoot(container);
-  return {
-    container,
-    root,
-    cleanup: () => {
-      act(() => root.unmount());
-      dom.window.close();
-    },
-  };
+async function setupDom() {
+  const environment = installSelectTestDom();
+  const container = document.createElement("div");
+  const root = await createLobeTestRoot(container);
+  return { container, root, cleanup: () => {
+    act(() => root.unmount());
+    environment.close();
+  } };
 }
 
 test("keeps reconnect pending state fenced to the current owner and attempt", async () => {
-  const dom = setupDom();
+  const dom = await setupDom();
   const first = deferred();
   const second = deferred();
   const calls: string[] = [];

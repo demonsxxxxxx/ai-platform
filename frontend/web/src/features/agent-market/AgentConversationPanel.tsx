@@ -1,11 +1,12 @@
+import { Button } from "@lobehub/ui/base-ui";
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, MessageSquare, MessageSquarePlus } from "lucide-react";
-import toast from "react-hot-toast";
+import { toast } from "@lobehub/ui/base-ui";
 import { useTranslation } from "react-i18next";
 
 import { ConfirmDialog } from "../../components/common/ConfirmDialog";
 import { AgentIdentityAvatar } from "../../components/agent/AgentIdentityAvatar";
-import { LoadingSpinner } from "../../components/common/LoadingSpinner";
+import { Spin } from "@lobehub/ui/base-ui";
 import { SessionItem } from "../../components/sidebar/SessionItem";
 import { groupSessionsByTime } from "../../components/panels/sessionHelpers";
 import { sessionApi } from "../../services/api";
@@ -103,20 +104,20 @@ export function AgentConversationPanel({
             </h2>
           </header>
           <div className="px-4 pb-3 pt-2">
-            <button
+            <Button type="text"
               className="flex h-9 w-full items-center justify-center gap-1.5 rounded-full border border-[var(--theme-border)] text-sm font-medium text-[var(--theme-primary)] transition-colors hover:bg-[var(--theme-primary-light)]"
               onClick={onNewSession}
-              type="button"
+              htmlType="button"
             >
               <MessageSquarePlus aria-hidden="true" size={15} />
               新建会话
-            </button>
+            </Button>
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
             {source.isLoading ? (
               <div className="flex justify-center py-8">
-                <LoadingSpinner size="sm" />
+                <Spin size={16} />
               </div>
             ) : groupedSessions.length ? (
               groupedSessions.map((group) => (
@@ -134,27 +135,27 @@ export function AgentConversationPanel({
             )}
 
             {source.hasMore ? (
-              <button
+              <Button type="text"
                 className="flex w-full items-center justify-center py-2 text-xs text-[var(--theme-primary)] hover:underline disabled:opacity-50"
                 disabled={source.isLoadingMore}
                 onClick={() => void source.loadMore()}
-                type="button"
+                htmlType="button"
               >
-                {source.isLoadingMore ? <LoadingSpinner size="xs" /> : "加载更多"}
-              </button>
+                {source.isLoadingMore ? <Spin size={12} /> : "加载更多"}
+              </Button>
             ) : null}
           </div>
         </>
       ) : null}
-      <button
+      <Button type="text"
         aria-label={isCollapsed ? "展开历史会话" : "收起历史会话"}
         className="absolute -right-5 top-1/2 z-20 flex h-12 w-5 -translate-y-1/2 items-center justify-center rounded-r-lg bg-[var(--theme-text-secondary)] text-white shadow-sm transition-colors hover:bg-[var(--theme-text)]"
         onClick={() => setIsCollapsed((collapsed) => !collapsed)}
         title={isCollapsed ? "展开历史会话" : "收起历史会话"}
-        type="button"
+        htmlType="button"
       >
         {isCollapsed ? <ChevronRight aria-hidden="true" size={16} /> : <ChevronLeft aria-hidden="true" size={16} />}
-      </button>
+      </Button>
 
       <ConfirmDialog
         cancelText={t("common.cancel")}

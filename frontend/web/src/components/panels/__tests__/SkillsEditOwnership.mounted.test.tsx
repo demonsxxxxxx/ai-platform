@@ -80,13 +80,13 @@ test("save passes explicit removals and leaves unwritten lazy files retained", a
 });
 
 test("export never downloads a partial archive and ignores a session changed mid-read", async () => {
-  const toast = (await import("react-hot-toast")).default;
+  const { toast } = await import("@lobehub/ui/base-ui");
   const { AUTH_SESSION_MARKER_KEY } = await import("../../../services/api/token");
   const old = { get: skillApi.get, file: skillApi.getFile, create: URL.createObjectURL, success: toast.success, error: toast.error };
   let downloads = 0; let successes = 0; let errors = 0;
   URL.createObjectURL = () => { downloads += 1; return "blob:synthetic"; };
-  toast.success = () => { successes += 1; return "success"; };
-  toast.error = () => { errors += 1; return "error"; };
+  toast.success = () => { successes += 1; return { id: "success", close() {}, update() {} }; };
+  toast.error = () => { errors += 1; return { id: "error", close() {}, update() {} }; };
   skillApi.get = async () => ({ files: ["SKILL.md", "missing.png"] });
   skillApi.getFile = async (_name, path) => {
     if (path === "missing.png") throw new Error("synthetic file request failed");

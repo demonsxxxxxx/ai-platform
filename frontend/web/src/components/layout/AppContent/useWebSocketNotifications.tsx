@@ -1,7 +1,7 @@
 import { useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { toast } from "react-hot-toast";
-import { Bell, X } from "lucide-react";
+import { toast } from "@lobehub/ui/base-ui";
+import { Bell } from "lucide-react";
 import { useWebSocket } from "../../../hooks/useWebSocket";
 import { useBrowserNotification } from "../../../hooks/useBrowserNotification";
 import { sessionApi } from "../../../services/api";
@@ -123,59 +123,18 @@ export function useWebSocketNotifications({
         });
       }
 
-      toast.custom(
-        (visible) => (
-          <div
-            className={`group relative pointer-events-auto cursor-pointer select-none max-w-[min(92vw,24rem)] w-full rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-4 py-3.5 text-[var(--theme-text)] shadow-[0_16px_40px_-28px_rgba(15,23,42,0.45)] transition-all ${
-              visible
-                ? "translate-y-0 opacity-100"
-                : "translate-y-1.5 opacity-0"
-            }`}
-            onClick={(e) => {
-              e.stopPropagation();
-              navigateToSession();
-              toast.remove();
-            }}
-          >
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                toast.remove();
-              }}
-              className="absolute top-1.5 right-1.5 z-10 rounded-full p-0.5 text-stone-400 opacity-0 transition-opacity hover:text-stone-600 group-hover:opacity-100 dark:text-stone-500 dark:hover:text-stone-300"
-              aria-label={t("common.close")}
-            >
-              <X size={12} />
-            </button>
-
-            <div className="flex items-center gap-3 text-left">
-              <div className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)]">
-                <Bell size={16} />
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="line-clamp-1 text-[13px] font-semibold leading-tight">
-                  {notificationCopy.title}
-                </div>
-                <div className="mt-0.5 line-clamp-1 text-xs leading-snug text-stone-500 dark:text-stone-400">
-                  {notificationCopy.body}
-                </div>
-              </div>
-            </div>
-          </div>
-        ),
-        {
-          duration: isMobileDevice() ? 5_000 : 10_000,
-          position: "top-right",
-          style: {
-            background: "transparent",
-            padding: 0,
-            boxShadow: "none",
-            border: "none",
-            borderRadius: 0,
-            overflow: "visible",
-          },
-        },
-      );
+      toast.info({
+        title: notificationCopy.title,
+        description: notificationCopy.body,
+        icon: Bell,
+        duration: isMobileDevice() ? 5_000 : 10_000,
+        placement: "top",
+        hideCloseButton: true,
+        actions: [
+          { label: t("common.open", "打开"), onClick: navigateToSession },
+          { label: t("common.close", "关闭"), variant: "secondary" },
+        ],
+      });
     },
   });
 }

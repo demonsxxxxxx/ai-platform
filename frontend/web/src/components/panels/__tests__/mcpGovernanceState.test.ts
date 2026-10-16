@@ -194,15 +194,11 @@ test("mcp editor traps focus and restores the invoking control", () => {
     "utf8",
   );
 
-  assert.match(source, /editorDialogRef/);
-  assert.match(source, /editorPreviousFocusRef/);
-  assert.match(source, /editorLoadingRef/);
-  assert.match(source, /event\.key === "Escape"/);
-  assert.match(source, /event\.key !== "Tab"/);
-  assert.match(source, /event\.shiftKey/);
+  assert.match(source, /<ModalRoot open=\{editorOpen\} onOpenChange=/);
+  assert.match(source, /<ModalPopup[^]*finalFocus=\{editorPreviousFocusRef\}/);
+  assert.match(source, /editorPreviousFocusRef\.current =[\s\S]*document\.activeElement/);
+  assert.match(source, /if \(!editorLoadingRef\.current\) setEditorOpen\(false\)/);
   assert.match(source, /data-mcp-editor-initial-focus/);
-  assert.match(source, /ref=\{editorDialogRef\}/);
-  assert.match(source, /editorPreviousFocusRef\.current\?\.focus\(\)/);
 });
 
 test("mcp lifecycle mutations keep the editor mounted", () => {
@@ -228,7 +224,7 @@ test("mcp admin transient state closes when lifecycle authority disappears", () 
     source,
     /useEffect\(\(\) => \{[\s\S]*?if \(canManageMcpUi\) return;[\s\S]*?setEditorOpen\(false\);[\s\S]*?setEditorServer\(null\);[\s\S]*?setDeleteTarget\(null\);[\s\S]*?\}, \[canManageMcpUi\]\);/,
   );
-  assert.match(source, /\}, \[editorOpen, canManageMcpUi\]\);/);
+  assert.match(source, /\{canManageMcpUi \? \(\s*<ModalRoot open=\{editorOpen\}/);
   assert.match(
     source,
     /isOpen=\{canManageMcpUi && Boolean\(deleteTarget\)\}/,

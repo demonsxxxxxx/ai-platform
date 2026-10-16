@@ -1,21 +1,23 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { act } from "react";
-import { createRoot } from "react-dom/client";
-// @ts-expect-error jsdom is the pinned mounted-test runtime.
-import { JSDOM } from "jsdom";
+import { createLobeTestRoot } from "../../../common/__tests__/lobeUiTestRoot";
+import { installSelectTestDom } from "../../../common/__tests__/selectTestDom";
 import { createSyntheticWordDocument } from "./wordPreviewFixture.ts";
+import i18n from "../../../../i18n";
 
 const t = (key: string) => key;
 
 test("Word uses measured direct DOM pages and retains zoom, gestures, selection, and reopening", async () => {
-  const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>");
+  const environment = installSelectTestDom();
+  const dom = { window };
+  document.body.innerHTML = "<div id='root'></div>";
   const saved = new Map<string, PropertyDescriptor | undefined>();
   const install = (key: string, value: unknown) => {
     saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, key, { value, configurable: true, writable: true });
   };
-  for (const key of ["window", "document", "DOMParser", "XMLSerializer", "Node", "Element", "HTMLElement", "Blob", "FileReader", "MutationObserver"]) install(key, dom.window[key]);
+  for (const key of ["window", "document", "DOMParser", "XMLSerializer", "Node", "Element", "HTMLElement", "Blob", "FileReader", "MutationObserver"] as const) install(key, dom.window[key]);
   install("IS_REACT_ACT_ENVIRONMENT", true);
   install("requestAnimationFrame", (callback: FrameRequestCallback) => setTimeout(callback, 0));
   install("ResizeObserver", class { observe() {} disconnect() {} });
@@ -31,7 +33,7 @@ test("Word uses measured direct DOM pages and retains zoom, gestures, selection,
       : 0;
   } });
   const host = document.getElementById("root")!;
-  const root = createRoot(host);
+  const root = await createLobeTestRoot(host);
   const { default: WordPreview } = await import("../WordPreview.tsx");
   const ready = async () => {
     for (let attempt = 0; attempt < 100; attempt++) {
@@ -61,7 +63,7 @@ test("Word uses measured direct DOM pages and retains zoom, gestures, selection,
     selection.removeAllRanges(); selection.addRange(range);
     assert.match(selection.toString(), /Final landscape page/);
     const click = async (label: string) => {
-      const button = host.querySelector<HTMLButtonElement>(`button[aria-label='${label}']`)!;
+      const button = host.querySelector<HTMLButtonElement>(`button[aria-label='${i18n.t(label)}']`)!;
       assert.ok(button);
       await act(async () => button.click());
     };
@@ -105,7 +107,7 @@ test("Word uses measured direct DOM pages and retains zoom, gestures, selection,
     assert.doesNotMatch(reopened.textContent!, /Final landscape page/);
   } finally {
     await act(async () => root.unmount());
-    dom.window.close();
+    environment.close();
     for (const [key, descriptor] of saved) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor);
       else Reflect.deleteProperty(globalThis, key);

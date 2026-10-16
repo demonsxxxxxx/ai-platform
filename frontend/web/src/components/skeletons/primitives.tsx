@@ -1,6 +1,7 @@
+import { Skeleton } from "@lobehub/ui/base-ui";
 /**
  * Reusable skeleton loading components for modals and panels.
- * Uses the existing `.skeleton-line` CSS class with shimmer animation.
+ * Lobe owns the visual primitive; the page classes keep responsive dimensions.
  */
 
 interface SkeletonLineProps {
@@ -13,7 +14,7 @@ export function SkeletonLine({
   className = "",
 }: SkeletonLineProps) {
   return (
-    <div className={`skeleton-line h-3 rounded-full ${width} ${className}`} />
+    <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className={`h-3 rounded-full ${width} ${className}`} />
   );
 }
 
@@ -29,8 +30,8 @@ export function SkeletonBlock({
   className = "",
 }: SkeletonBlockProps) {
   return (
-    <div
-      className={`skeleton-line rounded-lg ${width} ${height} ${className}`}
+    <Skeleton animated="sweep" style={{ width: undefined, height: undefined }}
+      className={`rounded-lg ${width} ${height} ${className}`}
     />
   );
 }
@@ -74,7 +75,7 @@ export function SkeletonList({
             <SkeletonLine width={i % 2 === 0 ? "w-3/4" : "w-1/2"} />
           ) : (
             <>
-              <div className="skeleton-line h-4 sm:h-[18px] w-4 sm:w-[18px] rounded-full flex-shrink-0" />
+              <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="h-4 sm:h-[18px] w-4 sm:w-[18px] rounded-full flex-shrink-0" />
               <div className="flex-1 space-y-1 sm:space-y-1.5 min-w-0">
                 <SkeletonLine width={i % 2 === 0 ? "w-3/4" : "w-1/2"} />
                 <SkeletonLine

@@ -5,9 +5,6 @@ export type {
   CollapsibleVariant,
 } from "./CollapsiblePill";
 
-export { LoadingSpinner, Loading } from "./LoadingSpinner";
-export type { LoadingSize } from "./LoadingSpinner";
-
 export { ThemeToggle } from "./ThemeToggle";
 export { ConfirmDialog } from "./ConfirmDialog";
 

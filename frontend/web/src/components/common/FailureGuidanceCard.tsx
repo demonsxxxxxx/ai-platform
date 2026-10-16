@@ -1,3 +1,4 @@
+import { Button } from "@lobehub/ui/base-ui";
 import { Check, Copy } from "lucide-react";
 import { useState } from "react";
 import type { FailureGuidance } from "../../types/failureGuidance";
@@ -49,15 +50,15 @@ export function FailureGuidanceCard({
               {guidance.problemNumber ?? "尚未生成"}
             </code>
             {guidance.problemNumber ? (
-              <button
-                type="button"
+              <Button type="text"
+                htmlType="button"
                 onClick={() => void copyProblemNumber()}
                 className="inline-flex shrink-0 items-center gap-1 rounded border border-amber-300 bg-white/80 px-2 py-1 text-[11px] font-medium text-stone-700 hover:bg-white dark:border-amber-800 dark:bg-stone-900/80 dark:text-stone-200"
                 aria-label="复制问题编号"
               >
                 {copied ? <Check size={12} /> : <Copy size={12} />}
                 {copied ? "已复制" : "复制"}
-              </button>
+              </Button>
             ) : null}
           </dd>
         </div>

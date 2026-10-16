@@ -1,3 +1,4 @@
+import { Button } from "@lobehub/ui/base-ui";
 import {
   Activity,
   AlertTriangle,
@@ -13,7 +14,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { PanelHeader } from "../common/PanelHeader";
-import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "../common/Table";
+import { Table } from "@lobehub/ui/base-ui";
 import { PanelLoadingState } from "../common/PanelLoadingState";
 import { WorkbenchStateSurface } from "../workbench/WorkbenchStateSurface";
 import { workbenchSurface } from "../workbench/workbenchSurface";
@@ -29,7 +30,7 @@ import {
 import { formatDateTimeShort } from "../../utils/datetime";
 import { buildAdminRunMonitorView } from "./adminRunTimeline";
 import { RunDiagnosticsSection } from "./RunDiagnosticsSection";
-import { EnterpriseSelect } from "../common/EnterpriseSelect";
+import { LobeSelectField } from "../lobe-ui/LobeSelectField";
 import { RunPerformanceSummary } from "./RunPerformanceSummary";
 import { RunInvestigationTimeline } from "./RunInvestigationTimeline";
 import { formatRunDuration } from "./runPerformance";
@@ -215,15 +216,15 @@ function IdentityField({ label, value }: { label: string; value?: string | null 
       <dt className="flex items-center justify-between gap-2 text-[11px] font-medium text-[var(--theme-text-tertiary)]">
         <span>{label}</span>
         {value ? (
-          <button
-            type="button"
+          <Button type="text"
+            htmlType="button"
             className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] hover:bg-[var(--theme-bg-sidebar)]"
             onClick={() => void copyValue()}
             aria-label={`复制${label}`}
           >
             <Copy size={11} />
             {copied ? "已复制" : "复制"}
-          </button>
+          </Button>
         ) : null}
       </dt>
       <dd className="mt-1 break-all font-mono text-xs leading-5 text-[var(--theme-text)]" title={value || undefined}>
@@ -425,16 +426,16 @@ function RunDetail({
             </p>
           ) : null}
         </div>
-        <button
+        <Button type="text"
           ref={closeRef}
-          type="button"
+          htmlType="button"
           className="btn-icon flex size-9 shrink-0 items-center justify-center rounded-md"
           onClick={onClose}
           aria-label="关闭运行详情"
           title="关闭运行详情"
         >
           <X size={17} />
-        </button>
+        </Button>
       </div>
 
       {loading ? (
@@ -468,7 +469,7 @@ function RunDetail({
             </div>
             <RuntimeHealth detail={detail} />
             {detail.run.error_code ? <p className="mt-2 text-xs text-[var(--theme-danger)]">终态分类：{detail.run.error_code}（与最早异常分开解释）</p> : null}
-            {detail.run.agent_id ? <button type="button" className="btn-secondary mt-3 text-xs" onClick={() => onFocusAgent(detail.run.agent_id!, agentDisplayName(detail.run))}>只看这个 Agent 的任务</button> : null}
+            {detail.run.agent_id ? <Button type="default" htmlType="button" className="mt-3 text-xs" onClick={() => onFocusAgent(detail.run.agent_id!, agentDisplayName(detail.run))}>只看这个 Agent 的任务</Button> : null}
           </section>
 
           <RunInvestigationTimeline
@@ -526,28 +527,16 @@ function DesktopRunTable({
 }) {
   return (
     <div className="hidden min-w-[940px] md:block">
-      <Table className="w-full border-separate border-spacing-0 text-left text-xs">
-        <TableHeader className="sticky top-0 z-[1] bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)]">
-          <TableRow>
-            <TableHead className="border-b border-[var(--theme-border)] px-3 py-2.5 font-medium">状态</TableHead>
-            <TableHead className="border-b border-[var(--theme-border)] px-3 py-2.5 font-medium">任务 / 运行</TableHead>
-            <TableHead className="border-b border-[var(--theme-border)] px-3 py-2.5 font-medium">用户 / 工作区</TableHead>
-            <TableHead className="border-b border-[var(--theme-border)] px-3 py-2.5 font-medium">Agent / Skill</TableHead>
-            <TableHead className="border-b border-[var(--theme-border)] px-3 py-2.5 font-medium">时间</TableHead>
-            <TableHead className="w-10 border-b border-[var(--theme-border)] px-2 py-2.5"><span className="sr-only">详情</span></TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {runs.map((run) => {
-            const selected = run.run_id === selectedRunId;
-            return (
-              <TableRow
-                key={run.run_id}
-                data-selected={selected ? "true" : "false"}
-                className="group transition-colors hover:bg-[var(--theme-bg-sidebar)] data-[selected=true]:bg-[var(--theme-info-soft)]"
-              >
-                <TableCell className="border-b border-[var(--theme-border)] px-3 py-3 align-top">
-                  <StatusBadge status={run.status} />
+      <Table
+ size="small" pagination={false}
+ dataSource={runs}
+ rowKey={(run) => run.run_id}
+onRow={(run) => { const selected = run.run_id === selectedRunId; return ({"data-selected": selected ? "true" : "false",
+"className": "group transition-colors hover:bg-[var(--theme-bg-sidebar)] data-[selected=true]:bg-[var(--theme-info-soft)]"}); }}
+ columns={[
+{ key: "status", title: "状态",
+render: (_value, run) => (<>
+<StatusBadge status={run.status} />
                   {run.status === "queued" && run.queue_position ? (
                     <p className="mt-1.5 whitespace-nowrap text-[11px] text-[var(--theme-text-tertiary)]">
                       队列第 {run.queue_position} 位
@@ -561,10 +550,11 @@ function DesktopRunTable({
                       {run.error_code}
                     </p>
                   ) : null}
-                </TableCell>
-                <TableCell className="max-w-[250px] border-b border-[var(--theme-border)] px-3 py-3 align-top">
-                  <button
-                    type="button"
+</>) },
+{ key: "identity", title: "任务 / 运行",
+render: (_value, run) => (<>
+<Button type="text"
+                    htmlType="button"
                     onClick={() => onSelect(run.run_id)}
                     className="block w-full min-w-0 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-focus-ring)]"
                     aria-label={`查看 ${run.run_id}`}
@@ -581,10 +571,11 @@ function DesktopRunTable({
                     >
                       运行 {compactIdentifier(run.run_id)}
                     </span>
-                  </button>
-                </TableCell>
-                <TableCell className="max-w-[190px] border-b border-[var(--theme-border)] px-3 py-3 align-top">
-                  <p className="truncate text-[var(--theme-text)]" title={userDisplayName(run)}>
+                  </Button>
+</>) },
+{ key: "user", title: "用户 / 工作区",
+render: (_value, run) => (<>
+<p className="truncate text-[var(--theme-text)]" title={userDisplayName(run)}>
                     {userDisplayName(run)}
                   </p>
                   <p
@@ -593,9 +584,10 @@ function DesktopRunTable({
                   >
                     {workspaceDisplayName(run)}
                   </p>
-                </TableCell>
-                <TableCell className="max-w-[210px] border-b border-[var(--theme-border)] px-3 py-3 align-top">
-                  <p className="truncate text-[var(--theme-text)]" title={agentDisplayName(run)}>
+</>) },
+{ key: "agent", title: "Agent / Skill",
+render: (_value, run) => (<>
+<p className="truncate text-[var(--theme-text)]" title={agentDisplayName(run)}>
                     {agentDisplayName(run)}
                   </p>
                   <p
@@ -604,27 +596,26 @@ function DesktopRunTable({
                   >
                     {skillDisplayName(run)}
                   </p>
-                </TableCell>
-                <TableCell className="whitespace-nowrap border-b border-[var(--theme-border)] px-3 py-3 align-top">
-                  <p className="text-[var(--theme-text)]">{dateTime(run.started_at ?? run.queued_at ?? run.created_at)}</p>
+</>) },
+{ key: "time", title: "时间",
+render: (_value, run) => (<>
+<p className="text-[var(--theme-text)]">{dateTime(run.started_at ?? run.queued_at ?? run.created_at)}</p>
                   <p className="mt-1 tabular-nums text-[11px] text-[var(--theme-text-tertiary)]">{durationLabel(run)}</p>
-                </TableCell>
-                <TableCell className="border-b border-[var(--theme-border)] px-2 py-3 align-middle">
-                  <button
-                    type="button"
+</>) },
+{ key: "actions", title: (<span className="sr-only">详情</span>),
+render: (_value, run) => (<>
+<Button type="text"
+                    htmlType="button"
                     onClick={() => onSelect(run.run_id)}
                     className="btn-icon flex size-8 items-center justify-center rounded-md"
                     aria-label={`打开 ${run.run_id} 详情`}
                     title="打开详情"
                   >
                     <ChevronRight size={16} />
-                  </button>
-                </TableCell>
-              </TableRow>
-            );
-          })}
-        </TableBody>
-      </Table>
+                  </Button>
+</>) }
+]}
+/>
     </div>
   );
 }
@@ -641,9 +632,9 @@ function MobileRunList({
   return (
     <div className="divide-y divide-[var(--theme-border)] md:hidden">
       {runs.map((run) => (
-        <button
+        <Button type="text"
           key={run.run_id}
-          type="button"
+          htmlType="button"
           onClick={() => onSelect(run.run_id)}
           aria-label={`查看 ${run.run_id}`}
           data-selected={run.run_id === selectedRunId ? "true" : "false"}
@@ -669,7 +660,7 @@ function MobileRunList({
             <span className="truncate">{userDisplayName(run)} · {agentDisplayName(run)}</span>
             <span className="shrink-0 tabular-nums">{durationLabel(run)}</span>
           </div>
-        </button>
+        </Button>
       ))}
     </div>
   );
@@ -934,18 +925,18 @@ export function RunMonitorPanel() {
 
   const headerActions = (
     <div className="flex items-center gap-1">
-      <button
-        type="button"
+      <Button type="text"
+        htmlType="button"
         className="btn-icon flex size-9 items-center justify-center rounded-md"
         onClick={() => setAutoRefresh((value) => !value)}
         aria-label={autoRefresh ? "暂停自动刷新" : "开启自动刷新"}
         title={autoRefresh ? "暂停自动刷新" : "开启自动刷新"}
       >
         {autoRefresh ? <Pause size={16} /> : <Play size={16} />}
-      </button>
-      <button
+      </Button>
+      <Button type="text"
         ref={refreshButtonRef}
-        type="button"
+        htmlType="button"
         className="btn-icon flex size-9 items-center justify-center rounded-md"
         onClick={() => void loadRuns(false)}
         disabled={isRefreshing}
@@ -953,7 +944,7 @@ export function RunMonitorPanel() {
         title="刷新最近运行"
       >
         <RefreshCw size={16} className={isRefreshing ? "animate-spin" : ""} />
-      </button>
+      </Button>
     </div>
   );
 
@@ -974,9 +965,9 @@ export function RunMonitorPanel() {
           title="运行监控暂不可用"
           description={loadError}
           actions={
-            <button type="button" className="btn-primary" onClick={() => void loadRuns(true)}>
+            <Button type="primary" htmlType="button" className="" onClick={() => void loadRuns(true)}>
               重试
-            </button>
+            </Button>
           }
         />
       </div>
@@ -1019,16 +1010,16 @@ export function RunMonitorPanel() {
       ) : null}
 
       <div className="flex flex-wrap items-center gap-2 px-4 py-3" aria-label="调查范围">
-        <EnterpriseSelect value={String(hours)} aria-label="统计时间窗" className="w-32"
+        <LobeSelectField value={String(hours)} aria-label="统计时间窗" className="w-32"
           options={[{ value: "1", label: "最近 1 小时" }, { value: "24", label: "最近 24 小时" }, { value: "168", label: "最近 7 天" }]}
           onChange={(value) => { invalidateMonitorScope(); setHours(Number(value)); setModelFilter("all"); }} />
-        <EnterpriseSelect value={modelFilter} aria-label="模型配置筛选" className="w-56"
+        <LobeSelectField value={modelFilter} aria-label="模型配置筛选" className="w-56"
           options={[{ value: "all", label: "全部模型配置" }, ...(monitorReport?.models ?? []).map((model) => ({ value: `${model.model_id}@${model.model_gateway_revision ?? ""}`, label: `${model.model_value || "未记录模型名称"}${model.model_gateway_revision == null ? "" : ` · 配置 v${model.model_gateway_revision}`}` }))]}
           onChange={(value) => { invalidateMonitorScope(); setModelFilter(value); }} />
-        <EnterpriseSelect value={order} aria-label="运行排序" className="w-36"
+        <LobeSelectField value={order} aria-label="运行排序" className="w-36"
           options={[{ value: "slow", label: "耗时从长到短" }, { value: "recent", label: "最近提交优先" }]}
           onChange={(value) => { invalidateMonitorScope(); setOrder(value as "slow" | "recent"); }} />
-        {agentFilter ? <button type="button" className="btn-secondary text-xs" onClick={() => { invalidateMonitorScope(); setAgentFilter(null); }}>Agent：{agentFilter.label} · 清除</button> : null}
+        {agentFilter ? <Button type="default" htmlType="button" className="text-xs" onClick={() => { invalidateMonitorScope(); setAgentFilter(null); }}>Agent：{agentFilter.label} · 清除</Button> : null}
       </div>
       <div className="px-4 pb-3"><RunPerformanceSummary report={monitorReport} /></div>
 
@@ -1039,15 +1030,15 @@ export function RunMonitorPanel() {
           aria-label="运行状态筛选"
         >
           {STATUS_FILTERS.map((filter) => (
-            <button
+            <Button type="text"
               key={filter.value}
-              type="button"
+              htmlType="button"
               aria-pressed={statusFilter === filter.value}
               onClick={() => { if (statusFilter !== filter.value) { invalidateMonitorScope(); setStatusFilter(filter.value); } }}
               className="h-7 whitespace-nowrap rounded px-2.5 text-xs font-medium text-[var(--theme-text-secondary)] transition-colors aria-pressed:bg-[var(--theme-workbench-panel)] aria-pressed:text-[var(--theme-text)] aria-pressed:shadow-sm"
             >
               {filter.label}
-            </button>
+            </Button>
           ))}
         </div>
         <p className="text-xs text-[var(--theme-text-tertiary)]" aria-live="polite">
@@ -1104,8 +1095,8 @@ export function RunMonitorPanel() {
 
         {selectedRunId ? (
           <div className="fixed inset-0 z-[300]">
-            <button
-              type="button"
+            <Button type="text"
+              htmlType="button"
               data-run-monitor-backdrop
               className="absolute inset-0 cursor-default bg-[var(--theme-overlay-strong)]"
               aria-label="关闭运行详情遮罩"
@@ -1147,26 +1138,26 @@ export function RunMonitorPanel() {
             {Math.min(currentPage * PAGE_SIZE, filteredRuns.length)} / {filteredRuns.length} 条
           </span>
           <div className="flex shrink-0 items-center gap-1">
-            <button
-              type="button"
-              className="btn-secondary inline-flex h-8 items-center gap-1 rounded-md px-2.5"
+            <Button type="default"
+              htmlType="button"
+              className="inline-flex h-8 items-center gap-1 rounded-md px-2.5"
               onClick={() => setPage((current) => Math.max(1, current - 1))}
               disabled={currentPage === 1}
               aria-label="上一页"
             >
               <ChevronLeft size={14} />
               <span>上一页</span>
-            </button>
-            <button
-              type="button"
-              className="btn-secondary inline-flex h-8 items-center gap-1 rounded-md px-2.5"
+            </Button>
+            <Button type="default"
+              htmlType="button"
+              className="inline-flex h-8 items-center gap-1 rounded-md px-2.5"
               onClick={() => setPage((current) => Math.min(pageCount, current + 1))}
               disabled={currentPage === pageCount}
               aria-label="下一页"
             >
               <span>下一页</span>
               <ChevronRight size={14} />
-            </button>
+            </Button>
           </div>
         </nav>
       ) : null}

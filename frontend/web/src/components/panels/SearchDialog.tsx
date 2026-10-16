@@ -1,3 +1,4 @@
+import { Button, Input, Spin, ModalRoot, ModalPortal, ModalBackdrop, ModalPopup, ModalTitle } from "@lobehub/ui/base-ui";
 /**
  * Search dialog for finding sessions across all projects.
  *
@@ -6,7 +7,6 @@
  */
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { createPortal } from "react-dom";
 import { useInView } from "react-intersection-observer";
 import { useTranslation } from "react-i18next";
 import { Search, X, Hash } from "lucide-react";
@@ -34,10 +34,8 @@ export function SearchDialog({
 }: SearchDialogProps) {
   const { t } = useTranslation();
   const inputRef = useRef<HTMLInputElement>(null);
-  const itemRefs = useRef<Map<number, HTMLButtonElement>>(new Map());
+  const itemRefs = useRef<Map<number, HTMLElement>>(new Map());
   const [activeIndex, setActiveIndex] = useState(-1);
-  const [isAnimating, setIsAnimating] = useState(false);
-  const [visible, setVisible] = useState(false);
 
   // ── Session state (independent pagination) ────────────────────
   const [allSessions, setAllSessions] = useState<SearchResult[]>([]);
@@ -54,32 +52,8 @@ export function SearchDialog({
     rootMargin: "200px",
   });
 
-  // ── Entrance / exit animation ──────────────────────────────────
   useEffect(() => {
-    if (isOpen) {
-      setIsAnimating(true);
-      requestAnimationFrame(() => {
-        setVisible(true);
-      });
-      // Reset & fetch on open
-      setAllSessions([]);
-      setSkip(0);
-      setHasMore(false);
-    } else {
-      setVisible(false);
-    }
-  }, [isOpen]);
-
-  const handleTransitionEnd = useCallback(() => {
-    if (!visible) setIsAnimating(false);
-  }, [visible]);
-
-  // ── Focus input on open ────────────────────────────────────────
-  useEffect(() => {
-    if (isOpen) {
-      const timer = setTimeout(() => inputRef.current?.focus(), 60);
-      return () => clearTimeout(timer);
-    }
+    if (isOpen) { setAllSessions([]); setSkip(0); setHasMore(false); }
   }, [isOpen]);
 
   // ── Reset active index when results change ─────────────────────
@@ -182,11 +156,7 @@ export function SearchDialog({
   useEffect(() => {
     if (!isOpen) return;
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        onClose();
-        return;
-      }
+      if (e.isComposing) return;
       if (e.key === "ArrowDown") {
         e.preventDefault();
         setActiveIndex((prev) => {
@@ -223,41 +193,18 @@ export function SearchDialog({
 
   const hasQuery = searchQuery.trim().length > 0;
 
-  if (!isAnimating) return null;
-
-  return createPortal(
-    <div
-      data-yields-sidebar
-      className={`fixed inset-0 z-[300] flex items-center justify-center transition-all duration-200 ease-out ${
-        visible ? "visible" : "invisible"
-      }`}
-    >
-      {/* Backdrop */}
-      <div
-        className={`absolute inset-0 bg-slate-950/35 transition-opacity duration-200 ${
-          visible ? "opacity-100" : "opacity-0"
-        }`}
-        onClick={onClose}
-      />
-
-      {/* Dialog panel — scale + fade */}
-      <div
-        onTransitionEnd={handleTransitionEnd}
-        className={`relative w-[92vw] max-w-lg overflow-hidden rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] shadow-[0_8px_24px_rgba(18,38,63,0.12)] transition-all duration-200 ease-out origin-top dark:bg-stone-900 ${
-          visible
-            ? "opacity-100 scale-100 translate-y-0"
-            : "opacity-0 scale-[0.97] -translate-y-2"
-        }`}
-      >
+  return (
+    <ModalRoot open={isOpen} onOpenChange={(open) => { if (!open) onClose(); }}>
+      <ModalPortal>
+        <ModalBackdrop />
+        <ModalPopup width="min(32rem, calc(100vw - 2rem))" className="workbench-modal" initialFocus={inputRef}>
+          <ModalTitle className="sr-only">{t("sidebar.searchSessions")}</ModalTitle>
         {/* Search input */}
         <div className="flex items-center gap-3 px-4 py-3.5">
-          <Search
-            size={16}
-            strokeWidth={2}
-            className="flex-shrink-0 text-stone-400 dark:text-stone-500"
-          />
-          <input
+          <Input
             ref={inputRef}
+            prefix={<Search size={16} />}
+            aria-label={t("sidebar.searchSessions")}
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
@@ -265,12 +212,13 @@ export function SearchDialog({
             className="flex-1 min-w-0 text-[15px] bg-transparent text-stone-800 dark:text-stone-100 placeholder:text-stone-400 dark:placeholder:text-stone-500 focus:outline-none"
           />
           {searchQuery && (
-            <button
+            <Button type="text"
               onClick={() => setSearchQuery("")}
+              aria-label={t("common.clear", "清空")}
               className="flex-shrink-0 flex items-center justify-center w-5 h-5 rounded-full text-[var(--theme-text-tertiary)] hover:text-[var(--theme-text)] hover:bg-[var(--theme-bg-sidebar)] transition-all"
             >
               <X size={12} strokeWidth={2.5} />
-            </button>
+            </Button>
           )}
           <kbd className="hidden sm:inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium text-[var(--theme-text-tertiary)] bg-[var(--theme-bg-sidebar)] rounded-md border border-[var(--theme-border)]">
             ESC
@@ -341,7 +289,7 @@ export function SearchDialog({
                         .search_match as string)
                     : null;
                 return (
-                  <button
+                  <Button type="text"
                     key={session.id}
                     ref={(el) => {
                       if (el) {
@@ -377,7 +325,7 @@ export function SearchDialog({
                         {projectName}
                       </span>
                     )}
-                  </button>
+                  </Button>
                 );
               })}
 
@@ -385,10 +333,7 @@ export function SearchDialog({
               {hasMore && (
                 <div ref={sentinelRef} className="flex justify-center py-3">
                   {isLoadingMore && (
-                    <div className="relative w-4 h-4">
-                      <div className="absolute inset-0 rounded-full border-2 border-stone-200 dark:border-stone-700" />
-                      <div className="absolute inset-0 rounded-full border-2 border-transparent border-t-stone-500 dark:border-t-stone-400 animate-spin will-change-transform" />
-                    </div>
+                    <Spin size={16} />
                   )}
                 </div>
               )}
@@ -424,8 +369,8 @@ export function SearchDialog({
             </div>
           </>
         )}
-      </div>
-    </div>,
-    document.body,
+        </ModalPopup>
+      </ModalPortal>
+    </ModalRoot>
   );
 }

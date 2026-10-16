@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { after } from "node:test";
 
 import type { SkillsResponse, UserSkill } from "../../types/skill.ts";
 import { skillApi } from "../../services/api/skill.ts";
@@ -7,6 +7,7 @@ import { ApiRequestError } from "../../services/api/fetch.ts";
 import { installTestDom } from "../useAgent/__tests__/testDom.ts";
 
 const dom = installTestDom();
+after(() => dom.close());
 
 test("admin lifecycle contract errors render a user-facing catalog message", async () => {
   const { resolveSkillOperationError } = await import("../useSkills.ts");

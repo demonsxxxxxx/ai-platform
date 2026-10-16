@@ -1,3 +1,4 @@
+import { Button, Input } from "@lobehub/ui/base-ui";
 /**
  * 登录/注册页面组件
  */
@@ -5,14 +6,14 @@
 import { useState, useEffect, useRef, useCallback, Fragment } from "react";
 import { AlertCircle, AtSign } from "lucide-react";
 import { PasswordInput } from "./PasswordInput";
-import toast from "react-hot-toast";
+import { toast } from "@lobehub/ui/base-ui";
 import { useTranslation } from "react-i18next";
 import { Turnstile } from "react-turnstile";
 import { useAuth } from "../../hooks/useAuth";
 import { BrowserAuthCoordinatorError } from "../../hooks/browserAuthCoordinator";
 import { ApiRequestError } from "../../services/api/fetch";
 import { useTheme } from "../../contexts/ThemeContext";
-import { Loading, LoadingSpinner } from "../common/LoadingSpinner";
+import { Spin } from "@lobehub/ui/base-ui";
 import { ContactAdminDialog } from "../common/ContactAdminDialog";
 import { ThemeToggle } from "../common/ThemeToggle";
 import { CompanyADLoginError, authApi } from "../../services/api/auth";
@@ -253,7 +254,7 @@ export function AuthPage({ onSuccess }: AuthPageProps) {
   if (isAttemptingAD) {
     return (
       <div className="auth-shell flex min-h-screen items-center justify-center">
-        <Loading size="lg" className="justify-center" />
+        <Spin size={32} className="justify-center" />
       </div>
     );
   }
@@ -262,7 +263,7 @@ export function AuthPage({ onSuccess }: AuthPageProps) {
     return (
       <div className="auth-shell flex min-h-screen items-center justify-center">
         <div className="text-center">
-          <Loading size="lg" className="justify-center" />
+          <Spin size={32} className="justify-center" />
           <p className="mt-4 text-stone-600 dark:text-stone-400">
             {t("auth.completingLogin")}
           </p>
@@ -322,8 +323,8 @@ export function AuthPage({ onSuccess }: AuthPageProps) {
                 <div className="flex flex-wrap items-center justify-center gap-2 sm:gap-3">
                   {oauthProviders.map((provider) => (
                     <Fragment key={provider.id}>
-                      <button
-                        type="button"
+                      <Button type="text"
+                        htmlType="button"
                         onClick={() => handleOAuthLogin(provider.id)}
                         className="flex h-11 min-w-12 items-center justify-center gap-2 rounded-xl border border-stone-200 bg-white/85 px-3 text-sm font-medium text-stone-700 shadow-sm transition-all hover:-translate-y-0.5 hover:bg-white hover:shadow-md active:translate-y-0 dark:border-stone-700 dark:bg-stone-800/70 dark:text-stone-200 dark:hover:bg-stone-800 dark:hover:shadow-lg sm:h-auto sm:gap-2.5 sm:p-3"
                       >
@@ -368,7 +369,7 @@ export function AuthPage({ onSuccess }: AuthPageProps) {
                             <path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z" />
                           </svg>
                         )}
-                      </button>
+                      </Button>
                     </Fragment>
                   ))}
                 </div>
@@ -399,42 +400,39 @@ export function AuthPage({ onSuccess }: AuthPageProps) {
                     error.includes("激活") ||
                     error.includes("verify") ||
                     error.includes("activate")) && (
-                    <button
+                    <Button type="text"
                       onClick={() => setContactAdminOpen(true)}
                       className="mt-1.5 text-xs text-stone-400 dark:text-stone-500 hover:text-stone-600 dark:hover:text-stone-300 transition-colors"
                     >
                       {t("contactAdmin.supportLink", "联系管理员")}
-                    </button>
+                    </Button>
                   )}
                 </div>
               )}
 
               {/* Account input */}
               <div>
-                <label className="mb-0.5 block text-[11px] font-medium text-stone-700 dark:text-stone-300 sm:mb-1.5 sm:text-sm">
+                <label htmlFor="auth-username" className="mb-0.5 block text-[11px] font-medium text-stone-700 dark:text-stone-300 sm:mb-1.5 sm:text-sm">
                   {t("auth.account")}
                 </label>
-                <div className="relative">
-                  <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-2.5 text-stone-400 dark:text-stone-500 sm:pl-3.5">
-                    <AtSign size={14} />
-                  </div>
-                  <input
-                    type="text"
-                    value={username}
-                    onChange={(e) => setUsername(e.target.value)}
-                    className="auth-input w-full rounded-xl py-2.5 pl-10 pr-3 text-sm transition-all sm:py-2.5 sm:pl-10 sm:pr-3 md:py-3 md:pl-11 md:pr-4"
-                    placeholder={t("auth.usernameOrEmailPlaceholder")}
-                    autoComplete="username"
-                  />
-                </div>
+                <Input
+                  id="auth-username"
+                  type="text"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  prefix={<AtSign size={14} />}
+                  placeholder={t("auth.usernameOrEmailPlaceholder")}
+                  autoComplete="username"
+                />
               </div>
 
               {/* Password */}
               <div>
-                <label className="mb-0.5 block text-[11px] font-medium text-stone-700 dark:text-stone-300 sm:mb-1.5 sm:text-sm">
+                <label htmlFor="auth-password" className="mb-0.5 block text-[11px] font-medium text-stone-700 dark:text-stone-300 sm:mb-1.5 sm:text-sm">
                   {t("auth.password")}
                 </label>
                 <PasswordInput
+                  id="auth-password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder={t("auth.passwordPlaceholder")}
@@ -464,21 +462,14 @@ export function AuthPage({ onSuccess }: AuthPageProps) {
               )}
 
               {/* Submit button */}
-              <button
-                type="submit"
+              <Button type="primary"
+                htmlType="submit"
+                loading={isSubmitting}
                 disabled={isSubmitting || isRedirecting}
-                className="auth-primary-button min-h-12 w-full rounded-xl py-3 text-sm font-semibold transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-50 lg:py-3.5 2xl:py-4"
+                className="w-full"
               >
-                <span className="inline-flex items-center justify-center gap-2">
-                  {isSubmitting && (
-                    <LoadingSpinner
-                      size="sm"
-                      className="text-white dark:text-stone-900"
-                    />
-                  )}
-                  <span>{submitLabel}</span>
-                </span>
-              </button>
+                {submitLabel}
+              </Button>
             </form>
           </div>
         </div>

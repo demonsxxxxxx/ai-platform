@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import React from "react";
+import { createLobeTestRoot } from "../../../components/common/__tests__/lobeUiTestRoot";
 import { installSelectTestDom } from "../../../components/common/__tests__/selectTestDom.ts";
 
 import type { AgentProfileAdminProjection, PublicSkillResponse } from "../../../types";
@@ -85,6 +86,12 @@ function catalog(
   };
 }
 
+function changeInput(input: HTMLInputElement | HTMLTextAreaElement, value: string) {
+  const prototype = input instanceof window.HTMLTextAreaElement ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+  Object.getOwnPropertyDescriptor(prototype, "value")!.set!.call(input, value);
+  input.dispatchEvent(new window.Event("input", { bubbles: true }));
+}
+
 function reactProps(element: Element): Record<string, (...args: never[]) => unknown> {
   const key = Object.keys(element).find((name) => name.startsWith("__reactProps$"));
   assert.ok(key, `React props are attached to <${element.tagName}>`);
@@ -105,7 +112,7 @@ async function flush() {
 
 test("mounted workbench hydrates, refreshes, and creates only an explicit local form", async () => {
   const document = installDom();
-  const ReactDOM = await import("react-dom/client");
+
   const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
   const { AgentBuilderWorkbench } = await import("../AgentBuilderWorkbench.tsx");
   const originals = { ...agentProfileApi };
@@ -130,7 +137,7 @@ test("mounted workbench hydrates, refreshes, and creates only an explicit local 
   };
   const container = document.createElement("div");
   document.body.appendChild(container);
-  const root = ReactDOM.createRoot(container as never);
+  const root = await createLobeTestRoot(container);
   try {
     await React.act(async () => {
       root.render(React.createElement(AgentBuilderWorkbench, {
@@ -191,7 +198,7 @@ test("mounted workbench hydrates, refreshes, and creates only an explicit local 
 
 test("mounted delete confirms retained evidence and removes a draft profile", async () => {
   const document = installDom();
-  const ReactDOM = await import("react-dom/client");
+
   const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
   const { AgentBuilderWorkbench } = await import("../AgentBuilderWorkbench.tsx");
   const originals = { ...agentProfileApi };
@@ -203,7 +210,7 @@ test("mounted delete confirms retained evidence and removes a draft profile", as
   };
   const container = document.createElement("div");
   document.body.appendChild(container);
-  const root = ReactDOM.createRoot(container as never);
+  const root = await createLobeTestRoot(container);
   try {
     await React.act(async () => {
       root.render(React.createElement(AgentBuilderWorkbench, {
@@ -242,14 +249,14 @@ test("mounted delete confirms retained evidence and removes a draft profile", as
 
 test("mounted starter prompts preserve separators while editing and normalize on blur", async () => {
   const document = installDom();
-  const ReactDOM = await import("react-dom/client");
+
   const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
   const { AgentBuilderWorkbench } = await import("../AgentBuilderWorkbench.tsx");
   const originals = { ...agentProfileApi };
   agentProfileApi.listAdmin = async () => ({ agent_profiles: [profile()] });
   const container = document.createElement("div");
   document.body.appendChild(container);
-  const root = ReactDOM.createRoot(container as never);
+  const root = await createLobeTestRoot(container);
   try {
     await React.act(async () => {
       root.render(React.createElement(AgentBuilderWorkbench, {
@@ -262,15 +269,15 @@ test("mounted starter prompts preserve separators while editing and normalize on
     const starterPrompts = container.querySelector<HTMLTextAreaElement>('[aria-label="启动问题（可选）"]');
     assert.ok(starterPrompts);
     await React.act(async () => {
-      reactProps(starterPrompts).onFocus?.({ target: starterPrompts } as never);
-      starterPrompts.value = "问题一,问题二";
-      reactProps(starterPrompts).onChange?.({ target: starterPrompts } as never);
+      starterPrompts.focus();
+      changeInput(starterPrompts, "问题一,问题二");
+
       await Promise.resolve();
     });
     assert.equal(starterPrompts.value, "问题一,问题二");
 
     await React.act(async () => {
-      reactProps(starterPrompts).onBlur?.({ target: starterPrompts } as never);
+      starterPrompts.blur();
       await Promise.resolve();
     });
     assert.equal(starterPrompts.value, "问题一\n问题二");
@@ -282,7 +289,7 @@ test("mounted starter prompts preserve separators while editing and normalize on
 
 test("market tag combobox shows existing tags, filters them, and accepts custom input", async () => {
   const document = installDom();
-  const ReactDOM = await import("react-dom/client");
+
   const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
   const { AgentBuilderWorkbench } = await import("../AgentBuilderWorkbench.tsx");
   const originals = { ...agentProfileApi };
@@ -298,7 +305,7 @@ test("market tag combobox shows existing tags, filters them, and accepts custom 
   });
   const container = document.createElement("div");
   document.body.appendChild(container);
-  const root = ReactDOM.createRoot(container as never);
+  const root = await createLobeTestRoot(container);
   try {
     await React.act(async () => {
       root.render(React.createElement(AgentBuilderWorkbench, {
@@ -308,54 +315,47 @@ test("market tag combobox shows existing tags, filters them, and accepts custom 
       await flush();
     });
 
-    const marketTag = container.querySelector<HTMLInputElement>('[aria-label="市场标签"]');
+    const marketTag = container.querySelector<HTMLInputElement>('#agent-market-tag-input');
     assert.ok(marketTag);
     await React.act(async () => {
-      reactProps(marketTag).onFocus?.({ target: marketTag } as never);
+      marketTag.focus();
+      marketTag.dispatchEvent(new window.MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+      marketTag.click();
       await Promise.resolve();
     });
-    const options = () => Array.from(container.querySelector('[role="listbox"]')?.querySelectorAll('[role="option"]') ?? []);
+    const options = () => Array.from(document.querySelector('[role="listbox"]')?.querySelectorAll('[role="option"]') ?? []);
     assert.deepEqual(
       options().map((option) => (option.textContent ?? "")),
       ["人力资源"],
     );
 
     await React.act(async () => {
-      marketTag.value = "人力";
-      reactProps(marketTag).onChange?.({ target: marketTag } as never);
+      changeInput(marketTag, "人力");
+
       await Promise.resolve();
     });
     assert.deepEqual(options().map((option) => (option.textContent ?? "")), ["人力资源"]);
 
     await React.act(async () => {
-      reactProps(marketTag).onKeyDown?.({
-        key: "ArrowDown",
-        preventDefault() {},
-      } as never);
+      marketTag.dispatchEvent(new window.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
       await Promise.resolve();
     });
     await React.act(async () => {
-      reactProps(marketTag).onKeyDown?.({
-        key: "Enter",
-        preventDefault() {},
-      } as never);
+      marketTag.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
       await Promise.resolve();
     });
     assert.equal(marketTag.value, "");
     assert.ok(container.querySelector('[aria-label="移除标签 人力资源"]'));
 
     await React.act(async () => {
-      marketTag.value = "自定义能力";
-      reactProps(marketTag).onChange?.({ target: marketTag } as never);
+      changeInput(marketTag, "自定义能力");
+
       await Promise.resolve();
     });
     assert.equal(marketTag.value, "自定义能力");
-    assert.match(container.querySelector('[role="listbox"]')?.textContent ?? "", /按回车添加/);
+    assert.match(document.body.textContent ?? "", /按回车添加/);
     await React.act(async () => {
-      reactProps(marketTag).onKeyDown?.({
-        key: "Enter",
-        preventDefault() {},
-      } as never);
+      marketTag.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
       await Promise.resolve();
     });
     assert.equal(marketTag.value, "");
@@ -368,7 +368,7 @@ test("market tag combobox shows existing tags, filters them, and accepts custom 
 
 test("mounted edit disables publish until save materializes a revision, then adopts publish status", async () => {
   const document = installDom();
-  const ReactDOM = await import("react-dom/client");
+
   const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
   const { AgentBuilderWorkbench } = await import("../AgentBuilderWorkbench.tsx");
   const originals = { ...agentProfileApi };
@@ -391,7 +391,7 @@ test("mounted edit disables publish until save materializes a revision, then ado
   };
   const container = document.createElement("div");
   document.body.appendChild(container);
-  const root = ReactDOM.createRoot(container as never);
+  const root = await createLobeTestRoot(container);
   try {
     await React.act(async () => {
       root.render(React.createElement(AgentBuilderWorkbench, {
@@ -403,8 +403,8 @@ test("mounted edit disables publish until save materializes a revision, then ado
     const nameInput = container.querySelector<HTMLInputElement>('[aria-label="专家名称"]');
     assert.ok(nameInput);
     await React.act(async () => {
-      nameInput.value = "支持助手已编辑";
-      reactProps(nameInput).onChange?.({ target: nameInput } as never);
+      changeInput(nameInput, "支持助手已编辑");
+
       await Promise.resolve();
     });
     const publishBeforeSave = findButton(container, "发布");
@@ -441,7 +441,7 @@ test("mounted edit disables publish until save materializes a revision, then ado
 
 test("mounted dirty editor requires confirmation before switching profiles", async () => {
   const document = installDom();
-  const ReactDOM = await import("react-dom/client");
+
   const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
   const { AgentBuilderWorkbench } = await import("../AgentBuilderWorkbench.tsx");
   const originals = { ...agentProfileApi };
@@ -453,7 +453,7 @@ test("mounted dirty editor requires confirmation before switching profiles", asy
   });
   const container = document.createElement("div");
   document.body.appendChild(container);
-  const root = ReactDOM.createRoot(container as never);
+  const root = await createLobeTestRoot(container);
   try {
     await React.act(async () => {
       root.render(React.createElement(AgentBuilderWorkbench, {
@@ -467,8 +467,8 @@ test("mounted dirty editor requires confirmation before switching profiles", asy
     assert.ok(nameInput);
     assert.ok(otherProfile);
     await React.act(async () => {
-      nameInput.value = "未保存名称";
-      reactProps(nameInput).onChange?.({ target: nameInput } as never);
+      changeInput(nameInput, "未保存名称");
+
       await Promise.resolve();
     });
     await React.act(async () => {
@@ -482,6 +482,7 @@ test("mounted dirty editor requires confirmation before switching profiles", asy
       await reactProps(findButton(document.body, "继续编辑")).onClick?.({} as never);
       await Promise.resolve();
     });
+    await React.act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
     assert.doesNotMatch((document.body.textContent ?? ""), /放弃未保存更改/);
     assert.equal(container.querySelector<HTMLInputElement>('[aria-label="专家名称"]')?.value, "未保存名称");
 
@@ -510,14 +511,14 @@ test("mounted dirty editor requires confirmation before switching profiles", asy
 
 test("mounted unresolved catalogs preserve server Skill names without stale or empty claims", async () => {
   const document = installDom();
-  const ReactDOM = await import("react-dom/client");
+
   const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
   const { AgentBuilderWorkbench } = await import("../AgentBuilderWorkbench.tsx");
   const originals = { ...agentProfileApi };
   agentProfileApi.listAdmin = async () => ({ agent_profiles: [profile()] });
   const container = document.createElement("div");
   document.body.appendChild(container);
-  const root = ReactDOM.createRoot(container as never);
+  const root = await createLobeTestRoot(container);
   try {
     const unresolved = catalog({
       skills: [],
@@ -568,7 +569,7 @@ test("mounted unresolved catalogs preserve server Skill names without stale or e
 
 test("mounted save conflict is safe, explicitly recoverable, and retryable", async () => {
   const document = installDom();
-  const ReactDOM = await import("react-dom/client");
+
   const { ApiRequestError } = await import("../../../services/api/fetch.ts");
   const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
   const { AgentBuilderWorkbench } = await import("../AgentBuilderWorkbench.tsx");
@@ -599,7 +600,7 @@ test("mounted save conflict is safe, explicitly recoverable, and retryable", asy
   };
   const container = document.createElement("div");
   document.body.appendChild(container);
-  const root = ReactDOM.createRoot(container as never);
+  const root = await createLobeTestRoot(container);
   try {
     await React.act(async () => {
       root.render(React.createElement(AgentBuilderWorkbench, {
@@ -611,8 +612,8 @@ test("mounted save conflict is safe, explicitly recoverable, and retryable", asy
     const nameInput = container.querySelector<HTMLInputElement>('[aria-label="专家名称"]');
     assert.ok(nameInput);
     await React.act(async () => {
-      nameInput.value = "重试后的名称";
-      reactProps(nameInput).onChange?.({ target: nameInput } as never);
+      changeInput(nameInput, "重试后的名称");
+
       await Promise.resolve();
     });
 
@@ -642,8 +643,7 @@ test("mounted save conflict is safe, explicitly recoverable, and retryable", asy
     const recoveredNameInput = container.querySelector<HTMLInputElement>('[aria-label="专家名称"]');
     assert.ok(recoveredNameInput);
     await React.act(async () => {
-      recoveredNameInput.value = "恢复后再次编辑";
-      reactProps(recoveredNameInput).onChange?.({ target: recoveredNameInput } as never);
+      changeInput(recoveredNameInput, "恢复后再次编辑");
       await reactProps(findButton(container, "保存草稿")).onClick?.({} as never);
       await flush();
     });
@@ -657,7 +657,7 @@ test("mounted save conflict is safe, explicitly recoverable, and retryable", asy
 
 test("mounted loading, empty, error, and non-admin states are explicit and safe", async () => {
   const document = installDom();
-  const ReactDOM = await import("react-dom/client");
+
   const { ApiRequestError } = await import("../../../services/api/fetch.ts");
   const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
   const { AgentBuilderWorkbench } = await import("../AgentBuilderWorkbench.tsx");
@@ -676,7 +676,7 @@ test("mounted loading, empty, error, and non-admin states are explicit and safe"
   };
   const container = document.createElement("div");
   document.body.appendChild(container);
-  const root = ReactDOM.createRoot(container as never);
+  const root = await createLobeTestRoot(container);
   try {
     await React.act(async () => {
       root.render(React.createElement(AgentBuilderWorkbench, {

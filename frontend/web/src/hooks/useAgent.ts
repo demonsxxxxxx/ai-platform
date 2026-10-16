@@ -11,7 +11,7 @@ import {
   useLayoutEffect,
   useMemo,
 } from "react";
-import toast from "react-hot-toast";
+import { toast } from "@lobehub/ui/base-ui";
 import i18n from "../i18n";
 import { uuid } from "../utils/uuid";
 import type {
@@ -2807,10 +2807,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
 
         // Handle queued status — show toast and wait via SSE
         if (submitData.status === "queued") {
-          toast.loading(
-            i18n.t("chat.queued", { position: submitData.queue_position }),
-            { id: "chat-queue", duration: Infinity },
-          );
+          toast.loading({
+            description: i18n.t("chat.queued", { position: submitData.queue_position }),
+            id: "chat-queue", duration: 0, hideCloseButton: true,
+          });
         }
 
         if (!requestSessionId && newSessionId) {

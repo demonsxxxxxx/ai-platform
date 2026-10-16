@@ -1,3 +1,4 @@
+import { Button } from "@lobehub/ui/base-ui";
 import { clsx } from "clsx";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { watchBrowserRunText } from "../../../hooks/useAgent/browserRunLatency";
@@ -532,19 +533,19 @@ function ArtifactCardItem({
       {(previewRequest || part.download_url) && (
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
           {previewRequest && onOpenPreview && (
-            <button
-              type="button"
+            <Button type="text"
+              htmlType="button"
               onClick={handlePreview}
               aria-label={`${previewLabel} ${part.label}`}
               className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--theme-border)] px-2 text-xs font-medium text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)]"
             >
               <Eye size={13} />
               <span>{previewLabel}</span>
-            </button>
+            </Button>
           )}
           {part.download_url && (
-            <button
-              type="button"
+            <Button type="text"
+              htmlType="button"
               onClick={() => void handleDownload()}
               disabled={isDownloading}
               aria-label={`${downloadLabel} ${part.label}`}
@@ -556,7 +557,7 @@ function ArtifactCardItem({
                 <Download size={13} />
               )}
               <span>{downloadLabel}</span>
-            </button>
+            </Button>
           )}
         </div>
       )}

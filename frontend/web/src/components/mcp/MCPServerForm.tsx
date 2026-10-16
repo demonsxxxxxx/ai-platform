@@ -1,3 +1,5 @@
+import { Checkbox } from "@lobehub/ui/base-ui";
+import { Button, Input } from "@lobehub/ui/base-ui";
 import { useState, useEffect } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -8,7 +10,7 @@ import type {
   MCPServerCreate,
   MCPRoleQuota,
 } from "../../types";
-import { EnterpriseSelect } from "../common/EnterpriseSelect";
+import { LobeSelectField } from "../lobe-ui/LobeSelectField";
 import { validateMcpStaticHeaderNames } from "./mcpHeaderValidation";
 import { RoleSelector } from "./RoleSelector";
 
@@ -251,7 +253,7 @@ export function MCPServerForm({
       {/* Name */}
       <div className="es-field">
         <label className="es-label">{t("mcp.form.serverName")}</label>
-        <input
+        <Input
           type="text"
           value={name}
           onChange={(e) => setName(e.target.value)}
@@ -274,7 +276,7 @@ export function MCPServerForm({
       {/* Transport Type */}
       <div className="es-field">
         <label className="es-label">{t("mcp.form.transportType")}</label>
-        <EnterpriseSelect
+        <LobeSelectField
           aria-label={t("mcp.form.transportType")}
           value={transport}
           onChange={(v) => setTransport(v as MCPServerCreate["transport"])}
@@ -293,30 +295,12 @@ export function MCPServerForm({
 
       {/* Enabled */}
       <label className="group flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 transition-colors hover:bg-[var(--theme-primary-light)]/40">
-        <input
-          type="checkbox"
+        <Checkbox
           id="enabled"
           checked={enabled}
-          onChange={(e) => setEnabled(e.target.checked)}
-          className="sr-only peer"
+          onChange={(checked) => setEnabled(checked)}
         />
-        <div className="h-[18px] w-[18px] rounded-[5px] border-2 border-[var(--theme-border)] flex items-center justify-center transition-all peer-checked:bg-amber-500 peer-checked:border-amber-500">
-          {enabled && (
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              width="12"
-              height="12"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="white"
-              strokeWidth="3"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <polyline points="20 6 9 17 4 12" />
-            </svg>
-          )}
-        </div>
+
         <span className="es-label">{t("mcp.form.enabled")}</span>
       </label>
 
@@ -326,6 +310,7 @@ export function MCPServerForm({
           <label className="es-label">{t("mcp.form.allowedRoles")}</label>
           <p className="es-hint">{t("mcp.form.allowedRolesDescription")}</p>
           <RoleSelector
+                    disabled={isLoading}
             selectedRoles={allowedRoles}
             onChange={handleAllowedRolesChange}
           />
@@ -346,7 +331,7 @@ export function MCPServerForm({
                         <label className="es-label">
                           {t("mcp.form.dailyLimit")}
                         </label>
-                        <input
+                        <Input
                           type="number"
                           min="0"
                           value={quota.daily_limit}
@@ -354,14 +339,14 @@ export function MCPServerForm({
                             updateRoleQuota(role, "daily_limit", e.target.value)
                           }
                           placeholder={t("mcp.form.unlimited")}
-                          className="enterprise-field-control es-input px-3"
+                          className="px-3"
                         />
                       </div>
                       <div className="es-field">
                         <label className="es-label">
                           {t("mcp.form.weeklyLimit")}
                         </label>
-                        <input
+                        <Input
                           type="number"
                           min="0"
                           value={quota.weekly_limit}
@@ -373,7 +358,7 @@ export function MCPServerForm({
                             )
                           }
                           placeholder={t("mcp.form.unlimited")}
-                          className="enterprise-field-control es-input px-3"
+                          className="px-3"
                         />
                       </div>
                     </div>
@@ -391,13 +376,13 @@ export function MCPServerForm({
             {t("mcp.form.allowedDepartments")}
           </label>
           <p className="es-hint">{t("mcp.form.allowedDepartmentsDescription")}</p>
-          <input
+          <Input
             id="mcp-allowed-departments"
             type="text"
             value={allowedDepartmentsInput}
             onChange={(event) => setAllowedDepartmentsInput(event.target.value)}
             placeholder={t("mcp.form.allowedDepartmentsPlaceholder")}
-            className="enterprise-field-control es-input"
+            className=""
           />
         </div>
       )}
@@ -411,7 +396,7 @@ export function MCPServerForm({
           {/* URL field */}
           <div className="es-field">
             <label className="es-label">{t("mcp.form.url")}</label>
-            <input
+            <Input
               type="url"
               value={url}
               onChange={(e) => setUrl(e.target.value)}
@@ -431,43 +416,43 @@ export function MCPServerForm({
           <div className="es-field">
             <div className="flex items-center justify-between">
               <label className="es-label">{t("mcp.form.httpHeaders")}</label>
-              <button
-                type="button"
+              <Button type="default"
+                htmlType="button"
                 onClick={addHeader}
-                className="btn-secondary text-xs px-2 py-1"
+                className="text-xs px-2 py-1"
               >
                 <Plus size={12} />
                 {t("mcp.form.add")}
-              </button>
+              </Button>
             </div>
             <div className="space-y-2 mt-1">
               {headers.map((header) => (
                 <div key={header.id} className="flex gap-2">
-                  <input
+                  <Input
                     type="text"
                     value={header.key}
                     onChange={(e) =>
                       updateHeader(header.id, "key", e.target.value)
                     }
                     placeholder={t("mcp.form.headerNamePlaceholder")}
-                    className="enterprise-field-control es-input font-mono"
+                    className="font-mono"
                   />
-                  <input
+                  <Input
                     type="text"
                     value={header.value}
                     onChange={(e) =>
                       updateHeader(header.id, "value", e.target.value)
                     }
                     placeholder={t("mcp.form.valuePlaceholder")}
-                    className="enterprise-field-control es-input font-mono"
+                    className="font-mono"
                   />
-                  <button
-                    type="button"
+                  <Button type="text"
+                    htmlType="button"
                     onClick={() => removeHeader(header.id)}
                     className="btn-icon hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/30 dark:hover:text-red-400"
                   >
                     <Trash2 size={16} />
-                  </button>
+                  </Button>
                 </div>
               ))}
               {headers.length === 0 && (
@@ -484,21 +469,21 @@ export function MCPServerForm({
 
       {/* Actions */}
       <div className="flex justify-end gap-2 pt-2">
-        <button
-          type="button"
+        <Button type="default"
+          htmlType="button"
           onClick={onCancel}
           disabled={isLoading}
-          className="btn-secondary"
+          className=""
         >
           {t("mcp.form.cancel")}
-        </button>
-        <button
-          type="submit"
+        </Button>
+        <Button type="primary"
+          htmlType="submit"
           disabled={isLoading || availableTransports.length === 0}
-          className="btn-primary disabled:opacity-50"
+          className="disabled:opacity-50"
         >
           {isEditing ? t("mcp.form.saveChanges") : t("mcp.form.createServer")}
-        </button>
+        </Button>
       </div>
     </form>
   );

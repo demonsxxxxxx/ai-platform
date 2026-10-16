@@ -2,35 +2,36 @@
 
 Status: active frontend source contract. This document does not establish deployment or browser acceptance.
 
+Lobe UI owns general table and single-select presentation. The [Lobe UI integration contract](lobe-ui-adoption.md) defines versions, providers, public entries and completion conditions. Production callers and local migration checks are complete. The six unused modules and two old direct dependencies are removed; the selector test is named for LobeSelectField.
+
 ## Components and responsibility
 
-The workbench uses shadcn/ui's composition pattern while retaining its theme:
+Management pages import `Table` and `Pagination` directly from `@lobehub/ui/base-ui`. The owning page supplies columns, raw records, row keys, selection, filters, actions and pagination callbacks. Use the library's public scroll/sticky/fixed-column contracts instead of restyling rows as a parallel grid table. Library placeholder and measurement rows are not business records; row assertions should use the owning page's data marker.
 
-- `src/components/common/Table.tsx` owns native table, header, body, row and cell primitives. It forwards native attributes and refs. Headers default to `scope="col"`; callers can specify row headers. Existing scroll containers, responsive layouts, cell styles and business actions remain caller-owned.
-- `src/components/common/EnterpriseSelect.tsx` composes Radix Select (`@radix-ui/react-select`, pinned in the package and lockfile). Radix owns keyboard navigation, typeahead, disabled-option handling, focus restoration, form participation and popup positioning. Callers provide the current string value, labelled options, accessible name and business callback. Default full-row width uses a zero-specificity rule so caller widths such as `sm:w-40` and `w-auto` remain effective.
+`components/lobe-ui/LobeSelectField.tsx` composes Lobe Select with an associated accessible label, caller-owned layout and nested Escape isolation. Lobe owns option navigation, disabled choices, form participation, popup positioning and focus restoration. The adapter preserves the value type; numeric page sizes are converted at their business callback. Width utilities apply to its layout wrapper so the inner full-width Select cannot consume adjacent search space.
 
-Avatar candidate layout remains in AgentAvatarPicker. Its eight choices use four columns at every viewport because the desktop editor can place the picker inside a narrow card; viewport width alone does not establish room for eight fixed-size avatars.
+Complex department/role selections, market-tag autocomplete and model/Skill/MCP catalogs retain their data and authority owners while using Lobe Select/Popover/AutoComplete/Modal controls. Department selections preserve authority IDs, unresolved values, duplicate restrictions and the 128-choice limit. Expert access editing remains department-only; historical API fields are preserved.
 
-This is a source-adapted component set, not a full shadcn CLI installation. The native Table primitive is sufficient for the current presentation tables; no sort/filter engine is added. Styling uses existing workbench tokens and Tailwind 3. Shadcn attribution is in `frontend/web/THIRD_PARTY_NOTICES.md`.
-
-Complex department/role multiselects, market-tag autocomplete, and model/Skill/MCP catalog panels retain their existing owners and behavior. This migration does not alter ACL identity, provider history, mutations, Run admission or SSE.
+Avatar candidates remain four columns inside the editor card. Viewport width alone does not establish room for eight fixed-size avatars. Actual rendered candidates must stay within their buttons without overlap.
 
 ## Retirement and compatibility disposition
 
 | Superseded surface | Disposition and current owner |
 | --- | --- |
-| Handwritten table elements in ToolSelector, AgentBuilderLifecycle, ModelAdminControl, RunMonitorPanel, ExcelPreview and MarkdownContent | All use Table primitives. Markdown copying/export and XLSX validation/image geometry remain in their original owners. |
-| SkillManagementTable's div/span table structure | Native Table primitives retain grid/card CSS, row actions, selection, permissions and mobile behavior. |
-| Native single selects in SkillDistributionGovernancePanel, ModelAdminControl, SkillsList, AgentBuilderEnterpriseFields and AgentAvatarPicker | All use EnterpriseSelect with the same option values and callbacks. Page size is converted back to number at its owning callback. |
-| EnterpriseSelect's handwritten Portal, outside-click listener and coordinate calculation | Removed. The same public component remains the sole Select adapter; MCPServerForm and the five migrated callers use it. |
-| `src/components/documents/previews/MermaidDiagram.tsx` | Deleted after source/test/config reference inventory found no caller. Document Markdown already uses MarkdownContent and the active chat MermaidDiagram. No compatibility consumer remains. |
-| Native-select test queries and option markup assertions affected by the migration | Updated to the shared trigger/options. Model and builder mounted tests use the existing JSDOM dependency rather than incomplete handwritten DOMs; original request/publication/permission assertions remain. |
-| High-specificity Select width and the avatar picker's viewport-based eight-column grid | Default width is lower priority than caller utilities; avatar choices remain four columns inside narrow editor cards. The browser route-layout smoke checks actual filter/search widths and candidate containment/overlap. |
-| Upload completion's bare `/api/ai/files/{id}` URL | The upload adapter now supplies `/preview` and a separate `/download`, both retained by the attachment upload hook. The file ID/key is unchanged; no backend migration or URL allowlist expansion is needed. Existing callers without an independent download URL keep their optional-field contract. |
+| Generic Table primitives and SkillManagementTable's handwritten structure | The generic Table module is deleted; eight management/parameter/history callers use Lobe Table. Business row selection, actions, permission gates and responsive layout stay with the caller. |
+| Markdown/XLSX Table primitive imports | Renderer-owned native semantic tables retain `scope="col"`, copying/export, worksheet validation and image geometry. They are the explicit document-rendering exception. |
+| EnterpriseSelect and native ordinary selects | All active ordinary single-select callers use Lobe Select/LobeSelectField with their original option values and callbacks. The old adapter and direct Radix dependency are removed; LobeSelectField.mounted.test.tsx owns the preserved keyboard, focus, form and disabled checks. The existing @assistant-ui/react → radix-ui dependency chain still requires Radix Select 2.3.7; that transitive dependency is retained. |
+| Old Checkbox, Pagination, LoadingSpinner and Skill Toggle modules | The modules and obsolete Loading barrel exports are deleted. No compatibility entry point remains; library primitives serve the migrated callers. |
+| react-hot-toast direct dependency | Removed from the package manifest and lockfile importer. Lobe ToastHost and toast own notifications, including stable queue notification identity. |
+| Handwritten department/role popups and market-tag suggestion interaction | Lobe Select/Popover/AutoComplete owns popup interaction; directory resolution, raw identity and tag normalization remain business-owned. |
+| Native-select and old table structure assertions | Owning tests use actual library controls and production providers. Business assertions for requests, publication, permissions and ownership remain required. |
+| `src/components/documents/previews/MermaidDiagram.tsx` | Previously retired; document Markdown uses MarkdownContent and the active chat MermaidDiagram. Keep the absence check. |
+| High-specificity Select width and viewport-based eight-column avatar grid | Caller layout and public library sizing replace the old control CSS. Route-layout smoke measures filter/search widths, visible rail icon sizes and avatar containment. |
+| Upload completion's bare `/api/ai/files/{id}` URL | Existing upload adapter contract supplies `/preview` and independent `/download`; file identity and optional download URL compatibility remain unchanged. |
 
 Uploaded-file preview is assembled by the upload adapter, useFileUpload and AttachmentPreviewHost. Markdown uses the owned preview content; XLSX uses the owned preview DTO and downloads original bytes through the independent download endpoint. URL validation, authenticated requests and backend tenant/workspace/user ownership checks remain with their existing owners.
 
-`tableSelectInventory.test.ts` checks production TSX for superseded native table/select markup outside the Table owner and checks the old Mermaid path is absent. This is an absence check, not evidence of browser layout or runtime success. Library-generated hidden form controls are outside this source inventory.
+`tableSelectInventory.test.ts` checks active production TSX for old ordinary select/table markup, the eight Lobe Table consumers and the document-renderer exceptions. A separate absence regression checks all six deleted modules, the old test filename and both retired direct dependencies. The same regression bans the retired pagination/Select CSS selectors and Checkbox animation. No deleted module is exempted from the production inventory. The inventory does not establish browser layout or runtime success. Library-generated hidden form controls are outside this source inventory.
 
 ## Owning checks
 

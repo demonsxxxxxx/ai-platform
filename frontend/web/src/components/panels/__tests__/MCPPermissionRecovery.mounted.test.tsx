@@ -1,30 +1,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-// @ts-expect-error jsdom runtime import.
-import { JSDOM } from "jsdom";
+import { installSelectTestDom } from "../../common/__tests__/selectTestDom";
+import { createLobeTestRoot } from "../../common/__tests__/lobeUiTestRoot";
 import type { ReactNode } from "react";
 import type { User } from "../../../types/auth";
 import { authApi } from "../../../services/api/auth";
 import { roleApi } from "../../../services/api/role";
 import { installBrowserAuthTestDb } from "../../../hooks/__tests__/browserAuthTestDb";
-import toast from "react-hot-toast";
 
-const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/memory" });
-Object.assign(globalThis, { window: dom.window, document: dom.window.document, localStorage: dom.window.localStorage, sessionStorage: dom.window.sessionStorage, HTMLElement: dom.window.HTMLElement, CustomEvent: dom.window.CustomEvent, IS_REACT_ACT_ENVIRONMENT: true });
-Object.defineProperty(globalThis, "navigator", { configurable: true, value: dom.window.navigator });
-Object.assign(globalThis, {
-  getComputedStyle: dom.window.getComputedStyle,
-  HTMLFormElement: dom.window.HTMLFormElement,
-  HTMLSelectElement: dom.window.HTMLSelectElement,
-  DocumentFragment: dom.window.DocumentFragment,
-});
+const fixture = installSelectTestDom();
+Object.assign(globalThis, { localStorage: window.localStorage, sessionStorage: window.sessionStorage });
+test.after(() => fixture.close());
 installBrowserAuthTestDb();
-Object.assign(dom.window.HTMLDialogElement.prototype, {
-  showModal(this: HTMLDialogElement) { this.setAttribute("open", ""); },
-  close(this: HTMLDialogElement) { this.removeAttribute("open"); },
-});
+const { toast } = await import("@lobehub/ui/base-ui");
+
 const { act, createElement } = await import("react");
-const { createRoot } = await import("react-dom/client");
+
 const { AuthProvider, useAuth } = await import("../../../hooks/useAuth");
 const { useMCP } = await import("../../../hooks/useMcp");
 const { MCPPanel } = await import("../MCPPanel");
@@ -49,8 +40,8 @@ async function harness(child: ReactNode, fetcher?: (request: Request) => Promise
   authApi.bootstrapAuthContext = async request => ({ status: "ready", protocol_version: 2, generation: request!.generation });
   authApi.getCurrentUser = async () => user;
   roleApi.list = async () => ({ roles: [], total: 0, skip: 0, limit: 200 });
-  toast.success = ((message: unknown) => { notices.push(`success:${String(message)}`); return "test"; }) as typeof toast.success;
-  toast.error = ((message: unknown) => { notices.push(`error:${String(message)}`); return "test"; }) as typeof toast.error;
+  toast.success = (message) => { notices.push(`success:${String(message)}`); return { id: "test", close() {}, update() {} }; };
+  toast.error = (message) => { notices.push(`error:${String(message)}`); return { id: "test", close() {}, update() {} }; };
   globalThis.fetch = (async (url, init = {}) => {
     const request = { url: new URL(String(url), "http://localhost"), init };
     if (request.url.pathname.endsWith("/tools")) {
@@ -62,7 +53,7 @@ async function harness(child: ReactNode, fetcher?: (request: Request) => Promise
     throw new Error(`Unexpected request ${request.url.pathname}`);
   }) as typeof fetch;
   function Probe({ children }: { children: ReactNode }) { auth = useAuth(); return children; }
-  const container = document.createElement("div"); document.body.append(container); const root = createRoot(container);
+  const container = document.createElement("div"); document.body.append(container); const root = await createLobeTestRoot(container);
   const render = async (next: ReactNode) => { await act(async () => { root.render(createElement(AuthProvider, null, createElement(Probe, { children: next }))); }); };
   await render(child);
   assert.equal(auth.isAuthenticated, true, "real AuthProvider must authenticate synthetic principal");
@@ -87,20 +78,21 @@ test("administrator sees discovered tools and can inspect their public descripti
     const trigger = row.querySelector<HTMLButtonElement>("[data-mcp-view-tools]")!;
     trigger.focus();
     await click(trigger);
-    const detail = view.container.querySelector("[data-mcp-tool-detail]")!;
+    const detail = document.querySelector("[data-mcp-tool-detail]")!;
     assert.ok(detail);
     assert.match(detail.textContent!, /Synthetic alpha/);
     assert.match(detail.textContent!, /Synthetic beta/);
     assert.doesNotMatch(detail.textContent!, /example\.invalid|headers|credential/);
     const first = detail.querySelector<HTMLButtonElement>("[data-mcp-tool-detail-close]")!;
     const last = detail.querySelector<HTMLInputElement>('input[type="search"]')!;
-    await act(async () => { last.focus(); last.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true })); });
-    assert.equal(document.activeElement, first);
-    await act(async () => { first.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true, cancelable: true })); });
-    assert.equal(document.activeElement, last);
+    assert.ok(detail.contains(document.activeElement), "opening focuses the drawer");
+    await act(async () => last.focus());
+    assert.ok(document.activeElement === last, "drawer search is focusable");
+    // Native Tab/Shift+Tab navigation is exercised by route-layout-browser-smoke.
     await click(first);
-    assert.equal(view.container.querySelector("[data-mcp-tool-detail]"), null);
-    assert.equal(document.activeElement, trigger);
+    await act(async () => { await new Promise(requestAnimationFrame); });
+    assert.equal(document.querySelector("[data-mcp-tool-detail]"), null);
+    assert.ok(document.activeElement === trigger, "closing restores the tools trigger focus");
   } finally { await view.close(); }
 });
 
@@ -143,16 +135,16 @@ test("refresh masks the previous count and updates the open tool detail", async 
   const view = await harness(createElement(MCPPanel), () => page(), () => ++discoveries === 1 ? response(2) : pending.promise);
   try {
     await click(view.container.querySelector<HTMLButtonElement>("[data-mcp-view-tools]")!);
-    await click(view.container.querySelector<HTMLButtonElement>("[data-mcp-tool-detail] [data-mcp-refresh-tools]")!);
+    await click(document.querySelector<HTMLButtonElement>("[data-mcp-tool-detail] [data-mcp-refresh-tools]")!);
     assert.equal(view.container.querySelector("[data-mcp-tool-count]")!.textContent, "—");
-    assert.doesNotMatch(view.container.querySelector("[data-mcp-tool-detail]")!.textContent!, /Synthetic tool/);
+    assert.doesNotMatch(document.querySelector("[data-mcp-tool-detail]")!.textContent!, /Synthetic tool/);
     await act(async () => pending.resolve(response(1)));
     assert.equal(view.container.querySelector("[data-mcp-tool-count]")!.textContent, "1 个工具");
-    assert.equal(view.container.querySelectorAll("[data-mcp-tool-detail] li").length, 1);
-    const search = view.container.querySelector<HTMLInputElement>('[data-mcp-tool-detail] input[type="search"]')!;
-    await act(async () => props(search).onChange({ target: { value: "no-such-tool" } }));
-    assert.equal(view.container.querySelectorAll("[data-mcp-tool-detail] li").length, 0);
-    assert.match(view.container.querySelector("[data-mcp-tool-detail]")!.textContent!, /没有匹配的工具/);
+    assert.equal(document.querySelectorAll("[data-mcp-tool-detail] li").length, 1);
+    const search = document.querySelector<HTMLInputElement>('[data-mcp-tool-detail] input[type="search"]')!;
+    await act(async () => changeInput(search, "no-such-tool"));
+    assert.equal(document.querySelectorAll("[data-mcp-tool-detail] li").length, 0);
+    assert.match(document.querySelector("[data-mcp-tool-detail]")!.textContent!, /没有匹配的工具/);
   } finally { await view.close(); }
 });
 
@@ -162,11 +154,11 @@ test("late tool discovery cannot publish across a same-user department change", 
   try {
     await click(view.container.querySelector<HTMLButtonElement>("[data-mcp-view-tools]")!);
     await view.setUser({ ...principal(), department_id: "synthetic-department" });
-    assert.equal(view.container.querySelector("[data-mcp-tool-detail]"), null);
+    assert.equal(document.querySelector("[data-mcp-tool-detail]"), null);
     assert.equal(view.container.querySelector("[data-mcp-tool-count]")!.textContent, "1 个工具");
     await act(async () => old.resolve(json({ server_name: server.name, tools: [{ name: "old-tool", description: "Old private description", parameters: [] }], count: 1, unavailable_reason: null })));
     await click(view.container.querySelector<HTMLButtonElement>("[data-mcp-view-tools]")!);
-    assert.match(view.container.querySelector("[data-mcp-tool-detail]")!.textContent!, /Current synthetic tool/);
+    assert.match(document.querySelector("[data-mcp-tool-detail]")!.textContent!, /Current synthetic tool/);
     assert.doesNotMatch(view.container.textContent!, /Old private description/);
     assert.equal(view.discoveryCalls.length, 2);
   } finally { await view.close(); }
@@ -177,18 +169,18 @@ test("paused authentication and unmount fence retained tool refresh callbacks", 
   const view = await harness(createElement(MCPPanel), () => page());
   try {
     await click(view.container.querySelector<HTMLButtonElement>("[data-mcp-view-tools]")!);
-    const refreshButton = view.container.querySelector<HTMLButtonElement>("[data-mcp-refresh-tools]")!;
+    const refreshButton = document.querySelector<HTMLButtonElement>("[data-mcp-refresh-tools]")!;
     const refreshKey = Object.keys(refreshButton).find(key => key.startsWith("__reactProps$"))!;
     const retainedRefresh = (refreshButton as unknown as Record<string, { onClick: () => void }>)[refreshKey].onClick;
     let refresh!: ReturnType<typeof view.refreshUser>;
     authApi.getCurrentUser = () => pending.promise;
     await act(async () => { refresh = view.refreshUser(); });
-    assert.equal(view.container.querySelector("[data-mcp-tool-detail]"), null);
+    assert.equal(document.querySelector("[data-mcp-tool-detail]"), null);
     const reads = view.discoveryCalls.length;
     await act(async () => retainedRefresh());
     assert.equal(view.discoveryCalls.length, reads);
     await act(async () => { pending.resolve(principal()); await refresh; });
-    assert.equal(view.container.querySelector("[data-mcp-tool-detail]"), null);
+    assert.equal(document.querySelector("[data-mcp-tool-detail]"), null);
     await view.render(null);
     const finished = view.discoveryCalls.length;
     await act(async () => retainedRefresh());
@@ -248,7 +240,7 @@ test("a mutation denial remains forbidden, closes the editor and never replays t
     assert.ok(cardToggle); await click(cardToggle);
     assert.equal(state(view), "forbidden");
     assert.equal(view.container.querySelector("[data-mcp-admin-controls]"), null);
-    assert.equal(view.container.querySelector('[role="dialog"]'), null);
+    assert.equal(document.querySelector('[role="dialog"]'), null);
     assert.equal(writes, 1); assert.equal(reads, 1);
     await click(retry(view)); assert.equal(state(view), "ready");
     assert.equal(writes, 1); assert.equal(reads, 2);
@@ -289,7 +281,7 @@ test("pending detail cannot reopen editor or report a failure after identity cha
       const edit = view.container.querySelector<HTMLButtonElement>("[data-mcp-admin-edit]")!;
       await click(edit); await view.setUser(principal("user-b"));
       await act(async () => detail.resolve(fail ? forbidden() : json(server)));
-      assert.equal(state(view), "ready"); assert.equal(view.container.querySelector('[role="dialog"]'), null);
+      assert.equal(state(view), "ready"); assert.equal(document.querySelector('[role="dialog"]'), null);
       assert.deepEqual(view.notices, []);
     } finally { await view.close(); }
   }
@@ -422,9 +414,9 @@ test("permission recovery refreshes revoked administrator roles before reopening
   } finally { await view.close(); }
 });
 
-function props(node: Element) {
-  const key = Object.keys(node).find(key => key.startsWith("__reactProps$")); assert.ok(key);
-  return (node as unknown as Record<string, unknown>)[key] as { onChange: (event: { target: { value: string } }) => void; onSubmit: (event: { preventDefault: () => void }) => Promise<void> };
+function changeInput(input: HTMLInputElement, value: string) {
+  Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!.call(input, value);
+  input.dispatchEvent(new window.Event("input", { bubbles: true }));
 }
 test("ordinary operation errors keep the actual editor draft and safe error visible for correction", async () => {
   for (const status of [400, 500]) {
@@ -438,17 +430,18 @@ test("ordinary operation errors keep the actual editor draft and safe error visi
     });
     try {
       await click(view.container.querySelector<HTMLButtonElement>("[data-mcp-admin-controls] button")!);
-      const name = view.container.querySelector<HTMLInputElement>('form input[type="text"]')!;
-      const url = view.container.querySelector<HTMLInputElement>('form input[type="url"]')!;
-      await act(async () => { props(name).onChange({ target: { value: "kept-draft" } }); props(url).onChange({ target: { value: "https://example.invalid/mcp" } }); });
-      await act(async () => { await props(view.container.querySelector("form")!).onSubmit({ preventDefault() {} }); });
-      assert.ok(view.container.querySelector('[role="dialog"]'), "non-permission errors must preserve the editor");
-      assert.equal(view.container.querySelector<HTMLInputElement>('form input[type="text"]')!.value, "kept-draft");
-      assert.ok(view.container.querySelector('[role="dialog"] [role="alert"]'));
+      const name = document.querySelector<HTMLInputElement>('form input[type="text"]')!;
+      const url = document.querySelector<HTMLInputElement>('form input[type="url"]')!;
+      await act(async () => { changeInput(name, "kept-draft"); changeInput(url, "https://example.invalid/mcp"); });
+      await act(async () => { document.querySelector("form")!.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true })); });
+      assert.ok(document.querySelector('[role="dialog"]'), "non-permission errors must preserve the editor");
+      assert.equal(document.querySelector<HTMLInputElement>('form input[type="text"]')!.value, "kept-draft");
+      assert.ok(document.querySelector('[role="dialog"] [role="alert"]'));
       assert.doesNotMatch(view.container.textContent!, /private-validation-detail/);
       assert.equal(state(view), "ready");
-      await act(async () => { await props(view.container.querySelector("form")!).onSubmit({ preventDefault() {} }); });
-      assert.equal(writes, 2); assert.ok(!view.container.querySelector('[role="dialog"]'));
+      await act(async () => { document.querySelector("form")!.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true })); });
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
+      assert.equal(writes, 2); assert.ok(!document.querySelector('[role="dialog"]'));
       assert.equal(view.notices.length, 1);
     } finally { await view.close(); }
   }

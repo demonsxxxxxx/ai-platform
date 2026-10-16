@@ -1,3 +1,4 @@
+import { Button } from "@lobehub/ui/base-ui";
 import { Boxes, FileText, Sparkles, Wrench, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type {
@@ -51,15 +52,15 @@ function TaskSelectedSkillChip({
       {selection.state !== "enabled" ? (
         <span className="shrink-0 text-xs opacity-80">{statusLabel}</span>
       ) : null}
-      <button
-        type="button"
+      <Button type="text"
+        htmlType="button"
         onClick={() => onRemove(selection.id)}
         className="inline-flex size-11 shrink-0 items-center justify-center rounded-lg hover:bg-[var(--theme-sidebar-hover)] hover:text-[var(--theme-text)] sm:size-7"
         aria-label={removeLabel}
         data-task-selected-skill-remove
       >
         <X size={13} />
-      </button>
+      </Button>
     </span>
   );
 }

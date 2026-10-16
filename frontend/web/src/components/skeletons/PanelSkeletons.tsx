@@ -1,3 +1,4 @@
+import { Skeleton } from "@lobehub/ui/base-ui";
 import { SkeletonLine } from "./primitives";
 import { PanelHeaderSkeleton } from "./PanelHeaderSkeleton";
 
@@ -31,7 +32,7 @@ export function SkillsPanelSkeleton() {
               <div className="flex flex-1 flex-col -mt-3 pt-5 p-4">
                 {/* Icon + name */}
                 <div className="flex items-start gap-3">
-                  <div className="scb__icon-ring shrink-0 skeleton-line" />
+                  <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="scb__icon-ring shrink-0 " />
                   <div className="min-w-0 flex-1">
                     <SkeletonLine
                       width={i % 2 === 0 ? "w-3/4" : "w-1/2"}
@@ -99,7 +100,7 @@ export function RolesPanelSkeleton() {
                           "color-mix(in srgb, var(--theme-bg-card) 78%, var(--theme-bg))",
                       }}
                     >
-                      <div className="skeleton-line size-[14px] rounded-sm" />
+                      <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-[14px] rounded-sm" />
                     </div>
                     <div>
                       <SkeletonLine
@@ -134,9 +135,9 @@ export function RolesPanelSkeleton() {
                 </div>
                 {/* Action buttons */}
                 <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-                  <div className="skeleton-line size-7 sm:size-8 rounded-lg" />
-                  <div className="skeleton-line size-7 sm:size-8 rounded-lg" />
-                  <div className="skeleton-line size-7 sm:size-8 rounded-lg" />
+                  <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-7 sm:size-8 rounded-lg" />
+                  <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-7 sm:size-8 rounded-lg" />
+                  <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-7 sm:size-8 rounded-lg" />
                 </div>
               </div>
               {/* Timestamp row */}
@@ -170,7 +171,7 @@ export function MCPPanelSkeleton() {
               <div className="flex-1 min-w-0">
                 {/* Server name + status badges */}
                 <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
-                  <div className="skeleton-line size-4 sm:size-5 rounded shrink-0" />
+                  <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-4 sm:size-5 rounded shrink-0" />
                   <SkeletonLine
                     width={i % 2 === 0 ? "w-24 sm:w-36" : "w-20 sm:w-28"}
                     className="!h-[15px] sm:!h-[16px]"
@@ -198,10 +199,10 @@ export function MCPPanelSkeleton() {
               </div>
               {/* Action buttons */}
               <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
-                <div className="skeleton-line size-7 sm:size-8 rounded-full" />
-                <div className="skeleton-line size-7 sm:size-8 rounded-lg" />
-                <div className="skeleton-line size-7 sm:size-8 rounded-lg hidden sm:block" />
-                <div className="skeleton-line size-7 sm:size-8 rounded-lg hidden sm:block" />
+                <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-7 sm:size-8 rounded-full" />
+                <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-7 sm:size-8 rounded-lg" />
+                <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-7 sm:size-8 rounded-lg hidden sm:block" />
+                <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-7 sm:size-8 rounded-lg hidden sm:block" />
               </div>
             </div>
             {/* Expandable tools hint */}
@@ -234,7 +235,7 @@ export function ChannelsPanelSkeleton() {
                     "color-mix(in srgb, var(--theme-bg-card) 78%, var(--theme-bg))",
                 }}
               >
-                <div className="skeleton-line size-5 rounded-md" />
+                <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-5 rounded-md" />
               </div>
               <div className="flex-1 min-w-0">
                 <SkeletonLine
@@ -265,7 +266,7 @@ export function AgentPanelSkeleton() {
         <div className="px-4 py-3.5">
           <SkeletonLine width="w-16 sm:w-20" className="!h-4" />
           {/* Active indicator */}
-          <div className="absolute bottom-0 left-3 right-3 h-0.5 rounded-full skeleton-line" />
+          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="absolute bottom-0 left-3 right-3 h-0.5 rounded-full " />
         </div>
         <div className="px-4 py-3.5">
           <SkeletonLine width="w-12 sm:w-16" className="!h-4 !opacity-50" />
@@ -285,7 +286,7 @@ export function AgentPanelSkeleton() {
                     "color-mix(in srgb, var(--theme-bg-card) 78%, var(--theme-bg))",
                 }}
               >
-                <div className="skeleton-line size-5 rounded-md" />
+                <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-5 rounded-md" />
               </div>
               <div className="min-w-0 flex-1">
                 <SkeletonLine
@@ -298,7 +299,7 @@ export function AgentPanelSkeleton() {
                 />
               </div>
             </div>
-            <div className="skeleton-line w-8 sm:w-10 h-4 sm:h-5 rounded-full shrink-0" />
+            <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="w-8 sm:w-10 h-4 sm:h-5 rounded-full shrink-0" />
           </div>
         ))}
       </div>
@@ -315,7 +316,7 @@ export function ModelPanelSkeleton() {
       <div className="flex border-b border-[var(--theme-border)] bg-[var(--theme-bg)] px-4 sm:px-6">
         <div className="px-5 py-3">
           <SkeletonLine width="w-14 sm:w-16" className="!h-4" />
-          <div className="absolute bottom-0 left-4 right-4 h-0.5 rounded-full skeleton-line" />
+          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="absolute bottom-0 left-4 right-4 h-0.5 rounded-full " />
         </div>
         <div className="px-5 py-3">
           <SkeletonLine width="w-20 sm:w-28" className="!h-4 !opacity-50" />
@@ -325,18 +326,18 @@ export function ModelPanelSkeleton() {
         {/* Toolbar */}
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-2">
-            <div className="skeleton-line h-8 w-20 rounded-lg" />
-            <div className="skeleton-line h-8 w-16 rounded-lg hidden sm:block" />
+            <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="h-8 w-20 rounded-lg" />
+            <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="h-8 w-16 rounded-lg hidden sm:block" />
           </div>
-          <div className="skeleton-line h-8 w-20 rounded-lg" />
+          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="h-8 w-20 rounded-lg" />
         </div>
         {Array.from({ length: 8 }).map((_, i) => (
           <div key={i} className="panel-card">
             {/* Desktop row */}
             <div className="hidden sm:flex items-center justify-between p-4 gap-2">
               <div className="flex items-center gap-2 sm:gap-3 flex-1 min-w-0">
-                <div className="skeleton-line size-4 rounded shrink-0" />
-                <div className="skeleton-line size-5 rounded shrink-0" />
+                <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-4 rounded shrink-0" />
+                <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-5 rounded shrink-0" />
                 <div className="flex-1 min-w-0">
                   <SkeletonLine
                     width={i % 2 === 0 ? "w-24 sm:w-32" : "w-20 sm:w-28"}
@@ -345,23 +346,23 @@ export function ModelPanelSkeleton() {
                 </div>
               </div>
               <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
-                <div className="skeleton-line w-8 sm:w-10 h-4 sm:h-5 rounded-full" />
-                <div className="skeleton-line size-7 sm:size-8 rounded-lg" />
-                <div className="skeleton-line size-7 sm:size-8 rounded-lg" />
+                <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="w-8 sm:w-10 h-4 sm:h-5 rounded-full" />
+                <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-7 sm:size-8 rounded-lg" />
+                <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-7 sm:size-8 rounded-lg" />
               </div>
             </div>
             {/* Mobile row */}
             <div className="block sm:hidden p-3.5">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2 min-w-0 flex-1">
-                  <div className="skeleton-line size-4 rounded shrink-0" />
-                  <div className="skeleton-line size-5 rounded shrink-0" />
+                  <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-4 rounded shrink-0" />
+                  <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-5 rounded shrink-0" />
                   <SkeletonLine
                     width={i % 2 === 0 ? "w-24" : "w-20"}
                     className="!h-[13px]"
                   />
                 </div>
-                <div className="skeleton-line w-8 h-4 rounded-full shrink-0" />
+                <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="w-8 h-4 rounded-full shrink-0" />
               </div>
             </div>
           </div>

@@ -1,3 +1,4 @@
+import { Input } from "@lobehub/ui/base-ui";
 /**
  * 统一的面板头部组件
  * 用于所有管理面板的标题和操作区域
@@ -71,19 +72,15 @@ export function PanelHeader({
       {/* 搜索框 */}
       {onSearchChange !== undefined && (
         <div className="mt-2 flex items-center gap-2 sm:mt-3">
-          <div className="relative min-w-0 flex-1">
-            <Search
-              size={18}
-              className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400 dark:text-stone-500"
-            />
-            <input
-              type="text"
-              value={searchValue}
-              onChange={(e) => onSearchChange(e.target.value)}
-              className="panel-search h-10"
-              placeholder={searchPlaceholder}
-            />
-          </div>
+          <Input
+            type="text"
+            value={searchValue}
+            onChange={(e) => onSearchChange(e.target.value)}
+            className="min-w-0 flex-1"
+            prefix={<Search size={18} />}
+            aria-label={searchPlaceholder ?? "搜索"}
+            placeholder={searchPlaceholder}
+          />
           {searchAccessory}
         </div>
       )}

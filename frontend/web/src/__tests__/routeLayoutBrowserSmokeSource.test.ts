@@ -25,7 +25,10 @@ test("offline route layout smoke covers required routes, viewports, reachability
   assert.match(source, /bodyScrollWidth > layout\.viewportWidth/);
   assert.match(source, /target\.scrollTop = target\.scrollHeight/);
   assert.match(source, /overlay_clipped/);
-  assert.match(source, /department-selector__menu/);
+  assert.match(source, /role=listbox/);
+  assert.match(source, /drawer-contained/);
+  assert.match(source, /skill-distribution-receipt/);
+  assert.match(source, /if \(failures\.length\) process\.exitCode = 1/);
   assert.match(source, /route_layout_smoke_unstubbed_api/);
   assert.match(source, /requiredSelectors/);
   assert.match(source, /element\.complete/);

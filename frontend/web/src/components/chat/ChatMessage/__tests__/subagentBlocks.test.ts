@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-// jsdom 26 ships no declarations; this mounted test uses only its runtime constructor.
-// @ts-expect-error jsdom is the pinned mounted-test runtime.
-import { JSDOM } from "jsdom";
+import { installSelectTestDom } from "../../../common/__tests__/selectTestDom";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { createLobeTestRoot } from "../../../common/__tests__/lobeUiTestRoot";
 import "../../../../i18n";
 import {
   closePersistentToolPanel,
@@ -18,7 +16,7 @@ import {
   SubagentBlock,
 } from "../SubagentBlocks.tsx";
 
-test("subagent panel subtitle shows only the start time", () => {
+test("subagent panel subtitle shows only the start time", async () => {
   const startedAt = Date.UTC(2026, 4, 10, 1, 45, 54);
   const completedAt = startedAt + 26_076 * 60_000 + 2_000;
 
@@ -45,7 +43,7 @@ test("subagent panel subtitle shows only the start time", () => {
   assert.ok(!state.subtitle?.includes("26076m 2s"));
 });
 
-test("subagent parts use the same stable artifact identity rather than list positions", () => {
+test("subagent parts use the same stable artifact identity rather than list positions", async () => {
   const artifact = {
     type: "artifact" as const,
     artifact_id: "artifact-a",
@@ -68,7 +66,7 @@ test("subagent parts use the same stable artifact identity rather than list posi
   assert.match(initial[0], /artifact:artifact-a$/);
 });
 
-test("nested subagents render inline once while panel entries retain source indexes", () => {
+test("nested subagents render inline once while panel entries retain source indexes", async () => {
   const parts = [
     { type: "text" as const, content: "status" },
     {
@@ -110,22 +108,10 @@ test("nested subagents render inline once while panel entries retain source inde
   assert.equal(shouldShowSubagentPanelLoading(false, 0), false);
 });
 
-test("running subagent stays in the message until the user opens its panel", () => {
-  const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>", {
-    url: "http://localhost/",
-  });
-  for (const key of ["window", "document", "navigator", "HTMLElement", "Node"] as const) {
-    Object.defineProperty(globalThis, key, {
-      configurable: true,
-      value: dom.window[key],
-    });
-  }
-  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", {
-    configurable: true,
-    value: true,
-  });
-  const container = dom.window.document.getElementById("root") as HTMLDivElement;
-  const root = createRoot(container);
+test("running subagent stays in the message until the user opens its panel", async () => {
+  const environment = installSelectTestDom();
+  const container = document.createElement("div");
+  const root = await createLobeTestRoot(container);
 
   try {
     closePersistentToolPanel();
@@ -152,6 +138,6 @@ test("running subagent stays in the message until the user opens its panel", () 
   } finally {
     act(() => root.unmount());
     closePersistentToolPanel();
-    dom.window.close();
+    environment.close();
   }
 });

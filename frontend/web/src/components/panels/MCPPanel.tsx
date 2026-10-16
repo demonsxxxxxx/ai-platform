@@ -1,3 +1,4 @@
+import { Button, ModalRoot, ModalPortal, ModalBackdrop, ModalPopup, ModalHeader, ModalTitle, ModalContent } from "@lobehub/ui/base-ui";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
@@ -13,10 +14,10 @@ import {
   X,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import toast from "react-hot-toast";
+import { toast } from "@lobehub/ui/base-ui";
 import { PanelHeader } from "../common/PanelHeader";
 import { MCPPanelSkeleton } from "../skeletons";
-import { Pagination } from "../common/Pagination";
+import { Pagination } from "@lobehub/ui/base-ui";
 import { ConfirmDialog } from "../common/ConfirmDialog";
 import {
   buildFrontendGovernanceSmokeAttributes,
@@ -30,7 +31,7 @@ import type { MCPServerCreate, MCPServerResponse } from "../../types";
 import { MCPServerForm } from "../mcp/MCPServerForm";
 import { MCPToolDrawer } from "../mcp/MCPToolDrawer";
 import { useMcpToolDiscovery } from "../mcp/useMcpToolDiscovery";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../common/Table";
+import { Table } from "@lobehub/ui/base-ui";
 import { canManageMcpLifecycle, isAiAdminUser } from "./capabilityAdmin";
 import { resolveMcpGovernanceState } from "./mcpGovernanceState";
 import { OrdinaryMcpCatalog } from "./OrdinaryMcpCatalog";
@@ -64,8 +65,8 @@ export function MCPPanel() {
   const [editorDetailsLoading, setEditorDetailsLoading] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<MCPServerResponse | null>(null);
   const [toolTarget, setToolTarget] = useState<{ name: string; scope: string } | null>(null);
-  const editorDialogRef = useRef<HTMLElement>(null);
   const editorPreviousFocusRef = useRef<HTMLElement | null>(null);
+  const toolPreviousFocusRef = useRef<HTMLElement | null>(null);
   const editorLoadingRef = useRef(false);
   const canReadMcp = hasPermission(Permission.MCP_READ);
   const pageSize = 20;
@@ -185,68 +186,6 @@ export function MCPPanel() {
     setDeleteTarget(null);
   }, [canManageMcpUi]);
 
-  useEffect(() => {
-    if (!editorOpen || !canManageMcpUi) return undefined;
-
-    const dialog = editorDialogRef.current;
-    if (!dialog) return undefined;
-
-    const focusableSelector = [
-      "button:not([disabled])",
-      "input:not([disabled])",
-      "select:not([disabled])",
-      "textarea:not([disabled])",
-      '[tabindex]:not([tabindex="-1"])',
-    ].join(",");
-    const initialFocus = dialog.querySelector<HTMLElement>(
-      "[data-mcp-editor-initial-focus]",
-    );
-    initialFocus?.focus();
-
-    const handleEditorKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        if (!editorLoadingRef.current) {
-          event.preventDefault();
-          setEditorOpen(false);
-        }
-        return;
-      }
-      if (event.key !== "Tab") return;
-
-      const focusable = Array.from(
-        dialog.querySelectorAll<HTMLElement>(focusableSelector),
-      ).filter((element) => element.getAttribute("aria-hidden") !== "true");
-      if (focusable.length === 0) {
-        event.preventDefault();
-        dialog.focus();
-        return;
-      }
-
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      const activeElement = document.activeElement;
-      if (
-        event.shiftKey &&
-        (activeElement === first || !dialog.contains(activeElement))
-      ) {
-        event.preventDefault();
-        last.focus();
-      } else if (
-        !event.shiftKey &&
-        (activeElement === last || !dialog.contains(activeElement))
-      ) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-
-    document.addEventListener("keydown", handleEditorKeyDown);
-    return () => {
-      document.removeEventListener("keydown", handleEditorKeyDown);
-      editorPreviousFocusRef.current?.focus();
-      editorPreviousFocusRef.current = null;
-    };
-  }, [editorOpen, canManageMcpUi]);
 
   const saveServer = async (data: MCPServerCreate): Promise<boolean> => {
     const saved = editorServer
@@ -327,9 +266,9 @@ export function MCPPanel() {
               : undefined
           }
           actions={mcpGovernance.pageState === "forbidden" ? (
-            <button type="button" className="btn-secondary" data-mcp-retry onClick={retryCatalog}>
+            <Button type="default" htmlType="button" className="" data-mcp-retry onClick={retryCatalog}>
               {t("mcp.catalogUnavailable.retry")}
-            </button>
+            </Button>
           ) : undefined}
           capabilities={[
             {
@@ -369,13 +308,13 @@ export function MCPPanel() {
         onSearchChange={setSearchQuery}
         searchPlaceholder={t("mcp.searchPlaceholder")}
         searchAccessory={<>
-          <button type="button" className="btn-secondary inline-flex min-h-11 items-center gap-2" data-mcp-refresh-tools onClick={discovery.refresh} disabled={!discoveryEnabled || Array.from(discovery.statusByServer.values()).includes("loading")} aria-label={t("mcp.tools.refresh")} title={t("mcp.tools.refresh")}>
+          <Button type="default" htmlType="button" className="inline-flex min-h-11 items-center gap-2" data-mcp-refresh-tools onClick={discovery.refresh} disabled={!discoveryEnabled || Array.from(discovery.statusByServer.values()).includes("loading")} aria-label={t("mcp.tools.refresh")} title={t("mcp.tools.refresh")}>
             <RefreshCw size={16} /><span className="hidden sm:inline">{t("mcp.tools.refresh")}</span>
-          </button>
+          </Button>
           {canManageMcpUi ? <div data-mcp-admin-controls>
-            <button type="button" onClick={openCreate} className="btn-primary inline-flex min-h-11 items-center justify-center gap-2" aria-label={t("mcp.admin.addServer")} title={t("mcp.admin.addServer")}>
+            <Button type="primary" htmlType="button" onClick={openCreate} className="inline-flex min-h-11 items-center justify-center gap-2" aria-label={t("mcp.admin.addServer")} title={t("mcp.admin.addServer")}>
               <Plus size={18} /><span className="hidden sm:inline">{t("mcp.admin.addServer")}</span>
-            </button>
+            </Button>
           </div> : null}
         </>}
       />
@@ -392,7 +331,7 @@ export function MCPPanel() {
             surface="mcp-directory"
             title={t("mcp.catalogUnavailable.title")}
             description={t("mcp.catalogUnavailable.description")}
-            actions={<button type="button" className="btn-secondary" data-mcp-retry onClick={retryCatalog}>{t("mcp.catalogUnavailable.retry")}</button>}
+            actions={<Button type="default" htmlType="button" className="" data-mcp-retry onClick={retryCatalog}>{t("mcp.catalogUnavailable.retry")}</Button>}
             className="max-w-none text-left"
           />
         </div>
@@ -419,64 +358,76 @@ export function MCPPanel() {
               </p>
             ) : null}
             {canManageMcpUi && !searchQuery ? (
-              <button
-                type="button"
+              <Button type="primary"
+                htmlType="button"
                 onClick={openCreate}
-                className="btn-primary mt-4 inline-flex min-h-11 items-center gap-2"
+                className="mt-4 inline-flex min-h-11 items-center gap-2"
               >
                 <Plus size={18} />
                 {t("mcp.admin.addFirstServer")}
-              </button>
+              </Button>
             ) : null}
           </div>
         ) : (
           <div className="overflow-x-auto rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)]">
-            <Table className="w-full min-w-[960px] text-left text-sm [&_th]:px-4 [&_th]:py-3 [&_th]:text-xs [&_th]:font-medium [&_th]:text-[var(--theme-text-secondary)] [&_td]:px-4 [&_td]:py-3 [&_td]:align-top" aria-label={t("mcp.title")}>
-              <TableHeader className="border-b border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)]">
-                <TableRow>
-                  <TableHead>{t("mcp.form.serverName")}</TableHead>
-                  <TableHead>{t("mcp.tools.accountCount")}</TableHead>
-                  <TableHead>{t("mcp.card.statusLabel")}</TableHead>
-                  <TableHead>{t("mcp.tools.discoveryStatus")}</TableHead>
-                  <TableHead>{t("mcp.form.transportType")}</TableHead>
-                  <TableHead>{t("mcp.directory.accessScope")}</TableHead>
-                  <TableHead>{t("mcp.directory.actions")}</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody className="divide-y divide-[var(--theme-border)]">
-                {servers.map((server) => {
-                  const status = discovery.statusByServer.get(server.name) ?? "idle";
-                  const quotaCount = roleQuotaCount(server);
-                  return <TableRow key={server.name} data-mcp-server-row={server.name}>
-                    <TableCell className="max-w-64">
-                      <p className="break-words font-semibold">{server.name}</p>
+            <div aria-label={t("mcp.title")}><Table
+ size="small" pagination={false}
+ dataSource={servers}
+ rowKey={(server) => server.name}
+onRow={(server) => {  return ({ role: "row", "data-mcp-server-row": server.name }); }}
+ columns={[
+{ key: "name", title: t("mcp.form.serverName"),
+render: (_value, server) => (<>
+<p className="break-words font-semibold">{server.name}</p>
                       <p className="mt-1 text-xs text-[var(--theme-text-secondary)]">{t(server.is_system ? "mcp.card.system" : "mcp.card.user")}</p>
-                    </TableCell>
-                    <TableCell data-mcp-tool-count>{status === "ready" ? t("mcp.tools.count", { count: discovery.toolsByServer.get(server.name)?.length ?? 0 }) : "—"}</TableCell>
-                    <TableCell><span className={server.enabled ? "text-[var(--theme-accent)]" : "text-[var(--theme-text-secondary)]"}>{t(server.enabled ? "mcp.card.statusEnabled" : "mcp.card.statusDisabled")}</span></TableCell>
-                    <TableCell><span className={status === "unavailable" ? "text-[var(--theme-danger)]" : "text-[var(--theme-text-secondary)]"}>{t(`mcp.discovery.${status}`)}</span></TableCell>
-                    <TableCell>{transportLabel(server.transport)}</TableCell>
-                    <TableCell className="max-w-64">
-                      <p title={server.allowed_departments?.join("、")}>{server.allowed_departments?.length ? t("mcp.directory.departments", { count: server.allowed_departments.length }) : t("mcp.directory.allDepartments")}</p>
+</>) },
+{ key: "toolCount", title: t("mcp.tools.accountCount"),
+onCell: () => ({"data-mcp-tool-count": true}),
+render: (_value, server) =>  {
+const status = discovery.statusByServer.get(server.name) ?? "idle";
+return (<>
+{status === "ready" ? t("mcp.tools.count", { count: discovery.toolsByServer.get(server.name)?.length ?? 0 }) : "—"}
+</>);
+} },
+{ key: "enabled", title: t("mcp.card.statusLabel"),
+render: (_value, server) => (<>
+<span className={server.enabled ? "text-[var(--theme-accent)]" : "text-[var(--theme-text-secondary)]"}>{t(server.enabled ? "mcp.card.statusEnabled" : "mcp.card.statusDisabled")}</span>
+</>) },
+{ key: "discovery", title: t("mcp.tools.discoveryStatus"),
+render: (_value, server) =>  {
+const status = discovery.statusByServer.get(server.name) ?? "idle";
+return (<>
+<span className={status === "unavailable" ? "text-[var(--theme-danger)]" : "text-[var(--theme-text-secondary)]"}>{t(`mcp.discovery.${status}`)}</span>
+</>);
+} },
+{ key: "transport", title: t("mcp.form.transportType"),
+render: (_value, server) => (<>
+{transportLabel(server.transport)}
+</>) },
+{ key: "scope", title: t("mcp.directory.accessScope"),
+render: (_value, server) =>  {
+const quotaCount = roleQuotaCount(server);
+return (<>
+<p title={server.allowed_departments?.join("、")}>{server.allowed_departments?.length ? t("mcp.directory.departments", { count: server.allowed_departments.length }) : t("mcp.directory.allDepartments")}</p>
                       <p className="mt-1 break-words text-xs text-[var(--theme-text-secondary)]">{t("mcp.directory.roles", { roles: server.allowed_roles?.length ? server.allowed_roles.join("、") : t("mcp.directory.allRoles") })}</p>
                       {quotaCount > 0 ? <p className="mt-1 text-xs text-[var(--theme-text-secondary)]">{t("mcp.card.roleQuotaCount")}：{quotaCount}</p> : null}
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-1">
-                        <button type="button" className="btn-secondary min-h-11 whitespace-nowrap" data-mcp-view-tools onClick={() => setToolTarget({ name: server.name, scope: toolsScope })}>{t("mcp.tools.view")}</button>
+</>);
+} },
+{ key: "actions", title: t("mcp.directory.actions"),
+render: (_value, server) => (<>
+<div className="flex items-center gap-1">
+                        <Button type="default" htmlType="button" className="min-h-11 whitespace-nowrap" data-mcp-view-tools onClick={(event) => { toolPreviousFocusRef.current = event.currentTarget; setToolTarget({ name: server.name, scope: toolsScope }); }}>{t("mcp.tools.view")}</Button>
                         {canManageMcpUi ? <div className="flex items-center gap-1" data-mcp-admin-controls>
-                          <button type="button" data-mcp-admin-toggle onClick={async () => { const updated = await toggleServer(server.name); if (updated) toast.success(t(updated.enabled ? "mcp.admin.enableSuccess" : "mcp.admin.disableSuccess")); }} className="btn-icon min-h-11 min-w-11" aria-label={server.enabled ? t("mcp.admin.disableServer") : t("mcp.admin.enableServer")} title={server.enabled ? t("mcp.admin.disableServer") : t("mcp.admin.enableServer")} disabled={isLoading}>
+                          <Button type="text" htmlType="button" data-mcp-admin-toggle onClick={async () => { const updated = await toggleServer(server.name); if (updated) toast.success(t(updated.enabled ? "mcp.admin.enableSuccess" : "mcp.admin.disableSuccess")); }} className="btn-icon min-h-11 min-w-11" aria-label={server.enabled ? t("mcp.admin.disableServer") : t("mcp.admin.enableServer")} title={server.enabled ? t("mcp.admin.disableServer") : t("mcp.admin.enableServer")} disabled={isLoading}>
                             {server.enabled ? <ToggleRight size={18} /> : <ToggleLeft size={18} />}
-                          </button>
-                          <button type="button" data-mcp-admin-edit onClick={() => void openEditor(server)} className="btn-icon min-h-11 min-w-11" aria-label={t("mcp.admin.editServer")} title={t("mcp.admin.editServer")} disabled={isLoading || editorDetailsLoading}><Edit3 size={18} /></button>
-                          <button type="button" data-mcp-admin-delete onClick={() => { setToolTarget(null); setDeleteTarget(server); }} className="btn-icon min-h-11 min-w-11 hover:bg-[var(--theme-danger-soft)] hover:text-[var(--theme-danger)]" aria-label={t("mcp.admin.deleteServer")} title={t("mcp.admin.deleteServer")} disabled={isLoading}><Trash2 size={18} /></button>
+                          </Button>
+                          <Button type="text" htmlType="button" data-mcp-admin-edit onClick={() => void openEditor(server)} className="btn-icon min-h-11 min-w-11" aria-label={t("mcp.admin.editServer")} title={t("mcp.admin.editServer")} disabled={isLoading || editorDetailsLoading}><Edit3 size={18} /></Button>
+                          <Button type="text" htmlType="button" data-mcp-admin-delete onClick={() => { setToolTarget(null); setDeleteTarget(server); }} className="btn-icon min-h-11 min-w-11 hover:bg-[var(--theme-danger-soft)] hover:text-[var(--theme-danger)]" aria-label={t("mcp.admin.deleteServer")} title={t("mcp.admin.deleteServer")} disabled={isLoading}><Trash2 size={18} /></Button>
                         </div> : null}
                       </div>
-                    </TableCell>
-                  </TableRow>;
-                })}
-              </TableBody>
-            </Table>
+</>) }
+]}
+/></div>
           </div>
         )}
       </div>
@@ -484,27 +435,31 @@ export function MCPPanel() {
       {total > pageSize && (
         <div className="enterprise-divider border-t px-3 py-3 sm:px-4">
           <Pagination
-            page={page}
+                  current={page} hideOnSinglePage responsive showSizeChanger={false}
+                  showTotal={(total, [start, end]) => `${start}-${end} / ${total}`}
             pageSize={pageSize}
             total={total}
             onChange={setPage}
           />
         </div>
       )}
-      {selectedToolServer ? <MCPToolDrawer key={selectedToolServer.name} serverName={selectedToolServer.name} status={discovery.statusByServer.get(selectedToolServer.name) ?? "idle"} tools={discovery.toolsByServer.get(selectedToolServer.name) ?? []} onRefresh={discovery.refresh} onClose={() => setToolTarget(null)} /> : null}
-      {editorOpen && canManageMcpUi ? (
-        <div className="fixed inset-0 z-[300] flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label={editorServer ? t("mcp.admin.editServer") : t("mcp.admin.addServer")}>
-          <div className="absolute inset-0 bg-[var(--theme-overlay-strong)]" onClick={closeEditor} />
-          <section ref={editorDialogRef} tabIndex={-1} className="enterprise-modal-shell relative z-10 max-h-[calc(100dvh-2rem)] w-full max-w-2xl overflow-y-auto">
-            <div className="enterprise-modal-footer justify-between">
-              <h2 className="text-base font-semibold text-[var(--theme-text)]">{editorServer ? t("mcp.admin.editServer") : t("mcp.admin.addServer")}</h2>
-              <button type="button" data-mcp-editor-initial-focus className="btn-icon" onClick={closeEditor} aria-label={t("common.close")} disabled={isLoading}><X size={18} /></button>
-            </div>
-            <div className="p-5">
-              {error ? <p role="alert" className="mb-3 text-sm text-[var(--theme-danger)]">{t("mcp.admin.operationFailed")}</p> : null}
-              <MCPServerForm server={editorServer} onSave={saveServer} onCancel={closeEditor} isLoading={isLoading} isSystemServer /></div>
-          </section>
-        </div>
+      {selectedToolServer ? <MCPToolDrawer returnFocusRef={toolPreviousFocusRef} key={selectedToolServer.name} serverName={selectedToolServer.name} status={discovery.statusByServer.get(selectedToolServer.name) ?? "idle"} tools={discovery.toolsByServer.get(selectedToolServer.name) ?? []} onRefresh={discovery.refresh} onClose={() => setToolTarget(null)} /> : null}
+      {canManageMcpUi ? (
+        <ModalRoot open={editorOpen} onOpenChange={(open) => { if (!open) closeEditor(); }}>
+          <ModalPortal>
+            <ModalBackdrop />
+            <ModalPopup width="min(42rem, calc(100vw - 2rem))" finalFocus={editorPreviousFocusRef}>
+              <ModalHeader>
+                <ModalTitle>{editorServer ? t("mcp.admin.editServer") : t("mcp.admin.addServer")}</ModalTitle>
+                <Button type="text" data-mcp-editor-initial-focus autoFocus onClick={closeEditor} aria-label={t("common.close")} disabled={isLoading}><X size={18} /></Button>
+              </ModalHeader>
+              <ModalContent>
+                {error ? <p role="alert" className="mb-3 text-sm text-[var(--theme-danger)]">{t("mcp.admin.operationFailed")}</p> : null}
+                <MCPServerForm server={editorServer} onSave={saveServer} onCancel={closeEditor} isLoading={isLoading} isSystemServer />
+              </ModalContent>
+            </ModalPopup>
+          </ModalPortal>
+        </ModalRoot>
       ) : null}
       <ConfirmDialog
         isOpen={canManageMcpUi && Boolean(deleteTarget)}

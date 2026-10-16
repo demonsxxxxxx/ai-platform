@@ -1,3 +1,4 @@
+import { Button } from "@lobehub/ui/base-ui";
 import type { AdminRunDiagnosticLoss, AdminRunDiagnosticsResponse } from "../../services/api/adminRuns";
 
 
@@ -106,9 +107,9 @@ export function RunDiagnosticsSection({
           诊断读取失败：{error}
         </div>
         {onRetry ? (
-          <button type="button" className="btn-secondary mt-3 rounded-md px-3 py-1.5 text-xs" onClick={onRetry}>
+          <Button type="default" htmlType="button" className="mt-3 rounded-md px-3 py-1.5 text-xs" onClick={onRetry}>
             重新读取诊断
-          </button>
+          </Button>
         ) : null}
       </section>
     );
@@ -151,14 +152,14 @@ export function RunDiagnosticsSection({
             {diagnostics.revision ? ` · r${diagnostics.revision}` : ""}
           </span>
           {onExport ? (
-            <button
-              type="button"
-              className="btn-secondary rounded-md px-2.5 py-1 text-[11px]"
+            <Button type="default"
+              htmlType="button"
+              className="rounded-md px-2.5 py-1 text-[11px]"
               onClick={onExport}
               disabled={exporting}
             >
               {exporting ? "正在生成…" : "下载脱敏诊断包"}
-            </button>
+            </Button>
           ) : null}
         </div>
       </div>

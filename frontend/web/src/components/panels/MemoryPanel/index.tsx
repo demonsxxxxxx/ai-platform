@@ -1,3 +1,5 @@
+import { Checkbox } from "@lobehub/ui/base-ui";
+import { Button, Input } from "@lobehub/ui/base-ui";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -10,7 +12,7 @@ import {
   ShieldCheck,
   Trash2,
 } from "lucide-react";
-import toast from "react-hot-toast";
+import { toast } from "@lobehub/ui/base-ui";
 import { PanelHeader } from "../../common/PanelHeader";
 import { GovernanceAvailabilityBadge } from "../../governance/GovernanceAvailabilityBadge";
 import {
@@ -88,7 +90,7 @@ function TextInput({
   disabled?: boolean;
 }) {
   return (
-    <input
+    <Input
       value={value}
       onChange={(event) => onChange(event.target.value)}
       placeholder={placeholder}
@@ -152,15 +154,15 @@ function MemoryRecordRow({
           {record.created_at ? formatDateTimeShort(record.created_at) : ""}
         </span>
         {canDelete && onDelete && (
-          <button
-            type="button"
+          <Button type="text"
+            htmlType="button"
             aria-label={t("memory.workbench.deleteRecord")}
             className="btn-icon inline-flex h-9 w-9 items-center justify-center rounded-lg text-red-500 transition hover:bg-red-50 dark:hover:bg-red-500/10"
             onClick={() => onDelete(record.memory_record_id)}
             title={t("common.delete")}
           >
             <Trash2 size={15} />
-          </button>
+          </Button>
         )}
       </div>
       {record.content && (
@@ -542,9 +544,9 @@ export function MemoryPanel() {
   };
 
   const refreshAction = (
-    <button
-      type="button"
-      className="btn-primary"
+    <Button type="primary"
+      htmlType="button"
+      className=""
       onClick={refreshAll}
       disabled={policyLoading || recordsLoading || adminLoading}
     >
@@ -555,7 +557,7 @@ export function MemoryPanel() {
         }
       />
       <span className="hidden sm:inline">{t("common.refresh", "Refresh")}</span>
-    </button>
+    </Button>
   );
 
   const blockingGovernanceState =
@@ -738,17 +740,15 @@ export function MemoryPanel() {
                     {t("memory.workbench.allowSessionWritesHint")}
                   </span>
                 </span>
-                <input
-                  type="checkbox"
+                <Checkbox
                   checked={memoryEnabled}
                   disabled={policyLoading || !policy}
-                  onChange={(event) => setMemoryEnabled(event.target.checked)}
-                  className="h-5 w-5 accent-[var(--theme-primary)]"
+                  onChange={(checked) => setMemoryEnabled(checked)}
                 />
               </label>
 
               <FieldLabel label={t("memory.workbench.retentionDays")}>
-                <input
+                <Input
                   type="number"
                   disabled={policyLoading || !policy}
                   min={1}
@@ -773,15 +773,15 @@ export function MemoryPanel() {
                 />
               </FieldLabel>
 
-              <button
-                type="button"
-                className="btn-primary justify-center"
+              <Button type="primary"
+                htmlType="button"
+                className="justify-center"
                 onClick={savePolicy}
                 disabled={policyLoading || !policy}
               >
                 <Save size={15} />
                 {t("memory.workbench.savePolicy")}
-              </button>
+              </Button>
             </div>
 
             <div className="mt-4 border-t border-[var(--theme-border)] pt-4">
@@ -832,15 +832,15 @@ export function MemoryPanel() {
               {t("memory.workbench.adminProjection")}
             </h2>
             {canUseAdminMemory && (
-              <button
-                type="button"
-                className="btn-secondary ml-auto"
+              <Button type="default"
+                htmlType="button"
+                className="ml-auto"
                 onClick={runRetentionCleanup}
                 disabled={cleanupLoading}
               >
                 <Trash2 size={15} />
                 <span>{t("memory.workbench.retentionCleanup")}</span>
-              </button>
+              </Button>
             )}
           </div>
 

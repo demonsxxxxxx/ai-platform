@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
-import toast from "react-hot-toast";
+import { toast } from "@lobehub/ui/base-ui";
 import { sanitizeSkillName } from "../../utils/skillFilters";
 import { normalizeTags, syncSkillMarkdownMetadata } from "./SkillForm.utils";
 import { DEFAULT_CONTENT } from "./SkillForm.types";
@@ -48,10 +48,9 @@ export function SkillForm({
       setIsFullscreen(fs);
       onFullscreenChange?.(fs);
       if (fs && window.innerWidth >= 640) {
-        toast(t("skills.form.fullscreenHint", "按 Esc 退出全屏"), {
-          duration: 2000,
-          position: "top-center",
-          style: { borderRadius: "10px", background: "#1c1917", color: "#fff" },
+        toast.info({
+          description: t("skills.form.fullscreenHint", "按 Esc 退出全屏"),
+          duration: 2000, placement: "top", hideCloseButton: true,
         });
       }
     },

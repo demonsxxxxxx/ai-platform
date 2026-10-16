@@ -1,5 +1,7 @@
+import { Button } from "@lobehub/ui/base-ui";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
+import { useAppElement } from "@lobehub/ui/es/ThemeProvider/index";
 import { useTranslation } from "react-i18next";
 import { X, Download, ChevronLeft, ChevronRight } from "lucide-react";
 import { ViewerToolbar } from "./ViewerToolbar";
@@ -32,6 +34,7 @@ export function ImageViewer({
   positionLabel,
 }: ImageViewerProps) {
   const { t } = useTranslation();
+  const appElement = useAppElement();
   const [scale, setScale] = useState(1);
   const [rotation, setRotation] = useState(0);
   const [position, setPosition] = useState({ x: 0, y: 0 });
@@ -217,14 +220,13 @@ export function ImageViewer({
     >
       {/* Top bar */}
       <div className="flex items-center justify-between px-3 sm:px-6 py-3 bg-black">
-        <button
-          type="button"
+        <Button type="text"
+          htmlType="button"
           onClick={onClose}
-          className="flex items-center justify-center w-10 h-10 rounded-lg hover:bg-white/10 transition-colors cursor-pointer"
+          size="large"
+          icon={<X size={20} className="text-white/70" />}
           aria-label={t("common.close")}
-        >
-          <X size={20} className="text-white/70" />
-        </button>
+        />
 
         {positionLabel && (
           <div className="pointer-events-none absolute left-1/2 -translate-x-1/2 rounded-md bg-white/10 px-2.5 py-1 text-xs font-medium tabular-nums text-white/70">
@@ -232,20 +234,21 @@ export function ImageViewer({
           </div>
         )}
 
-        <button
-          type="button"
+        <Button type="text"
+          htmlType="button"
           onClick={() => {
             const a = document.createElement("a");
             a.href = src;
             a.download = "";
             a.click();
           }}
-          className="flex items-center gap-1.5 rounded-lg px-3 h-10 text-sm font-medium transition-colors cursor-pointer hover:bg-white/10 text-white/70"
+          size="large"
+          className="text-white/70"
+          icon={<Download size={18} className="text-white/70" />}
           aria-label={t("imageViewer.download")}
         >
-          <Download size={18} className="text-white/70" />
           <span className="hidden sm:inline">{t("imageViewer.download")}</span>
-        </button>
+        </Button>
       </div>
 
       {/* Main area */}
@@ -293,26 +296,26 @@ export function ImageViewer({
 
         {(onPrevious || onNext) && (
           <>
-            <button
-              type="button"
+            <Button type="text"
+              htmlType="button"
               onClick={onPrevious}
               disabled={!canGoPrevious}
-              className="absolute left-2 sm:left-5 top-1/2 z-10 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full bg-black/45 text-white/75 transition-colors hover:bg-black/65 hover:text-white disabled:cursor-not-allowed disabled:opacity-25 disabled:hover:bg-black/45 disabled:hover:text-white/75"
+              size="large" shape="circle"
+              icon={<ChevronLeft size={28} className="text-white/75" />}
+              className="absolute left-2 sm:left-5 top-1/2 z-10 -translate-y-1/2 bg-black/45"
               aria-label={t("imageViewer.previous", "Previous image")}
               title={t("imageViewer.previous", "Previous image")}
-            >
-              <ChevronLeft size={28} />
-            </button>
-            <button
-              type="button"
+            />
+            <Button type="text"
+              htmlType="button"
               onClick={onNext}
               disabled={!canGoNext}
-              className="absolute right-2 sm:right-5 top-1/2 z-10 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full bg-black/45 text-white/75 transition-colors hover:bg-black/65 hover:text-white disabled:cursor-not-allowed disabled:opacity-25 disabled:hover:bg-black/45 disabled:hover:text-white/75"
+              size="large" shape="circle"
+              icon={<ChevronRight size={28} className="text-white/75" />}
+              className="absolute right-2 sm:right-5 top-1/2 z-10 -translate-y-1/2 bg-black/45"
               aria-label={t("imageViewer.next", "Next image")}
               title={t("imageViewer.next", "Next image")}
-            >
-              <ChevronRight size={28} />
-            </button>
+            />
           </>
         )}
 
@@ -328,6 +331,6 @@ export function ImageViewer({
         />
       </div>
     </div>,
-    document.body,
+    appElement ?? document.body,
   );
 }

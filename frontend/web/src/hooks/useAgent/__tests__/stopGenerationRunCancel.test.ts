@@ -5,7 +5,8 @@ import test from "node:test";
 import { createElement } from "react";
 import { createInstance } from "i18next";
 import { I18nextProvider } from "react-i18next";
-import { renderToStaticMarkup } from "react-dom/server";
+import { createLobeServerTestRoot } from "../../../components/common/__tests__/lobeUiTestRoot";
+const renderToStaticMarkup = await createLobeServerTestRoot();
 // @ts-expect-error jsdom 26 does not ship declarations.
 import { JSDOM } from "jsdom";
 import { ChatInputToolbar } from "../../../components/chat/ChatInputToolbar.tsx";
@@ -61,7 +62,7 @@ for (const [isLoading, canStop, canSend, expectedStop] of [
       const stop = dom.window.document.querySelector('button[title="Stop"]');
       assert.equal(stop !== null, expectedStop);
       if (isLoading && canSend && !canStop) {
-        assert.ok(dom.window.document.querySelector('button[disabled][aria-busy="true"]'));
+        assert.ok(dom.window.document.querySelector('button[aria-disabled="true"][aria-busy="true"], button[disabled][aria-busy="true"]'));
         assert.equal(dom.window.document.querySelector('button[type="submit"]'), null);
       }
     } finally {

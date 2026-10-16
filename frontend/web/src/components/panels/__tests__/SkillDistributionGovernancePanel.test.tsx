@@ -7,6 +7,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import "../../../i18n/index.ts";
 import { DepartmentDirectorySelector } from "../DepartmentDirectorySelector.tsx";
 import { buildControlledSkillDistributionUpdate } from "../skillDistributionDraft.ts";
+import { ThemeProvider } from "../../../contexts/ThemeContext";
+import { LobeUiProvider } from "../../../contexts/LobeUiProvider";
 
 test("Skill distribution editor uses server-backed ACL controls and safe errors", () => {
   const source = readFileSync(
@@ -93,13 +95,13 @@ test("department selector is keyboard navigable and keeps unresolved values remo
 
   assert.match(source, /data-skill-distribution-departments/);
   assert.match(source, /resolution\.unresolvedAuthorityIds\.map/);
-  assert.match(source, /aria-multiselectable="true"/);
-  assert.match(source, /aria-selected=\{checked\}/);
+  assert.match(source, /<SelectRoot multiple value=\{selectedAuthorityIds\}/);
+  assert.match(source, /<SelectItem[^]*value=\{option\.authorityId\}/);
   assert.match(source, /event\.key === "ArrowDown"/);
   assert.match(source, /event\.key === "Escape"/);
-  assert.match(source, /event\.key === "Home"/);
+  assert.match(source, /<SelectList/);
   assert.match(source, /MAX_SELECTED_DEPARTMENTS = 128/);
-  assert.match(source, /aria-disabled=\{unavailable\}/);
+  assert.match(source, /disabled=\{disabled \|\| !option\.selectable \|\| atLimit\}/);
   assert.match(source, /skills\.governance\.departmentSelector/);
   assert.doesNotMatch(source, /[\u4e00-\u9fff]/);
   assert.doesNotMatch(source, /split\(","\)|trim\(\).*department/);
@@ -154,7 +156,7 @@ test("controlled selected-Skill editor sends the exact all/restricted payload", 
 
 test("department selector renders authoritative multiselect semantics", () => {
   const markup = renderToStaticMarkup(
-    <DepartmentDirectorySelector
+    <ThemeProvider><LobeUiProvider><DepartmentDirectorySelector
       directory={[
         {
           authorityId: "总部",
@@ -169,7 +171,7 @@ test("department selector renders authoritative multiselect semantics", () => {
       loadError={null}
       onChange={() => undefined}
       selectedAuthorityIds={["总部"]}
-    />,
+    /></LobeUiProvider></ThemeProvider>,
   );
 
   assert.match(markup, /aria-haspopup="listbox"/);
@@ -180,12 +182,12 @@ test("department selector renders authoritative multiselect semantics", () => {
 
 test("department selector exposes unresolved values while directory authority is unavailable", () => {
   const markup = renderToStaticMarkup(
-    <DepartmentDirectorySelector
+    <ThemeProvider><LobeUiProvider><DepartmentDirectorySelector
       directory={null}
       loadError="权威部门目录暂时不可用"
       onChange={() => undefined}
       selectedAuthorityIds={["历史部门"]}
-    />,
+    /></LobeUiProvider></ThemeProvider>,
   );
 
   assert.match(markup, /移除未确认部门 历史部门/);

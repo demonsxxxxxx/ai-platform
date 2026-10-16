@@ -1,3 +1,4 @@
+import { Button } from "@lobehub/ui/base-ui";
 import {
   useEffect,
   useState,
@@ -16,7 +17,7 @@ import {
   Loader2,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { LoadingSpinner } from "../../common";
+import { Spin } from "@lobehub/ui/base-ui";
 import type { CollapsibleStatus } from "../../common";
 import type { MessagePart } from "../../../types";
 import {
@@ -261,7 +262,7 @@ function SubagentPanelContent({ agentId }: { agentId: string }) {
           panelPartEntries.length,
         ) && (
           <div className="flex items-center gap-2 text-stone-500 dark:text-stone-400">
-            <LoadingSpinner size="sm" />
+            <Spin size={16} />
             <span className="text-sm">{t("chat.message.executing")}</span>
           </div>
         )}
@@ -400,7 +401,7 @@ export function SubagentBlock({
   }, [formattedAgentName, panelStatus, subtitle, panelKey, agent_id]);
 
   const handleTriggerKeyDown = useCallback(
-    (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    (event: ReactKeyboardEvent<HTMLElement>) => {
       if (event.key !== "Enter" && event.key !== " ") return;
       // Prevent native click synthesis so explicit keyboard support cannot
       // double-open the panel when the browser also dispatches activation.
@@ -431,8 +432,8 @@ export function SubagentBlock({
           "border-stone-200/60 dark:border-stone-700/40",
       )}
     >
-      <button
-        type="button"
+      <Button type="text"
+        htmlType="button"
         aria-label={`${formattedAgentName}: ${statusLabel}${parentAgentId ? ", Nested Agent" : ""}`}
         aria-haspopup="dialog"
         data-subagent-trigger={agent_id}
@@ -498,7 +499,7 @@ export function SubagentBlock({
             {durationMs !== undefined && <span>Duration: {(durationMs / 1000).toFixed(1)}s</span>}
           </div>
         </div>
-      </button>
+      </Button>
       {inlineNestedEntries.length > 0 && (
         <div data-subagent-children className="ml-4 border-l-2 border-stone-200/60 pl-2 dark:border-stone-700/50">
           {inlineNestedEntries.map(({ part, index, key }, entryIndex) => (

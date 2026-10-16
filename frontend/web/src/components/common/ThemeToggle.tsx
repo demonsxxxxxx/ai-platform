@@ -1,3 +1,4 @@
+import { Button } from "@lobehub/ui/base-ui";
 import { Sun, Moon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useTheme } from "../../contexts/ThemeContext";
@@ -11,21 +12,14 @@ export function ThemeToggle({ className }: ThemeToggleProps) {
   const { t } = useTranslation();
 
   return (
-    <button
+    <Button type="text"
       onClick={toggleTheme}
-      className={
-        className ??
-        "flex h-8 w-8 items-center justify-center rounded-lg text-stone-600 hover:bg-stone-100 dark:text-stone-300 dark:hover:bg-stone-800 transition-colors"
-      }
+      className={className}
+      aria-label={theme === "light" ? t("theme.switchToDark") : t("theme.switchToLight")}
+      icon={theme === "light" ? <Moon size={20} /> : <Sun size={20} className="text-amber-400" />}
       title={
         theme === "light" ? t("theme.switchToDark") : t("theme.switchToLight")
       }
-    >
-      {theme === "light" ? (
-        <Moon size={20} className="text-[var(--theme-text-secondary)]" />
-      ) : (
-        <Sun size={20} className="text-amber-400" />
-      )}
-    </button>
+    />
   );
 }

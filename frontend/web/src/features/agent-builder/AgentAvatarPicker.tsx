@@ -1,3 +1,4 @@
+import { Button } from "@lobehub/ui/base-ui";
 import { useMemo, useState } from "react";
 import { RefreshCw } from "lucide-react";
 
@@ -5,7 +6,7 @@ import { AgentIdentityAvatar } from "../../components/agent/AgentIdentityAvatar"
 import { AGENT_AVATAR_STYLE_OPTIONS } from "../../components/agent/agentAvatar";
 import type { AgentProfileAvatarRef } from "../../types/agentProfile";
 import { uuid } from "../../utils/uuid";
-import { EnterpriseSelect } from "../../components/common/EnterpriseSelect";
+import { LobeSelectField } from "../../components/lobe-ui/LobeSelectField";
 
 const CANDIDATE_COUNT = 8;
 
@@ -49,7 +50,7 @@ export function AgentAvatarPicker({
           name={name}
           size="sm"
         />
-        <EnterpriseSelect
+        <LobeSelectField
           aria-label="选择头像风格"
           className="min-h-10 min-w-0 flex-1"
           disabled={disabled}
@@ -64,40 +65,37 @@ export function AgentAvatarPicker({
 
       <div className="mt-4 flex items-center justify-between gap-3">
         <span className="text-sm font-medium">选择头像</span>
-        <button
-          className="btn-secondary inline-flex min-h-10 cursor-pointer items-center gap-2 px-3 text-sm disabled:cursor-not-allowed disabled:opacity-60"
+        <Button type="default"
+          disabled={disabled}
+          icon={<RefreshCw aria-hidden="true" size={15} />}
           onClick={() => setCandidateSeeds(createCandidateSeeds())}
           title="生成一组新的头像候选"
-          type="button"
+          htmlType="button"
         >
-          <RefreshCw aria-hidden="true" size={15} />
           换一批
-        </button>
+        </Button>
       </div>
       <div className="mt-2 grid grid-cols-4 gap-2">
         {visibleSeeds.map((seed, index) => {
           const selected = seed === effectiveSeed;
           return (
-            <button
+            <Button type={selected ? "primary" : "default"}
+              disabled={disabled}
               aria-label={selected ? `当前头像，第 ${index + 1} 个候选` : `选择第 ${index + 1} 个头像`}
               aria-pressed={selected}
-              className={`flex aspect-square min-w-0 cursor-pointer items-center justify-center rounded-md border p-1 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)] disabled:cursor-not-allowed disabled:opacity-60 ${
-                selected
-                  ? "border-[var(--theme-primary)] bg-[var(--theme-primary-light)]/40"
-                  : "border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] hover:bg-[var(--theme-bg-sidebar)]"
-              }`}
+              className="min-w-0"
+              style={{ width: "100%", height: "auto", aspectRatio: "1", padding: 4 }}
               key={seed}
               onClick={() => onChange({ avatarSeed: seed })}
-              type="button"
-            >
-              <AgentIdentityAvatar
+              htmlType="button"
+              icon={<AgentIdentityAvatar
                 agentId={agentId}
                 avatarRef={avatarRef}
                 avatarSeed={seed}
                 name={name}
                 size="sm"
-              />
-            </button>
+              />}
+            />
           );
         })}
       </div>

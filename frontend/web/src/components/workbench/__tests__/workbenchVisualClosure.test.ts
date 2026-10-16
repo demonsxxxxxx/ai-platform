@@ -741,7 +741,8 @@ test("post-login sidebar avoids competing rail and panel active states", () => {
     rail,
     /showActiveRailState && activeRailItem === item/,
   );
-  assert.match(railPrimitive, /h-10 w-10/);
+  assert.match(railPrimitive, /size="large"/);
+  assert.match(railPrimitive, /icon=\{/);
   assert.match(sidebar, /onClick=\{onOpenSearch\}[\s\S]*LibreChatPanelSection group="tasks"/);
   assert.match(sidebar, /data-workbench-session-region[\s\S]*border-t border-\[var\(--theme-border\)\]\/70/);
   assert.match(sidebar, /className="sidebar-nav-btn flex h-9 w-full items-center gap-3 rounded-md/);

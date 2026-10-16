@@ -1,3 +1,4 @@
+import { Skeleton } from "@lobehub/ui/base-ui";
 import { SkeletonLine } from "./primitives";
 import { SidebarSkeleton } from "./SidebarSkeleton";
 
@@ -19,19 +20,19 @@ export function ChatPageSkeleton() {
         >
           <div className="flex items-center gap-2 flex-shrink-0">
             {/* Mobile hamburger */}
-            <div className="skeleton-line size-8 rounded-lg sm:hidden" />
+            <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-8 rounded-lg sm:hidden" />
             {/* Model selector — text button style */}
             <div className="hidden sm:flex items-center gap-1.5">
               <SkeletonLine width="w-28 sm:w-36" className="!h-5 !rounded-md" />
-              <div className="skeleton-line size-4 rounded-sm" />
+              <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-4 rounded-sm" />
             </div>
           </div>
           <div className="flex-1" />
           <div className="flex items-center gap-1.5 sm:gap-2 flex-shrink-0">
             {/* More menu */}
-            <div className="skeleton-line size-8 rounded-lg" />
+            <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-8 rounded-lg" />
             {/* UserMenu avatar */}
-            <div className="skeleton-line size-8 rounded-lg" />
+            <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-8 rounded-lg" />
           </div>
         </header>
 
@@ -83,7 +84,7 @@ function AssistantMessageSkeleton() {
       <div className="mx-auto flex max-w-[68rem] flex-col px-3 sm:px-5">
         {/* Avatar + name */}
         <div className="mb-2 flex items-center gap-2">
-          <div className="skeleton-line size-6 rounded-full shrink-0" />
+          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-6 rounded-full shrink-0" />
           <SkeletonLine
             width="w-16 sm:w-20"
             className="!h-[18px] sm:!h-[20px]"
@@ -92,15 +93,15 @@ function AssistantMessageSkeleton() {
         {/* Response content skeleton */}
         <div className="min-w-0 min-h-0 py-1 sm:py-2">
           <div className="space-y-3 px-2 my-2">
-            <div className="skeleton-line w-full h-2 sm:h-[7px] rounded-full" />
+            <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="w-full h-2 sm:h-[7px] rounded-full" />
             <div className="flex gap-2 sm:gap-3">
-              <div className="skeleton-line flex-1 h-2 sm:h-[7px] rounded-full" />
-              <div className="skeleton-line flex-1 h-2 sm:h-[7px] rounded-full" />
-              <div className="skeleton-line w-2/5 h-2 sm:h-[7px] rounded-full hidden sm:block" />
+              <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="flex-1 h-2 sm:h-[7px] rounded-full" />
+              <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="flex-1 h-2 sm:h-[7px] rounded-full" />
+              <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="w-2/5 h-2 sm:h-[7px] rounded-full hidden sm:block" />
             </div>
             <div className="flex gap-2 sm:gap-3">
-              <div className="skeleton-line flex-1 h-2 sm:h-[7px] rounded-full" />
-              <div className="skeleton-line w-1/3 h-2 sm:h-[7px] rounded-full" />
+              <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="flex-1 h-2 sm:h-[7px] rounded-full" />
+              <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="w-1/3 h-2 sm:h-[7px] rounded-full" />
             </div>
           </div>
         </div>
@@ -180,16 +181,16 @@ function ChatInputSkeleton() {
         >
           {/* Textarea area */}
           <div className="px-2.5 pt-1 flex items-start gap-2">
-            <div className="skeleton-line h-3 w-3/5 rounded flex-1 pt-[10px] min-h-[40px] sm:min-h-[44px]" />
+            <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="h-3 w-3/5 rounded flex-1 pt-[10px] min-h-[40px] sm:min-h-[44px]" />
           </div>
           {/* Toolbar — matches real toolbar: gap-1 sm:gap-2 */}
           <div className="flex justify-between flex-nowrap pt-3 pb-3 px-2 mx-0.5 max-w-full">
             <div className="flex items-center gap-1 sm:gap-2 self-end flex-1 min-w-0">
-              <div className="skeleton-line h-8 w-8 rounded-lg shrink-0" />
-              <div className="skeleton-line h-8 w-8 rounded-lg shrink-0 hidden sm:block" />
+              <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="h-8 w-8 rounded-lg shrink-0" />
+              <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="h-8 w-8 rounded-lg shrink-0 hidden sm:block" />
             </div>
             <div className="self-end flex shrink-0">
-              <div className="skeleton-line size-8 rounded-full" />
+              <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-8 rounded-full" />
             </div>
           </div>
         </div>
@@ -210,11 +211,11 @@ export function WelcomeSkeleton() {
       <div className="welcome-hero relative flex flex-col items-center mb-3 sm:mb-4 md:mb-5 xl:mb-6 2xl:mb-7 w-full max-w-[90vw]">
         {/* Mobile icon */}
         <div className="sm:hidden relative mb-3">
-          <div className="skeleton-line size-10 rounded-full shadow-md ring-1 ring-stone-200/60 dark:ring-stone-700/40" />
+          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-10 rounded-full shadow-md ring-1 ring-stone-200/60 dark:ring-stone-700/40" />
         </div>
         {/* Greeting line — desktop icon inline */}
         <div className="max-w-[90vw] w-full flex items-center justify-center">
-          <div className="skeleton-line size-10 2xl:size-12 rounded-full hidden sm:inline-block shrink-0 shadow-md ring-1 ring-stone-200/60 dark:ring-stone-700/40 mr-4" />
+          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-10 2xl:size-12 rounded-full hidden sm:inline-block shrink-0 shadow-md ring-1 ring-stone-200/60 dark:ring-stone-700/40 mr-4" />
           <SkeletonLine
             width="w-48 sm:w-64 md:w-72 lg:w-80 xl:w-[22rem] 2xl:w-96"
             className="!h-[1.65rem] sm:!h-8 md:!h-9 lg:!h-[2.35rem] xl:!h-[2.4rem] 2xl:!h-10 !rounded-lg"
@@ -239,16 +240,16 @@ export function WelcomeSkeleton() {
         >
           {/* Textarea area */}
           <div className="px-2.5 py-2 flex items-start gap-2">
-            <div className="skeleton-line h-3 w-3/5 rounded flex-1 mt-3 min-h-[30px]" />
+            <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="h-3 w-3/5 rounded flex-1 mt-3 min-h-[30px]" />
           </div>
           {/* Toolbar */}
           <div className="flex justify-between flex-nowrap pt-3 pb-3 px-2 mx-0.5 max-w-full">
             <div className="flex items-center gap-1 sm:gap-2 self-end flex-1 min-w-0">
-              <div className="skeleton-line h-8 w-8 rounded-lg shrink-0" />
-              <div className="skeleton-line h-8 w-8 rounded-lg shrink-0 hidden sm:block" />
+              <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="h-8 w-8 rounded-lg shrink-0" />
+              <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="h-8 w-8 rounded-lg shrink-0 hidden sm:block" />
             </div>
             <div className="self-end flex shrink-0">
-              <div className="skeleton-line size-8 rounded-full" />
+              <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-8 rounded-full" />
             </div>
           </div>
         </div>
@@ -259,7 +260,7 @@ export function WelcomeSkeleton() {
         {/* Label + refresh */}
         <div className="welcome-suggestions-header flex items-center justify-between mb-2 sm:mb-3 md:mb-3 xl:mb-4 2xl:mb-4 px-2 sm:px-0">
           <div className="flex items-center gap-1">
-            <div className="skeleton-line size-[11px] sm:size-3.5 xl:size-4 rounded-full opacity-60" />
+            <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-[11px] sm:size-3.5 xl:size-4 rounded-full opacity-60" />
             <SkeletonLine
               width="w-20 sm:w-24"
               className="!h-3 sm:!h-3.5 xl:!h-4"
@@ -267,7 +268,7 @@ export function WelcomeSkeleton() {
           </div>
           <div className="flex items-center gap-2">
             <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg">
-              <div className="skeleton-line size-3 xl:size-3.5 rounded-sm" />
+              <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-3 xl:size-3.5 rounded-sm" />
               <SkeletonLine
                 width="w-14 sm:w-16"
                 className="!h-[11px] sm:!h-3"
@@ -288,7 +289,7 @@ export function WelcomeSkeleton() {
                 borderColor: "var(--theme-border)",
               }}
             >
-              <div className="skeleton-line size-6 sm:size-7 xl:size-8 2xl:size-8 rounded-lg shrink-0" />
+              <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-6 sm:size-7 xl:size-8 2xl:size-8 rounded-lg shrink-0" />
               <SkeletonLine
                 width={i % 2 === 0 ? "w-3/4" : "w-4/5"}
                 className="!h-[12.5px] sm:!h-[13.5px] flex-1"

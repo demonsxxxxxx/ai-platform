@@ -5,6 +5,8 @@ import { resolve } from "node:path";
 import { captureScreenshot, startBrowser } from "./browser-smoke-harness.mjs";
 
 const baseUrl = (process.env.AI_PLATFORM_FRONTEND_URL || "http://127.0.0.1:4173").replace(/\/+$/, "");
+const theme = process.env.AI_PLATFORM_ROUTE_LAYOUT_THEME || "light";
+if (!["light", "dark"].includes(theme)) throw new Error("route_layout_smoke_theme_invalid");
 const evidenceDir = resolve(
   process.env.AI_PLATFORM_ROUTE_LAYOUT_SMOKE_DIR || "../../.codex-tmp/route-layout-browser-smoke",
 );
@@ -47,11 +49,11 @@ const profiles = [
   },
 ];
 
-function bootstrapSource() {
+function bootstrapSource(loading = false) {
   return `(() => {
     localStorage.setItem('language', 'zh');
     localStorage.setItem('i18nextLng', 'zh');
-    localStorage.setItem('ai-platform-theme', 'light');
+    localStorage.setItem('ai-platform-theme', ${JSON.stringify(theme)});
     const originalFetch = window.fetch.bind(window);
     const state = window.__routeLayoutSmoke = { errors: [], requests: [] };
     window.addEventListener('error', (event) => state.errors.push(String(event.message)));
@@ -68,6 +70,7 @@ function bootstrapSource() {
     const adminProfile = {
       ...profile,
       revision: profile.expected_revision,
+      published_revision: profile.expected_revision,
       status: 'published',
       content_hash: 'a'.repeat(64),
       instructions: '你是一位企业支持专家。先理解任务，再从授权 Skill Set 中自主选择需要的能力。',
@@ -84,6 +87,7 @@ function bootstrapSource() {
       const url = new URL(raw, location.origin);
       const method = String(init.method || (typeof input === 'object' && input.method) || 'GET').toUpperCase();
       if (url.pathname.startsWith('/api/')) state.requests.push({ path: url.pathname, method });
+      if (${loading} && url.pathname === '/api/ai/auth/me') return new Promise(() => {});
       if (url.pathname === '/api/ai/auth/me') return json({
         user_id: 'layout-admin', user_name: 'layout-admin', display_name: 'Layout Admin', tenant_id: 'tenant-layout',
         roles: ['admin'], permissions: ['chat:read','chat:write','session:read','session:write','skill:admin','skill:read','skill:write','skill:delete','agent_profile:admin','model:admin'],
@@ -103,7 +107,8 @@ function bootstrapSource() {
       if (url.pathname === '/api/ai/admin/skills') return json({ items: [{
         skill_id: 'skill-opaque-42', name: 'qa-file-reviewer', description: skill.description,
         lifecycle_status: 'active', distribution_status: 'active', visible_to_user: true,
-        latest_version: '0.1.0', latest_version_status: 'active', current_version: '0.1.0', rollout_percent: 100
+        latest_version: '0.1.0', latest_version_status: 'active', current_version: '0.1.0',
+        latest_display_version: '0.1.0', current_display_version: '0.1.0', latest_uploaded_at: '2026-08-09T00:00:00Z', rollout_percent: 100
       }] });
       if (url.pathname === '/api/admin/capability-distributions/department-directory') return json({ departments: [{
         directory_id: '1', authority_id: '运营QA for 工程', name: '运营QA for 工程', path: '运营QA for 工程', children: [], selectable: true, reason: null
@@ -112,16 +117,23 @@ function bootstrapSource() {
         id: 'dist-1', tenant_id: 'tenant-layout', capability_kind: 'skill', capability_id: 'skill-opaque-42',
         status: 'active', visible_to_user: true, scope_mode: 'allowlist', department_ids: ['运营QA for 工程'], allowed_roles: ['reviewer'], metadata_json: {}
       }] });
-      if (url.pathname === '/api/admin/capability-distributions/skill/skill-opaque-42' && method === 'PUT') return json({
+      if (url.pathname === '/api/admin/capability-distributions/skill/skill-opaque-42' && method === 'PUT') return json({ capability_distribution: {
         id: 'dist-1', tenant_id: 'tenant-layout', capability_kind: 'skill', capability_id: 'skill-opaque-42',
         status: 'active', visible_to_user: true, scope_mode: 'allowlist', department_ids: ['运营QA for 工程'], allowed_roles: ['reviewer'], metadata_json: {}
-      });
+      } });
       if (url.pathname === '/api/roles/') return json({ roles: [{ id: 'reviewer', name: 'reviewer', description: 'Reviewer', permissions: [], is_system: false }], total: 1, skip: 0, limit: 100 });
       if (url.pathname === '/api/ai/agent-profiles') return json({ agent_profiles: profiles });
       if (url.pathname === '/api/ai/agent-profiles/agt_support') return json(profile);
       if (url.pathname === '/api/ai/admin/agent-profiles') return json({ agent_profiles: [adminProfile] });
       if (url.pathname === '/api/ai/admin/agent-profiles/agt_support/history') return json({ agent_profiles: [adminProfile] });
       if (url.pathname === '/api/mcp/chat-tools') return json({ tools: [], count: 0, unavailable: [] });
+      if (url.pathname === '/api/mcp/') return json({ servers: [{
+        name: 'synthetic-mcp', transport: 'streamable_http', url: 'https://example.invalid/mcp',
+        enabled: true, is_system: true, can_edit: true, allowed_roles: [], role_quotas: {}, credential_state: 'configured'
+      }], total: 1, skip: 0, limit: 20 });
+      if (url.pathname === '/api/mcp/synthetic-mcp/tools') return json({
+        server_name: 'synthetic-mcp', tools: [{ name: 'synthetic-search', description: 'Synthetic search tool', parameters: [] }], count: 1, unavailable_reason: null
+      });
       if (url.pathname === '/api/ai/admin/models') return json({
         connection: { configured: true, revision: 7, base_url: 'https://gateway.example.invalid', key_fingerprint: 'synthetic' },
         models: Array.from({ length: 29 }, (_, index) => ({
@@ -162,6 +174,13 @@ function bootstrapSource() {
 
 const cases = [
   {
+    path: "/",
+    selector: ".welcome-root",
+    name: "loading",
+    loading: true,
+    requiredSelectors: [".welcome-hero .w-48", ".welcome-hero .w-36"],
+  },
+  {
     path: "/skills",
     selector: "[data-skills-master-detail]",
     name: "skills",
@@ -173,7 +192,7 @@ const cases = [
       "[data-skill-distribution-status]",
       "[data-skill-distribution-visible]",
       "[data-skill-distribution-save]",
-      ".department-selector__trigger",
+      "[data-department-directory-selector] button[aria-haspopup=listbox]",
     ],
     saveRequest: "/api/admin/capability-distributions/skill/skill-opaque-42",
     requiredRequests: [
@@ -231,6 +250,13 @@ const cases = [
     requiredRequests: ["/api/ai/admin/agent-profiles", "/api/skills/"],
   },
   {
+    path: "/mcp",
+    selector: "[data-mcp-view-tools]",
+    name: "mcp",
+    requiredSelectors: ["[data-mcp-view-tools]", "[data-mcp-tool-count]"],
+    requiredRequests: ["/api/mcp/", "/api/mcp/synthetic-mcp/tools"],
+  },
+  {
     path: "/models",
     selector: "[data-model-admin-control]",
     name: "models",
@@ -260,7 +286,7 @@ if (selectedCases.length === 0 || selectedViewports.length === 0) {
 async function runCase(viewport, scenario) {
   const browser = await startBrowser({ viewport, profilePrefix: `route-layout-${viewport.name}-` });
   try {
-    await browser.client.send("Page.addScriptToEvaluateOnNewDocument", { source: bootstrapSource() });
+    await browser.client.send("Page.addScriptToEvaluateOnNewDocument", { source: bootstrapSource(scenario.loading) });
     await browser.client.send("Page.navigate", { url: `${baseUrl}${scenario.path}` });
     try {
       await browser.client.waitFor(
@@ -301,7 +327,7 @@ async function runCase(viewport, scenario) {
         input.click();
       })()`);
       await browser.client.waitFor(
-        `document.querySelectorAll('[data-model-admin-table-scroll] tbody input[type=checkbox]:checked').length === 3`,
+        `document.querySelectorAll('[data-model-admin-table-scroll] [role=switch][aria-checked=true]').length === 3`,
         `${viewport.name}:models:enabled-toggle`,
       );
     }
@@ -314,6 +340,12 @@ async function runCase(viewport, scenario) {
       return {
         bodyScrollWidth: document.documentElement.scrollWidth,
         viewportWidth: window.innerWidth,
+        userAvatarValid: [...document.querySelectorAll('[data-user-menu-trigger] [data-user-avatar]')].filter((avatar) => avatar.checkVisibility({ opacityProperty: true, visibilityProperty: true })).every((avatar) => {
+          const box = avatar.getBoundingClientRect();
+          const button = avatar.closest('button').getBoundingClientRect();
+          return box.width >= 19 && box.height >= 19 && box.left >= button.left && box.right <= button.right + 1;
+        }),
+        railIconsValid: [...document.querySelectorAll('[data-workbench-rail-item] svg')].filter((icon) => icon.checkVisibility({ opacityProperty: true, visibilityProperty: true })).every((icon) => { const size = icon.getBoundingClientRect(); return size.width >= 18 && size.height >= 18; }),
         scrollTop: target?.scrollTop || 0,
         scrollHeight: target?.scrollHeight || 0,
         clientHeight: target?.clientHeight || 0,
@@ -335,6 +367,8 @@ async function runCase(viewport, scenario) {
     const reachable = layout.scrollHeight <= layout.clientHeight + 1 || layout.scrollTop + layout.clientHeight >= layout.scrollHeight - 2;
     if (
       layout.bodyScrollWidth > layout.viewportWidth ||
+      !layout.railIconsValid ||
+      !layout.userAvatarValid ||
       !reachable ||
       layout.errors.length ||
       missingRequests.length
@@ -350,15 +384,17 @@ async function runCase(viewport, scenario) {
         const bar = document.querySelector('[data-model-admin-action-bar]').getBoundingClientRect();
         const config = document.querySelector('[data-model-admin-control] > div:first-child').getBoundingClientRect();
         const shell = document.querySelector('[data-model-catalog-shell]');
-        const filterControl = document.querySelector('[aria-label="筛选模型状态"]');
+        const filterLabel = [...document.querySelectorAll('label')].find((label) => label.textContent === '筛选模型状态');
+        const filterControl = document.getElementById(filterLabel.htmlFor);
         const filter = filterControl.getBoundingClientRect();
-        const search = document.querySelector('[aria-label="搜索模型"]').getBoundingClientRect();
+        const search = document.querySelector('[aria-label="搜索模型"]').closest('label').getBoundingClientRect();
         return {
-          filterGroupWidth: filterControl.parentElement.getBoundingClientRect().width,
+          filterGroupWidth: filterLabel.parentElement.parentElement.getBoundingClientRect().width,
           filterWidth: filter.width,
           searchWidth: search.width,
-          rows: table.querySelectorAll('tbody tr').length,
-          enabledCount: table.querySelectorAll('tbody input[type=checkbox]:checked').length,
+          fontsMatch: getComputedStyle(document.querySelector('[aria-label="搜索模型"]')).fontFamily === getComputedStyle(document.documentElement).fontFamily,
+          rows: table.querySelectorAll('[data-model-admin-model]').length,
+          enabledCount: table.querySelectorAll('[role=switch][aria-checked=true]').length,
           missingLimitHintVisible: document.querySelector('[aria-label="deepseek-v4-flash-cc 最大输入 Token"]')?.getAttribute('placeholder') === '必填',
           shellScrollTop: shell.scrollTop,
           configVisible: config.top >= -1 && config.bottom <= innerHeight,
@@ -367,13 +403,13 @@ async function runCase(viewport, scenario) {
           publishRequestCount: window.__routeLayoutSmoke.requests.filter((request) => request.path === '/api/ai/admin/models/publish').length,
           tableScrollable: table.scrollHeight > table.clientHeight,
           headerPinned: Math.abs(header.top - tableRect.top) < 3 && header.bottom <= tableRect.bottom,
-          headerOpaque: getComputedStyle(table.querySelector('thead')).backgroundColor !== 'rgba(0, 0, 0, 0)',
+          headerOpaque: getComputedStyle(table.querySelector('th')).backgroundColor !== 'rgba(0, 0, 0, 0)',
           actionVisible: bar.top >= 0 && bar.bottom <= innerHeight + 1,
           actionBelowTable: bar.top >= tableRect.bottom - 2,
         };
       })()`);
       if ((viewport.width >= 640 && (Math.abs(modelLayout.filterWidth - 160) > 1 || Math.abs(modelLayout.searchWidth - Math.min(384, modelLayout.filterGroupWidth - 172)) > 1)) ||
-        modelLayout.rows !== 29 || modelLayout.enabledCount !== 3 || !modelLayout.missingLimitHintVisible || !modelLayout.publishErrorVisible || modelLayout.publishRequestCount !== 0 || !modelLayout.actionVisible || !modelLayout.headerOpaque ||
+        !modelLayout.fontsMatch || modelLayout.rows !== 29 || modelLayout.enabledCount !== 3 || !modelLayout.missingLimitHintVisible || !modelLayout.publishErrorVisible || modelLayout.publishRequestCount !== 0 || !modelLayout.actionVisible || !modelLayout.headerOpaque ||
         (viewport.width >= 1024 && (!modelLayout.tableScrollable || !modelLayout.headerPinned || !modelLayout.actionBelowTable || !modelLayout.configVisible || modelLayout.actionBottomGap > 48 || modelLayout.shellScrollTop !== 0)) ||
         (viewport.width < 1024 && layout.scrollHeight <= layout.clientHeight + 1)
       ) {
@@ -392,22 +428,34 @@ async function runCase(viewport, scenario) {
             contained: avatar.left >= frame.left - 1 && avatar.right <= frame.right + 1 && avatar.top >= frame.top - 1 && avatar.bottom <= frame.bottom + 1,
           };
         });
+        const directoryRows = [...document.querySelectorAll('[data-agent-directory-item]')].map((button) => {
+          const row = button.getBoundingClientRect();
+          const content = button.lastElementChild.getBoundingClientRect();
+          const avatar = button.querySelector('[data-agent-avatar-ref]')?.getBoundingClientRect();
+          return { top: row.top, bottom: row.bottom, contained: content.top >= row.top && content.bottom <= row.bottom + 1 && (!avatar || (avatar.top >= row.top && avatar.bottom <= row.bottom + 1)) };
+        });
         return {
+          directoryCount: directoryRows.length,
+          directoryContained: directoryRows.every((row) => row.contained),
+          directoryOverlapping: directoryRows.some((row, index) => index > 0 && directoryRows[index - 1].bottom > row.top + 1),
           count: candidates.length,
           contained: candidates.every((candidate) => candidate.contained),
           overlapping: candidates.some((candidate, index) => candidates.slice(index + 1).some((other) => candidate.left < other.right && candidate.right > other.left && candidate.top < other.bottom && candidate.bottom > other.top)),
         };
       })()`);
-      if (avatarLayout.count !== 8 || !avatarLayout.contained || avatarLayout.overlapping) {
+      if (avatarLayout.count !== 8 || !avatarLayout.contained || avatarLayout.overlapping || avatarLayout.directoryCount !== 2 || !avatarLayout.directoryContained || avatarLayout.directoryOverlapping) {
         throw new Error(`avatar_layout_failed:${viewport.name}:${JSON.stringify(avatarLayout)}`);
       }
     }
     let overlay = null;
     if (scenario.popover) {
-      await browser.client.evaluate(`(() => { const node = document.querySelector('.department-selector__trigger'); if (!node) throw new Error('department_trigger_missing'); node.click(); })()`);
-      await browser.client.waitFor("Boolean(document.querySelector('.department-selector__menu'))", `${viewport.name}:department-menu`);
-      overlay = await browser.client.evaluate(`(() => { const r = document.querySelector('.department-selector__menu').getBoundingClientRect(); return { left:r.left, right:r.right, top:r.top, bottom:r.bottom, visible:r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight }; })()`);
+      await browser.client.evaluate(`(() => { const node = document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]'); if (!node) throw new Error('department_trigger_missing'); node.click(); })()`);
+      await browser.client.waitFor("Boolean(document.querySelector('[role=listbox]')) && document.querySelector('[data-department-directory-popup]').contains(document.activeElement)", `${viewport.name}:department-menu`);
+      overlay = await browser.client.evaluate(`(() => { const r = document.querySelector('[role=listbox]').getBoundingClientRect(); return { left:r.left, right:r.right, top:r.top, bottom:r.bottom, visible:r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight }; })()`);
       if (!overlay.visible) throw new Error(`overlay_clipped:${viewport.name}:${JSON.stringify(overlay)}`);
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await browser.client.waitFor("!document.querySelector('[role=listbox]') && document.activeElement === document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]')", `${viewport.name}:department-escape`);
     }
     if (scenario.saveRequest) {
       await browser.client.evaluate(`(() => { const button = document.querySelector('[data-skill-distribution-save]'); if (!button) throw new Error('skill_distribution_save_missing'); button.click(); })()`);
@@ -415,22 +463,104 @@ async function runCase(viewport, scenario) {
         `window.__routeLayoutSmoke.requests.some((request) => request.path === ${JSON.stringify(scenario.saveRequest)} && request.method === 'PUT')`,
         `${viewport.name}:skill-distribution-save`,
       );
+      await browser.client.waitFor(`Boolean([...document.querySelectorAll('[data-skill-distribution-governance] [role=status]')].find((node) => node.textContent.includes('已保存')))`, `${viewport.name}:skill-distribution-receipt`);
+    }
+    let mcpFocus = null;
+    if (scenario.name === "mcp") {
+      await browser.client.evaluate(`(() => { const button = document.querySelector('[data-mcp-view-tools]'); button.focus(); button.click(); })()`);
+      await browser.client.waitFor("Boolean(document.querySelector('[data-mcp-tool-detail] input[type=search]'))", `${viewport.name}:mcp:drawer`);
+      await browser.client.evaluate(`document.querySelector('[data-mcp-tool-detail] input[type=search]').focus()`);
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 });
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 });
+      await browser.client.waitFor("document.activeElement === document.querySelector('[data-mcp-tool-detail-close]')", `${viewport.name}:mcp:tab-wrap`);
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9, modifiers: 8 });
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9, modifiers: 8 });
+      await browser.client.waitFor("document.activeElement === document.querySelector('[data-mcp-tool-detail] input[type=search]')", `${viewport.name}:mcp:shift-tab-wrap`);
+      await browser.client.waitFor(`(() => {
+        const panel = document.querySelector('[data-mcp-tool-detail] [data-drawer-placement]').getBoundingClientRect();
+        const close = document.querySelector('[data-mcp-tool-detail-close]').getBoundingClientRect();
+        return panel.left >= 0 && panel.right <= innerWidth + 1 && close.left >= 0 && close.right <= innerWidth + 1;
+      })()`, `${viewport.name}:mcp:drawer-contained`);
+      const drawerScreenshot = await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-mcp-drawer`);
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await browser.client.waitFor("!document.querySelector('[data-mcp-tool-detail]') && document.activeElement === document.querySelector('[data-mcp-view-tools]')", `${viewport.name}:mcp:focus-restore`);
+      await browser.client.evaluate(`(() => { const button = document.querySelector('[data-mcp-admin-controls] button'); button.focus(); button.click(); })()`);
+      await browser.client.waitFor("Boolean(document.querySelector('[data-mcp-editor-initial-focus]'))", `${viewport.name}:mcp:editor`);
+      await browser.client.evaluate(`document.querySelector('[role=dialog] button[aria-haspopup=listbox]').click()`);
+      await browser.client.waitFor("Boolean(document.querySelector('[role=listbox]'))", `${viewport.name}:mcp:transport-options`);
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await browser.client.waitFor("!document.querySelector('[role=listbox]') && Boolean(document.querySelector('[data-mcp-editor-initial-focus]'))", `${viewport.name}:mcp:nested-escape`);
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await browser.client.waitFor("!document.querySelector('[data-mcp-editor-initial-focus]') && document.activeElement === document.querySelector('[data-mcp-admin-controls] button')", `${viewport.name}:mcp:editor-focus-restore`);
+      mcpFocus = { drawerContained: true, tabWrap: true, shiftTabWrap: true, escapeClose: true, triggerFocusRestored: true, nestedEscapeIsolated: true, editorFocusRestored: true, drawerScreenshot };
     }
     if (scenario.name === "builder") {
       await browser.client.evaluate(`document.querySelector('[data-agent-avatar-picker]').scrollIntoView({ block: 'center' })`);
     }
-    const screenshot = await captureScreenshot(browser.client, evidenceDir, `${viewport.name}-${scenario.name}`);
-    return { viewport: viewport.name, route: scenario.path, layout, reachable, modelLayout, avatarLayout, overlay, screenshot };
+    const finalErrors = await browser.client.evaluate("window.__routeLayoutSmoke.errors");
+    if (finalErrors.length) throw new Error(`interaction_failed:${viewport.name}:${scenario.name}:${JSON.stringify(finalErrors)}`);
+    let loadingLayout = null;
+    if (scenario.loading) {
+      await browser.client.waitFor(`(() => {
+        let node = document.querySelector('.welcome-hero .w-48');
+        if (!node) return false;
+        while (node) {
+          if (Number(getComputedStyle(node).opacity) < 0.99) return false;
+          node = node.parentElement;
+        }
+        return true;
+      })()`, `${viewport.name}:loading:painted`);
+      loadingLayout = await browser.client.evaluate(`(() => {
+        const heading = document.querySelector('.welcome-hero .w-48');
+        const subtitle = document.querySelector('.welcome-hero .w-36');
+        const rect = heading.getBoundingClientRect();
+        const secondary = subtitle.getBoundingClientRect();
+        return { width: rect.width, height: rect.height, subtitleWidth: secondary.width, subtitleHeight: secondary.height,
+          inlineDimensionsCleared: heading.style.width === '' && heading.style.height === '' && subtitle.style.width === '' && subtitle.style.height === '',
+          visible: getComputedStyle(heading).backgroundColor !== 'rgba(0, 0, 0, 0)' };
+      })()`);
+      if (!loadingLayout.inlineDimensionsCleared || !loadingLayout.visible || loadingLayout.width <= 0 || loadingLayout.height <= 20 || loadingLayout.subtitleWidth <= 0 || loadingLayout.subtitleHeight <= 0) {
+        throw new Error(`loading_layout_failed:${viewport.name}:${JSON.stringify(loadingLayout)}`);
+      }
+    }
+    const screenshot = await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-${scenario.name}`);
+    return { viewport: viewport.name, route: scenario.path, layout, reachable, modelLayout, avatarLayout, overlay, mcpFocus, loadingLayout, screenshot };
+  } catch (error) {
+    if (scenario.loading) {
+      const paint = await browser.client.evaluate(`(() => {
+        const ancestors = [];
+        let node = document.querySelector('.welcome-hero .w-48');
+        while (node) {
+          const style = getComputedStyle(node);
+          ancestors.push({ tag: node.tagName, class: node.className, opacity: style.opacity, background: style.backgroundColor, visibility: style.visibility, animation: style.animation, animations: node.getAnimations().map((animation) => ({ state: animation.playState, time: animation.currentTime })) });
+          node = node.parentElement;
+        }
+        return { readyState: document.readyState, ancestors };
+      })()`);
+      console.error(JSON.stringify({ loadingPaint: paint }));
+    }
+    await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-${scenario.name}-failed`).catch((captureError) => console.error(String(captureError)));
+    throw error;
   } finally {
     await browser.close();
   }
 }
 
 const results = [];
+const failures = [];
 for (const viewport of selectedViewports) {
-  for (const scenario of selectedCases) results.push(await runCase(viewport, scenario));
+  for (const scenario of selectedCases) {
+    try { results.push(await runCase(viewport, scenario)); }
+    catch (error) {
+      failures.push({ viewport: viewport.name, route: scenario.path, error: String(error) });
+    }
+  }
 }
-const evidence = { schema: "ai-platform.route-layout-browser-smoke.v1", mock_backed: true, baseUrl, status: "passed", results };
+const evidence = { schema: "ai-platform.route-layout-browser-smoke.v1", mock_backed: true, theme, baseUrl, status: failures.length ? "failed" : "passed", results, failures };
 mkdirSync(evidenceDir, { recursive: true });
 writeFileSync(resolve(evidenceDir, "evidence.json"), `${JSON.stringify(evidence, null, 2)}\n`);
 console.log(JSON.stringify(evidence));
+if (failures.length) process.exitCode = 1;

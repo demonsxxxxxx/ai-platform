@@ -1,3 +1,4 @@
+import { Button } from "@lobehub/ui/base-ui";
 import { useCallback } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
@@ -124,9 +125,9 @@ export function EditorSidebar({
               )}
             </div>
           </div>
-          <button onClick={onClose} className="editor-sidebar-close-btn">
+          <Button type="text" onClick={onClose} className="editor-sidebar-close-btn">
             <X size={18} />
-          </button>
+          </Button>
         </div>
 
         {/* Body */}

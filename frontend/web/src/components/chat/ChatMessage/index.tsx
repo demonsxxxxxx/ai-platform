@@ -1,6 +1,7 @@
+import { Skeleton, Button } from "@lobehub/ui/base-ui";
 import { clsx } from "clsx";
 import { useEffect, useRef, useState, memo } from "react";
-import toast from "react-hot-toast";
+import { toast } from "@lobehub/ui/base-ui";
 import { Copy, Info, RefreshCw, Sparkles } from "lucide-react";
 import type {
   Message,
@@ -34,26 +35,26 @@ function StreamingPlaceholder() {
   return (
     <div className="space-y-2.5 py-1 px-1">
       {/* First line - long bar */}
-      <div className="skeleton-line w-full h-2 rounded-full" />
+      <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="w-full h-2 rounded-full" />
 
       {/* Second line - three medium bars */}
       <div className="flex gap-3">
-        <div className="skeleton-line flex-1 h-2 rounded-full" />
-        <div className="skeleton-line flex-1 h-2 rounded-full" />
-        <div className="skeleton-line flex-1 h-2 rounded-full" />
+        <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="flex-1 h-2 rounded-full" />
+        <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="flex-1 h-2 rounded-full" />
+        <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="flex-1 h-2 rounded-full" />
       </div>
 
       {/* Third line - three medium bars */}
       <div className="flex gap-3">
-        <div className="skeleton-line flex-1 h-2 rounded-full" />
-        <div className="skeleton-line flex-1 h-2 rounded-full" />
-        <div className="skeleton-line flex-1 h-2 rounded-full" />
+        <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="flex-1 h-2 rounded-full" />
+        <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="flex-1 h-2 rounded-full" />
+        <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="flex-1 h-2 rounded-full" />
       </div>
 
       {/* Fourth line */}
       <div className="flex gap-3">
-        <div className="skeleton-line flex-1 h-2 rounded-full" />
-        <div className="skeleton-line w-2/5 h-2 rounded-full" />
+        <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="flex-1 h-2 rounded-full" />
+        <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="w-2/5 h-2 rounded-full" />
       </div>
     </div>
   );
@@ -121,7 +122,7 @@ function TokenDetailsButton({
 
   return (
     <div className="relative">
-      <button
+      <Button type="text"
         ref={buttonRef}
         onClick={() => setShowDetails(!showDetails)}
         className={clsx(
@@ -132,7 +133,7 @@ function TokenDetailsButton({
         title={t("chat.message.tokenUsage")}
       >
         <Info size={16} />
-      </button>
+      </Button>
       {/* Token details popup */}
       {showDetails && (
         <div
@@ -373,7 +374,7 @@ export const ChatMessage = memo(function ChatMessage({
         {/* Copy button and Token button - same line at bottom, show on message hover (only after message completes) */}
         {!message.isStreaming && !message.isSynchronizing && (
           <div className="flex items-center gap-1">
-            <button
+            <Button type="text"
               onClick={() => {
                 const textContent = getAssistantTextContent();
                 if (textContent) {
@@ -389,7 +390,7 @@ export const ChatMessage = memo(function ChatMessage({
               title={t("chat.message.copy")}
             >
               <Copy size={16} />
-            </button>
+            </Button>
             {/* Token usage statistics button */}
             {(message.tokenUsage || message.duration !== undefined) && (
               <TokenDetailsButton

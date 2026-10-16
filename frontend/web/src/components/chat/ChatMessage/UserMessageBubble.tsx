@@ -1,3 +1,4 @@
+import { Button } from "@lobehub/ui/base-ui";
 import { useState } from "react";
 import { clsx } from "clsx";
 import { Copy, Check } from "lucide-react";
@@ -104,7 +105,7 @@ export function UserMessageBubble({
 
           {/* Action buttons - show on hover */}
           <div className="mt-1 flex justify-end gap-1">
-            <button
+            <Button type="text"
               onClick={handleCopy}
               className={clsx(
                 "p-1.5 rounded-lg transition-colors duration-200",
@@ -117,7 +118,7 @@ export function UserMessageBubble({
               title={copied ? t("chat.message.copied") : t("chat.message.copy")}
             >
               {copied ? <Check size={16} /> : <Copy size={16} />}
-            </button>
+            </Button>
           </div>
         </div>
       </div>

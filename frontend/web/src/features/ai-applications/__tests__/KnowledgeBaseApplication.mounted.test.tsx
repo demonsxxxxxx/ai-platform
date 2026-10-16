@@ -1,19 +1,18 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { after } from "node:test";
 import { registerHooks } from "node:module";
-// @ts-expect-error jsdom runtime import.
-import { JSDOM } from "jsdom";
+import { installSelectTestDom } from "../../../components/common/__tests__/selectTestDom";
+import { createLobeTestRoot } from "../../../components/common/__tests__/lobeUiTestRoot";
 import type { User } from "../../../types/auth";
 import { AUTH_SESSION_MARKER_KEY, getAccessToken } from "../../../services/api/token";
 import { authApi } from "../../../services/api/auth";
 import { installBrowserAuthTestDb } from "../../../hooks/__tests__/browserAuthTestDb";
 registerHooks({ load(url, context, nextLoad) { return url.endsWith(".css") ? { format: "module", source: "export {};", shortCircuit: true } : nextLoad(url, context); } });
-const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/ai-apps/sop-assistant" });
-Object.assign(globalThis, { window: dom.window, document: dom.window.document, localStorage: dom.window.localStorage, sessionStorage: dom.window.sessionStorage, HTMLElement: dom.window.HTMLElement, CustomEvent: dom.window.CustomEvent, IS_REACT_ACT_ENVIRONMENT: true });
-Object.defineProperty(globalThis, "navigator", { configurable: true, value: dom.window.navigator });
+const dom = installSelectTestDom();
+Object.assign(globalThis, { localStorage: window.localStorage, sessionStorage: window.sessionStorage });
+after(() => dom.close());
 installBrowserAuthTestDb();
 const { act, createElement } = await import("react");
-const { createRoot } = await import("react-dom/client");
 const { MemoryRouter } = await import("react-router-dom");
 const { AuthProvider, useAuth } = await import("../../../hooks/useAuth");
 const { KnowledgeBaseApplication } = await import("../AgentApplicationRoute");
@@ -21,7 +20,6 @@ await import("../../../i18n/index");
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(yes => { resolve = yes; }); return { promise, resolve }; }
 function response(data: unknown) { return new Response(`data: ${JSON.stringify({ data })}\n\n`); }
 function principal(id = "user-a", tenant = "tenant-a"): User { return { id, tenant_id: tenant, username: id, email: "synthetic@example.test", roles: [], permissions: [], is_active: true, created_at: "", updated_at: "" }; }
-function props(node: Element) { const key = Object.keys(node).find(key => key.startsWith("__reactProps$")); assert.ok(key); return (node as unknown as Record<string, unknown>)[key] as { onChange: (event: { target: { value: string } }) => void }; }
 async function harness(fetcher: (init: RequestInit) => Promise<Response> | Response) {
   const old = { fetch: globalThis.fetch, bootstrap: authApi.bootstrapAuthContext, user: authApi.getCurrentUser };
   let auth!: ReturnType<typeof useAuth>;
@@ -29,15 +27,19 @@ async function harness(fetcher: (init: RequestInit) => Promise<Response> | Respo
   authApi.bootstrapAuthContext = async request => ({ status: "ready", protocol_version: 2, generation: request.generation });
   authApi.getCurrentUser = async () => user;
   globalThis.fetch = (async (_url, init = {}) => fetcher(init)) as typeof fetch;
-  const container = document.createElement("div"); document.body.append(container); const root = createRoot(container);
+  const container = document.createElement("div"); document.body.append(container); const root = await createLobeTestRoot(container);
   function Probe() { auth = useAuth(); return createElement(MemoryRouter, null, createElement(KnowledgeBaseApplication, { config: { chatId: "synthetic", auth: "synthetic-only" } })); }
   await act(async () => { root.render(createElement(AuthProvider, null, createElement(Probe))); });
   assert.equal(auth.isAuthenticated, true);
   let unmounted = false;
   return { container,
     async submit(value: string) {
-      await act(async () => { props(container.querySelector("textarea")!).onChange({ target: { value } }); });
-      await act(async () => { container.querySelector("form")!.dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true })); });
+      await act(async () => {
+        const field = container.querySelector("textarea")!;
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(field, value);
+        field.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await act(async () => { container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
     },
     async setUser(next: User) { user = next; await act(async () => { await auth.refreshUser(); }); },
     async unmount() { if (!unmounted) { await act(async () => root.unmount()); unmounted = true; } },

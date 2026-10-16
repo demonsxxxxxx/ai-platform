@@ -1,3 +1,4 @@
+import { Button, Checkbox, DropdownMenu, Table, Tag } from "@lobehub/ui/base-ui";
 import {
   Download,
   Archive,
@@ -16,9 +17,8 @@ import {
   Store,
   UploadCloud,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "../../common/Table";
 
 import type {
   SkillCatalogEntry,
@@ -114,93 +114,22 @@ export function SkillManagementTable({
 }: SkillManagementTableProps) {
   const { t } = useTranslation();
   const [openActionName, setOpenActionName] = useState<string | null>(null);
-  const openActionMenuRef = useRef<HTMLDivElement>(null);
   const selectableEntries = entries.filter((entry) => entry.actionName !== null);
   const allSelectableSelected =
     selectableEntries.length > 0 &&
     selectableEntries.every((entry) => selectedNames.has(entry.actionName!));
 
-  useEffect(() => {
-    if (!openActionName) return;
-
-    const closeMenu = (event: MouseEvent) => {
-      if (
-        openActionMenuRef.current &&
-        !openActionMenuRef.current.contains(event.target as Node)
-      ) {
-        setOpenActionName(null);
-      }
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpenActionName(null);
-    };
-
-    document.addEventListener("mousedown", closeMenu);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => {
-      document.removeEventListener("mousedown", closeMenu);
-      document.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [openActionName]);
-
   return (
-    <Table
-      aria-label={t("skills.managementTable.listLabel")}
-      className="skill-management-table skill-management-table--master"
-      data-skill-management-table
-      role="table"
-    >
-      <TableHeader>
-      <TableRow
-        className={`skill-management-table__head ${canBatch ? "skill-management-table__head--selectable" : ""}`}
-        role="row"
-      >
-        {canBatch ? (
-          <TableHead className="skill-management-table__select">
-            <input
-              aria-label={
-                allSelectableSelected
-                  ? t("common.deselectAll")
-                  : t("common.selectAll")
-              }
-              checked={allSelectableSelected}
-              onChange={onSelectAll}
-              type="checkbox"
-            />
-          </TableHead>
-        ) : null}
-        <TableHead role="columnheader">{t("skills.managementTable.skill")}</TableHead>
-        <TableHead role="columnheader">{t("skills.managementTable.runtimeStatus")}</TableHead>
-        <TableHead className="skill-management-table__distribution" role="columnheader">{t("skills.managementTable.catalogStatus")}</TableHead>
-        <TableHead className="skill-management-table__package" role="columnheader">{t("skills.managementTable.package")}</TableHead>
-        <TableHead className="skill-management-table__updated" role="columnheader">{t("skills.managementTable.updatedAt")}</TableHead>
-        <TableHead aria-label={t("skills.managementTable.actions")} role="columnheader" />
-      </TableRow>
-      </TableHeader>
-
-      <TableBody role="rowgroup">
-        {entries.map((entry) => {
-          const actionName = entry.actionName;
-          const canAct = actionName !== null && entry.runtimeSkill !== null;
-          const rowCanToggle = canToggle && canAct;
-          const rowCanEdit = canEdit && canAct;
-          const rowCanExport = canExport && canAct;
-          const rowCanPublish = canPublish && canAct;
-          const rowCanDelete = canDelete && canAct;
-          const hasActions =
-            rowCanToggle || rowCanEdit || rowCanExport || rowCanPublish || rowCanDelete;
-          const CatalogStatusIcon =
-            entry.catalogStatus === "internal" ? Boxes : Store;
-          const SkillIcon = skillIcon(entry.displayName);
-          return (
-            <TableRow
-            aria-selected={entry.id === selectedSkillId}
-            className={`skill-management-table__row ${canBatch ? "skill-management-table__row--selectable" : ""} ${entry.id === selectedSkillId ? "skill-management-table__row--selected" : ""}`}
-            data-catalog-status={entry.catalogStatus}
-            data-skill-catalog-item={entry.id}
-            key={entry.id}
-            onClick={() => onSelectDetail(entry.id)}
-            onKeyDown={(event) => {
+    <div aria-label={t("skills.managementTable.listLabel")} data-skill-management-table><Table
+ size="small" pagination={false} className="skill-management-table" scroll={{ x: 720 }}
+ dataSource={entries}
+ rowKey={(entry) => entry.id}
+onRow={(entry) => {  return ({"aria-selected": entry.id === selectedSkillId,
+"className": `skill-management-table__row ${entry.id === selectedSkillId ? "skill-management-table__row--selected" : ""}`,
+"data-catalog-status": entry.catalogStatus,
+"data-skill-catalog-item": entry.id,
+"onClick": () => onSelectDetail(entry.id),
+"onKeyDown": (event) => {
               if (isInteractiveRowTarget(event.target, event.currentTarget)) {
                 return;
               }
@@ -208,30 +137,36 @@ export function SkillManagementTable({
                 event.preventDefault();
                 onSelectDetail(entry.id);
               }
-            }}
-            role="row"
-            tabIndex={0}
-          >
-            {canBatch && actionName ? (
-              <TableCell className="skill-management-table__select" role="cell">
-                <input
+            },
+"role": "row",
+"tabIndex": 0}); }}
+ columns={[
+{ hidden: !canBatch, width: 44, align: "center", key: "selection", title: (<Checkbox
+              aria-label={
+                allSelectableSelected
+                  ? t("common.deselectAll")
+                  : t("common.selectAll")
+              }
+              checked={allSelectableSelected}
+              onChange={onSelectAll}
+            />),
+render: (_value, entry) =>  {
+const actionName = entry.actionName;
+return (<>
+{actionName ? (<><Checkbox
                   aria-label={t("skills.managementTable.selectSkill", { name: entry.displayName })}
                   checked={selectedNames.has(actionName)}
                   onClick={(event) => event.stopPropagation()}
                   onChange={() => onSelectSkill(actionName)}
-                  type="checkbox"
-                />
-              </TableCell>
-            ) : canBatch ? (
-              <TableCell aria-hidden="true" role="cell" />
-            ) : null}
-
-            <TableCell
-              className="skill-management-table__identity"
-              data-label={t("skills.managementTable.skill")}
-              role="cell"
-            >
-              <span className="skill-management-table__icon" aria-hidden="true">
+                /></>) : null}
+</>);
+} },
+{ key: "identity", width: 240, title: t("skills.managementTable.skill"),
+onCell: () => ({"data-label": t("skills.managementTable.skill")}),
+render: (_value, entry) =>  {
+const SkillIcon = skillIcon(entry.displayName);
+return (<div className="skill-management-table__identity">
+<span className="skill-management-table__icon" aria-hidden="true">
                 <SkillIcon size={18} />
               </span>
               <div className="min-w-0">
@@ -253,35 +188,30 @@ export function SkillManagementTable({
                     className="mt-1.5 flex max-w-full gap-1 overflow-hidden"
                   >
                     {entry.tags.slice(0, 2).map((tag) => (
-                      <span
-                        className="skill-management-table__tag"
+                      <Tag
+                        className="max-w-28 truncate"
+                        size="small"
                         key={tag}
                         title={tag}
                       >
                         {tag}
-                      </span>
+                      </Tag>
                     ))}
                     {entry.tags.length > 2 ? (
-                      <span className="skill-management-table__tag">
+                      <Tag size="small">
                         +{entry.tags.length - 2}
-                      </span>
+                      </Tag>
                     ) : null}
                   </div>
                 ) : null}
               </div>
-            </TableCell>
-
-            <TableCell className="skill-management-table__runtime" data-label={t("skills.managementTable.runtimeStatus")} role="cell">
-              <span
-                className={`skill-management-table__status ${
-                  entry.runtimeEnabled
-                    ? "skill-management-table__status--active"
-                    : entry.catalogStatus === "internal"
-                      ? "skill-management-table__status--internal"
-                      : ""
-                }`}
-              >
-                <span aria-hidden="true" />
+</div>);
+} },
+{ key: "runtime", width: 120, title: t("skills.managementTable.runtimeStatus"),
+onCell: () => ({"className": "skill-management-table__runtime",
+"data-label": t("skills.managementTable.runtimeStatus")}),
+render: (_value, entry) => (<>
+<Tag size="small" color={entry.runtimeEnabled ? "success" : entry.catalogStatus === "internal" ? "warning" : undefined}>
                 {entry.catalogStatus === "internal"
                   ? t("skills.managementTable.internalRuntime")
                   : entry.runtimeEnabled === null
@@ -289,20 +219,18 @@ export function SkillManagementTable({
                     : entry.runtimeEnabled
                       ? t("skills.managementTable.enabled")
                       : t("skills.managementTable.disabled")}
-              </span>
-            </TableCell>
-
-            <TableCell
-              className="skill-management-table__distribution min-w-0"
-              data-label={t("skills.managementTable.catalogStatus")}
-              role="cell"
-            >
-              <span
-                className={`skill-management-table__status skill-management-table__status--catalog skill-management-table__status--${entry.catalogStatus}`}
-              >
-                <CatalogStatusIcon aria-hidden="true" size={13} />
+              </Tag>
+</>) },
+{ key: "catalog", width: 150, title: t("skills.managementTable.catalogStatus"),
+onCell: () => ({"className": "skill-management-table__distribution min-w-0",
+"data-label": t("skills.managementTable.catalogStatus")}),
+render: (_value, entry) =>  {
+const CatalogStatusIcon =
+            entry.catalogStatus === "internal" ? Boxes : Store;
+return (<>
+<Tag size="small" icon={<CatalogStatusIcon aria-hidden="true" size={13} />} color={entry.catalogStatus === "available" ? "info" : ["internal", "hidden"].includes(entry.catalogStatus) ? "warning" : undefined}>
                 {t(catalogStatusKey(entry.catalogStatus))}
-              </span>
+              </Tag>
               {entry.publishedCatalogName ? (
                 <span
                   className="mt-1 block truncate text-[11px] text-[var(--theme-text-secondary)]"
@@ -311,138 +239,75 @@ export function SkillManagementTable({
                   {entry.publishedCatalogName}
                 </span>
               ) : null}
-            </TableCell>
-
-            <TableCell
-              className="skill-management-table__package"
-              data-label={t("skills.managementTable.package")}
-              role="cell"
-            >
-              <span
+</>);
+} },
+{ key: "version", width: 110, responsive: ["xl"], title: t("skills.managementTable.package"),
+onCell: () => ({"className": "skill-management-table__package",
+"data-label": t("skills.managementTable.package")}),
+render: (_value, entry) => (<>
+<span
                 className="block truncate font-mono text-xs text-[var(--theme-text)]"
                 title={entry.version ?? undefined}
               >
                 {entry.version || "-"}
               </span>
-            </TableCell>
-
-            <TableCell
-              className="skill-management-table__updated text-xs text-[var(--theme-text-secondary)]"
-              data-label={t("skills.managementTable.updatedAt")}
-              role="cell"
-            >
-              {updatedDateLabel(entry.updatedAt ?? undefined)}
-            </TableCell>
-
-            <TableCell
-              className="skill-management-table__actions"
-              data-label={t("skills.managementTable.actions")}
-              role="cell"
-            >
-              {rowCanPublish ? (
-                <button
+</>) },
+{ key: "updated", width: 130, responsive: ["xl"], title: t("skills.managementTable.updatedAt"),
+onCell: () => ({"className": "skill-management-table__updated text-xs text-[var(--theme-text-secondary)]",
+"data-label": t("skills.managementTable.updatedAt")}),
+render: (_value, entry) => (<>
+{updatedDateLabel(entry.updatedAt ?? undefined)}
+</>) },
+{ key: "actions", width: 90, align: "right", title: t("skills.managementTable.actions"),
+onCell: () => ({"data-label": t("skills.managementTable.actions")}),
+render: (_value, entry) =>  {
+const actionName = entry.actionName;
+const canAct = actionName !== null && entry.runtimeSkill !== null;
+const rowCanToggle = canToggle && canAct;
+const rowCanEdit = canEdit && canAct;
+const rowCanExport = canExport && canAct;
+const rowCanPublish = canPublish && canAct;
+const rowCanDelete = canDelete && canAct;
+const hasActions =
+            rowCanToggle || rowCanEdit || rowCanExport || rowCanPublish || rowCanDelete;
+return (<div className="skill-management-table__actions">
+{rowCanPublish ? (
+                <Button type="text"
                   aria-label={t("skills.managementTable.updateVersionSkill", {
                     name: entry.displayName,
                   })}
-                  className="btn-icon"
+                  size="small"
                   onClick={(event) => {
                     event.stopPropagation();
                     onUploadVersion(actionName);
                   }}
                   title={t("skills.managementTable.updateVersion")}
-                  type="button"
+                  htmlType="button"
                 >
                   <UploadCloud aria-hidden="true" size={16} />
-                </button>
+                </Button>
               ) : null}
               {hasActions ? (
-                <div
-                  className="skill-management-table__action-menu"
-                  ref={openActionName === actionName ? openActionMenuRef : undefined}
+                <DropdownMenu
+                  open={openActionName === actionName}
+                  onOpenChange={(open) => setOpenActionName(open ? actionName : null)}
+                  placement="bottomRight"
+                  popupProps={{
+                    "aria-label": `${entry.displayName} ${t("common.menu")}`,
+                    onClick: (event) => event.stopPropagation(),
+                    onKeyDown: (event) => event.stopPropagation(),
+                  }}
+                  items={[
+                    rowCanToggle ? { key: "toggle", icon: Power, label: t(entry.runtimeEnabled ? "skills.managementTable.disable" : "skills.managementTable.enable"), onClick: () => { setOpenActionName(null); onToggle(actionName); } } : null,
+                    rowCanEdit ? { key: "edit", icon: Pencil, label: t("skills.managementTable.edit"), onClick: () => { setOpenActionName(null); onEdit(entry.runtimeSkill!); } } : null,
+                    rowCanExport ? { key: "export", icon: Download, label: t("skills.exportZip"), onClick: () => { setOpenActionName(null); onExportZip(actionName); } } : null,
+                    rowCanDelete ? { key: "archive", icon: Archive, label: t("skills.managementTable.delete"), onClick: () => { setOpenActionName(null); onDelete(actionName); } } : null,
+                  ]}
                 >
-                  <button
-                    aria-expanded={openActionName === actionName}
-                    aria-haspopup="menu"
-                    aria-label={t("common.menu")}
-                    className="btn-icon"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      setOpenActionName((current) =>
-                        current === actionName ? null : actionName,
-                      );
-                    }}
-                    title={t("common.menu")}
-                    type="button"
-                  >
+                  <Button type="text" size="small" aria-label={t("common.menu")} htmlType="button" onClick={(event) => event.stopPropagation()}>
                     <MoreHorizontal aria-hidden="true" size={17} />
-                  </button>
-                  {openActionName === actionName ? (
-                    <div
-                      aria-label={`${entry.displayName} ${t("common.menu")}`}
-                      className="skill-management-table__action-menu-panel"
-                      onClick={(event) => event.stopPropagation()}
-                      role="menu"
-                    >
-                      {rowCanToggle ? (
-                        <button
-                          onClick={() => {
-                            setOpenActionName(null);
-                            onToggle(actionName);
-                          }}
-                          role="menuitem"
-                          type="button"
-                        >
-                          <Power aria-hidden="true" size={14} />
-                          {t(
-                            entry.runtimeEnabled
-                              ? "skills.managementTable.disable"
-                              : "skills.managementTable.enable",
-                          )}
-                        </button>
-                      ) : null}
-                      {rowCanEdit ? (
-                        <button
-                          onClick={() => {
-                            setOpenActionName(null);
-                            onEdit(entry.runtimeSkill!);
-                          }}
-                          role="menuitem"
-                          type="button"
-                        >
-                          <Pencil aria-hidden="true" size={14} />
-                          {t("skills.managementTable.edit")}
-                        </button>
-                      ) : null}
-                      {rowCanExport ? (
-                        <button
-                          onClick={() => {
-                            setOpenActionName(null);
-                            onExportZip(actionName);
-                          }}
-                          role="menuitem"
-                          type="button"
-                        >
-                          <Download aria-hidden="true" size={14} />
-                          {t("skills.exportZip")}
-                        </button>
-                      ) : null}
-                      {rowCanDelete ? (
-                        <button
-                          className="skill-management-table__archive-action"
-                          onClick={() => {
-                            setOpenActionName(null);
-                            onDelete(actionName);
-                          }}
-                          role="menuitem"
-                          type="button"
-                        >
-                          <Archive aria-hidden="true" size={14} />
-                          {t("skills.managementTable.delete")}
-                        </button>
-                      ) : null}
-                    </div>
-                  ) : null}
-                </div>
+                  </Button>
+                </DropdownMenu>
               ) : null}
               {!hasActions ? (
                 <span className="text-xs text-[var(--theme-text-secondary)]">
@@ -453,11 +318,9 @@ export function SkillManagementTable({
                   )}
                 </span>
               ) : null}
-            </TableCell>
-            </TableRow>
-          );
-        })}
-      </TableBody>
-    </Table>
+</div>);
+} }
+]}
+/></div>
   );
 }

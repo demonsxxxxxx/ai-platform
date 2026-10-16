@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { after } from "node:test";
 import { installTestDom } from "../useAgent/__tests__/testDom.ts";
 import { sessionApi, type BackendSession } from "../../services/api/session.ts";
 import { dispatchSessionTitleUpdated } from "../../utils/sessionTitleEvents.ts";
 
 const dom = installTestDom();
+after(() => dom.close());
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason?: unknown) => void;

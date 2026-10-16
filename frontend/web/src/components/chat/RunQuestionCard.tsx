@@ -1,3 +1,4 @@
+import { Button, Input, TextArea } from "@lobehub/ui/base-ui";
 import { useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { RunInputAnswer, RunInputQuestionBatch } from "../../services/api/session";
@@ -135,7 +136,7 @@ export function RunQuestionCard({
                           className="flex cursor-pointer items-start gap-2 rounded-lg border border-[var(--theme-border)] px-2.5 py-2 text-sm hover:bg-[var(--theme-bg-sidebar)] has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-60"
                           key={option.key}
                         >
-                          <input
+                          <Input
                             checked={selected}
                             className="mt-0.5 accent-[var(--theme-primary)]"
                             disabled={readOnly || busy}
@@ -166,7 +167,7 @@ export function RunQuestionCard({
                     })}
                   </div>
                 ) : null}
-                <textarea
+                <TextArea
                   aria-label={t("chat.runInputs.freeText", "自由填写答案：{{question}}", {
                     question: question.question,
                   })}
@@ -211,23 +212,23 @@ export function RunQuestionCard({
           ) : null}
           <div className="flex justify-end gap-2">
             {uncertainAnswer && !readOnly ? (
-              <button
+              <Button type="text"
                 className="rounded-full border border-[var(--theme-primary)] px-3 py-1.5 text-xs font-medium text-[var(--theme-primary)]"
                 onClick={() => void runInputs.retryPendingSubmission()}
-                type="button"
+                htmlType="button"
               >
                 {t("chat.runInputs.retryAnswer", "重试提交答复")}
-              </button>
+              </Button>
             ) : null}
-            <button
+            <Button type="text"
               className="rounded-full bg-[var(--theme-primary)] px-3 py-1.5 text-xs font-medium text-white disabled:cursor-not-allowed disabled:opacity-45"
               disabled={readOnly || busy}
-              type="submit"
+              htmlType="submit"
             >
               {pending?.kind === "answer" && pending.questionId === batch.question_id && pending.state === "submitting"
                 ? t("chat.runInputs.submittingAnswer", "正在提交…")
                 : t("chat.runInputs.submitAnswer", "提交答复")}
-            </button>
+            </Button>
           </div>
         </div>
       </form>

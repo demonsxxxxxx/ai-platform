@@ -1,3 +1,4 @@
+import { Button } from "@lobehub/ui/base-ui";
 import type { ComponentType, ReactNode } from "react";
 import { X } from "lucide-react";
 import { clsx } from "clsx";
@@ -51,14 +52,14 @@ export function LibreChatComposerChip({
       {state !== "enabled" && statusLabel ? (
         <span className="shrink-0 text-[10px] opacity-80">{statusLabel}</span>
       ) : null}
-      <button
-        type="button"
+      <Button type="text"
+        htmlType="button"
         onClick={() => onRemove(id)}
         className="ml-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded hover:bg-[var(--theme-sidebar-hover)] hover:text-[var(--theme-text)]"
         aria-label={removeLabel}
       >
         <X size={11} />
-      </button>
+      </Button>
     </span>
   );
 }

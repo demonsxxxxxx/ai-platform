@@ -1,3 +1,4 @@
+import { Button } from "@lobehub/ui/base-ui";
 import type { ComponentType, ReactNode } from "react";
 import { clsx } from "clsx";
 
@@ -28,13 +29,13 @@ export function LibreChatCommandMenu({
       </div>
       <div className="composer-command-list p-1.5">{children}</div>
       <div className="border-t border-[var(--theme-border)] px-3 py-2 text-xs text-[var(--theme-text-secondary)]">
-        <button
-          type="button"
+        <Button type="text"
+          htmlType="button"
           onClick={onClose}
           className="rounded px-1.5 py-1 hover:bg-[var(--theme-bg-sidebar)]"
         >
           {closeLabel}
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -69,8 +70,8 @@ export function LibreChatCommandMenuItem({
   onSelect,
 }: LibreChatCommandMenuItemProps) {
   return (
-    <button
-      type="button"
+    <Button type="text"
+      htmlType="button"
       role="option"
       aria-selected={active}
       onMouseEnter={onHighlight}
@@ -110,6 +111,6 @@ export function LibreChatCommandMenuItem({
           {description}
         </span>
       </span>
-    </button>
+    </Button>
   );
 }

@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { DropdownMenuRoot, DropdownMenuPortal, DropdownMenuPositioner, DropdownMenuPopup, DropdownMenuItem } from "@lobehub/ui/base-ui";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   History,
@@ -47,7 +47,6 @@ export function WorkbenchMenuHost({
     bottom: 8,
     right: 8,
   });
-  const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const handleOpen = (event: Event) => {
@@ -60,112 +59,28 @@ export function WorkbenchMenuHost({
     return () => window.removeEventListener("workbench-menu-open", handleOpen);
   }, []);
 
-  useEffect(() => {
-    if (!menuOpen) return;
-    const handleClickOutside = (event: MouseEvent) => {
-      if (!menuRef.current?.contains(event.target as Node)) setMenuOpen(false);
-    };
-    const timer = window.setTimeout(
-      () => document.addEventListener("click", handleClickOutside),
-      0,
-    );
-    return () => {
-      window.clearTimeout(timer);
-      document.removeEventListener("click", handleClickOutside);
-    };
-  }, [menuOpen]);
-
-  const showRunPlaybackButton =
-    activeTab === "chat" && !!currentRunId && !!onOpenRunPlayback;
-
+  const anchor = useMemo(() => ({
+    getBoundingClientRect: () => new DOMRect(
+      menuPosition.left ?? window.innerWidth - (menuPosition.right ?? 8),
+      window.innerHeight - menuPosition.bottom, 0, 0,
+    ),
+  }), [menuPosition]);
+  const showRunPlaybackButton = activeTab === "chat" && !!currentRunId && !!onOpenRunPlayback;
   return (
-    <>
-      {menuOpen
-        ? createPortal(
-            <div
-              ref={menuRef}
-              className="fixed z-[301] w-56 overflow-hidden rounded-lg border shadow-[0_8px_18px_rgba(18,38,63,0.08)] animate-scale-in"
-              style={{
-                bottom: menuPosition.bottom,
-                left: menuPosition.left,
-                right: menuPosition.right,
-                backgroundColor: "var(--theme-bg-card)",
-                borderColor: "var(--theme-border)",
-              }}
-              onClick={(event) => event.stopPropagation()}
-            >
-              <div className="py-1">
-                {showOutlineButton && onToggleOutline ? (
-                  <button
-                    className="flex w-full items-center gap-3 px-3 py-2.5 text-left text-sm text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-primary-light)] hover:text-[var(--theme-text)]"
-                    onClick={() => {
-                      onToggleOutline();
-                      setMenuOpen(false);
-                    }}
-                    type="button"
-                  >
-                    <span className="flex w-5 shrink-0 items-center justify-center">
-                      <ListTree size={16} />
-                    </span>
-                    <span className="truncate">{t("chat.outline")}</span>
-                  </button>
-                ) : null}
-                {showRunPlaybackButton ? (
-                  <button
-                    className="flex w-full items-center gap-3 px-3 py-2.5 text-left text-sm text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-primary-light)] hover:text-[var(--theme-text)]"
-                    onClick={() => {
-                      onOpenRunPlayback?.();
-                      setMenuOpen(false);
-                    }}
-                    type="button"
-                  >
-                    <span className="flex w-5 shrink-0 items-center justify-center">
-                      <History size={16} />
-                    </span>
-                    <span className="truncate">{t("runPlayback.menuLabel")}</span>
-                  </button>
-                ) : null}
-                {activeTab === "chat" && allowNewSessionAction ? (
-                  <button
-                    className="flex w-full items-center gap-3 px-3 py-2.5 text-left text-sm text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-primary-light)] hover:text-[var(--theme-text)]"
-                    onClick={() => {
-                      onNewSession();
-                      setMenuOpen(false);
-                    }}
-                    type="button"
-                  >
-                    <span className="flex w-5 shrink-0 items-center justify-center">
-                      <MessageSquarePlus size={16} />
-                    </span>
-                    <span className="truncate">
-                      {newSessionActionLabel ?? t("sidebar.newChat")}
-                    </span>
-                  </button>
-                ) : null}
-                <button
-                  className="flex w-full items-center gap-3 px-3 py-2.5 text-left text-sm text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-primary-light)] hover:text-[var(--theme-text)]"
-                  onClick={() => {
-                    toggleTheme();
-                    setMenuOpen(false);
-                  }}
-                  type="button"
-                >
-                  <span className="flex w-5 shrink-0 items-center justify-center">
-                    {theme === "light" ? <Moon size={16} /> : <Sun size={16} />}
-                  </span>
-                  <span className="truncate">
-                    {t(
-                      theme === "light"
-                        ? "theme.switchToDark"
-                        : "theme.switchToLight",
-                    )}
-                  </span>
-                </button>
-              </div>
-            </div>,
-            document.body,
-          )
-        : null}
-    </>
+    <DropdownMenuRoot open={menuOpen} modal={false} onOpenChange={setMenuOpen}>
+      <DropdownMenuPortal>
+        <DropdownMenuPositioner anchor={anchor} placement={menuPosition.left == null ? "topRight" : "topLeft"}>
+          <DropdownMenuPopup className="w-56" aria-label={t("common.menu")}>
+            {showOutlineButton && onToggleOutline ? <DropdownMenuItem onClick={() => { onToggleOutline(); setMenuOpen(false); }}><ListTree size={16} />{t("chat.outline")}</DropdownMenuItem> : null}
+            {showRunPlaybackButton ? <DropdownMenuItem onClick={() => { onOpenRunPlayback?.(); setMenuOpen(false); }}><History size={16} />{t("runPlayback.menuLabel")}</DropdownMenuItem> : null}
+            {activeTab === "chat" && allowNewSessionAction ? <DropdownMenuItem onClick={() => { onNewSession(); setMenuOpen(false); }}><MessageSquarePlus size={16} />{newSessionActionLabel ?? t("sidebar.newChat")}</DropdownMenuItem> : null}
+            <DropdownMenuItem onClick={() => { toggleTheme(); setMenuOpen(false); }}>
+              {theme === "light" ? <Moon size={16} /> : <Sun size={16} />}
+              {t(theme === "light" ? "theme.switchToDark" : "theme.switchToLight")}
+            </DropdownMenuItem>
+          </DropdownMenuPopup>
+        </DropdownMenuPositioner>
+      </DropdownMenuPortal>
+    </DropdownMenuRoot>
   );
 }

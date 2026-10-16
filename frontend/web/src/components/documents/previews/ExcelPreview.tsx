@@ -1,5 +1,5 @@
+import { Button } from "@lobehub/ui/base-ui";
 /* eslint-disable react-refresh/only-export-components */
-import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "../../common/Table";
 import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import {
@@ -457,7 +457,7 @@ const ExcelPreview = memo(function ExcelPreview({
   const previewInstanceId = useId();
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const gridSurfaceRef = useRef<HTMLDivElement>(null);
-  const sheetTabRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const sheetTabRefs = useRef<Array<HTMLElement | null>>([]);
   const [imageRects, setImageRects] = useState<Map<string, ExcelImageRect>>(
     () => new Map(),
   );
@@ -550,7 +550,7 @@ const ExcelPreview = memo(function ExcelPreview({
   }, []);
 
   const handleSheetKeyDown = useCallback(
-    (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    (event: React.KeyboardEvent<HTMLElement>) => {
       if (sheets.length === 0) return;
       let nextIndex: number | null = null;
       if (event.key === "ArrowLeft") nextIndex = Math.max(0, activeSheet - 1);
@@ -602,8 +602,8 @@ const ExcelPreview = memo(function ExcelPreview({
       </div>
 
       <div className="flex items-center gap-0.5 px-1 py-0 bg-stone-100 dark:bg-stone-900 border-b border-stone-300 dark:border-stone-700 shrink-0">
-        <button
-          type="button"
+        <Button type="text"
+          htmlType="button"
           onClick={() => setActiveSheet((current) => Math.max(0, current - 1))}
           disabled={activeSheet === 0}
           aria-label={t("documents.excelPreviousSheet", { defaultValue: "Previous sheet" })}
@@ -612,10 +612,10 @@ const ExcelPreview = memo(function ExcelPreview({
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="15 18 9 12 15 6" />
           </svg>
-        </button>
+        </Button>
         <div role="tablist" aria-label={t("documents.excelSheets", { defaultValue: "Workbook sheets" })} className="flex-1 flex items-center gap-0.5 overflow-x-auto px-1 py-1">
           {sheets.map((sheet, index) => (
-            <button
+            <Button type="text"
               key={`${index}:${sheet.name}`}
               id={`${previewInstanceId}-xlsx-preview-tab-${index}`}
               role="tab"
@@ -634,11 +634,11 @@ const ExcelPreview = memo(function ExcelPreview({
               }`}
             >
               {sheet.name}
-            </button>
+            </Button>
           ))}
         </div>
-        <button
-          type="button"
+        <Button type="text"
+          htmlType="button"
           onClick={() =>
             setActiveSheet((current) => Math.min(sheets.length - 1, current + 1))
           }
@@ -649,7 +649,7 @@ const ExcelPreview = memo(function ExcelPreview({
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="9 6 15 12 9 18" />
           </svg>
-        </button>
+        </Button>
       </div>
 
       {preview?.status === "truncated" && (
@@ -662,54 +662,55 @@ const ExcelPreview = memo(function ExcelPreview({
 
       <div id={tabPanelId} role="tabpanel" aria-labelledby={`${previewInstanceId}-xlsx-preview-tab-${activeSheet}`} ref={scrollContainerRef} className="flex-1 overflow-auto relative overscroll-x-contain [-webkit-overflow-scrolling:touch] excel-preview-scroll border-x border-stone-300 dark:border-stone-600">
         <div ref={gridSurfaceRef} className="relative w-max min-w-full">
-          <Table className="border-collapse w-max min-w-full text-[13px]">
-          <TableHeader>
-            <TableRow className="sticky top-0 z-10">
-              <TableHead className="sticky left-0 z-20 w-8 sm:w-10 min-w-[2rem] sm:min-w-[2.5rem] max-w-[2rem] sm:max-w-[2.5rem] px-0 py-0 text-center text-[11px] text-stone-500 dark:text-stone-400 bg-stone-100 dark:bg-stone-800 border-r border-b border-stone-300 dark:border-stone-600 select-none" />
+          <table className="border-collapse w-max min-w-full text-[13px]">
+          <thead>
+            <tr className="sticky top-0 z-10">
+              <th scope="col" className="sticky left-0 z-20 w-8 sm:w-10 min-w-[2rem] sm:min-w-[2.5rem] max-w-[2rem] sm:max-w-[2.5rem] px-0 py-0 text-center text-[11px] text-stone-500 dark:text-stone-400 bg-stone-100 dark:bg-stone-800 border-r border-b border-stone-300 dark:border-stone-600 select-none" />
               {Array.from({ length: totalCols }, (_, index) => (
-                <TableHead
+                <th
+                  scope="col"
                   key={index}
                   data-excel-column-index={index}
                   className={`min-w-[60px] sm:min-w-[80px] h-6 px-0 py-0 text-center text-[11px] font-normal text-stone-500 dark:text-stone-400 bg-stone-100 dark:bg-stone-800 border border-stone-300 dark:border-stone-600 select-none leading-6 ${hoveredCell?.col === index ? "bg-stone-100 dark:bg-stone-800 text-stone-700 dark:text-stone-300" : ""}`}
                 >
                   {colLabel(index)}
-                </TableHead>
+                </th>
               ))}
-            </TableRow>
-          </TableHeader>
-          <TableBody>
+            </tr>
+          </thead>
+          <tbody>
             {Array.from({ length: displayRows }, (_, rawRowIndex) => {
               const isHeader = rawRowIndex === 0;
               const isRowHovered = hoveredCell && !isHeader && hoveredCell.row === rawRowIndex;
               return (
-                <TableRow
+                <tr
                   key={rawRowIndex}
                   data-excel-row-index={rawRowIndex}
                 >
-                  <TableCell className={`sticky left-0 z-10 w-8 sm:w-10 min-w-[2rem] sm:min-w-[2.5rem] max-w-[2rem] sm:max-w-[2.5rem] px-0 py-0 text-center text-[11px] bg-stone-100 dark:bg-stone-800 border-r border-b border-stone-300 dark:border-stone-600 select-none tabular-nums leading-6 touch-none [box-shadow:2px_0_4px_-1px_rgba(0,0,0,0.06)] dark:[box-shadow:2px_0_4px_-1px_rgba(0,0,0,0.3)] ${isHeader ? "text-stone-400 dark:text-stone-500" : isRowHovered ? "text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-900/40" : "text-stone-500 dark:text-stone-400"}`}>
+                  <td className={`sticky left-0 z-10 w-8 sm:w-10 min-w-[2rem] sm:min-w-[2.5rem] max-w-[2rem] sm:max-w-[2.5rem] px-0 py-0 text-center text-[11px] bg-stone-100 dark:bg-stone-800 border-r border-b border-stone-300 dark:border-stone-600 select-none tabular-nums leading-6 touch-none [box-shadow:2px_0_4px_-1px_rgba(0,0,0,0.06)] dark:[box-shadow:2px_0_4px_-1px_rgba(0,0,0,0.3)] ${isHeader ? "text-stone-400 dark:text-stone-500" : isRowHovered ? "text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-900/40" : "text-stone-500 dark:text-stone-400"}`}>
                     {isHeader ? "" : getSheetRowNumber(rawRowIndex)}
-                  </TableCell>
+                  </td>
                   {Array.from({ length: totalCols }, (_, colIndex) => {
                     const value = getCellValue(rawRowIndex, colIndex);
                     const isCellHovered = hoveredCell && !isHeader && hoveredCell.row === rawRowIndex && hoveredCell.col === colIndex;
                     if (isHeader) {
                       return (
-                        <TableHead key={colIndex} onMouseEnter={() => handleCellHover(rawRowIndex, colIndex)} onMouseLeave={handleCellLeave} className={`min-h-[24px] min-w-[60px] sm:min-w-[80px] px-2 py-0 text-[13px] leading-6 border border-stone-300 dark:border-stone-600 whitespace-nowrap text-left font-semibold text-stone-700 dark:text-stone-300 bg-stone-50 dark:bg-stone-800/60 ${isCellHovered ? "!outline outline-2 outline-stone-500 dark:outline-stone-400 outline-offset-[-1px] bg-stone-100/60 dark:bg-stone-800/40 !border-stone-400 dark:!border-stone-500" : ""}`}>
+                        <th scope="col" key={colIndex} onMouseEnter={() => handleCellHover(rawRowIndex, colIndex)} onMouseLeave={handleCellLeave} className={`min-h-[24px] min-w-[60px] sm:min-w-[80px] px-2 py-0 text-[13px] leading-6 border border-stone-300 dark:border-stone-600 whitespace-nowrap text-left font-semibold text-stone-700 dark:text-stone-300 bg-stone-50 dark:bg-stone-800/60 ${isCellHovered ? "!outline outline-2 outline-stone-500 dark:outline-stone-400 outline-offset-[-1px] bg-stone-100/60 dark:bg-stone-800/40 !border-stone-400 dark:!border-stone-500" : ""}`}>
                           {value || " "}
-                        </TableHead>
+                        </th>
                       );
                     }
                     return (
-                      <TableCell key={colIndex} onMouseEnter={() => handleCellHover(rawRowIndex, colIndex)} onMouseLeave={handleCellLeave} className={`min-h-[24px] min-w-[60px] sm:min-w-[80px] px-2 py-0 text-[13px] leading-6 border border-stone-200 dark:border-stone-700/80 whitespace-nowrap text-stone-800 dark:text-stone-200 ${isNumeric(value) ? "text-right tabular-nums font-mono" : "text-left"} ${isCellHovered ? "!outline outline-2 outline-stone-500 dark:outline-stone-400 outline-offset-[-1px] bg-stone-100/60 dark:bg-stone-800/40 !border-stone-400 dark:!border-stone-500" : isRowHovered ? "bg-stone-50/70 dark:bg-stone-800/30" : ""}`}>
+                      <td key={colIndex} onMouseEnter={() => handleCellHover(rawRowIndex, colIndex)} onMouseLeave={handleCellLeave} className={`min-h-[24px] min-w-[60px] sm:min-w-[80px] px-2 py-0 text-[13px] leading-6 border border-stone-200 dark:border-stone-700/80 whitespace-nowrap text-stone-800 dark:text-stone-200 ${isNumeric(value) ? "text-right tabular-nums font-mono" : "text-left"} ${isCellHovered ? "!outline outline-2 outline-stone-500 dark:outline-stone-400 outline-offset-[-1px] bg-stone-100/60 dark:bg-stone-800/40 !border-stone-400 dark:!border-stone-500" : isRowHovered ? "bg-stone-50/70 dark:bg-stone-800/30" : ""}`}>
                         {value || " "}
-                      </TableCell>
+                      </td>
                     );
                   })}
-                </TableRow>
+                </tr>
               );
             })}
-          </TableBody>
-          </Table>
+          </tbody>
+          </table>
 
           <div
             className="absolute inset-0 z-[5] pointer-events-none"

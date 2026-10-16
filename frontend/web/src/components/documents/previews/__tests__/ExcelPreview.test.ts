@@ -3,7 +3,8 @@ import { Buffer } from "node:buffer";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
+import { createLobeServerTestRoot } from "../../../common/__tests__/lobeUiTestRoot";
+const renderToStaticMarkup = await createLobeServerTestRoot();
 
 import ExcelPreview, { parseXlsxPreviewDto } from "../ExcelPreview.tsx";
 

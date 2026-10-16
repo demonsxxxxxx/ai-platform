@@ -1,3 +1,4 @@
+import { Button } from "@lobehub/ui/base-ui";
 import { memo } from "react";
 import { X, Loader2, Clock3 } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -159,8 +160,8 @@ export const AttachmentCard = memo(function AttachmentCard({
         {/* 删除/取消按钮 */}
         {variant === "editable" &&
           (isUploading && onCancel ? (
-            <button
-              type="button"
+            <Button type="text"
+              htmlType="button"
               onClick={(e) => {
                 e.stopPropagation();
                 onCancel();
@@ -169,11 +170,11 @@ export const AttachmentCard = memo(function AttachmentCard({
               title={t("fileUpload.cancelUpload")}
             >
               <X size={12} />
-            </button>
+            </Button>
           ) : (
             onRemove && (
-              <button
-                type="button"
+              <Button type="text"
+                htmlType="button"
                 onClick={handleRemove}
                 className={clsx(
                   removeButtonClass,
@@ -181,7 +182,7 @@ export const AttachmentCard = memo(function AttachmentCard({
                 )}
               >
                 <X size={12} />
-              </button>
+              </Button>
             )
           ))}
       </div>
@@ -190,8 +191,9 @@ export const AttachmentCard = memo(function AttachmentCard({
 
   // 默认模式样式（用于 ChatMessage）
   return (
-    <button
+    <Button type="text"
       onClick={handleClick}
+      style={{ height: "auto", padding: 0 }}
       className={clsx(
         "group relative flex items-center overflow-hidden",
         "h-12 sm:h-14 min-w-[200px] max-w-[280px] sm:min-w-[240px] sm:max-w-[320px]",
@@ -203,7 +205,7 @@ export const AttachmentCard = memo(function AttachmentCard({
         "active:opacity-90",
         isUploading && "pointer-events-none",
       )}
-      type="button"
+      htmlType="button"
     >
       {/* 左侧图标/图片区域 */}
       <div
@@ -260,6 +262,6 @@ export const AttachmentCard = memo(function AttachmentCard({
           </span>
         </div>
       </div>
-    </button>
+    </Button>
   );
 });

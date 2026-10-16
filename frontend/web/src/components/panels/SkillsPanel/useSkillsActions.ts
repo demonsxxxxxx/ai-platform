@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
-import toast from "react-hot-toast";
+import { toast } from "@lobehub/ui/base-ui";
 import { useLocation, useNavigate } from "react-router-dom";
 import { exportProjectZip } from "../../../utils/exportProjectZip";
 import { getAccessToken } from "../../../services/api/token";
