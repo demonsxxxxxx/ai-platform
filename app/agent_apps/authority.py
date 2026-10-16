@@ -506,6 +506,7 @@ class AgentProfileAuthority:
         definition: AgentProfileDraftRequest,
         skill_pins: dict[str, str] | None = None,
         check_mcp_configuration: bool = True,
+        check_mcp_catalog: bool = False,
     ) -> tuple[dict[str, Any], ...]:
         """Revalidate current Skill and MCP authorization for a definition."""
 
@@ -537,7 +538,7 @@ class AgentProfileAuthority:
                     for selected_skill in definition.skill_set
                 ]
             )
-            for server_id in server_ids if check_mcp_configuration else ():
+            for server_id in dict.fromkeys(server_ids) if check_mcp_configuration else ():
                 server = await mcp_api.get_mcp_server_registry_entry(
                     conn,
                     tenant_id=principal.tenant_id,
@@ -548,6 +549,16 @@ class AgentProfileAuthority:
                         status_code=403,
                         detail="agent_profile_capability_not_available",
                     )
+                if check_mcp_catalog and server.get("integration_kind") == "enterprise_gateway":
+                    catalog = await mcp_api.get_live_mcp_catalog().list_server_catalog(
+                        tenant_id=principal.tenant_id, server_id=server_id,
+                    )
+                    if catalog.unavailable_reason:
+                        raise HTTPException(status_code=503, detail="agent_profile_mcp_catalog_unavailable")
+                    available_ids = {tool.tool_id for tool in catalog.tools if tool.available is not False}
+                    if any(reference not in available_ids for reference in definition.mcp_tool_ids
+                           if parse_mcp_tool_reference(reference)[0] == server_id):
+                        raise HTTPException(status_code=403, detail="agent_profile_capability_not_available")
         except platform_errors.RepositoryConflictError as exc:
             raise HTTPException(status_code=409, detail="agent_profile_revision_stale") from exc
         except platform_errors.RepositoryAuthorizationError as exc:
@@ -731,7 +742,8 @@ class AgentProfileAuthority:
         self._require_revision_integrity(draft_row)
         definition = _draft_from_row(draft_row)
         await self._validate_profile_department_authorities(definition)
-        await self._validate_definition(conn, principal=principal, agent_id=agent_id, definition=definition)
+        await self._validate_definition(conn, principal=principal, agent_id=agent_id, definition=definition,
+                                        check_mcp_catalog=True)
         definition = _name_only_skill_set(definition)
         row = await agent_profile_repository.create_agent_profile_revision(
             conn,
@@ -975,6 +987,7 @@ class AgentProfileAuthority:
             principal=principal,
             agent_id=validation_agent_id,
             definition=definition,
+            check_mcp_catalog=True,
         )
         return await identity_audit_postgres.append_audit_log(
             conn,

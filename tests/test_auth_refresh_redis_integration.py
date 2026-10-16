@@ -3,6 +3,7 @@ import asyncio
 import os
 import time
 import uuid
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -85,3 +86,48 @@ async def test_real_redis_refresh_completed_before_second_connection_acquires_le
         await first_client.delete(*keys)
         await first_client.aclose()
         await second_client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("remaining_ms", [1750, 1250])
+async def test_real_redis_grant_projection_uses_absolute_deadline_across_second_boundary(monkeypatch, remaining_ms):
+    url = os.getenv("AI_PLATFORM_SSE_REDIS_TEST_URL", "").strip()
+    if not url:
+        pytest.skip("AI_PLATFORM_SSE_REDIS_TEST_URL is not configured")
+    prefix = f"test-auth-deadline:{uuid.uuid4().hex}:"
+    for owner, name in ((auth_sessions, "_context_key"), (auth_sessions, "_authority_key"),
+                        (runtime, "_principal_jwt_key")):
+        original = getattr(owner, name)
+        monkeypatch.setattr(owner, name, lambda value, original=original: prefix + original(value))
+    fake, _settings, cookie, _principal, _store, _record = await install_refresh_grant(monkeypatch)
+    client = Redis.from_url(url, decode_responses=True)
+    keys = list(fake.values)
+    try:
+        deadline_ms = (await client.time())[0] * 1000 + 86400000 + 500
+        async with client.pipeline(transaction=True) as pipeline:
+            for key, (value, _deadline) in fake.values.items():
+                pipeline.set(key, value, pxat=deadline_ms)
+            await pipeline.execute()
+        seconds, milliseconds = divmod(deadline_ms - remaining_ms, 1000)
+        # Exercise the production Lua with a controlled clock; actual key deadlines stay in Redis.
+        clock = f"""
+local actual_call = redis.call
+local redis = {{call = function(command, ...)
+  if command == "TIME" then return {{{seconds}, {milliseconds * 1000}}} end
+  if command == "PTTL" then return {remaining_ms} end
+  return actual_call(command, ...)
+end}}
+"""
+
+        async def eval_at_boundary(script, numkeys, *args):
+            assert script == auth_sessions.V2_PRINCIPAL_SNAPSHOT_SCRIPT
+            return await client.eval(clock + script, numkeys, *args)
+
+        monkeypatch.setattr(auth_sessions, "get_redis", lambda: SimpleNamespace(eval=eval_at_boundary))
+        grant = await auth_sessions.browser_auth_grant(cookie)
+        assert grant["expires_at"] == deadline_ms // 1000
+        for key in keys:
+            assert await client.pexpiretime(key) == deadline_ms
+    finally:
+        await client.delete(*keys)
+        await client.aclose()

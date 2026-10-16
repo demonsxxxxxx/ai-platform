@@ -977,6 +977,11 @@
     "zoomOut": "缩小"
   },
   "mcp": {
+    "catalog": {
+      "systemTools": "系统工具目录",
+      "unavailable": "暂不可用",
+      "missing": "缺失或已停用"
+    },
     "addFirst": "添加您的第一个 MCP 服务器",
     "addNew": "添加新 MCP 服务器",
     "addServer": "添加服务器",
@@ -1016,6 +1021,9 @@
       "title": "{{name}} · 工具目录",
       "accountScope": "展示当前账户可发现的工具；刷新时实时查询服务器。",
       "accountCount": "当前账户工具数",
+      "catalogCount": "可用工具数",
+      "catalogScope": "展示 Gateway 全量目录，缺失或已停用的工具不能选入专家。",
+      "catalogEmpty": "目录中暂无工具",
       "count": "{{count}} 个工具",
       "discoveryStatus": "工具发现",
       "view": "查看工具",
@@ -1076,6 +1084,10 @@
       "serverName": "服务器名称",
       "serverNamePlaceholder": "my-mcp-server",
       "serverNameUneditable": "服务器名称无法修改",
+      "integrationKind": "接入类型",
+      "genericMcp": "通用 MCP",
+      "enterpriseGateway": "企业 Gateway",
+      "enterpriseGatewayHint": "全量目录无需认证；工具调用自动使用当前用户身份，请勿填写个人 token。",
       "transportHttp": "流式 HTTP",
       "transportSandbox": "沙箱 (mcporter)",
       "transportSse": "SSE（服务器发送事件）",
@@ -1089,6 +1101,7 @@
         "commandRequired": "沙箱传输需要填写命令",
         "duplicateHeader": "请求头名称不能重复",
         "jwtHeaderConflict": "JWT-Authorization 保留用于当前用户的 MCP 令牌",
+        "userIdentityHeaderConflict": "企业 Gateway 的身份头由当前用户自动提供，请移除 Authorization、JWT-Authorization、Cookie 或账号密码头",
         "nameRequired": "请输入服务器名称",
         "urlRequired": "HTTP 传输需要 URL"
       },

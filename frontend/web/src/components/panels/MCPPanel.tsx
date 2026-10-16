@@ -27,6 +27,7 @@ import { workbenchSurface } from "../workbench/workbenchSurface";
 import { useAuth } from "../../hooks/useAuth";
 import { useMCP } from "../../hooks/useMcp";
 import { Permission } from "../../types";
+import { mcpApi } from "../../services/api/mcp";
 import type { MCPServerCreate, MCPServerResponse } from "../../types";
 import { MCPServerForm } from "../mcp/MCPServerForm";
 import { MCPToolDrawer } from "../mcp/MCPToolDrawer";
@@ -145,7 +146,8 @@ export function MCPPanel() {
   const lifecycleAvailability = mcpGovernance.lifecycleAvailability;
   const canManageMcpUi = canManageMcp && isAvailable;
   const discoveryEnabled = isAuthenticated && !authLoading && !isLoading && isAvailable && !catalogError;
-  const discovery = useMcpToolDiscovery(servers, JSON.stringify(catalogRequest), discoveryEnabled);
+  const discovery = useMcpToolDiscovery(servers, JSON.stringify(catalogRequest), discoveryEnabled,
+    isAiAdmin ? mcpApi.getServerCatalog : mcpApi.discoverTools);
   const toolsScope = JSON.stringify([catalogRequest, authLoading, permissionDenied, isAvailable]);
   const selectedToolServer = toolTarget?.scope === toolsScope ? servers.find((server) => server.name === toolTarget.name) : undefined;
   useEffect(() => {
@@ -381,12 +383,12 @@ render: (_value, server) => (<>
 <p className="break-words font-semibold">{server.name}</p>
                       <p className="mt-1 text-xs text-[var(--theme-text-secondary)]">{t(server.is_system ? "mcp.card.system" : "mcp.card.user")}</p>
 </>) },
-{ key: "toolCount", title: t("mcp.tools.accountCount"),
+{ key: "toolCount", title: t("mcp.tools.catalogCount"),
 onCell: () => ({"data-mcp-tool-count": true}),
 render: (_value, server) =>  {
 const status = discovery.statusByServer.get(server.name) ?? "idle";
 return (<>
-{status === "ready" ? t("mcp.tools.count", { count: discovery.toolsByServer.get(server.name)?.length ?? 0 }) : "—"}
+{status === "ready" ? t("mcp.tools.count", { count: discovery.toolsByServer.get(server.name)?.filter((tool) => tool.available !== false).length ?? 0 }) : "—"}
 </>);
 } },
 { key: "enabled", title: t("mcp.card.statusLabel"),
@@ -443,7 +445,7 @@ render: (_value, server) => (<>
           />
         </div>
       )}
-      {selectedToolServer ? <MCPToolDrawer returnFocusRef={toolPreviousFocusRef} key={selectedToolServer.name} serverName={selectedToolServer.name} status={discovery.statusByServer.get(selectedToolServer.name) ?? "idle"} tools={discovery.toolsByServer.get(selectedToolServer.name) ?? []} onRefresh={discovery.refresh} onClose={() => setToolTarget(null)} /> : null}
+      {selectedToolServer ? <MCPToolDrawer returnFocusRef={toolPreviousFocusRef} key={selectedToolServer.name} serverName={selectedToolServer.name} fullCatalog={selectedToolServer.integration_kind === "enterprise_gateway"} status={discovery.statusByServer.get(selectedToolServer.name) ?? "idle"} tools={discovery.toolsByServer.get(selectedToolServer.name) ?? []} onRefresh={discovery.refresh} onClose={() => setToolTarget(null)} /> : null}
       {canManageMcpUi ? (
         <ModalRoot open={editorOpen} onOpenChange={(open) => { if (!open) closeEditor(); }}>
           <ModalPortal>

@@ -56,6 +56,7 @@ async def test_dynamic_server_registry_projection_excludes_legacy_catalog_state(
             "tenant_id": "tenant-a",
             "name": "gateway",
             "transport": "streamable_http",
+            "integration_kind": "mcp",
             "endpoint_redacted": "",
             "status": "active",
             "is_system": False,
@@ -92,7 +93,8 @@ async def test_dynamic_server_upsert_persists_no_endpoint_material():
         async def execute(self, query, params):
             assert "insert into mcp_servers" in query
             assert "where mcp_servers.is_system = excluded.is_system" in query
-            assert params[1:5] == ("tenant-a", "gateway", "streamable_http", "")
+            assert params[1:6] == ("tenant-a", "gateway", "streamable_http", "enterprise_gateway", "")
+            assert "integration_kind = excluded.integration_kind" in query
             assert "https://mcp.example/sse" not in params
             assert "credential-sha" in params
             return _Cursor(row=row)
@@ -102,6 +104,7 @@ async def test_dynamic_server_upsert_persists_no_endpoint_material():
         tenant_id="tenant-a",
         name="gateway",
         transport="streamable_http",
+        integration_kind="enterprise_gateway",
         enabled=True,
         is_system=False,
         endpoint_redacted="https://mcp.example/sse",

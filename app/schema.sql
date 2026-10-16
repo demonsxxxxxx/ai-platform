@@ -149,6 +149,7 @@ create table if not exists mcp_servers (
   tenant_id text not null references tenants(id),
   name text not null,
   transport text not null default 'streamable_http',
+  integration_kind text not null default 'mcp',
   endpoint_redacted text not null default '',
   status text not null default 'active',
   is_system boolean not null default false,
@@ -166,6 +167,18 @@ create table if not exists mcp_servers (
   check (status in ('active', 'disabled', 'deleted')),
   check (credential_state in ('not_configured', 'configured', 'platform_managed'))
 );
+
+alter table mcp_servers add column if not exists integration_kind text not null default 'mcp';
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'mcp_servers_integration_kind_valid'
+      and conrelid = 'mcp_servers'::regclass
+  ) then
+    alter table mcp_servers add constraint mcp_servers_integration_kind_valid
+      check (integration_kind in ('mcp', 'enterprise_gateway'));
+  end if;
+end $$;
 
 create index if not exists idx_mcp_servers_tenant_status
   on mcp_servers(tenant_id, status, name);

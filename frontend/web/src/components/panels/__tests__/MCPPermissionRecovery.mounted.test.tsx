@@ -44,7 +44,7 @@ async function harness(child: ReactNode, fetcher?: (request: Request) => Promise
   toast.error = (message) => { notices.push(`error:${String(message)}`); return { id: "test", close() {}, update() {} }; };
   globalThis.fetch = (async (url, init = {}) => {
     const request = { url: new URL(String(url), "http://localhost"), init };
-    if (request.url.pathname.endsWith("/tools")) {
+    if (request.url.pathname.endsWith("/tools") || request.url.pathname.endsWith("/catalog")) {
       discoveryCalls.push(request);
       return discover ? discover(request) : json({ server_name: decodeURIComponent(request.url.pathname.split("/").at(-2)!), tools: [], count: 0, unavailable_reason: null });
     }
@@ -75,6 +75,7 @@ test("administrator sees discovered tools and can inspect their public descripti
     assert.doesNotMatch(view.container.textContent!, /common\.actions|mcp\.tools\./);
     assert.doesNotMatch(row.textContent!, /运行中|0 个角色/);
     assert.equal(view.discoveryCalls.length, 1);
+    assert.ok(view.discoveryCalls[0].url.pathname.endsWith("/catalog"));
     const trigger = row.querySelector<HTMLButtonElement>("[data-mcp-view-tools]")!;
     trigger.focus();
     await click(trigger);
@@ -96,6 +97,25 @@ test("administrator sees discovered tools and can inspect their public descripti
   } finally { await view.close(); }
 });
 
+test("enterprise catalog retains missing definitions without counting them as available", async () => {
+  const tools = [
+    { name: "synthetic-mcp::ready", description: "Available synthetic tool", parameters: [], available: true },
+    { name: "synthetic-mcp::missing", description: "Missing synthetic tool", parameters: [], available: false },
+  ];
+  const view = await harness(createElement(MCPPanel), () => json({ servers: [{ ...server, integration_kind: "enterprise_gateway" }], total: 1, skip: 0, limit: 20 }),
+    () => json({ server_name: server.name, tools, count: 1, unavailable_reason: null }));
+  try {
+    assert.equal(view.container.querySelector("[data-mcp-tool-count]")!.textContent, "1 个工具");
+    assert.ok(view.discoveryCalls.every(call => call.url.pathname.endsWith("/catalog")));
+    await click(view.container.querySelector<HTMLButtonElement>("[data-mcp-view-tools]")!);
+    const detail = document.querySelector("[data-mcp-tool-detail]")!;
+    assert.equal(detail.querySelectorAll("li").length, 2);
+    assert.match(detail.textContent!, /Gateway 全量目录/);
+    assert.match(detail.textContent!, /缺失或已停用/);
+    assert.doesNotMatch(detail.textContent!, /当前账户可发现/);
+  } finally { await view.close(); }
+});
+
 test("one unavailable server never hides healthy tools in the ordinary directory", async () => {
   const view = await harness(createElement(MCPPanel), () => json({ servers: [server, { ...server, name: "broken" }], total: 2, skip: 0, limit: 200 }), ({ url }) =>
     url.pathname.endsWith("/broken/tools")
@@ -105,6 +125,7 @@ test("one unavailable server never hides healthy tools in the ordinary directory
   try {
     await view.setUser(principal("ordinary", ["user"]));
     assert.match(view.container.querySelector("[data-ordinary-mcp-catalog]")!.textContent!, /Healthy synthetic tool/);
+    assert.ok(view.discoveryCalls.slice(-2).every(call => call.url.pathname.endsWith("/tools")));
     assert.match(view.container.textContent!, /暂时无法加载可用工具/);
     assert.doesNotMatch(view.container.textContent!, /common\.retry|mcp\.tools\./);
     assert.equal(view.container.querySelector("[data-mcp-admin-controls]"), null);
@@ -201,6 +222,7 @@ test("permission denial remains visible after effects settle instead of a ready 
     assert.equal(view.container.querySelector("[data-mcp-admin-controls]"), null);
     assert.doesNotMatch(view.container.textContent!, /missing_permission|mcp:read/);
     assert.equal(view.calls.length, 1, "denial must not self-retry");
+    assert.equal(view.discoveryCalls.length, 0, "denial must not query the management catalog");
   } finally { await view.close(); }
 });
 

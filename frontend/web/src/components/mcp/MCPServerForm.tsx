@@ -111,6 +111,7 @@ export function MCPServerForm({
     server?.transport === "sandbox" ? defaultTransport : server?.transport ?? defaultTransport,
   );
   const [enabled, setEnabled] = useState(server?.enabled ?? true);
+  const [integrationKind, setIntegrationKind] = useState<"mcp" | "enterprise_gateway">(server?.integration_kind ?? "mcp");
 
   // HTTP fields
   const [url, setUrl] = useState("");
@@ -134,6 +135,7 @@ export function MCPServerForm({
       setName(server.name);
       setTransport(server.transport === "sandbox" ? defaultTransport : server.transport);
       setEnabled(server.enabled);
+      setIntegrationKind(server.integration_kind ?? "mcp");
       setUrl("");
       setHeaders([]);
       setAllowedRoles(server.allowed_roles ?? []);
@@ -143,6 +145,7 @@ export function MCPServerForm({
       setName("");
       setTransport(defaultTransport);
       setEnabled(true);
+      setIntegrationKind("mcp");
       setUrl("");
       setHeaders([]);
       setAllowedRoles([]);
@@ -191,9 +194,10 @@ export function MCPServerForm({
     if (!url.trim()) {
       newErrors.url = t("mcp.form.validation.urlRequired");
     }
-    const headerError = validateMcpStaticHeaderNames(headers);
+    const headerError = validateMcpStaticHeaderNames(headers, integrationKind);
     if (headerError === "mcp_header_conflict") {
-      newErrors.headers = t("mcp.form.validation.jwtHeaderConflict");
+      newErrors.headers = t(integrationKind === "enterprise_gateway"
+        ? "mcp.form.validation.userIdentityHeaderConflict" : "mcp.form.validation.jwtHeaderConflict");
     } else if (headerError === "mcp_header_duplicate") {
       newErrors.headers = t("mcp.form.validation.duplicateHeader");
     }
@@ -210,6 +214,7 @@ export function MCPServerForm({
     const data: MCPServerCreate = {
       name: name.trim(),
       transport,
+      integration_kind: integrationKind,
       enabled,
       allowed_roles: isSystemServer ? allowedRoles : undefined,
       role_quotas: isSystemServer
@@ -271,6 +276,24 @@ export function MCPServerForm({
         {isEditing && (
           <p className="es-hint">{t("mcp.form.serverNameUneditable")}</p>
         )}
+      </div>
+
+      <div className="es-field">
+        <label className="es-label">{t("mcp.form.integrationKind")}</label>
+        <LobeSelectField
+          aria-label={t("mcp.form.integrationKind")}
+          value={integrationKind}
+          onChange={value => {
+            setIntegrationKind(value as "mcp" | "enterprise_gateway");
+            if (value === "enterprise_gateway") setTransport("streamable_http");
+          }}
+          options={[
+            { value: "mcp", label: t("mcp.form.genericMcp") },
+            { value: "enterprise_gateway", label: t("mcp.form.enterpriseGateway") },
+          ]}
+          disabled={isLoading}
+        />
+        {integrationKind === "enterprise_gateway" && <p className="es-hint">{t("mcp.form.enterpriseGatewayHint")}</p>}
       </div>
 
       {/* Transport Type */}

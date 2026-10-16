@@ -126,12 +126,12 @@ function bootstrapSource(loading = false) {
       if (url.pathname === '/api/ai/agent-profiles/agt_support') return json(profile);
       if (url.pathname === '/api/ai/admin/agent-profiles') return json({ agent_profiles: [adminProfile] });
       if (url.pathname === '/api/ai/admin/agent-profiles/agt_support/history') return json({ agent_profiles: [adminProfile] });
-      if (url.pathname === '/api/mcp/chat-tools') return json({ tools: [], count: 0, unavailable: [] });
+      if (url.pathname === '/api/mcp/chat-tools' || url.pathname === '/api/mcp/catalog-tools') return json({ tools: [], count: 0, unavailable: [] });
       if (url.pathname === '/api/mcp/') return json({ servers: [{
         name: 'synthetic-mcp', transport: 'streamable_http', url: 'https://example.invalid/mcp',
         enabled: true, is_system: true, can_edit: true, allowed_roles: [], role_quotas: {}, credential_state: 'configured'
       }], total: 1, skip: 0, limit: 20 });
-      if (url.pathname === '/api/mcp/synthetic-mcp/tools') return json({
+      if (url.pathname === '/api/mcp/synthetic-mcp/catalog') return json({
         server_name: 'synthetic-mcp', tools: [{ name: 'synthetic-search', description: 'Synthetic search tool', parameters: [] }], count: 1, unavailable_reason: null
       });
       if (url.pathname === '/api/ai/admin/models') return json({
@@ -247,14 +247,14 @@ const cases = [
       "[data-agent-avatar-picker]",
       "[data-agent-avatar-picker] [data-agent-avatar-ref] img[src^='data:image/svg+xml']",
     ],
-    requiredRequests: ["/api/ai/admin/agent-profiles", "/api/skills/"],
+    requiredRequests: ["/api/ai/admin/agent-profiles", "/api/skills/", "/api/mcp/catalog-tools"],
   },
   {
     path: "/mcp",
     selector: "[data-mcp-view-tools]",
     name: "mcp",
     requiredSelectors: ["[data-mcp-view-tools]", "[data-mcp-tool-count]"],
-    requiredRequests: ["/api/mcp/", "/api/mcp/synthetic-mcp/tools"],
+    requiredRequests: ["/api/mcp/", "/api/mcp/synthetic-mcp/catalog"],
   },
   {
     path: "/models",
@@ -487,7 +487,7 @@ async function runCase(viewport, scenario) {
       await browser.client.waitFor("!document.querySelector('[data-mcp-tool-detail]') && document.activeElement === document.querySelector('[data-mcp-view-tools]')", `${viewport.name}:mcp:focus-restore`);
       await browser.client.evaluate(`(() => { const button = document.querySelector('[data-mcp-admin-controls] button'); button.focus(); button.click(); })()`);
       await browser.client.waitFor("Boolean(document.querySelector('[data-mcp-editor-initial-focus]'))", `${viewport.name}:mcp:editor`);
-      await browser.client.evaluate(`document.querySelector('[role=dialog] button[aria-haspopup=listbox]').click()`);
+      await browser.client.evaluate(`(() => { const label = [...document.querySelectorAll('[role=dialog] label')].find((node) => node.htmlFor && node.textContent === '传输类型'); if (!label) throw new Error('transport_label_missing'); document.getElementById(label.htmlFor).click(); })()`);
       await browser.client.waitFor("Boolean(document.querySelector('[role=listbox]'))", `${viewport.name}:mcp:transport-options`);
       await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
       await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });

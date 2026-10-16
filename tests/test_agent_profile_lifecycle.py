@@ -279,6 +279,36 @@ async def test_profile_definition_validates_stable_mcp_reference_and_server_exis
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("available,unavailable,expected_status", [(True, None, None), (False, None, 403), (True, "discovery_failed", 503)])
+async def test_enterprise_profile_publish_checks_anonymous_catalog_not_admin_tool_acl(monkeypatch, available, unavailable, expected_status):
+    from app.agent_apps import AgentProfileAuthority
+    from app.agent_apps.authority import _draft_from_row
+    from app.mcp.api import LiveMcpServerResult, LiveMcpTool
+    from types import SimpleNamespace
+
+    row = _profile_row()
+    row["mcp_tool_ids"] = ["gateway::search"]
+    async def authorize_skill(*_args, **_kwargs):
+        return {"skill_id": "general-chat", "skill_version": "version-b"}
+    async def server(*_args, **_kwargs):
+        return {"name": "gateway", "integration_kind": "enterprise_gateway", "status": "active"}
+    async def catalog(**kwargs):
+        assert kwargs == {"tenant_id": "tenant-a", "server_id": "gateway"}
+        return LiveMcpServerResult("gateway", (LiveMcpTool("gateway::search", "gateway", "search", "Search", "Synthetic", available=available),), unavailable)
+    monkeypatch.setattr("app.agent_apps.authority._authorize_current_profile_skill", authorize_skill)
+    monkeypatch.setattr("app.agent_apps.authority.mcp_api.get_mcp_server_registry_entry", server)
+    monkeypatch.setattr("app.agent_apps.authority.mcp_api.get_live_mcp_catalog", lambda: SimpleNamespace(list_server_catalog=catalog))
+    call = AgentProfileAuthority()._validate_definition(object(), principal=_principal(), agent_id="agt_support",
+        definition=_draft_from_row(row), check_mcp_catalog=True)
+    if expected_status is None:
+        assert (await call)[0]["skill_id"] == "general-chat"
+    else:
+        with pytest.raises(HTTPException) as caught:
+            await call
+        assert caught.value.status_code == expected_status
+
+
+@pytest.mark.asyncio
 async def test_profile_definition_preserves_repository_authorization_status(monkeypatch):
     from app.agent_apps import AgentProfileAuthority
     from app.agent_apps.authority import _draft_from_row

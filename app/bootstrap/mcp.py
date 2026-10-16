@@ -20,6 +20,7 @@ from app.db import transaction
 from app.mcp.api import configure_mcp_runtime_services
 from app.mcp.application.live_catalog import LiveMcpCatalogService
 from app.mcp.infrastructure.client import McpToolDiscoveryAdapter
+from app.mcp.infrastructure.gateway_catalog import GatewayCatalogAdapter
 from app.mcp.infrastructure import postgres as mcp_postgres
 from app.mcp.infrastructure import runtime as mcp_runtime
 from app.redis_client import get_redis_client
@@ -54,6 +55,7 @@ class _LiveMcpTarget:
     endpoint: str
     static_headers: dict[str, str]
     transport: str
+    integration_kind: str = "mcp"
 
 
 class _McpRuntimeServices:
@@ -79,6 +81,7 @@ class _McpRuntimeServices:
             target_resolver=self._resolve_live_target,
             discovery=McpToolDiscoveryAdapter(),
             sse_discovery=McpToolDiscoveryAdapter(transport="sse"),
+            gateway_catalog=GatewayCatalogAdapter(),
         )
 
     @staticmethod
@@ -106,6 +109,7 @@ class _McpRuntimeServices:
             )
         return _LiveMcpTarget(
             endpoint=endpoint, static_headers=static_headers, transport=str(row.get("transport") or ""),
+            integration_kind=str(row.get("integration_kind") or "mcp"),
         )
 
     @staticmethod

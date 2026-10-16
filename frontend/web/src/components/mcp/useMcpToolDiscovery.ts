@@ -25,12 +25,12 @@ export async function collectMcpTools(
       try {
         const response = await discover(name);
         if (response.unavailable_reason !== null || response.server_name !== name ||
-          !Array.isArray(response.tools) || !Number.isInteger(response.count) || response.count !== response.tools.length ||
-          response.tools.some((tool) => !tool || typeof tool.name !== "string" || !tool.name || typeof tool.description !== "string") ||
+          !Array.isArray(response.tools) || !Number.isInteger(response.count) || response.count !== response.tools.filter((tool) => tool?.available !== false).length ||
+          response.tools.some((tool) => !tool || typeof tool.name !== "string" || !tool.name || typeof tool.description !== "string" || (tool.available !== undefined && typeof tool.available !== "boolean")) ||
           new Set(response.tools.map((tool) => tool.name)).size !== response.tools.length) {
           unavailableServers.add(name);
         } else {
-          toolsByServer.set(name, response.tools.map((tool) => ({ name: tool.name, description: tool.description, parameters: [] })));
+          toolsByServer.set(name, response.tools.map((tool) => ({ name: tool.name, description: tool.description, parameters: [], ...(tool.available !== undefined ? { available: tool.available } : {}) })));
         }
       } catch {
         unavailableServers.add(name);
@@ -40,7 +40,7 @@ export async function collectMcpTools(
   return { toolsByServer, unavailableServers };
 }
 
-export function useMcpToolDiscovery(servers: MCPServerResponse[], scope: string, enabled: boolean) {
+export function useMcpToolDiscovery(servers: MCPServerResponse[], scope: string, enabled: boolean, discover = mcpApi.discoverTools) {
   const [revision, setRevision] = useState(0);
   const [result, setResult] = useState<McpToolDiscoveryResult & { key: string }>(() => ({ key: "", toolsByServer: new Map(), unavailableServers: new Set() }));
   const serverStates = useMemo(() => new Map(servers.map((server): [string, McpToolDiscoveryStatus] => [server.name,
@@ -55,12 +55,12 @@ export function useMcpToolDiscovery(servers: MCPServerResponse[], scope: string,
     const isCurrent = () => active && activeKeyRef.current === key;
     if (enabled) {
       const names = Array.from(serverStates).filter(([, status]) => status === "idle").map(([name]) => name);
-      void collectMcpTools(names, mcpApi.discoverTools, isCurrent).then((discovered) => {
+      void collectMcpTools(names, discover, isCurrent).then((discovered) => {
         if (isCurrent()) setResult({ key, ...discovered });
       });
     }
     return () => { active = false; };
-  }, [enabled, key, serverStates]);
+  }, [enabled, key, serverStates, discover]);
 
   const current = enabled && result.key === key;
   const statusByServer = new Map(serverStates);

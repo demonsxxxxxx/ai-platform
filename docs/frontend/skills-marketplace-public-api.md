@@ -186,8 +186,9 @@ backend error details are not rendered. The ordinary directory remains read-only
 
 The administrator directory presents Server enablement separately from live tool
 discovery. Counts and the searchable tool-detail drawer come from
-`GET /api/mcp/{name}/tools` with the current account's credential; they are not a
-Gateway-wide total or evidence of tool execution. Successful empty discovery
+`GET /api/mcp/{name}/catalog`. Enterprise Gateway rows show the full anonymous
+directory and available-tool count, retaining unavailable tools in the drawer.
+Generic MCP rows retain current-account discovery. Successful empty discovery
 shows zero. Failed, unqueried, disabled, unconfigured, or unsupported Servers do
 not show a successful count. Disabled, unconfigured and unsupported registry
 rows do not start browser discovery requests. Refresh queries the current page
@@ -201,6 +202,8 @@ expose connection material or execute tools.
 Backed read and server lifecycle routes:
 
 - `GET /api/mcp/chat-tools`
+- `GET /api/mcp/catalog-tools` (admin full directory)
+- `GET /api/mcp/{name}/catalog` (admin Server directory)
 - `GET /api/mcp/`
 - `GET /api/mcp/{name}`
 - `GET /api/mcp/{name}/tools`
@@ -212,6 +215,23 @@ Backed read and server lifecycle routes:
 - `POST /api/admin/mcp/`
 - `PUT /api/admin/mcp/{name}`
 - `DELETE /api/admin/mcp/{name}`
+
+The two admin catalog routes feed the MCP management panel and expert tool
+selector. For `integration_kind: "enterprise_gateway"`, the backend calls
+Gateway `GET /api/mcp/catalog` anonymously: no user JWT lookup, static headers,
+API key or cookies. The Gateway response contains complete tool definitions and
+availability, but no user ACLs or downstream endpoints. The platform projects
+stable references and display metadata only. Aggregate `count` includes all
+returned records; unavailable records carry `available: false` and cannot be
+selected in the expert editor. The single-Server response's `count` is its
+available-tool count. Ordinary Chat continues to use its user-specific API.
+
+Server lifecycle writes accept `integration_kind: "mcp" | "enterprise_gateway"`,
+with `mcp` as the create default. Updates from older clients that omit it preserve
+the existing integration kind. Enterprise mode rejects static Authorization,
+JWT-Authorization, Cookie and account/password headers, using the current Run
+user's standard Authorization instead; generic MCP credentials remain compatible.
+A connection's mode is explicit, not derived from its name or endpoint.
 
 `GET /api/mcp/chat-tools` discovers each user's current effective tools from
 every distributed MCP Server by calling `tools/list` with that user's
@@ -260,7 +280,9 @@ which returns the current user's JWT to an authenticated page with
 Neither flow places the JWT in a URL or AI Platform browser storage. At MCP
 execution time the Worker reuses the existing Capability Distribution and Tool
 Policy plan and reads the current JWT and encrypted Server target. The executor
-opens remote MCP sessions with static headers plus `JWT-Authorization`, then
+opens enterprise Gateway sessions with the current user's standard
+`Authorization`, or generic MCP sessions with static headers plus
+`JWT-Authorization`, and refreshes the user credential before each dispatch. It then
 exposes only the authorized selected tools through the SDK's in-process MCP
 interface. For ProfileDrive, an authorized `read_text_file` selection is mapped
 inside the governed sandbox to `stage_profile_drive_file_to_workspace`: the
