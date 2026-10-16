@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -78,6 +78,7 @@ class McpServerLifecycleRequest(BaseModel):
 
     name: str | None = None
     transport: str = "streamable_http"
+    integration_kind: Literal["mcp", "enterprise_gateway"] = "mcp"
     enabled: bool = True
     url: str | None = None
     headers: dict[str, str] = Field(default_factory=dict)
@@ -99,8 +100,8 @@ class McpServerLifecycleRequest(BaseModel):
 
     @field_validator("headers")
     @classmethod
-    def validate_static_headers(cls, value: dict[str, str]):
-        return normalize_static_mcp_headers(value)
+    def validate_static_headers(cls, value: dict[str, str], info):
+        return normalize_static_mcp_headers(value, integration_kind=info.data.get("integration_kind", "mcp"))
 
     @field_validator("allowed_roles")
     @classmethod
@@ -221,6 +222,7 @@ def _server_response(
     response = {
         "name": str(row.get("name") or ""),
         "transport": str(row.get("transport") or "streamable_http"),
+        "integration_kind": str(row.get("integration_kind") or "mcp"),
         "status": distribution_status,
         "enabled": enabled,
         "visible_to_user": bool((distribution or {}).get("visible_to_user")),
@@ -559,6 +561,17 @@ async def _write_server(
     is_system: bool,
     action: str,
 ) -> dict[str, Any]:
+    if action.endswith(".updated") and "integration_kind" not in request.model_fields_set:
+        async with transaction() as conn:
+            existing = await mcp_repository.get_mcp_server_registry_entry(
+                conn, tenant_id=principal.tenant_id, name=name,
+            )
+        if existing is not None:
+            request = request.model_copy(update={"integration_kind": existing.get("integration_kind", "mcp")})
+    try:
+        normalize_static_mcp_headers(request.headers, integration_kind=request.integration_kind)
+    except McpRuntimeContextError as exc:
+        raise _mcp_runtime_http_error(exc) from exc
     fingerprint = _credential_fingerprint(request)
     metadata = _credential_metadata(request)
     credential_state = "configured" if fingerprint else "not_configured"
@@ -592,6 +605,7 @@ async def _write_server(
                 tenant_id=principal.tenant_id,
                 name=name,
                 transport=request.transport,
+                integration_kind=request.integration_kind,
                 enabled=request.enabled,
                 is_system=is_system,
                 endpoint_redacted="",
@@ -684,6 +698,68 @@ async def list_mcp_servers(
         "total": len(projected),
         "skip": skip,
         "limit": limit,
+    }
+
+
+async def _management_catalog(principal: AuthPrincipal, row: dict[str, Any]) -> LiveMcpServerResult:
+    server_id = str(row["name"])
+    trace_id = standard_trace_id()
+    try:
+        if row.get("integration_kind") == "enterprise_gateway":
+            result = await LIVE_MCP_CATALOG.list_server_catalog(
+                tenant_id=principal.tenant_id, server_id=server_id,
+            )
+        else:
+            jwt = await get_mcp_principal_jwt_store().get(principal)
+            return await _discover_server_tools(
+                principal=principal, server_id=server_id, jwt=jwt, trace_id=trace_id,
+            )
+    except Exception as exc:
+        result = LiveMcpServerResult(server_id, (), "discovery_failed",
+            McpCatalogFailure.from_error(exc, stage="catalog"))
+    if result.failure is not None:
+        _log_catalog_failure(result.failure, principal=principal, server_id=server_id, trace_id=trace_id)
+    return result
+
+
+@router.get("/mcp/catalog-tools")
+async def list_management_mcp_tools(principal: AuthPrincipal = Depends(require_principal)) -> dict[str, Any]:
+    _require_admin(principal)
+    async with transaction() as conn:
+        rows = await mcp_repository.list_mcp_server_registry(
+            conn, tenant_id=principal.tenant_id, include_disabled=False,
+        )
+    semaphore = asyncio.Semaphore(MCP_CHAT_DISCOVERY_CONCURRENCY)
+
+    async def discover(row):
+        async with semaphore:
+            return await _management_catalog(principal, row)
+
+    results = await asyncio.gather(*(discover(row) for row in rows))
+    tools = [tool.public_payload() for result in results for tool in result.tools]
+    tools.sort(key=lambda item: (item["server"], item["label"]))
+    return {"tools": tools, "count": len(tools), "unavailable": [
+        {"label": result.server_id, "reason": result.unavailable_reason}
+        for result in results if result.unavailable_reason
+    ]}
+
+
+@router.get("/mcp/{name}/catalog")
+async def get_management_mcp_catalog(name: str, principal: AuthPrincipal = Depends(require_principal)) -> dict[str, Any]:
+    _require_admin(principal)
+    safe_name = _safe_name(name)
+    async with transaction() as conn:
+        row = await mcp_repository.get_mcp_server_registry_entry(conn, tenant_id=principal.tenant_id, name=safe_name)
+    if row is None:
+        raise HTTPException(status_code=404, detail="mcp_server_not_found")
+    result = await _management_catalog(principal, row)
+    return {
+        "server_name": safe_name,
+        "tools": [{"name": tool.tool_id, "description": tool.description, "server": tool.server_id,
+                   "cached": False, "parameters": [], "system_disabled": False, "user_disabled": False,
+                   "available": tool.available is not False} for tool in result.tools],
+        "count": sum(tool.available is not False for tool in result.tools),
+        "unavailable_reason": result.unavailable_reason,
     }
 
 

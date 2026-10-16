@@ -539,6 +539,11 @@ def install_mcp_route_fakes(
         row = distributions.get(capability_id)
         return dict(row) if row and row["capability_kind"] == capability_kind else None
 
+    async def fake_get_server(conn, *, tenant_id, name):
+        calls.append(("get_server", {"tenant_id": tenant_id, "name": name}))
+        row = servers.get(name)
+        return dict(row) if row and row.get("status") != "deleted" else None
+
     async def fake_upsert_server(conn, **kwargs):
         calls.append(("upsert_server", dict(kwargs)))
         existing = servers.get(kwargs["name"])
@@ -547,6 +552,7 @@ def install_mcp_route_fakes(
         server = {
             "name": kwargs["name"],
             "transport": kwargs["transport"],
+            "integration_kind": kwargs.get("integration_kind", "mcp"),
             "status": "active" if kwargs["enabled"] else "disabled",
             "is_system": kwargs["is_system"],
             "allowed_roles": kwargs["allowed_roles"],
@@ -725,6 +731,7 @@ def install_mcp_route_fakes(
     )
     monkeypatch.setattr(_owner_identity_infrastructure_capability_distributions_postgres, 'archive_capability_distribution_row', fake_archive_distribution, raising=False)
     monkeypatch.setattr(_owner_mcp_infrastructure_registry_postgres, 'record_mcp_server_credential', fake_record_credential, raising=False)
+    monkeypatch.setattr(mcp.mcp_repository, "get_mcp_server_registry_entry", fake_get_server)
     monkeypatch.setattr(mcp.mcp_repository, "list_mcp_server_registry", fake_list_servers)
     monkeypatch.setattr(mcp.mcp_repository, "get_mcp_server_credential", fake_get_credential)
     monkeypatch.setattr(mcp.mcp_repository, "upsert_mcp_server_registry", fake_upsert_server)
@@ -741,6 +748,58 @@ def install_mcp_route_fakes(
     monkeypatch.setattr(mcp, "get_mcp_principal_jwt_store", lambda: FakePrincipalJwtStore())
     monkeypatch.setattr(mcp, "LIVE_MCP_CATALOG", FakeRouteLiveCatalog())
     return calls
+
+
+def test_enterprise_catalog_does_not_read_user_jwt_and_is_admin_only(monkeypatch):
+    from app.routes import mcp
+    calls = install_mcp_route_fakes(monkeypatch, seed_registry_ragflow=False)
+    client = TestClient(create_app())
+    created = client.post("/api/admin/mcp/", headers=headers(roles="admin"), json={
+        "name": "gateway", "integration_kind": "enterprise_gateway", "url": "https://gateway.example/",
+    })
+    assert created.status_code == 200
+    assert created.json()["integration_kind"] == "enterprise_gateway"
+
+    class Catalog:
+        async def list_server_catalog(self, *, tenant_id, server_id):
+            assert tenant_id and server_id == "gateway"
+            return LiveMcpServerResult(server_id, tuple(
+                LiveMcpTool(f"gateway::{name}", "gateway", name, name, "Synthetic", available=available)
+                for name, available in (("demo.allowed", True), ("demo.missing", False))
+            ))
+    monkeypatch.setattr(mcp, "LIVE_MCP_CATALOG", Catalog())
+    def no_jwt():
+        raise AssertionError("anonymous catalog must not read a user credential")
+    monkeypatch.setattr(mcp, "get_mcp_principal_jwt_store", no_jwt)
+    for path in ("/api/mcp/catalog-tools", "/api/mcp/gateway/catalog"):
+        assert client.get(path, headers=headers()).status_code == 403
+        response = client.get(path, headers=headers(roles="admin"))
+        assert response.status_code == 200
+        body = response.json()
+        assert len(body["tools"]) == 2
+        assert [tool["available"] for tool in body["tools"]] == [True, False]
+    assert not any(name == "principal_jwt" for name, _ in calls)
+
+    # Old lifecycle clients cannot accidentally downgrade an enterprise connection.
+    updated = client.put("/api/admin/mcp/gateway", headers=headers(roles="admin"), json={"url": "https://gateway.example/"})
+    assert updated.status_code == 200
+    assert updated.json()["integration_kind"] == "enterprise_gateway"
+    rejected = client.put("/api/admin/mcp/gateway", headers=headers(roles="admin"),
+                          json={"url": "https://gateway.example/", "headers": {"Authorization": "Bearer synthetic"}})
+    assert rejected.status_code == 400
+
+
+@pytest.mark.parametrize("header", ["Authorization", "jwt-authorization", "Cookie", "X-MCP-Username", "X-MCP-Password"])
+def test_enterprise_gateway_rejects_static_identity_headers(monkeypatch, header):
+    calls = install_mcp_route_fakes(monkeypatch)
+    client = TestClient(create_app())
+    response = client.post("/api/admin/mcp/", headers=headers(roles="admin"), json={
+        "name": "gateway", "integration_kind": "enterprise_gateway", "headers": {header: "synthetic-private"},
+    })
+    assert response.status_code == 400
+    assert response.json()["detail"] == "mcp_header_conflict"
+    assert "synthetic-private" not in response.text
+    assert not any(name == "upsert_server" for name, _ in calls)
 
 
 def test_chat_mcp_catalog_projects_only_canonical_public_fields_and_session_selection(monkeypatch):

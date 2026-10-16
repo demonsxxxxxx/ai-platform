@@ -24,6 +24,42 @@ Mandatory per-call checks stay in PreToolUse, including when can_use_tool is
 skipped by SDK approval rules. The installed CLI normalizes server/tool names
 by replacing characters outside `[a-zA-Z0-9_-]` with `_`.
 
+## Enterprise Gateway catalog and user identity
+
+Server `integration_kind` defaults to `mcp`, preserving existing generic MCP
+connections. `enterprise_gateway` separates anonymous directory reads from
+user-authenticated MCP sessions; it is explicit, never inferred from a server
+name or URL. The schema change is additive and preserves existing tool IDs.
+
+For enterprise connections, the platform backend reads the same origin's
+`GET /api/mcp/catalog` with a fresh credential-free HTTP client. It neither reads
+the user JWT store nor merges static headers/cookies. DNS pinning, redirect
+rejection, total deadline, 1 MiB limit and strict catalog projection remain
+mandatory. Gateway returns definitions only, including unavailable flags; this
+endpoint is deliberately visible to any client that can reach it.
+
+Platform `GET /api/mcp/catalog-tools` and `GET /api/mcp/{name}/catalog` remain
+admin-only. The management panel and expert editor use this full directory;
+unavailable entries are visible for management but not expert candidates.
+Publication revalidates enterprise references against the anonymous catalog,
+without requiring the publishing administrator's personal tool-call ACL.
+Generic MCP management discovery retains its existing user-credential behavior.
+
+Ordinary `/api/mcp/chat-tools` and runtime sessions still discover the actual
+user's tools. Only the intersection of selected tools, platform authorization
+and live Gateway availability is registered with the SDK. Enterprise sessions
+send the user's JWT as standard `Authorization`, refreshed before every HTTP
+dispatch. Static Authorization, JWT-Authorization, Cookie and account/password
+identity headers are rejected for this mode. Generic MCP sessions retain their
+static credentials plus dynamic `JWT-Authorization`. Mode and credential subject
+survive the Claude adapter's private configuration projection; neither becomes
+model input or public event data.
+
+To migrate a registered enterprise Gateway, explicitly choose the enterprise
+mode and resubmit its endpoint without the former personal Authorization.
+There is no automatic token copying, service key, catalog mirror or ACL grant.
+The Gateway must support the anonymous GET before this connection is enabled.
+
 ## Principal credential lifetime
 
 The principal JWT store holds one encrypted company-compatible credential per
@@ -57,7 +93,9 @@ a credential after their context operation has been superseded.
    Resolve incoming hook/message/denial names consistently, without guessing
    that underscores mean dots. Sanitize aliases as private runtime identities.
 2. Before model execution, open the selected external Servers using the
-   installed MCP client, current static headers and `JWT-Authorization`.
+   installed MCP client and the current user's JWT: standard `Authorization`
+   for enterprise Gateway connections, static headers plus `JWT-Authorization`
+   for generic MCP connections.
    Discover all pages with bounded time/size/cursor/name validation. Missing
    selected tools or failed connections remove only those optional capabilities.
    Servers discover concurrently; discovery timeouts end before the task waits
@@ -223,13 +261,18 @@ and absence of secrets in public events. That stage remains unclaimed until run.
 ## Retirement and compatibility disposition
 
 - Replace the administrator's state/role/quota-only cards with a compact Server
-  table and current-account live tool count/detail view. Retire the ordinary-only
+  table and live tool count/detail view. Retire the ordinary-only
   discovery helpers, whole-directory failure replacement, old card selectors and
   role-count/empty-tool copy. Both projections use the MCP-owned discovery hook;
   mounted regressions retain lifecycle authority checks and cover count, empty,
-  partial failure, refresh and supersession. Registry/API payloads, credentials,
-  distribution policy and tool execution remain compatible; no stored tool
-  catalog or alternative discovery endpoint is introduced.
+  partial failure, refresh and supersession. Enterprise administrator views now
+  use the anonymous Gateway catalog; ordinary-user views retain user-filtered
+  discovery. Registry updates preserve omitted integration kinds and existing
+  generic MCP credentials. No stored tool catalog or duplicated ACL is introduced.
+- Enterprise sessions replace static personal Authorization with the Run user
+  credential on every dispatch. Generic MCP keeps dynamic JWT-Authorization.
+  Gateway retains single alternate-header compatibility, rejects conflicting
+  dual identities, and keeps tool calls, administration and publishing protected.
 
 - Replace whole-remote-Server SDK registration for selected external tools with
   an Executor-local selected tool surface; no parallel direct-registration path.

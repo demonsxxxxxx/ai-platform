@@ -92,6 +92,7 @@ export {
 // ============================================
 export type {
   MCPTransport,
+  MCPIntegrationKind,
   MCPServerBase,
   MCPServerResponse,
   MCPServersResponse,

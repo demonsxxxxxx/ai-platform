@@ -8,6 +8,7 @@ from psycopg.rows import dict_row
 import pytest
 
 from app.mcp.infrastructure import postgres as mcp_repository
+from tests.support.db_transactions import event_loop_policy as event_loop_policy
 
 
 POSTGRES_DSN_ENV = "AI_PLATFORM_MCP_CATALOG_TEST_DSN"
@@ -95,8 +96,18 @@ async def test_postgres_keeps_only_server_credentials_and_lightweight_tool_refs(
 
         assert runtime_target == {
             "transport": "streamable_http",
+            "integration_kind": "mcp",
             "credential_envelope": "sealed-envelope",
         }
+        # Recreate the pre-upgrade column shape while retaining real registry/credential rows.
+        await conn.execute("alter table mcp_servers drop column integration_kind")
+        await conn.execute(schema_source)
+        upgraded_target = await mcp_repository.get_mcp_server_runtime_target(
+            conn, tenant_id="tenant-mcp", server_name="gateway",
+        )
+        assert upgraded_target == runtime_target
+        with pytest.raises(psycopg.errors.CheckViolation):
+            await conn.execute("update mcp_servers set integration_kind = 'unknown'")
         assert tool is not None
         assert tool["tool_id"] == "gateway::pmm.query_projects"
         assert tool["endpoint"] == ""
@@ -137,6 +148,7 @@ async def test_postgres_mcp_server_registry_crud_uses_current_schema():
             tenant_id="tenant-mcp-crud",
             name="crud-gateway",
             transport="streamable_http",
+            integration_kind="enterprise_gateway",
             enabled=True,
             is_system=False,
             endpoint_redacted="",
@@ -148,6 +160,7 @@ async def test_postgres_mcp_server_registry_crud_uses_current_schema():
             credential_fingerprint="fingerprint-v1",
             updated_by="user-mcp",
         )
+        assert created["integration_kind"] == "enterprise_gateway"
         assert created["name"] == "crud-gateway"
         assert created["status"] == "active"
         assert created["allowed_roles"] == ["Reviewer"]
@@ -159,6 +172,7 @@ async def test_postgres_mcp_server_registry_crud_uses_current_schema():
             tenant_id="tenant-mcp-crud",
             name="crud-gateway",
             transport="sse",
+            integration_kind="mcp",
             enabled=True,
             is_system=False,
             endpoint_redacted="",
@@ -170,6 +184,7 @@ async def test_postgres_mcp_server_registry_crud_uses_current_schema():
             credential_fingerprint="fingerprint-v2",
             updated_by="user-mcp",
         )
+        assert updated["integration_kind"] == "mcp"
         assert updated["transport"] == "sse"
         assert updated["allowed_roles"] == ["Admin"]
         assert updated["department_ids"] == ["Platform"]

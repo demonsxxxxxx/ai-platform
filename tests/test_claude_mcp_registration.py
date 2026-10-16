@@ -244,13 +244,18 @@ async def test_cancel_during_discovery_closes_owner_without_waiting_for_timeout(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("remote_error", [False, True])
 @pytest.mark.parametrize("server_name", ["gateway", "server.name"])
-async def test_installed_claude_cli_selected_mcp_end_to_end(monkeypatch, tmp_path, remote_error, server_name):
+@pytest.mark.parametrize("integration_kind", ["mcp", "enterprise_gateway"])
+async def test_installed_claude_cli_selected_mcp_end_to_end(monkeypatch, tmp_path, remote_error, server_name, integration_kind):
     from app.executors import claude_agent_sdk_runner as runner
 
 
     with local_mcp_peers() as peer:
         peer.is_error = remote_error
         selected_subject = {**subject(server=server_name, url=peer.url + "/mcp"), "write_capable": True}
+        if integration_kind == "enterprise_gateway":
+            selected_subject["mcp_server_config"].update(
+                integration_kind=integration_kind, headers={"Authorization": "Bearer synthetic.jwt"},
+            )
         registration = ClaudeMcpRegistration(
             {selected_subject["identity"]: selected_subject}, {}, session_factory=None, list_tools=None
         )
@@ -330,6 +335,11 @@ async def test_installed_claude_cli_selected_mcp_end_to_end(monkeypatch, tmp_pat
             [block for request in peer.models for message in request.get("messages", [])
              for block in message.get("content", []) if isinstance(block, dict) and block.get("type") == "tool_result"],
         )
+        if integration_kind == "enterprise_gateway":
+            for method, request_headers in peer.requests:
+                normalized = {key.lower(): value for key, value in request_headers.items()}
+                assert normalized.get("authorization") == "Bearer synthetic.jwt"
+                assert "jwt-authorization" not in normalized
         assert [(value["lifecycle_phase"], value["lifecycle_status"]) for value in receipts] == [
             ("invocation_requested", "invoking"), ("failed", "failed") if remote_error else ("completed", "succeeded"),
         ]

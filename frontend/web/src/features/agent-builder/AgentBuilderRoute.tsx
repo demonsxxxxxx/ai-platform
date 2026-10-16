@@ -2,7 +2,7 @@ import { useCallback, useMemo } from "react";
 
 import { useAuth } from "../../hooks/useAuth";
 import { useSkills } from "../../hooks/useSkills";
-import { useTools } from "../../hooks/useTools";
+import { useMcpAdminCatalog } from "../../hooks/useMcpAdminCatalog";
 import { AgentBuilderWorkbench } from "./AgentBuilderWorkbench";
 import { AgentBuilderShell } from "./AgentBuilderShell";
 import {
@@ -15,6 +15,7 @@ const BUILDER_CATALOG_LOAD_ERROR = "暂时无法加载授权目录，请稍后�
 /** Admin route bridge for the current Skill and MCP authorization catalogs. */
 export function AgentBuilderRoute() {
   const { user } = useAuth();
+  const catalogScope = JSON.stringify([user?.tenant_id, user?.id, user?.roles, user?.permissions, user?.is_admin, user?.department_id]);
   const {
     skills,
     catalogReadResolved,
@@ -28,7 +29,7 @@ export function AgentBuilderRoute() {
     isLoading: toolsLoading,
     error: toolsError,
     refreshTools,
-  } = useTools({ enabled: true });
+  } = useMcpAdminCatalog(catalogScope, user?.is_admin === true);
 
   const retryCatalog = useCallback(() => {
     void fetchSkills();

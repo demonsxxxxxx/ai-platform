@@ -348,6 +348,7 @@ async def test_worker_injects_current_jwt_into_existing_mcp_capability_plan(monk
         "gateway": {
             "type": "http",
             "url": "https://gateway.example/mcp",
+            "integration_kind": "mcp",
             "headers": {
                 "X-Static-Key": "configured",
                 "JWT-Authorization": "Bearer current.jwt",
