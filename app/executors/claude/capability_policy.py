@@ -511,6 +511,10 @@ def _mcp_server_options(
             "url": endpoint,
             "headers": dict(raw_headers),
         }
+        if "integration_kind" in config:
+            if config["integration_kind"] not in {"mcp", "enterprise_gateway"}:
+                raise ValueError("invalid MCP integration kind")
+            candidate["integration_kind"] = config["integration_kind"]
         if "credential_subject" in config:
             subject = config["credential_subject"]
             if not isinstance(subject, dict) or subject.get("user_id") is None or subject.get("tenant_id") is None:

@@ -10,7 +10,8 @@ test("AgentBuilderRoute supplies admin authority and capability catalogs without
   );
 
   assert.match(source, /useSkills\(\{ allAuthorizedCatalog: true \}\)/);
-  assert.match(source, /useTools\(\{ enabled: true \}\)/);
+  assert.match(source, /useMcpAdminCatalog\(catalogScope, user\?\.is_admin === true\)/);
+  assert.doesNotMatch(source, /useTools\(/);
   assert.match(source, /mapAuthorizedBuilderSkills/);
   assert.match(source, /mapSafeBuilderMcpTools/);
   assert.match(source, /BUILDER_CATALOG_LOAD_ERROR/);

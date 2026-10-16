@@ -699,11 +699,12 @@ def test_stream_only_schema_change_advances_schema_version():
 def test_schema_contract_names_are_bounded_and_include_lifecycle_tables():
     assert schema_migrations.RUN_INPUTS_SCHEMA_VERSION == "2026.10.07.1"
     assert schema_migrations.RUN_QUESTION_DEFAULT_ANSWER_SCHEMA_VERSION == "2026.10.12.1"
-    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.10.14.1"
+    assert schema_migrations.TARGET_SCHEMA_VERSION == "2026.10.15.1"
     assert (
         schema_migrations.TARGET_SCHEMA_VERSION
-        == schema_migrations.PROVIDER_SESSION_IMAGES_SCHEMA_VERSION
+        == schema_migrations.MCP_ENTERPRISE_GATEWAY_SCHEMA_VERSION
     )
+    assert ("mcp_servers", "integration_kind", "text", True) in schema_migrations.CRITICAL_COLUMNS
     assert ("sandbox_leases", "executor_reconciliation_retry_not_before", "timestamptz", False) in schema_migrations.CRITICAL_COLUMNS
     assert ("run_inputs", "source", "text", True) in schema_migrations.CRITICAL_COLUMNS
     assert ("run_inputs", "chk_run_inputs_source") in schema_migrations.CRITICAL_CONSTRAINTS

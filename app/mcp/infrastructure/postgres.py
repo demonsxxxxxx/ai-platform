@@ -436,7 +436,7 @@ async def get_mcp_server_runtime_target(
 
     cursor = await conn.execute(
         """
-        select mcp_servers.transport, credentials.credential_envelope
+        select mcp_servers.transport, mcp_servers.integration_kind, credentials.credential_envelope
         from mcp_servers
         join mcp_server_credentials credentials
           on credentials.tenant_id = mcp_servers.tenant_id

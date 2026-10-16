@@ -26,6 +26,7 @@ import { workbenchSurface } from "../workbench/workbenchSurface";
 import { useAuth } from "../../hooks/useAuth";
 import { useMCP } from "../../hooks/useMcp";
 import { Permission } from "../../types";
+import { mcpApi } from "../../services/api/mcp";
 import type { MCPServerCreate, MCPServerResponse } from "../../types";
 import { MCPServerForm } from "../mcp/MCPServerForm";
 import { MCPToolDrawer } from "../mcp/MCPToolDrawer";
@@ -144,7 +145,8 @@ export function MCPPanel() {
   const lifecycleAvailability = mcpGovernance.lifecycleAvailability;
   const canManageMcpUi = canManageMcp && isAvailable;
   const discoveryEnabled = isAuthenticated && !authLoading && !isLoading && isAvailable && !catalogError;
-  const discovery = useMcpToolDiscovery(servers, JSON.stringify(catalogRequest), discoveryEnabled);
+  const discovery = useMcpToolDiscovery(servers, JSON.stringify(catalogRequest), discoveryEnabled,
+    isAiAdmin ? mcpApi.getServerCatalog : mcpApi.discoverTools);
   const toolsScope = JSON.stringify([catalogRequest, authLoading, permissionDenied, isAvailable]);
   const selectedToolServer = toolTarget?.scope === toolsScope ? servers.find((server) => server.name === toolTarget.name) : undefined;
   useEffect(() => {
@@ -435,7 +437,7 @@ export function MCPPanel() {
               <TableHeader className="border-b border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)]">
                 <TableRow>
                   <TableHead>{t("mcp.form.serverName")}</TableHead>
-                  <TableHead>{t("mcp.tools.accountCount")}</TableHead>
+                  <TableHead>{t("mcp.tools.catalogCount")}</TableHead>
                   <TableHead>{t("mcp.card.statusLabel")}</TableHead>
                   <TableHead>{t("mcp.tools.discoveryStatus")}</TableHead>
                   <TableHead>{t("mcp.form.transportType")}</TableHead>
@@ -452,7 +454,7 @@ export function MCPPanel() {
                       <p className="break-words font-semibold">{server.name}</p>
                       <p className="mt-1 text-xs text-[var(--theme-text-secondary)]">{t(server.is_system ? "mcp.card.system" : "mcp.card.user")}</p>
                     </TableCell>
-                    <TableCell data-mcp-tool-count>{status === "ready" ? t("mcp.tools.count", { count: discovery.toolsByServer.get(server.name)?.length ?? 0 }) : "—"}</TableCell>
+                    <TableCell data-mcp-tool-count>{status === "ready" ? t("mcp.tools.count", { count: discovery.toolsByServer.get(server.name)?.filter((tool) => tool.available !== false).length ?? 0 }) : "—"}</TableCell>
                     <TableCell><span className={server.enabled ? "text-[var(--theme-accent)]" : "text-[var(--theme-text-secondary)]"}>{t(server.enabled ? "mcp.card.statusEnabled" : "mcp.card.statusDisabled")}</span></TableCell>
                     <TableCell><span className={status === "unavailable" ? "text-[var(--theme-danger)]" : "text-[var(--theme-text-secondary)]"}>{t(`mcp.discovery.${status}`)}</span></TableCell>
                     <TableCell>{transportLabel(server.transport)}</TableCell>
@@ -491,7 +493,7 @@ export function MCPPanel() {
           />
         </div>
       )}
-      {selectedToolServer ? <MCPToolDrawer key={selectedToolServer.name} serverName={selectedToolServer.name} status={discovery.statusByServer.get(selectedToolServer.name) ?? "idle"} tools={discovery.toolsByServer.get(selectedToolServer.name) ?? []} onRefresh={discovery.refresh} onClose={() => setToolTarget(null)} /> : null}
+      {selectedToolServer ? <MCPToolDrawer key={selectedToolServer.name} serverName={selectedToolServer.name} fullCatalog={selectedToolServer.integration_kind === "enterprise_gateway"} status={discovery.statusByServer.get(selectedToolServer.name) ?? "idle"} tools={discovery.toolsByServer.get(selectedToolServer.name) ?? []} onRefresh={discovery.refresh} onClose={() => setToolTarget(null)} /> : null}
       {editorOpen && canManageMcpUi ? (
         <div className="fixed inset-0 z-[300] flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label={editorServer ? t("mcp.admin.editServer") : t("mcp.admin.addServer")}>
           <div className="absolute inset-0 bg-[var(--theme-overlay-strong)]" onClick={closeEditor} />

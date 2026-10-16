@@ -46,7 +46,8 @@ PROVIDER_TRANSCRIPT_REPRESENTATION_SCHEMA_VERSION = "2026.10.10.1"
 RUN_QUESTION_DEFAULT_ANSWER_SCHEMA_VERSION = "2026.10.12.1"
 TERMINAL_RECONCILIATION_RETRY_SCHEMA_VERSION = "2026.10.13.1"
 PROVIDER_SESSION_IMAGES_SCHEMA_VERSION = "2026.10.14.1"
-TARGET_SCHEMA_VERSION = PROVIDER_SESSION_IMAGES_SCHEMA_VERSION
+MCP_ENTERPRISE_GATEWAY_SCHEMA_VERSION = "2026.10.15.1"
+TARGET_SCHEMA_VERSION = MCP_ENTERPRISE_GATEWAY_SCHEMA_VERSION
 # Concurrent-index authority advances only when its exact index contract changes.
 # The Stream-only cutover retires old index contracts and is not binary rollback-compatible.
 CONCURRENT_INDEX_LEDGER_SCHEMA_VERSION = PROVIDER_SESSION_IMAGES_SCHEMA_VERSION
@@ -90,6 +91,7 @@ CRITICAL_RELATIONS = (
 )
 RETIRED_RELATIONS = ("run_tool_permission_requests",)
 CRITICAL_COLUMNS = (
+    ("mcp_servers", "integration_kind", "text", True),
     ("users", "metadata_json", "jsonb", True),
     ("sessions", "title_source", "text", True),
     ("agent_profile_revisions", "skill_set", "jsonb", True),

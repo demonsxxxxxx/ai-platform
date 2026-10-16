@@ -14,7 +14,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from app.mcp.domain.errors import McpRuntimeContextError
 from app.mcp.domain.headers import (
-    MCP_JWT_AUTHORIZATION_HEADER,
+    mcp_user_jwt_header,
     normalize_static_mcp_headers,
 )
 from app.mcp.domain.identifiers import (
@@ -298,10 +298,12 @@ async def attach_mcp_server_configs(
             raise
         if not endpoint:
             continue
+        integration_kind = str(row.get("integration_kind") or "mcp")
         configs[server_id] = {
             "type": "sse" if transport == "sse" else "http",
             "url": endpoint,
-            "headers": static_headers,
+            "integration_kind": integration_kind,
+            "headers": normalize_static_mcp_headers(static_headers, integration_kind=integration_kind),
         }
 
     jwt: str | None = None
@@ -322,7 +324,7 @@ async def attach_mcp_server_configs(
     if jwt:
         credential_subject = await get_mcp_principal_jwt_store().credential_subject(principal)
         for config in configs.values():
-            config["headers"][MCP_JWT_AUTHORIZATION_HEADER] = f"Bearer {jwt}"
+            config["headers"][mcp_user_jwt_header(config["integration_kind"])] = f"Bearer {jwt}"
             config["credential_subject"] = credential_subject
 
     subjects: list[object] = []

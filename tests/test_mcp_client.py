@@ -32,7 +32,7 @@ async def test_catalog_dispatches_the_configured_transport(monkeypatch, transpor
             assert principal.tenant_id == "tenant" and principal.user_id == "user"
             return "synthetic.jwt"
 
-        monkeypatch.setattr(mcp_runtime, "get_mcp_principal_jwt_store", lambda: SimpleNamespace(get=current_credential))
+        monkeypatch.setattr("app.mcp.api.read_mcp_principal_jwt", current_credential)
         service = LiveMcpCatalogService(
             target_resolver=target, discovery=client.McpToolDiscoveryAdapter(),
             sse_discovery=client.McpToolDiscoveryAdapter(transport="sse"),
@@ -248,7 +248,8 @@ async def test_runtime_does_not_hide_database_or_corrupt_credential_failures(mon
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("transport", ["http", "sse"])
-async def test_open_mcp_session_updates_jwt_on_each_dispatch_without_replaying_tools(monkeypatch, transport):
+@pytest.mark.parametrize("integration_kind", ["mcp", "enterprise_gateway"])
+async def test_open_mcp_session_updates_jwt_on_each_dispatch_without_replaying_tools(monkeypatch, transport, integration_kind):
     with local_mcp_peers() as peer:
         allow_local_peer(monkeypatch, peer.url)
         token = "first.synthetic.jwt"
@@ -258,9 +259,12 @@ async def test_open_mcp_session_updates_jwt_on_each_dispatch_without_replaying_t
             assert vars(principal) == bound
             return token
 
-        monkeypatch.setattr(mcp_runtime, "get_mcp_principal_jwt_store", lambda: SimpleNamespace(get=current_credential))
+        monkeypatch.setattr("app.mcp.api.read_mcp_principal_jwt", current_credential)
         config = subject(url=peer.url + ("/sse" if transport == "sse" else "/mcp"))["mcp_server_config"]
-        config.update(type=transport, credential_subject=bound)
+        config.update(type=transport, credential_subject=bound, integration_kind=integration_kind)
+        jwt_header = "authorization" if integration_kind == "enterprise_gateway" else "jwt-authorization"
+        if integration_kind == "enterprise_gateway":
+            config["headers"] = {"Authorization": "Bearer first.synthetic.jwt"}
         async with asyncio.timeout(5):
             async with client.open_mcp_session(config, timeout_seconds=2) as session:
                 await client.list_mcp_tools(session)
@@ -268,12 +272,16 @@ async def test_open_mcp_session_updates_jwt_on_each_dispatch_without_replaying_t
                 await session.call_tool(RAW_TOOL, {"query": "synthetic"})
         tool_requests = [headers for method, headers in peer.requests if method == "tools/call"]
         assert len(peer.calls) == len(tool_requests) == 1
-        assert {key.lower(): value for key, value in tool_requests[0].items()}["jwt-authorization"] == "Bearer rotated.synthetic.jwt"
-        assert {key.lower(): value for key, value in peer.requests[0][1].items()}["jwt-authorization"] == "Bearer first.synthetic.jwt"
+        assert {key.lower(): value for key, value in tool_requests[0].items()}[jwt_header] == "Bearer rotated.synthetic.jwt"
+        assert {key.lower(): value for key, value in peer.requests[0][1].items()}[jwt_header] == "Bearer first.synthetic.jwt"
+        if integration_kind == "enterprise_gateway":
+            assert all("jwt-authorization" not in {key.lower() for key in headers}
+                       for _, headers in peer.requests)
 
 
 @pytest.mark.asyncio
-async def test_mcp_revoked_execution_credential_stops_before_tool_dispatch(monkeypatch):
+@pytest.mark.parametrize("integration_kind", ["mcp", "enterprise_gateway"])
+async def test_mcp_revoked_execution_credential_stops_before_tool_dispatch(monkeypatch, integration_kind):
     with local_mcp_peers() as peer:
         allow_local_peer(monkeypatch, peer.url)
         revoked = False
@@ -283,10 +291,13 @@ async def test_mcp_revoked_execution_credential_stops_before_tool_dispatch(monke
                 raise McpRuntimeContextError("mcp_principal_jwt_missing", status_code=401)
             return "synthetic.jwt"
 
-        monkeypatch.setattr(mcp_runtime, "get_mcp_principal_jwt_store", lambda: SimpleNamespace(get=current_credential))
+        monkeypatch.setattr("app.mcp.api.read_mcp_principal_jwt", current_credential)
         config = subject(url=peer.url + "/mcp")["mcp_server_config"]
         config["credential_subject"] = {"tenant_id": "tenant", "user_id": "user"}
-        with pytest.raises(catalog.McpToolDiscoveryError, match="authorization_required"):
+        config["integration_kind"] = integration_kind
+        if integration_kind == "enterprise_gateway":
+            config["headers"] = {"Authorization": "Bearer synthetic.jwt"}
+        with pytest.raises(McpToolDiscoveryError, match="authorization_required"):
             async with asyncio.timeout(4):
                 async with client.open_mcp_session(config, timeout_seconds=1) as session:
                     revoked = True

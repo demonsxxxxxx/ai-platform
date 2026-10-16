@@ -55,6 +55,7 @@ def _dynamic_server_projection(row: dict[str, Any]) -> dict[str, Any]:
         "tenant_id": str(row.get("tenant_id") or ""),
         "name": str(row.get("name") or ""),
         "transport": str(row.get("transport") or "streamable_http"),
+        "integration_kind": str(row.get("integration_kind") or "mcp"),
         "endpoint_redacted": str(row.get("endpoint_redacted") or ""),
         "status": str(row.get("status") or "disabled"),
         "is_system": bool(row.get("is_system")),
@@ -73,7 +74,7 @@ def _dynamic_server_projection(row: dict[str, Any]) -> dict[str, Any]:
 
 
 _DYNAMIC_SERVER_FIELDS = """
-  tenant_id, name, transport, endpoint_redacted, status, is_system,
+  tenant_id, name, transport, integration_kind, endpoint_redacted, status, is_system,
   allowed_roles, role_quotas_json, department_ids, credential_state,
   credential_metadata_json, created_at, updated_at
 """
@@ -135,13 +136,14 @@ async def upsert_runtime_mcp_server_registry(
     cursor = await conn.execute(
         f"""
         insert into mcp_servers(
-          id, tenant_id, name, transport, endpoint_redacted, status, is_system,
+          id, tenant_id, name, transport, integration_kind, endpoint_redacted, status, is_system,
           allowed_roles, role_quotas_json, department_ids, credential_state,
           credential_metadata_json, credential_fingerprint, updated_by, updated_at
         )
-        values (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s::jsonb, %s, %s, now())
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s::jsonb, %s, %s, now())
         on conflict (tenant_id, name) do update
         set transport = excluded.transport,
+            integration_kind = excluded.integration_kind,
             endpoint_redacted = excluded.endpoint_redacted,
             status = excluded.status,
             allowed_roles = excluded.allowed_roles,
@@ -160,6 +162,7 @@ async def upsert_runtime_mcp_server_registry(
             values["tenant_id"],
             values["name"],
             values["transport"],
+            values.get("integration_kind", "mcp"),
             "",
             "active" if values["enabled"] else "disabled",
             values["is_system"],
