@@ -12,7 +12,7 @@ from mcp.types import LATEST_PROTOCOL_VERSION
 
 from app.mcp.application.live_catalog import LiveMcpCatalogService
 from app.mcp.domain.errors import McpRuntimeContextError, McpToolDiscoveryError
-from app.mcp.infrastructure import catalog, client
+from app.mcp.infrastructure import catalog, client, runtime as mcp_runtime
 from app.mcp.infrastructure.client import McpToolDiscoveryAdapter
 
 
@@ -53,7 +53,7 @@ def mock_transport(monkeypatch):
         assert principal.tenant_id == "tenant" and principal.user_id == "user"
         return "user.jwt"
 
-    monkeypatch.setattr("app.mcp.api.read_mcp_principal_jwt", current_credential)
+    monkeypatch.setattr(mcp_runtime, "get_mcp_principal_jwt_store", lambda: SimpleNamespace(get=current_credential))
     real_client = httpx.AsyncClient
     requests, clients = [], []
 

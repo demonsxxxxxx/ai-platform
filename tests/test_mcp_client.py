@@ -32,7 +32,7 @@ async def test_catalog_dispatches_the_configured_transport(monkeypatch, transpor
             assert principal.tenant_id == "tenant" and principal.user_id == "user"
             return "synthetic.jwt"
 
-        monkeypatch.setattr("app.mcp.api.read_mcp_principal_jwt", current_credential)
+        monkeypatch.setattr(mcp_runtime, "get_mcp_principal_jwt_store", lambda: SimpleNamespace(get=current_credential))
         service = LiveMcpCatalogService(
             target_resolver=target, discovery=client.McpToolDiscoveryAdapter(),
             sse_discovery=client.McpToolDiscoveryAdapter(transport="sse"),
@@ -259,7 +259,7 @@ async def test_open_mcp_session_updates_jwt_on_each_dispatch_without_replaying_t
             assert vars(principal) == bound
             return token
 
-        monkeypatch.setattr("app.mcp.api.read_mcp_principal_jwt", current_credential)
+        monkeypatch.setattr(mcp_runtime, "get_mcp_principal_jwt_store", lambda: SimpleNamespace(get=current_credential))
         config = subject(url=peer.url + ("/sse" if transport == "sse" else "/mcp"))["mcp_server_config"]
         config.update(type=transport, credential_subject=bound, integration_kind=integration_kind)
         jwt_header = "authorization" if integration_kind == "enterprise_gateway" else "jwt-authorization"
@@ -291,7 +291,7 @@ async def test_mcp_revoked_execution_credential_stops_before_tool_dispatch(monke
                 raise McpRuntimeContextError("mcp_principal_jwt_missing", status_code=401)
             return "synthetic.jwt"
 
-        monkeypatch.setattr("app.mcp.api.read_mcp_principal_jwt", current_credential)
+        monkeypatch.setattr(mcp_runtime, "get_mcp_principal_jwt_store", lambda: SimpleNamespace(get=current_credential))
         config = subject(url=peer.url + "/mcp")["mcp_server_config"]
         config["credential_subject"] = {"tenant_id": "tenant", "user_id": "user"}
         config["integration_kind"] = integration_kind
