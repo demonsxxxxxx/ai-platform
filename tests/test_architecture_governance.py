@@ -410,6 +410,39 @@ def test_new_cross_domain_internal_import_is_non_exemptible(
     assert finding.details == {"target": "app.runs.domain"}
 
 
+def test_source_encoding_cannot_hide_a_cross_domain_internal_import(
+    governance_repo: tuple[Path, str],
+) -> None:
+    repo, authority = governance_repo
+    _write(
+        repo,
+        "app/skills/application/publish.py",
+        "# coding: raw_unicode_escape\n"
+        "# \\u000afrom app.runs.domain import attempt\n",
+    )
+    head = _commit(repo, "encoded cross-domain internal import")
+
+    evaluation = _evaluate(repo, authority, authority, head)
+
+    finding = next(item for item in evaluation.findings if item.code == "cross_domain_internal_import")
+    assert finding.exemptible is False
+    assert finding.details == {"target": "app.runs.domain"}
+
+
+@pytest.mark.parametrize("candidate", [False, True])
+def test_invalid_source_encoding_is_a_bounded_python_syntax_error(candidate: bool) -> None:
+    with pytest.raises(architecture_governance.ArchitectureError) as caught:
+        architecture_governance._parse_python(
+            "# coding: nonexistent-review-codec\nVALUE = 1\n",
+            "app/runs/domain/attempt.py",
+            candidate=candidate,
+        )
+
+    assert caught.value.code == (
+        "candidate_python_syntax" if candidate else "base_python_syntax"
+    )
+
+
 def test_mixed_public_and_internal_import_does_not_hide_internal_edge(
     governance_repo: tuple[Path, str],
 ) -> None:

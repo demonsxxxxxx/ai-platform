@@ -306,8 +306,9 @@ def test_trusted_runner_rejects_candidate_logic_changes(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.parametrize("encoding_cookie", ["", "# coding: utf-8\n"])
 def test_trusted_runner_accepts_only_standalone_allowlist_expansion(
-    tmp_path: Path,
+    tmp_path: Path, encoding_cookie: str,
 ) -> None:
     base = _copy_contract_root(tmp_path, "base")
     head = _copy_contract_root(tmp_path, "head")
@@ -318,6 +319,8 @@ def test_trusted_runner_accepts_only_standalone_allowlist_expansion(
         '"3d3c42e5aac5ba805825da76410c181273ba90b1", '
         '"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),',
     )
+    runner = head / TRUSTED_RUNNER_PATH
+    runner.write_text(encoding_cookie + runner.read_text(encoding="utf-8"), encoding="utf-8")
     _commit(head)
 
     validate_transition(
@@ -330,6 +333,54 @@ def test_trusted_runner_accepts_only_standalone_allowlist_expansion(
             base,
             head,
             changed_paths=(TRUSTED_RUNNER_PATH.as_posix(), "README.md"),
+        )
+
+
+def test_trusted_runner_rejects_encoded_logic_in_allowlist_expansion(
+    tmp_path: Path,
+) -> None:
+    base = _copy_contract_root(tmp_path, "base")
+    head = _copy_contract_root(tmp_path, "head")
+    runner = head / TRUSTED_RUNNER_PATH
+    _replace(
+        runner,
+        '"actions/checkout": ("3d3c42e5aac5ba805825da76410c181273ba90b1",),',
+        '"actions/checkout": ('
+        '"3d3c42e5aac5ba805825da76410c181273ba90b1", '
+        '"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),',
+    )
+    source = runner.read_text(encoding="utf-8")
+    source = "# coding: raw_unicode_escape\n" + source.replace(
+        "import argparse",
+        '# \\u000aprint("synthetic encoding probe")\nimport argparse',
+        1,
+    )
+    runner.write_text(source, encoding="utf-8")
+    _commit(head)
+
+    with pytest.raises(TrustedGovernanceError, match="executable logic changed"):
+        validate_transition(
+            base,
+            head,
+            changed_paths=(TRUSTED_RUNNER_PATH.as_posix(),),
+        )
+
+
+def test_trusted_runner_rejects_an_invalid_source_encoding(tmp_path: Path) -> None:
+    base = _copy_contract_root(tmp_path, "base")
+    head = _copy_contract_root(tmp_path, "head")
+    runner = head / TRUSTED_RUNNER_PATH
+    runner.write_text(
+        "# coding: nonexistent-review-codec\n" + runner.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    _commit(head)
+
+    with pytest.raises(TrustedGovernanceError, match="must parse as Python"):
+        validate_transition(
+            base,
+            head,
+            changed_paths=(TRUSTED_RUNNER_PATH.as_posix(),),
         )
 
 
