@@ -191,7 +191,7 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     jobs = contract["jobs"]
     assert isinstance(jobs, dict)
     assert jobs["frontend"]["runs-on"] == "windows-latest"
-    assert jobs["frontend"]["timeout-minutes"] == "15"
+    assert jobs["frontend"]["timeout-minutes"] == "30"
     frontend_steps = jobs["frontend"]["steps"]
     store_step = next(
         step for step in frontend_steps if step.get("name") == "Resolve pnpm store"

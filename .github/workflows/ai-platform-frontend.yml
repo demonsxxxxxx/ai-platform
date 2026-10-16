@@ -25,7 +25,7 @@ jobs:
   frontend:
     name: projection audit, lint, build, trace
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     env:
       SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
