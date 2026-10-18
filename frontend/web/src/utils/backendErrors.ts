@@ -161,6 +161,14 @@ const BACKEND_ERROR_KEYS: Record<string, string> = {
   "A model cannot be its own fallback": "backendErrors.modelFallbackSelf",
 };
 
+/** Only explicit allowlist entries may supply public error copy. */
+function ownBackendErrorCopy(
+  copy: Record<string, string>,
+  key: string,
+): string | undefined {
+  return Object.prototype.hasOwnProperty.call(copy, key) ? copy[key] : undefined;
+}
+
 const SAFE_ERROR_CODE_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
 const SAFE_DIAGNOSTIC_ID_PATTERN = /^diag_[a-f0-9]{16}$/;
 const SAFE_PATTERN_VALUE = /^[A-Za-z0-9][A-Za-z0-9:_ .-]{0,63}$/;
@@ -288,8 +296,8 @@ export function projectSafeBackendError(
   const code = safeBackendErrorCode(detail);
   const exactDetail = typeof detail === "string" ? detail : undefined;
   const safeCopy =
-    (code ? SAFE_BACKEND_ERROR_COPY[code] : undefined) ??
-    (exactDetail ? SAFE_BACKEND_ERROR_COPY[exactDetail] : undefined);
+    (code ? ownBackendErrorCopy(SAFE_BACKEND_ERROR_COPY, code) : undefined) ??
+    (exactDetail ? ownBackendErrorCopy(SAFE_BACKEND_ERROR_COPY, exactDetail) : undefined);
   if (safeCopy) {
     return {
       message: safeCopy,
@@ -297,8 +305,8 @@ export function projectSafeBackendError(
     };
   }
   const translationKey =
-    (code ? BACKEND_ERROR_KEYS[code] : undefined) ??
-    (exactDetail ? BACKEND_ERROR_KEYS[exactDetail] : undefined) ??
+    (code ? ownBackendErrorCopy(BACKEND_ERROR_KEYS, code) : undefined) ??
+    (exactDetail ? ownBackendErrorCopy(BACKEND_ERROR_KEYS, exactDetail) : undefined) ??
     statusFallbackKey(status);
   return {
     message: t(translationKey, translationKey),
@@ -337,10 +345,10 @@ function translateKnownBackendError(
   message: string,
   t: TFunction,
 ): string | undefined {
-  const safeCopy = SAFE_BACKEND_ERROR_COPY[message];
+  const safeCopy = ownBackendErrorCopy(SAFE_BACKEND_ERROR_COPY, message);
   if (safeCopy) return safeCopy;
 
-  const key = BACKEND_ERROR_KEYS[message];
+  const key = ownBackendErrorCopy(BACKEND_ERROR_KEYS, message);
   if (key) return t(key, key);
 
   for (const entry of BACKEND_ERROR_PATTERNS) {
