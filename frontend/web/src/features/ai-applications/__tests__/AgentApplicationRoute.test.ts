@@ -7,6 +7,9 @@ import { resolveInternalAiApplication } from "../aiApplicationCatalog.ts";
 
 const routeSource = readFileSync(resolve(import.meta.dirname, "../AgentApplicationRoute.tsx"), "utf8");
 
+const knowledgeSource = readFileSync(resolve(import.meta.dirname, "../KnowledgeBaseApplication.tsx"), "utf8");
+const frameSource = readFileSync(resolve(import.meta.dirname, "../InternalApplicationFrame.tsx"), "utf8");
+
 const sopSource = readFileSync(resolve(import.meta.dirname, "../sopTransport.ts"), "utf8");
 
 test("internal AI application aliases resolve their dedicated pages", () => {
@@ -20,7 +23,7 @@ test("internal AI application aliases resolve their dedicated pages", () => {
 });
 
 test("application routes render task-specific surfaces and use the independent Word review service", () => {
-  assert.match(routeSource, /您好，我是 SOP 问询助手/);
+  assert.match(knowledgeSource, /您好，我是 SOP 问询助手/);
   assert.match(routeSource, /处理记录/);
   assert.match(routeSource, /review-page/);
   assert.match(routeSource, /review-hero/);
@@ -37,12 +40,14 @@ test("application routes render task-specific surfaces and use the independent W
   assert.match(sopSource, /session_id: activeSessionId/);
   assert.match(sopSource, /Authorization: `Bearer \$\{config\.auth\}`/);
   assert.match(routeSource, /Accept: "text\/event-stream"/);
-  assert.doesNotMatch(routeSource, /useAgent\(|getPublished\(|agentProfileApi|sendMessage\(/);
-  assert.match(routeSource, /<main className="flex h-full min-h-0 flex-col overflow-hidden/);
-  assert.match(routeSource, /max-w-\[1440px\] flex-1 overflow-y-auto/);
-  assert.match(routeSource, /h-\[calc\(100dvh-150px\)\] min-h-\[420px\]/);
-  assert.match(routeSource, /min-h-0 flex-1 overflow-y-auto px-5 py-6/);
-  assert.match(routeSource, /<form onSubmit=\{submit\} className="shrink-0/);
+  for (const source of [routeSource, knowledgeSource, frameSource]) {
+    assert.doesNotMatch(source, /useAgent\(|getPublished\(|agentProfileApi|sendMessage\(/);
+  }
+  assert.match(frameSource, /<main className="flex h-full min-h-0 flex-col overflow-hidden/);
+  assert.match(frameSource, /max-w-\[1440px\] flex-1 overflow-y-auto/);
+  assert.match(knowledgeSource, /h-\[calc\(100dvh-150px\)\] min-h-\[420px\]/);
+  assert.match(knowledgeSource, /min-h-0 flex-1 overflow-y-auto px-5 py-6/);
+  assert.match(knowledgeSource, /<form onSubmit=\{submit\} className="shrink-0/);
   assert.match(routeSource, /VITE_WORD_REVIEW_API_TARGET/);
   assert.match(routeSource, /http:\/\/10\.56\.0\.211:8014/);
   assert.match(routeSource, /\/api\/upload/);
