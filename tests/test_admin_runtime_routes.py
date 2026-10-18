@@ -666,6 +666,8 @@ def test_admin_runtime_containers_lists_only_active_sandbox_leases(monkeypatch):
 
 
 def test_admin_runtime_containers_can_include_released_sandbox_lease_history(monkeypatch):
+    from app.execution_boundary import is_accepted_runtime_lease
+
     class FakeProvider:
         async def list_runtime_containers(self, filters):
             assert filters == {"tenant_id": "default"}
@@ -698,12 +700,6 @@ def test_admin_runtime_containers_can_include_released_sandbox_lease_history(mon
                 "browser_enabled": False,
                 "resource_limits_json": {},
                 "user_visible_payload_json": {"workspace": "/workspace"},
-                "lease_payload_json": {
-                    "container_name": "executor-run-a",
-                    "token": "secret-token",
-                    "source": "sandbox_runtime",
-                    "evidence_class": "runtime_lease_projection",
-                },
                 "release_reason": "expired",
                 **signed_runtime_lease(run_id="run-a"),
             },
@@ -728,6 +724,11 @@ def test_admin_runtime_containers_can_include_released_sandbox_lease_history(mon
                 "release_reason": "run_succeeded",
             },
         ]
+        # Add the synthetic secret to the final signed payload, not a dict
+        # that signed_runtime_lease would replace during row construction.
+        rows[0]["lease_payload_json"]["token"] = "secret-token"
+        assert rows[0]["lease_payload_json"]["token"] == "secret-token"
+        assert is_accepted_runtime_lease(rows[0], verification_mode="historical")
         repository_rows.extend(rows)
         return rows
 
@@ -752,7 +753,14 @@ def test_admin_runtime_containers_can_include_released_sandbox_lease_history(mon
     assert body["sandbox_lease_history"][0]["status"] == "released"
     assert [row["id"] for row in repository_rows] == ["lease-released", "lease-placeholder-history"]
     assert [lease["lease_id"] for lease in body["sandbox_lease_history"]] == ["lease-released"]
+    history = body["sandbox_lease_history"][0]
+    assert history["workspace"] == {"workspace": "/workspace"}
+    assert history["lease_payload"]["container_id"] == "exec-run-a"
+    assert history["lease_payload"]["container_name"] == "executor-exec-run-a"
+    assert history["lease_payload"]["source"] == "sandbox_runtime"
+    assert repository_rows[0]["lease_payload_json"]["token"] == "secret-token"
     assert "secret-token" not in str(body["sandbox_lease_history"])
+    assert "secret-token" not in response.text
 
 
 def test_admin_runtime_hides_stale_active_proof_but_keeps_signed_terminal_history(monkeypatch):

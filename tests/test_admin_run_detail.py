@@ -557,8 +557,75 @@ def test_admin_run_detail_returns_explainability_contract(monkeypatch):
     assert data["sandbox_leases"][0]["lease_id"] == "lease-a"
     assert data["sandbox_leases"][0]["lease_payload"] == {"source": "foundation_runtime_lifecycle_probe"}
     assert data["skill_snapshots"][0]["skill_id"] == "qa-file-reviewer"
+    assert data["skill_snapshots"][0]["skill_version"] == "hash-a"
+    assert data["skill_snapshots"][0]["content_hash"] == "hash-a"
     assert data["skill_snapshots"][0]["used"] is True
     assert data["skill_snapshots"][0]["usage"]["used_skills_source"] == "executor_hook"
+
+
+@pytest.mark.parametrize("governance_version", ["v1", "v2"])
+def test_admin_skill_snapshot_sanitizer_preserves_identity_and_removes_private_source(governance_version):
+    # Exercise the real repository sanitizer; the HTTP contract above mocks the repository.
+    from copy import deepcopy
+
+    from app.skills.infrastructure.run_snapshots_postgres import _sanitize_skill_snapshot
+    from app.skills.pinning import SKILL_PINNED_SNAPSHOT_GOVERNANCE_SCHEMA_VERSION_V1
+    from app.skills.pinning import SKILL_PINNED_SNAPSHOT_GOVERNANCE_SCHEMA_VERSION_V2
+
+    schema = {
+        "v1": SKILL_PINNED_SNAPSHOT_GOVERNANCE_SCHEMA_VERSION_V1,
+        "v2": SKILL_PINNED_SNAPSHOT_GOVERNANCE_SCHEMA_VERSION_V2,
+    }[governance_version]
+    snapshot = {
+        "skill_id": "qa-file-reviewer",
+        "skill_version": "a" * 64,
+        "content_hash": "a" * 64,
+        "source": {
+            "kind": "builtin",
+            "version": "private-source-version",
+            "token": "private-token",
+            "workspace_path": "/home/private/workspace",
+            "nested": {"label": "public label", "api_key": "private-api-key"},
+            "snapshot_governance": {
+                "schema_version": schema,
+                "does_not_close_b4_or_211": True,
+                "manifest": {"digest": "private-digest", "label": "public manifest"},
+                "release_lock": {"track": "private-track", "rollout": 50, "approved": True},
+            },
+        },
+        "dependency_ids": ["minimax-docx"],
+        "allowed": True,
+        "staged": True,
+        "used": True,
+        "created_at": "2026-10-17T00:00:00Z",
+        "unknown_top_level": "must-not-leak",
+        "runtime_private_payload": {"secret": "must-not-leak"},
+    }
+    original = deepcopy(snapshot)
+    governance = {
+        "schema_version": schema,
+        "manifest": {"label": "public manifest"},
+        "release_lock": {"approved": True},
+    }
+    if governance_version == "v1":
+        governance["does_not_close_b4_or_deployed_runtime_acceptance"] = True
+
+    assert _sanitize_skill_snapshot(snapshot) == {
+        "skill_id": "qa-file-reviewer",
+        "skill_version": "a" * 64,
+        "content_hash": "a" * 64,
+        "source": {
+            "kind": "builtin",
+            "nested": {"label": "public label"},
+            "snapshot_governance": governance,
+        },
+        "dependency_ids": ["minimax-docx"],
+        "allowed": True,
+        "staged": True,
+        "used": True,
+        "created_at": "2026-10-17T00:00:00Z",
+    }
+    assert snapshot == original
 
 
 def test_admin_run_diagnostics_reads_legacy_without_mutating_detail(monkeypatch):

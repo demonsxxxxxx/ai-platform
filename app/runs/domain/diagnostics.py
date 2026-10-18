@@ -23,9 +23,16 @@ _PRIVATE_KEY_PATTERN = re.compile(
     r"tool[_-]?input|prompt|command|path|raw|request|response|header|environment|env|"
     r"content|body|input|output)"
 )
+# Quoted values use disjoint escape/non-escape branches so matching stays linear.
+# A missing closing quote (for example after upstream truncation) is redacted
+# through the end of that line, without consuming later diagnostic lines.
 _SECRET_ASSIGNMENT_PATTERN = re.compile(
-    r"(?i)\b(api[_-]?key|access[_-]?token|authorization|bearer|credential|password|"
-    r"private[_-]?key|refresh[_-]?token|secret|token)\b\s*[:=]\s*[^\s,;]+"
+    r"(?i)(?P<key_quote>['\"]?)\b"
+    r"(?P<key>api[_-]?key|access[_-]?token|authorization|bearer|credential|password|"
+    r"private[_-]?key|refresh[_-]?token|secret|token)\b(?P=key_quote)\s*[:=]\s*"
+    r"(?:\"(?:[^\"\\\r\n]|\\[^\r\n])*(?:\"|\\?(?=[\r\n]|$))"
+    r"|'(?:[^'\\\r\n]|\\[^\r\n])*(?:'|\\?(?=[\r\n]|$))"
+    r"|\[redacted-secret\](?=[}\]]*(?:[\s,;]|$))|[^\s,;\"'][^\s,;]*)"
 )
 _BEARER_PATTERN = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+")
 _JWT_PATTERN = re.compile(
@@ -793,7 +800,7 @@ def _sanitize_diagnostic_value(value: object, *, depth: int = 0) -> object:
 
 
 def _redact_diagnostic_text(value: str) -> str:
-    text = _SECRET_ASSIGNMENT_PATTERN.sub(r"\1=[redacted-secret]", value)
+    text = _SECRET_ASSIGNMENT_PATTERN.sub(r"\g<key>=[redacted-secret]", value)
     text = _BEARER_PATTERN.sub("Bearer [redacted-secret]", text)
     text = _JWT_PATTERN.sub("[redacted-secret]", text)
     text = _PROVIDER_TOKEN_PATTERN.sub("[redacted-secret]", text)
