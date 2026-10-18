@@ -60,6 +60,7 @@ from app.bootstrap.claude_client import (
     prepare_claude_typed_observations,
     prepare_claude_result_usage,
 )
+from app.runtime.token_metrics import token_count
 from app.execution.api import (
     ClaudeSdkAgentEventAdapter,
     ModelTextCheckpoint,
@@ -262,7 +263,27 @@ def _merge_sdk_usage(previous: dict[str, Any], current: dict[str, Any]) -> dict[
     merged = dict(previous)
     for key, value in current.items():
         old = merged.get(key)
-        if isinstance(value, dict) and isinstance(old, dict):
+        if key in {"input_tokens", "input", "output_tokens", "output", "total_tokens", "total",
+                   "cache_creation_input_tokens", "cache_read_input_tokens"}:
+            # -1 is an invalid private carrier, never a projected count. Keep it
+            # sticky across turns; None retains the legacy absent-observation
+            # meaning and may still fall through to a known alias downstream.
+            if old is not None and token_count(old) is None:
+                merged[key] = -1
+            elif value is None:
+                merged[key] = None
+            elif token_count(value) is None:
+                merged[key] = -1
+            elif isinstance(value, (int, float)):
+                # Keep fractional legacy observations until the final projection;
+                # coercing each turn first changes int(12.9 + 12.9) from 25 to 24.
+                prior = old if isinstance(old, (int, float)) else 0
+                total = value + prior
+                merged[key] = total if token_count(total) is not None else -1
+            else:
+                # Legacy numeric strings replace rather than add across turns.
+                merged[key] = value
+        elif isinstance(value, dict) and isinstance(old, dict):
             merged[key] = _merge_sdk_usage(old, value)
         elif isinstance(value, (int, float)) and not isinstance(value, bool):
             merged[key] = value + (old if isinstance(old, (int, float)) else 0)
