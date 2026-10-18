@@ -1270,12 +1270,32 @@ async def copy_run(
                 status="accepted_pending_enqueue",
             )
         queue_position = int(admission.queue_position)
+    # Admission is authoritative; optional queue telemetry must not obscure the
+    # committed child's identity or encourage another copy after a read failure.
+    try:
+        queue_insight = await queue_insight_for_status(
+            "queued", principal.tenant_id, user_id=principal.user_id
+        )
+    except Exception as exc:  # noqa: BLE001 - only optional post-admission telemetry
+        queue_insight = None
+        error_type = type(exc).__name__
+        try:
+            try:
+                # A broken log sink must not print the private Redis cause.
+                raise RuntimeError("safe failure logging context") from None
+            except RuntimeError:
+                logger.warning(
+                    "Copy queue insight unavailable",
+                    extra={"run_id": str(copied["run_id"]), "error": error_type},
+                )
+        except Exception:
+            pass  # Failure reporting cannot obscure successful admission.
     return RunControlResponse(
         run_id=copied["run_id"],
         session_id=copied["session_id"],
         status="queued",
         queue_position=queue_position,
-        queue_insight=await queue_insight_for_status("queued", principal.tenant_id, user_id=principal.user_id),
+        queue_insight=queue_insight,
     )
 
 

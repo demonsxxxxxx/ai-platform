@@ -1081,6 +1081,8 @@ async def upload_file(
     display_name = _normalize_upload_filename(file.filename)
     content_type = file.content_type or "application/octet-stream"
     content = await _read_bounded_upload(file)
+    if not content:
+        raise HTTPException(status_code=400, detail="empty_file_not_supported")
     await _run_storage(
         _validate_upload_content,
         filename=display_name,

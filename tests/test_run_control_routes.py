@@ -879,8 +879,10 @@ def test_copy_run_reauthorizes_committed_child_before_external_queue_admission(m
     ]
 
 
-@pytest.mark.parametrize("enqueue_mode", ["normal", "reply_lost_readback", "unknown"])
-def test_copy_run_creates_new_queued_run(monkeypatch, enqueue_mode):
+@pytest.mark.parametrize("log_mode", ["normal", "closed_sink", "raising_sink"])
+@pytest.mark.parametrize("insight_mode", ["normal", "acquire_failure", "llen_failure", "close_failure", "cancelled"])
+@pytest.mark.parametrize("enqueue_mode", ["normal", "reply_lost_readback", "unknown", "receipt_failure", "rejected"])
+def test_copy_run_creates_new_queued_run(monkeypatch, caplog, capsys, enqueue_mode, insight_mode, log_mode):
     calls = []
     transaction_active = False
 
@@ -934,6 +936,9 @@ def test_copy_run_creates_new_queued_run(monkeypatch, enqueue_mode):
     async def fake_enqueue_run(payload):
         assert transaction_active is False
         calls.append(("queue", payload))
+        if enqueue_mode == "rejected":
+            from app.queue import QueueAdmissionRejected
+            raise QueueAdmissionRejected("queue_payload_invalid")
         if enqueue_mode != "normal":
             raise TimeoutError("synthetic Redis reply lost after enqueue")
         return 1
@@ -941,6 +946,8 @@ def test_copy_run_creates_new_queued_run(monkeypatch, enqueue_mode):
     async def fake_read_queue_admission(payload):
         assert enqueue_mode != "normal"
         assert payload["run_id"] == "run_new"
+        if enqueue_mode == "receipt_failure":
+            raise ConnectionError("synthetic receipt unavailable")
         return (
             QueueAdmissionMetadata(1, 1, "committed-message")
             if enqueue_mode == "reply_lost_readback"
@@ -948,6 +955,9 @@ def test_copy_run_creates_new_queued_run(monkeypatch, enqueue_mode):
         )
 
     async def fail_compensate(*args, **kwargs):
+        if enqueue_mode == "rejected":
+            calls.append(("compensate", kwargs["run_id"]))
+            return
         raise AssertionError("an unknown Redis outcome must preserve the child Run")
 
     async def fake_get_queue_insight(tenant_id, **_kwargs):
@@ -1024,25 +1034,133 @@ def test_copy_run_creates_new_queued_run(monkeypatch, enqueue_mode):
     monkeypatch.setattr("app.routes.runs.read_queue_admission", fake_read_queue_admission)
     monkeypatch.setattr("app.routes.runs._compensate_enqueue_failure", fail_compensate)
     monkeypatch.setattr("app.routes.runs.get_queue_insight", fake_get_queue_insight)
+    # Keep both route helpers and the queue implementation real; inject only
+    # the Redis boundary so cleanup and exception propagation are exercised.
+    redis_calls = []
+    private_error = "redis://secret@example.invalid/private?token=do-not-log"
+    import asyncio
+    cancellation = asyncio.CancelledError("synthetic insight cancellation")
+
+    class InsightRedis:
+        async def llen(self, key):
+            redis_calls.append("llen")
+            if insight_mode == "cancelled":
+                raise cancellation
+            if insight_mode == "llen_failure":
+                raise ConnectionError(private_error)
+            return 0
+
+        async def lrange(self, *args):
+            return []
+
+        async def hgetall(self, *args):
+            return {}
+
+        async def aclose(self):
+            redis_calls.append("aclose")
+            if insight_mode == "close_failure":
+                raise ConnectionError(private_error)
+
+    async def insight_redis():
+        redis_calls.append("acquire")
+        if insight_mode == "acquire_failure":
+            raise ConnectionError(private_error)
+        return InsightRedis()
+
+    if insight_mode != "normal":
+        import app.queue as queue_module
+        monkeypatch.setattr("app.routes.runs.get_queue_insight", queue_module.get_queue_insight)
+        monkeypatch.setattr(queue_module, "get_redis", insight_redis)
+    if log_mode != "normal":
+        import io
+        import logging
+        import app.routes.runs as runs_routes
+
+        class RaisingHandler(logging.Handler):
+            def emit(self, record):
+                raise RuntimeError("synthetic log sink unavailable")
+
+        stream = io.StringIO()
+        stream.close()
+        handler = logging.StreamHandler(stream) if log_mode == "closed_sink" else RaisingHandler()
+        monkeypatch.setattr(runs_routes.logger, "handlers", [handler])
+        monkeypatch.setattr(logging, "raiseExceptions", True)
     client = TestClient(create_app())
 
+    if insight_mode == "cancelled" and enqueue_mode in {"normal", "reply_lost_readback"}:
+        from concurrent.futures import CancelledError
+        with pytest.raises(CancelledError):
+            client.post("/api/ai/runs/run_old/copy", headers=headers())
+        assert redis_calls == ["acquire", "llen", "aclose"]
+        assert len([call for call in calls if call[0] == "queue"]) == 1
+        assert len([call for call in calls if call == ("default", "user-a", "run_old")]) == 1
+        assert not any(record.message == "Copy queue insight unavailable" for record in caplog.records)
+        # HTTP transport wraps cancellation. The route itself must propagate the
+        # exact cancellation object, after preserving the admitted child.
+        from types import SimpleNamespace
+        from app.routes.runs import copy_run
+
+        calls.clear()
+        redis_calls.clear()
+        principal = AuthPrincipal(
+            user_id="user-a", display_name="User A", tenant_id="default", roles=["user"],
+        )
+        with pytest.raises(asyncio.CancelledError) as cancelled:
+            asyncio.run(copy_run("run_old", SimpleNamespace(app=client.app), principal))
+        assert cancelled.value is cancellation
+        assert redis_calls == ["acquire", "llen", "aclose"]
+        queued = [call[1] for call in calls if call[0] == "queue"]
+        assert len(queued) == 1
+        assert queued[0]["run_id"] == "run_new"
+        assert not any(call[0] == "compensate" for call in calls)
+        return
     response = client.post("/api/ai/runs/run_old/copy", headers=headers())
 
+    assert len([call for call in calls if call[0] == "queue"]) == 1
+    assert len([call for call in calls if call == ("default", "user-a", "run_old")]) == 1
+    assert len([call for call in calls if call[0] == "admit"]) == 1
+    if enqueue_mode == "rejected":
+        assert response.status_code == 503
+        assert response.json()["detail"] == "queue_enqueue_failed"
+        assert ("compensate", "run_new") in calls
+        assert redis_calls == []
+        return
     assert response.status_code == 200
     assert calls[0] == ("admit", "default", "user-a", 3)
     assert response.json()["run_id"] == "run_new"
-    if enqueue_mode == "unknown":
+    assert response.json()["session_id"] == "ses_new"
+    if enqueue_mode in {"unknown", "receipt_failure"}:
         assert response.json()["status"] == "accepted_pending_enqueue"
         assert response.json()["queue_position"] is None
+        assert response.json()["queue_insight"] is None
+        assert redis_calls == []
         return
     assert response.json()["queue_position"] == 1
-    assert response.json()["queue_insight"] == {
-        "tenant_id": "default",
-        "queued": 3,
-        "running": 1,
-        "worker_capacity": 1,
-        "reason": "worker_capacity_full",
-    }
+    assert response.json()["status"] == "queued"
+    if insight_mode != "normal":
+        assert response.json()["queue_insight"] is None
+        assert redis_calls.count("acquire") == 1
+        assert redis_calls.count("aclose") == (0 if insight_mode == "acquire_failure" else 1)
+        assert redis_calls.count("llen") == {"acquire_failure": 0, "llen_failure": 1, "close_failure": 3}[insight_mode]
+        warnings = [record for record in caplog.records if record.message == "Copy queue insight unavailable"]
+        assert len(warnings) == (0 if log_mode == "raising_sink" else 1)
+        if warnings:
+            assert warnings[0].run_id == "run_new"
+            assert warnings[0].error == "ConnectionError"
+            assert warnings[0].exc_info is None
+        assert private_error not in caplog.text
+        captured = capsys.readouterr()
+        assert private_error not in captured.err
+        if log_mode == "closed_sink":
+            assert "Logging error" in captured.err
+    else:
+        assert response.json()["queue_insight"] == {
+            "tenant_id": "default",
+            "queued": 3,
+            "running": 1,
+            "worker_capacity": 1,
+            "reason": "worker_capacity_full",
+        }
     queued_payload = calls[-1][1]
     assert queued_payload["run_id"] == "run_new"
     assert queued_payload["skill_version"] == "hash-old"
