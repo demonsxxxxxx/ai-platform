@@ -7,7 +7,7 @@ from app.execution.infrastructure.harness.claude.result_usage import ClaudeResul
 
 import pytest
 
-from app.runtime.token_metrics import MAX_TOKEN_COUNT, token_count
+from app.execution.domain.token_metrics import MAX_TOKEN_COUNT, token_count
 from app.executors.claude_agent_sdk_runner import _merge_sdk_usage
 from app.execution.domain.worker_observability import executor_observability
 from app.execution.application.worker_terminal_projection import project_worker_terminal_result
@@ -178,3 +178,24 @@ def test_invalid_sdk_turn_stays_unknown_across_normal_or_null_turn(bad):
 
 def test_null_sdk_turn_retains_legacy_numeric_restart():
     assert _merge_sdk_usage({'input_tokens':None},{'input_tokens':3})['input_tokens'] == 3
+
+
+@pytest.mark.parametrize("first_module", [
+    "app.execution.api",
+    "app.runs.api",
+    "app.runs.application.lifecycle",
+])
+def test_public_token_contract_is_safe_in_cold_import_orders(first_module):
+    import subprocess
+    import sys
+
+    code = (
+        f"import {first_module}; "
+        "from app.execution.api import token_count, sum_token_counts, mapped_token_count; "
+        "from app.runs.application.lifecycle import _result_observability_values; "
+        "assert token_count(12.9) == 12; "
+        "assert sum_token_counts(2, 3) == 5; "
+        "assert mapped_token_count({'input': None, 'alias': 3}, 'input', 'alias') == 3; "
+        "assert _result_observability_values({'token_counts': {'input': 2, 'output': 3}})[1:4] == (2, 3, 5)"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True, timeout=30)

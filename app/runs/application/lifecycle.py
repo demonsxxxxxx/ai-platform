@@ -5,8 +5,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, Protocol
 
-from app.runtime.token_metrics import mapped_token_count, sum_token_counts, token_count
-
 from app.runs.domain.cost_observability import projected_estimated_cost_minor, private_cost_observation
 from app.runs.domain.terminalization import (
     RunTerminalizationProgress,
@@ -15,6 +13,9 @@ from app.runs.domain.terminalization import (
 
 
 def _result_observability_values(result_json: dict[str, Any] | None) -> tuple[int | None, int, int, int, int]:
+    # Resolve the public contract after API assembly to avoid an import-time cycle.
+    from app.execution.api import mapped_token_count, sum_token_counts
+
     result = result_json or {}
     token_counts = result.get("token_counts") if isinstance(result.get("token_counts"), dict) else {}
     cost = result.get("cost") if isinstance(result.get("cost"), dict) else {}
@@ -141,6 +142,8 @@ class RunLifecycleService:
     async def progress_run_terminalization(
         self, conn: object, *, tenant_id: str, run_id: str,
     ) -> RunTerminalizationProgress | None:
+        from app.execution.api import token_count
+
         staged = await self._persistence.load_staged_terminalization(
             conn, tenant_id=tenant_id, run_id=run_id
         )
