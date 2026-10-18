@@ -303,3 +303,47 @@ test("admission and shared HTTP errors preserve actionable allowlisted causes", 
     assert.doesNotMatch(JSON.stringify([http, admission]), /private-secret/);
   }
 });
+
+for (const name of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
+  test(`prototype name ${name} never supplies public error copy`, () => {
+    const code = name === "constructor" ? name : undefined;
+    for (const [status, key] of [
+      [401, "backendErrors.unauthenticated"],
+      [403, "errors.noPermission"],
+      [429, "backendErrors.tooManyRequests"],
+      [500, "chat.requestFailed"],
+    ] as const) {
+      for (const detail of [name, { code: name, message: "private-secret" }]) {
+        assert.deepEqual(projectSafeBackendError(detail, status, t), {
+          message: `translated:${key}`,
+          ...(code ? { code } : {}),
+        });
+      }
+    }
+    assert.equal(translateBackendError(name, t), "translated:chat.requestFailed");
+    assert.equal(translateBackendError(name, t, "chat.sendFailed"), "translated:chat.sendFailed");
+    for (const input of [{ message: name }, { code: name }]) {
+      const projection = projectChatAdmissionError({ status: 500, ...input }, t);
+      assert.equal(projection.message, "translated:chat.sendFailed");
+      assert.equal(projection.code, "code" in input ? code : undefined);
+      assert.equal(translateChatAdmissionError(input, t), "translated:chat.sendFailed");
+    }
+    assert.equal(projectChatAdmissionError({
+      code: name, message: name, diagnosticId: "diag_0123456789abcdef",
+    }, t).message, "translated:chat.sendFailed [diag_0123456789abcdef]");
+    // An unrecognized code still permits a separately allowlisted detail.
+    assert.equal(projectChatAdmissionError({ code: name, message: "model_not_found" }, t).message,
+      "translated:errors.modelNotFound");
+  });
+}
+
+test("null error details retain safe status fallback and no diagnostic code", () => {
+  for (const detail of [null, undefined, { code: null }, { code: undefined }]) {
+    assert.deepEqual(projectSafeBackendError(detail, 500, t), {
+      message: "translated:chat.requestFailed",
+    });
+  }
+  assert.deepEqual(projectChatAdmissionError({ code: null, message: null }, t), {
+    message: "translated:chat.sendFailed",
+  });
+});

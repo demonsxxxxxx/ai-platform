@@ -20,6 +20,8 @@ import { buildFrontendGovernanceSmokeAttributes } from "../governance/frontendGo
 import { WorkbenchStateSurface } from "../workbench/WorkbenchStateSurface";
 import { workbenchSurface } from "../workbench/workbenchSurface";
 import { useAuth } from "../../hooks/useAuth";
+import { ApiRequestError } from "../../services/api/fetch";
+import { formatSafeDiagnosticLog } from "../../utils/backendErrors";
 import { roleGovernanceApi } from "../../services/api/roleGovernance";
 import { Permission } from "../../types";
 import type {
@@ -35,7 +37,10 @@ type OperationState = {
   id: string;
 } | null;
 
-function getRoleGovernanceLoadErrorMessage(): string {
+function getRoleGovernanceLoadErrorMessage(error: unknown): string {
+  if (error instanceof ApiRequestError && error.status === 403) {
+    return `missing_permission:${Permission.ROLE_READ}`;
+  }
   return "role-governance-projection-unavailable";
 }
 
@@ -225,9 +230,11 @@ export function RolesPanel() {
       const response = await roleGovernanceApi.getOverview("default");
       setOverview(response);
     } catch (err) {
-      console.warn("[RolesPanel] Failed to load role governance overview:", err);
+      console.warn(
+        formatSafeDiagnosticLog("[RolesPanel] Failed to load role governance overview", err),
+      );
       setOverview(null);
-      setLoadError(getRoleGovernanceLoadErrorMessage());
+      setLoadError(getRoleGovernanceLoadErrorMessage(err));
     } finally {
       setIsLoading(false);
     }

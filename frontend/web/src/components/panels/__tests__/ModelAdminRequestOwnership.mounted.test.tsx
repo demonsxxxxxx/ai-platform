@@ -364,3 +364,142 @@ test("disabled capacity fields still honor request and upstream-availability loc
       await React.act(async () => pending.resolve(initial));
     });
 });
+
+function savedWithMissingModel(): AdminModelState {
+  const initial = saved();
+  initial.models.push({
+    ...initial.models[0], id: "mdl_missing", value: "mock/missing", label: "缺失模型",
+    available: false, enabled: false, is_default: false, order: 2,
+  });
+  return initial;
+}
+
+test("unavailable model names are disabled and attempted input cannot create a publishable draft", async () => {
+  let publications = 0;
+  await withControl({ get: async () => savedWithMissingModel(), publish: async () => {
+    publications += 1; return savedWithMissingModel();
+  } }, async ({ input, change, click, button, container }) => {
+    assert.equal(props(input("mock/missing 显示名称")).disabled, true);
+    assert.equal(input("mock/missing 显示名称").value, "缺失模型");
+    assert.match(text(container), /上游缺失/);
+    // Programmatic events can reach React even on a disabled input. They must not dirty the draft.
+    for (const value of ["不可保存的新名称", "", "x".repeat(161)]) {
+      await change("mock/missing 显示名称", value);
+      assert.equal(input("mock/missing 显示名称").value, "缺失模型");
+      assert.equal(props(button("data-model-admin-publish")).disabled, true);
+      assert.doesNotMatch(text(container), /有未保存的修改/);
+      await click("data-model-admin-publish");
+    }
+    assert.equal(publications, 0);
+  });
+});
+
+test("available model rename saves while missing names remain unchanged and excluded from publication", async () => {
+  const publications: AdminModelState["models"][] = [];
+  await withControl({ get: async () => savedWithMissingModel(), publish: async (_url, _key, revision, models) => {
+    assert.equal(revision, 4);
+    publications.push(models);
+    return { ...saved(5), models: [...models, savedWithMissingModel().models[1]] };
+  } }, async ({ input, change, click, button, container }) => {
+    assert.equal(props(input("mock/gpt 显示名称")).disabled, false);
+    await change("mock/gpt 显示名称", "可保存的新名称");
+    assert.equal(props(button("data-model-admin-publish")).disabled, false);
+    await click("data-model-admin-publish");
+    assert.equal(publications.length, 1);
+    assert.deepEqual(publications[0].map(({ id, label }) => ({ id, label })), [{ id: "mdl_gpt", label: "可保存的新名称" }]);
+    assert.equal(input("mock/gpt 显示名称").value, "可保存的新名称");
+    assert.equal(input("mock/missing 显示名称").value, "缺失模型");
+    assert.equal(props(button("data-model-admin-publish")).disabled, true);
+    assert.match(text(container), /模型配置已保存并生效/);
+  });
+});
+
+test("name editing follows reload availability and retains loading, pending and permission gates", async () => {
+  const reload = deferred<AdminModelState>();
+  const publication = deferred<AdminModelState>();
+  let gets = 0;
+  await withControl({ get: async () => ++gets === 2 ? reload.promise : savedWithMissingModel(),
+    publish: async () => publication.promise,
+  }, async ({ React, input, change, click, render, container }) => {
+    await click("data-model-admin-reload");
+    assert.equal(props(input("mock/gpt 显示名称")).disabled, true);
+    assert.equal(props(input("mock/missing 显示名称")).disabled, true);
+    const restored = savedWithMissingModel();
+    restored.models[1].available = true;
+    await React.act(async () => reload.resolve(restored));
+    assert.equal(props(input("mock/missing 显示名称")).disabled, false);
+    await change("mock/missing 显示名称", "恢复后的名称");
+    await click("data-model-admin-publish");
+    assert.equal(props(input("mock/gpt 显示名称")).disabled, true);
+    assert.equal(props(input("mock/missing 显示名称")).disabled, true);
+    await change("mock/missing 显示名称", "提交期间不应修改");
+    assert.equal(input("mock/missing 显示名称").value, "恢复后的名称");
+    restored.models[1].label = "恢复后的名称";
+    await React.act(async () => publication.resolve(restored));
+    assert.equal(props(input("mock/missing 显示名称")).disabled, false);
+    await click("data-model-admin-reload");
+    assert.equal(props(input("mock/missing 显示名称")).disabled, true);
+    assert.equal(input("mock/missing 显示名称").value, "缺失模型");
+    await render(false);
+    assert.equal(container.querySelectorAll('[data-model-admin-control]').length, 0);
+    await render(true);
+    assert.equal(props(input("mock/gpt 显示名称")).disabled, false);
+    assert.equal(props(input("mock/missing 显示名称")).disabled, true);
+  });
+});
+
+
+for (const settlement of ["resolve", "reject"] as const) {
+  test(`cancel fences late ${settlement} while a new same-owner discovery is pending`, async () => {
+    const a = deferred<ReturnType<typeof candidate>>();
+    const b = deferred<ReturnType<typeof candidate>>();
+    const calls: Array<{ url: string; key?: string; signal?: AbortSignal }> = [];
+    const publications: Array<{ url: string; key?: string; revision: number | null; models: AdminModelState["models"] }> = [];
+    await withControl({
+      discover: async (url, key, options) => {
+        calls.push({ url, key, signal: options?.signal });
+        return calls.length === 1 ? a.promise : b.promise;
+      },
+      publish: async (url, key, revision, models) => {
+        publications.push({ url, key, revision, models });
+        return { ...saved(5), models };
+      },
+    }, async ({ React, change, click, input, button, container }) => {
+      await change("模型 API Key", "synthetic-a");
+      await click("data-model-admin-discover");
+      await click("data-model-admin-cancel");
+      assert.equal(calls[0].signal?.aborted, true);
+      assert.equal(input("模型 API Key").value, "");
+      await change("mock/gpt 显示名称", "B draft");
+      await change("模型 API Key", "synthetic-b");
+      await click("data-model-admin-discover");
+      assert.equal(calls.length, 2);
+      assert.equal(calls[0].url, calls[1].url);
+      assert.equal(calls[1].signal?.aborted, false);
+      await React.act(async () => {
+        if (settlement === "resolve") a.resolve(candidate(99));
+        else a.reject(new ApiRequestError("synthetic stale failure", 502, "model_upstream_unavailable"));
+      });
+      assert.equal(input("模型 API 地址").value, "https://gateway-a.example");
+      assert.equal(input("模型 API Key").value, "synthetic-b");
+      assert.equal(input("mock/gpt 显示名称").value, "B draft");
+      assert.equal(input("mock/gpt 最大输入 Token").value, "32000");
+      assert.match(text(container), /正在测试当前连接/);
+      assert.equal(props(button("data-model-admin-publish")).disabled, true);
+      assert.equal(container.querySelectorAll('[role="alert"]').length, 0);
+      await click("data-model-admin-discover");
+      await click("data-model-admin-publish");
+      assert.equal(calls.length, 2);
+      assert.equal(publications.length, 0);
+      await React.act(async () => b.resolve(candidate()));
+      assert.match(text(container), /当前连接测试通过/);
+      assert.equal(props(button("data-model-admin-publish")).disabled, false);
+      await click("data-model-admin-publish");
+      assert.equal(publications.length, 1);
+      assert.equal(publications[0].url, "https://gateway-a.example");
+      assert.equal(publications[0].key, "synthetic-b");
+      assert.equal(publications[0].revision, 4);
+      assert.equal(publications[0].models[0].label, "B draft");
+    });
+  });
+}

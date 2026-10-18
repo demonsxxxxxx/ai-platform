@@ -285,3 +285,72 @@ test("Memory record deletion cannot notify or refetch after a session A-B-A navi
     assert.equal(view.calls.length, count); assert.deepEqual(view.notices, []);
   } finally { await view.close(); window.confirm = oldConfirm; }
 });
+
+
+for (const [rawMode, expected] of [["strict", "strict"], ["standard", "standard"], [undefined, "strict"], [null, "strict"], ["future-mode", "strict"], ["", "strict"], [" standard ", "standard"]] as const) {
+  test(`Memory redaction preservation: ${String(rawMode)} saves as ${expected}`, async () => {
+    const writes: Record<string, unknown>[] = [];
+    const view = await harness(createElement(MemoryPanel), request => {
+      if (request.url.pathname === "/api/ai/memory/policy") {
+        if (request.init.method === "PUT") writes.push(JSON.parse(String(request.init.body)));
+        return json({ memory_policy: { ...policy(), redaction_mode: rawMode } });
+      }
+      return defaultMemory(request);
+    });
+    try {
+      await change(input(view.container, "保留天数"), "120");
+      await change(input(view.container, "原因"), "synthetic edit");
+      await click(button(view.container, "保存策略"));
+      assert.deepEqual(writes, [{ workspace_id: "default", agent_id: "document-review", memory_enabled: true, long_term_memory_enabled: false, retention_days: 120, redaction_mode: expected, reason: "synthetic edit" }]);
+      console.log("PRESERVED_POLICY", JSON.stringify(writes[0]));
+    } finally { await view.close(); }
+  });
+}
+
+test("Memory redaction preservation: refresh, failure retry, and remount use current policy", async () => {
+  let mode = "standard"; let fail = false; const modes: unknown[] = [];
+  const view = await harness(createElement(MemoryPanel), request => {
+    if (request.url.pathname === "/api/ai/memory/policy") {
+      if (request.init.method === "PUT") {
+        modes.push(JSON.parse(String(request.init.body)).redaction_mode);
+        if (fail) { fail = false; throw new Error("synthetic failure"); }
+      }
+      return json({ memory_policy: { ...policy(), redaction_mode: mode } });
+    }
+    return defaultMemory(request);
+  });
+  try {
+    await click(button(view.container, "保存策略"));
+    mode = "strict"; await click(button(view.container, "刷新"));
+    fail = true; await click(button(view.container, "保存策略"));
+    await click(button(view.container, "保存策略"));
+    await view.render(null); mode = "standard"; await view.render(createElement(MemoryPanel));
+    await click(button(view.container, "保存策略"));
+    assert.deepEqual(modes, ["standard", "strict", "strict", "standard"]);
+  } finally { await view.close(); }
+});
+
+test("Memory redaction preservation: scope and auth reset fence stale strict reads and writes", async () => {
+  const staleRead = deferred<Response>(); const staleWrite = deferred<Response>();
+  let mode = "strict"; let reads = 0; const modes: unknown[] = [];
+  const view = await harness(createElement(MemoryPanel), request => {
+    if (request.url.pathname === "/api/ai/memory/policy") {
+      if (request.init.method === "PUT") {
+        modes.push(JSON.parse(String(request.init.body)).redaction_mode);
+        if (modes.length === 1) return staleWrite.promise;
+      } else if (++reads === 2) return staleRead.promise;
+      return json({ memory_policy: { ...policy(request.url.searchParams.get("agent_id") ?? undefined), redaction_mode: mode } });
+    }
+    return defaultMemory(request);
+  });
+  try {
+    await click(button(view.container, "刷新"));
+    mode = "standard"; await change(input(view.container, "专家公开 ID"), "agent-b");
+    await act(async () => staleRead.resolve(json({ memory_policy: { ...policy(), redaction_mode: "strict" } })));
+    await click(button(view.container, "保存策略"));
+    mode = "strict"; await view.setUser(principal("user-b", []));
+    await act(async () => staleWrite.resolve(json({ memory_policy: { ...policy("agent-b"), redaction_mode: "standard" } })));
+    await click(button(view.container, "保存策略"));
+    assert.deepEqual(modes, ["standard", "strict"]);
+  } finally { await view.close(); }
+});
