@@ -3,14 +3,6 @@ from app.execution.domain.token_metrics import (
     sum_token_counts as sum_token_counts,
     token_count as token_count,
 )
-from app.artifacts.api import (
-    build_artifact_records as build_artifact_records,
-    promote_artifact_reservations as promote_artifact_reservations,
-)
-from app.skills.api import (
-    PinnedSkillMismatch as PinnedSkillMismatch,
-    validate_pinned_skill_relative_path as validate_pinned_skill_relative_path,
-)
 from app.execution.application.worker_skill_evidence import (
     native_used_skills_from_result as native_used_skills_from_result,
     skill_manifests_for_persistence as skill_manifests_for_persistence,
@@ -88,6 +80,10 @@ from app.execution.domain.model_text_checkpoint import ModelTextCheckpoint as Mo
 from app.execution.application.stale_terminalization import (
     stage_stale_run_reconciliation,
 )
+from app.execution.application.sandbox_terminal_projection import (
+    project_sandbox_terminal_result as project_sandbox_terminal_result,
+    sandbox_terminal_disposition as sandbox_terminal_disposition,
+)
 from app.execution.application.worker_answer_persistence import (
     AnswerPersistenceLimits,
     WorkerAnswerMaterialization,
@@ -153,6 +149,8 @@ __all__ = [
     "select_execution_skill_names",
     "reconciliation_agent_profile_binding_matches",
     "runtime_terminal_payload",
+    "sandbox_terminal_disposition",
+    "project_sandbox_terminal_result",
     "RunModelSelection",
     "RunInteractionProtocol",
     "RunQuestionNeedsInput",
@@ -162,7 +160,6 @@ __all__ = [
     "artifact_label",
     "artifact_type",
     "build_artifact_execution_owner",
-    "build_artifact_records",
     "claude_sdk_failure_code",
     "claude_sdk_failure_message",
     "claude_provider_session_dispatch",
@@ -197,7 +194,6 @@ __all__ = [
     "bind_selected_run_model",
     "locked_run_payload_candidate",
     "parse_requested_model_selection",
-    "promote_artifact_reservations",
     "predispatch_failure_result",
     "public_answer_failure_reason",
     "resolve_chat_model_selection",

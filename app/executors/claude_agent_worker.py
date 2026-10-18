@@ -89,8 +89,6 @@ from app.skills.registry import BuiltinSkill
 from app.skills.stager import SkillStager
 from app.storage import ObjectStorage
 
-_SANDBOX_SUCCESS_TERMINAL_STATUSES = {"completed", "succeeded"}
-
 
 async def _emit_public_progress_event(
     event_sink: ExecutorEventSink | None,
@@ -1058,154 +1056,49 @@ class ClaudeAgentWorkerAdapter:
         diagnostic_payload = execution_api.normalized_runtime_diagnostics_payload(
             executor_response.get("runtime_diagnostics")
         )
-        failure_result_context = {
-            "sdk_used": bool(executor_response.get("sdk_used")),
-            "allowed_skills": prepared.allowed_skill_names,
-            "staged_skills": prepared.staged_skill_names,
-            "used_skills": used_skill_names,
-            **diagnostic_payload,
-        }
-        if runtime_status in _SANDBOX_SUCCESS_TERMINAL_STATUSES and selected_capability_error is not None:
-            turn_diagnostics = _public_sdk_turn_diagnostics(
-                payload,
-                executor_response.get("sdk_turn_diagnostics"),
-                error_code=selected_capability_error,
-                used_skill_ids=used_skill_names,
-                public_skill_metadata=prepared.public_skill_metadata,
-            )
-            return ExecutorResult(
-                status="failed",
-                adapter_version=self.adapter_version,
-                executor_type=self.executor_type,
-                executor_version=self.executor_version,
-                capabilities=self._run_capabilities(payload),
-                result={
-                    "message": "Capability execution evidence was incomplete. Please retry.",
-                    "error_code": selected_capability_error,
-                    "sdk_error": selected_capability_error,
-                    **execution_api.sdk_failure_result_fields(turn_diagnostics),
-                    **failure_result_context,
-                },
-                artifacts=[],
-                executor_payload={
-                    **common_payload,
-                    "sdk_error": selected_capability_error,
-                    "sdk_turn_diagnostics": turn_diagnostics,
-                    **diagnostic_payload,
-                },
-            )
-        if runtime_status == "accepted":
-            error_code = "executor_missing_structured_terminal"
-            message = "Sandbox executor returned without an authoritative terminal result"
-            turn_diagnostics = _public_sdk_turn_diagnostics(
-                payload,
-                executor_response.get("sdk_turn_diagnostics"),
-                error_code=error_code,
-                used_skill_ids=used_skill_names,
-                public_skill_metadata=prepared.public_skill_metadata,
-            )
-            return ExecutorResult(
-                status="failed",
-                adapter_version=self.adapter_version,
-                executor_type=self.executor_type,
-                executor_version=self.executor_version,
-                capabilities=self._run_capabilities(payload),
-                result={
-                    "message": message,
-                    "error_code": error_code,
-                    "sdk_error": error_code,
-                    **execution_api.sdk_failure_result_fields(turn_diagnostics),
-                    **failure_result_context,
-                },
-                artifacts=[],
-                executor_payload={
-                    **common_payload,
-                    "sdk_error": error_code,
-                    "sdk_turn_diagnostics": turn_diagnostics,
-                    **diagnostic_payload,
-                },
-            )
-        if runtime_status not in _SANDBOX_SUCCESS_TERMINAL_STATUSES:
-            error_code = str(executor_response.get("error_code") or "")
-            if not error_code and runtime_status in {"cancelled", "canceled"}:
-                error_code = "executor_cancelled"
-            if not error_code:
-                error_code = "executor_reported_failure"
-            message = (
-                "任务已取消"
-                if runtime_status in {"cancelled", "canceled"}
-                else execution_api.claude_sdk_failure_message(
-                    type("SdkFailure", (), {"error": error_code})()
-                )
-            )
-            sdk_error = error_code
-            turn_diagnostics = _public_sdk_turn_diagnostics(
-                payload,
-                executor_response.get("sdk_turn_diagnostics"),
-                error_code=error_code,
-                used_skill_ids=used_skill_names,
-                public_skill_metadata=prepared.public_skill_metadata,
-            )
-            return ExecutorResult(
-                status="failed",
-                adapter_version=self.adapter_version,
-                executor_type=self.executor_type,
-                executor_version=self.executor_version,
-                capabilities=self._run_capabilities(payload),
-                result={
-                    "message": message,
-                    "error_code": error_code,
-                    "sdk_error": sdk_error,
-                    **execution_api.sdk_failure_result_fields(turn_diagnostics),
-                    **failure_result_context,
-                },
-                artifacts=[],
-                executor_payload={
-                    **common_payload,
-                    "sdk_error": sdk_error,
-                    "sdk_turn_diagnostics": turn_diagnostics,
-                    **diagnostic_payload,
-                },
-            )
-
-        artifacts = self._collect_workspace_artifacts(
-            payload,
-            Path(str(getattr(runtime_result, "artifact_workspace_path", "") or prepared.workspace)),
-            response_files=executor_response.get("response_files", []),
-            response_file_descriptors=executor_response.get("response_file_descriptors"),
-            allowed_skill_names=prepared.staged_skill_names,
-            storage_scope=storage_scope,
-            abandoned=abandoned,
-            reserve_storage=reserve_storage,
+        disposition = execution_api.sandbox_terminal_disposition(
+            runtime_status, executor_response,
+            capability_error=selected_capability_error,
         )
+        artifacts = []
+        if disposition.succeeded:
+            artifacts = self._collect_workspace_artifacts(
+                payload,
+                Path(str(getattr(runtime_result, "artifact_workspace_path", "") or prepared.workspace)),
+                response_files=executor_response.get("response_files", []),
+                response_file_descriptors=executor_response.get("response_file_descriptors"),
+                allowed_skill_names=prepared.staged_skill_names,
+                storage_scope=storage_scope,
+                abandoned=abandoned,
+                reserve_storage=reserve_storage,
+            )
         turn_diagnostics = _public_sdk_turn_diagnostics(
             payload,
             executor_response.get("sdk_turn_diagnostics"),
-            error_code=None,
+            error_code=disposition.error_code,
             used_skill_ids=used_skill_names,
             public_skill_metadata=prepared.public_skill_metadata,
         )
+        projection = execution_api.project_sandbox_terminal_result(
+            disposition,
+            executor_response=executor_response,
+            allowed_skills=prepared.allowed_skill_names,
+            staged_skills=prepared.staged_skill_names,
+            used_skills=used_skill_names,
+            common_payload=common_payload,
+            diagnostic_payload=diagnostic_payload,
+            turn_diagnostics=turn_diagnostics,
+            artifact_count=len(artifacts),
+        )
         return ExecutorResult(
-            status="succeeded",
+            status=projection.status,
             adapter_version=self.adapter_version,
             executor_type=self.executor_type,
             executor_version=self.executor_version,
             capabilities=self._run_capabilities(payload),
-            result={
-                "message": str(executor_response.get("message") or ""),
-                "artifact_count": len(artifacts),
-                "sdk_used": bool(executor_response.get("sdk_used")),
-                "sdk_error": None,
-                "allowed_skills": prepared.allowed_skill_names,
-                "staged_skills": prepared.staged_skill_names,
-                "used_skills": used_skill_names,
-                "sdk_turn_diagnostics": turn_diagnostics,
-            },
+            result=projection.result,
             artifacts=artifacts,
-            executor_payload={
-                **common_payload, **diagnostic_payload,
-                "sdk_turn_diagnostics": turn_diagnostics,
-            },
+            executor_payload=projection.executor_payload,
         )
 
     async def _run_with_staged_skills(
