@@ -31,6 +31,74 @@ class CleanupOutcomeWriter(Protocol):
     async def record_sandbox_runtime_cleanup_outcome(self, conn: Any, **kwargs: Any) -> None: ...
 
 
+class SandboxCleanupOutcomes:
+    """Record Sandbox cleanup facts using the caller-owned transaction."""
+
+    def __init__(
+        self,
+        *,
+        append_event: Callable[..., Awaitable[Any]],
+        append_audit_log: Callable[..., Awaitable[Any]],
+    ) -> None:
+        self._append_event = append_event
+        self._append_audit_log = append_audit_log
+
+    async def record_sandbox_runtime_cleanup_outcome(
+        self,
+        conn: Any,
+        *,
+        tenant_id: str,
+        run_id: str,
+        trace_id: str | None = None,
+        user_id: str | None = None,
+        requested_by_role: str | None = None,
+        reason: str,
+        status: str,
+        lease_ids: list[str] | None = None,
+        failures: list[dict[str, str]] | None = None,
+    ) -> None:
+        payload: dict[str, Any] = {
+            "visible_to_user": False,
+            "reason": reason,
+            "status": status,
+            "lease_ids": lease_ids or [],
+            "failure_count": len(failures or []),
+        }
+        if requested_by_role:
+            payload["requested_by_role"] = requested_by_role
+        if failures:
+            payload["failures"] = failures
+        event_type = "sandbox_runtime_cleanup_failed" if status == "failed" else "sandbox_runtime_cleanup_succeeded"
+        message = "Sandbox runtime cleanup failed" if status == "failed" else "Sandbox runtime cleanup succeeded"
+        await self._append_event(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            trace_id=trace_id,
+            event_type=event_type,
+            stage="sandbox",
+            message=message,
+            payload=payload,
+        )
+        await self._append_audit_log(
+            conn,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            action=f"sandbox.runtime.cleanup.{status}",
+            target_type="run",
+            target_id=run_id,
+            trace_id=trace_id,
+            payload_json={
+                "run_id": run_id,
+                "reason": reason,
+                "status": status,
+                "lease_ids": lease_ids or [],
+                "failures": failures or [],
+                "requested_by_role": requested_by_role,
+            },
+        )
+
+
 class SandboxRuntimeCleanupError(RuntimeError):
     """Raised when one or more active sandbox leases cannot be stopped."""
 

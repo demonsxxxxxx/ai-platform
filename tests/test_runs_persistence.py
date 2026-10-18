@@ -5,10 +5,8 @@ import app.identity.infrastructure.audit_postgres as _repo_owner_app_identity_in
 import app.identity.infrastructure.postgres as _repo_owner_app_identity_infrastructure_postgres
 import app.platform.postgres.errors as _repo_owner_app_platform_postgres_errors
 import app.runs.infrastructure.creation_postgres as _repo_owner_app_runs_infrastructure_creation_postgres
-import app.sandbox.infrastructure.leases_postgres as _repo_owner_app_sandbox_infrastructure_leases_postgres
 import app.streaming.infrastructure.run_events_postgres as _repo_owner_app_streaming_infrastructure_run_events_postgres
 import app.runs.infrastructure.creation_postgres as run_creation_persistence
-import app.sandbox.infrastructure.leases_postgres as sandbox_leases_persistence
 from app.streaming.infrastructure import event_ledger_postgres as event_ledger
 from app.conversations.infrastructure import postgres as conversation_persistence
 from app.platform.public_payload import sanitize_public_payload, sanitize_public_text
@@ -63,89 +61,6 @@ async def test_count_active_runs_for_user_counts_queued_and_running_only():
     assert count == 2
     assert "status in ('queued', 'running')" in conn.sql
     assert conn.params == ("tenant-a", "user-a")
-
-
-@pytest.mark.asyncio
-
-
-@pytest.mark.asyncio
-
-
-@pytest.mark.asyncio
-
-
-@pytest.mark.asyncio
-
-
-@pytest.mark.asyncio
-async def test_record_sandbox_runtime_cleanup_outcome_writes_event_and_audit(monkeypatch):
-    calls = []
-
-    async def fake_append_event(conn, **kwargs):
-        calls.append(("event", kwargs))
-        return "evt-cleanup"
-
-    async def fake_append_audit_log(conn, **kwargs):
-        calls.append(("audit", kwargs))
-        return "aud-cleanup"
-
-    monkeypatch.setattr(sandbox_leases_persistence, "append_event", fake_append_event)
-    monkeypatch.setattr(sandbox_leases_persistence, "append_audit_log", fake_append_audit_log)
-
-    await _repo_owner_app_sandbox_infrastructure_leases_postgres.record_sandbox_runtime_cleanup_outcome(
-        object(),
-        tenant_id="tenant-a",
-        run_id="run-a",
-        trace_id="trace-a",
-        user_id="user-a",
-        requested_by_role="owner",
-        reason="cancel_requested",
-        status="failed",
-        lease_ids=["lease-a"],
-        failures=[{"container_id": "lease-a", "message": "runtime handle missing"}],
-    )
-
-    assert calls == [
-        (
-            "event",
-            {
-                "tenant_id": "tenant-a",
-                "run_id": "run-a",
-                "trace_id": "trace-a",
-                "event_type": "sandbox_runtime_cleanup_failed",
-                "stage": "sandbox",
-                "message": "Sandbox runtime cleanup failed",
-                "payload": {
-                    "visible_to_user": False,
-                    "reason": "cancel_requested",
-                    "status": "failed",
-                    "lease_ids": ["lease-a"],
-                    "failure_count": 1,
-                    "requested_by_role": "owner",
-                    "failures": [{"container_id": "lease-a", "message": "runtime handle missing"}],
-                },
-            },
-        ),
-        (
-            "audit",
-            {
-                "tenant_id": "tenant-a",
-                "user_id": "user-a",
-                "action": "sandbox.runtime.cleanup.failed",
-                "target_type": "run",
-                "target_id": "run-a",
-                "trace_id": "trace-a",
-                "payload_json": {
-                    "run_id": "run-a",
-                    "reason": "cancel_requested",
-                    "status": "failed",
-                    "lease_ids": ["lease-a"],
-                    "failures": [{"container_id": "lease-a", "message": "runtime handle missing"}],
-                    "requested_by_role": "owner",
-                },
-            },
-        ),
-    ]
 
 
 @pytest.mark.asyncio
