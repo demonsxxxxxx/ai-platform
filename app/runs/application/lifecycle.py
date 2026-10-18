@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, Protocol
 
+from app.runtime.token_metrics import mapped_token_count, sum_token_counts, token_count
+
 from app.runs.domain.cost_observability import projected_estimated_cost_minor, private_cost_observation
 from app.runs.domain.terminalization import (
     RunTerminalizationProgress,
@@ -25,11 +27,15 @@ def _result_observability_values(result_json: dict[str, Any] | None) -> tuple[in
             return int(value or default)
         except (TypeError, ValueError):
             return default
-    input_tokens = integer(token_counts.get("input"))
-    output_tokens = integer(token_counts.get("output"))
-    total_tokens = integer(token_counts.get("total"), input_tokens + output_tokens)
+    input_tokens = mapped_token_count(token_counts, "input")
+    output_tokens = mapped_token_count(token_counts, "output")
+    total_tokens = mapped_token_count(token_counts, "total")
+    if total_tokens == 0 and not token_counts.get("total"):
+        total_tokens = sum_token_counts(input_tokens, output_tokens)
+    if None in (input_tokens, output_tokens, total_tokens):
+        input_tokens = output_tokens = total_tokens = 0
     estimated_cost_minor = integer(cost.get("estimated_cost_minor"))
-    return latency_ms, input_tokens, output_tokens, total_tokens, estimated_cost_minor
+    return latency_ms, input_tokens or 0, output_tokens or 0, total_tokens or 0, estimated_cost_minor
 
 
 class RunLifecyclePersistence(Protocol):
@@ -159,8 +165,8 @@ class RunLifecycleService:
             result_payload = {}
         result_observability = _result_observability_values(result_payload)
         prior_observability = (
-            staged.get("latency_ms"), int(staged.get("input_token_count") or 0),
-            int(staged.get("output_token_count") or 0), int(staged.get("total_token_count") or 0),
+            staged.get("latency_ms"), (token_count(staged.get("input_token_count")) or 0),
+            (token_count(staged.get("output_token_count")) or 0), (token_count(staged.get("total_token_count")) or 0),
             int(staged.get("estimated_cost_minor") or 0),
         )
         observability = tuple(
@@ -179,9 +185,9 @@ class RunLifecycleService:
             return RunTerminalizationProgress(completed=True, status=target_status, did_transition=False)
         artifact_count = int(final.get("artifact_count") or 0)
         latency_ms = final.get("latency_ms")
-        input_tokens = int(final.get("input_token_count") or 0)
-        output_tokens = int(final.get("output_token_count") or 0)
-        total_tokens = int(final.get("total_token_count") or 0)
+        input_tokens = (token_count(final.get("input_token_count")) or 0)
+        output_tokens = (token_count(final.get("output_token_count")) or 0)
+        total_tokens = (token_count(final.get("total_token_count")) or 0)
         estimated_cost_minor = projected_estimated_cost_minor(final.get("estimated_cost_minor"), result_payload)
         message = "Run failed" if target_status == "failed" else "任务已取消"
         event_type = "run_failed" if target_status == "failed" else "run_cancelled"
