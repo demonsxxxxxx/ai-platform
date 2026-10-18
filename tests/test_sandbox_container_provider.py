@@ -7821,3 +7821,202 @@ def test_opensandbox_environment_still_filters_legacy_catalog_secrets():
     assert "MODEL_CATALOG_JSON" not in environment
     assert "MODEL_CATALOG_JSON" not in credential_free
     assert environment["OPENAI_MODEL"] == "sdk-default"
+
+
+# These synchronous regressions drive the production lifecycle body with inert
+# Docker/probe seams. The thread/event-loop wrapper is deliberately not exercised.
+def _finish_inert_docker_lifecycle(coroutine):
+    try:
+        with pytest.raises(StopIteration) as completed:
+            coroutine.send(None)
+        return completed.value.value
+    finally:
+        coroutine.close()
+
+
+def _inert_docker_provider(monkeypatch, settings):
+    from app.runtime.sandbox import container_provider
+
+    fake = FakeDockerClient()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    provider = container_provider.DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda *_args: True,
+        identity_probe=lambda *_args: {"uid": 10001, "gid": 10001},
+    )
+
+    async def probe(operation, *args):
+        return operation(*args)
+
+    monkeypatch.setattr(provider, "_run_probe", probe)
+    return provider, fake
+
+
+@pytest.mark.parametrize("key_id", ["current", "deployment-2026"])
+def test_docker_cached_proof_uses_configured_key_id_without_cleanup(monkeypatch, key_id):
+    from app.runtime.sandbox import container_provider
+
+    provider, fake = _inert_docker_provider(
+        monkeypatch, governed_docker_settings(sandbox_egress_proof_key_id=key_id)
+    )
+    operation = container_provider.DockerContainerProvider.create_or_reuse.__wrapped__
+    first = _finish_inert_docker_lifecycle(operation(provider, request(), workspace()))
+    second = _finish_inert_docker_lifecycle(operation(provider, request(), workspace()))
+    assert second.container_id == first.container_id
+    assert len(fake.created) == 1
+    assert not fake.containers_by_name[first.container_name].removed
+
+
+@pytest.mark.parametrize("failure", ["owner_stat", "owner_uid", "skill", "timeout", "cancel"])
+@pytest.mark.parametrize("abort_fails", [False, True])
+def test_docker_precreate_failure_aborts_owned_network_once(monkeypatch, failure, abort_fails):
+    from app.runtime.sandbox import container_provider
+
+    provider, fake = _inert_docker_provider(monkeypatch, governed_docker_settings())
+    original_networks = set(fake.networks_by_name)
+    if failure == "owner_stat":
+        error = OSError("synthetic owner stat failure")
+    elif failure == "owner_uid":
+        error = None
+    elif failure == "timeout":
+        error = TimeoutError("synthetic timeout")
+    elif failure == "cancel":
+        error = asyncio.CancelledError("synthetic cancellation")
+    else:
+        error = container_provider.ContainerStartFailedError("synthetic skill failure")
+
+    def fail(*_args):
+        if error is not None:
+            raise error
+        return SimpleNamespace(st_uid=0, st_gid=10001, st_mode=0o40700)
+
+    target = "_prepare_trusted_skill_mount" if failure == "skill" else "_workspace_owner_stat"
+    monkeypatch.setattr(container_provider, target, fail)
+    removals = []
+    remove = provider._remove_owned_governed_network
+
+    def remove_owned(lease):
+        removals.append(lease)
+        return False if abort_fails else remove(lease)
+
+    monkeypatch.setattr(provider, "_remove_owned_governed_network", remove_owned)
+    expected = (
+        container_provider.ContainerStartFailedError
+        if failure in {"owner_stat", "owner_uid", "skill", "timeout"}
+        else asyncio.CancelledError
+    )
+    operation = container_provider.DockerContainerProvider.create_or_reuse.__wrapped__
+    with pytest.raises(container_provider.ContainerCleanupFailedError if abort_fails else expected) as caught:
+        _finish_inert_docker_lifecycle(operation(provider, request(), workspace()))
+    assert fake.created == []
+    assert len(fake.network_create_calls) == 1
+    assert len(removals) == 1
+    if abort_fails:
+        assert isinstance(caught.value.__cause__, expected)
+        assert provider._cached_lease_for_run(request().run_id) is removals[0]
+        assert set(fake.networks_by_name) > original_networks
+    else:
+        assert provider._cached_lease_for_run(request().run_id) is None
+        assert set(fake.networks_by_name) == original_networks
+        if failure in {"skill", "cancel"}:
+            assert caught.value is error
+
+
+@pytest.mark.parametrize("key_id", ["current", "deployment-2026"])
+def test_docker_reuse_proof_refresh_threads_current_key_id(monkeypatch, key_id):
+    from app.runtime.sandbox import container_provider
+
+    provider, fake = _inert_docker_provider(
+        monkeypatch, governed_docker_settings(sandbox_egress_proof_key_id=key_id)
+    )
+    operation = container_provider.DockerContainerProvider.create_or_reuse.__wrapped__
+    lease = _finish_inert_docker_lifecycle(operation(provider, request(), workspace()))
+    remote = fake.containers_by_name[lease.container_name]
+    remote.labels[container_provider.GOVERNED_EGRESS_PROOF_LABEL] = lease.labels[
+        container_provider.GOVERNED_EGRESS_PROOF_LABEL
+    ]
+    # Enter the defensive refresh branch without changing its signature/binding
+    # verification. The production status matcher remains in use after entry.
+    matches = container_provider._status_matches_lease
+    checks = []
+
+    def first_observation_needs_refresh(status, candidate):
+        checks.append(candidate)
+        return False if len(checks) == 1 else matches(status, candidate)
+
+    monkeypatch.setattr(container_provider, "_status_matches_lease", first_observation_needs_refresh)
+    result = _finish_inert_docker_lifecycle(provider._reuse_existing_container(
+        lease, 30, container_provider._resolve_executor_published_endpoint("127.0.0.1")
+    ))
+    assert result is not None
+    assert result.container_id == lease.container_id
+    assert len(checks) == 2
+    assert not remote.removed
+
+
+@pytest.mark.parametrize("key_id", ["current", "deployment-2026"])
+@pytest.mark.parametrize("mutation", ["none", "wrong_key", "old_key_id", "invalid_key_id", "scope", "expired", "signature"])
+def test_docker_cached_proof_keeps_fail_closed_binding(monkeypatch, key_id, mutation):
+    from app import execution_boundary as proof
+
+    settings = governed_docker_settings(sandbox_egress_proof_key_id=key_id)
+    provider, _fake = _inert_docker_provider(monkeypatch, settings)
+    fields = {field: "synthetic-" + field for field in proof._GOVERNED_EGRESS_SUBJECT_FIELDS}
+    args = dict(signing_key=settings.sandbox_egress_proof_signing_key, key_id=key_id,
+                provider="docker", network_internal=True, **fields)
+    expected = proof.build_governed_egress_proof(**args)
+    if mutation == "wrong_key":
+        args["signing_key"] = "synthetic-wrong-key-with-enough-entropy"
+    elif mutation == "old_key_id":
+        args["key_id"] = "old-deployment"
+    elif mutation == "scope":
+        args["attempt_id"] = "other-attempt"
+    elif mutation == "expired":
+        args["issued_at"] = datetime.now(timezone.utc) - timedelta(minutes=5)
+        args["expires_at"] = datetime.now(timezone.utc) - timedelta(minutes=4)
+    stored = proof.build_governed_egress_proof(**args)
+    if mutation == "signature":
+        stored["signature"] = "0" * 64
+    configured_id = "bad key id" if mutation == "invalid_key_id" else key_id
+    label = proof.GOVERNED_EGRESS_PROOF_LABEL
+    result = provider._cached_governed_egress_matches(
+        SimpleNamespace(labels={label: proof.governed_egress_proof_label(stored)}),
+        {label: proof.governed_egress_proof_label(expected)},
+        settings.sandbox_egress_proof_signing_key,
+        signing_key_id=configured_id,
+    )
+    assert result is (mutation == "none")
+
+
+@pytest.mark.parametrize("abort_fails", [False, True])
+def test_docker_owner_cancellation_compensation_is_resource_idempotent(monkeypatch, abort_fails):
+    from app.runtime.sandbox import container_provider
+
+    provider, fake = _inert_docker_provider(monkeypatch, governed_docker_settings())
+    initial_networks = set(fake.networks_by_name)
+    cancellation = asyncio.CancelledError("synthetic cancellation")
+    monkeypatch.setattr(
+        container_provider, "_workspace_owner_stat",
+        lambda _path: (_ for _ in ()).throw(cancellation),
+    )
+    removed = []
+    original_remove = FakeDockerNetwork.remove
+
+    def remove(network):
+        removed.append(network["attrs"]["Name"])
+        return original_remove(network)
+
+    monkeypatch.setattr(FakeDockerNetwork, "remove", remove)
+    original_cleanup = provider._remove_owned_governed_network
+    if abort_fails:
+        monkeypatch.setattr(provider, "_remove_owned_governed_network", lambda _lease: False)
+    operation = container_provider.DockerContainerProvider.create_or_reuse.__wrapped__
+    with pytest.raises(container_provider.ContainerCleanupFailedError if abort_fails else asyncio.CancelledError):
+        _finish_inert_docker_lifecycle(operation(provider, request(), workspace()))
+    monkeypatch.setattr(provider, "_remove_owned_governed_network", original_cleanup)
+    # Exercise the same production callback used by the outer lifecycle lane.
+    # No thread, socket, timer, or detached worker is started in this test.
+    provider._compensate_cancelled_create(request(), workspace())
+    assert len(removed) == 1
+    assert set(fake.networks_by_name) == initial_networks
+    assert provider._cached_lease_for_run(request().run_id) is None

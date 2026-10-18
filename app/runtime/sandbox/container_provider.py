@@ -2429,6 +2429,7 @@ class DockerContainerProvider(DockerLeaseRegistry):
             stored_proof = labels.get(GOVERNED_EGRESS_PROOF_LABEL) if isinstance(labels, dict) else None
             if lease.provider != "docker" or not isinstance(stored_proof, str):
                 return None
+            settings = get_settings()
             candidate_labels = dict(lease.labels)
             candidate_labels[GOVERNED_EGRESS_PROOF_LABEL] = stored_proof
             candidate = lease.model_copy(update={"labels": candidate_labels})
@@ -2437,7 +2438,8 @@ class DockerContainerProvider(DockerLeaseRegistry):
                 and self._cached_governed_egress_matches(
                     candidate,
                     lease.labels,
-                    getattr(get_settings(), "sandbox_egress_proof_signing_key", ""),
+                    getattr(settings, "sandbox_egress_proof_signing_key", ""),
+                    signing_key_id=_governed_egress_proof_key_id(settings),
                 )
             ):
                 return None
@@ -2559,8 +2561,13 @@ class DockerContainerProvider(DockerLeaseRegistry):
         lease: ContainerLease,
         expected_labels: dict[str, str],
         signing_key: object,
+        *,
+        signing_key_id: object,
     ) -> bool:
-        return _governed_egress_labels_match("docker", lease.labels, expected_labels, signing_key)
+        return _governed_egress_labels_match(
+            "docker", lease.labels, expected_labels, signing_key,
+            signing_key_id=signing_key_id,
+        )
 
     @staticmethod
     def _is_exact_owned_remote_container(
@@ -2643,6 +2650,7 @@ class DockerContainerProvider(DockerLeaseRegistry):
                 candidate.model_copy(update={"labels": stored_labels}),
                 expected_labels,
                 getattr(settings, "sandbox_egress_proof_signing_key", ""),
+                signing_key_id=_governed_egress_proof_key_id(settings),
             ):
                 raise GovernedEgressAdmissionError()
         except Exception as exc:
@@ -2772,13 +2780,13 @@ class DockerContainerProvider(DockerLeaseRegistry):
                 if native_tool_required
                 else {}
             )
+            workspace_user = _docker_workspace_user_value(workspace.workspace_host_path)
         except BaseException as exc:
             try:
                 owned_resources.abort()
             except ContainerCleanupFailedError as cleanup_exc:
                 raise cleanup_exc from exc
             raise
-        workspace_user = _docker_workspace_user_value(workspace.workspace_host_path)
         bootstrap_lease.labels.update(egress_admission.lease_labels)
         bootstrap_lease.labels["ai-platform.native_tool_required"] = _env_bool(native_tool_required)
         bootstrap_lease.labels.update(native_tool_admission_evidence)
