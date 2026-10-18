@@ -179,6 +179,8 @@ jobs:
             redis_url: redis://localhost:6379/15
             test_files: >-
               tests/test_context_memory_retention.py
+              tests/test_context_routes.py
+              tests/test_context_request_contracts.py
               tests/test_context_persistence.py
               tests/test_context_builder.py
               tests/test_conversations_persistence.py
