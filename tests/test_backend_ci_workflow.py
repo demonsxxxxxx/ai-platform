@@ -161,6 +161,8 @@ BACKEND_TEST_SHARDS = {
     ),
     "repository-worker-streaming": (
         "tests/test_context_memory_retention.py",
+        "tests/test_context_routes.py",
+        "tests/test_context_request_contracts.py",
         "tests/test_context_persistence.py",
         "tests/test_context_builder.py",
         "tests/test_context_artifact_transfer.py",
