@@ -43,6 +43,10 @@ async def test_monitor_queries_bind_one_closed_tenant_window_and_row_limit():
 @pytest.mark.asyncio
 async def test_postgres_monitor_samples_runs_not_events_and_uses_frozen_skill_cohort():
     async with _isolated_postgres_run() as (_dsn, _schema, admin, conn):
+        await admin.execute("""insert into model_gateway_revisions(
+            revision, base_url, api_key_ciphertext, key_fingerprint, created_by
+            ) values (1, 'https://gateway.example.test', decode('00', 'hex'),
+                '0123456789abcdef', 'user-a')""")
         created = datetime.now(timezone.utc) - timedelta(hours=1)
         end = created + timedelta(minutes=10)
         await admin.execute("""update runs set status='succeeded', created_at=%s, queued_at=%s,
