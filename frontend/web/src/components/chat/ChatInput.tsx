@@ -878,7 +878,6 @@ export const ChatInput = memo(function ChatInput({
     const files = e.dataTransfer?.files;
     if (!files || files.length === 0) return;
     if (acceptedFileTypes?.length === 0) return;
-    if (!validateCount(files.length)) return;
     uploadFiles(files);
   };
 

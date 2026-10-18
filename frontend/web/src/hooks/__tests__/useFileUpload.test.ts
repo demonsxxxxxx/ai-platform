@@ -705,3 +705,128 @@ test("compression fallback continues through normal progress and success", async
   assert.equal(harness.abortMap.size, 0);
   assert.equal(harness.cancelled.size, 0);
 });
+
+// Mounted adapters use the real controller; only the network and toast sinks are replaced.
+test("paste and both drops match central accepted-file admission", async (suite) => {
+  const { installSelectTestDom } = await import("../../components/common/__tests__/selectTestDom");
+  const fixture = installSelectTestDom();
+  const { act, createElement, useRef } = await import("react");
+  const { createLobeTestRoot } = await import("../../components/common/__tests__/lobeUiTestRoot");
+  const { useDragAndDrop } = await import("../../components/layout/AppContent/useDragAndDrop");
+  const { usePasteHandler } = await import("../usePasteHandler");
+  const { ChatInput } = await import("../../components/chat/ChatInput");
+  const { AuthProvider } = await import("../useAuth");
+  const { uploadApi } = await import("../../services/api/upload");
+  const { toast } = await import("@lobehub/ui/base-ui");
+  const { default: i18n } = await import("../../i18n");
+  const { PASTE_TEXT_THRESHOLD } = await import("../../components/chat/chatInputConstants");
+  const originalConfig = uploadApi.getConfig, originalUpload = uploadApi.uploadFile;
+  const originalError = toast.error, originalInfo = toast.info;
+  type Route = "direct" | "paste" | "page" | "composer";
+  const routes: Route[] = ["direct", "paste", "page", "composer"];
+  const good = () => new File(["ok"], "good.txt", { type: "text/plain" });
+  const bad = () => new File(["no"], "bad.exe", { type: "application/octet-stream" });
+  async function run({ route, files = [], accepted = [".txt"], maxFiles = 1, current = 0, plain = "", html = "", sizeLimit = 100000, ignored = false }: {
+    route: Route; files?: File[]; accepted?: string[]; maxFiles?: number; current?: number;
+    plain?: string; html?: string; sizeLimit?: number; ignored?: boolean;
+  }) {
+    const sent: string[] = [], errors: string[] = [], infos: unknown[] = [];
+    let configCalls = 0, changedInput = "", resizes = 0;
+    uploadApi.getConfig = async () => { configCalls += 1; return { enabled: true, maxFiles, uploadLimitsBytes: { image: sizeLimit, video: sizeLimit, audio: sizeLimit, document: sizeLimit } }; };
+    uploadApi.uploadFile = (file) => { sent.push(file.name); return { promise: Promise.resolve({ key: file.name, url: "", name: file.name, type: file.type.startsWith("image/") ? "image" : "document", mimeType: file.type, size: file.size } as UploadResult), abort() {} }; };
+    toast.error = ((value: unknown) => { errors.push(String(value)); }) as typeof toast.error;
+    toast.info = ((value: unknown) => { infos.push(value); }) as typeof toast.info;
+    let owner!: ReturnType<typeof useDragAndDrop>, paste!: ReturnType<typeof usePasteHandler>;
+    const container = document.createElement("div");
+    const root = await createLobeTestRoot(container);
+    function Harness() {
+      owner = useDragAndDrop(accepted);
+      const textareaRef = useRef<HTMLTextAreaElement>(null);
+      paste = usePasteHandler({ textareaRef, input: "AB", setInput: (value) => { changedInput = value; }, uploadFiles: owner.uploadControls.uploadFiles, validateCount: owner.uploadControls.validateCount, scheduleTextareaResize: () => { resizes += 1; } });
+      if (route !== "composer") return createElement("textarea", { ref: textareaRef, defaultValue: "AB" });
+      return createElement(AuthProvider, null, createElement(ChatInput, {
+        onSend: async () => ({ status: "accepted" as const }), onStop: async () => "unavailable" as const,
+        isLoading: false, attachments: owner.pageDragAttachments, onAttachmentsChange: owner.setPageDragAttachments,
+        uploadControls: owner.uploadControls, acceptedFileTypes: accepted, disableSlashCommands: true,
+        tools: [], skills: [], enableSkills: false, agentOptionValues: {}, availableModels: [],
+      }));
+    }
+    let prevented = false;
+    try {
+      await act(async () => { root.render(createElement(Harness)); });
+      if (current) await act(async () => owner.setPageDragAttachments(Array.from({ length: current }, (_, index): MessageAttachment => ({ id: `existing-${index}`, key: "existing", name: "existing.txt", type: "document", mimeType: "text/plain", size: 1 }))));
+      const textarea = container.querySelector("textarea");
+      if (textarea) textarea.selectionStart = textarea.selectionEnd = 1;
+      await act(async () => {
+        if (route === "direct") owner.uploadControls.uploadFiles(files);
+        else if (route === "paste") paste.handlePaste({ clipboardData: { files, getData: (type: string) => type === "text/html" ? html : plain }, preventDefault() { prevented = true; } } as unknown as React.ClipboardEvent);
+        else {
+          const target = route === "composer" ? container.querySelector('[data-disable-global-file-drop="true"]') : document.body;
+          assert.ok(target);
+          if (ignored) (target as HTMLElement).setAttribute("data-disable-global-file-drop", "true");
+          const event = new Event("drop", { bubbles: true, cancelable: true });
+          Object.defineProperty(event, "dataTransfer", { value: { files, types: ["Files"], getData: () => "" } });
+          target.dispatchEvent(event); prevented = event.defaultPrevented;
+          if (ignored) (target as HTMLElement).removeAttribute("data-disable-global-file-drop");
+        }
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      assert.equal(configCalls, 1, "Composer reuses the page upload owner");
+      return { sent, errors, infos, prevented, changedInput, resizes, attachments: owner.pageDragAttachments.map(({ name, type, isUploading }) => ({ name, type, isUploading })) };
+    } finally { await act(async () => root.unmount()); }
+  }
+  try {
+    const scenarios = [
+      { name: "mixed batch fits after filtering", files: () => [good(), bad()], expected: ["good.txt"], errors: ["fileUpload.serverUnsupportedFileType"] },
+      { name: "accepted batch exceeds count", files: () => [good(), new File(["ok"], "second.txt")], expected: [], errors: ["fileUpload.tooManyFiles"] },
+      { name: "existing attachments consume count", files: () => [good(), bad()], current: 1, maxFiles: 2, expected: ["good.txt"], errors: ["fileUpload.serverUnsupportedFileType"] },
+      { name: "full owner rejects accepted files", files: () => [good(), bad()], current: 1, expected: [], errors: ["fileUpload.serverUnsupportedFileType", "fileUpload.tooManyFiles"] },
+      { name: "no accepted files bypass count", files: () => [bad(), bad()], current: 1, expected: [], errors: ["fileUpload.serverUnsupportedFileType"] },
+      { name: "size limit still rejects", files: () => [good()], sizeLimit: 1, expected: [], errors: ["fileUpload.fileTooLarge"] },
+      { name: "image wildcard preserves category", files: () => [new File(["png"], "photo.png", { type: "image/png" })], accepted: ["image/*"], expected: ["photo.png"], errors: [] },
+    ];
+    for (const scenario of scenarios) await suite.test(scenario.name, async (scenarioSuite) => {
+      let baseline: Awaited<ReturnType<typeof run>> | undefined;
+      for (const route of routes) await scenarioSuite.test(route, async () => {
+        const result = await run({ ...scenario, route, files: scenario.files() });
+        assert.deepEqual(result.sent, scenario.expected, route);
+        assert.equal(result.errors.length, scenario.errors.length, route);
+        scenario.errors.forEach((key, index) => assert.ok(result.errors[index].includes(String(i18n.t(key, { count: scenario.maxFiles ?? 1 }))), `${route}: ${key}`));
+        if (baseline) { assert.deepEqual(result.attachments, baseline.attachments, route); assert.deepEqual(result.errors, baseline.errors, route); assert.equal(result.prevented, true, route); }
+        else baseline = result;
+      });
+    });
+    await suite.test("explicit empty acceptance admits nothing", async () => {
+      for (const route of routes) { const result = await run({ route, files: [good()], accepted: [] }); assert.deepEqual(result.sent, []); assert.deepEqual(result.attachments, []); assert.equal(result.errors.length, route === "direct" || route === "paste" ? 1 : 0); }
+    });
+    await suite.test("global drop respects scoped owner and unmount cleanup", async () => {
+      assert.deepEqual((await run({ route: "page", files: [good()], ignored: true })).sent, []);
+      const event = new Event("drop", { bubbles: true, cancelable: true });
+      Object.defineProperty(event, "dataTransfer", { value: { files: [good()], types: ["Files"] } });
+      document.body.dispatchEvent(event); assert.equal(event.defaultPrevented, false);
+    });
+    await suite.test("file clipboard takes precedence over text", async () => {
+      const result = await run({ route: "paste", files: [good()], plain: "x".repeat(PASTE_TEXT_THRESHOLD + 1), html: "<p>ignored</p>" });
+      assert.deepEqual(result.sent, ["good.txt"]); assert.equal(result.changedInput, ""); assert.deepEqual(result.infos, []);
+    });
+    await suite.test("short plain text remains native; empty clipboard is inert", async () => {
+      const result = await run({ route: "paste", plain: "ordinary text" });
+      assert.equal(result.prevented, false); assert.deepEqual(result.sent, []); assert.equal(result.changedInput, "");
+      for (const route of routes) assert.deepEqual((await run({ route })).sent, []);
+    });
+    await suite.test("HTML insertion preserves callbacks and resize", async () => {
+      const result = await run({ route: "paste", html: "<p>hello</p>" });
+      assert.equal(result.prevented, true); assert.equal(result.changedInput, "AhelloB"); assert.equal(result.resizes, 1); assert.deepEqual(result.sent, []);
+    });
+    await suite.test("long text retains count guard and conversion info", async () => {
+      const plain = "x".repeat(PASTE_TEXT_THRESHOLD + 1);
+      const allowed = await run({ route: "paste", plain });
+      assert.equal(allowed.sent.length, 1); assert.match(allowed.sent[0], /^clipboard-\d+\.txt$/); assert.equal(allowed.infos.length, 1);
+      const full = await run({ route: "paste", plain, current: 1 });
+      assert.deepEqual(full.sent, []); assert.equal(full.infos.length, 0); assert.equal(full.errors.length, 1); assert.equal(full.prevented, true);
+    });
+  } finally {
+    uploadApi.getConfig = originalConfig; uploadApi.uploadFile = originalUpload;
+    toast.error = originalError; toast.info = originalInfo; fixture.close();
+  }
+});
