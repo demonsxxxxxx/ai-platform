@@ -302,3 +302,213 @@ async def test_cancel_preserves_only_normalized_observations_without_answer_or_p
     assert outcome.status == "cancelled"
     assert captured == [{"message": "任务已取消", **observation}]
     assert "PRIVATE" not in repr(captured)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_requested", [False, True])
+@pytest.mark.parametrize("delta", [-1, 0, 1, 49, 100_000])
+@pytest.mark.parametrize("unit", ["x", "汉\"\\"])
+async def test_receipt_answer_budget_includes_final_cancel_status(cancel_requested, delta, unit):
+    from app.execution.api import materialize_worker_answer, AnswerPersistenceLimits
+    from app.executors.base import ExecutorResult
+    from app.platform.postgres.limits import (
+        MESSAGE_CONTENT_MAX_BYTES, RUN_RESULT_MAX_BYTES, json_size_bytes, ensure_json_size,
+    )
+
+    receipt = {"schema_version": "test-receipt", "run_id": "run", "attempt_id": "attempt", "sha256": "a" * 64}
+    payload = {
+        "artifacts": [{"id": "artifact", "display_name": "报告", "download_url": "/artifacts/artifact"}],
+        "executor": {"executor_type": "claude_agent", "capabilities": ["tools"]},
+        "sdk_used": True, "allowed_skills": [], "staged_skills": [],
+        "latency_ms": 7, "token_counts": {"input": 3, "output": 5, "total": 8},
+        "cost": {"estimated_cost_minor": 17},
+    }
+    final_fields = {"cancel_status": "cancel_requested_but_completed"} if cancel_requested else {}
+    overhead = json_size_bytes({**payload, **final_fields, "message": "", "answer_receipt": receipt})
+    text_budget = RUN_RESULT_MAX_BYTES - overhead + delta
+    unit_size = json_size_bytes(unit) - 2
+    message = unit * (text_budget // unit_size) + "x" * (text_budget % unit_size)
+    assert json_size_bytes({**payload, **final_fields, "message": message, "answer_receipt": receipt}) == RUN_RESULT_MAX_BYTES + delta
+    calls = []
+    committed = []
+    assistant = []
+
+    @asynccontextmanager
+    async def transaction():
+        try:
+            yield object()
+        except BaseException:
+            calls.append("rollback")
+            raise
+        else:
+            calls.append("commit")
+
+    async def noop(*args, **kwargs):
+        return None
+
+    async def lock_run(*args, **kwargs):
+        return {"status": "running"}
+
+    async def load_answer(conn, **kwargs):
+        assert kwargs == {"tenant_id": "tenant", "run_id": "run", "attempt_id": "attempt", "receipt": receipt}
+        calls.append("verified")
+        return SimpleNamespace(text=message)
+
+    async def materialize(capabilities, conn, **kwargs):
+        return await materialize_worker_answer(capabilities, conn, **kwargs, limits=AnswerPersistenceLimits(
+            MESSAGE_CONTENT_MAX_BYTES, RUN_RESULT_MAX_BYTES, json_size_bytes,
+        ))
+
+    async def persist_assistant(conn, result, dispatch, records, skills, text, metadata, attempt_id, result_payload):
+        assistant.append((text, metadata))
+
+    class Attempt:
+        async def is_cancel_requested(self, conn):
+            return cancel_requested
+
+        async def complete(self, conn, **kwargs):
+            ensure_json_size(kwargs["result_json"], max_bytes=RUN_RESULT_MAX_BYTES, code="run_result_too_large")
+            committed.append(kwargs["result_json"])
+            return True
+
+    service = WorkerResultCommitService(
+        transaction_factory=transaction, lock_run=lock_run,
+        reconciliation_claim_current=noop, materialize_answer=materialize,
+        persist_artifacts=noop, persist_skill_snapshots=noop,
+        persist_assistant=persist_assistant, append_user_event=noop,
+        append_hidden_event=noop, persist_failure_event=noop,
+        public_failure_message=lambda result: "safe failure", prefers_cancelled=lambda result: False,
+    )
+    command = WorkerResultCommitCommand(
+        payload=SimpleNamespace(tenant_id="tenant", run_id="run"),
+        result=ExecutorResult(status="succeeded", adapter_version="1", executor_type="test", executor_version="1", capabilities={}, result={}, artifacts=[], executor_payload={"answer_receipt": receipt}),
+        result_payload=payload, artifact_records=[], skill_snapshot={}, terminal_event_kwargs={},
+        attempt_id="attempt", trace_id="trace",
+    )
+    outcome = await service.commit(command, attempt_authority=Attempt(), capabilities=SimpleNamespace(
+        event_persistence=SimpleNamespace(load_answer_by_receipt=load_answer),
+    ), release_runtime_lease=noop)
+    assert outcome.status == "succeeded"
+    assert calls == ["verified", "commit"]
+    stored = committed[0]
+    assert stored.get("cancel_status") == final_fields.get("cancel_status")
+    for key, value in payload.items():
+        assert stored[key] == value
+    assert stored["answer_receipt"] == receipt
+    if delta <= 0:
+        assert stored["message"] == message
+        assert json_size_bytes(stored) == RUN_RESULT_MAX_BYTES + delta
+    else:
+        assert stored["answer_body_source"] == "run_events_v4"
+        assert stored["message"] != message
+        assert json_size_bytes(stored) <= RUN_RESULT_MAX_BYTES
+    assert assistant[0][1]["answer_receipt"] == receipt
+    assert assistant[0][0] == (message if len(message.encode("utf-8")) <= MESSAGE_CONTENT_MAX_BYTES else stored["message"])
+    assert command.result_payload == payload
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["invalid", "retryable", "replay", "oversized_metadata"])
+async def test_receipt_budget_preserves_failure_replay_and_rollback(case):
+    from app.execution.api import materialize_worker_answer, AnswerPersistenceLimits
+    from app.executors.base import ExecutorResult
+    from app.streaming.api import AssistantAnswerReceiptError
+    from app.platform.postgres.limits import (
+        MESSAGE_CONTENT_MAX_BYTES, RUN_RESULT_MAX_BYTES, json_size_bytes,
+        ensure_json_size, PersistenceSizeLimitError,
+    )
+
+    writes = []
+    transactions = []
+    captured = []
+    receipt = {"schema_version": "test-receipt", "run_id": "run", "attempt_id": "attempt"}
+
+    @asynccontextmanager
+    async def transaction():
+        pending = []
+        try:
+            yield pending
+        except BaseException:
+            transactions.append("rollback")
+            raise
+        else:
+            transactions.append("commit")
+            writes.extend(pending)
+
+    async def noop(*args, **kwargs):
+        return None
+
+    async def lock_run(*args, **kwargs):
+        return {"status": "succeeded" if case == "replay" else "running"}
+
+    async def load_answer(conn, **kwargs):
+        assert kwargs == {"tenant_id": "tenant", "run_id": "run", "attempt_id": "attempt", "receipt": receipt}
+        if case in {"invalid", "retryable"}:
+            raise AssistantAnswerReceiptError(retryable=case == "retryable")
+        assert case == "oversized_metadata"
+        return SimpleNamespace(text="verified answer")
+
+    async def materialize(capabilities, conn, **kwargs):
+        return await materialize_worker_answer(capabilities, conn, **kwargs, limits=AnswerPersistenceLimits(
+            MESSAGE_CONTENT_MAX_BYTES, RUN_RESULT_MAX_BYTES, json_size_bytes,
+        ))
+
+    async def persist(conn, *args, **kwargs):
+        conn.append("persist")
+
+    class Attempt:
+        async def is_cancel_requested(self, conn):
+            return True
+
+        async def complete(self, conn, **kwargs):
+            assert case == "oversized_metadata"
+            ensure_json_size(kwargs["result_json"], max_bytes=RUN_RESULT_MAX_BYTES, code="run_result_too_large")
+            pytest.fail("oversized non-message metadata must not bypass the Runs limit")
+
+        async def fail(self, conn, **kwargs):
+            assert case == "invalid"
+            captured.append(kwargs)
+            conn.append("failed")
+            return True
+
+        async def classify_success_commit_block(self, conn):
+            assert case == "replay"
+            return "stale_terminal_state"
+
+    service = WorkerResultCommitService(
+        transaction_factory=transaction, lock_run=lock_run,
+        reconciliation_claim_current=noop, materialize_answer=materialize,
+        persist_artifacts=persist, persist_skill_snapshots=persist,
+        persist_assistant=persist, append_user_event=noop,
+        append_hidden_event=noop, persist_failure_event=noop,
+        public_failure_message=lambda result: "safe failure", prefers_cancelled=lambda result: False,
+    )
+    command = WorkerResultCommitCommand(
+        payload=SimpleNamespace(tenant_id="tenant", run_id="run"),
+        result=ExecutorResult(status="succeeded", adapter_version="1", executor_type="test", executor_version="1", capabilities={}, result={}, artifacts=[], executor_payload={"answer_receipt": receipt}),
+        result_payload={"extra": "x" * RUN_RESULT_MAX_BYTES} if case == "oversized_metadata" else {"artifacts": []},
+        artifact_records=[], skill_snapshot={}, terminal_event_kwargs={}, attempt_id="attempt", trace_id="trace",
+    )
+    async def commit():
+        return await service.commit(command, attempt_authority=Attempt(), capabilities=SimpleNamespace(
+            event_persistence=SimpleNamespace(load_answer_by_receipt=load_answer),
+        ), release_runtime_lease=noop)
+
+    if case in {"retryable", "oversized_metadata"}:
+        error_type = AssistantAnswerReceiptError if case == "retryable" else PersistenceSizeLimitError
+        with pytest.raises(error_type):
+            await commit()
+        assert transactions == ["rollback"]
+        assert writes == []
+    else:
+        outcome = await commit()
+        if case == "invalid":
+            assert outcome.status == "failed"
+            assert captured[0]["error_code"] == "assistant_answer_receipt_invalid"
+            assert "cancel_status" not in captured[0]["result_json"]
+            assert "answer_receipt" not in captured[0]["result_json"]
+            assert writes == ["persist", "persist", "failed"]
+        else:
+            assert outcome.status == "skipped"
+            assert writes == []
+            assert transactions == ["rollback", "commit"]
