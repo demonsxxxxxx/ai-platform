@@ -224,7 +224,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_worker.py",
         "tests/test_execution_worker_failure_projection.py",
         "tests/test_execution_worker_observability.py",
-        "tests/test_runtime_token_metrics.py",
+        "tests/test_execution_token_metrics.py",
         "tests/test_terminal_stage_timing.py",
         "tests/test_execution_worker_skill_evidence.py",
         "tests/test_execution_worker_terminal_projection.py",

@@ -4,7 +4,7 @@ from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal, DecimalException
 from typing import Any
 
-from app.runtime.token_metrics import mapped_token_count, sum_token_counts, token_count
+from app.execution.domain.token_metrics import mapped_token_count, sum_token_counts, token_count
 
 
 def _int_payload_value(payload: dict[str, Any], key: str, default: int = 0) -> int:

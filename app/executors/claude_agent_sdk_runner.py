@@ -62,10 +62,10 @@ from app.bootstrap.claude_client import (
     prepare_claude_typed_observations,
     prepare_claude_result_usage,
 )
-from app.runtime.token_metrics import token_count
 from app.execution.api import (
     AUTO_COMPACT_WINDOW_MAX_TOKENS,
     AUTO_COMPACT_WINDOW_MIN_TOKENS,
+    token_count,
     ClaudeSdkAgentEventAdapter,
     ModelTextCheckpoint,
     RunInteractionProtocol,
