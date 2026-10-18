@@ -7956,11 +7956,11 @@ def test_docker_reuse_proof_refresh_threads_current_key_id(monkeypatch, key_id):
 
 @pytest.mark.parametrize("key_id", ["current", "deployment-2026"])
 @pytest.mark.parametrize("mutation", ["none", "wrong_key", "old_key_id", "invalid_key_id", "scope", "expired", "signature"])
-def test_docker_cached_proof_keeps_fail_closed_binding(monkeypatch, key_id, mutation):
+def test_docker_governed_egress_labels_keep_fail_closed_binding(key_id, mutation):
     from app import execution_boundary as proof
+    from app.runtime.sandbox.container_provider import _governed_egress_labels_match
 
     settings = governed_docker_settings(sandbox_egress_proof_key_id=key_id)
-    provider, _fake = _inert_docker_provider(monkeypatch, settings)
     fields = {field: "synthetic-" + field for field in proof._GOVERNED_EGRESS_SUBJECT_FIELDS}
     args = dict(signing_key=settings.sandbox_egress_proof_signing_key, key_id=key_id,
                 provider="docker", network_internal=True, **fields)
@@ -7979,8 +7979,9 @@ def test_docker_cached_proof_keeps_fail_closed_binding(monkeypatch, key_id, muta
         stored["signature"] = "0" * 64
     configured_id = "bad key id" if mutation == "invalid_key_id" else key_id
     label = proof.GOVERNED_EGRESS_PROOF_LABEL
-    result = provider._cached_governed_egress_matches(
-        SimpleNamespace(labels={label: proof.governed_egress_proof_label(stored)}),
+    result = _governed_egress_labels_match(
+        "docker",
+        {label: proof.governed_egress_proof_label(stored)},
         {label: proof.governed_egress_proof_label(expected)},
         settings.sandbox_egress_proof_signing_key,
         signing_key_id=configured_id,

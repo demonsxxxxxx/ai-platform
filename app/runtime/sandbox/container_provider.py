@@ -2435,8 +2435,9 @@ class DockerContainerProvider(DockerLeaseRegistry):
             candidate = lease.model_copy(update={"labels": candidate_labels})
             if not (
                 _status_matches_lease(status, candidate)
-                and self._cached_governed_egress_matches(
-                    candidate,
+                and _governed_egress_labels_match(
+                    "docker",
+                    candidate.labels,
                     lease.labels,
                     getattr(settings, "sandbox_egress_proof_signing_key", ""),
                     signing_key_id=_governed_egress_proof_key_id(settings),
@@ -2556,19 +2557,6 @@ class DockerContainerProvider(DockerLeaseRegistry):
             )
         return container
 
-    def _cached_governed_egress_matches(
-        self,
-        lease: ContainerLease,
-        expected_labels: dict[str, str],
-        signing_key: object,
-        *,
-        signing_key_id: object,
-    ) -> bool:
-        return _governed_egress_labels_match(
-            "docker", lease.labels, expected_labels, signing_key,
-            signing_key_id=signing_key_id,
-        )
-
     @staticmethod
     def _is_exact_owned_remote_container(
         container: Any,
@@ -2646,8 +2634,9 @@ class DockerContainerProvider(DockerLeaseRegistry):
                 container,
             )
             stored_labels = remembered_lease.labels if remembered_lease is not None else _container_labels(container)
-            if not self._cached_governed_egress_matches(
-                candidate.model_copy(update={"labels": stored_labels}),
+            if not _governed_egress_labels_match(
+                "docker",
+                stored_labels,
                 expected_labels,
                 getattr(settings, "sandbox_egress_proof_signing_key", ""),
                 signing_key_id=_governed_egress_proof_key_id(settings),
