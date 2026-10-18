@@ -3,16 +3,10 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from app.capabilities import get_capability
+from app.conversations.api import FileSummary
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 ExecutionPolarity = Literal["affirmative", "non_execution", "unspecified"]
-
-
-@dataclass(frozen=True)
-class FileSummary:
-    file_id: str
-    name: str = ""
-    content_type: str = ""
 
 
 @dataclass(frozen=True)

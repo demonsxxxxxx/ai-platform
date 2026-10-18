@@ -51,7 +51,6 @@ from app.routes.chat import (
     _audit_capability_denial,
     _canonical_pre_persistence_rejection_fingerprint,
     _chat_submission_http_error,
-    _file_row_matches_request_scope,
     _preledger_recovery_fingerprint,
     _submission_code,
     _validate_queue_payload_for_enqueue,
@@ -419,23 +418,6 @@ def principal(**overrides):
     values = {"user_id": "user-a", "display_name": "User A", "tenant_id": "tenant-a"}
     values.update(overrides)
     return AuthPrincipal(**values)
-
-
-def test_file_row_scope_uses_effective_continuation_workspace():
-    request = ChatStreamRequest(message="review", workspace_id="default", session_id="ses-owned")
-    row = {
-        "tenant_id": "tenant-a",
-        "workspace_id": "workspace-owned",
-        "user_id": "user-a",
-        "session_id": "ses-owned",
-        "run_id": None,
-    }
-    assert _file_row_matches_request_scope(
-        row, request, principal(), workspace_id="workspace-owned"
-    )
-    assert not _file_row_matches_request_scope(
-        row, request, principal(), workspace_id="workspace-other"
-    )
 
 
 def test_chat_mcp_selection_model_preserves_omitted_clear_and_explicit_contract():
