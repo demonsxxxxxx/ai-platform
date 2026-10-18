@@ -6,12 +6,19 @@ from app.skills import api as skills_api
 from app.execution.api import select_execution_skill_names
 
 
-def test_retained_execution_imports_delegate_to_owners():
-    assert execution_api.build_artifact_records is artifacts_api.build_artifact_records
-    assert execution_api.promote_artifact_reservations is artifacts_api.promote_artifact_reservations
-    assert execution_api.PinnedSkillMismatch is skills_api.PinnedSkillMismatch
-    assert execution_api.validate_pinned_skill_relative_path is skills_api.validate_pinned_skill_relative_path
-    assert {"build_artifact_records", "promote_artifact_reservations"} <= set(execution_api.__all__)
+@pytest.mark.parametrize(
+    ("owner", "name"),
+    [
+        (artifacts_api, "build_artifact_records"),
+        (artifacts_api, "promote_artifact_reservations"),
+        (skills_api, "PinnedSkillMismatch"),
+        (skills_api, "validate_pinned_skill_relative_path"),
+    ],
+)
+def test_artifact_and_skill_contracts_are_only_exported_by_their_owners(owner, name):
+    assert callable(getattr(owner, name))
+    assert not hasattr(execution_api, name)
+    assert name not in execution_api.__all__
 
 
 @pytest.mark.parametrize(
