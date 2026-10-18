@@ -244,6 +244,8 @@ BACKEND_TEST_SHARDS = {
         "tests/test_run_control_routes.py",
         "tests/test_run_file_continuity_routes.py",
         "tests/test_run_diagnostics.py",
+        "tests/test_run_performance.py",
+        "tests/test_run_performance_routes.py",
         "tests/test_run_persistence.py",
         "tests/test_run_projection.py",
         "tests/test_public_run_outcome.py",
@@ -256,6 +258,7 @@ BACKEND_TEST_SHARDS = {
     ),
     "schema-migrations": (
         "tests/test_run_diagnostics_postgres.py",
+        "tests/test_run_performance_postgres.py",
         "tests/test_schema_migrations.py",
         "tests/test_schema_migrations_postgres.py",
         "tests/test_skill_release_lifecycle_postgres.py",
