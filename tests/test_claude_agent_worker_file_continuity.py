@@ -479,20 +479,21 @@ async def test_materialize_files_cleans_all_written_copies_after_io_failure(
             "storage_key": f"files/{kwargs['file_id']}.docx",
         }
 
-    original_write_bytes = type(workspace).write_bytes
-    original_mkdir = type(workspace).mkdir
+    from app.sandbox.infrastructure import input_materialization as input_owner
+    original_write = input_owner.InputMaterializationBatch.write_file
+    original_mkdir = input_owner.os.mkdir
 
     def fail_inputs_mkdir(path, *args, **kwargs):
-        if path == workspace / "inputs":
+        if path == "inputs":
             raise OSError("simulated workspace directory failure")
         return original_mkdir(path, *args, **kwargs)
 
-    def fail_second_canonical_write(path, content):
-        if path.parent.name == "inputs" and path.name == "file-b.docx":
+    def fail_second_private_write(batch, name, content):
+        if name == "file-b.docx":
             if failure_point == "partial_write":
-                original_write_bytes(path, b"partial")
-            raise OSError("simulated workspace write failure")
-        return original_write_bytes(path, content)
+                original_write(batch, name, b"partial")
+            raise OSError("simulated private stage write failure")
+        return original_write(batch, name, content)
 
     adapter = ClaudeAgentWorkerAdapter()
     monkeypatch.setattr("app.bootstrap.context.ObjectStorage", FakeStorage)
@@ -501,11 +502,10 @@ async def test_materialize_files_cleans_all_written_copies_after_io_failure(
         fake_get_scoped_context_file,
     )
     monkeypatch.setattr("app.bootstrap.context.transaction", fake_transaction)
-    monkeypatch.setattr(
-        type(workspace),
-        "mkdir" if failure_point == "mkdir" else "write_bytes",
-        fail_inputs_mkdir if failure_point == "mkdir" else fail_second_canonical_write,
-    )
+    if failure_point == "mkdir":
+        monkeypatch.setattr(input_owner.os, "mkdir", fail_inputs_mkdir)
+    else:
+        monkeypatch.setattr(input_owner.InputMaterializationBatch, "write_file", fail_second_private_write)
 
     with pytest.raises(
         ContextFileContentError,

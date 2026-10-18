@@ -8,9 +8,11 @@ from app.context.retrieval import (
 )
 from app.db import transaction
 from app.storage import ObjectStorage, ObjectStorageSizeLimitError, run_storage_io
+from app.platform.storage_io_completion import StorageIOCompletion
 from app.context.infrastructure import snapshot_postgres as context_snapshot_postgres
 from app.context.infrastructure import sources_postgres as context_sources_postgres
 from app.context.file_continuity import materialize_run_context_files
+from app.sandbox.infrastructure.input_materialization import InputMaterializationBatch
 from app.context_builder import ensure_public_context_provenance
 from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION, sanitize_context_manifest_payload
 from app.control_plane_contracts import CONTEXT_SNAPSHOT_SCHEMA_VERSION
@@ -70,6 +72,8 @@ async def materialize_worker_context_files(*, payload, workspace: Path):
         repository=context_sources_postgres,
         transaction_factory=transaction, storage=ObjectStorage(), storage_io=run_storage_io,
         storage_size_limit_error=ObjectStorageSizeLimitError, workspace=workspace,
+        input_batch_factory=InputMaterializationBatch,
+        storage_completion_factory=StorageIOCompletion,
         tenant_id=payload.tenant_id, workspace_id=payload.workspace_id,
         user_id=payload.user_id, session_id=payload.session_id,
         run_id=payload.run_id, file_ids=payload.file_ids,

@@ -50,7 +50,7 @@ def _validate_identity(row: dict[str, Any], raw: bytes) -> None:
         raise ContextFileContentError("context_file_identity_mismatch")
 
 
-def _declared_as_xlsx(row: dict[str, Any]) -> bool:
+def declared_as_xlsx(row: dict[str, Any]) -> bool:
     name = row.get("original_name") or row.get("name")
     return (
         _extension(name) == ".xlsx"
@@ -240,5 +240,5 @@ def validate_context_file_for_stage(row: dict[str, Any], raw: bytes) -> None:
     if len(raw) > MAX_CONTEXT_FILE_STAGE_BYTES:
         raise ContextFileContentError("context_file_too_large")
     _validate_identity(row, raw)
-    if _declared_as_xlsx(row):
+    if declared_as_xlsx(row):
         _validate_xlsx_archive_security(raw)

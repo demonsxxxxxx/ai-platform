@@ -2,6 +2,9 @@ from contextlib import asynccontextmanager
 
 import pytest
 
+from app.sandbox.infrastructure.input_materialization import InputMaterializationBatch
+from app.platform.storage_io_completion import StorageIOCompletion
+
 from app.context.file_continuity import materialize_run_context_files
 
 
@@ -37,11 +40,10 @@ async def test_materialize_run_context_files_disambiguates_duplicate_names(tmp_p
     async def transaction_factory():
         yield object()
 
-    async def storage_io(operation, *args, **kwargs):
-        return operation(*args, **kwargs)
+    from app.storage import run_storage_io as storage_io
 
     result = await materialize_run_context_files(
-        transaction_factory=transaction_factory,
+        input_batch_factory=InputMaterializationBatch, storage_completion_factory=StorageIOCompletion, transaction_factory=transaction_factory,
         repository=Repository(),
         storage=Storage(),
         storage_io=storage_io,
