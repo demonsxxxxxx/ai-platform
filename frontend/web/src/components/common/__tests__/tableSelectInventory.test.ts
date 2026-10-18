@@ -75,3 +75,28 @@ test("active table/select consumers use Lobe UI and retain document-renderer sem
   assert.equal(existsSync(join(root, "components/documents/previews/MermaidDiagram.tsx")), false);
   assert.match(readFileSync(join(root, "components/documents/previews/MarkdownRenderer.tsx"), "utf8"), /MarkdownContent/);
 });
+
+test("retired department CSS stays absent while both owners retain the Lobe directory selector", () => {
+  const root = join(process.cwd(), "src");
+  const css = readFileSync(join(root, "styles/skill.css"), "utf8");
+  assert.doesNotMatch(css, /\.department-selector(?:__[\w-]+)?(?![\w-])/);
+  assert.match(css, /\.skill-authority-rail\b/);
+  const selector = readFileSync(join(root, "components/panels/DepartmentDirectorySelector.tsx"), "utf8");
+  assert.match(selector, /from "@lobehub\/ui\/base-ui"/);
+  for (const control of ["SelectRoot", "SelectTrigger", "SelectPortal", "SelectPositioner", "SelectPopup", "SelectList", "SelectItem", "SelectItemIndicator"]) {
+    assert.match(selector, new RegExp(`<${control}\\b`), control);
+  }
+  assert.match(selector, /data-department-directory-selector/);
+  assert.match(selector, /data-department-directory-popup/);
+  assert.doesNotMatch(selector, /department-selector/);
+  for (const owner of [
+    "components/panels/SkillDistributionGovernancePanel.tsx",
+    "features/agent-builder/AgentBuilderEnterpriseFields.tsx",
+  ]) {
+    const source = readFileSync(join(root, owner), "utf8");
+    assert.match(source, /<DepartmentDirectorySelector\b/, owner);
+    assert.match(source, /directory=\{directory\}/, owner);
+    assert.match(source, /loadError=\{directoryError\}/, owner);
+    assert.match(source, /selectedAuthorityIds=\{(?:draft\.departmentIds|editor\.allowedDepartmentIds)\}/, owner);
+  }
+});

@@ -31,11 +31,12 @@ test("librechat-ui is a pinned pure UI upstream module", () => {
     "src/librechat-ui/Chips.tsx",
     "src/librechat-ui/CommandMenu.tsx",
     "src/librechat-ui/StateSurface.tsx",
-    "src/librechat-ui/index.ts",
     "src/librechat-ui/NOTICE.md",
   ]) {
     assert.equal(existsSync(join(root, path)), true, `${path} should exist`);
   }
+
+  assert.equal(existsSync(join(root, "src/librechat-ui/index.ts")), false);
 
   const source = read("src/librechat-ui/source.ts");
   assert.match(source, /https:\/\/github\.com\/danny-avila\/LibreChat/);

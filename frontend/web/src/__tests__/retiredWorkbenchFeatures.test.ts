@@ -45,7 +45,6 @@ test("unimplemented feedback and announcements have no production clients or ent
     "src/components/layout/UserMenu.tsx",
     "src/components/panels/SidebarParts/SidebarRail.tsx",
     "src/components/panels/SidebarParts/SessionListContent.tsx",
-    "src/components/chat/ChatInputShortcuts.tsx",
     "src/components/chat/AgentOptionButton.tsx",
   ]) {
     assert.doesNotMatch(read(path), /feedback|notifications|notifDialog|activeNotifCount/i, path);
@@ -85,4 +84,27 @@ test("browser smoke fixtures no longer conceal announcement API calls", () => {
   ]) {
     assert.doesNotMatch(read(path), /pathname\.includes\(["']notification["']\)/);
   }
+});
+
+test("unconsumed skill views, chat help and LibreChat compatibility exports are retired", () => {
+  for (const path of [
+    "src/services/api/workbench.ts",
+    "src/components/chat/ChatMessage/items/toolUtils.ts",
+    "src/components/panels/AvailableSkillsPanel.tsx",
+    "src/components/skill/SkillCard.tsx",
+    "src/components/chat/ChatInputHelpMenu.tsx",
+    "src/components/chat/ChatInputShortcuts.tsx",
+    "src/components/librechatShell/LibreChatPanel.tsx",
+    "src/components/librechatShell/LibreChatRail.tsx",
+    "src/components/librechatShell/LibreChatShell.tsx",
+    "src/components/librechatShell/LibreChatSidePanel.tsx",
+    "src/components/librechatShell/libreChatSurface.ts",
+    "src/librechat-ui/index.ts"
+]) {
+    assert.equal(existsSync(join(root, path)), false, path);
+  }
+});
+
+test("retired skill-card projection does not survive without a production consumer", () => {
+  assert.doesNotMatch(read("src/components/panels/ordinaryCatalogPolicy.ts"), /OrdinarySkillCatalogItem|normalizedStrings/);
 });

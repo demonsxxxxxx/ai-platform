@@ -346,3 +346,43 @@ test("controlled open releases the lease before unmount and custom close notifie
     await escape(); assert.deepEqual(events, ["user", "close", "user", "close"]);
   } finally { await view.close(); }
 });
+
+test("active document video host renders owned bytes and releases them after close", async () => {
+  const originalCreate = URL.createObjectURL;
+  const originalRevoke = URL.revokeObjectURL;
+  const revoked: string[] = [];
+  URL.createObjectURL = () => "blob:synthetic-document-video";
+  URL.revokeObjectURL = (url) => revoked.push(url);
+  const requests: string[] = [];
+  const view = await harness((async (input: RequestInfo | URL) => {
+    requests.push(String(input));
+    return new Response("synthetic video bytes", { headers: { "Content-Type": "video/mp4" } });
+  }) as typeof fetch);
+  try {
+    await view.render(createElement(AttachmentPreviewHost));
+    await act(async () => attachment.openAttachmentPreview({
+      id: "video-fixture", type: "document", key: "video-fixture",
+      name: "synthetic.mp4", size: 32, mimeType: "video/mp4",
+      url: "/api/ai/files/video-fixture/preview",
+      downloadUrl: "/api/ai/files/video-fixture/download",
+    }, "chat-input"));
+    for (let attempt = 0; attempt < 100 && !document.querySelector("video"); attempt++) {
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
+    }
+    const video = document.querySelector("video");
+    assert.ok(video);
+    assert.equal(video.getAttribute("src"), "blob:synthetic-document-video");
+    assert.equal(video.controls, true);
+    assert.equal(video.autoplay, false);
+    assert.ok(requests.includes("/api/ai/files/video-fixture/preview"));
+    assert.equal(requests.some(url => url.endsWith("/download")), false);
+    assert.deepEqual(revoked, []);
+    await act(async () => attachment.closeAttachmentPreview());
+    assert.equal(document.querySelector("video"), null);
+    assert.deepEqual(revoked, ["blob:synthetic-document-video"]);
+  } finally {
+    await view.close();
+    URL.createObjectURL = originalCreate;
+    URL.revokeObjectURL = originalRevoke;
+  }
+});

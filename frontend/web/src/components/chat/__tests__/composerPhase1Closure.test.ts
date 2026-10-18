@@ -138,7 +138,6 @@ test("composer model selector uses restrained workbench overlay styling", () => 
 test("authenticated workbench popovers avoid legacy heavy overlays", () => {
   const activePopoverFiles = [
     "src/components/chat/AgentOptionButton.tsx",
-    "src/components/chat/ChatInputShortcuts.tsx",
     "src/components/layout/UserMenu.tsx",
     "src/components/selectors/SkillSelector.tsx",
     "src/components/selectors/ToolSelector.tsx",

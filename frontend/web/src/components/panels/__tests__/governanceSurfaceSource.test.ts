@@ -41,18 +41,13 @@ test("skills hub exposes governed catalog status without composer help copy", ()
   assert.match(source, /<SkillsPanel[\s\S]*allAuthorizedCatalog/);
   assert.doesNotMatch(source, /AvailableSkillsPanel/);
 
-  const ordinarySkills = readFileSync(
-    join(root, "src/components/panels/AvailableSkillsPanel.tsx"),
-    "utf8",
-  );
-  assert.match(ordinarySkills, /data-ordinary-skills-catalog/);
-  assert.match(ordinarySkills, /useSkills\(\{ allAuthorizedCatalog: true \}\)/);
-  assert.match(ordinarySkills, /skills\.available\.title/);
+  const ordinarySkills = readFileSync(join(root, "src/components/panels/SkillsPanel/index.tsx"), "utf8");
   assert.match(ordinarySkills, /skills\.available\.fileTypes/);
-  assert.doesNotMatch(
-    ordinarySkills,
-    /expected_version|file_count|skill\.content|skill\.files|is_published|marketplace_is_active/,
-  );
+  // The public effective version is allowed; private file/source metadata is not rendered.
+  // The real API-to-host boundary and role matrix are exercised by SkillsCatalogPublicHost.
+  assert.match(ordinarySkills, /selectedSkill\.expected_version/);
+  assert.match(ordinarySkills, /isAiAdmin &&/);
+  assert.doesNotMatch(ordinarySkills, /selectedSkill\.(?:content|files|source|private_manifest|storage_key|runtime_path)/);
 });
 
 test("mcp panel gives AI admins lifecycle controls while keeping the ordinary directory redacted", () => {
