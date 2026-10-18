@@ -3,14 +3,17 @@ import { useCallback, useRef, useState, type Dispatch, type SetStateAction } fro
 /** Browser-local presentation preference; it is not a user profile fact. */
 export const SIDEBAR_COLLAPSED_STORAGE_KEY = "ai-platform-sidebar-collapsed";
 
+/** Read without writing or subscribing; unavailable storage means expanded. */
+export function readSidebarCollapsedPreference(): boolean {
+  try {
+    return localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
 export function useSidebarPreference(): [boolean, Dispatch<SetStateAction<boolean>>] {
-  const [collapsed, setCollapsed] = useState(() => {
-    try {
-      return localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === "true";
-    } catch {
-      return false;
-    }
-  });
+  const [collapsed, setCollapsed] = useState(readSidebarCollapsedPreference);
   const current = useRef(collapsed);
   const setPreference = useCallback<Dispatch<SetStateAction<boolean>>>((value) => {
     const next = typeof value === "function" ? value(current.current) : value;

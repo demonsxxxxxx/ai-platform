@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import { createRequire } from "node:module";
+import type { ReactElement, ReactNode } from "react";
+import ts from "typescript";
 
 import type { BackendSession } from "../../../../services/api.ts";
 import { groupSessionsByAgent } from "../../sessionHelpers.ts";
@@ -110,4 +113,82 @@ test("session history has no detached preview with its own event projection", ()
     existsSync(join(process.cwd(), "src/components/sidebar/SessionPreviewDialog.tsx")),
     false,
   );
+});
+
+// Exercise the local helper without adding an exported production seam or mocking
+// React hooks. The owning source remains the executable body under test.
+function historyCatalogSource() {
+  const source = readFileSync(
+    join(process.cwd(), "src/components/panels/SidebarParts/SessionListContent.tsx"),
+    "utf8",
+  );
+  return ts.createSourceFile("SessionListContent.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+}
+
+function historyCatalog(collapsed: boolean, loadingCalls: () => ReactNode) {
+  const source = historyCatalogSource();
+  let initializer: ts.Expression | undefined;
+  const visit = (node: ts.Node) => {
+    if (ts.isVariableDeclaration(node) && node.name.getText(source) === "renderHistoryCatalog") {
+      initializer = node.initializer;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  assert.ok(initializer);
+  const compiled = ts.transpileModule(`export const renderHistoryCatalog = ${initializer.getText(source)};`, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2020 },
+  }).outputText;
+  const exports: { renderHistoryCatalog?: (
+    label: string, loading: boolean, hasHistory: boolean, unread: number, content: () => ReactNode,
+  ) => ReactElement<{ children: ReactNode[] }> | null } = {};
+  new Function("isChatsCollapsed", "renderLoadingSessions", "onToggleChatsCollapsed", "formatUnreadCount", "ChevronDown", "require", "exports", compiled)(
+    collapsed, loadingCalls, () => {}, String, "chevron-test", createRequire(import.meta.url), exports,
+  );
+  assert.ok(exports.renderHistoryCatalog);
+  return exports.renderHistoryCatalog;
+}
+
+for (const collapsed of [false, true]) {
+  for (const loading of [false, true]) {
+    for (const hasHistory of [false, true]) {
+      test(`history factory calls: collapsed=${collapsed}, loading=${loading}, history=${hasHistory}`, () => {
+        let contentCalls = 0;
+        let skeletonCalls = 0;
+        const content = ["first session", "second session"];
+        const catalog = historyCatalog(collapsed, () => { skeletonCalls += 1; return "loading"; });
+        const rendered = catalog("History", loading, hasHistory, 3, () => {
+          contentCalls += 1;
+          assert.equal(collapsed || loading || !hasHistory, false, "Hidden content must never be constructed");
+          return content;
+        });
+        const shouldConstruct = !collapsed && !loading && hasHistory;
+        assert.equal(contentCalls, shouldConstruct ? 1 : 0);
+        assert.equal(skeletonCalls, !collapsed && loading ? 1 : 0);
+        if (!hasHistory && !loading) {
+          assert.equal(rendered, null);
+        } else {
+          assert.ok(rendered);
+          assert.equal(rendered.props.children[1], collapsed ? null : loading ? "loading" : content);
+        }
+      });
+    }
+  }
+}
+
+test("all four catalog callers pass task/global factories without eager invocation", () => {
+  const source = historyCatalogSource();
+  const factories: string[] = [];
+  const visit = (node: ts.Node) => {
+    if (ts.isCallExpression(node) && node.expression.getText(source) === "renderHistoryCatalog") {
+      assert.equal(node.arguments.length, 5);
+      factories.push(node.arguments[4].getText(source));
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  assert.deepEqual(factories, [
+    "renderGlobalSessionGroups", "renderTaskHistory", "renderGlobalSessionGroups",
+    "agentWorkspace ? renderTaskHistory : renderGlobalSessionGroups",
+  ]);
 });

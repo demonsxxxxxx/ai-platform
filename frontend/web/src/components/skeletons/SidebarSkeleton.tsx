@@ -1,12 +1,9 @@
 import { Skeleton } from "@lobehub/ui/base-ui";
-import { SIDEBAR_COLLAPSED_STORAGE_KEY } from "../../hooks/useSidebarPreference";
+import { readSidebarCollapsedPreference } from "../../hooks/useSidebarPreference";
 
 /** Sidebar skeleton — matches real SessionSidebar layout */
 export function SidebarSkeleton() {
-  const collapsed = (() => {
-    const saved = localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY);
-    return saved !== null ? saved === "true" : true;
-  })();
+  const collapsed = readSidebarCollapsedPreference();
 
   if (collapsed) {
     return <SidebarRailSkeleton />;

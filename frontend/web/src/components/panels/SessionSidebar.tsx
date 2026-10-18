@@ -226,6 +226,16 @@ export const SessionSidebar = forwardRef<
     sessionId: string | null;
   }>({ isOpen: false, sessionId: null });
 
+  const [isDeletingSession, setIsDeletingSession] = useState(false);
+  const deleteRequestRef = useRef<object | null>(null);
+  // A new list owner starts a new deletion lifecycle. A request from the old
+  // owner may finish, but must not close or unlock the new owner's dialog.
+  useLayoutEffect(() => {
+    setIsDeletingSession(false);
+    setDeleteConfirm({ isOpen: false, sessionId: null });
+    return () => { deleteRequestRef.current = null; };
+  }, [sessionList.removeSession]);
+
   const deleteOwnerRef = useRef<{ removeSession: (id: string) => void; currentSessionId: string | null; onNewSession: () => void } | null>(null);
   useLayoutEffect(() => {
     deleteOwnerRef.current = { removeSession: sessionList.removeSession, currentSessionId, onNewSession };
@@ -234,21 +244,35 @@ export const SessionSidebar = forwardRef<
 
   const confirmDeleteSession = async () => {
     const sessionId = deleteConfirm.sessionId;
-    if (!sessionId) return;
+    if (
+      !sessionId || deleteRequestRef.current ||
+      deleteOwnerRef.current?.removeSession !== sessionList.removeSession
+    ) return;
+    const request = {};
+    deleteRequestRef.current = request;
+    setIsDeletingSession(true);
     try {
       await sessionApi.delete(sessionId);
+      if (deleteRequestRef.current !== request) return;
       const owner = deleteOwnerRef.current;
       if (!owner || owner.removeSession !== sessionList.removeSession) return;
       owner.removeSession(sessionId);
       if (owner.currentSessionId === sessionId) owner.onNewSession();
       toast.success(t("sidebar.sessionDeleted"));
     } catch (err) {
-      if (deleteOwnerRef.current?.removeSession !== sessionList.removeSession) return;
+      if (
+        deleteRequestRef.current !== request ||
+        deleteOwnerRef.current?.removeSession !== sessionList.removeSession
+      ) return;
       console.error("Failed to delete session:", err);
       toast.error(t("sidebar.deleteFailed"));
     } finally {
-      if (deleteOwnerRef.current?.removeSession === sessionList.removeSession) {
-        setDeleteConfirm({ isOpen: false, sessionId: null });
+      if (deleteRequestRef.current === request) {
+        deleteRequestRef.current = null;
+        setIsDeletingSession(false);
+        setDeleteConfirm((current) => current.sessionId === sessionId
+          ? { isOpen: false, sessionId: null }
+          : current);
       }
     }
   };
@@ -354,8 +378,11 @@ export const SessionSidebar = forwardRef<
 
   const sessionActions: SessionActions = useMemo(
     () => ({
-      onDeleteSession: (id) =>
-        setDeleteConfirm({ isOpen: true, sessionId: id }),
+      onDeleteSession: (id) => {
+        if (!deleteRequestRef.current) {
+          setDeleteConfirm({ isOpen: true, sessionId: id });
+        }
+      },
       onSelectSession: selectAndClose,
     }),
     [selectAndClose],
@@ -544,6 +571,7 @@ export const SessionSidebar = forwardRef<
 
       {isSearchOpen && !agentWorkspace && !navigationOnly && (
         <SearchDialog
+          key={JSON.stringify([user?.tenant_id, user?.id])}
           isOpen={isSearchOpen}
           onClose={() => setIsSearchOpen(false)}
           onSelectSession={(sessionId) => {
@@ -560,7 +588,12 @@ export const SessionSidebar = forwardRef<
         confirmText={t("common.delete")}
         cancelText={t("common.cancel")}
         onConfirm={confirmDeleteSession}
-        onCancel={() => setDeleteConfirm({ isOpen: false, sessionId: null })}
+        onCancel={() => {
+          if (!deleteRequestRef.current) {
+            setDeleteConfirm({ isOpen: false, sessionId: null });
+          }
+        }}
+        loading={isDeletingSession}
         variant="danger"
       />
 

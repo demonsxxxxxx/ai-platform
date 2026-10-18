@@ -12,6 +12,10 @@ is the frontend, not the authenticated principal or profile metadata service.
 - `useSidebarPreference` owns `ai-platform-sidebar-collapsed`, defaults the
   application shell to expanded, and persists explicit changes. AppContent,
   Agent Builder, Agent Market, and Agent Workspace share this owner.
+  `readSidebarCollapsedPreference` is the shared, safe read-only initializer
+  for this hook and SidebarSkeleton, including route-loading fallbacks. Only
+  the exact stored string `true` collapses; missing/invalid values or unavailable
+  storage keep both expanded. Skeletons neither persist nor subscribe to state.
 - Storage failures do not prevent the current tab from changing presentation.
   These preferences are deliberately shared by users of the same browser;
   they are not account-scoped server facts or cross-device synchronization.
@@ -37,3 +41,9 @@ change identity or authorization, or change PWA/notification behavior.
 coverage: OS-derived initialization, OS changes, explicit choice, remount,
 legacy values, local sidebar changes, no metadata writes, and listener cleanup.
 The existing workbench source assertions now point to the local sidebar owner.
+
+Sidebar fallback regression coverage includes stored values, missing keys, blocked
+storage getters/reads and absent storage, plus a no-window SSR projection. The
+former independent skeleton default/read is retired; the existing preference
+key and explicit-change writer remain the compatibility owner. Mounted synthetic
+DOM checks do not certify browser layout or real-service loading behavior.

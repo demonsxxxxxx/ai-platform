@@ -229,8 +229,15 @@ const ExcalidrawPreview = memo(function ExcalidrawPreview({
       if (svgElement) {
         const containerWidth = container.clientWidth;
         const containerHeight = container.clientHeight;
-        const svgWidth = svgElement.getBoundingClientRect().width;
-        const svgHeight = svgElement.getBoundingClientRect().height;
+        // Layout dimensions exclude the parent's transform, including any
+        // in-flight zoom transition. DOMRect would include that current scale.
+        const svgWidth = svgElement.clientWidth;
+        const svgHeight = svgElement.clientHeight;
+        if (
+          containerWidth <= 0 || containerHeight <= 0 ||
+          !Number.isFinite(svgWidth) || !Number.isFinite(svgHeight) ||
+          svgWidth <= 0 || svgHeight <= 0
+        ) return;
 
         const scaleX = containerWidth / svgWidth;
         const scaleY = containerHeight / svgHeight;

@@ -6,7 +6,7 @@ import { Button, Input, Spin, ModalRoot, ModalPortal, ModalBackdrop, ModalPopup,
  * (↑/↓/Enter/Escape), infinite scroll, smooth scrolling.
  */
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useInView } from "react-intersection-observer";
 import { useTranslation } from "react-i18next";
 import { Search, X, Hash } from "lucide-react";
@@ -42,7 +42,9 @@ export function SearchDialog({
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(false);
-  const [skip, setSkip] = useState(0);
+  const [failed, setFailed] = useState(false);
+  const requestRef = useRef<((reset: boolean) => void) | null>(null);
+  const wasOpenRef = useRef(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [skeletonVisible, setSkeletonVisible] = useState(false);
 
@@ -52,38 +54,47 @@ export function SearchDialog({
     rootMargin: "200px",
   });
 
-  useEffect(() => {
-    if (isOpen) { setAllSessions([]); setSkip(0); setHasMore(false); }
-  }, [isOpen]);
-
   // ── Reset active index when results change ─────────────────────
   useEffect(() => {
     setActiveIndex(-1);
     itemRefs.current.clear();
   }, [allSessions]);
 
-  // ── Fetch sessions (search or initial) ─────────────────────────
-  const fetchSessions = useCallback(
-    async (reset = false) => {
-      const targetSkip = reset ? 0 : skip;
-      if (!reset && (isLoadingMore || !hasMore)) return;
+  // One owner per open/query generation owns both reset and pagination.
+  // Cleanup invalidates receipts (including finally/RAF), independently of abort.
+  useEffect(() => {
+    const opening = isOpen && !wasOpenRef.current;
+    wasOpenRef.current = isOpen;
+    if (!isOpen) return;
 
+    const owner = { current: true, busy: false, skip: 0, hasMore: false };
+    const q = searchQuery.trim();
+    setAllSessions([]);
+    setHasMore(false);
+    setFailed(false);
+    setIsLoading(true);
+    setIsLoadingMore(false);
+    setSkeletonVisible(true);
+
+    async function fetchSessions(reset: boolean) {
+      if (!owner.current || owner.busy || (!reset && !owner.hasMore)) return;
+      owner.busy = true;
+      const targetSkip = reset ? 0 : owner.skip;
+      setFailed(false);
       if (reset) {
         setIsLoading(true);
         setSkeletonVisible(true);
       } else {
         setIsLoadingMore(true);
       }
-
       try {
-        const q = searchQuery.trim();
         const response = await sessionApi.list({
           limit: PAGE_SIZE,
           skip: targetSkip,
           status: "active",
           ...(q ? { search: q } : {}),
         });
-
+        if (!owner.current) return;
         const newSessions =
           "sessions" in response
             ? response.sessions
@@ -91,8 +102,6 @@ export function SearchDialog({
               ? response
               : [];
         const newHasMore = "has_more" in response ? response.has_more : false;
-
-        // Map to SearchResult (no project info from global search)
         const results: SearchResult[] = newSessions.map((s) => ({
           session: s,
           projectName:
@@ -100,57 +109,43 @@ export function SearchDialog({
               | string
               | null) ?? null,
         }));
-
-        if (reset) {
-          setAllSessions(results);
-          setSkip(results.length);
-        } else {
-          setAllSessions((prev) => [...prev, ...results]);
-          setSkip(targetSkip + results.length);
-        }
-        setHasMore(newSessions.length > 0 ? newHasMore : false);
+        setAllSessions((previous) => reset ? results : [...previous, ...results]);
+        owner.skip = targetSkip + results.length;
+        owner.hasMore = newSessions.length > 0 ? newHasMore : false;
+        setHasMore(owner.hasMore);
       } catch {
-        // silently fail
+        if (owner.current) setFailed(true);
       } finally {
-        setIsLoading(false);
-        setIsLoadingMore(false);
-        if (reset) {
-          requestAnimationFrame(() => setSkeletonVisible(false));
+        if (owner.current) {
+          owner.busy = false;
+          setIsLoading(false);
+          setIsLoadingMore(false);
+          if (reset) {
+            requestAnimationFrame(() => {
+              if (owner.current) setSkeletonVisible(false);
+            });
+          }
         }
       }
-    },
-    [searchQuery, skip, isLoadingMore, hasMore],
-  );
-
-  // ── Fetch on open (initial load) ───────────────────────────────
-  useEffect(() => {
-    if (isOpen) {
-      fetchSessions(true);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen]);
 
-  // ── Debounced search ───────────────────────────────────────────
-  const debounceTimerRef = useRef<ReturnType<typeof setTimeout>>(null);
-  useEffect(() => {
-    if (!isOpen) return;
-    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
-    debounceTimerRef.current = setTimeout(() => {
-      fetchSessions(true);
-    }, 200);
+    requestRef.current = fetchSessions;
+    // Opening already performs the initial load; only input edits debounce.
+    const timer = opening ? null : setTimeout(() => fetchSessions(true), 200);
+    if (opening) void fetchSessions(true);
     return () => {
-      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+      owner.current = false;
+      requestRef.current = null;
+      if (timer !== null) clearTimeout(timer);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchQuery]);
+  }, [isOpen, searchQuery]);
 
-  // ── Infinite scroll trigger ────────────────────────────────────
+  // Failed pages wait for an explicit retry instead of a visible sentinel loop.
   useEffect(() => {
-    if (inView && hasMore && !isLoadingMore && !isLoading) {
-      fetchSessions(false);
+    if (isOpen && inView && hasMore && !failed && !isLoadingMore && !isLoading) {
+      requestRef.current?.(false);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [inView, hasMore, isLoadingMore, isLoading]);
+  }, [isOpen, inView, hasMore, failed, isLoadingMore, isLoading]);
 
   // ── Keyboard navigation ────────────────────────────────────────
   useEffect(() => {
@@ -268,7 +263,7 @@ export function SearchDialog({
               }`}
             >
               {/* Empty search results */}
-              {hasQuery && allSessions.length === 0 && (
+              {!failed && hasQuery && allSessions.length === 0 && (
                 <div className="px-4 py-10 text-center">
                   <p className="text-sm text-stone-400 dark:text-stone-500">
                     {t("sidebar.noSearchResults")}
@@ -328,6 +323,12 @@ export function SearchDialog({
                   </Button>
                 );
               })}
+
+              {failed && (
+                <Button type="text" onClick={() => requestRef.current?.(allSessions.length === 0)}>
+                  {t("common.retry", "Retry")}
+                </Button>
+              )}
 
               {/* Infinite scroll sentinel */}
               {hasMore && (

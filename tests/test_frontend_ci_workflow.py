@@ -158,6 +158,21 @@ def test_frontend_ci_runs_browser_auth_owner_regressions():
         assert (PACKAGE.parent / selector).is_file()
 
 
+def test_frontend_ci_runs_browser_preference_owner_regressions():
+    scripts = json.loads(PACKAGE.read_text(encoding="utf-8"))["scripts"]
+    assert scripts["ci:verify"].split(" && ").count("corepack pnpm run test:browser-preferences") == 1
+    assert scripts["test:browser-preferences"].split() == [
+        "node", "--import", "tsx", "--import", "./scripts/lobe-ui-test-setup.mjs",
+        "--test", "--test-concurrency=2",
+        "src/contexts/__tests__/BrowserPreferences.mounted.test.tsx",
+        "src/contexts/__tests__/SidebarPreference.mounted.test.tsx",
+        "src/utils/__tests__/themeDom.test.ts",
+        "src/features/agent-builder/__tests__/AgentBuilderShell.test.tsx",
+    ]
+    for selector in scripts["test:browser-preferences"].split()[7:]:
+        assert (PACKAGE.parent / selector).is_file()
+
+
 def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability():
     workflow = WORKFLOW.read_text(encoding="utf-8")
     backend_workflow = BACKEND_WORKFLOW.read_text(encoding="utf-8")
@@ -173,6 +188,8 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
         "src/components/layout/AppContent/__tests__/useSessionSync.test.ts",
         "src/components/layout/AppContent/__tests__/chatViewMessageListKey.test.ts",
         "src/hooks/__tests__/useSession.test.ts",
+        "src/components/panels/__tests__/SessionSidebarDelete.mounted.test.tsx",
+        "src/components/panels/__tests__/SearchDialog.mounted.test.tsx",
         "src/hooks/useAgent/__tests__/runControlLifecycle.test.ts",
         "src/hooks/useAgent/runControlLifecycle.test.ts",
         "src/hooks/useAgent/__tests__/runLifecycle.test.ts",
