@@ -1939,6 +1939,7 @@ def _safe_platform_resource_probe_from_result(
     platform_resource_timeout_probe: bool,
     requested_max_seconds: float,
     runtime_identity: dict[str, Any],
+    cleanup_observation: dict[str, object] | None = None,
 ) -> dict[str, Any]:
     if not platform_resource_timeout_probe:
         return {}
@@ -1966,6 +1967,9 @@ def _safe_platform_resource_probe_from_result(
         or not runtime_subject
     ):
         return {}
+    # Only the same invocation's exact-container readback attests deletion.
+    # A released lease (including run_failed) is not deletion evidence.
+    cleanup = dict(cleanup_observation or {"result": "unverified"})
     probe = {
         "probe_kind": "platform_executor_deadline",
         "run_id": run_id,
@@ -1976,7 +1980,9 @@ def _safe_platform_resource_probe_from_result(
         "requested_max_seconds": float(requested_max_seconds),
         "observed_timeout_elapsed_ms": int(observed_elapsed_ms),
         "max_seconds_enforced": True,
-        "over_limit_cleanup_verified": True,
+        "over_limit_cleanup_verified": cleanup.get("result") == "confirmed"
+        and cleanup.get("post_cleanup_query_succeeded") is True,
+        "over_limit_cleanup": cleanup,
     }
     return probe
 
@@ -2346,6 +2352,8 @@ def _platform_hardening_evidence(
     if resource_probe.get("probe_kind") == "platform_executor_deadline":
         resource_limits_evidence.update(
             {
+                **({"over_limit_cleanup": resource_probe["over_limit_cleanup"]}
+                   if "over_limit_cleanup" in resource_probe else {}),
                 "over_limit_probe_kind": "platform_executor_deadline",
                 "over_limit_requested_max_seconds": resource_probe.get("requested_max_seconds"),
                 "over_limit_observed_timeout_elapsed_ms": resource_probe.get("observed_timeout_elapsed_ms"),
@@ -2391,6 +2399,8 @@ def _platform_hardening_evidence(
             if resource_probe.get("max_seconds_enforced") is True
             else "",
             "failed_container_removed": resource_probe.get("over_limit_cleanup_verified") is True,
+            **({"failed_container_cleanup": resource_probe["over_limit_cleanup"]}
+               if "over_limit_cleanup" in resource_probe else {}),
             "requested_max_seconds": resource_probe.get("requested_max_seconds"),
             "observed_timeout_elapsed_ms": resource_probe.get("observed_timeout_elapsed_ms"),
             "run_id": str(resource_probe.get("run_id") or ""),
@@ -2723,6 +2733,7 @@ def run_platform_runtime_probe(
         run_id=recorder.run_id,
         result=result,
         release_reason=captured.get("release_reason"),
+        cleanup_observation=cleanup_observation,
         platform_resource_timeout_probe=platform_resource_timeout_probe,
         requested_max_seconds=PLATFORM_DEADLINE_PROBE_SECONDS,
         runtime_identity=_runtime_identity_from_docker_inspect(
@@ -2786,6 +2797,8 @@ def _runtime_probe_results_payload(*, run_id: str, hardening: dict[str, Any]) ->
         "source": "platform_runtime_probe",
         "resource_limits": {
             "over_limit_cleanup_verified": resource_limits.get("over_limit_cleanup_verified") is True,
+            **({"over_limit_cleanup": resource_limits["over_limit_cleanup"]}
+               if "over_limit_cleanup" in resource_limits else {}),
             "probe_kind": str(resource_limits.get("over_limit_probe_kind") or ""),
             "run_id": str(resource_limits.get("timeout_probe_run_id") or ""),
             "probe_source": str(resource_limits.get("timeout_probe_source") or ""),

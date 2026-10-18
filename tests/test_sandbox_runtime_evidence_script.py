@@ -1999,7 +1999,8 @@ def test_platform_resource_probe_derivation_requires_explicit_timeout_probe():
         "requested_max_seconds": 0.05,
         "observed_timeout_elapsed_ms": 51,
         "max_seconds_enforced": True,
-        "over_limit_cleanup_verified": True,
+        "over_limit_cleanup_verified": False,
+        "over_limit_cleanup": {"result": "unverified"},
     }
     observed_with_projection = generator._safe_platform_resource_probe_from_result(
         run_id="run-a",
@@ -2533,6 +2534,9 @@ def test_main_generate_runtime_probe_results_uses_callback_server(tmp_path, monk
             )()
 
     def fake_run(cmd, capture_output, text, timeout, check):
+        if cmd[1] == "ps":
+            assert cmd == ["docker", "ps", "--all", "--quiet", "--no-trunc", "--filter", "id=exec-run-a"]
+            return subprocess.CompletedProcess(cmd, 0, "", "")
         if tuple(cmd[:3]) == ("docker", "exec", "executor-exec-run-a"):
             return type("Completed", (), {"returncode": 42, "stdout": "", "stderr": ""})()
         assert tuple(cmd) == ("docker", "inspect", "executor-exec-run-a")
@@ -2804,6 +2808,9 @@ def test_generate_runtime_probe_results_file_from_platform_probe(tmp_path, monke
 
     def fake_run(cmd, capture_output, text, timeout, check):
         docker_calls.append(tuple(cmd))
+        if cmd[1] == "ps":
+            assert cmd == ["docker", "ps", "--all", "--quiet", "--no-trunc", "--filter", "id=exec-run-a"]
+            return subprocess.CompletedProcess(cmd, 0, "", "")
         if tuple(cmd[:3]) == ("docker", "exec", "executor-exec-run-a"):
             assert "https://egress-denied.invalid/" in cmd[-1]
             assert "egress_denied" in cmd[-1]
@@ -2878,6 +2885,7 @@ def test_generate_runtime_probe_results_file_from_platform_probe(tmp_path, monke
     assert docker_calls[1][:3] == ("docker", "exec", "executor-exec-run-a")
     payload = json.loads(runtime_probe_results_file.read_text(encoding="utf-8"))
     expected_resource_probe = observed_resource_probe()
+    expected_resource_probe["over_limit_cleanup"] = {"result": "confirmed", "post_cleanup_query_succeeded": True}
     expected_resource_probe["requested_max_seconds"] = generator.PLATFORM_DEADLINE_PROBE_SECONDS
     expected_resource_probe["observed_timeout_elapsed_ms"] = 2001
     expected_resource_probe.pop("bounded_error_projection")
@@ -3752,8 +3760,9 @@ def test_run_platform_runtime_probe_does_not_derive_resource_over_limit_from_gen
     assert "bounded_error_projection" not in recorder.hardening["resource_limits"]
 
 
+@pytest.mark.parametrize("readback", ["absent", "present", "failure", "timeout", "missing_id"])
 def test_run_platform_runtime_probe_derives_resource_over_limit_from_explicit_platform_timeout_probe(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, readback
 ):
     generator = load_generator()
 
@@ -3775,7 +3784,7 @@ def test_run_platform_runtime_probe_derives_resource_over_limit_from_explicit_pl
             assert request.resource_limits["max_seconds"] == generator.PLATFORM_DEADLINE_PROBE_SECONDS
             assert request.resource_limits["platform_timeout_probe"] is True
             lease = ContainerLease(
-                container_id="exec-run-a",
+                container_id="" if readback == "missing_id" else "exec-run-a",
                 container_name="executor-exec-run-a",
                 provider="docker",
                 executor_url="http://127.0.0.1:18000",
@@ -3837,7 +3846,16 @@ def test_run_platform_runtime_probe_derives_resource_over_limit_from_explicit_pl
                 },
             )()
 
+    cleanup_calls = []
+
     def fake_run(cmd, capture_output, text, timeout, check):
+        if cmd[1] == "ps":
+            cleanup_calls.append(cmd)
+            assert cmd == ["docker", "ps", "--all", "--quiet", "--no-trunc", "--filter", "id=exec-run-a"]
+            if readback == "timeout":
+                raise subprocess.TimeoutExpired(cmd, timeout)
+            return subprocess.CompletedProcess(cmd, 1 if readback == "failure" else 0,
+                                               "exec-run-a\n" if readback == "present" else "", "")
         assert tuple(cmd) == ("docker", "inspect", "executor-exec-run-a")
         return type(
             "Completed",
@@ -3901,7 +3919,27 @@ def test_run_platform_runtime_probe_derives_resource_over_limit_from_explicit_pl
         "error_code": "executor_deadline_exceeded",
     }
     assert recorder.hardening["lease_isolation"]["release_reason"] == "run_failed"
-    assert recorder.hardening["resource_limits"]["over_limit_cleanup_verified"] is True
+    assert len(cleanup_calls) == (0 if readback == "missing_id" else 1)
+    removed = readback == "absent"
+    observation = {
+        "result": "confirmed" if removed else "failed" if readback == "present" else "unverified",
+        "post_cleanup_query_succeeded": readback in {"absent", "present"},
+    }
+    if readback == "missing_id":
+        observation = {"result": "unverified"}
+    assert recorder.hardening["cleanup"]["ephemeral_container_removed"] is removed
+    assert recorder.hardening["resource_limits"]["over_limit_cleanup_verified"] is removed
+    assert recorder.hardening["resource_limits"]["over_limit_cleanup"] == observation
+    assert recorder.hardening["resource_timeout"]["failed_container_removed"] is removed
+    assert recorder.hardening["resource_timeout"]["failed_container_cleanup"] == observation
+    assert recorder.hardening["resource_timeout"]["max_seconds_enforced"] is True
+    payload = generator._runtime_probe_results_payload(run_id="run-a", hardening=recorder.hardening)
+    assert payload["resource_limits"]["over_limit_cleanup_verified"] is removed
+    assert payload["resource_limits"]["over_limit_cleanup"] == observation
+    error = generator._runtime_probe_section_error("resource_limits", payload["resource_limits"], run_id="run-a")
+    assert error == (None if removed else "runtime probe results missing: resource_limits.over_limit_cleanup_verified")
+    timeout_error = load_verifier()._resource_timeout_hardening_error(recorder.hardening["resource_timeout"], run_id="run-a")
+    assert timeout_error == (None if removed else "hardening evidence missing: resource_timeout.failed_container_removed")
     assert recorder.hardening["resource_limits"]["bounded_error_projection_verified"] is False
     assert recorder.hardening["resource_limits"]["process_timeout_seconds"] == 60
     assert recorder.hardening["resource_limits"]["over_limit_probe_kind"] == "platform_executor_deadline"

@@ -1000,7 +1000,7 @@ async def get_sandbox_executor_reconciliation_summary(
           ) as cleanup_pending_receipt_count,
           count(*) filter (
             where status = 'quarantined'
-              and executor_reconciliation_status = 'failed'
+              and executor_reconciliation_status in ('failed', 'cleanup_pending')
           ) as quarantined_receipt_count,
           max(executor_terminal_reconciliation_attempt_count) filter (
             where executor_terminal_json is not null
