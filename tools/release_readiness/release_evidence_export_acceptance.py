@@ -9,7 +9,7 @@ from typing import Any
 SCHEMA_VERSION = "ai-platform.release-evidence-export-acceptance.v1"
 ENTRY_SCHEMA_VERSION = "ai-platform.release-evidence-entry.v1"
 GATE_NAME = "G9 Release Evidence Export Acceptance"
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_EVIDENCE_ROOT = ROOT / "docs" / "release-evidence"
 
 _SAFE_ENTRY_FIELDS = (

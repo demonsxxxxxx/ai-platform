@@ -8,7 +8,7 @@ import subprocess
 from typing import Any
 
 from app.public_context_keys import public_context_input_key_findings
-from app.sandbox_hardening_contract import SANDBOX_HARDENING_ACCEPTANCE_BLOCKER
+from tools.release_readiness.sandbox_hardening_contract import SANDBOX_HARDENING_ACCEPTANCE_BLOCKER
 
 
 SCHEMA_VERSION = "ai-platform.office-context-pack-readiness.v1"
@@ -226,7 +226,7 @@ _EXECUTOR_CONTEXT_PACK_RUNTIME_ACCEPTANCE_CONTRACT = {
 }
 
 
-_ROOT = Path(__file__).resolve().parents[1]
+_ROOT = Path(__file__).resolve().parents[2]
 _RUNTIME_EVIDENCE_ROOT = "docs/release-evidence/office-context-runtime"
 
 

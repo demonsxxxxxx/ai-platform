@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.office_context_readiness import (  # noqa: E402
+from tools.release_readiness.office_context_readiness import (  # noqa: E402
     build_office_context_readiness,
     render_office_context_readiness_markdown,
 )

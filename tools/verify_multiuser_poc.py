@@ -22,7 +22,7 @@ from urllib import error, request
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.foundation_runtime_concurrency import (  # noqa: E402
+from tools.release_readiness.foundation_runtime_concurrency import (  # noqa: E402
     FOUNDATION_RUNTIME_CONCURRENCY_SCHEMA,
     build_foundation_runtime_concurrency_readiness,
 )

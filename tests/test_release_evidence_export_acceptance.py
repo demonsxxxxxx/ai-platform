@@ -3,7 +3,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from app.release_evidence_export_acceptance import build_release_evidence_export_acceptance
+from tools.release_readiness.release_evidence_export_acceptance import build_release_evidence_export_acceptance
 
 
 VALID_COMMIT = "d95107da2b5691781518bdbb8c4e5e76409869f3"

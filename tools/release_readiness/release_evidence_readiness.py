@@ -6,7 +6,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from app.release_evidence_export_acceptance import build_release_evidence_export_acceptance
+from tools.release_readiness.release_evidence_export_acceptance import build_release_evidence_export_acceptance
 
 
 SCHEMA_VERSION = "ai-platform.release-evidence-readiness.v1"
@@ -121,7 +121,7 @@ _OPEN_GAPS = [
     "release_evidence_runtime_export_acceptance",
     "release_evidence_retention_runtime_acceptance",
 ]
-_ROOT = Path(__file__).resolve().parents[1]
+_ROOT = Path(__file__).resolve().parents[2]
 _DEFAULT_EVIDENCE_ROOT = _ROOT / "docs/release-evidence"
 _FULL_COMMIT_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 

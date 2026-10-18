@@ -1,10 +1,10 @@
 from typing import Any
 from pathlib import Path
 
-from app.office_context_readiness import build_office_context_readiness
+from tools.release_readiness.office_context_readiness import build_office_context_readiness
 from app.skills.release_readiness import build_skill_release_readiness
-from app.tool_policy_bulk_review_readiness import build_tool_policy_bulk_review_readiness
-from app.tool_policy_readiness import build_tool_policy_readiness
+from tools.release_readiness.tool_policy_bulk_review_readiness import build_tool_policy_bulk_review_readiness
+from tools.release_readiness.tool_policy_readiness import build_tool_policy_readiness
 
 
 SCHEMA_VERSION = "ai-platform.governance-readiness.v1"

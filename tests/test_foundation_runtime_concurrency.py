@@ -6,7 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-from app.foundation_runtime_concurrency import (
+from tools.release_readiness.foundation_runtime_concurrency import (
     FOUNDATION_RUNTIME_CONCURRENCY_SCHEMA,
     build_foundation_runtime_concurrency_readiness,
     render_foundation_runtime_concurrency_markdown,
@@ -141,7 +141,7 @@ def test_foundation_runtime_concurrency_missing_evidence_fails_closed():
 
 
 def test_foundation_runtime_concurrency_does_not_depend_on_cli_tools():
-    source = (ROOT / "app/foundation_runtime_concurrency.py").read_text(encoding="utf-8")
+    source = (ROOT / "tools/release_readiness/foundation_runtime_concurrency.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     imported_tool_modules = {
         alias.name
@@ -458,3 +458,38 @@ def test_foundation_runtime_concurrency_accepts_pinned_skills_without_fabricatin
     evidence["checks"]["skill_snapshots"]["used_count"] = 0
 
     assert build_foundation_runtime_concurrency_readiness(evidence)["verified"] is True
+
+
+@pytest.mark.parametrize(
+    "case",
+    json.loads((ROOT / "tests/fixtures/release_readiness_cli.json").read_text(encoding="utf-8")),
+    ids=lambda case: " ".join(case["args"]),
+)
+def test_offline_readiness_cli_replays_pre_migration_contract(case):
+    """Replay deterministic d897 CLI JSON/Markdown and missing-evidence outputs."""
+    result = subprocess.run(
+        [sys.executable, *case["args"]], cwd=ROOT, capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == case["returncode"]
+    assert result.stdout == case["stdout"]
+    assert result.stderr == case["stderr"]
+
+
+def test_offline_readiness_owner_preserves_roots_and_historical_path_classification():
+    from tools.release_readiness import foundation_alpha_readiness as foundation
+    from tools.release_readiness import office_context_readiness as office
+    from tools.release_readiness import release_evidence_export_acceptance as export
+    from tools.release_readiness import release_evidence_readiness as release
+
+    assert foundation._ROOT == office._ROOT == export.ROOT == release._ROOT == ROOT
+    package = ROOT / "tools/release_readiness"
+    for path in package.glob("*.py"):
+        assert not foundation._is_runtime_affecting_path(path.relative_to(ROOT).as_posix())
+        if path.name != "__init__.py":
+            assert not (ROOT / "app" / path.name).exists()
+    # Historical classifications must not be rewritten to make old evidence pass.
+    assert not foundation._is_runtime_affecting_path("app/foundation_alpha_readiness.py")
+    assert not foundation._is_runtime_affecting_path("app/b2_sandbox_readiness.py")
+    assert not foundation._is_runtime_affecting_path("app/memory_erasure_readiness.py")
+    assert foundation._is_runtime_affecting_path("app/foundation_runtime_concurrency.py")
+    assert foundation._is_runtime_affecting_path("app/worker.py")

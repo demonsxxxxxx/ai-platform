@@ -8,7 +8,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-from app.foundation_runtime_concurrency import build_foundation_runtime_concurrency_readiness
+from tools.release_readiness.foundation_runtime_concurrency import build_foundation_runtime_concurrency_readiness
 
 
 def load_verify_multiuser_poc():

@@ -129,15 +129,21 @@ The following stay outside live request paths:
 - operator checklists or release packets; and
 - static control inventories presented as current runtime facts.
 
-Offline checks belong under `tools/` or `scripts/`. A runtime endpoint may link
-to an operator command but does not execute or project its historical output.
+Offline checks belong under `tools/` or `scripts/`.
+`tools/release_readiness/` owns the offline Foundation, governance, Office,
+observability and reviewed-evidence report closure. Existing `tools/*.py`
+operator commands retain their flags and output contracts; runtime processes
+do not import this report package. Archived producer identities and historical
+source-path tombstones remain readers of their original subjects. A runtime
+endpoint may link to an operator command but does not execute or project its
+historical output.
 
 ### Offline acceptance summary contracts
 
 Foundation concurrency evidence is produced by
 `tools/verify_multiuser_poc.py` and accepted by
-`app/foundation_runtime_concurrency.py`. A section's `status: passed` does not
-replace its samples. All required counts must be explicit non-negative integers;
+`tools/release_readiness/foundation_runtime_concurrency.py`. A section's
+`status: passed` does not replace its samples. All required counts must be explicit non-negative integers;
 booleans, strings, missing values, and negative counts cannot become zero proof.
 Owner downloads require HTTP 200 and aligned positive `owner_bytes` samples;
 playback requires HTTP 200 samples for all runs. Skill snapshot evidence includes
@@ -153,7 +159,8 @@ regressions are `tests/test_foundation_runtime_concurrency.py` and
 `tests/test_verify_multiuser_poc.py`; Foundation Alpha and capacity consumers use
 the same validator rather than a compatibility bypass.
 
-Sandbox hardening acceptance belongs to `app/sandbox_hardening_contract.py` and
+Sandbox hardening acceptance belongs to
+`tools/release_readiness/sandbox_hardening_contract.py` and
 `scripts/verify_sandbox_runtime.py`. Their shared
 `SANDBOX_HARDENING_ACCEPTANCE_BLOCKER` names the unavailable bounded-error
 projection observer. Office readiness projects this blocker and leaves

@@ -5,7 +5,7 @@ import os
 import subprocess
 import sys
 
-from app.office_context_readiness import (
+from tools.release_readiness.office_context_readiness import (
     _current_source_commit,
     build_office_context_readiness,
     render_office_context_readiness_markdown,
@@ -675,7 +675,7 @@ def test_office_context_readiness_default_subject_fails_closed_when_git_is_unava
         assert kwargs["timeout"] == 5
         raise FileNotFoundError("git")
 
-    monkeypatch.setattr("app.office_context_readiness.subprocess.run", git_unavailable)
+    monkeypatch.setattr("tools.release_readiness.office_context_readiness.subprocess.run", git_unavailable)
 
     assert _current_source_commit(tmp_path) == ""
 

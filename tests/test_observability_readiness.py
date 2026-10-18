@@ -6,18 +6,18 @@ import sys
 
 import pytest
 
-import app.quality_golden_set_readiness as quality_golden_set_readiness
-from app.error_taxonomy_dashboard_readiness import build_error_taxonomy_dashboard_readiness
-from app.observability_readiness import (
+import tools.release_readiness.quality_golden_set_readiness as quality_golden_set_readiness
+from tools.release_readiness.error_taxonomy_dashboard_readiness import build_error_taxonomy_dashboard_readiness
+from tools.release_readiness.observability_readiness import (
     build_observability_readiness,
     render_observability_readiness_markdown,
 )
-from app.quality_golden_set_readiness import build_quality_golden_set_readiness
-from app.release_evidence_readiness import (
+from tools.release_readiness.quality_golden_set_readiness import build_quality_golden_set_readiness
+from tools.release_readiness.release_evidence_readiness import (
     build_release_evidence_readiness,
     load_reviewed_runtime_acceptance_for_subject,
 )
-from app.trace_audit_export_readiness import build_trace_audit_export_readiness
+from tools.release_readiness.trace_audit_export_readiness import build_trace_audit_export_readiness
 
 
 class SecretBearingSettings:
@@ -122,7 +122,7 @@ def test_observability_readiness_import_is_runtime_dependency_neutral():
         "        raise ModuleNotFoundError(\"No module named 'pydantic_settings'\")\n"
         "    return real_import(name, globals, locals, fromlist, level)\n"
         "builtins.__import__ = guarded_import\n"
-        "from app.observability_readiness import build_observability_readiness\n"
+        "from tools.release_readiness.observability_readiness import build_observability_readiness\n"
         "readiness = build_observability_readiness(SettingsBlocker())\n"
         "assert readiness['status'] == 'partial_blocked'\n"
         "assert len(readiness['open_gaps']) > 1\n"

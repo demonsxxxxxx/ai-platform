@@ -11,8 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.observability_readiness import build_observability_readiness  # noqa: E402
-from app.quality_golden_set_readiness import build_quality_golden_set_readiness  # noqa: E402
+from tools.release_readiness.observability_readiness import build_observability_readiness  # noqa: E402
+from tools.release_readiness.quality_golden_set_readiness import build_quality_golden_set_readiness  # noqa: E402
 
 
 SCHEMA_VERSION = "ai-platform.b6-operations-beta-readiness.v1"

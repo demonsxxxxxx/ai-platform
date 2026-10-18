@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.governance_readiness import build_governance_readiness, render_governance_readiness_markdown
+from tools.release_readiness.governance_readiness import build_governance_readiness, render_governance_readiness_markdown  # noqa: E402
 
 
 def main() -> None:

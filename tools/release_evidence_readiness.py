@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.release_evidence_readiness import build_release_evidence_readiness
+from tools.release_readiness.release_evidence_readiness import build_release_evidence_readiness  # noqa: E402
 
 
 def render_release_evidence_readiness_markdown(readiness: dict[str, object]) -> str:
