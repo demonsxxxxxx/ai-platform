@@ -16,6 +16,8 @@ import {
 
 import { APP_ROUTE_PATHS } from "../../appRouteManifest";
 import { useAuth } from "../../hooks/useAuth";
+import { BROWSER_AUTH_INCARCINATION_EVENT, getBrowserAuthIncarnation } from "../../hooks/browserAuthCoordinator";
+import { getAccessToken } from "../../services/api/token";
 import { readWordReviewStream } from "./wordReviewStream";
 import { resolveInternalAiApplication } from "./aiApplicationCatalog";
 import { KnowledgeBaseApplication } from "./KnowledgeBaseApplication";
@@ -488,7 +490,7 @@ function useWordReviewController(workId: string, tenantId: string) {
   const scopeGeneration = useRef(0);
   const scopeKeyRef = useRef(scopeKey);
   const taskOwnersRef = useRef(new Map<string, number>());
-  const runningTaskOwnersRef = useRef(new Map<string, object>());
+  const runningTaskOwnersRef = useRef(new Map<string, { taskId: string }>());
   const cancelConfirmedRef = useRef(new Set<string>());
   const historyRequestSeq = useRef(0);
   const statsRequestSeq = useRef(0);
@@ -529,6 +531,79 @@ function useWordReviewController(workId: string, tenantId: string) {
       confirmed.clear();
     };
   }, [scopeKey, workId]);
+
+  const downloadGeneration = useRef(0);
+  const downloadsRef = useRef(new Set<AbortController>());
+  const downloadUrlsRef = useRef(new Map<string, number>());
+  useLayoutEffect(() => {
+    const downloads = downloadsRef.current;
+    const urls = downloadUrlsRef.current;
+    const invalidate = () => {
+      downloadGeneration.current += 1;
+      for (const controller of downloads) controller.abort();
+      downloads.clear();
+      for (const [url, timer] of urls) {
+        window.clearTimeout(timer);
+        URL.revokeObjectURL(url);
+      }
+      urls.clear();
+    };
+    window.addEventListener(BROWSER_AUTH_INCARCINATION_EVENT, invalidate);
+    return () => {
+      window.removeEventListener(BROWSER_AUTH_INCARCINATION_EVENT, invalidate);
+      invalidate();
+    };
+  }, [scopeKey]);
+
+  const captureDownloadOwner = () => {
+    const scope = scopeGeneration.current;
+    const generation = downloadGeneration.current;
+    const marker = getAccessToken();
+    const incarnation = getBrowserAuthIncarnation();
+    return () => ownsScope(scope) && downloadGeneration.current === generation &&
+      getAccessToken() === marker && getBrowserAuthIncarnation() === incarnation;
+  };
+
+  const downloadResultFile = async (file: WordReviewFile, taskId: string) => {
+    const ownsDownload = captureDownloadOwner();
+    const url = getWordReviewDownloadUrl(file, taskId);
+    if (!url || !ownsDownload()) return;
+    const controller = new AbortController();
+    downloadsRef.current.add(controller);
+    let objectUrl = "";
+    let link: HTMLAnchorElement | undefined;
+    try {
+      const response = await fetch(url, { signal: controller.signal });
+      if (!ownsDownload()) return;
+      if (!response.ok) throw await wordReviewResponseError(response);
+      const blob = await response.blob();
+      if (!ownsDownload()) return;
+      objectUrl = URL.createObjectURL(blob);
+      if (!ownsDownload()) return;
+      link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = file.name || "review-result";
+      document.body.appendChild(link);
+      if (!ownsDownload()) return;
+      link.click();
+      if (!ownsDownload()) return;
+      const savedUrl = objectUrl;
+      const timer = window.setTimeout(() => {
+        downloadUrlsRef.current.delete(savedUrl);
+        URL.revokeObjectURL(savedUrl);
+      }, 1_000);
+      downloadUrlsRef.current.set(savedUrl, timer);
+      objectUrl = "";
+    } catch (error) {
+      if (ownsDownload() && !isWordReviewAbortError(error)) {
+        toast.error(error instanceof Error ? error.message : "下载审核结果失败");
+      }
+    } finally {
+      downloadsRef.current.delete(controller);
+      link?.remove();
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    }
+  };
 
   const updateTask = (localId: string, patch: Partial<WordReviewTask>) => {
     if (!ownsTask(localId)) return;
@@ -765,11 +840,16 @@ function useWordReviewController(workId: string, tenantId: string) {
   const submitCancellation = async (localId: string, taskId: string) => {
     if (!ownsTask(localId) || !runningTaskOwnersRef.current.has(localId) || !taskId || cancelSubmittedRef.current.has(localId)) return;
     const runOwner = runningTaskOwnersRef.current.get(localId);
+    if (runOwner?.taskId !== taskId) return;
     cancelSubmittedRef.current.add(localId);
     try {
       const response = await requestWordReview(`/api/review/history/${encodeURIComponent(taskId)}/cancel`, { method: "POST" });
       const record = asWordReviewRecord(await response.json().catch(() => ({})));
       if (!ownsTask(localId) || runningTaskOwnersRef.current.get(localId) !== runOwner) return;
+      if (runOwner.taskId !== taskId) {
+        cancelSubmittedRef.current.delete(localId);
+        return;
+      }
       const status = String(record.status || "").toLowerCase();
       if (status !== "cancelled" && status !== "canceled") throw new Error("未收到服务端取消确认，请到历史记录核实任务状态。");
       cancelConfirmedRef.current.add(localId);
@@ -777,6 +857,10 @@ function useWordReviewController(workId: string, tenantId: string) {
       requestAbortRef.current.get(localId)?.();
     } catch (error) {
       if (!ownsTask(localId) || runningTaskOwnersRef.current.get(localId) !== runOwner) return;
+      if (runOwner.taskId !== taskId) {
+        cancelSubmittedRef.current.delete(localId);
+        return;
+      }
       cancelSubmittedRef.current.delete(localId);
       throw error;
     }
@@ -784,15 +868,16 @@ function useWordReviewController(workId: string, tenantId: string) {
 
   const runReview = async (task: WordReviewTask) => {
     if (!ownsTask(task.localId) || runningTaskOwnersRef.current.has(task.localId) || !task.fileId || !["ready", "failed", "timeout"].includes(task.status)) return;
-    const runOwner = {};
+    const runOwner = { taskId: "" };
     runningTaskOwnersRef.current.set(task.localId, runOwner);
     cancelConfirmedRef.current.delete(task.localId);
     cancelledTaskIdsRef.current.delete(task.localId);
     cancelRequestedRef.current.delete(task.localId);
     cancelSubmittedRef.current.delete(task.localId);
     const startedAt = Date.now();
-    const runningTask = { ...task, startedAt, status: "running" as const };
+    const runningTask = { ...task, taskId: "", startedAt, status: "running" as const };
     updateTask(task.localId, {
+      taskId: "",
       status: "running",
       progress: Math.max(24, task.progress),
       latestProgress: "正在初始化审核任务",
@@ -807,7 +892,7 @@ function useWordReviewController(workId: string, tenantId: string) {
     const controller = new AbortController();
     requestAbortRef.current.set(task.localId, () => controller.abort());
     let rawText = "";
-    let serverTaskId = task.taskId;
+    let serverTaskId = "";
     let timedOut = false;
     let resultFiles: WordReviewFile[] = [];
     const addResultFiles = (values: unknown[]) => {
@@ -858,6 +943,7 @@ function useWordReviewController(workId: string, tenantId: string) {
         if (!ownsTask(task.localId)) return;
         if (event.taskId) {
           serverTaskId = event.taskId;
+          runOwner.taskId = event.taskId;
           updateTask(task.localId, { taskId: event.taskId });
           if (cancelRequestedRef.current.has(task.localId)) {
             try {
@@ -951,11 +1037,14 @@ function useWordReviewController(workId: string, tenantId: string) {
   const cancelTask = async (task: WordReviewTask) => {
     if (!task || !ownsTask(task.localId) || !["queued", "running"].includes(task.status)) return;
     if (!window.confirm("确认中断该任务？已进入执行中的任务会在服务端可中断点停止。")) return;
+    const runOwner = runningTaskOwnersRef.current.get(task.localId);
+    if (!runOwner) return;
+    const taskId = runOwner.taskId;
     cancelRequestedRef.current.add(task.localId);
-    updateTask(task.localId, { latestProgress: task.taskId ? "正在中断任务…" : "等待服务端任务编号，随后中断任务" });
-    if (!task.taskId) return;
+    updateTask(task.localId, { latestProgress: taskId ? "正在中断任务…" : "等待服务端任务编号，随后中断任务" });
+    if (!taskId) return;
     try {
-      await submitCancellation(task.localId, task.taskId);
+      await submitCancellation(task.localId, taskId);
     } catch (error) {
       if (!ownsTask(task.localId)) return;
       cancelRequestedRef.current.delete(task.localId);
@@ -1008,8 +1097,10 @@ function useWordReviewController(workId: string, tenantId: string) {
   const batchDownloadHistory = async (
     download: (file: WordReviewFile, taskId: string) => Promise<void>,
   ) => {
+    const ownsBatch = captureDownloadOwner();
     for (const item of selectedHistory) {
       for (const file of item.files) {
+        if (!ownsBatch()) return;
         await download(file, item.taskId);
         await new Promise((resolve) => window.setTimeout(resolve, 160));
       }
@@ -1038,7 +1129,7 @@ function useWordReviewController(workId: string, tenantId: string) {
     runReview,
     cancelTask,
     removeTask,
-    downloadUrl: getWordReviewDownloadUrl,
+    downloadResultFile,
     viewUrl: getWordReviewViewUrl,
     batchDownloadHistory,
     toggleHistorySelection,
@@ -1078,7 +1169,7 @@ function WordReviewApplication() {
     runReview,
     cancelTask,
     removeTask,
-    downloadUrl,
+    downloadResultFile,
     viewUrl,
     batchDownloadHistory,
     toggleHistorySelection,
@@ -1091,25 +1182,6 @@ function WordReviewApplication() {
   const uploading = tasks.some((task) => task.status === "uploading");
   const isLoading = tasks.some((task) => ["queued", "running"].includes(task.status));
   const failureReason = "文档审核服务暂时无法连接，请检查 8014 服务。";
-
-  const downloadResultFile = async (file: WordReviewFile, taskId: string) => {
-    const url = downloadUrl(file, taskId);
-    if (!url) return;
-    try {
-      const response = await fetch(url);
-      if (!response.ok) throw await wordReviewResponseError(response);
-      const objectUrl = URL.createObjectURL(await response.blob());
-      const link = document.createElement("a");
-      link.href = objectUrl;
-      link.download = file.name || "review-result";
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1_000);
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "下载审核结果失败");
-    }
-  };
 
   const reviewStats = [
     { label: "当前排队", value: String(tasks.filter((task) => ["ready", "queued"].includes(task.status)).length) },

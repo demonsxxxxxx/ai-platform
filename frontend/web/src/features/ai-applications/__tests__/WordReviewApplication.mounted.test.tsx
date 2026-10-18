@@ -219,3 +219,234 @@ test("initial history resolving in the replacement scope layout cannot paint old
     assert.doesNotMatch(view.container.textContent!, /old-layout-owner/); assert.deepEqual(historyValues(), []);
   } finally { await view.close(); }
 });
+
+test("retry cancellation waits for this attempt receipt before submitting", async () => {
+  let attempts = 0;
+  let second!: ReadableStreamDefaultController<Uint8Array>;
+  const view = await harness({ review: () => {
+    attempts++;
+    return attempts === 1
+      ? new Response(stream('data: {"task_id":"old-attempt"}\n\n'))
+      : new Response(new ReadableStream({ start(c) { second = c; } }));
+  }});
+  try {
+    await view.select(); await view.start();
+    assert.ok(view.container.querySelector(".task-card.is-failed"));
+    await act(async () => button(view.container, "重试").click());
+    await act(async () => button(view.container, "中断任务").click());
+    const cancels = view.calls.filter(call => call.url.endsWith("/cancel"));
+    assert.equal(cancels.length, 0);
+    assert.ok(view.container.querySelector(".task-card.is-running"));
+    await act(async () => second.enqueue(new TextEncoder().encode('data: {"task_id":"new-attempt"}\n\n')));
+    const received = view.calls.filter(call => call.url.endsWith("/cancel"));
+    assert.equal(received.length, 1);
+    assert.ok(received[0].url.includes("/new-attempt/cancel"));
+    const bodies = view.calls.filter(call => call.url.endsWith("/api/chat/stream")).map(call => JSON.parse(String(call.init.body)));
+    assert.equal(bodies[0].client_task_id, bodies[1].client_task_id);
+    assert.equal(bodies[0].session_id, bodies[1].session_id);
+    assert.ok(view.container.querySelector(".task-card.is-cancelled"));
+  } finally { await view.close(); }
+});
+
+test("download discards old owner response after principal switch", async () => {
+  const pending = deferred<Response>();
+  const oldCreate = URL.createObjectURL; const oldRevoke = URL.revokeObjectURL;
+  const oldClick = HTMLAnchorElement.prototype.click;
+  let clicks = 0;
+  URL.createObjectURL = () => "blob:synthetic-review"; URL.revokeObjectURL = () => {};
+  HTMLAnchorElement.prototype.click = function() { clicks++; };
+  const view = await harness();
+  try {
+    await view.select(); await view.start();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = ((url, init) => String(url).includes("/api/file/download") ? pending.promise : originalFetch(url, init)) as typeof fetch;
+    await act(async () => button(view.container, "批注 Word").click());
+    await view.setUser(principal("user-b", "tenant-b"));
+    assert.equal(view.container.querySelector(".task-card"), null);
+    await act(async () => pending.resolve(new Response("synthetic old-owner content")));
+    assert.equal(clicks, 0);
+  } finally {
+    await view.close(); URL.createObjectURL = oldCreate; URL.revokeObjectURL = oldRevoke; HTMLAnchorElement.prototype.click = oldClick;
+  }
+});
+
+
+for (const boundary of ["unmount", "same-principal refresh", "auth event", "marker replacement", "workspace"] as const) {
+  test(`download pending body is fenced on ${boundary}`, async () => {
+    const pending = deferred<Blob>();
+    const oldCreate = URL.createObjectURL; const oldRevoke = URL.revokeObjectURL;
+    const oldClick = HTMLAnchorElement.prototype.click;
+    let clicks = 0; let creates = 0; let signal: AbortSignal | undefined;
+    URL.createObjectURL = () => { creates++; return "blob:synthetic"; }; URL.revokeObjectURL = () => {};
+    HTMLAnchorElement.prototype.click = () => { clicks++; };
+    const view = await harness();
+    try {
+      await view.select(); await view.start();
+      const original = globalThis.fetch;
+      globalThis.fetch = ((url, init) => {
+        if (!String(url).includes("/api/file/download")) return original(url, init);
+        signal = init?.signal as AbortSignal;
+        const response = new Response("synthetic"); response.blob = () => pending.promise;
+        return Promise.resolve(response);
+      }) as typeof fetch;
+      await act(async () => button(view.container, "批注 Word").click());
+      if (boundary === "unmount") await view.unmount();
+      else if (boundary === "same-principal refresh") await view.setUser(principal());
+      else if (boundary === "auth event") {
+        const { publishBrowserAuthIncarnationChange } = await import("../../../hooks/browserAuthCoordinator");
+        publishBrowserAuthIncarnationChange();
+      } else if (boundary === "marker replacement") {
+        const { AUTH_SESSION_MARKER_KEY } = await import("../../../services/api/token");
+        localStorage.setItem(AUTH_SESSION_MARKER_KEY, "synthetic-new-session");
+      } else {
+        localStorage.setItem("workspace_id", "synthetic-new-workspace"); await view.setUser(principal());
+      }
+      if (boundary !== "marker replacement") assert.equal(signal?.aborted, true);
+      await act(async () => pending.resolve(new Blob(["synthetic"])));
+      assert.equal(creates, 0); assert.equal(clicks, 0);
+    } finally { await view.close(); URL.createObjectURL = oldCreate; URL.revokeObjectURL = oldRevoke; HTMLAnchorElement.prototype.click = oldClick; }
+  });
+}
+
+test("download saves normally, removes anchor and revokes URL on owner cleanup", async () => {
+  const oldCreate = URL.createObjectURL; const oldRevoke = URL.revokeObjectURL; const oldClick = HTMLAnchorElement.prototype.click;
+  const revoked: string[] = []; let clicks = 0;
+  URL.createObjectURL = () => "blob:synthetic-save"; URL.revokeObjectURL = url => { revoked.push(url); };
+  HTMLAnchorElement.prototype.click = function() { clicks++; assert.equal(this.download, "result.docx"); assert.equal(this.isConnected, true); };
+  const view = await harness();
+  try {
+    await view.select(); await view.start(); const original = globalThis.fetch;
+    globalThis.fetch = ((url, init) => String(url).includes("/api/file/download") ? Promise.resolve(new Response("synthetic")) : original(url, init)) as typeof fetch;
+    await act(async () => button(view.container, "批注 Word").click());
+    assert.equal(clicks, 1); assert.equal(document.querySelector('a[href="blob:synthetic-save"]'), null);
+    await view.unmount(); assert.deepEqual(revoked, ["blob:synthetic-save"]);
+    await new Promise(resolve => setTimeout(resolve, 1100)); assert.equal(revoked.length, 1);
+  } finally { await view.close(); URL.createObjectURL = oldCreate; URL.revokeObjectURL = oldRevoke; HTMLAnchorElement.prototype.click = oldClick; }
+});
+
+test("download failures notify only current owner and never create URLs", async () => {
+  const { toast } = await import("@lobehub/ui/base-ui");
+  const oldError = toast.error; const oldCreate = URL.createObjectURL;
+  const errors: unknown[] = []; let creates = 0;
+  toast.error = ((message: unknown) => { errors.push(message); }) as typeof toast.error;
+  URL.createObjectURL = () => { creates++; return "blob:synthetic"; };
+  const view = await harness();
+  try {
+    await view.select(); await view.start(); const original = globalThis.fetch;
+    globalThis.fetch = ((url, init) => String(url).includes("/api/file/download") ? Promise.resolve(json({ message: "download failed" }, 500)) : original(url, init)) as typeof fetch;
+    await act(async () => button(view.container, "批注 Word").click()); assert.deepEqual(errors, ["download failed"]);
+    const pending = deferred<Response>();
+    globalThis.fetch = ((url, init) => String(url).includes("/api/file/download") ? pending.promise : original(url, init)) as typeof fetch;
+    await act(async () => button(view.container, "批注 Word").click()); await view.setUser(principal("user-b", "tenant-b"));
+    await act(async () => pending.reject(new Error("old owner failure")));
+    assert.equal(errors.length, 1); assert.equal(creates, 0);
+  } finally { await view.close(); toast.error = oldError; URL.createObjectURL = oldCreate; }
+});
+
+test("batch download stops requesting files after owner changes during first request", async () => {
+  const pending = deferred<Response>(); let requests = 0;
+  const view = await harness({ history: () => json({ items: [{ task_id: "history-a", name: "batch.docx", status: "completed", files: [{ name: "first.docx", path: "first.docx" }, { name: "second.docx", path: "second.docx" }] }] }) });
+  try {
+    await act(async () => Array.from(view.container.querySelectorAll("button")).find(node => node.textContent?.startsWith("历史记录"))!.click());
+    await act(async () => (view.container.querySelector('[role="checkbox"]') as HTMLElement).click());
+    const original = globalThis.fetch;
+    globalThis.fetch = ((url, init) => { if (String(url).includes("/download")) { requests++; return pending.promise; } return original(url, init); }) as typeof fetch;
+    await act(async () => button(view.container, "批量下载").click()); assert.equal(requests, 1);
+    await view.setUser(principal("user-b", "tenant-b")); await act(async () => pending.resolve(new Response("synthetic")));
+    await act(async () => new Promise(resolve => setTimeout(resolve, 200))); assert.equal(requests, 1);
+  } finally { await view.close(); }
+});
+
+test("late cancellation failure across principal change cannot paint replacement owner", async () => {
+  const pending = deferred<Response>();
+  const view = await harness({ review: () => new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('data: {"task_id":"task-a"}\n\n')); } })), cancel: () => pending.promise });
+  try {
+    await view.select(); await view.start(); await act(async () => button(view.container, "中断任务").click());
+    await view.setUser(principal("user-b", "tenant-b")); await view.select();
+    await act(async () => pending.reject(new Error("stale cancellation failure")));
+    assert.ok(view.container.querySelector(".task-card.is-ready")); assert.doesNotMatch(view.container.textContent!, /stale cancellation failure/);
+  } finally { await view.close(); }
+});
+
+for (const invalidateAtCreate of [false, true]) {
+  test(`download URL is revoked ${invalidateAtCreate ? "when owner changes at creation" : "after normal save delay"}`, async () => {
+    const { publishBrowserAuthIncarnationChange } = await import("../../../hooks/browserAuthCoordinator");
+    const oldCreate = URL.createObjectURL; const oldRevoke = URL.revokeObjectURL; const oldClick = HTMLAnchorElement.prototype.click;
+    let clicks = 0; const revoked: string[] = [];
+    URL.createObjectURL = () => { if (invalidateAtCreate) publishBrowserAuthIncarnationChange(); return "blob:synthetic-timer"; };
+    URL.revokeObjectURL = url => { revoked.push(url); }; HTMLAnchorElement.prototype.click = () => { clicks++; };
+    const view = await harness();
+    try {
+      await view.select(); await view.start(); const original = globalThis.fetch;
+      globalThis.fetch = ((url, init) => String(url).includes("/api/file/download") ? Promise.resolve(new Response("synthetic")) : original(url, init)) as typeof fetch;
+      await act(async () => button(view.container, "批注 Word").click());
+      assert.equal(clicks, invalidateAtCreate ? 0 : 1);
+      await new Promise(resolve => setTimeout(resolve, 1100)); assert.deepEqual(revoked, ["blob:synthetic-timer"]);
+      await view.unmount(); assert.equal(revoked.length, 1);
+    } finally { await view.close(); URL.createObjectURL = oldCreate; URL.revokeObjectURL = oldRevoke; HTMLAnchorElement.prototype.click = oldClick; }
+  });
+}
+
+test("retry without a new receipt fails without reusing old task ID in history", async () => {
+  let attempts = 0;
+  const view = await harness({ review: () => new Response(stream(++attempts === 1 ? 'data: {"task_id":"old-attempt"}\n\n' : "")) });
+  try {
+    await view.select(); await view.start(); await act(async () => button(view.container, "重试").click());
+    assert.ok(view.container.querySelector(".task-card.is-failed"));
+    assert.equal(historyValues()[0][0].taskId, "");
+    assert.match(view.container.textContent!, /审核结果流提前结束，未收到完成回执/);
+  } finally { await view.close(); }
+});
+
+test("normal batch download saves both files and cleans both URLs", async () => {
+  const oldCreate = URL.createObjectURL; const oldRevoke = URL.revokeObjectURL; const oldClick = HTMLAnchorElement.prototype.click;
+  let creates = 0; const saved: string[] = []; const revoked: string[] = [];
+  URL.createObjectURL = () => `blob:synthetic-batch-${++creates}`; URL.revokeObjectURL = url => { revoked.push(url); };
+  HTMLAnchorElement.prototype.click = function() { saved.push(this.download); };
+  const view = await harness({ history: () => json({ items: [{ task_id: "history-a", name: "batch.docx", status: "completed", files: [{ name: "first.docx", path: "first.docx" }, { name: "second.docx", path: "second.docx" }] }] }) });
+  try {
+    await act(async () => Array.from(view.container.querySelectorAll("button")).find(node => node.textContent?.startsWith("历史记录"))!.click());
+    await act(async () => (view.container.querySelector('[role="checkbox"]') as HTMLElement).click());
+    const original = globalThis.fetch;
+    globalThis.fetch = ((url, init) => String(url).includes("/download") ? Promise.resolve(new Response("synthetic")) : original(url, init)) as typeof fetch;
+    await act(async () => button(view.container, "批量下载").click());
+    await act(async () => new Promise(resolve => setTimeout(resolve, 400)));
+    assert.deepEqual(saved, ["first.docx", "second.docx"]);
+    await view.unmount(); assert.deepEqual(revoked.sort(), ["blob:synthetic-batch-1", "blob:synthetic-batch-2"]);
+  } finally { await view.close(); URL.createObjectURL = oldCreate; URL.revokeObjectURL = oldRevoke; HTMLAnchorElement.prototype.click = oldClick; }
+});
+
+test("late cancellation error cannot paint a retry reusing the same receipt", async () => {
+  let first!: ReadableStreamDefaultController<Uint8Array>;
+  const cancellation = deferred<Response>(); let attempts = 0;
+  const view = await harness({ review: () => new Response(new ReadableStream({ start(c) {
+    if (++attempts === 1) first = c;
+    c.enqueue(new TextEncoder().encode('data: {"task_id":"same-receipt"}\n\n'));
+  } })), cancel: () => cancellation.promise });
+  try {
+    await view.select(); await view.start(); await act(async () => button(view.container, "中断任务").click());
+    await act(async () => first.close());
+    await act(async () => button(view.container, "重试").click());
+    await act(async () => cancellation.reject(new Error("obsolete cancellation failure")));
+    assert.ok(view.container.querySelector(".task-card.is-running"));
+    assert.doesNotMatch(view.container.textContent!, /obsolete cancellation failure/);
+  } finally { await view.close(); }
+});
+
+test("cancellation error is fenced when receipt changes within a stream", async () => {
+  let current!: ReadableStreamDefaultController<Uint8Array>;
+  const cancellation = deferred<Response>();
+  const view = await harness({ review: () => new Response(new ReadableStream({ start(c) {
+    current = c; c.enqueue(new TextEncoder().encode('data: {"task_id":"receipt-a"}\n\n'));
+  } })), cancel: url => url.includes("/receipt-a/") ? cancellation.promise : json({ status: "cancelled" }) });
+  try {
+    await view.select(); await view.start(); await act(async () => button(view.container, "中断任务").click());
+    await act(async () => current.enqueue(new TextEncoder().encode('data: {"task_id":"receipt-b"}\n\n')));
+    await act(async () => cancellation.reject(new Error("obsolete receipt failure")));
+    assert.doesNotMatch(view.container.textContent!, /obsolete receipt failure/);
+    assert.ok(view.container.querySelector(".task-card.is-running"));
+    await act(async () => current.enqueue(new TextEncoder().encode('data: {"task_id":"receipt-b"}\n\n')));
+    assert.equal(view.calls.filter(call => call.url.endsWith("/receipt-b/cancel")).length, 1);
+    assert.ok(view.container.querySelector(".task-card.is-cancelled"));
+  } finally { await view.close(); }
+});
