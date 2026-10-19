@@ -136,6 +136,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_mcp_persistence.py",
         "tests/test_mcp_selection_authorization.py",
         "tests/test_mcp_tool_catalog.py",
+        "tests/test_mcp_gateway_catalog.py",
         "tests/test_mcp_client.py",
         "tests/test_mcp_routes.py",
         "tests/test_mcp_authorization_projection.py",
