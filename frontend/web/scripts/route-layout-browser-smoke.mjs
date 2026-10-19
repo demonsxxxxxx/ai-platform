@@ -153,6 +153,8 @@ function bootstrapSource(loading = false) {
       });
       if (url.pathname === '/api/ai/auth/company-credential-handoff') return json({ credential: 'synthetic-handoff' });
       if (url.pathname === '/api/profile-drive/status') return json({ status: 'disconnected', connected: false, reauthRequired: false, connectedAtUtc: null, lastUsedAtUtc: null });
+      if (url.pathname === '/api/review/history') return json({ items: [] });
+      if (url.pathname === '/api/review/stats/documents') return json({ total: 146, daily: [] });
       if (url.pathname === '/api/upload/config') return json({
         enabled: true,
         provider: 's3',
@@ -176,6 +178,8 @@ function bootstrapSource(loading = false) {
 }
 
 const cases = [
+  { path: "/ai-apps/sop-assistant", selector: "textarea[aria-label=\"制度或流程问题\"]", name: "sop", scroller: "[data-ai-application-scroller]" },
+  { path: "/ai-apps/word-review", selector: ".review-upload", name: "word", scroller: "[data-ai-application-scroller]", requiredRequests: ["/api/review/history", "/api/review/stats/documents"] },
   {
     path: "/",
     selector: ".welcome-root",
@@ -402,6 +406,30 @@ async function runCase(viewport, scenario) {
         `${viewport.name}:models:enabled-toggle`,
       );
     }
+    const responsiveLayout = await browser.client.evaluate(`(() => {
+      const detail = document.querySelector('[data-selected-skill-detail-shell]')?.getBoundingClientRect();
+      const upload = document.querySelector('.review-upload')?.getBoundingClientRect();
+      const header = document.querySelector('.review-panel-header');
+      const table = document.querySelector('[data-mcp-server-row]')?.closest('table');
+      let tableScroller = table?.parentElement;
+      while (tableScroller && tableScroller.scrollWidth <= tableScroller.clientWidth + 1) tableScroller = tableScroller.parentElement;
+      if (tableScroller) tableScroller.scrollLeft = tableScroller.scrollWidth;
+      const tableReachable = !tableScroller || tableScroller.scrollLeft + tableScroller.clientWidth >= tableScroller.scrollWidth - 2;
+      if (tableScroller) tableScroller.scrollLeft = 0;
+      return {
+        detailContained: !detail || (detail.left >= 0 && detail.right <= innerWidth + 1),
+        uploadBottom: upload?.bottom ?? null,
+        headerPosition: header ? getComputedStyle(header).position : null,
+        tableWidth: table?.getBoundingClientRect().width ?? null, tableReachable,
+        iconsValid: [...document.querySelectorAll('button svg')].filter(node => node.checkVisibility({ opacityProperty: true, visibilityProperty: true }) && Number(node.getAttribute('width')) >= 12).every(node => node.getBoundingClientRect().width >= 12),
+        badgesSingleLine: [...document.querySelectorAll('[data-governance-state]')].every(node => getComputedStyle(node).whiteSpace === 'nowrap'),
+      };
+    })()`);
+    if (!responsiveLayout.detailContained || !responsiveLayout.iconsValid || !responsiveLayout.badgesSingleLine || !responsiveLayout.tableReachable ||
+        (scenario.name === "mcp" && responsiveLayout.tableWidth < 1080) ||
+        (scenario.name === "word" && (responsiveLayout.headerPosition === "sticky" || (viewport.mobile && responsiveLayout.uploadBottom > viewport.height)))) {
+      throw new Error(`responsive_layout_failed:${viewport.name}:${scenario.name}:${JSON.stringify(responsiveLayout)}`);
+    }
     const scrollerSelector = typeof scenario.scroller === "function" ? scenario.scroller(viewport) : scenario.scroller;
     const layout = await browser.client.evaluate(`(() => {
       const target = ${scrollerSelector ? `document.querySelector(${JSON.stringify(scrollerSelector)})` : "document.scrollingElement"};
@@ -521,12 +549,14 @@ async function runCase(viewport, scenario) {
     let overlay = null;
     if (scenario.popover) {
       await browser.client.evaluate(`(() => { const node = document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]'); if (!node) throw new Error('department_trigger_missing'); node.click(); })()`);
-      await browser.client.waitFor("Boolean(document.querySelector('[role=listbox]')) && document.querySelector('[data-department-directory-popup]').contains(document.activeElement)", `${viewport.name}:department-menu`);
+      await browser.client.waitFor("Boolean(document.querySelector('[role=listbox]')) && document.querySelector('[data-department-directory-popup]').contains(document.activeElement) && document.querySelector('[data-department-directory-popup]').getAnimations({ subtree: true }).every((animation) => animation.playState !== 'running')", `${viewport.name}:department-menu`);
       overlay = await browser.client.evaluate(`(() => { const r = document.querySelector('[role=listbox]').getBoundingClientRect(); return { left:r.left, right:r.right, top:r.top, bottom:r.bottom, visible:r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight }; })()`);
       if (!overlay.visible) throw new Error(`overlay_clipped:${viewport.name}:${JSON.stringify(overlay)}`);
       await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
       await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
-      await browser.client.waitFor("!document.querySelector('[role=listbox]') && document.activeElement === document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]')", `${viewport.name}:department-escape`);
+      // Select can retain its closed animation DOM; verify the user-visible close contract.
+      await browser.client.waitFor("!document.querySelector('[role=listbox]')?.checkVisibility({ opacityProperty: true, visibilityProperty: true }) && document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]').getAttribute('aria-expanded') === 'false' && document.activeElement === document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]')", `${viewport.name}:department-escape`);
+      overlay.dismissal = await browser.client.evaluate(`(() => { const list = document.querySelector('[role=listbox]'); return { retainedDom: Boolean(list), visible: list?.checkVisibility({ opacityProperty: true, visibilityProperty: true }) ?? false, expanded: document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]').getAttribute('aria-expanded'), focusRestored: document.activeElement === document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]') }; })()`);
     }
     if (scenario.saveRequest) {
       await browser.client.evaluate(`(() => { const button = document.querySelector('[data-skill-distribution-save]'); if (!button) throw new Error('skill_distribution_save_missing'); button.click(); })()`);
@@ -598,8 +628,10 @@ async function runCase(viewport, scenario) {
       }
     }
     const screenshot = await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-${scenario.name}`);
-    return { viewport: viewport.name, route: scenario.path, layout, reachable, modelLayout, avatarLayout, overlay, mcpFocus, loadingLayout, pluginLayout, screenshot };
+    return { viewport: viewport.name, route: scenario.path, layout, reachable, responsiveLayout, modelLayout, avatarLayout, overlay, mcpFocus, loadingLayout, pluginLayout, screenshot };
   } catch (error) {
+    const focusDiagnostic = await browser.client.evaluate(`(() => ({ activeTag: document.activeElement?.tagName, activeLabel: document.activeElement?.getAttribute('aria-label'), activeTitle: document.activeElement?.getAttribute('title'), listboxes: [...document.querySelectorAll('[role=listbox]')].map(node => ({ visible: node.checkVisibility({ opacityProperty: true, visibilityProperty: true }), display: getComputedStyle(node).display, visibility: getComputedStyle(node).visibility, opacity: getComputedStyle(node).opacity, hidden: node.getAttribute('aria-hidden'), inert: Boolean(node.closest('[inert]')), ending: node.hasAttribute('data-ending-style') })), departmentExpanded: document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]')?.getAttribute('aria-expanded'), departmentTriggerFocused: document.activeElement === document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]') }))()`);
+    console.error(JSON.stringify({ route: scenario.path, focusDiagnostic }));
     if (scenario.loading) {
       const paint = await browser.client.evaluate(`(() => {
         const ancestors = [];

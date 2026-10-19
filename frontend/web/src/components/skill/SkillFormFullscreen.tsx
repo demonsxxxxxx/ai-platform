@@ -19,7 +19,8 @@ export function SkillFormFullscreen(a: SkillFormActions) {
       <Button type="primary" size="large"
         htmlType="button" icon={<Shrink size={18} />}
         onClick={() => a.toggleFullscreen(false)}
-        className="fixed top-4 right-4 z-[410] shadow-xl"
+        className="shadow-xl"
+        style={{ position: "fixed", top: 16, right: 16, zIndex: 410 }}
         aria-label={t("skills.form.exitFullscreen")} title={t("skills.form.exitFullscreen")}
       />
       <div className="flex flex-1 min-h-0 overflow-hidden">

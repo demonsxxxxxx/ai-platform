@@ -19,40 +19,40 @@ export function RunPerformanceSummary({ report }: { report: AdminRunMonitorRespo
         <span>执行中 {counts.running} · 排队 {counts.queued}</span>
         <span>成功率 {report.success_rate == null ? "无已完成样本" : `${(report.success_rate * 100).toFixed(1)}%`}<span className="ml-1 text-[var(--theme-text-tertiary)]">（成功 / 成功与失败）</span></span>
       </div>
-      <div className="overflow-x-auto px-4 py-3">
+      <div className="overflow-x-auto px-4 py-3" data-run-latency-table>
         <Table
- size="small" pagination={false}
+ size="small" pagination={false} scroll={{ x: 560 }}
  dataSource={(Object.keys(RUN_LATENCY_LABELS) as Array<keyof AdminRunLatency>)}
  rowKey={(name) => name}
 onRow={(name) => {  return ({"className": "border-t border-[var(--theme-border)]",
 "data-latency-metric": name}); }}
  columns={[
-{ key: "metric", title: "指标",
+{ key: "metric", title: "指标", width: 180,
 render: (_value, name) => (<>
 {RUN_LATENCY_LABELS[name]}
 </>) },
-{ key: "p50", title: "P50",
+{ key: "p50", title: "P50", width: 90,
 render: (_value, name) =>  {
 const metric = report.latency[name];
 return (<>
 {formatRunDuration(metric?.p50)}
 </>);
 } },
-{ key: "p95", title: "P95",
+{ key: "p95", title: "P95", width: 90,
 render: (_value, name) =>  {
 const metric = report.latency[name];
 return (<>
 {formatRunDuration(metric?.p95)}
 </>);
 } },
-{ key: "p99", title: "P99",
+{ key: "p99", title: "P99", width: 90,
 render: (_value, name) =>  {
 const metric = report.latency[name];
 return (<>
 {formatRunDuration(metric?.p99)}
 </>);
 } },
-{ key: "sampleCount", title: "有效样本",
+{ key: "sampleCount", title: "有效样本", width: 110,
 render: (_value, name) =>  {
 const metric = report.latency[name];
 return (<>

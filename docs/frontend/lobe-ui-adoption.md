@@ -67,6 +67,12 @@ Lobe ThemeProvider 自带 AntD App 和 Base UI portal host。`enableCustomFonts=
 
 保留的传递依赖链为 `@assistant-ui/react@0.15.16 → radix-ui@1.6.7 → @radix-ui/react-select@2.3.7`，由现有聊天 UI runtime 的依赖合同拥有；项目业务代码不直接使用它，也不手工删除它所需的锁文件条目。`frontend/web/THIRD_PARTY_NOTICES.md` 保留已退役适配代码的 MIT 来源许可，不再将旧适配描述为当前实现。
 
+专业查看器保留业务外壳：`ToolResultPanel` / `EditorSidebar` 拥有主内容让位、宽度拖拽、移动手势和面板历史；`SkillForm` 保留同一编辑状态下的全屏模式，退出按钮通过公开 `style` 固定在可见的右上角；Mermaid 查看器保留缩放、平移及图形几何。这些 Portal 通过公开 `useAppElement` 进入 Lobe 主题宿主，工具结果只由面板自身创建一次 Portal。Markdown/XLSX 的语义表格与 Provider 外的 `ErrorBoundary` 刷新按钮仍是明确例外，不恢复旧通用控件。
+
+普通图标按钮使用公开 `icon` 属性；已退役 `btn-icon`、`btn-secondary`、`btn-danger`、`enterprise-form-input` / `enterprise-form-textarea` 及旧企业图标按钮 CSS。记忆表单尺寸改用库的 `size`，仅 `ErrorBoundary` 继续使用 `btn-primary`。共享 `ConfirmDialog` 使用公开 Modal 组合，保留加载时禁止关闭和危险操作，并将焦点还给打开前的控件；Word 中断操作复用它，服务端取消确认仍由审核业务 owner 判断。
+
+窄屏管理表格由 MCP 与运行性能 owner 显式设置列宽及横向滚动；Skill 详情所在单列使用 `minmax(0, 1fr)`，治理状态标签不换行。SOP、Word 使用现有语义主题变量，Word 页头使用 `review-panel-header` 避免继承全局 sticky 样式，手机统计与上传区保持首屏任务优先。相关几何由实际浏览器回归验证，不用页面隐藏溢出来替代内容可达性。
+
 源码库存检查须对应实际调用方和 renderer 例外，不能为保留旧断言而恢复旧组件。组件替换需完成 owning 回归、中文与可访问名称、禁用/提交状态、键盘与焦点、窄屏布局和实际渲染检查。
 
 ## 验收与证据
