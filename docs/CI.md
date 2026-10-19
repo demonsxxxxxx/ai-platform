@@ -14,9 +14,13 @@ Status: active CI navigation and dated local observations; not deployment eviden
 | 文件 | 触发条件 | 覆盖平台/内容 | 是否自动发布 | 备注 |
 |---|---|---|---|---|
 | ai-platform-backend.yml | PR→main、push main、workflow_dispatch | ubuntu：preflight/compileall/SSE cutover + 8 个 pytest 分片 + Agent/Skill 契约 + 镜像构建 + Trivy + 启动健康 + required 聚合 | 否 | 镜像推送委托 packaging（push 时） |
-| ai-platform-frontend.yml | PR→main、push main、workflow_dispatch | Windows 功能检查 + `pnpm ci:verify` + Linux 镜像/Trivy/provenance/启动健康 + required 聚合 | 否 | 同上 |
+| ai-platform-frontend.yml | PR→main、push main、workflow_dispatch | Windows 4 个 JS 测试分片、独立 Python 合同/投影审计、lint/build/trace + Linux 镜像/Trivy/provenance/启动健康 + required 聚合 | 否 | 同上 |
 | ai-platform-packaging-publish.yml | push main + dispatch（confirm_release=PUBLISH_MAIN） | 不可变镜像 + SBOM + cosign 签名/验证 + manifest + Compose 包 + 可选版本化 Release | 是（受控） | 无 PR 触发 |
 | ai-platform-trusted-governance-v2.yml | pull_request_target（opened/synchronize/reopened/edited） | 受信基线 + PR head 验证 + Ruff + code_governance + architecture_governance | 否 | governance 是 authority object（candidate 不可放宽自身结果） |
+
+前端 JS 分片直接执行 `package.json` 中既有的 14 个测试阶段，每个 Runner 保持 `--test-concurrency=2` 和原有进程隔离；`test:sse` 的第二次 Runner 同样保留。分片按 [main 基线运行](https://github.com/demonsxxxxxx/ai-platform/actions/runs/39191073843) 的阶段耗时均衡，纯测试历史耗时约为每片 161–164 秒，不含环境准备或排队。实际提速以新候选的 CI 结果为准。
+
+Python 合同/投影审计、JS 分片、lint/build/trace 和镜像并行启动；构建 Job 的 Python 依赖仅供产物来源记录使用。`frontend required` 必须接收四类 Job 的成功结果，失败、取消、跳过或缺失均阻断；矩阵不因其他分片失败而取消剩余分片。`tests/test_frontend_ci_shards.py` 校验分片与完整本地 `ci:verify` 阶段清单完全一致，无遗漏或重复分配；原有跨阶段文件重复保持原状。`ci:verify` 仍是本地完整串行复现入口，不新增测试运行器，也不复制测试文件选择器。
 
 配置覆盖 lint/test/build、镜像扫描及发布来源验证，可作为阶段 3 的复用候选。源码中有这些 job 不等于检查已执行，也不证明 coverage、文档新鲜度、hook、结构化日志等全部 Harness 要求已满足；逐项处置见 [计划 §5.1](exec-plans/active/harness-migration.md#51-必需要求处置与验收索引)。未发现 commit-msg/Conventional Commits 机械门禁，该项与提交前 hook 的具体处置仍需确认，不能直接宣布豁免。
 
