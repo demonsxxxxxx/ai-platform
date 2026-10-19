@@ -185,7 +185,10 @@ operation failures retain the editor draft and show safe error copy; raw
 backend error details are not rendered. The ordinary directory remains read-only.
 
 The administrator directory presents Server enablement separately from live tool
-discovery. Counts and the searchable tool-detail drawer come from
+discovery. Enabled status text, toggle icons and the checked form control use the
+success-green theme token; disabled controls use neutral styling. The toggle's
+pressed state also exposes enablement without depending on color. Counts and the
+searchable tool-detail drawer come from
 `GET /api/mcp/{name}/catalog`. Enterprise Gateway rows show the full anonymous
 directory and available-tool count, retaining unavailable tools in the drawer.
 Generic MCP rows retain current-account discovery. Successful empty discovery
