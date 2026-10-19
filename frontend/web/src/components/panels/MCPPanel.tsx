@@ -393,7 +393,7 @@ return (<>
 } },
 { key: "enabled", title: t("mcp.card.statusLabel"), width: 100,
 render: (_value, server) => (<>
-<span className={server.enabled ? "text-[var(--theme-accent)]" : "text-[var(--theme-text-secondary)]"}>{t(server.enabled ? "mcp.card.statusEnabled" : "mcp.card.statusDisabled")}</span>
+<span className={server.enabled ? "text-[var(--theme-success)]" : "text-[var(--theme-text-secondary)]"}>{t(server.enabled ? "mcp.card.statusEnabled" : "mcp.card.statusDisabled")}</span>
 </>) },
 { key: "discovery", title: t("mcp.tools.discoveryStatus"), width: 120,
 render: (_value, server) =>  {
@@ -420,8 +420,8 @@ render: (_value, server) => (<>
 <div className="flex items-center gap-1">
                         <Button type="default" htmlType="button" className="min-h-11 whitespace-nowrap" data-mcp-view-tools onClick={(event) => { toolPreviousFocusRef.current = event.currentTarget; setToolTarget({ name: server.name, scope: toolsScope }); }}>{t("mcp.tools.view")}</Button>
                         {canManageMcpUi ? <div className="flex items-center gap-1" data-mcp-admin-controls>
-                          <Button type="text" htmlType="button" data-mcp-admin-toggle onClick={async () => { const updated = await toggleServer(server.name); if (updated) toast.success(t(updated.enabled ? "mcp.admin.enableSuccess" : "mcp.admin.disableSuccess")); }} className="min-h-11 min-w-11" aria-label={server.enabled ? t("mcp.admin.disableServer") : t("mcp.admin.enableServer")} title={server.enabled ? t("mcp.admin.disableServer") : t("mcp.admin.enableServer")} disabled={isLoading}
-                            icon={server.enabled ? <ToggleRight size={18} /> : <ToggleLeft size={18} />}
+                          <Button type="text" htmlType="button" data-mcp-admin-toggle aria-pressed={server.enabled} onClick={async () => { const updated = await toggleServer(server.name); if (updated) toast.success(t(updated.enabled ? "mcp.admin.enableSuccess" : "mcp.admin.disableSuccess")); }} className="min-h-11 min-w-11" aria-label={server.enabled ? t("mcp.admin.disableServer") : t("mcp.admin.enableServer")} title={server.enabled ? t("mcp.admin.disableServer") : t("mcp.admin.enableServer")} disabled={isLoading}
+                            icon={server.enabled ? <ToggleRight size={18} className="text-[var(--theme-success)]" /> : <ToggleLeft size={18} className="text-[var(--theme-text-secondary)]" />}
                           />
                           <Button type="text" htmlType="button" data-mcp-admin-edit onClick={() => void openEditor(server)} className="min-h-11 min-w-11" aria-label={t("mcp.admin.editServer")} title={t("mcp.admin.editServer")} disabled={isLoading || editorDetailsLoading}
                             icon={<Edit3 size={18} />}

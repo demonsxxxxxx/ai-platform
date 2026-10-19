@@ -33,6 +33,9 @@ for (const integrationKind of ["mcp", "enterprise_gateway"] as const) {
       await act(async () => { root.render(createElement(MCPServerForm, {
         server, onSave: async (data) => { saved.push(data); return true; }, onCancel: () => {},
       })); });
+      const enabled = container.querySelector<HTMLElement>('[role="checkbox"]')!;
+      assert.equal(enabled.style.getPropertyValue("--lobe-checkbox-bg"), "var(--theme-success)");
+      assert.equal(enabled.getAttribute("aria-checked"), "true");
       await act(async () => change(container.querySelector<HTMLInputElement>('input[type="url"]')!, "https://example.invalid/mcp"));
       await submit();
       assert.equal(saved[0].integration_kind, integrationKind);
