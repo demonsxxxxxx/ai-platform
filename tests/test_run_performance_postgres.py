@@ -32,12 +32,13 @@ async def test_monitor_queries_bind_one_closed_tenant_window_and_row_limit():
     conn = Connection()
     report = await get_admin_run_monitor_report(conn, tenant_id="tenant-a", from_at=start,
         to_at=start + timedelta(hours=1), user_id="user-a", agent_id="agent-a", model_id="model-a",
-        model_gateway_revision=3, comparison_run_id="run-target", limit=1)
+        model_gateway_revision=3, limit=1)
     assert len(conn.calls) == 2 and report["has_more"] is True and len(report["runs"]) == 1
     assert conn.calls[0][1][:5] == ("tenant-a", start, start + timedelta(hours=1), "user-a", "user-a")
-    assert conn.calls[1][1][:-1] == conn.calls[0][1] and conn.calls[1][1][-1] == 2
+    assert conn.calls[1][1][:-1] == conn.calls[0][1][:len(conn.calls[1][1]) - 1]
+    assert conn.calls[1][1][-1] == 2
+    assert conn.calls[0][1][-4:] == (start, 300.0, start, 300.0)
     assert "percentile_cont(0.95)" in conn.calls[0][0]
-    assert "run_skill_snapshots" in conn.calls[0][0] and "pin.content_hash" in conn.calls[0][0]
 
 
 @pytest.mark.asyncio
@@ -70,10 +71,9 @@ async def test_postgres_monitor_samples_runs_not_events_and_uses_frozen_skill_co
         assert report["latency"]["total_ms"]["p50"] == 20000
         assert report["latency"]["server_first_text_ms"] == {"sample_count": 1, "p50": 1000, "p95": 1000, "p99": 1000}
         assert report["latency"]["browser_first_text_ms"]["sample_count"] == 0
-        peers = await get_admin_run_monitor_report(conn, tenant_id="tenant-a", from_at=created, to_at=end, comparison_run_id="run-a")
-        assert peers["counts"]["total"] == 1 and peers["runs"][0]["run_id"] == "run-normal"
-        assert peers["latency"]["total_ms"]["p50"] == 2000
-        foreign = await get_admin_run_monitor_report(conn, tenant_id="unknown-tenant", from_at=created, to_at=end)
+        foreign = await get_admin_run_monitor_report(
+            conn, tenant_id="unknown-tenant", from_at=created, to_at=end
+        )
         assert foreign["counts"]["total"] == 0 and foreign["runs"] == []
         repository = PostgresRunDiagnosticsRepository()
         await repository.append_browser_latency(conn, tenant_id="tenant-a", run_id="run-a", measurement={

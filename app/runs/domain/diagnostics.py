@@ -16,6 +16,53 @@ RUN_DIAGNOSTICS_REDACTION_POLICY_VERSION = "run-diagnostics-redaction.v1"
 RUN_DIAGNOSTICS_MAX_BYTES = 128 * 1024
 RUN_DIAGNOSTICS_OBSERVATION_LIMIT = 64
 
+_RUNTIME_DEBUG_LABELS = {
+    "component": {"claude_executor", "model_proxy", "provider_session"},
+    "operation": {"messages", "count_tokens", "load", "append", "list_subkeys", "initialize"},
+    "phase": {"preflight", "connect", "response", "stream", "entry_validation", "structured_entry_validation", "image_validation"},
+    "failure_class": {"policy_rejected", "connect_error", "connect_timeout", "read_timeout", "write_timeout", "protocol_error", "transport_error", "http_error", "size_limit", "invalid_response"},
+    "policy": {"anthropic_version", "anthropic_beta", "capacity", "request", "binding"},
+    "entry_kind": {"user", "assistant", "system", "summary", "file-history-snapshot", "progress", "cost-state", "queue-operation", "other"},
+    "scope": {"main", "child"},
+}
+_RUNTIME_DEBUG_COUNTS = {
+    "attempt_count", "beta_count", "entry_count", "entry_index", "observed_bytes", "limit_bytes",
+    "image_count", "encoded_image_bytes", "largest_encoded_image_bytes",
+    "expected_sequence", "accepted_sequence", "timeout_ms",
+}
+_RUNTIME_DEBUG_VERSIONS = {"sdk_version", "cli_version", "python_version"}
+_RUNTIME_DEBUG_COMMITS = {"executor_runtime_commit", "api_runtime_commit"}
+
+
+def _normalize_execution_debug(value: object) -> dict[str, str | int]:
+    """Revalidate closed runtime facts at the Runs persistence boundary."""
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, str | int] = {}
+    for name, allowed in _RUNTIME_DEBUG_LABELS.items():
+        item = value.get(name)
+        if name == "entry_kind" and isinstance(item, str):
+            result[name] = item if item in allowed else "other"
+        elif isinstance(item, str) and item in allowed:
+            result[name] = item
+    for name in _RUNTIME_DEBUG_COUNTS:
+        item = value.get(name)
+        if type(item) is int and 0 <= item <= 1_000_000_000:
+            result[name] = item
+    status = value.get("http_status")
+    if type(status) is int and 100 <= status <= 599:
+        result["http_status"] = status
+    for name in _RUNTIME_DEBUG_VERSIONS:
+        item = value.get(name)
+        if isinstance(item, str) and re.fullmatch(r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,6}(?:[a-z][0-9]{1,3})?", item):
+            result[name] = item
+    for name in _RUNTIME_DEBUG_COMMITS:
+        item = value.get(name)
+        if isinstance(item, str) and re.fullmatch(r"[0-9a-f]{40}", item):
+            result[name] = item
+    return result
+
+
 _IDENTITY_PATTERN = re.compile(r"[A-Za-z0-9_.:-]{1,160}")
 _LOSS_FIELD_PATTERN = re.compile(r"[a-z][a-z0-9_.\[\]]{0,127}")
 _PRIVATE_KEY_PATTERN = re.compile(
@@ -215,6 +262,8 @@ def sanitize_runtime_diagnostics(value: object) -> dict[str, Any]:
             sdk["exception_chain"]
         )
 
+    if debug := _normalize_execution_debug(sdk.get("debug")):
+        sdk_projection["debug"] = debug
     failure_observations = [
         projected
         for raw in _list_value(value.get("failure_observations"))
@@ -956,6 +1005,8 @@ def _minimize_observation(
             or (type(sdk[key]) is int and 100 <= sdk[key] <= 599)
         )
     }
+    if debug := _normalize_execution_debug(sdk.get("debug")):
+        sdk_projection["debug"] = debug
     retained_failures = failures[:1] if isinstance(failures, list) else []
     if severe:
         sdk_projection.pop("errors", None)

@@ -28,6 +28,10 @@ from app.runs.domain.diagnostics import (
 )
 
 
+from app.sandbox.api import SandboxRuntimeDebugReader
+from app.execution.events import normalize_execution_debug
+from app.runs.application.admin_trajectory import project_admin_trajectory_page
+
 logger = logging.getLogger(__name__)
 
 
@@ -50,13 +54,17 @@ class RunDiagnosticsPersistence(Protocol):
         self, conn: Any, *, tenant_id: str, from_at: datetime, to_at: datetime,
         user_id: str | None = None, agent_id: str | None = None,
         model_id: str | None = None, model_gateway_revision: int | None = None,
-        status: str | None = None, comparison_run_id: str | None = None,
+        status: str | None = None,
         order: str = "slow", limit: int = 50,
     ) -> dict[str, Any]: ...
 
     async def get_admin_investigation_events(
         self, conn: Any, *, tenant_id: str, run_id: str,
     ) -> dict[str, Any]: ...
+
+    async def get_admin_debug_skills(self, conn: Any, *, tenant_id: str, run_id: str) -> list[dict[str, Any]]: ...
+
+    async def get_execution_debug_binding(self, conn: Any, *, run_id: str, attempt_id: str) -> dict[str, Any] | None: ...
 
     async def get_admin_snapshot(
         self,
@@ -82,6 +90,8 @@ class RunDiagnosticsService:
     runtime_diagnostics_schema_version: str
     exception_log_fields: Callable[[BaseException], dict[str, Any]]
     tool_operation_id: Callable[[object, object], str | None] | None = None
+    runtime_debug_reader: SandboxRuntimeDebugReader | None = field(default=None, repr=False)
+    query_runtime_commit: str | None = None
     clock: Callable[[], datetime] = field(
         default=lambda: datetime.now(timezone.utc),
         repr=False,
@@ -363,11 +373,8 @@ class RunDiagnosticsService:
         return report
 
     async def read_admin_investigation(
-        self, conn: Any, *, tenant_id: str, run_id: str, hours: int = 24,
-        from_at: datetime | None = None, to_at: datetime | None = None,
-        user_id: str | None = None,
+        self, conn: Any, *, tenant_id: str, run_id: str,
     ) -> dict[str, Any] | None:
-        start, end = self._monitor_window(hours, from_at, to_at)
         snapshot = await self.persistence.get_admin_snapshot(conn, tenant_id=tenant_id, run_id=run_id)
         if snapshot is None:
             return None
@@ -387,26 +394,69 @@ class RunDiagnosticsService:
             browser_measurement=browser, first_text_at=evidence.get("first_public_text_at"),
             observed_at=self.clock(),
         )
-        comparison: dict[str, Any] = {
-            "window": {"from_at": start, "to_at": end}, "sample_count": 0,
-            "latency": {}, "normal_run_id": None,
-            "scope": "same_agent_skill_profile_model_configuration",
-            "missing_reason": "model_identity_unknown",
-        }
-        if run.get("model_id") and run.get("model_gateway_revision") is not None:
-            reference = await self.persistence.get_admin_monitor_report(
-                conn, tenant_id=tenant_id, from_at=start, to_at=end,
-                user_id=user_id, comparison_run_id=run_id, limit=1,
-            )
-            comparison.update(
-                sample_count=reference["counts"]["total"], latency=reference["latency"],
-                normal_run_id=reference["runs"][0]["run_id"] if reference["runs"] else None,
-                missing_reason=None if reference["runs"] else "no_comparable_successful_run",
-            )
         return {
             "run_id": run_id, **investigation,
-            "events_truncated": evidence["events_truncated"], "comparison": comparison,
+            "events_truncated": evidence["events_truncated"],
         }
+
+    async def capture_execution_debug(
+        self, conn: Any, *, run_id: str, attempt_id: str, error_code: str,
+        debug: object,
+    ) -> None:
+        facts = normalize_execution_debug(debug)
+        if not facts:
+            return
+        binding = await self.persistence.get_execution_debug_binding(conn, run_id=run_id, attempt_id=attempt_id)
+        if binding is None:
+            return
+        await self._capture_runtime_diagnostics(
+            conn, tenant_id=binding["tenant_id"], run_id=run_id, attempt_id=attempt_id,
+            lease_id=binding.get("lease_id"), source=str(facts.get("component", "executor")),
+            stage=str(facts.get("phase", "runtime")), error_code=error_code, normalize=True,
+            runtime_diagnostics={
+                "schema_version": self.runtime_diagnostics_schema_version,
+                "error_code": error_code, "failure_source": facts.get("component", "executor"),
+                "failure_stage": facts.get("phase", "runtime"), "sdk": {"debug": facts, **({"api_error_status": facts["http_status"]} if "http_status" in facts else {})},
+            },
+        )
+
+    async def read_admin_debug(self, conn: Any, *, tenant_id: str, run_id: str) -> dict[str, Any] | None:
+        snapshot = await self.persistence.get_admin_snapshot(conn, tenant_id=tenant_id, run_id=run_id)
+        if snapshot is None:
+            return None
+        diagnostics = _admin_projection(snapshot, normalize_runtime_diagnostics=self.normalize_runtime_diagnostics,
+                                        tool_operation_id=self.tool_operation_id)
+        evidence = await self.persistence.get_admin_investigation_events(conn, tenant_id=tenant_id, run_id=run_id)
+        skills = await self.persistence.get_admin_debug_skills(conn, tenant_id=tenant_id, run_id=run_id)
+        payload = (snapshot.get("diagnostic") or {}).get("payload_json") or {}
+        investigation = build_run_investigation(
+            snapshot["run"], evidence["events"], attempts=snapshot.get("attempts", []),
+            browser_measurement=payload.get("browser_latency"), first_text_at=evidence.get("first_public_text_at"),
+            observed_at=self.clock(),
+        )
+        trajectory = project_admin_trajectory_page(evidence["events"], sanitize_text=sanitize_run_diagnostic_text)
+        runtime = await self.runtime_debug_reader(conn, tenant_id=tenant_id, run_id=run_id) if self.runtime_debug_reader else None
+        diagnostics["debug"] = {
+            "schema_version": "ai-platform.run-debug.v1", "observed_at": self.clock(),
+            "investigation": {"run_id": run_id, **investigation, "events_truncated": evidence["events_truncated"]},
+            "events": trajectory["events"], "events_omitted": trajectory["omitted"],
+            "events_truncated": evidence["events_truncated"], "event_limit": 500,
+            "usage": {
+                name: value if type(value) is int and 0 <= value <= 2**63 - 1 else None
+                for name, value in snapshot.get("usage", {}).items()
+                if name in {"input_tokens", "output_tokens", "total_tokens", "estimated_cost_minor"}
+            }, "skill_snapshots": skills[:100],
+            "skill_snapshots_truncated": len(skills) > 100,
+            "runtime": runtime,
+            "query_component": normalize_execution_debug({"api_runtime_commit": self.query_runtime_commit}),
+            "missing_evidence": [
+                "provider_internal_trace", "egress_proxy_connection_log",
+                *[name for name in ("sdk_version", "cli_version", "executor_runtime_commit")
+                  if not any(name in item.get("sdk", {}).get("debug", {}) for item in diagnostics["details"]["observations"])],
+                *(["runtime_lease_snapshot"] if runtime is None else []),
+            ],
+        }
+        return diagnostics
 
     async def read_admin(
         self,

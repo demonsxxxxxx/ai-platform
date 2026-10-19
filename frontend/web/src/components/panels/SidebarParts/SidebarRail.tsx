@@ -298,9 +298,8 @@ export function SidebarRail({
           }}
           title="设置"
           htmlType="button"
-        >
-          <Settings aria-hidden="true" size={17} />
-        </Button>
+          icon={<Settings aria-hidden="true" size={17} />}
+        />
       </div>
     </nav>
   );

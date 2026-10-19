@@ -1,4 +1,5 @@
-import { Modal } from "@lobehub/ui/base-ui";
+import { Button, ModalBackdrop, ModalContent, ModalDescription, ModalFooter, ModalHeader, ModalPopup, ModalPortal, ModalRoot, ModalTitle } from "@lobehub/ui/base-ui";
+import { useLayoutEffect, useRef } from "react";
 import { AlertTriangle } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -26,28 +27,33 @@ export function ConfirmDialog({
   loading = false,
 }: ConfirmDialogProps) {
   const { t } = useTranslation();
+  const returnFocusRef = useRef<HTMLElement | null>(null);
+  const confirmRef = useRef<HTMLButtonElement>(null);
+  useLayoutEffect(() => {
+    if (isOpen && document.activeElement instanceof HTMLElement) {
+      returnFocusRef.current = document.activeElement;
+    }
+  }, [isOpen]);
   return (
-    <Modal
-      open={isOpen}
-      title={title}
-      width={400}
-      draggable={false}
-      closable={false}
-      keyboard={!loading}
-      maskClosable={!loading}
-      onCancel={() => { if (!loading) onCancel(); }}
-      onOk={onConfirm}
-      confirmLoading={loading}
-      okText={confirmText || t("common.confirm")}
-      cancelText={cancelText || t("common.cancel")}
-      cancelButtonProps={{ disabled: loading }}
-      okButtonProps={{ autoFocus: true, disabled: loading, danger: variant === "danger" }}
-      classNames={{ wrapper: "workbench-modal" }}
-    >
-      <div className="flex items-start gap-3">
-        <AlertTriangle aria-hidden="true" size={22} className={variant === "danger" ? "shrink-0 text-[var(--theme-danger)]" : variant === "warning" ? "shrink-0 text-amber-500" : "shrink-0 text-[var(--theme-primary)]"} />
-        <p className="text-sm leading-relaxed text-[var(--theme-text-secondary)]">{message}</p>
-      </div>
-    </Modal>
+    <ModalRoot open={isOpen} onOpenChange={(open) => { if (!open && !loading) onCancel(); }}>
+      <ModalPortal>
+        <ModalBackdrop />
+        <ModalPopup width={400} className="workbench-modal" initialFocus={confirmRef} finalFocus={returnFocusRef}>
+          <ModalHeader><ModalTitle>{title}</ModalTitle></ModalHeader>
+          <ModalContent>
+            <div className="flex items-start gap-3">
+              <AlertTriangle aria-hidden="true" size={22} className={variant === "danger" ? "shrink-0 text-[var(--theme-danger)]" : variant === "warning" ? "shrink-0 text-amber-500" : "shrink-0 text-[var(--theme-primary)]"} />
+              <ModalDescription className="text-sm leading-relaxed text-[var(--theme-text-secondary)]">{message}</ModalDescription>
+            </div>
+          </ModalContent>
+          <ModalFooter>
+            <Button disabled={loading} onClick={onCancel}>{cancelText || t("common.cancel")}</Button>
+            <Button ref={confirmRef} type="primary" danger={variant === "danger"} loading={loading} disabled={loading} onClick={onConfirm}>
+              {confirmText || t("common.confirm")}
+            </Button>
+          </ModalFooter>
+        </ModalPopup>
+      </ModalPortal>
+    </ModalRoot>
   );
 }

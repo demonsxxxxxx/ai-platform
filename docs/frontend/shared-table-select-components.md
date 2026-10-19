@@ -18,7 +18,7 @@ Avatar candidates remain four columns inside the editor card. Viewport width alo
 
 | Superseded surface | Disposition and current owner |
 | --- | --- |
-| Generic Table primitives and SkillManagementTable's handwritten structure | The generic Table module is deleted; eight management/parameter/history callers use Lobe Table. Business row selection, actions, permission gates and responsive layout stay with the caller. |
+| Generic Table primitives and SkillManagementTable's handwritten structure | The generic Table module is deleted; seven management/parameter/history callers use Lobe Table. Business row selection, actions, permission gates and responsive layout stay with the caller. |
 | Markdown/XLSX Table primitive imports | Renderer-owned native semantic tables retain `scope="col"`, copying/export, worksheet validation and image geometry. They are the explicit document-rendering exception. |
 | EnterpriseSelect and native ordinary selects | All active ordinary single-select callers use Lobe Select/LobeSelectField with their original option values and callbacks. The old adapter and direct Radix dependency are removed; LobeSelectField.mounted.test.tsx owns the preserved keyboard, focus, form and disabled checks. The existing @assistant-ui/react → radix-ui dependency chain still requires Radix Select 2.3.7; that transitive dependency is retained. |
 | Old Checkbox, Pagination, LoadingSpinner and Skill Toggle modules | The modules and obsolete Loading barrel exports are deleted. No compatibility entry point remains; library primitives serve the migrated callers. |
