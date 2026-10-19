@@ -127,7 +127,12 @@ function bootstrapSource(loading = false) {
       if (url.pathname === '/api/ai/agent-profiles/agt_support') return json(profile);
       if (url.pathname === '/api/ai/admin/agent-profiles') return json({ agent_profiles: [adminProfile] });
       if (url.pathname === '/api/ai/admin/agent-profiles/agt_support/history') return json({ agent_profiles: [adminProfile] });
-      if (url.pathname === '/api/mcp/chat-tools' || url.pathname === '/api/mcp/catalog-tools') return json({ tools: [], count: 0, unavailable: [] });
+      if (url.pathname === '/api/mcp/catalog-tools') return json({ tools: [
+        { tool_id: 'mcp:drive:upload_file', label: 'ProfileDriveMCPServer.upload_file', description: 'Upload authorized attachments.', server: 'drive', category: 'mcp', cached: false },
+        { tool_id: 'mcp:support:search', label: '支持知识检索', description: '检索授权支持知识。', server: 'support', category: 'mcp', cached: false },
+        { tool_id: 'mcp:calendar:list', label: '列出会议', description: '查看授权日历。', server: 'calendar', category: 'mcp', cached: false }
+      ], count: 3, unavailable: [] });
+      if (url.pathname === '/api/mcp/chat-tools') return json({ tools: [], count: 0, unavailable: [] });
       if (url.pathname === '/api/mcp/') return json({ servers: [{
         name: 'synthetic-mcp', transport: 'streamable_http', url: 'https://example.invalid/mcp',
         enabled: true, is_system: true, can_edit: true, allowed_roles: [], role_quotas: {}, credential_state: 'configured'
@@ -599,6 +604,53 @@ async function runCase(viewport, scenario) {
       mcpFocus = { drawerContained: true, tabWrap: true, shiftTabWrap: true, escapeClose: true, triggerFocusRestored: true, nestedEscapeIsolated: true, editorFocusRestored: true, drawerScreenshot };
     }
     if (scenario.name === "builder") {
+      await browser.client.evaluate(`(() => {
+        document.querySelector('[data-agent-builder-mcp-settings]').open = true;
+        const trigger = [...document.querySelectorAll('button')].find(node => node.textContent.trim() === '管理工具');
+        trigger.focus();
+        trigger.click();
+      })()`);
+      await browser.client.waitFor("Boolean(document.querySelector('[aria-label=\"搜索 MCP 工具\"]'))", "builder:mcp-search-open");
+      const searchLayout = await browser.client.evaluate(`(() => {
+        const dialog = document.querySelector('[role=dialog]');
+        const input = dialog.querySelector('[aria-label="搜索 MCP 工具"]');
+        const button = [...dialog.querySelectorAll('button')].find(node => node.textContent.trim() === '搜索');
+        const box = dialog.getBoundingClientRect();
+        return { contained: box.left >= 0 && box.right <= innerWidth && box.top >= 0 && box.bottom <= innerHeight,
+          searchVisible: button?.getBoundingClientRect().width >= 40 && input.getBoundingClientRect().width >= 150,
+          retiredCopyAbsent: !document.body.textContent.includes('Skill Set 无法覆盖的外部能力才需要额外选择 MCP 工具。') };
+      })()`);
+      if (!searchLayout.contained || !searchLayout.searchVisible || !searchLayout.retiredCopyAbsent) throw new Error(`builder_mcp_search_layout_failed:${JSON.stringify(searchLayout)}`);
+      await browser.client.waitFor(`(() => {
+        for (let node = document.querySelector('[role=dialog]'); node; node = node.parentElement) {
+          if (Number(getComputedStyle(node).opacity) < 0.99) return false;
+        }
+        return true;
+      })()`, "builder:mcp-search-painted");
+      await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-builder-mcp-search`);
+      await browser.client.evaluate(`(() => {
+        const input = document.querySelector('[aria-label="搜索 MCP 工具"]');
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '  UPLOAD_FILE  ');
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.focus();
+      })()`);
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+      await browser.client.waitFor("document.querySelector('[role=dialog]').textContent.includes('显示 1 / 3 项')", "builder:mcp-search-enter");
+      await browser.client.evaluate(`document.querySelector('[role=dialog] label').click()`);
+      await browser.client.waitFor("document.querySelector('[role=dialog]').textContent.includes('已选 1 项')", "builder:mcp-select-filtered");
+      await browser.client.evaluate(`document.querySelector('[aria-label="清除 MCP 工具搜索"]').click()`);
+      await browser.client.waitFor("document.querySelector('[role=dialog]').textContent.includes('已选 1 项 · 显示 3 / 3 项')", "builder:mcp-clear-preserves-selection");
+      await browser.client.evaluate(`(() => {
+        const input = document.querySelector('[aria-label="搜索 MCP 工具"]');
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'missing-tool');
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      })()`);
+      await browser.client.evaluate(`([...document.querySelectorAll('[role=dialog] button')].find(node => node.textContent.trim() === '搜索')).click()`);
+      await browser.client.waitFor("document.querySelector('[role=dialog]').textContent.includes('没有匹配的 MCP 工具')", "builder:mcp-search-button-empty");
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await browser.client.waitFor("!document.querySelector('[role=dialog]') && document.activeElement?.textContent.trim() === '管理工具'", "builder:mcp-focus-restored");
       await browser.client.evaluate(`document.querySelector('[data-agent-avatar-picker]').scrollIntoView({ block: 'center' })`);
     }
     const finalErrors = await browser.client.evaluate("window.__routeLayoutSmoke.errors");

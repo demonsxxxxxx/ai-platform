@@ -2884,7 +2884,7 @@ async def test_sdk_disconnects_before_selected_mcp_session_closes(
     async def list_tools(_session):
         return [types.SimpleNamespace(name="search")]
 
-    def prepare(subjects, configs, callback_wrapper=None, *, failure_observer=None):
+    def prepare(subjects, configs, callback_wrapper=None, *, failure_observer=None, credential_resolver=None):
         return ClaudeMcpRegistration(
             subjects,
             configs,
@@ -6765,7 +6765,7 @@ async def test_returned_mcp_error_only_fails_current_call(monkeypatch, tmp_path,
     first = {**_subject(server_id="files", tool_name="list_files"), "write_capable": True}
     next_tool = {**_subject(server_id="projects", tool_name="update"), "write_capable": True}
 
-    def prepare(subjects, configs, callback_wrapper=None, *, failure_observer=None):
+    def prepare(subjects, configs, callback_wrapper=None, *, failure_observer=None, credential_resolver=None):
         @asynccontextmanager
         async def session_factory(config):
             names = [item["mcp_tool"] for item in subjects.values()
