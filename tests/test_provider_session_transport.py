@@ -234,8 +234,12 @@ async def test_session_store_adapter_stops_oversized_stream(monkeypatch):
         max_response_bytes=8,
     )
 
-    with pytest.raises(ClaudeSessionStoreTransportError, match="response_too_large"):
+    with pytest.raises(ClaudeSessionStoreTransportError, match="response_too_large") as caught:
         await adapter.load({"session_id": "provider-a"})
+    assert caught.value.debug == adapter.diagnostic_debug == {
+        "component": "provider_session", "operation": "load", "phase": "stream",
+        "failure_class": "size_limit", "observed_bytes": 9, "limit_bytes": 8,
+    }
 
 
 @pytest.mark.asyncio

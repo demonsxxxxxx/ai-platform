@@ -18,7 +18,7 @@
 - 构建方式：后端 `uv` + Dockerfile；前端 `corepack pnpm` + Dockerfile
 - 运行方式：API `app.main:create_app()`；Worker `python -m app.worker_main`；开发 `corepack pnpm run dev`
 - 部署方式：不可变 Docker/Compose 发布包 `python3 deploy.py --env-file ...`（README.md:15-30）
-- 当前测试与 CI 现状：4 个 GitHub workflow；后端 CI 8 个 pytest 分片 + 镜像构建 + Trivy + 聚合 required 门禁；前端 `pnpm ci:verify`（多组 tsx --test + projection audit + eslint + tsc + vite build）；trusted-governance（Ruff + code/architecture governance）；packaging-publish（SBOM + cosign + manifest）
+- 当前测试与 CI 现状：4 个 GitHub workflow；后端 CI 8 个 pytest 分片 + 镜像构建 + Trivy + 聚合 required 门禁；前端 4 个 JS 分片 + 独立 Python 合同/投影审计 + lint/type-check/build，保留完整本地 `pnpm ci:verify`（当前拓扑见 [CI 配置](../../CI.md)）；trusted-governance（Ruff + code/architecture governance）；packaging-publish（SBOM + cosign + manifest）
 - 本仓库「记录系统」基础：`docs/README.md` 是 authority index；架构约束已由 `tools/architecture_governance.py` + `architecture-policy.json` 机械执行
 
 ## 2. 框架判定与 CI 现状（§3.2）
@@ -30,7 +30,7 @@
 | 文件 | 触发 | 覆盖 | 自动发布 | 本地可复现 |
 |---|---|---|---|---|
 | ai-platform-backend.yml | PR→main / push main / dispatch | preflight + compileall + SSE cutover + 8 pytest 分片 + 镜像/Trivy/启动健康 + required 聚合 | 否 | 大部分可（uv sync + pytest 分片命令）；Docker/Trivy 需 Docker |
-| ai-platform-frontend.yml | PR→main / push main / dispatch | Windows 前端契约测试 + pnpm ci:verify + 镜像/Trivy/来源验证 + required 聚合 | 否 | pnpm 命令可；Windows/Linux runner 不完全等价 |
+| ai-platform-frontend.yml | PR→main / push main / dispatch | Windows JS 分片 + 独立 Python 合同/投影审计 + lint/build/trace + 镜像/Trivy/来源验证 + required 聚合 | 否 | 完整本地 pnpm ci:verify；Windows/Linux runner 不完全等价 |
 | ai-platform-packaging-publish.yml | push main + dispatch（需 confirm_release） | 镜像构建推送 + SBOM + cosign 签名验证 + manifest + Compose 包 + 可选 GitHub Release | 是（受控） | manifest/打包脚本可；签名/推送不可离线复现 |
 | ai-platform-trusted-governance-v2.yml | pull_request_target（4 事件） | 受信基线校验 + Ruff + code_governance + architecture_governance | 否 | 可（pinned 依赖 + 相同命令） |
 

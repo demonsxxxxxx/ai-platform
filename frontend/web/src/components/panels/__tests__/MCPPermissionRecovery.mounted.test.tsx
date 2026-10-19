@@ -97,6 +97,32 @@ test("administrator sees discovered tools and can inspect their public descripti
   } finally { await view.close(); }
 });
 
+test("administrator can disable and restore a server with clear enable state", async () => {
+  let enabled = true;
+  const view = await harness(createElement(MCPPanel), ({ init }) => {
+    if (init.method === "PATCH") {
+      enabled = !enabled;
+      return json({ server: { ...server, enabled }, message: "updated" });
+    }
+    return json({ servers: [{ ...server, enabled }], total: 1, skip: 0, limit: 20 });
+  });
+  try {
+    const toggle = () => view.container.querySelector<HTMLButtonElement>("[data-mcp-admin-toggle]")!;
+    assert.equal(toggle().getAttribute("aria-pressed"), "true");
+    assert.ok(toggle().querySelector("svg")!.classList.contains("text-[var(--theme-success)]"));
+    await click(toggle());
+    assert.ok(view.container.querySelector("[data-mcp-server-row]"), "disabled servers remain in the administrator list");
+    assert.equal(toggle().getAttribute("aria-pressed"), "false");
+    assert.equal(toggle().getAttribute("aria-label"), "启用 MCP 服务器");
+    assert.ok(toggle().querySelector("svg")!.classList.contains("text-[var(--theme-text-secondary)]"));
+    assert.equal(view.discoveryCalls.length, 1, "disabled server must not be queried");
+    await click(toggle());
+    assert.equal(toggle().getAttribute("aria-pressed"), "true");
+    assert.equal(view.calls.filter(call => call.init.method === "PATCH").length, 2);
+    assert.equal(view.discoveryCalls.length, 2, "restored server can discover tools again");
+  } finally { await view.close(); }
+});
+
 test("enterprise catalog retains missing definitions without counting them as available", async () => {
   const tools = [
     { name: "synthetic-mcp::ready", description: "Available synthetic tool", parameters: [], available: true },

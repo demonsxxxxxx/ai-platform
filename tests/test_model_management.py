@@ -1416,19 +1416,25 @@ async def test_anthropic_count_tokens_404_uses_bounded_local_fallback_only():
     for status, error in (
         (401, "model_proxy_count_tokens_failed"),
         (429, "model_proxy_count_tokens_unavailable"),
+        (503, "model_proxy_count_tokens_unavailable"),
+        (502, "model_proxy_count_tokens_failed"),
         (500, "model_proxy_count_tokens_failed"),
     ):
         service._upstream = SimpleNamespace(
             request=lambda status=status, **_kwargs: SimpleNamespace(
-                status=status, body=b'{}',
+                status=status, body=b'{}', debug={"attempt_count": 2, "body": "PRIVATE"},
             ),
             open_stream=forward,
         )
-        with pytest.raises(RuntimeError, match=error):
+        with pytest.raises(RuntimeError, match=error) as caught:
             await service.proxy(
                 provider="anthropic", upstream_path="v1/messages/count_tokens",
                 body=count_body, **fields,
             )
+        assert caught.value.debug == {
+            "component": "model_proxy", "operation": "count_tokens", "phase": "response",
+            "failure_class": "http_error", "http_status": status, "attempt_count": 2,
+        }
 
     service._upstream = SimpleNamespace(request=missing_count, open_stream=forward)
 

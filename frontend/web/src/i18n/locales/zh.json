@@ -1051,7 +1051,7 @@
       "allowedDepartments": "允许的部门",
       "allowedDepartmentsDescription": "使用逗号分隔可访问此服务器的部门 ID。",
       "allowedDepartmentsPlaceholder": "engineering, finance",
-      "connectionReentry": "编辑时 URL 和 HTTP 头会回显；沙箱命令和环境变量键不会回显，更新时需要重新输入。",
+      "connectionReentry": "编辑时会显示已保存的 URL 和 HTTP 头。",
       "removeRole": "移除角色 {{role}}",
       "add": "添加",
       "allRoles": "所有角色（无限制）",

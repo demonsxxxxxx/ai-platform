@@ -28,6 +28,7 @@ from fastapi import FastAPI, Header, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.bootstrap.execution import build_claude_session_store
+from app.bootstrap.claude_mcp import build_mcp_credential_resolver
 from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION
 from app.control_plane_contracts import normalize_thinking_effort
 from app.executors.claude_agent_sdk_runner import (
@@ -1818,6 +1819,13 @@ async def _default_executor_runner(
         sdk_kwargs = {
             "interaction_client": build_run_input_callback_client(
                 callback_base_url=request.callback_target.base_url,
+                callback_token=request.callback_token,
+                callback_token_id=request.callback_token_id,
+                run_id=request.run_id,
+                attempt_id=request.attempt_id,
+            ),
+            "mcp_credential_resolver": build_mcp_credential_resolver(
+                callback_url=request.callback_target.mcp_credential_url,
                 callback_token=request.callback_token,
                 callback_token_id=request.callback_token_id,
                 run_id=request.run_id,

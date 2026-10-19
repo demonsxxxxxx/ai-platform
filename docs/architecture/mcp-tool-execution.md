@@ -78,7 +78,22 @@ fence. Failed or revoked grants cannot issue a token. A credential-only rotation
 preserves subject ownership; authorization changes retire old owners. An expired
 read must not delete a shared key, since a concurrent login may already have
 replaced it. Selected-tool transports obtain the latest authorized JWT before
-each HTTP dispatch, including within an already-open MCP session. Transport
+each HTTP dispatch, including within an already-open MCP session. Independent
+Sandbox executors use the task-scoped `/api/ai/runtime/callbacks/mcp-credential`
+client rather than a process-local Redis credential store. The platform-created
+lease records only each selected Server's credential subject (tenant/user and
+original grant/epoch or legacy credential identity), never its JWT, endpoint or
+static headers. The callback accepts only Run, Attempt, callback token identity
+and Server ID; it derives the user and original credential subject from the
+current locked Run/lease. It validates the existing callback token and active
+Attempt, reads or renews that bound credential outside database locks, then
+rechecks the same Run, lease and subject before returning a private, no-store
+response. A replaced login, cancelled/terminal Run, stale owner, released lease
+or unselected Server cannot acquire a credential. The resolver remains local to
+one executor task, with bounded credential responses and no redirects, retries
+or fallback to the initial JWT after a refresh failure. API/Worker discovery
+continues to use its configured credential store. Optional MCP unavailability
+and Run completion semantics are unchanged. Transport
 failures and potentially executed tool effects do not authorize tool replay.
 
 This preserves the absolute browser authentication lifetime and tenant/user
