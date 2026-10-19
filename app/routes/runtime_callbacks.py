@@ -747,6 +747,10 @@ async def provider_session_callback(
     except HTTPException:
         raise
     except (context_api.ProviderSessionContinuityError, ValueError) as exc:
+        if getattr(exc, "debug", None):
+            from app.bootstrap.run_diagnostics import record_execution_debug
+            await record_execution_debug(run_id=callback.run_id, attempt_id=callback.attempt_id,
+                                         error_code=str(exc), debug=exc.debug)
         raise _provider_session_http_error(exc) from exc
     except Exception as exc:  # noqa: BLE001 - callback details stay private.
         raise HTTPException(status_code=503, detail="provider_session_callback_failed") from exc

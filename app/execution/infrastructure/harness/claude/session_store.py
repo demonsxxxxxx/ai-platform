@@ -10,6 +10,8 @@ from typing import Any
 
 import httpx
 
+from app.execution.events import normalize_execution_debug
+
 from app.context.api import (
     MAX_PROVIDER_SESSION_CALLBACK_RESPONSE_BYTES as MAX_PROVIDER_SESSION_RESPONSE_BYTES,
     MAX_PROVIDER_SESSION_BATCH_BYTES,
@@ -28,6 +30,10 @@ MAX_PROVIDER_SESSION_APPEND_ENTRY_BYTES = MAX_PROVIDER_SESSION_ENTRY_BYTES
 
 class ClaudeSessionStoreTransportError(RuntimeError):
     """A bounded, detail-free failure from the host SessionStore callback."""
+
+    def __init__(self, code: str, *, debug: dict[str, Any] | None = None) -> None:
+        super().__init__(code)
+        self.debug = normalize_execution_debug(debug)
 
 
 @dataclass
@@ -93,6 +99,13 @@ class ClaudeSessionStoreAdapter:
         self._pending_batch: _PendingAppend | None = None
         self._append_lock = asyncio.Lock()
         self._completed_sequence: int | None = None
+        self.diagnostic_debug: dict[str, str | int] = {}
+
+    def _failure(self, code: str, *, action: str, phase: str, **facts: Any) -> ClaudeSessionStoreTransportError:
+        self.diagnostic_debug = normalize_execution_debug({
+            "component": "provider_session", "operation": action, "phase": phase, **facts,
+        })
+        return ClaudeSessionStoreTransportError(code, debug=self.diagnostic_debug)
 
     @property
     def accepted_final_sequence(self) -> int | None:
@@ -162,8 +175,10 @@ class ClaudeSessionStoreAdapter:
             "entries": encoded_entries,
             "expected_sequence": expected_sequence,
         }
-        if self._json_size(payload) > self._max_request_bytes:
-            raise ClaudeSessionStoreTransportError("provider_session_request_too_large")
+        size = self._json_size(payload)
+        if size > self._max_request_bytes:
+            raise self._failure("provider_session_request_too_large", action=action, phase="entry_validation",
+                                failure_class="size_limit", observed_bytes=size, limit_bytes=self._max_request_bytes)
         return payload
 
     async def _request(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -182,43 +197,47 @@ class ClaudeSessionStoreAdapter:
                     headers=headers,
                 ) as response:
                     if response.status_code >= 400:
-                        raise ClaudeSessionStoreTransportError(
-                            "provider_session_callback_rejected"
+                        raise self._failure(
+                            "provider_session_callback_rejected", action=payload["action"], phase="response",
+                            failure_class="http_error", http_status=response.status_code,
+                            entry_count=len(payload["entries"]), expected_sequence=payload.get("expected_sequence"),
                         )
                     chunks: list[bytes] = []
                     total = 0
                     async for chunk in response.aiter_bytes():
                         total += len(chunk)
                         if total > self._max_response_bytes:
-                            raise ClaudeSessionStoreTransportError(
-                                "provider_session_response_too_large"
-                            )
+                            raise self._failure("provider_session_response_too_large", action=payload["action"], phase="stream",
+                                                failure_class="size_limit", observed_bytes=total, limit_bytes=self._max_response_bytes)
                         chunks.append(chunk)
         except ClaudeSessionStoreTransportError:
             raise
         except httpx.TimeoutException as exc:
-            raise ClaudeSessionStoreTransportError("provider_session_callback_timeout") from exc
+            raise self._failure("provider_session_callback_timeout", action=payload["action"], phase="connect" if isinstance(exc, httpx.ConnectTimeout) else "stream",
+                                failure_class="connect_timeout" if isinstance(exc, httpx.ConnectTimeout) else "read_timeout", timeout_ms=int(self._timeout_seconds * 1000)) from exc
         except httpx.HTTPError as exc:
-            raise ClaudeSessionStoreTransportError("provider_session_callback_unavailable") from exc
+            raise self._failure("provider_session_callback_unavailable", action=payload["action"], phase="connect" if isinstance(exc, httpx.ConnectError) else "stream",
+                                failure_class="connect_error" if isinstance(exc, httpx.ConnectError) else "transport_error") from exc
 
         try:
             body = json.loads(b"".join(chunks))
         except (TypeError, ValueError) as exc:
-            raise ClaudeSessionStoreTransportError("provider_session_response_invalid") from exc
+            raise self._failure("provider_session_response_invalid", action=payload["action"], phase="response", failure_class="invalid_response") from exc
         if not isinstance(body, dict) or body.get("action") != payload["action"]:
-            raise ClaudeSessionStoreTransportError("provider_session_response_invalid")
+            raise self._failure("provider_session_response_invalid", action=payload["action"], phase="response", failure_class="invalid_response")
         if "child_entries" in body and payload["action"] != "list_subkeys":
-            raise ClaudeSessionStoreTransportError("provider_session_response_invalid")
+            raise self._failure("provider_session_response_invalid", action=payload["action"], phase="response", failure_class="invalid_response")
         sequence = body.get("next_sequence")
         if type(sequence) is not int or sequence < 1:
-            raise ClaudeSessionStoreTransportError("provider_session_response_invalid")
+            raise self._failure("provider_session_response_invalid", action=payload["action"], phase="response", failure_class="invalid_response")
         if payload["action"] == "append" and (
             body.get("accepted") is not True
             or body.get("entry_count") != len(payload["entries"])
             or body.get("last_sequence") != payload["expected_sequence"] + len(payload["entries"]) - 1
             or sequence != body["last_sequence"] + 1
         ):
-            raise ClaudeSessionStoreTransportError("provider_session_append_rejected")
+            raise self._failure("provider_session_append_rejected", action="append", phase="response", failure_class="invalid_response",
+                                expected_sequence=payload["expected_sequence"], accepted_sequence=sequence, entry_count=len(payload["entries"]))
         return body
 
     async def load(self, key: Mapping[str, Any] | str) -> list[dict[str, Any]] | None:
@@ -235,18 +254,21 @@ class ClaudeSessionStoreAdapter:
             # SDK writes each child synchronously after awaiting load. A cache
             # hit must still let delivered task cancellation stop materialization.
             await asyncio.sleep(0)
+            self.diagnostic_debug = {}
             return deepcopy(self._load_cache[cache_key])
         body = await self._request(self._payload(action="load", key=key))
         sequence = body["next_sequence"]
         if self._next_sequence is not None and sequence != self._next_sequence:
-            raise ClaudeSessionStoreTransportError("provider_session_sequence_conflict")
+            raise self._failure("provider_session_sequence_conflict", action="load", phase="response", failure_class="invalid_response",
+                                expected_sequence=self._next_sequence, accepted_sequence=sequence)
         entries = body.get("entries")
         if not isinstance(entries, list) or any(not isinstance(entry, dict) for entry in entries):
-            raise ClaudeSessionStoreTransportError("provider_session_response_invalid")
+            raise self._failure("provider_session_response_invalid", action="load", phase="response", failure_class="invalid_response")
         result = entries or None
         self._next_sequence = sequence
         self._completed_sequence = sequence - 1
         self._load_cache[cache_key] = result
+        self.diagnostic_debug = {}
         return deepcopy(result)
 
     def _append_input(
@@ -266,10 +288,18 @@ class ClaudeSessionStoreAdapter:
         except (TypeError, ValueError, OverflowError) as exc:
             raise ClaudeSessionStoreTransportError("provider_session_entry_not_json") from exc
         entry_sizes: list[int] = []
-        for entry in frozen:
+        for index, entry in enumerate(frozen):
             entry_bytes = self._json_size(entry)
             if entry_bytes > MAX_PROVIDER_SESSION_APPEND_ENTRY_BYTES:
-                raise ClaudeSessionStoreTransportError("provider_session_entry_too_large")
+                from app.execution.infrastructure.harness.claude.session_images import provider_session_image_fields
+                image_sizes = [len(value.encode("utf-8")) for _path, _mime, value in provider_session_image_fields(entry)]
+                raise self._failure(
+                    "provider_session_entry_too_large", action="append", phase="entry_validation", failure_class="size_limit",
+                    entry_index=index, entry_count=len(frozen), observed_bytes=entry_bytes,
+                    limit_bytes=MAX_PROVIDER_SESSION_APPEND_ENTRY_BYTES, entry_kind=entry.get("type", "other"),
+                    scope="child" if self._subpath(key) else "main", image_count=len(image_sizes),
+                    encoded_image_bytes=sum(image_sizes), largest_encoded_image_bytes=max(image_sizes, default=0),
+                )
             entry_sizes.append(entry_bytes)
         return encoded, frozen, entry_sizes
 
@@ -296,7 +326,8 @@ class ClaudeSessionStoreAdapter:
             # The empty envelope includes []; only entries and separating commas grow.
             candidate_bytes = chunk_bytes + entry_bytes + (1 if chunk else 0)
             if candidate_bytes > self._max_request_bytes:
-                raise ClaudeSessionStoreTransportError("provider_session_request_too_large")
+                raise self._failure("provider_session_request_too_large", action="append", phase="entry_validation",
+                                    failure_class="size_limit", observed_bytes=candidate_bytes, limit_bytes=self._max_request_bytes)
             chunk.append(entry)
             chunk_bytes = candidate_bytes
         if chunk:
@@ -312,6 +343,7 @@ class ClaudeSessionStoreAdapter:
             if pending is not None and pending.signature != signature:
                 raise ClaudeSessionStoreTransportError("provider_session_append_pending")
             if not frozen:
+                self.diagnostic_debug = {}
                 return
             if self._next_sequence is None:
                 raise ClaudeSessionStoreTransportError("provider_session_sequence_uninitialized")
@@ -329,6 +361,7 @@ class ClaudeSessionStoreAdapter:
                 self._load_cache.clear()
             self._completed_sequence = self._next_sequence - 1
             self._pending_batch = None
+            self.diagnostic_debug = {}
 
     async def list_subkeys(self, key: Mapping[str, Any] | str | None = None) -> list[str]:
         async with self._append_lock:
@@ -344,12 +377,13 @@ class ClaudeSessionStoreAdapter:
         session_id = self._session_id(key)
         body = await self._request(self._payload(action="list_subkeys", key=key))
         if self._next_sequence is not None and body["next_sequence"] != self._next_sequence:
-            raise ClaudeSessionStoreTransportError("provider_session_sequence_conflict")
+            raise self._failure("provider_session_sequence_conflict", action="list_subkeys", phase="response", failure_class="invalid_response",
+                                expected_sequence=self._next_sequence, accepted_sequence=body["next_sequence"])
         subpaths = body.get("subpaths")
         if not isinstance(subpaths, list) or any(
             not isinstance(subpath, str) for subpath in subpaths
         ):
-            raise ClaudeSessionStoreTransportError("provider_session_response_invalid")
+            raise self._failure("provider_session_response_invalid", action="list_subkeys", phase="response", failure_class="invalid_response")
         if "child_entries" in body:
             children = body["child_entries"]
             if (
@@ -364,7 +398,7 @@ class ClaudeSessionStoreAdapter:
                     for entries in children.values()
                 )
             ):
-                raise ClaudeSessionStoreTransportError("provider_session_response_invalid")
+                raise self._failure("provider_session_response_invalid", action="list_subkeys", phase="response", failure_class="invalid_response")
             child_count = sum(len(entries) for entries in children.values())
             main_key = (session_id, None)
             if (
@@ -376,11 +410,12 @@ class ClaudeSessionStoreAdapter:
                     and child_count + len(self._load_cache[main_key] or []) != body["next_sequence"] - 1
                 )
             ):
-                raise ClaudeSessionStoreTransportError("provider_session_response_invalid")
+                raise self._failure("provider_session_response_invalid", action="list_subkeys", phase="response", failure_class="invalid_response")
             # Install only a complete validated view from this locked read.
             self._load_cache.update({(session_id, path): entries for path, entries in children.items()})
         self._next_sequence = body["next_sequence"]
         self._completed_sequence = self._next_sequence - 1
+        self.diagnostic_debug = {}
         return subpaths
 
 

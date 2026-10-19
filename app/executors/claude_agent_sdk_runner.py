@@ -1604,6 +1604,16 @@ async def run_claude_agent_sdk(
     ):
         raise ValueError("model_token_limits_invalid")
     settings = get_settings()
+    from importlib.metadata import PackageNotFoundError, version
+    from app.execution.events import normalize_execution_debug
+    runtime_versions = normalize_execution_debug({
+        "component": "claude_executor", "executor_runtime_commit": getattr(settings, "ai_platform_runtime_commit", None),
+        "python_version": ".".join(str(part) for part in sys.version_info[:3]),
+    })
+    try:
+        runtime_versions.update(normalize_execution_debug({"sdk_version": version("claude-agent-sdk")}))
+    except PackageNotFoundError:
+        pass
     max_turns = max(1, int(getattr(settings, "claude_agent_sdk_max_turns", 256)))
     diagnostic_counters = {
         "max_turns": max_turns,
@@ -1697,7 +1707,11 @@ async def run_claude_agent_sdk(
         exception: BaseException | None = None,
     ) -> dict[str, Any]:
         finalize_read_only_lifecycle_denials()
-        sdk: dict[str, Any] = {}
+        sdk: dict[str, Any] = {"debug": {
+            **runtime_versions,
+            **normalize_execution_debug(getattr(session_store, "diagnostic_debug", None)),
+            **normalize_execution_debug(getattr(exception, "debug", None)),
+        }}
         normalization_losses: list[dict[str, object]] = []
         if api_error_status is not None:
             sdk["api_error_status"] = api_error_status
@@ -3906,6 +3920,8 @@ async def run_claude_agent_sdk(
             answer_stream_gate.fail_closed()
 
         async for message in messages:
+            if getattr(message, "subtype", None) == "init" and isinstance(getattr(message, "data", None), dict):
+                runtime_versions.update(normalize_execution_debug({"cli_version": message.data.get("claude_code_version")}))
             mcp_registration.check_message(message)
             if isinstance(message, MirrorErrorMessage):
                 close_failed_terminal("provider_session_mirror_error")

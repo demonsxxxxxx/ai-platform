@@ -10,6 +10,8 @@ import math
 import re
 from typing import Any
 
+from app.execution.events import normalize_execution_debug
+
 RUN_DIAGNOSTICS_SCHEMA_VERSION = "ai-platform.run-diagnostics.v1"
 RUN_DIAGNOSTICS_BUDGET_POLICY_VERSION = "run-diagnostics-budget.v1"
 RUN_DIAGNOSTICS_REDACTION_POLICY_VERSION = "run-diagnostics-redaction.v1"
@@ -215,6 +217,8 @@ def sanitize_runtime_diagnostics(value: object) -> dict[str, Any]:
             sdk["exception_chain"]
         )
 
+    if debug := normalize_execution_debug(sdk.get("debug")):
+        sdk_projection["debug"] = debug
     failure_observations = [
         projected
         for raw in _list_value(value.get("failure_observations"))
@@ -956,6 +960,8 @@ def _minimize_observation(
             or (type(sdk[key]) is int and 100 <= sdk[key] <= 599)
         )
     }
+    if debug := normalize_execution_debug(sdk.get("debug")):
+        sdk_projection["debug"] = debug
     retained_failures = failures[:1] if isinstance(failures, list) else []
     if severe:
         sdk_projection.pop("errors", None)

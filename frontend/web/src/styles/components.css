@@ -1,3 +1,5 @@
+@import "./run-monitor.css";
+
 /* Typewriter dots animation */
 .typing-dots::after {
   content: "...";

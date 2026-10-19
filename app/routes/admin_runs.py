@@ -335,22 +335,16 @@ async def admin_run_investigation(
     run_id: str,
     request: Request,
     response: Response,
-    hours: int = Query(24, ge=1, le=168),
-    from_at: datetime | None = None,
-    to_at: datetime | None = None,
-    user_id: str | None = None,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, Any]:
     if not is_ai_admin(principal):
         raise HTTPException(status_code=403, detail="not_ai_admin")
     try:
         run_id = assert_safe_id(run_id, "run_id")
-        user_id = assert_safe_id(user_id, "user_id") if user_id else None
         async with transaction() as conn:
             await conn.execute("set local statement_timeout = '5s'")
             investigation = await _require_run_diagnostics_service(request).read_admin_investigation(
-                conn, tenant_id=principal.tenant_id, run_id=run_id, hours=hours,
-                from_at=from_at, to_at=to_at, user_id=user_id,
+                conn, tenant_id=principal.tenant_id, run_id=run_id,
             )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -472,7 +466,8 @@ async def admin_run_diagnostic_export(
 
     async with transaction() as conn:
         await conn.execute("set transaction isolation level repeatable read")
-        diagnostics = await _require_run_diagnostics_service(request).read_admin(
+        await conn.execute("set local statement_timeout = '5s'")
+        diagnostics = await _require_run_diagnostics_service(request).read_admin_debug(
             conn,
             tenant_id=principal.tenant_id,
             run_id=run_id,

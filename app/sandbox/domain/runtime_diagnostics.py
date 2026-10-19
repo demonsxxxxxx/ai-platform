@@ -7,6 +7,8 @@ from collections.abc import Callable
 from typing import Any, Protocol, runtime_checkable
 
 
+from app.execution.events import normalize_execution_debug
+
 SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION = "ai-platform.sdk-runtime-diagnostics.v1"
 SDK_RUNTIME_DIAGNOSTICS_MAX_BYTES = 128 * 1024
 SDK_RUNTIME_DIAGNOSTIC_TEXT_MAX_BYTES = 8_192
@@ -574,6 +576,11 @@ def _normalize_sdk(
     }
     status_evidence = _sdk_api_status_evidence(value)
     normalized.update(status_evidence)
+    runtime = value.get("debug")
+    if debug := normalize_execution_debug(runtime):
+        normalized["debug"] = debug
+    if isinstance(runtime, dict) and (omitted := len(set(runtime) - set(normalized.get("debug", {})))):
+        _append_loss(losses, field="sdk.debug", reason="unknown_fields_dropped", count=omitted)
     if value.get("api_error_status") is not None and not status_evidence:
         _append_loss(losses, field="sdk.api_error_status", reason="invalid_field")
     for key, max_bytes, preserve_tail in (
@@ -597,6 +604,7 @@ def _normalize_sdk(
         )
     known = _SDK_VALUE_FIELDS | {
         "api_error_status",
+        "debug",
         "exception_chain",
         "exception_type",
         "exception_message",
@@ -791,7 +799,8 @@ def _fit_runtime_diagnostics(payload: dict[str, Any]) -> dict[str, Any]:
 
     if encoded_size() > SDK_RUNTIME_DIAGNOSTICS_MAX_BYTES:
         sdk_bytes = len(_json_bytes(payload.get("sdk") or {}))
-        payload["sdk"] = _sdk_api_status_evidence(payload.get("sdk"))
+        sdk = payload.get("sdk") or {}
+        payload["sdk"] = {**_sdk_api_status_evidence(sdk), **({"debug": normalize_execution_debug(sdk.get("debug"))} if sdk.get("debug") else {})}
         for key in ("tool_lifecycles", "tool_calls", "tool_policy_denials"):
             original = len(payload[key])
             payload[key] = []
@@ -819,7 +828,7 @@ def _fit_runtime_diagnostics(payload: dict[str, Any]) -> dict[str, Any]:
         "error_code": payload["error_code"],
         "failure_source": payload.get("failure_source", ""),
         "failure_stage": payload.get("failure_stage", ""),
-        "sdk": _sdk_api_status_evidence(payload.get("sdk")),
+        "sdk": {**_sdk_api_status_evidence(payload.get("sdk")), **({"debug": normalize_execution_debug(payload["sdk"].get("debug"))} if payload.get("sdk", {}).get("debug") else {})},
         "failure_observations": payload.get("failure_observations", [])[:1],
         "tool_lifecycles": [],
         "tool_calls": [],

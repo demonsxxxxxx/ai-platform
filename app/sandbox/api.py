@@ -17,7 +17,13 @@ from app.sandbox.application.runtime_cleanup import (
 
 from dataclasses import asdict, dataclass
 from re import fullmatch
-from typing import Literal, Mapping
+from typing import Any, Literal, Mapping, Protocol
+
+
+class SandboxRuntimeDebugReader(Protocol):
+    """Read bounded same-Run lease facts without handles, paths or credentials."""
+
+    async def __call__(self, conn: Any, *, tenant_id: str, run_id: str) -> dict[str, Any]: ...
 
 from app.sandbox.domain.executor_failure import (
     SandboxExecutorHttpError as SandboxExecutorHttpError,
