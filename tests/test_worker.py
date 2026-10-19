@@ -280,6 +280,9 @@ async def test_worker_injects_current_jwt_into_existing_mcp_capability_plan(monk
             assert (principal.tenant_id, principal.user_id) == ("tenant-a", "user-a")
             return "current.jwt"
 
+        async def get_with_subject(self, principal):
+            return await self.get(principal), await self.credential_subject(principal)
+
         async def credential_subject(self, principal):
             assert (principal.tenant_id, principal.user_id) == ("tenant-a", "user-a")
             return {
@@ -8764,6 +8767,9 @@ def _install_task6_worker_fakes(
         async def get(self, principal):
             assert (principal.tenant_id, principal.user_id) == ("tenant-a", "user-a")
             return "current.jwt"
+
+        async def get_with_subject(self, principal):
+            return await self.get(principal), await self.credential_subject(principal)
 
         async def credential_subject(self, principal):
             assert (principal.tenant_id, principal.user_id) == ("tenant-a", "user-a")

@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
+
+from app.mcp.domain.credential_binding import (
+    MCP_CREDENTIAL_SUBJECTS_LEASE_KEY as MCP_CREDENTIAL_SUBJECTS_LEASE_KEY,
+    bound_mcp_credential_subject,
+    mcp_credential_subjects_for_lease as mcp_credential_subjects_for_lease,
+)
 
 from app.mcp.application.worker_dispatch_authorization import (
     WorkerMcpDispatchAuthorization as WorkerMcpDispatchAuthorization,
@@ -57,6 +64,13 @@ async def store_mcp_principal_jwt(principal: Any, jwt: str) -> None:
 
 async def read_mcp_principal_jwt(principal: Any) -> str:
     return await mcp_runtime_services().principal_jwt_store.get(principal)
+
+
+async def read_mcp_execution_credential(
+    *, tenant_id: str, user_id: str, credential_subject: object,
+) -> str:
+    subject = bound_mcp_credential_subject(credential_subject, tenant_id=tenant_id, user_id=user_id)
+    return await read_mcp_principal_jwt(SimpleNamespace(**subject))
 
 
 def seal_mcp_server_credentials(**kwargs: Any) -> str:
@@ -166,6 +180,9 @@ __all__ = [
     "McpCatalogFailure",
     "LiveMcpTool",
     "MCP_JWT_AUTHORIZATION_HEADER",
+    "MCP_CREDENTIAL_SUBJECTS_LEASE_KEY",
+    "mcp_credential_subjects_for_lease",
+    "read_mcp_execution_credential",
     "McpRuntimeContextError",
     "assert_mcp_tool_reference",
     "attach_mcp_server_configs",

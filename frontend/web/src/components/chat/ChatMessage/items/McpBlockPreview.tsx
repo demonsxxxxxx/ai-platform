@@ -9,7 +9,6 @@ import {
 } from "lucide-react";
 import { useState, useEffect, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
-import { createPortal } from "react-dom";
 import { MarkdownContent } from "../MarkdownContent";
 import { CopyButton } from "../../../common";
 import type { McpContentBlock, McpMultiModalResult } from "./toolUtils";
@@ -320,7 +319,7 @@ export function BlockPreviewPortal() {
     return null;
   }
 
-  return createPortal(
+  return (
     <ToolResultPanel
       open
       onClose={close}
@@ -329,8 +328,7 @@ export function BlockPreviewPortal() {
       status="success"
     >
       {content}
-    </ToolResultPanel>,
-    document.body,
+    </ToolResultPanel>
   );
 }
 

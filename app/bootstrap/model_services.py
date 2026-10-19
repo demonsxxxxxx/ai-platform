@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter
 
+from app.bootstrap.run_diagnostics import record_execution_debug
 from app.auth import is_ai_admin, require_principal
 from app.db import transaction
 from app.execution.application.model_control_plane import (
@@ -69,6 +70,7 @@ def configure_model_services() -> None:
             security=ModelEndpointSecurityAdapter(),
             upstream=ModelUpstreamAdapter(),
             attempt_capability_verifier=_model_attempt_capability_matches,
+            diagnostic_recorder=record_execution_debug,
         )
     )
     configure_run_model_snapshots(

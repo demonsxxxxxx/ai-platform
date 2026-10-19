@@ -2,6 +2,7 @@ import { Button } from "@lobehub/ui/base-ui";
 /* eslint-disable react-refresh/only-export-components */
 import { useState, useEffect, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
+import { useAppElement } from "@lobehub/ui/es/ThemeProvider/index";
 import { BackIcon } from "../../../common/BackIcon";
 import {
   X,
@@ -129,6 +130,7 @@ export function ToolResultPanel({
   onBack,
   mobileFillViewport,
 }: ToolResultPanelProps) {
+  const appElement = useAppElement();
   const { t } = useTranslation();
   const [internalViewMode, setInternalViewMode] = useState<
     "sidebar" | "center"
@@ -373,12 +375,11 @@ export function ToolResultPanel({
                   }}
                     className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-colors duration-150 hover:bg-[var(--theme-bg-card)] active:opacity-90"
                   title={t("common.back", "Back")}
-                >
-                  <BackIcon
+                  icon={<BackIcon
                     size={15}
                     className="text-stone-400 dark:text-stone-500"
-                  />
-                </Button>
+                  />}
+                />
               )}
 
               {/* Status + Icon */}
@@ -438,8 +439,7 @@ export function ToolResultPanel({
                         ? t("documents.centerView", "Center view")
                         : t("documents.sidebarView", "Sidebar view")
                     }
-                  >
-                    {isSidebar ? (
+                    icon={isSidebar ? (
                       <Columns2
                         size={15}
                         className="text-stone-400 dark:text-stone-500"
@@ -450,7 +450,7 @@ export function ToolResultPanel({
                         className="text-stone-400 dark:text-stone-500"
                       />
                     )}
-                  </Button>
+                  />
                   <Button type="text"
                     htmlType="button"
                     onClick={(e) => {
@@ -463,8 +463,7 @@ export function ToolResultPanel({
                         ? t("documents.exitFullscreen", "退出全屏")
                         : t("documents.fullscreen", "全屏")
                     }
-                  >
-                    {isFullscreen ? (
+                    icon={isFullscreen ? (
                       <Shrink
                         size={15}
                         className="text-stone-400 dark:text-stone-500"
@@ -475,7 +474,7 @@ export function ToolResultPanel({
                         className="text-stone-400 dark:text-stone-500"
                       />
                     )}
-                  </Button>
+                  />
                   <Button type="text"
                     htmlType="button"
                     onClick={(e) => {
@@ -485,12 +484,11 @@ export function ToolResultPanel({
                     className="flex h-8 w-8 items-center justify-center rounded-lg transition-colors duration-150 hover:bg-[var(--theme-bg-card)] active:opacity-90"
                     aria-label={t("common.close")}
                     title={t("common.close", "Close")}
-                  >
-                    <X
+                    icon={<X
                       size={15}
                       className="text-stone-400 dark:text-stone-500"
-                    />
-                  </Button>
+                    />}
+                  />
                 </div>
               )}
               {hideViewToggle && (
@@ -503,9 +501,8 @@ export function ToolResultPanel({
                   className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-colors duration-150 hover:bg-[var(--theme-bg-card)] active:opacity-90"
                   aria-label={t("common.close")}
                   title={t("common.close", "Close")}
-                >
-                  <X size={15} className="text-stone-400 dark:text-stone-500" />
-                </Button>
+                  icon={<X size={15} className="text-stone-400 dark:text-stone-500" />}
+                />
               )}
             </div>
           )}
@@ -523,9 +520,8 @@ export function ToolResultPanel({
               }}
               className="flex h-10 w-10 cursor-pointer items-center justify-center rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] text-[var(--theme-text)] shadow-[0_8px_18px_rgba(18,38,63,0.08)] transition-colors duration-150 hover:bg-[var(--theme-bg-sidebar)]"
               aria-label="Back"
-            >
-              <BackIcon size={18} />
-            </Button>
+              icon={<BackIcon size={18} />}
+            />
           )}
           <Button type="text"
             onClick={(e) => {
@@ -534,9 +530,8 @@ export function ToolResultPanel({
             }}
             className="flex h-10 w-10 cursor-pointer items-center justify-center rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] text-[var(--theme-text)] shadow-[0_8px_18px_rgba(18,38,63,0.08)] transition-colors duration-150 hover:bg-[var(--theme-bg-sidebar)]"
             aria-label={t("common.close")}
-          >
-            <X size={18} />
-          </Button>
+            icon={<X size={18} />}
+          />
         </div>
       )}
 
@@ -558,6 +553,7 @@ export function ToolResultPanel({
 
   return createPortal(
     <div
+      data-tool-result-overlay
       className={`fixed inset-0 z-[200] flex flex-col ${
         overlayClass
           ? overlayClass
@@ -577,6 +573,6 @@ export function ToolResultPanel({
     >
       {content}
     </div>,
-    document.body,
+    appElement ?? document.body,
   );
 }

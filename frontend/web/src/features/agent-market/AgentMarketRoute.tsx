@@ -238,9 +238,8 @@ function ExpertMarketCard({
                     }`}
                     onClick={() => onToggleFavorite(profile)}
                     htmlType="button"
-                  >
-                    <Star aria-hidden="true" fill={profile.is_favorite ? "currentColor" : "none"} size={17} />
-                  </Button>
+                    icon={<Star aria-hidden="true" fill={profile.is_favorite ? "currentColor" : "none"} size={17} />}
+                  />
                 </div>
               </div>
               <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--theme-text-secondary)]">
@@ -256,8 +255,6 @@ function ExpertMarketCard({
                 ) : (
                   <span>未分类</span>
                 )}
-                <span aria-hidden="true">·</span>
-                <span>企业已发布</span>
               </div>
             </div>
           </div>
@@ -598,18 +595,16 @@ function AgentMarketCatalog({
                     className={`inline-flex h-8 w-9 items-center justify-center rounded-l-md ${view === "grid" ? "bg-[var(--theme-primary)] text-white" : "text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)]"}`}
                     onClick={() => handleView("grid")}
                     htmlType="button"
-                  >
-                    <Grid2X2 aria-hidden="true" size={15} />
-                  </Button>
+                    icon={<Grid2X2 aria-hidden="true" size={15} />}
+                  />
                   <Button type="text"
                     aria-label="列表视图"
                     aria-pressed={view === "list"}
                     className={`inline-flex h-8 w-9 items-center justify-center rounded-r-md border-l border-[var(--theme-border)] ${view === "list" ? "bg-[var(--theme-primary)] text-white" : "text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)]"}`}
                     onClick={() => handleView("list")}
                     htmlType="button"
-                  >
-                    <ListIcon aria-hidden="true" size={15} />
-                  </Button>
+                    icon={<ListIcon aria-hidden="true" size={15} />}
+                  />
                 </div>
               </div>
               </div>
@@ -735,9 +730,6 @@ function AgentMarketDetail({
                 ) : (
                   <span>未分类</span>
                 )}
-                <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-200">
-                  企业已发布
-                </span>
               </div>
               <h1 className="mt-2 text-2xl font-semibold sm:text-3xl">{profile.name}</h1>
               <p className="mt-4 whitespace-pre-wrap text-sm leading-7 text-[var(--theme-text-secondary)] sm:text-base">

@@ -1,6 +1,5 @@
 /* eslint-disable react-refresh/only-export-components */
 import { useEffect, useState, type ReactNode } from "react";
-import { createPortal } from "react-dom";
 import type { CollapsibleStatus } from "../../../common/CollapsiblePill";
 import { isMobileDevice } from "../../../../utils/mobile";
 import { ToolResultPanel } from "./ToolResultPanel";
@@ -112,7 +111,7 @@ export function PersistentToolPanelHost() {
 
   if (!panel) return null;
 
-  return createPortal(
+  return (
     <ToolResultPanel
       open={true}
       onClose={close}
@@ -132,7 +131,6 @@ export function PersistentToolPanelHost() {
       onUserClose={panel.onUserClose}
     >
       {panel.children}
-    </ToolResultPanel>,
-    document.body,
+    </ToolResultPanel>
   );
 }
