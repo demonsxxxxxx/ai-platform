@@ -6,8 +6,7 @@ from contextlib import nullcontext
 from types import SimpleNamespace
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 
 from app.bootstrap.run_inputs import RunInputsCallbackRequest
 from app.bootstrap.sandbox_callbacks import build_sandbox_callback_authority
@@ -694,8 +693,9 @@ async def run_inputs_callback(
 @router.post("/runtime/callbacks/mcp-credential")
 async def mcp_credential_callback(
     callback: McpCredentialCallbackRequest,
+    response: Response,
     callback_token: str | None = Header(default=None, alias="X-AI-Platform-Callback-Token"),
-) -> JSONResponse:
+) -> dict[str, str]:
     _require_valid_callback_token(
         callback_token, callback.callback_token_id,
         run_id=callback.run_id, attempt_id=callback.attempt_id,
@@ -723,7 +723,9 @@ async def mcp_credential_callback(
             or final_lease.get("id") != lease_id
             or final_bindings.get(callback.server_id) != subject):
             raise HTTPException(status_code=409, detail="mcp_credential_scope_changed")
-    return JSONResponse({"jwt": jwt}, headers={"Cache-Control": "private, no-store", "Pragma": "no-cache"})
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["Pragma"] = "no-cache"
+    return {"jwt": jwt}
 
 
 @router.post(
