@@ -108,11 +108,25 @@ test("personal file server authentication sends only the password through the au
     assert.equal(dialog.querySelector("#file-server-account"), null);
     assert.ok(password);
     assert.ok(form);
+    assert.ok(container.contains(dialog), "dialog must stay in the themed app portal");
+    assert.equal(password.type, "password");
+    const field = password.parentElement;
+    assert.ok(field);
+    assert.ok(field.querySelector("svg"), "lock prefix belongs to the Input");
+    const toggle = field.querySelector('button[aria-label="显示密码"]');
+    assert.ok(toggle, "visibility action belongs to the Input suffix");
+    await act(async () => { toggle.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
+    assert.equal(password.type, "text");
+    assert.ok(field.querySelector('button[aria-label="隐藏密码"]'));
+    await act(async () => { toggle.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
+    assert.equal(password.type, "password");
 
     await act(async () => {
       form.dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true }));
     });
     assert.match(dialog.textContent ?? "", /请输入企业账号密码/);
+    assert.equal(password.getAttribute("aria-invalid"), "true");
+    assert.equal(password.getAttribute("aria-describedby"), "file-server-password-error");
 
     await act(async () => {
       setInputValue(dom.window, password, "not-sent");
@@ -148,6 +162,18 @@ test("personal file server authentication sends only the password through the au
     assert.deepEqual(JSON.parse(String(connectRequest.init.body)), {
       password: "not-sent",
     });
+    const trigger = buttonByText(container, "认证");
+    assert.equal(document.activeElement, trigger);
+    await act(async () => { trigger.click(); });
+    const reopenedPassword = document.querySelector<HTMLInputElement>("#file-server-password");
+    assert.ok(reopenedPassword);
+    assert.equal(reopenedPassword.value, "");
+    assert.equal(reopenedPassword.type, "password");
+    await act(async () => { buttonByText(document, "取消").click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
+    assert.equal(document.querySelector('[role="dialog"]'), null);
+    assert.equal(document.activeElement, trigger);
+    assert.equal(requests.length, 4);
   } finally {
     await act(async () => root.unmount());
     globalThis.fetch = originalFetch;

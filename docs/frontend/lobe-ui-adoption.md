@@ -54,7 +54,7 @@ Lobe ThemeProvider 自带 AntD App 和 Base UI portal host。`enableCustomFonts=
 - 高层 Select 的标签转发有边界；`LobeSelectField` 只负责调用方的可访问标签、布局和嵌套 Escape 隔离，选择交互仍由库拥有。
 - 受控 `ModalRoot` 在关闭时会卸载子树。需要常驻的打开按钮放在 Root 外；没有库 Trigger 的弹层显式传入原按钮的 `finalFocus` 引用。
 - 组合 Trigger 遇到单个 React 子元素时会克隆它；图标操作应传入实际 Button，不能让 SVG/span 成为伪按钮。
-- 使用库 Portal；专业查看器自有 Portal 通过公开 `useAppElement` 接入主题范围。嵌套弹层、全屏和侧栏仍需实际检验定位与焦点。
+- 使用库 Portal；插件市场认证使用 `ModalRoot`、`ModalPortal` 与公开 Modal 组合，保持浮层位于主题容器内，密码前后缀通过 Input 的 `prefix/suffix` 组合；不保留手写 `document.body` Portal、遮罩按钮或 Tab/Escape/滚动锁。专业查看器自有 Portal 通过公开 `useAppElement` 接入主题范围。嵌套弹层、全屏和侧栏仍需实际检验定位与焦点。
 - `ToastHost` 是统一通知宿主。队列通知维持稳定 ID `chat-queue` 和持续显示，关闭/更新使用 Lobe toast 合同。
 
 ## 完成范围与退役条件
