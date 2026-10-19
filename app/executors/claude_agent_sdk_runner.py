@@ -1587,6 +1587,7 @@ async def run_claude_agent_sdk(
     run_id: str | None = None,
     attempt_id: str | None = None,
     interaction_client: RunInteractionProtocol | None = None,
+    mcp_credential_resolver: Callable[[str], Awaitable[str]] | None = None,
     tool_policy_subjects: list[dict[str, Any]] | None = None,
     execution_policy: str = "worker_local_legacy",
     public_skill_metadata: dict[str, dict[str, str]] | None = None,
@@ -2200,6 +2201,7 @@ async def run_claude_agent_sdk(
         mcp_registration = prepare_claude_mcp(
             authorized_subjects if sandbox_brokered else {}, mcp_servers, callback_tracker.wrap,
             failure_observer=observe_mcp_session_failure,
+            credential_resolver=mcp_credential_resolver,
         )
         allowed_tools = [
             mcp_registration.sdk_names.get(name, name) for name in allowed_tools
