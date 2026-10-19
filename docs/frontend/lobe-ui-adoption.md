@@ -59,7 +59,7 @@ Lobe ThemeProvider 自带 AntD App 和 Base UI portal host。`enableCustomFonts=
 
 ## 完成范围与退役条件
 
-管理表格已由 MCP、模型、运行监控/调查/性能、Skill 管理、工具参数及专家发布历史 8 个实际调用方直接使用 Lobe Table。普通单选通过 Lobe Select 接入；部门/角色、市场标签及聊天目录选择保留业务数据 owner，使用库 Select/Popover/AutoComplete/Modal 交互。
+管理表格已由 MCP、模型、运行监控、运行性能、Skill 管理、工具参数及专家发布历史 7 个实际调用方直接使用 Lobe Table。普通单选通过 Lobe Select 接入；部门/角色、市场标签及聊天目录选择保留业务数据 owner，使用库 Select/Popover/AutoComplete/Modal 交互。
 
 聊天、文档和编辑器外围采用 Lobe 控件；9 个页面/面板的 115 个手写加载占位已使用 Lobe Skeleton，业务布局和响应式尺寸保持。保留 Run/SSE、assistant-ui、草稿、附件 URL、安全下载和专业渲染职责。Markdown/XLSX 表格是 renderer 的语义结构；代码、图形、文档查看器的缩放、图层和几何不是通用管理表格。
 

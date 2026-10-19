@@ -9,6 +9,7 @@ from typing import Iterator, Mapping
 import httpx
 
 from app.execution.domain.model_catalog import validate_upstream_model_id
+from app.execution.domain.runtime_debug import normalize_execution_debug
 
 from .model_security import ValidatedEndpoint, endpoint_parts, tls_context, validate_endpoint
 
@@ -18,10 +19,29 @@ class UpstreamResponse:
     status: int
     content_type: str
     body: bytes
+    debug: dict[str, str | int] = field(default_factory=dict)
 
 
 class ModelUpstreamError(RuntimeError):
     """Stable failure raised by bounded model-endpoint operations."""
+
+    def __init__(self, code: str, *, debug: object = None) -> None:
+        super().__init__(code)
+        self.debug = normalize_execution_debug(debug)
+
+
+def _failure_class(error: BaseException | None) -> str:
+    if isinstance(error, httpx.ConnectTimeout):
+        return "connect_timeout"
+    if isinstance(error, httpx.ConnectError):
+        return "connect_error"
+    if isinstance(error, httpx.ReadTimeout):
+        return "read_timeout"
+    if isinstance(error, httpx.WriteTimeout):
+        return "write_timeout"
+    if isinstance(error, httpx.ProtocolError):
+        return "protocol_error"
+    return "transport_error"
 
 
 _PROXY_PATHS = {
@@ -37,6 +57,7 @@ class UpstreamStream:
     response: httpx.Response
     client: httpx.Client
     max_response_bytes: int
+    debug: dict[str, str | int] = field(default_factory=dict)
     _closed: bool = field(default=False, init=False, repr=False)
 
     def close(self) -> None:
@@ -57,8 +78,13 @@ class UpstreamStream:
             for chunk in self.response.iter_raw():
                 total += len(chunk)
                 if total > self.max_response_bytes:
-                    raise ModelUpstreamError("model_upstream_response_too_large")
+                    raise ModelUpstreamError("model_upstream_response_too_large", debug={**self.debug, "phase": "stream", "failure_class": "size_limit", "observed_bytes": total, "limit_bytes": self.max_response_bytes})
                 yield chunk
+        except (httpx.HTTPError, OSError) as exc:
+            exc.debug = normalize_execution_debug({
+                **self.debug, "phase": "stream", "failure_class": _failure_class(exc),
+            })
+            raise
         finally:
             self.close()
 
@@ -83,7 +109,8 @@ def _open_response(
 ) -> UpstreamStream:
     origin = httpx.URL(endpoint.base_url)
     last_error: Exception | None = None
-    for ip in endpoint.ips:
+    attempts = 0
+    for attempts, ip in enumerate(endpoint.ips, start=1):
         client = _new_client(timeout_seconds)
         response = None
         transferred = False
@@ -104,6 +131,7 @@ def _open_response(
                 status=response.status_code,
                 content_type=response.headers.get("content-type") or "application/octet-stream",
                 response=response, client=client, max_response_bytes=max_response_bytes,
+                debug={"component": "model_proxy", "phase": "response", "http_status": response.status_code, "attempt_count": attempts},
             )
             transferred = True
             return stream
@@ -112,7 +140,9 @@ def _open_response(
             # Read/write/protocol failures may follow an accepted, billed call.
             last_error = exc
         except (httpx.HTTPError, OSError) as exc:
-            raise ModelUpstreamError("model_upstream_unavailable") from exc
+            raise ModelUpstreamError("model_upstream_unavailable", debug={
+                "component": "model_proxy", "phase": "response", "failure_class": _failure_class(exc), "attempt_count": attempts,
+            }) from exc
         finally:
             if not transferred:
                 try:
@@ -120,7 +150,9 @@ def _open_response(
                         response.close()
                 finally:
                     client.close()
-    raise ModelUpstreamError("model_upstream_unavailable") from last_error
+    raise ModelUpstreamError("model_upstream_unavailable", debug={
+        "component": "model_proxy", "phase": "connect", "failure_class": _failure_class(last_error), "attempt_count": attempts,
+    }) from last_error
 
 
 def open_upstream_stream(
@@ -213,10 +245,10 @@ def request_upstream(
     try:
         payload = b"".join(stream.body())
         return UpstreamResponse(
-            status=stream.status, content_type=stream.content_type, body=payload,
+            status=stream.status, content_type=stream.content_type, body=payload, debug=stream.debug,
         )
     except (httpx.HTTPError, OSError) as exc:
-        raise ModelUpstreamError("model_upstream_unavailable") from exc
+        raise ModelUpstreamError("model_upstream_unavailable", debug=getattr(exc, "debug", None)) from exc
 
 
 def parse_model_ids(response: UpstreamResponse) -> list[str]:

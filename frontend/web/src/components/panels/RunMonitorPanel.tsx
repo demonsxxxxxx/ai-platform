@@ -1,4 +1,4 @@
-import { Button } from "@lobehub/ui/base-ui";
+import { Button, Input } from "@lobehub/ui/base-ui";
 import {
   Activity,
   AlertTriangle,
@@ -10,6 +10,7 @@ import {
   Pause,
   Play,
   RefreshCw,
+  Search,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
@@ -127,7 +128,7 @@ export function filterAdminRuns(
 ): AdminRunSummary[] {
   const normalizedQuery = normalized(query);
   return runs.filter((run) => {
-    if (status !== "all" && run.status !== status) return false;
+    if (status !== "all" && run.status !== status && !(status === "running" && run.status === "cancel_requested")) return false;
     if (!normalizedQuery) return true;
     return [
       run.session_title,
@@ -148,6 +149,12 @@ export function filterAdminRuns(
   });
 }
 
+
+function statusCount(filter: StatusFilter, report: AdminRunMonitorResponse | null): number | null {
+  if (!report) return null;
+  if (filter === "all") return report.counts.total;
+  return report.counts[filter] ?? null;
+}
 
 function statusLabel(status: string | null | undefined): string {
   return STATUS_LABELS[status ?? ""] ?? status ?? "未知";
@@ -304,7 +311,6 @@ function RunDetail({
   investigationLoading,
   investigationError,
   onRetryInvestigation,
-  onSelectRun,
   onFocusAgent,
   onClose,
   fallbackFocusRef,
@@ -323,7 +329,6 @@ function RunDetail({
   investigationLoading: boolean;
   investigationError: string | null;
   onRetryInvestigation: () => void;
-  onSelectRun: (runId: string) => void;
   onFocusAgent: (agentId: string, label: string) => void;
   onClose: () => void;
   fallbackFocusRef: RefObject<HTMLButtonElement | null>;
@@ -478,7 +483,6 @@ function RunDetail({
             error={investigationError}
             diagnostics={diagnostics}
             onRetry={onRetryInvestigation}
-            onSelectRun={onSelectRun}
           />
           <RunDiagnosticsSection
             diagnostics={diagnostics}
@@ -527,13 +531,13 @@ function DesktopRunTable({
   return (
     <div className="hidden min-w-[940px] md:block">
       <Table
- size="small" pagination={false}
+ size="small" pagination={false} tableLayout="fixed"
  dataSource={runs}
  rowKey={(run) => run.run_id}
 onRow={(run) => { const selected = run.run_id === selectedRunId; return ({"data-selected": selected ? "true" : "false",
 "className": "group transition-colors hover:bg-[var(--theme-bg-sidebar)] data-[selected=true]:bg-[var(--theme-info-soft)]"}); }}
  columns={[
-{ key: "status", title: "状态",
+{ key: "status", title: "状态", width: "8%",
 render: (_value, run) => (<>
 <StatusBadge status={run.status} />
                   {run.status === "queued" && run.queue_position ? (
@@ -550,7 +554,7 @@ render: (_value, run) => (<>
                     </p>
                   ) : null}
 </>) },
-{ key: "identity", title: "任务 / 运行",
+{ key: "identity", title: "任务 / 运行", width: "24%",
 render: (_value, run) => (<>
 <Button type="text"
                     htmlType="button"
@@ -558,6 +562,7 @@ render: (_value, run) => (<>
                     className="block w-full min-w-0 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-focus-ring)]"
                     aria-label={`查看 ${run.run_id}`}
                   >
+                    <span className="block w-full min-w-0 text-left">
                     <span
                       className="block truncate font-medium text-[var(--theme-text)]"
                       title={runDisplayTitle(run)}
@@ -570,9 +575,10 @@ render: (_value, run) => (<>
                     >
                       运行 {compactIdentifier(run.run_id)}
                     </span>
+                    </span>
                   </Button>
 </>) },
-{ key: "user", title: "用户 / 工作区",
+{ key: "user", title: "用户 / 工作区", width: "16%",
 render: (_value, run) => (<>
 <p className="truncate text-[var(--theme-text)]" title={userDisplayName(run)}>
                     {userDisplayName(run)}
@@ -584,7 +590,7 @@ render: (_value, run) => (<>
                     {workspaceDisplayName(run)}
                   </p>
 </>) },
-{ key: "agent", title: "Agent / Skill",
+{ key: "agent", title: "Agent / Skill", width: "18%",
 render: (_value, run) => (<>
 <p className="truncate text-[var(--theme-text)]" title={agentDisplayName(run)}>
                     {agentDisplayName(run)}
@@ -596,21 +602,19 @@ render: (_value, run) => (<>
                     {skillDisplayName(run)}
                   </p>
 </>) },
-{ key: "time", title: "时间",
-render: (_value, run) => (<>
-<p className="text-[var(--theme-text)]">{dateTime(run.started_at ?? run.queued_at ?? run.created_at)}</p>
-                  <p className="mt-1 tabular-nums text-[11px] text-[var(--theme-text-tertiary)]">{durationLabel(run)}</p>
-</>) },
-{ key: "actions", title: (<span className="sr-only">详情</span>),
+{ key: "time", title: "提交时间", width: "18%",
+render: (_value, run) => <span className="whitespace-nowrap">{dateTime(run.created_at)}</span> },
+{ key: "duration", title: "耗时", width: "9%",
+render: (_value, run) => <span className="whitespace-nowrap tabular-nums">{durationLabel(run)}</span> },
+{ key: "actions", title: "操作", width: "7%",
 render: (_value, run) => (<>
 <Button type="text"
                     htmlType="button"
                     onClick={() => onSelect(run.run_id)}
-                    className="flex size-8 items-center justify-center rounded-md"
+                    className="font-medium text-[var(--theme-primary)]"
                     aria-label={`打开 ${run.run_id} 详情`}
                     title="打开详情"
-  icon={<ChevronRight size={16} />}
-/>
+>查看</Button>
 </>) }
 ]}
 />
@@ -671,7 +675,7 @@ export function RunMonitorPanel() {
   const [hours, setHours] = useState(24);
   const [modelFilter, setModelFilter] = useState("all");
   const [agentFilter, setAgentFilter] = useState<{ id: string; label: string } | null>(null);
-  const [order, setOrder] = useState<"slow" | "recent">("slow");
+  const [order, setOrder] = useState<"slow" | "recent">("recent");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedRunId, setSelectedRunId] = useState<string | null>(scope.runId);
@@ -697,7 +701,6 @@ export function RunMonitorPanel() {
   const detailRequestSequence = useRef(0);
   const diagnosticsRequestSequence = useRef(0);
   const investigationRequestSequence = useRef(0);
-  const monitorWindowRef = useRef<AdminRunMonitorResponse["window"] | null>(null);
   const diagnosticsExportSequence = useRef(0);
   const selectedRunIdRef = useRef<string | null>(scope.runId);
   const refreshButtonRef = useRef<HTMLButtonElement>(null);
@@ -730,12 +733,8 @@ export function RunMonitorPanel() {
     const requestId = ++investigationRequestSequence.current;
     if (announce) setInvestigationLoading(true);
     setInvestigationError(null);
-    const window = monitorWindowRef.current;
     try {
-      const response = await adminRunsApi.investigation(runId, {
-        hours, userId: scope.userId ?? undefined,
-        fromAt: window?.from_at, toAt: window?.to_at,
-      });
+      const response = await adminRunsApi.investigation(runId);
       if (requestId !== investigationRequestSequence.current || selectedRunIdRef.current !== runId) return;
       setInvestigation(response);
     } catch (error) {
@@ -744,7 +743,7 @@ export function RunMonitorPanel() {
     } finally {
       if (requestId === investigationRequestSequence.current) setInvestigationLoading(false);
     }
-  }, [hours, scope.userId]);
+  }, []);
 
   const loadDiagnostics = useCallback(async (runId: string, announce = true) => {
     const requestId = ++diagnosticsRequestSequence.current;
@@ -784,7 +783,6 @@ export function RunMonitorPanel() {
         modelGatewayRevision: revision ? Number(revision) : undefined,
       });
       if (requestId !== listRequestSequence.current) return;
-      monitorWindowRef.current = response.window;
       setMonitorReport(response);
       setRuns(response.runs);
       setLoadError(null);
@@ -896,7 +894,6 @@ export function RunMonitorPanel() {
     setRuns([]);
     setIsLoading(true);
     setLoadError(null);
-    monitorWindowRef.current = null;
     setPage(1);
   }, [closeDetail]);
 
@@ -918,11 +915,12 @@ export function RunMonitorPanel() {
   }, [pageCount]);
 
   const lastUpdatedLabel = lastUpdatedAt
-    ? lastUpdatedAt.toLocaleTimeString("zh-CN", { hour12: false })
+    ? lastUpdatedAt.toLocaleTimeString("zh-CN", { hour12: false, timeZone: "Asia/Shanghai" })
     : "尚未刷新";
 
   const headerActions = (
-    <div className="flex items-center gap-1">
+    <div className="flex flex-wrap items-center gap-1">
+      <span className="mr-2 text-[11px] text-[var(--theme-text-tertiary)]">{autoRefresh ? "每 5 秒自动刷新" : "自动刷新已暂停"} · {lastUpdatedLabel}</span>
       <Button type="text"
         htmlType="button"
         className="flex size-9 items-center justify-center rounded-md"
@@ -974,21 +972,14 @@ export function RunMonitorPanel() {
     <div
       data-run-monitor
       data-frontend-governance-state="ready"
-      className={workbenchSurface.page}
+      className={`${workbenchSurface.page} run-monitor-page`}
     >
       <PanelHeader
+        className="run-monitor-header"
         title="运行监控"
-        subtitle="从性能异常到单次运行、阶段证据与正常任务对照"
+        subtitle="查看任务状态、阶段耗时与故障诊断"
         icon={<Activity size={20} />}
         actions={headerActions}
-        searchValue={searchQuery}
-        onSearchChange={setSearchQuery}
-        searchPlaceholder="搜索任务 / Agent / 用户 / 运行编号"
-        searchAccessory={
-          <span className="hidden shrink-0 text-xs text-[var(--theme-text-tertiary)] sm:inline">
-            {autoRefresh ? "每 5 秒自动刷新" : "自动刷新已暂停"} · {lastUpdatedLabel}
-          </span>
-        }
       />
 
       {scope.userId ? (
@@ -1005,7 +996,9 @@ export function RunMonitorPanel() {
         </div>
       ) : null}
 
-      <div className="flex flex-wrap items-center gap-2 px-4 py-3" aria-label="调查范围">
+      <div className="run-monitor-toolbar" aria-label="调查范围">
+        <Input className="run-monitor-search" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)}
+          prefix={<Search size={16} />} aria-label="搜索任务 / Agent / 用户 / 运行编号" placeholder="搜索任务 / Agent / 用户 / 运行编号" />
         <LobeSelectField value={String(hours)} aria-label="统计时间窗" className="w-32"
           options={[{ value: "1", label: "最近 1 小时" }, { value: "24", label: "最近 24 小时" }, { value: "168", label: "最近 7 天" }]}
           onChange={(value) => { invalidateMonitorScope(); setHours(Number(value)); setModelFilter("all"); }} />
@@ -1017,11 +1010,11 @@ export function RunMonitorPanel() {
           onChange={(value) => { invalidateMonitorScope(); setOrder(value as "slow" | "recent"); }} />
         {agentFilter ? <Button type="default" htmlType="button" className="text-xs" onClick={() => { invalidateMonitorScope(); setAgentFilter(null); }}>Agent：{agentFilter.label} · 清除</Button> : null}
       </div>
-      <div className="px-4 pb-3"><RunPerformanceSummary report={monitorReport} /></div>
+      <div className="run-monitor-overview-container"><RunPerformanceSummary report={monitorReport} /></div>
 
-      <div className="flex flex-wrap items-center justify-between gap-2 px-4 pb-3 pt-1">
+      <div className="run-monitor-list-toolbar">
         <div
-          className="inline-flex max-w-full overflow-x-auto rounded-md bg-[var(--theme-bg-sidebar)] p-1 ring-1 ring-[var(--theme-border)]"
+          className="run-monitor-status-tabs"
           role="group"
           aria-label="运行状态筛选"
         >
@@ -1031,9 +1024,9 @@ export function RunMonitorPanel() {
               htmlType="button"
               aria-pressed={statusFilter === filter.value}
               onClick={() => { if (statusFilter !== filter.value) { invalidateMonitorScope(); setStatusFilter(filter.value); } }}
-              className="h-7 whitespace-nowrap rounded px-2.5 text-xs font-medium text-[var(--theme-text-secondary)] transition-colors aria-pressed:bg-[var(--theme-workbench-panel)] aria-pressed:text-[var(--theme-text)] aria-pressed:shadow-sm"
+              className="run-monitor-status-tab"
             >
-              {filter.label}
+              {filter.label}{statusCount(filter.value, monitorReport) == null ? "" : ` ${statusCount(filter.value, monitorReport)}`}
             </Button>
           ))}
         </div>
@@ -1052,10 +1045,10 @@ export function RunMonitorPanel() {
         </div>
       ) : null}
 
-      <div className="relative min-h-0 flex-1 overflow-hidden px-4 pb-4">
+      <div className="run-monitor-list relative min-h-64 flex-1 px-4 pb-0">
         <section
           aria-label="最近 Worker 请求"
-          className="h-full min-w-0 overflow-x-auto rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] shadow-[0_1px_2px_rgba(18,38,63,0.04)] xl:overflow-y-auto"
+          className="h-full min-w-0 overflow-auto rounded-b-lg border border-t-0 border-[var(--theme-border)] bg-[var(--theme-workbench-panel)]"
         >
           {filteredRuns.length ? (
             <>
@@ -1114,7 +1107,6 @@ export function RunMonitorPanel() {
                 investigationLoading={investigationLoading}
                 investigationError={investigationError}
                 onRetryInvestigation={() => void loadInvestigation(selectedRunId)}
-                onSelectRun={selectRun}
                 onFocusAgent={(id, label) => { invalidateMonitorScope(); setAgentFilter({ id, label }); }}
                 onClose={closeDetail}
                 fallbackFocusRef={refreshButtonRef}
@@ -1127,7 +1119,7 @@ export function RunMonitorPanel() {
       {filteredRuns.length ? (
         <nav
           aria-label="运行分页"
-          className="flex items-center justify-between gap-3 px-4 pb-4 pt-2 text-xs text-[var(--theme-text-tertiary)]"
+          className="run-monitor-pagination"
         >
           <span className="tabular-nums">
             第 {currentPage} / {pageCount} 页 · 显示 {Math.min((currentPage - 1) * PAGE_SIZE + 1, filteredRuns.length)}-
@@ -1144,6 +1136,10 @@ export function RunMonitorPanel() {
               <ChevronLeft size={14} />
               <span>上一页</span>
             </Button>
+            {Array.from({ length: pageCount }, (_, index) => index + 1).map((pageNumber) => <Button type="text"
+              key={pageNumber} htmlType="button" className="run-monitor-page-number" aria-label={`第 ${pageNumber} 页`}
+              aria-current={currentPage === pageNumber ? "page" : undefined} onClick={() => setPage(pageNumber)}
+            >{pageNumber}</Button>)}
             <Button type="default"
               htmlType="button"
               className="inline-flex h-8 items-center gap-1 rounded-md px-2.5"

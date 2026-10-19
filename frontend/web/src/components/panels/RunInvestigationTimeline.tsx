@@ -3,7 +3,6 @@ import { useState } from "react";
 import type {
   AdminRunDiagnosticsResponse, AdminRunInvestigation, AdminRunLatency,
 } from "../../services/api/adminRuns";
-import { Table } from "@lobehub/ui/base-ui";
 import { indexToolDiagnosticEvidence } from "./adminRunTimeline";
 import { formatRunDuration, RUN_LATENCY_LABELS } from "./runPerformance";
 
@@ -20,14 +19,13 @@ const STATE_LABELS: Record<string, string> = {
 };
 
 export function RunInvestigationTimeline({
-  investigation, loading, error, diagnostics, onRetry, onSelectRun,
+  investigation, loading, error, diagnostics, onRetry,
 }: {
   investigation: AdminRunInvestigation | null;
   loading: boolean;
   error: string | null;
   diagnostics: AdminRunDiagnosticsResponse | null;
   onRetry: () => void;
-  onSelectRun: (runId: string) => void;
 }) {
   const [selectedStageId, setSelectedStageId] = useState<string | null>(null);
   if (!investigation) return (
@@ -47,7 +45,6 @@ export function RunInvestigationTimeline({
     ]),
   );
   const evidence = selected?.operation_id ? toolEvidence.get(selected.operation_id) : null;
-  const baseline = investigation.comparison;
   return (
     <section className="p-4" data-run-investigation>
       <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -111,56 +108,6 @@ export function RunInvestigationTimeline({
           </details>
         </div>
       ) : null}
-      <div className="mt-4 border-t border-[var(--theme-border)] pt-3" data-run-comparison>
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h4 className="text-xs font-semibold">同类成功任务对照</h4>
-          {baseline.normal_run_id ? <Button type="default" htmlType="button" className="text-xs" onClick={() => onSelectRun(baseline.normal_run_id!)}>调查正常对照任务</Button> : null}
-        </div>
-        <p className="mt-1 text-[11px] leading-5 text-[var(--theme-text-tertiary)]">
-          同 Agent 版本、冻结的 Skill 版本与依赖集合、模型配置；使用相同统计窗口，排除当前任务。任务复杂度仍可能不同。
-        </p>
-        {baseline.missing_reason ? <p className="mt-2 text-xs text-[var(--theme-text-secondary)]">{baseline.missing_reason === "model_identity_unknown" ? "该任务没有完整模型配置快照，无法建立可比基线。" : "当前窗口没有同类成功任务，不能推断正常耗时。"}</p> : (
-          <div className="mt-2 overflow-x-auto">
-            <Table
- size="small" pagination={false}
- dataSource={(Object.keys(RUN_LATENCY_LABELS) as Array<keyof AdminRunLatency>)}
- rowKey={(name) => name}
-onRow={(_record) => {  return ({"className": "border-t border-[var(--theme-border)]"}); }}
- columns={[
-{ key: "metric", title: "指标",
-render: (_value, name) => (<>
-{RUN_LATENCY_LABELS[name]}
-</>) },
-{ key: "current", title: "本次",
-render: (_value, name) => (<>
-{formatRunDuration(investigation[name])}
-</>) },
-{ key: "p50", title: "同类 P50",
-render: (_value, name) =>  {
-const metric = baseline.latency[name];
-return (<>
-{formatRunDuration(metric?.p50)}
-</>);
-} },
-{ key: "p95", title: "同类 P95",
-render: (_value, name) =>  {
-const metric = baseline.latency[name];
-return (<>
-{formatRunDuration(metric?.p95)}
-</>);
-} },
-{ key: "sampleCount", title: "样本",
-render: (_value, name) =>  {
-const metric = baseline.latency[name];
-return (<>
-{metric?.sample_count ?? 0}
-</>);
-} }
-]}
-/>
-          </div>
-        )}
-      </div>
     </section>
   );
 }

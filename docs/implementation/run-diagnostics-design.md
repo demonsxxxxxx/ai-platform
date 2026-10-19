@@ -196,7 +196,9 @@ SDK 输出校验的 `projection_failure`（原因、阶段、位置、可用的�
 
 ### 5.1.1 性能范围与单次调查
 
-监控页使用 `GET /admin/runs/monitor`，默认最近 24 小时，也可选 1 小时或 7 天；后端接收成对的有时区 `from_at` / `to_at`，限制窗口最多 168 小时。范围按 Run 的 `created_at ∈ [from_at, to_at)` 定义，限定当前租户，可按用户、Agent、模型 ID 与冻结 gateway revision、状态筛选。聚合覆盖整个选中范围，每个 Run 至多一个样本；有界任务列表最多 100 条，页面请求 50 条，可按总耗时或创建时间排序，不能用列表前 50 条推算总体。每项百分位显示自己的有效样本数；成功率是成功 /（成功 + 失败），取消和未结束单独列出。
+监控页使用 `GET /admin/runs/monitor`，默认最近 24 小时，也可选 1 小时或 7 天；后端接收成对的有时区 `from_at` / `to_at`，限制窗口最多 168 小时。范围按 Run 的 `created_at ∈ [from_at, to_at)` 定义，限定当前租户，可按用户、Agent、模型 ID 与冻结 gateway revision 筛选。总量、性能和趋势覆盖整个选中范围；状态页签仅缩小任务列表，执行中包含 `cancel_requested`，切换页签不改变概览及各页签计数。每个 Run 至多一个样本；有界任务列表最多 100 条，页面请求 50 条，默认最近提交优先，也可按总耗时排序，不能用列表前 50 条推算总体。每项百分位显示自己的有效样本数；成功率是成功 /（成功 + 失败），取消和未结束单独列出。
+
+首屏由总任务、执行中、成功、失败四项摘要、五项阶段 P50 及运行趋势组成。趋势由服务端按整个窗口等分为 12 桶，按提交时间统计任务的当前成功、失败、执行中状态；它不是过去每一时刻的状态快照。无任务的桶为 0，旧响应未提供 `trend` 时显示未采集，不从有限列表补画。趋势时间为北京时间。原默认展开的 P50/P95/P99 表保留在“性能分位数与样本数”折叠区，替换首屏长表；未采集、真实 0 和各指标口径保持原义。列表将提交时间与耗时分列，原详情与导出入口继续保留。
 
 `run_lifecycle.v1` 的五项指标：
 
@@ -212,7 +214,7 @@ SDK 输出校验的 `projection_failure`（原因、阶段、位置、可用的�
 
 `GET /admin/runs/{run_id}/investigation` 将 Run 生命周期、Attempt、最近 500 条可见模型/工具回执与首段公开文本串成一条调查时间线，返回来源、时间和关联 ID、截断/未绑定计数。条形位置使用平台接收/入库时间；SDK 报告耗时与回执跨度分开，重叠区间不求和、不把最长阶段当成根因。工具证据需同时匹配 Attempt 与调用身份；未知尝试不猜测配对。供应商内部、上下文构建和网络传输细分尚未采集，页面明示缺口。完整公开记录仍通过既有分页 trajectory 查询。
 
-正常对照沿用概览的固定时间窗口，只选择同 Agent、执行类型、冻结 Profile revision、完整 Skill 快照集合（ID、版本、content hash、依赖）及模型 ID / value / gateway revision 的成功 Run，排除本次 Run。主 Skill 有身份但没有冻结快照时不建立基线。返回同类各指标 P50/P95/P99、有效样本及最接近总耗时 P50 的任务入口；模型配置缺失或无可比成功任务明确返回缺口。它不能控制任务输入复杂度，也不证明供应商根因。
+单次调查只读取当前 Run，不再查询其他成功任务。原 `comparison` 响应字段、`comparison_run_id` 参数及 cohort SQL/排序、对照跳转、表格与对应断言均退役；已识别消费者为当前前端及 owning 测试，未保留空对象兼容。监控概览、全窗口趋势和耗时统计继续由 monitor 拥有。
 
 浏览器测量只提交 `POST /chat/submissions/{submission_id}/latency` 的 `run_id` 和有界整数 `duration_ms`。服务端复用 principal-scoped submission resolver，验证已授权 Run 与 outcome 一致，并要求已有非空白公开文本证据。新槽位 `browser_latency.measurement=browser_dom_commit.v1` 位于既有 Run 私有诊断 JSON，按行锁 first-wins；不存正文、Cookie、客户端绝对时间、私有 payload，不推动 Run/Attempt 状态。浏览器按 mounted/session/auth/submission 身份退休观察；历史加载、新标签页、取消、身份更替或卸载不能生成新提交计时。可选采集失败不影响聊天；浏览器数据始终是客户端观测，不是业务权威。
 
@@ -228,13 +230,19 @@ SDK 输出校验的 `projection_failure`（原因、阶段、位置、可用的�
 
 ### 5.2 导出接口
 
-当前候选已新增 `POST /admin/runs/{run_id}/diagnostic-exports`，在请求时校验管理权限。接口由一个短的 REPEATABLE READ 事务读取 Run/Attempt 摘要及诊断 revision/payload，释放事务后在应用内生成 ZIP，再写导出响应审计；审计失败不返回包。此接口不执行任务或资源维护。
+当前候选使用 `POST /admin/runs/{run_id}/diagnostic-exports`，在请求时校验管理权限。接口由一个短的 REPEATABLE READ 事务及 5 秒 statement timeout 调用 `read_admin_debug`，读取 Run/Attempt、诊断 revision/payload、最近 500 条安全类型事件、最多 100 个冻结 Skill 快照以及 Sandbox 公共注入端口投影的最多 100 个租约；释放事务后生成 ZIP，再写响应审计。接口不执行任务或资源维护。
+
+固定三文件及导出 v1 入口保留，`diagnostics.json.debug` 作为加法扩展承载 `ai-platform.run-debug.v1`，包括五项生命周期耗时、来源/Attempt/operation/event 因果关联、事件序号与有界摘要、token/成本观测、冻结模型容量/Profile 版本与 hash/Skill pins、租约心跳/终态接收/调和状态及实际留存的 dispatch timings。事件不包含消息正文、工具输入输出或任意 payload；缺少的用量为 null，成本仍遵守已有 coverage 权威。`events_truncated`、事件拒绝计数、Skill/lease 截断标识和 `missing_evidence` 保留缺口。
+
+Execution 的闭合 `sdk.debug` 契约仅允许受控组件/操作/阶段/失败分类、HTTP 状态、连接尝试次数、代理策略类型/beta 数量、SessionStore entry 类型/主子流/UTF-8 JSON 大小及限制、图片编码字节计数与版本值。Sandbox 和 Runs 在各自领域的诊断投影边界按同一闭集契约独立复验，不从领域层导入其他 bounded context；回归测试逐项核对枚举、数值边界和版本格式的一致性。不保存 header、beta 原文、URL/IP、凭据或 entry。模型代理在响应前、HTTP 错误及流迭代故障处记录；HTTPX 原异常类型、仅连接失败可尝试下一个地址及不重发已接收 POST 的规则保留。记录经实际 Run/Attempt/存活租约及 owner generation 绑定，诊断失败不改变代理或 callback 结果。
+
+SessionStore adapter 保留首次被拒绝写入的已测大小；Context 媒体拆分后的结构化 entry 超限也直接采集到宿主私有诊断，避免 callback 只剩通用拒绝。图片编码字节不是解码文件大小。SDK 版本来自执行进程安装元数据；CLI 版本只在实际 init 回执提供时记录。执行时 `executor_runtime_commit` 与记录时 `api_runtime_commit`、导出时 `debug.query_component` 分开；未提供的历史版本不倒填。egress Nginx 的连接日志、供应商内部 trace 和未采集的 CLI/执行版本作为明确缺口，平台观察到 502 不能单独证明供应商失败。
 
 同一包内所有数据库事实来自这次快照；manifest 分开记录快照已有的诊断版本与导出包 schema，未记录的实际组件构建版本保持未知。HTTP 返回沿用本次请求已经验证的 principal 和既有身份快照有效期，不声称即时感知上游权限撤销。
 
 审计只记录 export_id、操作者、范围、快照 revision、策略版本、结果类别与字节数。审计失败则不返回诊断包。下载开始后无法保证客户端完整接收；审计的 `response_started` 与 `generation_failed` 等结果不得伪称下载已送达。
 
-包按 PRD 固定文件名，未压缩合计上限 512 KiB。压缩在数据库事务外执行，内存受限；不写长期对象、不建立公开下载链接。响应采用附件下载与 `Cache-Control: no-store`，前端 Blob URL 使用后释放。超限内容按统一预算压缩并声明；最小包仍失败则返回固定安全错误。
+包按 PRD 固定文件名，未压缩合计上限 512 KiB。压缩在数据库事务外执行，内存受限；不写长期对象、不建立公开下载链接。响应采用附件下载与 `Cache-Control: no-store`，前端 Blob URL 使用后释放。可选事件/阶段/租约/Skill 历史超过导出预算时缩减其较早详情，`debug.export_omissions` 与 manifest 写明数量，保留原异常与既有 losses；最小包仍失败则返回固定安全错误。
 
 ### 5.3 脱敏与版本
 

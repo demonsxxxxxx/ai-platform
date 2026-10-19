@@ -7178,7 +7178,17 @@ async def test_sdk_session_guard_diagnostics_are_value_free(monkeypatch, tmp_pat
     )
     assert result.error == "claude_agent_sdk_provider_session_failed"
     assert result.runtime_diagnostics["failure_source"] == source
-    assert not result.runtime_diagnostics.get("sdk")
+    sdk = result.runtime_diagnostics["sdk"]
+    assert set(sdk) == {"debug"}
+    assert sdk["debug"]["component"] == "claude_executor"
+    assert sdk["debug"]["sdk_version"] == "0.2.165"
+    python_version = sdk["debug"]["python_version"]
+    assert (
+        isinstance(python_version, str)
+        and len(python_version.split(".")) == 3
+        and all(part.isdigit() for part in python_version.split("."))
+    )
+    assert set(sdk["debug"]) == {"component", "sdk_version", "python_version"}
     for secret in ("private-session-sentinel", "private-transcript-sentinel", "private-prompt-sentinel"):
         assert secret not in json.dumps(result.runtime_diagnostics)
 
