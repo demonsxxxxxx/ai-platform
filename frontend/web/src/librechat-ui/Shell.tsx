@@ -54,9 +54,8 @@ export function LibreChatShell({
                 title={t("workbench.contextLabel")}
                 onClick={() => setContextOpen((open) => !open)}
                 className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-sidebar-panel-muted)] hover:text-[var(--theme-text)]"
-              >
-                <ContextIcon size={18} aria-hidden="true" />
-              </Button>
+                icon={<ContextIcon size={18} aria-hidden="true" />}
+              />
             </div>
           )}
           <div

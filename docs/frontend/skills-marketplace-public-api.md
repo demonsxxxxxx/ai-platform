@@ -185,7 +185,10 @@ operation failures retain the editor draft and show safe error copy; raw
 backend error details are not rendered. The ordinary directory remains read-only.
 
 The administrator directory presents Server enablement separately from live tool
-discovery. Counts and the searchable tool-detail drawer come from
+discovery. Enabled status text, toggle icons and the checked form control use the
+success-green theme token; disabled controls use neutral styling. The toggle's
+pressed state also exposes enablement without depending on color. Counts and the
+searchable tool-detail drawer come from
 `GET /api/mcp/{name}/catalog`. Enterprise Gateway rows show the full anonymous
 directory and available-tool count, retaining unavailable tools in the drawer.
 Generic MCP rows retain current-account discovery. Successful empty discovery
@@ -258,9 +261,13 @@ Server lifecycle writes require a platform-admin principal. They persist only
 tenant-scoped registry metadata, allowed roles, department enablement, quotas,
 credential state, bounded metadata, and a credential fingerprint. Endpoint and
 static headers are stored only in a tenant/Server-bound encrypted envelope;
-static headers cannot use the reserved `JWT-Authorization` name. Raw URL query
-secrets, header names or values, commands, JWTs, and credential values are not
-returned in API responses or written to audit payloads.
+static headers cannot use the reserved `JWT-Authorization` name. The platform-admin
+`GET /api/mcp/{name}` detail read returns the saved URL and static headers for
+editing. The management form prefills both fields, preserves their values when
+saved unchanged, replaces them when another Server is selected, and clears them
+when creating a Server. Ordinary-user reads, list/export responses and audit
+payloads exclude these connection materials. Company user JWTs remain outside
+the editable Server configuration.
 
 Company login stores one encrypted MCP JWT per `tenant_id + user_id` in Redis;
 the JWT's own `exp` is its lifetime and a later login replaces the earlier

@@ -23,6 +23,7 @@ dom.window.Range.prototype.getBoundingClientRect = () => new dom.window.DOMRect(
 const { act, createElement } = await import("react");
 
 await import("../../../i18n/index");
+const { default: i18n } = await import("i18next");
 const { SkillForm } = await import("../SkillForm");
 
 async function harness(initial: SkillResponse) {
@@ -33,6 +34,25 @@ async function harness(initial: SkillResponse) {
   await render(initial);
   return { container, saves, render, async submit() { await act(async () => { container.querySelector("form")!.dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true })); }); }, async close() { await act(async () => root.unmount()); container.remove(); } };
 }
+
+test("fullscreen editor remains in the theme host and Escape preserves the current skill", async () => {
+  const original = skillApi.getFile;
+  skillApi.getFile = async () => ({ content: "# Fullscreen owner" });
+  const view = await harness(skill("one"));
+  try {
+    const trigger = Array.from(view.container.querySelectorAll("button")).find(node => node.textContent?.trim() === i18n.t("skills.form.editFullscreen"));
+    assert.ok(trigger);
+    await act(async () => trigger.click());
+    assert.ok(view.container.querySelector(".skill-form--fullscreen"), "fullscreen portal stays in the Lobe theme host");
+    const exit = view.container.querySelector<HTMLButtonElement>(`button[aria-label="${i18n.t("skills.form.exitFullscreen")}"]`)!;
+    assert.equal(getComputedStyle(exit).position, "fixed", "library button positioning cannot displace the fullscreen exit");
+    await act(async () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    assert.equal(document.querySelector(".skill-form--fullscreen"), null);
+    await view.submit();
+    assert.equal(view.saves.length, 1);
+    assert.match(view.saves[0].content, /Fullscreen owner/);
+  } finally { await view.close(); skillApi.getFile = original; }
+});
 
 test("metadata-only save preserves unopened text and binary bytes", async () => {
   const original = skillApi.getFile;

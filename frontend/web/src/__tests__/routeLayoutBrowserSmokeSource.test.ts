@@ -19,6 +19,9 @@ test("offline route layout smoke covers required routes, viewports, reachability
     "/agent-market/agt_support",
     "/agent-market/agt_support/chat",
     "/agent-builder",
+    "/plugins",
+    "/ai-apps/sop-assistant",
+    "/ai-apps/word-review",
   ]) {
     assert.match(source, new RegExp(path.replaceAll("/", "\\/")));
   }
@@ -42,6 +45,14 @@ test("offline route layout smoke covers required routes, viewports, reachability
   assert.match(source, /skill-opaque-42/);
   assert.match(source, /data-skill-distribution-save/);
   assert.match(source, /skill-distribution-save/);
+  assert.match(source, /responsive_layout_failed/);
+  assert.match(source, /detailContained/);
+  assert.match(source, /tableReachable/);
+  assert.match(source, /uploadBottom > viewport.height/);
+  assert.match(source, /plugin_layout_failed/);
+  assert.match(source, /plugins:auth-tab-wrap/);
+  assert.match(source, /plugins:auth-focus-restored/);
+  assert.match(source, /plugins:collapsed-icon-not-centered/);
   assert.match(source, /data-agent-market-start-chat/);
   assert.match(source, /data-agent-builder-save-reason/);
 });

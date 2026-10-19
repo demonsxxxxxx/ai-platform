@@ -166,13 +166,14 @@
 
 .skill-catalog-layout {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   min-width: 0;
   gap: 0.9rem;
 }
 
 .skill-catalog-detail-shell {
   min-width: 0;
-  overflow: hidden;
+  overflow-x: auto;
   border: 1px solid var(--theme-border);
   border-radius: 8px;
   background: var(--theme-workbench-panel);
