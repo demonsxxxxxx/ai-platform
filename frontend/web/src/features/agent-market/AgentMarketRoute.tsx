@@ -255,8 +255,6 @@ function ExpertMarketCard({
                 ) : (
                   <span>未分类</span>
                 )}
-                <span aria-hidden="true">·</span>
-                <span>企业已发布</span>
               </div>
             </div>
           </div>
@@ -732,9 +730,6 @@ function AgentMarketDetail({
                 ) : (
                   <span>未分类</span>
                 )}
-                <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-200">
-                  企业已发布
-                </span>
               </div>
               <h1 className="mt-2 text-2xl font-semibold sm:text-3xl">{profile.name}</h1>
               <p className="mt-4 whitespace-pre-wrap text-sm leading-7 text-[var(--theme-text-secondary)] sm:text-base">
