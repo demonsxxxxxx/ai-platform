@@ -106,8 +106,7 @@ function investigationResponse(runId: string): AdminRunInvestigation {
     timeline_source: "platform_receipts", durations_additive: false, unbound_event_count: 0, events_truncated: false, missing_measurements: ["browser_first_text_ms"],
     stages: [{ stage_id: "tool:attempt-a:op-a", label: "Read", source: "sdk_tool_hooks", status: "denied", attempt_id: "attempt-a",
       operation_id: "op_6aaadf71488c9cf9ca0e4928bbf70f1e", event_id: "tool-event", causation_event_id: "start-event",
-      started_at: "2026-04-01T09:00:02Z", finished_at: "2026-04-01T09:00:03Z", offset_ms: 2000, receipt_duration_ms: 1000, duration_ms: 1200 }],
-    comparison: { window: monitorResponse([]).window, scope: "same_agent_skill_profile_model_configuration", normal_run_id: "run_failed", sample_count: 2, latency: metrics, missing_reason: null } };
+      started_at: "2026-04-01T09:00:02Z", finished_at: "2026-04-01T09:00:03Z", offset_ms: 2000, receipt_duration_ms: 1000, duration_ms: 1200 }] };
 }
 
 test("Run Monitor derives current activity without private events or stale terminal labels", () => {
@@ -124,6 +123,7 @@ test("Run Monitor filters only the explicitly projected Run identities", () => {
   assert.deepEqual(filterAdminRuns(runs, "failed", "worker_execution_failed").map((run) => run.run_id), [
     "run_failed",
   ]);
+  assert.deepEqual(filterAdminRuns([{ ...runs[0], status: "cancel_requested" }], "running", "").map((run) => run.run_id), ["run_running"]);
   assert.deepEqual(filterAdminRuns(runs, "running", "合同审阅助手").map((run) => run.run_id), [
     "run_running",
   ]);
@@ -469,10 +469,8 @@ for (const scenario of [
     calls.push("monitor");
     return monitorResponse(paginatedRuns.filter((run) => !options?.status || run.status === options.status));
   };
-  adminRunsApi.investigation = async (runId, options) => {
+  adminRunsApi.investigation = async (runId) => {
     calls.push(`investigation:${runId}`);
-    assert.equal(options?.fromAt, "2026-04-01T00:00:00Z");
-    assert.equal(options?.toAt, "2026-04-02T00:00:00Z");
     return investigationResponse(runId);
   };
   adminRunsApi.detail = async (runId: string) => {
@@ -601,7 +599,17 @@ for (const scenario of [
     });
     assert.ok(document.querySelector('button[aria-label="开启自动刷新"]'));
     assert.match(document.body.textContent ?? "", /P50/);
-    assert.match(document.body.textContent ?? "", /P95/);
+    const performanceDetails = document.querySelector(".run-performance-details") as HTMLDetailsElement;
+    assert.equal(performanceDetails.open, false);
+    performanceDetails.open = true;
+    assert.match(performanceDetails.textContent ?? "", /P95/);
+    assert.match(performanceDetails.textContent ?? "", /有效样本/);
+    assert.equal(document.querySelectorAll('[aria-label="运行摘要"] [data-run-metric]').length, 4);
+    const toolbar = document.querySelector('[aria-label="调查范围"]');
+    assert.ok(toolbar?.querySelector('input[aria-label="搜索任务 / Agent / 用户 / 运行编号"]'));
+    assert.ok(toolbar?.querySelector('label'));
+    assert.ok(Array.from(document.querySelectorAll('th')).some((cell) => cell.textContent === "耗时"));
+    assert.doesNotMatch(document.body.textContent ?? "", /正常任务对照|同类成功任务对照/);
     assert.match(document.body.textContent ?? "", /80/);
     assert.doesNotMatch(document.body.textContent ?? "", /Worker 在线/);
     assert.match(document.body.textContent ?? "", /王敏/);
@@ -615,9 +623,12 @@ for (const scenario of [
       'button[aria-label="下一页"]',
     ) as HTMLButtonElement | null;
     assert.ok(nextPageButton);
+    assert.ok(document.querySelector('button[aria-label="第 1 页"][aria-current="page"]'));
+    const secondPage = document.querySelector('button[aria-label="第 2 页"]') as HTMLButtonElement;
+    assert.ok(secondPage);
     assert.equal(nextPageButton.disabled, false);
     await act(async () => {
-      nextPageButton.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+      secondPage.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
     });
     await waitFor(() => document.body.textContent?.includes("run_failed_8") === true);
     assert.doesNotMatch(document.body.textContent ?? "", /run_failed_0/);
@@ -703,7 +714,6 @@ for (const scenario of [
     assert.ok(stageButton);
     await act(async () => { stageButton.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
     assert.match(document.querySelector("[data-selected-stage-evidence]")?.textContent ?? "", /tool_parameters_not_authorized/);
-    assert.match(document.querySelector("[data-run-comparison]")?.textContent ?? "", /同类 P50/);
     const abortLabels = (Array.from(document.querySelectorAll("[data-sdk-tool-abort]")) as HTMLElement[]).map((item) => item.textContent);
     assert.deepEqual(abortLabels, [
       "SDK 报告工具 abort：是；不代表用户取消或 Run 取消状态。",
@@ -841,7 +851,7 @@ for (const scenario of [
 
     const failedFilter = (
       Array.from(document.querySelectorAll('button[aria-pressed]')) as HTMLButtonElement[]
-    ).find((button) => button.textContent === "失败");
+    ).find((button) => button.textContent?.startsWith("失败"));
     assert.ok(failedFilter);
     await act(async () => {
       failedFilter.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
@@ -934,7 +944,7 @@ for (const scenario of [
 
     const allFilter = (
       Array.from(document.querySelectorAll('button[aria-pressed]')) as HTMLButtonElement[]
-    ).find((button) => button.textContent === "全部");
+    ).find((button) => button.textContent?.startsWith("全部"));
     assert.ok(allFilter);
     await act(async () => {
       allFilter.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));

@@ -1994,3 +1994,81 @@ def test_mcp_bulk_discovery_logs_each_failure_once_with_request_correlation(monk
     assert len(records) == 2
     assert {record.server_id for record in records} == {"gateway-a", "gateway-b"}
     assert len({record.trace_id for record in records}) == 1
+
+
+def test_mcp_disabled_management_reads_restore_without_enabling_discovery(monkeypatch):
+    from app.routes import mcp
+
+    calls = install_mcp_route_fakes(monkeypatch)
+    client = TestClient(create_app())
+    admin = headers(roles="platform_admin")
+    assert client.get("/api/mcp/", headers=admin).json()["total"] == 1
+    assert client.get("/api/mcp/ragflow", headers=admin).json()["enabled"] is True
+    assert client.patch("/api/mcp/ragflow/toggle", headers=admin, json={"enabled": False}).status_code == 200
+    listing = client.get("/api/mcp/", headers=admin).json()
+    assert (listing["total"], listing["skip"], listing["limit"]) == (1, 0, 50)
+    assert listing["servers"][0]["enabled"] is False
+    assert listing["servers"][0]["can_edit"] is True
+    detail = client.get("/api/mcp/ragflow", headers=admin)
+    assert detail.status_code == 200
+    assert detail.json()["enabled"] is False
+    assert client.get("/api/mcp/?q=RAG&skip=1&limit=1", headers=admin).json() == {
+        "servers": [], "total": 1, "skip": 1, "limit": 1,
+    }
+    assert client.get("/api/mcp/?q=absent", headers=admin).json()["total"] == 0
+    assert any(payload["payload_json"].get("decision_reason") == "admin_management"
+               for name, payload in calls if name == "audit")
+    for actor in (admin, headers(), headers(roles="readonly")):
+        assert client.get("/api/mcp/ragflow/tools", headers=actor).status_code == 404
+        assert client.get("/api/mcp/chat-tools", headers=actor).json()["tools"] == []
+    for actor in (headers(), headers(roles="readonly")):
+        assert client.get("/api/mcp/", headers=actor).json()["total"] == 0
+        assert client.get("/api/mcp/ragflow", headers=actor).status_code == 404
+        assert client.patch("/api/mcp/ragflow/toggle", headers=actor, json={"enabled": True}).status_code == 403
+    principal = AuthPrincipal(user_id="admin", display_name="Admin", tenant_id="default", roles=["platform_admin"])
+    _, _, decision = asyncio.run(mcp._public_server_access(principal=principal, name="ragflow", management=True))
+    assert decision.visible and decision.manageable and not decision.usable
+    row = {"name": "ragflow", "status": "disabled"}
+    distribution = _mcp_distribution(status="disabled")
+    assert mcp.authorized_mcp_registration_entries(
+        principal=principal, registry_entries=[row], distributions_by_server={"ragflow": distribution},
+    ) == []
+    restored = client.patch("/api/mcp/ragflow/toggle", headers=admin, json={"enabled": True})
+    assert restored.status_code == 200 and restored.json()["server"]["enabled"] is True
+    assert client.get("/api/mcp/", headers=headers()).json()["total"] == 1
+    assert client.get("/api/mcp/ragflow/tools", headers=headers()).status_code == 200
+    assert client.delete("/api/mcp/ragflow", headers=admin).status_code == 200
+    assert client.get("/api/mcp/", headers=admin).json()["total"] == 0
+    assert client.get("/api/mcp/ragflow", headers=admin).status_code == 404
+
+
+def test_mcp_disabled_management_preserves_tenant_archive_and_missing_distribution(monkeypatch):
+    from app.routes import mcp
+
+    calls = install_mcp_route_fakes(monkeypatch)
+    async def tenant_servers(conn, *, tenant_id, include_disabled=True):
+        return [{"name": "ragflow", "status": "disabled"}] if tenant_id == "default" else []
+    monkeypatch.setattr(mcp.mcp_repository, "list_mcp_server_registry", tenant_servers)
+    client = TestClient(create_app())
+    foreign = {**headers(roles="platform_admin"), "X-AI-Tenant-ID": "tenant-b"}
+    assert client.get("/api/mcp/", headers=foreign).json()["total"] == 0
+    assert client.get("/api/mcp/ragflow", headers=foreign).status_code == 404
+    assert not any(name == "get_credential" for name, _ in calls)
+    async def tenant_toggle(conn, **kwargs):
+        assert kwargs["tenant_id"] == "tenant-b"
+        raise RepositoryNotFoundError("mcp_server_not_found")
+    monkeypatch.setattr(mcp.mcp_repository, "toggle_mcp_server_registry", tenant_toggle)
+    assert client.patch("/api/mcp/ragflow/toggle", headers=foreign, json={"enabled": True}).status_code == 404
+    assert not any(name == "set_distribution_status" for name, _ in calls)
+    for distribution in (None, (_mcp_distribution() | {"metadata_json": {"archived_at": "2026-07-15T00:00:00.000Z"}})):
+        async def get_distribution(conn, **kwargs):
+            assert kwargs["tenant_id"] == "default"
+            return distribution
+        async def list_distributions(conn, **kwargs):
+            assert kwargs["tenant_id"] == "default"
+            return [] if distribution is None else [distribution]
+        monkeypatch.setattr(mcp.identity_capability_distributions, "get_capability_distribution_row", get_distribution)
+        monkeypatch.setattr(mcp.identity_capability_distributions, "list_capability_distribution_rows", list_distributions)
+        admin = headers(roles="platform_admin")
+        assert client.get("/api/mcp/", headers=admin).json()["total"] == 0
+        assert client.get("/api/mcp/ragflow", headers=admin).status_code == 404

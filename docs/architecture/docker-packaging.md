@@ -42,9 +42,11 @@ and focused tests in one review.
 
 Pull requests and `main` run the stable `backend required` and `frontend required`
 checks. Those checks include real Docker builds. The frontend workflow owns the full
-`ci:verify` audit, test, lint, type-check, and build command; the frontend Dockerfile
-runs only the production `build` command so image packaging does not repeat the full
-suite. Backend acceptance verifies imports, HTTP startup, non-root identity, executable
+audit, test, lint, type-check, and build coverage through four JS test shards, an
+independent Python audit/contract job, and the lint/build/trace job. The local
+`ci:verify` command retains the complete serial reproduction path. The frontend
+Dockerfile runs only the production `build` command so image packaging does not
+repeat the full suite. Backend acceptance verifies imports, HTTP startup, non-root identity, executable
 entrypoint, source markers, and existing OCI/release labels. Frontend acceptance verifies
 the built artifact, the same commit/label contract, and an HTTP health response from
 the temporary CI container. That standalone frontend container overrides its upstream with the
