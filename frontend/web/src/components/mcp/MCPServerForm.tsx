@@ -473,10 +473,10 @@ export function MCPServerForm({
                   <Button type="text"
                     htmlType="button"
                     onClick={() => removeHeader(header.id)}
-                    className="btn-icon hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/30 dark:hover:text-red-400"
-                  >
-                    <Trash2 size={16} />
-                  </Button>
+                    className="hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/30 dark:hover:text-red-400"
+                    aria-label={t("common.delete")}
+                    icon={<Trash2 size={16} />}
+                  />
                 </div>
               ))}
               {headers.length === 0 && (

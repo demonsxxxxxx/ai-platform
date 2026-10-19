@@ -238,9 +238,8 @@ function ExpertMarketCard({
                     }`}
                     onClick={() => onToggleFavorite(profile)}
                     htmlType="button"
-                  >
-                    <Star aria-hidden="true" fill={profile.is_favorite ? "currentColor" : "none"} size={17} />
-                  </Button>
+                    icon={<Star aria-hidden="true" fill={profile.is_favorite ? "currentColor" : "none"} size={17} />}
+                  />
                 </div>
               </div>
               <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--theme-text-secondary)]">
@@ -598,18 +597,16 @@ function AgentMarketCatalog({
                     className={`inline-flex h-8 w-9 items-center justify-center rounded-l-md ${view === "grid" ? "bg-[var(--theme-primary)] text-white" : "text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)]"}`}
                     onClick={() => handleView("grid")}
                     htmlType="button"
-                  >
-                    <Grid2X2 aria-hidden="true" size={15} />
-                  </Button>
+                    icon={<Grid2X2 aria-hidden="true" size={15} />}
+                  />
                   <Button type="text"
                     aria-label="列表视图"
                     aria-pressed={view === "list"}
                     className={`inline-flex h-8 w-9 items-center justify-center rounded-r-md border-l border-[var(--theme-border)] ${view === "list" ? "bg-[var(--theme-primary)] text-white" : "text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)]"}`}
                     onClick={() => handleView("list")}
                     htmlType="button"
-                  >
-                    <ListIcon aria-hidden="true" size={15} />
-                  </Button>
+                    icon={<ListIcon aria-hidden="true" size={15} />}
+                  />
                 </div>
               </div>
               </div>
