@@ -1,4 +1,4 @@
-from app.sandbox_hardening_contract import (
+from tools.release_readiness.sandbox_hardening_contract import (
     bounded_error_projection_error,
     bounded_error_projection_is_safe,
     safe_bounded_error_projection,

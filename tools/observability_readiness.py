@@ -8,11 +8,11 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.observability_readiness import (  # noqa: E402
+from tools.release_readiness.observability_readiness import (  # noqa: E402
     build_observability_readiness,
     render_observability_readiness_markdown,
 )
-from app.release_evidence_readiness import (  # noqa: E402
+from tools.release_readiness.release_evidence_readiness import (  # noqa: E402
     load_reviewed_runtime_acceptance_for_subject,
 )
 

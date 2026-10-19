@@ -5,7 +5,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.util import find_spec
 from threading import Thread
 
-from app import foundation_alpha_readiness
+from tools.release_readiness import foundation_alpha_readiness
 from app.capacity_baseline import build_capacity_gate_readiness
 from app.capacity_baseline import LOAD_TEST_GATES
 from tools.capacity.bounded_load import (

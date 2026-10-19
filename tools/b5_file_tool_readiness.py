@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.tool_policy_readiness import build_tool_policy_readiness  # noqa: E402
+from tools.release_readiness.tool_policy_readiness import build_tool_policy_readiness  # noqa: E402
 
 
 SCHEMA_VERSION = "ai-platform.b5-file-tool-readiness.v1"

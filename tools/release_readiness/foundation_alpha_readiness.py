@@ -6,7 +6,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from app.foundation_runtime_concurrency import build_foundation_runtime_concurrency_readiness
+from tools.release_readiness.foundation_runtime_concurrency import build_foundation_runtime_concurrency_readiness
 from app.public_context_keys import public_context_input_key_findings, safe_public_context_pack_version
 
 
@@ -23,7 +23,7 @@ GOVERNANCE_RUNTIME_WRAPPED_GATE_NAME = "Governance Runtime Smoke"
 RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_WRAPPED_GATE_NAME = "Release Evidence Runtime Acceptance"
 ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_WRAPPED_GATE_NAME = "Alert Trace Export Runtime Acceptance"
 RUNTIME_SUBJECT_COMMIT_SHA = "96f27bb9bc8e415faddada2cec0fbfb6ecdcf92c"
-_ROOT = Path(__file__).resolve().parents[1]
+_ROOT = Path(__file__).resolve().parents[2]
 _EVIDENCE_BASE_ROOT = _ROOT / "docs/release-evidence/foundation-alpha-poc"
 _FOUNDATION_RUNTIME_CONCURRENCY_EVIDENCE_ROOT = _ROOT / "docs/release-evidence/foundation-runtime-concurrency"
 _SOURCE_RUNTIME_RELATION_MANIFEST = _EVIDENCE_BASE_ROOT / "source-runtime-relation-manifest.json"
@@ -59,6 +59,23 @@ _RUNTIME_NEUTRAL_EXACT_PATHS = {
     "app/release_evidence_export_acceptance.py",
     "app/release_evidence_readiness.py",
     "app/release_evidence_runtime_acceptance.py",
+    # Canonical offline report owners; old paths above remain historical tombstones.
+    "tools/release_readiness/alert_slo_readiness.py",
+    "tools/release_readiness/alert_trace_export_runtime_acceptance.py",
+    "tools/release_readiness/error_taxonomy_dashboard_readiness.py",
+    "tools/release_readiness/foundation_alpha_readiness.py",
+    "tools/release_readiness/foundation_runtime_concurrency.py",
+    "tools/release_readiness/governance_readiness.py",
+    "tools/release_readiness/observability_readiness.py",
+    "tools/release_readiness/office_context_readiness.py",
+    "tools/release_readiness/quality_golden_set_readiness.py",
+    "tools/release_readiness/release_evidence_export_acceptance.py",
+    "tools/release_readiness/release_evidence_readiness.py",
+    "tools/release_readiness/sandbox_hardening_contract.py",
+    "tools/release_readiness/tool_policy_bulk_review_readiness.py",
+    "tools/release_readiness/tool_policy_readiness.py",
+    "tools/release_readiness/trace_audit_export_readiness.py",
+    "tools/release_readiness/__init__.py",
     "tools/capacity/__init__.py",
     "tools/capacity/bounded_load.py",
     "tools/capacity_bounded_load_harness.py",
@@ -504,7 +521,7 @@ def _release_evidence_runtime_acceptance_from_payload(payload: dict[str, Any]) -
     ):
         return None
 
-    from app.release_evidence_readiness import (
+    from tools.release_readiness.release_evidence_readiness import (
         _runtime_acceptance_is_valid,
         _runtime_acceptance_summary,
     )
@@ -548,7 +565,7 @@ def _alert_trace_export_runtime_acceptance_from_payload(payload: dict[str, Any])
     ):
         return None
 
-    from app.alert_trace_export_runtime_acceptance import (
+    from tools.release_readiness.alert_trace_export_runtime_acceptance import (
         acceptance_is_valid,
         acceptance_summary,
     )
@@ -1081,7 +1098,7 @@ def _mcp_tool_permission_runtime_controls_summary(
     *,
     runtime_rollout_required_for_current_source: bool,
 ) -> dict[str, Any]:
-    from app.tool_policy_readiness import build_tool_policy_readiness
+    from tools.release_readiness.tool_policy_readiness import build_tool_policy_readiness
 
     readiness = build_tool_policy_readiness()
     registry_contract = readiness.get("registry_contract")
@@ -1100,6 +1117,7 @@ def _mcp_tool_permission_runtime_controls_summary(
         if runtime_rollout_required_for_current_source
         else "source_verified_current_runtime",
         "runtime_verified": not runtime_rollout_required_for_current_source,
+        # Recorded evidence identity, not a current Python import path.
         "policy_source": "app.tool_policy_readiness",
         "registry_source": registry_contract.get("registry_source"),
         "ordinary_user_custom_mcp": registry_contract.get("ordinary_user_custom_mcp"),
@@ -1826,7 +1844,7 @@ def _operator_context(
 
 def _build_governance_summary(settings: object | None) -> dict[str, Any]:
     try:
-        from app.governance_readiness import build_governance_readiness
+        from tools.release_readiness.governance_readiness import build_governance_readiness
     except ModuleNotFoundError as exc:
         return _governance_dependency_unavailable_summary(exc)
 
@@ -1922,7 +1940,7 @@ def _build_observability_summary(
     release_evidence_runtime_acceptance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     try:
-        from app.observability_readiness import build_observability_readiness
+        from tools.release_readiness.observability_readiness import build_observability_readiness
     except ModuleNotFoundError as exc:
         return _observability_dependency_unavailable_summary(exc)
 

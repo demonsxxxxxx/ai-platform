@@ -1712,7 +1712,7 @@ class EvidenceRecorder:
         self._lock = threading.Lock()
 
     def record_callback(self, payload: dict[str, object], token: str) -> bool:
-        from app.sandbox_hardening_contract import safe_bounded_error_projection
+        from tools.release_readiness.sandbox_hardening_contract import safe_bounded_error_projection
 
         if token != self._callback_token:
             return False

@@ -1,0 +1,114 @@
+[
+  {
+    "args": [
+      "tools/tool_policy_readiness.py",
+      "--format",
+      "json"
+    ],
+    "stdout": "{\n  \"decision_options\": [],\n  \"evidence\": {},\n  \"evidence_policy\": \"readiness records local policy behavior only; it does not replace independent review, CI, or deployed-runtime evidence\",\n  \"gate\": \"G6 Zero-click Tool Policy\",\n  \"implemented_controls\": [\n    \"single_allow_deny_runtime_tool_policy\",\n    \"platform_registered_mcp_only_policy\",\n    \"ordinary_user_custom_mcp_disabled\",\n    \"historical_permission_evidence_read_only\"\n  ],\n  \"open_gaps\": [\n    \"legacy_frontend_route_policy_enforcement_or_ai_platform_remap\"\n  ],\n  \"policy_contract\": {\n    \"allow\": \"exact registered, declared, active and distributed tools execute immediately\",\n    \"deny\": \"all malformed, unknown, inactive, undistributed or unauthorized attempts fail closed\"\n  },\n  \"registry_contract\": {\n    \"ordinary_user_custom_mcp\": \"not_allowed\",\n    \"registry_source\": \"platform_registered_mcp_tools_only\",\n    \"tenant_policy_scope\": \"same_tenant_registered_tools_only\",\n    \"unregistered_tool_behavior\": \"deny\"\n  },\n  \"risk_levels\": [\n    \"low\",\n    \"medium\",\n    \"high\"\n  ],\n  \"schema_version\": \"ai-platform.tool-policy-readiness.v2\",\n  \"status\": \"partial_blocked\",\n  \"summary\": {\n    \"deny_cases\": 2,\n    \"immediate_allow_cases\": 4,\n    \"taxonomy_cases\": 6\n  },\n  \"taxonomy_cases\": [\n    {\n      \"classification\": \"allow\",\n      \"expected_reason\": \"tool_policy_allowed\",\n      \"id\": \"active_low_read_only\",\n      \"policy_status\": \"active\",\n      \"registry_status\": \"active\",\n      \"risk_level\": \"low\",\n      \"write_capable\": false\n    },\n    {\n      \"classification\": \"allow\",\n      \"expected_reason\": \"tool_policy_allowed\",\n      \"id\": \"active_medium_read_only\",\n      \"policy_status\": \"active\",\n      \"registry_status\": \"active\",\n      \"risk_level\": \"medium\",\n      \"write_capable\": false\n    },\n    {\n      \"classification\": \"allow\",\n      \"expected_reason\": \"tool_policy_allowed\",\n      \"id\": \"active_high_read_only\",\n      \"policy_status\": \"active\",\n      \"registry_status\": \"active\",\n      \"risk_level\": \"high\",\n      \"write_capable\": false\n    },\n    {\n      \"classification\": \"allow\",\n      \"expected_reason\": \"tool_policy_allowed\",\n      \"id\": \"active_low_write_capable\",\n      \"policy_status\": \"active\",\n      \"registry_status\": \"active\",\n      \"risk_level\": \"low\",\n      \"write_capable\": true\n    },\n    {\n      \"classification\": \"deny\",\n      \"expected_reason\": \"tool_not_active\",\n      \"id\": \"disabled_registry\",\n      \"policy_status\": \"active\",\n      \"registry_status\": \"disabled\",\n      \"risk_level\": \"low\",\n      \"write_capable\": false\n    },\n    {\n      \"classification\": \"deny\",\n      \"expected_reason\": \"tool_not_active\",\n      \"id\": \"disabled_tenant_policy\",\n      \"policy_status\": \"disabled\",\n      \"registry_status\": \"active\",\n      \"risk_level\": \"low\",\n      \"write_capable\": false\n    }\n  ]\n}\n",
+    "stderr": "",
+    "returncode": 0
+  },
+  {
+    "args": [
+      "tools/tool_policy_readiness.py",
+      "--format",
+      "markdown"
+    ],
+    "stdout": "# ai-platform Tool Policy Readiness\n\nSchema: `ai-platform.tool-policy-readiness.v2`\n\nGate: `G6 Zero-click Tool Policy`\n\nStatus: `partial_blocked`\n\n## Open Gaps\n\n- legacy_frontend_route_policy_enforcement_or_ai_platform_remap\n\n## Policy Contract\n\n- `allow`: exact registered, declared, active and distributed tools execute immediately\n- `deny`: all malformed, unknown, inactive, undistributed or unauthorized attempts fail closed\n\n## Taxonomy Cases\n\n- `active_low_read_only`: `allow`, risk `low`, write `False`, reason `tool_policy_allowed`\n- `active_medium_read_only`: `allow`, risk `medium`, write `False`, reason `tool_policy_allowed`\n- `active_high_read_only`: `allow`, risk `high`, write `False`, reason `tool_policy_allowed`\n- `active_low_write_capable`: `allow`, risk `low`, write `True`, reason `tool_policy_allowed`\n- `disabled_registry`: `deny`, risk `low`, write `False`, reason `tool_not_active`\n- `disabled_tenant_policy`: `deny`, risk `low`, write `False`, reason `tool_not_active`\n\n",
+    "stderr": "",
+    "returncode": 0
+  },
+  {
+    "args": [
+      "tools/tool_policy_bulk_review_readiness.py",
+      "--format",
+      "json"
+    ],
+    "stdout": "{\n  \"dashboard_contract\": {\n    \"admin_only\": true,\n    \"allowed_history_fields\": [\n      \"audit_id\",\n      \"action\",\n      \"tool_id\",\n      \"updated_by\",\n      \"trace_id\",\n      \"schema_version\",\n      \"created_at\",\n      \"payload.tool_id\",\n      \"payload.status\",\n      \"payload.risk_level\",\n      \"payload.write_capable\",\n      \"payload.visible_to_user\",\n      \"payload.reason\"\n    ],\n    \"allowed_policy_fields\": [\n      \"tool_id\",\n      \"server_id\",\n      \"name\",\n      \"description\",\n      \"registry_status\",\n      \"policy_status\",\n      \"effective_status\",\n      \"write_capable\",\n      \"risk_level\",\n      \"visible_to_user\",\n      \"source\",\n      \"requires_decision\",\n      \"reason\",\n      \"updated_by\",\n      \"updated_at\"\n    ],\n    \"required_dashboard_controls\": [\n      \"risk_level_filter\",\n      \"write_capable_filter\",\n      \"requires_decision_filter\",\n      \"effective_status_filter\",\n      \"per_tool_policy_diff_preview\",\n      \"single_tool_update_confirmation\",\n      \"change_history_drilldown\"\n    ],\n    \"required_inputs\": [\n      \"bounded_tool_policy_inventory\",\n      \"bounded_tool_policy_change_history\",\n      \"tool_policy_taxonomy_summary\",\n      \"decision_options\",\n      \"legacy_route_policy_gap_summary\"\n    ],\n    \"same_tenant_only\": true,\n    \"schema_version\": \"ai-platform.tool-policy-bulk-review-dashboard-contract.v1\",\n    \"source_routes\": [\n      \"GET /api/ai/admin/tool-policies\",\n      \"GET /api/ai/admin/tool-policies/history\",\n      \"PUT /api/ai/admin/tool-policies/{tool_id}\"\n    ]\n  },\n  \"does_not_close_g6\": true,\n  \"forbidden_payload_classes\": [\n    \"executor private runtime payloads\",\n    \"raw object-storage keys\",\n    \"sandbox working directories\",\n    \"secret material and credentials\",\n    \"raw registry endpoints or auth modes\",\n    \"tool request bodies or shell command payloads\"\n  ],\n  \"open_gaps\": [\n    \"admin_policy_bulk_review_visual_acceptance\",\n    \"admin_policy_bulk_review_controlled_host_acceptance\"\n  ],\n  \"policy\": \"source_contract_recorded_not_visual_or_deployed_runtime_acceptance\",\n  \"runtime_acceptance\": {\n    \"covered_runtime_controls\": [\n      \"ordinary_user_denied_inventory\",\n      \"same_tenant_admin_inventory_projection\",\n      \"ordinary_user_denied_history\",\n      \"same_tenant_admin_history_projection\",\n      \"dirty_history_payload_sanitized\",\n      \"admin_update_audited\",\n      \"risky_or_write_policy_requires_decision\",\n      \"missing_tool_update_fails_closed\"\n    ],\n    \"does_not_close_g6\": true,\n    \"does_not_close_runtime_acceptance\": true,\n    \"does_not_close_visual_acceptance\": true,\n    \"evidence_strength\": \"source_route_tests\",\n    \"forbidden_payload_classes\": [\n      \"executor private runtime payloads\",\n      \"raw object-storage keys\",\n      \"sandbox working directories\",\n      \"secret material and credentials\",\n      \"raw registry endpoints or auth modes\",\n      \"tool request bodies or shell command payloads\"\n    ],\n    \"schema_version\": \"ai-platform.tool-policy-bulk-review-runtime-acceptance.v1\",\n    \"source_routes\": [\n      \"GET /api/ai/admin/tool-policies\",\n      \"GET /api/ai/admin/tool-policies/history\",\n      \"PUT /api/ai/admin/tool-policies/{tool_id}\"\n    ],\n    \"source_tests\": [\n      \"tests/test_admin_tool_policies.py::test_admin_list_tool_policies_requires_admin\",\n      \"tests/test_admin_tool_policies.py::test_admin_list_tool_policies_returns_same_tenant_operational_projection\",\n      \"tests/test_admin_tool_policies.py::test_admin_tool_policy_history_requires_admin\",\n      \"tests/test_admin_tool_policies.py::test_admin_tool_policy_history_returns_bounded_same_tenant_secret_safe_projection\",\n      \"tests/test_admin_tool_policies.py::test_admin_tool_policy_history_drops_dirty_scalars_and_nested_allowed_payloads\",\n      \"tests/test_admin_tool_policies.py::test_admin_update_tool_policy_audits_and_keeps_risky_tools_fail_closed\",\n      \"tests/test_admin_tool_policies.py::test_admin_update_tool_policy_returns_404_for_missing_tool\"\n    ],\n    \"status\": \"source_route_tests_recorded\"\n  },\n  \"schema_version\": \"ai-platform.tool-policy-bulk-review-readiness.v1\",\n  \"status\": \"partial_blocked\"\n}\n",
+    "stderr": "",
+    "returncode": 0
+  },
+  {
+    "args": [
+      "tools/tool_policy_bulk_review_readiness.py",
+      "--format",
+      "markdown"
+    ],
+    "stdout": "# ai-platform Tool Policy Bulk Review Readiness\n\nSchema: `ai-platform.tool-policy-bulk-review-readiness.v1`\n\nStatus: `partial_blocked`\n\nPolicy: `source_contract_recorded_not_visual_or_deployed_runtime_acceptance`\n\nDashboard contract: `ai-platform.tool-policy-bulk-review-dashboard-contract.v1`\n\n## Runtime Acceptance\n\nSchema: `ai-platform.tool-policy-bulk-review-runtime-acceptance.v1`\n\nStatus: `source_route_tests_recorded`\n\nEvidence strength: `source_route_tests`\n\nDoes not close deployed-runtime acceptance: `True`\n\nSource tests:\n\n- tests/test_admin_tool_policies.py::test_admin_list_tool_policies_requires_admin\n- tests/test_admin_tool_policies.py::test_admin_list_tool_policies_returns_same_tenant_operational_projection\n- tests/test_admin_tool_policies.py::test_admin_tool_policy_history_requires_admin\n- tests/test_admin_tool_policies.py::test_admin_tool_policy_history_returns_bounded_same_tenant_secret_safe_projection\n- tests/test_admin_tool_policies.py::test_admin_tool_policy_history_drops_dirty_scalars_and_nested_allowed_payloads\n- tests/test_admin_tool_policies.py::test_admin_update_tool_policy_audits_and_keeps_risky_tools_fail_closed\n- tests/test_admin_tool_policies.py::test_admin_update_tool_policy_returns_404_for_missing_tool\n\n## Required Inputs\n\n- bounded_tool_policy_inventory\n- bounded_tool_policy_change_history\n- tool_policy_taxonomy_summary\n- decision_options\n- legacy_route_policy_gap_summary\n\n## Required Dashboard Controls\n\n- risk_level_filter\n- write_capable_filter\n- requires_decision_filter\n- effective_status_filter\n- per_tool_policy_diff_preview\n- single_tool_update_confirmation\n- change_history_drilldown\n\n## Open Gaps\n\n- admin_policy_bulk_review_visual_acceptance\n- admin_policy_bulk_review_controlled_host_acceptance\n\nThis is a contract-only readiness snapshot. It does not close G6, does not add a batch mutation API, and does not expose private runtime payloads.\n\n",
+    "stderr": "",
+    "returncode": 0
+  },
+  {
+    "args": [
+      "tools/foundation_runtime_concurrency.py",
+      "--format",
+      "json"
+    ],
+    "stdout": "{\n  \"checks\": {\n    \"artifact_acl\": {},\n    \"memory_context\": {},\n    \"queue_admission\": {},\n    \"run_playback\": {},\n    \"sandbox_workspace\": {},\n    \"skill_snapshots\": {}\n  },\n  \"evidence_policy\": \"This is Foundation Runtime POC correctness evidence only; it does not raise production concurrency defaults, broaden ordinary-user platform-level multi-run orchestration exposure, claim Docker sandbox hardening, enable long-term memory, or open department rollout gates.\",\n  \"failures\": [\n    \"missing_evidence\"\n  ],\n  \"non_expansion_invariants\": {\n    \"department_rollout_allowed\": false,\n    \"docker_sandbox_hardened_claim_allowed\": false,\n    \"long_term_cross_session_memory_enabled\": false,\n    \"ordinary_user_multi_agent_allowed\": false,\n    \"production_concurrency_increase_allowed\": false\n  },\n  \"requirements\": {\n    \"evidence_status\": \"required_before_foundation_runtime_poc_closure\",\n    \"minimum_concurrent_requests\": 10,\n    \"minimum_tenants\": 2,\n    \"required_checks\": [\n      \"queue_admission\",\n      \"sandbox_workspace\",\n      \"memory_context\",\n      \"artifact_acl\",\n      \"skill_snapshots\",\n      \"run_playback\"\n    ],\n    \"required_scenarios\": [\n      \"run_creation\",\n      \"execution\",\n      \"cancel\",\n      \"retry\"\n    ]\n  },\n  \"scenario_counts\": {\n    \"cancel\": 0,\n    \"execution\": 0,\n    \"retry\": 0,\n    \"run_creation\": 0\n  },\n  \"schema_version\": \"ai-platform.foundation-runtime-concurrency.v1\",\n  \"status\": \"missing_foundation_runtime_concurrency_evidence\",\n  \"summary\": {\n    \"concurrency_probe_source\": \"missing\",\n    \"concurrency_window_sample_count\": 0,\n    \"concurrent_request_count\": 0,\n    \"max_observed_concurrency\": 0,\n    \"run_count\": 0,\n    \"session_count\": 0,\n    \"tenant_count\": 0,\n    \"user_count\": 0\n  },\n  \"terminal_run_failures\": [],\n  \"verified\": false\n}\n",
+    "stderr": "",
+    "returncode": 0
+  },
+  {
+    "args": [
+      "tools/foundation_runtime_concurrency.py",
+      "--format",
+      "markdown"
+    ],
+    "stdout": "# Foundation Runtime Concurrency Readiness\n\n- Status: `missing_foundation_runtime_concurrency_evidence`\n- Verified: `False`\n- Tenants: `0`\n- Runs: `0`\n- Concurrent requests: `0`\n- Context pack version samples: `0`\n\n## Evidence Policy\n\nThis is Foundation Runtime POC correctness evidence only; it does not raise production concurrency defaults, broaden ordinary-user platform-level multi-run orchestration exposure, claim Docker sandbox hardening, enable long-term memory, or open department rollout gates.\n\n## Non-Expansion Invariants\n\n- `department_rollout_allowed`: `False`\n- `docker_sandbox_hardened_claim_allowed`: `False`\n- `long_term_cross_session_memory_enabled`: `False`\n- `ordinary_user_multi_agent_allowed`: `False`\n- `production_concurrency_increase_allowed`: `False`\n\n## Failures\n\n- missing_evidence\n",
+    "stderr": "",
+    "returncode": 0
+  },
+  {
+    "args": [
+      "tools/error_taxonomy_dashboard_readiness.py",
+      "--format",
+      "json"
+    ],
+    "stdout": "{\n  \"active_dashboard_policy\": \"contract_only_not_runtime_dashboard_acceptance\",\n  \"dashboard_contract\": {\n    \"allowed_display_fields\": [\n      \"category\",\n      \"count\",\n      \"definition\",\n      \"trend_window\",\n      \"recent_failure_refs_public\",\n      \"last_seen_at\"\n    ],\n    \"does_not_close_g9\": true,\n    \"forbidden_payload_classes\": [\n      \"executor private payload\",\n      \"raw storage key\",\n      \"sandbox workdir\",\n      \"secret material\",\n      \"API key\",\n      \"bearer token\",\n      \"database URL\",\n      \"Redis URL\"\n    ],\n    \"required_admin_runtime_fields\": [\n      \"observability.error_categories\",\n      \"observability.error_types\",\n      \"observability.recent_failures\",\n      \"observability_readiness.error_taxonomy\"\n    ],\n    \"required_category_ids\": [\n      \"executor\",\n      \"tool\",\n      \"tool_permission\",\n      \"sandbox\",\n      \"model_gateway\",\n      \"queue\",\n      \"database\",\n      \"memory_context\",\n      \"artifact\",\n      \"auth_policy\",\n      \"unknown\"\n    ],\n    \"same_tenant_admin_only\": true,\n    \"schema_version\": \"ai-platform.error-taxonomy-dashboard-contract.v1\",\n    \"unknown_category_policy\": \"unknown_category_visible_but_raw_payload_hidden\"\n  },\n  \"does_not_close_g9\": true,\n  \"gate\": \"G9 Error Taxonomy Dashboard\",\n  \"open_gaps\": [\n    \"error_taxonomy_dashboard_runtime_acceptance\",\n    \"error_taxonomy_dashboard_visual_acceptance\",\n    \"error_taxonomy_dashboard_controlled_host_acceptance\"\n  ],\n  \"schema_version\": \"ai-platform.error-taxonomy-dashboard-readiness.v1\",\n  \"status\": \"partial_blocked\"\n}\n",
+    "stderr": "",
+    "returncode": 0
+  },
+  {
+    "args": [
+      "tools/error_taxonomy_dashboard_readiness.py",
+      "--format",
+      "markdown"
+    ],
+    "stdout": "# ai-platform G9 Error Taxonomy Dashboard Readiness\n\nSchema: `ai-platform.error-taxonomy-dashboard-readiness.v1`\n\nGate: `G9 Error Taxonomy Dashboard`\n\nStatus: `partial_blocked`\n\nActive dashboard policy: `contract_only_not_runtime_dashboard_acceptance`\n\nDashboard contract: `ai-platform.error-taxonomy-dashboard-contract.v1`\n\nRequired Admin Runtime fields:\n\n- `observability.error_categories`\n- `observability.error_types`\n- `observability.recent_failures`\n- `observability_readiness.error_taxonomy`\n\nRequired categories:\n\n- `executor`\n- `tool`\n- `tool_permission`\n- `sandbox`\n- `model_gateway`\n- `queue`\n- `database`\n- `memory_context`\n- `artifact`\n- `auth_policy`\n- `unknown`\n\nOpen gaps:\n\n- `error_taxonomy_dashboard_runtime_acceptance`\n- `error_taxonomy_dashboard_visual_acceptance`\n- `error_taxonomy_dashboard_controlled_host_acceptance`\n\nThis contract does not close G9 and does not expose raw runtime payloads.\n\n",
+    "stderr": "",
+    "returncode": 0
+  },
+  {
+    "args": [
+      "tools/trace_audit_export_readiness.py",
+      "--format",
+      "json"
+    ],
+    "stdout": "{\n  \"active_export_policy\": \"contract_only_not_runtime_export\",\n  \"does_not_close_g9\": true,\n  \"export_contract\": {\n    \"accepted_redaction_scan_statuses\": [\n      \"passed\"\n    ],\n    \"accepted_review_statuses\": [\n      \"reviewed\",\n      \"accepted\"\n    ],\n    \"allowed_event_sources\": [\n      \"run_event_public_projection\",\n      \"audit_event_public_projection\",\n      \"admin_runtime_observability_summary\",\n      \"release_evidence_entry\"\n    ],\n    \"does_not_close_g9\": true,\n    \"does_not_export_raw_runtime_payloads\": true,\n    \"forbidden_marker_classes\": [\n      \"executor private payload\",\n      \"raw storage key\",\n      \"sandbox workdir\",\n      \"secret material\",\n      \"API key\",\n      \"bearer token\",\n      \"database URL\",\n      \"Redis URL\"\n    ],\n    \"required_fields\": [\n      \"export_id\",\n      \"commit_sha\",\n      \"tenant_id\",\n      \"requested_by\",\n      \"requested_at\",\n      \"time_range\",\n      \"filters\",\n      \"artifact_refs_public\",\n      \"redaction_scan_status\",\n      \"review_status\"\n    ],\n    \"schema_version\": \"ai-platform.trace-audit-export-contract.v1\",\n    \"write_path\": \"audit.trace_exports.<export_id>\"\n  },\n  \"gate\": \"G9 Trace / Audit Export\",\n  \"open_gaps\": [\n    \"trace_audit_export_runtime_acceptance\",\n    \"trace_audit_export_dashboard_acceptance\",\n    \"trace_audit_export_controlled_host_acceptance\"\n  ],\n  \"schema_version\": \"ai-platform.trace-audit-export-readiness.v1\",\n  \"status\": \"partial_blocked\"\n}\n",
+    "stderr": "",
+    "returncode": 0
+  },
+  {
+    "args": [
+      "tools/trace_audit_export_readiness.py",
+      "--format",
+      "markdown"
+    ],
+    "stdout": "# ai-platform G9 Trace / Audit Export Readiness\n\nSchema: `ai-platform.trace-audit-export-readiness.v1`\n\nGate: `G9 Trace / Audit Export`\n\nStatus: `partial_blocked`\n\nActive export policy: `contract_only_not_runtime_export`\n\nExport contract: `ai-platform.trace-audit-export-contract.v1`\n\nWrite path: `audit.trace_exports.<export_id>`\n\nRequired fields:\n\n- `export_id`\n- `commit_sha`\n- `tenant_id`\n- `requested_by`\n- `requested_at`\n- `time_range`\n- `filters`\n- `artifact_refs_public`\n- `redaction_scan_status`\n- `review_status`\n\nAllowed event sources:\n\n- `run_event_public_projection`\n- `audit_event_public_projection`\n- `admin_runtime_observability_summary`\n- `release_evidence_entry`\n\nOpen gaps:\n\n- `trace_audit_export_runtime_acceptance`\n- `trace_audit_export_dashboard_acceptance`\n- `trace_audit_export_controlled_host_acceptance`\n\nThis contract does not close G9 and does not export raw runtime payloads.\n\n",
+    "stderr": "",
+    "returncode": 0
+  },
+  {
+    "args": [
+      "tools/foundation_runtime_concurrency.py",
+      "--evidence-json",
+      "tests/fixtures/offline-readiness-malformed.json",
+      "--format",
+      "json"
+    ],
+    "stdout": "{\n  \"checks\": {\n    \"artifact_acl\": {},\n    \"memory_context\": {},\n    \"queue_admission\": {},\n    \"run_playback\": {},\n    \"sandbox_workspace\": {},\n    \"skill_snapshots\": {}\n  },\n  \"evidence_policy\": \"This is Foundation Runtime POC correctness evidence only; it does not raise production concurrency defaults, broaden ordinary-user platform-level multi-run orchestration exposure, claim Docker sandbox hardening, enable long-term memory, or open department rollout gates.\",\n  \"failures\": [\n    \"missing_evidence\"\n  ],\n  \"non_expansion_invariants\": {\n    \"department_rollout_allowed\": false,\n    \"docker_sandbox_hardened_claim_allowed\": false,\n    \"long_term_cross_session_memory_enabled\": false,\n    \"ordinary_user_multi_agent_allowed\": false,\n    \"production_concurrency_increase_allowed\": false\n  },\n  \"requirements\": {\n    \"evidence_status\": \"required_before_foundation_runtime_poc_closure\",\n    \"minimum_concurrent_requests\": 10,\n    \"minimum_tenants\": 2,\n    \"required_checks\": [\n      \"queue_admission\",\n      \"sandbox_workspace\",\n      \"memory_context\",\n      \"artifact_acl\",\n      \"skill_snapshots\",\n      \"run_playback\"\n    ],\n    \"required_scenarios\": [\n      \"run_creation\",\n      \"execution\",\n      \"cancel\",\n      \"retry\"\n    ]\n  },\n  \"scenario_counts\": {\n    \"cancel\": 0,\n    \"execution\": 0,\n    \"retry\": 0,\n    \"run_creation\": 0\n  },\n  \"schema_version\": \"ai-platform.foundation-runtime-concurrency.v1\",\n  \"status\": \"missing_foundation_runtime_concurrency_evidence\",\n  \"summary\": {\n    \"concurrency_probe_source\": \"missing\",\n    \"concurrency_window_sample_count\": 0,\n    \"concurrent_request_count\": 0,\n    \"max_observed_concurrency\": 0,\n    \"run_count\": 0,\n    \"session_count\": 0,\n    \"tenant_count\": 0,\n    \"user_count\": 0\n  },\n  \"terminal_run_failures\": [],\n  \"verified\": false\n}\n",
+    "stderr": "",
+    "returncode": 0
+  }
+]

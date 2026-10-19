@@ -3,7 +3,7 @@ import os
 import subprocess
 import sys
 
-from app.governance_readiness import (
+from tools.release_readiness.governance_readiness import (
     build_governance_readiness,
     render_governance_readiness_markdown,
 )
@@ -35,7 +35,7 @@ def test_governance_readiness_import_is_runtime_dependency_neutral():
         "        raise ModuleNotFoundError(\"No module named 'pydantic_settings'\")\n"
         "    return real_import(name, globals, locals, fromlist, level)\n"
         "builtins.__import__ = guarded_import\n"
-        "from app.governance_readiness import build_governance_readiness\n"
+        "from tools.release_readiness.governance_readiness import build_governance_readiness\n"
         "readiness = build_governance_readiness(SettingsBlocker())\n"
         "assert readiness['status'] == 'partial_blocked'\n"
         "assert len(readiness['open_gaps']) > 1\n"

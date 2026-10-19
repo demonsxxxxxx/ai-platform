@@ -5,8 +5,8 @@ import sys
 
 import pytest
 
-import app.foundation_alpha_readiness as foundation_alpha_readiness
-from app.foundation_alpha_readiness import (
+import tools.release_readiness.foundation_alpha_readiness as foundation_alpha_readiness
+from tools.release_readiness.foundation_alpha_readiness import (
     build_foundation_alpha_readiness,
     render_foundation_alpha_readiness_markdown,
 )
@@ -4517,7 +4517,7 @@ def test_foundation_alpha_readiness_summaries_do_not_require_runtime_settings_im
         "        raise ModuleNotFoundError(\"No module named 'pydantic_settings'\")\n"
         "    return real_import(name, globals, locals, fromlist, level)\n"
         "builtins.__import__ = guarded_import\n"
-        "from app.foundation_alpha_readiness import _build_governance_summary, _build_observability_summary\n"
+        "from tools.release_readiness.foundation_alpha_readiness import _build_governance_summary, _build_observability_summary\n"
         "governance = _build_governance_summary(None)\n"
         "observability = _build_observability_summary(None)\n"
         "assert governance['governance_readiness_status'] == 'partial_blocked'\n"

@@ -1,4 +1,4 @@
-from app.tool_policy_readiness import build_tool_policy_readiness, render_tool_policy_readiness_markdown
+from tools.release_readiness.tool_policy_readiness import build_tool_policy_readiness, render_tool_policy_readiness_markdown
 
 
 def test_tool_policy_readiness_truthfully_records_only_allow_and_deny_outcomes():

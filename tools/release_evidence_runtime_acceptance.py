@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from app.release_evidence_export_acceptance import build_release_evidence_export_acceptance
-from app.release_evidence_readiness import build_release_evidence_readiness
+from tools.release_readiness.release_evidence_export_acceptance import build_release_evidence_export_acceptance
+from tools.release_readiness.release_evidence_readiness import build_release_evidence_readiness
 
 
 SCHEMA_VERSION = "ai-platform.release-evidence-runtime-acceptance.v1"

@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.foundation_runtime_concurrency import (  # noqa: E402
+from tools.release_readiness.foundation_runtime_concurrency import (  # noqa: E402
     build_foundation_runtime_concurrency_readiness,
     load_foundation_runtime_concurrency_evidence,
     render_foundation_runtime_concurrency_markdown,

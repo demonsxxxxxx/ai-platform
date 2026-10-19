@@ -9,7 +9,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.capacity_baseline import LOAD_TEST_GATES  # noqa: E402
-from app.foundation_runtime_concurrency import (  # noqa: E402
+from tools.release_readiness.foundation_runtime_concurrency import (  # noqa: E402
     FOUNDATION_RUNTIME_CONCURRENCY_SCHEMA,
     build_foundation_runtime_concurrency_readiness,
 )

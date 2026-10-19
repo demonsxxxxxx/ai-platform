@@ -12,7 +12,7 @@ from app.capacity_baseline import (
     build_capacity_recorded_gate_batch_snapshot,
     build_capacity_recorded_gate_evidence_packet_result,
 )
-from app.foundation_runtime_concurrency import FOUNDATION_RUNTIME_CONCURRENCY_SCHEMA
+from tools.release_readiness.foundation_runtime_concurrency import FOUNDATION_RUNTIME_CONCURRENCY_SCHEMA
 from tools import verify_multiuser_poc
 from tools.capacity_recorded_gate_values_from_live_run import (
     build_recorded_gate_values_from_live_run,

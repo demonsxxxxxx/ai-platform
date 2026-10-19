@@ -4,7 +4,7 @@ import sys
 
 import pytest
 
-from app.foundation_alpha_readiness import _release_evidence_entry_base_is_valid
+from tools.release_readiness.foundation_alpha_readiness import _release_evidence_entry_base_is_valid
 from scripts import verify_executor_context_pack
 from tools.wrap_foundation_alpha_evidence import build_release_evidence_entry
 
