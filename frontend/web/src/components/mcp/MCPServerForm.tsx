@@ -114,8 +114,10 @@ export function MCPServerForm({
   const [integrationKind, setIntegrationKind] = useState<"mcp" | "enterprise_gateway">(server?.integration_kind ?? "mcp");
 
   // HTTP fields
-  const [url, setUrl] = useState("");
-  const [headers, setHeaders] = useState<KeyValuePair[]>([]);
+  const [url, setUrl] = useState(server?.url ?? "");
+  const [headers, setHeaders] = useState<KeyValuePair[]>(() =>
+    Object.entries(server?.headers ?? {}).map(([key, value]) => ({ id: uuid(), key, value })),
+  );
 
   const [allowedRoles, setAllowedRoles] = useState<string[]>(
     server?.allowed_roles ?? [],
@@ -136,8 +138,8 @@ export function MCPServerForm({
       setTransport(server.transport === "sandbox" ? defaultTransport : server.transport);
       setEnabled(server.enabled);
       setIntegrationKind(server.integration_kind ?? "mcp");
-      setUrl("");
-      setHeaders([]);
+      setUrl(server.url ?? "");
+      setHeaders(Object.entries(server.headers ?? {}).map(([key, value]) => ({ id: uuid(), key, value })));
       setAllowedRoles(server.allowed_roles ?? []);
       setAllowedDepartmentsInput(server.allowed_departments?.join(", ") ?? "");
       setRoleQuotas(toQuotaDrafts(server.role_quotas ?? {}));
