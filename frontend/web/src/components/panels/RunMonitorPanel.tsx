@@ -429,13 +429,12 @@ function RunDetail({
         <Button type="text"
           ref={closeRef}
           htmlType="button"
-          className="btn-icon flex size-9 shrink-0 items-center justify-center rounded-md"
+          className="flex size-9 shrink-0 items-center justify-center rounded-md"
           onClick={onClose}
           aria-label="关闭运行详情"
           title="关闭运行详情"
-        >
-          <X size={17} />
-        </Button>
+          icon={<X size={17} />}
+        />
       </div>
 
       {loading ? (
@@ -607,12 +606,11 @@ render: (_value, run) => (<>
 <Button type="text"
                     htmlType="button"
                     onClick={() => onSelect(run.run_id)}
-                    className="btn-icon flex size-8 items-center justify-center rounded-md"
+                    className="flex size-8 items-center justify-center rounded-md"
                     aria-label={`打开 ${run.run_id} 详情`}
                     title="打开详情"
-                  >
-                    <ChevronRight size={16} />
-                  </Button>
+  icon={<ChevronRight size={16} />}
+/>
 </>) }
 ]}
 />
@@ -927,24 +925,22 @@ export function RunMonitorPanel() {
     <div className="flex items-center gap-1">
       <Button type="text"
         htmlType="button"
-        className="btn-icon flex size-9 items-center justify-center rounded-md"
+        className="flex size-9 items-center justify-center rounded-md"
         onClick={() => setAutoRefresh((value) => !value)}
         aria-label={autoRefresh ? "暂停自动刷新" : "开启自动刷新"}
         title={autoRefresh ? "暂停自动刷新" : "开启自动刷新"}
-      >
-        {autoRefresh ? <Pause size={16} /> : <Play size={16} />}
-      </Button>
+        icon={autoRefresh ? <Pause size={16} /> : <Play size={16} />}
+      />
       <Button type="text"
         ref={refreshButtonRef}
         htmlType="button"
-        className="btn-icon flex size-9 items-center justify-center rounded-md"
+        className="flex size-9 items-center justify-center rounded-md"
         onClick={() => void loadRuns(false)}
         disabled={isRefreshing}
         aria-label="刷新最近运行"
         title="刷新最近运行"
-      >
-        <RefreshCw size={16} className={isRefreshing ? "animate-spin" : ""} />
-      </Button>
+        icon={<RefreshCw size={16} className={isRefreshing ? "animate-spin" : ""} />}
+      />
     </div>
   );
 

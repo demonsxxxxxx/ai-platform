@@ -634,9 +634,8 @@ export function AgentBuilderWorkbench({
                             }}
                             title={`移除 ${selection.skill_id}`}
                             htmlType="button"
-                          >
-                            <X aria-hidden="true" size={15} />
-                          </Button>
+                            icon={<X aria-hidden="true" size={15} />}
+                          />
                         </span>
                       );
                     })}
@@ -709,9 +708,8 @@ export function AgentBuilderWorkbench({
                             onClick={() => removeMcpTool(toolId)}
                             title={`移除 ${tool?.label ?? toolId}`}
                             htmlType="button"
-                          >
-                            <X size={16} aria-hidden="true" />
-                          </Button>
+                            icon={<X size={16} aria-hidden="true" />}
+                          />
                         </div>
                       );
                       })}

@@ -23,6 +23,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
+import { ConfirmDialog } from "../../components/common/ConfirmDialog";
 import type { Message } from "../../types";
 import { APP_ROUTE_PATHS } from "../../appRouteManifest";
 import { useAuth } from "../../hooks/useAuth";
@@ -84,29 +85,28 @@ function AppFrame({
 }) {
   const navigate = useNavigate();
   return (
-    <main className="flex h-full min-h-0 flex-col overflow-hidden bg-[#f5f8fb] text-[#122235]">
-      <header className="shrink-0 border-b border-[#dce5ed] bg-white">
+    <main className="flex h-full min-h-0 flex-col overflow-hidden bg-[var(--theme-workbench-canvas)] text-[var(--theme-text)]">
+      <header className="shrink-0 border-b border-[var(--theme-border)] bg-[var(--theme-workbench-panel)]">
         <div className="mx-auto flex min-h-[72px] w-full max-w-[1440px] items-center gap-4 px-5 sm:px-8">
-          <Button type="text"
+          <Button type="text" size="large"
             htmlType="button"
             onClick={() => navigate(APP_ROUTE_PATHS.apps)}
-            className="flex size-9 shrink-0 items-center justify-center rounded-lg text-[#5d7389] transition-colors hover:bg-[#eef4f8] hover:text-[#244b6c]"
+            icon={<ArrowLeft size={19} />}
+            className="shrink-0"
             aria-label="返回 AI 应用"
             title="返回 AI 应用"
-          >
-            <ArrowLeft size={19} />
-          </Button>
-          <span className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-[#e8f5f5] text-[#188b8d]">
+          />
+          <span className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-[var(--theme-bg-sidebar)] text-[var(--theme-primary)]">
             <Icon size={21} strokeWidth={1.9} />
           </span>
           <div className="min-w-0 flex-1">
-            <h1 className="truncate text-lg font-bold text-[#122235]">{title}</h1>
-            <p className="truncate text-xs text-[#6d8295]">{subtitle}</p>
+            <h1 className="truncate text-lg font-bold text-[var(--theme-text)]">{title}</h1>
+            <p className="truncate text-xs text-[var(--theme-text-secondary)]">{subtitle}</p>
           </div>
           {status}
         </div>
       </header>
-      <div className="mx-auto min-h-0 w-full max-w-[1440px] flex-1 overflow-y-auto px-5 py-5 sm:px-8 sm:py-7">{children}</div>
+      <div data-ai-application-scroller className="mx-auto min-h-0 w-full max-w-[1440px] flex-1 overflow-y-auto px-5 py-5 sm:px-8 sm:py-7">{children}</div>
     </main>
   );
 }
@@ -114,7 +114,7 @@ function AppFrame({
 function ConnectionNotice({ failed, message }: { failed: boolean; message?: string }) {
   if (!failed) return null;
   return (
-    <div className="connection-notice flex items-start gap-2 rounded-lg border border-[#f1d6a1] bg-[#fff9eb] px-4 py-3 text-sm text-[#8b651c]">
+    <div className="connection-notice flex items-start gap-2 rounded-lg border border-[var(--theme-warning-ring)] bg-[var(--theme-warning-soft)] px-4 py-3 text-sm text-[var(--theme-warning)]">
       <AlertCircle size={17} className="mt-0.5 shrink-0" />
       <span>{message || "应用配置暂时无法连接，页面仍可预览；连接平台后即可提交任务。"}</span>
     </div>
@@ -123,10 +123,10 @@ function ConnectionNotice({ failed, message }: { failed: boolean; message?: stri
 
 function AgentStatus({ loading, failed, label = "平台已接入" }: { loading: boolean; failed: boolean; label?: string }) {
   const text = loading ? "正在连接" : failed ? "待连接" : label;
-  const color = loading ? "text-[#b27619]" : failed ? "text-[#a36a1b]" : "text-[#13876d]";
+  const color = loading ? "text-[var(--theme-warning)]" : failed ? "text-[var(--theme-warning)]" : "text-[var(--theme-success)]";
   return (
     <span className={`hidden items-center gap-1.5 text-xs font-medium sm:flex ${color}`}>
-      <span className={`size-2 rounded-full ${loading ? "bg-[#e3a534]" : failed ? "bg-[#e3a534]" : "bg-[#2eb88a]"}`} />
+      <span className={`size-2 rounded-full ${loading ? "bg-[var(--theme-warning)]" : failed ? "bg-[var(--theme-warning)]" : "bg-[var(--theme-success)]"}`} />
       {text}
     </span>
   );
@@ -136,16 +136,16 @@ function MessageBubble({ message }: { message: Message }) {
   const user = message.role === "user";
   return (
     <div className={`flex gap-3 ${user ? "flex-row-reverse" : ""}`}>
-      <span className={`flex size-8 shrink-0 items-center justify-center rounded-full ${user ? "bg-[#dcecff] text-[#3b6ea8]" : "bg-[#e6f6f1] text-[#168c73]"}`}>
+      <span className={`flex size-8 shrink-0 items-center justify-center rounded-full ${user ? "bg-[var(--theme-bg-sidebar)] text-[var(--theme-primary)]" : "bg-[var(--theme-bg-sidebar)] text-[var(--theme-primary)]"}`}>
         {user ? <MessageCircle size={16} /> : <BookOpen size={16} />}
       </span>
       <div className={`max-w-[min(760px,85%)] ${user ? "items-end" : "items-start"} flex flex-col gap-1`}>
-        <span className="text-[11px] text-[#8395a6]">{user ? "您" : "SOP 问询助手"}</span>
-        <div className={`whitespace-pre-wrap rounded-lg px-4 py-3 text-sm leading-6 ${user ? "bg-[#2f7edb] text-white" : "border border-[#e0e8ee] bg-white text-[#304457]"}`}>
+        <span className="text-[11px] text-[var(--theme-text-secondary)]">{user ? "您" : "SOP 问询助手"}</span>
+        <div className={`whitespace-pre-wrap rounded-lg px-4 py-3 text-sm leading-6 ${user ? "bg-[var(--theme-primary)] text-[var(--theme-primary-foreground)]" : "border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] text-[var(--theme-text)]"}`}>
           {message.content || "正在生成回答…"}
           {message.isStreaming && <Loader2 size={14} className="ml-2 inline animate-spin" />}
         </div>
-        <span className="text-[11px] text-[#9aa9b6]">{formatTime(message.timestamp)}</span>
+        <span className="text-[11px] text-[var(--theme-text-secondary)]">{formatTime(message.timestamp)}</span>
       </div>
     </div>
   );
@@ -269,20 +269,20 @@ export function KnowledgeBaseApplication({ config = getSopRagflowConfig() }: { c
     >
       <ConnectionNotice
         failed={!configured}
-        message="公司知识库访问配置未提供，请配置 VITE_RAGFLOW_SOP_SHARE_URL。"
+        message="公司知识库暂未接入，请联系管理员配置后使用。"
       />
       <div className="grid min-h-0 gap-5 lg:grid-cols-[minmax(0,1fr)_300px]">
-        <section className="flex h-[calc(100dvh-150px)] min-h-[420px] flex-col overflow-hidden rounded-lg border border-[#dce5ed] bg-white shadow-[0_2px_8px_rgba(31,58,80,0.04)]">
-          <div className="shrink-0 flex items-center justify-between border-b border-[#edf1f4] px-5 py-4">
+        <section className="flex h-[calc(100dvh-150px)] min-h-[420px] flex-col overflow-hidden rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] shadow-[0_2px_8px_rgba(31,58,80,0.04)]">
+          <div className="shrink-0 flex items-center justify-between border-b border-[var(--theme-border)] px-5 py-4">
             <div>
-              <h2 className="text-sm font-bold text-[#1b344b]">问询对话</h2>
-              <p className="mt-1 text-xs text-[#8294a5]">回答将基于已授权的公司知识库内容</p>
+              <h2 className="text-sm font-bold text-[var(--theme-text)]">问询对话</h2>
+              <p className="mt-1 text-xs text-[var(--theme-text-secondary)]">回答将基于已授权的公司知识库内容</p>
             </div>
             <Button type="text"
               htmlType="button"
               onClick={clearMessages}
               disabled={messages.length === 0 || isLoading}
-              className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs text-[#72869a] hover:bg-[#f2f6f9] disabled:cursor-not-allowed disabled:opacity-40"
+              className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)] disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Trash2 size={14} /> 清空
             </Button>
@@ -290,18 +290,19 @@ export function KnowledgeBaseApplication({ config = getSopRagflowConfig() }: { c
           <div className="min-h-0 flex-1 overflow-y-auto px-5 py-6 sm:px-8">
             {messages.length === 0 ? (
               <div className="mx-auto flex max-w-[680px] flex-col items-center pt-12 text-center sm:pt-20">
-                <span className="flex size-16 items-center justify-center rounded-full bg-[#e6f6f1] text-[#168c73]"><Sparkles size={28} /></span>
-                <h2 className="mt-5 text-xl font-bold text-[#17334b]">您好，我是 SOP 问询助手</h2>
-                <p className="mt-2 max-w-[520px] text-sm leading-6 text-[#718598]">我已接入公司知识库，可以帮助您查询制度、审批流程、操作指引和规范要求。</p>
+                <span className="flex size-16 items-center justify-center rounded-full bg-[var(--theme-bg-sidebar)] text-[var(--theme-primary)]"><Sparkles size={28} /></span>
+                <h2 className="mt-5 text-xl font-bold text-[var(--theme-text)]">您好，我是 SOP 问询助手</h2>
+                <p className="mt-2 max-w-[520px] text-sm leading-6 text-[var(--theme-text-secondary)]">我已接入公司知识库，可以帮助您查询制度、审批流程、操作指引和规范要求。</p>
                 <div className="mt-8 grid w-full gap-2 sm:grid-cols-2">
                   {SOP_SUGGESTIONS.map((suggestion) => (
                     <Button type="text"
                       key={suggestion}
                       htmlType="button"
                       onClick={() => setDraft(suggestion)}
-                      className="flex min-h-12 items-center gap-2 rounded-lg border border-[#dfe8ee] px-3 text-left text-xs leading-5 text-[#49657c] transition-colors hover:border-[#8fc9c3] hover:bg-[#f2fbf8]"
+                      icon={<MessageCircle size={15} />}
+                      style={{ height: "auto", minHeight: 48, justifyContent: "flex-start", whiteSpace: "normal", textAlign: "left" }}
+                      className="rounded-lg border border-[var(--theme-border)] px-3 text-xs leading-5"
                     >
-                      <MessageCircle size={15} className="shrink-0 text-[#26a58c]" />
                       {suggestion}
                     </Button>
                   ))}
@@ -313,9 +314,9 @@ export function KnowledgeBaseApplication({ config = getSopRagflowConfig() }: { c
               </div>
             )}
           </div>
-          <form onSubmit={submit} className="shrink-0 border-t border-[#edf1f4] bg-[#fbfcfd] p-4 sm:p-5">
-            {localError && <p className="mb-2 text-xs text-[#c35b50]">{localError}</p>}
-            <div className="flex items-end gap-2 rounded-lg border border-[#d4e0e8] bg-white p-2 focus-within:border-[#55aaa0] focus-within:ring-2 focus-within:ring-[#d9f0ed]">
+          <form onSubmit={submit} className="shrink-0 border-t border-[var(--theme-border)] bg-[var(--theme-workbench-canvas)] p-4 sm:p-5">
+            {localError && <p className="mb-2 text-xs text-[var(--theme-danger)]">{localError}</p>}
+            <div className="flex items-end gap-2 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-2 focus-within:border-[var(--theme-primary)] focus-within:ring-2 focus-within:ring-[var(--theme-border)]">
               <TextArea
                 value={draft}
                 onChange={(event) => setDraft(event.target.value.slice(0, 1000))}
@@ -340,15 +341,15 @@ export function KnowledgeBaseApplication({ config = getSopRagflowConfig() }: { c
                 title="发送问题"
               />
             </div>
-            <p className="mt-2 text-[11px] text-[#9aa9b6]">Enter 发送，Shift + Enter 换行</p>
+            <p className="mt-2 text-[11px] text-[var(--theme-text-secondary)]">Enter 发送，Shift + Enter 换行</p>
           </form>
         </section>
-        <aside className="h-fit rounded-lg border border-[#dce5ed] bg-white p-5 shadow-[0_2px_8px_rgba(31,58,80,0.04)]">
-          <div className="flex items-center gap-2 text-sm font-bold text-[#1b344b]"><ShieldCheck size={17} className="text-[#238f85]" /> 使用说明</div>
-          <div className="mt-4 space-y-4 text-xs leading-5 text-[#718598]">
+        <aside className="h-fit rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-5 shadow-[0_2px_8px_rgba(31,58,80,0.04)]">
+          <div className="flex items-center gap-2 text-sm font-bold text-[var(--theme-text)]"><ShieldCheck size={17} className="text-[var(--theme-primary)]" /> 使用说明</div>
+          <div className="mt-4 space-y-4 text-xs leading-5 text-[var(--theme-text-secondary)]">
             <p>请输入具体的制度、流程或审批问题，助手会返回答案和相关依据。</p>
             <p>回答仅使用您当前账号有权访问的知识库内容。</p>
-            <div className="rounded-md bg-[#f2f8f8] p-3 text-[#4f7075]">当前绑定：公司 SOP 知识库</div>
+            <div className="rounded-md bg-[var(--theme-bg-sidebar)] p-3 text-[var(--theme-text-secondary)]">当前绑定：公司 SOP 知识库</div>
           </div>
         </aside>
       </div>
@@ -1258,7 +1259,6 @@ function useWordReviewController(workId: string, tenantId: string) {
 
   const cancelTask = async (task: WordReviewTask) => {
     if (!task || !ownsTask(task.localId) || !["queued", "running"].includes(task.status)) return;
-    if (!window.confirm("确认中断该任务？已进入执行中的任务会在服务端可中断点停止。")) return;
     cancelRequestedRef.current.add(task.localId);
     updateTask(task.localId, { latestProgress: task.taskId ? "正在中断任务…" : "等待服务端任务编号，随后中断任务" });
     if (!task.taskId) return;
@@ -1395,6 +1395,8 @@ function WordReviewApplication() {
     setHistoryPage,
   } = useWordReviewController(workId, tenantId);
   const [activeTab, setActiveTab] = useState<"current" | "history">("current");
+  const [cancelTargetId, setCancelTargetId] = useState<string | null>(null);
+  const cancelTarget = tasks.find((task) => task.localId === cancelTargetId && ["queued", "running"].includes(task.status));
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploading = tasks.some((task) => task.status === "uploading");
   const isLoading = tasks.some((task) => ["queued", "running"].includes(task.status));
@@ -1473,7 +1475,7 @@ function WordReviewApplication() {
 
         <section className="review-workbench">
           <div className="upload-panel">
-            <div className="panel-header">
+            <div className="review-panel-header">
               <div>
                 <h2>新建审核任务</h2>
                 <p>上传需要审核的 Word 文档</p>
@@ -1570,7 +1572,7 @@ function WordReviewApplication() {
           </div>
 
           <TabsRoot className="task-panel" value={activeTab} onValueChange={(value) => setActiveTab(value as typeof activeTab)}>
-            <div className="panel-header">
+            <div className="review-panel-header">
               <div>
                 <h2>处理记录</h2>
                 <span className="panel-subtitle">共 {tasks.length} 条审核记录</span>
@@ -1640,7 +1642,7 @@ function WordReviewApplication() {
                       <div className="task-actions">
                         {task.status === "ready" && <Button type="primary" size="small" htmlType="button" onClick={() => void runReview(task)}><Play size={13} />开始审核</Button>}
                         {(["failed", "timeout"].includes(task.status) && task.fileId) && <Button type="default" size="small" htmlType="button" onClick={() => void runReview(task)}><RotateCcw size={13} />重试</Button>}
-                        {["queued", "running"].includes(task.status) && <Button type="default" size="small" htmlType="button" onClick={() => void cancelTask(task)}><X size={13} />中断任务</Button>}
+                        {["queued", "running"].includes(task.status) && <Button type="default" size="small" htmlType="button" onClick={() => setCancelTargetId(task.localId)}><X size={13} />中断任务</Button>}
                         <Button type="default" size="small" htmlType="button" onClick={() => removeTask(task)} disabled={["uploading", "queued", "running"].includes(task.status)}><X size={13} />移除</Button>
                       </div>
                     </article>
@@ -1700,6 +1702,17 @@ function WordReviewApplication() {
             </TabsPanel>
           </TabsRoot>
         </section>
+        <ConfirmDialog
+          isOpen={Boolean(cancelTarget)}
+          title="中断审核任务"
+          message="确认中断该任务？已进入执行中的任务会在服务端可中断点停止。"
+          confirmText="确认中断"
+          onCancel={() => setCancelTargetId(null)}
+          onConfirm={() => {
+            setCancelTargetId(null);
+            if (cancelTarget) void cancelTask(cancelTarget);
+          }}
+        />
       </div>
     </AppFrame>
   );
