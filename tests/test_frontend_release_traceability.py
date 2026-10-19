@@ -12,6 +12,7 @@ from tools.frontend_release_traceability import (
     WORKFLOW_COMMAND_JOBS,
     WORKFLOW_STEP_COMMANDS,
     WORKFLOW_STEP_JOBS,
+    WORKFLOW_TEST_STEP_COMMANDS,
     _validate_workflow_contract_mappings,
     build_frontend_release_traceability,
     render_frontend_release_traceability_markdown,
@@ -49,7 +50,7 @@ EXPECTED_WORKFLOW_PYTEST = (
     "python -m pytest tests/test_deploy_frontend_static.py "
     "tests/test_frontend_release_traceability.py "
     "tests/test_frontend_packaged_runtime_smoke.py "
-    "tests/test_frontend_ci_workflow.py "
+    "tests/test_frontend_ci_workflow.py tests/test_frontend_ci_shards.py "
     "-q --basetemp .pytest-tmp"
 )
 EXPECTED_LINUX_WORKFLOW_PYTEST = (
@@ -114,7 +115,10 @@ def test_frontend_release_traceability_records_ci_contract_without_local_paths()
     assert trace["workflow"]["path"] == ".github/workflows/ai-platform-frontend.yml"
     assert trace["workflow"]["status"] == "present"
     assert len(trace["workflow"]["sha256"]) == 64
-    assert "corepack pnpm run ci:verify" in trace["workflow"]["enforced_commands"]
+    assert "corepack pnpm run lint" in trace["workflow"]["enforced_commands"]
+    assert "corepack pnpm run build" in trace["workflow"]["enforced_commands"]
+    assert "python tools/frontend_projection_audit.py --format json" in trace["workflow"]["enforced_commands"]
+    assert all(command in trace["workflow"]["enforced_commands"] for command in WORKFLOW_TEST_STEP_COMMANDS.values())
     assert EXPECTED_PYTHON_DEPENDENCIES in trace["workflow"]["enforced_commands"]
     assert EXPECTED_WORKFLOW_PYTEST in trace["workflow"]["enforced_commands"]
     assert "tests/test_governance_readiness.py" not in EXPECTED_WORKFLOW_PYTEST
@@ -122,8 +126,11 @@ def test_frontend_release_traceability_records_ci_contract_without_local_paths()
     assert "python tools/frontend_release_traceability.py --format json" in trace["workflow"]["enforced_commands"]
     assert "python tools/frontend_packaged_runtime_smoke.py --format json" in trace["workflow"]["enforced_commands"]
     assert trace["workflow"]["enforced_step_commands"] == {
+        "Verify frontend lint and build": "corepack pnpm run lint && corepack pnpm run build",
         "Verify static frontend Python contracts": EXPECTED_WORKFLOW_PYTEST,
         "Verify static frontend deploy helper": "python tools/deploy_frontend_static.py --help",
+        "Audit frontend projections": "python tools/frontend_projection_audit.py --format json",
+        **WORKFLOW_TEST_STEP_COMMANDS,
         "Install Linux contract test dependencies": "python tools/frontend_ci_dependencies.py --subset linux-contracts",
         "Verify Linux frontend healthcheck contract": EXPECTED_LINUX_WORKFLOW_PYTEST,
     }
@@ -481,30 +488,27 @@ def test_frontend_release_traceability_flags_workflow_missing_enforced_commands(
         "frontend_workflow_enforced_commands_missing",
         "frontend_workflow_step_contract_missing",
     ]
-    assert trace["workflow"]["missing_commands"] == [
-        "corepack pnpm install --frozen-lockfile",
-        EXPECTED_PYTHON_DEPENDENCIES,
-        EXPECTED_WORKFLOW_PYTEST,
-        EXPECTED_LINUX_WORKFLOW_PYTEST,
-        "corepack pnpm run ci:verify",
-        "python tools/frontend_release_traceability.py --format json",
-        "python tools/deploy_frontend_static.py --help",
-        "python tools/frontend_packaged_runtime_smoke.py --format json",
-        "docker build",
-        '--build-arg AI_PLATFORM_BUILD_COMMIT="$IMAGE_SOURCE_COMMIT"',
-        "--build-arg AI_PLATFORM_BUILD_DIRTY=false",
-        '--build-arg AI_PLATFORM_BUILD_REPOSITORY="$IMAGE_SOURCE_REPOSITORY"',
-        "-f frontend/web/Dockerfile",
-        "docker run --rm --entrypoint cat",
-        "ai-platform-build-provenance.json",
-    ]
-    assert trace["workflow"]["missing_step_commands"] == [
-        "Verify static frontend Python contracts",
-        "Verify static frontend deploy helper",
-        "Install Linux contract test dependencies",
-        "Verify Linux frontend healthcheck contract",
-    ]
+    assert trace["workflow"]["missing_commands"] == WORKFLOW_COMMANDS
+    assert trace["workflow"]["missing_step_commands"] == list(WORKFLOW_STEP_COMMANDS)
     assert trace["workflow"]["missing_path_filters"] == []
+
+
+@pytest.mark.parametrize("step_name", [
+    "Verify frontend lint and build", "Audit frontend projections",
+    *WORKFLOW_TEST_STEP_COMMANDS,
+])
+def test_frontend_release_traceability_rejects_missing_parallel_checks(tmp_path, step_name):
+    write_frontend_package(tmp_path / "frontend/web")
+    source = (Path(__file__).resolve().parents[1] / ".github/workflows/ai-platform-frontend.yml").read_text(encoding="utf-8")
+    command = WORKFLOW_STEP_COMMANDS[step_name]
+    assert source.count("        run: " + command) == 1
+    source = source.replace("        run: " + command, "        run: echo omitted")
+    path = tmp_path / ".github/workflows/ai-platform-frontend.yml"
+    path.parent.mkdir(parents=True)
+    path.write_text(source, encoding="utf-8")
+    trace = build_frontend_release_traceability(repo_root=tmp_path)
+    assert step_name in trace["workflow"]["missing_step_commands"]
+    assert "frontend_workflow_step_contract_missing" in trace["workflow"]["blockers"]
 
 
 def test_frontend_release_traceability_rejects_commands_in_the_wrong_job_or_comments(
