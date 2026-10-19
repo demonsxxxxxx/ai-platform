@@ -8,6 +8,8 @@ from typing import Any
 
 from psycopg import AsyncConnection
 
+from app.runs.domain.cost_observability import projected_estimated_cost_minor
+
 from app.runs.infrastructure.admin_queries_postgres import get_admin_run_monitor_report
 from app.runs.domain.run_performance import merge_browser_latency
 from app.runs.domain.diagnostics import (
@@ -188,6 +190,9 @@ class PostgresRunDiagnosticsRepository:
                    r.finished_at, r.error_code, r.result_json, r.agent_id,
                    r.execution_kind, r.model_id, r.model_value,
                    r.model_gateway_revision, r.admitted_agent_profile_revision,
+                   r.admitted_agent_profile_hash, r.max_input_tokens, r.max_output_tokens,
+                   r.input_token_count, r.output_token_count, r.total_token_count,
+                   r.estimated_cost_minor, r.copied_from_run_id,
                    d.diagnostic_id, d.schema_version as diagnostic_schema_version,
                    d.revision, d.payload_json, d.created_at as diagnostic_created_at,
                    d.updated_at as diagnostic_updated_at
@@ -243,11 +248,18 @@ class PostgresRunDiagnosticsRepository:
                     "model_value",
                     "model_gateway_revision",
                     "admitted_agent_profile_revision",
+                    "admitted_agent_profile_hash", "max_input_tokens", "max_output_tokens", "copied_from_run_id",
                 )
             },
             "result_json": row.get("result_json"),
             "diagnostic": diagnostic,
             "attempts": attempts,
+            "usage": {
+                "input_tokens": row.get("input_token_count"),
+                "output_tokens": row.get("output_token_count"),
+                "total_tokens": row.get("total_token_count"),
+                "estimated_cost_minor": projected_estimated_cost_minor(row.get("estimated_cost_minor"), row.get("result_json")),
+            },
         }
 
     async def get_admin_monitor_metadata(
@@ -323,26 +335,48 @@ class PostgresRunDiagnosticsRepository:
         self, conn: AsyncConnection, *, tenant_id: str, from_at: datetime, to_at: datetime,
         user_id: str | None = None, agent_id: str | None = None,
         model_id: str | None = None, model_gateway_revision: int | None = None,
-        status: str | None = None, comparison_run_id: str | None = None,
+        status: str | None = None,
         order: str = "slow", limit: int = 50,
     ) -> dict[str, Any]:
         return await get_admin_run_monitor_report(
             conn, tenant_id=tenant_id, from_at=from_at, to_at=to_at,
             user_id=user_id, agent_id=agent_id, model_id=model_id,
             model_gateway_revision=model_gateway_revision, status=status,
-            comparison_run_id=comparison_run_id, order=order, limit=limit,
+            order=order, limit=limit,
         )
+
+    async def get_execution_debug_binding(self, conn: AsyncConnection, *, run_id: str, attempt_id: str) -> dict[str, Any] | None:
+        cursor = await conn.execute(
+            """select r.tenant_id, lease.id as lease_id
+               from runs r join run_attempts a on a.tenant_id=r.tenant_id and a.run_id=r.id
+               join sandbox_leases lease on lease.tenant_id=r.tenant_id and lease.run_id=r.id and lease.attempt_id=a.id
+               where r.id=%s and a.id=%s and r.status in ('queued','running') and a.status in ('running','cancel_requested')
+                 and lease.lease_payload_json->>'attempt_id'=a.id
+                 and lease.lease_payload_json->>'owner_generation'=a.owner_generation::text
+                 and lease.status='active' and lease.released_at is null and lease.expires_at>now()
+               order by lease.created_at desc limit 1""", (run_id, attempt_id),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def get_admin_debug_skills(self, conn: AsyncConnection, *, tenant_id: str, run_id: str) -> list[dict[str, Any]]:
+        cursor = await conn.execute(
+            """select skill_id, skill_version, content_hash, dependency_ids
+               from run_skill_snapshots where tenant_id = %s and run_id = %s
+               order by skill_id limit 101""", (tenant_id, run_id),
+        )
+        return list(await cursor.fetchall())
 
     async def get_admin_investigation_events(
         self, conn: AsyncConnection, *, tenant_id: str, run_id: str,
     ) -> dict[str, Any]:
         cursor = await conn.execute(
             """
-            select id as event_id, event_type as type, sequence, created_at,
-                   visible_to_user, payload_json as payload
+            select id, id as event_id, event_type, event_type as type, stage, sequence, created_at,
+                   visible_to_user, payload_json, payload_json as payload
             from run_events
             where tenant_id = %s and run_id = %s and visible_to_user is true
-              and event_type in ('tool.started', 'tool.completed', 'tool.failed', 'tool.denied', 'model.completed')
+              and event_type in ('tool.started', 'tool.completed', 'tool.failed', 'tool.denied', 'model.completed', 'agent.progress', 'run.failed', 'message.completed')
             order by sequence desc limit 501
             """, (tenant_id, run_id),
         )

@@ -114,8 +114,10 @@ export function MCPServerForm({
   const [integrationKind, setIntegrationKind] = useState<"mcp" | "enterprise_gateway">(server?.integration_kind ?? "mcp");
 
   // HTTP fields
-  const [url, setUrl] = useState("");
-  const [headers, setHeaders] = useState<KeyValuePair[]>([]);
+  const [url, setUrl] = useState(server?.url ?? "");
+  const [headers, setHeaders] = useState<KeyValuePair[]>(() =>
+    Object.entries(server?.headers ?? {}).map(([key, value]) => ({ id: uuid(), key, value })),
+  );
 
   const [allowedRoles, setAllowedRoles] = useState<string[]>(
     server?.allowed_roles ?? [],
@@ -136,8 +138,8 @@ export function MCPServerForm({
       setTransport(server.transport === "sandbox" ? defaultTransport : server.transport);
       setEnabled(server.enabled);
       setIntegrationKind(server.integration_kind ?? "mcp");
-      setUrl("");
-      setHeaders([]);
+      setUrl(server.url ?? "");
+      setHeaders(Object.entries(server.headers ?? {}).map(([key, value]) => ({ id: uuid(), key, value })));
       setAllowedRoles(server.allowed_roles ?? []);
       setAllowedDepartmentsInput(server.allowed_departments?.join(", ") ?? "");
       setRoleQuotas(toQuotaDrafts(server.role_quotas ?? {}));
@@ -320,6 +322,7 @@ export function MCPServerForm({
       <label className="group flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 transition-colors hover:bg-[var(--theme-primary-light)]/40">
         <Checkbox
           id="enabled"
+          backgroundColor="var(--theme-success)"
           checked={enabled}
           onChange={(checked) => setEnabled(checked)}
         />
@@ -472,10 +475,10 @@ export function MCPServerForm({
                   <Button type="text"
                     htmlType="button"
                     onClick={() => removeHeader(header.id)}
-                    className="btn-icon hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/30 dark:hover:text-red-400"
-                  >
-                    <Trash2 size={16} />
-                  </Button>
+                    className="hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/30 dark:hover:text-red-400"
+                    aria-label={t("common.delete")}
+                    icon={<Trash2 size={16} />}
+                  />
                 </div>
               ))}
               {headers.length === 0 && (

@@ -43,7 +43,7 @@ test("market keeps one, two, and three cards responsive while resolving durable 
   assert.doesNotMatch(source, /找到 \{visibleProfiles\.length\} 位专家/);
   assert.match(source, /data-agent-market-detail/);
   assert.match(source, /data-agent-market-start-chat/);
-  assert.match(source, /企业已发布/);
+  assert.doesNotMatch(source, /企业已发布/);
   assert.match(source, /已完成任务/);
   assert.match(source, /已发布的 Skill Set/);
   assert.match(source, /selectPublishedMarketProfile/);

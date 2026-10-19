@@ -405,16 +405,30 @@ test("rendered Marketplace opens a productized bare workspace without creating a
     });
     assert.equal(currentPath, "/agent-market?q=%E8%B4%A2%E5%8A%A1&tag=%E8%B4%A2%E5%8A%A1");
     assert.equal(customerServiceTag.getAttribute("aria-pressed"), "false");
+    const gridView = container.querySelector('[aria-label="网格视图"]');
     const listView = container.querySelector('[aria-label="列表视图"]');
+    assert.ok(gridView);
     assert.ok(listView);
+    assert.equal(gridView.getAttribute("aria-pressed"), "true");
+    assert.equal(listView.getAttribute("aria-pressed"), "false");
     await React.act(async () => {
       listView.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
       await Promise.resolve();
     });
     assert.equal(listView.getAttribute("aria-pressed"), "true");
+    assert.equal(gridView.getAttribute("aria-pressed"), "false");
+    assert.doesNotMatch(container.textContent ?? "", /企业已发布/);
     const marketCardClassName = container.querySelector("[data-agent-market-card]")?.getAttribute("class") ?? "";
     assert.match(marketCardClassName, /flex-col/);
     assert.match(marketCardClassName, /sm:flex-row/);
+    await React.act(async () => {
+      gridView.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      await Promise.resolve();
+    });
+    assert.equal(gridView.getAttribute("aria-pressed"), "true");
+    assert.equal(listView.getAttribute("aria-pressed"), "false");
+    assert.equal(container.querySelectorAll("[data-agent-market-card]").length, 1);
+    assert.match(container.querySelector("[data-agent-market-catalog]")?.className ?? "", /\bgrid\b/);
     const sortGroup = container.querySelector('[data-agent-market-sort]');
     assert.ok(sortGroup);
     assert.equal(sortGroup.querySelectorAll("button")[0].textContent, "我的收藏");
@@ -504,7 +518,7 @@ test("rendered Marketplace opens a productized bare workspace without creating a
     );
     assert.ok(container.querySelector("[data-agent-market-detail]"));
     assert.match((container.textContent ?? ""), /核对报销材料/);
-    assert.match((container.textContent ?? ""), /企业已发布/);
+    assert.doesNotMatch((container.textContent ?? ""), /企业已发布/);
     assert.doesNotMatch((container.textContent ?? ""), /版本 2/);
     assert.match((container.textContent ?? ""), /已发布的 Skill Set/);
     assert.doesNotMatch(

@@ -1,4 +1,8 @@
 import asyncio
+import base64
+import hashlib
+import json
+from contextlib import asynccontextmanager
 import gzip
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -12,6 +16,9 @@ from app.mcp.domain.errors import McpToolDiscoveryError
 from app.mcp.infrastructure import client, catalog
 from app.mcp.infrastructure import runtime as mcp_runtime
 from app.mcp.infrastructure.runtime import McpRuntimeContextError
+from app.runs.api import (
+    WorkerDispatchBindingService, WorkerDispatchContextPorts, WorkerDispatchExecutionPorts,
+)
 from tests.support.mcp_protocol_peers import RAW_TOOL, local_mcp_peers
 from tests.test_claude_mcp_registration import allow_local_peer, subject
 
@@ -199,7 +206,7 @@ async def test_runtime_missing_target_or_jwt_only_removes_optional_external_subj
     )
 
     class MissingJwt:
-        async def get(self, _principal):
+        async def get_with_subject(self, _principal):
             raise McpRuntimeContextError("mcp_principal_jwt_missing", status_code=401)
 
     monkeypatch.setattr(mcp_runtime, "get_mcp_principal_jwt_store", lambda: MissingJwt())
@@ -234,7 +241,7 @@ async def test_runtime_does_not_hide_database_or_corrupt_credential_failures(mon
         )
 
     class CorruptJwt:
-        async def get(self, _principal):
+        async def get_with_subject(self, _principal):
             raise McpRuntimeContextError("mcp_principal_jwt_corrupt", status_code=503)
 
     monkeypatch.setattr(mcp_runtime, "get_mcp_principal_jwt_store", lambda: CorruptJwt())
@@ -303,3 +310,248 @@ async def test_mcp_revoked_execution_credential_stops_before_tool_dispatch(monke
                     revoked = True
                     await session.call_tool(RAW_TOOL, {"query": "synthetic"})
         assert peer.calls == []
+
+
+# Credential attachment snapshot and Worker pre-dispatch regressions.
+@dataclass(frozen=True)
+class Payload:
+    input: dict
+    owner_generation: int = 0
+
+
+@pytest.fixture
+def credential_case(monkeypatch):
+    settings = SimpleNamespace(mcp_encryption_keys_json=json.dumps({'current': '01' * 32}),
+                               mcp_encryption_current_key_id='current')
+    monkeypatch.setattr(mcp_runtime, '_settings_provider', lambda: settings)
+    principal = SimpleNamespace(tenant_id='tenant', user_id='user')
+    store = mcp_runtime.McpPrincipalJwtStore(clock=lambda: 1000)
+    monkeypatch.setattr(mcp_runtime, '_DEFAULT_PRINCIPAL_JWT_STORE', store)
+
+    def token(exp, tag='synthetic'):
+        return 'e30.' + base64.urlsafe_b64encode(json.dumps({'exp': exp}).encode()).decode().rstrip('=') + '.' + tag
+
+    jwt = token(2000)
+    _, envelope = store.prepare(principal, jwt)
+    builtin = {'identity': 'mcp__ai-platform-context__lookup', 'mcp_server': 'ai-platform-context'}
+    external = {'identity': 'mcp__gateway__tool', 'mcp_server': 'gateway'}
+    payload = Payload({'_runtime_tool_policy_subjects': [external, builtin, {'identity': 'builtin'}]})
+    server = mcp_runtime.seal_mcp_server_credentials(tenant_id='tenant', server_id='gateway',
+                                               endpoint='https://example.invalid/mcp', static_headers={})
+
+    async def target(*args, **kwargs):
+        return {'transport': 'streamable_http', 'credential_envelope': server}
+
+    monkeypatch.setattr(mcp_runtime.mcp_postgres, 'get_mcp_server_runtime_target', target)
+
+    class Redis:
+        def __init__(self, values):
+            self.values = iter(values)
+            self.reads = self.closed = 0
+        async def get(self, key):
+            self.reads += 1
+            value = next(self.values)
+            if isinstance(value, Exception):
+                raise value
+            return value
+        async def aclose(self):
+            self.closed += 1
+
+    def reads(*values):
+        redis = Redis(values)
+        monkeypatch.setattr(mcp_runtime, '_redis_provider', lambda: redis)
+        return redis
+
+    def record(**updates):
+        values = dict(tenant_id='tenant', user_id='user', jwt=jwt, jwt_exp=2000)
+        values.update(updates)
+        return mcp_runtime._seal_principal_jwt(mcp_runtime._PrincipalJwtRecord(**values))
+
+    return SimpleNamespace(principal=principal, store=store, jwt=jwt, envelope=envelope,
+                           builtin=builtin, payload=payload, reads=reads, record=record, token=token)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failure', ['missing', 'expired', 'unavailable'])
+async def test_optional_credential_initial_failure_drops_only_external(credential_case, failure):
+    c = credential_case
+    value = {'missing': None, 'expired': c.record(jwt=c.token(900), jwt_exp=900),
+             'unavailable': OSError('synthetic unavailable')}[failure]
+    redis = c.reads(value)
+    result = await mcp_runtime.attach_mcp_server_configs(None, principal=c.principal, run_payload=c.payload)
+    assert result.input['_runtime_tool_policy_subjects'] == [c.builtin, {'identity': 'builtin'}]
+    assert redis.reads == redis.closed == 1
+    assert len(c.payload.input['_runtime_tool_policy_subjects']) == 3
+    # The required, per-dispatch credential API still raises rather than degrading.
+    c.reads(value)
+    with pytest.raises(mcp_runtime.McpRuntimeContextError, match='mcp_principal_jwt_' + failure):
+        await c.store.get(c.principal)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('next_value', ['missing', 'expired', 'unavailable', 'corrupt', 'different_login'])
+async def test_attachment_never_rereads_for_subject(credential_case, next_value):
+    c = credential_case
+    poison = {'missing': None, 'expired': c.record(jwt=c.token(900), jwt_exp=900),
+              'unavailable': OSError('synthetic unavailable'), 'corrupt': 'not-json',
+              'different_login': c.record(jwt=c.token(2000, 'other'))}[next_value]
+    redis = c.reads(c.envelope, poison)
+    result = await mcp_runtime.attach_mcp_server_configs(None, principal=c.principal, run_payload=c.payload)
+    config = result.input['_runtime_tool_policy_subjects'][0]['mcp_server_config']
+    assert config['credential_subject'] == {'tenant_id': 'tenant', 'user_id': 'user',
+        'legacy_jwt_id': hashlib.sha256(c.jwt.encode()).hexdigest()}
+    assert config['headers'][mcp_runtime.mcp_user_jwt_header('mcp')] == 'Bearer ' + c.jwt
+    assert redis.reads == redis.closed == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failure', ['missing', 'expired', 'unavailable', 'corrupt', 'configuration'])
+async def test_refresh_reread_preserves_optional_and_fail_closed_policy(credential_case, monkeypatch, failure):
+    c = credential_case
+    expired = c.record(jwt=c.token(900), jwt_exp=900, refresh_cookie='v2.synthetic',
+                       subject_epoch=1, refresh_expires_at=3000)
+    async def grant(cookie):
+        return {'principal': {'tenant_id': 'tenant', 'user_id': 'user'}, 'subject_epoch': 1}
+    async def refresh(*args, **kwargs):
+        if failure == 'configuration':
+            # Configuration failure at the actual read, not translated refresh adapter error.
+            monkeypatch.setattr(mcp_runtime, '_settings_provider', lambda: SimpleNamespace(
+                mcp_encryption_keys_json='', mcp_encryption_current_key_id='current'))
+    monkeypatch.setattr(mcp_runtime, '_grant_reader', grant)
+    monkeypatch.setattr(mcp_runtime, '_credential_refresher', refresh)
+    second = {'missing': None, 'expired': c.record(jwt=c.token(900), jwt_exp=900),
+              'unavailable': OSError('synthetic unavailable'), 'corrupt': 'not-json',
+              'configuration': c.envelope}[failure]
+    redis = c.reads(expired, second)
+    # Existing store contract classifies an invalid post-refresh JWT as corrupt.
+    if failure in {'expired', 'corrupt', 'configuration'}:
+        code = 'mcp_context_key_not_configured' if failure == 'configuration' else 'mcp_principal_jwt_corrupt'
+        with pytest.raises(mcp_runtime.McpRuntimeContextError, match=code):
+            await mcp_runtime.attach_mcp_server_configs(None, principal=c.principal, run_payload=c.payload)
+    else:
+        result = await mcp_runtime.attach_mcp_server_configs(None, principal=c.principal, run_payload=c.payload)
+        assert result.input['_runtime_tool_policy_subjects'] == [c.builtin, {'identity': 'builtin'}]
+    assert redis.reads == redis.closed == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failure', ['corrupt', 'configuration', 'tenant_mismatch'])
+async def test_initial_corruption_configuration_and_tenant_mismatch_fail(credential_case, monkeypatch, failure):
+    c = credential_case
+    value = c.envelope
+    if failure == 'corrupt':
+        value = 'not-json'
+    elif failure == 'tenant_mismatch':
+        value = c.record(tenant_id='other-tenant')
+    else:
+        monkeypatch.setattr(mcp_runtime, '_settings_provider', lambda: SimpleNamespace(
+            mcp_encryption_keys_json='', mcp_encryption_current_key_id='current'))
+    c.reads(value)
+    with pytest.raises(mcp_runtime.McpRuntimeContextError):
+        await mcp_runtime.attach_mcp_server_configs(None, principal=c.principal, run_payload=c.payload)
+
+
+@pytest.mark.asyncio
+async def test_refresh_subject_and_legacy_api_use_validated_record(credential_case, monkeypatch):
+    c = credential_case
+    refreshed = c.record(refresh_cookie='v2.synthetic', subject_epoch=2, refresh_expires_at=3000)
+    async def grant(cookie):
+        return {'principal': {'tenant_id': 'tenant', 'user_id': 'user'}, 'subject_epoch': 2}
+    monkeypatch.setattr(mcp_runtime, '_grant_reader', grant)
+    c.reads(refreshed)
+    jwt, subject = await c.store.get_with_subject(c.principal)
+    assert jwt == c.jwt
+    assert subject == {'tenant_id': 'tenant', 'user_id': 'user',
+                       'grant_id': hashlib.sha256(b'v2.synthetic').hexdigest(), 'subject_epoch': 2}
+    c.reads(refreshed)
+    assert await c.store.credential_subject(c.principal) == subject
+    c.reads(refreshed)
+    assert await c.store.get(SimpleNamespace(**subject)) == c.jwt
+    c.reads(refreshed)
+    with pytest.raises(mcp_runtime.McpRuntimeContextError, match='mcp_principal_jwt_missing'):
+        await c.store.get(SimpleNamespace(**{**subject, 'subject_epoch': 1}))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failure', ['missing', 'unavailable', 'corrupt', 'configuration', 'required'])
+async def test_worker_binding_optional_loss_vs_required_failure(credential_case, monkeypatch, failure):
+    c = credential_case
+    c.reads(None if failure == 'missing' else OSError('synthetic') if failure == 'unavailable'
+            else 'not-json' if failure == 'corrupt' else c.envelope)
+    if failure == 'configuration':
+        monkeypatch.setattr(mcp_runtime, '_settings_provider', lambda: SimpleNamespace(
+            mcp_encryption_keys_json='', mcp_encryption_current_key_id='current'))
+    events = []
+    @asynccontextmanager
+    async def transaction():
+        yield object()
+    async def fence(*args, **kwargs):
+        return 'ready'
+    async def materialize(*args, **kwargs):
+        return {'file_ids': [], 'context_snapshot_id': 'snapshot', 'context_snapshot': {},
+                'conversation_context': {}}, None
+    def compile_spec(**kwargs):
+        if failure == 'required':
+            raise ValueError('required capability denied')
+        return object()
+    async def event(*args, **kwargs):
+        events.append(kwargs['event_type'])
+    async def fail(*args, **kwargs):
+        events.append('fail')
+        return SimpleNamespace(payload=kwargs['payload'], outcome=SimpleNamespace(
+            status='failed', error_code=kwargs['error_code'], error_message='failed'))
+    class Attempt:
+        async def bind_execution_spec(self, *args):
+            events.append('bound')
+            return {'owner_generation': 7}
+    class Queue(SimpleNamespace):
+        def model_copy(self, *, update):
+            return Queue(**{**vars(self), **update})
+    service = WorkerDispatchBindingService(transaction_factory=transaction, dispatch_fence=fence,
+        compile_spec=compile_spec, context=WorkerDispatchContextPorts(materialize, lambda x: x, lambda x: {}),
+        execution=WorkerDispatchExecutionPorts(project_spec=lambda *a, **kw: c.payload,
+            attach_mcp=mcp_runtime.attach_mcp_server_configs, mcp_runtime_error=mcp_runtime.McpRuntimeContextError,
+            append_user_event=event, runtime_evidence=lambda **kw: {}, uses_runtime_sandbox=lambda *a, **kw: True,
+            create_runtime_lease=event, missing_attempt_error=RuntimeError), fail_pre_dispatch=fail)
+    result = await service.bind(payload=Queue(context_snapshot_id='snapshot', executor_type='synthetic'),
+        run_identity={'tenant_id': 'tenant', 'run_id': 'run'}, locked_run={}, trace_id='trace',
+        attempt_id='attempt', attempt_authority=Attempt(), capabilities=object(), principal=c.principal,
+        worker_id='worker', reconciliation=False)
+    if failure in {'missing', 'unavailable'}:
+        assert result.outcome is None
+        assert result.run_payload.input['_runtime_tool_policy_subjects'] == [c.builtin, {'identity': 'builtin'}]
+        assert events == ['bound', 'worker_started']
+    else:
+        assert result.outcome.status == 'failed'
+        assert events == ['fail']
+
+
+@pytest.mark.asyncio
+async def test_builtin_only_never_loads_credentials(credential_case):
+    c = credential_case
+    redis = c.reads(AssertionError('must not read'))
+    payload = Payload({'_runtime_tool_policy_subjects': [c.builtin]})
+    assert await mcp_runtime.attach_mcp_server_configs(None, principal=c.principal, run_payload=payload) is payload
+    assert redis.reads == redis.closed == 0
+
+
+@pytest.mark.asyncio
+async def test_refresh_pairs_new_token_and_subject_without_third_read(credential_case, monkeypatch):
+    c = credential_case
+    expired = c.record(jwt=c.token(900), jwt_exp=900, refresh_cookie='v2.synthetic',
+                       subject_epoch=1, refresh_expires_at=3000)
+    fresh_jwt = c.token(2000, 'refreshed')
+    fresh = c.record(jwt=fresh_jwt, refresh_cookie='v2.synthetic', subject_epoch=1, refresh_expires_at=3000)
+    async def grant(cookie):
+        return {'principal': {'tenant_id': 'tenant', 'user_id': 'user'}, 'subject_epoch': 1}
+    async def refresh(*args, **kwargs):
+        assert kwargs == {'expected_user': ('tenant', 'user'), 'expected_subject_epoch': 1}
+    monkeypatch.setattr(mcp_runtime, '_grant_reader', grant)
+    monkeypatch.setattr(mcp_runtime, '_credential_refresher', refresh)
+    redis = c.reads(expired, fresh, AssertionError('no third read'))
+    result = await mcp_runtime.attach_mcp_server_configs(None, principal=c.principal, run_payload=c.payload)
+    config = result.input['_runtime_tool_policy_subjects'][0]['mcp_server_config']
+    assert config['headers'][mcp_runtime.mcp_user_jwt_header('mcp')] == 'Bearer ' + fresh_jwt
+    assert config['credential_subject'] == {'tenant_id': 'tenant', 'user_id': 'user',
+        'grant_id': hashlib.sha256(b'v2.synthetic').hexdigest(), 'subject_epoch': 1}
+    assert redis.reads == redis.closed == 2
