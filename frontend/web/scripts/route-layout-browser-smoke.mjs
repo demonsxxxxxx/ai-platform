@@ -338,6 +338,33 @@ async function runCase(viewport, scenario) {
       })`,
       `${viewport.name}:${scenario.name}:required-controls`,
     );
+    let marketView = null;
+    if (scenario.name === "market") {
+      marketView = await browser.client.evaluate(`(() => {
+        const group = document.querySelector('[data-agent-market-view]');
+        return [...group.querySelectorAll('button')].map(button => {
+          const box = button.getBoundingClientRect();
+          const icon = button.querySelector('svg').getBoundingClientRect();
+          const style = getComputedStyle(button);
+          return { label: button.getAttribute('aria-label'), width: box.width, height: box.height,
+            iconWidth: icon.width, iconHeight: icon.height, paddingLeft: style.paddingLeft, paddingRight: style.paddingRight };
+        });
+      })()`);
+      if (marketView.length !== 2 || marketView.some(button => button.width < 32 || button.height < 32 || button.iconWidth < 15 || button.iconHeight < 15)) {
+        throw new Error(`market_view_toggle_size_failed:${JSON.stringify(marketView)}`);
+      }
+      await browser.client.evaluate(`document.querySelector('[aria-label="列表视图"]').click()`);
+      await browser.client.waitFor(`document.querySelector('[aria-label="列表视图"]').getAttribute('aria-pressed') === 'true' && document.querySelector('[data-agent-market-card]').classList.contains('sm:flex-row')`, "market:list-view");
+      await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-market-list`);
+      await browser.client.evaluate(`document.querySelector('[aria-label="网格视图"]').focus()`);
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: " ", code: "Space", windowsVirtualKeyCode: 32 });
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: " ", code: "Space", windowsVirtualKeyCode: 32 });
+      await browser.client.waitFor(`document.querySelector('[aria-label="网格视图"]').getAttribute('aria-pressed') === 'true' && document.querySelector('[data-agent-market-catalog]').classList.contains('grid')`, "market:grid-view-keyboard");
+    }
+    if (["market", "market-detail"].includes(scenario.name)) {
+      const retiredCopyPresent = await browser.client.evaluate("document.body.textContent.includes('企业已发布')");
+      if (retiredCopyPresent) throw new Error("market_retired_publication_badge_present");
+    }
     let pluginLayout = null;
     if (scenario.name === "plugins") {
       if (viewport.mobile) {
@@ -680,7 +707,7 @@ async function runCase(viewport, scenario) {
       }
     }
     const screenshot = await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-${scenario.name}`);
-    return { viewport: viewport.name, route: scenario.path, layout, reachable, responsiveLayout, modelLayout, avatarLayout, overlay, mcpFocus, loadingLayout, pluginLayout, screenshot };
+    return { viewport: viewport.name, route: scenario.path, layout, reachable, responsiveLayout, modelLayout, avatarLayout, overlay, mcpFocus, loadingLayout, pluginLayout, marketView, screenshot };
   } catch (error) {
     const focusDiagnostic = await browser.client.evaluate(`(() => ({ activeTag: document.activeElement?.tagName, activeLabel: document.activeElement?.getAttribute('aria-label'), activeTitle: document.activeElement?.getAttribute('title'), listboxes: [...document.querySelectorAll('[role=listbox]')].map(node => ({ visible: node.checkVisibility({ opacityProperty: true, visibilityProperty: true }), display: getComputedStyle(node).display, visibility: getComputedStyle(node).visibility, opacity: getComputedStyle(node).opacity, hidden: node.getAttribute('aria-hidden'), inert: Boolean(node.closest('[inert]')), ending: node.hasAttribute('data-ending-style') })), departmentExpanded: document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]')?.getAttribute('aria-expanded'), departmentTriggerFocused: document.activeElement === document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]') }))()`);
     console.error(JSON.stringify({ route: scenario.path, focusDiagnostic }));
