@@ -9,6 +9,8 @@ import {
   memo,
   type SetStateAction,
 } from "react";
+import { ComposerPrimitive, MessageNotSentError, useAui } from "@assistant-ui/react";
+import { usePlatformComposer } from "./assistant-ui/platformComposer";
 import { toast } from "@lobehub/ui/base-ui";
 import { useTranslation } from "react-i18next";
 import { ImageViewer } from "../common";
@@ -123,6 +125,8 @@ export const ChatInput = memo(function ChatInput({
   className,
 }: ChatInputProps) {
   const { t } = useTranslation();
+  const aui = useAui();
+  const { register: registerComposer } = usePlatformComposer();
   const localDraftSnapshotRef = useRef<ChatInputDraftSnapshot>({
     value: "",
     appliedInitialDraftKey: null,
@@ -149,6 +153,7 @@ export const ChatInput = memo(function ChatInput({
       draftScopeKey === draftScopeHandoffKey &&
       draftSnapshot.pendingScopeHandoff;
     if (scopeChanged) {
+      void aui.composer.reset();
       draftSnapshot.scopeKey = draftScopeKey;
       draftSnapshot.pendingScopeHandoff = false;
       if (!preserveFirstSubmission) {
@@ -161,15 +166,17 @@ export const ChatInput = memo(function ChatInput({
     const apply = (value: string) => {
       inputRef.current = value;
       setLocalInput(value);
+      aui.composer.setText(value);
     };
     draftSnapshot.apply = apply;
     if (inputRef.current !== draftSnapshot.value) {
       apply(draftSnapshot.value);
     }
+    aui.composer.setText(draftSnapshot.value);
     return () => {
       if (draftSnapshot.apply === apply) draftSnapshot.apply = undefined;
     };
-  }, [draftScopeHandoffKey, draftScopeKey, draftSnapshot]);
+  }, [aui, draftScopeHandoffKey, draftScopeKey, draftSnapshot]);
 
   const setInput = useCallback(
     (next: SetStateAction<string>) => {
@@ -314,23 +321,22 @@ export const ChatInput = memo(function ChatInput({
 
   const hasUploadingAttachment = attachments.some((a) => a.isUploading);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!canSend || hasUploadingAttachment) return;
-    if (!disableSlashCommands && handleComposerCommandSubmit(input)) return;
-    if (input.trim() && !isLoading && !disabled) {
-      const trimmed = input.trim();
+  const submitToPlatform = async (content: string) => {
+    if (!canSend || hasUploadingAttachment || isLoading || disabled) throw new MessageNotSentError();
+    if (content.trim()) {
+      const trimmed = content.trim();
+      const submittedRevision = draftSnapshot.revision;
       const selectedSkillSubmission = selectedSkillState
         ? prepareSelectedSkillSubmission(selectedSkillState, attachments)
         : { error: null, request: null };
       if (selectedSkillSubmission.error) {
         await onSelectedSkillRecoverable?.(selectedSkillSubmission.error);
+        if (draftSnapshot.apply && draftSnapshot.revision === submittedRevision) throw new MessageNotSentError();
         return;
       }
 
       const submissionToken = tryAcquireChatInputSubmissionLock(isSubmittingRef);
-      if (!submissionToken) return;
-      const submittedRevision = draftSnapshot.revision;
+      if (!submissionToken) throw new MessageNotSentError();
       const submittedSkillRevision = draftSnapshot.selectedSkillRevision;
       const submittedAttachmentIds = new Set(
         attachments.map((attachment) => attachment.id),
@@ -347,6 +353,8 @@ export const ChatInput = memo(function ChatInput({
         );
         if (outcome.status === "recoverable_error") {
           await onSelectedSkillRecoverable?.(outcome.code);
+          // Native restoration must not resurrect a newer, deliberately empty draft.
+          if (draftSnapshot.apply && draftSnapshot.revision === submittedRevision) throw new MessageNotSentError();
           return;
         }
         if (outcome.status === "accepted") {
@@ -366,6 +374,7 @@ export const ChatInput = memo(function ChatInput({
         }
       } finally {
         releaseChatInputSubmissionLock(isSubmittingRef, submissionToken);
+        if (draftSnapshot.apply) aui.composer.setText(draftSnapshot.value);
       }
     }
   };
@@ -420,7 +429,7 @@ export const ChatInput = memo(function ChatInput({
       } else if (isLoading) {
         return;
       } else {
-        handleSubmit(e);
+        textareaRef.current?.closest("form")?.requestSubmit();
       }
       return;
     }
@@ -480,6 +489,16 @@ export const ChatInput = memo(function ChatInput({
   );
   const canSubmit =
     hasContent && canSend && !isLoading && !hasUploadingAttachment;
+
+  useLayoutEffect(() => registerComposer({
+    send: submitToPlatform,
+    requestCancel: () => setStopConfirmOpen(true),
+    getText: () => draftSnapshot.value,
+    setText: (text) => setInput(text),
+    disabled: Boolean(disabled || !canSend),
+    sendDisabled: !canSend || isLoading || hasUploadingAttachment,
+    canCancel: Boolean(canStop && isLoading),
+  }));
 
   const upsertUnavailableCommandChip = useCallback(
     (command: ReturnType<typeof parseComposerCommand>) => {
@@ -884,8 +903,10 @@ export const ChatInput = memo(function ChatInput({
 
   return (
     <LibreChatComposerFrame>
-      <form
-        onSubmit={handleSubmit}
+      <ComposerPrimitive.Root
+        onSubmit={(event) => {
+          if (!canSubmit || (!disableSlashCommands && handleComposerCommandSubmit(input))) event.preventDefault();
+        }}
         className={
           className ?? "mx-auto max-w-[68rem] px-2"
         }
@@ -956,7 +977,13 @@ export const ChatInput = memo(function ChatInput({
 
             <LibreChatComposerRegion region="textarea" className="col-span-2">
               <div className="relative">
-                <LibreChatComposerTextarea
+                <ComposerPrimitive.Input
+                  asChild
+                  submitMode="none"
+                  cancelOnEscape={false}
+                  addAttachmentOnPaste={false}
+                  unstable_focusOnRunStart={false}
+                  unstable_focusOnThreadSwitched={false}
                   ref={textareaRef}
                   aria-label={t("chat.messageInput", "消息")}
                   value={input}
@@ -977,7 +1004,9 @@ export const ChatInput = memo(function ChatInput({
                 }
                 disabled={disabled || !canSend}
                 rows={1}
-                />
+                >
+                  <LibreChatComposerTextarea />
+                </ComposerPrimitive.Input>
               </div>
             </LibreChatComposerRegion>
 
@@ -1006,13 +1035,12 @@ export const ChatInput = memo(function ChatInput({
                 onFileCommandReady={(openFileCommand) => {
                   openFileCommandRef.current = openFileCommand;
                 }}
-                onStopClick={() => setStopConfirmOpen(true)}
                 onNoPermissionClick={() => setContactAdminOpen(true)}
               />
             </LibreChatComposerRegion>
           </LibreChatComposerBox>
         </div>
-      </form>
+      </ComposerPrimitive.Root>
 
       <ChatInputSelectors
         activePanel={activePanel}

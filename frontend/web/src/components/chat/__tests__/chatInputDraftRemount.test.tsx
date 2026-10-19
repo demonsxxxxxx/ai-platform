@@ -27,6 +27,7 @@ test("keeps drafts local across remounts, submissions, and session scopes", asyn
   const dom = installDom();
   const { createLobeTestRoot } = await import("../../common/__tests__/lobeUiTestRoot");
   const { ChatInput } = await import("../ChatInput");
+  const { AssistantUiTestProvider } = await import("../assistant-ui/__tests__/assistantUiTestProvider");
   const { AuthProvider } = await import("../../../hooks/useAuth");
   const rootNode = document.getElementById("root");
   assert.ok(rootNode);
@@ -107,11 +108,13 @@ test("keeps drafts local across remounts, submissions, and session scopes", asyn
     await act(async () => {
       root.render(
         <AuthProvider>
+          <AssistantUiTestProvider>
           <Harness
             optimistic={optimistic}
             scopeKey={scopeKey}
             handoffKey={handoffKey}
           />
+          </AssistantUiTestProvider>
         </AuthProvider>,
       );
     });
@@ -193,6 +196,14 @@ test("keeps drafts local across remounts, submissions, and session scopes", asyn
     assert.equal(textarea().value, "keep after failure");
 
     submission = deferredSubmission();
+    await typeDraft("discard during recovery");
+    await submit();
+    await typeDraft("");
+    await act(async () => submission.resolve({ status: "recoverable_error", code: "file_required_for_skill" }));
+    assert.equal(textarea().value, "", "a late recoverable receipt must not restore a draft the user deliberately cleared");
+
+    submission = deferredSubmission();
+    await typeDraft("keep after failure");
     await submit();
     await render(false, "session-2");
     assert.equal(textarea().value, "keep after failure");

@@ -18,7 +18,8 @@ test("workbench shell exposes dense chat regions", () => {
   assert.match(shell, /data-workbench-region="thread"/);
   assert.match(shell, /data-workbench-region="composer"/);
   assert.match(shell, /data-workbench-region="context"/);
-  assert.match(shell, /absolute right-3 top-2/);
+  assert.match(shell, /flex shrink-0 justify-end px-3 pt-2/);
+  assert.doesNotMatch(shell, /absolute right-3 top-2/);
   assert.match(workbenchShell, /LibreChatShell/);
   assert.match(surface, /workspace:/);
   assert.match(surface, /thread:[\s\S]*relative flex/);
@@ -205,13 +206,17 @@ test("workbench right context uses the same canvas as the main workspace", () =>
 
   assert.match(surface, /threadBody: "flex min-h-0 flex-1 flex-col px-3 pb-2 pt-3 sm:px-4"/);
   assert.match(surface, /context:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
-  assert.match(surface, /context:[\s\S]*fixed inset-y-0 right-0/);
-  assert.match(surface, /context:[\s\S]*xl:static/);
+  assert.match(surface, /context:[\s\S]*min-h-0[\s\S]*overflow-hidden/);
+  assert.doesNotMatch(surface, /context:[\s\S]*fixed inset-y-0/);
   assert.match(surface, /workspaceWithContext:[\s\S]*18rem/);
   assert.match(shell, /data-librechat-context-toggle/);
   assert.match(shell, /aria-controls="librechat-context-panel"/);
-  assert.match(shell, /fixed inset-0 z-40[\s\S]*xl:hidden/);
-  assert.match(shell, /event\.key === "Escape"/);
+  assert.match(shell, /contextOpen && desktop && \([\s\S]*<aside/);
+  assert.match(shell, /<DrawerRoot open=\{contextOpen\}/);
+  assert.match(shell, /<DrawerBackdrop data-librechat-context-backdrop/);
+  assert.match(shell, /finalFocus=\{triggerRef\}/);
+  assert.doesNotMatch(shell, /fixed inset-0 z-40[\s\S]*xl:hidden/);
+  assert.match(shell, /event\.key !== "Escape" \|\| event\.defaultPrevented/);
   assert.match(shell, /contextOpen/);
   assert.match(shell, /useState\(false\)/);
   assert.doesNotMatch(shell, /useState\(true\)/);

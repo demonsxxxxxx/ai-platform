@@ -303,12 +303,6 @@ export function ChatView({
     selectedSkillRevision: 0,
     pendingScopeHandoff: false,
   });
-  const setComposerInput = useCallback((value: string) => {
-    const snapshot = composerDraftSnapshotRef.current;
-    snapshot.revision += 1;
-    snapshot.value = value;
-    snapshot.apply?.(value);
-  }, []);
   const [workspaceProjection, setWorkspaceProjection] =
     useState<SessionWorkspaceProjection>({
       session_id: null,
@@ -1088,15 +1082,15 @@ export function ChatView({
             可以直接开始的任务
           </p>
           {agentEmptyProfile.starter_prompts.map((prompt) => (
-            <Button type="text"
-              className="min-w-0 rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 py-2 text-left text-sm text-[var(--theme-text)] hover:border-[var(--theme-primary)]"
-              key={prompt}
-              disabled={!canSendInCurrentView || isLoading}
-              onClick={() => setComposerInput(prompt)}
-              htmlType="button"
-            >
-              {prompt}
-            </Button>
+            <ThreadPrimitive.Suggestion key={prompt} prompt={prompt} send={false} asChild>
+              <Button type="default"
+                style={{ height: "auto", padding: "8px 12px", textAlign: "left", whiteSpace: "normal" }}
+                disabled={!canSendInCurrentView || isLoading}
+                htmlType="button"
+              >
+                {prompt}
+              </Button>
+            </ThreadPrimitive.Suggestion>
           ))}
         </div>
       ) : null}

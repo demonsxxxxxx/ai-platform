@@ -1,3 +1,4 @@
+import { ComposerPrimitive } from "@assistant-ui/react";
 import { Button } from "@lobehub/ui/base-ui";
 import { useRef, useCallback, useEffect } from "react";
 import {
@@ -36,7 +37,6 @@ export interface ChatInputToolbarProps {
   uploadCategories: FileCategory[];
   uploadFiles: (files: FileList | File[], category?: FileCategory) => void;
   onFileCommandReady?: (openFileCommand: () => void) => void;
-  onStopClick: () => void;
   onNoPermissionClick: () => void;
 }
 
@@ -69,7 +69,6 @@ export function ChatInputToolbar({
   uploadCategories,
   uploadFiles,
   onFileCommandReady,
-  onStopClick,
   onNoPermissionClick,
 }: ChatInputToolbarProps) {
   const { t } = useTranslation();
@@ -179,20 +178,26 @@ export function ChatInputToolbar({
           />
         ) : isLoading ? (
           canStop ? (
-            <Button type="default" shape="circle" size="large" htmlType="button"
-              onClick={(event) => { event.preventDefault(); event.stopPropagation(); onStopClick(); }}
-              aria-label={t("chat.stop")} title={t("chat.stop")} icon={<Square size={16} fill="currentColor" />}
-            />
+            <ComposerPrimitive.Cancel asChild>
+              <Button type="default" shape="circle" size="large" htmlType="button"
+                aria-label={t("chat.stop")} title={t("chat.stop")} icon={<Square size={16} fill="currentColor" />}
+              />
+            </ComposerPrimitive.Cancel>
           ) : (
             <Button type="default" shape="circle" size="large" htmlType="button" disabled loading
               aria-label={t("chat.generating", "生成中")} title={t("chat.generating", "生成中")} icon={<Square size={16} />}
             />
           )
         ) : (
-          <Button type={canSubmit ? "primary" : "default"} shape="circle" size="large" htmlType="submit" disabled={!canSubmit}
-            aria-label={t("chat.send")} icon={<ArrowUp size={18} />}
-            title={hasUploadingAttachment ? t("chat.waitingForUpload", "请等待文件上传完成") : t("chat.send")}
-          />
+          <ComposerPrimitive.Send asChild onClick={(event) => {
+            event.preventDefault();
+            event.currentTarget.form?.requestSubmit();
+          }}>
+            <Button type={canSubmit ? "primary" : "default"} shape="circle" size="large" htmlType="button" disabled={!canSubmit}
+              aria-label={t("chat.send")} icon={<ArrowUp size={18} />}
+              title={hasUploadingAttachment ? t("chat.waitingForUpload", "请等待文件上传完成") : t("chat.send")}
+            />
+          </ComposerPrimitive.Send>
         )}
       </div>
     </div>

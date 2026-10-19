@@ -848,7 +848,8 @@ test("projects the Agent description and starter prompts only in the empty Chat 
   assert.doesNotMatch(chatViewSource, /<Bot\b/);
   assert.match(chatViewSource, /agentEmptyProfile\.description/);
   assert.match(chatViewSource, /data-agent-starter-prompts/);
-  assert.match(chatViewSource, /onClick=\{\(\) => setComposerInput\(prompt\)\}/);
+  assert.match(chatViewSource, /<ThreadPrimitive\.Suggestion[^>]*prompt=\{prompt\}[^>]*send=\{false\}/);
+  assert.doesNotMatch(chatViewSource, /setComposerInput/);
   assert.match(
     appContentSource,
     /onConversationCreated:\s*\(createdSessionId\)\s*=>\s*\{[\s\S]*?setAgentWorkspaceDraftHandoffKey\(createdSessionId\)/,

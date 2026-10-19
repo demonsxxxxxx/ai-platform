@@ -116,16 +116,16 @@ export function ToolCallItem({
   return (
     <CollapsiblePill
       status={status}
-      icon={<ToolIcon size={12} aria-hidden="true" className="shrink-0 opacity-70" />}
+      icon={<ToolIcon size={14} aria-hidden="true" className="shrink-0 opacity-80" />}
       label={`${publicCategoryLabel}：${canonicalDisplayName}`}
       suffix={
         statusLabel || durationLabel ? (
           <span className="flex min-w-0 items-center gap-1.5">
             {durationLabel && (
-              <span className="text-[10px] font-medium">{durationLabel}</span>
+              <span className="text-xs tabular-nums">{durationLabel}</span>
             )}
             {statusLabel && (
-              <span role="status" aria-label={statusLabel} className="text-[10px] font-medium">
+              <span role="status" aria-label={statusLabel} className="text-xs font-medium">
                 {statusLabel}
               </span>
             )}

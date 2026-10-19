@@ -1,8 +1,8 @@
 import { Skeleton, Button } from "@lobehub/ui/base-ui";
 import { clsx } from "clsx";
 import { useEffect, useRef, useState, memo } from "react";
-import { toast } from "@lobehub/ui/base-ui";
-import { Copy, Info, RefreshCw, Sparkles } from "lucide-react";
+import { Info, RefreshCw, Sparkles } from "lucide-react";
+import { AssistantUiMessageActions } from "../assistant-ui/MessageActions";
 import type {
   Message,
   TokenUsagePart,
@@ -23,7 +23,6 @@ import type { RevealPreviewRequest } from "./items/revealPreviewData";
 import type { RevealPreviewOpenSource } from "./items/revealPreviewState";
 import { createMessageAnchorId } from "../../layout/AppContent/messageOutline";
 import { formatDateTime, formatDateTimeShort } from "../../../utils/datetime";
-import { copyToClipboard } from "../../../utils/clipboard";
 import { selectAssistantCopyText } from "../../../types/assistantTextParts";
 import {
   createArtifactDownloadScope,
@@ -267,6 +266,7 @@ export const ChatMessage = memo(function ChatMessage({
         className="space-y-3 scroll-mt-6 rounded-lg transition-[box-shadow] duration-300 data-[external-navigation-highlighted=true]:ring-2 data-[external-navigation-highlighted=true]:ring-amber-500/75 data-[external-navigation-highlighted=true]:shadow-[0_0_20px_rgba(245,158,11,0.2)] dark:data-[external-navigation-highlighted=true]:ring-amber-400/55 dark:data-[external-navigation-highlighted=true]:shadow-[0_0_20px_rgba(251,191,36,0.1)] sm:space-y-4"
       >
         <UserMessageBubble
+          messageId={message.id}
           content={message.content}
           attachments={message.attachments}
           lockedSkillLabel={message.lockedSkillLabel}
@@ -373,24 +373,7 @@ export const ChatMessage = memo(function ChatMessage({
         </div>
         {/* Copy button and Token button - same line at bottom, show on message hover (only after message completes) */}
         {!message.isStreaming && !message.isSynchronizing && (
-          <div className="flex items-center gap-1">
-            <Button type="text"
-              onClick={() => {
-                const textContent = getAssistantTextContent();
-                if (textContent) {
-                  copyToClipboard(textContent);
-                  toast.success(t("chat.message.copied"));
-                }
-              }}
-              className={clsx(
-                "p-1.5 rounded-md transition-colors",
-                !isLastMessage && "opacity-0 group-hover:opacity-100",
-                "text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)]",
-              )}
-              title={t("chat.message.copy")}
-            >
-              <Copy size={16} />
-            </Button>
+          <AssistantUiMessageActions messageId={message.id} text={getAssistantTextContent()}>
             {/* Token usage statistics button */}
             {(message.tokenUsage || message.duration !== undefined) && (
               <TokenDetailsButton
@@ -401,7 +384,7 @@ export const ChatMessage = memo(function ChatMessage({
                 isLastMessage={isLastMessage}
               />
             )}
-          </div>
+          </AssistantUiMessageActions>
         )}
       </div>
     </div>

@@ -1,39 +1,32 @@
-import { Button } from "@lobehub/ui/base-ui";
 import { useState } from "react";
 import { clsx } from "clsx";
-import { Copy, Check } from "lucide-react";
+import { getUserMessageActionButtonVisibilityClass } from "./userMessageBubbleState";
+import { AssistantUiMessageActions } from "../assistant-ui/MessageActions";
 import { useTranslation } from "react-i18next";
 import { AttachmentCard, ImageViewer } from "../../common";
 import type { MessageAttachment } from "../../../types";
 import { MarkdownContent } from "./MarkdownContent";
 import { openAttachmentPreview } from "../attachmentPreviewStore";
-import { getUserMessageActionButtonVisibilityClass } from "./userMessageBubbleState";
-import { copyToClipboard } from "../../../utils/clipboard";
+
 import { useSessionImageGallery } from "./sessionImageGallery";
 
 // User message bubble component (with copy function, supports markdown rendering)
 export function UserMessageBubble({
+  messageId,
   content,
   attachments,
   lockedSkillLabel,
   isLastMessage,
 }: {
+  messageId: string;
   content?: string;
   attachments?: MessageAttachment[];
   lockedSkillLabel?: string;
   isLastMessage?: boolean;
 }) {
   const { t } = useTranslation();
-  const [copied, setCopied] = useState(false);
   const [imageViewerSrc, setImageViewerSrc] = useState<string | null>(null);
   const sessionImageGallery = useSessionImageGallery();
-
-  const handleCopy = async () => {
-    if (!content) return;
-    await copyToClipboard(content);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
 
   // Render attachment preview - use file card style uniformly
   const renderAttachments = () => {
@@ -103,22 +96,8 @@ export function UserMessageBubble({
             </div>
           )}
 
-          {/* Action buttons - show on hover */}
-          <div className="mt-1 flex justify-end gap-1">
-            <Button type="text"
-              onClick={handleCopy}
-              className={clsx(
-                "p-1.5 rounded-lg transition-colors duration-200",
-                getUserMessageActionButtonVisibilityClass(isLastMessage),
-                "hover:bg-[var(--theme-bg-sidebar)]",
-                copied
-                  ? "text-emerald-500 dark:text-emerald-400"
-                  : "text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)]",
-              )}
-              title={copied ? t("chat.message.copied") : t("chat.message.copy")}
-            >
-              {copied ? <Check size={16} /> : <Copy size={16} />}
-            </Button>
+          <div className={clsx("mt-1 flex justify-end", getUserMessageActionButtonVisibilityClass(isLastMessage))}>
+            <AssistantUiMessageActions messageId={messageId} text={content ?? ""} />
           </div>
         </div>
       </div>

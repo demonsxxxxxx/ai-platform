@@ -32,17 +32,8 @@ export interface CollapsiblePillProps {
 
 // Get spinner color based on variant
 function getSpinnerColor(variant: CollapsibleVariant): string {
-  if (variant === "tool") {
-    return "text-amber-500 dark:text-amber-400";
-  }
-  if (variant === "thinking") {
-    return "text-stone-500 dark:text-stone-400";
-  }
-  if (variant === "summary") {
-    return "text-amber-500 dark:text-amber-400";
-  }
-  // default (sandbox) - use emerald
-  return "text-emerald-500 dark:text-emerald-400";
+  if (variant === "thinking") return "var(--theme-text-secondary)";
+  return variant === "default" ? "var(--theme-success)" : "var(--theme-warning)";
 }
 
 // StatusIndicator component
@@ -206,42 +197,26 @@ export function CollapsiblePill({
     .join(" ");
   const displayedLabel = formatLabel ? formattedLabel : label;
 
+  const content = (
+    <>
+      <StatusIndicator status={status} variant={variant} />
+      {icon}
+      <span className={clsx("min-w-0 break-words", animatedDots && "typing-dots")}>{displayedLabel}</span>
+      {suffix}
+      {canExpand && <ChevronRight size={14} className={clsx("shrink-0 transition-transform", isExpanded && "rotate-90")} />}
+    </>
+  );
+  const rowClassName = "inline-flex max-w-full flex-wrap items-center gap-2 rounded-lg px-3 py-2 text-[13px] leading-5";
   return (
-    <div className="my-1 min-w-0 max-w-full">
-      <Button type="text"
-        onClick={handleToggle}
-        aria-expanded={canExpand ? isExpanded : undefined}
-        className={clsx(
-          "inline-flex items-center gap-2 px-2.5 py-2 rounded-full text-xs font-medium max-w-full",
-          "transition-colors",
-          getButtonStyles(status, variant),
-          canExpand && "cursor-pointer",
-          !canExpand && "cursor-default",
-        )}
-      >
-        <StatusIndicator status={status} variant={variant} />
-        {icon}
-        <span
-          className={clsx(
-            "font-mono min-w-0 truncate overflow-hidden",
-            animatedDots && "typing-dots",
-          )}
-        >
-          {displayedLabel}
-        </span>
-        {suffix}
-        {canExpand && (
-          <ChevronRight
-            size={12}
-            className={clsx(
-              "shrink-0 transition-transform duration-200",
-              "text-stone-500 dark:text-stone-400",
-              isExpanded && "rotate-90",
-            )}
-          />
-        )}
-      </Button>
-
+    <div className="my-1 min-w-0 max-w-full" data-chat-activity-status={status}>
+      <div className={clsx("w-fit max-w-full rounded-lg", getButtonStyles(status, variant))}>
+        {canExpand ? (
+          <Button type="text" htmlType="button" onClick={handleToggle} aria-expanded={isExpanded}
+            className={rowClassName} style={{ color: "inherit", background: "transparent", height: "auto", fontSize: 13, padding: "8px 12px" }}>
+            {content}
+          </Button>
+        ) : <div className={rowClassName}>{content}</div>}
+      </div>
       {isExpanded && hasChildren && (
         <div className="mt-1 animate-[fade-in_150ms_ease-out]">{children}</div>
       )}

@@ -219,14 +219,13 @@ test("generic public tools expose distinct safe failed and denied states", async
       );
     });
 
-    const buttons = [...container.querySelectorAll("button")];
-    assert.equal(buttons.length, 2);
-    assert.equal(buttons[0]?.tagName, "BUTTON");
-    assert.equal(buttons[1]?.tagName, "BUTTON");
-    assert.equal(buttons[0]?.getAttribute("aria-expanded"), null);
-    assert.equal(buttons[1]?.getAttribute("aria-expanded"), null);
-    assert.ok(buttons[0]?.querySelector(".lucide-circle-x"));
-    assert.ok(buttons[1]?.querySelector(".lucide-ban"));
+    const activities = [...container.querySelectorAll("[data-chat-activity-status]")];
+    assert.equal(activities.length, 2);
+    assert.equal(container.querySelectorAll("button").length, 0);
+    assert.equal(activities[0]?.getAttribute("data-chat-activity-status"), "error");
+    assert.equal(activities[1]?.getAttribute("data-chat-activity-status"), "cancelled");
+    assert.ok(activities[0]?.querySelector(".lucide-circle-x"));
+    assert.ok(activities[1]?.querySelector(".lucide-ban"));
 
     const statuses = [...container.querySelectorAll('[role="status"]')];
     assert.equal(statuses.length >= 2, true);
@@ -243,8 +242,6 @@ test("generic public tools expose distinct safe failed and denied states", async
       /private-failure-token|private-denial-token|operation-failed|operation-denied/,
     );
 
-    activateNativeButton(buttons[0] as HTMLButtonElement, "Enter");
-    activateNativeButton(buttons[1] as HTMLButtonElement, " ");
     assert.equal(getPersistentToolPanelState(), null);
   } finally {
     closePersistentToolPanel();

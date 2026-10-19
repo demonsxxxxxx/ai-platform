@@ -384,7 +384,7 @@ test("Agent workspaces disable composer commands without changing ordinary Chat"
   assert.match(chatInput, /disableSlashCommands = false/);
   assert.match(
     chatInput,
-    /if \(!disableSlashCommands && handleComposerCommandSubmit\(input\)\) return/,
+    /!disableSlashCommands && handleComposerCommandSubmit\(input\)/,
   );
   assert.match(chatInput, /if \(disableSlashCommands\) return false/);
   assert.match(

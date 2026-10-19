@@ -141,9 +141,7 @@ test("mounted projection uses the production canonical tool lifecycle", async ()
     }]), actions);
     const projection = dom.container.querySelector("[data-assistant-ui-projection]");
     const frame = dom.container.querySelector("[data-assistant-ui-message]");
-    const tool = [...dom.container.querySelectorAll("button")].find((button) =>
-      button.textContent?.includes("读取：Read"),
-    );
+    const tool = dom.container.querySelector('[data-chat-activity-status="success"]');
     assert.ok(projection);
     assert.ok(frame);
     assert.equal(projection?.getAttribute("role"), "log");
@@ -169,8 +167,8 @@ test("mounted projection uses the production canonical tool lifecycle", async ()
       dom.container.innerHTML,
       /Bash:|workspace|private result|command/,
     );
-    tool.focus();
-    assert.equal(dom.container.ownerDocument.activeElement, tool);
+    assert.match(tool.textContent || "", /读取：Read/);
+    assert.equal(tool.querySelector("button"), null, "nonexpandable activity is status text, not a fake action");
   } finally {
     dom.cleanup();
   }

@@ -151,12 +151,14 @@ export function useAssistantUiExternalStoreRuntime(
   messages: readonly Message[],
   isRunning: boolean,
   actions: AssistantUiRuntimeActions,
+  gates: { disabled: boolean; sendDisabled: boolean } = { disabled: false, sendDisabled: false },
 ) {
   const adapter = useMemo<ExternalStoreAdapter<Message>>(
     () => ({
       messages,
       isRunning,
-      isSendDisabled: false,
+      isDisabled: gates.disabled,
+      isSendDisabled: gates.sendDisabled,
       convertMessage: toAssistantUiMessage,
       onNew: async (message) => {
         await actions.sendMessage(appendContent(message));
@@ -167,11 +169,8 @@ export function useAssistantUiExternalStoreRuntime(
       onRefetchThread: async () => {
         await actions.loadHistory();
       },
-      onReload: async () => {
-        await actions.reconnect();
-      },
     }),
-    [actions, isRunning, messages],
+    [actions, gates.disabled, gates.sendDisabled, isRunning, messages],
   );
   return useExternalStoreRuntime(adapter);
 }

@@ -126,9 +126,11 @@ test("empty chat keeps the first task prompt reachable and context uses one quie
   assert.match(welcomeCss, /html\[data-mobile-keyboard="true"\] \.welcome-root\.welcome-chat-start[\s\S]*?justify-content:\s*flex-start/);
   assert.doesNotMatch(welcomeCss, /\.welcome-root\.welcome-chat-start[\s\S]{0,300}h-screen|\.welcome-root\.welcome-chat-start[\s\S]{0,300}min-height:\s*100vh/);
 
-  assert.match(surface, /context:[\s\S]*?fixed inset-y-0 right-0/);
-  assert.match(surface, /context:[\s\S]*?min-w-0 w-\[calc\(100vw-3\.25rem\)\]/);
-  assert.match(surface, /context:[\s\S]*?xl:static[\s\S]*?xl:w-full/);
+  const shell = read("src/librechat-ui/Shell.tsx");
+  assert.match(surface, /context:[\s\S]*?min-h-0 min-w-0[\s\S]*?border-l/);
+  assert.doesNotMatch(surface, /context:[\s\S]*?fixed inset-y-0/);
+  assert.match(shell, /<DrawerPopup placement="right" width="min\(22rem, calc\(100vw - 2rem\)\)"/);
+  assert.match(shell, /rightPanel && contextOpen && desktop/);
   assert.match(surface, /workspaceWithContext:[\s\S]*?minmax\(18rem,20rem\)/);
   assert.doesNotMatch(sidePanel, /workbenchSurface\.secondaryPanel/);
   assert.match(sidePanel, /className="min-h-0 flex-1 overflow-y-auto pr-1"/);

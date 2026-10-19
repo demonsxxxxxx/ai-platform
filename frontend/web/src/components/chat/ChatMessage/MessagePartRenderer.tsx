@@ -1,3 +1,4 @@
+import { ErrorPrimitive } from "@assistant-ui/react";
 import { Button } from "@lobehub/ui/base-ui";
 import { clsx } from "clsx";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -327,8 +328,9 @@ function RunStatusItem({
       })
     : null;
 
+  const StatusRoot = part.severity === "info" ? "div" : ErrorPrimitive.Root;
   return (
-    <div
+    <StatusRoot
       role={part.severity === "info" ? "status" : "alert"}
       className={clsx(
         "my-1 flex min-w-0 items-start gap-2 rounded-lg border px-3 py-2 text-sm",
@@ -354,7 +356,7 @@ function RunStatusItem({
           {runReferenceLabel ? ` ${runReferenceLabel}` : ""}
         </div>
       </div>
-    </div>
+    </StatusRoot>
   );
 }
 
