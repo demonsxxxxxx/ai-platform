@@ -234,7 +234,7 @@ SDK 输出校验的 `projection_failure`（原因、阶段、位置、可用的�
 
 固定三文件及导出 v1 入口保留，`diagnostics.json.debug` 作为加法扩展承载 `ai-platform.run-debug.v1`，包括五项生命周期耗时、来源/Attempt/operation/event 因果关联、事件序号与有界摘要、token/成本观测、冻结模型容量/Profile 版本与 hash/Skill pins、租约心跳/终态接收/调和状态及实际留存的 dispatch timings。事件不包含消息正文、工具输入输出或任意 payload；缺少的用量为 null，成本仍遵守已有 coverage 权威。`events_truncated`、事件拒绝计数、Skill/lease 截断标识和 `missing_evidence` 保留缺口。
 
-Execution 的闭合 `sdk.debug` 契约仅允许受控组件/操作/阶段/失败分类、HTTP 状态、连接尝试次数、代理策略类型/beta 数量、SessionStore entry 类型/主子流/UTF-8 JSON 大小及限制、图片编码字节计数与版本值。Sandbox 和 Runs 使用同一公开 Execution evidence 契约复验，不保存 header、beta 原文、URL/IP、凭据或 entry。模型代理在响应前、HTTP 错误及流迭代故障处记录；HTTPX 原异常类型、仅连接失败可尝试下一个地址及不重发已接收 POST 的规则保留。记录经实际 Run/Attempt/存活租约及 owner generation 绑定，诊断失败不改变代理或 callback 结果。
+Execution 的闭合 `sdk.debug` 契约仅允许受控组件/操作/阶段/失败分类、HTTP 状态、连接尝试次数、代理策略类型/beta 数量、SessionStore entry 类型/主子流/UTF-8 JSON 大小及限制、图片编码字节计数与版本值。Sandbox 和 Runs 在各自领域的诊断投影边界按同一闭集契约独立复验，不从领域层导入其他 bounded context；回归测试逐项核对枚举、数值边界和版本格式的一致性。不保存 header、beta 原文、URL/IP、凭据或 entry。模型代理在响应前、HTTP 错误及流迭代故障处记录；HTTPX 原异常类型、仅连接失败可尝试下一个地址及不重发已接收 POST 的规则保留。记录经实际 Run/Attempt/存活租约及 owner generation 绑定，诊断失败不改变代理或 callback 结果。
 
 SessionStore adapter 保留首次被拒绝写入的已测大小；Context 媒体拆分后的结构化 entry 超限也直接采集到宿主私有诊断，避免 callback 只剩通用拒绝。图片编码字节不是解码文件大小。SDK 版本来自执行进程安装元数据；CLI 版本只在实际 init 回执提供时记录。执行时 `executor_runtime_commit` 与记录时 `api_runtime_commit`、导出时 `debug.query_component` 分开；未提供的历史版本不倒填。egress Nginx 的连接日志、供应商内部 trace 和未采集的 CLI/执行版本作为明确缺口，平台观察到 502 不能单独证明供应商失败。
 

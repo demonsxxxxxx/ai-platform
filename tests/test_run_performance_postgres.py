@@ -67,6 +67,9 @@ async def test_postgres_monitor_samples_runs_not_events_and_uses_frozen_skill_co
         assert report["latency"]["total_ms"]["p50"] == 20000
         assert report["latency"]["server_first_text_ms"] == {"sample_count": 1, "p50": 1000, "p95": 1000, "p99": 1000}
         assert report["latency"]["browser_first_text_ms"]["sample_count"] == 0
+        foreign = await get_admin_run_monitor_report(
+            conn, tenant_id="unknown-tenant", from_at=created, to_at=end
+        )
         assert foreign["counts"]["total"] == 0 and foreign["runs"] == []
         repository = PostgresRunDiagnosticsRepository()
         await repository.append_browser_latency(conn, tenant_id="tenant-a", run_id="run-a", measurement={

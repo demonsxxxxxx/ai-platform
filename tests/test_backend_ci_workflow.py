@@ -245,6 +245,8 @@ BACKEND_TEST_SHARDS = {
         "tests/test_run_control_routes.py",
         "tests/test_run_file_continuity_routes.py",
         "tests/test_run_diagnostics.py",
+        "tests/test_run_debug_evidence.py",
+        "tests/test_admin_diagnostic_export.py",
         "tests/test_run_persistence.py",
         "tests/test_run_projection.py",
         "tests/test_public_run_outcome.py",

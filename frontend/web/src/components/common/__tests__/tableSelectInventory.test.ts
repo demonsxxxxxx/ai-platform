@@ -62,7 +62,6 @@ test("active table/select consumers use Lobe UI and retain document-renderer sem
     "components/panels/MCPPanel.tsx",
     "components/panels/ModelAdminControl.tsx",
     "components/panels/RunMonitorPanel.tsx",
-    "components/panels/RunInvestigationTimeline.tsx",
     "components/panels/RunPerformanceSummary.tsx",
     "components/panels/SkillsPanel/SkillManagementTable.tsx",
     "components/selectors/ToolSelector.tsx",

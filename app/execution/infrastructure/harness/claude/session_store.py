@@ -10,7 +10,7 @@ from typing import Any
 
 import httpx
 
-from app.execution.events import normalize_execution_debug
+from app.execution.domain.runtime_debug import normalize_execution_debug
 
 from app.context.api import (
     MAX_PROVIDER_SESSION_CALLBACK_RESPONSE_BYTES as MAX_PROVIDER_SESSION_RESPONSE_BYTES,

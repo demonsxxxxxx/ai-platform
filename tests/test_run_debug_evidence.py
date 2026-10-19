@@ -37,6 +37,42 @@ def test_debug_closed_fields_survive_both_boundaries_without_arbitrary_data():
     assert sanitize_runtime_diagnostics(projected) == projected
 
 
+def test_debug_projection_boundaries_match_the_execution_contract():
+    from app.execution.domain import runtime_debug as contract
+
+    cases = [
+        {name: value}
+        for name, values in contract._LABELS.items()
+        for value in [*values, "PRIVATE", None, True]
+    ]
+    cases += [
+        {name: value}
+        for name in contract._COUNTS
+        for value in [0, 1_000_000_000, -1, 1_000_000_001, True, "PRIVATE"]
+    ]
+    cases += [{"http_status": value} for value in [99, 100, 599, 600, True]]
+    cases += [
+        {name: value}
+        for name in contract._VERSIONS
+        for value in ["0.2.165", "3.13.14", "1.0.0a1", "PRIVATE", "1.2", True]
+    ]
+    cases += [
+        {name: value}
+        for name in contract._COMMITS
+        for value in ["a" * 40, "A" * 40, "a" * 39, "PRIVATE", True]
+    ]
+    for facts in cases:
+        expected = normalize_execution_debug(facts)
+        raw = {"schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+               "error_code": "executor_failure", "sdk": {"debug": {**facts, "headers": "PRIVATE"}}}
+        normalized = normalize_sdk_runtime_diagnostics(raw)
+        assert normalized.get("sdk", {}).get("debug", {}) == expected, facts
+        for payload in (raw, normalized):
+            projected = sanitize_runtime_diagnostics(payload)
+            assert projected.get("sdk", {}).get("debug", {}) == expected, facts
+            assert sanitize_runtime_diagnostics(projected) == projected
+
+
 @pytest.mark.parametrize("error,expected,phase,attempts", [
     (httpx.ConnectError("PRIVATE endpoint"), "connect_error", "connect", 2),
     (httpx.ConnectTimeout("PRIVATE endpoint"), "connect_timeout", "connect", 2),
