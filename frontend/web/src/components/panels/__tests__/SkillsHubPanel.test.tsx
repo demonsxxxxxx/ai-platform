@@ -109,7 +109,7 @@ test("Skill archiving removes local catalog rows and announces the synchronized 
   assert.match(skillsHook, /current\.filter\(\(skill\) => skill\.name !== name\)/);
   assert.match(skillsHook, /catalogMutationRevisionRef/);
   assert.match(skillsHook, /pendingCatalogMutationsRef/);
-  assert.match(skillsHook, /if \(finishCatalogMutation\(\)\) \{\s*await fetchSkills\(\);/);
+  assert.match(skillsHook, /if \(finishCatalogMutation\(\)\) \{\s*await latestFetchSkillsRef\.current\(\);/);
 });
 
 test("Skill selection synchronization copy exists in Chinese", () => {

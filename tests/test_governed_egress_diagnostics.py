@@ -11,6 +11,9 @@ import pytest
 
 from app.runtime.sandbox import container_provider
 from app.runtime.sandbox import governed_egress_diagnostics as diagnostics
+from test_sandbox_container_provider import (
+    fixed_runtime_identity_test_seams as fixed_runtime_identity_test_seams,
+)
 from test_sandbox_container_provider import FakeDockerClient, governed_docker_settings, request, workspace
 
 

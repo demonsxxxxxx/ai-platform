@@ -200,6 +200,69 @@ test("archive mutations reject stale catalog reads for single and batch results"
   }
 });
 
+for (const archivePending of [false, true]) {
+  test(`department scope refresh fences old reads${archivePending ? " and a pending archive" : ""} without resetting drafts`, async () => {
+    const React = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    const { useSkills } = await import("../useSkills.ts");
+    const originalList = skillApi.listAllAuthorized;
+    const originalDelete = skillApi.delete;
+    const oldRead = deferred<SkillsResponse>();
+    const archive = deferred<void>();
+    let calls = 0;
+    skillApi.listAllAuthorized = async () => {
+      calls += 1;
+      if (calls === 1) return catalogResponse(["old-skill"]);
+      if (calls === 2) return oldRead.promise;
+      return catalogResponse(["current-skill"]);
+    };
+    skillApi.delete = async () => { await archive.promise; throw new Error("archive denied"); };
+    let snapshot: ReturnType<typeof useSkills> | undefined;
+    let changeDraft!: (value: string) => void;
+    const container = dom.document.createElement("div");
+    const root = createRoot(container as never);
+    function Probe({ departments }: { departments: string[] }) {
+      const [draft, setDraft] = React.useState("");
+      changeDraft = setDraft;
+      snapshot = useSkills({
+        allAuthorizedCatalog: true,
+        identityScope: JSON.stringify(["tenant", "user", "110", departments]),
+      });
+      return React.createElement("span", null, draft);
+    }
+    const current = () => { assert.ok(snapshot); return snapshot; };
+    try {
+      await React.act(async () => root.render(React.createElement(Probe, { departments: ["100", "110", "120"] })));
+      let stale!: Promise<boolean>;
+      let mutation: Promise<boolean> | undefined;
+      const oldRefresh = current().fetchSkills;
+      await React.act(async () => {
+        changeDraft("unsaved draft");
+        stale = oldRefresh();
+        if (archivePending) mutation = current().deleteSkill("old-skill");
+      });
+      await React.act(async () => root.render(React.createElement(Probe, { departments: ["100", "110", "130"] })));
+      assert.equal(container.textContent, "unsaved draft");
+      assert.equal(current().skills.some(skill => skill.name === "old-skill"), false);
+      await React.act(async () => {
+        oldRead.resolve(catalogResponse(["old-skill"]));
+        assert.equal(await stale, false);
+        assert.equal(await oldRefresh(), false);
+        if (mutation) { archive.resolve(); assert.equal(await mutation, false); }
+      });
+      assert.deepEqual(current().skills.map(skill => skill.name), ["current-skill"]);
+      assert.equal(current().total, 1);
+      assert.equal(current().error, null);
+      assert.equal(container.textContent, "unsaved draft");
+      assert.equal(calls, archivePending ? 4 : 3);
+    } finally {
+      await React.act(async () => root.unmount());
+      skillApi.listAllAuthorized = originalList;
+      skillApi.delete = originalDelete;
+    }
+  });
+}
+
 test("full authorized catalog does not reload for local list parameters", async () => {
   const React = await import("react");
   const { createRoot } = await import("react-dom/client");
@@ -295,6 +358,41 @@ test("catalog permission denial stays structured through localization, retries a
     assert.deepEqual(current().skills, []);
   } finally {
     await React.act(async () => { root.unmount(); });
+    skillApi.listAllAuthorized = originalList;
+  }
+});
+
+
+test("identity replacement clears a previous catalog denial even while the new host is disabled", async () => {
+  const React = await import("react");
+  const { createRoot } = await import("react-dom/client");
+  const { useSkills } = await import("../useSkills.ts");
+  const originalList = skillApi.listAllAuthorized;
+  let calls = 0;
+  skillApi.listAllAuthorized = async () => {
+    calls += 1;
+    throw new ApiRequestError("private-permission-detail", 403);
+  };
+  const container = dom.document.createElement("div");
+  const root = createRoot(container as never);
+  let snapshot: ReturnType<typeof useSkills> | undefined;
+  function Probe({ scope, enabled }: { scope: string; enabled: boolean }) {
+    snapshot = useSkills({ allAuthorizedCatalog: true, identityScope: scope, enabled });
+    return null;
+  }
+  const current = () => { assert.ok(snapshot); return snapshot; };
+  try {
+    await React.act(async () => root.render(React.createElement(Probe, { scope: "old-identity", enabled: true })));
+    assert.equal(current().listPermissionDenied, true);
+    await React.act(async () => root.render(React.createElement(Probe, { scope: "new-identity", enabled: false })));
+    assert.equal(current().listPermissionDenied, false);
+    assert.equal(current().listError, null);
+    assert.equal(current().effectivePermissionsKnown, false);
+    assert.equal(current().catalogReadResolved, false);
+    assert.deepEqual(current().skills, []);
+    assert.equal(calls, 1, "disabled replacement must not fetch to clear stale authority");
+  } finally {
+    await React.act(async () => root.unmount());
     skillApi.listAllAuthorized = originalList;
   }
 });

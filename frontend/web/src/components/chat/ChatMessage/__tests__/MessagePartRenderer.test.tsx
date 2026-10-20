@@ -13,6 +13,8 @@ import type { MessagePart } from "../../../../types";
 import { clearAllLoadingStates } from "../../../../hooks/useAgent/messageParts.ts";
 import { PUBLIC_TERMINAL_PRESENTATION_DEFINITIONS } from "../../../../hooks/useAgent/publicTerminalPresentation.ts";
 import { getVisibleMessageParts } from "../messagePartVisibility.ts";
+import { ArtifactCard } from "../elements/ArtifactCard";
+import { ActivityErrorBoundary } from "../elements/ActivityErrorBoundary";
 import {
   createMessagePartRenderKeys,
   MessagePartRenderer,
@@ -86,6 +88,7 @@ test("renders public tool metadata without raw arguments or results", () => {
       markup,
       /raw-label|workspace|private-token|private command output|command/,
     );
+    assert.doesNotMatch(markup, /role="status"|aria-live/);
   }
 
   for (const part of [
@@ -291,11 +294,11 @@ test("renders only public subagent lifecycle fields", () => {
     }),
   );
 
-  assert.match(markup, /Sub-agent/);
-  assert.match(markup, /Completed/);
-  assert.match(markup, /Category: read/);
-  assert.match(markup, /Progress: 100%/);
-  assert.match(markup, /Duration: 1\.2s/);
+  assert.match(markup, /子代理/);
+  assert.match(markup, /已完成/);
+  assert.match(markup, /当前操作：读取/);
+  assert.match(markup, /进度：100%/);
+  assert.match(markup, /耗时：1\.2 秒/);
   assert.doesNotMatch(
     markup,
     /workspace|private|secret|worker result|worker error/,
@@ -679,6 +682,126 @@ test("departing preview owner cleanup cannot close a newer session's preview", a
     assert.equal(getAttachmentPreviewState()?.attachment.name, "new owner's valid preview.png");
     oldContainer.remove();
   });
+});
+
+
+test("rejects unknown todo status instead of rendering an implicit success state", () => {
+  const markup = renderToStaticMarkup(
+    createElement(MessagePartRenderer, {
+      isLast: true,
+      part: {
+        type: "todo",
+        items: [{ content: "private task", status: "failed" }],
+      } as never,
+    }),
+  );
+  assert.equal(markup, "");
+});
+
+test("renders todos with upstream wrapping rows and localized source statuses", () => {
+  const markup = renderToStaticMarkup(
+    createElement(MessagePartRenderer, {
+      isLast: true,
+      part: {
+        type: "todo",
+        items: [
+          { content: "等待授权", status: "pending" },
+          { content: "正在整理较长的任务说明并保持完整换行", status: "in_progress" },
+          { content: "已完成的任务", status: "completed" },
+        ],
+      },
+    }),
+  );
+  assert.match(markup, /进度/);
+  assert.match(markup, /1\/3 已完成/);
+  assert.match(markup, /等待中/);
+  assert.match(markup, /运行中/);
+  assert.match(markup, /已成功/);
+  assert.match(markup, /break-words/);
+  assert.doesNotMatch(markup, /role="progressbar"|style="width:/);
+});
+
+
+test("renders failed artifact delivery without actions or success styling", () => {
+  const markup = renderToStaticMarkup(
+    createElement(MessagePartRenderer, {
+      isLast: true,
+      part: {
+        type: "artifact",
+        artifact_id: "artifact-failed",
+        artifact_type: "file",
+        label: "report.txt",
+        content_type: "text/plain",
+        size_bytes: 1,
+        status: "failed",
+      },
+    }),
+  );
+  assert.match(markup, /data-slot="artifact-card"/);
+  assert.match(markup, /data-status="failed"/);
+  assert.match(markup, /交付失败/);
+  assert.doesNotMatch(markup, /<button|data-chat-activity-status="success"/);
+});
+
+test("activity renderer errors stop at a safe public boundary", async () => {
+  const environment = installSelectTestDom();
+  const container = document.createElement("div");
+  const root = await createLobeTestRoot(container);
+  function ThrowingActivity(): never {
+    throw new Error("private stack /workspace/secret");
+  }
+  try {
+    const originalConsoleError = console.error;
+    console.error = () => undefined;
+    try {
+      await act(async () => {
+        root.render(
+          createElement(
+            ActivityErrorBoundary,
+            null,
+            createElement(ThrowingActivity),
+          ),
+        );
+      });
+    } finally {
+      console.error = originalConsoleError;
+    }
+    assert.match(container.textContent || "", /活动暂时无法显示/);
+    assert.doesNotMatch(container.textContent || "", /private|workspace|secret/);
+    assert.equal(container.querySelector('[data-slot="activity-error"]')?.getAttribute("role"), "status");
+    await act(async () => {
+      root.render(
+        createElement(
+          ActivityErrorBoundary,
+          {
+            resetKey: "recovered",
+            children: createElement("span", null, "updated activity"),
+          },
+        ),
+      );
+    });
+    assert.match(container.textContent || "", /updated activity/);
+    assert.equal(container.querySelector('[data-slot="activity-error"]'), null);
+  } finally {
+    await act(async () => root.unmount());
+    environment.close();
+  }
+});
+
+test("artifact element keeps public status without accepting raw payload props", () => {
+  const markup = renderToStaticMarkup(
+    createElement(ArtifactCard, {
+      label: "report.json",
+      typeLabel: "JSON",
+      sizeLabel: "1 KB",
+      status: "ready",
+      icon: createElement("span", null, "file"),
+      iconBackgroundClassName: "bg-stone-100",
+    }),
+  );
+  assert.match(markup, /data-slot="artifact-card"/);
+  assert.match(markup, /report\.json/);
+  assert.doesNotMatch(markup, /private|secret|workspace/);
 });
 
 test("preview owner transition clears attachments and history even when the session key is unchanged", async () => {

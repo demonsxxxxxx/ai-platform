@@ -1,4 +1,26 @@
 {
+  "assistantUi": {
+    "options": {
+      "noSelection": "未选择",
+      "unconfirmed": "提交未确认，请重试。"
+    },
+    "unread": "{{count}} 条未读消息",
+    "subagent": {
+      "name": "子代理",
+      "status": { "pending": "等待中", "running": "运行中", "complete": "已完成", "error": "失败", "cancelled": "已取消" },
+      "nested": "嵌套子代理",
+      "category": "当前操作：{{category}}",
+      "progress": "进度：{{percent}}%",
+      "duration": "耗时：{{seconds}} 秒"
+    },
+    "toolCategory": {
+      "skill": "技能", "mcp": "外部工具", "read": "读取", "write": "写入",
+      "edit": "编辑", "search": "搜索", "execute": "执行"
+    },
+    "toolError": {
+      "failed": "失败", "denied": "操作未获授权", "cancelled": "操作已停止，结果尚未确认"
+    }
+  },
   "adminMarketplace": {
     "tags": "标签",
     "tagsHint": "多个标签用逗号分隔",
@@ -263,6 +285,7 @@
   "chat": {
     "assistant": "助手",
     "attachFile": "附件",
+    "followUpSuggestions": "后续建议",
     "cancelled": "已取消",
     "dropFilesHere": "拖放文件到此处上传",
     "enterToSend": "发送",
@@ -281,7 +304,6 @@
       "settings": "设置",
       "upload": "上传"
     },
-    "fileReferenceChip": "{{name}} · {{type}}",
     "fileReferences": "文件引用",
     "features": "功能",
     "goodAfternoon": "下午好，{{name}}",
@@ -295,7 +317,8 @@
       "artifactsSubtitleFiles": "{{count}} 个文件",
       "artifactsSubtitleMixed": "{{files}} 个文件 · {{projects}} 个项目",
       "artifactsSubtitleProjects": "{{count}} 个项目",
-      "assistant": "Assistant",
+      "assistant": "助手",
+      "user": "用户消息",
       "cancelled": "生成已取消",
       "collapse": "收起",
       "complete": "完成",
@@ -314,6 +337,7 @@
       "forkFailed": "分叉失败",
       "forkSuccess": "已分叉到新会话",
       "generating": "生成中",
+      "waitingForResponse": "正在等待回复…",
       "synchronizingResult": "正在同步结果",
       "lockedSkill": "已锁定 Skill：{{skill}}",
       "mermaidError": "Mermaid 错误",
@@ -1049,8 +1073,7 @@
     "featureDisabled": "MCP 功能已禁用，请联系管理员启用。",
     "form": {
       "allowedDepartments": "允许的部门",
-      "allowedDepartmentsDescription": "使用逗号分隔可访问此服务器的部门 ID。",
-      "allowedDepartmentsPlaceholder": "engineering, finance",
+      "allowedDepartmentsDescription": "从部门目录选择，留空表示不限制部门。",
       "connectionReentry": "编辑时会显示已保存的 URL 和 HTTP 头。",
       "removeRole": "移除角色 {{role}}",
       "add": "添加",
@@ -1229,6 +1252,7 @@
     }
   },
   "mermaidViewer": {
+    "diagram": "流程图",
     "hideCode": "隐藏代码",
     "showCode": "查看代码"
   },

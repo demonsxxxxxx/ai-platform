@@ -34,6 +34,7 @@ async def test_real_opensandbox_bash_cannot_read_raw_model_credentials(
     ]
     acceptance_settings = settings.model_copy(
         update={
+            "sandbox_workspace_root": str(tmp_path),
             "openai_api_key": credential_canaries[0],
             "anthropic_auth_token": credential_canaries[1],
         }

@@ -106,22 +106,15 @@ test("mcp panel gives AI admins lifecycle controls while keeping the ordinary di
   assert.doesNotMatch(form, /server\?\.command|server\.command/);
   assert.doesNotMatch(form, /server\?\.env_keys|server\.env_keys/);
   assert.match(form, /department_ids/);
-  assert.match(form, /const \[allowedDepartmentsInput, setAllowedDepartmentsInput\] = useState/);
-  assert.match(
-    form,
-    /department_ids: isSystemServer[\s\S]*?parseDepartmentIds\(allowedDepartmentsInput\)/,
-  );
-  assert.match(form, /value=\{allowedDepartmentsInput\}/);
-  assert.match(form, /<label htmlFor="mcp-allowed-departments"/);
-  assert.match(form, /id="mcp-allowed-departments"/);
-  assert.match(
-    form,
-    /onChange=\{\(event\) => setAllowedDepartmentsInput\(event\.target\.value\)\}/,
-  );
+  assert.match(form, /department_ids: allowedDepartments/);
+  assert.match(form, /<DepartmentDirectorySelector/);
+  assert.match(form, /selectedAuthorityIds=\{allowedDepartments\}/);
+  assert.match(form, /!departmentSelection\.authoritative/);
+  assert.doesNotMatch(form, /parseDepartmentIds|allowedDepartmentsInput/);
   assert.doesNotMatch(form, /value=\{allowedDepartments\.join/);
   assert.match(form, /else \{[\s\S]*setUrl\(""\);[\s\S]*setHeaders\(\[\]\);/);
   assert.doesNotMatch(form, /setCommand|setEnvKeys|EnvKeysSelector/);
-  assert.match(form, /else \{[\s\S]*setAllowedDepartmentsInput\(""\);/);
+  assert.match(form, /else \{[\s\S]*setAllowedDepartments\(\[\]\);/);
   assert.ok(
     form.indexOf('t("mcp.form.connectionReentry")') <
       form.indexOf("{/* HTTP/SSE connection */}"),

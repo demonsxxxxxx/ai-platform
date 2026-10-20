@@ -6,6 +6,7 @@ import {
   CompanyADLoginError,
   authApi,
   buildOAuthLoginUrl,
+  mapPrincipalToUser,
 } from "../auth.ts";
 import { registerAuthScopedCacheClearer } from "../authCacheInvalidation.ts";
 import { ApiRequestError } from "../fetch.ts";
@@ -14,6 +15,21 @@ import {
   refreshTokens,
 } from "../tokenManager.ts";
 import { UploadRequestError, uploadApi } from "../upload.ts";
+
+test("principal mapping keeps effective department scope and never derives it from a scalar", () => {
+  const principal = {
+    user_id: "member", display_name: "Member", tenant_id: "default", department_id: "110",
+    roles: ["user"], permissions: [], is_admin: false, source: "company-login",
+  };
+  const legacy = mapPrincipalToUser(principal);
+  assert.deepEqual(legacy.department_ids, []);
+  assert.equal(legacy.department_authority_status, "unavailable");
+  const current = mapPrincipalToUser({ ...principal, direct_department_ids: ["110", "210"],
+    department_ids: ["100", "110", "200", "210"], department_authority_status: "available" });
+  assert.deepEqual(current.direct_department_ids, ["110", "210"]);
+  assert.deepEqual(current.department_ids, ["100", "110", "200", "210"]);
+  assert.equal(current.department_authority_status, "available");
+});
 
 function installAuthApiBrowserStubs(
   responseBody:

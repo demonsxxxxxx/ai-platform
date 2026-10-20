@@ -457,3 +457,21 @@ def test_transfer_timeout_configuration_has_finite_positive_bounds():
     ]:
         with pytest.raises(ValidationError):
             Settings(_env_file=None, **{field: value})
+
+
+@pytest.mark.asyncio
+async def test_opted_in_http_upstream_still_sends_the_user_bearer_to_the_connector(monkeypatch):
+    seen = []
+
+    def handler(request):
+        seen.append((str(request.url).split("/api/")[0], request.headers["authorization"]))
+        return httpx.Response(200, headers={"Content-Length": "1"}, stream=Stream())
+
+    client_factory(monkeypatch, handler)
+    transfer = await transfer_module.open_profile_drive_file(
+        upstream="http://profile-drive-mcp:5201", ca_cert_file="", jwt="synthetic",
+        path="sample.txt", max_bytes=16, require_nonempty=True,
+        not_found_status=404, too_large_detail="file_too_large",
+    )
+    await transfer.aclose()
+    assert seen == [("http://profile-drive-mcp:5201", "Bearer synthetic")]

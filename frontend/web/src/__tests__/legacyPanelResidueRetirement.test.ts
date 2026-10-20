@@ -21,8 +21,6 @@ const retainedKeys = {
     "taskFailed",
   ],
   mcpCard: [
-    "noTools",
-    "roleCount",
     "roleQuotaCount",
     "statusDisabled",
     "statusEnabled",

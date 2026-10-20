@@ -108,6 +108,7 @@ export function useSkillsActions(options?: {
     enabled,
     listParams,
     allAuthorizedCatalog: options?.allAuthorizedCatalog,
+    identityScope: JSON.stringify([user?.tenant_id, user?.id, user?.roles, user?.permissions, user?.is_admin, user?.department_ids, user?.direct_department_ids, user?.department_authority_status]),
   });
   const canAdminUploadSkills = isAiAdminUser(user);
 

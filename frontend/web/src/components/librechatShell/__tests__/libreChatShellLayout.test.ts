@@ -75,7 +75,7 @@ test("composer and right panel expose LibreChat-style regions without backend au
     "src/components/workbench/ProfileDriveWorkspaceBrowser.tsx",
   );
   const chatInput = read("src/components/chat/ChatInput.tsx");
-  const composer = read("src/librechat-ui/Composer.tsx");
+  const composer = read("src/components/chat/assistant-ui/elements/composer.tsx");
   const chatCss = read("src/styles/chat.css");
 
   assert.match(sidePanel, /data-librechat-side-panel/);
@@ -93,13 +93,13 @@ test("composer and right panel expose LibreChat-style regions without backend au
   assert.match(driveBrowser, /activeSource|setActiveSource/);
   assert.match(rightPanel, /LibreChatSidePanel/);
   assert.match(rightPanel, /librechat-ui\/SidePanel/);
-  assert.match(chatInput, /LibreChatComposerFrame/);
-  assert.match(chatInput, /LibreChatComposerRegion region="chips"/);
-  assert.match(chatInput, /LibreChatComposerRegion region="textarea"/);
-  assert.match(chatInput, /LibreChatComposerRegion region="toolbar"/);
-  assert.match(composer, /data-librechat-composer="phase1"/);
-  assert.match(composer, /data-librechat-composer-region=\{region\}/);
-  assert.match(chatCss, /\.librechat-composer-shell/);
+  assert.match(chatInput, /<ComposerBar/);
+  assert.match(chatInput, /data-slot="composer-chips"/);
+  assert.match(chatInput, /data-slot="composer-input"/);
+  assert.match(chatInput, /data-slot="composer-toolbar-region"/);
+  assert.match(composer, /ComposerPrimitive.Root/);
+  assert.match(composer, /data-slot="composer-bar"/);
+  assert.match(chatCss, /\.chat-input-shell/);
   assert.doesNotMatch(
     sidePanel + rightPanel + chatInput,
     /librechat-data-provider|useRecoilState|~\/Providers|~\/store/,
@@ -120,9 +120,11 @@ test("empty chat keeps the first task prompt reachable and context uses one quie
   assert.match(welcomeCss, /html\[data-mobile-keyboard="true"\] \.welcome-root\.welcome-chat-start[\s\S]*?justify-content:\s*flex-start/);
   assert.doesNotMatch(welcomeCss, /\.welcome-root\.welcome-chat-start[\s\S]{0,300}h-screen|\.welcome-root\.welcome-chat-start[\s\S]{0,300}min-height:\s*100vh/);
 
-  assert.match(surface, /context:[\s\S]*?fixed inset-y-0 right-0/);
-  assert.match(surface, /context:[\s\S]*?min-w-0 w-\[calc\(100vw-3\.25rem\)\]/);
-  assert.match(surface, /context:[\s\S]*?xl:static[\s\S]*?xl:w-full/);
+  const shell = read("src/librechat-ui/Shell.tsx");
+  assert.match(surface, /context:[\s\S]*?min-h-0 min-w-0[\s\S]*?border-l/);
+  assert.doesNotMatch(surface, /context:[\s\S]*?fixed inset-y-0/);
+  assert.match(shell, /<DrawerPopup placement="right" width="min\(22rem, calc\(100vw - 2rem\)\)"/);
+  assert.match(shell, /rightPanel && contextOpen && desktop/);
   assert.match(surface, /workspaceWithContext:[\s\S]*?minmax\(18rem,20rem\)/);
   assert.doesNotMatch(sidePanel, /workbenchSurface\.secondaryPanel/);
   assert.match(sidePanel, /className="min-h-0 flex-1 overflow-y-auto pr-1"/);

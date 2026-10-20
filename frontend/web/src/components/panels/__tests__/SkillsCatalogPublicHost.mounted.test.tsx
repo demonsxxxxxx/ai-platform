@@ -80,7 +80,12 @@ async function harness(user: User, list: () => Response | Promise<Response>) {
     // Any accidental detail/file access or mutation is recorded and fails below.
     return json({ detail: "skill_not_found" }, 404);
   }) as typeof fetch;
-  function Probe({ children }: { children: ReactNode }) { auth = useAuth(); return children; }
+  function Probe({ children }: { children: ReactNode }) {
+    auth = useAuth();
+    // Match App's protected route: do not mount a catalog for the unresolved
+    // principal and then mistake its identity-replacement read for a retry.
+    return auth.isAuthenticated && !auth.isLoading ? children : null;
+  }
   const container = document.createElement("div");
   const root = await createLobeTestRoot(container);
   await act(async () => root.render(createElement(AuthProvider, null,

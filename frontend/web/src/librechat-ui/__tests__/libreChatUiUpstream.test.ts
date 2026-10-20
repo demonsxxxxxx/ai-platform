@@ -26,10 +26,7 @@ test("librechat-ui is a pinned pure UI upstream module", () => {
     "src/librechat-ui/Rail.tsx",
     "src/librechat-ui/Panel.tsx",
     "src/librechat-ui/SidePanel.tsx",
-    "src/librechat-ui/Composer.tsx",
     "src/librechat-ui/Selector.tsx",
-    "src/librechat-ui/Chips.tsx",
-    "src/librechat-ui/CommandMenu.tsx",
     "src/librechat-ui/StateSurface.tsx",
     "src/librechat-ui/NOTICE.md",
   ]) {
@@ -106,18 +103,21 @@ test("active workbench consumes librechat-ui instead of legacy shell files", () 
   }
 });
 
-test("active composer and state surfaces consume librechat-ui primitives", () => {
+test("active composer consumes Elements while shell state retains its owner", () => {
   for (const [path, expected] of [
-    ["src/components/chat/ChatInput.tsx", /LibreChatComposerFrame/],
-    ["src/components/chat/ComposerChips.tsx", /LibreChatComposerChip/],
-    ["src/components/chat/SlashCommandMenu.tsx", /LibreChatCommandMenu/],
-    ["src/components/workbench/WorkbenchStateSurface.tsx", /LibreChatStateSurface/],
+    ["src/components/chat/ChatInput.tsx", /ComposerBar/],
+    ["src/components/chat/ComposerChips.tsx", /ComposerChip/],
+    ["src/components/chat/SlashCommandMenu.tsx", /ComposerMenu/],
   ] as const) {
     const source = read(path);
-    assert.match(source, /librechat-ui/, `${path} should import librechat-ui`);
-    assert.match(source, expected, `${path} should consume ${expected}`);
+    assert.match(source, /assistant-ui\/elements/);
+    assert.match(source, expected);
+    assert.doesNotMatch(source, /librechat-ui/);
   }
-
+  for (const path of ["Composer.tsx", "Chips.tsx", "CommandMenu.tsx"]) {
+    assert.equal(existsSync(join(uiRoot, path)), false, `${path} is retired`);
+  }
+  assert.match(read("src/components/workbench/WorkbenchStateSurface.tsx"), /LibreChatStateSurface/);
   const selectors = read("src/components/chat/ChatInputSelectors.tsx");
   assert.match(selectors, /LibreChatSelectorLayer/);
   assert.match(selectors, /LibreChatSelectorModal/);
