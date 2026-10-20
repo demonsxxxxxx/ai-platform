@@ -40,9 +40,11 @@ test("ChatInput reconciles and releases the same guarded lock", () => {
     source,
     /reconcileChatInputSubmissionLock\(isSubmittingRef, isLoading\)/,
   );
-  assert.match(source, /tryAcquireChatInputSubmissionLock\(isSubmittingRef\)/);
-  assert.match(
-    source,
-    /releaseChatInputSubmissionLock\(isSubmittingRef, submissionToken\)/,
+  const submission = readFileSync(
+    join(process.cwd(), "src/components/chat/assistant-ui/composerSubmission.ts"),
+    "utf8",
   );
+  assert.match(source, /lock: isSubmittingRef/);
+  assert.match(submission, /tryAcquireChatInputSubmissionLock\(lock\)/);
+  assert.match(submission, /releaseChatInputSubmissionLock\(lock, token\)/);
 });

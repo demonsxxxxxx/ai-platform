@@ -4,7 +4,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from app import foundation_alpha_readiness
+from tools import foundation_alpha_readiness
 from tools.release_evidence_runtime_acceptance import ROOT, build_release_evidence_runtime_acceptance
 
 

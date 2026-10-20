@@ -1,6 +1,7 @@
 import { Button, DropdownMenu } from "@lobehub/ui/base-ui";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useAppElement } from "@lobehub/ui/es/ThemeProvider/index";
 import { Check, Copy, Download, Code, Eye, X, Maximize2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import {
@@ -421,9 +422,9 @@ export function MermaidDiagram({
                 { key: "png", label: "PNG", onClick: (event: React.MouseEvent<HTMLElement>) => { event.stopPropagation(); void handleDownloadPNG(); } },
               ]}
             >
-              <Button type="text" size="small" htmlType="button" aria-label={t("documents.download")} onClick={(event) => event.stopPropagation()}>
-                <Download size={14} />
-              </Button>
+              <Button type="text" size="small" htmlType="button" aria-label={t("documents.download")} onClick={(event) => event.stopPropagation()}
+                icon={<Download size={14} />}
+              />
             </DropdownMenu>
             {/* Preview code button */}
             <Button type="text"
@@ -444,18 +445,17 @@ export function MermaidDiagram({
               onClick={() => setIsFullscreen(true)}
               className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-all hover:bg-stone-300/50 dark:hover:bg-stone-700/50 min-h-[32px] min-w-[32px] touch-manipulation"
               title={t("imageViewer.fullscreen", "Fullscreen")}
-            >
-              <Maximize2
+              icon={<Maximize2
                 size={14}
                 className="text-stone-500 dark:text-stone-400"
-              />
-            </Button>
+              />}
+            />
           </div>
         </div>
 
-        {/* Diagram container - centered with zoom and drag */}
+        {/* Mermaid's fixed default SVG theme needs a light canvas in both app themes. */}
         <div
-          className={`mermaid-diagram overflow-hidden p-4 bg-stone-50 dark:bg-stone-800 flex items-center justify-center min-h-[200px] max-h-[500px] cursor-${
+          className={`mermaid-diagram overflow-hidden p-4 bg-stone-50 flex items-center justify-center min-h-[200px] max-h-[500px] cursor-${
             isDragging ? "grabbing" : "grab"
           }`}
           onWheel={handleWheel}
@@ -512,6 +512,7 @@ function MermaidViewer({
 }) {
   const { t } = useTranslation();
   const [scale, setScale] = useState(1);
+  const appElement = useAppElement();
   const [rotation, setRotation] = useState(0);
   const [position, setPosition] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
@@ -541,9 +542,10 @@ function MermaidViewer({
   }, [svgBlobUrl]);
 
   useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     return () => {
-      document.body.style.overflow = "";
+      document.body.style.overflow = previousOverflow;
     };
   }, []);
 
@@ -674,9 +676,8 @@ function MermaidViewer({
           onClick={onClose}
           className={btnCls}
           aria-label={t("common.close")}
-        >
-          <X size={20} className="text-white/70" />
-        </Button>
+          icon={<X size={20} className="text-white/70" />}
+        />
 
         <div className="flex items-center gap-1">
           {/* Toggle code view */}
@@ -774,8 +775,8 @@ function MermaidViewer({
           >
             <img
               src={svgBlobUrl}
-              alt="mermaid diagram"
-              className="max-w-[90vw] max-h-[85vh] object-contain select-none"
+              alt={t("mermaidViewer.diagram")}
+              className="max-w-[90vw] max-h-[85vh] bg-stone-50 object-contain select-none"
               style={{
                 transform: `translate(${position.x}px, ${position.y}px) scale(${scale}) rotate(${rotation}deg)`,
                 transition: isDragging ? "none" : "transform 0.1s ease-out",
@@ -819,6 +820,6 @@ function MermaidViewer({
         )}
       </div>
     </div>,
-    document.body,
+    appElement ?? document.body,
   );
 }

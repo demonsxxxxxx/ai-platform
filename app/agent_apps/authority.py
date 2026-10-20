@@ -36,6 +36,7 @@ from app.agent_apps.api import (
     agent_type_requires_profile_admission,
 )
 from app.auth import AuthPrincipal, is_ai_admin, normalize_roles
+from app.identity.api import is_department_id
 from app.chat_session_projection import session_response
 from app.control_plane_contracts import standard_trace_id
 from app.mcp import api as mcp_api
@@ -171,7 +172,10 @@ def profile_acl_allows(row: dict[str, Any], *, principal: AuthPrincipal) -> bool
     if principal.user_id in _safe_string_list(row.get("allowed_user_ids")):
         return True
     allowed_departments = set(_safe_string_list(row.get("allowed_department_ids")))
-    if allowed_departments and principal.department_id not in allowed_departments:
+    if allowed_departments and (
+        any(not is_department_id(value) for value in allowed_departments)
+        or not allowed_departments.intersection(principal.department_ids)
+    ):
         return False
     allowed_roles = set(normalize_roles(_safe_string_list(row.get("allowed_roles"))))
     if allowed_roles and not allowed_roles.intersection(normalize_roles(principal.roles)):
@@ -228,6 +232,7 @@ async def _authorize_current_profile_skill(
     skill_id: str,
     rollout_key: str,
     principal_department_id: str | None,
+    principal_department_ids: tuple[str, ...] = (),
     principal_roles: list[str] | None,
     is_admin: bool,
     permissions: list[str] | None,
@@ -237,6 +242,7 @@ async def _authorize_current_profile_skill(
         skill = await runs_capability_admission_postgres.authorize_skill_access(
             conn, tenant_id=tenant_id, agent_id=agent_id, skill_id=skill_id,
             normalized_input={}, principal_department_id=principal_department_id,
+            principal_department_ids=principal_department_ids,
             principal_roles=principal_roles, is_admin=is_admin, permissions=permissions,
         )
         return {**skill, "skill_version": pinned_version, "skill_content_hash": pinned_version}
@@ -248,6 +254,7 @@ async def _authorize_current_profile_skill(
         rollout_key=rollout_key,
         normalized_input={},
         principal_department_id=principal_department_id,
+        principal_department_ids=principal_department_ids,
         principal_roles=principal_roles,
         is_admin=is_admin,
         permissions=permissions,
@@ -530,6 +537,7 @@ class AgentProfileAuthority:
                         skill_id=selected_skill["skill_id"],
                         rollout_key=principal.user_id,
                         principal_department_id=principal.department_id,
+                        principal_department_ids=principal.department_ids,
                         principal_roles=principal.roles,
                         is_admin=is_ai_admin(principal),
                         permissions=principal.permissions,
@@ -1325,6 +1333,7 @@ class AgentProfileAuthority:
                 tenant_id=principal.tenant_id,
                 tool_ids=list(effective_mcp_tool_ids),
                 principal_department_id=principal.department_id,
+                principal_department_ids=principal.department_ids,
                 principal_roles=principal.roles,
                 is_admin=is_ai_admin(principal),
                 permissions=principal.permissions,
