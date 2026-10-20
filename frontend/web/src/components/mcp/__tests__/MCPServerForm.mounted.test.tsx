@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { mock } from "node:test";
 import { installSelectTestDom } from "../../common/__tests__/selectTestDom";
 import { createLobeTestRoot } from "../../common/__tests__/lobeUiTestRoot";
 import type { MCPServerCreate, MCPServerResponse } from "../../../types";
@@ -8,7 +8,79 @@ const dom = installSelectTestDom();
 test.after(() => dom.close());
 const { act, createElement } = await import("react");
 const { MCPServerForm } = await import("../MCPServerForm");
+const { capabilityDistributionApi } = await import("../../../services/api/capabilityDistribution");
+const directory = ["101", "201"].map((id) => ({
+  directoryId: id, authorityId: id, name: "研发", path: `公司 ${id} / 研发`,
+  selectable: true, reason: null, children: [],
+}));
+test.beforeEach(() => { mock.method(capabilityDistributionApi, "departmentDirectory", async () => directory); });
+test.afterEach(() => mock.restoreAll());
 await import("../../../i18n");
+
+for (const isSystemServer of [false, true]) {
+  test(`MCP ${isSystemServer ? "system" : "regular"} form preserves legacy departments until explicit ID reselection`, async () => {
+    const container = dom.document.createElement("div");
+    dom.document.body.append(container);
+    const root = await createLobeTestRoot(container);
+    const saved: MCPServerCreate[] = [];
+    const server: MCPServerResponse = {
+      name: "scoped", transport: "streamable_http", enabled: true,
+      url: "https://example.invalid/mcp", headers: { "X-Context": "synthetic" },
+      is_system: isSystemServer, can_edit: true, allowed_roles: [], role_quotas: {},
+      allowed_departments: ["研发"],
+    };
+    const submit = () => act(async () => {
+      container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    try {
+      await act(async () => { root.render(createElement(MCPServerForm, {
+        server, isSystemServer, onSave: async (data) => { saved.push(data); return true; }, onCancel: () => {},
+      })); });
+      assert.match(container.textContent!, /未确认部门会保留显示/);
+      await submit();
+      assert.equal(saved.length, 0);
+      await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="移除未确认部门 研发"]')!.click(); });
+      const trigger = container.querySelector<HTMLButtonElement>('[data-department-directory-selector] [role="combobox"]')!;
+      await act(async () => { trigger.click(); });
+      const option = document.querySelector<HTMLElement>('[role="option"][aria-label="公司 101 / 研发"]');
+      assert.ok(option);
+      await act(async () => { option.click(); });
+      await act(async () => {
+        document.querySelector('[data-department-directory-popup]')!.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+        );
+      });
+      assert.equal(trigger.getAttribute("aria-expanded"), "false");
+      await submit();
+      assert.deepEqual(saved[0].department_ids, ["101"]);
+      assert.equal(saved[0].url, server.url);
+      assert.deepEqual(saved[0].headers, server.headers);
+    } finally {
+      await act(async () => root.unmount()); container.remove();
+    }
+  });
+}
+
+test("MCP directory outage retains the unresolved grant and blocks nonempty submission", async (t) => {
+  t.mock.method(capabilityDistributionApi, "departmentDirectory", async () => { throw new Error("private upstream"); });
+  const container = dom.document.createElement("div");
+  dom.document.body.append(container);
+  const root = await createLobeTestRoot(container);
+  const saved: MCPServerCreate[] = [];
+  try {
+    await act(async () => { root.render(createElement(MCPServerForm, {
+      server: { name: "scoped", transport: "streamable_http", enabled: true, url: "https://example.invalid/mcp",
+        is_system: false, can_edit: true, allowed_roles: [], role_quotas: {}, allowed_departments: ["101"] },
+      onSave: async (data) => { saved.push(data); return true; }, onCancel: () => {},
+    })); });
+    assert.match(container.textContent!, /101/);
+    assert.doesNotMatch(container.textContent!, /private upstream/);
+    await act(async () => { container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
+    assert.equal(saved.length, 0);
+  } finally {
+    await act(async () => root.unmount()); container.remove();
+  }
+});
 
 function change(input: HTMLInputElement, value: string) {
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);

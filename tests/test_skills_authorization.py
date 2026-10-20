@@ -124,7 +124,7 @@ async def test_authorize_selected_run_capabilities_returns_stable_stale_conflict
             "status": "active",
             "visible_to_user": True,
             "scope_mode": "allowlist",
-            "department_ids": ["qa"],
+            "department_ids": ["110"],
             "allowed_roles": ["reviewer"],
         }
 
@@ -144,7 +144,8 @@ async def test_authorize_selected_run_capabilities_returns_stable_stale_conflict
             expected_version="hash-v1",
             rollout_key="user-a",
             normalized_input={},
-            principal_department_id="qa",
+            principal_department_id="110",
+            principal_department_ids=("110",),
             principal_roles=["reviewer"],
             is_admin=False,
             permissions=[],

@@ -12,10 +12,11 @@ Thin platform service for the enterprise AI Agent platform.
 
 ## Deployment quick start
 
-Download the desired immutable Deployment Release's
-`ai-platform-production.tar.gz` and extract
-it into a new directory. The package fixes the application version and image
-digests; no Git checkout, Actions query or host build is needed.
+Download `ai-platform-internal-test.tar.gz` from the chosen immutable Deployment
+Release and extract it into a new directory on a trusted isolated test host.
+The current publication workflow does not emit a new production package. The
+package fixes the application version and image digests; no Git checkout,
+Actions query or host build is needed.
 
 After the one-time Docker/Compose and OpenSandbox host preparation, configure
 an owner-held `0600` environment file (reuse the existing file when upgrading):
@@ -30,11 +31,14 @@ the new runtime. With already-loaded digest-verified images, add `--offline`.
 Database migrations are not automatically reversed and there is no speculative
 image rollback after a migration has begun.
 
-See the [deployment package guide](deploy/ai-platform/README.md) for first-use
-configuration, upgrade, offline images and failure handling. Production host
-provisioning and changes to OpenSandbox credentials/network policy remain
-separate controlled maintenance operations; see
-[production host preparation](docs/operations/production-bootstrap.md).
+See the [internal-test package guide](deploy/ai-platform/README.internal-test.md)
+for host preparation, configuration, upgrade, offline images and failure handling,
+and the [release runbook](docs/operations/release-operations-runbook.md) for the
+release procedure. The test bridge is not production network isolation.
+The [historical production package guide](deploy/ai-platform/README.md) applies
+only to previously published production Releases;
+[production host preparation](docs/operations/production-bootstrap.md) and
+OpenSandbox credential/network changes remain separate controlled operations.
 
 ## Health check
 

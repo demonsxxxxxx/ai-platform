@@ -108,9 +108,16 @@ def test_browser_public_launchpad_urls_reject_unsafe_values(value):
         "https://auth.internal.example/#fragment",
     ],
 )
-def test_private_upstream_urls_reject_invalid_base_urls(value):
+@pytest.mark.parametrize("field", ["existing_auth_base_url", "dingtalk_department_authority_base_url"])
+def test_private_upstream_urls_reject_invalid_base_urls(value, field):
     with pytest.raises(ValidationError, match="private_upstream_url_invalid"):
-        Settings(_env_file=None, existing_auth_base_url=value)
+        Settings(_env_file=None, **{field: value})
+
+
+@pytest.mark.parametrize("timeout", [0, 31])
+def test_department_authority_timeout_is_bounded(timeout):
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, dingtalk_department_authority_timeout_seconds=timeout)
 
 
 def test_profile_drive_transfer_upstream_requires_https():
