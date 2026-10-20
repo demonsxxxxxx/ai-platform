@@ -43,13 +43,20 @@ _COLLECTION_PRIVATE_FILES = frozenset(
     }
 )
 
+# Model scratch space: TMPDIR points at .tmp, so staged intermediate files must
+# be re-readable without a shell workaround. It stays mutation-protected and
+# uncollectible so scratch files never become deliverables.
+_READABLE_SCRATCH_ROOTS = frozenset({".tmp"})
+
 _READ_PRIVATE_FILES = frozenset(
     name
     for name in _COLLECTION_PRIVATE_FILES
     if name != PLATFORM_CLAUDE_INSTRUCTIONS_FILENAME.casefold()
 )
 _READ_PRIVATE_DIRECTORIES = frozenset(
-    name for name in _COLLECTION_PRIVATE_DIRECTORIES if name not in {".claude", "inputs"}
+    name
+    for name in _COLLECTION_PRIVATE_DIRECTORIES
+    if name not in {".claude", "inputs", *_READABLE_SCRATCH_ROOTS}
 )
 
 

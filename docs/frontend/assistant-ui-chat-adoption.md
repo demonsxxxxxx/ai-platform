@@ -60,6 +60,8 @@
 
 专家新任务直接把已发布 Profile 的 `description` 原文作为开场正文，不新增配置。描述为空时不补默认问候；有历史消息时不重复展示。开场内容不创建消息、Session 或 Run，也不进入模型输入、持久历史或复制内容。
 
+专家新任务直接把已发布 Profile 的 `description` 原文作为开场正文，不新增配置。描述为空时不补默认问候；有历史消息时不重复展示。开场内容不创建消息、Session 或 Run，也不进入模型输入、持久历史或复制内容。
+
 ## 提交、附件与迟到回执
 
 `composerSubmission.ts` 是 native 发送与键盘提交共用的事务：保留文本、模型选项、授权附件和显式 Skill，以及 draft revision、selectedSkillRevision 和首次会话 handoff。仅对应请求 accepted 才清理其内容；后续编辑或清空不被旧回执覆盖。scope revision 隔离账号/会话，旧发送、上传、取消回执不修改新页面。
