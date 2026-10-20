@@ -1,5 +1,5 @@
 import { memo, useMemo } from "react";
-import { MarkdownContent } from "../../chat/ChatMessage/MarkdownContent";
+import { MarkdownRenderer as ChatMarkdownRenderer } from "../../chat/ChatMessage/MarkdownRenderer";
 
 interface MarkdownRendererProps {
   content: string;
@@ -21,7 +21,7 @@ const MarkdownRenderer = memo(function MarkdownRenderer({
 
   return (
     <div className="markdown-preview overflow-auto h-full p-4 sm:p-6 lg:p-8">
-      <MarkdownContent content={displayContent} />
+      <ChatMarkdownRenderer content={displayContent} />
     </div>
   );
 });

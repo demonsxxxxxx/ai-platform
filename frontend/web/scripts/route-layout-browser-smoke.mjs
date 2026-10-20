@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { captureScreenshot, startBrowser } from "./browser-smoke-harness.mjs";
+import { checkChatIntegration } from "./chat-integration-browser-checks.mjs";
 
 const baseUrl = (process.env.AI_PLATFORM_FRONTEND_URL || "http://127.0.0.1:4173").replace(/\/+$/, "");
 const theme = process.env.AI_PLATFORM_ROUTE_LAYOUT_THEME || "light";
@@ -49,7 +50,7 @@ const profiles = [
   },
 ];
 
-function bootstrapSource(loading = false) {
+function bootstrapSource(loading = false, chatFiles = false) {
   return `(() => {
     localStorage.setItem('language', 'zh');
     localStorage.setItem('i18nextLng', 'zh');
@@ -205,7 +206,11 @@ function bootstrapSource(loading = false) {
         count: 1, enabled_count: 1, default_model_id: 'model-enterprise'
       });
       if (url.pathname === '/api/ai/auth/company-credential-handoff') return json({ credential: 'synthetic-handoff' });
-      if (url.pathname === '/api/profile-drive/status') return json({ status: 'disconnected', connected: false, reauthRequired: false, connectedAtUtc: null, lastUsedAtUtc: null });
+      if (url.pathname === '/api/profile-drive/status') return json({ status: ${chatFiles} ? 'connected' : 'disconnected', connected: ${chatFiles}, reauthRequired: false, connectedAtUtc: null, lastUsedAtUtc: null });
+      if (${chatFiles} && url.pathname === '/api/profile-drive/files/list') return json({
+        status: 'success', path: '', truncated: false,
+        entries: Array.from({ length: 48 }, (_, index) => ({ path: 'report-' + index + '.txt', name: '报告 ' + (index + 1) + '.txt', type: 'file', size: 1200, lastModifiedUtc: '2026-01-01T00:00:00Z' }))
+      });
       if (url.pathname === '/api/review/history') return json({ items: [] });
       if (url.pathname === '/api/review/stats/documents') return json({ total: 146, daily: [] });
       if (url.pathname === '/api/upload/config') return json({
@@ -219,6 +224,10 @@ function bootstrapSource(loading = false) {
           document: 52428800
         }
       });
+      if (url.pathname === '/api/ai/chat/sessions/session-synthetic/files') return json({ session_id: 'session-synthetic', files: [{
+        file_id: 'file-synthetic', run_id: 'run-synthetic-1', name: '已确认附件.pdf', mime_type: 'application/pdf', size_bytes: 2048,
+        preview_url: '/api/ai/files/file-synthetic/preview?session_id=session-synthetic', download_url: '/api/ai/files/file-synthetic/download?session_id=session-synthetic'
+      }] });
       if (url.pathname === '/api/ai/chat/sessions') return json({ sessions: [], next_cursor: null });
       if (url.pathname === '/api/sessions') return json({ sessions: [], total: 0, skip: 0, limit: 20, has_more: false });
       if (url.pathname.startsWith('/api/')) {
@@ -231,6 +240,7 @@ function bootstrapSource(loading = false) {
 }
 
 const cases = [
+  { path: "/scripts/fixtures/chat-integration.html", selector: "[data-agent-starter-prompts] button", name: "chat-integration", requiredSelectors: ["textarea", "[data-librechat-context-toggle]"] },
   { path: "/ai-apps/sop-assistant", selector: "textarea[aria-label=\"制度或流程问题\"]", name: "sop", scroller: "[data-ai-application-scroller]" },
   { path: "/ai-apps/word-review", selector: ".review-upload", name: "word", scroller: "[data-ai-application-scroller]", requiredRequests: ["/api/review/history", "/api/review/stats/documents"] },
   {
@@ -358,7 +368,7 @@ if (selectedCases.length === 0 || selectedViewports.length === 0) {
 async function runCase(viewport, scenario) {
   const browser = await startBrowser({ viewport, profilePrefix: `route-layout-${viewport.name}-` });
   try {
-    await browser.client.send("Page.addScriptToEvaluateOnNewDocument", { source: bootstrapSource(scenario.loading) });
+    await browser.client.send("Page.addScriptToEvaluateOnNewDocument", { source: bootstrapSource(scenario.loading, ["chat-integration", "market-workspace"].includes(scenario.name)) });
     await browser.client.send("Page.navigate", { url: `${baseUrl}${scenario.path}` });
     try {
       await browser.client.waitFor(
@@ -797,6 +807,8 @@ async function runCase(viewport, scenario) {
       await browser.client.waitFor("!document.querySelector('[role=dialog]') && document.activeElement?.textContent.trim() === '管理工具'", "builder:mcp-focus-restored");
       await browser.client.evaluate(`document.querySelector('[data-agent-avatar-picker]').scrollIntoView({ block: 'center' })`);
     }
+    const chatIntegration = ["chat-integration", "market-workspace"].includes(scenario.name)
+      ? await checkChatIntegration(browser.client, viewport, scenario.name, { theme, evidenceDir }) : null;
     const finalErrors = await browser.client.evaluate("window.__routeLayoutSmoke.errors");
     if (finalErrors.length) throw new Error(`interaction_failed:${viewport.name}:${scenario.name}:${JSON.stringify(finalErrors)}`);
     let loadingLayout = null;
@@ -824,7 +836,7 @@ async function runCase(viewport, scenario) {
       }
     }
     const screenshot = await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-${scenario.name}`);
-    return { viewport: viewport.name, route: scenario.path, layout, reachable, responsiveLayout, modelLayout, avatarLayout, overlay, mcpFocus, runDiagnostics, loadingLayout, pluginLayout, marketView, screenshot };
+    return { viewport: viewport.name, route: scenario.path, layout, reachable, responsiveLayout, modelLayout, avatarLayout, overlay, mcpFocus, runDiagnostics, loadingLayout, pluginLayout, marketView, chatIntegration, screenshot };
   } catch (error) {
     const focusDiagnostic = await browser.client.evaluate(`(() => ({ activeTag: document.activeElement?.tagName, activeLabel: document.activeElement?.getAttribute('aria-label'), activeTitle: document.activeElement?.getAttribute('title'), listboxes: [...document.querySelectorAll('[role=listbox]')].map(node => ({ visible: node.checkVisibility({ opacityProperty: true, visibilityProperty: true }), display: getComputedStyle(node).display, visibility: getComputedStyle(node).visibility, opacity: getComputedStyle(node).opacity, hidden: node.getAttribute('aria-hidden'), inert: Boolean(node.closest('[inert]')), ending: node.hasAttribute('data-ending-style') })), departmentExpanded: document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]')?.getAttribute('aria-expanded'), departmentTriggerFocused: document.activeElement === document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]') }))()`);
     console.error(JSON.stringify({ route: scenario.path, focusDiagnostic }));

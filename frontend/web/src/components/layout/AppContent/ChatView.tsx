@@ -13,12 +13,12 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 import { ListTree } from "lucide-react";
-import { ThreadPrimitive } from "@assistant-ui/react";
+import { ThreadPrimitive, type ExternalStoreThreadListAdapter } from "@assistant-ui/react";
 import { toast } from "@lobehub/ui/base-ui";
 import { useAuth } from "../../../hooks/useAuth";
 import { ChatMessage } from "../../chat/ChatMessage";
 import { AssistantUiProjection } from "../../chat/assistant-ui/AssistantUiProjection";
-import { AssistantUiMessageFrame } from "../../chat/assistant-ui/MessageFrame";
+import { ThreadMessage } from "../../chat/assistant-ui/elements/thread";
 import { AttachmentPreviewHost } from "../../chat/AttachmentPreviewHost";
 import { RevealPreviewHost } from "../../chat/ChatMessage/items/RevealPreviewHost";
 import { SessionImageGalleryProvider } from "../../chat/ChatMessage/sessionImageGallery";
@@ -144,7 +144,7 @@ const AssistantUiMessageContentContext = createContext<ReactNode>(null);
 
 function AssistantUiProjectedMessage() {
   const content = useContext(AssistantUiMessageContentContext);
-  return <AssistantUiMessageFrame>{content}</AssistantUiMessageFrame>;
+  return <ThreadMessage>{content}</ThreadMessage>;
 }
 
 const ASSISTANT_UI_MESSAGE_COMPONENTS = {
@@ -153,6 +153,7 @@ const ASSISTANT_UI_MESSAGE_COMPONENTS = {
 
 interface ChatViewProps {
   messages: Message[];
+  threadListAdapter?: ExternalStoreThreadListAdapter;
   sessionId: string | null;
   conversationIdentityKey: string;
   currentRunId: string | null;
@@ -225,6 +226,7 @@ interface ChatViewProps {
 
 export function ChatView({
   messages,
+  threadListAdapter,
   sessionId,
   conversationIdentityKey,
   currentRunId,
@@ -303,12 +305,6 @@ export function ChatView({
     selectedSkillRevision: 0,
     pendingScopeHandoff: false,
   });
-  const setComposerInput = useCallback((value: string) => {
-    const snapshot = composerDraftSnapshotRef.current;
-    snapshot.revision += 1;
-    snapshot.value = value;
-    snapshot.apply?.(value);
-  }, []);
   const [workspaceProjection, setWorkspaceProjection] =
     useState<SessionWorkspaceProjection>({
       session_id: null,
@@ -882,7 +878,7 @@ export function ChatView({
   );
 
   const virtuosoItemContent = useCallback(
-    (index: number, message: (typeof messages)[number]) => (
+    (_index: number, message: (typeof messages)[number]) => (
       <AssistantUiMessageContentContext.Provider
         value={
           <div
@@ -891,9 +887,7 @@ export function ChatView({
             data-browser-session-id={sessionId ?? undefined}
           >
             <ChatMessage
-              message={message}
               artifactDownloadScopeContext={artifactDownloadScopeContext}
-              isLastMessage={index === messages.length - 1}
               onOpenPreview={handleOpenPreview}
             />
           </div>
@@ -908,7 +902,6 @@ export function ChatView({
     [
       artifactDownloadScopeContext,
       sessionId,
-      messages.length,
       handleOpenPreview,
     ],
   );
@@ -919,6 +912,7 @@ export function ChatView({
     initialDraftKey: initialComposerDraftKey,
     draftSnapshotRef: composerDraftSnapshotRef,
     draftScopeKey: sessionId,
+    runControlKey: currentRunId,
     attachmentScopeKey: conversationIdentityKey,
     draftScopeHandoffKey: composerDraftHandoffKey,
     onSend: onSendMessage,
@@ -1088,15 +1082,15 @@ export function ChatView({
             可以直接开始的任务
           </p>
           {agentEmptyProfile.starter_prompts.map((prompt) => (
-            <Button type="text"
-              className="min-w-0 rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 py-2 text-left text-sm text-[var(--theme-text)] hover:border-[var(--theme-primary)]"
-              key={prompt}
-              disabled={!canSendInCurrentView || isLoading}
-              onClick={() => setComposerInput(prompt)}
-              htmlType="button"
-            >
-              {prompt}
-            </Button>
+            <ThreadPrimitive.Suggestion key={prompt} prompt={prompt} send={false} asChild>
+              <Button type="default"
+                style={{ height: "auto", padding: "8px 12px", textAlign: "left", whiteSpace: "normal" }}
+                disabled={!canSendInCurrentView || isLoading}
+                htmlType="button"
+              >
+                {prompt}
+              </Button>
+            </ThreadPrimitive.Suggestion>
           ))}
         </div>
       ) : null}
@@ -1118,7 +1112,8 @@ export function ChatView({
 
   return (
     <AssistantUiProjection
-      messages={messages}
+      threadListAdapter={threadListAdapter}
+      messages={displayMessages}
       isRunning={sessionRunning}
       actions={assistantUiActions}
     >

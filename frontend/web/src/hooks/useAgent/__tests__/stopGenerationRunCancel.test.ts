@@ -9,6 +9,7 @@ import { createLobeServerTestRoot } from "../../../components/common/__tests__/l
 const renderToStaticMarkup = await createLobeServerTestRoot();
 // @ts-expect-error jsdom 26 does not ship declarations.
 import { JSDOM } from "jsdom";
+import { AssistantUiTestProvider } from "../../../components/chat/assistant-ui/__tests__/assistantUiTestProvider";
 import { ChatInputToolbar } from "../../../components/chat/ChatInputToolbar.tsx";
 import { fileURLToPath } from "node:url";
 
@@ -54,9 +55,10 @@ for (const [isLoading, canStop, canSend, expectedStop] of [
       canSubmit: false, hasUploadingAttachment: false, enabledToolsCount: 0,
       totalToolsCount: 0, enabledSkillsCount: 0, totalSkillsCount: 0,
       availableModels: [], uploadCategories: [], uploadFiles: noop,
-      onStopClick: noop, onNoPermissionClick: noop,
+      onNoPermissionClick: noop,
     });
-    const markup = renderToStaticMarkup(createElement(I18nextProvider, { i18n: translations }, toolbar));
+    const markup = renderToStaticMarkup(createElement(I18nextProvider, { i18n: translations },
+      createElement(AssistantUiTestProvider, { isRunning: isLoading }, toolbar)));
     const dom = new JSDOM(markup);
     try {
       const stop = dom.window.document.querySelector('button[title="Stop"]');

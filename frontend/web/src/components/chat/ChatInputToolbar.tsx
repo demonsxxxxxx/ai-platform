@@ -1,12 +1,11 @@
+import { ComposerToolbar, ComposerActions, ComposerSubmit } from "./assistant-ui/elements/composer";
 import { Button } from "@lobehub/ui/base-ui";
 import { useRef, useCallback, useEffect } from "react";
 import {
-  ArrowUp,
   Boxes,
   ChevronDown,
   Lock,
   Paperclip,
-  Square,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { FeatureMenu, type FeaturePanel } from "../selectors/FeatureMenu";
@@ -36,7 +35,6 @@ export interface ChatInputToolbarProps {
   uploadCategories: FileCategory[];
   uploadFiles: (files: FileList | File[], category?: FileCategory) => void;
   onFileCommandReady?: (openFileCommand: () => void) => void;
-  onStopClick: () => void;
   onNoPermissionClick: () => void;
 }
 
@@ -69,7 +67,6 @@ export function ChatInputToolbar({
   uploadCategories,
   uploadFiles,
   onFileCommandReady,
-  onStopClick,
   onNoPermissionClick,
 }: ChatInputToolbarProps) {
   const { t } = useTranslation();
@@ -101,7 +98,7 @@ export function ChatInputToolbar({
   );
 
   return (
-    <div className="flex min-h-11 max-w-full items-end justify-between gap-2 px-3 pb-2 pt-1">
+    <ComposerToolbar>
       <div className="min-w-0 flex-1">
         {showModelSelector && onSelectModel && availableModels.length > 0 ? (
           <Button type={activePanel === "model" ? "primary" : "default"} size="large"
@@ -133,7 +130,7 @@ export function ChatInputToolbar({
         ) : null}
       </div>
 
-      <div className="flex shrink-0 items-center gap-1">
+      <ComposerActions>
         <input
           ref={fileInputRef}
           type="file"
@@ -177,24 +174,10 @@ export function ChatInputToolbar({
             onClick={(event) => { event.preventDefault(); event.stopPropagation(); onNoPermissionClick(); }}
             aria-label={t("chat.noPermission")} title={t("chat.noPermission")} icon={<Lock size={18} />}
           />
-        ) : isLoading ? (
-          canStop ? (
-            <Button type="default" shape="circle" size="large" htmlType="button"
-              onClick={(event) => { event.preventDefault(); event.stopPropagation(); onStopClick(); }}
-              aria-label={t("chat.stop")} title={t("chat.stop")} icon={<Square size={16} fill="currentColor" />}
-            />
-          ) : (
-            <Button type="default" shape="circle" size="large" htmlType="button" disabled loading
-              aria-label={t("chat.generating", "生成中")} title={t("chat.generating", "生成中")} icon={<Square size={16} />}
-            />
-          )
         ) : (
-          <Button type={canSubmit ? "primary" : "default"} shape="circle" size="large" htmlType="submit" disabled={!canSubmit}
-            aria-label={t("chat.send")} icon={<ArrowUp size={18} />}
-            title={hasUploadingAttachment ? t("chat.waitingForUpload", "请等待文件上传完成") : t("chat.send")}
-          />
+          <ComposerSubmit running={isLoading} canStop={canStop} canSubmit={canSubmit} uploading={hasUploadingAttachment} />
         )}
-      </div>
-    </div>
+      </ComposerActions>
+    </ComposerToolbar>
   );
 }

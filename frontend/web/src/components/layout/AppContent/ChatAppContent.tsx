@@ -1,3 +1,4 @@
+import type { ExternalStoreThreadListAdapter } from "@assistant-ui/react";
 import { Button } from "@lobehub/ui/base-ui";
 /* eslint-disable react-refresh/only-export-components -- behavioral seams stay with the canonical Chat owner */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -897,6 +898,7 @@ export function ChatAppContent({
       agentWorkspaceTranscriptReady);
 
   const sidebarRef = useRef<SessionSidebarHandle>(null);
+  const [threadListAdapter, setThreadListAdapter] = useState<ExternalStoreThreadListAdapter>();
 
   useWebSocketNotifications({
     sessionId,
@@ -1255,6 +1257,7 @@ export function ChatAppContent({
       sidebar={
         <SessionSidebar
           ref={sidebarRef}
+          onThreadListAdapterChange={setThreadListAdapter}
           currentSessionId={sessionId}
           onSelectSession={handleSelectSessionAndClose}
           onSelectGlobalHistorySession={
@@ -1342,6 +1345,7 @@ export function ChatAppContent({
         ) : null}
         <ChatMcpCatalogContext.Provider value={mcpCatalogContextValue}>
             <ChatView
+            threadListAdapter={threadListAdapter}
             messages={visibleMessages}
             sessionId={visibleSessionId}
             conversationIdentityKey={conversationIdentityKey}
