@@ -72,6 +72,7 @@ class SkillRunAdmissionService:
         rollout_key: str,
         expected_version: str | None = None,
         department_id: str = "",
+        department_ids: tuple[str, ...] = (),
         roles: list[str] | None = None,
         permissions: list[str] | None = None,
     ) -> SkillRunAdmission:
@@ -81,7 +82,7 @@ class SkillRunAdmissionService:
             input_payload=input_payload,
             tenant_id=tenant_id,
             rollout_key=rollout_key,
-            department_id=department_id, roles=roles, permissions=permissions,
+            department_id=department_id, department_ids=department_ids, roles=roles, permissions=permissions,
         )
         return admissions[0]
 
@@ -94,6 +95,7 @@ class SkillRunAdmissionService:
         tenant_id: str,
         rollout_key: str,
         department_id: str = "",
+        department_ids: tuple[str, ...] = (),
         roles: list[str] | None = None,
         permissions: list[str] | None = None,
     ) -> list[SkillRunAdmission]:
@@ -167,7 +169,7 @@ class SkillRunAdmissionService:
                     tenant_id=tenant_id,
                     skill_id=dependency_id,
                     row=row,
-                    department_id=department_id, roles=roles, permissions=permissions,
+                    department_id=department_id, department_ids=department_ids, roles=roles, permissions=permissions,
                 ):
                     raise self._ports.materialization_error("skill_version_not_materializable")
                 selected_version = str(row.get("version") or "")

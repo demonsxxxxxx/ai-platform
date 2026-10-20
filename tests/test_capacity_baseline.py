@@ -2714,7 +2714,7 @@ def test_capacity_runtime_evidence_cli_sends_gateway_secret_without_printing_val
     assert "test-capacity-secret" not in result.stdout
 
 
-def test_capacity_runtime_evidence_cli_can_skip_maintenance_cleanup_for_default_stack():
+def test_capacity_runtime_evidence_cli_uses_read_only_overview_for_default_stack():
     requests: list[str] = []
 
     class OverviewHandler(BaseHTTPRequestHandler):
@@ -2723,10 +2723,10 @@ def test_capacity_runtime_evidence_cli_can_skip_maintenance_cleanup_for_default_
 
         def do_GET(self):  # noqa: N802
             requests.append(self.path)
-            if self.path != "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false":
+            if self.path != "/api/ai/admin/runtime/overview":
                 self.send_response(500)
                 self.end_headers()
-                self.wfile.write(b'{"detail":"sandbox_provider_cleanup_failed"}')
+                self.wfile.write(b'{"detail":"unexpected_route"}')
                 return
             payload = _admin_runtime_overview()
             raw = json.dumps(payload).encode("utf-8")
@@ -2757,7 +2757,6 @@ def test_capacity_runtime_evidence_cli_can_skip_maintenance_cleanup_for_default_
                 "abc123",
                 "--runtime-profile",
                 "default-stack",
-                "--skip-maintenance-cleanup",
                 "--format",
                 "json",
             ],
@@ -2771,11 +2770,11 @@ def test_capacity_runtime_evidence_cli_can_skip_maintenance_cleanup_for_default_
 
     payload = json.loads(result.stdout)
     assert payload["source"]["overview_route"] == (
-        "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false"
+        "/api/ai/admin/runtime/overview"
     )
     assert payload["source"]["http_status"] == 200
     assert payload["readiness"]["status"] == "blocked_missing_load_test_evidence"
-    assert requests == ["/api/ai/admin/runtime/overview?include_maintenance_cleanup=false"]
+    assert requests == ["/api/ai/admin/runtime/overview"]
 
 
 def test_capacity_runtime_evidence_cli_accepts_host_sandbox_observation_json(tmp_path):
@@ -2831,7 +2830,6 @@ def test_capacity_runtime_evidence_cli_accepts_host_sandbox_observation_json(tmp
                 "abc123",
                 "--runtime-profile",
                 "default-stack",
-                "--skip-maintenance-cleanup",
                 "--format",
                 "json",
             ],
@@ -2855,7 +2853,7 @@ def test_capacity_runtime_evidence_cli_accepts_host_sandbox_observation_json(tmp
     assert payload["snapshot"]["admin_runtime_evidence"]["missing_sections"] == []
     assert payload["readiness"]["status"] == "blocked_missing_load_test_evidence"
     assert payload["readiness"]["missing_load_test_gates"] == LOAD_TEST_GATES
-    assert requests == ["/api/ai/admin/runtime/overview?include_maintenance_cleanup=false"]
+    assert requests == ["/api/ai/admin/runtime/overview"]
 
 
 def test_capacity_runtime_evidence_cli_reports_missing_host_sandbox_observation_as_safe_json(tmp_path):
@@ -2890,7 +2888,6 @@ def test_capacity_runtime_evidence_cli_reports_missing_host_sandbox_observation_
                 str(missing_path),
                 "--commit-sha",
                 "abc123",
-                "--skip-maintenance-cleanup",
                 "--format",
                 "json",
             ],
@@ -2912,7 +2909,7 @@ def test_capacity_runtime_evidence_cli_reports_missing_host_sandbox_observation_
     assert host_status["diagnostic_only"] is True
     assert host_status["does_not_mark_b3_recorded_evidence"] is True
     assert payload["readiness"]["status"] == "blocked_missing_load_test_evidence"
-    assert requests == ["/api/ai/admin/runtime/overview?include_maintenance_cleanup=false"]
+    assert requests == ["/api/ai/admin/runtime/overview"]
     assert "Traceback" not in result.stderr
     assert str(tmp_path) not in result.stdout
     assert str(tmp_path) not in result.stderr
@@ -2951,7 +2948,6 @@ def test_capacity_runtime_evidence_cli_reports_malformed_host_sandbox_observatio
                 str(malformed_path),
                 "--commit-sha",
                 "abc123",
-                "--skip-maintenance-cleanup",
                 "--format",
                 "json",
             ],
@@ -2973,7 +2969,7 @@ def test_capacity_runtime_evidence_cli_reports_malformed_host_sandbox_observatio
     assert host_status["diagnostic_only"] is True
     assert host_status["does_not_mark_b3_recorded_evidence"] is True
     assert payload["readiness"]["status"] == "blocked_missing_load_test_evidence"
-    assert requests == ["/api/ai/admin/runtime/overview?include_maintenance_cleanup=false"]
+    assert requests == ["/api/ai/admin/runtime/overview"]
     assert "Traceback" not in result.stderr
     assert str(tmp_path) not in result.stdout
     assert str(tmp_path) not in result.stderr

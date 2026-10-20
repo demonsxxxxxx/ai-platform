@@ -302,13 +302,12 @@ function DirectorySection({
                     ? "text-amber-500 hover:bg-amber-500/10"
                     : "text-[var(--theme-text-tertiary)] hover:bg-[var(--theme-hover)] hover:text-amber-500"
                 }`}
-              >
-                <Star
+                icon={<Star
                   aria-hidden="true"
                   className="size-4"
                   fill={isFavorite ? "currentColor" : "none"}
-                />
-              </Button>
+                />}
+              />
             </div>
           );
         })}

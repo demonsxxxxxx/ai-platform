@@ -163,6 +163,24 @@ def test_runner_executes_explicit_selector_with_local_evidence(tmp_path):
     assert (repo / str(paths["evidence"])).is_file()
 
 
+def test_runner_supports_deep_temporary_fixture_paths(tmp_path):
+    repo = _make_repo(tmp_path, {
+        "test_deep.py": (
+            "def test_deep(tmp_path):\n"
+            "    path = tmp_path\n"
+            "    for i in range(4):\n"
+            "        path = path / (str(i) + '-' + 'x' * 45)\n"
+            "    path.mkdir(parents=True)\n"
+            "    target = path / 'evidence.json'\n"
+            "    target.write_text('{}')\n"
+            "    assert target.read_text() == '{}'\n"
+        ),
+    })
+    completed = _runner(repo, "--stage", "deep", "tests/test_deep.py")
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert _single_evidence(repo)["status"] == "passed"
+
+
 def test_runner_removes_caller_pytest_control_environment(tmp_path):
     repo = _make_repo(tmp_path, {"test_pass.py": "def test_pass():\n    assert True\n"})
 

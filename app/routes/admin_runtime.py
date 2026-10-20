@@ -6,12 +6,9 @@ from app.control_plane_contracts import sanitize_public_payload, sanitize_public
 from app.db import get_pool_status, transaction
 from app.error_taxonomy import summarize_error_categories
 from app.execution_boundary import REAL_SANDBOX_PROVIDERS, is_accepted_runtime_lease
-from app.identity.infrastructure import audit_postgres as identity_audit
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 from app.queue import get_queue_insight, get_queue_status
 from app.routes.sandbox_leases import lease_response
-from app.bootstrap.sandbox_cleanup import build_sandbox_runtime_cleanup
-from app.sandbox.api import SandboxRuntimeCleanupError
 from app.runs.infrastructure import admin_queries_postgres as runs_admin_queries
 from app.runtime.sandbox.container_provider import (
     DockerPermissionDeniedError,
@@ -21,11 +18,8 @@ from app.runtime.sandbox.container_provider import (
 from app.sandbox.infrastructure import leases_postgres as sandbox_leases
 from app.settings import get_settings
 
-_sandbox_cleanup = build_sandbox_runtime_cleanup()
-
 router = APIRouter()
 
-_SUCCESSFUL_PROVIDER_CLEANUP_STATUSES = {"stopped", "not_found"}
 _EXECUTOR_RECONCILIATION_SLO_SECONDS = 900
 _OVERVIEW_FORBIDDEN_KEYS = {"skillid"}
 _DATABASE_POOL_CONFIG_KEYS = {"min_size", "max_size", "timeout_seconds", "max_waiting"}
@@ -440,71 +434,6 @@ def _backpressure_snapshot(
     return snapshot
 
 
-def _provider_cleanup_failures(cleanup_results: object) -> list[dict[str, str]]:
-    if not isinstance(cleanup_results, list):
-        return [{"container_id": "unknown", "message": "Malformed provider cleanup result"}]
-    failures: list[dict[str, str]] = []
-    for result in cleanup_results:
-        if isinstance(result, dict):
-            failures.append({"container_id": "unknown", "message": "Malformed provider cleanup result"})
-            continue
-        status = getattr(result, "status", None)
-        if status not in _SUCCESSFUL_PROVIDER_CLEANUP_STATUSES:
-            failures.append(
-                {
-                    "container_id": str(getattr(result, "container_id", None) or "unknown"),
-                    "message": "Provider orphan cleanup failed",
-                }
-            )
-    return failures
-
-
-async def _record_admin_orphan_cleanup_failure(
-    principal: AuthPrincipal,
-    failures: list[dict[str, str]],
-) -> None:
-    try:
-        async with transaction() as conn:
-            await identity_audit.append_audit_log(
-                conn,
-                tenant_id=principal.tenant_id,
-                user_id=principal.user_id,
-                action="sandbox.runtime.orphan_cleanup.failed",
-                target_type="sandbox_runtime",
-                target_id=principal.tenant_id,
-                payload_json={"failure_count": len(failures), "failures": failures},
-            )
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail="sandbox_cleanup_audit_unavailable") from exc
-
-
-async def _cleanup_provider_orphans(provider: object, principal: AuthPrincipal) -> None:
-    cleanup = getattr(provider, "cleanup_orphan_containers", None)
-    if cleanup is None:
-        return
-    try:
-        cleanup_results = await cleanup({"tenant_id": principal.tenant_id}, reason="admin_runtime")
-    except Exception as exc:
-        await _record_admin_orphan_cleanup_failure(
-            principal,
-            [{"container_id": "unknown", "message": "Provider orphan cleanup raised an exception"}],
-        )
-        raise HTTPException(status_code=500, detail="sandbox_provider_cleanup_failed") from exc
-    failures = _provider_cleanup_failures(cleanup_results)
-    if failures:
-        await _record_admin_orphan_cleanup_failure(principal, failures)
-        raise HTTPException(status_code=500, detail="sandbox_provider_cleanup_failed")
-
-
-def _only_placeholder_cleanup_failures(exc: SandboxRuntimeCleanupError) -> bool:
-    failures = getattr(exc, "failures", None)
-    return bool(failures) and all(
-        str(failure.get("message") or "") == "Unsupported sandbox provider: fake"
-        for failure in failures
-        if isinstance(failure, dict)
-    ) and all(isinstance(failure, dict) for failure in failures)
-
-
 def _accepted_runtime_containers(
     containers: list[object],
     active_leases: list[dict[str, object]],
@@ -588,17 +517,7 @@ async def admin_runtime_containers(
         raise HTTPException(status_code=403, detail="not_ai_admin")
 
     provider = create_container_provider()
-    await _cleanup_provider_orphans(provider, principal)
-    try:
-        await _sandbox_cleanup.cleanup_expired_sandbox_runtime_leases(
-            tenant_id=principal.tenant_id,
-            provider_factory=create_container_provider,
-        )
-    except SandboxRuntimeCleanupError as exc:
-        if not _only_placeholder_cleanup_failures(exc):
-            raise HTTPException(status_code=500, detail="sandbox_runtime_cleanup_failed") from exc
     async with transaction() as conn:
-        await _sandbox_cleanup.cleanup_expired_sandbox_leases(conn, tenant_id=principal.tenant_id)
         leases = await sandbox_leases.list_sandbox_leases(conn, tenant_id=principal.tenant_id, status="active")
         lease_history = (
             await sandbox_leases.list_sandbox_leases(conn, tenant_id=principal.tenant_id, status=None)
@@ -635,7 +554,6 @@ async def admin_runtime_containers(
 
 @router.get("/admin/runtime/overview")
 async def admin_runtime_overview(
-    include_maintenance_cleanup: bool = True,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, object]:
     """Return an admin-only same-tenant runtime overview snapshot."""
@@ -643,20 +561,7 @@ async def admin_runtime_overview(
         raise HTTPException(status_code=403, detail="not_ai_admin")
 
     provider = create_container_provider()
-    if include_maintenance_cleanup:
-        await _cleanup_provider_orphans(provider, principal)
-        try:
-            await _sandbox_cleanup.cleanup_expired_sandbox_runtime_leases(
-                tenant_id=principal.tenant_id,
-                provider_factory=create_container_provider,
-            )
-        except SandboxRuntimeCleanupError as exc:
-            if not _only_placeholder_cleanup_failures(exc):
-                raise HTTPException(status_code=500, detail="sandbox_runtime_cleanup_failed") from exc
-
     async with transaction() as conn:
-        if include_maintenance_cleanup:
-            await _sandbox_cleanup.cleanup_expired_sandbox_leases(conn, tenant_id=principal.tenant_id)
         leases = await sandbox_leases.list_sandbox_leases(conn, tenant_id=principal.tenant_id, status="active")
         lease_history = await sandbox_leases.list_sandbox_leases(conn, tenant_id=principal.tenant_id, status=None)
 

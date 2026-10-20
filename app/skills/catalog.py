@@ -964,6 +964,7 @@ def is_current_skill_dependency_usable(
     skill_id: str,
     row: dict[str, Any],
     department_id: str,
+    department_ids: tuple[str, ...] = (),
     roles: list[str] | None,
     permissions: list[str] | None,
 ) -> bool:
@@ -979,6 +980,7 @@ def is_current_skill_dependency_usable(
         CapabilityAccessContext(
             tenant_id=tenant_id,
             department_id=department_id,
+            department_ids=tuple(department_ids),
             roles=roles or [],
             permissions=permissions or [],
         ),
@@ -1000,6 +1002,7 @@ async def resolve_authorized_skill_catalog(
     *,
     binding: AuthorizedSkillCatalogBinding,
     department_id: str,
+    department_ids: tuple[str, ...] = (),
     roles: list[str],
     permissions: list[str],
     pinned_manifests: list[dict[str, Any]] | None = None,
@@ -1045,6 +1048,7 @@ async def resolve_authorized_skill_catalog(
     context = CapabilityAccessContext(
         tenant_id=binding.tenant_id,
         department_id=str(department_id or ""),
+        department_ids=tuple(department_ids),
         roles=list(roles),
         is_admin=False,
         permissions=list(permissions),

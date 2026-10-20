@@ -117,7 +117,7 @@ class _BoundedMcpStream(httpx.AsyncByteStream):
 @asynccontextmanager
 async def open_mcp_session(
     config, *, timeout_seconds=60.0, max_response_bytes=1024 * 1024,
-    max_response_total_bytes=None, terminate_on_close=True,
+    max_response_total_bytes=None, terminate_on_close=True, credential_resolver=None,
 ):
     """Keep credentials on one approved origin, including SSE message endpoints."""
     transport = config.get("type")
@@ -168,13 +168,22 @@ async def open_mcp_session(
         request.extensions["sni_hostname"] = target.sni_hostname
         if credential_principal is not None:
             try:
-                current_jwt = await mcp_runtime.get_mcp_principal_jwt_store().get(credential_principal)
+                current_jwt = (
+                    await credential_resolver() if credential_resolver is not None
+                    else await mcp_runtime.get_mcp_principal_jwt_store().get(credential_principal)
+                )
+                current_header = _mcp_headers(
+                    target, static_headers={}, jwt_authorization=f"Bearer {current_jwt}",
+                    integration_kind=integration_kind,
+                )[jwt_header]
             except McpRuntimeContextError as exc:
                 fail("authorization_required" if exc.status_code == 401 else "transport_failure")
+            except McpToolDiscoveryError as exc:
+                fail(exc.reason)
             except Exception:
                 fail("transport_failure")
             # Only subsequent HTTP dispatches change headers; tool effects are never replayed.
-            request.headers[jwt_header] = f"Bearer {current_jwt}"
+            request.headers[jwt_header] = current_header
 
     async def bound_response(response):
         # HTTPX closes responses rejected by hooks, including unread bodies.

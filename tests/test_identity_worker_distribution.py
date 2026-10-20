@@ -28,7 +28,9 @@ async def test_worker_distribution_rechecks_inherited_tool_and_non_admin_builtin
         conflict_error=ValueError,
     )
     principal = SimpleNamespace(
-        tenant_id="tenant", department_id="dept", roles=["member"], permissions=[],
+        tenant_id="tenant", department_id="110", department_ids=("110",),
+        direct_department_ids=("110",), department_authority_status="available",
+        roles=["member"], permissions=[],
     )
     skill, builtin_distribution = await authority.skill_decision(
         object(), principal=principal, tenant_id="tenant",

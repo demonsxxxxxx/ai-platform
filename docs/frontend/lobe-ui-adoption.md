@@ -20,7 +20,7 @@
 | 管理列表 | 同入口的 `Table`、`Pagination` | 数据列映射、分页及选择状态由所属业务页面维护，不改变查询语义 |
 | 菜单与提示 | 同入口的 `DropdownMenu`、`Popover`、`Tooltip`、`Tabs` | 使用库公开交互合同，不重新编写定位、Escape 和焦点状态机 |
 | 通知与加载 | 同入口的 `toast`、`ToastHost`、`useToast`、`Spin`、`Skeleton` | 新入口已提供 Toast；不假设存在同名 `Message` API |
-| Agent/聊天展示 | 经单独核验的 `@lobehub/ui/chat` 公开组件 | 后续评估展示层；不因 UI 选型替换现有 Run/SSE、消息投影或 assistant-ui runtime 合同 |
+| AI 聊天交互 | 固定来源的 assistant-ui Elements 与公开 primitives/runtime | 按[聊天接入合同](assistant-ui-chat-adoption.md)组合 thread、message、composer、actions 和 suggestions；内部通用按钮、输入、弹窗仍使用 Lobe |
 
 Root barrel 中部分组件仍然存在，但旧 Button、Modal 已标记 `@deprecated`。业务控件优先从 `/base-ui` 导入；Provider、国际化及其他只在 root/subpath 导出的能力按各自公开合同使用，不能将“禁止旧控件”误写为“禁止一切 root import”。不从包的私有源码路径导入。
 
@@ -54,18 +54,25 @@ Lobe ThemeProvider 自带 AntD App 和 Base UI portal host。`enableCustomFonts=
 - 高层 Select 的标签转发有边界；`LobeSelectField` 只负责调用方的可访问标签、布局和嵌套 Escape 隔离，选择交互仍由库拥有。
 - 受控 `ModalRoot` 在关闭时会卸载子树。需要常驻的打开按钮放在 Root 外；没有库 Trigger 的弹层显式传入原按钮的 `finalFocus` 引用。
 - 组合 Trigger 遇到单个 React 子元素时会克隆它；图标操作应传入实际 Button，不能让 SVG/span 成为伪按钮。
-- 使用库 Portal；专业查看器自有 Portal 通过公开 `useAppElement` 接入主题范围。嵌套弹层、全屏和侧栏仍需实际检验定位与焦点。
+- 使用库 Portal；插件市场认证使用 `ModalRoot`、`ModalPortal` 与公开 Modal 组合，保持浮层位于主题容器内，密码前后缀通过 Input 的 `prefix/suffix` 组合；不保留手写 `document.body` Portal、遮罩按钮或 Tab/Escape/滚动锁。专业查看器自有 Portal 通过公开 `useAppElement` 接入主题范围。嵌套弹层、全屏和侧栏仍需实际检验定位与焦点。
+- assistant-ui 的 `asChild` 仅组合能转发 DOM ref、事件和原生属性的 Lobe 控件；聊天语义由 assistant-ui 拥有，外观由 Lobe 公开 API 设置。禁止靠保留 Tailwind `className` 假定覆盖库根样式：定位/Grid 分区放在业务容器，颜色/尺寸使用公开 `style`、`styles`、`size`、`icon`。实际检查 computed style 和几何。
 - `ToastHost` 是统一通知宿主。队列通知维持稳定 ID `chat-queue` 和持续显示，关闭/更新使用 Lobe toast 合同。
 
 ## 完成范围与退役条件
 
-管理表格已由 MCP、模型、运行监控/调查/性能、Skill 管理、工具参数及专家发布历史 8 个实际调用方直接使用 Lobe Table。普通单选通过 Lobe Select 接入；部门/角色、市场标签及聊天目录选择保留业务数据 owner，使用库 Select/Popover/AutoComplete/Modal 交互。
+管理表格已由 MCP、模型、运行监控、运行性能、Skill 管理、工具参数及专家发布历史 7 个实际调用方直接使用 Lobe Table。普通单选通过 Lobe Select 接入；部门/角色、市场标签及聊天目录选择保留业务数据 owner，使用库 Select/Popover/AutoComplete/Modal 交互。
 
-聊天、文档和编辑器外围采用 Lobe 控件；9 个页面/面板的 115 个手写加载占位已使用 Lobe Skeleton，业务布局和响应式尺寸保持。保留 Run/SSE、assistant-ui、草稿、附件 URL、安全下载和专业渲染职责。Markdown/XLSX 表格是 renderer 的语义结构；代码、图形、文档查看器的缩放、图层和几何不是通用管理表格。
+AI 聊天交互采用 assistant-ui，内部通用控件及文档、编辑器外围采用 Lobe；[聊天接入合同](assistant-ui-chat-adoption.md)列出已接通能力和保留的业务适配。9 个页面/面板的 115 个手写加载占位已使用 Lobe Skeleton，业务布局和响应式尺寸保持。Run/SSE、草稿、附件 URL、安全下载和专业渲染仍由平台及各业务 owner 拥有。Markdown/XLSX 表格是 renderer 的语义结构；代码、图形、文档查看器的缩放、图层和几何不是通用管理表格。
 
 以下旧文件已删除：`common/EnterpriseSelect.tsx`、`Checkbox.tsx`、`Table.tsx`、`Pagination.tsx`、`LoadingSpinner.tsx` 和 `skill/Toggle.tsx`；旧导出和生产消费者均已移除，无兼容入口；旧分页、旧 Select 的专用 CSS 和旧 Checkbox 的 `check-pop` 动画也已删除。选择器挂载测试已重命名为 `common/__tests__/LobeSelectField.mounted.test.tsx`。`@radix-ui/react-select` 与 `react-hot-toast` 的直接依赖及对应锁文件 importer 记录已移除；库存回归断言这些旧文件、旧测试文件名和直接依赖保持缺席。
 
-保留的传递依赖链为 `@assistant-ui/react@0.15.16 → radix-ui@1.6.7 → @radix-ui/react-select@2.3.7`，由现有聊天 UI runtime 的依赖合同拥有；项目业务代码不直接使用它，也不手工删除它所需的锁文件条目。`frontend/web/THIRD_PARTY_NOTICES.md` 保留已退役适配代码的 MIT 来源许可，不再将旧适配描述为当前实现。
+保留的传递依赖链为 `@assistant-ui/react@0.15.29 → radix-ui@1.8.1 → @radix-ui/react-select@2.4.1`，由现有聊天 UI runtime 的依赖合同拥有；项目业务代码不直接使用它，也不手工删除它所需的锁文件条目。`frontend/web/THIRD_PARTY_NOTICES.md` 保留已退役适配代码的 MIT 来源许可，不再将旧适配描述为当前实现。
+
+专业查看器保留业务外壳：`ToolResultPanel` / `EditorSidebar` 拥有主内容让位、宽度拖拽、移动手势和面板历史；`SkillForm` 保留同一编辑状态下的全屏模式，退出按钮通过公开 `style` 固定在可见的右上角；Mermaid 查看器保留缩放、平移及图形几何。这些 Portal 通过公开 `useAppElement` 进入 Lobe 主题宿主，工具结果只由面板自身创建一次 Portal。Markdown/XLSX 的语义表格与 Provider 外的 `ErrorBoundary` 刷新按钮仍是明确例外，不恢复旧通用控件。
+
+普通图标按钮使用公开 `icon` 属性；已退役 `btn-icon`、`btn-secondary`、`btn-danger`、`enterprise-form-input` / `enterprise-form-textarea` 及旧企业图标按钮 CSS。记忆表单尺寸改用库的 `size`，仅 `ErrorBoundary` 继续使用 `btn-primary`。共享 `ConfirmDialog` 使用公开 Modal 组合，保留加载时禁止关闭和危险操作，并将焦点还给打开前的控件；Word 中断操作复用它，服务端取消确认仍由审核业务 owner 判断。
+
+窄屏管理表格由 MCP 与运行性能 owner 显式设置列宽及横向滚动；Skill 详情所在单列使用 `minmax(0, 1fr)`，治理状态标签不换行。SOP、Word 使用现有语义主题变量，Word 页头使用 `review-panel-header` 避免继承全局 sticky 样式，手机统计与上传区保持首屏任务优先。相关几何由实际浏览器回归验证，不用页面隐藏溢出来替代内容可达性。
 
 源码库存检查须对应实际调用方和 renderer 例外，不能为保留旧断言而恢复旧组件。组件替换需完成 owning 回归、中文与可访问名称、禁用/提交状态、键盘与焦点、窄屏布局和实际渲染检查。
 
