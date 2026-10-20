@@ -163,6 +163,15 @@ export function RunDiagnosticsSection({
           ) : null}
         </div>
       </div>
+      <p className="mt-2 text-[11px] leading-5 text-[var(--theme-text-secondary)]">诊断包包含本次运行的阶段、事件关联、用量、冻结配置、租约及已采集的调试事实；缺失与裁剪会在包内列明。</p>
+      {observationEvidence.some((observation) => observation.sdk.debug) || diagnostics.details.sdk.debug ? (
+        <details className="mt-3 rounded-md border border-[var(--theme-border)] p-3" data-run-debug-facts>
+          <summary className="cursor-pointer text-xs font-medium">结构化调试事实</summary>
+          <div className="mt-2 space-y-3">{(observationEvidence.length ? observationEvidence : [{ sdk: diagnostics.details.sdk }]).map((observation, index) => observation.sdk.debug ? (
+            <pre key={index} className="max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-[var(--theme-text-secondary)]">{diagnosticJson(observation.sdk.debug)}</pre>
+          ) : null)}</div>
+        </details>
+      ) : null}
       {exportError ? (
         <p role="alert" className="mt-2 text-xs text-[var(--theme-danger)]">
           诊断包生成失败：{exportError}

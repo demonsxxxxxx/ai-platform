@@ -72,9 +72,19 @@ class ProviderSessionUseCases:
         if kwargs["action"] == "append":
             batch, _size = normalize_provider_entry_batch(kwargs["entries"], subpath=kwargs["subpath"])
             projection = split_provider_images([item.entry for item in batch], image_fields=self._image_fields)
-            if any(provider_entry_json_bytes(entry) > MAX_PROVIDER_SESSION_STRUCTURED_ENTRY_BYTES
-                   for entry in projection.entries):
-                raise ProviderSessionContinuityError("provider_session_entry_too_large")
+            for index, entry in enumerate(projection.entries):
+                size = provider_entry_json_bytes(entry)
+                if size > MAX_PROVIDER_SESSION_STRUCTURED_ENTRY_BYTES:
+                    references = projection.references[index]
+                    sizes = [ref["size_bytes"] for ref in references]
+                    raise ProviderSessionContinuityError("provider_session_entry_too_large", debug={
+                        "component": "provider_session", "operation": "append", "phase": "structured_entry_validation",
+                        "failure_class": "size_limit", "observed_bytes": size,
+                        "limit_bytes": MAX_PROVIDER_SESSION_STRUCTURED_ENTRY_BYTES, "entry_index": index,
+                        "entry_count": len(projection.entries), "scope": "child" if kwargs["subpath"] else "main",
+                        "entry_kind": entry.get("type", "other"), "image_count": len(sizes),
+                        "encoded_image_bytes": sum(sizes), "largest_encoded_image_bytes": max(sizes, default=0),
+                    })
         binding = {key: kwargs[key] for key in (
             "tenant_id", "workspace_id", "user_id", "session_id", "agent_id", "run_id",
             "attempt_id", "provider_session_id", "action", "entries", "subpath", "expected_sequence",

@@ -2,10 +2,16 @@
 
 from app.execution.infrastructure.claude_mcp import ClaudeMcpRegistration
 from app.mcp.infrastructure.client import list_mcp_tools, open_mcp_session
+from app.mcp.infrastructure.credential_callback import McpCredentialCallbackClient
 
 
-def prepare_claude_mcp(subjects, configs, callback_wrapper=None, *, failure_observer=None):
+def build_mcp_credential_resolver(**binding):
+    return McpCredentialCallbackClient(**binding).get
+
+
+def prepare_claude_mcp(subjects, configs, callback_wrapper=None, *, failure_observer=None, credential_resolver=None):
     return ClaudeMcpRegistration(
         subjects, configs, session_factory=open_mcp_session, list_tools=list_mcp_tools,
         callback_wrapper=callback_wrapper, failure_observer=failure_observer,
+        credential_resolver=credential_resolver,
     )

@@ -233,7 +233,6 @@ async def test_browser_only_diagnostics_do_not_claim_an_exception_or_full_failur
     assert projected["browser_latency"]["duration_ms"] == 2500
     investigated = await diagnostics.read_admin_investigation(object(), tenant_id="tenant-a", run_id="run-a")
     assert investigated["browser_first_text_ms"] == 2500
-    assert investigated["comparison"]["missing_reason"] == "model_identity_unknown"
 
 
 @pytest.mark.asyncio

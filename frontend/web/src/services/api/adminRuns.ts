@@ -205,6 +205,7 @@ export interface AdminRunDiagnosticsResponse {
   details: {
     schema_version?: string | null;
     sdk: {
+      debug?: Record<string, string | number>;
       api_error_status?: number;
       result_subtype?: string | null;
       stop_reason?: string | null;
@@ -226,6 +227,7 @@ export interface AdminRunDiagnosticsResponse {
       stage?: string | null;
       error_code?: string | null;
       sdk: {
+        debug?: Record<string, string | number>;
         api_error_status?: number;
         exception_chain?: Array<{
           type: string;
@@ -378,6 +380,7 @@ export interface AdminRunMonitorResponse {
   counts: { total: number; succeeded: number; failed: number; cancelled: number; queued: number; running: number };
   success_rate: number | null;
   latency: Record<keyof AdminRunLatency, AdminRunMetricSummary>;
+  trend?: Array<{ from_at: string; succeeded: number; failed: number; running: number }>;
   models: Array<{ model_id: string; model_value: string; model_gateway_revision: number | null }>;
   runs: AdminRunSummary[];
   limit: number;
@@ -413,14 +416,6 @@ export interface AdminRunInvestigation extends AdminRunLatency {
   unbound_event_count: number;
   missing_measurements: Array<keyof AdminRunLatency>;
   stages: AdminRunInvestigationStage[];
-  comparison: {
-    window: { from_at: string; to_at: string };
-    sample_count: number;
-    latency: Partial<Record<keyof AdminRunLatency, AdminRunMetricSummary>>;
-    normal_run_id: string | null;
-    scope: "same_agent_skill_profile_model_configuration";
-    missing_reason: "model_identity_unknown" | "no_comparable_successful_run" | null;
-  };
 }
 
 export interface AdminRunMonitorOptions extends AdminRunListOptions {
@@ -560,12 +555,12 @@ export async function fetchAdminRunMonitor(
 }
 
 export async function fetchAdminRunInvestigation(
-  runId: string, options: AdminRunMonitorOptions = {}, client: AdminRunsApiClient = defaultClient,
+  runId: string, client: AdminRunsApiClient = defaultClient,
 ): Promise<AdminRunInvestigation> {
   const response = await client.request<AdminRunInvestigation>(
-    `/api/ai/admin/runs/${encodeURIComponent(runId)}/investigation?${monitorQuery(options)}`, { method: "GET" },
+    `/api/ai/admin/runs/${encodeURIComponent(runId)}/investigation`, { method: "GET" },
   );
-  if (!response || response.run_id !== runId || response.timeline_source !== "platform_receipts" || !Array.isArray(response.stages) || !response.comparison) {
+  if (!response || response.run_id !== runId || response.timeline_source !== "platform_receipts" || !Array.isArray(response.stages)) {
     throw new Error("admin_run_investigation_response_invalid");
   }
   return response;

@@ -2884,7 +2884,7 @@ async def test_sdk_disconnects_before_selected_mcp_session_closes(
     async def list_tools(_session):
         return [types.SimpleNamespace(name="search")]
 
-    def prepare(subjects, configs, callback_wrapper=None, *, failure_observer=None):
+    def prepare(subjects, configs, callback_wrapper=None, *, failure_observer=None, credential_resolver=None):
         return ClaudeMcpRegistration(
             subjects,
             configs,
@@ -6766,7 +6766,7 @@ async def test_returned_mcp_error_only_fails_current_call(monkeypatch, tmp_path,
     first = {**_subject(server_id="files", tool_name="list_files"), "write_capable": True}
     next_tool = {**_subject(server_id="projects", tool_name="update"), "write_capable": True}
 
-    def prepare(subjects, configs, callback_wrapper=None, *, failure_observer=None):
+    def prepare(subjects, configs, callback_wrapper=None, *, failure_observer=None, credential_resolver=None):
         @asynccontextmanager
         async def session_factory(config):
             names = [item["mcp_tool"] for item in subjects.values()
@@ -7179,7 +7179,17 @@ async def test_sdk_session_guard_diagnostics_are_value_free(monkeypatch, tmp_pat
     )
     assert result.error == "claude_agent_sdk_provider_session_failed"
     assert result.runtime_diagnostics["failure_source"] == source
-    assert not result.runtime_diagnostics.get("sdk")
+    sdk = result.runtime_diagnostics["sdk"]
+    assert set(sdk) == {"debug"}
+    assert sdk["debug"]["component"] == "claude_executor"
+    assert sdk["debug"]["sdk_version"] == "0.2.165"
+    python_version = sdk["debug"]["python_version"]
+    assert (
+        isinstance(python_version, str)
+        and len(python_version.split(".")) == 3
+        and all(part.isdigit() for part in python_version.split("."))
+    )
+    assert set(sdk["debug"]) == {"component", "sdk_version", "python_version"}
     for secret in ("private-session-sentinel", "private-transcript-sentinel", "private-prompt-sentinel"):
         assert secret not in json.dumps(result.runtime_diagnostics)
 

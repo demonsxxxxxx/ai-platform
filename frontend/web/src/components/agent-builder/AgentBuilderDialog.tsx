@@ -3,6 +3,7 @@ import { X } from "lucide-react";
 
 interface AgentBuilderDialogProps {
   isOpen: boolean;
+  finalFocus?: React.RefObject<HTMLElement | null>;
   title: string;
   descriptionId?: string;
   onClose: () => void;
@@ -10,12 +11,12 @@ interface AgentBuilderDialogProps {
 }
 
 /** Agent configuration content, with library-managed focus, dismissal and scroll lock. */
-export function AgentBuilderDialog({ isOpen, title, descriptionId, onClose, children }: AgentBuilderDialogProps) {
+export function AgentBuilderDialog({ isOpen, finalFocus, title, descriptionId, onClose, children }: AgentBuilderDialogProps) {
   return (
     <ModalRoot open={isOpen} onOpenChange={(open) => { if (!open) onClose(); }}>
       <ModalPortal>
         <ModalBackdrop />
-        <ModalPopup width="min(42rem, calc(100vw - 2rem))" aria-describedby={descriptionId}>
+        <ModalPopup finalFocus={finalFocus} width="min(42rem, calc(100vw - 2rem))" aria-describedby={descriptionId}>
           <ModalHeader>
             <ModalTitle>{title}</ModalTitle>
             <Button type="text" aria-label={`关闭${title}`} onClick={onClose} autoFocus icon={<X size={17} aria-hidden="true" />} />

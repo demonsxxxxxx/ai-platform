@@ -1553,7 +1553,8 @@ async def test_accepted_terminal_keeps_runtime_through_worker_execution_owner(tm
 
 
 @pytest.mark.asyncio
-async def test_runtime_default_db_acceptance_targets_created_lease_id(tmp_path, monkeypatch):
+@pytest.mark.parametrize("with_mcp_binding", [False, True])
+async def test_runtime_default_db_acceptance_targets_created_lease_id(tmp_path, monkeypatch, with_mcp_binding):
     calls = []
     workspace_root = _short_sandbox_workspace_root(tmp_path)
 
@@ -1621,7 +1622,18 @@ async def test_runtime_default_db_acceptance_targets_created_lease_id(tmp_path, 
         callback_token_resolver=lambda token_id: "secret-token",
     )
 
-    await runtime.submit(request(sandbox_mode="ephemeral", trace_id="trace-run-a"))
+    from tests.test_claude_mcp_registration import subject
+
+    credential_subject = {"tenant_id": "tenant-a", "user_id": "user-a", "grant_id": "a" * 64, "subject_epoch": 1}
+    mcp_subject = subject(tool="knowledge.search")
+    mcp_subject["mcp_server_config"]["credential_subject"] = credential_subject
+    await runtime.submit(request(
+        sandbox_mode="ephemeral", trace_id="trace-run-a",
+        tool_policy_subjects=[mcp_subject] if with_mcp_binding else [],
+    ))
+    assert calls[0][4].pop("mcp_credential_subjects", None) == (
+        {"gateway": credential_subject} if with_mcp_binding else None
+    )
 
     assert calls == [
         (
