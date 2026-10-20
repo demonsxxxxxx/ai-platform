@@ -534,11 +534,12 @@ async def test_copy_retry_resume_legacy_general_chat_upgrades_child_to_skillless
         tenant_id="tenant-a",
         user_id="user-a",
         run_id="run-legacy",
+        principal_department_ids=("100", "110"),
     )
 
     assert calls["mcp"] == {
         "tenant_id": "tenant-a", "tool_ids": [],
-        "principal_department_id": "qa", "principal_roles": ["user"],
+        "principal_department_id": "qa", "principal_department_ids": ("100", "110"), "principal_roles": ["user"],
         "is_admin": False, "permissions": [],
     }
     assert copied["execution_kind"] == "harness_chat"

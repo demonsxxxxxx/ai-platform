@@ -964,6 +964,7 @@ class FakeOpenSandbox:
         cls.create_error = None
         cls.endpoint_headers = {}
         cls.connect_calls = []
+        FakeOpenSandboxManager.reset()
 
     @classmethod
     def create(cls, **kwargs) -> "FakeOpenSandbox":

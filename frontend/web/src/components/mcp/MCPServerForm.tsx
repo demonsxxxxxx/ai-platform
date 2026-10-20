@@ -1,6 +1,6 @@
 import { Checkbox } from "@lobehub/ui/base-ui";
 import { Button, Input } from "@lobehub/ui/base-ui";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Permission } from "../../types";
@@ -11,6 +11,9 @@ import type {
   MCPRoleQuota,
 } from "../../types";
 import { LobeSelectField } from "../lobe-ui/LobeSelectField";
+import { capabilityDistributionApi, type DepartmentDirectoryNode } from "../../services/api/capabilityDistribution";
+import { DepartmentDirectorySelector } from "../panels/DepartmentDirectorySelector";
+import { resolveDepartmentSelection } from "../panels/departmentDirectorySelection";
 import { validateMcpStaticHeaderNames } from "./mcpHeaderValidation";
 import { RoleSelector } from "./RoleSelector";
 
@@ -63,10 +66,6 @@ function serializeRoleQuotas(
     };
   }
   return quotas;
-}
-
-function parseDepartmentIds(value: string): string[] {
-  return [...new Set(value.split(",").map((item) => item.trim()).filter(Boolean))];
 }
 
 export function MCPServerForm({
@@ -122,14 +121,29 @@ export function MCPServerForm({
   const [allowedRoles, setAllowedRoles] = useState<string[]>(
     server?.allowed_roles ?? [],
   );
-  const [allowedDepartmentsInput, setAllowedDepartmentsInput] = useState(
-    server?.allowed_departments?.join(", ") ?? "",
+  const [allowedDepartments, setAllowedDepartments] = useState<string[]>(server?.allowed_departments ?? []);
+  const [departmentDirectory, setDepartmentDirectory] = useState<DepartmentDirectoryNode[] | null>(null);
+  const [departmentDirectoryError, setDepartmentDirectoryError] = useState<string | null>(null);
+  const departmentSelection = useMemo(
+    () => resolveDepartmentSelection(allowedDepartments, departmentDirectory),
+    [allowedDepartments, departmentDirectory],
   );
   const [roleQuotas, setRoleQuotas] = useState<Record<string, RoleQuotaDraft>>(
     () => toQuotaDrafts(server?.role_quotas ?? {}),
   );
 
   const [errors, setErrors] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    let active = true;
+    setDepartmentDirectory(null);
+    setDepartmentDirectoryError(null);
+    void capabilityDistributionApi.departmentDirectory().then(
+      (directory) => { if (active) setDepartmentDirectory(directory); },
+      () => { if (active) setDepartmentDirectoryError(t("skills.governance.errors.directoryUnavailable")); },
+    );
+    return () => { active = false; };
+  }, [t]);
 
   // Update form when server changes
   useEffect(() => {
@@ -141,7 +155,7 @@ export function MCPServerForm({
       setUrl(server.url ?? "");
       setHeaders(Object.entries(server.headers ?? {}).map(([key, value]) => ({ id: uuid(), key, value })));
       setAllowedRoles(server.allowed_roles ?? []);
-      setAllowedDepartmentsInput(server.allowed_departments?.join(", ") ?? "");
+      setAllowedDepartments(server.allowed_departments ?? []);
       setRoleQuotas(toQuotaDrafts(server.role_quotas ?? {}));
     } else {
       setName("");
@@ -151,7 +165,7 @@ export function MCPServerForm({
       setUrl("");
       setHeaders([]);
       setAllowedRoles([]);
-      setAllowedDepartmentsInput("");
+      setAllowedDepartments([]);
       setRoleQuotas({});
     }
     setErrors({});
@@ -204,6 +218,9 @@ export function MCPServerForm({
       newErrors.headers = t("mcp.form.validation.duplicateHeader");
     }
 
+    if (!departmentSelection.authoritative || allowedDepartments.length > 128) {
+      newErrors.departments = t("skills.governance.errors.directoryNotAuthoritative");
+    }
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
@@ -222,9 +239,7 @@ export function MCPServerForm({
       role_quotas: isSystemServer
         ? serializeRoleQuotas(allowedRoles, roleQuotas)
         : undefined,
-      department_ids: isSystemServer
-        ? parseDepartmentIds(allowedDepartmentsInput)
-        : undefined,
+      department_ids: allowedDepartments,
     };
 
     data.url = url.trim();
@@ -396,22 +411,21 @@ export function MCPServerForm({
         </div>
       )}
 
-      {isSystemServer && (
-        <div className="es-field">
-          <label htmlFor="mcp-allowed-departments" className="es-label">
-            {t("mcp.form.allowedDepartments")}
-          </label>
-          <p className="es-hint">{t("mcp.form.allowedDepartmentsDescription")}</p>
-          <Input
-            id="mcp-allowed-departments"
-            type="text"
-            value={allowedDepartmentsInput}
-            onChange={(event) => setAllowedDepartmentsInput(event.target.value)}
-            placeholder={t("mcp.form.allowedDepartmentsPlaceholder")}
-            className=""
-          />
-        </div>
-      )}
+      <div className="es-field" role="group" aria-label={t("mcp.form.allowedDepartments")}>
+        <div className="es-label">{t("mcp.form.allowedDepartments")}</div>
+        <p className="es-hint">{t("mcp.form.allowedDepartmentsDescription")}</p>
+        <DepartmentDirectorySelector
+          directory={departmentDirectory}
+          disabled={isLoading}
+          loadError={departmentDirectoryError}
+          selectedAuthorityIds={allowedDepartments}
+          onChange={(ids) => {
+            setAllowedDepartments(ids);
+            setErrors((current) => ({ ...current, departments: "" }));
+          }}
+        />
+        {errors.departments ? <p className="es-hint text-[var(--theme-danger)]" role="alert">{errors.departments}</p> : null}
+      </div>
 
       {isEditing && (
         <p className="es-hint">{t("mcp.form.connectionReentry")}</p>

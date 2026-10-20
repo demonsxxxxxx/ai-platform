@@ -91,8 +91,9 @@ Rules:
 ### Convergence checks and repair feedback
 
 [Source architecture §12](source-code-architecture.md#12-executable-governance)
-owns the executable architecture boundaries and frozen-file ratchet. Reuse its
-trusted policy rather than creating another size policy. In
+owns the executable architecture boundaries, new production code size limit,
+and frozen-file ratchet. Reuse its trusted policy rather than creating another
+size policy. In
 `tools/code_governance.py`, Ruff violations block; file counts, line growth,
 hotspots and test-volume signals remain advisory. Findings carry an additive
 `remediation` field in JSON and a text repair hint. Fix the reported behavior and

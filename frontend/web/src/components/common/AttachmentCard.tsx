@@ -36,17 +36,17 @@ export function getAttachmentIconInfo(
 
 export interface AttachmentCardProps {
   attachment: MessageAttachment;
-  /** 点击卡片时的回调（预览） */
+  /** Click the tile to preview the authorized attachment URL. */
   onClick?: (previewSrc?: string) => void;
-  /** 删除按钮点击回调 */
+  /** Remove a completed attachment. */
   onRemove?: () => void;
-  /** 取消上传按钮点击回调 */
+  /** Cancel an in-flight upload. */
   onCancel?: () => void;
-  /** 显示模式：editable 显示删除按钮，preview 显示预览指示器 */
+  /** Composer attachments are editable; message attachments are read-only. */
   variant?: "editable" | "preview";
-  /** 尺寸：compact 更紧凑，适合输入框区域 */
+  /** Compact is used in the composer; default is used in messages. */
   size?: "default" | "compact";
-  /** Whether upload is in progress */
+  /** Whether upload is in progress. */
   isUploading?: boolean;
 }
 
@@ -79,109 +79,145 @@ export const AttachmentCard = memo(function AttachmentCard({
     onClick?.(imageSrc);
   };
 
-  const handleRemove = (e: React.MouseEvent) => {
-    e.stopPropagation();
+  const handleRemove = (event: React.MouseEvent<HTMLElement>) => {
+    event.stopPropagation();
     onRemove?.();
   };
 
-  // 紧凑模式样式（用于 ChatInput）
+  const previewLabel = isImage
+    ? `${t("imageViewer.fullscreen")} ${attachment.name}`
+    : `${t("fileUpload.selectFile")} ${attachment.name}`;
+  const state = isUploading
+    ? isQueued
+      ? "queued"
+      : isRetrying
+        ? "retrying"
+        : "uploading"
+    : "complete";
+
+  // This is the props-driven equivalent of assistant-ui's AttachmentPrimitive.Root.
   if (isCompact) {
     return (
       <div
-        onClick={handleClick}
-        className={clsx(
-          "group relative flex items-center gap-2.5 px-3 py-2",
-          "rounded-lg border border-[var(--theme-border)]",
-          "bg-[var(--theme-bg-card)] dark:bg-stone-900",
-          "shadow-[0_4px_12px_rgba(18,38,63,0.03)] cursor-pointer select-none",
-          "transition-colors duration-150 ease-out",
-          "hover:bg-[var(--theme-bg-sidebar)]",
-          "active:opacity-90",
-          isUploading && !onCancel && "pointer-events-none",
-        )}
+        data-slot="attachment-root"
+        data-state={state}
+        data-attachment-source="composer"
+        className="group relative flex items-center gap-2.5"
       >
-        {/* 图标/图片 */}
-        <div
+        <Button
+          type="text"
+          htmlType="button"
+          data-slot="attachment-tile"
+          onClick={handleClick}
+          aria-label={previewLabel}
+          style={{
+            height: "auto",
+            minWidth: 0,
+            width: "100%",
+            padding: "8px 12px",
+            justifyContent: "flex-start",
+            textAlign: "left",
+          }}
           className={clsx(
-            "shrink-0 flex items-center justify-center rounded-lg overflow-hidden",
-            "transition-transform duration-200",
-            !isUploading && "group-hover:scale-105",
-            isImage ? "size-10" : clsx("size-10", bgColor),
+            "relative flex min-w-0 flex-1 items-center gap-2.5 px-3 py-2",
+            "rounded-lg border border-[var(--theme-border)]",
+            "bg-[var(--theme-bg-card)] dark:bg-stone-900",
+            "shadow-[0_4px_12px_rgba(18,38,63,0.03)] cursor-pointer select-none",
+            "transition-colors duration-150 ease-out",
+            "hover:bg-[var(--theme-bg-sidebar)] active:opacity-90",
+            isUploading && !onCancel && "pointer-events-none",
           )}
         >
-          {isUploading ? (
-            isQueued ? (
-              <Clock3 size={18} className={iconColor} />
-            ) : (
-              <Loader2 size={18} className={clsx(iconColor, "animate-spin")} />
-            )
-          ) : isImage ? (
-            <img
-              src={imageSrc}
-              alt={attachment.name}
-              className="w-full h-full object-cover"
-            />
-          ) : (
-            <FileIcon size={18} className={iconColor} />
-          )}
-        </div>
-
-        {/* 文件信息 */}
-        <div className="flex flex-col min-w-0 flex-1">
-          <span className="max-w-[120px] truncate text-[13px] font-medium leading-tight text-[var(--theme-text)] sm:max-w-[160px]">
-            {attachment.name}
-          </span>
-          <span className="mt-0.5 text-xs text-[var(--theme-text-secondary)]">
-            {isUploading
-              ? isQueued
-                ? t("fileUpload.waiting")
-                : isRetrying
-                  ? t("fileUpload.waitingForCapacity")
-                  : `${attachment.uploadProgress ?? 0}%`
-              : formatFileSize(attachment.size)}
-          </span>
-          {isUploading && !isQueued && !isRetrying && (
-            <div
-              className="mt-1 h-1 w-full overflow-hidden rounded-full bg-[var(--theme-border)]"
-              role="progressbar"
-              aria-valuemin={0}
-              aria-valuemax={100}
-              aria-valuenow={attachment.uploadProgress ?? 0}
-              aria-label={`${attachment.name} ${attachment.uploadProgress ?? 0}%`}
-            >
-              <div
-                className="h-full rounded-full bg-[var(--theme-primary)] transition-[width] duration-150"
-                style={{ width: `${attachment.uploadProgress ?? 0}%` }}
+          <div
+            className={clsx(
+              "shrink-0 flex items-center justify-center rounded-lg overflow-hidden",
+              "transition-transform duration-200",
+              !isUploading && "group-hover:scale-105",
+              isImage ? "size-10" : clsx("size-10", bgColor),
+            )}
+          >
+            {isUploading ? (
+              isQueued ? (
+                <Clock3 size={18} className={iconColor} aria-hidden="true" />
+              ) : (
+                <Loader2
+                  size={18}
+                  className={clsx(iconColor, "animate-spin")}
+                  aria-hidden="true"
+                />
+              )
+            ) : isImage ? (
+              <img
+                src={imageSrc}
+                alt={attachment.name}
+                className="h-full w-full object-cover"
               />
-            </div>
-          )}
-        </div>
+            ) : (
+              <FileIcon size={18} className={iconColor} aria-hidden="true" />
+            )}
+          </div>
 
-        {/* 删除/取消按钮 */}
+          <div className="flex min-w-0 flex-1 flex-col">
+            <span className="max-w-[120px] truncate text-[13px] font-medium leading-tight text-[var(--theme-text)] sm:max-w-[160px]">
+              {attachment.name}
+            </span>
+            <span className="mt-0.5 text-xs text-[var(--theme-text-secondary)]">
+              {isUploading
+                ? isQueued
+                  ? t("fileUpload.waiting")
+                  : isRetrying
+                    ? t("fileUpload.waitingForCapacity")
+                    : `${attachment.uploadProgress ?? 0}%`
+                : formatFileSize(attachment.size)}
+            </span>
+            {isUploading && !isQueued && !isRetrying && (
+              <div
+                className="mt-1 h-1 w-full overflow-hidden rounded-full bg-[var(--theme-border)]"
+                role="progressbar"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={attachment.uploadProgress ?? 0}
+                aria-label={`${attachment.name} ${attachment.uploadProgress ?? 0}%`}
+              >
+                <div
+                  className="h-full rounded-full bg-[var(--theme-primary)] transition-[width] duration-150"
+                  style={{ width: `${attachment.uploadProgress ?? 0}%` }}
+                />
+              </div>
+            )}
+          </div>
+        </Button>
+
         {variant === "editable" &&
           (isUploading && onCancel ? (
-            <Button type="text"
+            <Button
+              type="text"
               htmlType="button"
-              onClick={(e) => {
-                e.stopPropagation();
+              onClick={(event) => {
+                event.stopPropagation();
                 onCancel();
               }}
+              style={{ height: 24, width: 24, padding: 0 }}
               className={removeButtonClass}
               title={t("fileUpload.cancelUpload")}
+              aria-label={t("fileUpload.cancelUpload")}
             >
-              <X size={12} />
+              <X size={12} aria-hidden="true" />
             </Button>
           ) : (
             onRemove && (
-              <Button type="text"
+              <Button
+                type="text"
                 htmlType="button"
                 onClick={handleRemove}
+                style={{ height: 24, width: 24, padding: 0 }}
                 className={clsx(
                   removeButtonClass,
                   "sm:opacity-0 sm:group-hover:opacity-100",
                 )}
+                aria-label={`${t("fileUpload.removeAttachment")} ${attachment.name}`}
               >
-                <X size={12} />
+                <X size={12} aria-hidden="true" />
               </Button>
             )
           ))}
@@ -189,11 +225,23 @@ export const AttachmentCard = memo(function AttachmentCard({
     );
   }
 
-  // 默认模式样式（用于 ChatMessage）
   return (
-    <Button type="text"
+    <Button
+      type="text"
+      htmlType="button"
+      data-slot="attachment-root"
+      data-state={state}
+      data-attachment-source="message"
       onClick={handleClick}
-      style={{ height: "auto", padding: 0 }}
+      aria-label={previewLabel}
+      style={{
+        height: "auto",
+        minHeight: 48,
+        width: "100%",
+        padding: 0,
+        justifyContent: "flex-start",
+        textAlign: "left",
+      }}
       className={clsx(
         "group relative flex items-center overflow-hidden",
         "h-12 sm:h-14 min-w-[200px] max-w-[280px] sm:min-w-[240px] sm:max-w-[320px]",
@@ -201,13 +249,10 @@ export const AttachmentCard = memo(function AttachmentCard({
         "shadow-[0_4px_12px_rgba(18,38,63,0.03)]",
         "text-left cursor-pointer select-none",
         "transition-colors duration-150 ease-out",
-        "hover:bg-[var(--theme-bg-sidebar)]",
-        "active:opacity-90",
+        "hover:bg-[var(--theme-bg-sidebar)] active:opacity-90",
         isUploading && "pointer-events-none",
       )}
-      htmlType="button"
     >
-      {/* 左侧图标/图片区域 */}
       <div
         className={clsx(
           "shrink-0 flex items-center justify-center",
@@ -219,20 +264,21 @@ export const AttachmentCard = memo(function AttachmentCard({
         )}
       >
         {isUploading ? (
-          attachment.uploadStatus === "queued" ? (
-            <Clock3 size={18} className={iconColor} />
+          isQueued ? (
+            <Clock3 size={18} className={iconColor} aria-hidden="true" />
           ) : (
-            <Loader2 size={18} className={clsx(iconColor, "animate-spin")} />
+            <Loader2
+              size={18}
+              className={clsx(iconColor, "animate-spin")}
+              aria-hidden="true"
+            />
           )
         ) : isImage ? (
-          <>
-            <img
-              src={imageSrc}
-              alt={attachment.name}
-              className="w-full h-full object-cover"
-            />
-            <div className="absolute inset-0 bg-gradient-to-t from-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
-          </>
+          <img
+            src={imageSrc}
+            alt={attachment.name}
+            className="h-full w-full object-cover"
+          />
         ) : (
           <FileIcon
             size={18}
@@ -240,18 +286,18 @@ export const AttachmentCard = memo(function AttachmentCard({
               iconColor,
               "transition-transform duration-300 group-hover:scale-110",
             )}
+            aria-hidden="true"
           />
         )}
       </div>
 
-      {/* 文件信息 */}
-      <div className="flex flex-col justify-center px-3 sm:px-3.5 py-2 min-w-0 flex-1">
+      <div className="flex min-w-0 flex-1 flex-col justify-center px-3 py-2 sm:px-3.5">
         <div className="truncate text-[13px] font-medium leading-tight text-[var(--theme-text)] sm:text-sm">
           {attachment.name}
         </div>
         <div className="mt-0.5 flex items-center justify-between text-[11px] text-[var(--theme-text-secondary)] sm:mt-1 sm:text-xs">
-          <span className="capitalize truncate">{label}</span>
-          <span className="shrink-0 ml-2">
+          <span className="truncate capitalize">{label}</span>
+          <span className="ml-2 shrink-0">
             {isUploading
               ? isQueued
                 ? t("fileUpload.waiting")

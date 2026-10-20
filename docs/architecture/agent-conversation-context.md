@@ -60,6 +60,29 @@ controlled system channel. Claude does not receive `read_session_messages`.
 Provider IDs, transcript entries, callback credentials and storage/runtime details
 remain private. Public Context summaries expose counts and safe provenance.
 
+## Follow-up Question Completion Boundary
+
+Model-generated follow-up questions are a read-only projection over a settled
+answer, not Context coverage. `conversations` owns the authorized request: it
+takes only `session_id` and `run_id`, rechecks tenant/user/Session scope, and
+requires the target Run to be the Session's current generation, `succeeded`, and
+without a later user message. The turn input is the bounded recent public
+`user`/`assistant` message text (redacted in Conversations infrastructure); drafts,
+attachments, tool raw data and Profile instructions are excluded.
+
+The completion uses that Run's own frozen `model_id`, `model_value` and
+`model_gateway_revision` through the Execution-owned model adapter, once,
+non-streaming, with tools disabled and a bounded output size. Execution resolves
+the pinned connection read-only and returns none when that model is disabled or
+delisted, rather than selecting another model. This capability creates no Run,
+Attempt, lease, message, Session or provider transcript entry, and does not
+extend provider coverage: the native conversation lineage stays owned by
+`Admission And Resume`.
+
+Concurrent and repeated requests for one owner and target Run are collapsed by a
+Redis claim plus bounded cache in Conversations infrastructure; a failed or empty
+generation is not cached, and provider failure never becomes a Run failure.
+
 ## Bounded Attachment Selection
 
 Current attachments retain priority and are all preserved within the existing
