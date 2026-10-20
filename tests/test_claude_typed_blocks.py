@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 from datetime import datetime, timezone
+import re
 
 import pytest
 
@@ -206,7 +207,21 @@ async def test_no_public_answer_is_invented_from_result(source_routing_settings,
         "failure_source",
         "failure_stage",
         "projection_failure",
+        "sdk",
+        "failure_observations",
+        "tool_lifecycles",
+        "tool_calls",
+        "tool_policy_denials",
+        "normalization_losses",
     }
+    observation, = result.runtime_diagnostics["failure_observations"]
+    assert re.fullmatch(r"obs_[0-9a-f]{32}", observation["observation_id"])
+    assert "parent_observation_id" not in observation
+    assert observation["failure_source"] == "public_projection"
+    assert observation["error_code"] == result.runtime_diagnostics["error_code"]
+    assert not any(result.runtime_diagnostics[key] for key in (
+        "sdk", "tool_lifecycles", "tool_calls", "tool_policy_denials", "normalization_losses",
+    ))
     assert result.answer_receipt is None
     assert not texts
     assert not any(event.event_type == "message.completed" for event in events)

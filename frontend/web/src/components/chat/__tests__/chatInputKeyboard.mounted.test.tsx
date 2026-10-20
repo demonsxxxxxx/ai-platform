@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { installSelectTestDom } from "../../common/__tests__/selectTestDom";
 import { act } from "react";
+import { ThreadPrimitive } from "@assistant-ui/react";
 import { installBrowserAuthTestDb } from "../../../hooks/__tests__/browserAuthTestDb";
 import type { ChatInputProps } from "../chatInputTypes";
 import type { SubmissionOutcome } from "../../../hooks/useAgent/types";
@@ -22,6 +23,7 @@ test("composer preserves IME, multiline editing, history, menu and submission ow
   } });
   const { createLobeTestRoot } = await import("../../common/__tests__/lobeUiTestRoot");
   const { ChatInput } = await import("../ChatInput");
+  const { AssistantUiTestProvider } = await import("../assistant-ui/__tests__/assistantUiTestProvider");
   const { AuthProvider } = await import("../../../hooks/useAuth");
   const { authApi } = await import("../../../services/api/auth");
   const originalBootstrap = authApi.bootstrapAuthContext;
@@ -49,7 +51,7 @@ test("composer preserves IME, multiline editing, history, menu and submission ow
   };
   const render = async (changes: Partial<ChatInputProps> = {}) => {
     Object.assign(props, changes);
-    await act(async () => { root.render(<AuthProvider><ChatInput {...props} /></AuthProvider>); });
+    await act(async () => { root.render(<AuthProvider><AssistantUiTestProvider isRunning={props.isLoading}><ThreadPrimitive.Suggestion prompt="建议问题" send={false} data-test-suggestion>建议问题</ThreadPrimitive.Suggestion><ChatInput {...props} /></AssistantUiTestProvider></AuthProvider>); });
   };
   const textarea = () => container.querySelector("textarea")!;
   const type = async (value: string) => {
@@ -160,6 +162,33 @@ test("composer preserves IME, multiline editing, history, menu and submission ow
       await type("/");
       assert.equal((await key("Escape")).defaultPrevented, true);
       assert.equal((await key("Escape")).defaultPrevented, false);
+    });
+    await t.test("native suggestions, send and permission/upload gates use the platform payload", async () => {
+      const submitted: Parameters<ChatInputProps["onSend"]>[] = [];
+      let accepted = false;
+      const attachment = { id: "attachment-public", key: "attachment-public", name: "report.txt", type: "document" as const, url: "/api/files/report", mimeType: "text/plain", size: 20 };
+      await render({ disableSlashCommands: true, attachments: [attachment], agentOptionValues: { model: "selected-model" },
+        onSend: async (...args) => { submitted.push(args); return accepted ? { status: "accepted" } : { status: "failed" }; } });
+      await act(async () => container.querySelector<HTMLButtonElement>("[data-test-suggestion]")!.click());
+      assert.equal(textarea().value, "建议问题");
+      assert.equal(submitted.length, 0);
+      await render({ canSend: false });
+      await key("Enter");
+      assert.equal(submitted.length, 0);
+      await render({ canSend: true, attachments: [{ ...attachment, isUploading: true }] });
+      await key("Enter");
+      assert.equal(submitted.length, 0);
+      await render({ attachments: [attachment] });
+      const send = () => container.querySelector<HTMLButtonElement>("button[aria-label='发送消息']")!;
+      await act(async () => send().click());
+      assert.equal(submitted.length, 1);
+      assert.deepEqual(submitted[0], ["建议问题", { model: "selected-model" }, [attachment], null]);
+      assert.equal(textarea().value, "建议问题", "unaccepted submission retains the durable draft");
+      assert.equal(send().disabled, false, "native send remains usable after an unaccepted submission");
+      accepted = true;
+      await act(async () => send().click());
+      assert.equal(submitted.length, 2);
+      assert.equal(textarea().value, "");
     });
   } finally {
     await act(async () => root.unmount());

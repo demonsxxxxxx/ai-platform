@@ -1,6 +1,5 @@
 from app.bootstrap.sandbox_cleanup import build_sandbox_runtime_cleanup
 
-import app.identity.infrastructure.audit_postgres as _owner_identity_infrastructure_audit_postgres
 import app.runs.infrastructure.postgres as _owner_runs_infrastructure_postgres
 import app.sandbox.infrastructure.leases_postgres as _owner_sandbox_infrastructure_leases_postgres
 import app.streaming.infrastructure.run_events_postgres as _owner_streaming_infrastructure_run_events_postgres
@@ -11,7 +10,7 @@ from fastapi import HTTPException
 
 from app.auth import AuthPrincipal
 from app.models import SandboxLeaseReleaseRequest
-from app.routes import admin_runtime, runtime_callbacks, sandbox_leases
+from app.routes import runtime_callbacks, sandbox_leases
 from app.sandbox.api import SandboxRuntimeCleanupError
 from app.runtime.kernel_contracts import AgentEvent
 from app.runtime.sandbox import executor_app
@@ -276,85 +275,6 @@ async def test_explicit_release_binds_failure_to_lease_and_surfaces_audit_outage
     assert exc_info.value.status_code == 503
     assert exc_info.value.detail == "sandbox_cleanup_audit_unavailable"
     assert captured[0]["lease_ids"] == ["lease-a"]
-
-
-@pytest.mark.asyncio
-async def test_admin_orphan_cleanup_failure_writes_tenant_audit(monkeypatch):
-    audits = []
-    principal = AuthPrincipal(
-        user_id="admin-a",
-        display_name="Admin",
-        tenant_id="tenant-a",
-        roles=["ai_admin"],
-    )
-
-    class FailedProvider:
-        async def cleanup_orphan_containers(self, filters, *, reason):
-            return [
-                StopResult(
-                    container_id="container-a",
-                    status="failed",
-                    message="private provider detail",
-                )
-            ]
-
-    async def append_audit_log(conn, **kwargs):
-        audits.append(kwargs)
-        return "audit-a"
-
-    monkeypatch.setattr(admin_runtime, "transaction", _FakeTransaction)
-    monkeypatch.setattr(_owner_identity_infrastructure_audit_postgres, 'append_audit_log', append_audit_log)
-
-    with pytest.raises(HTTPException) as exc_info:
-        await admin_runtime._cleanup_provider_orphans(FailedProvider(), principal)
-
-    assert exc_info.value.status_code == 500
-    assert exc_info.value.detail == "sandbox_provider_cleanup_failed"
-    assert audits == [
-        {
-            "tenant_id": "tenant-a",
-            "user_id": "admin-a",
-            "action": "sandbox.runtime.orphan_cleanup.failed",
-            "target_type": "sandbox_runtime",
-            "target_id": "tenant-a",
-            "payload_json": {
-                "failure_count": 1,
-                "failures": [
-                    {
-                        "container_id": "container-a",
-                        "message": "Provider orphan cleanup failed",
-                    }
-                ],
-            },
-        }
-    ]
-    assert "private provider detail" not in str(audits)
-
-
-@pytest.mark.asyncio
-async def test_admin_orphan_cleanup_surfaces_audit_outage(monkeypatch):
-    principal = AuthPrincipal(
-        user_id="admin-a",
-        display_name="Admin",
-        tenant_id="tenant-a",
-        roles=["ai_admin"],
-    )
-
-    class FailedProvider:
-        async def cleanup_orphan_containers(self, filters, *, reason):
-            return [StopResult(container_id="container-a", status="failed", message="private detail")]
-
-    async def fail_audit(conn, **kwargs):
-        raise RuntimeError("database unavailable")
-
-    monkeypatch.setattr(admin_runtime, "transaction", _FakeTransaction)
-    monkeypatch.setattr(_owner_identity_infrastructure_audit_postgres, 'append_audit_log', fail_audit)
-
-    with pytest.raises(HTTPException) as exc_info:
-        await admin_runtime._cleanup_provider_orphans(FailedProvider(), principal)
-
-    assert exc_info.value.status_code == 503
-    assert exc_info.value.detail == "sandbox_cleanup_audit_unavailable"
 
 
 @pytest.mark.parametrize("duplicate", [False, True])

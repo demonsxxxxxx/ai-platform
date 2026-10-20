@@ -23,6 +23,7 @@ async def list_principal_lambchat_agents(
     tenant_id: str,
     actor_user_id: str,
     department_id: str,
+    department_ids: tuple[str, ...] = (),
     roles: list[str] | None,
     is_admin: bool,
     permissions: list[str] | None,
@@ -43,6 +44,7 @@ async def list_principal_lambchat_agents(
     context = CapabilityAccessContext(
         tenant_id=tenant_id,
         department_id=str(department_id or ""),
+        department_ids=department_ids,
         roles=normalize_roles(roles or []),
         is_admin=bool(is_admin),
         permissions=[str(item) for item in permissions or [] if str(item)],

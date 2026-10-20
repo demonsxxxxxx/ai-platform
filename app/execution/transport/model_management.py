@@ -11,11 +11,36 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
+from starlette.concurrency import iterate_in_threadpool
+from app.execution.domain.runtime_debug import normalize_execution_debug
 from app.execution.application.model_control_plane import configured_model_control_plane
 from app.execution.application.model_stream_ownership import close_model_stream
 
 
 _logger = logging.getLogger(__name__)
+
+
+async def _record_proxy_debug(*, run_id: str, attempt_id: str, error_code: str, debug: object, operation: str) -> None:
+    facts = normalize_execution_debug(debug)
+    if not facts:
+        return
+    try:
+        await configured_model_control_plane().record_debug(
+            run_id=run_id, attempt_id=attempt_id, error_code=error_code,
+            debug={**facts, "operation": operation},
+        )
+    except Exception:
+        _logger.warning("model_proxy_debug_capture_unavailable")
+
+
+async def _diagnostic_stream(body, *, run_id: str, attempt_id: str, operation: str):
+    try:
+        async for chunk in iterate_in_threadpool(iter(body)):
+            yield chunk
+    except Exception as exc:
+        await _record_proxy_debug(run_id=run_id, attempt_id=attempt_id,
+                                  error_code="model_upstream_unavailable", debug=getattr(exc, "debug", None), operation=operation)
+        raise
 
 
 class _OwnedModelStreamingResponse(StreamingResponse):
@@ -208,6 +233,9 @@ async def proxy_model_request(
             model_proxy_capability=model_proxy_capability,
         )
     except PermissionError as exc:
+        await _record_proxy_debug(run_id=x_ai_platform_run_id, attempt_id=x_ai_platform_attempt_id,
+                                  error_code=str(exc), debug=getattr(exc, "debug", None),
+                                  operation="count_tokens" if upstream_path.endswith("count_tokens") else "messages")
         # Keep denial diagnostics structured and bounded. Never include the
         # request body, credentials, or authorization headers in this record.
         _logger.warning(
@@ -228,13 +256,23 @@ async def proxy_model_request(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except RuntimeError as exc:
+        await _record_proxy_debug(run_id=x_ai_platform_run_id, attempt_id=x_ai_platform_attempt_id,
+                                  error_code=str(exc), debug=getattr(exc, "debug", None),
+                                  operation="count_tokens" if upstream_path.endswith("count_tokens") else "messages")
         raise HTTPException(
             status_code=503 if str(exc) == "model_proxy_count_tokens_unavailable" else 502,
             detail=str(exc),
         ) from exc
     try:
+        operation = "count_tokens" if upstream_path.endswith("count_tokens") else "messages"
+        if upstream.status >= 400:
+            await _record_proxy_debug(run_id=x_ai_platform_run_id, attempt_id=x_ai_platform_attempt_id,
+                                      error_code="model_upstream_http_error", debug={
+                                          **(getattr(upstream, "debug", None) or {}), "component": "model_proxy", "phase": "response",
+                                          "failure_class": "http_error", "http_status": upstream.status,
+                                      }, operation=operation)
         return _OwnedModelStreamingResponse(
-            upstream.body,
+            _diagnostic_stream(upstream.body, run_id=x_ai_platform_run_id, attempt_id=x_ai_platform_attempt_id, operation=operation),
             close=upstream.close,
             status_code=upstream.status,
             media_type=upstream.content_type.split(";", 1)[0],

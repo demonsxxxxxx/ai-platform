@@ -1,5 +1,7 @@
 """Refresh completion fencing against real Lua on independent Redis clients."""
 import asyncio
+from dataclasses import replace
+import json
 import os
 import time
 import uuid
@@ -128,6 +130,68 @@ end}}
         assert grant["expires_at"] == deadline_ms // 1000
         for key in keys:
             assert await client.pexpiretime(key) == deadline_ms
+    finally:
+        await client.delete(*keys)
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["same", "secondary_membership", "unavailable"])
+async def test_real_redis_refresh_fences_department_scope_changes_without_a_role_or_primary_change(monkeypatch, change):
+    from app.identity.api import DepartmentAuthority, resolve_department_scope
+    from app.mcp.domain.errors import McpRuntimeContextError
+
+    url = os.getenv("AI_PLATFORM_SSE_REDIS_TEST_URL", "").strip()
+    if not url:
+        pytest.skip("AI_PLATFORM_SSE_REDIS_TEST_URL is not configured")
+    prefix = f"test-department-refresh:{uuid.uuid4().hex}:"
+    for owner, name in ((auth_sessions, "_context_key"), (auth_sessions, "_authority_key"),
+                        (runtime, "_principal_jwt_key")):
+        original = getattr(owner, name)
+        monkeypatch.setattr(owner, name, lambda value, original=original: prefix + original(value))
+    fake, _settings, cookie, principal, store, _record = await install_refresh_grant(monkeypatch)
+    parents = {"100": None, "110": "100", "200": None, "210": "200"}
+    initial_scope = resolve_department_scope(["110", "210"], parents)
+    principal = replace(principal, **initial_scope.principal_fields())
+    context_key = next(key for key in fake.values if ":auth-context:" in key)
+    raw, deadline = fake.values[context_key]
+    context = json.loads(raw)
+    context["principal"] = auth_sessions.principal_snapshot(principal)
+    fake.values[context_key] = (json.dumps(context), deadline)
+    next_scope = (initial_scope if change == "same" else resolve_department_scope(["110"], parents)
+                  if change == "secondary_membership" else DepartmentAuthority())
+
+    async def department_source(work_id, **kwargs):
+        assert work_id == principal.user_id and kwargs["fresh"] is True
+        return next_scope
+
+    client = Redis.from_url(url, decode_responses=True)
+    keys = list(fake.values)
+    try:
+        async with client.pipeline(transaction=True) as pipeline:
+            for key, (value, expiry) in fake.values.items():
+                pipeline.set(key, value, pxat=int(expiry * 1000))
+            await pipeline.execute()
+        monkeypatch.setattr(auth_sessions, "get_redis", lambda: client)
+        monkeypatch.setattr(runtime, "get_redis_client", lambda: client)
+        monkeypatch.setattr("app.principal_authority.resolve_department_authority", department_source)
+        before = await auth_sessions.browser_auth_grant(cookie)
+        execution = SimpleNamespace(**await store.credential_subject(principal))
+        refreshed, changed = await auth.refresh_company_session(cookie)
+        after = await auth_sessions.browser_auth_grant(cookie)
+        assert changed is (change != "same")
+        assert refreshed.roles == principal.roles
+        assert refreshed.department_ids == next_scope.department_ids
+        assert after["subject_epoch"] == before["subject_epoch"] + int(changed)
+        assert after["expires_at"] == before["expires_at"]
+        if change == "secondary_membership":
+            assert refreshed.department_id == principal.department_id
+        if changed:
+            with pytest.raises(McpRuntimeContextError) as fenced:
+                await store.get(execution)
+            assert fenced.value.status_code == 401
+        else:
+            assert await store.get(execution)
     finally:
         await client.delete(*keys)
         await client.aclose()

@@ -39,6 +39,7 @@ EXECUTOR_AUTH_HEADER = "X-AI-Platform-Executor-Credential"
 EXECUTOR_CALLBACK_PATH = "/api/ai/runtime/callbacks/executor"
 EXECUTOR_CONTEXT_RETRIEVAL_CALLBACK_PATH = "/api/ai/runtime/callbacks/context-retrieval"
 EXECUTOR_PROVIDER_SESSION_CALLBACK_PATH = "/api/ai/runtime/callbacks/provider-session"
+EXECUTOR_MCP_CREDENTIAL_CALLBACK_PATH = "/api/ai/runtime/callbacks/mcp-credential"
 PROFILE_DRIVE_STAGE_MAX_BYTES = 512 * 1024 * 1024
 PROFILE_DRIVE_STAGE_LEASE_FLAG = "profile_drive_file_staging_authorized"
 _TRUSTED_CALLBACK_HOSTS = {
@@ -127,6 +128,10 @@ class TrustedCallbackTarget:
     provider_session_url: str
     host: str
 
+    @property
+    def mcp_credential_url(self) -> str:
+        return f"{self.base_url}{EXECUTOR_MCP_CREDENTIAL_CALLBACK_PATH}"
+
 
 def _normalize_host(host: str) -> str:
     return str(host or "").strip().lower().rstrip(".")
@@ -195,6 +200,20 @@ def build_trusted_callback_target(
         provider_session_url=f"{normalized_base_url}{EXECUTOR_PROVIDER_SESSION_CALLBACK_PATH}",
         host=host,
     )
+
+
+class McpCredentialCallbackRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    attempt_id: str
+    callback_token_id: str
+    server_id: str
+
+    @field_validator("run_id", "attempt_id", "callback_token_id", "server_id")
+    @classmethod
+    def validate_ids(cls, value: str, info):
+        return assert_safe_id(value, info.field_name)
 
 
 class ProviderSessionCallbackRequest(BaseModel):

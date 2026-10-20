@@ -10,6 +10,8 @@ import { toast } from "@lobehub/ui/base-ui";
 import type { BackendSession } from "../../services/api/session";
 import { sessionApi } from "../../services/api";
 import { SessionMenu } from "./SessionMenu";
+import { ThreadListRow } from "../panels/SidebarParts/ThreadList";
+import { toSessionThreadListItem } from "../panels/SidebarParts/sessionThreadListAdapter";
 
 interface SessionItemProps {
   session: BackendSession;
@@ -17,6 +19,10 @@ interface SessionItemProps {
   onSelect: () => void;
   onDelete: () => void;
   onSessionUpdate: (session: BackendSession) => void;
+  onRenameSession?: (
+    sessionId: string,
+    title: string,
+  ) => Promise<BackendSession | void>;
 }
 
 export function SessionItem({
@@ -25,6 +31,7 @@ export function SessionItem({
   onSelect,
   onDelete,
   onSessionUpdate,
+  onRenameSession,
 }: SessionItemProps) {
   const { t } = useTranslation();
   const [isEditing, setIsEditing] = useState(false);
@@ -82,14 +89,18 @@ export function SessionItem({
 
     setIsSaving(true);
     try {
-      const response = await sessionApi.update(session.id, {
-        name: trimmedTitle,
-      });
+      const response = onRenameSession
+        ? { session: await onRenameSession(session.id, trimmedTitle) }
+        : await sessionApi.update(session.id, {
+            name: trimmedTitle,
+          });
       if (response.session) {
         // The list owner survives collapsed/unmounted rows and fences account
         // changes itself; only this row's local UI work depends on its mount.
         onSessionUpdate(response.session);
         if (updateOwnerRef.current !== onSessionUpdate) return;
+      }
+      if (updateOwnerRef.current === onSessionUpdate) {
         toast.success(t("sidebar.renamed"));
       }
     } catch (error) {
@@ -143,74 +154,60 @@ export function SessionItem({
     };
   }, []);
 
-  // Get display title
   const displayTitle = getSessionTitle(session);
+  const thread = toSessionThreadListItem(session, displayTitle);
 
   return (
     <>
-      <div
-        onTouchStart={handleItemTouchStart}
-        onClick={() => {
-          if (!isEditing) {
-            onSelect();
-          }
-        }}
-        className={`group relative flex cursor-pointer items-center gap-3 h-10 rounded-lg px-[9px] transition-colors ${
-          isActive
-            ? "bg-[var(--theme-sidebar-panel-muted)]"
-            : "hover:bg-[var(--theme-sidebar-panel-muted)]"
-        }`}
-      >
-        {/* Title - editable or display */}
-        <div className="min-w-0 flex-1">
-          {isEditing ? (
-            <Input
-              ref={inputRef}
-              type="text"
-              value={editTitle}
-              onChange={(e) => setEditTitle(e.target.value)}
-              onKeyDown={handleKeyDown}
-              onBlur={handleSaveTitle}
-              disabled={isSaving}
-              className="w-full rounded border border-[var(--theme-border-strong)] bg-transparent px-1.5 py-0.5 text-[13px] text-[var(--theme-text)] focus:outline-none focus:ring-1 focus:ring-[var(--theme-ring)]"
-              onClick={(e) => e.stopPropagation()}
-            />
-          ) : (
-            <div
-              className={`truncate text-[13px] transition-colors ${
-                isActive
-                  ? "font-medium text-[var(--theme-text)]"
-                  : "text-[var(--theme-text-secondary)] group-hover:text-[var(--theme-text)]"
-              }`}
-            >
-              {displayTitle}
-            </div>
-          )}
-        </div>
-
-        {/* Unread dot - hidden when session is active (user is viewing it) */}
-        {!isEditing && !isActive && (session.unread_count ?? 0) > 0 && (
-          <span className="inline-flex h-4 min-w-[16px] shrink-0 items-center justify-center rounded-full bg-[var(--theme-danger)] px-1 text-[10px] font-medium leading-none text-[var(--theme-primary-foreground)]">
-            {session.unread_count}
+      <ThreadListRow
+      thread={thread}
+      active={isActive}
+      editing={isEditing}
+      onSelect={() => {
+        if (!isEditing) onSelect();
+      }}
+      onTouchStart={handleItemTouchStart}
+      title={
+        isEditing ? (
+          <Input
+            ref={inputRef}
+            type="text"
+            value={editTitle}
+            onChange={(e) => setEditTitle(e.target.value)}
+            onKeyDown={handleKeyDown}
+            onBlur={handleSaveTitle}
+            disabled={isSaving}
+            className="w-full rounded border border-[var(--theme-border-strong)] bg-transparent px-1.5 py-0.5 text-[13px] text-[var(--theme-text)] focus:outline-none focus:ring-1 focus:ring-[var(--theme-ring)]"
+            onClick={(e) => e.stopPropagation()}
+          />
+        ) : (
+          <span
+            className={`block truncate transition-colors ${
+              isActive
+                ? "font-medium text-[var(--theme-text)]"
+                : "text-[var(--theme-text-secondary)] group-hover:text-[var(--theme-text)]"
+            }`}
+          >
+            {displayTitle}
           </span>
-        )}
-        {!isEditing && (
-          <Button type="text"
+        )
+      }
+      actions={
+        !isEditing ? (
+          <Button
+            type="text"
             ref={menuButtonRef}
             onClick={handleMenuClick}
-            className="flex-shrink-0 rounded p-1 text-[var(--theme-text-tertiary)] opacity-0 transition-all hover:bg-[var(--theme-hover)] hover:text-[var(--theme-text)] group-hover:opacity-100"
+            className="flex-shrink-0 rounded p-1 text-[var(--theme-text-tertiary)] hover:bg-[var(--theme-hover)] hover:text-[var(--theme-text)]"
             style={isTouched ? { opacity: 1 } : undefined}
             title={t("sidebar.moreOptions")}
           >
-            <MoreHorizontal
-              size={14}
-              className="text-current"
-            />
+            <MoreHorizontal size={14} className="text-current" />
           </Button>
-        )}
-      </div>
-
-      {/* Context Menu */}
+        ) : undefined
+      }
+      actionsVisible={isTouched}
+      />
       <SessionMenu
         session={session}
         isOpen={isMenuOpen}

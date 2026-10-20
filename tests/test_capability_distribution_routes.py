@@ -68,7 +68,7 @@ def configure_admin_route(monkeypatch):
     async def fake_department_directory():
         return normalize_department_directory(
             [
-                {"value": "1", "parentId": "1", "label": "QA", "children": []},
+                {"value": "10", "parentId": "1", "label": "QA", "children": []},
                 {"value": "2", "parentId": "1", "label": "OPS", "children": []},
                 {"value": "3", "parentId": "1", "label": "RD", "children": []},
             ]
@@ -210,7 +210,7 @@ def test_admin_updates_skill_distribution_normalizes_scopes_and_audits(monkeypat
             "status": "active",
             "visible_to_user": False,
             "scope_mode": "allowlist",
-            "department_ids": ["QA", "RD", "RD"],
+            "department_ids": ["10", "3", "3"],
             "allowed_roles": [" QA_REVIEWER ", "qa_reviewer", "RD-Lead"],
             "metadata": metadata,
         },
@@ -220,18 +220,18 @@ def test_admin_updates_skill_distribution_normalizes_scopes_and_audits(monkeypat
     body = response.json()
     assert body["audit_id"] == "aud-capdist-updated"
     assert body["audit_action"] == "capability_distribution.updated"
-    assert body["capability_distribution"]["department_ids"] == ["QA", "RD"]
+    assert body["capability_distribution"]["department_ids"] == ["10", "3"]
     assert body["capability_distribution"]["allowed_roles"] == ["qa_reviewer", "rd-lead"]
     assert body["capability_distribution"]["metadata_json"] == metadata
-    assert calls[0][1]["department_ids"] == ["QA", "RD"]
+    assert calls[0][1]["department_ids"] == ["10", "3"]
     assert calls[0][1]["metadata_json"] == metadata
     assert calls[1][1]["action"] == "capability_distribution.updated"
     assert calls[1][1]["payload_json"] == {
         "capability_kind": "skill",
         "capability_id": "qa-file-reviewer",
-        "actor_department_id": "platform",
+        "actor_department_id": "",
         "actor_roles": ["admin"],
-        "department_scope_ids": ["QA", "RD"],
+        "department_scope_ids": ["10", "3"],
         "role_scope_ids": ["qa_reviewer", "rd-lead"],
         "scope_mode": "allowlist",
         "decision_reason": "admin_bypass",
@@ -554,7 +554,7 @@ def test_skill_distribution_rejects_unknown_or_ambiguous_authority_before_reposi
     async def ambiguous_directory():
         return normalize_department_directory(
             [
-                {"value": "1", "parentId": "1", "label": "QA", "children": []},
+                {"value": "10", "parentId": "1", "label": "QA", "children": []},
                 {"value": "2", "parentId": "1", "label": "qa", "children": []},
             ]
         )
