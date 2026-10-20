@@ -1143,24 +1143,28 @@ export function ChatView({
                 data-workbench-empty-state="agent-chat"
               >
                 <section className="chat-start-surface flex w-full max-w-[56rem] flex-col items-center gap-5">
-                  <div className="max-w-2xl text-center">
-                    <span className="inline-flex">
-                      <AgentIdentityAvatar
-                        agentId={agentEmptyProfile.agent_id}
-                        avatarRef={agentEmptyProfile.avatar_ref}
-                        avatarSeed={agentEmptyProfile.avatar_seed}
-                        name={agentEmptyProfile.name}
-                        size="md"
-                      />
-                    </span>
-                    <h1 className="mt-3 text-2xl font-semibold text-[var(--theme-text)]">
-                      {agentEmptyProfile.name}
-                    </h1>
-                    {agentEmptyProfile.description ? (
-                      <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-[var(--theme-text-secondary)]">
-                        {agentEmptyProfile.description}
-                      </p>
-                    ) : null}
+                  {/* The published description is the opening text; it is not a runtime message. */}
+                  <div className="flex w-full items-start gap-3 px-2" data-agent-opening>
+                    <AgentIdentityAvatar
+                      agentId={agentEmptyProfile.agent_id}
+                      avatarRef={agentEmptyProfile.avatar_ref}
+                      avatarSeed={agentEmptyProfile.avatar_seed}
+                      name={agentEmptyProfile.name}
+                      size="md"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <h1 className="break-words text-lg font-semibold text-[var(--theme-text)]">
+                        {agentEmptyProfile.name}
+                      </h1>
+                      {agentEmptyProfile.description ? (
+                        <p
+                          className="mt-2 max-w-[42rem] whitespace-pre-wrap break-words text-[15px] leading-7 text-[var(--theme-text)]"
+                          data-agent-opening-message
+                        >
+                          {agentEmptyProfile.description}
+                        </p>
+                      ) : null}
+                    </div>
                   </div>
                   <div className="w-full">{composer}</div>
                 </section>

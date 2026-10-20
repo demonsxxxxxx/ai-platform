@@ -47,6 +47,8 @@
 
 `ActivityErrorBoundary` 是平台新增的局部异常边界，只显示固定安全提示，公开 part 替换后允许恢复。上游 raw 工具明细、不匹配的默认 Continue/Discard、自动发送建议问题没有进入生产。开场建议仍先填草稿。
 
+专家新任务直接把已发布 Profile 的 `description` 原文作为开场正文，不新增配置。描述为空时不补默认问候；有历史消息时不重复展示。开场内容不创建消息、Session 或 Run，也不进入模型输入、持久历史或复制内容。
+
 ## 提交、附件与迟到回执
 
 `composerSubmission.ts` 是 native 发送与键盘提交共用的事务：保留文本、模型选项、授权附件和显式 Skill，以及 draft revision、selectedSkillRevision 和首次会话 handoff。仅对应请求 accepted 才清理其内容；后续编辑或清空不被旧回执覆盖。scope revision 隔离账号/会话，旧发送、上传、取消回执不修改新页面。
@@ -81,6 +83,7 @@ Run 问答只使用一个 RunInputsController：单选、多选、自由文本�
 ## 退役与具名保留
 
 - LibreChat Composer/CommandMenu/Chips、ComposerModelPanel、MessageFrame 旧入口和 exports/对应 selectors 已替换，旧专用 CSS 清退。业务控制器继续在 ChatInput，不增加第二 form、上传器或提交路径。
+- Composer 上传附件只由 `ChatInputAttachments` 展示；逐附件镜像 `file` chip 及其专用删除分支、文案已退役，无兼容消费者。已发送文件和正文归入同一用户消息容器，继续沿用原文件预览和授权入口。
 - 旧 token 明细手写点击外部监听及 guard 退役，由 MessageTiming + Lobe Popover 承担。
 - 活动旧展示壳由 Elements 接管；公开分类、顺序、折叠、面板导航、下载与预览 controller 保留。
 - MarkdownContent 保留显式业务内容/图库适配；独立文档直接走共享 renderer，主消息正文不再使用旧直接 parser。
