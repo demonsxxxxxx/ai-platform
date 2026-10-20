@@ -127,8 +127,14 @@ async function mountSidebar(deleteRequest: (id: string) => Promise<Response>, in
     return item;
   };
   const openDelete = async (id: string) => {
-    await click(await openMenu(id));
+    const item = await openMenu(id);
+    const opener = Array.from(container.querySelectorAll<HTMLElement>('[data-slot="thread-list-item"]'))
+      .find((node) => node.textContent?.includes(`Synthetic session ${id}`))!
+      .querySelectorAll<HTMLButtonElement>("button")[1];
+    await React.act(async () => { item.focus(); });
+    await click(item);
     dialog();
+    return opener;
   };
   const escape = async () => {
     await React.act(async () => {
@@ -238,11 +244,12 @@ test("idle confirmation remains dismissible by Cancel, Escape and its real mask 
   const view = await mountSidebar(async (id) => { requests.push(id); return new Response(null, { status: 204 }); });
   try {
     for (const [label, dismiss] of [["Cancel", () => view.click(view.cancel())], ["Escape", view.escape], ["mask", view.mask]] as const) {
-      await view.openDelete("a");
+      const opener = await view.openDelete("a");
       assert.equal(view.cancel().disabled, false);
       await dismiss();
       await view.tick(300);
       view.expectClosed(`Idle ${label} dismisses the confirmation`);
+      assert.ok(document.activeElement === opener, `${label} restores the stable row action, not the unmounted menu item`);
     }
     assert.deepEqual(requests, []);
     assert.deepEqual(view.initial.removed, []);

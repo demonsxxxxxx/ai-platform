@@ -152,7 +152,10 @@ try {
           // SessionMenu intentionally renders a bottom Drawer with Buttons on mobile.
           await wait(`Boolean(${dialog}) && ${dialog}.textContent.includes(${quote(labels.sidebar.sessionOptions)})`, "session_actions_drawer");
           const remove = buttonText(labels.common.delete, dialog);
-          await wait(`(() => { const e=${remove}; if (!e) return false; const r=e.getBoundingClientRect(); return r.top>=0 && r.bottom<=innerHeight && e.contains(document.elementFromPoint(r.left+r.width/2,r.top+r.height/2)) && ${dialog}.getAnimations({subtree:true}).every(a=>a.playState!=='running'); })()`, "session_actions_drawer_ready");
+          // Button's hidden spinner keeps animating; readiness belongs to the hit
+          // target's stable geometry, not every animation in the Drawer subtree.
+          await c.evaluate("void (window.__sessionPreview.drawerBounds = null)");
+          await wait(`(() => { const e=${remove}; if (!e) return false; const r=e.getBoundingClientRect(), bounds=[r.x,r.y,r.width,r.height], previous=window.__sessionPreview.drawerBounds; window.__sessionPreview.drawerBounds=bounds; return previous && bounds.every((value,index)=>Math.abs(value-previous[index])<0.5) && r.width>0 && r.height>0 && r.left>=0 && r.right<=innerWidth && r.top>=0 && r.bottom<=innerHeight && e.contains(document.elementFromPoint(r.left+r.width/2,r.top+r.height/2)); })()`, "session_actions_drawer_ready");
           await click(remove);
         } else {
           await wait("Boolean(document.querySelector('[role=menuitem]'))", "session_menu");
@@ -175,7 +178,7 @@ try {
       await wait(`document.activeElement === ${buttonText(labels.common.delete, dialog)}`, "delete_reverse_wrap");
       await key("Escape", "Escape", 27);
       await wait(`!${dialog}`, "delete_cancel");
-      if (!viewport.mobile) await wait(`${sidebar}.contains(document.activeElement)`, "delete_focus_restored_to_sidebar");
+      if (!viewport.mobile) await wait(`${sidebar}.contains(document.activeElement) && document.activeElement === window.__sessionPreview.deleteAnchor`, "delete_focus_restored_to_sidebar");
       await assert("window.__sessionPreview.deletions.length===0 && window.__sessionPreview.removed.length===0", "cancel_has_no_delete_effect");
       await openDelete();
       await click(buttonText(labels.common.delete, dialog));

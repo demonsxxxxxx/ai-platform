@@ -42,7 +42,7 @@ import type { AgentProfileAvatarRef } from "../../../types/agentProfile";
 import { isAiAdminUser } from "../capabilityAdmin";
 
 export interface SessionActions {
-  onDeleteSession: (id: string) => void;
+  onDeleteSession: (id: string, returnFocus?: HTMLElement | null) => void;
   onSelectSession: (id: string) => void;
 }
 
@@ -207,7 +207,7 @@ export function SessionListContent({
         session={session}
         isActive={currentSessionId === session.id}
         onSelect={onSelect}
-        onDelete={() => sessionActions.onDeleteSession(session.id)}
+        onDelete={(returnFocus) => sessionActions.onDeleteSession(session.id, returnFocus)}
         onSessionUpdate={onUpdate}
         onRenameSession={onRename}
       />

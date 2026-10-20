@@ -273,6 +273,7 @@ export const SessionSidebar = forwardRef<
     requestId: number;
   }>({ isOpen: false, sessionId: null, requestId: 0 });
   const deleteRequestIdRef = useRef(0);
+  const deleteReturnFocusRef = useRef<HTMLElement | null>(null);
   const [isDeletingSession, setIsDeletingSession] = useState(false);
   const deleteRequestRef = useRef<object | null>(null);
   useLayoutEffect(() => {
@@ -415,8 +416,10 @@ export const SessionSidebar = forwardRef<
   );
 
   const requestDeleteSession = useCallback(
-    (sessionId: string) => {
+    (sessionId: string, returnFocus?: HTMLElement | null) => {
       if (deleteRequestRef.current || !isOwnerSnapshotCurrent(ownerSnapshot)) return;
+      // Menu items disappear when confirmation opens; the row owns its stable trigger.
+      deleteReturnFocusRef.current = returnFocus ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
       const requestId = ++deleteRequestIdRef.current;
       setDeleteConfirm({ isOpen: true, sessionId, requestId });
     },
@@ -798,6 +801,7 @@ export const SessionSidebar = forwardRef<
 
       <ConfirmDialog
         isOpen={deleteConfirm.isOpen}
+        finalFocus={deleteReturnFocusRef}
         title={t("sidebar.deleteSession")}
         message={t("sidebar.deleteConfirm")}
         confirmText={t("common.delete")}

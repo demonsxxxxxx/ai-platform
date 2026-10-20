@@ -17,7 +17,7 @@ interface SessionItemProps {
   session: BackendSession;
   isActive: boolean;
   onSelect: () => void;
-  onDelete: () => void;
+  onDelete: (returnFocus: HTMLElement | null) => void;
   onSessionUpdate: (session: BackendSession) => void;
   onRenameSession?: (
     sessionId: string,
@@ -213,7 +213,7 @@ export function SessionItem({
         isOpen={isMenuOpen}
         onClose={() => setIsMenuOpen(false)}
         onRename={handleStartEdit}
-        onDelete={onDelete}
+        onDelete={() => onDelete(menuButtonRef.current)}
         anchorEl={menuAnchor}
       />
     </>
