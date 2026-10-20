@@ -146,7 +146,7 @@ try {
       const openDelete = async () => {
         await openSidebar();
         const row = `[...${sidebar}.querySelectorAll('[data-slot="thread-list-item"]')].find(e=>e.textContent.includes('Synthetic session a'))`;
-        await c.evaluate(`window.__sessionPreview.deleteAnchor = ${row}.querySelectorAll('button')[1]`);
+        await c.evaluate(`void (window.__sessionPreview.deleteAnchor = ${row}.querySelectorAll('button')[1])`);
         await click(`${row}.querySelectorAll('button')[1]`);
         if (viewport.mobile) {
           // SessionMenu intentionally renders a bottom Drawer with Buttons on mobile.
@@ -156,7 +156,7 @@ try {
           await click(remove);
         } else {
           await wait("Boolean(document.querySelector('[role=menuitem]'))", "session_menu");
-          await c.evaluate(`window.__sessionPreview.deleteMenuItem = [...document.querySelectorAll('[role=menuitem]')].find(e=>e.textContent.trim()===${quote(labels.common.delete)})`);
+          await c.evaluate(`void (window.__sessionPreview.deleteMenuItem = [...document.querySelectorAll('[role=menuitem]')].find(e=>e.textContent.trim()===${quote(labels.common.delete)}))`);
           await click(`[...document.querySelectorAll('[role=menuitem]')].find(e=>e.textContent.trim()===${quote(labels.common.delete)})`);
         }
         await wait(`document.querySelectorAll('[role=dialog]').length===1 && ${dialog}.textContent.includes(${quote(labels.sidebar.deleteSession)})`, "delete_dialog");
