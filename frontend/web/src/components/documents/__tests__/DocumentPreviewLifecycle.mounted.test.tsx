@@ -53,7 +53,7 @@ function button(title: string): HTMLButtonElement {
   assert.ok(result, `Missing button: ${title}`); return result;
 }
 function overlay(): HTMLElement {
-  const result = Array.from(document.body.children).find(node => node.classList.contains("fixed") && node.classList.contains("inset-0"));
+  const result = document.querySelector<HTMLElement>("[data-tool-result-overlay]");
   assert.ok(result, "Missing tool panel overlay"); return result as HTMLElement;
 }
 async function click(node: HTMLElement) { await act(async () => node.click()); }
@@ -73,6 +73,7 @@ async function harness(fetchHandler?: typeof fetch) {
   const container = document.createElement("div"); document.body.append(container);
   const root = await createLobeTestRoot(container);
   return {
+    container,
     async render(children: ReactNode) {
       await act(async () => { root.render(children); });
       await act(async () => {
@@ -214,6 +215,8 @@ test("center and fullscreen preserve independent editor and simultaneous preview
   }
   try {
     await view.render(tree("sidebar")); assert.equal(ownerClose, 0, "same registry remounts never close each other");
+    assert.ok(view.container.contains(overlay()), "preview portal stays in the Lobe theme host");
+    assert.ok(view.container.contains(button("关闭编辑器")), "editor portal stays in the Lobe theme host");
     await click(button("Center view")); assert.equal(compressed(), true, "second sidebar retains shared attribute");
     await view.render(tree("center")); assert.equal(compressed(), false); assert.equal(compressed("data-editor-sidebar"), true);
     await view.render(tree("sidebar", true)); assert.equal(compressed(), false, "controlled fullscreen never reserves sidebar space");

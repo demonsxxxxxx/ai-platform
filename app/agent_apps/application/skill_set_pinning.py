@@ -20,6 +20,7 @@ async def pin_agent_skill_set(
     mcp_tool_ids_for_skill: Callable[[dict[str, Any], dict[str, Any]], list[str]],
     conflict_error: Callable[[str], Exception],
     department_id: str = "",
+    department_ids: tuple[str, ...] = (),
     roles: list[str] | None = None,
     permissions: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], str, dict[str, Any]]:
@@ -37,7 +38,7 @@ async def pin_agent_skill_set(
         admissions = await admit_skill_set(
             conn,
             roots=roots,
-            department_id=department_id, roles=roles, permissions=permissions,
+            department_id=department_id, department_ids=department_ids, roles=roles, permissions=permissions,
             input_payload=input_payload,
             tenant_id=tenant_id,
             rollout_key=rollout_key,

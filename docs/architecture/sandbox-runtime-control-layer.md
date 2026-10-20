@@ -120,7 +120,10 @@ generation, timestamps, and reconciliation ownership in one migration.
    session, terminal, Attempt and token-generation fences. Only provider-session
    append opts into the cancelling provider-tail fallback. HTTP token parsing
    and rejection status/detail mapping remain in the callback route, as do
-   receipt persistence, renewal sequencing and post-commit publication. The old
+   receipt persistence, renewal sequencing and post-commit publication. The MCP
+   credential callback uses this same authority and the selected Server's
+   platform-recorded lease binding; the [MCP execution contract](mcp-tool-execution.md#principal-credential-lifetime)
+   owns its credential refresh and no-store response behavior. The old
    route-owned guards and their misleading Attempt-before-Run name are retired;
    there is no compatibility alias or second validator.
    A callback batch is persisted through the durable

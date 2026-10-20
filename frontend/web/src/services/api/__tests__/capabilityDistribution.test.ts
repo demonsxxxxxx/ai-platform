@@ -25,7 +25,7 @@ const projection = {
 
 const departmentNode = {
   directory_id: "1",
-  authority_id: "总部",
+  authority_id: "1",
   name: "总部",
   path: "总部",
   selectable: true,
@@ -60,7 +60,7 @@ test("normalizes the exact bounded department directory projection", () => {
   response.departments[0].children = [
     {
       directory_id: "2",
-      authority_id: "研发",
+      authority_id: "2",
       name: "研发",
       path: "总部 / 研发",
       selectable: false,
@@ -72,7 +72,7 @@ test("normalizes the exact bounded department directory projection", () => {
   assert.deepEqual(normalizeDepartmentDirectory(response), [
     {
       directoryId: "1",
-      authorityId: "总部",
+      authorityId: "1",
       name: "总部",
       path: "总部",
       selectable: true,
@@ -80,7 +80,7 @@ test("normalizes the exact bounded department directory projection", () => {
       children: [
         {
           directoryId: "2",
-          authorityId: "研发",
+          authorityId: "2",
           name: "研发",
           path: "总部 / 研发",
           selectable: false,
@@ -92,11 +92,18 @@ test("normalizes the exact bounded department directory projection", () => {
   ]);
 });
 
+test("display names do not replace numeric department identity", () => {
+  const departments = ["101", "201"].map((id) => ({
+    ...departmentNode, directory_id: id, authority_id: id, name: "研发", path: "研发",
+  }));
+  assert.deepEqual(normalizeDepartmentDirectory({ departments }).map((node) => node.authorityId), ["101", "201"]);
+  assert.equal(normalizeDepartmentDirectory({ departments: [{ ...departmentNode, name: "101", path: "101" }] })[0].authorityId, "1");
+});
+
 test("counts supplementary-plane department labels by Unicode code point", () => {
   const boundaryLabel = "𠀀".repeat(160);
   const boundary = {
     ...departmentNode,
-    authority_id: boundaryLabel,
     name: boundaryLabel,
     path: boundaryLabel,
   };
@@ -111,7 +118,6 @@ test("counts supplementary-plane department labels by Unicode code point", () =>
       departments: [
         {
           ...boundary,
-          authority_id: overlongLabel,
           name: overlongLabel,
           path: overlongLabel,
         },
@@ -128,7 +134,7 @@ test("rejects hostile department keys, identifiers, labels, and integrity drift"
       departments: [
         {
           directory_id: "1",
-          authority_id: "总部",
+          authority_id: "1",
           name: "总部",
           path: "总部",
           selectable: true,
@@ -137,6 +143,9 @@ test("rejects hostile department keys, identifiers, labels, and integrity drift"
       ],
     },
     { departments: [{ ...departmentNode, directory_id: "dept-1" }] },
+    { departments: [{ ...departmentNode, directory_id: "01", authority_id: "01" }] },
+    { departments: [{ ...departmentNode, authority_id: "2" }] },
+    { departments: [{ ...departmentNode, authority_id: "总部" }] },
     { departments: [{ ...departmentNode, authority_id: " 总部", name: " 总部", path: " 总部" }] },
     {
       departments: [
@@ -172,7 +181,7 @@ test("rejects department depth and node-count overflow", () => {
     const child = {
       ...structuredClone(departmentNode),
       directory_id: String(depth),
-      authority_id: `部门${depth}`,
+      authority_id: String(depth),
       name: `部门${depth}`,
       path: `${current.path} / 部门${depth}`,
     };
@@ -184,7 +193,7 @@ test("rejects department depth and node-count overflow", () => {
   const departments = Array.from({ length: 5_001 }, (_, index) => ({
     ...structuredClone(departmentNode),
     directory_id: String(index + 1),
-    authority_id: `部门${index + 1}`,
+    authority_id: String(index + 1),
     name: `部门${index + 1}`,
     path: `部门${index + 1}`,
   }));
@@ -207,7 +216,7 @@ test("fetches the same-origin admin department projection through the typed clie
     assert.deepEqual(await capabilityDistributionApi.departmentDirectory(), [
       {
         directoryId: "1",
-        authorityId: "总部",
+        authorityId: "1",
         name: "总部",
         path: "总部",
         selectable: true,

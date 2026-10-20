@@ -23,7 +23,7 @@ env:
 
 jobs:
   frontend:
-    name: projection audit, lint, build, trace
+    name: lint, build, trace
     runs-on: windows-latest
     timeout-minutes: 30
     env:
@@ -72,6 +72,117 @@ jobs:
       - name: Install frontend dependencies
         working-directory: frontend/web
         run: corepack pnpm install --frozen-lockfile
+
+      - name: Set up uv for frontend contracts
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Install Python traceability dependencies
+        run: python tools/frontend_ci_dependencies.py --subset windows-contracts
+
+      - name: Verify frontend lint and build
+        working-directory: frontend/web
+        run: corepack pnpm run lint && corepack pnpm run build
+
+      - name: Record frontend release traceability
+        run: python tools/frontend_release_traceability.py --format json
+
+      - name: Record packaged frontend runtime smoke contract
+        run: python tools/frontend_packaged_runtime_smoke.py --format json
+
+  frontend-tests:
+    name: frontend tests (${{ matrix.shard }})
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: frontend/web
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [stream-auth, documents-workspace, skill-model, runtime-control]
+    env:
+      SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify exact source checkout
+        shell: pwsh
+        run: |
+          if ($env:SOURCE_COMMIT -notmatch '^[0-9a-f]{40}$') { exit 1 }
+          if ((git rev-parse HEAD) -ne $env:SOURCE_COMMIT) { exit 1 }
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.FRONTEND_NODE_VERSION }}
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Resolve pnpm store
+        id: pnpm-store
+        shell: pwsh
+        working-directory: frontend/web
+        run: |
+          "path=$(corepack pnpm store path --silent)" >> $env:GITHUB_OUTPUT
+
+      - name: Cache pnpm store
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: frontend-pnpm-${{ runner.os }}-${{ hashFiles('frontend/web/pnpm-lock.yaml') }}
+          restore-keys: |
+            frontend-pnpm-${{ runner.os }}-
+
+      - name: Install frontend dependencies
+        working-directory: frontend/web
+        run: corepack pnpm install --frozen-lockfile
+
+      - name: Test streaming and authentication
+        if: matrix.shard == 'stream-auth'
+        run: corepack pnpm run test:auth && corepack pnpm run test:run-playback && corepack pnpm run test:sse
+
+      - name: Test documents and workspace
+        if: matrix.shard == 'documents-workspace'
+        run: corepack pnpm run test:agent-market && corepack pnpm run test:profile-drive && corepack pnpm run test:document-previews && corepack pnpm run test:browser-preferences
+
+      - name: Test skill and model management
+        if: matrix.shard == 'skill-model'
+        run: corepack pnpm run test:prd-closure-smoke-source && corepack pnpm run test:company-rbac-browser-smoke-source && corepack pnpm run test:skill-admin-ui && corepack pnpm run test:model-admin && corepack pnpm run test:pwa
+
+      - name: Test runtime control
+        if: matrix.shard == 'runtime-control'
+        run: corepack pnpm run test:run-monitor && corepack pnpm run test:control-plane-ui
+
+  frontend-contracts:
+    name: Python contracts and projection audit
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify exact source checkout
+        shell: pwsh
+        run: |
+          if ($env:SOURCE_COMMIT -notmatch '^[0-9a-f]{40}$') { exit 1 }
+          if ((git rev-parse HEAD) -ne $env:SOURCE_COMMIT) { exit 1 }
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.FRONTEND_PYTHON_VERSION }}
 
       - name: Set up uv for frontend contracts
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
@@ -194,20 +305,13 @@ jobs:
           python -c "import jsonschema"
 
       - name: Verify static frontend Python contracts
-        run: python -m pytest tests/test_deploy_frontend_static.py tests/test_frontend_release_traceability.py tests/test_frontend_packaged_runtime_smoke.py tests/test_frontend_ci_workflow.py -q --basetemp .pytest-tmp
+        run: python -m pytest tests/test_deploy_frontend_static.py tests/test_frontend_release_traceability.py tests/test_frontend_packaged_runtime_smoke.py tests/test_frontend_ci_workflow.py tests/test_frontend_ci_shards.py -q --basetemp .pytest-tmp
 
       - name: Verify static frontend deploy helper
         run: python tools/deploy_frontend_static.py --help
 
-      - name: Verify frontend projection and build
-        working-directory: frontend/web
-        run: corepack pnpm run ci:verify
-
-      - name: Record frontend release traceability
-        run: python tools/frontend_release_traceability.py --format json
-
-      - name: Record packaged frontend runtime smoke contract
-        run: python tools/frontend_packaged_runtime_smoke.py --format json
+      - name: Audit frontend projections
+        run: python tools/frontend_projection_audit.py --format json
 
   frontend-image:
     name: packaged image build
@@ -381,7 +485,7 @@ jobs:
     name: frontend required
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [frontend, frontend-image]
+    needs: [frontend, frontend-tests, frontend-contracts, frontend-image]
     if: ${{ always() }}
     steps:
       - name: Set up Python
@@ -392,6 +496,8 @@ jobs:
       - name: Require frontend verification and image provenance
         env:
           FRONTEND_RESULT: ${{ needs.frontend.result }}
+          TESTS_RESULT: ${{ needs.frontend-tests.result }}
+          CONTRACTS_RESULT: ${{ needs.frontend-contracts.result }}
           IMAGE_RESULT: ${{ needs.frontend-image.result }}
         run: |
           python - <<'PY'
@@ -399,10 +505,11 @@ jobs:
 
 
           def require_successful_results(results):
+              required_jobs = ("frontend", "frontend-tests", "frontend-contracts", "frontend-image")
               unexpected = {
-                  name: result
-                  for name, result in results.items()
-                  if result != "success"
+                  name: results.get(name, "")
+                  for name in required_jobs
+                  if results.get(name) != "success"
               }
               if unexpected:
                   detail = ", ".join(
@@ -418,6 +525,8 @@ jobs:
               require_successful_results(
                   {
                       "frontend": os.environ.get("FRONTEND_RESULT", ""),
+                      "frontend-tests": os.environ.get("TESTS_RESULT", ""),
+                      "frontend-contracts": os.environ.get("CONTRACTS_RESULT", ""),
                       "frontend-image": os.environ.get("IMAGE_RESULT", ""),
                   }
               )

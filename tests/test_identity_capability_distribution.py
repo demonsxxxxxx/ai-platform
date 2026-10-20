@@ -506,7 +506,7 @@ async def test_principal_agent_projection_filters_exact_scope_and_audits_admin_b
             "status": "active",
             "visible_to_user": True,
             "scope_mode": "allowlist",
-            "department_ids": ["QA"],
+            "department_ids": ["110"],
             "allowed_roles": ["qa-operator"],
         },
         {
@@ -515,7 +515,7 @@ async def test_principal_agent_projection_filters_exact_scope_and_audits_admin_b
             "status": "active",
             "visible_to_user": True,
             "scope_mode": "allowlist",
-            "department_ids": ["qa"],
+            "department_ids": ["210"],
             "allowed_roles": ["qa-operator"],
         },
         {
@@ -524,7 +524,7 @@ async def test_principal_agent_projection_filters_exact_scope_and_audits_admin_b
             "status": "disabled",
             "visible_to_user": False,
             "scope_mode": "allowlist",
-            "department_ids": ["translation"],
+            "department_ids": ["510"],
             "allowed_roles": ["translator"],
         },
     ]
@@ -550,7 +550,8 @@ async def test_principal_agent_projection_filters_exact_scope_and_audits_admin_b
         object(),
         tenant_id="tenant-a",
         actor_user_id="qa-user",
-        department_id="QA",
+        department_id="110",
+        department_ids=("110",),
         roles=[" QA-OPERATOR "],
         is_admin=False,
         permissions=["chat:read"],
@@ -559,7 +560,8 @@ async def test_principal_agent_projection_filters_exact_scope_and_audits_admin_b
         object(),
         tenant_id="tenant-a",
         actor_user_id="admin-a",
-        department_id="platform",
+        department_id="410",
+        department_ids=("410",),
         roles=["admin"],
         is_admin=True,
         permissions=["chat:read"],
@@ -1348,7 +1350,7 @@ async def test_capability_distribution_authorization_allows_same_department_skil
             "status": "active",
             "visible_to_user": True,
             "scope_mode": "allowlist",
-            "department_ids": ["qa"],
+            "department_ids": ["110"],
             "allowed_roles": ["qa-operator"],
         }
 
@@ -1372,7 +1374,8 @@ async def test_capability_distribution_authorization_allows_same_department_skil
         agent_id="general-agent",
         skill_id="general-chat",
         normalized_input={"mcp_tool_ids": ["qa-search"]},
-        principal_department_id="qa",
+        principal_department_id="110",
+        principal_department_ids=("110",),
         principal_roles=[" QA-Operator "],
         is_admin=False,
         permissions=[],
@@ -1405,7 +1408,7 @@ async def test_harness_skill_authorization_derives_canonical_backing_tool_withou
             "status": "active",
             "visible_to_user": True,
             "scope_mode": "allowlist",
-            "department_ids": ["qa"],
+            "department_ids": ["110"],
             "allowed_roles": ["qa_operator"],
         }
 
@@ -1429,7 +1432,8 @@ async def test_harness_skill_authorization_derives_canonical_backing_tool_withou
         agent_id="sop-assistant",
         skill_id="knowledge-skill",
         normalized_input={},
-        principal_department_id="qa",
+        principal_department_id="110",
+        principal_department_ids=("110",),
         principal_roles=["qa_operator"],
         is_admin=False,
         permissions=[],
@@ -1464,7 +1468,7 @@ async def test_harness_backed_ragflow_skill_authorization_fails_closed_for_curre
             "status": "active",
             "visible_to_user": True,
             "scope_mode": "allowlist",
-            "department_ids": ["qa"],
+            "department_ids": ["110"],
             "allowed_roles": ["qa_operator"],
         }
         if capability_kind == "mcp_server":
@@ -1473,7 +1477,7 @@ async def test_harness_backed_ragflow_skill_authorization_fails_closed_for_curre
             elif denial == "disabled":
                 row["status"] = "disabled"
             elif denial == "department":
-                row["department_ids"] = ["finance"]
+                row["department_ids"] = ["310"]
             elif denial == "role":
                 row["allowed_roles"] = ["reviewer"]
         return row
@@ -1500,7 +1504,8 @@ async def test_harness_backed_ragflow_skill_authorization_fails_closed_for_curre
             agent_id="sop-assistant",
             skill_id="ragflow-knowledge-search",
             normalized_input={},
-            principal_department_id="qa",
+            principal_department_id="110",
+            principal_department_ids=("110",),
             principal_roles=["qa_operator"],
             is_admin=False,
             permissions=[],
@@ -1520,7 +1525,7 @@ async def test_capability_distribution_authorization_denies_skill_before_enqueue
             "status": "active",
             "visible_to_user": True,
             "scope_mode": "allowlist",
-            "department_ids": ["qa"],
+            "department_ids": ["110"],
             "allowed_roles": ["qa_operator"],
         }
         if denial == "hidden":
@@ -1528,7 +1533,7 @@ async def test_capability_distribution_authorization_denies_skill_before_enqueue
         elif denial == "disabled":
             row["status"] = "disabled"
         elif denial == "department":
-            row["department_ids"] = ["finance"]
+            row["department_ids"] = ["310"]
         elif denial == "role":
             row["allowed_roles"] = ["reviewer"]
         return row
@@ -1543,7 +1548,8 @@ async def test_capability_distribution_authorization_denies_skill_before_enqueue
             agent_id="general-agent",
             skill_id="general-chat",
             normalized_input={},
-            principal_department_id="qa",
+            principal_department_id="110",
+            principal_department_ids=("110",),
             principal_roles=["qa_operator"],
             is_admin=False,
             permissions=[],
@@ -1564,7 +1570,7 @@ async def test_capability_distribution_denial_carries_sanitized_immutable_audit_
             "status": "active",
             "visible_to_user": True,
             "scope_mode": "allowlist",
-            "department_ids": ["finance"],
+            "department_ids": ["310"],
             "allowed_roles": ["reviewer"],
             "metadata_json": {"secret": "must-not-be-audited"},
         }
@@ -1579,7 +1585,8 @@ async def test_capability_distribution_denial_carries_sanitized_immutable_audit_
             agent_id="general-agent",
             skill_id="general-chat",
             normalized_input={},
-            principal_department_id="QA",
+            principal_department_id="110",
+            principal_department_ids=("110",),
             principal_roles=[" QA-Operator ", "qa-operator"],
             is_admin=False,
             permissions=[],
@@ -1590,9 +1597,9 @@ async def test_capability_distribution_denial_carries_sanitized_immutable_audit_
     assert denial.audit_payload() == {
         "capability_kind": "skill",
         "capability_id": "general-chat",
-        "actor_department_id": "QA",
+        "actor_department_id": "110",
         "actor_roles": ["qa-operator"],
-        "department_scope_ids": ["finance"],
+        "department_scope_ids": ["310"],
         "role_scope_ids": ["reviewer"],
         "scope_mode": "allowlist",
         "decision_reason": "department_not_allowed",
@@ -1649,14 +1656,14 @@ async def test_capability_distribution_authorization_denies_explicit_mcp_tool_be
                 "status": "active",
                 "visible_to_user": True,
                 "scope_mode": "allowlist",
-                "department_ids": ["qa"],
+                "department_ids": ["110"],
                 "allowed_roles": [],
             }
         return {
             "status": "active",
             "visible_to_user": True,
             "scope_mode": "allowlist",
-            "department_ids": ["finance"] if denial == "department" else ["qa"],
+            "department_ids": ["310"] if denial == "department" else ["110"],
             "allowed_roles": [],
         }
 
@@ -1682,7 +1689,8 @@ async def test_capability_distribution_authorization_denies_explicit_mcp_tool_be
             agent_id="general-agent",
             skill_id="general-chat",
             normalized_input={"mcp_tool_ids": ["qa-search"]},
-            principal_department_id="qa",
+            principal_department_id="110",
+            principal_department_ids=("110",),
             principal_roles=["qa_operator"],
             is_admin=False,
             permissions=[],
@@ -1700,7 +1708,7 @@ async def test_capability_distribution_skill_revocation_after_original_run_denie
             "status": "disabled",
             "visible_to_user": True,
             "scope_mode": "allowlist",
-            "department_ids": ["qa"],
+            "department_ids": ["110"],
             "allowed_roles": ["qa_operator"],
         }
 
@@ -1718,7 +1726,8 @@ async def test_capability_distribution_skill_revocation_after_original_run_denie
             agent_id="general-agent",
             skill_id="general-chat",
             normalized_input={"mcp_tool_ids": ["tool-a"]},
-            principal_department_id="qa",
+            principal_department_id="110",
+            principal_department_ids=("110",),
             principal_roles=["qa_operator"],
             is_admin=False,
             permissions=[],
@@ -1738,7 +1747,7 @@ async def test_capability_distribution_mcp_revocation_after_original_run_denies_
             "status": "active" if capability_kind == "skill" else "disabled",
             "visible_to_user": True,
             "scope_mode": "allowlist",
-            "department_ids": ["qa"],
+            "department_ids": ["110"],
             "allowed_roles": ["qa_operator"],
         }
 
@@ -1763,7 +1772,8 @@ async def test_capability_distribution_mcp_revocation_after_original_run_denies_
             agent_id="general-agent",
             skill_id="general-chat",
             normalized_input={"mcpToolIds": ["revoked-tool"]},
-            principal_department_id="qa",
+            principal_department_id="110",
+            principal_department_ids=("110",),
             principal_roles=["qa_operator"],
             is_admin=False,
             permissions=[],

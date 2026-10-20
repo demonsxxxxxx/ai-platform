@@ -195,9 +195,9 @@ test("Run investigation encodes identity and rejects another Run's evidence", as
   const calls: string[] = [];
   const client: AdminRunsApiClient = { async request<T>(url: string): Promise<T> {
     calls.push(url);
-    return { run_id: "run/a", timeline_source: "platform_receipts", stages: [], comparison: {} } as T;
+    return { run_id: "run/a", timeline_source: "platform_receipts", stages: [] } as T;
   } };
-  await fetchAdminRunInvestigation("run/a", { hours: 24, userId: "user/a" }, client);
-  assert.equal(calls[0], "/api/ai/admin/runs/run%2Fa/investigation?hours=24&user_id=user%2Fa");
-  await assert.rejects(fetchAdminRunInvestigation("run/b", {}, client), /admin_run_investigation_response_invalid/);
+  await fetchAdminRunInvestigation("run/a", client);
+  assert.equal(calls[0], "/api/ai/admin/runs/run%2Fa/investigation");
+  await assert.rejects(fetchAdminRunInvestigation("run/b", client), /admin_run_investigation_response_invalid/);
 });

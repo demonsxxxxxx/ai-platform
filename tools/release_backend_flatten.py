@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass
-import hashlib
+from dataclasses import dataclass, replace
 import json
 import os
 from pathlib import Path
@@ -188,6 +187,9 @@ class _ArchiveIdentity:
     st_dev: int
     st_ino: int
     st_uid: int | None
+    st_ctime_ns: int | None = None
+    st_mtime_ns: int | None = None
+    st_size: int | None = None
 
 
 @dataclass(frozen=True)
@@ -399,6 +401,9 @@ def _assert_archive_metadata(
         metadata.st_dev != identity.st_dev
         or metadata.st_ino != identity.st_ino
         or (identity.st_uid is not None and metadata.st_uid != identity.st_uid)
+        or (identity.st_ctime_ns is not None and metadata.st_ctime_ns != identity.st_ctime_ns)
+        or (identity.st_mtime_ns is not None and metadata.st_mtime_ns != identity.st_mtime_ns)
+        or (identity.st_size is not None and metadata.st_size != identity.st_size)
     ):
         raise BackendFlattenError("backend flatten archive is unsafe")
     if require_content and metadata.st_size <= 0:
@@ -469,19 +474,21 @@ def _open_verified_archive(archive: _VerifiedArchive) -> BinaryIO:
 
 def _verify_archive(path: Path, identity: _ArchiveIdentity) -> _VerifiedArchive:
     archive = _VerifiedArchive(path=path, identity=identity)
-    digest = hashlib.sha256()
     try:
         with _open_verified_archive(archive) as handle:
-            while True:
-                chunk = handle.read(128 * 1024)
-                if not chunk:
-                    break
-                digest.update(chunk)
+            metadata = os.fstat(handle.fileno())
+            # Inodes can be reused after close; seal the completed export's change stamps too.
+            archive = _VerifiedArchive(path=path, identity=replace(
+                identity,
+                st_ctime_ns=metadata.st_ctime_ns if os.name == "posix" else None,
+                st_mtime_ns=metadata.st_mtime_ns,
+                st_size=metadata.st_size,
+            ))
+            while handle.read(128 * 1024):
+                pass
             _assert_verified_archive_binding(archive, handle)
     except OSError:
         raise BackendFlattenError("backend flatten archive is unavailable") from None
-    if not digest.hexdigest():
-        raise BackendFlattenError("backend flatten archive checksum failed")
     return archive
 
 

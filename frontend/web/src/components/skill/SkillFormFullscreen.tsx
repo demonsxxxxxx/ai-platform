@@ -19,7 +19,8 @@ export function SkillFormFullscreen(a: SkillFormActions) {
       <Button type="primary" size="large"
         htmlType="button" icon={<Shrink size={18} />}
         onClick={() => a.toggleFullscreen(false)}
-        className="fixed top-4 right-4 z-[410] shadow-xl"
+        className="shadow-xl"
+        style={{ position: "fixed", top: 16, right: 16, zIndex: 410 }}
         aria-label={t("skills.form.exitFullscreen")} title={t("skills.form.exitFullscreen")}
       />
       <div className="flex flex-1 min-h-0 overflow-hidden">
@@ -61,7 +62,7 @@ export function SkillFormFullscreen(a: SkillFormActions) {
           {/* Right: editor only */}
           <div className="flex flex-1 flex-col min-h-0">
             {/* Mobile header: tabs + actions */}
-            <div className="shrink-0 flex items-center gap-1 px-3 py-2 sm:hidden">
+            <div className="shrink-0 flex items-center gap-1 py-2 pl-3 pr-[72px] sm:hidden">
               <div className="flex-1 min-w-0">
                 <FileTabs
                   panelId={editorPanelId}
@@ -72,7 +73,7 @@ export function SkillFormFullscreen(a: SkillFormActions) {
                   untitledLabel={t("skills.form.untitled")}
                 />
               </div>
-              <Button type="text"
+              <Button type="text" size="large"
                 htmlType="button"
                 onClick={a.addFile}
                 className="shrink-0" icon={<Plus size={15} />}

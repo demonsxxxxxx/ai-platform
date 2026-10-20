@@ -54,6 +54,7 @@ function bootstrapSource(loading = false) {
     localStorage.setItem('language', 'zh');
     localStorage.setItem('i18nextLng', 'zh');
     localStorage.setItem('ai-platform-theme', ${JSON.stringify(theme)});
+    localStorage.setItem('ai-platform-sidebar-collapsed', 'false');
     const originalFetch = window.fetch.bind(window);
     const state = window.__routeLayoutSmoke = { errors: [], requests: [] };
     window.addEventListener('error', (event) => state.errors.push(String(event.message)));
@@ -66,6 +67,33 @@ function bootstrapSource(loading = false) {
       created_at: '2026-08-09T00:00:00Z', updated_at: '2026-08-09T00:00:00Z'
     };
     const profiles = ${JSON.stringify(profiles)};
+    const run = {
+      run_id: 'run-failed', session_id: 'session-synthetic', session_title: '采购合同审核（合成案例）',
+      task_summary: '检查超时异常与后续处理的观察关联', user_id: 'user-synthetic', user_display_name: '合成测试用户',
+      workspace_id: 'workspace-synthetic', workspace_name: '测试工作区', trace_id: 'trace-synthetic',
+      status: 'failed', agent_id: 'agent-synthetic', agent_name: '合同审阅专家', skill_name: '合同检查',
+      created_at: '2026-04-01T09:00:00Z', queued_at: '2026-04-01T09:00:00Z',
+      started_at: '2026-04-01T09:00:01Z', finished_at: '2026-04-01T09:00:05Z',
+      error_code: 'executor_failed', error_message: '任务执行失败'
+    };
+    const monitorWindow = { from_at: '2026-04-01T00:00:00Z', to_at: '2026-04-02T00:00:00Z' };
+    const metric = (value) => ({ sample_count: value === null ? 0 : 1, p50: value, p95: value, p99: value });
+    const rootId = 'obs_' + '1'.repeat(32), wrapperId = 'obs_' + '2'.repeat(32), receiptId = 'obs_' + '3'.repeat(32);
+    const diagnostics = {
+      schema_version: 'ai-platform.run-diagnostics.v1', diagnostic_id: 'rdiag-synthetic', revision: 1,
+      coverage: 'full', run,
+      root: { observation_id: rootId, attempt_id: 'attempt-a', kind: 'failure', source: 'sdk_exception',
+        stage: 'model_wait', error_code: 'provider_timeout', exception_type: 'TimeoutError', message: '模型等待超时；已保留原始异常摘要。' },
+      handling: [{ observation_id: wrapperId, parent_observation_id: rootId, attempt_id: 'attempt-a',
+        kind: 'handling', source: 'executor_wrapper', stage: 'sandbox_submission', error_code: 'executor_failed' }],
+      losses: [], attempts: [{ attempt_id: 'attempt-a', ordinal: 1, status: 'failed', owner_kind: 'queue_worker', terminal_reason: 'run_failed' }],
+      details: { schema_version: 'ai-platform.sdk-runtime-diagnostics.v1', sdk: {},
+        observations: [{ observation_id: receiptId, parent_observation_id: wrapperId, attempt_id: 'attempt-a',
+          source: 'executor_callback', stage: 'terminal_receipt', error_code: 'executor_failed', sdk: {},
+          tool_lifecycles: [], tool_calls: [], tool_policy_denials: [], normalization_losses: [] }],
+        tool_lifecycles: [], tool_calls: [], tool_policy_denials: [] },
+      versions: {}, counts: { retained_observations: 1, omitted_observations: 0 }
+    };
     const profile = profiles[0];
     const adminProfile = {
       ...profile,
@@ -111,28 +139,54 @@ function bootstrapSource(loading = false) {
         latest_display_version: '0.1.0', current_display_version: '0.1.0', latest_uploaded_at: '2026-08-09T00:00:00Z', rollout_percent: 100
       }] });
       if (url.pathname === '/api/admin/capability-distributions/department-directory') return json({ departments: [{
-        directory_id: '1', authority_id: '运营QA for 工程', name: '运营QA for 工程', path: '运营QA for 工程', children: [], selectable: true, reason: null
+        directory_id: '1', authority_id: '1', name: '运营QA for 工程', path: '运营QA for 工程', children: [], selectable: true, reason: null
       }] });
       if (url.pathname === '/api/admin/capability-distributions') return json({ capability_distributions: [{
         id: 'dist-1', tenant_id: 'tenant-layout', capability_kind: 'skill', capability_id: 'skill-opaque-42',
-        status: 'active', visible_to_user: true, scope_mode: 'allowlist', department_ids: ['运营QA for 工程'], allowed_roles: ['reviewer'], metadata_json: {}
+        status: 'active', visible_to_user: true, scope_mode: 'allowlist', department_ids: ['1'], allowed_roles: ['reviewer'], metadata_json: {}
       }] });
       if (url.pathname === '/api/admin/capability-distributions/skill/skill-opaque-42' && method === 'PUT') return json({ capability_distribution: {
         id: 'dist-1', tenant_id: 'tenant-layout', capability_kind: 'skill', capability_id: 'skill-opaque-42',
-        status: 'active', visible_to_user: true, scope_mode: 'allowlist', department_ids: ['运营QA for 工程'], allowed_roles: ['reviewer'], metadata_json: {}
+        status: 'active', visible_to_user: true, scope_mode: 'allowlist', department_ids: ['1'], allowed_roles: ['reviewer'], metadata_json: {}
       } });
       if (url.pathname === '/api/roles/') return json({ roles: [{ id: 'reviewer', name: 'reviewer', description: 'Reviewer', permissions: [], is_system: false }], total: 1, skip: 0, limit: 100 });
       if (url.pathname === '/api/ai/agent-profiles') return json({ agent_profiles: profiles });
       if (url.pathname === '/api/ai/agent-profiles/agt_support') return json(profile);
       if (url.pathname === '/api/ai/admin/agent-profiles') return json({ agent_profiles: [adminProfile] });
       if (url.pathname === '/api/ai/admin/agent-profiles/agt_support/history') return json({ agent_profiles: [adminProfile] });
-      if (url.pathname === '/api/mcp/chat-tools' || url.pathname === '/api/mcp/catalog-tools') return json({ tools: [], count: 0, unavailable: [] });
+      if (url.pathname === '/api/mcp/catalog-tools') return json({ tools: [
+        { tool_id: 'mcp:drive:upload_file', label: 'ProfileDriveMCPServer.upload_file', description: 'Upload authorized attachments.', server: 'drive', category: 'mcp', cached: false },
+        { tool_id: 'mcp:support:search', label: '支持知识检索', description: '检索授权支持知识。', server: 'support', category: 'mcp', cached: false },
+        { tool_id: 'mcp:calendar:list', label: '列出会议', description: '查看授权日历。', server: 'calendar', category: 'mcp', cached: false }
+      ], count: 3, unavailable: [] });
+      if (url.pathname === '/api/mcp/chat-tools') return json({ tools: [], count: 0, unavailable: [] });
       if (url.pathname === '/api/mcp/') return json({ servers: [{
         name: 'synthetic-mcp', transport: 'streamable_http', url: 'https://example.invalid/mcp',
         enabled: true, is_system: true, can_edit: true, allowed_roles: [], role_quotas: {}, credential_state: 'configured'
       }], total: 1, skip: 0, limit: 20 });
       if (url.pathname === '/api/mcp/synthetic-mcp/catalog') return json({
         server_name: 'synthetic-mcp', tools: [{ name: 'synthetic-search', description: 'Synthetic search tool', parameters: [] }], count: 1, unavailable_reason: null
+      });
+      if (url.pathname === '/api/ai/admin/runs/monitor') return json({
+        measurement: 'run_lifecycle.v1', window: monitorWindow, counts: { total: 1, succeeded: 0, failed: 1, cancelled: 0, queued: 0, running: 0 },
+        success_rate: 0, latency: { total_ms: metric(5000), queue_ms: metric(1000), execution_ms: metric(4000), server_first_text_ms: metric(null), browser_first_text_ms: metric(null) },
+        models: [], runs: [run], limit: 50, has_more: false, order: 'slow'
+      });
+      if (url.pathname === '/api/ai/admin/runs/run-failed') return json({
+        run, worker_execution: { response: '', messages: [], actions: [], model: { turn_count: 1, duration_ms: 4000, stop_category: 'failed' } },
+        events: [], steps: [], artifacts: [], sandbox_leases: [], skill_snapshots: [], audit: []
+      });
+      if (url.pathname === '/api/ai/admin/runs/run-failed/diagnostics') return json(diagnostics);
+      if (url.pathname === '/api/ai/admin/runs/run-failed/investigation') return json({
+        run_id: run.run_id, total_ms: 5000, queue_ms: 1000, execution_ms: 4000, elapsed_ms: 5000,
+        server_first_text_ms: null, browser_first_text_ms: null, first_public_text_at: null,
+        observed_at: run.finished_at, browser_measurement: null, timeline_source: 'platform_receipts', durations_additive: false,
+        events_truncated: false, unbound_event_count: 0, missing_measurements: ['server_first_text_ms', 'browser_first_text_ms'], stages: [],
+        comparison: { window: monitorWindow, sample_count: 0, latency: {}, normal_run_id: null,
+          scope: 'same_agent_skill_profile_model_configuration', missing_reason: 'no_comparable_successful_run' }
+      });
+      if (url.pathname === '/api/ai/admin/runs/run-failed/trajectory') return json({
+        contract_version: 'ai-platform.admin-run-trajectory.v1', run_id: run.run_id, events: [], next_after_sequence: 0, has_more: false
       });
       if (url.pathname === '/api/ai/admin/models') return json({
         connection: { configured: true, revision: 7, base_url: 'https://gateway.example.invalid', key_fingerprint: 'synthetic' },
@@ -150,6 +204,10 @@ function bootstrapSource(loading = false) {
         models: [{ id: 'model-enterprise', value: 'model-enterprise', label: 'Enterprise Claude', provider: 'anthropic' }],
         count: 1, enabled_count: 1, default_model_id: 'model-enterprise'
       });
+      if (url.pathname === '/api/ai/auth/company-credential-handoff') return json({ credential: 'synthetic-handoff' });
+      if (url.pathname === '/api/profile-drive/status') return json({ status: 'disconnected', connected: false, reauthRequired: false, connectedAtUtc: null, lastUsedAtUtc: null });
+      if (url.pathname === '/api/review/history') return json({ items: [] });
+      if (url.pathname === '/api/review/stats/documents') return json({ total: 146, daily: [] });
       if (url.pathname === '/api/upload/config') return json({
         enabled: true,
         provider: 's3',
@@ -173,6 +231,8 @@ function bootstrapSource(loading = false) {
 }
 
 const cases = [
+  { path: "/ai-apps/sop-assistant", selector: "textarea[aria-label=\"制度或流程问题\"]", name: "sop", scroller: "[data-ai-application-scroller]" },
+  { path: "/ai-apps/word-review", selector: ".review-upload", name: "word", scroller: "[data-ai-application-scroller]", requiredRequests: ["/api/review/history", "/api/review/stats/documents"] },
   {
     path: "/",
     selector: ".welcome-root",
@@ -257,6 +317,18 @@ const cases = [
     requiredRequests: ["/api/mcp/", "/api/mcp/synthetic-mcp/catalog"],
   },
   {
+    path: "/plugins",
+    selector: "[data-plugin-market]",
+    name: "plugins",
+    requiredSelectors: ["[data-plugin-card='personal-file-server']"],
+    requiredRequests: ["/api/profile-drive/status"],
+  },
+  {
+    path: "/runs", selector: "[data-run-monitor]", name: "runs",
+    requiredSelectors: ['button[aria-label="查看 run-failed"]'],
+    requiredRequests: ["/api/ai/admin/runs/monitor"],
+  },
+  {
     path: "/models",
     selector: "[data-model-admin-control]",
     name: "models",
@@ -319,6 +391,94 @@ async function runCase(viewport, scenario) {
       })`,
       `${viewport.name}:${scenario.name}:required-controls`,
     );
+    let marketView = null;
+    if (scenario.name === "market") {
+      marketView = await browser.client.evaluate(`(() => {
+        const group = document.querySelector('[data-agent-market-view]');
+        return [...group.querySelectorAll('button')].map(button => {
+          const box = button.getBoundingClientRect();
+          const icon = button.querySelector('svg').getBoundingClientRect();
+          const style = getComputedStyle(button);
+          return { label: button.getAttribute('aria-label'), width: box.width, height: box.height,
+            iconWidth: icon.width, iconHeight: icon.height, paddingLeft: style.paddingLeft, paddingRight: style.paddingRight };
+        });
+      })()`);
+      if (marketView.length !== 2 || marketView.some(button => button.width < 32 || button.height < 32 || button.iconWidth < 15 || button.iconHeight < 15)) {
+        throw new Error(`market_view_toggle_size_failed:${JSON.stringify(marketView)}`);
+      }
+      await browser.client.evaluate(`document.querySelector('[aria-label="列表视图"]').click()`);
+      await browser.client.waitFor(`document.querySelector('[aria-label="列表视图"]').getAttribute('aria-pressed') === 'true' && document.querySelector('[data-agent-market-card]').classList.contains('sm:flex-row')`, "market:list-view");
+      await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-market-list`);
+      await browser.client.evaluate(`document.querySelector('[aria-label="网格视图"]').focus()`);
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: " ", code: "Space", windowsVirtualKeyCode: 32 });
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: " ", code: "Space", windowsVirtualKeyCode: 32 });
+      await browser.client.waitFor(`document.querySelector('[aria-label="网格视图"]').getAttribute('aria-pressed') === 'true' && document.querySelector('[data-agent-market-catalog]').classList.contains('grid')`, "market:grid-view-keyboard");
+    }
+    if (["market", "market-detail"].includes(scenario.name)) {
+      const retiredCopyPresent = await browser.client.evaluate("document.body.textContent.includes('企业已发布')");
+      if (retiredCopyPresent) throw new Error("market_retired_publication_badge_present");
+    }
+    let pluginLayout = null;
+    if (scenario.name === "plugins") {
+      if (viewport.mobile) {
+        await browser.client.evaluate(`document.querySelector('[data-librechat-mobile-rail] button[aria-expanded=false]').click()`);
+        await browser.client.waitFor(`document.querySelector('[data-librechat-mobile-sidebar]').getBoundingClientRect().left >= -1`, "plugins:mobile-sidebar-open");
+      }
+      const navigation = await browser.client.evaluate(`(() => {
+        const shell = document.querySelector(${JSON.stringify(viewport.mobile ? "[data-librechat-mobile-sidebar]" : "[data-librechat-desktop-sidebar]")});
+        return [...shell.querySelectorAll('[data-workbench-nav-item]')].map((button) => {
+          const box = button.getBoundingClientRect();
+          const icon = [...button.querySelectorAll('svg')].find((node) => node.getBoundingClientRect().width > 0).getBoundingClientRect();
+          return { item: button.dataset.workbenchNavItem, inset: icon.left - box.left, iconWidth: icon.width, align: getComputedStyle(button).justifyContent };
+        });
+      })()`);
+      const sidebarScreenshot = await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-plugins-sidebar`);
+      if (viewport.mobile) {
+        await browser.client.evaluate(`document.querySelector('[data-librechat-mobile-sidebar] button[title="收起侧边栏"]').click()`);
+        await browser.client.waitFor(`document.querySelector('[data-librechat-mobile-sidebar]').getBoundingClientRect().right <= 1`, "plugins:mobile-sidebar-close");
+      }
+      await browser.client.evaluate(`(() => { const button = [...document.querySelectorAll('[data-plugin-card] button')].find((node) => node.textContent.trim() === '认证'); button.focus(); window.__pluginAuthTrigger = button; button.click(); })()`);
+      await browser.client.waitFor("Boolean(document.querySelector('#file-server-password'))", "plugins:auth-open");
+      // Wait for the real popup entrance animation before measuring its controls.
+      await browser.client.waitFor(`(() => { const input = document.querySelector('#file-server-password'); return input && input.closest('[role=dialog]').getBoundingClientRect().height > 200 && [...document.querySelectorAll('[role=dialog]')].every((node) => node.getAnimations({ subtree: true }).every((animation) => animation.effect?.getTiming().iterations === Infinity || animation.playState !== 'running')); })()`, "plugins:auth-painted");
+      const field = await browser.client.evaluate(`(() => {
+        const input = document.querySelector('#file-server-password');
+        const root = input.parentElement;
+        const toggle = document.querySelector('button[aria-label="显示密码"]');
+        const rect = root.getBoundingClientRect();
+        const button = toggle.getBoundingClientRect();
+        const dialog = input.closest('[role=dialog]').getBoundingClientRect();
+        return { width: rect.width, height: rect.height, display: getComputedStyle(root).display,
+          themed: getComputedStyle(root).borderTopStyle === 'solid' && (getComputedStyle(root).borderTopColor !== 'rgba(0, 0, 0, 0)' || getComputedStyle(root).backgroundColor !== 'rgba(0, 0, 0, 0)'),
+          hasPrefix: Boolean(root.querySelector('svg')), toggleInside: root.contains(toggle), toggleWidth: button.width,
+          iconWidth: toggle.querySelector('svg')?.getBoundingClientRect().width ?? 0,
+          contained: dialog.left >= 0 && dialog.right <= innerWidth && dialog.top >= 0 && dialog.bottom <= innerHeight,
+          focused: document.activeElement === input };
+      })()`);
+      const screenshot = await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-plugins-auth`);
+      pluginLayout = { navigation, field, screenshot, sidebarScreenshot };
+      if (!navigation.length || navigation.some((item) => item.inset > 24 || item.iconWidth < 18 || item.align !== 'flex-start') ||
+          field.width < 260 || field.height < 40 || !field.themed || !field.hasPrefix || !field.toggleInside || field.toggleWidth < 28 || field.iconWidth < 15 || !field.contained || !field.focused) {
+        throw new Error(`plugin_layout_failed:${JSON.stringify(pluginLayout)}`);
+      }
+      await browser.client.evaluate(`document.querySelector('[role=dialog] button[type=submit]').focus()`);
+      for (const [modifiers, selector] of [[0, 'button[aria-label="关闭本地文件服务器认证"]'], [8, '[role=dialog] button[type=submit]']]) {
+        await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9, modifiers });
+        await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9, modifiers });
+        await browser.client.waitFor(`document.activeElement === document.querySelector(${JSON.stringify(selector)})`, `plugins:auth-tab-wrap:${modifiers}`);
+      }
+      await browser.client.evaluate(`document.querySelector('button[aria-label="显示密码"]').click()`);
+      await browser.client.waitFor(`document.querySelector('#file-server-password').type === 'text' && Boolean(document.querySelector('button[aria-label="隐藏密码"]'))`, "plugins:password-visible");
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await browser.client.waitFor("!document.querySelector('#file-server-password') && document.activeElement === window.__pluginAuthTrigger", "plugins:auth-focus-restored");
+      if (!viewport.mobile) {
+        await browser.client.evaluate(`document.querySelector('[data-librechat-desktop-sidebar] button[title="收起侧边栏"]').click()`);
+        await browser.client.waitFor("Boolean(document.querySelector('[data-librechat-desktop-sidebar] [data-workbench-rail-item]'))", "plugins:collapsed-rail");
+        const centered = await browser.client.evaluate(`(() => { const button = document.querySelector('[data-librechat-desktop-sidebar] [data-workbench-rail-item]'); const box = button.getBoundingClientRect(); const icon = button.querySelector('svg').getBoundingClientRect(); return Math.abs((box.left + box.right - icon.left - icon.right) / 2) < 2; })()`);
+        if (!centered) throw new Error('plugins:collapsed-icon-not-centered');
+      }
+    }
     if (scenario.name === "models") {
       await browser.client.evaluate(`(() => {
         const input = document.querySelector('[aria-label="启用 deepseek-v4-flash-cc"]');
@@ -330,6 +490,30 @@ async function runCase(viewport, scenario) {
         `document.querySelectorAll('[data-model-admin-table-scroll] [role=switch][aria-checked=true]').length === 3`,
         `${viewport.name}:models:enabled-toggle`,
       );
+    }
+    const responsiveLayout = await browser.client.evaluate(`(() => {
+      const detail = document.querySelector('[data-selected-skill-detail-shell]')?.getBoundingClientRect();
+      const upload = document.querySelector('.review-upload')?.getBoundingClientRect();
+      const header = document.querySelector('.review-panel-header');
+      const table = document.querySelector('[data-mcp-server-row]')?.closest('table');
+      let tableScroller = table?.parentElement;
+      while (tableScroller && tableScroller.scrollWidth <= tableScroller.clientWidth + 1) tableScroller = tableScroller.parentElement;
+      if (tableScroller) tableScroller.scrollLeft = tableScroller.scrollWidth;
+      const tableReachable = !tableScroller || tableScroller.scrollLeft + tableScroller.clientWidth >= tableScroller.scrollWidth - 2;
+      if (tableScroller) tableScroller.scrollLeft = 0;
+      return {
+        detailContained: !detail || (detail.left >= 0 && detail.right <= innerWidth + 1),
+        uploadBottom: upload?.bottom ?? null,
+        headerPosition: header ? getComputedStyle(header).position : null,
+        tableWidth: table?.getBoundingClientRect().width ?? null, tableReachable,
+        iconsValid: [...document.querySelectorAll('button svg')].filter(node => node.checkVisibility({ opacityProperty: true, visibilityProperty: true }) && Number(node.getAttribute('width')) >= 12).every(node => node.getBoundingClientRect().width >= 12),
+        badgesSingleLine: [...document.querySelectorAll('[data-governance-state]')].every(node => getComputedStyle(node).whiteSpace === 'nowrap'),
+      };
+    })()`);
+    if (!responsiveLayout.detailContained || !responsiveLayout.iconsValid || !responsiveLayout.badgesSingleLine || !responsiveLayout.tableReachable ||
+        (scenario.name === "mcp" && responsiveLayout.tableWidth < 1080) ||
+        (scenario.name === "word" && (responsiveLayout.headerPosition === "sticky" || (viewport.mobile && responsiveLayout.uploadBottom > viewport.height)))) {
+      throw new Error(`responsive_layout_failed:${viewport.name}:${scenario.name}:${JSON.stringify(responsiveLayout)}`);
     }
     const scrollerSelector = typeof scenario.scroller === "function" ? scenario.scroller(viewport) : scenario.scroller;
     const layout = await browser.client.evaluate(`(() => {
@@ -450,12 +634,14 @@ async function runCase(viewport, scenario) {
     let overlay = null;
     if (scenario.popover) {
       await browser.client.evaluate(`(() => { const node = document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]'); if (!node) throw new Error('department_trigger_missing'); node.click(); })()`);
-      await browser.client.waitFor("Boolean(document.querySelector('[role=listbox]')) && document.querySelector('[data-department-directory-popup]').contains(document.activeElement)", `${viewport.name}:department-menu`);
+      await browser.client.waitFor("Boolean(document.querySelector('[role=listbox]')) && document.querySelector('[data-department-directory-popup]').contains(document.activeElement) && document.querySelector('[data-department-directory-popup]').getAnimations({ subtree: true }).every((animation) => animation.playState !== 'running')", `${viewport.name}:department-menu`);
       overlay = await browser.client.evaluate(`(() => { const r = document.querySelector('[role=listbox]').getBoundingClientRect(); return { left:r.left, right:r.right, top:r.top, bottom:r.bottom, visible:r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight }; })()`);
       if (!overlay.visible) throw new Error(`overlay_clipped:${viewport.name}:${JSON.stringify(overlay)}`);
       await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
       await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
-      await browser.client.waitFor("!document.querySelector('[role=listbox]') && document.activeElement === document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]')", `${viewport.name}:department-escape`);
+      // Select can retain its closed animation DOM; verify the user-visible close contract.
+      await browser.client.waitFor("!document.querySelector('[role=listbox]')?.checkVisibility({ opacityProperty: true, visibilityProperty: true }) && document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]').getAttribute('aria-expanded') === 'false' && document.activeElement === document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]')", `${viewport.name}:department-escape`);
+      overlay.dismissal = await browser.client.evaluate(`(() => { const list = document.querySelector('[role=listbox]'); return { retainedDom: Boolean(list), visible: list?.checkVisibility({ opacityProperty: true, visibilityProperty: true }) ?? false, expanded: document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]').getAttribute('aria-expanded'), focusRestored: document.activeElement === document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]') }; })()`);
     }
     if (scenario.saveRequest) {
       await browser.client.evaluate(`(() => { const button = document.querySelector('[data-skill-distribution-save]'); if (!button) throw new Error('skill_distribution_save_missing'); button.click(); })()`);
@@ -491,13 +677,124 @@ async function runCase(viewport, scenario) {
       await browser.client.waitFor("Boolean(document.querySelector('[role=listbox]'))", `${viewport.name}:mcp:transport-options`);
       await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
       await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
-      await browser.client.waitFor("!document.querySelector('[role=listbox]') && Boolean(document.querySelector('[data-mcp-editor-initial-focus]'))", `${viewport.name}:mcp:nested-escape`);
+      await browser.client.waitFor("!document.querySelector('[role=listbox]')?.checkVisibility({ opacityProperty: true, visibilityProperty: true }) && Boolean(document.querySelector('[data-mcp-editor-initial-focus]'))", `${viewport.name}:mcp:nested-escape`);
+      await browser.client.evaluate(`(() => { const trigger = document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]'); trigger.scrollIntoView({ block: 'center' }); trigger.click(); })()`);
+      await browser.client.waitFor(`(() => { const option = document.querySelector('[data-department-directory-popup] [role=option]'); if (!option || option.getAttribute('aria-disabled') === 'true' || document.querySelector('[data-department-directory-popup]').getAnimations({ subtree: true }).some(animation => animation.playState === 'running')) return false; const rect = option.getBoundingClientRect(); return rect.left >= 0 && rect.right <= innerWidth + 1 && rect.top >= 0 && rect.bottom <= innerHeight; })()`, `${viewport.name}:mcp:department-options`);
+      const departmentScreenshot = await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-mcp-departments`);
+      await browser.client.evaluate(`document.querySelector('[data-department-directory-popup] [role=option]').click()`);
+      await browser.client.waitFor(`Boolean(document.querySelector('[data-department-selection-overflow] span[title="运营QA for 工程"]'))`, `${viewport.name}:mcp:department-selected`);
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await browser.client.waitFor(`document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]').getAttribute('aria-expanded') === 'false' && !document.querySelector('[data-department-directory-popup]')?.checkVisibility({ opacityProperty: true, visibilityProperty: true }) && document.activeElement === document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]') && Boolean(document.querySelector('[data-mcp-editor-initial-focus]'))`, `${viewport.name}:mcp:department-escape`);
       await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
       await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
       await browser.client.waitFor("!document.querySelector('[data-mcp-editor-initial-focus]') && document.activeElement === document.querySelector('[data-mcp-admin-controls] button')", `${viewport.name}:mcp:editor-focus-restore`);
-      mcpFocus = { drawerContained: true, tabWrap: true, shiftTabWrap: true, escapeClose: true, triggerFocusRestored: true, nestedEscapeIsolated: true, editorFocusRestored: true, drawerScreenshot };
+      mcpFocus = { drawerContained: true, tabWrap: true, shiftTabWrap: true, escapeClose: true, triggerFocusRestored: true, nestedEscapeIsolated: true, editorFocusRestored: true, drawerScreenshot, departmentScreenshot, departmentSelection: true };
+    }
+    let runDiagnostics = null;
+    if (scenario.name === "runs") {
+      await browser.client.evaluate(`(() => {
+        const button = [...document.querySelectorAll('button[aria-label="查看 run-failed"]')].find(node => node.checkVisibility());
+        button.scrollIntoView({ block: 'center' }); button.focus(); window.__runDiagnosticTrigger = button; button.click();
+      })()`);
+      await browser.client.waitFor("Boolean(document.querySelector('[data-run-runtime-diagnostics] summary'))", "runs:diagnostics-ready");
+      await browser.client.waitFor(`(() => { const node = document.querySelector('[data-run-monitor-detail]'); const box = node.getBoundingClientRect(); return box.left >= 0 && box.right <= innerWidth + 1 && node.getAnimations({ subtree: true }).every(animation => animation.effect?.getTiming().iterations === Infinity || animation.playState !== 'running'); })()`, "runs:detail-painted");
+      const collapsed = await browser.client.evaluate(`(() => {
+        const details = [...document.querySelectorAll('[data-run-runtime-diagnostics] details')];
+        return ['技术关联编号', '观察关联'].every(label => {
+          const node = details.find(item => item.querySelector('summary')?.textContent === label);
+          return node && !node.open && !node.querySelector('p').checkVisibility();
+        });
+      })()`);
+      if (!collapsed) throw new Error("runs:observation-identities-not-collapsed");
+      for (const label of ["技术关联编号", "观察关联"]) {
+        await browser.client.evaluate(`(() => {
+          const node = [...document.querySelectorAll('[data-run-runtime-diagnostics] summary')].find(item => item.textContent === ${JSON.stringify(label)});
+          node.scrollIntoView({ block: 'center' }); node.focus();
+        })()`);
+        await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r", unmodifiedText: "\r" });
+        await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+        await browser.client.waitFor(`[...document.querySelectorAll('[data-run-runtime-diagnostics] summary')].find(item => item.textContent === ${JSON.stringify(label)}).parentElement.open`, `runs:expand:${label}`);
+      }
+      runDiagnostics = await browser.client.evaluate(`(() => {
+        const panel = document.querySelector('[data-run-monitor-detail]').getBoundingClientRect();
+        const section = document.querySelector('[data-run-runtime-diagnostics]');
+        const identities = [...section.querySelectorAll('details[open] p')];
+        return { collapsed: ${collapsed}, contained: panel.left >= 0 && panel.right <= innerWidth + 1,
+          idsContained: identities.every(node => { const box = node.getBoundingClientRect(); return box.left >= panel.left && box.right <= panel.right + 1; }),
+          root: section.innerText.includes('观察 obs_' + '1'.repeat(32)),
+          parent: section.innerText.includes('父观察 obs_' + '1'.repeat(32)),
+          wrapper: section.innerText.includes('观察 obs_' + '2'.repeat(32)) };
+      })()`);
+      if (!runDiagnostics.contained || !runDiagnostics.idsContained || !runDiagnostics.root || !runDiagnostics.parent || !runDiagnostics.wrapper) {
+        throw new Error(`runs:observation-chain-failed:${JSON.stringify(runDiagnostics)}`);
+      }
+      await browser.client.evaluate("document.querySelector('[data-run-runtime-diagnostics]').scrollIntoView({ block: 'center' })");
+      runDiagnostics.screenshot = await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-runs-diagnostics`);
+      await browser.client.evaluate(`(() => {
+        const outer = [...document.querySelectorAll('[data-run-runtime-diagnostics] details')].find(node => node.querySelector('summary')?.textContent === '逐条观测证据');
+        outer.open = true; outer.querySelector('details').open = true; outer.scrollIntoView({ block: 'center' });
+      })()`);
+      const receipt = await browser.client.evaluate(`(() => {
+        const evidence = [...document.querySelectorAll('[data-run-runtime-diagnostics] pre')].find(node => node.textContent.includes('parent_observation_id'));
+        return evidence?.checkVisibility() && evidence.textContent.includes('obs_' + '2'.repeat(32)) && evidence.textContent.includes('obs_' + '3'.repeat(32));
+      })()`);
+      if (!receipt) throw new Error("runs:receipt-parent-missing");
+      runDiagnostics.receiptScreenshot = await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-runs-receipt`);
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await browser.client.waitFor("!document.querySelector('[data-run-monitor-detail]') && document.activeElement === window.__runDiagnosticTrigger", "runs:focus-restored");
+      runDiagnostics.receiptParent = true;
+      runDiagnostics.focusRestored = true;
     }
     if (scenario.name === "builder") {
+      await browser.client.evaluate(`(() => {
+        document.querySelector('[data-agent-builder-mcp-settings]').open = true;
+        const trigger = [...document.querySelectorAll('button')].find(node => node.textContent.trim() === '管理工具');
+        trigger.focus();
+        trigger.click();
+      })()`);
+      await browser.client.waitFor("Boolean(document.querySelector('[aria-label=\"搜索 MCP 工具\"]'))", "builder:mcp-search-open");
+      const searchLayout = await browser.client.evaluate(`(() => {
+        const dialog = document.querySelector('[role=dialog]');
+        const input = dialog.querySelector('[aria-label="搜索 MCP 工具"]');
+        const button = [...dialog.querySelectorAll('button')].find(node => node.textContent.trim() === '搜索');
+        const box = dialog.getBoundingClientRect();
+        return { contained: box.left >= 0 && box.right <= innerWidth && box.top >= 0 && box.bottom <= innerHeight,
+          searchVisible: button?.getBoundingClientRect().width >= 40 && input.getBoundingClientRect().width >= 150,
+          retiredCopyAbsent: !document.body.textContent.includes('Skill Set 无法覆盖的外部能力才需要额外选择 MCP 工具。') };
+      })()`);
+      if (!searchLayout.contained || !searchLayout.searchVisible || !searchLayout.retiredCopyAbsent) throw new Error(`builder_mcp_search_layout_failed:${JSON.stringify(searchLayout)}`);
+      await browser.client.waitFor(`(() => {
+        for (let node = document.querySelector('[role=dialog]'); node; node = node.parentElement) {
+          if (Number(getComputedStyle(node).opacity) < 0.99) return false;
+        }
+        return true;
+      })()`, "builder:mcp-search-painted");
+      await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-builder-mcp-search`);
+      await browser.client.evaluate(`(() => {
+        const input = document.querySelector('[aria-label="搜索 MCP 工具"]');
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '  UPLOAD_FILE  ');
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.focus();
+      })()`);
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+      await browser.client.waitFor("document.querySelector('[role=dialog]').textContent.includes('显示 1 / 3 项')", "builder:mcp-search-enter");
+      await browser.client.evaluate(`document.querySelector('[role=dialog] label').click()`);
+      await browser.client.waitFor("document.querySelector('[role=dialog]').textContent.includes('已选 1 项')", "builder:mcp-select-filtered");
+      await browser.client.evaluate(`document.querySelector('[aria-label="清除 MCP 工具搜索"]').click()`);
+      await browser.client.waitFor("document.querySelector('[role=dialog]').textContent.includes('已选 1 项 · 显示 3 / 3 项')", "builder:mcp-clear-preserves-selection");
+      await browser.client.evaluate(`(() => {
+        const input = document.querySelector('[aria-label="搜索 MCP 工具"]');
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'missing-tool');
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      })()`);
+      await browser.client.evaluate(`([...document.querySelectorAll('[role=dialog] button')].find(node => node.textContent.trim() === '搜索')).click()`);
+      await browser.client.waitFor("document.querySelector('[role=dialog]').textContent.includes('没有匹配的 MCP 工具')", "builder:mcp-search-button-empty");
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await browser.client.waitFor("!document.querySelector('[role=dialog]') && document.activeElement?.textContent.trim() === '管理工具'", "builder:mcp-focus-restored");
       await browser.client.evaluate(`document.querySelector('[data-agent-avatar-picker]').scrollIntoView({ block: 'center' })`);
     }
     const finalErrors = await browser.client.evaluate("window.__routeLayoutSmoke.errors");
@@ -527,8 +824,10 @@ async function runCase(viewport, scenario) {
       }
     }
     const screenshot = await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-${scenario.name}`);
-    return { viewport: viewport.name, route: scenario.path, layout, reachable, modelLayout, avatarLayout, overlay, mcpFocus, loadingLayout, screenshot };
+    return { viewport: viewport.name, route: scenario.path, layout, reachable, responsiveLayout, modelLayout, avatarLayout, overlay, mcpFocus, runDiagnostics, loadingLayout, pluginLayout, marketView, screenshot };
   } catch (error) {
+    const focusDiagnostic = await browser.client.evaluate(`(() => ({ activeTag: document.activeElement?.tagName, activeLabel: document.activeElement?.getAttribute('aria-label'), activeTitle: document.activeElement?.getAttribute('title'), listboxes: [...document.querySelectorAll('[role=listbox]')].map(node => ({ visible: node.checkVisibility({ opacityProperty: true, visibilityProperty: true }), display: getComputedStyle(node).display, visibility: getComputedStyle(node).visibility, opacity: getComputedStyle(node).opacity, hidden: node.getAttribute('aria-hidden'), inert: Boolean(node.closest('[inert]')), ending: node.hasAttribute('data-ending-style') })), departmentExpanded: document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]')?.getAttribute('aria-expanded'), departmentTriggerFocused: document.activeElement === document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]') }))()`);
+    console.error(JSON.stringify({ route: scenario.path, focusDiagnostic }));
     if (scenario.loading) {
       const paint = await browser.client.evaluate(`(() => {
         const ancestors = [];

@@ -413,7 +413,7 @@ export function ChatAppContent({
   });
   const agentConversationControlsLocked = !chatToolAccess.enabled;
   const { availableModels, defaultModel } = useModelCatalogContext();
-  const { hasPermission, isAuthenticated } = useAuth();
+  const { user, hasPermission, isAuthenticated } = useAuth();
   const composerSkillsProbeAvailability = resolveComposerSkillsAvailability({
     isAuthenticated,
     catalogEffectivePermissions: [],
@@ -440,6 +440,7 @@ export function ChatAppContent({
       !agentConversationControlsLocked &&
       composerSkillsProbeAvailability.shouldFetchSkills,
     allAuthorizedCatalog: true,
+    identityScope: JSON.stringify([user?.tenant_id, user?.id, user?.roles, user?.permissions, user?.is_admin, user?.department_ids, user?.direct_department_ids, user?.department_authority_status]),
   });
   const {
     state: selectedSkillState,

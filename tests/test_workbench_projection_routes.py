@@ -15,7 +15,7 @@ def user_headers(permissions: str = "user:read,feedback:read,notification:read")
         "X-AI-User-Name": "Ordinary",
         "X-AI-Roles": "user",
         "X-AI-Tenant-ID": "default",
-        "X-AI-Department-ID": "qa",
+        "X-AI-Department-ID": "110",
         "X-AI-Permissions": permissions,
     }
 
@@ -30,7 +30,7 @@ def admin_headers(
         "X-AI-User-ID": "workbench-admin",
         "X-AI-Roles": "admin",
         "X-AI-Tenant-ID": "default",
-        "X-AI-Department-ID": "platform",
+        "X-AI-Department-ID": "410",
         "X-AI-Permissions": permissions,
     }
 
@@ -47,6 +47,14 @@ def assert_no_sensitive_material(value: object) -> None:
 
 def install_workbench_route_fakes(monkeypatch) -> list[tuple[str, dict[str, object]]]:
     from app.routes import workbench_projections
+    from app.identity.api import DepartmentAuthority, resolve_department_scope
+
+    async def department_source(work_id, **_kwargs):
+        memberships = {"ordinary": ["110"], "workbench-admin": ["410"]}
+        ids = memberships.get(work_id, [])
+        return resolve_department_scope(ids, {"110": None, "210": None, "410": None}) if ids else DepartmentAuthority()
+
+    monkeypatch.setattr("app.principal_authority.resolve_department_authority", department_source)
 
     class FakeConnection:
         pass
@@ -87,7 +95,7 @@ def test_users_projection_returns_safe_directory_for_ordinary_user(monkeypatch):
         "roles": ["user"],
         "permissions": ["feedback:read", "notification:read", "user:read"],
         "tenant_id": "default",
-        "department_id": "qa",
+        "department_id": "110",
         "created_at": None,
         "updated_at": None,
     }

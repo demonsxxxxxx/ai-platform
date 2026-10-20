@@ -136,6 +136,8 @@ class Settings(BaseSettings):
     existing_auth_base_url: str = Field(default="")
     existing_user_info_base_url: str = Field(default="")
     existing_auth_timeout_seconds: float = Field(default=15.0)
+    dingtalk_department_authority_base_url: str = Field(default="")
+    dingtalk_department_authority_timeout_seconds: float = Field(default=5.0, gt=0, le=30)
     company_login_jwt_secret: str = Field(default="", repr=False)
     company_login_jwt_issuer: str = Field(default="")
     company_login_jwt_audience: str = Field(default="")
@@ -226,6 +228,7 @@ class Settings(BaseSettings):
     @field_validator(
         "existing_auth_base_url",
         "existing_user_info_base_url",
+        "dingtalk_department_authority_base_url",
         "profile_drive_transfer_upstream",
         mode="before",
     )

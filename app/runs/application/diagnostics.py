@@ -28,6 +28,10 @@ from app.runs.domain.diagnostics import (
 )
 
 
+from app.sandbox.api import SandboxRuntimeDebugReader
+from app.execution.events import normalize_execution_debug
+from app.runs.application.admin_trajectory import project_admin_trajectory_page
+
 logger = logging.getLogger(__name__)
 
 
@@ -50,13 +54,17 @@ class RunDiagnosticsPersistence(Protocol):
         self, conn: Any, *, tenant_id: str, from_at: datetime, to_at: datetime,
         user_id: str | None = None, agent_id: str | None = None,
         model_id: str | None = None, model_gateway_revision: int | None = None,
-        status: str | None = None, comparison_run_id: str | None = None,
+        status: str | None = None,
         order: str = "slow", limit: int = 50,
     ) -> dict[str, Any]: ...
 
     async def get_admin_investigation_events(
         self, conn: Any, *, tenant_id: str, run_id: str,
     ) -> dict[str, Any]: ...
+
+    async def get_admin_debug_skills(self, conn: Any, *, tenant_id: str, run_id: str) -> list[dict[str, Any]]: ...
+
+    async def get_execution_debug_binding(self, conn: Any, *, run_id: str, attempt_id: str) -> dict[str, Any] | None: ...
 
     async def get_admin_snapshot(
         self,
@@ -82,6 +90,8 @@ class RunDiagnosticsService:
     runtime_diagnostics_schema_version: str
     exception_log_fields: Callable[[BaseException], dict[str, Any]]
     tool_operation_id: Callable[[object, object], str | None] | None = None
+    runtime_debug_reader: SandboxRuntimeDebugReader | None = field(default=None, repr=False)
+    query_runtime_commit: str | None = None
     clock: Callable[[], datetime] = field(
         default=lambda: datetime.now(timezone.utc),
         repr=False,
@@ -363,11 +373,8 @@ class RunDiagnosticsService:
         return report
 
     async def read_admin_investigation(
-        self, conn: Any, *, tenant_id: str, run_id: str, hours: int = 24,
-        from_at: datetime | None = None, to_at: datetime | None = None,
-        user_id: str | None = None,
+        self, conn: Any, *, tenant_id: str, run_id: str,
     ) -> dict[str, Any] | None:
-        start, end = self._monitor_window(hours, from_at, to_at)
         snapshot = await self.persistence.get_admin_snapshot(conn, tenant_id=tenant_id, run_id=run_id)
         if snapshot is None:
             return None
@@ -387,26 +394,69 @@ class RunDiagnosticsService:
             browser_measurement=browser, first_text_at=evidence.get("first_public_text_at"),
             observed_at=self.clock(),
         )
-        comparison: dict[str, Any] = {
-            "window": {"from_at": start, "to_at": end}, "sample_count": 0,
-            "latency": {}, "normal_run_id": None,
-            "scope": "same_agent_skill_profile_model_configuration",
-            "missing_reason": "model_identity_unknown",
-        }
-        if run.get("model_id") and run.get("model_gateway_revision") is not None:
-            reference = await self.persistence.get_admin_monitor_report(
-                conn, tenant_id=tenant_id, from_at=start, to_at=end,
-                user_id=user_id, comparison_run_id=run_id, limit=1,
-            )
-            comparison.update(
-                sample_count=reference["counts"]["total"], latency=reference["latency"],
-                normal_run_id=reference["runs"][0]["run_id"] if reference["runs"] else None,
-                missing_reason=None if reference["runs"] else "no_comparable_successful_run",
-            )
         return {
             "run_id": run_id, **investigation,
-            "events_truncated": evidence["events_truncated"], "comparison": comparison,
+            "events_truncated": evidence["events_truncated"],
         }
+
+    async def capture_execution_debug(
+        self, conn: Any, *, run_id: str, attempt_id: str, error_code: str,
+        debug: object,
+    ) -> None:
+        facts = normalize_execution_debug(debug)
+        if not facts:
+            return
+        binding = await self.persistence.get_execution_debug_binding(conn, run_id=run_id, attempt_id=attempt_id)
+        if binding is None:
+            return
+        await self._capture_runtime_diagnostics(
+            conn, tenant_id=binding["tenant_id"], run_id=run_id, attempt_id=attempt_id,
+            lease_id=binding.get("lease_id"), source=str(facts.get("component", "executor")),
+            stage=str(facts.get("phase", "runtime")), error_code=error_code, normalize=True,
+            runtime_diagnostics={
+                "schema_version": self.runtime_diagnostics_schema_version,
+                "error_code": error_code, "failure_source": facts.get("component", "executor"),
+                "failure_stage": facts.get("phase", "runtime"), "sdk": {"debug": facts, **({"api_error_status": facts["http_status"]} if "http_status" in facts else {})},
+            },
+        )
+
+    async def read_admin_debug(self, conn: Any, *, tenant_id: str, run_id: str) -> dict[str, Any] | None:
+        snapshot = await self.persistence.get_admin_snapshot(conn, tenant_id=tenant_id, run_id=run_id)
+        if snapshot is None:
+            return None
+        diagnostics = _admin_projection(snapshot, normalize_runtime_diagnostics=self.normalize_runtime_diagnostics,
+                                        tool_operation_id=self.tool_operation_id)
+        evidence = await self.persistence.get_admin_investigation_events(conn, tenant_id=tenant_id, run_id=run_id)
+        skills = await self.persistence.get_admin_debug_skills(conn, tenant_id=tenant_id, run_id=run_id)
+        payload = (snapshot.get("diagnostic") or {}).get("payload_json") or {}
+        investigation = build_run_investigation(
+            snapshot["run"], evidence["events"], attempts=snapshot.get("attempts", []),
+            browser_measurement=payload.get("browser_latency"), first_text_at=evidence.get("first_public_text_at"),
+            observed_at=self.clock(),
+        )
+        trajectory = project_admin_trajectory_page(evidence["events"], sanitize_text=sanitize_run_diagnostic_text)
+        runtime = await self.runtime_debug_reader(conn, tenant_id=tenant_id, run_id=run_id) if self.runtime_debug_reader else None
+        diagnostics["debug"] = {
+            "schema_version": "ai-platform.run-debug.v1", "observed_at": self.clock(),
+            "investigation": {"run_id": run_id, **investigation, "events_truncated": evidence["events_truncated"]},
+            "events": trajectory["events"], "events_omitted": trajectory["omitted"],
+            "events_truncated": evidence["events_truncated"], "event_limit": 500,
+            "usage": {
+                name: value if type(value) is int and 0 <= value <= 2**63 - 1 else None
+                for name, value in snapshot.get("usage", {}).items()
+                if name in {"input_tokens", "output_tokens", "total_tokens", "estimated_cost_minor"}
+            }, "skill_snapshots": skills[:100],
+            "skill_snapshots_truncated": len(skills) > 100,
+            "runtime": runtime,
+            "query_component": normalize_execution_debug({"api_runtime_commit": self.query_runtime_commit}),
+            "missing_evidence": [
+                "provider_internal_trace", "egress_proxy_connection_log",
+                *[name for name in ("sdk_version", "cli_version", "executor_runtime_commit")
+                  if not any(name in item.get("sdk", {}).get("debug", {}) for item in diagnostics["details"]["observations"])],
+                *(["runtime_lease_snapshot"] if runtime is None else []),
+            ],
+        }
+        return diagnostics
 
     async def read_admin(
         self,
@@ -605,6 +655,7 @@ def _project_observations(
 ]:
     root = None
     handling: list[dict[str, Any]] = []
+    seen_failures: set[tuple[object, object]] = set()
     details: dict[str, Any] = {
         "schema_version": None,
         "sdk": {},
@@ -623,6 +674,7 @@ def _project_observations(
         details["observations"].append(
             {
                 "observation_id": raw.get("observation_id"),
+                **({"parent_observation_id": raw["parent_observation_id"]} if raw.get("parent_observation_id") else {}),
                 "attempt_id": raw.get("attempt_id"),
                 "lease_id": raw.get("lease_id"),
                 "request_id": raw.get("request_id"),
@@ -656,10 +708,17 @@ def _project_observations(
         )
         failures = evidence.get("failure_observations")
         failures = failures if isinstance(failures, list) else []
-        failure_projections = [
-            _failure_projection(raw, item, evidence=evidence, kind="handling")
-            for item in failures
-        ]
+        failure_projections = []
+        failure_identities = set()
+        for item in failures:
+            projected = _failure_projection(raw, item, evidence=evidence, kind="handling")
+            failure_identities.add(_projection_identity(projected))
+            if isinstance(item, dict) and item.get("observation_id"):
+                identity = (raw.get("attempt_id"), item["observation_id"])
+                if identity in seen_failures:
+                    continue
+                seen_failures.add(identity)
+            failure_projections.append(projected)
         if root is None:
             root = (
                 failure_projections.pop(0)
@@ -667,6 +726,7 @@ def _project_observations(
                 else _failure_projection(raw, None, evidence=evidence)
             )
             root["kind"] = "failure"
+            seen_failures.add((root.get("attempt_id"), root.get("observation_id")))
             details.update(
                 {
                     "schema_version": evidence.get("schema_version"),
@@ -685,20 +745,24 @@ def _project_observations(
                 }
             )
         handling.extend(failure_projections)
+        seen_failures.update((item.get("attempt_id"), item.get("observation_id")) for item in failure_projections)
         record_projection = _failure_projection(
             raw, None, evidence=evidence, kind="handling"
         )
-        failure_identities = {
-            _projection_identity(item)
-            for item in [*failure_projections, root]
-            if item is not None
-            and item.get("observation_id") == raw.get("observation_id")
-        }
-        if (
-            _projection_identity(record_projection) not in failure_identities
-            and _projection_identity(record_projection) != _projection_identity(root)
-        ):
+        record_identity = (raw.get("attempt_id"), raw.get("observation_id"))
+        has_producer_ids = bool(raw.get("parent_observation_id")) or any(
+            isinstance(item, dict) and item.get("observation_id") for item in failures
+        )
+        if has_producer_ids:
+            keep_record = record_identity not in seen_failures
+        else:
+            keep_record = (
+                _projection_identity(record_projection) not in failure_identities
+                and _projection_identity(record_projection) != _projection_identity(root)
+            )
+        if keep_record:
             handling.append(record_projection)
+            seen_failures.add(record_identity)
         projection_failure = evidence.get("projection_failure")
         if details["projection_failure"] is None and isinstance(projection_failure, dict):
             details["projection_failure"] = projection_failure
@@ -723,8 +787,10 @@ def _failure_projection(
     # Fallbacks must use the same read-time redaction as detailed evidence,
     # including when a retained record predates the current redaction policy.
     sdk = evidence.get("sdk") if isinstance(evidence.get("sdk"), dict) else {}
+    identity = item if item.get("observation_id") else record
     return {
-        "observation_id": record.get("observation_id"),
+        "observation_id": identity.get("observation_id"),
+        **({"parent_observation_id": identity["parent_observation_id"]} if identity.get("parent_observation_id") else {}),
         "attempt_id": record.get("attempt_id"),
         "lease_id": record.get("lease_id"),
         "request_id": record.get("request_id"),
@@ -740,5 +806,5 @@ def _failure_projection(
     }
 
 
-def _projection_identity(value: dict[str, Any]) -> tuple[object, object, object]:
-    return value.get("source"), value.get("stage"), value.get("error_code")
+def _projection_identity(value: dict[str, Any]) -> tuple[object, object, object, object]:
+    return value.get("attempt_id"), value.get("source"), value.get("stage"), value.get("error_code")

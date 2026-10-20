@@ -24,6 +24,7 @@ FRONTEND_NGINX_BASE = (
     "nginx:1.30.4-alpine@"
     "sha256:dc5069ad14f19660b141b21236140b91656bf89bbc3e2417c70ae650cd66104c"
 )
+# Full local reproduction; WORKFLOW_* below records parallel CI execution.
 CI_COMMANDS = [
     "corepack pnpm install --frozen-lockfile",
     "corepack pnpm run ci:verify",
@@ -37,21 +38,47 @@ STATIC_FRONTEND_PYTEST_COMMAND = (
     "python -m pytest tests/test_deploy_frontend_static.py "
     "tests/test_frontend_release_traceability.py "
     "tests/test_frontend_packaged_runtime_smoke.py "
-    "tests/test_frontend_ci_workflow.py "
+    "tests/test_frontend_ci_workflow.py tests/test_frontend_ci_shards.py "
     "-q --basetemp .pytest-tmp"
 )
 LINUX_FRONTEND_PYTEST_COMMAND = (
     "python -m pytest tests/test_frontend_linux_contracts.py -q --basetemp .pytest-tmp"
 )
+WORKFLOW_TEST_STEP_COMMANDS = {
+    "Test streaming and authentication": (
+        "corepack pnpm run test:auth && corepack pnpm run test:run-playback "
+        "&& corepack pnpm run test:sse"
+    ),
+    "Test documents and workspace": (
+        "corepack pnpm run test:agent-market && corepack pnpm run test:profile-drive "
+        "&& corepack pnpm run test:document-previews "
+        "&& corepack pnpm run test:browser-preferences"
+    ),
+    "Test skill and model management": (
+        "corepack pnpm run test:prd-closure-smoke-source "
+        "&& corepack pnpm run test:company-rbac-browser-smoke-source "
+        "&& corepack pnpm run test:skill-admin-ui "
+        "&& corepack pnpm run test:model-admin && corepack pnpm run test:pwa"
+    ),
+    "Test runtime control": (
+        "corepack pnpm run test:run-monitor && corepack pnpm run test:control-plane-ui"
+    ),
+}
 WORKFLOW_STEP_COMMANDS = {
+    "Verify frontend lint and build": "corepack pnpm run lint && corepack pnpm run build",
     "Verify static frontend Python contracts": STATIC_FRONTEND_PYTEST_COMMAND,
     "Verify static frontend deploy helper": "python tools/deploy_frontend_static.py --help",
+    "Audit frontend projections": "python tools/frontend_projection_audit.py --format json",
+    **WORKFLOW_TEST_STEP_COMMANDS,
     "Install Linux contract test dependencies": "python tools/frontend_ci_dependencies.py --subset linux-contracts",
     "Verify Linux frontend healthcheck contract": LINUX_FRONTEND_PYTEST_COMMAND,
 }
 WORKFLOW_STEP_JOBS = {
-    "Verify static frontend Python contracts": "frontend",
-    "Verify static frontend deploy helper": "frontend",
+    "Verify frontend lint and build": "frontend",
+    "Verify static frontend Python contracts": "frontend-contracts",
+    "Verify static frontend deploy helper": "frontend-contracts",
+    "Audit frontend projections": "frontend-contracts",
+    **dict.fromkeys(WORKFLOW_TEST_STEP_COMMANDS, "frontend-tests"),
     "Install Linux contract test dependencies": "frontend-image",
     "Verify Linux frontend healthcheck contract": "frontend-image",
 }
@@ -60,7 +87,10 @@ WORKFLOW_COMMANDS = [
     "python tools/frontend_ci_dependencies.py --subset windows-contracts",
     STATIC_FRONTEND_PYTEST_COMMAND,
     LINUX_FRONTEND_PYTEST_COMMAND,
-    "corepack pnpm run ci:verify",
+    "corepack pnpm run lint",
+    "corepack pnpm run build",
+    "python tools/frontend_projection_audit.py --format json",
+    *WORKFLOW_TEST_STEP_COMMANDS.values(),
     "python tools/frontend_release_traceability.py --format json",
     "python tools/deploy_frontend_static.py --help",
     "python tools/frontend_packaged_runtime_smoke.py --format json",
@@ -74,12 +104,15 @@ WORKFLOW_COMMANDS = [
 ]
 WORKFLOW_COMMAND_JOBS = {
     "corepack pnpm install --frozen-lockfile": "frontend",
-    "python tools/frontend_ci_dependencies.py --subset windows-contracts": "frontend",
-    STATIC_FRONTEND_PYTEST_COMMAND: "frontend",
+    "python tools/frontend_ci_dependencies.py --subset windows-contracts": "frontend-contracts",
+    STATIC_FRONTEND_PYTEST_COMMAND: "frontend-contracts",
     LINUX_FRONTEND_PYTEST_COMMAND: "frontend-image",
-    "corepack pnpm run ci:verify": "frontend",
+    "corepack pnpm run lint": "frontend",
+    "corepack pnpm run build": "frontend",
+    "python tools/frontend_projection_audit.py --format json": "frontend-contracts",
+    **dict.fromkeys(WORKFLOW_TEST_STEP_COMMANDS.values(), "frontend-tests"),
     "python tools/frontend_release_traceability.py --format json": "frontend",
-    "python tools/deploy_frontend_static.py --help": "frontend",
+    "python tools/deploy_frontend_static.py --help": "frontend-contracts",
     "python tools/frontend_packaged_runtime_smoke.py --format json": "frontend",
     "docker build": "frontend-image",
     '--build-arg AI_PLATFORM_BUILD_COMMIT="$IMAGE_SOURCE_COMMIT"': "frontend-image",
