@@ -1,6 +1,7 @@
 import { FileText, Sparkles } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useSkills } from "../../hooks/useSkills";
+import { useAuth } from "../../hooks/useAuth";
 import { PanelHeader } from "../common/PanelHeader";
 import { workbenchSurface } from "../workbench/workbenchSurface";
 import { projectOrdinarySkillCatalogItem } from "./ordinaryCatalogPolicy";
@@ -8,7 +9,11 @@ import { projectOrdinarySkillCatalogItem } from "./ordinaryCatalogPolicy";
 /** Read-only catalog used by ordinary company accounts. */
 export function AvailableSkillsPanel() {
   const { t } = useTranslation();
-  const { skills, isLoading, error } = useSkills({ allAuthorizedCatalog: true });
+  const { user } = useAuth();
+  const { skills, isLoading, error } = useSkills({
+    allAuthorizedCatalog: true,
+    identityScope: JSON.stringify([user?.tenant_id, user?.id, user?.roles, user?.permissions, user?.is_admin, user?.department_ids, user?.direct_department_ids, user?.department_authority_status]),
+  });
   const catalog = skills
     .map((skill) =>
       projectOrdinarySkillCatalogItem({

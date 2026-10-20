@@ -16,7 +16,55 @@ RUN_DIAGNOSTICS_REDACTION_POLICY_VERSION = "run-diagnostics-redaction.v1"
 RUN_DIAGNOSTICS_MAX_BYTES = 128 * 1024
 RUN_DIAGNOSTICS_OBSERVATION_LIMIT = 64
 
+_RUNTIME_DEBUG_LABELS = {
+    "component": {"claude_executor", "model_proxy", "provider_session"},
+    "operation": {"messages", "count_tokens", "load", "append", "list_subkeys", "initialize"},
+    "phase": {"preflight", "connect", "response", "stream", "entry_validation", "structured_entry_validation", "image_validation"},
+    "failure_class": {"policy_rejected", "connect_error", "connect_timeout", "read_timeout", "write_timeout", "protocol_error", "transport_error", "http_error", "size_limit", "invalid_response"},
+    "policy": {"anthropic_version", "anthropic_beta", "capacity", "request", "binding"},
+    "entry_kind": {"user", "assistant", "system", "summary", "file-history-snapshot", "progress", "cost-state", "queue-operation", "other"},
+    "scope": {"main", "child"},
+}
+_RUNTIME_DEBUG_COUNTS = {
+    "attempt_count", "beta_count", "entry_count", "entry_index", "observed_bytes", "limit_bytes",
+    "image_count", "encoded_image_bytes", "largest_encoded_image_bytes",
+    "expected_sequence", "accepted_sequence", "timeout_ms",
+}
+_RUNTIME_DEBUG_VERSIONS = {"sdk_version", "cli_version", "python_version"}
+_RUNTIME_DEBUG_COMMITS = {"executor_runtime_commit", "api_runtime_commit"}
+
+
+def _normalize_execution_debug(value: object) -> dict[str, str | int]:
+    """Revalidate closed runtime facts at the Runs persistence boundary."""
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, str | int] = {}
+    for name, allowed in _RUNTIME_DEBUG_LABELS.items():
+        item = value.get(name)
+        if name == "entry_kind" and isinstance(item, str):
+            result[name] = item if item in allowed else "other"
+        elif isinstance(item, str) and item in allowed:
+            result[name] = item
+    for name in _RUNTIME_DEBUG_COUNTS:
+        item = value.get(name)
+        if type(item) is int and 0 <= item <= 1_000_000_000:
+            result[name] = item
+    status = value.get("http_status")
+    if type(status) is int and 100 <= status <= 599:
+        result["http_status"] = status
+    for name in _RUNTIME_DEBUG_VERSIONS:
+        item = value.get(name)
+        if isinstance(item, str) and re.fullmatch(r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,6}(?:[a-z][0-9]{1,3})?", item):
+            result[name] = item
+    for name in _RUNTIME_DEBUG_COMMITS:
+        item = value.get(name)
+        if isinstance(item, str) and re.fullmatch(r"[0-9a-f]{40}", item):
+            result[name] = item
+    return result
+
+
 _IDENTITY_PATTERN = re.compile(r"[A-Za-z0-9_.:-]{1,160}")
+_OBSERVATION_ID_PATTERN = re.compile(r"obs_[0-9a-f]{32}")
 _LOSS_FIELD_PATTERN = re.compile(r"[a-z][a-z0-9_.\[\]]{0,127}")
 _PRIVATE_KEY_PATTERN = re.compile(
     r"(?i)(?:api[_-]?key|authorization|bearer|cookie|credential|password|secret|token|"
@@ -174,8 +222,11 @@ def build_failure_observation(
             }
         )
     ).hexdigest()
+    failures = runtime_diagnostics["failure_observations"]
+    parent_id = failures[-1].get("observation_id") if failures else None
     return {
         "observation_id": f"obs_{digest[:32]}",
+        **({"parent_observation_id": parent_id} if parent_id else {}),
         "attempt_id": identity["attempt_id"] or None,
         "kind": "failure",
         "source": identity["source"],
@@ -215,6 +266,8 @@ def sanitize_runtime_diagnostics(value: object) -> dict[str, Any]:
             sdk["exception_chain"]
         )
 
+    if debug := _normalize_execution_debug(sdk.get("debug")):
+        sdk_projection["debug"] = debug
     failure_observations = [
         projected
         for raw in _list_value(value.get("failure_observations"))
@@ -709,6 +762,15 @@ def _sanitize_failure_observation(value: object) -> dict[str, Any] | None:
         "failure_source": _diagnostic_label(value.get("failure_source")),
         "failure_stage": _diagnostic_label(value.get("failure_stage")),
     }
+    for key in ("observation_id", "parent_observation_id"):
+        identity = value.get(key)
+        if isinstance(identity, str) and _OBSERVATION_ID_PATTERN.fullmatch(identity):
+            projected[key] = identity
+    if "parent_observation_id" in projected and (
+        "observation_id" not in projected
+        or projected["parent_observation_id"] == projected["observation_id"]
+    ):
+        projected.pop("parent_observation_id")
     exception = value.get("exception")
     if isinstance(exception, dict):
         exception_projection = {
@@ -815,7 +877,22 @@ def merge_run_diagnostics(
     observation_id = observation.get("observation_id")
     if any(item.get("observation_id") == observation_id for item in observations):
         return payload, False
-    observations.append(deepcopy(observation))
+    observation = deepcopy(observation)
+    if (observation.get("source") == "executor_reconciler"
+        and observation.get("stage") == "terminalization"
+        and not observation.get("parent_observation_id")):
+        receipts = [item for item in observations
+                    if item.get("source") in {"executor_callback", "executor_probe"}
+                    and item.get("stage") == "terminal_receipt"
+                    and item.get("attempt_id") == observation.get("attempt_id")
+                    and item.get("lease_id") == observation.get("lease_id")]
+        if observation.get("attempt_id") and len(receipts) == 1:
+            observation["parent_observation_id"] = receipts[0]["observation_id"]
+        else:
+            missing = next((int(loss.get("count") or 0) for loss in payload["losses"]
+                            if loss.get("reason") == "parent_observation_not_collected"), 0)
+            _upsert_budget_loss(payload, reason="parent_observation_not_collected", count=missing + 1)
+    observations.append(observation)
     omitted = int(payload["counts"].get("omitted_observations") or 0)
     if len(observations) > RUN_DIAGNOSTICS_OBSERVATION_LIMIT:
         del observations[1]
@@ -956,6 +1033,8 @@ def _minimize_observation(
             or (type(sdk[key]) is int and 100 <= sdk[key] <= 599)
         )
     }
+    if debug := _normalize_execution_debug(sdk.get("debug")):
+        sdk_projection["debug"] = debug
     retained_failures = failures[:1] if isinstance(failures, list) else []
     if severe:
         sdk_projection.pop("errors", None)
@@ -968,7 +1047,10 @@ def _minimize_observation(
                 sdk_projection[key] = _bounded_utf8(
                     sdk_projection[key], max_bytes=max_bytes
                 )
-        retained_failures = []
+        retained_failures = [
+            {key: value for key, value in item.items() if key != "exception"}
+            for item in retained_failures if item.get("observation_id")
+        ]
     minimized = {
         "schema_version": evidence.get("schema_version"),
         "error_code": evidence.get("error_code"),

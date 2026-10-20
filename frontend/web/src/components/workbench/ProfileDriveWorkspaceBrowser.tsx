@@ -681,14 +681,15 @@ function ProfileDriveSourceBrowser({
                   {!directory && (
                     <Button type="text"
                       htmlType="button"
+                      size="small"
+                      icon={<Paperclip size={13} aria-hidden="true" />}
+                      style={{ width: 28, height: 28, padding: 0 }}
                       aria-label={`添加 ${name} 到会话`}
                       title="添加到会话"
                       disabled={disabled}
                       onClick={() => void addToConversation(entry)}
-                      className="mr-0.5 flex size-7 shrink-0 items-center justify-center rounded text-[var(--theme-text-tertiary)] hover:text-[var(--theme-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)] disabled:cursor-default disabled:opacity-60"
-                    >
-                      <Paperclip size={13} aria-hidden="true" />
-                    </Button>
+                      className="mr-0.5 shrink-0 rounded text-[var(--theme-text-tertiary)] hover:text-[var(--theme-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)] disabled:cursor-default disabled:opacity-60"
+                    />
                   )}
                 </div>
               );

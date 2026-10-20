@@ -46,6 +46,7 @@ class WorkerDistributionAuthority:
     def context(self, principal: Any) -> Any:
         return self._context_type(
             tenant_id=principal.tenant_id, department_id=principal.department_id,
+            department_ids=principal.department_ids,
             roles=principal.roles, is_admin=self._is_admin(principal),
             permissions=principal.permissions,
         )

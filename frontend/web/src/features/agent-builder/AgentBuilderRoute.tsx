@@ -15,7 +15,7 @@ const BUILDER_CATALOG_LOAD_ERROR = "暂时无法加载授权目录，请稍后�
 /** Admin route bridge for the current Skill and MCP authorization catalogs. */
 export function AgentBuilderRoute() {
   const { user } = useAuth();
-  const catalogScope = JSON.stringify([user?.tenant_id, user?.id, user?.roles, user?.permissions, user?.is_admin, user?.department_id]);
+  const catalogScope = JSON.stringify([user?.tenant_id, user?.id, user?.roles, user?.permissions, user?.is_admin, user?.department_id, user?.department_ids, user?.direct_department_ids, user?.department_authority_status]);
   const {
     skills,
     catalogReadResolved,
@@ -23,7 +23,7 @@ export function AgentBuilderRoute() {
     isLoading: skillsLoading,
     error: skillsError,
     fetchSkills,
-  } = useSkills({ allAuthorizedCatalog: true });
+  } = useSkills({ allAuthorizedCatalog: true, identityScope: catalogScope });
   const {
     tools,
     isLoading: toolsLoading,

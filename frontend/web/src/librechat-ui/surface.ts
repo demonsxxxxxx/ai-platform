@@ -27,7 +27,7 @@ export const FORBIDDEN_LIBRECHAT_IMPORTS = [
 
 export const libreChatSurface = {
   root: clsx(
-    "librechat-shell-root flex min-h-0 flex-1 bg-[var(--theme-workbench-canvas)] text-[var(--theme-text)]",
+    "librechat-shell-root flex min-h-0 min-w-0 flex-1 overflow-hidden bg-[var(--theme-workbench-canvas)] text-[var(--theme-text)]",
   ),
   workspace: clsx(
     "librechat-shell-workspace grid min-h-0 w-full flex-1 grid-cols-1",
@@ -37,14 +37,12 @@ export const libreChatSurface = {
     "xl:grid-cols-[minmax(0,1fr)_minmax(18rem,20rem)]",
   ),
   thread: clsx(
-    "librechat-shell-thread workbench-thread-frame relative flex min-w-0 flex-1 flex-col bg-[var(--theme-workbench-canvas)]",
+    "librechat-shell-thread workbench-thread-frame relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--theme-workbench-canvas)]",
   ),
   threadBody: "flex min-h-0 flex-1 flex-col px-3 pb-2 pt-3 sm:px-4",
   composer: "shrink-0 bg-[var(--theme-workbench-canvas)] px-3 py-2",
   context: clsx(
-    "fixed inset-y-0 right-0 z-50 flex min-h-0 min-w-0 w-[calc(100vw-3.25rem)] max-w-[22rem] flex-col border-l border-[var(--theme-border)]",
-    "bg-[var(--theme-workbench-canvas)] shadow-[-12px_0_32px_rgba(15,23,42,0.12)]",
-    "xl:static xl:z-auto xl:w-full xl:max-w-none xl:shadow-none",
+    "flex min-h-0 min-w-0 flex-col overflow-hidden border-l border-[var(--theme-border)] bg-[var(--theme-workbench-canvas)]",
   ),
   panel: clsx(
     "rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)]",

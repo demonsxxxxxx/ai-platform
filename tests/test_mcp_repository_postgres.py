@@ -191,7 +191,6 @@ async def test_postgres_mcp_server_registry_crud_uses_current_schema():
         listed = await mcp_repository.list_mcp_server_registry(
             conn,
             tenant_id="tenant-mcp-crud",
-            department_id="Platform",
         )
         assert [row["name"] for row in listed] == ["crud-gateway"]
         assert listed[0]["role_quotas"] == {"Admin": 5}
@@ -207,7 +206,6 @@ async def test_postgres_mcp_server_registry_crud_uses_current_schema():
         assert await mcp_repository.list_mcp_server_registry(
             conn,
             tenant_id="tenant-mcp-crud",
-            department_id="Platform",
             include_disabled=False,
         ) == []
         assert [
@@ -215,15 +213,14 @@ async def test_postgres_mcp_server_registry_crud_uses_current_schema():
             for row in await mcp_repository.list_mcp_server_registry(
                 conn,
                 tenant_id="tenant-mcp-crud",
-                department_id="Platform",
-            )
+                )
         ] == ["crud-gateway"]
         deleted = await mcp_repository.delete_mcp_server_registry(
             conn, tenant_id="tenant-mcp-crud", name="crud-gateway", updated_by="user-mcp"
         )
         assert deleted["status"] == "deleted"
         assert await mcp_repository.list_mcp_server_registry(
-            conn, tenant_id="tenant-mcp-crud", department_id="Platform"
+            conn, tenant_id="tenant-mcp-crud"
         ) == []
     finally:
         try:

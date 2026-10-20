@@ -710,12 +710,27 @@ test("compression fallback continues through normal progress and success", async
 test("paste and both drops match central accepted-file admission", async (suite) => {
   const { installSelectTestDom } = await import("../../components/common/__tests__/selectTestDom");
   const fixture = installSelectTestDom();
+  const { installBrowserAuthTestDb } = await import("./browserAuthTestDb");
+  installBrowserAuthTestDb();
+  Object.defineProperty(navigator, "locks", { configurable: true, value: {
+    request: async (_key: string, _options: unknown, callback: () => Promise<unknown>) => callback(),
+  } });
   const { act, createElement, useRef } = await import("react");
   const { createLobeTestRoot } = await import("../../components/common/__tests__/lobeUiTestRoot");
   const { useDragAndDrop } = await import("../../components/layout/AppContent/useDragAndDrop");
   const { usePasteHandler } = await import("../usePasteHandler");
   const { ChatInput } = await import("../../components/chat/ChatInput");
+  const { AssistantUiTestProvider } = await import("../../components/chat/assistant-ui/__tests__/assistantUiTestProvider");
   const { AuthProvider } = await import("../useAuth");
+  const { authApi } = await import("../../services/api/auth");
+  const { Permission } = await import("../../types");
+  const originalBootstrap = authApi.bootstrapAuthContext, originalUser = authApi.getCurrentUser;
+  authApi.bootstrapAuthContext = async (request) => ({ status: "ready", protocol_version: 2, generation: request.generation });
+  authApi.getCurrentUser = async () => ({
+    id: "upload-user", tenant_id: "upload-tenant", username: "Synthetic upload user", email: "upload@example.test",
+    roles: [], permissions: [Permission.FILE_UPLOAD_DOCUMENT, Permission.FILE_UPLOAD_IMAGE],
+    is_active: true, created_at: "", updated_at: "",
+  });
   const { uploadApi } = await import("../../services/api/upload");
   const { toast } = await import("@lobehub/ui/base-ui");
   const { default: i18n } = await import("../../i18n");
@@ -744,12 +759,12 @@ test("paste and both drops match central accepted-file admission", async (suite)
       const textareaRef = useRef<HTMLTextAreaElement>(null);
       paste = usePasteHandler({ textareaRef, input: "AB", setInput: (value) => { changedInput = value; }, uploadFiles: owner.uploadControls.uploadFiles, validateCount: owner.uploadControls.validateCount, scheduleTextareaResize: () => { resizes += 1; } });
       if (route !== "composer") return createElement("textarea", { ref: textareaRef, defaultValue: "AB" });
-      return createElement(AuthProvider, null, createElement(ChatInput, {
+      return createElement(AuthProvider, null, createElement(AssistantUiTestProvider, null, createElement(ChatInput, {
         onSend: async () => ({ status: "accepted" as const }), onStop: async () => "unavailable" as const,
         isLoading: false, attachments: owner.pageDragAttachments, onAttachmentsChange: owner.setPageDragAttachments,
         uploadControls: owner.uploadControls, acceptedFileTypes: accepted, disableSlashCommands: true,
         tools: [], skills: [], enableSkills: false, agentOptionValues: {}, availableModels: [],
-      }));
+      })));
     }
     let prevented = false;
     try {
@@ -826,6 +841,7 @@ test("paste and both drops match central accepted-file admission", async (suite)
       assert.deepEqual(full.sent, []); assert.equal(full.infos.length, 0); assert.equal(full.errors.length, 1); assert.equal(full.prevented, true);
     });
   } finally {
+    authApi.bootstrapAuthContext = originalBootstrap; authApi.getCurrentUser = originalUser;
     uploadApi.getConfig = originalConfig; uploadApi.uploadFile = originalUpload;
     toast.error = originalError; toast.info = originalInfo; fixture.close();
   }

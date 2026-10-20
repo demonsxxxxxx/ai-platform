@@ -59,10 +59,17 @@ def split_provider_images(
         for path, media_type, value in image_fields(entry):
             count += 1
             if count > MAX_PROVIDER_IMAGE_FIELDS:
-                raise ProviderSessionContinuityError("provider_session_image_count_exceeded")
+                raise ProviderSessionContinuityError("provider_session_image_count_exceeded", debug={
+                    "component": "provider_session", "operation": "append", "phase": "image_validation",
+                    "failure_class": "size_limit", "image_count": count,
+                })
             content = value.encode("utf-8")
             if len(content) > MAX_PROVIDER_IMAGE_BYTES:
-                raise ProviderSessionContinuityError("provider_session_image_too_large")
+                raise ProviderSessionContinuityError("provider_session_image_too_large", debug={
+                    "component": "provider_session", "operation": "append", "phase": "image_validation",
+                    "failure_class": "size_limit", "observed_bytes": len(content), "limit_bytes": MAX_PROVIDER_IMAGE_BYTES,
+                    "image_count": count, "largest_encoded_image_bytes": len(content),
+                })
             digest = hashlib.sha256(content).hexdigest()
             images.setdefault(digest, ProviderImagePayload(digest, content, media_type))
             _replace(projected_entry, path, expected=value, replacement="")

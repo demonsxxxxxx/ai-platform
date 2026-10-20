@@ -47,6 +47,15 @@ rejects missing, linked, malformed, group/world-writable and private-key files
 and verifies the mount as the API user. Never mount a private key or replace the
 existing certificate without its approved renewal procedure.
 
+This test profile may instead reach the in-network connector over plain HTTP by
+setting `PROFILE_DRIVE_TRANSFER_UPSTREAM=http://profile-drive-mcp:5201` together
+with `PROFILE_DRIVE_TRANSFER_ALLOW_INSECURE_HTTP=true`; leave the CA paths empty
+then. That transfer sends the invoking user's company JWT and the file bytes
+unencrypted, so configure the API to use the Docker-network service address,
+not an endpoint reached through a host-published port. Preflight rejects an HTTP upstream unless that
+flag is true, and the API rejects it while the flag is false. `--allow-insecure-http`
+below covers only the browser origin and cookies; it does not enable this path.
+
 Keep the existing externally owned `.env` (mode 0600), data volumes, PostgreSQL,
 Redis, MinIO and workspace directory. Do not copy `.env.example` over it, create
 replacement secrets, or remove legacy workspaces. The controller does not

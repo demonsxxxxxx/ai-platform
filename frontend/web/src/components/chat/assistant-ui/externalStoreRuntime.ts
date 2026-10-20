@@ -2,9 +2,13 @@ import { useMemo } from "react";
 import {
   useExternalStoreRuntime,
   type AppendMessage,
+  type AttachmentAdapter,
   type ExternalStoreAdapter,
+  type ExternalStoreThreadListAdapter,
   type ThreadMessageLike,
+  type ThreadSuggestion,
 } from "@assistant-ui/react";
+import { getPublicTerminalPresentationDefinition } from "../../../hooks/useAgent/publicTerminalPresentation";
 import type { Message, MessagePart } from "../../../types";
 import {
   assistantTextPartRole,
@@ -12,6 +16,7 @@ import {
   hasMarkedAssistantTextParts,
 } from "../../../types/assistantTextParts";
 import {
+  getVisibleMessageParts,
   getPublicToolDisplayName,
   isPublicSubagentPart,
   isPublicToolPresentation,
@@ -47,7 +52,8 @@ function convertPart(
   switch (part.type) {
     case "text": {
       const role = assistantTextPartRole(part);
-      if (role === null || role === "work") return null;
+      if (role === null) return null;
+      if (role === "work") return { type: "data-work", data: {} };
       return { type: "text", text: `${textPrefix}${part.content}` };
     }
     case "thinking":
@@ -70,6 +76,7 @@ function convertPart(
       }
       const data = definedData({
         category: part.public_category,
+        status: part.cancelled ? "cancelled" : part.status,
         durationMs: part.duration_ms,
       });
       return {
@@ -102,13 +109,35 @@ function convertPart(
       // Artifact authorization and rendering stay in ChatMessage's renderer.
       return { type: "data-artifact", data: { label: part.label, status: part.status } };
     default:
-      return null;
+      // Business renderers keep authorized files, timelines and safe error copy outside generic data UIs.
+      return { type: "data-platform", data: {} };
   }
+}
+
+export function getAssistantUiDisplayParts(message: Message): MessagePart[] {
+  return getVisibleMessageParts(message.parts || []).filter(
+    (part) => part.type !== "text" || assistantTextPartRole(part) !== null,
+  );
+}
+
+function messageStatus(message: Message): ThreadMessageLike["status"] {
+  const terminal = message.parts?.findLast((part) => part.type === "run_status" && (
+    getPublicTerminalPresentationDefinition(part.event_type) || part.event_type === "terminal_result_unavailable"
+  ));
+  const cancelled = message.cancelled || message.parts?.some((part) => part.type === "cancelled") ||
+    (terminal?.type === "run_status" && getPublicTerminalPresentationDefinition(terminal.event_type)?.detailKind === "cancelled");
+  if (cancelled) {
+    return { type: "incomplete", reason: "cancelled" };
+  }
+  if (terminal) return { type: "incomplete", reason: "error" };
+  // Synchronization is a content-read state after the Run is already terminal.
+  if (message.isStreaming && !message.isSynchronizing) return { type: "running" };
+  return { type: "complete", reason: "stop" };
 }
 
 export function toAssistantUiMessage(message: Message): ThreadMessageLike {
   let lastPublicPartId: string | null = null;
-  const content = (message.parts || []).flatMap((part) => {
+  const content = (message.role === "user" ? [] : getAssistantUiDisplayParts(message)).flatMap((part) => {
     let prefix = "";
     if (part.type === "text") {
       const role = assistantTextPartRole(part);
@@ -129,19 +158,18 @@ export function toAssistantUiMessage(message: Message): ThreadMessageLike {
   return {
     id: message.id,
     role: message.role,
-    content: content.length ? content : fallbackContent,
+    content: message.role === "user" ? message.content : content.length ? content : fallbackContent,
     createdAt: message.timestamp,
     ...(message.role === "assistant"
       ? {
-          status: message.isStreaming
-            ? { type: "running" as const }
-            : { type: "complete" as const, reason: "stop" as const },
+          status: messageStatus(message),
         }
       : {}),
     metadata: {
       custom: {
         runId: message.runId,
         cancelled: message.cancelled,
+        isSynchronizing: message.isSynchronizing,
       },
     },
   };
@@ -151,12 +179,19 @@ export function useAssistantUiExternalStoreRuntime(
   messages: readonly Message[],
   isRunning: boolean,
   actions: AssistantUiRuntimeActions,
+  gates: { disabled: boolean; sendDisabled: boolean } = { disabled: false, sendDisabled: false },
+  threadList?: ExternalStoreThreadListAdapter,
+  attachments?: AttachmentAdapter,
+  suggestions: readonly ThreadSuggestion[] = [],
 ) {
   const adapter = useMemo<ExternalStoreAdapter<Message>>(
     () => ({
       messages,
       isRunning,
-      isSendDisabled: false,
+      isDisabled: gates.disabled,
+      isSendDisabled: gates.sendDisabled,
+      suggestions,
+      adapters: { threadList, attachments },
       convertMessage: toAssistantUiMessage,
       onNew: async (message) => {
         await actions.sendMessage(appendContent(message));
@@ -167,11 +202,8 @@ export function useAssistantUiExternalStoreRuntime(
       onRefetchThread: async () => {
         await actions.loadHistory();
       },
-      onReload: async () => {
-        await actions.reconnect();
-      },
     }),
-    [actions, isRunning, messages],
+    [actions, attachments, gates.disabled, gates.sendDisabled, isRunning, messages, suggestions, threadList],
   );
   return useExternalStoreRuntime(adapter);
 }
