@@ -466,6 +466,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
       const changed = detail.authorization_changed
         || refreshed.department_id !== current.department_id
+        || refreshed.department_authority_status !== current.department_authority_status
+        || JSON.stringify(refreshed.direct_department_ids ?? []) !== JSON.stringify(current.direct_department_ids ?? [])
+        || JSON.stringify(refreshed.department_ids ?? []) !== JSON.stringify(current.department_ids ?? [])
         || JSON.stringify(refreshed.roles) !== JSON.stringify(current.roles)
         || JSON.stringify(refreshed.permissions) !== JSON.stringify(current.permissions);
       if (changed) {

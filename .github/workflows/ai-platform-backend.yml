@@ -67,9 +67,12 @@ jobs:
 
   backend-tests:
     name: backend tests (${{ matrix.shard }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     needs: backend-preflight
     timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
     services:
       postgres:
         image: ${{ matrix.postgres_image }}
@@ -110,6 +113,7 @@ jobs:
       matrix:
         include:
           - shard: sandbox-runtime
+            runner: ubuntu-latest
             postgres_image: ""
             postgres_url: ""
             redis_image: redis:7.4-alpine
@@ -172,7 +176,28 @@ jobs:
               tests/test_skill_execution_profiles.py
               tests/test_validation.py
               tests/test_contract.py
+              tests/test_claude_agent_worker.py
+              tests/test_context_duplicate_file_staging.py
+              tests/test_embedded_kernel_contracts.py
+              tests/test_execution_boundary.py
+              tests/test_executor_context_pack_evidence_script.py
+              tests/test_executor_registry.py
+              tests/test_kernel_contracts.py
+              tests/test_native_skill_tool_sandbox.py
+              tests/test_office_execution_tier_router.py
+              tests/test_opensandbox_metadata.py
+              tests/test_opensandbox_startup.py
+              tests/test_public_execution.py
+              tests/test_sandbox_callback_delivery.py
+              tests/test_sandbox_contracts.py
+              tests/test_sandbox_executor_client.py
+              tests/test_sandbox_filesystem_contract.py
+              tests/test_sandbox_hardening_contract.py
+              tests/test_sandbox_lease_routes.py
+              tests/test_sandbox_readiness_evidence.py
+              tests/test_context_manifest.py
           - shard: repository-worker-streaming
+            runner: ubuntu-latest
             postgres_image: postgres:16-alpine
             postgres_url: postgresql://ai_platform:ai_platform_ci_password@127.0.0.1:54329/ai_platform
             redis_image: redis:7.4-alpine
@@ -230,7 +255,6 @@ jobs:
               tests/test_provider_empty_start_postgres.py
               tests/test_chat_admission_postgres.py
               tests/test_run_cost_observability_postgres.py
-              tests/test_s0a_schema_postgres.py::test_expired_terminal_receipt_survives_cleanup_and_historical_release
               tests/test_worker_heartbeat_postgres_redis_integration.py
               tests/test_sse_runtime_cutover.py
               tests/test_streaming_redis.py
@@ -248,7 +272,24 @@ jobs:
               tests/test_lambchat_sse_v21.py
               tests/test_app_lifespan.py
               tests/test_runtime_launch_script.py
+              tests/test_capability_distribution_postgres.py
+              tests/test_chat_sessions.py
+              tests/test_conversation_persistence.py
+              tests/test_db_transaction_test_support.py
+              tests/test_issue_511_session_context_postgres.py
+              tests/test_issue_512_preledger_postgres.py
+              tests/test_mcp.py
+              tests/test_mcp_repository.py
+              tests/test_mcp_repository_postgres.py
+              tests/test_persistence_limits.py
+              tests/test_persistence_limits_postgres.py
+              tests/test_run_performance.py
+              tests/test_run_performance_postgres.py
+              tests/test_streaming_schema_postgres.py
+              tests/test_verify_b1_memory_context_workflow.py
+              tests/test_s0a_schema_postgres.py
           - shard: model-control-plane
+            runner: ubuntu-latest
             postgres_image: ""
             postgres_url: ""
             redis_image: ""
@@ -258,12 +299,9 @@ jobs:
               tests/test_model_upstream_stream.py
               tests/test_model_stream_ownership.py
               tests/test_model_discovery_security.py
-              tests/test_lambchat_frontend_compat.py::test_lambchat_model_catalog_is_empty_without_governed_connection
-              tests/test_lambchat_frontend_compat.py::test_lambchat_governed_model_catalog_preserves_raw_ids
-              tests/test_execution_spec.py::test_execution_spec_preserves_raw_upstream_model_identity
-              tests/test_execution_spec.py::test_execution_spec_rejects_unsafe_upstream_model_identity
-              tests/test_schema.py::test_schema_adds_versioned_model_gateway_and_non_deleting_shared_catalog
+              tests/test_models.py
           - shard: run-control-contracts
+            runner: ubuntu-latest
             postgres_image: ""
             postgres_url: ""
             redis_image: ""
@@ -274,8 +312,6 @@ jobs:
               tests/test_admin_runtime_routes.py
               tests/test_auth_principal.py
               tests/test_workbench_projection_routes.py
-              tests/test_lambchat_frontend_compat.py::test_notifications_have_one_workbench_route_owner
-              tests/test_lambchat_frontend_compat.py::test_frontend_bootstrap_endpoints_match_retained_contracts
               tests/test_artifact_permissions.py
               tests/test_two_user_artifact_isolation.py
               tests/test_auth_routes.py
@@ -285,9 +321,6 @@ jobs:
               tests/test_chat_selected_skill_routing.py
               tests/test_claude_agent_events.py
               tests/test_public_event_enum_types.py
-              tests/test_lambchat_frontend_compat.py::test_lambchat_history_restores_strict_v4_commentary_as_work_summary
-              tests/test_lambchat_frontend_compat.py::test_session_event_pages_project_authorized_run_columns_on_every_page
-              tests/test_lambchat_frontend_compat.py::test_read_mark_compatibility_route_keeps_its_noop_acknowledgement
               tests/test_executor_reconciler.py
               tests/test_executor_signals.py
               tests/test_run_attempt_lifecycle_domain.py
@@ -310,7 +343,6 @@ jobs:
               tests/test_run_file_continuity_routes.py
               tests/test_run_diagnostics.py
               tests/test_run_debug_evidence.py
-              tests/test_admin_diagnostic_export.py
               tests/test_run_persistence.py
               tests/test_run_projection.py
               tests/test_public_run_outcome.py
@@ -320,7 +352,37 @@ jobs:
               tests/test_streaming_contracts.py
               tests/test_worker_attempt_lifecycle.py
               tests/test_frozen_receipt_spec.py
+              tests/test_admin_diagnostic_export.py
+              tests/test_admin_run_monitor.py
+              tests/test_admin_run_trajectory.py
+              tests/test_admin_schema_routes.py
+              tests/test_admin_tool_policies.py
+              tests/test_admin_user_diagnostics.py
+              tests/test_capability_distribution_routes.py
+              tests/test_context_routes.py
+              tests/test_cors.py
+              tests/test_department_directory.py
+              tests/test_error_taxonomy.py
+              tests/test_event_bridge.py
+              tests/test_event_playback_routes.py
+              tests/test_identity_profile_metadata.py
+              tests/test_identity_profile_routes.py
+              tests/test_role_governance_routes.py
+              tests/test_run_control_readiness.py
+              tests/test_run_performance_routes.py
+              tests/test_run_question_defaults.py
+              tests/test_tool_permission_routes.py
+              tests/test_tool_policy_readiness.py
+              tests/test_verify_auth_rbac_smoke.py
+              tests/test_frontend_projection_routes.py
+              tests/test_lambchat_compat.py
+              tests/test_lambchat_projection_contract.py
+              tests/test_lambchat_public_lifecycle_singletons.py
+              tests/test_lambchat_frontend_compat.py
+              tests/test_execution_spec.py
+              tests/test_dingtalk_department_authority.py
           - shard: schema-migrations
+            runner: ubuntu-latest
             postgres_image: postgres:16-alpine
             postgres_url: postgresql://ai_platform:ai_platform_ci_password@127.0.0.1:54329/ai_platform
             redis_image: ""
@@ -334,8 +396,9 @@ jobs:
               tests/test_provider_session_recovery_postgres.py
               tests/test_provider_session_images_postgres.py
               tests/test_frozen_receipt_spec_postgres.py
-              tests/test_schema.py::test_schema_declares_attempt_identity_state_and_fences
+              tests/test_schema.py
           - shard: v4-durable-streaming
+            runner: ubuntu-latest
             postgres_image: postgres:16-alpine
             postgres_url: postgresql://ai_platform:ai_platform_ci_password@127.0.0.1:54329/ai_platform
             redis_image: redis:7.4-alpine
@@ -352,6 +415,7 @@ jobs:
               tests/test_auth_refresh_redis_integration.py
               tests/test_streaming_v4_transport.py
           - shard: release-governance-policy
+            runner: ubuntu-latest
             postgres_image: ""
             postgres_url: ""
             redis_image: ""
@@ -363,7 +427,6 @@ jobs:
               tests/test_trusted_governance.py
               tests/test_code_governance.py
               tests/test_source_authority_docs.py
-              tests/test_frontend_projection_audit.py::test_feedback_and_announcements_have_no_active_browser_api_or_projection_allowlist
               tests/test_check_documentation.py
               tests/test_run_test_stage.py
               tests/test_source_quality_inventory.py
@@ -375,7 +438,17 @@ jobs:
               tests/test_trivy_failure_evidence.py
               tests/test_release_image_manifest.py
               tests/test_authenticated_smoke_redirects.py
+              tests/test_backend_image_source_markers.py
+              tests/test_legacy_product_surface_cleanup.py
+              tests/test_oci_image_manifest.py
+              tests/test_release_backend_flatten.py
+              tests/test_release_parity_convergence.py
+              tests/test_release_plan.py
+              tests/test_spdx_failure_evidence.py
+              tests/test_frontend_projection_audit.py
+              tests/test_git_hook_checks.py
           - shard: release-governance-authority
+            runner: ubuntu-latest
             postgres_image: ""
             postgres_url: ""
             redis_image: ""
@@ -395,9 +468,31 @@ jobs:
               tests/test_production_bootstrap.py
               tests/test_release_authority.py
               tests/test_s75_opensandbox_transition.py
+              tests/integration/run_control/test_exact_main_run_control_acceptance.py
+              tests/test_b5_file_tool_readiness.py
+              tests/test_b6_operations_beta_readiness.py
+              tests/test_browser_runtime_config.py
+              tests/test_capacity_bounded_load_harness.py
+              tests/test_governed_egress_diagnostics.py
+              tests/test_observability_readiness.py
+              tests/test_release_evidence_runtime_acceptance.py
+          - shard: windows-runtime
+            runner: windows-latest
+            postgres_image: ""
+            postgres_url: ""
+            redis_image: ""
+            redis_url: ""
+            test_files: >-
+              tests/test_release_authority.py::test_run_timeout_windows_job_kills_pipe_holder_after_direct_parent_exit
+              tests/test_release_authority.py::test_run_success_closes_job_without_killing_detached_descendant
+              tests/test_sandbox_workspace_manager.py::test_prepare_fails_closed_for_windows_host_bind
+              tests/test_sandbox_workspace_manager.py::test_prepare_rejects_windows_junction_root
+              tests/test_sandbox_workspace_manager.py::test_prepare_rejects_windows_junction_parent
     env:
       BACKEND_TEST_SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
       AI_PLATFORM_S0A_SCHEMA_TEST_DSN: ${{ matrix.postgres_url }}
+      AI_PLATFORM_MCP_CATALOG_TEST_DSN: ${{ matrix.postgres_url }}
+      AI_PLATFORM_CAPABILITY_DISTRIBUTION_TEST_DSN: ${{ matrix.postgres_url }}
       AI_PLATFORM_PROVIDER_IMAGE_MINIO_URL: ${{ matrix.shard == 'schema-migrations' && 'http://127.0.0.1:19014' || '' }}
       AI_PLATFORM_SSE_REDIS_TEST_URL: ${{ matrix.redis_url }}
     steps:
@@ -434,18 +529,24 @@ jobs:
       - name: Run backend test shard
         run: |
           mkdir -p .pytest-tmp
-          timeout --signal=TERM --kill-after=30s 10m \
-            uv run --locked --extra test python -m pytest \
-              ${{ matrix.test_files }} \
-              -vv \
-              --tb=short \
-              -o faulthandler_timeout=120 \
-              --junitxml ".pytest-tmp/${{ matrix.shard }}.xml" \
-              --basetemp ".pytest-tmp/${{ matrix.shard }}"
-          if [[ "${{ matrix.shard }}" =~ ^(repository-worker-streaming|run-control-contracts|schema-migrations|v4-durable-streaming)$ ]]; then
-            uv run --locked --extra test python tools/require_zero_junit_skips.py \
-              ".pytest-tmp/${{ matrix.shard }}.xml"
+          zero_skips=()
+          if [[ "${{ matrix.shard }}" != "sandbox-runtime" && "${{ matrix.shard }}" != "release-governance-authority" ]]; then
+            zero_skips=(--require-zero-skips)
           fi
+          uv run --locked --extra test python tools/run_test_stage.py \
+            --stage "${{ matrix.shard }}" --timeout-seconds 600 --coverage \
+            "${zero_skips[@]}" -- ${{ matrix.test_files }}
+
+      - name: Upload exact shard evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: backend-tests-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          path: |
+            .pytest-tmp/test-runs/**/${{ matrix.shard }}/evidence.json
+            .pytest-tmp/test-runs/**/${{ matrix.shard }}/junit.xml
+            .pytest-tmp/test-runs/**/${{ matrix.shard }}/coverage.json
 
   agent-skill-contracts:
     name: Agent and Skill contracts
@@ -503,8 +604,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p .pytest-tmp
-          timeout --signal=TERM --kill-after=30s 10m \
-            uv run --locked --extra test python -m pytest \
+          uv run --locked --extra test python tools/run_test_stage.py \
+            --stage agent-skill-contracts --timeout-seconds 600 --coverage --require-zero-skips -- \
               tests/test_agent_profile_authority.py \
               tests/test_agent_profile_unpinned_admission.py \
               tests/test_agent_apps_worker_profile_snapshot.py \
@@ -527,15 +628,32 @@ jobs:
               tests/test_admin_skills.py \
               tests/test_skill_run_admission.py \
               tests/test_chat_routes.py \
+              tests/test_follow_up_suggestions.py \
+              tests/test_follow_up_transport_cancellation.py \
+              tests/test_follow_up_single_flight.py \
               tests/test_chat_submission_failures.py \
               tests/test_skills_marketplace_routes.py \
-              -vv \
-              --tb=short \
-              -o faulthandler_timeout=120 \
-              --junitxml .pytest-tmp/agent-skill-contracts.xml \
-              --basetemp .pytest-tmp/agent-skill-contracts
-          uv run --locked --extra test python tools/require_zero_junit_skips.py \
-            .pytest-tmp/agent-skill-contracts.xml
+              tests/test_agent_app_capability_state.py \
+              tests/test_agent_autonomy_boundaries.py \
+              tests/test_capability_distribution.py \
+              tests/test_claude_capability_policy.py \
+              tests/test_github_skill_import.py \
+              tests/test_skill_legacy_workbench.py \
+              tests/test_skill_pinning.py \
+              tests/test_skill_release_readiness.py \
+              tests/test_skill_version_labels.py \
+              tests/test_zero_click_tool_policy.py
+
+      - name: Upload exact Agent and Skill evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: backend-tests-agent-skill-contracts-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          path: |
+            .pytest-tmp/test-runs/**/agent-skill-contracts/evidence.json
+            .pytest-tmp/test-runs/**/agent-skill-contracts/junit.xml
+            .pytest-tmp/test-runs/**/agent-skill-contracts/coverage.json
 
   backend-image:
     name: packaged backend image build

@@ -5,6 +5,7 @@ import gc
 import hashlib
 import json
 import logging
+import re
 import sys
 import threading
 import time
@@ -1469,6 +1470,16 @@ def test_runtime_diagnostic_wrapper_preserves_first_failure_and_appends_handling
     assert merged["failure_observations"][-1]["exception"]["type"] == (
         "RuntimeError"
     )
+    first, wrapper = merged["failure_observations"]
+    assert first["observation_id"].startswith("obs_")
+    assert wrapper["parent_observation_id"] == first["observation_id"]
+    assert executor_app._merge_runtime_diagnostics(
+        merged,
+        error_code="executor_failed",
+        failure_source="sandbox_terminal_normalization",
+        failure_stage="sandbox_submission",
+        exception=RuntimeError("terminal wrapper failed"),
+    ) == merged
 
 
 @pytest.mark.asyncio
@@ -3037,13 +3048,20 @@ def test_executor_execute_preserves_bounded_sdk_error_codes(
     diagnostics = body["runtime_diagnostics"]
     assert diagnostics["error_code"] == expected_error_code
     assert "runner_failure_source" not in diagnostics
+    terminal_id = diagnostics["failure_observations"][-1]["observation_id"]
+    assert re.fullmatch(r"obs_[0-9a-f]{32}", terminal_id)
     terminal_observation = {
+        "observation_id": terminal_id,
         "error_code": expected_error_code,
         "failure_source": "sandbox_terminal_normalization",
         "failure_stage": "sandbox_submission",
     }
     if sdk_error == expected_error_code:
         assert diagnostics["failure_source"] == "sdk_result_error"
+        assert len(diagnostics["failure_observations"]) == 2
+        origin_id = diagnostics["failure_observations"][0]["observation_id"]
+        assert re.fullmatch(r"obs_[0-9a-f]{32}", origin_id) and origin_id != terminal_id
+        terminal_observation["parent_observation_id"] = origin_id
         assert diagnostics["failure_observations"][-1] == terminal_observation
     else:
         assert diagnostics["failure_source"] == "sandbox_terminal_normalization"

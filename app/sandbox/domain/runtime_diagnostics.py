@@ -79,6 +79,7 @@ class SandboxRuntimeFailure(Protocol):
     error_code: str
 
 
+_OBSERVATION_ID_PATTERN = re.compile(r"obs_[0-9a-f]{32}")
 _STRUCTURED_VALUE_PATTERN = re.compile(r"[a-z][a-z0-9_]{0,63}")
 _LOSS_FIELD_PATTERN = re.compile(r"[a-z][a-z0-9_.\[\]]{0,127}")
 _LOSS_REASONS = frozenset(
@@ -774,6 +775,20 @@ def _normalize_failure_observation(
             max_bytes=SDK_RUNTIME_DIAGNOSTIC_IDENTITY_MAX_BYTES,
         ),
     }
+    for key in ("observation_id", "parent_observation_id"):
+        if key not in value:
+            continue
+        identity = value[key]
+        if isinstance(identity, str) and _OBSERVATION_ID_PATTERN.fullmatch(identity):
+            normalized[key] = identity
+        else:
+            _append_loss(losses, field=f"{field}.{key}", reason="invalid_field")
+    if "parent_observation_id" in normalized and (
+        "observation_id" not in normalized
+        or normalized["parent_observation_id"] == normalized["observation_id"]
+    ):
+        normalized.pop("parent_observation_id")
+        _append_loss(losses, field=f"{field}.parent_observation_id", reason="invalid_field")
     exception = value.get("exception")
     if isinstance(exception, dict):
         sdk_exception = _normalize_sdk(
@@ -1006,7 +1021,17 @@ def normalize_sdk_runtime_diagnostics(value: object) -> dict[str, Any]:
                 field=f"failure_observations[{index}]",
             )
             if item is not None and item not in observations:
+                if item.get("observation_id") and any(
+                    previous.get("observation_id") == item["observation_id"] for previous in observations
+                ):
+                    _append_loss(losses, field="failure_observations", reason="invalid_field")
+                    continue
                 observations.append(item)
+        positions = {item["observation_id"]: index for index, item in enumerate(observations) if "observation_id" in item}
+        for index, item in enumerate(observations):
+            if positions.get(item.get("parent_observation_id"), -1) >= index:
+                item.pop("parent_observation_id")
+                _append_loss(losses, field="failure_observations.parent_observation_id", reason="cycle")
     elif raw_observations is not None:
         _append_loss(losses, field="failure_observations", reason="invalid_field")
     if not observations or _failure_identity(observations[0]) != _failure_identity(

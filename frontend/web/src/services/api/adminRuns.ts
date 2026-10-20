@@ -85,6 +85,7 @@ export type AdminRunDiagnosticCoverage =
 
 export interface AdminRunDiagnosticObservation {
   observation_id?: string | null;
+  parent_observation_id?: string | null;
   attempt_id?: string | null;
   lease_id?: string | null;
   request_id?: string | null;
@@ -216,6 +217,7 @@ export interface AdminRunDiagnosticsResponse {
     };
     observations?: Array<{
       observation_id?: string | null;
+      parent_observation_id?: string | null;
       attempt_id?: string | null;
       lease_id?: string | null;
       request_id?: string | null;

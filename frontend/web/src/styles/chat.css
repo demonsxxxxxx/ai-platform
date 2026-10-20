@@ -6,13 +6,9 @@
   display: none;
 }
 
-.librechat-composer-shell {
+.chat-input-shell {
   background: var(--theme-workbench-canvas);
   padding-bottom: 0.5rem;
-}
-
-.librechat-composer-shell .chat-input-container {
-  background: var(--theme-workbench-panel);
 }
 
 .chat-input-container {
@@ -31,17 +27,6 @@
   box-shadow:
     0 8px 28px rgba(0, 0, 0, 0.1),
     0 2px 6px rgba(0, 0, 0, 0.05);
-}
-
-.composer-command-surface {
-  max-height: min(48dvh, 360px);
-  overflow: hidden;
-  border-radius: 8px;
-}
-
-.composer-command-list {
-  max-height: min(42dvh, 312px);
-  overflow-y: auto;
 }
 
 /* Chat input textarea placeholder */

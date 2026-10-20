@@ -13,7 +13,7 @@ CAPACITY_BOUNDED_LOAD_HARNESS_SCHEMA = "ai-platform.capacity-bounded-load-harnes
 OPERATOR_ACKNOWLEDGEMENT = "send-bounded-load-without-default-raise"
 _DEFAULT_GATE = "api_read_write_burst"
 _ADMIN_RUNTIME_OVERVIEW_ENDPOINT = {
-    "path": "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+    "path": "/api/ai/admin/runtime/overview",
     "method": "GET",
 }
 _GATE_ENDPOINTS = {

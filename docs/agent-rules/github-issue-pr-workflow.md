@@ -25,6 +25,30 @@ consumers remain. Use `none` only after a current-source inventory proves that
 category has no superseded surface. Update the owning documentation in the
 same change; do not preserve obsolete code solely for an outdated test.
 
+## Decision rationale
+
+Before changing a lasting trade-off, cross-module contract, or non-obvious
+constraint, search existing ADRs and owning documents. Update the existing owner.
+An ADR is needed only for a durable architectural decision or genuine alternative
+analysis. Routine changes keep their record in the PR, without a parallel note
+tree or per-task ledger. Named migration and improvement plans retain their
+approved scope and acceptance requirements.
+
+Record the reasoning that code and tests cannot explain:
+
+- The problem, driving constraints, chosen approach, and why it fits.
+- Alternatives actually considered: each option's strongest argument, then the
+  concrete constraint that ruled it out. Do not invent alternatives to fill a template.
+- Benefits, costs, known limits, and observable conditions for reconsideration.
+- Links to the relevant code, checks, and observed evidence; keep execution
+  results in the PR or existing evidence output rather than copying a ledger.
+
+Update current facts such as paths, symbols, and parameters in the owning document
+alongside the affected code and tests. When a decision or its rationale reverses,
+preserve the original reasoning and record the new decision with links and the
+exact supersession boundary, including any parts that remain valid. Distinguish
+proposals and historical decisions from current contracts.
+
 ## High-risk changes
 
 Use a bounded Change Contract in the PR for changes to authentication,
@@ -32,8 +56,7 @@ authorization, tenant/workspace isolation, secrets or public redaction,
 destructive lifecycle, retention, schema/data compatibility, Sandbox/Tool/Skill/
 MCP admission, public API/callback/stream protocols, or CI/release authority.
 Record the owner, reached invariants, falsifiable acceptance, evidence limits,
-stop conditions, and applicable migration/rollback. An ADR is needed only for
-a durable architectural decision or genuine alternative analysis.
+stop conditions, and applicable migration/rollback.
 
 Independent GitHub review or a trusted independent check remains required for
 these boundaries. Author-written approval claims are not review evidence.

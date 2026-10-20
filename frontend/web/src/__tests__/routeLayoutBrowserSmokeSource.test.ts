@@ -20,6 +20,7 @@ test("offline route layout smoke covers required routes, viewports, reachability
     "/agent-market/agt_support/chat",
     "/agent-builder",
     "/plugins",
+    "/runs",
     "/ai-apps/sop-assistant",
     "/ai-apps/word-review",
   ]) {
@@ -55,4 +56,8 @@ test("offline route layout smoke covers required routes, viewports, reachability
   assert.match(source, /plugins:collapsed-icon-not-centered/);
   assert.match(source, /data-agent-market-start-chat/);
   assert.match(source, /data-agent-builder-save-reason/);
+  assert.match(source, /parent_observation_id/);
+  assert.match(source, /runs:observation-identities-not-collapsed/);
+  assert.match(source, /runs:receipt-parent-missing/);
+  assert.match(source, /runs:focus-restored/);
 });

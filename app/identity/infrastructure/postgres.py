@@ -11,6 +11,12 @@ from app.identity.application.profile_metadata import validate_profile_metadata
 from app.platform.postgres.errors import RepositoryAuthorizationError
 
 
+async def list_tenant_ids(conn: AsyncConnection) -> list[str]:
+    """Enumerate provisioned tenant scopes for platform maintenance."""
+    cursor = await conn.execute("select id from tenants order by id")
+    return [row["id"] for row in await cursor.fetchall()]
+
+
 async def tenant_exists(conn: AsyncConnection, *, tenant_id: str) -> bool:
     """Return whether the tenant identity is already provisioned."""
 

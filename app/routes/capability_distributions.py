@@ -12,7 +12,6 @@ from app.capability_distribution import (
 from app.control_plane_contracts import standard_trace_id
 from app.db import transaction
 from app.department_directory import (
-    MAX_DISTRIBUTION_DEPARTMENTS,
     DepartmentDirectoryError,
     fetch_department_directory,
     validate_distribution_department_authorities,
@@ -66,25 +65,12 @@ async def _safe_distribution_department_ids(
 ) -> list[str]:
     if not department_ids:
         return []
-    if capability_kind == "skill":
-        try:
-            directory = await fetch_department_directory()
-            return validate_distribution_department_authorities(department_ids, directory)
-        except DepartmentDirectoryError as exc:
-            status_code = 422 if str(exc) == "capability_distribution_department_authority_invalid" else 503
-            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
-
-    if len(department_ids) > MAX_DISTRIBUTION_DEPARTMENTS:
-        raise HTTPException(status_code=422, detail="capability_distribution_department_authority_invalid")
-    normalized: list[str] = []
     try:
-        for department_id in department_ids:
-            candidate = assert_safe_id(department_id.strip(), "department_ids")
-            if candidate not in normalized:
-                normalized.append(candidate)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail="capability_distribution_department_authority_invalid") from exc
-    return normalized
+        directory = await fetch_department_directory()
+        return validate_distribution_department_authorities(department_ids, directory)
+    except DepartmentDirectoryError as exc:
+        status_code = 422 if str(exc) == "capability_distribution_department_authority_invalid" else 503
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
 
 def _require_unreserved_distribution_metadata(request: CapabilityDistributionAuthorityUpdateRequest) -> None:
@@ -118,6 +104,7 @@ def _audit_payload(principal: AuthPrincipal, row: dict[str, object]) -> dict[str
         CapabilityAccessContext(
             tenant_id=principal.tenant_id,
             department_id=principal.department_id,
+            department_ids=principal.department_ids,
             roles=principal.roles,
             is_admin=is_ai_admin(principal),
             permissions=principal.permissions,

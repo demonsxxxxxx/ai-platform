@@ -453,9 +453,9 @@ export function MermaidDiagram({
           </div>
         </div>
 
-        {/* Diagram container - centered with zoom and drag */}
+        {/* Mermaid's fixed default SVG theme needs a light canvas in both app themes. */}
         <div
-          className={`mermaid-diagram overflow-hidden p-4 bg-stone-50 dark:bg-stone-800 flex items-center justify-center min-h-[200px] max-h-[500px] cursor-${
+          className={`mermaid-diagram overflow-hidden p-4 bg-stone-50 flex items-center justify-center min-h-[200px] max-h-[500px] cursor-${
             isDragging ? "grabbing" : "grab"
           }`}
           onWheel={handleWheel}
@@ -775,8 +775,8 @@ function MermaidViewer({
           >
             <img
               src={svgBlobUrl}
-              alt="mermaid diagram"
-              className="max-w-[90vw] max-h-[85vh] object-contain select-none"
+              alt={t("mermaidViewer.diagram")}
+              className="max-w-[90vw] max-h-[85vh] bg-stone-50 object-contain select-none"
               style={{
                 transform: `translate(${position.x}px, ${position.y}px) scale(${scale}) rotate(${rotation}deg)`,
                 transition: isDragging ? "none" : "transform 0.1s ease-out",

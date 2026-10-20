@@ -14,9 +14,11 @@ from app.auth import (
     authority_checked_at_now,
     normalize_roles,
 )
+from app.bootstrap.department_authority import resolve_department_authority
+from app.identity.api import DepartmentAuthority
 from app.platform.jwt_validation import JwtValidationError, decode_hs256_jwt, encode_hs256_jwt
 from app.settings import get_settings
-from app.validation import assert_safe_department_authority_id, assert_safe_principal_user_id
+from app.validation import assert_safe_principal_user_id
 
 
 CURRENT_PRINCIPAL_DENIAL_REASON = "current_principal_authority_denied"
@@ -66,6 +68,21 @@ AI_ADMIN_PERMISSIONS = (
 )
 
 UserInfoAdapter = Callable[[str], Awaitable[object]]
+DepartmentAuthorityAdapter = Callable[[str], Awaitable[DepartmentAuthority]]
+
+
+async def bind_department_authority(
+    principal: AuthPrincipal, *, settings: Any | None = None,
+    department_adapter: DepartmentAuthorityAdapter | None = None, fresh: bool = False,
+) -> AuthPrincipal:
+    try:
+        if department_adapter:
+            authority = await department_adapter(principal.user_id)
+        else:
+            authority = await resolve_department_authority(principal.user_id, settings=settings, fresh=fresh)
+    except (httpx.HTTPError, OSError, TimeoutError, ValueError, RuntimeError):
+        authority = DepartmentAuthority()
+    return replace(principal, **authority.principal_fields())
 
 _ROLE_LIST_KEYS = ("roles", "roleList", "role_list", "RoleList")
 _ROLE_KEYS = ("role", "roleName", "role_name")
@@ -174,13 +191,12 @@ def resolve_company_login_jwt(
     company_jwt_expires_at = _required_epoch_claim(claims, "exp")
     try:
         assert_safe_principal_user_id(work_id)
-        roles, department_id = _normalize_company_record(
+        roles = _normalize_company_record(
             expected_work_id=work_id,
             tenant_id=str(effective_settings.default_tenant_id),
             raw_user_info={
                 "workid": work_id,
                 "username": username,
-                "department": department,
                 "role": role,
             },
             settings=effective_settings,
@@ -192,7 +208,6 @@ def resolve_company_login_jwt(
         user_id=work_id,
         display_name=display_name,
         tenant_id=effective_settings.default_tenant_id,
-        department_id=department_id,
         roles=roles,
         permissions=_effective_permissions(roles),
         source="company-login",
@@ -246,6 +261,7 @@ async def resolve_login_principal(
     login_name: str,
     display_name: str,
     user_info_adapter: UserInfoAdapter | None = None,
+    department_adapter: DepartmentAuthorityAdapter | None = None,
     settings: Any | None = None,
 ) -> AuthPrincipal:
     """Resolve a company-login principal from the current trusted user record."""
@@ -258,17 +274,16 @@ async def resolve_login_principal(
         raise PrincipalAuthorityDenied() from None
     # The submitted login name remains an input compatibility field, never an
     # independent identity or configured-admin authority source.
-    roles, department_id = _normalize_company_record(
+    roles = _normalize_company_record(
         expected_work_id=work_id,
         tenant_id=str(effective_settings.default_tenant_id),
         raw_user_info=raw_user_info,
         settings=effective_settings,
     )
-    return AuthPrincipal(
+    principal = AuthPrincipal(
         user_id=work_id,
         display_name=display_name,
         tenant_id=effective_settings.default_tenant_id,
-        department_id=department_id,
         roles=roles,
         permissions=_effective_permissions(roles),
         source="company-login",
@@ -277,6 +292,9 @@ async def resolve_login_principal(
         authority_checked_at=authority_checked_at_now(),
         **_company_fields_from_user_info(raw_user_info, work_id),
     )
+    return await bind_department_authority(
+        principal, settings=effective_settings, department_adapter=department_adapter, fresh=True,
+    )
 
 
 async def resolve_current_principal(
@@ -284,6 +302,7 @@ async def resolve_current_principal(
     user_id: str,
     tenant_id: str,
     user_info_adapter: UserInfoAdapter | None = None,
+    department_adapter: DepartmentAuthorityAdapter | None = None,
     settings: Any | None = None,
 ) -> AuthPrincipal:
     """Resolve current dispatch authority or raise one stable fail-closed error."""
@@ -296,23 +315,25 @@ async def resolve_current_principal(
         raw_user_info = await adapter(user_id)
     except Exception:
         raise PrincipalAuthorityDenied() from None
-    roles, department_id = _normalize_company_record(
+    roles = _normalize_company_record(
         expected_work_id=user_id,
         tenant_id=tenant_id,
         raw_user_info=raw_user_info,
         settings=effective_settings,
     )
-    return AuthPrincipal(
+    principal = AuthPrincipal(
         user_id=user_id,
         display_name=user_id,
         tenant_id=tenant_id,
-        department_id=department_id,
         roles=roles,
         permissions=_effective_permissions(roles),
         source="company-user-info-current",
         authz_policy_version=COMPANY_AUTHZ_POLICY_VERSION,
         authority_source="company-user-info",
         authority_checked_at=authority_checked_at_now(),
+    )
+    return await bind_department_authority(
+        principal, settings=effective_settings, department_adapter=department_adapter, fresh=True,
     )
 
 
@@ -338,6 +359,7 @@ async def issue_refreshed_company_jwt(
     *,
     expires_at: int,
     user_info_adapter: UserInfoAdapter | None = None,
+    department_adapter: DepartmentAuthorityAdapter | None = None,
     settings: Any | None = None,
 ) -> tuple[AuthPrincipal, str]:
     """Recheck current company authority and issue an independently bounded JWT."""
@@ -354,7 +376,7 @@ async def issue_refreshed_company_jwt(
         raise CompanyLoginJwtUnavailable() from exc
     except (httpx.HTTPError, OSError, TimeoutError, ValueError) as exc:
         raise CompanyLoginJwtUnavailable() from exc
-    roles, department_id = _normalize_company_record(
+    roles = _normalize_company_record(
         expected_work_id=principal.user_id, tenant_id=principal.tenant_id,
         raw_user_info=raw, settings=effective_settings,
     )
@@ -386,10 +408,13 @@ async def issue_refreshed_company_jwt(
     except JwtValidationError as exc:
         raise CompanyLoginJwtUnavailable() from exc
     refreshed = replace(
-        principal, display_name=display_name, department_id=department_id,
+        principal, display_name=display_name,
         roles=roles, permissions=_effective_permissions(roles),
         authority_source="company-user-info", authority_checked_at=authority_checked_at_now(),
         company_jwt_expires_at=deadline, **fields,
+    )
+    refreshed = await bind_department_authority(
+        refreshed, settings=effective_settings, department_adapter=department_adapter, fresh=True,
     )
     return refreshed, token
 
@@ -407,8 +432,8 @@ def _normalize_company_record(
     tenant_id: str,
     raw_user_info: object,
     settings: Any,
-) -> tuple[list[str], str]:
-    """Validate one company record and return its bounded product authority."""
+) -> list[str]:
+    """Validate company eligibility and roles without deriving department authority."""
 
     if not isinstance(raw_user_info, dict):
         raise PrincipalAuthorityDenied()
@@ -423,7 +448,7 @@ def _normalize_company_record(
         settings=settings,
         identity_aliases=identity_aliases,
     )
-    return roles, _department_from_user_info(raw_user_info)
+    return roles
 
 
 def _as_list(value: object, *, strict: bool) -> list[str]:
@@ -492,24 +517,6 @@ def _effective_permissions(roles: list[str]) -> list[str]:
     if set(normalize_roles(roles)).intersection(_ADMIN_UPSTREAM_ROLES):
         permissions.extend(AI_ADMIN_PERMISSIONS)
     return permissions
-
-
-def _department_from_user_info(payload: dict[str, Any]) -> str:
-    if "department" not in payload or payload.get("department") is None:
-        return ""
-    value = payload.get("department")
-    if not isinstance(value, str):
-        return ""
-    candidate = value
-    if not candidate:
-        return ""
-    try:
-        return assert_safe_department_authority_id(candidate, "department")
-    except ValueError:
-        # Empty is intentionally unscoped: it cannot match a non-empty
-        # department allowlist and never invents authority from display data.
-        return ""
-
 
 
 def _validated_identity_aliases(payload: dict[str, Any], *, expected_work_id: str) -> set[str]:

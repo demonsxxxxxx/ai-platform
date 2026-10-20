@@ -19,6 +19,7 @@ class AdminRunDiagnosticRun(TypedDict):
 
 class AdminRunDiagnosticObservation(TypedDict):
     observation_id: str | None
+    parent_observation_id: NotRequired[str]
     attempt_id: str | None
     lease_id: str | None
     request_id: str | None
@@ -138,6 +139,7 @@ class AdminRunDiagnosticProjectionFailure(TypedDict):
 
 class AdminRunDiagnosticObservationEvidence(TypedDict):
     observation_id: str | None
+    parent_observation_id: NotRequired[str]
     attempt_id: str | None
     lease_id: str | None
     request_id: str | None

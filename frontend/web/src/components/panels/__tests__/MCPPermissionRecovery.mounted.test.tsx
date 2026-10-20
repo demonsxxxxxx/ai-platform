@@ -27,7 +27,9 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 function principal(id = "user-a", roles = ["admin"]): User {
-  return { id, tenant_id: "tenant-test", username: id, email: "synthetic@example.test", roles, permissions: [], is_active: true, created_at: "", updated_at: "" };
+  return { id, tenant_id: "tenant-test", department_id: "110", direct_department_ids: ["110"],
+    department_ids: ["100", "110"], department_authority_status: "available",
+    username: id, email: "synthetic@example.test", roles, permissions: [], is_active: true, created_at: "", updated_at: "" };
 }
 function json(value: unknown, status = 200) { return new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } }); }
 async function click(node: HTMLButtonElement) { await act(async () => { node.click(); }); }
@@ -195,12 +197,12 @@ test("refresh masks the previous count and updates the open tool detail", async 
   } finally { await view.close(); }
 });
 
-test("late tool discovery cannot publish across a same-user department change", async () => {
+test("late tool discovery cannot publish across a secondary membership change with the same primary", async () => {
   const old = deferred<Response>(); let discoveries = 0;
   const view = await harness(createElement(MCPPanel), () => page(), () => ++discoveries === 1 ? old.promise : json({ server_name: server.name, tools: [{ name: "current-tool", description: "Current synthetic tool", parameters: [] }], count: 1, unavailable_reason: null }));
   try {
     await click(view.container.querySelector<HTMLButtonElement>("[data-mcp-view-tools]")!);
-    await view.setUser({ ...principal(), department_id: "synthetic-department" });
+    await view.setUser({ ...principal(), direct_department_ids: ["110", "210"], department_ids: ["100", "110", "200", "210"] });
     assert.equal(document.querySelector("[data-mcp-tool-detail]"), null);
     assert.equal(view.container.querySelector("[data-mcp-tool-count]")!.textContent, "1 个工具");
     await act(async () => old.resolve(json({ server_name: server.name, tools: [{ name: "old-tool", description: "Old private description", parameters: [] }], count: 1, unavailable_reason: null })));
