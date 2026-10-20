@@ -27,6 +27,7 @@ try {
     let browser;
     const prefix = `${theme}-${viewport.name}`;
     const screenshots = [];
+    const measurements = {};
     try {
       browser = await startBrowser({ viewport, report: (...items) => log.push(JSON.stringify(items)) });
       const c = browser.client;
@@ -49,7 +50,7 @@ try {
       const screenshot = async name => screenshots.push(await captureScreenshot(c, evidenceDir, `${prefix}-${name}`));
       const navigate = async (mode, collapsed = false) => {
         await c.send("Page.navigate", { url: `http://127.0.0.1:4173/scripts/fixtures/session-preview.html?theme=${theme}&mode=${mode}&collapsed=${collapsed}` });
-        await wait("Boolean(window.__sessionPreview) && Boolean(document.querySelector('main'))", "fixture_ready");
+        await wait("Boolean(window.__sessionPreview) && Boolean(document.querySelector('[data-synthetic-auth-ready=synthetic-user]'))", "fixture_ready");
         await assert(`document.documentElement.classList.contains('dark') === ${theme === "dark"}`, "theme");
       };
       // Use browser input rather than React callback extraction or synthetic DOM click events.
@@ -74,6 +75,7 @@ try {
         await noErrors();
         await navigate("sidebar", collapsed);
         await wait("Boolean(document.querySelector('[data-librechat-desktop-sidebar]'))", "sidebar_ready");
+        if (viewport.mobile) await wait("document.querySelector('[data-librechat-mobile-sidebar]').getBoundingClientRect().left >= 0", "mobile_sidebar_painted");
         const sidebarWidth = await c.evaluate("document.querySelector('[data-librechat-desktop-sidebar]').getBoundingClientRect().width");
         if (viewport.mobile ? skeletonWidth !== 0 || sidebarWidth !== 0 : Math.abs(skeletonWidth - sidebarWidth) > 1) throw Error(`preference_width_mismatch:${skeletonWidth}:${sidebarWidth}`);
         await screenshot(`sidebar-${collapsed ? "collapsed" : "expanded"}`);
@@ -95,12 +97,21 @@ try {
       await wait("document.querySelector('[data-synthetic-diagram] div[style*=\"transform:\"] > svg').parentElement.getAnimations().every(a=>a.playState!=='running')", "second_fit_transition");
       await assert(`document.querySelector('[data-synthetic-diagram] div[style*=\"transform:\"] > svg').parentElement.style.transform === ${quote(firstFit)}`, "fit_independent_of_prior_zoom");
       await assert("(() => { const svg=document.querySelector('[data-synthetic-diagram] div[style*=\"transform:\"] > svg'); const r=svg.getBoundingClientRect(), p=svg.parentElement.parentElement.getBoundingClientRect(); return r.width>0 && r.height>0 && r.left>=p.left-1 && r.right<=p.right+1 && r.top>=p.top-1 && r.bottom<=p.bottom+1; })()", "diagram_fits_visible_container");
+      measurements.zoomControls = await c.evaluate(`(() => { const names=${quote([labels.documents.zoomOut, labels.documents.zoomIn])}; return names.map(name => { const button=[...document.querySelectorAll('[data-synthetic-diagram] button')].find(e=>e.title===name); const b=button.getBoundingClientRect(), s=button.querySelector('svg').getBoundingClientRect(); return { name, buttonWidth:b.width, buttonHeight:b.height, iconWidth:s.width, iconHeight:s.height }; }); })()`);
       await screenshot("diagram-fit");
       await noErrors();
       await navigate("sidebar");
       const sidebar = viewport.mobile ? "document.querySelector('[data-librechat-mobile-sidebar]')" : "document.querySelector('[data-librechat-desktop-sidebar]')";
+      const openSidebar = async () => {
+        if (viewport.mobile && await c.evaluate(`${sidebar}.classList.contains('-translate-x-full')`)) {
+          await wait(`${sidebar}.getBoundingClientRect().right <= 1`, "mobile_sidebar_closed");
+          await click("document.querySelector('[data-synthetic-open-sidebar]')");
+        }
+        if (viewport.mobile) await wait(`${sidebar}.getBoundingClientRect().left >= 0`, "mobile_sidebar_open");
+      };
+      await openSidebar();
       await wait(`${sidebar}.querySelectorAll('[data-slot="thread-list-item"]').length === 2`, "session_rows");
-      const searchButton = `${sidebar}.querySelector('button[aria-label='+${quote(quote(labels.sidebar.searchSessions))}+']')`;
+      const searchButton = `[...${sidebar}.querySelectorAll('button')].find(e=>e.textContent.includes(${quote(labels.sidebar.searchSessions)}))`;
       await click(searchButton);
       await wait("window.__sessionPreview.searches.length===1 && document.activeElement.tagName==='INPUT'", "search_initial_focus");
       await assert(contained, "search_portal_contained");
@@ -121,7 +132,7 @@ try {
       if (await c.evaluate(`Boolean(${dialog})`)) await key("Escape", "Escape", 27);
       await wait(`!${dialog}`, "search_closed");
       // Open again and Escape while a receipt is outstanding.
-      if (viewport.mobile && await c.evaluate(`${sidebar}.getBoundingClientRect().left < 0`)) { await click("document.querySelector('[data-synthetic-open-sidebar]')"); await wait(`${sidebar}.getBoundingClientRect().left >= 0`, "mobile_sidebar_reopened"); }
+      await openSidebar();
       await click(searchButton);
       await wait("window.__sessionPreview.searches.length===4", "search_reopen");
       await key("Escape", "Escape", 27);
@@ -129,9 +140,6 @@ try {
       await wait(`!${dialog}`, "search_escape");
       if (!viewport.mobile) await assert(`document.activeElement === ${searchButton}`, "search_focus_restored");
       await assert("!document.body.textContent.includes('closed-stale')", "closed_receipt_ignored");
-      const openSidebar = async () => {
-        if (viewport.mobile && await c.evaluate(`${sidebar}.getBoundingClientRect().left < 0`)) { await click("document.querySelector('[data-synthetic-open-sidebar]')"); await wait(`${sidebar}.getBoundingClientRect().left >= 0`, "mobile_sidebar_reopened"); }
-      };
       const openDelete = async () => {
         await openSidebar();
         const row = `[...${sidebar}.querySelectorAll('[data-slot="thread-list-item"]')].find(e=>e.textContent.includes('Synthetic session a'))`;
@@ -175,10 +183,10 @@ try {
       await assert("window.__sessionPreview.removed[0]==='a' && window.__sessionPreview.deletions.length===2", "only_target_deleted_once");
       await screenshot("delete-success");
       await noErrors();
-      results.push({ theme, viewport, screenshots, status: "passed" });
+      results.push({ theme, viewport, screenshots, measurements, status: "passed" });
     } catch (error) {
       if (browser) screenshots.push(await captureScreenshot(browser.client, evidenceDir, `${prefix}-failed`).catch(() => "capture_failed"));
-      failures.push({ theme, viewport, error: String(error), screenshots });
+      failures.push({ theme, viewport, error: String(error), screenshots, measurements });
     } finally { if (browser) await browser.close(); }
   }
 } catch (error) {

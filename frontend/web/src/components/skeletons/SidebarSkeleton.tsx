@@ -1,3 +1,4 @@
+import { LIBRECHAT_SHELL_GEOMETRY } from "../../librechat-ui/surface";
 import { Skeleton } from "@lobehub/ui/base-ui";
 import { readSidebarCollapsedPreference } from "../../hooks/useSidebarPreference";
 
@@ -17,7 +18,7 @@ function SidebarRailSkeleton() {
   return (
     <div
       className="hidden sm:flex h-full relative shrink-0 overflow-hidden"
-      style={{ width: "var(--sidebar-rail-width)" }}
+      style={{ width: LIBRECHAT_SHELL_GEOMETRY.railWidthPx }}
     >
       <nav
         className="absolute inset-0 flex h-full w-full flex-col items-start select-none"
@@ -59,8 +60,9 @@ function SidebarRailSkeleton() {
 function SidebarExpandedSkeleton() {
   return (
     <div
-      className="hidden sm:flex w-64 shrink-0 flex-col rounded-r-lg overflow-hidden"
+      className="hidden sm:flex shrink-0 flex-col rounded-r-lg overflow-hidden"
       style={{
+        width: LIBRECHAT_SHELL_GEOMETRY.expandedMinWidthPx,
         borderRight:
           "1px solid color-mix(in srgb, var(--theme-border) 60%, transparent)",
         backgroundColor: "color-mix(in srgb, var(--theme-bg) 50%, transparent)",

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { LIBRECHAT_SHELL_GEOMETRY } from "../../librechat-ui/surface";
 import { SidebarSkeleton } from "../../components/skeletons/SidebarSkeleton";
 import { createLobeTestRoot } from "../../components/common/__tests__/lobeUiTestRoot";
 import { installSelectTestDom } from "../../components/common/__tests__/selectTestDom";
@@ -51,8 +52,8 @@ for (const [label, stored, expected] of cases) {
       assert.equal(container.querySelector("output")?.textContent, String(expected));
       const skeleton = container.querySelector("section > div") as HTMLElement;
       assert.ok(skeleton);
-      assert.equal(skeleton.style.width === "var(--sidebar-rail-width)", expected);
-      assert.equal(skeleton.classList.contains("w-64"), !expected);
+      assert.equal(skeleton.style.width, `${expected ? LIBRECHAT_SHELL_GEOMETRY.railWidthPx : LIBRECHAT_SHELL_GEOMETRY.expandedMinWidthPx}px`, "loading and loaded shells share the geometry owner");
+      assert.equal(skeleton.classList.contains("w-64"), false, "retired fixed-width skeleton does not override shell geometry");
       if (label !== "storage getter throws" && label !== "storage absent") assert.equal(reads, 2);
       assert.equal(writes, 0, "initial preference and skeleton never persist");
       assert.equal(requests, 0, "loading shell does not request business data");

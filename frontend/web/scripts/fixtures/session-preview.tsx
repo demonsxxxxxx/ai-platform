@@ -5,7 +5,7 @@ import { MemoryRouter } from "react-router-dom";
 import { ToastHost } from "@lobehub/ui/base-ui";
 import { ThemeProvider } from "../../src/contexts/ThemeContext";
 import { LobeUiProvider } from "../../src/contexts/LobeUiProvider";
-import { AuthProvider } from "../../src/hooks/useAuth";
+import { AuthProvider, useAuth } from "../../src/hooks/useAuth";
 import { useSidebarPreference } from "../../src/hooks/useSidebarPreference";
 import { SidebarSkeleton } from "../../src/components/skeletons/SidebarSkeleton";
 import { SessionSidebar } from "../../src/components/panels/SessionSidebar";
@@ -55,6 +55,7 @@ sessionApi.listAuthoritative = async () => { state.errors.push("unexpected_defau
 const diagram = JSON.stringify({ elements: [{ id: "synthetic-wide-rectangle", type: "rectangle", x: 0, y: 0, width: 1600, height: 900, angle: 0, strokeColor: "#1971c2", backgroundColor: "#a5d8ff", fillStyle: "solid", strokeWidth: 2, strokeStyle: "solid", roughness: 0, opacity: 100, groupIds: [], frameId: null, roundness: null, seed: 1, version: 1, versionNonce: 1, isDeleted: false, boundElements: null, updated: 1, link: null, locked: false }], appState: { viewBackgroundColor: "#ffffff" } });
 
 export function Fixture() {
+  const { user } = useAuth();
   const [collapsed, setCollapsed] = useSidebarPreference();
   const [sessions, setSessions] = useState([makeSession("a"), makeSession("b")]);
   const [mobileOpen, setMobileOpen] = useState(true);
@@ -62,7 +63,7 @@ export function Fixture() {
   const removeSession = useCallback((id: string) => { state.removed.push(id); setSessions(items => items.filter(item => item.id !== id)); }, []);
   const source = useMemo(() => ({ sessions, isLoading: false, isLoadingMore: false, hasMore: false, loadMore: ready, softRefresh: ready, prependSession: noop, updateSession: noop, removeSession }), [sessions, removeSession]);
   const mode = params.get("mode");
-  return <div style={{ display: "flex", height: "100dvh", background: "var(--theme-bg)", color: "var(--theme-text)" }}>
+  return <div data-synthetic-auth-ready={user?.id} style={{ display: "flex", height: "100dvh", background: "var(--theme-bg)", color: "var(--theme-text)" }}>
     {mode === "skeleton" ? <section data-synthetic-skeleton style={{ display: "flex", height: "100%" }}><SidebarSkeleton /></section> : mode !== "diagram" ?
       <SessionSidebar currentSessionId={selected} onSelectSession={id => { state.selected = id; setSelected(id); }} onNewSession={() => {}} isCollapsed={collapsed} onToggleCollapsed={setCollapsed} mobileOpen={mobileOpen} onMobileOpen={() => setMobileOpen(true)} onMobileClose={() => setMobileOpen(false)} sessionSource={source} /> : null}
     <main style={{ flex: 1, minWidth: 0, height: "100%" }}>

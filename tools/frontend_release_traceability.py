@@ -38,7 +38,7 @@ STATIC_FRONTEND_PYTEST_COMMAND = (
     "python -m pytest tests/test_deploy_frontend_static.py "
     "tests/test_frontend_release_traceability.py "
     "tests/test_frontend_packaged_runtime_smoke.py "
-    "tests/test_frontend_ci_workflow.py tests/test_frontend_ci_shards.py "
+    "tests/test_frontend_ci_workflow.py tests/test_frontend_ci_shards.py tests/test_session_preview_browser_smoke.py "
     "-q --basetemp .pytest-tmp"
 )
 LINUX_FRONTEND_PYTEST_COMMAND = (
