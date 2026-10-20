@@ -498,3 +498,19 @@ Oversized SDK error values retain the existing truncation summary rather than an
 unbounded copy. Required response attachment tool registration failures likewise
 retain the constructor exception through this same diagnostic path; optional
 registration failure still leaves attachments unavailable without failing a turn.
+
+### Context prompt evidence compatibility
+
+The context-pack evidence generator, verifier, and office readiness consumer use
+probe/runtime-acceptance v3. They require the common redaction checks plus the
+selected rendering contract: manifest refs and retrieval tools, a bounded legacy
+summary, or no material section. Unknown legacy counts are not proof of absence;
+only three explicit integer-zero material counts suppress the legacy summary.
+`memory_read_flag_absent` checks prompt rendering only, not whether memory was
+read; worker-dispatch, scoped material evidence, and non-expansion invariants
+remain separately required. Source probes still cannot close runtime acceptance.
+
+Archived v2 reports remain immutable historical evidence for their original
+source. They do not satisfy the current v3 readiness contract; a current-runtime
+claim requires fresh v3 evidence rather than relabeling an old artifact. The
+retired summary/version/timestamp-in-prompt assertions have no current consumers.

@@ -563,7 +563,7 @@ def test_wraps_list_style_verifier_checks_and_attached_runtime_payload():
         "redaction_scan_status": "passed",
     }
     runtime_payload = {
-        "schema_version": "ai-platform.executor-context-pack-probe.v2",
+        "schema_version": "ai-platform.executor-context-pack-probe.v3",
         "run_id": "run-live",
         "public_context_summary": {
             "input_keys": ["attachments", "message"],
@@ -843,7 +843,7 @@ def test_wrap_cli_accepts_executor_context_runtime_payload_file(tmp_path):
     runtime_payload_path.write_text(
         json.dumps(
             {
-                "schema_version": "ai-platform.executor-context-pack-probe.v2",
+                "schema_version": "ai-platform.executor-context-pack-probe.v3",
                 "run_id": "run-live",
                 "public_context_summary": {
                     "input_keys": ["attachments", "message"],

@@ -24,13 +24,31 @@ if str(REPO_ROOT) not in sys.path:
 from app.context.infrastructure import snapshot_postgres  # noqa: E402
 from app.context_builder import executor_context_pack_from_snapshot  # noqa: E402
 from app.db import transaction  # noqa: E402
+from app.executors.claude.capability_policy import claude_context_retrieval_tools  # noqa: E402
 from app.executors.claude_agent_sdk_runner import build_skill_prompt  # noqa: E402
 from app.bootstrap.context import worker_context_snapshot_ref_from_row  # noqa: E402
 
 
-SOURCE_PROBE_SCHEMA_VERSION = "ai-platform.executor-context-pack-probe.v2"
-RUNTIME_ACCEPTANCE_SCHEMA_VERSION = "ai-platform.executor-context-pack-runtime-acceptance.v2"
+SOURCE_PROBE_SCHEMA_VERSION = "ai-platform.executor-context-pack-probe.v3"
+RUNTIME_ACCEPTANCE_SCHEMA_VERSION = "ai-platform.executor-context-pack-runtime-acceptance.v3"
 SOURCE_SCHEMA_VERSION = "ai-platform.executor-context-pack.v1"
+REQUIRED_PROMPT_CHECKS = (
+    "raw_storage_identifiers_absent",
+    "sandbox_runtime_paths_absent",
+    "executor_private_content_absent",
+    "generated_at_metadata_absent",
+    "memory_read_flag_absent",
+)
+PROMPT_CHECKS_BY_RENDERING_MODE = {
+    "manifest_materials": (
+        "manifest_refs_rendered",
+        "safe_retrieval_tools_rendered",
+        "manifest_summary_omitted",
+        "manifest_audit_metadata_omitted",
+    ),
+    "legacy_bounded_summary": ("legacy_bounded_summary_present",),
+    "empty_materials": ("empty_material_section_omitted",),
+}
 NON_EXPANSION_INVARIANTS = {
     "ordinary_user_multi_agent_allowed": False,
     "ordinary_user_high_risk_sandbox_allowed": False,
@@ -68,6 +86,26 @@ def _sample_context_snapshot(run_id: str) -> dict[str, Any]:
         "execution_tier": "document_worker",
         "context_pack_version": "v8",
         "context_pack_generated_at": "2026-06-12T01:23:45Z",
+        "context_manifest": {
+            "schema_version": "ai-platform.context-manifest.v1",
+            "context_manifest_version": "v8",
+            "generated_at": "2026-06-12T01:23:45Z",
+            "selection": {
+                "history_candidate_count": 2,
+                "history_authorized_count": 1,
+                "history_omitted_count": 1,
+            },
+            "files": [{"file_id": "file-a", "name": "proposal.docx"}],
+            "artifacts": [{"artifact_id": "artifact-a", "label": "prior draft"}],
+            "memory_records": [{"memory_record_id": "memory-a", "summary": "related context"}],
+            "available_retrieval_tools": [
+                "read_session_messages",
+                "stage_context_file_to_workspace",
+                "read_run_artifact",
+                "stage_run_artifact_to_workspace",
+                "search_memory",
+            ],
+        },
         "included_artifact_ids": ["artifact-secret"],
         "raw_storage_key": "s3://private/object",
         "sandbox_workdir": "/tmp/private",
@@ -75,21 +113,91 @@ def _sample_context_snapshot(run_id: str) -> dict[str, Any]:
     }
 
 
+def _prompt_rendering_mode(context_pack: dict[str, Any]) -> str:
+    manifest = context_pack.get("context_manifest")
+    if isinstance(manifest, dict) and manifest.get("schema_version") == "ai-platform.context-manifest.v1":
+        has_refs = any(
+            isinstance(manifest.get(key), list) and bool(manifest[key])
+            for key in ("files", "artifacts", "memory_records")
+        )
+        if has_refs or claude_context_retrieval_tools(manifest):
+            return "manifest_materials"
+        return "empty_materials"
+    materials = context_pack.get("referenced_materials")
+    if not isinstance(materials, dict):
+        return "legacy_bounded_summary"
+    if not all(
+        type(materials.get(key)) is int and materials[key] == 0
+        for key in ("file_count", "artifact_count", "memory_record_count")
+    ):
+        return "legacy_bounded_summary"
+    return "empty_materials"
+
+
 def _prompt_checks(prompt: str, *, context_pack: dict[str, Any]) -> dict[str, bool]:
     prompt_lower = prompt.lower()
+    mode = _prompt_rendering_mode(context_pack)
+    summary = context_pack.get("prompt_summary")
     context_pack_version = str(context_pack.get("context_pack_version") or "")
     generated_at = str(context_pack.get("context_pack_generated_at") or "")
+    manifest = context_pack.get("context_manifest")
+    manifest = manifest if isinstance(manifest, dict) else {}
+    manifest_generated_at = str(manifest.get("generated_at") or "")
+    expected_refs: list[str] = []
+    for refs_key, id_key in (
+        ("files", "file_id"),
+        ("artifacts", "artifact_id"),
+        ("memory_records", "memory_record_id"),
+    ):
+        refs = manifest.get(refs_key)
+        if isinstance(refs, list):
+            expected_refs.extend(
+                str(ref.get(id_key) or "").strip()
+                for ref in refs[:8]
+                if isinstance(ref, dict) and str(ref.get(id_key) or "").strip()
+            )
+    expected_tools = claude_context_retrieval_tools(manifest) if manifest else []
     return {
-        "bounded_summary_present": "Context pack:" in prompt and "Office context pack:" in prompt,
-        "context_pack_version_present": bool(context_pack_version)
-        and f"Context pack version: {context_pack_version}" in prompt,
-        "context_pack_generated_at_present": bool(generated_at)
-        and f"Context pack generated at: {generated_at}" in prompt,
+        "manifest_refs_rendered": all(ref_id in prompt for ref_id in expected_refs),
+        "safe_retrieval_tools_rendered": all(tool_name in prompt for tool_name in expected_tools)
+        and (not expected_tools or "Available context retrieval tools:" in prompt),
+        "manifest_summary_omitted": not summary or summary not in prompt,
+        "manifest_audit_metadata_omitted": (
+            "Context pack version:" not in prompt
+            and "Context pack generated at:" not in prompt
+            and (not context_pack_version or f"Context pack version: {context_pack_version}" not in prompt)
+            and (not generated_at or generated_at not in prompt)
+            and (not manifest_generated_at or manifest_generated_at not in prompt)
+        ),
+        "legacy_bounded_summary_present": (
+            mode == "legacy_bounded_summary"
+            and isinstance(summary, str)
+            and bool(summary)
+            and len(summary.encode("utf-8")) <= 2048
+            and "Office context pack:" in prompt
+            and summary in prompt
+        ),
+        "empty_material_section_omitted": (
+            mode == "empty_materials" and "Office context pack:" not in prompt
+        ),
+        "generated_at_metadata_absent": (
+            "Context pack generated at:" not in prompt
+            and (not generated_at or generated_at not in prompt)
+            and (not manifest_generated_at or manifest_generated_at not in prompt)
+        ),
+        "memory_read_flag_absent": (
+            "long_term_memory_read" not in prompt_lower
+            and "memory_policy_source" not in prompt_lower
+        ),
         "raw_storage_identifiers_absent": "s3://" not in prompt_lower and "raw_storage_key" not in prompt,
         "sandbox_runtime_paths_absent": "/tmp/" not in prompt_lower and "sandbox_workdir" not in prompt,
         "executor_private_content_absent": "executor_private_payload" not in prompt and "executor-private-probe-token-47d6" not in prompt_lower,
-        "long_term_memory_read_false": "0 long-term memory record(s)" in prompt,
     }
+
+
+def _prompt_rendering_contract_verified(mode: str, checks: dict[str, bool]) -> bool:
+    required = (*REQUIRED_PROMPT_CHECKS, *PROMPT_CHECKS_BY_RENDERING_MODE.get(mode, ()))
+    return mode in PROMPT_CHECKS_BY_RENDERING_MODE and all(checks.get(name) is True for name in required)
 
 
 def _scope_checks_from_context_pack(context_pack: dict[str, Any]) -> dict[str, bool]:
@@ -135,6 +243,8 @@ def _base_evidence(
     schema_version: str = SOURCE_PROBE_SCHEMA_VERSION,
     observed_worker_dispatch: bool = False,
 ) -> dict[str, Any]:
+    prompt_rendering_mode = _prompt_rendering_mode(context_pack)
+    prompt_checks = _prompt_checks(prompt, context_pack=context_pack)
     return {
         "schema_version": schema_version,
         "source_schema_version": SOURCE_SCHEMA_VERSION,
@@ -147,6 +257,7 @@ def _base_evidence(
         "observed_worker_dispatch": observed_worker_dispatch,
         "reconstruction_source": reconstruction_source,
         "generated_at": _utc_now(),
+        "prompt_rendering_mode": prompt_rendering_mode,
         "source_functions": [
             "app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker",
             "app.context_builder.executor_context_pack_from_snapshot",
@@ -154,7 +265,7 @@ def _base_evidence(
             "app.executors.claude.prompts.build_skill_prompt",
             "app.bootstrap.context.worker_context_snapshot_ref_from_row",
         ],
-        "prompt_checks": _prompt_checks(prompt, context_pack=context_pack),
+        "prompt_checks": prompt_checks,
         "scope_checks": _scope_checks_from_context_pack(context_pack),
         "non_expansion_invariants": dict(NON_EXPANSION_INVARIANTS),
     }
@@ -307,15 +418,13 @@ async def build_live_run_evidence(*, run_id: str) -> dict[str, Any]:
         "worker_context_ref_rebuilt_from_db_snapshot": live_run_checks[
             "worker_context_ref_rebuilt_from_db_snapshot"
         ],
-        "prompt_includes_bounded_summary": prompt_checks["bounded_summary_present"],
-        "prompt_includes_context_pack_version": prompt_checks["context_pack_version_present"],
-        "prompt_includes_context_pack_generated_at": prompt_checks[
-            "context_pack_generated_at_present"
-        ],
+        "prompt_rendering_contract_verified": _prompt_rendering_contract_verified(
+            evidence["prompt_rendering_mode"], prompt_checks
+        ),
         "raw_storage_identifiers_absent": prompt_checks["raw_storage_identifiers_absent"],
         "sandbox_runtime_paths_absent": prompt_checks["sandbox_runtime_paths_absent"],
         "executor_private_content_absent": prompt_checks["executor_private_content_absent"],
-        "long_term_memory_read_false": prompt_checks["long_term_memory_read_false"],
+        "memory_read_flag_absent": prompt_checks["memory_read_flag_absent"],
         "source_run_material_scope_tenant_workspace_user_session": scope_checks[
             "source_run_material_scope_verified"
         ],
@@ -382,20 +491,24 @@ def main(argv: list[str] | None = None) -> int:
         "evidence_file": "[redacted-path]",
         "schema_version": evidence["schema_version"],
         "evidence_strength": evidence["evidence_strength"],
-        "prompt_checks_passed": all(evidence["prompt_checks"].values()),
+        "prompt_checks_passed": _prompt_rendering_contract_verified(
+            evidence["prompt_rendering_mode"], evidence["prompt_checks"]
+        ),
         "scope_checks_passed": all(evidence["scope_checks"].values()),
         "runtime_run_payload_verified": bool(evidence.get("runtime_run_payload_verified")),
     }
+    passed = output["prompt_checks_passed"] and output["scope_checks_passed"]
     if args.json_output:
         print(json.dumps(output, ensure_ascii=True, indent=2))
     else:
-        print(
-            "PASSED: executor context-pack worker-run evidence generated"
+        kind = (
+            "worker-run"
             if evidence["evidence_strength"]
             == "observed_worker_dispatch_with_scoped_context_reconstruction"
-            else "PASSED: executor context-pack source-probe evidence generated"
+            else "source-probe"
         )
-    return 0 if output["prompt_checks_passed"] and output["scope_checks_passed"] else 1
+        print(f"{'PASSED' if passed else 'FAILED'}: executor context-pack {kind} evidence generated")
+    return 0 if passed else 1
 
 
 if __name__ == "__main__":

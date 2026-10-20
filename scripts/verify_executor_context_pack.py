@@ -19,8 +19,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 
-SOURCE_PROBE_SCHEMA_VERSION = "ai-platform.executor-context-pack-probe.v2"
-RUNTIME_ACCEPTANCE_SCHEMA_VERSION = "ai-platform.executor-context-pack-runtime-acceptance.v2"
+SOURCE_PROBE_SCHEMA_VERSION = "ai-platform.executor-context-pack-probe.v3"
+RUNTIME_ACCEPTANCE_SCHEMA_VERSION = "ai-platform.executor-context-pack-runtime-acceptance.v3"
 SOURCE_SCHEMA_VERSION = "ai-platform.executor-context-pack.v1"
 REQUIRED_MATERIAL_COUNT_FIELDS = {
     "message_count",
@@ -37,14 +37,22 @@ REQUIRED_SOURCE_FUNCTIONS = [
     "app.bootstrap.context.worker_context_snapshot_ref_from_row",
 ]
 REQUIRED_PROMPT_CHECKS = [
-    "bounded_summary_present",
-    "context_pack_version_present",
-    "context_pack_generated_at_present",
     "raw_storage_identifiers_absent",
     "sandbox_runtime_paths_absent",
     "executor_private_content_absent",
-    "long_term_memory_read_false",
+    "generated_at_metadata_absent",
+    "memory_read_flag_absent",
 ]
+PROMPT_CHECKS_BY_RENDERING_MODE = {
+    "manifest_materials": [
+        "manifest_refs_rendered",
+        "safe_retrieval_tools_rendered",
+        "manifest_summary_omitted",
+        "manifest_audit_metadata_omitted",
+    ],
+    "legacy_bounded_summary": ["legacy_bounded_summary_present"],
+    "empty_materials": ["empty_material_section_omitted"],
+}
 REQUIRED_SCOPE_CHECKS = [
     "tenant_id_scoped",
     "workspace_id_scoped",
@@ -79,13 +87,11 @@ REQUIRED_RUNTIME_EVIDENCE = [
     "context_snapshot_id_present",
     "scoped_context_snapshot_loaded",
     "worker_context_ref_rebuilt_from_db_snapshot",
-    "prompt_includes_bounded_summary",
-    "prompt_includes_context_pack_version",
-    "prompt_includes_context_pack_generated_at",
+    "prompt_rendering_contract_verified",
     "raw_storage_identifiers_absent",
     "sandbox_runtime_paths_absent",
     "executor_private_content_absent",
-    "long_term_memory_read_false",
+    "memory_read_flag_absent",
     "source_run_material_scope_tenant_workspace_user_session",
     "source_run_material_count_positive",
     "fresh_generated_at",
@@ -154,6 +160,17 @@ def _require_true(section: dict[str, Any], fields: list[str], *, section_name: s
         if section.get(field) is not True:
             return f"{section_name} missing or false: {field}"
     return None
+
+
+def _prompt_rendering_error(evidence: dict[str, Any]) -> str | None:
+    mode = evidence.get("prompt_rendering_mode")
+    required = PROMPT_CHECKS_BY_RENDERING_MODE.get(mode) if isinstance(mode, str) else None
+    if required is None:
+        return "prompt rendering mode missing or invalid"
+    checks = evidence.get("prompt_checks")
+    if not isinstance(checks, dict):
+        return "prompt_checks evidence missing"
+    return _require_true(checks, required, section_name="prompt_checks")
 
 
 def _freshness_error(evidence: dict[str, Any], *, max_age_seconds: int = 900) -> str | None:
@@ -327,6 +344,9 @@ def check_executor_context_pack_evidence(
     prompt_error = _require_true(prompt_checks, REQUIRED_PROMPT_CHECKS, section_name="prompt_checks")
     if prompt_error:
         return CheckResult("check_executor_context_pack_evidence", False, prompt_error)
+    rendering_error = _prompt_rendering_error(evidence)
+    if rendering_error:
+        return CheckResult("check_executor_context_pack_evidence", False, rendering_error)
     scope_checks = evidence.get("scope_checks")
     if not isinstance(scope_checks, dict):
         return CheckResult("check_executor_context_pack_evidence", False, "scope_checks evidence missing")

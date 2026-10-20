@@ -87,8 +87,8 @@ def context_pack_prompt_section(context_pack: dict[str, Any] | None) -> str:
     else:
         # Older snapshots without a manifest still have a bounded public summary.
         materials = context_pack.get("referenced_materials")
-        if isinstance(materials, dict) and not any(
-            type(materials.get(key)) is int and materials[key] > 0
+        if isinstance(materials, dict) and all(
+            type(materials.get(key)) is int and materials[key] == 0
             for key in ("file_count", "artifact_count", "memory_record_count")
         ):
             summary = ""

@@ -174,8 +174,8 @@ _EXECUTOR_CONTEXT_PACK_RUNTIME_ACCEPTANCE_CONTRACT = {
     "target": "controlled_worker_runtime",
     "generator_script": "scripts/generate_executor_context_pack_evidence.py",
     "verifier_script": "scripts/verify_executor_context_pack.py",
-    "source_probe_schema_version": "ai-platform.executor-context-pack-probe.v2",
-    "runtime_acceptance_schema_version": "ai-platform.executor-context-pack-runtime-acceptance.v2",
+    "source_probe_schema_version": "ai-platform.executor-context-pack-probe.v3",
+    "runtime_acceptance_schema_version": "ai-platform.executor-context-pack-runtime-acceptance.v3",
     "source_schema_version": "ai-platform.executor-context-pack.v1",
     "source_probe_evidence_strength": "source_probe_on_target_runtime",
     "required_runtime_evidence_strength": "observed_worker_dispatch_with_scoped_context_reconstruction",
@@ -202,13 +202,11 @@ _EXECUTOR_CONTEXT_PACK_RUNTIME_ACCEPTANCE_CONTRACT = {
         "context_snapshot_id_present",
         "scoped_context_snapshot_loaded",
         "worker_context_ref_rebuilt_from_db_snapshot",
-        "prompt_includes_bounded_summary",
-        "prompt_includes_context_pack_version",
-        "prompt_includes_context_pack_generated_at",
+        "prompt_rendering_contract_verified",
         "raw_storage_identifiers_absent",
         "sandbox_runtime_paths_absent",
         "executor_private_content_absent",
-        "long_term_memory_read_false",
+        "memory_read_flag_absent",
         "source_run_material_scope_tenant_workspace_user_session",
         "source_run_material_count_positive",
         "fresh_generated_at",
@@ -352,7 +350,7 @@ def _executor_context_evidence_summary(
     if evidence is None:
         return None
     if (
-        evidence.get("schema_version") != "ai-platform.executor-context-pack-runtime-acceptance.v2"
+        evidence.get("schema_version") != "ai-platform.executor-context-pack-runtime-acceptance.v3"
         or evidence.get("source_schema_version") != _EXECUTOR_CONTEXT_PACK_RUNTIME_ACCEPTANCE_CONTRACT[
             "source_schema_version"
         ]
@@ -368,15 +366,24 @@ def _executor_context_evidence_summary(
     if not isinstance(prompt_checks, dict) or not _all_true(
         prompt_checks,
         [
-            "bounded_summary_present",
-            "context_pack_version_present",
-            "context_pack_generated_at_present",
+            "generated_at_metadata_absent",
             "raw_storage_identifiers_absent",
             "sandbox_runtime_paths_absent",
             "executor_private_content_absent",
-            "long_term_memory_read_false",
+            "memory_read_flag_absent",
         ],
     ):
+        return None
+    rendering_mode = evidence.get("prompt_rendering_mode")
+    if not isinstance(rendering_mode, str):
+        return None
+    rendering_checks = {
+        "manifest_materials": ["manifest_refs_rendered", "safe_retrieval_tools_rendered",
+                               "manifest_summary_omitted", "manifest_audit_metadata_omitted"],
+        "legacy_bounded_summary": ["legacy_bounded_summary_present"],
+        "empty_materials": ["empty_material_section_omitted"],
+    }.get(rendering_mode)
+    if rendering_checks is None or not _all_true(prompt_checks, rendering_checks):
         return None
     scope_checks = evidence.get("scope_checks")
     if not isinstance(scope_checks, dict) or not _all_true(

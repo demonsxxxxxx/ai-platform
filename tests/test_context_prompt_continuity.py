@@ -628,3 +628,19 @@ async def test_sdk_runner_fails_closed_when_authorized_context_tool_registration
 
     assert result.used_sdk is True
     assert result.error == expected_error
+
+
+@pytest.mark.parametrize("materials", [
+    {}, {"message_count": 1}, {"file_count": 0},
+    {"file_count": None, "artifact_count": 0, "memory_record_count": 0},
+    {"file_count": False, "artifact_count": 0, "memory_record_count": 0},
+    {"file_count": "0", "artifact_count": 0, "memory_record_count": 0},
+    {"file_count": -1, "artifact_count": 0, "memory_record_count": 0},
+])
+def test_legacy_context_summary_preserves_unknown_material_counts(materials):
+    pack = {
+        "schema_version": "ai-platform.executor-context-pack.v1",
+        "prompt_summary": "Authorized legacy material summary.",
+        "referenced_materials": materials,
+    }
+    assert pack["prompt_summary"] in claude_prompts.context_pack_prompt_section(pack)

@@ -14,7 +14,7 @@ from app.office_context_readiness import (
 
 def _valid_executor_context_pack_evidence() -> dict:
     return {
-        "schema_version": "ai-platform.executor-context-pack-runtime-acceptance.v2",
+        "schema_version": "ai-platform.executor-context-pack-runtime-acceptance.v3",
         "source_schema_version": "ai-platform.executor-context-pack.v1",
         "run_id": "run_f417cf0ac1104d5884ed58e0f111fd00",
         "runtime_mode": "worker",
@@ -29,14 +29,17 @@ def _valid_executor_context_pack_evidence() -> dict:
             "app.executors.claude.prompts.build_skill_prompt",
             "app.bootstrap.context.worker_context_snapshot_ref_from_row",
         ],
+        "prompt_rendering_mode": "manifest_materials",
         "prompt_checks": {
-            "bounded_summary_present": True,
-            "context_pack_version_present": True,
-            "context_pack_generated_at_present": True,
+            "manifest_refs_rendered": True,
+            "safe_retrieval_tools_rendered": True,
+            "manifest_summary_omitted": True,
+            "manifest_audit_metadata_omitted": True,
+            "generated_at_metadata_absent": True,
             "raw_storage_identifiers_absent": True,
             "sandbox_runtime_paths_absent": True,
             "executor_private_content_absent": True,
-            "long_term_memory_read_false": True,
+            "memory_read_flag_absent": True,
         },
         "scope_checks": {
             "tenant_id_scoped": True,
@@ -72,13 +75,11 @@ def _valid_executor_context_pack_evidence() -> dict:
             "context_snapshot_id_present": True,
             "scoped_context_snapshot_loaded": True,
             "worker_context_ref_rebuilt_from_db_snapshot": True,
-            "prompt_includes_bounded_summary": True,
-            "prompt_includes_context_pack_version": True,
-            "prompt_includes_context_pack_generated_at": True,
+            "prompt_rendering_contract_verified": True,
             "raw_storage_identifiers_absent": True,
             "sandbox_runtime_paths_absent": True,
             "executor_private_content_absent": True,
-            "long_term_memory_read_false": True,
+            "memory_read_flag_absent": True,
             "source_run_material_scope_tenant_workspace_user_session": True,
             "source_run_material_count_positive": True,
             "fresh_generated_at": True,
@@ -454,8 +455,8 @@ def test_office_context_readiness_defines_safe_context_pack_contract_without_ena
         "target": "controlled_worker_runtime",
         "generator_script": "scripts/generate_executor_context_pack_evidence.py",
         "verifier_script": "scripts/verify_executor_context_pack.py",
-        "source_probe_schema_version": "ai-platform.executor-context-pack-probe.v2",
-        "runtime_acceptance_schema_version": "ai-platform.executor-context-pack-runtime-acceptance.v2",
+        "source_probe_schema_version": "ai-platform.executor-context-pack-probe.v3",
+        "runtime_acceptance_schema_version": "ai-platform.executor-context-pack-runtime-acceptance.v3",
         "source_schema_version": "ai-platform.executor-context-pack.v1",
         "source_probe_evidence_strength": "source_probe_on_target_runtime",
         "required_runtime_evidence_strength": "observed_worker_dispatch_with_scoped_context_reconstruction",
@@ -482,13 +483,11 @@ def test_office_context_readiness_defines_safe_context_pack_contract_without_ena
             "context_snapshot_id_present",
             "scoped_context_snapshot_loaded",
             "worker_context_ref_rebuilt_from_db_snapshot",
-            "prompt_includes_bounded_summary",
-            "prompt_includes_context_pack_version",
-            "prompt_includes_context_pack_generated_at",
+            "prompt_rendering_contract_verified",
             "raw_storage_identifiers_absent",
             "sandbox_runtime_paths_absent",
             "executor_private_content_absent",
-            "long_term_memory_read_false",
+            "memory_read_flag_absent",
             "source_run_material_scope_tenant_workspace_user_session",
             "source_run_material_count_positive",
             "fresh_generated_at",
@@ -1059,7 +1058,7 @@ def test_office_context_readiness_markdown_is_gap_first_and_operator_readable(tm
     assert "ai-platform.executor-context-pack-runtime-acceptance.v1" in markdown
     assert "app.context.infrastructure.snapshot_postgres.get_context_snapshot_for_worker" in markdown
     assert "app.context_builder.executor_context_pack_from_snapshot" in markdown
-    assert "prompt_includes_bounded_summary" in markdown
+    assert "prompt_rendering_contract_verified" in markdown
     assert "source_run_material_scope_tenant_workspace_user_session" in markdown
     assert "fresh_generated_at" in markdown
     assert "source_functions_bound_to_current_runtime" in markdown
@@ -1110,11 +1109,11 @@ def test_office_context_readiness_cli_outputs_json_without_secret_markers():
     ] is False
     assert payload["executor_context_pack_runtime_acceptance_contract"]["target"] == "controlled_worker_runtime"
     assert payload["executor_context_pack_runtime_acceptance_contract"]["source_probe_schema_version"] == (
-        "ai-platform.executor-context-pack-probe.v2"
+        "ai-platform.executor-context-pack-probe.v3"
     )
     assert payload["executor_context_pack_runtime_acceptance_contract"][
         "runtime_acceptance_schema_version"
-    ] == "ai-platform.executor-context-pack-runtime-acceptance.v2"
+    ] == "ai-platform.executor-context-pack-runtime-acceptance.v3"
     assert payload["executor_context_pack_runtime_acceptance_contract"]["source_schema_version"] == (
         "ai-platform.executor-context-pack.v1"
     )
@@ -1144,7 +1143,7 @@ def test_office_context_readiness_cli_outputs_json_without_secret_markers():
     assert payload["executor_context_pack_runtime_acceptance_contract"]["verifier_script"] == (
         "scripts/verify_executor_context_pack.py"
     )
-    assert "prompt_includes_bounded_summary" in payload[
+    assert "prompt_rendering_contract_verified" in payload[
         "executor_context_pack_runtime_acceptance_contract"
     ]["required_runtime_evidence"]
     assert "observed_worker_dispatch" in payload[
