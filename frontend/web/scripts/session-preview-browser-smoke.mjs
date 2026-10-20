@@ -146,6 +146,7 @@ try {
       const openDelete = async () => {
         await openSidebar();
         const row = `[...${sidebar}.querySelectorAll('[data-slot="thread-list-item"]')].find(e=>e.textContent.includes('Synthetic session a'))`;
+        await c.evaluate(`window.__sessionPreview.deleteAnchor = ${row}.querySelectorAll('button')[1]`);
         await click(`${row}.querySelectorAll('button')[1]`);
         if (viewport.mobile) {
           // SessionMenu intentionally renders a bottom Drawer with Buttons on mobile.
@@ -155,6 +156,7 @@ try {
           await click(remove);
         } else {
           await wait("Boolean(document.querySelector('[role=menuitem]'))", "session_menu");
+          await c.evaluate(`window.__sessionPreview.deleteMenuItem = [...document.querySelectorAll('[role=menuitem]')].find(e=>e.textContent.trim()===${quote(labels.common.delete)})`);
           await click(`[...document.querySelectorAll('[role=menuitem]')].find(e=>e.textContent.trim()===${quote(labels.common.delete)})`);
         }
         await wait(`document.querySelectorAll('[role=dialog]').length===1 && ${dialog}.textContent.includes(${quote(labels.sidebar.deleteSession)})`, "delete_dialog");
@@ -196,6 +198,13 @@ try {
       await noErrors();
       results.push({ theme, viewport, screenshots, measurements, status: "passed" });
     } catch (error) {
+      if (browser) measurements.failureUi = await browser.client.evaluate(`(() => {
+        const describe = element => element ? { tag: element.tagName, role: element.getAttribute('role'), text: element.textContent.slice(0, 120), title: element.getAttribute('title'), connected: element.isConnected } : null;
+        return { active: describe(document.activeElement), deleteAnchor: describe(window.__sessionPreview?.deleteAnchor), deleteMenuItem: describe(window.__sessionPreview?.deleteMenuItem), viewport: { width: innerWidth, height: innerHeight }, dialogs: [...document.querySelectorAll('[role=dialog]')].map(dialog => ({
+          text: dialog.textContent.slice(0, 160), animations: dialog.getAnimations({subtree:true}).map(a => ({state:a.playState, time:a.currentTime, iterations:a.effect?.getTiming().iterations, target:describe(a.effect?.target), targetClass:a.effect?.target?.getAttribute('class')})),
+          buttons: [...dialog.querySelectorAll('button')].map(button => { const r=button.getBoundingClientRect(); const hit=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2); return { ...describe(button), rect:r.toJSON(), withinHeight:r.top>=0 && r.bottom<=innerHeight, hit:describe(hit), ownsHit:button.contains(hit), disabled:button.disabled }; })
+        })) };
+      })()`).catch(diagnosticError => ({ error: String(diagnosticError) }));
       if (browser) screenshots.push(await captureScreenshot(browser.client, evidenceDir, `${prefix}-failed`).catch(() => "capture_failed"));
       failures.push({ theme, viewport, error: String(error), screenshots, measurements });
     } finally { if (browser) await browser.close(); }
