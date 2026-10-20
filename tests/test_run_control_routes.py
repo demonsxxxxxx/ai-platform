@@ -894,7 +894,7 @@ def test_copy_run_creates_new_queued_run(monkeypatch, enqueue_mode):
             finally:
                 transaction_active = False
 
-    async def fake_copy_run_as_new_task(conn, *, tenant_id, user_id, run_id):
+    async def fake_copy_run_as_new_task(conn, *, tenant_id, user_id, run_id, principal_department_ids=()):
         calls.append((tenant_id, user_id, run_id))
         return {
             "session_id": "ses_new",
@@ -1125,7 +1125,7 @@ def test_copy_run_rejects_when_user_active_run_limit_is_reached(monkeypatch):
 def test_retry_run_creates_queued_retry_from_failed_source(monkeypatch):
     calls = {"retry": [], "inherit": [], "enqueue": [], "step": [], "execution_snapshot": []}
 
-    async def fake_retry_run_as_new_task(conn, *, tenant_id, user_id, run_id):
+    async def fake_retry_run_as_new_task(conn, *, tenant_id, user_id, run_id, principal_department_ids=()):
         calls["retry_conn"] = conn
         calls["retry"].append((tenant_id, user_id, run_id))
         return {
@@ -1831,7 +1831,7 @@ def test_retry_run_returns_capability_not_authorized_for_stale_source_capability
         calls.append(("admit", tenant_id, user_id, limit))
         return 0
 
-    async def fake_retry_run_as_new_task(conn, *, tenant_id, user_id, run_id):
+    async def fake_retry_run_as_new_task(conn, *, tenant_id, user_id, run_id, principal_department_ids=()):
         calls.append(("retry", tenant_id, user_id, run_id))
         raise RepositoryNotFoundError("agent_or_skill_not_found")
 
@@ -1866,7 +1866,7 @@ def test_retry_run_rejects_non_retryable_source_without_enqueue(monkeypatch):
         calls.append(("admit", tenant_id, user_id, limit))
         return 0
 
-    async def fake_retry_run_as_new_task(conn, *, tenant_id, user_id, run_id):
+    async def fake_retry_run_as_new_task(conn, *, tenant_id, user_id, run_id, principal_department_ids=()):
         calls.append(("retry", tenant_id, user_id, run_id))
         raise RepositoryConflictError("status_not_retryable")
 
@@ -1993,7 +1993,7 @@ def test_retry_run_returns_not_found_without_enqueue(monkeypatch):
         calls.append(("admit", tenant_id, user_id, limit))
         return 0
 
-    async def fake_retry_run_as_new_task(conn, *, tenant_id, user_id, run_id):
+    async def fake_retry_run_as_new_task(conn, *, tenant_id, user_id, run_id, principal_department_ids=()):
         calls.append(("retry", tenant_id, user_id, run_id))
         return None
 
@@ -2030,7 +2030,7 @@ def test_resume_run_creates_queued_resume_from_checkpointed_source(monkeypatch):
         "order": [],
     }
 
-    async def fake_resume_run_as_new_task(conn, *, tenant_id, user_id, run_id):
+    async def fake_resume_run_as_new_task(conn, *, tenant_id, user_id, run_id, principal_department_ids=()):
         calls["resume_conn"] = conn
         calls["order"].append("resume")
         calls["resume"].append((tenant_id, user_id, run_id))
@@ -2182,7 +2182,7 @@ def test_resume_run_rejects_source_without_checkpoint_outputs(monkeypatch):
 
     calls = []
 
-    async def fake_resume_run_as_new_task(conn, *, tenant_id, user_id, run_id):
+    async def fake_resume_run_as_new_task(conn, *, tenant_id, user_id, run_id, principal_department_ids=()):
         calls.append(("resume", tenant_id, user_id, run_id))
         raise RepositoryConflictError("no_checkpoint_outputs")
 
@@ -4276,7 +4276,7 @@ async def test_resume_run_as_new_task_records_resume_events_and_audit(monkeypatc
             }
         }
 
-    async def fake_copy_run_as_new_task(conn, *, tenant_id, user_id, run_id):
+    async def fake_copy_run_as_new_task(conn, *, tenant_id, user_id, run_id, principal_department_ids=()):
         calls.append(("copy", tenant_id, user_id, run_id))
         return {
             "session_id": "ses-old",
@@ -4564,7 +4564,7 @@ async def test_retry_run_as_new_task_auth_snapshot_records_retry_events_and_audi
             "input_json": {"input": {"message": "retry"}},
         }
 
-    async def fake_copy_run_as_new_task(conn, *, tenant_id, user_id, run_id):
+    async def fake_copy_run_as_new_task(conn, *, tenant_id, user_id, run_id, principal_department_ids=()):
         return {
             "session_id": "ses-old",
             "run_id": "run-new",

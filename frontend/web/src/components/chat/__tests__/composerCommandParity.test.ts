@@ -351,7 +351,7 @@ test("composer first screen keeps slash and dollar commands typed-first", () => 
     "utf8",
   );
   const commandMenu = readFileSync(
-    join(root, "src/librechat-ui/CommandMenu.tsx"),
+    join(root, "src/components/chat/assistant-ui/elements/composer.tsx"),
     "utf8",
   );
   const zh = readFileSync(join(root, "src/i18n/locales/zh.json"), "utf8");
@@ -361,9 +361,9 @@ test("composer first screen keeps slash and dollar commands typed-first", () => 
   assert.doesNotMatch(chatInput, /handleComposerCommandShortcut/);
   assert.match(chatInput, /resolveComposerCommandDraft/);
   assert.match(chatInput, /resolveSlashCommandMenu/);
-  assert.match(slashMenu, /data-librechat-command-entrypoint="slash-menu"/);
+  assert.match(slashMenu, /<ComposerMenu/);
   assert.match(commandMenu, /data-composer-command-menu/);
-  assert.match(commandMenu, /data-librechat-command-menu/);
+  assert.match(commandMenu, /data-slot="composer-menu"/);
   assert.match(slashMenu, /commandAlias/);
   assert.match(slashMenu, /\$/);
   assert.match(zh, /输入 \//);
@@ -384,7 +384,7 @@ test("Agent workspaces disable composer commands without changing ordinary Chat"
   assert.match(chatInput, /disableSlashCommands = false/);
   assert.match(
     chatInput,
-    /if \(!disableSlashCommands && handleComposerCommandSubmit\(input\)\) return/,
+    /!disableSlashCommands && handleComposerCommandSubmit\(input\)/,
   );
   assert.match(chatInput, /if \(disableSlashCommands\) return false/);
   assert.match(
@@ -441,15 +441,15 @@ test("slash command menu is anchored outside the clipped textarea region", () =>
     "utf8",
   );
   const commandMenu = readFileSync(
-    join(root, "src/librechat-ui/CommandMenu.tsx"),
+    join(root, "src/components/chat/assistant-ui/elements/composer.tsx"),
     "utf8",
   );
 
   assert.match(chatInput, /data-composer-command-menu-anchor/);
   assert.match(chatInput, /<SlashCommandMenu/);
-  assert.match(slashMenu, /LibreChatCommandMenu/);
-  assert.match(commandMenu, /composer-command-surface/);
-  assert.match(commandMenu, /composer-command-list/);
+  assert.match(slashMenu, /ComposerMenu/);
+  assert.match(commandMenu, /PopoverPortal/);
+  assert.match(commandMenu, /PopoverPositioner/);
   assert.doesNotMatch(
     chatInput,
     /<div className="px-2\.5 pt-1">[\s\S]*?<SlashCommandMenu[\s\S]*?<\/div>[\s\S]*?<textarea/,
@@ -458,14 +458,14 @@ test("slash command menu is anchored outside the clipped textarea region", () =>
 
 test("composer styles and primitive keep only the governed command menu surface", () => {
   const styles = readFileSync(join(root, "src/styles/chat.css"), "utf8");
-  const composer = readFileSync(join(root, "src/librechat-ui/Composer.tsx"), "utf8");
+  const composer = readFileSync(join(root, "src/components/chat/assistant-ui/elements/composer.tsx"), "utf8");
   const featureMenu = readFileSync(
     join(root, "src/components/selectors/FeatureMenu.tsx"),
     "utf8",
   );
 
-  assert.match(styles, /\.composer-command-surface\s*\{/);
-  assert.match(styles, /\.composer-command-list\s*\{/);
+  assert.doesNotMatch(styles, /\.composer-command-surface\s*\{/);
+  assert.doesNotMatch(styles, /\.composer-command-list\s*\{/);
   assert.match(featureMenu, /<DropdownMenu/);
   assert.match(featureMenu, /type: "group", key: "enhance"/);
   assert.doesNotMatch(styles, /feature-menu-/);
@@ -509,11 +509,11 @@ test("composer workflow exposes stable browser smoke selectors for PRD evidence"
     "utf8",
   );
   const chipPrimitive = readFileSync(
-    join(root, "src/librechat-ui/Chips.tsx"),
+    join(root, "src/components/chat/assistant-ui/elements/composer-chips.tsx"),
     "utf8",
   );
   const composerPrimitive = readFileSync(
-    join(root, "src/librechat-ui/Composer.tsx"),
+    join(root, "src/components/chat/assistant-ui/elements/composer.tsx"),
     "utf8",
   );
   const slashMenu = readFileSync(
@@ -521,7 +521,7 @@ test("composer workflow exposes stable browser smoke selectors for PRD evidence"
     "utf8",
   );
   const commandMenu = readFileSync(
-    join(root, "src/librechat-ui/CommandMenu.tsx"),
+    join(root, "src/components/chat/assistant-ui/elements/composer.tsx"),
     "utf8",
   );
   const skillSelector = readFileSync(
@@ -537,9 +537,9 @@ test("composer workflow exposes stable browser smoke selectors for PRD evidence"
     "utf8",
   );
 
-  assert.match(slashMenu, /data-librechat-command-entrypoint="slash-menu"/);
+  assert.match(slashMenu, /<ComposerMenu/);
   assert.match(commandMenu, /data-composer-command-menu/);
-  assert.match(commandMenu, /data-composer-command-item=\{id\}/);
+  assert.match(slashMenu, /data-composer-command-item=\{item.command\}/);
   assert.match(skillSelector, /data-composer-skill-selector/);
   assert.match(skillSelector, /data-composer-skill-row=\{skill\.name\}/);
   assert.match(toolSelector, /data-composer-mcp-selector/);
@@ -553,8 +553,8 @@ test("composer workflow exposes stable browser smoke selectors for PRD evidence"
   assert.match(attachmentList, /data-composer-file-reference/);
   assert.match(attachmentList, /data-composer-file-state/);
   assert.match(chatInput, /data-composer-command-menu-anchor/);
-  assert.match(chatInput, /<LibreChatComposerRegion region="chips"[^>]*>/);
-  assert.match(composerPrimitive, /data-librechat-composer-region=\{region\}/);
+  assert.match(chatInput, /data-slot="composer-chips"/);
+  assert.match(composerPrimitive, /data-slot="composer-bar"/);
 });
 
 test("Chinese placeholders expose slash and dollar entry points", () => {

@@ -22,6 +22,9 @@ from app.conversations.infrastructure import (
     session_queries_postgres as conversations_session_queries,
 )
 from app.db import transaction
+from app.department_directory import (
+    DepartmentDirectoryError, fetch_department_directory, validate_distribution_department_authorities,
+)
 from app.identity.infrastructure import audit_postgres as identity_audit
 from app.identity.infrastructure import (
     capability_distributions_postgres as identity_capability_distributions,
@@ -289,6 +292,7 @@ def _capability_access_context(principal: AuthPrincipal) -> CapabilityAccessCont
     return CapabilityAccessContext(
         tenant_id=principal.tenant_id,
         department_id=principal.department_id,
+        department_ids=principal.department_ids,
         roles=principal.roles,
         is_admin=is_ai_admin(principal),
         permissions=principal.permissions,
@@ -592,6 +596,15 @@ async def _write_server(
         normalize_static_mcp_headers(request.headers, integration_kind=request.integration_kind)
     except McpRuntimeContextError as exc:
         raise _mcp_runtime_http_error(exc) from exc
+    department_ids: list[str] = []
+    if request.department_ids:
+        try:
+            department_ids = validate_distribution_department_authorities(
+                request.department_ids, await fetch_department_directory(),
+            )
+        except DepartmentDirectoryError as exc:
+            status_code = 422 if str(exc) == "capability_distribution_department_authority_invalid" else 503
+            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
     fingerprint = _credential_fingerprint(request)
     metadata = _credential_metadata(request)
     credential_state = "configured" if fingerprint else "not_configured"
@@ -631,7 +644,7 @@ async def _write_server(
                 endpoint_redacted="",
                 allowed_roles=request.allowed_roles,
                 role_quotas=_role_quotas_payload(request.role_quotas),
-                department_ids=request.department_ids,
+                department_ids=department_ids,
                 credential_state=credential_state,
                 credential_metadata=metadata,
                 credential_fingerprint=fingerprint,
@@ -652,7 +665,7 @@ async def _write_server(
                     if existing_distribution is not None
                     else "allowlist"
                 ),
-                department_ids=request.department_ids,
+                department_ids=department_ids,
                 allowed_roles=request.allowed_roles,
                 metadata_json=dict(
                     existing_distribution.get("metadata_json") or {}

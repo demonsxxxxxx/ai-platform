@@ -131,7 +131,7 @@ test("controlled selected-Skill editor sends the exact all/restricted payload", 
     status: "disabled" as const,
     visibleToUser: false,
     scopeMode: "allowlist" as const,
-    departmentIds: ["工程部", "质量部"],
+    departmentIds: ["101", "201"],
     allowedRoles: ["reviewer"],
     metadata: { source: "admin" },
   };
@@ -159,7 +159,7 @@ test("department selector renders authoritative multiselect semantics", () => {
     <ThemeProvider><LobeUiProvider><DepartmentDirectorySelector
       directory={[
         {
-          authorityId: "总部",
+          authorityId: "1",
           children: [],
           directoryId: "1",
           name: "总部",
@@ -170,7 +170,7 @@ test("department selector renders authoritative multiselect semantics", () => {
       ]}
       loadError={null}
       onChange={() => undefined}
-      selectedAuthorityIds={["总部"]}
+      selectedAuthorityIds={["1"]}
     /></LobeUiProvider></ThemeProvider>,
   );
 

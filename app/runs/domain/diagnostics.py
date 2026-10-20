@@ -64,6 +64,7 @@ def _normalize_execution_debug(value: object) -> dict[str, str | int]:
 
 
 _IDENTITY_PATTERN = re.compile(r"[A-Za-z0-9_.:-]{1,160}")
+_OBSERVATION_ID_PATTERN = re.compile(r"obs_[0-9a-f]{32}")
 _LOSS_FIELD_PATTERN = re.compile(r"[a-z][a-z0-9_.\[\]]{0,127}")
 _PRIVATE_KEY_PATTERN = re.compile(
     r"(?i)(?:api[_-]?key|authorization|bearer|cookie|credential|password|secret|token|"
@@ -221,8 +222,11 @@ def build_failure_observation(
             }
         )
     ).hexdigest()
+    failures = runtime_diagnostics["failure_observations"]
+    parent_id = failures[-1].get("observation_id") if failures else None
     return {
         "observation_id": f"obs_{digest[:32]}",
+        **({"parent_observation_id": parent_id} if parent_id else {}),
         "attempt_id": identity["attempt_id"] or None,
         "kind": "failure",
         "source": identity["source"],
@@ -758,6 +762,15 @@ def _sanitize_failure_observation(value: object) -> dict[str, Any] | None:
         "failure_source": _diagnostic_label(value.get("failure_source")),
         "failure_stage": _diagnostic_label(value.get("failure_stage")),
     }
+    for key in ("observation_id", "parent_observation_id"):
+        identity = value.get(key)
+        if isinstance(identity, str) and _OBSERVATION_ID_PATTERN.fullmatch(identity):
+            projected[key] = identity
+    if "parent_observation_id" in projected and (
+        "observation_id" not in projected
+        or projected["parent_observation_id"] == projected["observation_id"]
+    ):
+        projected.pop("parent_observation_id")
     exception = value.get("exception")
     if isinstance(exception, dict):
         exception_projection = {
@@ -864,7 +877,22 @@ def merge_run_diagnostics(
     observation_id = observation.get("observation_id")
     if any(item.get("observation_id") == observation_id for item in observations):
         return payload, False
-    observations.append(deepcopy(observation))
+    observation = deepcopy(observation)
+    if (observation.get("source") == "executor_reconciler"
+        and observation.get("stage") == "terminalization"
+        and not observation.get("parent_observation_id")):
+        receipts = [item for item in observations
+                    if item.get("source") in {"executor_callback", "executor_probe"}
+                    and item.get("stage") == "terminal_receipt"
+                    and item.get("attempt_id") == observation.get("attempt_id")
+                    and item.get("lease_id") == observation.get("lease_id")]
+        if observation.get("attempt_id") and len(receipts) == 1:
+            observation["parent_observation_id"] = receipts[0]["observation_id"]
+        else:
+            missing = next((int(loss.get("count") or 0) for loss in payload["losses"]
+                            if loss.get("reason") == "parent_observation_not_collected"), 0)
+            _upsert_budget_loss(payload, reason="parent_observation_not_collected", count=missing + 1)
+    observations.append(observation)
     omitted = int(payload["counts"].get("omitted_observations") or 0)
     if len(observations) > RUN_DIAGNOSTICS_OBSERVATION_LIMIT:
         del observations[1]
@@ -1019,7 +1047,10 @@ def _minimize_observation(
                 sdk_projection[key] = _bounded_utf8(
                     sdk_projection[key], max_bytes=max_bytes
                 )
-        retained_failures = []
+        retained_failures = [
+            {key: value for key, value in item.items() if key != "exception"}
+            for item in retained_failures if item.get("observation_id")
+        ]
     minimized = {
         "schema_version": evidence.get("schema_version"),
         "error_code": evidence.get("error_code"),

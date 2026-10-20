@@ -15,15 +15,15 @@ from app.department_directory import (
 from app.models import CapabilityDistributionAuthorityUpdateRequest
 
 
-def test_projects_pure_tree_and_disables_normalized_label_collisions():
+def test_projects_pure_tree_with_id_authority_despite_normalized_label_collisions():
     directory = normalize_department_directory(
         [
             {
-                "value": "1",
+                "value": "10",
                 "parentId": "1",
                 "label": "总部",
                 "children": [
-                    {"value": "2", "parentId": "1", "label": "Research", "children": []},
+                    {"value": "2", "parentId": "10", "label": "Research", "children": []},
                 ],
             },
             {
@@ -39,9 +39,9 @@ def test_projects_pure_tree_and_disables_normalized_label_collisions():
 
     assert [node.path for node in directory.departments] == ["总部", "分部"]
     duplicates = [directory.departments[0].children[0], directory.departments[1].children[0]]
-    assert [(node.selectable, node.reason) for node in duplicates] == [
-        (False, "duplicate_authority_id"),
-        (False, "duplicate_authority_id"),
+    assert [(node.authority_id, node.selectable, node.reason) for node in duplicates] == [
+        ("2", True, None),
+        ("4", True, None),
     ]
 
 
@@ -86,12 +86,12 @@ def test_rejects_non_pure_or_untrusted_nodes(payload):
 
 def test_fails_closed_at_node_and_depth_bounds():
     too_many = [
-        {"value": str(index + 1), "parentId": "1", "label": f"dept-{index}", "children": []}
+        {"value": str(index + 2), "parentId": "1", "label": f"dept-{index}", "children": []}
         for index in range(5_001)
     ]
-    root = {"value": "1", "parentId": "1", "label": "root", "children": []}
+    root = {"value": "2", "parentId": "1", "label": "root", "children": []}
     current = root
-    for depth in range(2, 14):
+    for depth in range(3, 15):
         child = {
             "value": str(depth),
             "parentId": str(depth - 1),
@@ -110,14 +110,14 @@ def test_fails_closed_at_node_and_depth_bounds():
 def test_authority_selection_accepts_only_exact_selectable_directory_values():
     directory = normalize_department_directory(
         [
-            {"value": "1", "parentId": "1", "label": "QA", "children": []},
+            {"value": "10", "parentId": "1", "label": "QA", "children": []},
             {"value": "2", "parentId": "1", "label": "Research", "children": []},
             {"value": "3", "parentId": "1", "label": "ＲＥＳＥＡＲＣＨ", "children": []},
         ]
     )
 
-    assert validate_distribution_department_authorities(["QA", "QA"], directory) == ["QA"]
-    for invalid in (["UNKNOWN"], ["Research"], ["\u0000"], [" QA"], ["QA\n"]):
+    assert validate_distribution_department_authorities(["10", "10", "2", "3"], directory) == ["10", "2", "3"]
+    for invalid in (["999"], ["QA"], ["Research"], ["\u0000"], [" 10"], ["10\n"]):
         with pytest.raises(
             DepartmentDirectoryError,
             match="capability_distribution_department_authority_invalid",

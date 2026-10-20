@@ -5,6 +5,10 @@ from app.sandbox.application.callback_authority import (
     SandboxCallbackAuthorityError as SandboxCallbackAuthorityError,
 )
 
+from app.sandbox.application.diagnostic_capture import (
+    capture_sdk_runtime_diagnostics as capture_sdk_runtime_diagnostics,
+)
+
 from app.sandbox.application.reconciliation_receipt import (
     SandboxReconciliationReceiptAuthority as SandboxReconciliationReceiptAuthority,
 )

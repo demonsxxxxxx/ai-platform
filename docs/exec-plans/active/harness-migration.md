@@ -3,14 +3,24 @@
 ## 0. 元信息
 
 - 项目 / 仓库：ai-platform
-- 分支 / 工作区：`harnessing`，独立工作区 `ai-platform-harnessing`；原 feature 分支未修改
-- 计划版本 / 日期：v1.4 / 2026-10-13（北京时间）
-- 状态：**B1/B2 设施候选已交付；补齐可复算suite范围与两个Runs CI入口，174用例关键域样本通过。完整范围处置/真实依赖、D5阈值、hook和独立review仍待验收，B3–B7未实施**
+- 分支 / 工作区：`fix/main-contract-convergence-20261019`，独立修复工作区；原 feature 工作区及其未提交改动保留
+- 计划版本 / 日期：v1.5 / 2026-10-19（北京时间）
+- 状态：**全范围修复已获授权；既有 B1/B2 设施已进入 main。本轮先补齐完整测试基线、D5 门槛和 hooks，再按前置条件推进 B3–B7；完成与验收分别记录。**
 - 施工图：`docs/HARNESS-RULES.md`（turn-project 版，保留全文）；固定母本与 MIT 归属见 [来源记录](../../references/harness-go.md)
-- 源码核对基线：起始 `origin/main`，`f519d041f1bb155a788278abfd5e07becebe1767`；仅表示固定源码来源，不证明部署状态
-- 证据范围：tracked 全仓机械库存、后端静态依赖图、B3–B5接口引用/有界合同比对、B1 85包OSV；B2 88设施回归、原132用例及扩展174用例coverage。当前330候选测试文件里86未见workflow字面引用、4仅node引用；PG/Redis必需探针7 skip且退出6，不能作通过。新增test依赖OSV刷新TLS超时；完整suite/Linux/Node漏洞/运行并发未验收。
-- 执行方式：原生只读 scout 五路启动均失败，用户已明确批准主会话接管本轮库存与文档；没有独立子代理审查证据。
-- 约束归属：施工流程采用 Harness 规则；产品架构、事务、公共投影和发布继续由 [文档 authority 索引](../../README.md) 指向的合同拥有。路径与术语的等价复用须在计划确认中说明，不另建平行架构权威。
+- 本轮修复基线：`main f853a8a8cdbc4542319d8c244cefad9fb54aaeec`。既有库存基线 `f519d041f1bb155a788278abfd5e07becebe1767` 的测量仍是历史样本，不证明本轮候选或部署状态。
+- 历史证据范围：2026-10-13 的 tracked 库存、依赖图、B3–B5 有界合同比对、B1 85 包 OSV、B2 88 设施回归及 132/174 用例 coverage 样本。当时 330 个候选测试文件中 86 个无 workflow 字面引用、4 个仅 node 引用；PG/Redis 探针 7 skip、exit 6，依赖审计刷新 TLS 超时。当前完整范围、真实依赖与门槛须重新测量，不能沿用这些数值作验收。
+- 执行方式：主会话单一 writer；只读 Scout 提供分域证据，主会话复核。高风险独立 review 和正式运行验收仍按现有流程取得，不由探查报告替代。
+- 约束归属：施工流程采用 Harness 规则；产品架构、事务、公共投影和发布继续由 [文档 authority 索引](../../README.md) 指向的合同拥有。路径与术语复用 §5.2 的现有 owner，不另建平行架构权威。
+
+### 2026-10-19 已确认的修复范围与政策
+
+- 范围包含 Runtime GET 只读、文档对齐、决策记录与 DingTalk 部门方案集成，以及完整 RunAttempt 迁移、保留策略、诊断 PRD 和 Harness B3–B7。各自详细产品契约继续由现有 owner 维护。
+- 已认证根路径和登录默认入口保留 `/apps`；裸 `/chat` 进入专家市场。移除项目的 fake provider“仅供测试”规则，不新增环境禁令；已有要求真实 Sandbox 的执行边界保持。
+- 五类保留配置默认仍为 `0`。配置非零时，只清理到期、已退役且没有有效引用的数据；保留可查看会话历史、可重放 Run 的依赖和关联审计。阻断原因须可见，文件对象继续走现有删除 outbox；本轮不启用真实数据清理。
+- D5 以完整实际测试范围和真实依赖基线为前置。整体及现有高风险 owner 域的 statement/branch coverage 不得回退；新文件大小上限由实际规模测量确定并记录依据，不从历史局部样本推定，不放宽既有门禁。
+- 交付版本化 pre-commit 快速静态/文档检查与 pre-push 受影响检查；完整验证仍由 CI 负责。仅在隔离工作区验证，不修改全局 Git 或原工作区配置。
+- 普通任务沿用 PR/ADR/契约记录；本专项继续使用本计划和既定阶段验收。先完成完整范围与保护，再做事务/身份/删除迁移；每批更新 caller、测试、selector 和退役处置。
+- 实现与验证之后，用户已授权提交当前候选、推送修复分支并创建 PR；未完成验收的候选以草稿交付。授权不包含合并或部署。源码、CI、测试包与正式环境证据分别记录；正式发布仍须单独授权。
 
 ## 1. 项目概况
 
@@ -211,6 +221,8 @@ T9 的自动坏链接反例与作者触发修复在 B2 候选中已落实；T10 
 
 ### 5.3 本轮门禁核验结果与具体未闭环项
 
+本节记录 2026-10-13 B2 批次的观测及当时缺口；本轮授权和执行顺序以 §0、§6 为准。
+
 证据在 f519d041 固定环境下取得：code/architecture 173 用例、risk baseline 104 用例及 measurement/source-authority 21 用例，均 0 失败/跳过。Ruff 检查新增分析脚本/测试通过；生成库存可重复复算。它们只覆盖各自 selector，不等于阶段 3/5 全部通过。
 
 | 要求 | 当前处置 | 进入后续步骤的具体条件 |
@@ -230,6 +242,8 @@ T9 的自动坏链接反例与作者触发修复在 B2 候选中已落实；T10 
 
 ### 5.4 B2 变更合同与观测限制
 
+本节保留 2026-10-13 批次的变更与授权边界，不授予本轮提交、推送或部署权限。
+
 - Owner：repository documentation 与 local-test-stage；达到 backend preflight/required 边界，执行现有高风险 CI review 合同。
 - Change：文档 detector 检查真实 rendered Markdown、本地 link/anchor；状态/导航说明不设固定字段、行号或索引门禁；coverage 是 runner 显式可选项，默认行为/v1 envelope 不变。只在 test extra 增加 pytest-cov/coverage（tomli 带 Python 版本 marker），已有包版本不升级。
 - Invariants：显式 selector、worktree lock、PYTEST_* 净化、stage deadline、Windows Job、原始失败/skip/timeout 分类保持。Coverage 清理自己的控制环境、使用 stage-owned config/data/report，完整 app 文件分母、Python source 前后 digest 和报告摘要绑定证据。无效/缺失/缺源范围的报告不能把测试绿转成成功证据。
@@ -240,6 +254,8 @@ T9 的自动坏链接反例与作者触发修复在 B2 候选中已落实；T10 
 
 ### 5.5 完整suite前置核验与局部补采
 
+本节是 2026-10-13 的固定来源记录；当前候选须重新取得完整范围与实测基线。
+
 - 范围：新增inventory复用已有PyYAML，只读取workflow的run/test_files字面引用并记录摘要；不会执行candidate命令、动态解析测试或新增trusted gate。当前328 tracked +2本轮新增测试，244有字面引用、86待处置、4仅node引用；完整清单在generated JSON，不能将八分片称完整330文件suite。
 - 具体修复：已核对test_run_lifecycle.py的7个独立测试及test_run_lifecycle_postgres.py的6个recording-connection测试，将两文件放入既有run-control-contracts分片，更新owning assertion。MemoryPersistence/service的间接复用未被误算作这7个测试已执行；postgres文件名未被误算为真实DB集成。
 - 必需依赖：Docker/WSL/PG/Redis命令不在PATH、测试DSN/URL未配、常用本地端口关闭。实际PG terminal-order + Redis v4节点因缺配置产生7skip，runner返回exit6/required_dependency_missing。既有CI声明PG16/Redis7.4不能代替本轮实际结果；本轮未访问远程或安装OS设施。
@@ -247,16 +263,31 @@ T9 的自动坏链接反例与作者触发修复在 B2 候选中已落实；T10 
 - D5退出条件：86文件与4个node-only范围逐项核对现行消费者/责任，给出真实required lane或有证明的retirement/acceptance owner；供应隔离的真实依赖和平台条件，按同runner/no-skip采完整约定并集，再决定阈值及阻断反例。不能靠永久deselect、假provider或目录名称使候选“全绿”。
 - 兼容/风险：无删除生产/CLI/测试/selector，只扩大两个已确认的CI入口并增加库存字段；source envelope保留，独立review/GitHub CI未观测。原始执行证据归runner，不复制台账；三轮全量与B3–B5依然pending。
 
+### 5.6 2026-10-19 当前实现与验收缺口
+
+- 2026-10-20 同步 main 后，候选库存为 348 个 Python 测试文件。所有文件在既有 Linux 分片、Agent/Skill 或前端 Python 合同中各有一个完整文件 owner；Windows 平台节点另行补充。库存缺失、重复或只选择部分 node 会被 workflow 回归拒绝。PR #1850 的 CI 已启动，完整结果待实际验收。
+- f853 app 源码的完整 Linux 选择范围已执行，结果与 owner 覆盖率见 [当前测量](../../QUALITY_SCORE.md#2026-10-19-full-linux-selection-observation)。12 个平台/真实 Sandbox 跳过仍逐项处置；原始失败已通过同输入 fixture/tool 修复重跑，不能当作 untouched-main 全绿。
+- T1 已按 f853 的实际文件规模采用新生产代码文件 800 行上限；现有冻结文件不增长和受信 authority 保持。T2 已实现差异范围内可识别标准 logger 的窄结构化检测，保留未改日志及既有安全适配器；不是全仓日志格式迁移。两者的正反例及既有治理测试已通过；使用最终 Windows runner 的 architecture/code/source-authority 合组为 219 passed、0 skipped。
+- 版本化 hooks 已交付精确 staged/pushed 快照检查，测试在临时仓库执行；无全局或原工作区 Git 配置修改。Windows 深临时路径问题经最小用例 red→green 修复，完整 runner 回归及 Foundation 用例通过。
+- 候选全量首次为 10632 passed、58 failed、12 skipped。部门数字 authority fixture、replay mock 签名、Linux hook fixture 符号链接和旧 README 断言已修正；本地 12 文件回归为 824 passed、1 个 hook fixture 失败，修复后 hook 9 项复测通过。该证据不替代候选 Linux 全量重跑。
+- 真实 OpenSandbox 凭据隔离仍未运行：独立 root 临时环境授权已取消。随后 SSH 用户更新测试目录被 UID 所有权拒绝，使用既有测试 UID 更新的授权也被取消；不继续写该远端副本或启动补测。本地独立工作继续。
+- D5 的完整基线验收、覆盖率可信比较/阻断、整批独立审查与三轮全量仍未完成；B3–B5 事务/身份及保留策略删除迁移继续遵守前置条件。诊断 D09 已把三个离线报告及调用链迁入工具。
+- 诊断父观察链已实现 SDK/Executor 首次捕获、callback/probe receipt 与同 Attempt/lease 调和关联、管理 HTTP/ZIP 保留、旧记录只读兼容及预算保护。独立审查发现的三个 P1 均经 red→green 修复并复核；最新 SDK/reconciler/诊断/HTTP 四文件 435 passed、0 skipped，前端 Run Monitor 36 passed，构建及浅深色桌面/390px 四个真实浏览器合成场景通过。Windows 仍有四个 owning 符号链接用例因权限跳过；新链路的真实 PostgreSQL 验收未执行。
+- 派发版本快照已定位到 Docker 构建标记、运行时配置和既有 accepted reconciliation context，尚未接入新的 Run/Attempt 持久快照与查询；该持久化接缝随 D5 前置恢复后推进。真实 PostgreSQL 故障链、20 并发诊断详情/ZIP 性能及完整诊断 PRD 验收仍待完成。
+
 ## 6. 待人工决策清单
 
-| 编号 | 问题 | 为什么需要人判断 | 影响范围 |
-|---|---|---|---|
-| D1 | 本轮库存/文档与既有 owning 合同的等价导航已获继续授权；落实见 §5.2 | 后续新增阻断策略/行为迁移仍须遵守既有 review 和先决条件 | 当前批准覆盖 B1/门禁核验，不授权提交、部署或跳过审查 |
-| D3 | 已撤销：当前 ProfileDrive 读取与总时限均已实现 | 原抽样来自旧源码；以后只按具体失败场景立项 | 无新增可靠性修改 |
-| D4 | latency_ms 与现行 terminal timing 是否仍有未满足的观测需求 | 先核对当前指标，再决定是否新增，避免重复 | 可选独立任务 |
-| D5 | 新文件大小及整体/关键域 coverage 阈值 | 有界样本完整app分母；330候选测试中86待处置、4node-only，真实PG/Redis探针exit6；先明确完整范围/环境再设门槛 | 阶段3，pending，退出条件§5.5 |
+范围与政策已按 2026-10-19 的确认更新；剩余实测数值和验收条件分别列明。
 
-原 D2 已撤销：固定历史链接目标存在且已标记历史，不要求再次决定删除。其余尚未确认的范围/阈值保持 pending，不能用本次文档修订当作五阶段实施批准。
+| 编号 | 问题 | 当前决定 | 影响范围 |
+|---|---|---|---|
+| D1 | 完整改造范围与现有合同映射 | 2026-10-19 已授权完成本计划及关联修复；复用 §5.2 的 owner，阶段前置和独立审查保持 | 实现与验证，以及随后获准的当前候选提交、推送和草稿 PR；不授权合并或部署 |
+| D3 | 已撤销：当前 ProfileDrive 读取与总时限均已实现 | 原抽样来自旧源码；以后只按具体失败场景立项 | 无新增可靠性修改 |
+| D4 | latency_ms 与现行 terminal timing 的观测需求 | 按现有诊断 PRD 的字段、单位、缺失及性能目标核验，不另建一套指标 | 诊断 owning 实现与验收 |
+| D5 | 新文件大小及整体/关键域 coverage 门槛 | 已批准完整实测基线不回退；新生产文件 800 行上限已按 f853 规模确定。完整 coverage 验收与可信阻断仍待完成 | 阶段 3；旧 330/86/4 库存与局部百分比不得当作新基线 |
+| D6 | 本地 hooks | 版本化 pre-commit 快速静态/文档及 pre-push 受影响检查已实现并在临时仓库验证；CI 保留完整验证 | 隔离工作区验证；不改全局 Git 或原工作区 |
+
+原 D2 已撤销：固定历史链接目标存在且已标记历史。范围与政策已确认；实际基线、阈值正反例和阶段完成证据仍须取得，不能以授权代替验收。
 
 ## 7. 进度与决策日志
 

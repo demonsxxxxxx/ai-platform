@@ -112,7 +112,7 @@ export function MCPPanel() {
   } = useMCP({
     enabled: isAuthenticated,
     paused: authLoading,
-    identityScope: JSON.stringify([user?.tenant_id, user?.id, user?.roles, user?.permissions, user?.is_admin, user?.department_id, authorityRevision]),
+    identityScope: JSON.stringify([user?.tenant_id, user?.id, user?.roles, user?.permissions, user?.is_admin, user?.department_id, user?.department_ids, user?.department_authority_status, authorityRevision]),
     listParams,
     allAuthorizedCatalog: !isAiAdmin,
     canManageServers: canManageMcp,
