@@ -147,25 +147,33 @@ try {
         await openSidebar();
         const row = `[...${sidebar}.querySelectorAll('[data-slot="thread-list-item"]')].find(e=>e.textContent.includes('Synthetic session a'))`;
         await click(`${row}.querySelectorAll('button')[1]`);
-        await wait("Boolean(document.querySelector('[role=menuitem]'))", "session_menu");
-        await click(`[...document.querySelectorAll('[role=menuitem]')].find(e=>e.textContent.trim()===${quote(labels.common.delete)})`);
-        await wait(`Boolean(${dialog})`, "delete_dialog");
+        if (viewport.mobile) {
+          // SessionMenu intentionally renders a bottom Drawer with Buttons on mobile.
+          await wait(`Boolean(${dialog}) && ${dialog}.textContent.includes(${quote(labels.sidebar.sessionOptions)})`, "session_actions_drawer");
+          const remove = buttonText(labels.common.delete, dialog);
+          await wait(`(() => { const e=${remove}; if (!e) return false; const r=e.getBoundingClientRect(); return r.top>=0 && r.bottom<=innerHeight && e.contains(document.elementFromPoint(r.left+r.width/2,r.top+r.height/2)) && ${dialog}.getAnimations({subtree:true}).every(a=>a.playState!=='running'); })()`, "session_actions_drawer_ready");
+          await click(remove);
+        } else {
+          await wait("Boolean(document.querySelector('[role=menuitem]'))", "session_menu");
+          await click(`[...document.querySelectorAll('[role=menuitem]')].find(e=>e.textContent.trim()===${quote(labels.common.delete)})`);
+        }
+        await wait(`document.querySelectorAll('[role=dialog]').length===1 && ${dialog}.textContent.includes(${quote(labels.sidebar.deleteSession)})`, "delete_dialog");
         await assert(contained, "delete_portal_contained");
       };
       await openDelete();
       await screenshot("delete-confirm");
       await wait(`document.activeElement === ${buttonText(labels.common.delete, dialog)}`, "delete_initial_focus");
       await key("Tab", "Tab", 9);
-      await assert(`document.activeElement === ${buttonText(labels.common.cancel, dialog)}`, "delete_forward_wrap");
+      await wait(`document.activeElement === ${buttonText(labels.common.cancel, dialog)}`, "delete_forward_wrap");
       await key("Tab", "Tab", 9);
-      await assert(`document.activeElement === ${buttonText(labels.common.delete, dialog)}`, "delete_forward_cycle");
+      await wait(`document.activeElement === ${buttonText(labels.common.delete, dialog)}`, "delete_forward_cycle");
       await key("Tab", "Tab", 9, 8);
-      await assert(`document.activeElement === ${buttonText(labels.common.cancel, dialog)}`, "delete_reverse_step");
+      await wait(`document.activeElement === ${buttonText(labels.common.cancel, dialog)}`, "delete_reverse_step");
       await key("Tab", "Tab", 9, 8);
-      await assert(`document.activeElement === ${buttonText(labels.common.delete, dialog)}`, "delete_reverse_wrap");
+      await wait(`document.activeElement === ${buttonText(labels.common.delete, dialog)}`, "delete_reverse_wrap");
       await key("Escape", "Escape", 27);
       await wait(`!${dialog}`, "delete_cancel");
-      if (!viewport.mobile) await assert(`${sidebar}.contains(document.activeElement)`, "delete_focus_restored_to_sidebar");
+      if (!viewport.mobile) await wait(`${sidebar}.contains(document.activeElement)`, "delete_focus_restored_to_sidebar");
       await assert("window.__sessionPreview.deletions.length===0 && window.__sessionPreview.removed.length===0", "cancel_has_no_delete_effect");
       await openDelete();
       await click(buttonText(labels.common.delete, dialog));
