@@ -36,19 +36,21 @@ test("retired UI modules, test filename and direct dependencies stay absent", ()
     assert.equal(manifest.optionalDependencies?.[dependency], undefined, dependency);
   }
   const controlsCss = readFileSync(join(root, "styles/components.css"), "utf8");
-  assert.doesNotMatch(controlsCss, /pagination-(?:wrapper|controls|btn|page|ellipsis)|enterprise-select-|es-select-btn/);
+  assert.doesNotMatch(controlsCss, /pagination-(?:wrapper|controls|btn|page|ellipsis)|enterprise-select-|es-select-btn|btn-(?:icon|secondary|danger)|enterprise-(?:form-(?:input|textarea)|(?:danger-)?icon-button)/);
+  assert.doesNotMatch(controlsCss, /editor-sidebar-close-btn/);
   assert.doesNotMatch(readFileSync(join(root, "styles/skill.css"), "utf8"), /@keyframes check-pop/);
 });
 
 test("active table/select consumers use Lobe UI and retain document-renderer semantics", () => {
   const root = join(process.cwd(), "src");
   const rendererTables = new Set([
-    join(root, "components/chat/ChatMessage/MarkdownContent.tsx"),
+    join(root, "components/chat/ChatMessage/MarkdownRenderer.tsx"),
     join(root, "components/documents/previews/ExcelPreview.tsx"),
   ]);
   for (const path of sourceFiles(root)) {
     const source = readFileSync(path, "utf8");
     assert.doesNotMatch(source, /<(?:select|option)\b/, path);
+    assert.doesNotMatch(source, /\b(?:btn-(?:icon|secondary|danger)|enterprise-(?:form-(?:input|textarea)|(?:danger-)?icon-button))\b/, path);
     assert.doesNotMatch(source, /from\s+["'][^"']*\/common\/(?:EnterpriseSelect|Checkbox|Table|Pagination|LoadingSpinner)["']/, path);
     if (rendererTables.has(path)) {
       assert.match(source, /<th\b[^>]*scope="col"/, path);
@@ -60,7 +62,6 @@ test("active table/select consumers use Lobe UI and retain document-renderer sem
     "components/panels/MCPPanel.tsx",
     "components/panels/ModelAdminControl.tsx",
     "components/panels/RunMonitorPanel.tsx",
-    "components/panels/RunInvestigationTimeline.tsx",
     "components/panels/RunPerformanceSummary.tsx",
     "components/panels/SkillsPanel/SkillManagementTable.tsx",
     "components/selectors/ToolSelector.tsx",
@@ -73,5 +74,5 @@ test("active table/select consumers use Lobe UI and retain document-renderer sem
     assert.match(source, /columns=\{/, owner);
   }
   assert.equal(existsSync(join(root, "components/documents/previews/MermaidDiagram.tsx")), false);
-  assert.match(readFileSync(join(root, "components/documents/previews/MarkdownRenderer.tsx"), "utf8"), /MarkdownContent/);
+  assert.match(readFileSync(join(root, "components/documents/previews/MarkdownRenderer.tsx"), "utf8"), /ChatMarkdownRenderer/);
 });

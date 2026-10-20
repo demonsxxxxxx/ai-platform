@@ -21,7 +21,6 @@ import { APP_TOASTER_CLASS_NAME } from "./components/layout/AppContent/appToastL
 import { useAuth } from "./hooks/useAuth";
 import type { TabType } from "./components/layout/AppContent/types";
 import { APP_ROUTE_PATHS } from "./appRouteManifest";
-import { ChatRouteBoundary } from "./components/common/ChatRouteBoundary";
 
 const OAuthCallback = lazy(() =>
   import("./components/auth/OAuthCallback").then((m) => ({
@@ -84,10 +83,10 @@ function ChatPageSEO() {
 // Chat Page Component
 function ChatPage() {
   return (
-    <ChatRouteBoundary>
+    <>
       <ChatPageSEO />
       <AppContent key="chat" activeTab="chat" />
-    </ChatRouteBoundary>
+    </>
   );
 }
 

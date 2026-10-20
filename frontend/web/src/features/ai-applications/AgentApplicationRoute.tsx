@@ -14,6 +14,7 @@ import {
   X,
 } from "lucide-react";
 
+import { ConfirmDialog } from "../../components/common/ConfirmDialog";
 import { APP_ROUTE_PATHS } from "../../appRouteManifest";
 import { useAuth } from "../../hooks/useAuth";
 import { BROWSER_AUTH_INCARCINATION_EVENT, getBrowserAuthIncarnation } from "../../hooks/browserAuthCoordinator";
@@ -837,7 +838,7 @@ function useWordReviewController(workId: string, tenantId: string) {
     });
   };
 
-  const submitCancellation = async (localId: string, taskId: string) => {
+  const submitCancellation = async (localId: string, taskId: string): Promise<void> => {
     if (!ownsTask(localId) || !runningTaskOwnersRef.current.has(localId) || !taskId || cancelSubmittedRef.current.has(localId)) return;
     const runOwner = runningTaskOwnersRef.current.get(localId);
     if (runOwner?.taskId !== taskId) return;
@@ -848,6 +849,8 @@ function useWordReviewController(workId: string, tenantId: string) {
       if (!ownsTask(localId) || runningTaskOwnersRef.current.get(localId) !== runOwner) return;
       if (runOwner.taskId !== taskId) {
         cancelSubmittedRef.current.delete(localId);
+        // Forward the active intent without waiting for another stream event.
+        if (cancelRequestedRef.current.has(localId)) return submitCancellation(localId, runOwner.taskId);
         return;
       }
       const status = String(record.status || "").toLowerCase();
@@ -859,6 +862,8 @@ function useWordReviewController(workId: string, tenantId: string) {
       if (!ownsTask(localId) || runningTaskOwnersRef.current.get(localId) !== runOwner) return;
       if (runOwner.taskId !== taskId) {
         cancelSubmittedRef.current.delete(localId);
+        // Forward the active intent without waiting for another stream event.
+        if (cancelRequestedRef.current.has(localId)) return submitCancellation(localId, runOwner.taskId);
         return;
       }
       cancelSubmittedRef.current.delete(localId);
@@ -1036,7 +1041,6 @@ function useWordReviewController(workId: string, tenantId: string) {
 
   const cancelTask = async (task: WordReviewTask) => {
     if (!task || !ownsTask(task.localId) || !["queued", "running"].includes(task.status)) return;
-    if (!window.confirm("确认中断该任务？已进入执行中的任务会在服务端可中断点停止。")) return;
     const runOwner = runningTaskOwnersRef.current.get(task.localId);
     if (!runOwner) return;
     const taskId = runOwner.taskId;
@@ -1178,6 +1182,8 @@ function WordReviewApplication() {
     setHistoryPage,
   } = useWordReviewController(workId, tenantId);
   const [activeTab, setActiveTab] = useState<"current" | "history">("current");
+  const [cancelTargetId, setCancelTargetId] = useState<string | null>(null);
+  const cancelTarget = tasks.find((task) => task.localId === cancelTargetId && ["queued", "running"].includes(task.status));
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploading = tasks.some((task) => task.status === "uploading");
   const isLoading = tasks.some((task) => ["queued", "running"].includes(task.status));
@@ -1237,7 +1243,7 @@ function WordReviewApplication() {
 
         <section className="review-workbench">
           <div className="upload-panel">
-            <div className="panel-header">
+            <div className="review-panel-header">
               <div>
                 <h2>新建审核任务</h2>
                 <p>上传需要审核的 Word 文档</p>
@@ -1334,7 +1340,7 @@ function WordReviewApplication() {
           </div>
 
           <TabsRoot className="task-panel" value={activeTab} onValueChange={(value) => setActiveTab(value as typeof activeTab)}>
-            <div className="panel-header">
+            <div className="review-panel-header">
               <div>
                 <h2>处理记录</h2>
                 <span className="panel-subtitle">共 {tasks.length} 条审核记录</span>
@@ -1404,7 +1410,7 @@ function WordReviewApplication() {
                       <div className="task-actions">
                         {task.status === "ready" && <Button type="primary" size="small" htmlType="button" onClick={() => void runReview(task)}><Play size={13} />开始审核</Button>}
                         {(["failed", "timeout"].includes(task.status) && task.fileId) && <Button type="default" size="small" htmlType="button" onClick={() => void runReview(task)}><RotateCcw size={13} />重试</Button>}
-                        {["queued", "running"].includes(task.status) && <Button type="default" size="small" htmlType="button" onClick={() => void cancelTask(task)}><X size={13} />中断任务</Button>}
+                        {["queued", "running"].includes(task.status) && <Button type="default" size="small" htmlType="button" onClick={() => setCancelTargetId(task.localId)}><X size={13} />中断任务</Button>}
                         <Button type="default" size="small" htmlType="button" onClick={() => removeTask(task)} disabled={["uploading", "queued", "running"].includes(task.status)}><X size={13} />移除</Button>
                       </div>
                     </article>
@@ -1464,6 +1470,17 @@ function WordReviewApplication() {
             </TabsPanel>
           </TabsRoot>
         </section>
+        <ConfirmDialog
+          isOpen={Boolean(cancelTarget)}
+          title="中断审核任务"
+          message="确认中断该任务？已进入执行中的任务会在服务端可中断点停止。"
+          confirmText="确认中断"
+          onCancel={() => setCancelTargetId(null)}
+          onConfirm={() => {
+            setCancelTargetId(null);
+            if (cancelTarget) void cancelTask(cancelTarget);
+          }}
+        />
       </div>
     </AppFrame>
   );

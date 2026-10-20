@@ -95,7 +95,7 @@ function TextInput({
       onChange={(event) => onChange(event.target.value)}
       placeholder={placeholder}
       disabled={disabled}
-      className="enterprise-form-input"
+      size="large"
     />
   );
 }
@@ -157,12 +157,11 @@ function MemoryRecordRow({
           <Button type="text"
             htmlType="button"
             aria-label={t("memory.workbench.deleteRecord")}
-            className="btn-icon inline-flex h-9 w-9 items-center justify-center rounded-lg text-red-500 transition hover:bg-red-50 dark:hover:bg-red-500/10"
+            className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-red-500 transition hover:bg-red-50 dark:hover:bg-red-500/10"
             onClick={() => onDelete(record.memory_record_id)}
             title={t("common.delete")}
-          >
-            <Trash2 size={15} />
-          </Button>
+            icon={<Trash2 size={15} />}
+          />
         )}
       </div>
       {record.content && (
@@ -760,7 +759,7 @@ export function MemoryPanel() {
                       setRetentionDays(Math.max(1, Math.min(3650, next)));
                     }
                   }}
-                  className="enterprise-form-input"
+                  size="large"
                 />
               </FieldLabel>
 

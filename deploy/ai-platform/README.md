@@ -92,7 +92,16 @@ The configuration must be owned by the invoking user. If that user requires
 sudo for Docker, use `--docker-cmd 'sudo -n docker'`; do not run the entire
 entry as another user against a differently owned configuration.
 
-For ProfileDrive HTTPS file imports with a private CA, set
+ProfileDrive imports use HTTPS by default. Only a test installation may set
+`PROFILE_DRIVE_TRANSFER_ALLOW_INSECURE_HTTP=true` to reach a plain-HTTP
+connector such as `http://profile-drive-mcp:5201`; deployment then warns and
+proceeds, and application configuration alone rejects HTTP while the flag stays
+false. That path sends the invoking user's company JWT and the file bytes
+unencrypted. Configure the API to use the Docker-network service address, not
+an endpoint reached through a host-published port; leave the flag false in
+production. The separate
+`--allow-insecure-http` deployment flag acknowledges browser-origin and cookie
+exposure only; it grants no ProfileDrive HTTP transfer. With HTTPS retained, set
 `PROFILE_DRIVE_TRANSFER_CA_CERT_HOST_FILE` to an absolute, readable host path
 containing only the trusted public CA certificate and set
 `PROFILE_DRIVE_TRANSFER_CA_CERT_FILE` to its target path inside the API container.

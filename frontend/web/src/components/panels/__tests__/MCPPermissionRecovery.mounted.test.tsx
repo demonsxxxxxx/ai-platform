@@ -27,7 +27,9 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 function principal(id = "user-a", roles = ["admin"]): User {
-  return { id, tenant_id: "tenant-test", username: id, email: "synthetic@example.test", roles, permissions: [], is_active: true, created_at: "", updated_at: "" };
+  return { id, tenant_id: "tenant-test", department_id: "110", direct_department_ids: ["110"],
+    department_ids: ["100", "110"], department_authority_status: "available",
+    username: id, email: "synthetic@example.test", roles, permissions: [], is_active: true, created_at: "", updated_at: "" };
 }
 function json(value: unknown, status = 200) { return new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } }); }
 async function click(node: HTMLButtonElement) { await act(async () => { node.click(); }); }
@@ -94,6 +96,32 @@ test("administrator sees discovered tools and can inspect their public descripti
     await act(async () => { await new Promise(requestAnimationFrame); });
     assert.equal(document.querySelector("[data-mcp-tool-detail]"), null);
     assert.ok(document.activeElement === trigger, "closing restores the tools trigger focus");
+  } finally { await view.close(); }
+});
+
+test("administrator can disable and restore a server with clear enable state", async () => {
+  let enabled = true;
+  const view = await harness(createElement(MCPPanel), ({ init }) => {
+    if (init.method === "PATCH") {
+      enabled = !enabled;
+      return json({ server: { ...server, enabled }, message: "updated" });
+    }
+    return json({ servers: [{ ...server, enabled }], total: 1, skip: 0, limit: 20 });
+  });
+  try {
+    const toggle = () => view.container.querySelector<HTMLButtonElement>("[data-mcp-admin-toggle]")!;
+    assert.equal(toggle().getAttribute("aria-pressed"), "true");
+    assert.ok(toggle().querySelector("svg")!.classList.contains("text-[var(--theme-success)]"));
+    await click(toggle());
+    assert.ok(view.container.querySelector("[data-mcp-server-row]"), "disabled servers remain in the administrator list");
+    assert.equal(toggle().getAttribute("aria-pressed"), "false");
+    assert.equal(toggle().getAttribute("aria-label"), "启用 MCP 服务器");
+    assert.ok(toggle().querySelector("svg")!.classList.contains("text-[var(--theme-text-secondary)]"));
+    assert.equal(view.discoveryCalls.length, 1, "disabled server must not be queried");
+    await click(toggle());
+    assert.equal(toggle().getAttribute("aria-pressed"), "true");
+    assert.equal(view.calls.filter(call => call.init.method === "PATCH").length, 2);
+    assert.equal(view.discoveryCalls.length, 2, "restored server can discover tools again");
   } finally { await view.close(); }
 });
 
@@ -169,12 +197,12 @@ test("refresh masks the previous count and updates the open tool detail", async 
   } finally { await view.close(); }
 });
 
-test("late tool discovery cannot publish across a same-user department change", async () => {
+test("late tool discovery cannot publish across a secondary membership change with the same primary", async () => {
   const old = deferred<Response>(); let discoveries = 0;
   const view = await harness(createElement(MCPPanel), () => page(), () => ++discoveries === 1 ? old.promise : json({ server_name: server.name, tools: [{ name: "current-tool", description: "Current synthetic tool", parameters: [] }], count: 1, unavailable_reason: null }));
   try {
     await click(view.container.querySelector<HTMLButtonElement>("[data-mcp-view-tools]")!);
-    await view.setUser({ ...principal(), department_id: "synthetic-department" });
+    await view.setUser({ ...principal(), direct_department_ids: ["110", "210"], department_ids: ["100", "110", "200", "210"] });
     assert.equal(document.querySelector("[data-mcp-tool-detail]"), null);
     assert.equal(view.container.querySelector("[data-mcp-tool-count]")!.textContent, "1 个工具");
     await act(async () => old.resolve(json({ server_name: server.name, tools: [{ name: "old-tool", description: "Old private description", parameters: [] }], count: 1, unavailable_reason: null })));

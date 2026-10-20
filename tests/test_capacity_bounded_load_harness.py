@@ -5,7 +5,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.util import find_spec
 from threading import Thread
 
-from app import foundation_alpha_readiness
+from tools import foundation_alpha_readiness
 from app.capacity_baseline import build_capacity_gate_readiness
 from app.capacity_baseline import LOAD_TEST_GATES
 from tools.capacity.bounded_load import (
@@ -49,7 +49,7 @@ def test_capacity_bounded_load_harness_dry_run_is_safe_and_not_gate_evidence():
     assert plan["gate_evidence_compatibility"] == "not_accepted_by_capacity_gate_readiness"
     assert [endpoint["path"] for endpoint in plan["endpoints"]] == [
         "/api/ai/health",
-        "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+        "/api/ai/admin/runtime/overview",
     ]
 
     serialized = json.dumps(plan, ensure_ascii=False).lower()
@@ -83,7 +83,7 @@ def test_capacity_bounded_load_harness_covers_each_capacity_gate_with_read_only_
         assert plan["writes_runtime_state"] is False
         assert [endpoint["method"] for endpoint in plan["endpoints"]] == ["GET"]
         assert [endpoint["path"] for endpoint in plan["endpoints"]] == [
-            "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false"
+            "/api/ai/admin/runtime/overview"
         ]
 
 
@@ -100,7 +100,7 @@ def test_capacity_bounded_load_harness_queue_gate_dry_run_is_safe():
     assert plan["request_count"] == 200
     assert plan["concurrency"] == 20
     assert [endpoint["path"] for endpoint in plan["endpoints"]] == [
-        "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+        "/api/ai/admin/runtime/overview",
     ]
     assert plan["load_test_evidence_status"] == "probe_only_not_recorded"
     assert plan["does_not_raise_defaults"] is True
@@ -120,7 +120,7 @@ def test_capacity_bounded_load_harness_model_gateway_gate_dry_run_is_safe():
     assert plan["request_count"] == 200
     assert plan["concurrency"] == 20
     assert [endpoint["path"] for endpoint in plan["endpoints"]] == [
-        "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+        "/api/ai/admin/runtime/overview",
     ]
     assert "model gateway" in plan["endpoints"][0]["purpose"]
     assert plan["load_test_evidence_status"] == "probe_only_not_recorded"
@@ -158,7 +158,7 @@ def test_capacity_bounded_load_harness_executes_bounded_read_only_probe_without_
             if path == "/api/ai/health":
                 payload = {"status": "ok", "secret": "health-secret"}
             elif path == "/api/ai/admin/runtime/overview":
-                assert "include_maintenance_cleanup=false" in self.path
+                assert self.path == "/api/ai/admin/runtime/overview"
                 payload = {
                     "capacity": {"schema_version": "ai-platform.capacity-baseline.v1"},
                     "database_pool": {"open": True, "database_url": "postgres://secret"},
@@ -202,7 +202,7 @@ def test_capacity_bounded_load_harness_executes_bounded_read_only_probe_without_
     assert result["sent_requests"] == 6
     assert set(requests) == {
         "/api/ai/health",
-        "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+        "/api/ai/admin/runtime/overview",
     }
     assert result["http_status_counts"] == {"200": 6}
     assert result["latency_ms"]["count"] == 6
@@ -234,7 +234,7 @@ def test_capacity_bounded_load_harness_executes_queue_gate_against_admin_project
 
         def do_GET(self):  # noqa: N802
             requests.append(self.path)
-            if self.path != "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false":
+            if self.path != "/api/ai/admin/runtime/overview":
                 self.send_response(404)
                 self.end_headers()
                 return
@@ -279,7 +279,7 @@ def test_capacity_bounded_load_harness_executes_queue_gate_against_admin_project
     assert result["status"] == "probe_completed_not_gate_evidence"
     assert result["gate"] == "queue_depth_and_lease_latency"
     assert result["sent_requests"] == 5
-    assert set(requests) == {"/api/ai/admin/runtime/overview?include_maintenance_cleanup=false"}
+    assert set(requests) == {"/api/ai/admin/runtime/overview"}
     assert result["http_status_counts"] == {"200": 5}
     assert result["observed_admin_runtime_sections"] == [
         "admission",
@@ -307,7 +307,7 @@ def test_capacity_bounded_load_harness_executes_model_gateway_gate_against_admin
 
         def do_GET(self):  # noqa: N802
             requests.append(self.path)
-            if self.path != "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false":
+            if self.path != "/api/ai/admin/runtime/overview":
                 self.send_response(404)
                 self.end_headers()
                 return
@@ -369,7 +369,7 @@ def test_capacity_bounded_load_harness_executes_model_gateway_gate_against_admin
     assert result["status"] == "probe_completed_not_gate_evidence"
     assert result["gate"] == "model_gateway_timeout_and_backpressure"
     assert result["sent_requests"] == 5
-    assert set(requests) == {"/api/ai/admin/runtime/overview?include_maintenance_cleanup=false"}
+    assert set(requests) == {"/api/ai/admin/runtime/overview"}
     assert result["http_status_counts"] == {"200": 5}
     assert result["observed_admin_runtime_sections"] == [
         "admission",
@@ -970,7 +970,7 @@ def test_capacity_bounded_load_harness_cli_queue_gate_dry_run_outputs_supported_
     assert payload["gate"] == "queue_depth_and_lease_latency"
     assert payload["supported_gates"] == LOAD_TEST_GATES
     assert [endpoint["path"] for endpoint in payload["endpoints"]] == [
-        "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+        "/api/ai/admin/runtime/overview",
     ]
 
 
@@ -1001,6 +1001,6 @@ def test_capacity_bounded_load_harness_cli_model_gateway_gate_dry_run_outputs_su
     assert payload["gate"] == "model_gateway_timeout_and_backpressure"
     assert payload["supported_gates"] == LOAD_TEST_GATES
     assert [endpoint["path"] for endpoint in payload["endpoints"]] == [
-        "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+        "/api/ai/admin/runtime/overview",
     ]
     assert "model gateway" in payload["endpoints"][0]["purpose"]

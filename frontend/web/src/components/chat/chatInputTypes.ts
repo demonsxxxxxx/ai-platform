@@ -23,6 +23,9 @@ export interface ChatInputDraftSnapshot {
   value: string;
   appliedInitialDraftKey: string | null;
   scopeKey: string | null | undefined;
+  /** Changes only when account/session ownership changes, not on draft edits. */
+  scopeRevision?: number;
+  ownerKey?: string;
   revision: number;
   selectedSkillState: SelectedSkillTaskState | undefined;
   selectedSkillRevision: number;
@@ -50,6 +53,7 @@ export interface ChatInputProps {
   isLoading: boolean;
   /** Stop is available only after the current run-control owner is bound. */
   canStop?: boolean;
+  runControlKey?: string | null;
   disabled?: boolean;
   canSend?: boolean;
   /** Optional product-specific prompt for a locked composer surface. */

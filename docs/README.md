@@ -42,6 +42,7 @@ current SHAs, exceptions, and evidence results belong in the issue/PR.
 | Stream admission, direct publication, leases, and hydration | [SSE execution control](architecture/redis-streams-sse-execution-control.md) |
 | Browser-local theme and sidebar preferences | [Browser preferences](frontend/browser-local-preferences.md) |
 | General React UI library direction and staged migration | [Lobe UI adoption](frontend/lobe-ui-adoption.md) |
+| AI chat components, runtime adaptation and retained renderers | [assistant-ui chat adoption](frontend/assistant-ui-chat-adoption.md) |
 | LobeHub-derived visual rules and style sample acceptance | [Visual guidelines](frontend/lobehub-visual-guidelines.md) |
 | Current shared tables and ordinary single-select controls | [Table and Select components](frontend/shared-table-select-components.md) |
 | Chat display and public terminal errors | [Chat projection](architecture/chat-run-lifecycle-and-public-error-projection.md) |

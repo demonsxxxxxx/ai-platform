@@ -15,6 +15,7 @@ from app.auth_sessions import (
     AuthContextError, begin_auth_operation_for_cookie, browser_auth_grant,
     commit_auth_operation, principal_for_context, principal_for_cookie, principal_snapshot,
 )
+from app.identity.api import department_authority_from_snapshot
 from app.settings import get_settings
 
 
@@ -59,6 +60,9 @@ class AuthPrincipal:
     company_username: str = ""
     company_department: str = ""
     company_role: str = ""
+    direct_department_ids: tuple[str, ...] = ()
+    department_ids: tuple[str, ...] = ()
+    department_authority_status: str = "unavailable"
 
 
 def authority_checked_at_now() -> str:
@@ -114,6 +118,9 @@ def principal_to_response(principal: AuthPrincipal) -> dict[str, object]:
         "display_name": principal.display_name,
         "tenant_id": principal.tenant_id,
         "department_id": principal.department_id,
+        "direct_department_ids": list(principal.direct_department_ids),
+        "department_ids": list(principal.department_ids),
+        "department_authority_status": principal.department_authority_status,
         "roles": principal.roles,
         "permissions": principal.permissions,
         "is_admin": is_ai_admin(principal),
@@ -166,6 +173,9 @@ def sign_principal_session(principal: AuthPrincipal) -> str:
         "company_username": principal.company_username,
         "company_department": principal.company_department,
         "company_role": principal.company_role,
+        "direct_department_ids": list(principal.direct_department_ids),
+        "department_ids": list(principal.department_ids),
+        "department_authority_status": principal.department_authority_status,
         "iat": now,
         "exp": now + int(settings.ai_session_max_age_seconds),
     }
@@ -239,12 +249,16 @@ def verify_principal_session(token: str) -> AuthPrincipal:
     )
 
 
-def _company_snapshot_fields(snapshot: Mapping[str, object]) -> dict[str, str]:
-    """Keep original company claims separate from the platform role projection."""
+def _company_snapshot_fields(snapshot: Mapping[str, object]) -> dict[str, object]:
+    """Keep company metadata separate from validated DingTalk department scope."""
     fields = ("company_username", "company_department", "company_role")
     if any(not isinstance(snapshot.get(name, ""), str) for name in fields):
         raise HTTPException(status_code=401, detail="invalid_session")
-    return {name: str(snapshot.get(name, "")) for name in fields}
+    try:
+        authority = department_authority_from_snapshot(snapshot)
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail="invalid_session") from exc
+    return {**{name: str(snapshot.get(name, "")) for name in fields}, **vars(authority)}
 
 def _enforce_deployment_scope(principal: AuthPrincipal, settings: object) -> AuthPrincipal:
     if getattr(settings, "deployment_environment", "development") != "production":
@@ -345,7 +359,7 @@ async def refresh_company_session(
                 if (current["subject_epoch"] == initial["subject_epoch"]
                     and current.get("successful_refresh_epoch", 0) > initial.get("successful_refresh_epoch", 0)
                     and (snapshot.get("company_jwt_expires_at") or 0) > int(time.time())):
-                    return AuthPrincipal(**snapshot), False
+                    return AuthPrincipal(**{**snapshot, **_company_snapshot_fields(snapshot)}), False
         previous = operation.principal
         if (previous is None or (previous["tenant_id"], previous["user_id"]) != subject
             or (expected_subject_epoch is not None and operation.subject_epoch != expected_subject_epoch)):
@@ -361,12 +375,13 @@ async def refresh_company_session(
         if (operation.subject_epoch == initial["subject_epoch"]
             and operation.successful_refresh_epoch > initial.get("successful_refresh_epoch", 0)
             and (previous.get("company_jwt_expires_at") or 0) > int(time.time())):
-            return AuthPrincipal(**previous), False
-        principal = AuthPrincipal(**previous)
+            return AuthPrincipal(**{**previous, **_company_snapshot_fields(previous)}), False
+        principal = AuthPrincipal(**{**previous, **_company_snapshot_fields(previous)})
         refreshed, token = await issue_refreshed_company_jwt(principal, expires_at=operation.expires_at)
         snapshot = principal_snapshot(refreshed)
         authorization_fields = (
-            "department_id", "authz_policy_version", "company_role", "company_username",
+            "department_id", "direct_department_ids", "department_ids", "department_authority_status",
+            "authz_policy_version", "company_role", "company_username",
             "company_department", "roles", "permissions",
         )
         changed = any(previous.get(name, "") != snapshot.get(name, "") for name in authorization_fields)
@@ -413,7 +428,9 @@ async def refresh_company_session(
 async def require_principal(request: Request) -> AuthPrincipal:
     """Mark authentication rejection before endpoint business execution."""
     try:
-        return await _require_principal(request)
+        from app.principal_authority import bind_department_authority
+        principal = await _require_principal(request)
+        return await bind_department_authority(principal, settings=get_settings())
     except HTTPException as exc:
         if exc.status_code == 401:
             exc.headers = {**(exc.headers or {}), AUTH_REJECTED_HEADER: "true"}
