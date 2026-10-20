@@ -1,3 +1,4 @@
+import json
 import subprocess
 import sys
 from importlib.metadata import version
@@ -5,9 +6,9 @@ from inspect import signature
 from pathlib import Path
 
 
-def test_installed_claude_agent_sdk_02130_contract(tmp_path):
+def test_installed_claude_agent_sdk_02165_contract(tmp_path):
     installed_version = version("claude-agent-sdk")
-    assert installed_version == "0.2.130"
+    assert installed_version == "0.2.165"
 
     import claude_agent_sdk as sdk
     from claude_agent_sdk._internal.transport.subprocess_cli import (
@@ -17,7 +18,9 @@ def test_installed_claude_agent_sdk_02130_contract(tmp_path):
         PostToolUseHookSpecificOutput,
         PreToolUseHookSpecificOutput,
         SyncHookJSONOutput,
+        SystemPromptCustom,
     )
+    assert {"type", "prompt", "snapshot"}.issubset(SystemPromptCustom.__annotations__)
 
     assert {"options", "transport"}.issubset(
         signature(sdk.ClaudeSDKClient).parameters
@@ -66,7 +69,12 @@ def test_installed_claude_agent_sdk_02130_contract(tmp_path):
     bootstrap_options = sdk.ClaudeAgentOptions(
         cwd=str(tmp_path),
         model="model-a",
-        system_prompt={"type": "preset", "preset": "claude_code", "append": "profile"},
+        system_prompt={"type": "custom", "prompt": "file core and current profile", "snapshot": False},
+        settings=json.dumps({
+            "autoMemoryEnabled": False,
+            "includeGitInstructions": False,
+            "attribution": {"commit": "", "pr": ""},
+        }),
         tools=["Read", "Skill"],
         allowed_tools=["Read", "Skill(qa-review)"],
         disallowed_tools=["Write"],
@@ -109,6 +117,11 @@ def test_installed_claude_agent_sdk_02130_contract(tmp_path):
     options = bootstrap_options
     command = SubprocessCLITransport(prompt="", options=options)._build_command()
     autocompact_index = command.index("--autocompact")
+    system_index = command.index("--system-prompt")
+    assert command[system_index + 1] == "file core and current profile"
+    assert "--append-system-prompt" not in command
+    assert options.system_prompt["snapshot"] is False
+    assert json.loads(command[command.index("--settings") + 1])["autoMemoryEnabled"] is False
 
     assistant = sdk.AssistantMessage(content=[sdk.TextBlock(text="partial")], model="model-a")
     event = sdk.StreamEvent(uuid="event-a", session_id="session-a", event={"type": "message_start"})

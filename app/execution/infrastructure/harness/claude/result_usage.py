@@ -47,8 +47,8 @@ def _models(value: object) -> dict[str, dict[str, int | float]] | None:
 class ClaudeResultUsage:
     """Keep turn counters separate from call-cumulative cost/model snapshots.
 
-    SDK 0.2.130 bundles CLI 2.1.222: a new process, including resume, starts
-    these totals at zero. Revalidate this contract before upgrading the CLI.
+    SDK 0.2.165 / CLI 2.1.294 is qualified with external SessionStore resume:
+    each executor process reports its own totals. Revalidate on SDK upgrades.
     This is private telemetry, never billing or execution authority.
     """
 
@@ -63,8 +63,7 @@ class ClaudeResultUsage:
         self.observe_input(prompt)
 
     def observe_input(self, text: str) -> None:
-        # This SDK predates ConversationResetMessage. Do not change the input
-        # or guess a total spanning an explicitly requested reset.
+        # Do not change the input or guess a total spanning an explicit reset.
         if _RESET_COMMAND.match(text.lstrip()):
             self._partial = True
 

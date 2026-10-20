@@ -12,8 +12,8 @@ remote transport constraints; Execution owns the Claude adapter; bootstrap
 assembles concrete adapters. Existing Run/Attempt/lease and callback authorities
 remain unchanged. No new host relay, service, database catalog, or dependency.
 
-The current installed baseline is claude-agent-sdk 0.2.130, bundled Claude Code
-2.1.222. Official contracts: [MCP](https://code.claude.com/docs/en/agent-sdk/mcp),
+The pinned baseline is claude-agent-sdk 0.2.165, bundled Claude Code
+2.1.294. Official contracts: [MCP](https://code.claude.com/docs/en/agent-sdk/mcp),
 [permissions](https://code.claude.com/docs/en/agent-sdk/permissions),
 [hooks](https://code.claude.com/docs/en/agent-sdk/hooks), and
 [Python API](https://code.claude.com/docs/en/agent-sdk/python).
@@ -49,9 +49,8 @@ last-write-wins credential replacement policy.
    Expose only selected Tool definitions using the SDK's in-process MCP Server
    support; preserve model-visible input schemas, annotations, result content,
    structured result data and `isError`. Remote `outputSchema` remains on the
-   typed Tool at the MCP boundary; SDK 0.2.130 does not forward it to the model.
-   Because that bridge also drops the optional
-   `structuredContent` field, the adapter carries it as a bounded JSON text
+   typed Tool at the MCP boundary; the adapter does not rely on it reaching the model.
+   To preserve `structuredContent` across SDK bridges, the adapter carries it as a bounded JSON text
    content item while retaining the typed field for direct MCP callers.
    Forward calls to the original remote names. Do not expose
    unselected siblings or use a Server-wide wildcard permission grant.

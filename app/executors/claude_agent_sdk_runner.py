@@ -48,6 +48,8 @@ from app.executors.claude.capability_policy import (
     internal_response_tool_policy_subjects,
 )
 from app.executors.claude.prompts import (
+    FILE_TASK_SYSTEM_PROMPT,
+    compose_system_prompt,
     build_skill_prompt as build_skill_prompt,
     context_pack_prompt_section as _prompt_context_pack_prompt_section,
 )
@@ -1436,7 +1438,7 @@ def _filtered_workspace_search_output(
             "numFiles": len(filtered_filenames),
             "filenames": filtered_filenames,
             "truncated": tool_response.get("truncated") is True,
-            # SDK 0.2.130 accepts these fields as optional. Recompute them from
+            # The SDK accepts these fields as optional. Recompute them from
             # the visible result so private paths never survive as counts.
             "totalMatches": len(filtered_filenames),
             "countIsComplete": True,
@@ -3377,11 +3379,12 @@ async def run_claude_agent_sdk(
         if interaction_actor is not None:
             # A question may remain pending for the Run's execution deadline.
             hooks["PreToolUse"][0].timeout = timeout_seconds or 86_400.0
-    # The installed SDK's SystemPromptPreset preserves Claude Code's default
-    # system prompt while adding only server-owned profile instructions.
-    sdk_system_prompt: dict[str, str] = {"type": "preset", "preset": "claude_code"}
-    if system_prompt:
-        sdk_system_prompt["append"] = system_prompt
+    # A resumed Run must use its current Profile and material authorization, not the first prompt.
+    sdk_system_prompt = {
+        "type": "custom",
+        "prompt": compose_system_prompt(FILE_TASK_SYSTEM_PROMPT, system_prompt or ""),
+        "snapshot": False,
+    }
     thinking_options: dict[str, Any] = {
         "thinking": {"type": "adaptive", "display": "omitted"}
     }
@@ -3394,6 +3397,11 @@ async def run_claude_agent_sdk(
         or settings.anthropic_model
         or None,
         system_prompt=sdk_system_prompt,
+        settings=json.dumps({
+            "autoMemoryEnabled": False,
+            "includeGitInstructions": False,
+            "attribution": {"commit": "", "pr": ""},
+        }),
         tools=sdk_tools,
         mcp_servers=mcp_servers,
         strict_mcp_config=True,
@@ -3581,7 +3589,7 @@ async def run_claude_agent_sdk(
                     )
                 ):
                     raise
-                # SDK 0.2.130 reports the CLI's intentional nonzero exit as an
+                # The SDK reports the CLI's intentional nonzero exit as an
                 # error frame before final flush/EOF. Retain the error Result
                 # and drain the public stream's remainder to that same EOF.
                 terminal_stream_error = exc

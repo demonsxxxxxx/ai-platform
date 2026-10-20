@@ -2818,7 +2818,7 @@ async def test_sdk_pretool_denies_when_invocation_evidence_is_not_acknowledged(
 @pytest.mark.parametrize(
     "execution_policy", ["worker_local_legacy", "sandbox_brokered"]
 )
-async def test_sdk_profile_system_prompt_appends_to_claude_code_without_entering_user_stream(
+async def test_sdk_current_profile_uses_file_task_system_without_entering_user_stream(
     monkeypatch,
     tmp_path,
     execution_policy,
@@ -2840,11 +2840,19 @@ async def test_sdk_profile_system_prompt_appends_to_claude_code_without_entering
         tool_policy_subjects=[_subject()],
     )
 
+    from app.executors.claude.prompts import FILE_TASK_SYSTEM_PROMPT
+
     assert captured["system_prompt"] == {
-        "type": "preset",
-        "preset": "claude_code",
-        "append": "Private profile instruction",
+        "type": "custom",
+        "prompt": FILE_TASK_SYSTEM_PROMPT + "\n\nPrivate profile instruction",
+        "snapshot": False,
     }
+    assert json.loads(captured["settings"]) == {
+        "autoMemoryEnabled": False,
+        "includeGitInstructions": False,
+        "attribution": {"commit": "", "pr": ""},
+    }
+    assert captured["setting_sources"] == ["project"]
     sdk_prompt = _captured_sdk_prompt(captured)
     assert sdk_prompt.startswith("User supplied question")
     assert "Private profile instruction" not in sdk_prompt
