@@ -90,7 +90,7 @@ from app.sandbox.api import (
     SDK_RUNTIME_DIAGNOSTIC_LIFECYCLE_LIMIT as _MAX_RUNTIME_DIAGNOSTIC_LIFECYCLES,
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
     exception_chain_from_error,
-    normalize_sdk_runtime_diagnostics,
+    capture_sdk_runtime_diagnostics,
     runtime_diagnostic_text as _runtime_diagnostic_text,
     runtime_diagnostic_value as _runtime_diagnostic_value,
     workspace_delivery_file_allowed,
@@ -1783,7 +1783,7 @@ async def run_claude_agent_sdk(
         for key, lifecycle in tool_states.items():
             if key in tool_calls:
                 tool_calls[key]["state"] = lifecycle["state"]
-        return normalize_sdk_runtime_diagnostics(
+        return capture_sdk_runtime_diagnostics(
             {
                 "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
                 "error_code": error_code,
@@ -4292,13 +4292,13 @@ async def run_claude_agent_sdk(
                     ),
                 )
                 if terminal_error is not None
-                else {
+                else capture_sdk_runtime_diagnostics({
                     "schema_version": SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
                     "error_code": _SDK_OUTPUT_VALIDATION_FAILED,
                     "failure_source": "public_projection",
                     "failure_stage": first_projection_failure.stage,
                     "projection_failure": first_projection_failure.as_dict(),
-                } if first_projection_failure is not None else {}
+                }) if first_projection_failure is not None else {}
             ),
             include_terminal_files=True,
         )

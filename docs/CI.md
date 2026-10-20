@@ -13,7 +13,7 @@ Status: active CI navigation and dated local observations; not deployment eviden
 
 | 文件 | 触发条件 | 覆盖平台/内容 | 是否自动发布 | 备注 |
 |---|---|---|---|---|
-| ai-platform-backend.yml | PR→main、push main、workflow_dispatch | ubuntu：preflight/compileall/SSE cutover + 8 个 pytest 分片 + Agent/Skill 契约 + 镜像构建 + Trivy + 启动健康 + required 聚合 | 否 | 镜像推送委托 packaging（push 时） |
+| ai-platform-backend.yml | PR→main、push main、workflow_dispatch | Linux 8 个完整文件分片 + Windows runtime 节点分片；preflight/compileall/SSE cutover + Agent/Skill 契约 + 镜像构建 + Trivy + 启动健康 + required 聚合 | 否 | 镜像推送委托 packaging（push 时） |
 | ai-platform-frontend.yml | PR→main、push main、workflow_dispatch | Windows 4 个 JS 测试分片、独立 Python 合同/投影审计、lint/build/trace + Linux 镜像/Trivy/provenance/启动健康 + required 聚合 | 否 | 同上 |
 | ai-platform-packaging-publish.yml | push main + dispatch（confirm_release=PUBLISH_MAIN） | 不可变镜像 + SBOM + cosign 签名/验证 + manifest + Compose 包 + 可选版本化 Release | 是（受控） | 无 PR 触发 |
 | ai-platform-trusted-governance-v2.yml | pull_request_target（opened/synchronize/reopened/edited） | 受信基线 + PR head 验证 + Ruff + code_governance + architecture_governance | 否 | governance 是 authority object（candidate 不可放宽自身结果） |
@@ -22,7 +22,27 @@ Status: active CI navigation and dated local observations; not deployment eviden
 
 Python 合同/投影审计、JS 分片、lint/build/trace 和镜像并行启动；构建 Job 的 Python 依赖仅供产物来源记录使用。`frontend required` 必须接收四类 Job 的成功结果，失败、取消、跳过或缺失均阻断；矩阵不因其他分片失败而取消剩余分片。`tests/test_frontend_ci_shards.py` 校验分片与完整本地 `ci:verify` 阶段清单完全一致，无遗漏或重复分配；原有跨阶段文件重复保持原状。`ci:verify` 仍是本地完整串行复现入口，不新增测试运行器，也不复制测试文件选择器。
 
-配置覆盖 lint/test/build、镜像扫描及发布来源验证，可作为阶段 3 的复用候选。源码中有这些 job 不等于检查已执行，也不证明 coverage、文档新鲜度、hook、结构化日志等全部 Harness 要求已满足；逐项处置见 [计划 §5.1](exec-plans/active/harness-migration.md#51-必需要求处置与验收索引)。未发现 commit-msg/Conventional Commits 机械门禁，该项与提交前 hook 的具体处置仍需确认，不能直接宣布豁免。
+配置覆盖 lint/test/build、镜像扫描及发布来源验证，可作为阶段 3 的复用候选。源码中有这些 job 不等于检查已执行，也不证明 coverage、文档新鲜度、hook、结构化日志等全部 Harness 要求已满足；逐项处置见 [计划 §5.1](exec-plans/active/harness-migration.md#51-必需要求处置与验收索引)。已交付版本化 pre-commit/pre-push，使用方式见 [本地 hooks](agent-rules/local-test-execution.md#versioned-local-git-hooks)。未新增 commit-msg/Conventional Commits 机械门禁。
+
+### 完整 Python 文件库存与平台补充
+
+后端八个 Linux 分片、Agent/Skill 和前端 Python 合同共同拥有全部 `tests/**/test_*.py`。
+`test_every_backend_test_file_has_one_complete_ci_owner` 对当前源码集合检查遗漏、
+失效路径、重复 owner 和只选部分节点的文件；新测试必须同时加入其已有 owning lane。
+原五个 node-only 文件已迁入单一 lane 的完整文件选择，不保留旧零散选择器。
+
+Windows runtime 分片只补充 Linux 无法执行的两个 Job Object、六个 host-bind
+和两个 junction 场景。它复用 `backend-tests` 矩阵并进入原 `backend required` 聚合，
+不改变受信聚合拓扑。该分片的服务 image 表达式为空，不启动 Linux 服务容器。
+真实 MCP/Capability Distribution PostgreSQL 测试使用对应的专用 DSN，不能借用
+已有数据库容器但漏传连接配置而产生 skip。
+
+后端和 Agent/Skill 均使用既有 `tools/run_test_stage.py`、600 秒 stage deadline
+及显式 branch coverage；每个分片上传自己的 evidence、JUnit 和 coverage JSON。
+PG/Redis 必需分片和 Windows 分片保持 zero-skips；sandbox-runtime 与 release-governance-authority
+仍可能报告另一个平台的 skip。真实 OpenSandbox 凭据隔离是独立 governed 环境验收，
+其未执行状态不能由普通 CI 的 skip 或镜像构建成功替代。覆盖率汇总/ratchet
+只有在完整所需验收证据闭合后才能作为 D5 门槛接受。
 
 ## 3. 交互确认记录
 

@@ -1565,6 +1565,7 @@ async def chat_stream(
                     tenant_id=principal.tenant_id,
                     tool_ids=runs_capability_admission.extract_run_mcp_tool_ids(run_input),
                     principal_department_id=principal.department_id,
+                    principal_department_ids=principal.department_ids,
                     principal_roles=principal.roles,
                     is_admin=is_ai_admin(principal),
                     permissions=principal.permissions,
@@ -1612,6 +1613,7 @@ async def chat_stream(
                         tenant_id=principal.tenant_id,
                         actor_user_id=principal.user_id,
                         department_id=principal.department_id,
+                        department_ids=principal.department_ids,
                         roles=principal.roles,
                         is_admin=is_ai_admin(principal),
                         permissions=principal.permissions,
@@ -1692,6 +1694,7 @@ async def chat_stream(
                     "skill_id": resolved_skill_id,
                     "normalized_input": run_input,
                     "principal_department_id": principal.department_id,
+                    "principal_department_ids": principal.department_ids,
                     "principal_roles": principal.roles,
                     "is_admin": is_ai_admin(principal),
                     "permissions": principal.permissions,
@@ -1791,7 +1794,7 @@ async def chat_stream(
                     rollout_key=principal.user_id,
                     mcp_tool_ids_for_skill=runs_capability_admission.run_mcp_tool_ids_for_skill,
                     conflict_error=RepositoryConflictError,
-                    department_id=principal.department_id, roles=principal.roles, permissions=principal.permissions,
+                    department_id=principal.department_id, department_ids=principal.department_ids, roles=principal.roles, permissions=principal.permissions,
                 )
             elif admitted_agent_profile is not None:
                 skill_version, release_decision_payload, skill_manifests = None, {}, []
@@ -1804,7 +1807,7 @@ async def chat_stream(
                     input_payload=run_input,
                     tenant_id=principal.tenant_id,
                     rollout_key=principal.user_id,
-                    department_id=principal.department_id, roles=principal.roles, permissions=principal.permissions,
+                    department_id=principal.department_id, department_ids=principal.department_ids, roles=principal.roles, permissions=principal.permissions,
                 )
                 skill_manifests = admission.skill_manifests
                 skill_version = admission.skill_version

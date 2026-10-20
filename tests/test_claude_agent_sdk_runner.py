@@ -5869,6 +5869,7 @@ async def test_sdk_first_projection_failure_survives_later_skill_hook(
 
     assert result.error is None
     assert result.runtime_diagnostics["failure_source"] == "public_projection"
+    assert result.runtime_diagnostics["failure_observations"][0]["observation_id"].startswith("obs_")
     assert result.turn_diagnostics["last_public_stage"] == "skills"
     assert result.runtime_diagnostics["failure_stage"] == "message"
     assert result.runtime_diagnostics["projection_failure"] == {

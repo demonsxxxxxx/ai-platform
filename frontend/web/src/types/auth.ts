@@ -61,8 +61,11 @@ export interface User {
   id: string;
   /** Stable authenticated tenant identity from the principal projection. */
   tenant_id?: string;
-  /** Trusted company department authority from the principal projection. */
+  /** Primary department retained for display compatibility, never an ACL source. */
   department_id?: string;
+  direct_department_ids?: string[];
+  department_ids?: string[];
+  department_authority_status?: "available" | "unavailable";
   username: string;
   email: string;
   avatar_url?: string;

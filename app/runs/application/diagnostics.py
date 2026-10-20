@@ -605,6 +605,7 @@ def _project_observations(
 ]:
     root = None
     handling: list[dict[str, Any]] = []
+    seen_failures: set[tuple[object, object]] = set()
     details: dict[str, Any] = {
         "schema_version": None,
         "sdk": {},
@@ -623,6 +624,7 @@ def _project_observations(
         details["observations"].append(
             {
                 "observation_id": raw.get("observation_id"),
+                **({"parent_observation_id": raw["parent_observation_id"]} if raw.get("parent_observation_id") else {}),
                 "attempt_id": raw.get("attempt_id"),
                 "lease_id": raw.get("lease_id"),
                 "request_id": raw.get("request_id"),
@@ -656,10 +658,17 @@ def _project_observations(
         )
         failures = evidence.get("failure_observations")
         failures = failures if isinstance(failures, list) else []
-        failure_projections = [
-            _failure_projection(raw, item, evidence=evidence, kind="handling")
-            for item in failures
-        ]
+        failure_projections = []
+        failure_identities = set()
+        for item in failures:
+            projected = _failure_projection(raw, item, evidence=evidence, kind="handling")
+            failure_identities.add(_projection_identity(projected))
+            if isinstance(item, dict) and item.get("observation_id"):
+                identity = (raw.get("attempt_id"), item["observation_id"])
+                if identity in seen_failures:
+                    continue
+                seen_failures.add(identity)
+            failure_projections.append(projected)
         if root is None:
             root = (
                 failure_projections.pop(0)
@@ -667,6 +676,7 @@ def _project_observations(
                 else _failure_projection(raw, None, evidence=evidence)
             )
             root["kind"] = "failure"
+            seen_failures.add((root.get("attempt_id"), root.get("observation_id")))
             details.update(
                 {
                     "schema_version": evidence.get("schema_version"),
@@ -685,20 +695,24 @@ def _project_observations(
                 }
             )
         handling.extend(failure_projections)
+        seen_failures.update((item.get("attempt_id"), item.get("observation_id")) for item in failure_projections)
         record_projection = _failure_projection(
             raw, None, evidence=evidence, kind="handling"
         )
-        failure_identities = {
-            _projection_identity(item)
-            for item in [*failure_projections, root]
-            if item is not None
-            and item.get("observation_id") == raw.get("observation_id")
-        }
-        if (
-            _projection_identity(record_projection) not in failure_identities
-            and _projection_identity(record_projection) != _projection_identity(root)
-        ):
+        record_identity = (raw.get("attempt_id"), raw.get("observation_id"))
+        has_producer_ids = bool(raw.get("parent_observation_id")) or any(
+            isinstance(item, dict) and item.get("observation_id") for item in failures
+        )
+        if has_producer_ids:
+            keep_record = record_identity not in seen_failures
+        else:
+            keep_record = (
+                _projection_identity(record_projection) not in failure_identities
+                and _projection_identity(record_projection) != _projection_identity(root)
+            )
+        if keep_record:
             handling.append(record_projection)
+            seen_failures.add(record_identity)
         projection_failure = evidence.get("projection_failure")
         if details["projection_failure"] is None and isinstance(projection_failure, dict):
             details["projection_failure"] = projection_failure
@@ -723,8 +737,10 @@ def _failure_projection(
     # Fallbacks must use the same read-time redaction as detailed evidence,
     # including when a retained record predates the current redaction policy.
     sdk = evidence.get("sdk") if isinstance(evidence.get("sdk"), dict) else {}
+    identity = item if item.get("observation_id") else record
     return {
-        "observation_id": record.get("observation_id"),
+        "observation_id": identity.get("observation_id"),
+        **({"parent_observation_id": identity["parent_observation_id"]} if identity.get("parent_observation_id") else {}),
         "attempt_id": record.get("attempt_id"),
         "lease_id": record.get("lease_id"),
         "request_id": record.get("request_id"),
@@ -740,5 +756,5 @@ def _failure_projection(
     }
 
 
-def _projection_identity(value: dict[str, Any]) -> tuple[object, object, object]:
-    return value.get("source"), value.get("stage"), value.get("error_code")
+def _projection_identity(value: dict[str, Any]) -> tuple[object, object, object, object]:
+    return value.get("attempt_id"), value.get("source"), value.get("stage"), value.get("error_code")

@@ -277,6 +277,69 @@ are source-linked observations, not a full-suite threshold proposal. Complete
 selection disposition plus real-dependency/platform evidence is the explicit exit
 condition; D5 remains pending rather than inventing a ratchet from these samples.
 
+## 2026-10-19 full Linux selection observation
+
+Status: complete Linux selector inventory executed; required acceptance remains
+incomplete. The source baseline is `f853a8a8cdbc4542319d8c244cefad9fb54aaeec`.
+The repaired baseline preserves every app source file and overlays four files:
+`tools/release_backend_flatten.py`, `tests/test_release_backend_flatten.py`,
+`tests/test_sandbox_container_provider.py`, and `tests/test_run_performance_postgres.py`.
+These repairs address archive replacement detection/fixtures, provider test-state
+isolation, and the synthetic model-revision foreign key. It is not an untouched-main
+passing claim.
+
+The 344-file selection ran on s72 in isolated test containers with Python 3.13.14
+and locked dependencies, real PostgreSQL/Redis/MinIO, no Docker socket, and no
+production data access: **10,620 passed, 12 skipped, zero failures**, 1,331.77 seconds.
+Evidence is in runner stage `20261019T090554-8-e93495bf/base-fixed`; its app/tests
+source and report bindings remain in the original evidence envelope. The 466-file
+app denominator includes unexecuted files.
+
+| Scope under this Linux selection | Covered / executable statements | Statement % | Covered / possible branches | Branch % |
+| --- | ---: | ---: | ---: | ---: |
+| All app files | 49,266 / 55,437 | 88.87 | 14,076 / 18,000 | 78.20 |
+| runs | 4,173 / 4,573 | 91.25 | 1,182 / 1,528 | 77.36 |
+| skills | 3,156 / 3,574 | 88.30 | 1,037 / 1,340 | 77.39 |
+| sandbox | 1,595 / 1,870 | 85.29 | 568 / 716 | 79.33 |
+| files | 499 / 651 | 76.65 | 97 / 166 | 58.43 |
+| identity | 515 / 593 | 86.85 | 88 / 114 | 77.19 |
+| streaming | 2,564 / 2,839 | 90.31 | 642 / 854 | 75.18 |
+| execution | 3,510 / 3,992 | 87.93 | 1,108 / 1,460 | 75.89 |
+
+Owner rows use `app/<owner>/`, as in the earlier samples; they do not silently
+assign legacy root modules to a context. Each percentage is computed from the
+separate integer totals, not the combined terminal coverage percentage.
+
+Ten Windows-only cases also passed with coverage on the same repaired f853
+source, stage `20261019T125750-11508-54f36f7e/win-base`. Its app/tests source and
+runner bindings match the Linux report; both have the same 466 files, 55,437
+statements and 18,000 branches. Unioning executable line and branch identities
+adds 16 covered statements and 9 branches: **49,282 / 55,437 (88.90%) statements**
+and **14,085 / 18,000 (78.25%) branches**. Percentages are not added or averaged.
+The context rows above are unchanged by this supplement.
+
+The network-guard case passed on the exact f853 GitHub backend run
+`39205219808`, job `117906583655`; its coverage is not included in that union.
+The real governed OpenSandbox credential-isolation case remains unexecuted:
+the existing deployment is internal-test/bridge, and the isolated privileged
+test-environment request was cancelled. The union is an observation of the
+available runs, not a completed required no-skip baseline or an adopted floor.
+
+The candidate now has 346 test files, each with one complete-file CI owner; Windows
+platform nodes are additional coverage. Its first Linux execution reported
+**10,632 passed, 58 failed, 12 skipped**. The identified fixture/caller and hook
+repairs have local owning checks, but candidate Linux full-suite verification has
+not been repeated after those changes. Updating the remote test directory hit an
+ownership denial and the follow-up test-owner request was cancelled. No current
+coverage floor or passed ratchet is claimed from that failed candidate run.
+
+T1 is now a separate 800-line new-production-file gate based on f853 measurements:
+371/411 backend modules and 398/419 frontend modules already fit it. Existing
+production moves keep their prior identity; existing frozen-growth checks and
+base-owned exception controls remain. T2 and local hooks have owning positive and
+negative tests. Trusted coverage comparison, independent review, real Sandbox
+acceptance, and three complete passing rounds remain pending.
+
 ## Refresh and repair
 
 The author of a relevant source migration refreshes the inventory and explains

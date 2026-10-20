@@ -67,6 +67,7 @@ from app.bootstrap.run_inputs_client import build_run_input_callback_client
 from app.sandbox.api import (
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
     normalize_sdk_runtime_diagnostics,
+    capture_sdk_runtime_diagnostics,
 )
 from app.runtime.sandbox.contracts import (
     EXECUTOR_AUTH_HEADER,
@@ -593,7 +594,10 @@ def _merge_runtime_diagnostics(
     if has_existing_failure:
         merged = dict(normalized_existing)
         observations = list(merged.get("failure_observations") or [])
-        if not observations or observations[-1] != current_observation:
+        if not observations or {
+            key: value for key, value in observations[-1].items()
+            if key not in {"observation_id", "parent_observation_id"}
+        } != current_observation:
             observations.append(current_observation)
         merged["failure_observations"] = observations
     else:
@@ -641,7 +645,7 @@ def _merge_runtime_diagnostics(
         merged["tool_lifecycles"] = list(lifecycle_by_key.values())
     else:
         merged["tool_lifecycles"] = existing_lifecycles
-    return normalize_sdk_runtime_diagnostics(merged)
+    return capture_sdk_runtime_diagnostics(merged)
 
 
 def _log_sandbox_tool_lifecycle(
