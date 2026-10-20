@@ -71,7 +71,7 @@ function MessageAttachmentRow({
 
   const className = isImage
     ? "group flex w-full items-center gap-3 overflow-hidden rounded-2xl border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-2 text-start"
-    : "flex w-full items-center gap-2.5 rounded-2xl border border-[var(--theme-border)] px-3 py-2.5 text-start";
+    : "flex w-full items-center gap-2.5 rounded-xl border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-3 py-2 text-start";
 
   return onOpen ? (
     <Button
@@ -85,7 +85,7 @@ function MessageAttachmentRow({
         minHeight: 40,
         width: "100%",
         justifyContent: "flex-start",
-        padding: 0,
+        padding: isImage ? 0 : "8px 12px",
         textAlign: "left",
       }}
       className={`${className} transition-colors hover:bg-[var(--theme-bg-sidebar)]`}

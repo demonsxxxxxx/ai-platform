@@ -303,7 +303,6 @@
       "settings": "设置",
       "upload": "上传"
     },
-    "fileReferenceChip": "{{name}} · {{type}}",
     "fileReferences": "文件引用",
     "features": "功能",
     "goodAfternoon": "下午好，{{name}}",
