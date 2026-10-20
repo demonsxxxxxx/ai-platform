@@ -349,24 +349,22 @@ const ExcalidrawPreview = memo(function ExcalidrawPreview({
       <div className="flex items-center gap-2 px-4 py-2 border-b border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800/50 shrink-0">
         {/* Zoom controls */}
         <Button type="text"
+          icon={<ZoomOut size={16} />}
           onClick={handleZoomOut}
           className="flex items-center justify-center w-8 h-8 rounded-lg bg-stone-100 dark:bg-stone-800 hover:bg-stone-200 dark:hover:bg-stone-700 text-stone-600 dark:text-stone-300 transition-colors"
           title={t("documents.zoomOut")}
-        >
-          <ZoomOut size={16} />
-        </Button>
+        />
 
         <span className="text-xs text-stone-500 dark:text-stone-400 min-w-[50px] text-center">
           {Math.round(scale * 100)}%
         </span>
 
         <Button type="text"
+          icon={<ZoomIn size={16} />}
           onClick={handleZoomIn}
           className="flex items-center justify-center w-8 h-8 rounded-lg bg-stone-100 dark:bg-stone-800 hover:bg-stone-200 dark:hover:bg-stone-700 text-stone-600 dark:text-stone-300 transition-colors"
           title={t("documents.zoomIn")}
-        >
-          <ZoomIn size={16} />
-        </Button>
+        />
 
         <Button type="text"
           onClick={handleFitToScreen}

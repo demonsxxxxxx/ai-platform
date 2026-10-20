@@ -6,7 +6,7 @@ import { Button, Input, Spin, ModalRoot, ModalPortal, ModalBackdrop, ModalPopup,
  * (↑/↓/Enter/Escape), infinite scroll, smooth scrolling.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { useInView } from "react-intersection-observer";
 import { useTranslation } from "react-i18next";
 import { Search, X, Hash } from "lucide-react";
@@ -148,43 +148,39 @@ export function SearchDialog({
   }, [isOpen, inView, hasMore, failed, isLoadingMore, isLoading]);
 
   // ── Keyboard navigation ────────────────────────────────────────
-  useEffect(() => {
-    if (!isOpen) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.isComposing) return;
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        setActiveIndex((prev) => {
-          const next = prev < allSessions.length - 1 ? prev + 1 : 0;
-          itemRefs.current.get(next)?.scrollIntoView({ block: "nearest" });
-          return next;
-        });
-        return;
-      }
-      if (e.key === "ArrowUp") {
-        e.preventDefault();
-        setActiveIndex((prev) => {
-          if (prev <= 0) {
-            inputRef.current?.focus();
-            return -1;
-          }
-          const next = prev - 1;
-          itemRefs.current.get(next)?.scrollIntoView({ block: "nearest" });
-          return next;
-        });
-        return;
-      }
-      if (e.key === "Enter") {
-        if (activeIndex >= 0 && activeIndex < allSessions.length) {
-          e.preventDefault();
-          onSelectSession(allSessions[activeIndex].session.id);
+  // Keep navigation inside the popup: Base UI stops composite keys bubbling.
+  const handleKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.nativeEvent.isComposing) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActiveIndex((prev) => {
+        const next = prev < allSessions.length - 1 ? prev + 1 : 0;
+        itemRefs.current.get(next)?.scrollIntoView({ block: "nearest" });
+        return next;
+      });
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActiveIndex((prev) => {
+        if (prev <= 0) {
+          inputRef.current?.focus();
+          return -1;
         }
-        return;
+        const next = prev - 1;
+        itemRefs.current.get(next)?.scrollIntoView({ block: "nearest" });
+        return next;
+      });
+      return;
+    }
+    if (e.key === "Enter") {
+      if (activeIndex >= 0 && activeIndex < allSessions.length) {
+        e.preventDefault();
+        onSelectSession(allSessions[activeIndex].session.id);
       }
-    };
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, activeIndex, allSessions, onClose, onSelectSession]);
+      return;
+    }
+  };
 
   const hasQuery = searchQuery.trim().length > 0;
 
@@ -192,7 +188,7 @@ export function SearchDialog({
     <ModalRoot open={isOpen} onOpenChange={(open) => { if (!open) onClose(); }}>
       <ModalPortal>
         <ModalBackdrop />
-        <ModalPopup width="min(32rem, calc(100vw - 2rem))" className="workbench-modal" initialFocus={inputRef}>
+        <ModalPopup width="min(32rem, calc(100vw - 2rem))" className="workbench-modal" initialFocus={inputRef} onKeyDown={handleKeyDown}>
           <ModalTitle className="sr-only">{t("sidebar.searchSessions")}</ModalTitle>
         {/* Search input */}
         <div className="flex items-center gap-3 px-4 py-3.5">

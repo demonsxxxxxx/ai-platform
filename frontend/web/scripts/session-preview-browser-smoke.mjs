@@ -98,6 +98,7 @@ try {
       await assert(`document.querySelector('[data-synthetic-diagram] div[style*=\"transform:\"] > svg').parentElement.style.transform === ${quote(firstFit)}`, "fit_independent_of_prior_zoom");
       await assert("(() => { const svg=document.querySelector('[data-synthetic-diagram] div[style*=\"transform:\"] > svg'); const r=svg.getBoundingClientRect(), p=svg.parentElement.parentElement.getBoundingClientRect(); return r.width>0 && r.height>0 && r.left>=p.left-1 && r.right<=p.right+1 && r.top>=p.top-1 && r.bottom<=p.bottom+1; })()", "diagram_fits_visible_container");
       measurements.zoomControls = await c.evaluate(`(() => { const names=${quote([labels.documents.zoomOut, labels.documents.zoomIn])}; return names.map(name => { const button=[...document.querySelectorAll('[data-synthetic-diagram] button')].find(e=>e.title===name); const b=button.getBoundingClientRect(), s=button.querySelector('svg').getBoundingClientRect(); return { name, buttonWidth:b.width, buttonHeight:b.height, iconWidth:s.width, iconHeight:s.height }; }); })()`);
+      if (measurements.zoomControls.some(control => Math.abs(control.iconWidth - 16) > 1 || Math.abs(control.iconHeight - 16) > 1)) throw Error("zoom_icon_declared_size_not_rendered");
       await screenshot("diagram-fit");
       await noErrors();
       await navigate("sidebar");
@@ -125,8 +126,10 @@ try {
       await c.evaluate("window.__sessionPreview.resolveSearch(2,'beta-result'); window.__sessionPreview.resolveSearch(1,'stale-alpha')");
       await wait("document.body.textContent.includes('Synthetic session beta-result')", "current_result");
       await assert("!document.body.textContent.includes('stale-alpha')", "stale_search_cannot_replace_current");
+      await wait("[...document.querySelectorAll('[role=dialog] [class*=grid-area]')].every(e => e.getAnimations().every(a => a.playState !== 'running')) && document.querySelector('[role=dialog] [class*=grid-area]').classList.contains('opacity-0')", "search_crossfade_finished");
       await screenshot("search-result");
       await key("ArrowDown", "ArrowDown", 40);
+      await wait("[...document.querySelectorAll('[role=dialog] button')].some(e => e.textContent.includes('Synthetic session beta-result') && e.classList.contains('bg-[var(--theme-primary-light)]'))", "search_keyboard_highlight");
       await key("Enter", "Enter", 13);
       await wait("window.__sessionPreview.selected==='beta-result'", "search_keyboard_selection");
       if (await c.evaluate(`Boolean(${dialog})`)) await key("Escape", "Escape", 27);

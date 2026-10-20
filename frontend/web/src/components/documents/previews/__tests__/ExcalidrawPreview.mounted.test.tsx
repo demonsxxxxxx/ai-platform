@@ -136,6 +136,21 @@ async function mountPreview(geometry: Geometry = normalGeometry) {
   };
 }
 
+test("mounted Excalidraw zoom buttons retain their icon-only controls and labels", async () => {
+  const view = await mountPreview();
+  try {
+    for (const key of ["documents.zoomOut", "documents.zoomIn"]) {
+      const button = [...view.host.querySelectorAll<HTMLButtonElement>("button")].find(node => node.title === i18n.t(key));
+      assert.ok(button);
+      assert.equal(button.textContent, "");
+      const icon = button.querySelector("svg");
+      assert.ok(icon);
+      assert.equal(icon.getAttribute("width"), "16");
+      assert.equal(icon.getAttribute("height"), "16");
+    }
+  } finally { await view.close(); }
+});
+
 test("mounted Excalidraw repeated Fit stays at 50% with transformed SVG bounds", async () => {
   const view = await mountPreview();
   try {

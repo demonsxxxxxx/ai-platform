@@ -39,11 +39,22 @@ test('one initial request; 200ms debounce; late query success and finally cannot
  await h.resolve(0,'initial');await h.query('alpha');await h.tick(80);assert.equal(h.requests.length,1);await h.tick(150);assert.equal(h.requests.length,2);
  await h.query('beta');await h.tick();assert.equal(h.requests.length,3);
  assert.equal(h.requests[2].params.search,'beta');await h.resolve(2,'beta-result');await h.resolve(1,'alpha-stale');assert.ok(h.visible('beta-result'));assert.ok(!h.visible('alpha-stale'));
- await act(async()=>{document.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true}));});
- await act(async()=>{document.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));});assert.deepEqual(h.selected,['beta-result']);
+ await act(async()=>{document.querySelector('input')!.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true}));});
+ await act(async()=>{document.querySelector('input')!.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));});assert.deepEqual(h.selected,['beta-result']);
  await h.query('gamma');await h.tick();await h.query('delta');await h.tick();
  await h.resolve(3,'gamma-stale');assert.ok(!h.visible('gamma-stale'));assert.ok(document.querySelectorAll('[class*="grid-area:1/1"]')[0].classList.contains('opacity-100'), 'stale finally must not hide the latest skeleton');assert.ok(document.querySelectorAll('[class*="grid-area:1/1"]')[1].classList.contains('opacity-0'), 'stale finally must not reveal the loading results layer');
  await h.resolve(4,'delta-result');assert.ok(h.visible('delta-result'));
+ }finally{await h.close();}
+});
+test('input keyboard navigation stays inside the real modal and ignores IME composition',async()=>{
+ const h=await harness();try{
+ await h.resolve(0,'keyboard-result');
+ const input=document.querySelector('input')!;
+ const key=async(key:string,isComposing=false)=>{await act(async()=>{input.dispatchEvent(new KeyboardEvent('keydown',{key,isComposing,bubbles:true,cancelable:true}));});};
+ await key('ArrowDown',true);await key('Enter');assert.deepEqual(h.selected,[]);
+ await key('ArrowDown');await key('ArrowUp');await key('Enter');assert.deepEqual(h.selected,[]);assert.equal(document.activeElement,input);
+ await key('ArrowDown');await key('Enter',true);assert.deepEqual(h.selected,[]);
+ await key('Enter');assert.deepEqual(h.selected,['keyboard-result']);
  }finally{await h.close();}
 });
 test('pagination belongs to its query; stale page cannot append or change latest cursor/hasMore',async()=>{
