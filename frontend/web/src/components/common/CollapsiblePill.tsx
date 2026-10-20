@@ -49,7 +49,7 @@ function StatusIndicator({
       <Spin
         size={12}
         className="shrink-0"
-        color={getSpinnerColor(variant)}
+        style={{ color: getSpinnerColor(variant) }}
       />
     );
   }

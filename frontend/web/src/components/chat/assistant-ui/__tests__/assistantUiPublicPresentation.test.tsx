@@ -227,8 +227,9 @@ test("generic public tools expose distinct safe failed and denied states", async
     assert.ok(activities[0]?.querySelector(".lucide-circle-x"));
     assert.ok(activities[1]?.querySelector(".lucide-ban"));
 
-    const statuses = [...container.querySelectorAll('[role="status"]')];
-    assert.equal(statuses.length >= 2, true);
+    const statuses = [...container.querySelectorAll('[data-slot="tool-error"]')];
+    assert.equal(statuses.length, 2);
+    assert.equal(container.querySelectorAll('[role="status"]').length, 0, "tool errors must not duplicate the message live status");
     const labels = statuses
       .map((status) => status.getAttribute("aria-label"))
       .filter((label): label is string => Boolean(label));

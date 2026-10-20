@@ -1,3 +1,4 @@
+// Adapted from assistant-ui Elements thread.aui.tsx action bar at 727a02dc (MIT).
 import { ActionBarPrimitive, MessageProvider, fromThreadMessageLike, useAui, useAuiState } from "@assistant-ui/react";
 import { Button, toast } from "@lobehub/ui/base-ui";
 import { Check, Copy } from "lucide-react";
@@ -37,7 +38,7 @@ export function AssistantUiMessageActions({
   }, messageId, { type: "complete", reason: "stop" }), [messageId, text]);
   return (
     <MessageProvider message={message} index={0}>
-      <ActionBarPrimitive.Root className="flex items-center gap-1" data-assistant-ui-message-actions>
+      <ActionBarPrimitive.Root hideWhenRunning className="flex items-center gap-1" data-slot="aui-message-actions" data-assistant-ui-message-actions>
         {text && <CopyMessageButton />}
         {children}
       </ActionBarPrimitive.Root>

@@ -37,6 +37,8 @@ import type { RevealPreviewRequest } from "./items/revealPreviewData";
 import type { RevealPreviewOpenSource } from "./items/revealPreviewState";
 import { buildArtifactPreviewRequest } from "./items/artifactPreview";
 import { downloadArtifactFile } from "./items/artifactDownload";
+import { ActivityErrorBoundary } from "./elements/ActivityErrorBoundary";
+import { ArtifactCard } from "./elements/ArtifactCard";
 import {
   getArtifactDownloadController,
   type ArtifactDownloadController,
@@ -45,16 +47,7 @@ import {
 } from "./items/artifactDownloadRegistry";
 
 // Render single message part (shared by main agent and subagent)
-export function MessagePartRenderer({
-  part,
-  messageId,
-  partIndex,
-  isStreaming,
-  isLast,
-  onOpenPreview,
-  artifactDownloadScope,
-  withinWorkDetails,
-}: {
+export interface MessagePartRendererProps {
   part: MessagePart;
   messageId?: string;
   partIndex?: number;
@@ -66,7 +59,18 @@ export function MessagePartRenderer({
   ) => boolean;
   artifactDownloadScope?: ArtifactDownloadScope;
   withinWorkDetails?: boolean;
-}) {
+}
+
+function MessagePartRendererContent({
+  part,
+  messageId,
+  partIndex,
+  isStreaming,
+  isLast,
+  onOpenPreview,
+  artifactDownloadScope,
+  withinWorkDetails,
+}: MessagePartRendererProps) {
   const { t } = useTranslation();
   const textNodeRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
@@ -227,6 +231,14 @@ export function MessagePartRenderer({
   return null;
 }
 
+export function MessagePartRenderer(props: MessagePartRendererProps) {
+  return (
+    <ActivityErrorBoundary resetKey={props.part}>
+      <MessagePartRendererContent {...props} />
+    </ActivityErrorBoundary>
+  );
+}
+
 const RUN_STATUS_EVENT_I18N_KEYS: Readonly<Record<string, string>> = {
   queued: "chat.runStatus.event.queued",
   run_started: "chat.runStatus.event.runStarted",
@@ -383,8 +395,8 @@ function createMessagePartIdentity(part: MessagePart, index: number): string {
     case "artifact":
       return `${part.type}:${part.artifact_id}`;
     case "tool":
-      return part.id
-        ? `${part.type}:${part.id}`
+      return part.public_operation_id || part.id
+        ? `${part.type}:${part.public_operation_id || part.id}`
         : `${part.type}:object:${getMessagePartObjectToken(part)}`;
     case "run_status":
       return part.event_id
@@ -498,79 +510,60 @@ function ArtifactCardItem({
     hasDownloadFailed ? "common.retry" : "chat.message.download",
     { defaultValue: ARTIFACT_DOWNLOAD_RETRY_LABEL },
   );
-  const body = (
-    <>
-      <div
-        className={clsx(
-          "flex h-10 w-10 shrink-0 items-center justify-center rounded-lg",
-          info.bg,
-        )}
-      >
-        <FileIcon size={18} className={info.color} />
-      </div>
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-sm font-medium text-[var(--theme-text)]">
-          {part.label}
-        </div>
-        <div className="mt-0.5 flex min-w-0 items-center gap-2 text-xs text-[var(--theme-text-secondary)]">
-          <span className="truncate">{info.label}</span>
-          <span className="shrink-0">{sizeText}</span>
-        </div>
-      </div>
-    </>
-  );
-
-  return (
-    <div
-      role="group"
-      aria-label={part.label}
-      className={clsx(
-        "my-1 flex min-w-0 max-w-xl items-center gap-3 rounded-lg border px-3 py-2.5",
-        "flex-wrap",
-        "border-[var(--theme-border)] bg-[var(--theme-bg-card)] text-left shadow-[0_4px_12px_rgba(18,38,63,0.03)]",
-        "dark:bg-stone-900",
-      )}
-    >
-      {body}
-      {(previewRequest || part.download_url) && (
-        <div className="ml-auto flex shrink-0 items-center gap-1.5">
-          {previewRequest && onOpenPreview && (
-            <Button type="text"
-              htmlType="button"
-              onClick={handlePreview}
-              aria-label={`${previewLabel} ${part.label}`}
-              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--theme-border)] px-2 text-xs font-medium text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)]"
-            >
-              <Eye size={13} />
-              <span>{previewLabel}</span>
-            </Button>
-          )}
-          {part.download_url && (
-            <Button type="text"
-              htmlType="button"
-              onClick={() => void handleDownload()}
-              disabled={isDownloading}
-              aria-label={`${downloadLabel} ${part.label}`}
-              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--theme-border)] px-2 text-xs font-medium text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)] disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {isDownloading ? (
-                <LoaderCircle size={13} className="animate-spin" />
-              ) : (
-                <Download size={13} />
-              )}
-              <span>{downloadLabel}</span>
-            </Button>
-          )}
-        </div>
-      )}
-      {hasDownloadFailed && (
-        <div
-          role="alert"
-          className="basis-full text-xs text-red-600 dark:text-red-400"
+  const artifactStatus = part.status === "failed"
+    ? "failed"
+    : part.status === "created"
+      ? "pending"
+      : part.status === "ready" || part.status === "available" || part.download_url || part.preview_url
+        ? "ready"
+        : "legacy";
+  const canDeliver = artifactStatus === "ready";
+  const statusLabel = artifactStatus === "pending"
+    ? "正在准备"
+    : artifactStatus === "failed"
+      ? "交付失败"
+      : undefined;
+  const actions = canDeliver && (previewRequest || part.download_url) ? (
+    <div className="ml-auto flex shrink-0 items-center gap-1.5">
+      {previewRequest && onOpenPreview && (
+        <Button
+          type="text"
+          htmlType="button"
+          onClick={handlePreview}
+          aria-label={`${previewLabel} ${part.label}`}
+          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--theme-border)] px-2 text-xs font-medium text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)]"
         >
-          {ARTIFACT_DOWNLOAD_FAILURE_MESSAGE}
-        </div>
+          <Eye size={13} />
+          <span>{previewLabel}</span>
+        </Button>
+      )}
+      {part.download_url && (
+        <Button
+          type="text"
+          htmlType="button"
+          onClick={() => void handleDownload()}
+          disabled={isDownloading}
+          aria-label={`${downloadLabel} ${part.label}`}
+          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--theme-border)] px-2 text-xs font-medium text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)] disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {isDownloading ? <LoaderCircle size={13} className="animate-spin" /> : <Download size={13} />}
+          <span>{downloadLabel}</span>
+        </Button>
       )}
     </div>
+  ) : undefined;
+
+  return (
+    <ArtifactCard
+      label={part.label}
+      typeLabel={info.label}
+      sizeLabel={sizeText}
+      status={artifactStatus}
+      icon={<FileIcon size={18} className={info.color} />}
+      iconBackgroundClassName={info.bg}
+      statusLabel={statusLabel}
+      errorMessage={hasDownloadFailed ? ARTIFACT_DOWNLOAD_FAILURE_MESSAGE : undefined}
+      actions={actions}
+    />
   );
 }

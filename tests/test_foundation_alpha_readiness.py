@@ -4572,7 +4572,7 @@ def test_runtime_relevant_diff_treats_frontend_source_as_backend_runtime_neutral
             "frontend/web/src/__tests__/frontendPrdClosureSmokeSource.test.ts",
             "frontend/web/src/components/chat/AgentOptionButton.tsx",
             "frontend/web/src/components/selectors/SkillSelector.tsx",
-            "frontend/web/src/librechat-ui/Composer.tsx",
+            "frontend/web/src/components/chat/assistant-ui/elements/composer.tsx",
         ]
     )
     monkeypatch.setattr(

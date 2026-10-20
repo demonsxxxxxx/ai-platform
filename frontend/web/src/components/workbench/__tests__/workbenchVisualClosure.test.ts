@@ -202,7 +202,6 @@ test("workbench right context uses the same canvas as the main workspace", () =>
     "src/components/workbench/ProfileDriveWorkspaceBrowser.tsx",
   );
   const chatInput = read("src/components/chat/ChatInput.tsx");
-  const composer = read("src/librechat-ui/Composer.tsx");
 
   assert.match(surface, /threadBody: "flex min-h-0 flex-1 flex-col px-3 pb-2 pt-3 sm:px-4"/);
   assert.match(surface, /context:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
@@ -224,9 +223,9 @@ test("workbench right context uses the same canvas as the main workspace", () =>
   assert.match(rightPanel, /LibreChatSidePanel/);
   assert.match(sidePanel, /bg-\[var\(--theme-workbench-canvas\)\]/);
   assert.match(driveBrowser, /workbenchSurface\.compactPanel/);
-  assert.match(chatInput, /LibreChatComposerFrame/);
+  assert.match(chatInput, /<ComposerBar/);
   assert.doesNotMatch(chatInput, /ChatInputHelpMenu/);
-  assert.match(composer, /backgroundColor: "var\(--theme-workbench-canvas\)"/);
+  assert.match(chatInput, /backgroundColor: "var\(--theme-workbench-canvas\)"/);
   assert.doesNotMatch(chatInput, /backgroundColor: "var\(--theme-bg\)"/);
 });
 
@@ -654,12 +653,12 @@ test("model admin governance state follows its projection", () => {
 
 test("composer and command surfaces use stable compact dimensions", () => {
   const css = read("src/styles/chat.css");
-  const composer = read("src/librechat-ui/Composer.tsx");
+  const composer = read("src/components/chat/assistant-ui/elements/composer.tsx");
   assert.match(css, /\.chat-input-container/);
   assert.match(css, /min-height:\s*112px/);
   assert.match(css, /max-height:\s*min\(52dvh,\s*420px\)/);
-  assert.match(composer, /grid-cols-\[minmax\(0,1fr\)_auto\]/);
-  assert.match(css, /\.composer-command-surface/);
+  assert.match(composer, /flex w-full flex-col/);
+  assert.match(composer, /PopoverPortal/);
   assert.match(css, /overflow:\s*hidden/);
 });
 
@@ -781,9 +780,9 @@ test("post-login shell uses a single compact LibreChat-style sidebar", () => {
 
 test("post-login composer and selector surfaces use shared semantic workbench tokens", () => {
   const sources = new Map([
-    ["LibreChatComposer", read("src/librechat-ui/Composer.tsx")],
-    ["LibreChatCommandMenu", read("src/librechat-ui/CommandMenu.tsx")],
-    ["LibreChatComposerChip", read("src/librechat-ui/Chips.tsx")],
+    ["LibreChatComposer", read("src/components/chat/assistant-ui/elements/composer.tsx")],
+    ["LibreChatCommandMenu", read("src/components/chat/assistant-ui/elements/composer.tsx")],
+    ["LibreChatComposerChip", read("src/components/chat/assistant-ui/elements/composer-chips.tsx")],
     ["SkillSelector", read("src/components/selectors/SkillSelector.tsx")],
     ["ToolSelector", read("src/components/selectors/ToolSelector.tsx")],
   ]);
@@ -808,9 +807,9 @@ test("post-login composer and selector surfaces use shared semantic workbench to
   const toolSelector = sources.get("ToolSelector")!;
   const skillSelector = sources.get("SkillSelector")!;
 
-  assert.match(commandMenu, /data-librechat-command-menu/);
-  assert.match(commandMenu, /bg-\[var\(--theme-workbench-panel\)\]/);
-  assert.match(chips, /data-librechat-composer-chip/);
+  assert.match(commandMenu, /data-slot="composer-menu"/);
+  assert.match(commandMenu, /var\(--theme-workbench-panel\)/);
+  assert.match(chips, /data-slot="composer-context-chip"/);
   assert.match(chips, /theme-warning-soft/);
   assert.match(toolSelector, /data-composer-mcp-selector/);
   assert.match(toolSelector, /theme-danger-soft/);

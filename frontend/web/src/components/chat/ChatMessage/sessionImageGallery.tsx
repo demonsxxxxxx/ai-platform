@@ -85,6 +85,7 @@ function collectPartImages(
   return [];
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function collectSessionImageGalleryItems(
   messages: Message[],
 ): SessionImageGalleryItem[] {
@@ -136,14 +137,14 @@ export function SessionImageGalleryProvider({
   );
   const [activeImage, setActiveImage] =
     useState<SessionImageGalleryItem | null>(null);
-  const activeIndex = activeImage
-    ? items
-        .filter((item) => item.group === activeImage.group)
-        .findIndex((item) => item.src === activeImage.src)
-    : -1;
   const activeGalleryItems = activeImage
     ? items.filter((item) => item.group === activeImage.group)
     : [];
+  const activeIndex = activeImage
+    ? activeGalleryItems.findIndex(
+        (item) => item.id === activeImage.id && item.src === activeImage.src,
+      )
+    : -1;
   const currentItem =
     activeIndex >= 0 ? activeGalleryItems[activeIndex] : activeImage;
   const currentImageSrc = useSafeAttachmentImageSrc(

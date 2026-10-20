@@ -20,7 +20,7 @@
 | 管理列表 | 同入口的 `Table`、`Pagination` | 数据列映射、分页及选择状态由所属业务页面维护，不改变查询语义 |
 | 菜单与提示 | 同入口的 `DropdownMenu`、`Popover`、`Tooltip`、`Tabs` | 使用库公开交互合同，不重新编写定位、Escape 和焦点状态机 |
 | 通知与加载 | 同入口的 `toast`、`ToastHost`、`useToast`、`Spin`、`Skeleton` | 新入口已提供 Toast；不假设存在同名 `Message` API |
-| AI 聊天交互 | `@assistant-ui/react` 的公开 primitives/runtime | 按[聊天接入合同](assistant-ui-chat-adoption.md)组合 thread、message、composer、actions 和 suggestions；内部通用按钮、输入、弹窗仍使用 Lobe |
+| AI 聊天交互 | 固定来源的 assistant-ui Elements 与公开 primitives/runtime | 按[聊天接入合同](assistant-ui-chat-adoption.md)组合 thread、message、composer、actions 和 suggestions；内部通用按钮、输入、弹窗仍使用 Lobe |
 
 Root barrel 中部分组件仍然存在，但旧 Button、Modal 已标记 `@deprecated`。业务控件优先从 `/base-ui` 导入；Provider、国际化及其他只在 root/subpath 导出的能力按各自公开合同使用，不能将“禁止旧控件”误写为“禁止一切 root import”。不从包的私有源码路径导入。
 
@@ -66,7 +66,7 @@ AI 聊天交互采用 assistant-ui，内部通用控件及文档、编辑器外�
 
 以下旧文件已删除：`common/EnterpriseSelect.tsx`、`Checkbox.tsx`、`Table.tsx`、`Pagination.tsx`、`LoadingSpinner.tsx` 和 `skill/Toggle.tsx`；旧导出和生产消费者均已移除，无兼容入口；旧分页、旧 Select 的专用 CSS 和旧 Checkbox 的 `check-pop` 动画也已删除。选择器挂载测试已重命名为 `common/__tests__/LobeSelectField.mounted.test.tsx`。`@radix-ui/react-select` 与 `react-hot-toast` 的直接依赖及对应锁文件 importer 记录已移除；库存回归断言这些旧文件、旧测试文件名和直接依赖保持缺席。
 
-保留的传递依赖链为 `@assistant-ui/react@0.15.16 → radix-ui@1.6.7 → @radix-ui/react-select@2.3.7`，由现有聊天 UI runtime 的依赖合同拥有；项目业务代码不直接使用它，也不手工删除它所需的锁文件条目。`frontend/web/THIRD_PARTY_NOTICES.md` 保留已退役适配代码的 MIT 来源许可，不再将旧适配描述为当前实现。
+保留的传递依赖链为 `@assistant-ui/react@0.15.29 → radix-ui@1.8.1 → @radix-ui/react-select@2.4.1`，由现有聊天 UI runtime 的依赖合同拥有；项目业务代码不直接使用它，也不手工删除它所需的锁文件条目。`frontend/web/THIRD_PARTY_NOTICES.md` 保留已退役适配代码的 MIT 来源许可，不再将旧适配描述为当前实现。
 
 专业查看器保留业务外壳：`ToolResultPanel` / `EditorSidebar` 拥有主内容让位、宽度拖拽、移动手势和面板历史；`SkillForm` 保留同一编辑状态下的全屏模式，退出按钮通过公开 `style` 固定在可见的右上角；Mermaid 查看器保留缩放、平移及图形几何。这些 Portal 通过公开 `useAppElement` 进入 Lobe 主题宿主，工具结果只由面板自身创建一次 Portal。Markdown/XLSX 的语义表格与 Provider 外的 `ErrorBoundary` 刷新按钮仍是明确例外，不恢复旧通用控件。
 

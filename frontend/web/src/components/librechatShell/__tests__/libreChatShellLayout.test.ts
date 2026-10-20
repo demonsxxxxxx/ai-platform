@@ -80,7 +80,7 @@ test("composer and right panel expose LibreChat-style regions without backend au
     "src/components/workbench/ProfileDriveWorkspaceBrowser.tsx",
   );
   const chatInput = read("src/components/chat/ChatInput.tsx");
-  const composer = read("src/librechat-ui/Composer.tsx");
+  const composer = read("src/components/chat/assistant-ui/elements/composer.tsx");
   const chatCss = read("src/styles/chat.css");
 
   assert.match(sidePanel, /data-librechat-side-panel/);
@@ -99,13 +99,13 @@ test("composer and right panel expose LibreChat-style regions without backend au
   assert.match(legacySidePanel, /\.\.\/\.\.\/librechat-ui/);
   assert.match(rightPanel, /LibreChatSidePanel/);
   assert.match(rightPanel, /librechat-ui\/SidePanel/);
-  assert.match(chatInput, /LibreChatComposerFrame/);
-  assert.match(chatInput, /LibreChatComposerRegion region="chips"/);
-  assert.match(chatInput, /LibreChatComposerRegion region="textarea"/);
-  assert.match(chatInput, /LibreChatComposerRegion region="toolbar"/);
-  assert.match(composer, /data-librechat-composer="phase1"/);
-  assert.match(composer, /data-librechat-composer-region=\{region\}/);
-  assert.match(chatCss, /\.librechat-composer-shell/);
+  assert.match(chatInput, /<ComposerBar/);
+  assert.match(chatInput, /data-slot="composer-chips"/);
+  assert.match(chatInput, /data-slot="composer-input"/);
+  assert.match(chatInput, /data-slot="composer-toolbar-region"/);
+  assert.match(composer, /ComposerPrimitive.Root/);
+  assert.match(composer, /data-slot="composer-bar"/);
+  assert.match(chatCss, /\.chat-input-shell/);
   assert.doesNotMatch(
     sidePanel + rightPanel + chatInput,
     /librechat-data-provider|useRecoilState|~\/Providers|~\/store/,

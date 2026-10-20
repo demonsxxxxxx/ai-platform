@@ -92,7 +92,7 @@ CI lane alongside the fetch parser and history consumers.
 
 ### Public model catalog and selection
 
-The shared composer uses `ChatInputToolbar` and `ComposerModelPanel` to select
+The shared composer uses `ChatInputToolbar` and the Elements `ComposerModelPicker` to select
 an administrator-enabled public model. `ModelCatalogProvider` hydrates only
 `/api/agent/models/available`; its subject-scoped read remains abortable and
 rejects stale completions after login changes or unmount. `default_model_id`

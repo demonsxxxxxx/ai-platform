@@ -176,6 +176,10 @@ function bootstrapSource(loading = false, chatFiles = false) {
           document: 52428800
         }
       });
+      if (url.pathname === '/api/ai/chat/sessions/session-synthetic/files') return json({ session_id: 'session-synthetic', files: [{
+        file_id: 'file-synthetic', run_id: 'run-synthetic-1', name: '已确认附件.pdf', mime_type: 'application/pdf', size_bytes: 2048,
+        preview_url: '/api/ai/files/file-synthetic/preview?session_id=session-synthetic', download_url: '/api/ai/files/file-synthetic/download?session_id=session-synthetic'
+      }] });
       if (url.pathname === '/api/ai/chat/sessions') return json({ sessions: [], next_cursor: null });
       if (url.pathname === '/api/sessions') return json({ sessions: [], total: 0, skip: 0, limit: 20, has_more: false });
       if (url.pathname.startsWith('/api/')) {

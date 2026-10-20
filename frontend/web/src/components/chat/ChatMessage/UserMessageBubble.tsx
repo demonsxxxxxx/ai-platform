@@ -3,9 +3,12 @@ import { clsx } from "clsx";
 import { getUserMessageActionButtonVisibilityClass } from "./userMessageBubbleState";
 import { AssistantUiMessageActions } from "../assistant-ui/MessageActions";
 import { useTranslation } from "react-i18next";
-import { AttachmentCard, ImageViewer } from "../../common";
+import { ImageViewer } from "../../common";
+import { MessageAttachments } from "../assistant-ui/MessageAttachments";
 import type { MessageAttachment } from "../../../types";
-import { MarkdownContent } from "./MarkdownContent";
+import { MessagePrimitive } from "@assistant-ui/react";
+import { UserMessageContent } from "../assistant-ui/elements/thread";
+import { AssistantUiMarkdownText } from "../assistant-ui/MessageParts";
 import { openAttachmentPreview } from "../attachmentPreviewStore";
 
 import { useSessionImageGallery } from "./sessionImageGallery";
@@ -33,28 +36,15 @@ export function UserMessageBubble({
     if (!attachments || attachments.length === 0) return null;
 
     return (
-      <div className="flex flex-row justify-end flex-wrap gap-2 sm:gap-3 mb-2">
-        {attachments.map((attachment) => {
-          return (
-            <AttachmentCard
-              key={attachment.id}
-              attachment={attachment}
-              variant="preview"
-              size="default"
-              onClick={(previewSrc) => {
-                if (previewSrc) {
-                  sessionImageGallery?.openImage(previewSrc, attachment.name);
-                  if (!sessionImageGallery) {
-                    setImageViewerSrc(previewSrc);
-                  }
-                } else {
-                  openAttachmentPreview(attachment, "user-message");
-                }
-              }}
-            />
-          );
-        })}
-      </div>
+      <MessageAttachments attachments={attachments} className="mb-2"
+        onOpen={(attachment, previewSrc) => {
+          if (previewSrc) {
+            sessionImageGallery?.openImage(previewSrc, attachment.name);
+            if (!sessionImageGallery) setImageViewerSrc(previewSrc);
+          } else {
+            openAttachmentPreview(attachment, "user-message");
+          }
+        }} />
     );
   };
 
@@ -79,21 +69,9 @@ export function UserMessageBubble({
 
           {/* Message bubble */}
           {hasContent && (
-            <div
-              className="max-w-full rounded-lg border px-4 py-2 shadow-[0_4px_12px_rgba(18,38,63,0.03)]"
-              style={{
-                background:
-                  "color-mix(in srgb, var(--theme-primary-light) 42%, var(--theme-bg-card))",
-                borderColor: "var(--theme-border)",
-              }}
-            >
-              <div
-                className="leading-relaxed text-[15px] sm:text-base"
-                style={{ color: "var(--theme-text)" }}
-              >
-                <MarkdownContent content={content!} />
-              </div>
-            </div>
+            <UserMessageContent>
+              <MessagePrimitive.Parts components={{ Text: AssistantUiMarkdownText }} unstable_showEmptyOnNonTextEnd={false} />
+            </UserMessageContent>
           )}
 
           <div className={clsx("mt-1 flex justify-end", getUserMessageActionButtonVisibilityClass(isLastMessage))}>

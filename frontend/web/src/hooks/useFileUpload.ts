@@ -12,10 +12,19 @@ import {
 import { uuid } from "../utils/uuid";
 import type { MessageAttachment, FileCategory, UploadResult } from "../types";
 
+export interface FileUploadHandle {
+  tempId: string;
+  file: File;
+  done: Promise<MessageAttachment | null>;
+  isSettled: () => boolean;
+}
+
 export interface FileUploadControls {
   uploadLimitsBytes: ResolvedUploadBytePolicy["limitsBytes"] | null;
-  uploadFiles: (files: FileList | File[], category?: FileCategory) => void;
-  uploadFile: (file: File, category?: FileCategory) => void;
+  uploadFiles: (files: FileList | File[], category?: FileCategory, startFile?: (file: File, category: FileCategory) => void) => void;
+  uploadFile: (file: File, category?: FileCategory) => FileUploadHandle | null;
+  getUploadHandle: (tempId: string) => FileUploadHandle | undefined;
+  releaseUploadHandle: (tempId: string) => void;
   validateSize: (file: File, category: FileCategory) => boolean;
   validateCount: (newFileCount: number) => boolean;
   cancelUpload: (id: string) => void;
@@ -166,7 +175,9 @@ interface FileUploadTaskOptions {
 
 interface FileUploadTask {
   tempId: string;
-  done: Promise<void>;
+  file: File;
+  done: Promise<MessageAttachment | null>;
+  isSettled: () => boolean;
 }
 
 export function isDuplicateFileUpload(
@@ -249,7 +260,9 @@ export function startFileUploadTask({
 }: FileUploadTaskOptions): FileUploadTask {
   const tempId = `temp-${createId()}`;
   const isCancelled = () => cancelled.has(tempId);
+  let settled = false;
   const finish = () => {
+    settled = true;
     abortMap.delete(tempId);
     cancelled.delete(tempId);
     onTaskSettled?.(tempId);
@@ -269,14 +282,14 @@ export function startFileUploadTask({
   };
   onAttachmentsChange((previous) => [...previous, tempAttachment]);
 
-  const done = (async () => {
+  const done = (async (): Promise<MessageAttachment | null> => {
     try {
       if (waitFor) {
         await waitFor;
       }
       if (isCancelled()) {
         finish();
-        return;
+        return null;
       }
       onAttachmentsChange((previous) =>
         previous.map((attachment) =>
@@ -288,7 +301,7 @@ export function startFileUploadTask({
       const processedFile = await prepareFile(file);
       if (isCancelled()) {
         finish();
-        return;
+        return null;
       }
       onAttachmentsChange((previous) =>
         previous.map((attachment) =>
@@ -347,7 +360,7 @@ export function startFileUploadTask({
           await retryDelay(attempt);
           if (isCancelled()) {
             finish();
-            return;
+            return null;
           }
           onAttachmentsChange((previous) =>
             previous.map((attachment) =>
@@ -368,7 +381,7 @@ export function startFileUploadTask({
           reportFailure(error);
         }
         finish();
-        return;
+        return null;
       }
       const finalId = createId();
       const finalAttachment: MessageAttachment = {
@@ -388,11 +401,12 @@ export function startFileUploadTask({
       );
       onAttachmentReplaced?.(tempId, finalId);
       finish();
+      return finalAttachment;
     } catch (error) {
       abortMap.delete(tempId);
       if (isCancelled()) {
         finish();
-        return;
+        return null;
       }
       const message = settleUploadFailure(error, t, () => {
         onAttachmentsChange((previous) =>
@@ -404,10 +418,11 @@ export function startFileUploadTask({
         notifyError(message);
       }
       finish();
+      return null;
     }
   })();
 
-  return { tempId, done };
+  return { tempId, file, done, isSettled: () => settled };
 }
 
 export function clearAttachmentResources(
@@ -438,6 +453,7 @@ export function useFileUpload({
   const cancelledUploadIdsRef = useRef<Set<string>>(new Set());
   const uploadSchedulerRef = useRef(createUploadScheduler(1));
   const uploadSourcesRef = useRef<Map<string, File>>(new Map());
+  const uploadHandlesRef = useRef<Map<string, FileUploadHandle>>(new Map());
 
   // Fetch upload limits once
   useEffect(() => {
@@ -497,6 +513,15 @@ export function useFileUpload({
     [uploadPolicy, attachments.length, t],
   );
 
+  /** Forget one task handle after the composer/runtime no longer needs it. */
+  const releaseUploadHandle = useCallback((tempId: string) => {
+    const handle = uploadHandlesRef.current.get(tempId);
+    if (!handle) return;
+    for (const [id, candidate] of uploadHandlesRef.current) {
+      if (candidate === handle) uploadHandlesRef.current.delete(id);
+    }
+  }, []);
+
   /** Cancel an in-progress upload by attachment id */
   const cancelUpload = useCallback(
     (id: string) => {
@@ -515,6 +540,7 @@ export function useFileUpload({
   const clearUploads = useCallback(() => {
     clearAttachmentResources(attachments, cancelUpload);
     uploadSourcesRef.current.clear();
+    uploadHandlesRef.current.clear();
     onAttachmentsChange([]);
   }, [attachments, cancelUpload, onAttachmentsChange]);
 
@@ -526,16 +552,17 @@ export function useFileUpload({
         cancelUpload,
         onAttachmentsChange,
       );
+      releaseUploadHandle(attachment.id);
     },
-    [cancelUpload, onAttachmentsChange],
+    [cancelUpload, onAttachmentsChange, releaseUploadHandle],
   );
 
   /** Upload a single file with progress tracking */
   const uploadFile = useCallback(
-    (file: File, category?: FileCategory) => {
+    (file: File, category?: FileCategory): FileUploadHandle | null => {
       if (isDuplicateFileUpload(file, uploadSourcesRef.current)) {
         toast.error(String(t("fileUpload.duplicateFile")));
-        return;
+        return null;
       }
 
       const fileCategory = category || getFileCategory(file);
@@ -563,9 +590,12 @@ export function useFileUpload({
         },
         onAttachmentReplaced: (temporaryId, finalId) => {
           const source = uploadSourcesRef.current.get(temporaryId);
-          if (!source) return;
-          uploadSourcesRef.current.delete(temporaryId);
-          uploadSourcesRef.current.set(finalId, source);
+          const handle = uploadHandlesRef.current.get(temporaryId);
+          if (source) {
+            uploadSourcesRef.current.delete(temporaryId);
+            uploadSourcesRef.current.set(finalId, source);
+          }
+          if (handle) uploadHandlesRef.current.set(finalId, handle);
         },
         onTaskSettled: (temporaryId) => {
           uploadSourcesRef.current.delete(temporaryId);
@@ -573,13 +603,15 @@ export function useFileUpload({
         },
       });
       uploadSourcesRef.current.set(task.tempId, file);
+      uploadHandlesRef.current.set(task.tempId, task);
+      return task;
     },
     [onAttachmentsChange, t],
   );
 
   /** Validate and upload multiple files */
   const uploadFiles = useCallback(
-    (files: FileList | File[], category?: FileCategory) => {
+    (files: FileList | File[], category?: FileCategory, startFile?: (file: File, category: FileCategory) => void) => {
       const fileArray = Array.from(files);
       if (fileArray.length === 0) return;
 
@@ -595,16 +627,21 @@ export function useFileUpload({
       for (const file of acceptedFiles) {
         const fileCategory = category || getFileCategory(file);
         if (!validateSize(file, fileCategory)) continue;
-        uploadFile(file, fileCategory);
+        if (startFile) startFile(file, fileCategory);
+        else uploadFile(file, fileCategory);
       }
     },
     [acceptedFileTypes, t, validateCount, validateSize, uploadFile],
   );
 
+  const getUploadHandle = useCallback((id: string) => uploadHandlesRef.current.get(id), []);
+
   const controls: FileUploadControls = {
     uploadLimitsBytes: uploadPolicy?.limitsBytes ?? null,
     uploadFiles,
     uploadFile,
+    getUploadHandle,
+    releaseUploadHandle,
     validateSize,
     validateCount,
     cancelUpload,

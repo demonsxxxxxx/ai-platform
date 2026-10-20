@@ -1,4 +1,5 @@
 import { createContext, useContext } from "react";
+import type { AttachmentAdapter } from "@assistant-ui/react";
 
 /** Platform submission and draft rules behind assistant-ui's composer actions. */
 export interface PlatformComposerBinding {
@@ -9,6 +10,7 @@ export interface PlatformComposerBinding {
   disabled: boolean;
   sendDisabled: boolean;
   canCancel: boolean;
+  attachmentAdapter?: AttachmentAdapter;
 }
 
 export const PlatformComposerContext = createContext<{

@@ -13,12 +13,12 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 import { ListTree } from "lucide-react";
-import { ThreadPrimitive } from "@assistant-ui/react";
+import { ThreadPrimitive, type ExternalStoreThreadListAdapter } from "@assistant-ui/react";
 import { toast } from "@lobehub/ui/base-ui";
 import { useAuth } from "../../../hooks/useAuth";
 import { ChatMessage } from "../../chat/ChatMessage";
 import { AssistantUiProjection } from "../../chat/assistant-ui/AssistantUiProjection";
-import { AssistantUiMessageFrame } from "../../chat/assistant-ui/MessageFrame";
+import { ThreadMessage } from "../../chat/assistant-ui/elements/thread";
 import { AttachmentPreviewHost } from "../../chat/AttachmentPreviewHost";
 import { RevealPreviewHost } from "../../chat/ChatMessage/items/RevealPreviewHost";
 import { SessionImageGalleryProvider } from "../../chat/ChatMessage/sessionImageGallery";
@@ -144,7 +144,7 @@ const AssistantUiMessageContentContext = createContext<ReactNode>(null);
 
 function AssistantUiProjectedMessage() {
   const content = useContext(AssistantUiMessageContentContext);
-  return <AssistantUiMessageFrame>{content}</AssistantUiMessageFrame>;
+  return <ThreadMessage>{content}</ThreadMessage>;
 }
 
 const ASSISTANT_UI_MESSAGE_COMPONENTS = {
@@ -153,6 +153,7 @@ const ASSISTANT_UI_MESSAGE_COMPONENTS = {
 
 interface ChatViewProps {
   messages: Message[];
+  threadListAdapter?: ExternalStoreThreadListAdapter;
   sessionId: string | null;
   conversationIdentityKey: string;
   currentRunId: string | null;
@@ -225,6 +226,7 @@ interface ChatViewProps {
 
 export function ChatView({
   messages,
+  threadListAdapter,
   sessionId,
   conversationIdentityKey,
   currentRunId,
@@ -876,7 +878,7 @@ export function ChatView({
   );
 
   const virtuosoItemContent = useCallback(
-    (index: number, message: (typeof messages)[number]) => (
+    (_index: number, message: (typeof messages)[number]) => (
       <AssistantUiMessageContentContext.Provider
         value={
           <div
@@ -885,9 +887,7 @@ export function ChatView({
             data-browser-session-id={sessionId ?? undefined}
           >
             <ChatMessage
-              message={message}
               artifactDownloadScopeContext={artifactDownloadScopeContext}
-              isLastMessage={index === messages.length - 1}
               onOpenPreview={handleOpenPreview}
             />
           </div>
@@ -902,7 +902,6 @@ export function ChatView({
     [
       artifactDownloadScopeContext,
       sessionId,
-      messages.length,
       handleOpenPreview,
     ],
   );
@@ -913,6 +912,7 @@ export function ChatView({
     initialDraftKey: initialComposerDraftKey,
     draftSnapshotRef: composerDraftSnapshotRef,
     draftScopeKey: sessionId,
+    runControlKey: currentRunId,
     attachmentScopeKey: conversationIdentityKey,
     draftScopeHandoffKey: composerDraftHandoffKey,
     onSend: onSendMessage,
@@ -1112,7 +1112,8 @@ export function ChatView({
 
   return (
     <AssistantUiProjection
-      messages={messages}
+      threadListAdapter={threadListAdapter}
+      messages={displayMessages}
       isRunning={sessionRunning}
       actions={assistantUiActions}
     >

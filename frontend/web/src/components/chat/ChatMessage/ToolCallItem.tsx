@@ -1,7 +1,7 @@
 import { FileText, Globe, Pencil, Search, Sparkles, Terminal, Wrench } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { CollapsiblePill } from "../../common";
-import type { CollapsibleStatus } from "../../common";
+import { ToolCall } from "./elements/ToolCall";
+import type { ToolErrorKind } from "./elements/ToolError";
 import {
   getPublicToolDisplayName,
   isPublicToolPresentation,
@@ -86,55 +86,47 @@ export function ToolCallItem({
   }
 
   const isStopped = lifecycleStatus === "started" && cancelled === true;
-  let status: CollapsibleStatus = "idle";
+  let status: "idle" | "loading" | "success" | "error" | "cancelled" = "idle";
+  let errorKind: ToolErrorKind | undefined;
   if (isStopped) {
     status = "cancelled";
+    errorKind = "cancelled";
   } else if (lifecycleStatus === "started") {
     status = "loading";
   } else if (lifecycleStatus === "denied") {
     status = "cancelled";
+    errorKind = "denied";
   } else if (lifecycleStatus === "completed") {
     status = "success";
   } else if (lifecycleStatus === "failed") {
     status = "error";
+    errorKind = "failed";
   }
   const statusLabel = isStopped
-    ? t("chat.runStatus.event.toolCallStopped", { defaultValue: "操作已停止，结果尚未确认" })
+    ? undefined
     : lifecycleStatus === "started"
       ? t("chat.runStatus.event.toolCallStarted", { defaultValue: "操作已开始" })
-    : lifecycleStatus === "completed"
-      ? t("chat.runStatus.event.toolCallCompleted", { defaultValue: "操作已完成" })
-      : lifecycleStatus === "denied"
-        ? t("chat.runStatus.event.toolPermissionDenied", { defaultValue: "操作未获授权" })
-        : lifecycleStatus === "failed"
-          ? t("chat.runStatus.status.failed", { defaultValue: "失败" })
-          : null;
+      : lifecycleStatus === "completed"
+        ? t("chat.runStatus.event.toolCallCompleted", { defaultValue: "操作已完成" })
+        : undefined;
   const durationLabel = formatDurationMs(durationMs);
   const ToolIcon = publicCategoryIcon(publicCategory);
   const publicCategoryLabel = PUBLIC_CATEGORY_LABELS[publicCategory] || "工具";
 
   return (
-    <CollapsiblePill
+    <ToolCall
       status={status}
       icon={<ToolIcon size={14} aria-hidden="true" className="shrink-0 opacity-80" />}
       label={`${publicCategoryLabel}：${canonicalDisplayName}`}
+      errorKind={errorKind}
       suffix={
         statusLabel || durationLabel ? (
-          <span className="flex min-w-0 items-center gap-1.5">
-            {durationLabel && (
-              <span className="text-xs tabular-nums">{durationLabel}</span>
-            )}
-            {statusLabel && (
-              <span role="status" aria-label={statusLabel} className="text-xs font-medium">
-                {statusLabel}
-              </span>
-            )}
+          <span className="text-xs font-medium">
+            {durationLabel && <span className="mr-1.5 tabular-nums">{durationLabel}</span>}
+            {statusLabel}
           </span>
         ) : undefined
       }
-      variant="tool"
-      formatLabel={false}
-      expandable={false}
     />
   );
 }

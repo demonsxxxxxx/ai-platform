@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
+import { createLobeServerTestRoot } from "../../../common/__tests__/lobeUiTestRoot";
 
 import type { MessagePart } from "../../../../types";
 import "../../../../i18n";
 import { MessageWorkActivity } from "../MessageWorkActivity";
 
-test("collapsed work activity keeps failed and denied operation counts visible", () => {
+test("collapsed work activity keeps failed and denied operation counts visible", async () => {
+  const renderToStaticMarkup = await createLobeServerTestRoot();
   const failedTool: Extract<MessagePart, { type: "tool" }> = {
     type: "tool",
     name: "Read",

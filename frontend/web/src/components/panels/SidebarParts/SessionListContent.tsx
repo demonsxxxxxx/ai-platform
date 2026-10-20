@@ -27,6 +27,7 @@ import {
 } from "../../sidebar/unreadCounts";
 import { groupSessionsByAgent, groupSessionsByTime } from "../sessionHelpers";
 import { SessionItem } from "../../sidebar/SessionItem";
+import { ThreadList } from "./ThreadList";
 import { APP_NAME } from "../../../constants";
 import {
   getWorkbenchNavItemFromPathname,
@@ -63,6 +64,14 @@ interface SessionListContentProps {
   isLoadingMore: boolean;
   loadMoreRef: React.RefCallback<HTMLElement>;
   onUpdateSession: (s: BackendSession) => void;
+  onRenameSession?: (
+    sessionId: string,
+    title: string,
+  ) => Promise<BackendSession | void>;
+  onRenameGlobalSession?: (
+    sessionId: string,
+    title: string,
+  ) => Promise<BackendSession | void>;
   onSelectGlobalSession: (session: BackendSession) => void;
   onUpdateGlobalSession: (session: BackendSession) => void;
   currentSessionId: string | null;
@@ -97,6 +106,8 @@ export function SessionListContent({
   isLoadingMore,
   loadMoreRef,
   onUpdateSession,
+  onRenameSession,
+  onRenameGlobalSession,
   onSelectGlobalSession,
   onUpdateGlobalSession,
   currentSessionId,
@@ -184,6 +195,9 @@ export function SessionListContent({
     session: BackendSession,
     onSelect: () => void = () => sessionActions.onSelectSession(session.id),
     onUpdate: (session: BackendSession) => void = onUpdateSession,
+    onRename:
+      | ((sessionId: string, title: string) => Promise<BackendSession | void>)
+      | undefined = onRenameSession,
   ) => {
     if (!session.id) return null;
     return (
@@ -194,66 +208,75 @@ export function SessionListContent({
         onSelect={onSelect}
         onDelete={() => sessionActions.onDeleteSession(session.id)}
         onSessionUpdate={onUpdate}
+        onRenameSession={onRename}
       />
     );
   };
-  const renderGlobalSessionGroups = () =>
-    groupedAgentSessions.map((group) => {
-      const isExpanded = expandedAgentGroups.has(group.key);
-      return (
-        <div key={group.key} data-agent-history-group>
-          <Button type="text"
-            htmlType="button"
-            aria-expanded={isExpanded}
-            onClick={() => toggleAgentGroup(group.key)}
-            className="group flex h-10 w-full items-center gap-2 rounded-lg px-[9px] text-left transition-colors hover:bg-[var(--theme-sidebar-panel-muted)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)]"
-          >
-            <AgentIdentityAvatar
-              agentId={group.identity?.agent_id ?? group.key}
-              avatarRef={group.identity?.avatar_ref}
-              avatarSeed={group.identity?.avatar_seed}
-              name={group.name}
-              size="sm"
-            />
-            <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-[var(--theme-text-secondary)] group-hover:text-[var(--theme-text)]">
-              {group.name}
-            </span>
-            <span className="shrink-0 text-[11px] text-[var(--theme-text-tertiary)]">
-              {group.sessions.length}
-            </span>
-            <ChevronDown
-              size={14}
-              aria-hidden="true"
-              className={`shrink-0 text-[var(--theme-text-tertiary)] transition-transform duration-200 ${
-                isExpanded ? "" : "-rotate-90"
-              }`}
-            />
-          </Button>
-          {isExpanded ? (
-            <div className="ml-3 border-l border-[var(--theme-border)]/70 pl-1">
-              {group.sessions.map((session) =>
-                renderSession(
-                  session,
-                  () => onSelectGlobalSession(session),
-                  onUpdateGlobalSession,
-                ),
-              )}
-            </div>
-          ) : null}
+  const renderGlobalSessionGroups = () => (
+    <ThreadList>
+      {groupedAgentSessions.map((group) => {
+        const isExpanded = expandedAgentGroups.has(group.key);
+        return (
+          <div key={group.key} data-agent-history-group>
+            <Button
+              type="text"
+              htmlType="button"
+              aria-expanded={isExpanded}
+              onClick={() => toggleAgentGroup(group.key)}
+              className="group flex h-10 w-full items-center gap-2 rounded-lg px-[9px] text-left transition-colors hover:bg-[var(--theme-sidebar-panel-muted)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)]"
+            >
+              <AgentIdentityAvatar
+                agentId={group.identity?.agent_id ?? group.key}
+                avatarRef={group.identity?.avatar_ref}
+                avatarSeed={group.identity?.avatar_seed}
+                name={group.name}
+                size="sm"
+              />
+              <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-[var(--theme-text-secondary)] group-hover:text-[var(--theme-text)]">
+                {group.name}
+              </span>
+              <span className="shrink-0 text-[11px] text-[var(--theme-text-tertiary)]">
+                {group.sessions.length}
+              </span>
+              <ChevronDown
+                size={14}
+                aria-hidden="true"
+                className={`shrink-0 text-[var(--theme-text-tertiary)] transition-transform duration-200 ${
+                  isExpanded ? "" : "-rotate-90"
+                }`}
+              />
+            </Button>
+            {isExpanded ? (
+              <div className="ml-3 border-l border-[var(--theme-border)]/70 pl-1">
+                {group.sessions.map((session) =>
+                  renderSession(
+                    session,
+                    () => onSelectGlobalSession(session),
+                    onUpdateGlobalSession,
+                    onRenameGlobalSession,
+                  ),
+                )}
+              </div>
+            ) : null}
+          </div>
+        );
+      })}
+    </ThreadList>
+  );
+  const renderTaskSessionGroups = () => (
+    <ThreadList>
+      {groupedSessions.map((group) => (
+        <div key={group.label}>
+          <div className="flex h-7 select-none items-center px-[9px] text-[13px] font-medium text-[var(--theme-text-tertiary)]">
+            {group.label}
+          </div>
+          <div className="flex flex-col gap-px">
+            {group.sessions.map((session) => renderSession(session))}
+          </div>
         </div>
-      );
-    });
-  const renderTaskSessionGroups = () =>
-    groupedSessions.map((group) => (
-      <div key={group.label}>
-        <div className="flex h-7 select-none items-center px-[9px] text-[13px] font-medium text-[var(--theme-text-tertiary)]">
-          {group.label}
-        </div>
-        <div className="flex flex-col gap-px">
-          {group.sessions.map((session) => renderSession(session))}
-        </div>
-      </div>
-    ));
+      ))}
+    </ThreadList>
+  );
   const renderLoadingSessions = () => (
     <div className="space-y-px px-0">
       {Array.from({ length: 5 }).map((_, i) => (

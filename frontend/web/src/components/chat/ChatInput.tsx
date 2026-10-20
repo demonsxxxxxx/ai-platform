@@ -9,7 +9,9 @@ import {
   memo,
   type SetStateAction,
 } from "react";
-import { ComposerPrimitive, MessageNotSentError, useAui } from "@assistant-ui/react";
+import { useAui } from "@assistant-ui/react";
+import { createPlatformAttachmentAdapter } from "./assistant-ui/attachmentBinding";
+import { submitComposerMessage } from "./assistant-ui/composerSubmission";
 import { usePlatformComposer } from "./assistant-ui/platformComposer";
 import { toast } from "@lobehub/ui/base-ui";
 import { useTranslation } from "react-i18next";
@@ -40,11 +42,7 @@ import {
   type ComposerSelectionKind,
 } from "./composerSelections";
 import { FILE_CATEGORY_PERMISSIONS } from "./chatInputConstants";
-import {
-  reconcileChatInputSubmissionLock,
-  releaseChatInputSubmissionLock,
-  tryAcquireChatInputSubmissionLock,
-} from "./chatInputSubmissionLock";
+import { reconcileChatInputSubmissionLock } from "./chatInputSubmissionLock";
 import {
   consumePendingSelectionActionPrompt,
   SELECTION_ACTION_EVENT,
@@ -57,26 +55,22 @@ import type {
 import type { FeaturePanel } from "../selectors/FeatureMenu";
 import type {
   MessageAttachment,
+  ToolState,
+  FileCategory,
   PublicSkillResponse,
 } from "../../types";
-import {
-  prepareSelectedSkillSubmission,
-} from "../../hooks/useSelectedSkillTask";
 import {
   getProfileDriveDragReference,
   hasProfileDriveDragData,
 } from "../workbench/profileDriveDrag";
-import {
-  LibreChatComposerBox,
-  LibreChatComposerFrame,
-  LibreChatComposerRegion,
-  LibreChatComposerTextarea,
-} from "../../librechat-ui/Composer";
+import { Composer, ComposerBar, ComposerInput } from "./assistant-ui/elements/composer";
 
 export type {
   ChatInputDraftSnapshot,
   ChatInputProps,
 } from "./chatInputTypes";
+
+const EMPTY_TOOLS: ToolState[] = [];
 
 export const ChatInput = memo(function ChatInput({
   initialDraft,
@@ -89,12 +83,13 @@ export const ChatInput = memo(function ChatInput({
   onStop,
   isLoading,
   canStop = false,
+  runControlKey,
   disabled,
   canSend = true,
   placeholder,
   acceptedFileTypes,
   disableSlashCommands = false,
-  tools = [],
+  tools = EMPTY_TOOLS,
   onToggleTool,
   onToggleCategory,
   onToggleAll,
@@ -125,7 +120,10 @@ export const ChatInput = memo(function ChatInput({
   className,
 }: ChatInputProps) {
   const { t } = useTranslation();
+  const { hasPermission, user } = useAuth();
+  const ownerKey = `${user?.tenant_id ?? ""}:${user?.id ?? ""}`;
   const aui = useAui();
+  const composerRuntime = aui.composer;
   const { register: registerComposer } = usePlatformComposer();
   const localDraftSnapshotRef = useRef<ChatInputDraftSnapshot>({
     value: "",
@@ -146,17 +144,22 @@ export const ChatInput = memo(function ChatInput({
   }
 
   useLayoutEffect(() => {
+    const ownerChanged = draftSnapshot.ownerKey !== undefined && draftSnapshot.ownerKey !== ownerKey;
     const scopeChanged = draftSnapshot.scopeKey !== draftScopeKey;
+    draftSnapshot.ownerKey = ownerKey;
     const preserveFirstSubmission =
+      !ownerChanged &&
       draftSnapshot.scopeKey == null &&
       draftScopeKey != null &&
       draftScopeKey === draftScopeHandoffKey &&
       draftSnapshot.pendingScopeHandoff;
-    if (scopeChanged) {
+    if (scopeChanged || ownerChanged) {
       void aui.composer.reset();
       draftSnapshot.scopeKey = draftScopeKey;
       draftSnapshot.pendingScopeHandoff = false;
       if (!preserveFirstSubmission) {
+        draftSnapshot.scopeRevision = (draftSnapshot.scopeRevision ?? 0) + 1;
+        draftSnapshot.selectedSkillRevision += 1;
         draftSnapshot.value = "";
         draftSnapshot.revision += 1;
         draftSnapshot.appliedInitialDraftKey = null;
@@ -176,7 +179,7 @@ export const ChatInput = memo(function ChatInput({
     return () => {
       if (draftSnapshot.apply === apply) draftSnapshot.apply = undefined;
     };
-  }, [aui, draftScopeHandoffKey, draftScopeKey, draftSnapshot]);
+  }, [aui, draftScopeHandoffKey, draftScopeKey, draftSnapshot, ownerKey]);
 
   const setInput = useCallback(
     (next: SetStateAction<string>) => {
@@ -235,7 +238,13 @@ export const ChatInput = memo(function ChatInput({
   const containerRef = useRef<HTMLDivElement>(null);
   const openFileCommandRef = useRef<(() => void) | null>(null);
   const isSubmittingRef = useRef<symbol | null>(null);
-  const { hasPermission, user } = useAuth();
+  const stopOwnerRef = useRef(runControlKey);
+  stopOwnerRef.current = runControlKey;
+
+  useEffect(() => {
+    setStopConfirmOpen(false);
+    setIsStopSubmitting(false);
+  }, [draftScopeKey, ownerKey, runControlKey]);
 
   useEffect(() => {
     reconcileChatInputSubmissionLock(isSubmittingRef, isLoading);
@@ -253,17 +262,61 @@ export const ChatInput = memo(function ChatInput({
   const setAttachments = externalOnAttachmentsChange ?? setInternalAttachments;
 
   const {
-    uploadFiles,
+    uploadFiles: uploadPlatformFiles,
+    uploadFile,
+    getUploadHandle,
+    releaseUploadHandle,
     validateCount,
-    cancelUpload,
+    cancelUpload: cancelPlatformUpload,
     clearUploads,
-    removeAttachment,
+    removeAttachment: removePlatformAttachment,
   } = useFileUpload({
     attachments,
     onAttachmentsChange: setAttachments,
     acceptedFileTypes,
     sharedControls: sharedUploadControls,
   });
+
+  const attachmentAdapter = useMemo(() => createPlatformAttachmentAdapter({
+    uploadControls: { uploadFile, getUploadHandle, releaseUploadHandle, cancelUpload: cancelPlatformUpload, removeAttachment: removePlatformAttachment },
+    completeAttachment: async (attachment) => ({
+      id: attachment.id, type: attachment.type === "image" ? "image" : "document", name: attachment.name,
+      contentType: attachment.mimeType, content: [], status: { type: "complete" },
+    }),
+  }), [uploadFile, getUploadHandle, releaseUploadHandle, cancelPlatformUpload, removePlatformAttachment]);
+
+  const uploadFiles = useCallback((files: FileList | File[], category?: FileCategory) => {
+    // Profile type/count/size validation remains in the shared upload controller.
+    uploadPlatformFiles(files, category, (file) => {
+      const scopeRevision = draftSnapshot.scopeRevision;
+      void composerRuntime.addAttachment(file).then(() => {
+        if (draftSnapshot.scopeRevision !== scopeRevision) return;
+        const added = composerRuntime.getState().attachments.find((item) => item.file === file);
+        const handle = added && getUploadHandle(added.id);
+        void handle?.done.then((result) => {
+          if (result || draftSnapshot.scopeRevision !== scopeRevision) return;
+          const index = composerRuntime.getState().attachments.findIndex((item) => item.id === added?.id);
+          if (index >= 0) void composerRuntime.attachment({ index }).remove();
+        });
+      }).catch(() => { /* The upload controller already reports validation/upload failures. */ });
+    });
+  }, [composerRuntime, draftSnapshot, getUploadHandle, uploadPlatformFiles]);
+
+  const removeAttachment = useCallback((attachment: MessageAttachment) => {
+    const handle = getUploadHandle(attachment.id);
+    const native = composerRuntime.getState().attachments;
+    const index = native.findIndex((item) => item.id === attachment.id || item.id === handle?.tempId);
+    if (index >= 0) {
+      void composerRuntime.attachment({ index }).remove();
+      if (native[index].status.type !== "complete") return;
+    }
+    removePlatformAttachment(attachment);
+  }, [composerRuntime, getUploadHandle, removePlatformAttachment]);
+  const cancelUpload = useCallback((id: string) => {
+    const attachment = attachments.find((item) => item.id === id);
+    if (attachment) removeAttachment(attachment);
+    else cancelPlatformUpload(id);
+  }, [attachments, cancelPlatformUpload, removeAttachment]);
 
   const previousAttachmentScopeKeyRef = useRef(attachmentScopeKey);
   useLayoutEffect(() => {
@@ -321,68 +374,30 @@ export const ChatInput = memo(function ChatInput({
 
   const hasUploadingAttachment = attachments.some((a) => a.isUploading);
 
-  const submitToPlatform = async (content: string) => {
-    if (!canSend || hasUploadingAttachment || isLoading || disabled) throw new MessageNotSentError();
-    if (content.trim()) {
-      const trimmed = content.trim();
-      const submittedRevision = draftSnapshot.revision;
-      const selectedSkillSubmission = selectedSkillState
-        ? prepareSelectedSkillSubmission(selectedSkillState, attachments)
-        : { error: null, request: null };
-      if (selectedSkillSubmission.error) {
-        await onSelectedSkillRecoverable?.(selectedSkillSubmission.error);
-        if (draftSnapshot.apply && draftSnapshot.revision === submittedRevision) throw new MessageNotSentError();
-        return;
-      }
-
-      const submissionToken = tryAcquireChatInputSubmissionLock(isSubmittingRef);
-      if (!submissionToken) throw new MessageNotSentError();
-      const submittedSkillRevision = draftSnapshot.selectedSkillRevision;
-      const submittedAttachmentIds = new Set(
-        attachments.map((attachment) => attachment.id),
-      );
-      if (draftSnapshot.scopeKey == null) {
-        draftSnapshot.pendingScopeHandoff = true;
-      }
-      try {
-        const outcome = await onSend(
-          trimmed,
-          agentOptionValues,
-          attachments,
-          selectedSkillSubmission.request,
-        );
-        if (outcome.status === "recoverable_error") {
-          await onSelectedSkillRecoverable?.(outcome.code);
-          // Native restoration must not resurrect a newer, deliberately empty draft.
-          if (draftSnapshot.apply && draftSnapshot.revision === submittedRevision) throw new MessageNotSentError();
-          return;
-        }
-        if (outcome.status === "accepted") {
-          pushHistory(trimmed);
-          if (draftSnapshot.revision === submittedRevision) setInput("");
-          setAttachments((current) =>
-            current.filter(
-              (attachment) => !submittedAttachmentIds.has(attachment.id),
-            ),
-          );
-          if (draftSnapshot.selectedSkillRevision === submittedSkillRevision) {
-            onClearSelectedSkill?.();
-          }
-          requestAnimationFrame(() => {
-            if (textareaRef.current) textareaRef.current.style.height = "auto";
-          });
-        }
-      } finally {
-        releaseChatInputSubmissionLock(isSubmittingRef, submissionToken);
-        if (draftSnapshot.apply) aui.composer.setText(draftSnapshot.value);
-      }
-    }
-  };
+  const submitToPlatform = (content: string) => submitComposerMessage({
+    content,
+    snapshot: draftSnapshot,
+    attachments,
+    allowed: canSend && !hasUploadingAttachment && !isLoading && !disabled,
+    lock: isSubmittingRef,
+    onSend,
+    agentOptionValues,
+    selectedSkillState,
+    onSelectedSkillRecoverable,
+    onClearSelectedSkill,
+    setAttachments,
+    setInput,
+    pushHistory,
+    restoreText: (value) => aui.composer.setText(value),
+  });
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     // IME candidate keys belong to the native editor, including the legacy 229
     // signal used when composition ends before the confirming keydown event.
-    if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
+    if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) {
+      e.stopPropagation();
+      return;
+    }
 
     if (!disableSlashCommands && slashMenuOpen) {
       if (e.key === "ArrowUp") {
@@ -498,6 +513,7 @@ export const ChatInput = memo(function ChatInput({
     disabled: Boolean(disabled || !canSend),
     sendDisabled: !canSend || isLoading || hasUploadingAttachment,
     canCancel: Boolean(canStop && isLoading),
+    attachmentAdapter: uploadCategories.length > 0 ? attachmentAdapter : undefined,
   }));
 
   const upsertUnavailableCommandChip = useCallback(
@@ -713,7 +729,9 @@ export const ChatInput = memo(function ChatInput({
       if (panel === null) {
         setActivePanel(null);
         closeSlashMenu();
-        requestAnimationFrame(() => textareaRef.current?.focus());
+        if (activePanel !== "model" || commandSearchSeed) {
+          requestAnimationFrame(() => textareaRef.current?.focus());
+        }
         return;
       }
       if (panel === "file") {
@@ -723,7 +741,7 @@ export const ChatInput = memo(function ChatInput({
       setActivePanel(panel);
       closeSlashMenu();
     },
-    [closeSlashMenu],
+    [activePanel, closeSlashMenu, commandSearchSeed],
   );
 
   const handleSelectTaskSkill = useCallback(
@@ -902,8 +920,8 @@ export const ChatInput = memo(function ChatInput({
   };
 
   return (
-    <LibreChatComposerFrame>
-      <ComposerPrimitive.Root
+    <div className="chat-input-shell sm:px-2" style={{ backgroundColor: "var(--theme-workbench-canvas)" }}>
+      <Composer
         onSubmit={(event) => {
           if (!canSubmit || (!disableSlashCommands && handleComposerCommandSubmit(input))) event.preventDefault();
         }}
@@ -924,32 +942,29 @@ export const ChatInput = memo(function ChatInput({
               onClose={closeSlashMenu}
             />
           )}
-          <LibreChatComposerBox
+          <ComposerBar
             ref={containerRef}
             data-disable-global-file-drop="true"
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
-            dragging={isDraggingOver}
+            dragActive={isDraggingOver}
           >
-            <LibreChatComposerRegion
-              region="attachments"
-              className="col-span-2"
-            >
+            <div data-slot="composer-attachments">
               <ChatInputAttachments
                 attachments={attachments}
                 onRemoveAttachment={removeAttachment}
                 onCancelUpload={cancelUpload}
                 onImageViewerOpen={(url) => setImageViewerSrc(url)}
               />
-            </LibreChatComposerRegion>
+            </div>
 
-            <LibreChatComposerRegion region="chips" className="col-span-2">
+            <div data-slot="composer-chips">
               <ComposerChips
                 selections={composerSelections}
                 onRemove={handleRemoveComposerSelection}
               />
-            </LibreChatComposerRegion>
+            </div>
 
             {selectedSkillState?.recoveryCode && (
               <div
@@ -975,15 +990,8 @@ export const ChatInput = memo(function ChatInput({
               </div>
             )}
 
-            <LibreChatComposerRegion region="textarea" className="col-span-2">
-              <div className="relative">
-                <ComposerPrimitive.Input
-                  asChild
-                  submitMode="none"
-                  cancelOnEscape={false}
-                  addAttachmentOnPaste={false}
-                  unstable_focusOnRunStart={false}
-                  unstable_focusOnThreadSwitched={false}
+            <div data-slot="composer-input">
+                <ComposerInput
                   ref={textareaRef}
                   aria-label={t("chat.messageInput", "消息")}
                   value={input}
@@ -1004,13 +1012,10 @@ export const ChatInput = memo(function ChatInput({
                 }
                 disabled={disabled || !canSend}
                 rows={1}
-                >
-                  <LibreChatComposerTextarea />
-                </ComposerPrimitive.Input>
-              </div>
-            </LibreChatComposerRegion>
+                />
+            </div>
 
-            <LibreChatComposerRegion region="toolbar" className="col-span-2 min-w-0">
+            <div data-slot="composer-toolbar-region" className="min-w-0">
               <ChatInputToolbar
                 activePanel={activePanel}
                 onActivePanelChange={handlePanelChange}
@@ -1037,10 +1042,10 @@ export const ChatInput = memo(function ChatInput({
                 }}
                 onNoPermissionClick={() => setContactAdminOpen(true)}
               />
-            </LibreChatComposerRegion>
-          </LibreChatComposerBox>
+            </div>
+          </ComposerBar>
         </div>
-      </ComposerPrimitive.Root>
+      </Composer>
 
       <ChatInputSelectors
         activePanel={activePanel}
@@ -1080,6 +1085,8 @@ export const ChatInput = memo(function ChatInput({
         loading={isStopSubmitting}
         onConfirm={() => {
           void (async () => {
+            const stopOwner = stopOwnerRef.current;
+            const scopeRevision = draftSnapshot.scopeRevision;
             setIsStopSubmitting(true);
             let result: Awaited<ReturnType<typeof onStop>> = "unconfirmed";
             try {
@@ -1089,6 +1096,7 @@ export const ChatInput = memo(function ChatInput({
               // explicit result. Keep this UI truthful if a caller regresses.
             }
 
+            if (stopOwnerRef.current !== stopOwner || draftSnapshot.scopeRevision !== scopeRevision) return;
             if (result !== "acknowledged") {
               setIsStopSubmitting(false);
               toast.error(
@@ -1115,6 +1123,6 @@ export const ChatInput = memo(function ChatInput({
         onClose={() => setContactAdminOpen(false)}
         reason="noPermission"
       />
-    </LibreChatComposerFrame>
+    </div>
   );
 });

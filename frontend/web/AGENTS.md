@@ -10,11 +10,14 @@ the owners linked below.
   [integration contract](../../docs/frontend/lobe-ui-adoption.md) for versions,
   public imports, providers and component behavior. Do not add a parallel UI
   library, private imports or same-name wrappers without a product responsibility.
-- AI chat uses assistant-ui for thread/message framing, composer interactions,
-  message actions and suggestions. Follow the
-  [chat integration contract](../../docs/frontend/assistant-ui-chat-adoption.md).
+- AI chat prioritizes the pinned assistant-ui Elements source for thread/message
+  framing, composer, attachments, activities, lists and question receipts. Follow the
+  [chat integration contract](../../docs/frontend/assistant-ui-chat-adoption.md)
+  for source provenance, version pins and retained business adapters.
   Compose Lobe general controls inside its public slots; do not add a second
   chat runtime or use Lobe chat components as a parallel interaction owner.
+  Keep the platform SSE data chain; consume one runtime-bound message snapshot
+  for text and business parts, with no parallel generic text/loading renderer.
 - Follow the [visual guidelines](../../docs/frontend/lobehub-visual-guidelines.md)
   for hierarchy, spacing, typography, themes and responsive layout. Keep page CSS
   scoped to its owner; use public component sizing APIs instead of global
