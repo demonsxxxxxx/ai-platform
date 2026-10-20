@@ -88,6 +88,25 @@ Rules:
    `not_affected`; they do not disappear from branch protection.
 9. CI success is CI evidence only.
 
+### Convergence checks and repair feedback
+
+[Source architecture §12](source-code-architecture.md#12-executable-governance)
+owns the executable architecture boundaries, new production code size limit,
+and frozen-file ratchet. Reuse its trusted policy rather than creating another
+size policy. In
+`tools/code_governance.py`, Ruff violations block; file counts, line growth,
+hotspots and test-volume signals remain advisory. Findings carry an additive
+`remediation` field in JSON and a text repair hint. Fix the reported behavior and
+rerun the same range; hints do not create exemptions or change exit status.
+
+`tests/test_source_authority_docs.py`, already in the backend governance shard,
+checks inline local file links from the authority index and its directly linked
+Markdown owners. Missing files and resolved paths outside the repository fail
+with a repair hint. URL fragments stay attached to the source link; this file
+check does not validate anchor existence, external URLs, or document freshness.
+It reuses the authority map, without crawling archives or introducing another
+rules index. Local execution uses the existing test-stage runner.
+
 Frontend Python contract jobs use the existing pinned uv to export `uv.lock`
 with `--locked`, then install only their pytest/PyYAML subset and applicable
 transitive dependencies under those exported constraints. Installation verifies

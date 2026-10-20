@@ -3,6 +3,7 @@
 import i18n from "../../i18n";
 import { projectSafeBackendError } from "../../utils/backendErrors";
 import { getAccessToken } from "./token";
+import { AuthSessionChangedError, refreshTokens } from "./tokenManager";
 
 // ============================================
 // 带认证的 fetch 封装
@@ -123,6 +124,87 @@ export async function cookieSessionFetch(
   });
 }
 
+const REFRESHABLE_AUTH_CODES = new Set([
+  "company_login_expired", "mcp_principal_jwt_expired", "mcp_principal_jwt_missing",
+  "mcp_jwt_expired_or_missing",
+]);
+
+export function isRefreshableAuthRejection(error: ApiRequestError, forced: boolean): boolean {
+  return !forced || REFRESHABLE_AUTH_CODES.has(error.code ?? "");
+}
+
+/** Refresh only authentication rejections; never replay an ambiguous mutation. */
+export async function cookieSessionRequest(
+  input: RequestInfo | URL,
+  options: RequestInit = {},
+  ordinary401Recovery: "global" | "caller" = "global",
+): Promise<Response> {
+  const marker = getAccessToken();
+  const originalRequest = input instanceof Request ? input : null;
+  const replayRequest = originalRequest?.clone();
+  const signal = options.signal ?? originalRequest?.signal;
+  const method = (options.method ?? originalRequest?.method ?? "GET").toUpperCase();
+  const originalBody = options.body;
+  const body = originalBody instanceof FormData
+    ? (() => {
+      const copy = new FormData();
+      originalBody.forEach((value, key) => copy.append(key, value));
+      return copy;
+    })()
+    : originalBody instanceof URLSearchParams ? new URLSearchParams(originalBody) : originalBody;
+  const requestOptions = { ...options, body };
+  const rawUrl = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+  const path = new URL(rawUrl, "http://localhost").pathname;
+  const authEndpoint = /^\/api\/(?:ai\/)?auth\/(?:login|logout|bootstrap|refresh|ad-login|oauth)(?:\/|$)/.test(path);
+  const response = await cookieSessionFetch(input, requestOptions);
+  const forced = response.headers.get("X-Force-Relogin") === "true";
+  if (response.status === 409 && marker && !authEndpoint && ordinary401Recovery === "global") {
+    const conflict = await apiRequestErrorFromResponse(response.clone());
+    signal?.throwIfAborted();
+    if (marker === getAccessToken() && conflict.code === "auth_context_stale") {
+      notifyForcedRelogin();
+      throw new ApiRequestError(conflict.message, 401, conflict.code);
+    }
+  }
+  if (response.status !== 401 && !forced) return response;
+  const error = await apiRequestErrorFromResponse(response, forced ? 401 : response.status);
+  signal?.throwIfAborted();
+  if (marker !== getAccessToken()) throw error;
+  if (authEndpoint) throw error;
+  const refreshable = isRefreshableAuthRejection(error, forced);
+  if (marker && refreshable) {
+    try {
+      await refreshTokens(signal ?? undefined);
+    } catch (refreshError) {
+      signal?.throwIfAborted();
+      if (marker !== getAccessToken()) throw new AuthSessionChangedError();
+      if (ordinary401Recovery === "global" && refreshError instanceof ApiRequestError
+        && (refreshError.status === 401 || refreshError.status === 403)) {
+        notifyForcedRelogin();
+      }
+      throw refreshError;
+    }
+    signal?.throwIfAborted();
+    if (marker !== getAccessToken()) throw new AuthSessionChangedError();
+    const rejectedBeforeExecution = response.headers.get("X-Auth-Rejected-Before-Execution") === "true"
+      || error.submissionDisposition === "rejected_before_persist";
+    const streamBody = typeof ReadableStream !== "undefined" && body instanceof ReadableStream;
+    if (!streamBody && (method === "GET" || method === "HEAD" || rejectedBeforeExecution)) {
+      const retried = await cookieSessionFetch(replayRequest ?? input, requestOptions);
+      const retryForced = retried.headers.get("X-Force-Relogin") === "true";
+      if (retried.status !== 401 && !retryForced) return retried;
+      const retryError = await apiRequestErrorFromResponse(retried, 401);
+      signal?.throwIfAborted();
+      if (marker !== getAccessToken()) throw new AuthSessionChangedError();
+      if (ordinary401Recovery === "global") notifyForcedRelogin();
+      throw retryError;
+    }
+    throw error;
+  }
+  if (forced || (ordinary401Recovery === "global" && marker)) notifyForcedRelogin();
+  throw error;
+}
+
 /**
  * 带认证的 fetch 封装
  * 浏览器生产路径只依赖同源 cookie session，不再附带脚本可读 bearer token。
@@ -150,31 +232,10 @@ export async function authFetch<T>(
   // Cookie-session transport behavior is identical either way.
   void skipAuth;
 
-  const requestAuthMarker = getAccessToken();
-  const response = await cookieSessionFetch(url, {
+  const response = await cookieSessionRequest(url, {
     ...restOptions,
     headers: finalHeaders,
-  });
-
-  // Cookie-session callers own identity recovery. Only the request's current
-  // auth incarnation may invalidate the browser presentation; an older
-  // response must not log out a replacement principal.
-  const authMarkerIsCurrent = requestAuthMarker === getAccessToken();
-  const forceReloginHeader =
-    response.headers.get("X-Force-Relogin") === "true";
-  if (
-    (ordinary401Recovery === "global" &&
-      response.status === 401 &&
-      requestAuthMarker !== null &&
-      authMarkerIsCurrent) ||
-    (forceReloginHeader && authMarkerIsCurrent)
-  ) {
-    const error = await apiRequestErrorFromResponse(response, 401);
-    // Body consumption is asynchronous too; the original response-arrival
-    // fence cannot authorize invalidating a later browser identity.
-    if (requestAuthMarker === getAccessToken()) notifyForcedRelogin();
-    throw error;
-  }
+  }, ordinary401Recovery);
 
   if (!response.ok) {
     throw await apiRequestErrorFromResponse(response);

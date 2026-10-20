@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 import hashlib
 from typing import Any
 
 from psycopg import AsyncConnection
 
+from app.runs.domain.cost_observability import projected_estimated_cost_minor
+
+from app.runs.infrastructure.admin_queries_postgres import get_admin_run_monitor_report
+from app.runs.domain.run_performance import merge_browser_latency
 from app.runs.domain.diagnostics import (
     RUN_DIAGNOSTICS_SCHEMA_VERSION,
     merge_run_diagnostics,
@@ -21,6 +26,31 @@ class PostgresRunDiagnosticsRepository:
             min(int(write_timeout_seconds * 1_000), 60_000),
         )
 
+    async def append_browser_latency(
+        self,
+        conn: AsyncConnection,
+        *,
+        tenant_id: str,
+        run_id: str,
+        measurement: dict[str, Any],
+    ) -> dict[str, Any]:
+        cursor = await conn.execute(
+            """
+            select 1 from run_events
+            where tenant_id = %s and run_id = %s and visible_to_user is true
+              and event_type in ('message.delta', 'message.part.delta')
+              and jsonb_typeof(payload_json->'delta') = 'string'
+              and payload_json->>'delta' ~ '[^[:space:]]'
+            limit 1
+            """, (tenant_id, run_id),
+        )
+        if await cursor.fetchone() is None:
+            raise ValueError("browser_text_evidence_unavailable")
+        return await self._capture(
+            conn, tenant_id=tenant_id, run_id=run_id,
+            observation=None, browser_latency=measurement,
+        )
+
     async def append_observation(
         self,
         conn: AsyncConnection,
@@ -28,6 +58,20 @@ class PostgresRunDiagnosticsRepository:
         tenant_id: str,
         run_id: str,
         observation: dict[str, Any],
+    ) -> dict[str, Any]:
+        return await self._capture(
+            conn, tenant_id=tenant_id, run_id=run_id,
+            observation=observation,
+        )
+
+    async def _capture(
+        self,
+        conn: AsyncConnection,
+        *,
+        tenant_id: str,
+        run_id: str,
+        observation: dict[str, Any] | None,
+        browser_latency: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         savepoint = "run_diagnostics_capture"
         await conn.execute(f"savepoint {savepoint}")
@@ -48,6 +92,7 @@ class PostgresRunDiagnosticsRepository:
                 tenant_id=tenant_id,
                 run_id=run_id,
                 observation=observation,
+                browser_latency=browser_latency,
             )
             await conn.execute(
                 "select set_config('lock_timeout', %s, true), "
@@ -72,9 +117,12 @@ class PostgresRunDiagnosticsRepository:
         *,
         tenant_id: str,
         run_id: str,
-        observation: dict[str, Any],
+        observation: dict[str, Any] | None,
+        browser_latency: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        payload, _ = merge_run_diagnostics(None, observation)
+        merge = merge_browser_latency if browser_latency is not None else merge_run_diagnostics
+        value = browser_latency if browser_latency is not None else observation
+        payload, _ = merge(None, value)
         diagnostic_id = _diagnostic_id(tenant_id=tenant_id, run_id=run_id)
         cursor = await conn.execute(
             """
@@ -110,7 +158,7 @@ class PostgresRunDiagnosticsRepository:
             raise RuntimeError("run_diagnostics_write_conflict")
         if current.get("schema_version") != RUN_DIAGNOSTICS_SCHEMA_VERSION:
             raise RuntimeError("run_diagnostics_schema_unsupported")
-        payload, changed = merge_run_diagnostics(current.get("payload_json"), observation)
+        payload, changed = merge(current.get("payload_json"), value)
         if not changed:
             return dict(current)
         cursor = await conn.execute(
@@ -139,7 +187,12 @@ class PostgresRunDiagnosticsRepository:
             """
             select r.id as run_id, r.session_id, r.user_id, r.workspace_id,
                    r.status, r.trace_id, r.created_at, r.queued_at, r.started_at,
-                   r.finished_at, r.error_code, r.result_json,
+                   r.finished_at, r.error_code, r.result_json, r.agent_id,
+                   r.execution_kind, r.model_id, r.model_value,
+                   r.model_gateway_revision, r.admitted_agent_profile_revision,
+                   r.admitted_agent_profile_hash, r.max_input_tokens, r.max_output_tokens,
+                   r.input_token_count, r.output_token_count, r.total_token_count,
+                   r.estimated_cost_minor, r.copied_from_run_id,
                    d.diagnostic_id, d.schema_version as diagnostic_schema_version,
                    d.revision, d.payload_json, d.created_at as diagnostic_created_at,
                    d.updated_at as diagnostic_updated_at
@@ -189,11 +242,24 @@ class PostgresRunDiagnosticsRepository:
                     "started_at",
                     "finished_at",
                     "error_code",
+                    "agent_id",
+                    "execution_kind",
+                    "model_id",
+                    "model_value",
+                    "model_gateway_revision",
+                    "admitted_agent_profile_revision",
+                    "admitted_agent_profile_hash", "max_input_tokens", "max_output_tokens", "copied_from_run_id",
                 )
             },
             "result_json": row.get("result_json"),
             "diagnostic": diagnostic,
             "attempts": attempts,
+            "usage": {
+                "input_tokens": row.get("input_token_count"),
+                "output_tokens": row.get("output_token_count"),
+                "total_tokens": row.get("total_token_count"),
+                "estimated_cost_minor": projected_estimated_cost_minor(row.get("estimated_cost_minor"), row.get("result_json")),
+            },
         }
 
     async def get_admin_monitor_metadata(
@@ -263,6 +329,75 @@ class PostgresRunDiagnosticsRepository:
                 key: value for key, value in dict(row).items() if key != "run_id"
             }
             for row in rows
+        }
+
+    async def get_admin_monitor_report(
+        self, conn: AsyncConnection, *, tenant_id: str, from_at: datetime, to_at: datetime,
+        user_id: str | None = None, agent_id: str | None = None,
+        model_id: str | None = None, model_gateway_revision: int | None = None,
+        status: str | None = None,
+        order: str = "slow", limit: int = 50,
+    ) -> dict[str, Any]:
+        return await get_admin_run_monitor_report(
+            conn, tenant_id=tenant_id, from_at=from_at, to_at=to_at,
+            user_id=user_id, agent_id=agent_id, model_id=model_id,
+            model_gateway_revision=model_gateway_revision, status=status,
+            order=order, limit=limit,
+        )
+
+    async def get_execution_debug_binding(self, conn: AsyncConnection, *, run_id: str, attempt_id: str) -> dict[str, Any] | None:
+        cursor = await conn.execute(
+            """select r.tenant_id, lease.id as lease_id
+               from runs r join run_attempts a on a.tenant_id=r.tenant_id and a.run_id=r.id
+               join sandbox_leases lease on lease.tenant_id=r.tenant_id and lease.run_id=r.id and lease.attempt_id=a.id
+               where r.id=%s and a.id=%s and r.status in ('queued','running') and a.status in ('running','cancel_requested')
+                 and lease.lease_payload_json->>'attempt_id'=a.id
+                 and lease.lease_payload_json->>'owner_generation'=a.owner_generation::text
+                 and lease.status='active' and lease.released_at is null and lease.expires_at>now()
+               order by lease.created_at desc limit 1""", (run_id, attempt_id),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def get_admin_debug_skills(self, conn: AsyncConnection, *, tenant_id: str, run_id: str) -> list[dict[str, Any]]:
+        cursor = await conn.execute(
+            """select skill_id, skill_version, content_hash, dependency_ids
+               from run_skill_snapshots where tenant_id = %s and run_id = %s
+               order by skill_id limit 101""", (tenant_id, run_id),
+        )
+        return list(await cursor.fetchall())
+
+    async def get_admin_investigation_events(
+        self, conn: AsyncConnection, *, tenant_id: str, run_id: str,
+    ) -> dict[str, Any]:
+        cursor = await conn.execute(
+            """
+            select id, id as event_id, event_type, event_type as type, stage, sequence, created_at,
+                   visible_to_user, payload_json, payload_json as payload
+            from run_events
+            where tenant_id = %s and run_id = %s and visible_to_user is true
+              and event_type in ('tool.started', 'tool.completed', 'tool.failed', 'tool.denied', 'model.completed', 'agent.progress', 'run.failed', 'message.completed')
+            order by sequence desc limit 501
+            """, (tenant_id, run_id),
+        )
+        rows = list(await cursor.fetchall())
+        text_cursor = await conn.execute(
+            """
+            select min(e.created_at) as first_public_text_at
+            from run_events e join runs r on r.tenant_id = e.tenant_id and r.id = e.run_id
+            where e.tenant_id = %s and e.run_id = %s and e.visible_to_user is true
+              and e.event_type in ('message.delta', 'message.part.delta')
+              and jsonb_typeof(e.payload_json->'delta') = 'string'
+              and e.payload_json->>'delta' ~ '[^[:space:]]'
+              and e.created_at >= r.created_at and e.created_at <= now()
+              and (r.finished_at is null or e.created_at <= r.finished_at)
+            """, (tenant_id, run_id),
+        )
+        text_row = await text_cursor.fetchone() or {}
+        return {
+            "events": list(reversed(rows[:500])),
+            "events_truncated": len(rows) > 500,
+            "first_public_text_at": text_row.get("first_public_text_at"),
         }
 
 

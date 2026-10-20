@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import secrets
 
+from app.context.application.snapshot_recording import (
+    ContextSnapshotRecorder as ContextSnapshotRecorder,
+)
+
 from app.context.domain.conversation_authority import (
     make_authority_receipt as make_authority_receipt,
     validate_authority_receipt as validate_authority_receipt,
@@ -14,6 +18,9 @@ from app.context.application.provider_sessions import (
     prepare_provider_epoch,
     commit_provider_turn,
     execute_provider_session_callback,
+    prepare_provider_session_media,
+    transfer_provider_session_media,
+    queue_provider_session_images_for_deletion,
 )
 from app.context.application.worker_attachment_projection import (
     manifest_with_worker_attachment_metadata as manifest_with_worker_attachment_metadata,
@@ -225,6 +232,7 @@ async def materialize_worker_context_snapshot(
     return result
 
 __all__ = [
+    "ContextSnapshotRecorder",
     "CONTEXT_FILE_ERROR_CODES",
     "CONTEXT_FILE_FAILURE_SCHEMA_VERSION",
     "ContextFileContentError",
@@ -263,4 +271,7 @@ __all__ = [
     "normalize_provider_subpath",
     "provider_session_id_for_scope",
     "execute_provider_session_callback",
+    "prepare_provider_session_media",
+    "transfer_provider_session_media",
+    "queue_provider_session_images_for_deletion",
 ]

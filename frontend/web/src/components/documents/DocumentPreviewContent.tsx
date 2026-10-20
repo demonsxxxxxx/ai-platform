@@ -1,6 +1,6 @@
 import { Suspense, lazy } from "react";
 import { AlertCircle } from "lucide-react";
-import { LoadingSpinner } from "../common/LoadingSpinner";
+import { Spin } from "@lobehub/ui/base-ui";
 import { ImageViewer } from "../common/ImageViewer";
 import CodeRenderer from "./previews/CodeRenderer";
 import MarkdownRenderer from "./previews/MarkdownRenderer";
@@ -108,7 +108,7 @@ export default function DocumentPreviewContent({
 }: ContentProps) {
   const suspenseFallback = (
     <div className="flex items-center justify-center h-full min-h-[400px]">
-      <LoadingSpinner size="lg" />
+      <Spin size={32} />
     </div>
   );
 
@@ -116,14 +116,8 @@ export default function DocumentPreviewContent({
     return (
       <div className="flex flex-col items-center justify-center py-16 sm:py-20 gap-4">
         <div className="relative">
-          <LoadingSpinner size="lg" color="text-[var(--theme-primary)]" />
-          <div className="absolute inset-0 animate-ping">
-            <LoadingSpinner
-              size="lg"
-              static
-              color="text-[var(--theme-primary)]"
-            />
-          </div>
+          <Spin size={32} />
+
         </div>
         <p className="text-sm text-stone-500 dark:text-stone-400 font-medium">
           {t("documents.loadingFileContent")}

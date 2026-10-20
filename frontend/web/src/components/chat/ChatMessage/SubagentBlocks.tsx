@@ -4,19 +4,11 @@ import {
   useCallback,
   useRef,
   useLayoutEffect,
-  type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
-import { clsx } from "clsx";
-import {
-  CheckCircle,
-  XCircle,
-  Ban,
-  ChevronRight,
-  Users,
-  Loader2,
-} from "lucide-react";
+import { Users } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { LoadingSpinner } from "../../common";
+import i18n from "../../../i18n";
+import { Spin } from "@lobehub/ui/base-ui";
 import type { CollapsibleStatus } from "../../common";
 import type { MessagePart } from "../../../types";
 import {
@@ -45,6 +37,8 @@ import {
   shouldAutoScrollSubagentPanel,
 } from "./subagentPanelScroll";
 import { formatDateTime } from "../../../utils/datetime";
+import { SubagentList } from "./elements/SubagentList";
+import { TaskCard, type TaskCardStatus } from "./elements/TaskCard";
 
 function useSubagentPanelData(agentId: string): SubagentPanelData | undefined {
   const [, forceRender] = useState(0);
@@ -78,16 +72,7 @@ export function buildSubagentPanelState(data: SubagentPanelData) {
             ? "cancelled"
             : "idle";
   const subtitle = data.startedAt ? formatDateTime(data.startedAt) : undefined;
-  const statusLabel =
-    effectiveStatus === "running"
-      ? "Running"
-      : effectiveStatus === "complete"
-        ? "Completed"
-        : effectiveStatus === "error"
-          ? "Failed"
-          : effectiveStatus === "cancelled"
-            ? "Cancelled"
-            : "Pending";
+  const statusLabel = i18n.t(`assistantUi.subagent.status.${effectiveStatus}`);
 
   return {
     effectiveStatus,
@@ -99,7 +84,7 @@ export function buildSubagentPanelState(data: SubagentPanelData) {
     progressPercent: data.progressPercent,
     currentCategory: data.currentCategory,
     panelKey: createSubagentPanelKey(data.agentId),
-    formattedAgentName: formatSubagentName(data.agentName),
+    formattedAgentName: data.agentName === "Sub-agent" ? i18n.t("assistantUi.subagent.name") : formatSubagentName(data.agentName),
   };
 }
 
@@ -261,7 +246,7 @@ function SubagentPanelContent({ agentId }: { agentId: string }) {
           panelPartEntries.length,
         ) && (
           <div className="flex items-center gap-2 text-stone-500 dark:text-stone-400">
-            <LoadingSpinner size="sm" />
+            <Spin size={16} />
             <span className="text-sm">{t("chat.message.executing")}</span>
           </div>
         )}
@@ -399,108 +384,21 @@ export function SubagentBlock({
     });
   }, [formattedAgentName, panelStatus, subtitle, panelKey, agent_id]);
 
-  const handleTriggerKeyDown = useCallback(
-    (event: ReactKeyboardEvent<HTMLButtonElement>) => {
-      if (event.key !== "Enter" && event.key !== " ") return;
-      // Prevent native click synthesis so explicit keyboard support cannot
-      // double-open the panel when the browser also dispatches activation.
-      event.preventDefault();
-      handleOpenInPanel();
-    },
-    [handleOpenInPanel],
-  );
-
+  const taskStatus: TaskCardStatus = effectiveStatus;
   return (
-    <div
-      data-subagent-id={agent_id}
-      data-parent-agent-id={parentAgentId}
-      className={clsx(
-        "my-1.5 rounded-xl overflow-hidden min-w-0 group",
-        "border transition-all duration-200",
-        parentAgentId &&
-          "ml-4 border-l-2 border-l-stone-300 pl-2 dark:border-l-stone-600",
-        effectiveStatus === "running" &&
-          "border-stone-200/60 dark:border-stone-700/40 bg-stone-50/50 dark:bg-stone-800/30",
-        effectiveStatus === "complete" &&
-          "border-stone-200/60 dark:border-stone-700/40 bg-stone-50/50 dark:bg-stone-800/30",
-        effectiveStatus === "error" &&
-          "border-red-200/60 dark:border-red-900/40 bg-gradient-to-r from-red-50/60 to-transparent dark:from-red-950/20",
-        effectiveStatus === "cancelled" &&
-          "border-stone-200/60 dark:border-stone-700/40 bg-stone-50/50 dark:bg-stone-800/30",
-        (!effectiveStatus || effectiveStatus === "pending") &&
-          "border-stone-200/60 dark:border-stone-700/40",
-      )}
+    <TaskCard
+      id={agent_id}
+      parentId={parentAgentId}
+      name={formattedAgentName}
+      status={taskStatus}
+      statusLabel={statusLabel}
+      currentCategory={currentCategory}
+      progressPercent={progressPercent}
+      durationMs={durationMs}
+      onOpen={handleOpenInPanel}
     >
-      <button
-        type="button"
-        aria-label={`${formattedAgentName}: ${statusLabel}${parentAgentId ? ", Nested Agent" : ""}`}
-        aria-haspopup="dialog"
-        data-subagent-trigger={agent_id}
-        className="flex w-full items-center gap-3 px-3.5 py-2.5 text-left cursor-pointer transition-colors hover:bg-white/60 dark:hover:bg-white/5"
-        onClick={handleOpenInPanel}
-        onKeyDown={handleTriggerKeyDown}
-      >
-        <div
-          className={clsx(
-            "flex h-7 w-7 items-center justify-center rounded-lg shrink-0",
-            effectiveStatus === "running" && "bg-amber-500/10",
-            effectiveStatus === "complete" && "bg-emerald-500/10",
-            effectiveStatus === "error" && "bg-red-500/10",
-            effectiveStatus === "cancelled" && "bg-amber-500/10",
-            (!effectiveStatus || effectiveStatus === "pending") &&
-              "bg-stone-500/10",
-          )}
-        >
-          {effectiveStatus === "running" ? (
-            <Loader2
-              size={13}
-              className="text-amber-500 dark:text-amber-400 animate-spin"
-            />
-          ) : effectiveStatus === "complete" ? (
-            <CheckCircle
-              size={13}
-              className="text-emerald-500 dark:text-emerald-400"
-            />
-          ) : effectiveStatus === "error" ? (
-            <XCircle size={13} className="text-red-500 dark:text-red-400" />
-          ) : effectiveStatus === "cancelled" ? (
-            <Ban size={13} className="text-amber-500 dark:text-amber-400" />
-          ) : (
-            <ChevronRight
-              size={13}
-              className="text-stone-400 dark:text-stone-500"
-            />
-          )}
-        </div>
-
-        <div className="flex-1 min-w-0">
-          <span
-            className={clsx(
-              "text-[13px] font-medium truncate block",
-              effectiveStatus === "running" &&
-                "text-stone-700 dark:text-stone-300",
-              effectiveStatus === "complete" &&
-                "text-stone-700 dark:text-stone-300",
-              effectiveStatus === "error" && "text-red-700 dark:text-red-300",
-              effectiveStatus === "cancelled" &&
-                "text-stone-700 dark:text-stone-300",
-              (!effectiveStatus || effectiveStatus === "pending") &&
-                "text-stone-600 dark:text-stone-400",
-            )}
-          >
-            {formattedAgentName}
-          </span>
-          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-stone-500 dark:text-stone-400">
-            <span data-subagent-status>{statusLabel}</span>
-            {parentAgentId && <span data-subagent-nested-label>Nested Agent</span>}
-            {currentCategory && <span>Category: {currentCategory}</span>}
-            {progressPercent !== undefined && <span>Progress: {progressPercent}%</span>}
-            {durationMs !== undefined && <span>Duration: {(durationMs / 1000).toFixed(1)}s</span>}
-          </div>
-        </div>
-      </button>
       {inlineNestedEntries.length > 0 && (
-        <div data-subagent-children className="ml-4 border-l-2 border-stone-200/60 pl-2 dark:border-stone-700/50">
+        <SubagentList>
           {inlineNestedEntries.map(({ part, index, key }, entryIndex) => (
             <MessagePartRenderer
               key={key}
@@ -512,8 +410,8 @@ export function SubagentBlock({
               artifactDownloadScope={inlineNestedArtifactScope}
             />
           ))}
-        </div>
+        </SubagentList>
       )}
-    </div>
+    </TaskCard>
   );
 }

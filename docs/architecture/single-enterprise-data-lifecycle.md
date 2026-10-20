@@ -11,40 +11,89 @@ AI Platform is a single-enterprise, multi-user, concurrent system. The existing
 queries, queues, leases, and storage paths scoped consistently. It is not a
 customer-selectable tenant and does not introduce tenant management.
 
-Department, role, and permission facts come from the existing company login and
-user-info authority. Ordinary clients cannot choose them. A trusted gateway may
-inject principal headers only with the configured shared secret. Production
-startup rejects an absent secret or the frontend POC header path.
+Role and permission facts come from the existing company login and user-info
+authority; department grants come from the DingTalk membership source below.
+Ordinary clients cannot choose them. A trusted gateway may inject principal
+headers only with the configured shared secret; its department header grants
+no department scope. Production startup rejects an absent secret or the frontend
+POC header path.
 
 Windows login first obtains the company-signed JWT from `GetADName`. AI Platform
 accepts only that JWT, verifies its HS256 signature, issuer, audience, and
-lifetime, and projects the signed `workid`, `username`, `cnname`, `depart`, and
-`role` claims into platform authority. It does not trust browser-supplied
-identity fields or repeat the PermissionMS user-info lookup already performed by
-`GetADName`. The superseded AD request shape and login-time requery have no
+lifetime, and projects the signed identity and role claims into platform
+authority. The original `depart` claim remains company metadata for JWT renewal.
+It does not trust browser-supplied identity fields or repeat the PermissionMS
+user-info lookup already performed by `GetADName`. It separately resolves
+DingTalk membership for the verified `workid`. The superseded AD request shape and login-time requery have no
 compatibility owner and are removed atomically; password login and Worker
 current-authority revalidation continue to use the existing user-info endpoint.
 
 [ADR 0007](../adr/0007-fixed-browser-authentication-day.md) owns the browser
-authentication lifetime: signed token, server authentication context and company
-authority freshness use one absolute, non-sliding 86,400-second day. Policy/source
-metadata is retained; expiry and policy mismatch fail closed. The former
-15-minute browser freshness description is superseded. Company permissions in a
-valid authenticated snapshot may remain effective for that accepted window;
-Worker reauthorization does not imply instant upstream-company revocation.
+authentication lifetime: the signed platform token and server authentication
+context retain one absolute, non-sliding 86,400-second day. A company-compatible
+JWT has an independent 28,800-second lifetime capped by that context's remaining
+authority. An expired JWT is rejected; a still-authenticated browser context may
+renew it after a fresh company eligibility and permission check. The refresh
+endpoint never accepts client-provided identity or an expired JWT as its grant.
+Company username, department, and original role stay in the server-owned auth
+snapshot, independently of the platform `roles` projection.
+
+Refresh atomically commits the updated principal and encrypted MCP credential
+under the context operation fence. Credential-only rotation preserves current
+subject ownership; permission or department changes fence old owners. Logout,
+identity replacement, and context expiry invalidate renewal. Legacy contexts
+without the additional company fields recover those fields from the trusted
+company user-info endpoint before renewal; they never infer company roles from
+platform `admin/user`. Worker reauthorization does not imply instant
+upstream-company revocation.
 
 The per-connection SSE authorization lease is a separate mechanism described in
 [Streaming execution control](redis-streams-sse-execution-control.md). Its short
 frame-admission deadline is not the browser authentication lifetime and cannot
 by itself invalidate an unrefreshed upstream company snapshot.
 
-Successful login and run admission retain only the non-sensitive facts needed
-to explain an authorization decision: `department_id`, authorization policy
-version, authority source, and authority check time. Raw DingTalk or user-info
-responses, credentials, gateway secrets, and full upstream payloads must not be
-stored. A department directory, if added for labels or configuration, may only
-be a short-TTL cache; an upstream outage must deny or preserve the last stricter
-ACL and must never create a second department authority.
+Successful login snapshots retain bounded identity, role, department scope,
+authorization policy, source and check-time facts. Raw DingTalk or user-info
+responses, credentials, gateway secrets and full upstream payloads must not be
+stored. Historical Run `principal_department_id` remains audit provenance; replay
+and dispatch check current authority, never infer grants from that scalar.
+
+## DingTalk department authority
+
+Identity resolves the authenticated work ID through the internal
+`GET /api/DingTalk/employee/{workid}/department-ids` endpoint. The response contains
+exactly `workid` and `department_ids`, and the work ID must match exactly. This
+read-only endpoint follows the existing internal DingTalkAPI network boundary;
+it uses no service key, Authorization header or custom authentication header.
+Platform login validation, trusted work-ID binding and downstream ACL checks
+remain required.
+
+`DINGTALK_DEPARTMENT_AUTHORITY_BASE_URL` and the bounded timeout configure API and
+Worker together. The same source provides `/api/DingTalk/departs/pure`. Canonical
+IDs are non-zero-leading ASCII decimal strings of at most ten digits. Identity
+combines all direct memberships with their ancestors; missing parents, cycles,
+overlong paths or unknown IDs reject the complete department scope. Names and
+paths are display-only, including duplicate names.
+
+Login, refresh and Worker dispatch use fresh membership. Authenticated requests
+may reuse a 30-second, bounded in-process result. A failed lookup clears its old
+result; a late concurrent lookup cannot restore an older scope. Empty configuration
+or an unavailable source yields empty `direct_department_ids`, `department_ids`
+and `department_authority_status="unavailable"`, preserving roles and identity.
+Legacy sessions without these fields are read as unavailable. Refresh includes
+all three fields in the existing authorization epoch comparison, so secondary
+membership or availability changes fence old MCP execution owners as well.
+
+Profile, Skill and MCP access uses the intersection of canonical ACL IDs and the
+effective direct-plus-ancestor set. There is no name or scalar fallback. Existing
+administrator, explicit-user, role and unrestricted semantics remain with their
+owning authorizers. All administrator department writes validate against the
+current directory; ordinary and system MCP forms use the shared selector.
+
+Existing name grants require [administrator reselection](../operations/dingtalk-department-reselection.md)
+through the owning forms before activation. Preserve immutable Profile revisions,
+hashes and Run provenance; publish a new revision instead of rewriting history.
+No schema migration or automatic name-to-ID conversion is part of this change.
 
 ## Data ownership
 
@@ -52,7 +101,7 @@ ACL and must never create a second department authority.
 | --- | --- | --- |
 | Users, sessions, runs, private Run diagnostics, messages, artifact metadata, ACL and audit facts | PostgreSQL | Durable business facts and authorization evidence. Private diagnostics use a separate tenant/Run-scoped bounded record and are not public answer data. |
 | Queue entries, leases and bounded SSE transport | Redis | Ephemeral coordination only; it is not the terminal record. |
-| Uploaded files, generated artifacts and Skill packages | MinIO/S3 | Object bytes live here; PostgreSQL stores keys, digests, sizes, schemas and bounded summaries. |
+| Uploaded files, generated artifacts, Skill packages and private provider image payloads | MinIO/S3 | Object bytes live here; PostgreSQL stores keys, digests, sizes, schemas and bounded summaries. Provider session entry structure and original receipts remain in PostgreSQL; image payloads are restored losslessly under the [native continuity contract](claude-provider-session-continuity.md#private-image-persistence). |
 | Executor workspace | Sandbox filesystem | Attempt-scoped temporary copy; never a durable authority. |
 | Canonical v4 `message.delta` | PostgreSQL public Run-event ledger | Persists as one safe committed event with semantic identity/sequence, then publishes through the bounded Redis transport. |
 | Legacy `assistant_delta` projection | Legacy ingress suppressed after V4 answer projection is accepted | It must not become a second durable answer producer. The ban on a PostgreSQL browser fallback does not forbid canonical v4 event persistence. |
@@ -170,6 +219,13 @@ cannot delete its object bytes without a matching file receipt. New workers
 remain dual-read for artifact states while all file transitions stay namespaced.
 This is the data-safety fence; worker capability heartbeat remains an optional
 availability and rollout-observability layer rather than deletion authority.
+Private provider images similarly use `provider_image_pending`,
+`provider_image_processing`, `provider_image_failed`, `provider_image_dead_letter`
+and `provider_image_deleted`. Their metadata survives Session/epoch removal so
+physical deletion retains an owner. Upload reservations are created before I/O
+and only promoted with the entry transaction; unresolved uploads retain repeated
+cleanup to catch late writes. The shared maintenance loop queues orphaned and
+soft-deleted-session images without treating them as public Files or Artifacts.
 
 The core schema includes both additive changes and destructive cutovers:
 

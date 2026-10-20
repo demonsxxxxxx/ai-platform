@@ -1,3 +1,4 @@
+import { Button } from "@lobehub/ui/base-ui";
 import { memo, useState, useMemo } from "react";
 import { Code, Eye } from "lucide-react";
 import { DeferredCodeMirrorViewer } from "../../common/DeferredCodeMirrorViewer";
@@ -31,7 +32,7 @@ const HtmlPreview = memo(function HtmlPreview({ content }: HtmlPreviewProps) {
         </div>
 
         <div className="flex items-center gap-0.5 bg-stone-100 dark:bg-stone-800 rounded-md p-0.5">
-          <button
+          <Button type="text"
             onClick={() => setShowSource(false)}
             className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition-all ${
               !showSource
@@ -41,8 +42,8 @@ const HtmlPreview = memo(function HtmlPreview({ content }: HtmlPreviewProps) {
           >
             <Eye size={13} />
             <span>{t("documents.preview")}</span>
-          </button>
-          <button
+          </Button>
+          <Button type="text"
             onClick={() => setShowSource(true)}
             className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition-all ${
               showSource
@@ -52,7 +53,7 @@ const HtmlPreview = memo(function HtmlPreview({ content }: HtmlPreviewProps) {
           >
             <Code size={13} />
             <span>{t("documents.source")}</span>
-          </button>
+          </Button>
         </div>
       </div>
 

@@ -1,3 +1,5 @@
+import { Button, Spin } from "@lobehub/ui/base-ui";
+import { useId } from "react";
 import { useTranslation } from "react-i18next";
 import { Shrink, Plus, ChevronDown } from "lucide-react";
 import { FileTreeItem } from "./FileTreeItem";
@@ -9,18 +11,18 @@ import type { SkillFormActions } from "./SkillForm.types";
 
 export function SkillFormFullscreen(a: SkillFormActions) {
   const { t } = useTranslation();
+  const editorPanelId = useId();
 
   return (
     <>
       {/* Top-right floating exit button — always visible, prominent */}
-      <button
-        type="button"
+      <Button type="primary" size="large"
+        htmlType="button" icon={<Shrink size={18} />}
         onClick={() => a.toggleFullscreen(false)}
-        className="fixed top-4 right-4 z-[410] flex items-center justify-center w-11 h-11 rounded-lg bg-black/80 hover:bg-black text-white shadow-xl transition-all duration-200 hover:scale-105 active:scale-95"
-        title={t("skills.form.exitFullscreen")}
-      >
-        <Shrink size={18} />
-      </button>
+        className="shadow-xl"
+        style={{ position: "fixed", top: 16, right: 16, zIndex: 410 }}
+        aria-label={t("skills.form.exitFullscreen")} title={t("skills.form.exitFullscreen")}
+      />
       <div className="flex flex-1 min-h-0 overflow-hidden">
         {/* Editor area — sidebar + editor, full-screen focused */}
         <div className="skill-form-editor flex flex-1 min-h-0 overflow-hidden">
@@ -46,23 +48,24 @@ export function SkillFormFullscreen(a: SkillFormActions) {
               ))}
             </div>
             <div className="shrink-0 px-2 py-1.5">
-              <button
-                type="button"
+              <Button type="text"
+                htmlType="button"
                 onClick={a.addFile}
                 className="w-full flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-sm text-stone-500 dark:text-stone-400 hover:bg-stone-100 dark:hover:bg-white/5 transition-colors"
               >
                 <Plus size={13} />
                 {t("skills.form.addFile")}
-              </button>
+              </Button>
             </div>
           </div>
 
           {/* Right: editor only */}
           <div className="flex flex-1 flex-col min-h-0">
             {/* Mobile header: tabs + actions */}
-            <div className="shrink-0 flex items-center gap-1 px-3 py-2 sm:hidden">
+            <div className="shrink-0 flex items-center gap-1 py-2 pl-3 pr-[72px] sm:hidden">
               <div className="flex-1 min-w-0">
                 <FileTabs
+                  panelId={editorPanelId}
                   files={a.files}
                   activeFileIndex={a.activeFileIndex}
                   onSelect={a.setActiveFileIndex}
@@ -70,18 +73,16 @@ export function SkillFormFullscreen(a: SkillFormActions) {
                   untitledLabel={t("skills.form.untitled")}
                 />
               </div>
-              <button
-                type="button"
+              <Button type="text" size="large"
+                htmlType="button"
                 onClick={a.addFile}
-                className="shrink-0 flex items-center justify-center h-9 w-9 rounded-lg text-stone-400 transition-colors duration-150 hover:bg-[var(--theme-bg-card)] hover:text-[var(--theme-text)]"
-                title={t("skills.form.addFile", "Add file")}
-              >
-                <Plus size={15} />
-              </button>
+                className="shrink-0" icon={<Plus size={15} />}
+                aria-label={t("skills.form.addFile")} title={t("skills.form.addFile", "Add file")}
+              />
             </div>
 
             {/* Editor / Binary Preview */}
-            <div className="flex-1 min-h-0 p-3 sm:p-4">
+            <div id={editorPanelId} role="tabpanel" aria-labelledby={`${editorPanelId}-tab-${a.activeFileIndex}`} className="flex-1 min-h-0 p-3 sm:p-4">
               {(() => {
                 const currentPath = a.files[a.activeFileIndex]?.path || "";
                 const binaryInfo = a.binaryFiles?.[currentPath];
@@ -91,25 +92,7 @@ export function SkillFormFullscreen(a: SkillFormActions) {
                   return (
                     <div className="flex h-full items-center justify-center rounded-lg bg-[var(--theme-bg)]">
                       <div className="flex flex-col items-center gap-3">
-                        <svg
-                          className="h-6 w-6 animate-spin text-[var(--theme-text-secondary)]"
-                          viewBox="0 0 24 24"
-                        >
-                          <circle
-                            className="opacity-25"
-                            cx="12"
-                            cy="12"
-                            r="10"
-                            stroke="currentColor"
-                            strokeWidth="4"
-                            fill="none"
-                          />
-                          <path
-                            className="opacity-75"
-                            fill="currentColor"
-                            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-                          />
-                        </svg>
+                        <Spin size={24} aria-label={t("common.loading")} />
                         <span className="text-sm text-[var(--theme-text-secondary)]">
                           {currentPath.split("/").pop()}
                         </span>

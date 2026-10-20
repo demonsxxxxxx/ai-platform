@@ -1,3 +1,4 @@
+import { Button, Input } from "@lobehub/ui/base-ui";
 import {
   Building2,
   ChevronDown,
@@ -13,7 +14,7 @@ import {
   UserRound,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import toast from "react-hot-toast";
+import { toast } from "@lobehub/ui/base-ui";
 
 import type { SessionInputFile } from "../../services/api";
 import {
@@ -199,7 +200,7 @@ function ProfileDriveSourceBrowser({
   const [importingPath, setImportingPath] = useState<string | null>(null);
   const treeGenerationRef = useRef(0);
   const pendingPathsRef = useRef(new Set<string>());
-  const directoryButtonRefs = useRef(new Map<string, HTMLButtonElement>());
+  const directoryButtonRefs = useRef(new Map<string, HTMLElement>());
   const mountedRef = useRef(false);
 
   const loadRoot = useCallback(async () => {
@@ -500,7 +501,7 @@ function ProfileDriveSourceBrowser({
             className="shrink-0 text-[var(--theme-text-tertiary)]"
             aria-hidden="true"
           />
-          <input
+          <Input
             type="search"
             aria-label="筛选文件树"
             className="min-w-0 flex-1 bg-transparent text-xs text-[var(--theme-text)] outline-none placeholder:text-[var(--theme-text-tertiary)]"
@@ -542,14 +543,14 @@ function ProfileDriveSourceBrowser({
                     <span className="min-w-0 flex-1 text-[var(--theme-danger)]">
                       {row.text}
                     </span>
-                    <button
-                      type="button"
+                    <Button type="text"
+                      htmlType="button"
                       aria-label={`返回 ${row.label}`}
                       className="shrink-0 rounded px-1.5 py-1 font-medium text-[var(--theme-primary)] hover:bg-[var(--theme-workbench-panel)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)]"
                       onClick={() => returnFromDirectory(row.path)}
                     >
                       返回
-                    </button>
+                    </Button>
                   </div>
                 );
               }
@@ -602,7 +603,7 @@ function ProfileDriveSourceBrowser({
                     );
                   }}
                 >
-                  <button
+                  <Button type="text"
                     ref={
                       directory
                         ? (node) => {
@@ -611,7 +612,7 @@ function ProfileDriveSourceBrowser({
                           }
                         : undefined
                     }
-                    type="button"
+                    htmlType="button"
                     className="flex h-full min-w-0 flex-1 items-center gap-1.5 overflow-hidden rounded px-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)] disabled:cursor-default disabled:opacity-60"
                     style={{ paddingInlineStart: `${6 + depth * 16}px` }}
                     aria-label={actionLabel}
@@ -676,18 +677,19 @@ function ProfileDriveSourceBrowser({
                         }`}
                       />
                     )}
-                  </button>
+                  </Button>
                   {!directory && (
-                    <button
-                      type="button"
+                    <Button type="text"
+                      htmlType="button"
+                      size="small"
+                      icon={<Paperclip size={13} aria-hidden="true" />}
+                      style={{ width: 28, height: 28, padding: 0 }}
                       aria-label={`添加 ${name} 到会话`}
                       title="添加到会话"
                       disabled={disabled}
                       onClick={() => void addToConversation(entry)}
-                      className="mr-0.5 flex size-7 shrink-0 items-center justify-center rounded text-[var(--theme-text-tertiary)] hover:text-[var(--theme-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)] disabled:cursor-default disabled:opacity-60"
-                    >
-                      <Paperclip size={13} aria-hidden="true" />
-                    </button>
+                      className="mr-0.5 shrink-0 rounded text-[var(--theme-text-tertiary)] hover:text-[var(--theme-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)] disabled:cursor-default disabled:opacity-60"
+                    />
                   )}
                 </div>
               );
@@ -777,8 +779,8 @@ export function ProfileDriveWorkspaceBrowser({
               文件
             </h3>
           </div>
-          <button
-            type="button"
+          <Button type="text"
+            htmlType="button"
             className="flex size-6 shrink-0 items-center justify-center rounded text-[var(--theme-text-tertiary)] hover:bg-[var(--theme-workbench-panel)] hover:text-[var(--theme-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)] disabled:opacity-50"
             aria-label={`刷新${activeTab.label}`}
             title={`刷新${activeTab.label}`}
@@ -789,7 +791,7 @@ export function ProfileDriveWorkspaceBrowser({
               size={13}
               className={activeControls.loading ? "animate-spin" : ""}
             />
-          </button>
+          </Button>
           <span
             className={workbenchSurface.catalog.chip}
             data-profile-drive-count={activeSource}
@@ -817,10 +819,10 @@ export function ProfileDriveWorkspaceBrowser({
           {DRIVE_TABS.map(({ id, label, Icon }) => {
             const active = activeSource === id;
             return (
-              <button
+              <Button type="text"
                 key={id}
                 id={`profile-drive-${id}-tab`}
-                type="button"
+                htmlType="button"
                 role="tab"
                 aria-selected={active}
                 aria-controls={`profile-drive-${id}-panel`}
@@ -834,7 +836,7 @@ export function ProfileDriveWorkspaceBrowser({
               >
                 <Icon size={14} className="shrink-0" aria-hidden="true" />
                 <span className="truncate">{label}</span>
-              </button>
+              </Button>
             );
           })}
         </div>

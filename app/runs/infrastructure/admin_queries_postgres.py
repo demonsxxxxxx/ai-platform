@@ -80,6 +80,162 @@ async def list_admin_runs(
     return list(await cursor.fetchall())
 
 
+_MONITOR_METRICS_SQL = """
+with window_runs as (
+  select r.id as run_id, r.session_id, r.user_id, r.workspace_id, r.status,
+         r.agent_id, r.execution_kind, r.skill_id, r.created_at, r.queued_at,
+         r.started_at, r.finished_at, r.error_code, r.error_message,
+         r.model_id, r.model_value, r.model_gateway_revision,
+         r.admitted_agent_profile_revision
+  from runs r
+  where r.tenant_id = %s and r.created_at >= %s and r.created_at < %s
+    and (%s::text is null or r.user_id = %s)
+), selected_runs as (
+  select r.* from window_runs r
+  where (%s::text is null or r.agent_id = %s)
+    and (%s::text is null or r.model_id = %s)
+    and (%s::integer is null or r.model_gateway_revision = %s)
+    and (%s::text is null or r.status = any(%s::text[]))
+), metrics as (
+  select r.*,
+    case when r.status in ('succeeded', 'failed', 'cancelled') and r.finished_at >= r.created_at
+      and r.finished_at <= %s then floor(extract(epoch from (r.finished_at-r.created_at))*1000)::bigint end as total_ms,
+    case when r.started_at >= r.queued_at and r.started_at <= %s
+      then floor(extract(epoch from (r.started_at-r.queued_at))*1000)::bigint end as queue_ms,
+    case when r.status in ('succeeded', 'failed', 'cancelled') and r.finished_at >= r.started_at
+      and r.finished_at <= %s then floor(extract(epoch from (r.finished_at-r.started_at))*1000)::bigint end as execution_ms,
+    case when first_text.created_at >= r.created_at
+      then floor(extract(epoch from (first_text.created_at-r.created_at))*1000)::bigint end as server_first_text_ms,
+    case when d.payload_json->'browser_latency'->>'measurement' = 'browser_dom_commit.v1'
+      and d.payload_json->'browser_latency'->>'visibility' = 'visible'
+      and jsonb_typeof(d.payload_json->'browser_latency'->'duration_ms') = 'number'
+      and d.payload_json->'browser_latency'->>'duration_ms' ~ '^[0-9]{1,8}$'
+      then case when (d.payload_json->'browser_latency'->>'duration_ms')::bigint <= 86400000
+        then (d.payload_json->'browser_latency'->>'duration_ms')::bigint end end as browser_first_text_ms
+  from selected_runs r
+  left join run_diagnostics d on d.tenant_id = %s and d.run_id = r.run_id
+  left join lateral (
+    select min(e.created_at) as created_at
+    from run_events e
+    where e.tenant_id = %s and e.run_id = r.run_id and e.visible_to_user is true
+      and e.event_type in ('message.delta', 'message.part.delta')
+      and jsonb_typeof(e.payload_json->'delta') = 'string'
+      and e.payload_json->>'delta' ~ '[^[:space:]]'
+      and e.created_at >= r.created_at and e.created_at <= %s
+      and (r.finished_at is null or e.created_at <= r.finished_at)
+  ) first_text on true
+)
+"""
+
+
+def _monitor_parameters(
+    *, tenant_id: str, from_at: datetime, to_at: datetime,
+    user_id: str | None = None, agent_id: str | None = None,
+    model_id: str | None = None, model_gateway_revision: int | None = None,
+    status: str | None = None,
+) -> tuple[object, ...]:
+    return (
+        tenant_id, from_at, to_at, user_id, user_id, agent_id, agent_id,
+        model_id, model_id, model_gateway_revision, model_gateway_revision,
+        status, ["running", "cancel_requested"] if status == "running" else [status],
+        to_at, to_at, to_at, tenant_id, tenant_id, to_at,
+    )
+
+
+async def get_admin_run_monitor_report(
+    conn: AsyncConnection, *, tenant_id: str, from_at: datetime, to_at: datetime,
+    user_id: str | None = None, agent_id: str | None = None,
+    model_id: str | None = None, model_gateway_revision: int | None = None,
+    status: str | None = None,
+    order: str = "slow", limit: int = 50,
+) -> dict[str, Any]:
+    """One Run per sample, one closed window, no queue/provider maintenance."""
+    parameters = _monitor_parameters(
+        tenant_id=tenant_id, from_at=from_at, to_at=to_at, user_id=user_id,
+        agent_id=agent_id, model_id=model_id, model_gateway_revision=model_gateway_revision,
+        status=status,
+    )
+    # Status tabs narrow the list; the overview keeps the whole selected scope.
+    summary_parameters = _monitor_parameters(
+        tenant_id=tenant_id, from_at=from_at, to_at=to_at, user_id=user_id,
+        agent_id=agent_id, model_id=model_id, model_gateway_revision=model_gateway_revision,
+    )
+    bucket_seconds = (to_at - from_at).total_seconds() / 12
+    summary_cursor = await conn.execute(
+        _MONITOR_METRICS_SQL + """
+        , metric_summary as (
+          select name, count(value) as sample_count,
+            percentile_cont(0.5) within group (order by value) as p50,
+            percentile_cont(0.95) within group (order by value) as p95,
+            percentile_cont(0.99) within group (order by value) as p99
+          from metrics cross join lateral (values
+            ('total_ms', total_ms), ('queue_ms', queue_ms), ('execution_ms', execution_ms),
+            ('server_first_text_ms', server_first_text_ms), ('browser_first_text_ms', browser_first_text_ms)
+          ) observation(name, value)
+          group by name
+        ), trend_counts as (
+          select least(11, floor(extract(epoch from (created_at - %s::timestamptz)) / %s)::integer) as bucket,
+            count(*) filter (where status = 'succeeded') as succeeded,
+            count(*) filter (where status = 'failed') as failed,
+            count(*) filter (where status in ('running', 'cancel_requested')) as running
+          from selected_runs group by 1
+        )
+        select
+          count(*) as total,
+          count(*) filter (where status = 'succeeded') as succeeded,
+          count(*) filter (where status = 'failed') as failed,
+          count(*) filter (where status = 'cancelled') as cancelled,
+          count(*) filter (where status = 'queued') as queued,
+          count(*) filter (where status in ('running', 'cancel_requested')) as running,
+          (select coalesce(jsonb_object_agg(name, jsonb_build_object(
+            'sample_count', sample_count, 'p50', p50, 'p95', p95, 'p99', p99
+          )), '{}'::jsonb) from metric_summary) as latency,
+          (select jsonb_agg(jsonb_build_object(
+            'from_at', %s::timestamptz + buckets.bucket * %s * interval '1 second',
+            'succeeded', coalesce(t.succeeded, 0), 'failed', coalesce(t.failed, 0),
+            'running', coalesce(t.running, 0)
+          ) order by buckets.bucket)
+          from generate_series(0, 11) as buckets(bucket)
+          left join trend_counts t using (bucket)) as trend,
+          (select coalesce(jsonb_agg(model), '[]'::jsonb) from (
+            select distinct model_id, model_value, model_gateway_revision
+            from window_runs where model_id is not null and model_gateway_revision is not null
+            order by model_value, model_id, model_gateway_revision limit 100
+          ) model) as models
+        from metrics
+        """,
+        (*summary_parameters, from_at, bucket_seconds, from_at, bucket_seconds),
+    )
+    summary = dict(await summary_cursor.fetchone() or {})
+    ordering = "total_ms desc nulls last" if order == "slow" else "created_at desc"
+    rows_cursor = await conn.execute(
+        _MONITOR_METRICS_SQL + f"""
+        select * from metrics
+        order by {ordering}, created_at desc, run_id desc
+        limit %s
+        """,
+        (*parameters, limit + 1),
+    )
+    rows = list(await rows_cursor.fetchall())
+    for row in rows:
+        row["error_code"] = sanitize_public_text(row.get("error_code")) or None
+        row["error_message"] = sanitize_public_text(row.get("error_message"))
+    models = summary.get("models") if isinstance(summary.get("models"), list) else []
+    return {
+        "window": {"from_at": from_at, "to_at": to_at},
+        "counts": {key: _coerce_int(summary.get(key)) for key in ("total", "succeeded", "failed", "cancelled", "queued", "running")},
+        "latency": summary.get("latency") if isinstance(summary.get("latency"), dict) else {},
+        "trend": summary.get("trend") if isinstance(summary.get("trend"), list) else [],
+        "models": [
+            {"model_id": item.get("model_id"), "model_value": sanitize_public_text(item.get("model_value")),
+             "model_gateway_revision": item.get("model_gateway_revision")}
+            for item in models if isinstance(item, dict)
+        ],
+        "runs": rows[:limit], "limit": limit, "has_more": len(rows) > limit,
+        "measurement": "run_lifecycle.v1", "order": order,
+    }
+
+
 async def get_admin_runtime_run_summary(
     conn: AsyncConnection,
     *,

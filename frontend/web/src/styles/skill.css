@@ -160,62 +160,20 @@
   padding: 0.15rem;
 }
 
-.skill-catalog-view-switcher__item {
-  display: inline-flex;
-  min-height: 2rem;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 0.4rem;
-  border-radius: 6px;
-  padding: 0.35rem 0.55rem;
-  color: var(--theme-text-secondary);
-  font-size: 0.75rem;
-  font-weight: 600;
-  transition:
-    background-color 0.16s ease,
-    color 0.16s ease;
-}
-
-.skill-catalog-view-switcher__item:hover {
-  background: var(--theme-bg-sidebar);
-  color: var(--theme-text);
-}
-
-.skill-catalog-view-switcher__item[aria-pressed="true"] {
-  background: var(--theme-text);
-  color: var(--theme-workbench-panel);
-}
-
-.skill-catalog-view-switcher__item > span:last-child {
-  min-width: 1.2rem;
-  border: 1px solid color-mix(in srgb, currentColor 22%, transparent);
-  border-radius: 4px;
-  padding: 0.05rem 0.25rem;
-  text-align: center;
-  font-size: 0.65rem;
-  font-variant-numeric: tabular-nums;
-}
-
 .skill-catalog-clear {
   align-self: flex-start;
-  color: var(--theme-text-secondary);
-  font-size: 0.72rem;
-  font-weight: 600;
-}
-
-.skill-catalog-clear:hover {
-  color: var(--theme-primary);
 }
 
 .skill-catalog-layout {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   min-width: 0;
   gap: 0.9rem;
 }
 
 .skill-catalog-detail-shell {
   min-width: 0;
-  overflow: hidden;
+  overflow-x: auto;
   border: 1px solid var(--theme-border);
   border-radius: 8px;
   background: var(--theme-workbench-panel);
@@ -235,10 +193,6 @@
   flex: 1 1 auto;
 }
 
-.skill-catalog-pagination__navigation .pagination-wrapper {
-  width: 100%;
-}
-
 .skill-catalog-page-size {
   display: inline-flex;
   flex: 0 0 auto;
@@ -247,21 +201,6 @@
   color: var(--theme-text-secondary);
   font-size: 0.75rem;
   font-weight: 600;
-}
-
-.skill-catalog-page-size select {
-  min-height: 2rem;
-  border: 1px solid var(--theme-border);
-  border-radius: 6px;
-  background: var(--theme-workbench-panel);
-  padding: 0 1.8rem 0 0.55rem;
-  color: var(--theme-text);
-  font-size: 0.75rem;
-}
-
-.skill-catalog-page-size select:focus-visible {
-  outline: 2px solid var(--theme-primary);
-  outline-offset: 2px;
 }
 
 @media (min-width: 640px) {
@@ -410,16 +349,6 @@
   box-shadow: none;
 }
 
-.skill-filter-dropdown {
-  border-color: var(--theme-border);
-  background: var(--theme-workbench-panel);
-  box-shadow: 0 12px 28px -18px rgb(15 23 42 / 0.18);
-}
-
-.dark .skill-filter-dropdown {
-  box-shadow: 0 14px 30px -20px rgb(0 0 0 / 0.36);
-}
-
 .skill-grid {
   align-items: stretch;
 }
@@ -445,21 +374,6 @@
 
 .skill-card-danger:hover {
   border-color: color-mix(in srgb, #ef4444 24%, var(--theme-border));
-}
-
-/* Check pop animation for skill selection */
-@keyframes check-pop {
-  0% {
-    transform: scale(0);
-    opacity: 0;
-  }
-  50% {
-    transform: scale(1.3);
-  }
-  100% {
-    transform: scale(1);
-    opacity: 1;
-  }
 }
 
 .skill-status-pill {

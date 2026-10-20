@@ -1,21 +1,27 @@
 import assert from "node:assert/strict";
-import test from "node:test";
-import { installTestDom } from "../../../hooks/useAgent/__tests__/testDom.ts";
+import test, { after } from "node:test";
+import { installSelectTestDom } from "../../common/__tests__/selectTestDom.ts";
+import { createLobeTestRoot } from "../../common/__tests__/lobeUiTestRoot.tsx";
 import { modelAdminApi, type AdminModelState } from "../../../services/api/modelAdmin.ts";
 import { ApiRequestError } from "../../../services/api/fetch.ts";
-const dom = installTestDom();
+const dom = installSelectTestDom();
+after(() => dom.close());
 type ReactModule = typeof import("react");
-type QueryNode = { getAttribute(name: string): string | null; textContent?: string | null; childNodes?: unknown[] };
-type Container = { querySelectorAll(selector: string): QueryNode[] };
+type QueryNode = { getAttribute(name: string): string | null; textContent?: string | null; childNodes?: ArrayLike<unknown> };
+type Container = { querySelectorAll(selector: string): ArrayLike<QueryNode> };
 type Field = { value: string; checked: boolean };
+function choice(container: Container, label: string): HTMLElement {
+  const found = Array.from(container.querySelectorAll("button, [role=radio]")).find((node) => node.getAttribute("aria-label") === label);
+  assert.ok(found, label); return found as HTMLElement;
+}
 function text(node: unknown): string {
-  const value = node as { data?: unknown; textContent?: unknown; childNodes?: unknown[] };
+  const value = node as { data?: unknown; textContent?: unknown; childNodes?: ArrayLike<unknown> };
   if (typeof value.data === "string") return value.data;
-  return typeof value.textContent === "string" && value.textContent ? value.textContent : (value.childNodes ?? []).map(text).join("");
+  return typeof value.textContent === "string" && value.textContent ? value.textContent : Array.from(value.childNodes ?? []).map(text).join("");
 }
 function props(node: object) {
   const key = Object.keys(node).find((key) => key.startsWith("__reactProps$")); assert.ok(key);
-  return (node as Record<string, unknown>)[key] as { disabled?: boolean; onClick?: () => void; onChange?: (event: { target: Field }) => void };
+  return (node as Record<string, unknown>)[key] as { disabled?: boolean; onClick?: (event: MouseEvent) => void; onChange?: (event: { target: Field }) => void };
 }
 function saved(revision = 4): AdminModelState {
   return { connection: { configured: true, revision, base_url: "https://gateway-a.example", key_fingerprint: "synthetic-marker" }, models: [{
@@ -38,24 +44,28 @@ interface View {
   unmount(): Promise<void>;
 }
 async function withControl(api: Partial<typeof modelAdminApi>, run: (view: View) => Promise<void>) {
-  const React = await import("react"); const { createRoot } = await import("react-dom/client");
+  const React = await import("react");
   const { ModelAdminControl } = await import("../ModelAdminControl.tsx");
   const original = { ...modelAdminApi };
   Object.assign(modelAdminApi, { get: async () => saved(), ...api });
-  const container = dom.document.createElement("div"); const root = createRoot(container as never);
+  const container = dom.document.createElement("div"); const root = await createLobeTestRoot(container);
   const render = async (canManage: boolean) => { await React.act(async () => { root.render(React.createElement(ModelAdminControl, { canManage })); }); };
   const input = (label: string) => {
-    const found = container.querySelectorAll("input").find((node) => node.getAttribute("aria-label") === label); assert.ok(found, label); return found as unknown as Field;
+    const found = Array.from(container.querySelectorAll("input")).find((node) => node.getAttribute("aria-label") === label); assert.ok(found, label); return found as unknown as Field;
   };
   const button = (attribute: string) => {
-    const found = container.querySelectorAll("button").find((node) => node.getAttribute(attribute) !== null); assert.ok(found, attribute); return found;
+    const found = Array.from(container.querySelectorAll("button")).find((node) => node.getAttribute(attribute) !== null); assert.ok(found, attribute); return found;
   };
   try {
     await render(true);
     await run({ React, container, input, button, render,
       unmount: async () => { await React.act(async () => root.render(null)); },
-      change: async (label, value) => { await React.act(async () => { const field = input(label); field.value = value; props(field).onChange?.({ target: field }); }); },
-      click: async (attribute) => { await React.act(async () => { props(button(attribute)).onClick?.(); await Promise.resolve(); }); },
+      change: async (label, value) => { await React.act(async () => {
+        const field = input(label);
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, value);
+        (field as unknown as HTMLInputElement).dispatchEvent(new Event("input", { bubbles: true }));
+      }); },
+      click: async (attribute) => { await React.act(async () => { props(button(attribute)).onClick?.(new MouseEvent("click", { bubbles: true })); await Promise.resolve(); }); },
     });
   } finally { await React.act(async () => root.unmount()); Object.assign(modelAdminApi, original); }
 }
@@ -135,7 +145,7 @@ test("dirty reload updates saved baseline; discovery preserves edits and failure
     await change("mock/gpt 最大输入 Token", "64000"); await change("模型 API Key", "synthetic-b"); await click("data-model-admin-reload");
     assert.equal(gets, 2); assert.equal(input("模型 API Key").value, ""); assert.equal(input("mock/gpt 最大输入 Token").value, "32000");
     await change("mock/gpt 最大输入 Token", "64000"); await change("mock/gpt 显示名称", "我的模型"); await click("data-model-admin-discover");
-    assert.equal(input("mock/gpt 最大输入 Token").value, "64000"); assert.equal(input("启用 我的模型").checked, true);
+    assert.equal(input("mock/gpt 最大输入 Token").value, "64000"); assert.equal(choice(container, "启用 我的模型").getAttribute("aria-checked"), "true");
     await click("data-model-admin-discover"); assert.equal(input("mock/gpt 显示名称").value, "我的模型"); assert.match(text(container), /无法连接模型服务/);
   });
 });
@@ -201,8 +211,8 @@ for (const discoveredRevision of [3, 5]) {
         assert.equal(input("mock/gpt 显示名称").value, "我的未保存名称");
         assert.equal(input("mock/gpt 最大输入 Token").value, "64000");
         assert.equal(input("mock/gpt 最大输出 Token").value, "4096");
-        assert.equal(input("启用 我的未保存名称").checked, true);
-        assert.equal(input("设为默认 我的未保存名称").checked, true);
+        assert.equal(choice(container, "启用 我的未保存名称").getAttribute("aria-checked"), "true");
+        assert.equal(choice(container, "设为默认 我的未保存名称").getAttribute("aria-checked"), "true");
         assert.equal(input("模型 API Key").value, "synthetic-unsaved");
         assert.equal(props(button("data-model-admin-publish")).disabled, true);
         assert.match(text(container), /未保存编辑已保留，请重新加载配置后再发布/);
@@ -257,8 +267,7 @@ for (const field of ["输入", "输出"]) {
       } }, async ({ React, change, click, input, container }) => {
         await change(`mock/second 最大${field} Token`, invalid);
         await React.act(async () => {
-          const enabled = input("启用 第二模型"); enabled.checked = false;
-          props(enabled).onChange?.({ target: enabled });
+          choice(container, "启用 第二模型").click();
         });
         await click("data-model-admin-publish");
         assert.equal(publications, 0, "invalid disabled capacity must not reach the publish API");
@@ -290,8 +299,8 @@ for (const clearCapacity of [false, true]) {
       await withControl({ get: async () => initial, discover: async () => ({ ...initial, base_url: initial.connection.base_url }) },
         async ({ React, change, click, input, container }) => {
           const toggle = async (checked: boolean) => { await React.act(async () => {
-            const enabled = input("启用 停用草稿"); enabled.checked = checked;
-            props(enabled).onChange?.({ target: enabled });
+            const enabled = choice(container, "启用 停用草稿");
+            if ((enabled.getAttribute("aria-checked") === "true") !== checked) enabled.click();
           }); };
           await change("模型 API Key", "synthetic-capacity-key");
           await change("mock/second 显示名称", "停用草稿");

@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef } from "react";
+import { Button, Input, Pagination, PopoverRoot, PopoverTriggerElement, PopoverPortal, PopoverPositioner, PopoverPopup, Segmented } from "@lobehub/ui/base-ui";
 import { useTranslation } from "react-i18next";
 import {
   Package,
@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import { PanelHeader } from "../../common/PanelHeader";
 import { SkillsPanelSkeleton } from "../../skeletons";
-import { Pagination } from "../../common/Pagination";
+import { LobeSelectField } from "../../lobe-ui/LobeSelectField";
 import { SkillManagementTable } from "./SkillManagementTable";
 import { workbenchSurface } from "../../workbench/workbenchSurface";
 import {
@@ -108,33 +108,6 @@ export function SkillsList({
   onZipClick,
 }: SkillsListProps) {
   const { t } = useTranslation();
-  const filterRef = useRef<HTMLDivElement>(null);
-  const filterTriggerRef = useRef<HTMLButtonElement>(null);
-  const filterMenuId = useId();
-
-  // Close filter dropdown when clicking outside
-  useEffect(() => {
-    if (!isFilterOpen) return;
-    const handleClick = (e: MouseEvent) => {
-      if (filterRef.current && !filterRef.current.contains(e.target as Node)) {
-        setIsFilterOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  }, [isFilterOpen, setIsFilterOpen]);
-
-  useEffect(() => {
-    if (!isFilterOpen) return;
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      setIsFilterOpen(false);
-      filterTriggerRef.current?.focus();
-    };
-    document.addEventListener("keydown", closeOnEscape);
-    return () => document.removeEventListener("keydown", closeOnEscape);
-  }, [isFilterOpen, setIsFilterOpen]);
-
   if (isLoading) {
     return embedded ? (
       <div className="[&_.panel-header]:hidden">
@@ -185,83 +158,40 @@ export function SkillsList({
   };
 
   const filterMenu = availableTags.length > 0 && (
-    <div className="relative shrink-0" ref={filterRef}>
-      <button
-        aria-controls={filterMenuId}
-        aria-expanded={isFilterOpen}
-        aria-haspopup="true"
-        type="button"
-        onClick={() => setIsFilterOpen((prev) => !prev)}
-        className={`btn-secondary h-10 px-3 ${
-          selectedTags.length > 0
-            ? "border-[var(--theme-primary)] text-[var(--theme-text)]"
-            : ""
-        }`}
-        ref={filterTriggerRef}
-      >
-        <Tag size={16} />
-        <span className="hidden sm:inline">{t("skills.filter")}</span>
-        {selectedTags.length > 0 && (
-          <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-[var(--theme-primary-light)] px-1 text-[11px]">
-            {selectedTags.length}
-          </span>
-        )}
-        <ChevronDown
-          size={16}
-          className={`transition-transform ${isFilterOpen ? "rotate-180" : ""}`}
-        />
-      </button>
-      {isFilterOpen && (
-        <div
-          aria-label={t("skills.tagFilter")}
-          className="skill-filter-dropdown absolute right-0 top-[calc(100%+0.5rem)] z-20 w-72 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-3 shadow-[0_12px_28px_rgba(15,23,42,0.12)]"
-          id={filterMenuId}
-          role="group"
-        >
-          <div className="mb-2 flex items-center justify-between">
-            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--theme-text-secondary)]">
-              {t("skills.tagFilter")}
-            </p>
-            {hasActiveFilters && (
-              <button
-                type="button"
-                onClick={clearCatalogFilters}
-                className="text-xs text-[var(--theme-text-secondary)] transition-colors hover:text-[var(--theme-primary)]"
-              >
-                {t("fileLibrary.clearFilters")}
-              </button>
-            )}
-          </div>
-          <div className="flex max-h-56 flex-wrap gap-2 overflow-y-auto">
-            {availableTags.map((tag) => (
-              <button
-                key={tag}
-                aria-pressed={selectedTags.includes(tag)}
-                type="button"
-                onClick={() => toggleTag(tag)}
-                className={`skill-tag-chip ${
-                  selectedTags.includes(tag) ? "skill-tag-chip--active" : ""
-                }`}
-              >
-                {tag}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
+    <PopoverRoot open={isFilterOpen} onOpenChange={setIsFilterOpen}>
+      <PopoverTriggerElement>
+        <Button type={selectedTags.length > 0 ? "primary" : "default"} htmlType="button" aria-label={t("skills.filter")}>
+          <Tag size={16} />
+          <span className="hidden sm:inline">{t("skills.filter")}</span>
+          {selectedTags.length > 0 ? <span>({selectedTags.length})</span> : null}
+          <ChevronDown size={16} />
+        </Button>
+      </PopoverTriggerElement>
+      <PopoverPortal>
+        <PopoverPositioner placement="bottomRight">
+          <PopoverPopup className="skill-filter-dropdown w-72 p-3" aria-label={t("skills.tagFilter")}>
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <p className="text-sm font-medium">{t("skills.tagFilter")}</p>
+              {hasActiveFilters ? <Button type="text" size="small" htmlType="button" onClick={clearCatalogFilters}>{t("fileLibrary.clearFilters")}</Button> : null}
+            </div>
+            <div className="flex max-h-56 flex-wrap gap-2 overflow-y-auto">
+              {availableTags.map((tag) => <Button type={selectedTags.includes(tag) ? "primary" : "default"} size="small" key={tag} aria-pressed={selectedTags.includes(tag)} htmlType="button" onClick={() => toggleTag(tag)}>{tag}</Button>)}
+            </div>
+          </PopoverPopup>
+        </PopoverPositioner>
+      </PopoverPortal>
+    </PopoverRoot>
   );
 
   const uploadAction = canImportSkills ? (
-    <button
+    <Button type={adminRelease ? "primary" : "default"}
       onClick={() => onZipClick()}
-      className={`${adminRelease ? "btn-primary" : "btn-secondary"} h-10`}
       title={t("skills.zipUploadSubtitle")}
-      type="button"
+      htmlType="button"
     >
       <Upload size={16} />
       <span>{t("skills.zipUploadAction")}</span>
-    </button>
+    </Button>
   ) : undefined;
 
   return (
@@ -299,16 +229,12 @@ export function SkillsList({
                     className={`skill-catalog-toolbar__search ${workbenchSurface.catalog.toolbarSearch}`}
                   >
                   <div className="relative min-w-0 flex-1">
-                    <Search
-                      size={18}
-                      className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--theme-text-secondary)]"
-                    />
-                    <input
+                    <Input
                       aria-label={t("skills.searchPlaceholder")}
                       type="text"
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
-                      className="panel-search h-10"
+                      prefix={<Search size={18} />}
                       placeholder={t("skills.searchPlaceholder")}
                     />
                   </div>
@@ -319,28 +245,22 @@ export function SkillsList({
                     className="skill-catalog-view-switcher"
                     role="group"
                   >
-                    {catalogViews.map((view) => (
-                      <button
-                        aria-pressed={catalogView === view.id}
-                        className="skill-catalog-view-switcher__item"
-                        key={view.id}
-                        onClick={() => setCatalogView(view.id)}
-                        type="button"
-                      >
-                        <span>{view.label}</span>
-                        <span aria-hidden="true">{view.count}</span>
-                      </button>
-                    ))}
+                    <Segmented
+                      value={catalogView}
+                      onChange={setCatalogView}
+                      classNames={{ item: "skill-catalog-view-switcher__item" }}
+                      options={catalogViews.map((view) => ({ value: view.id, label: <span>{view.label} <span aria-hidden="true">{view.count}</span></span> }))}
+                    />
                   </div>
                 </div>
                 {hasActiveFilters ? (
-                  <button
+                  <Button type="text"
                     className="skill-catalog-clear"
                     onClick={clearCatalogFilters}
-                    type="button"
+                    htmlType="button"
                   >
                     {t("fileLibrary.clearFilters")}
-                  </button>
+                  </Button>
                 ) : null}
               </div>
             </div>
@@ -372,14 +292,13 @@ export function SkillsList({
           className="mx-4 mt-4 flex items-center justify-between rounded-lg bg-[var(--theme-danger-soft)] p-3 text-sm text-[var(--theme-danger)] ring-1 ring-[var(--theme-danger-ring)]"
         >
           <span>{error}</span>
-          <button
+          <Button type="text"
             aria-label={t("common.close")}
             onClick={clearError}
-            className="btn-icon hover:text-[var(--theme-danger)]"
-            type="button"
-          >
-            <X size={18} />
-          </button>
+            className="hover:text-[var(--theme-danger)]"
+            htmlType="button"
+            icon={<X size={18} />}
+          />
         </div>
       )}
 
@@ -406,13 +325,13 @@ export function SkillsList({
                 : t("skills.subtitle")}
             </p>
             {hasActiveFilters && (
-              <button
-                type="button"
+              <Button type="default"
+                htmlType="button"
                 onClick={clearCatalogFilters}
-                className="btn-secondary mt-4"
+                className="mt-4"
               >
                 {t("fileLibrary.clearFilters")}
-              </button>
+              </Button>
             )}
           </div>
         ) : (
@@ -452,7 +371,8 @@ export function SkillsList({
           <div className="skill-catalog-pagination__navigation">
             {total > pageSize ? (
               <Pagination
-                page={page}
+                  current={page} hideOnSinglePage responsive showSizeChanger={false}
+                  showTotal={(total, [start, end]) => `${start}-${end} / ${total}`}
                 pageSize={pageSize}
                 total={total}
                 onChange={setPage}
@@ -467,20 +387,19 @@ export function SkillsList({
               </p>
             )}
           </div>
-          <label className="skill-catalog-page-size">
+          <div className="skill-catalog-page-size">
             <span>{t("skills.paginationPageSize")}</span>
-            <select
+            <LobeSelectField
               aria-label={t("skills.paginationPageSize")}
-              onChange={(event) => setPageSize(Number(event.target.value))}
-              value={pageSize}
-            >
-              {[10, 20, 50].map((size) => (
-                <option key={size} value={size}>
-                  {t("skills.paginationRows", { count: size })}
-                </option>
-              ))}
-            </select>
-          </label>
+              className="w-auto"
+              onChange={(value) => setPageSize(Number(value))}
+              value={String(pageSize)}
+              options={[10, 20, 50].map((size) => ({
+                value: String(size),
+                label: t("skills.paginationRows", { count: size }),
+              }))}
+            />
+          </div>
         </div>
       )}
     </>

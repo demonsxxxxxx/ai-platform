@@ -60,7 +60,8 @@ function uploadResultFromMultipart(
 ): UploadResult {
   return {
     key: raw.file_id,
-    url: `/api/ai/files/${raw.file_id}`,
+    url: `/api/ai/files/${raw.file_id}/preview`,
+    downloadUrl: `/api/ai/files/${raw.file_id}/download`,
     name: raw.name,
     type: fileCategory(file),
     mimeType: file.type || "application/octet-stream",

@@ -1,3 +1,4 @@
+import { Skeleton } from "@lobehub/ui/base-ui";
 import { SkeletonLine } from "./primitives";
 
 /** Matches PanelHeader layout: icon box (size-12, gradient bg) + title + optional search + actions */
@@ -18,7 +19,7 @@ export function PanelHeaderSkeleton({
                 "linear-gradient(to bottom right, var(--theme-bg-card), color-mix(in srgb, var(--theme-bg) 80%, white))",
             }}
           >
-            <div className="skeleton-line size-6 rounded-md" />
+            <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-6 rounded-md" />
           </div>
           <div className="min-w-0">
             <SkeletonLine
@@ -32,14 +33,14 @@ export function PanelHeaderSkeleton({
           </div>
         </div>
         <div className="flex flex-nowrap flex-shrink-0 items-center gap-1.5 sm:gap-2">
-          <div className="skeleton-line h-9 w-20 sm:w-24 xl:w-28 rounded-lg" />
-          <div className="skeleton-line h-9 w-9 rounded-lg sm:hidden" />
-          <div className="skeleton-line h-9 w-20 sm:w-24 xl:w-28 rounded-lg hidden sm:block" />
+          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="h-9 w-20 sm:w-24 xl:w-28 rounded-lg" />
+          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="h-9 w-9 rounded-lg sm:hidden" />
+          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="h-9 w-20 sm:w-24 xl:w-28 rounded-lg hidden sm:block" />
         </div>
       </div>
       {hasSearch && (
         <div className="mt-2 flex items-center gap-2 sm:mt-3">
-          <div className="skeleton-line h-10 flex-1 rounded-lg" />
+          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="h-10 flex-1 rounded-lg" />
         </div>
       )}
     </div>

@@ -1,3 +1,4 @@
+import { Button } from "@lobehub/ui/base-ui";
 import { BackIcon } from "../common/BackIcon";
 import { FileIcon } from "../common/FileIcon";
 import {
@@ -84,17 +85,16 @@ export default function DocumentPreviewToolbar({
   return (
     <div className="flex items-center gap-1.5 sm:gap-2.5 px-2 sm:px-4 py-2 sm:py-3 border-b border-[var(--theme-border)] overflow-hidden">
       {effectiveOnBack && (
-        <button
-          type="button"
+        <Button type="text"
+          htmlType="button"
+          icon={<BackIcon size={16} />}
+          aria-label={t("common.back", "Back")}
           onClick={(e) => {
             e.stopPropagation();
             effectiveOnBack();
           }}
-          className="flex items-center justify-center size-8 sm:size-9 rounded-lg sm:rounded-xl hover:bg-stone-200/80 dark:hover:bg-stone-700/60 active:bg-stone-200 dark:active:bg-stone-600/60 transition-all duration-200 active:scale-95 cursor-pointer shrink-0"
-          title={t("common.back", "Back")}
-        >
-          <BackIcon size={16} className="text-stone-500 dark:text-stone-400" />
-        </button>
+          className="shrink-0"
+        />
       )}
       <FileIcon icon={Icon} bg={fileInfo.bg} color={fileInfo.color} />
       <div className="flex-1 min-w-0 overflow-hidden">
@@ -124,174 +124,87 @@ export default function DocumentPreviewToolbar({
         className="flex items-center gap-px sm:gap-1 relative z-10 shrink-0"
       >
         {markdownFile && data?.content && (
-          <button
-            type="button"
+          <Button type="text"
+            htmlType="button"
+            icon={viewSource ? <Eye size={16} /> : <Code2 size={16} />}
+            aria-label={viewSource ? t("documents.preview") : t("documents.source")}
             onClick={(e) => {
               e.stopPropagation();
               setViewSource(!viewSource);
             }}
-            className="flex items-center justify-center size-8 sm:size-auto sm:gap-1.5 sm:px-2.5 sm:py-2 rounded-lg sm:rounded-xl text-stone-600 dark:text-stone-300 hover:bg-stone-200/80 dark:hover:bg-stone-700/60 active:bg-stone-200 dark:active:bg-stone-600/60 transition-all duration-200 active:scale-95 cursor-pointer"
-            title={viewSource ? t("documents.preview") : t("documents.source")}
           >
-            {viewSource ? (
-              <>
-                <Eye size={16} />
-                {!toolbarCompact && (
-                  <span className="hidden sm:inline">
-                    {t("documents.preview")}
-                  </span>
-                )}
-              </>
-            ) : (
-              <>
-                <Code2 size={16} />
-                {!toolbarCompact && (
-                  <span className="hidden sm:inline">
-                    {t("documents.source")}
-                  </span>
-                )}
-              </>
-            )}
-          </button>
+            {!toolbarCompact && (viewSource ? t("documents.preview") : t("documents.source"))}
+          </Button>
         )}
-        <button
-          type="button"
+        <span className="hidden sm:contents">
+          <Button type="text"
+            htmlType="button"
+            icon={isSidebar ? <Columns2 size={16} /> : <PanelRight size={16} />}
+            aria-label={isSidebar ? t("documents.centerView", "Center view") : t("documents.sidebarView", "Sidebar view")}
+            onClick={(e) => {
+              e.stopPropagation();
+              onUserInteraction?.();
+              if (isSidebar) {
+                setViewMode("center");
+              } else {
+                setViewMode("sidebar");
+                if (isFullscreen) setIsFullscreen(false);
+              }
+            }}
+          >
+            {!toolbarCompact && (isSidebar ? t("documents.centerView", "居中") : t("documents.sidebarView"))}
+          </Button>
+        </span>
+        <Button type="text"
+          htmlType="button"
+          icon={isFullscreen ? <Shrink size={16} /> : <Expand size={16} />}
+          aria-label={isFullscreen ? t("documents.exitFullscreen") : t("documents.fullscreen")}
           onClick={(e) => {
             e.stopPropagation();
             onUserInteraction?.();
-            if (isSidebar) {
-              setViewMode("center");
-            } else {
-              setViewMode("sidebar");
-              if (isFullscreen) setIsFullscreen(false);
-            }
-          }}
-          className="hidden sm:flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-xl text-xs sm:text-sm font-medium text-stone-600 dark:text-stone-300 hover:bg-stone-200/80 dark:hover:bg-stone-700/60 active:bg-stone-200 dark:active:bg-stone-600/60 transition-all duration-200 active:scale-95 cursor-pointer"
-          title={
-            isSidebar
-              ? t("documents.centerView", "Center view")
-              : t("documents.sidebarView", "Sidebar view")
-          }
-        >
-          {isSidebar ? (
-            <>
-              <Columns2 size={16} />
-              {!toolbarCompact && (
-                <span>{t("documents.centerView", "居中")}</span>
-              )}
-            </>
-          ) : (
-            <>
-              <PanelRight size={16} />
-              {!toolbarCompact && <span>{t("documents.sidebarView")}</span>}
-            </>
-          )}
-        </button>
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            onUserInteraction?.();
-            if (!isFullscreen && isSidebar) {
-              setViewMode("center");
-            }
+            if (!isFullscreen && isSidebar) setViewMode("center");
             setIsFullscreen(!isFullscreen);
           }}
-          className="flex items-center justify-center size-8 sm:size-auto sm:gap-1.5 sm:px-2.5 sm:py-2 rounded-lg sm:rounded-xl text-stone-600 dark:text-stone-300 hover:bg-stone-200/80 dark:hover:bg-stone-700/60 active:bg-stone-200 dark:active:bg-stone-600/60 transition-all duration-200 active:scale-95 cursor-pointer"
-          title={
-            isFullscreen
-              ? t("documents.exitFullscreen")
-              : t("documents.fullscreen")
-          }
         >
-          {isFullscreen ? (
-            <>
-              <Shrink size={16} />
-              {!toolbarCompact && (
-                <span className="hidden sm:inline">
-                  {t("documents.exitFullscreen")}
-                </span>
-              )}
-            </>
-          ) : (
-            <>
-              <Expand size={16} />
-              {!toolbarCompact && (
-                <span className="hidden sm:inline">
-                  {t("documents.fullscreen")}
-                </span>
-              )}
-            </>
-          )}
-        </button>
-        {(data?.content ||
-          s3Key ||
-          signedUrl ||
-          externalImageUrl ||
-          resolvedUrl) && (
+          {!toolbarCompact && (isFullscreen ? t("documents.exitFullscreen") : t("documents.fullscreen"))}
+        </Button>
+        {(data?.content || s3Key || signedUrl || externalImageUrl || resolvedUrl) && (
           <>
-            <button
-              type="button"
+            <Button type="text"
+              htmlType="button"
+              icon={<Download size={16} />}
+              aria-label={t("documents.download")}
               onClick={(e) => {
                 e.stopPropagation();
                 handleDownload();
               }}
-              className="flex items-center justify-center size-8 sm:size-auto sm:gap-1.5 sm:px-2.5 sm:py-2 rounded-lg sm:rounded-xl text-stone-600 dark:text-stone-300 hover:bg-stone-200/80 dark:hover:bg-stone-700/60 active:bg-stone-200 dark:active:bg-stone-600/60 transition-all duration-200 active:scale-95 cursor-pointer"
-              title={t("documents.download")}
             >
-              <Download size={16} />
-              {!toolbarCompact && (
-                <span className="hidden sm:inline">
-                  {t("documents.download")}
-                </span>
-              )}
-            </button>
+              {!toolbarCompact && t("documents.download")}
+            </Button>
             {data?.content && !unsupportedPreviewFile && (
-              <button
-                type="button"
+              <Button type="text"
+                htmlType="button"
+                icon={copied ? <Check size={16} className="text-green-500 dark:text-green-400" /> : <Copy size={16} />}
+                aria-label={copied ? t("documents.copied") : t("documents.copy")}
                 onClick={(e) => {
                   e.stopPropagation();
                   handleCopy();
                 }}
-                className="flex items-center justify-center size-8 sm:size-auto sm:gap-1.5 sm:px-2.5 sm:py-2 rounded-lg sm:rounded-xl text-stone-600 dark:text-stone-300 hover:bg-stone-200/80 dark:hover:bg-stone-700/60 active:bg-stone-200 dark:active:bg-stone-600/60 transition-all duration-200 active:scale-95 cursor-pointer"
               >
-                {copied ? (
-                  <>
-                    <Check
-                      size={16}
-                      className="text-green-500 dark:text-green-400"
-                    />
-                    {!toolbarCompact && (
-                      <span className="hidden sm:inline text-green-500 dark:text-green-400">
-                        {t("documents.copied")}
-                      </span>
-                    )}
-                  </>
-                ) : (
-                  <>
-                    <Copy size={16} />
-                    {!toolbarCompact && (
-                      <span className="hidden sm:inline">
-                        {t("documents.copy")}
-                      </span>
-                    )}
-                  </>
-                )}
-              </button>
+                {!toolbarCompact && (copied ? t("documents.copied") : t("documents.copy"))}
+              </Button>
             )}
           </>
         )}
-        <button
-          type="button"
+        <Button type="text"
+          htmlType="button"
+          icon={<X size={16} />}
           onClick={(e) => {
             e.stopPropagation();
             onClose();
           }}
-          className="flex items-center justify-center size-8 sm:size-9 rounded-lg sm:rounded-xl hover:bg-stone-200/80 dark:hover:bg-stone-700/60 active:bg-stone-200 dark:active:bg-stone-600/60 transition-all duration-200 active:scale-95 cursor-pointer"
           aria-label={t("common.close")}
-        >
-          <X size={16} className="text-stone-500 dark:text-stone-400" />
-        </button>
+        />
       </div>
     </div>
   );

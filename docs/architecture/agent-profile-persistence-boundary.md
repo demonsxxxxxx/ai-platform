@@ -145,6 +145,16 @@ returns the existing outcome before capacity and resource admission.
 See [ADR 0015](../adr/0015-agent-autonomy-and-effect-boundaries.md) for the governing
 policy and graduated effect boundaries.
 
+The durable Agent type also identifies whether Profile admission is mandatory.
+Generic Session and Run transports reject a `profile` Agent identity without
+Profile admission, even when the selected Skill is independently authorized or
+the caller is an administrator. They do not substitute Profile capabilities for
+the caller's selection. Dedicated Profile transports keep the existing authority
+and pinning flow. Worker dispatch and reconciliation read Agent type from the
+same-tenant durable Agent row and reject a Profile identity with absent Profile
+snapshot or pins. Ordinary non-Profile chat and Skill Runs retain valid null
+Profile pins; queue content cannot supply or override the durable Agent type.
+
 Executor reconciliation snapshots persist only the non-secret profile identity
 needed to bind recovery to the original admission: `agent_id`, immutable
 `revision` and `content_hash`, plus the resolved Skill version pins. They never
@@ -184,7 +194,9 @@ an upgraded database exposes one write contract.
 - Profile admission cannot override Run-owned model selection.
 - Skill and MCP identifiers are accepted only from the immutable authorized
   profile definition.
-- Conversation and Run pins cannot silently advance to another publication.
+- Conversation provenance and accepted Run snapshots are never rewritten by a
+  later publication. New Run admission independently resolves the current
+  publication as specified in section 5.
 - Recovery snapshots cannot substitute for private Profile reauthorization.
 - Database errors do not trigger alternate write paths.
 - Deployment applies the schema before starting application processes built for
@@ -228,3 +240,44 @@ A behavior change must cover:
 
 Local tests are developer evidence. Trusted merge authority remains the required
 GitHub checks bound to the actual base and head.
+
+### Change Contract: reject unpinned Profile identity at generic ingress
+
+- **Owner:** Agent Apps owns the Agent-type/Profile-admission policy through its
+  public API. Existing Chat/Run transports apply it to their existing identity
+  read; Skills identity resolution projects the durable type. Runs supplies that
+  same-tenant type with the locked Worker snapshot.
+  Session-pin-to-Profile selection belongs to the same domain contract; Chat
+  retains request DTO construction and the existing HTTP 409 error mapping.
+- **Scope:** reject generic Session/Run creation for Profile identities unless
+  the existing Profile admission path has supplied the Profile snapshot and
+  pins; retain the ordinary non-Profile null-pin path and current Profile ACL,
+  publication, model, Skill, MCP, and ownership checks.
+- **Retirement:** the implicit `active Agent + independent Skill` fallback is
+  removed for Profile identities in generic Session, Run, and Chat ingress.
+  Already queued or reconciling unpinned Profile Runs fail closed before executor
+  dispatch. No stored Session/Run/revision/hash is rewritten, no public DTO or
+  schema column is retired, and no new compatibility alias is introduced.
+- **Consumers:** generic `/chat/sessions`, `/runs`, and `/chat/stream`; dedicated
+  Agent Apps submissions still compose canonical Chat admission. Both queued
+  Worker locking and reconciliation `get_run` reads carry durable Agent type.
+  The unused legacy `mark_run_running` path is not restored or expanded.
+- **Verification:** owning regression covers restricted, draft, published and
+  withdrawn Profile identities, administrator and ordinary callers, independent
+  Skill selectors and raw query Agent selectors, rejection before work writes,
+  durable-type Worker dispatch/reconciliation, valid non-Profile null pins, and
+  admitted Profile Run pins distinct from Session creation provenance. The
+  explicit Agent and Skill CI selector includes this regression.
+  The existing `test_conversations_persistence.py` owner-Run lookup and
+  `test_runs_persistence.py` queued-Run lock assertions replace the old
+  direct-to-Session SQL shape with the durable Agent-type join, retaining the
+  full tenant, workspace, user, Session, and Agent scope and Run-only row lock.
+  Both suites remain in the existing repository-worker-streaming CI shard;
+  no selector is removed or weakened for this identity projection migration.
+- **Limits and stop conditions:** this change does not convert historical
+  unpinned Profile Sessions or Runs into admitted Profile work. Replay of such
+  legacy Runs is rejected by the Profile authority before creating a copy,
+  retry, or resume child. The authorized source read supplies same-tenant Agent
+  type; missing pins cannot select the ordinary non-Profile replay path. Stop
+  rather than silently replacing a caller's Skill, inventing Profile pins, or
+  weakening the existing Profile publication and ACL owners.

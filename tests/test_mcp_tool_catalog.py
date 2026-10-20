@@ -12,7 +12,7 @@ from mcp.types import LATEST_PROTOCOL_VERSION
 
 from app.mcp.application.live_catalog import LiveMcpCatalogService
 from app.mcp.domain.errors import McpRuntimeContextError, McpToolDiscoveryError
-from app.mcp.infrastructure import catalog, client
+from app.mcp.infrastructure import catalog, client, runtime as mcp_runtime
 from app.mcp.infrastructure.client import McpToolDiscoveryAdapter
 
 
@@ -49,6 +49,11 @@ def _http_peer(page_handler, *, session_id=None):
 
 @pytest.fixture
 def mock_transport(monkeypatch):
+    async def current_credential(principal):
+        assert principal.tenant_id == "tenant" and principal.user_id == "user"
+        return "user.jwt"
+
+    monkeypatch.setattr(mcp_runtime, "get_mcp_principal_jwt_store", lambda: SimpleNamespace(get=current_credential))
     real_client = httpx.AsyncClient
     requests, clients = [], []
 

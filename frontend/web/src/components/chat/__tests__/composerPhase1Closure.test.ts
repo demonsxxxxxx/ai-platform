@@ -11,15 +11,15 @@ function read(path: string): string {
 
 test("composer exposes the backed model panel", () => {
   assert.equal(
-    existsSync(join(root, "src/components/chat/ComposerModelPanel.tsx")),
+    existsSync(join(root, "src/components/chat/assistant-ui/elements/composer-model-picker.tsx")),
     true,
   );
-  const modelPanel = read("src/components/chat/ComposerModelPanel.tsx");
+  const modelPanel = read("src/components/chat/assistant-ui/elements/composer-model-picker.tsx");
 
   assert.match(modelPanel, /data-composer-model-panel/);
   assert.match(modelPanel, /data-composer-model-option/);
   assert.match(modelPanel, /\[data-composer-model-trigger\]/);
-  assert.match(modelPanel, /<Bot size=\{18\}/);
+  assert.match(modelPanel, /<ComposerMenuItem/);
   assert.doesNotMatch(modelPanel, /data-composer-model-provider/);
   assert.doesNotMatch(modelPanel, /model\.provider/);
   assert.match(modelPanel, /onSelectModel\(model\.id,\s*model\.value\)/);
@@ -42,10 +42,7 @@ test("model projections flow from app content into chat input", () => {
     chatApp,
     /availableModels=\{filteredModels \?\? \[\]\}/,
   );
-  assert.match(
-    chatApp,
-    /availableModels=\{agentWorkspace \? null : filteredModels\}/,
-  );
+  assert.match(chatApp, /availableModels\?\.some\(\(model\) => model.id === currentModelId/);
   assert.match(chatApp, /reconcileCurrentModelSelection\(\{/);
   assert.match(chatApp, /currentModelId=\{currentModelId\}/);
   assert.match(chatApp, /onSelectModel=\{handleSelectModel\}/);
@@ -80,7 +77,7 @@ test("chat input exposes the existing model panel from a visible composer contro
   assert.doesNotMatch(input, /id:\s*`model:\$\{currentModelId\}`/);
   assert.match(input, /handleSelectModelChip/);
 
-  assert.match(selectors, /ComposerModelPanel/);
+  assert.match(selectors, /ComposerModelPicker/);
   assert.match(selectors, /activePanel === "model"/);
   assert.doesNotMatch(selectors, /ComposerUnavailablePanel|context-selector/);
 });
@@ -99,8 +96,8 @@ test("composer separates task input from its bottom action row", () => {
   const input = read("src/components/chat/ChatInput.tsx");
   const toolbar = read("src/components/chat/ChatInputToolbar.tsx");
 
-  assert.match(input, /region="textarea" className="col-span-2"/);
-  assert.match(input, /region="toolbar" className="col-span-2 min-w-0"/);
+  assert.match(input, /data-slot="composer-input"/);
+  assert.match(input, /data-slot="composer-toolbar-region"/);
   assert.match(toolbar, /<Paperclip size=\{19\}/);
   assert.match(toolbar, /accept=\{attachmentAccept\}/);
 });
@@ -122,88 +119,42 @@ test("composer model labels remain in the Chinese catalog", () => {
   assert.match(zh, /"modelSelector"/);
 });
 
-test("composer model selector uses restrained workbench overlay styling", () => {
-  const modelPanel = read("src/components/chat/ComposerModelPanel.tsx");
-
-  assert.match(modelPanel, /data-composer-model-panel/);
-  assert.match(modelPanel, /bg-\[var\(--theme-workbench-panel\)\]/);
-  assert.match(modelPanel, /bg-\[var\(--theme-bg-sidebar\)\]/);
-  assert.match(modelPanel, /shadow-\[0_8px_24px_rgba\(18,38,63,0\.12\)\]/);
-  assert.doesNotMatch(modelPanel, /shadow-xl|shadow-2xl/);
-  assert.doesNotMatch(modelPanel, /rounded-xl|rounded-2xl|rounded-3xl/);
-  assert.doesNotMatch(modelPanel, /bg-black\/(?:30|40)/);
-  assert.doesNotMatch(modelPanel, /\bbg-white(?:\s|")/);
+test("composer model selector delegates overlays to Lobe", () => {
+  const modelPanel = read("src/components/chat/assistant-ui/elements/composer-model-picker.tsx");
+  assert.match(modelPanel, /<PopoverPortal>/);
+  assert.match(modelPanel, /<PopoverPopup/);
+  assert.match(modelPanel, /<Drawer/);
+  assert.match(modelPanel, /maxWidth: "calc\(100vw - 16px\)"/);
+  assert.doesNotMatch(modelPanel, /createPortal|document\.body/);
 });
 
-test("authenticated workbench popovers avoid legacy heavy overlays", () => {
-  const activePopoverFiles = [
-    "src/components/chat/AgentOptionButton.tsx",
-    "src/components/chat/ChatInputShortcuts.tsx",
-    "src/components/layout/UserMenu.tsx",
-    "src/components/notification/NotificationDialog.tsx",
-    "src/components/selectors/SkillSelector.tsx",
-    "src/components/selectors/ToolSelector.tsx",
-  ];
-
-  for (const path of activePopoverFiles) {
+test("authenticated workbench popovers use the existing Lobe overlay owner", () => {
+  for (const path of [
+    "src/components/chat/AgentOptionButton.tsx", "src/components/chat/ChatInputShortcuts.tsx",
+    "src/components/layout/UserMenu.tsx", "src/components/selectors/SkillSelector.tsx", "src/components/selectors/ToolSelector.tsx",
+  ]) {
     const source = read(path);
-    assert.match(source, /bg-slate-950\/35|bg-\[var\(--theme-overlay\)\]/, path);
-    assert.match(
-      source,
-      /shadow-\[0_8px_24px_rgba\(18,38,63,0\.12\)\]/,
-      path,
-    );
-    assert.doesNotMatch(source, /bg-black\/(?:40|50)/, path);
-    assert.doesNotMatch(source, /shadow-xl|shadow-2xl/, path);
-    assert.doesNotMatch(source, /rounded-2xl|rounded-3xl/, path);
+    assert.match(source, /from "@lobehub\/ui\/base-ui"/, path);
+    assert.match(source, /<(?:Popover|DropdownMenu|Modal|Drawer)/, path);
+    assert.doesNotMatch(source, /createPortal\([\s\S]*document\.body/, path);
   }
 });
 
-test("governed composer selector sheets use one workbench token palette", () => {
-  const selectorFiles = [
-    "src/components/chat/ComposerModelPanel.tsx",
-    "src/components/selectors/SkillSelector.tsx",
-    "src/components/selectors/ToolSelector.tsx",
-  ];
-
-  for (const path of selectorFiles) {
+test("governed composer selector sheets share the Lobe theme owner", () => {
+  for (const path of ["src/components/chat/assistant-ui/elements/composer-model-picker.tsx", "src/components/selectors/SkillSelector.tsx", "src/components/selectors/ToolSelector.tsx"]) {
     const source = read(path);
-
-    assert.match(source, /var\(--theme-workbench-panel\)/, path);
-    assert.match(source, /var\(--theme-text\)/, path);
-    assert.match(source, /var\(--theme-text-secondary\)/, path);
-    assert.match(source, /var\(--theme-primary\)|var\(--theme-ring\)/, path);
-    assert.doesNotMatch(source, /\b(?:bg|text|border)-stone-\d/, path);
-    assert.doesNotMatch(source, /\b(?:bg|text|border)-slate-\d/, path);
-    assert.doesNotMatch(source, /\bdark:(?:bg|text|border)-stone-\d/, path);
-    assert.doesNotMatch(source, /\bdark:(?:bg|text|border)-slate-\d/, path);
+    assert.match(source, /from "@lobehub\/ui\/base-ui"/, path);
+    assert.doesNotMatch(source, /\b(?:bg|text|border)-(?:slate|stone)-\d/, path);
   }
 });
 
-test("governed selector primary controls use theme foreground contrast", () => {
+test("governed selector primary controls inherit library foreground contrast", () => {
   const theme = read("src/styles/base.css");
-  const selectorFiles = [
-    "src/components/chat/ComposerModelPanel.tsx",
-    "src/components/selectors/SkillSelector.tsx",
-    "src/components/selectors/ToolSelector.tsx",
-  ];
-
   assert.match(theme, /--theme-primary-foreground:/);
-  assert.match(theme, /--theme-primary-foreground-muted:/);
-  assert.match(theme, /--theme-primary-foreground-subtle:/);
-
-  for (const path of selectorFiles) {
+  for (const path of ["src/components/chat/assistant-ui/elements/composer-model-picker.tsx", "src/components/selectors/SkillSelector.tsx", "src/components/selectors/ToolSelector.tsx"]) {
     const source = read(path);
-    assert.doesNotMatch(
-      source,
-      /bg-\[var\(--theme-primary\)\]\s+text-white/,
-      path,
-    );
-    assert.match(
-      source,
-      /text-\[var\(--theme-primary-foreground\)\]|bg-\[var\(--theme-primary-light\)\]\s+text-\[var\(--theme-primary\)\]/,
-      path,
-    );
+    assert.match(source, /Button/, path);
+    assert.doesNotMatch(source, /bg-\[var\(--theme-primary\)\]\s+text-white/, path);
   }
 });
 
@@ -230,6 +181,7 @@ test("authenticated chat support surfaces use restrained enterprise workbench to
       "UserMessageBubble",
       read("src/components/chat/ChatMessage/UserMessageBubble.tsx"),
     ],
+    ["ArtifactCard", read("src/components/chat/ChatMessage/elements/ArtifactCard.tsx")],
     [
       "MessagePartRenderer",
       read("src/components/chat/ChatMessage/MessagePartRenderer.tsx"),
@@ -247,6 +199,15 @@ test("authenticated chat support surfaces use restrained enterprise workbench to
   ]);
 
   for (const [name, source] of sources) {
+    if (name === "MessagePartRenderer") {
+      assert.match(source, /<ArtifactCard/);
+      continue;
+    }
+    if (["SlashCommandMenu", "ChatMessage", "UserMessageBubble"].includes(name)) {
+      assert.match(source, /assistant-ui\/elements\//, `${name} uses the migrated view owner`);
+      assert.doesNotMatch(source, /LibreChatComposer|LibreChatCommandMenu/);
+      continue;
+    }
     assert.match(
       source,
       /var\(--theme-bg-card\)|var\(--theme-workbench-panel\)|panel-card|enterprise-modal-shell|workbenchSurface|data-librechat-command-entrypoint/,

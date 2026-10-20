@@ -1,6 +1,8 @@
+import { Button } from "@lobehub/ui/base-ui";
 /* eslint-disable react-refresh/only-export-components */
 import { useState, useEffect, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
+import { useAppElement } from "@lobehub/ui/es/ThemeProvider/index";
 import { BackIcon } from "../../../common/BackIcon";
 import {
   X,
@@ -13,7 +15,7 @@ import {
   Shrink,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { LoadingSpinner } from "../../../common";
+import { Spin } from "@lobehub/ui/base-ui";
 
 import { useSidebarPanel } from "../../../../hooks/useSidebarPanel";
 import type { CollapsibleStatus } from "../../../common/CollapsiblePill";
@@ -128,6 +130,7 @@ export function ToolResultPanel({
   onBack,
   mobileFillViewport,
 }: ToolResultPanelProps) {
+  const appElement = useAppElement();
   const { t } = useTranslation();
   const [internalViewMode, setInternalViewMode] = useState<
     "sidebar" | "center"
@@ -364,20 +367,19 @@ export function ToolResultPanel({
             <div className="flex items-center gap-2 sm:gap-3 px-2 sm:px-4 py-2 sm:py-3 border-b border-stone-200 dark:border-stone-700 shrink-0 overflow-hidden">
               {/* Back button */}
               {effectiveOnBack && (
-                <button
-                  type="button"
+                <Button type="text"
+                  htmlType="button"
                   onClick={(e) => {
                     e.stopPropagation();
                     effectiveOnBack();
                   }}
                     className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-colors duration-150 hover:bg-[var(--theme-bg-card)] active:opacity-90"
                   title={t("common.back", "Back")}
-                >
-                  <BackIcon
+                  icon={<BackIcon
                     size={15}
                     className="text-stone-400 dark:text-stone-500"
-                  />
-                </button>
+                  />}
+                />
               )}
 
               {/* Status + Icon */}
@@ -385,8 +387,8 @@ export function ToolResultPanel({
                 className={`flex size-10 shrink-0 items-center justify-center rounded-lg ${cfg.bg}`}
               >
                 {status === "loading" ? (
-                  <LoadingSpinner
-                    size="sm"
+                  <Spin
+                    size={16}
                     className="shrink-0"
                     color={cfg.color || "text-blue-600 dark:text-blue-400"}
                   />
@@ -425,8 +427,8 @@ export function ToolResultPanel({
               {/* Center / Fullscreen / Close */}
               {!hideViewToggle && (
                 <div className="flex items-center gap-1 shrink-0">
-                  <button
-                    type="button"
+                  <Button type="text"
+                    htmlType="button"
                     onClick={(e) => {
                       e.stopPropagation();
                       handleToggleViewMode();
@@ -437,8 +439,7 @@ export function ToolResultPanel({
                         ? t("documents.centerView", "Center view")
                         : t("documents.sidebarView", "Sidebar view")
                     }
-                  >
-                    {isSidebar ? (
+                    icon={isSidebar ? (
                       <Columns2
                         size={15}
                         className="text-stone-400 dark:text-stone-500"
@@ -449,9 +450,9 @@ export function ToolResultPanel({
                         className="text-stone-400 dark:text-stone-500"
                       />
                     )}
-                  </button>
-                  <button
-                    type="button"
+                  />
+                  <Button type="text"
+                    htmlType="button"
                     onClick={(e) => {
                       e.stopPropagation();
                       handleToggleFullscreen();
@@ -462,8 +463,7 @@ export function ToolResultPanel({
                         ? t("documents.exitFullscreen", "退出全屏")
                         : t("documents.fullscreen", "全屏")
                     }
-                  >
-                    {isFullscreen ? (
+                    icon={isFullscreen ? (
                       <Shrink
                         size={15}
                         className="text-stone-400 dark:text-stone-500"
@@ -474,9 +474,9 @@ export function ToolResultPanel({
                         className="text-stone-400 dark:text-stone-500"
                       />
                     )}
-                  </button>
-                  <button
-                    type="button"
+                  />
+                  <Button type="text"
+                    htmlType="button"
                     onClick={(e) => {
                       e.stopPropagation();
                       handleUserClose();
@@ -484,17 +484,16 @@ export function ToolResultPanel({
                     className="flex h-8 w-8 items-center justify-center rounded-lg transition-colors duration-150 hover:bg-[var(--theme-bg-card)] active:opacity-90"
                     aria-label={t("common.close")}
                     title={t("common.close", "Close")}
-                  >
-                    <X
+                    icon={<X
                       size={15}
                       className="text-stone-400 dark:text-stone-500"
-                    />
-                  </button>
+                    />}
+                  />
                 </div>
               )}
               {hideViewToggle && (
-                <button
-                  type="button"
+                <Button type="text"
+                  htmlType="button"
                   onClick={(e) => {
                     e.stopPropagation();
                     handleUserClose();
@@ -502,9 +501,8 @@ export function ToolResultPanel({
                   className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-colors duration-150 hover:bg-[var(--theme-bg-card)] active:opacity-90"
                   aria-label={t("common.close")}
                   title={t("common.close", "Close")}
-                >
-                  <X size={15} className="text-stone-400 dark:text-stone-500" />
-                </button>
+                  icon={<X size={15} className="text-stone-400 dark:text-stone-500" />}
+                />
               )}
             </div>
           )}
@@ -515,27 +513,25 @@ export function ToolResultPanel({
       {isCenter && !hasCustomHeader && !isMobile && (
         <div className="absolute top-3 right-3 z-[310] flex items-center gap-2">
           {effectiveOnBack && (
-            <button
+            <Button type="text"
               onClick={(e) => {
                 e.stopPropagation();
                 effectiveOnBack();
               }}
               className="flex h-10 w-10 cursor-pointer items-center justify-center rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] text-[var(--theme-text)] shadow-[0_8px_18px_rgba(18,38,63,0.08)] transition-colors duration-150 hover:bg-[var(--theme-bg-sidebar)]"
               aria-label="Back"
-            >
-              <BackIcon size={18} />
-            </button>
+              icon={<BackIcon size={18} />}
+            />
           )}
-          <button
+          <Button type="text"
             onClick={(e) => {
               e.stopPropagation();
               handleUserClose();
             }}
             className="flex h-10 w-10 cursor-pointer items-center justify-center rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] text-[var(--theme-text)] shadow-[0_8px_18px_rgba(18,38,63,0.08)] transition-colors duration-150 hover:bg-[var(--theme-bg-sidebar)]"
             aria-label={t("common.close")}
-          >
-            <X size={18} />
-          </button>
+            icon={<X size={18} />}
+          />
         </div>
       )}
 
@@ -557,6 +553,7 @@ export function ToolResultPanel({
 
   return createPortal(
     <div
+      data-tool-result-overlay
       className={`fixed inset-0 z-[200] flex flex-col ${
         overlayClass
           ? overlayClass
@@ -576,6 +573,6 @@ export function ToolResultPanel({
     >
       {content}
     </div>,
-    document.body,
+    appElement ?? document.body,
   );
 }

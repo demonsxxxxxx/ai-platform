@@ -1,5 +1,7 @@
+import { Button } from "@lobehub/ui/base-ui";
 import { useCallback } from "react";
 import { createPortal } from "react-dom";
+import { useAppElement } from "@lobehub/ui/es/ThemeProvider/index";
 import { X } from "lucide-react";
 import { useSidebarPanel } from "../../hooks/useSidebarPanel";
 
@@ -29,6 +31,7 @@ export function EditorSidebar({
   footer,
   width = "default",
 }: EditorSidebarProps) {
+  const appElement = useAppElement();
   const {
     isMobile,
     animateIn,
@@ -124,9 +127,7 @@ export function EditorSidebar({
               )}
             </div>
           </div>
-          <button onClick={onClose} className="editor-sidebar-close-btn">
-            <X size={18} />
-          </button>
+          <Button type="text" size="large" onClick={onClose} aria-label="关闭编辑器" icon={<X size={18} />} />
         </div>
 
         {/* Body */}
@@ -136,6 +137,6 @@ export function EditorSidebar({
         {footer && <div className="editor-sidebar-footer">{footer}</div>}
       </div>
     </>,
-    document.body,
+    appElement ?? document.body,
   );
 }

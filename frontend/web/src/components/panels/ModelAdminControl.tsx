@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Button, Input, Radio, SwitchRoot, SwitchThumb, Table, Tag } from "@lobehub/ui/base-ui";
+import { RadioGroup as BaseRadioGroup } from "@base-ui/react/radio-group";
+import { useCallback, useEffect, useRef, useState, type HTMLAttributes } from "react";
 import { DatabaseZap, RefreshCw, Save, Search, PlugZap, RotateCcw } from "lucide-react";
 import {
   modelAdminApi,
@@ -6,6 +8,7 @@ import {
   type AdminModelState,
 } from "../../services/api/modelAdmin";
 import { ApiRequestError } from "../../services/api/fetch";
+import { LobeSelectField } from "../lobe-ui/LobeSelectField";
 
 const STATUS_FILTERS = [
   ["all", "状态：全部"],
@@ -334,21 +337,21 @@ export function ModelAdminControl({
             <h2 className="text-sm font-semibold">连接信息</h2>
             <p className="mt-1 text-xs text-[var(--theme-text-secondary)]">兼容模型网关 · 测试和获取候选不会修改已生效配置</p>
           </div>
-          <button
-            className="inline-flex min-h-8 items-center gap-1.5 rounded-md px-2 text-xs text-[var(--theme-text-secondary)] hover:bg-[var(--theme-hover)] disabled:opacity-50"
+          <Button type="text"
+            size="small"
             data-model-admin-reload
             disabled={connectionLocked}
             onClick={() => void load()}
-            type="button"
-          ><RefreshCw size={14} aria-hidden="true" />重新加载已保存配置</button>
+            htmlType="button"
+          ><RefreshCw size={14} aria-hidden="true" />重新加载已保存配置</Button>
         </div>
         <div className="grid min-w-0 gap-3 md:grid-cols-2">
           <label className="flex min-w-0 flex-col gap-1.5 text-sm">
             <span className="font-medium">API 地址</span>
-            <input
+            <Input
               aria-label="模型 API 地址"
               aria-describedby="model-address-help"
-              className="h-10 min-w-0 rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg)] px-3 outline-none focus:border-[var(--theme-primary)] disabled:opacity-60"
+              size="large"
               disabled={connectionLocked}
               onChange={(event) => {
                 if (!invalidateConnection()) return;
@@ -362,11 +365,11 @@ export function ModelAdminControl({
           </label>
           <label className="flex min-w-0 flex-col gap-1.5 text-sm">
             <span className="font-medium">API Key</span>
-            <input
+            <Input
               aria-label="模型 API Key"
               aria-describedby="model-key-help"
               autoComplete="new-password"
-              className="h-10 min-w-0 rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg)] px-3 outline-none focus:border-[var(--theme-primary)] disabled:opacity-60"
+              size="large"
               disabled={connectionLocked}
               onChange={(event) => {
                 if (!invalidateConnection()) return;
@@ -380,30 +383,25 @@ export function ModelAdminControl({
           </label>
         </div>
         <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-          <span className={`inline-flex items-center gap-2 rounded-md px-2 py-1 text-xs ${
-            testState === "passed" ? "bg-[var(--theme-success-soft)] text-[var(--theme-success)]"
-              : testState === "failed" ? "bg-[var(--theme-danger-soft)] text-[var(--theme-danger)]"
-                : "bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)]"
-          }`} role="status" data-model-admin-test-state={testState}>
+          <Tag color={testState === "passed" ? "success" : testState === "failed" ? "error" : undefined} role="status" data-model-admin-test-state={testState}>
             {busy === "load" ? "正在加载配置" : testState === "testing" ? "正在测试当前连接"
               : testState === "passed" ? "当前连接测试通过" : testState === "failed" ? "当前连接测试失败"
                 : state?.connection.configured && reuseSavedCredential && !credential ? "已配置 · 尚未测试" : "连接草稿 · 尚未测试"}
-          </span>
+          </Tag>
           <div className="flex flex-wrap gap-2">
-            <button
-              className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-[var(--theme-border)] px-3 text-sm hover:bg-[var(--theme-hover)] disabled:opacity-50"
-              data-model-admin-test
+            <Button type="default"
+            data-model-admin-test
               disabled={busy !== null || !connectionReady}
               onClick={() => void discover("test")}
-              type="button"
-            ><PlugZap size={16} aria-hidden="true" />测试连接</button>
-            <button
-              className="btn-primary inline-flex h-10 items-center justify-center gap-2"
+              htmlType="button"
+            ><PlugZap size={16} aria-hidden="true" />测试连接</Button>
+            <Button type="primary"
+              loading={busy === "discover"}
               data-model-admin-discover
               disabled={busy !== null || !connectionReady}
               onClick={() => void discover("discover")}
-              type="button"
-            ><RefreshCw className={busy === "discover" ? "animate-spin" : ""} size={16} aria-hidden="true" />获取候选模型</button>
+              htmlType="button"
+            ><RefreshCw size={16} aria-hidden="true" />获取候选模型</Button>
           </div>
         </div>
         {error ? <p className="mt-3 text-sm text-[var(--theme-danger)]" role="alert">{error}</p> : null}
@@ -418,25 +416,21 @@ export function ModelAdminControl({
         <div className="flex shrink-0 flex-col gap-3 border-b border-[var(--theme-border)] p-3 md:flex-row md:items-center md:justify-between">
           <div className="flex min-w-0 flex-1 flex-col gap-3 sm:flex-row">
             <label className="relative min-w-0 sm:max-w-sm sm:flex-1">
-              <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--theme-text-secondary)]" size={16} aria-hidden="true" />
-              <input
+              <Input
                 aria-label="搜索模型"
-                className="h-10 w-full rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg)] pl-9 pr-3 text-sm outline-none focus:border-[var(--theme-primary)]"
+                prefix={<Search size={16} />} size="large"
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="搜索模型名称或模型 ID"
                 value={query}
               />
             </label>
-            <select
+            <LobeSelectField
               aria-label="筛选模型状态"
-              className="h-10 rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg)] px-3 text-sm outline-none focus:border-[var(--theme-primary)] sm:w-40"
-              onChange={(event) => setStatusFilter(event.target.value)}
+              className="h-10 sm:w-40"
+              onChange={setStatusFilter}
               value={statusFilter}
-            >
-              {STATUS_FILTERS.map(([value, label]) => (
-                <option key={value} value={value}>{label}</option>
-              ))}
-            </select>
+              options={STATUS_FILTERS.map(([value, label]) => ({ value, label }))}
+            />
           </div>
           <span className="shrink-0 text-xs text-[var(--theme-text-secondary)]">
             显示 {visibleDraft.length} / {draft.length} 个模型
@@ -444,45 +438,42 @@ export function ModelAdminControl({
         </div>
 
         <div className="min-w-0 overflow-x-auto lg:min-h-0 lg:flex-1 lg:overflow-auto" data-model-admin-table-scroll>
-          <table className="w-full min-w-[880px] table-fixed text-left text-sm">
-            <thead className="sticky top-0 z-10 bg-[var(--theme-workbench-panel)] text-xs text-[var(--theme-text-secondary)]">
-              <tr>
-                <th className="w-24 px-4 py-3 font-medium">启用</th>
-                <th className="w-[28%] px-4 py-3 font-medium">显示名称 / 上游模型 ID</th>
-                <th className="w-40 px-4 py-3 font-medium">最大输入 Token</th>
-                <th className="w-40 px-4 py-3 font-medium">最大输出 Token</th>
-                <th className="w-28 px-4 py-3 font-medium">状态</th>
-                <th className="w-20 px-4 py-3 text-center font-medium">默认</th>
-              </tr>
-            </thead>
-            <tbody>
-              {visibleDraft.map((model) => (
-                <tr key={model.id} className="border-t border-[var(--theme-border)] first:border-t-0">
-                  <td className="px-4 py-3">
-                    <label className="inline-flex cursor-pointer items-center">
-                      <input
+          <BaseRadioGroup
+          aria-label="默认模型" name="default-model"
+          value={draft.find((model) => model.is_default)?.id ?? null}
+          onValueChange={(id) => updateDraft(id as string, { is_default: true })}
+        >
+        <Table
+ size="small" pagination={false} scroll={{ x: 900 }} tableLayout="fixed" sticky
+ dataSource={visibleDraft}
+ rowKey={(model) => model.id}
+ onRow={(model) => ({ "data-model-admin-model": model.id } as HTMLAttributes<HTMLTableRowElement>)}
+ columns={[
+{ key: "enabled", width: 70, title: "启用",
+render: (_value, model) => (<>
+<label className="inline-flex cursor-pointer items-center">
+                      <SwitchRoot
                         aria-label={`启用 ${model.label}`}
                         checked={model.enabled}
-                        className="peer sr-only"
                         disabled={!model.available || busy !== null}
-                        onChange={(event) => updateDraft(model.id, {
-                          enabled: event.target.checked,
-                          ...(!event.target.checked ? { is_default: false } : {}),
+                        onCheckedChange={(checked) => updateDraft(model.id, {
+                          enabled: checked,
+                          ...(!checked ? { is_default: false } : {}),
                         })}
-                        type="checkbox"
-                      />
-                      <span className="relative h-5 w-9 rounded-full bg-[var(--theme-border)] transition-colors after:absolute after:left-0.5 after:top-0.5 after:h-4 after:w-4 after:rounded-full after:bg-white after:transition-transform peer-checked:bg-[var(--theme-primary)] peer-checked:after:translate-x-4 peer-focus-visible:outline-none peer-focus-visible:ring-2 peer-focus-visible:ring-[var(--theme-primary)] peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-[var(--theme-workbench-panel)] peer-disabled:cursor-not-allowed peer-disabled:opacity-50" />
+                      ><SwitchThumb /></SwitchRoot>
+
                     </label>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex min-w-0 items-center gap-3">
+</>) },
+{ key: "identity", width: 280, title: "显示名称 / 上游模型 ID",
+render: (_value, model) => (<>
+<div className="flex min-w-0 items-center gap-3">
                       <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[#eef2ff] text-[#5967e8]" aria-hidden="true">
                         <DatabaseZap size={16} />
                       </div>
                       <div className="min-w-0 flex-1">
-                        <input
+                        <Input
                           aria-label={`${model.value} 显示名称`}
-                          className="h-7 w-full truncate border-0 bg-transparent p-0 font-medium outline-none focus:text-[var(--theme-primary)]"
+                          size="small" variant="borderless"
                           onChange={(event) => updateDraft(model.id, { label: event.target.value })}
                           disabled={busy !== null}
                           value={model.label}
@@ -490,11 +481,12 @@ export function ModelAdminControl({
                         <p className="truncate text-xs text-[var(--theme-text-secondary)]">{model.value}</p>
                       </div>
                     </div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <input
+</>) },
+{ key: "inputTokens", width: 160, title: "最大输入 Token",
+render: (_value, model) => (<>
+<Input
                       aria-label={`${model.value} 最大输入 Token`}
-                      className="h-9 w-full rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg)] px-2 disabled:opacity-60"
+                      size="small"
                       disabled={!model.available || busy !== null}
                       min={1}
                       max={10000000}
@@ -504,11 +496,12 @@ export function ModelAdminControl({
                       type="number"
                       value={model.max_input_tokens ?? ""}
                     />
-                  </td>
-                  <td className="px-4 py-3">
-                    <input
+</>) },
+{ key: "outputTokens", width: 160, title: "最大输出 Token",
+render: (_value, model) => (<>
+<Input
                       aria-label={`${model.value} 最大输出 Token`}
-                      className="h-9 w-full rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg)] px-2 disabled:opacity-60"
+                      size="small"
                       disabled={!model.available || busy !== null}
                       min={1}
                       max={10000000}
@@ -518,38 +511,22 @@ export function ModelAdminControl({
                       type="number"
                       value={model.max_output_tokens ?? ""}
                     />
-                  </td>
-                  <td className="px-4 py-3">
-                    <span className={`inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs ${
-                      model.available
-                        ? "bg-[var(--theme-success-soft)] text-[var(--theme-success)]"
-                        : "bg-[var(--theme-danger-soft)] text-[var(--theme-danger)]"
-                    }`}>
-                      <span className="h-1.5 w-1.5 rounded-full bg-current" aria-hidden="true" />
-                      {model.available ? "已发现" : "上游缺失"}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-center">
-                    <input
+</>) },
+{ key: "availability", width: 120, title: "状态",
+render: (_value, model) => (<>
+<Tag color={model.available ? "success" : "error"} size="small">{model.available ? "已发现" : "上游缺失"}</Tag>
+</>) },
+{ key: "default", width: 70, title: "默认",
+render: (_value, model) => (<>
+<Radio
                       aria-label={`设为默认 ${model.label}`}
-                      checked={model.is_default}
+                      value={model.id}
                       disabled={!model.enabled || !model.available || busy !== null}
-                      name="default-model"
-                      onChange={() => updateDraft(model.id, { is_default: true })}
-                      type="radio"
                     />
-                  </td>
-                </tr>
-              ))}
-              {!visibleDraft.length ? (
-                <tr>
-                  <td className="px-4 py-12 text-center text-sm text-[var(--theme-text-secondary)]" colSpan={6}>
-                    {draft.length ? "没有匹配的模型" : busy === "load" ? "正在加载模型配置" : "请先获取候选模型"}
-                  </td>
-                </tr>
-              ) : null}
-            </tbody>
-          </table>
+</>) }
+]}
+ emptyText={draft.length ? "没有匹配的模型" : busy === "load" ? "正在加载模型配置" : "请先获取候选模型"}
+/></BaseRadioGroup>
         </div>
       </div>
       <div className="sticky bottom-0 z-10 flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 py-2 lg:static" data-model-admin-action-bar>
@@ -561,20 +538,19 @@ export function ModelAdminControl({
           </p>
         )}
         <div className="flex flex-wrap items-center gap-2">
-          <button
-            className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-[var(--theme-border)] px-3 text-sm hover:bg-[var(--theme-hover)] disabled:opacity-50"
+          <Button type="default"
             data-model-admin-cancel
             disabled={!state || connectionLocked || (!hasChanges && busy === null)}
             onClick={cancelDraft}
-            type="button"
-          ><RotateCcw size={16} aria-hidden="true" />放弃修改</button>
-          <button
-            className="btn-primary inline-flex h-10 items-center justify-center gap-2"
+            htmlType="button"
+          ><RotateCcw size={16} aria-hidden="true" />放弃修改</Button>
+          <Button type="primary"
+            loading={busy === "publish"}
             data-model-admin-publish
             disabled={busy !== null || !canPublish}
             onClick={() => void publish()}
-            type="button"
-          ><Save size={16} aria-hidden="true" />{busy === "publish" ? "正在保存" : "保存并生效"}</button>
+            htmlType="button"
+          ><Save size={16} aria-hidden="true" />{busy === "publish" ? "正在保存" : "保存并生效"}</Button>
         </div>
       </div>
     </section>

@@ -1,5 +1,8 @@
 """Public in-process contracts owned by the Runs bounded context."""
 
+from app.runs.domain.run_performance import (
+    BROWSER_LATENCY_MAX_MS as BROWSER_LATENCY_MAX_MS,
+)
 from app.runs.application.admin_run_monitor import (
     build_admin_worker_execution as build_admin_worker_execution,
 )
@@ -226,4 +229,9 @@ from app.runs.domain.inputs import (
 
 from app.runs.application.attempt_lifecycle import (
     ReconciliationAuthorityError as ReconciliationAuthorityError,
+)
+
+from app.runs.application.worker_terminal_completion import (
+    WorkerOutcome as WorkerOutcome,
+    WorkerTerminalCompletionService as WorkerTerminalCompletionService,
 )

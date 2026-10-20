@@ -3,12 +3,15 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
+from app.auth import AuthPrincipal
 from app.principal_authority import (
     AI_ADMIN_PERMISSIONS,
     AI_USER_PERMISSIONS,
     CURRENT_PRINCIPAL_DENIAL_REASON,
+    CompanyLoginJwtUnavailable,
     PrincipalAuthorityDenied,
     fetch_company_user_info,
+    issue_refreshed_company_jwt,
     resolve_current_principal,
     resolve_login_principal,
 )
@@ -33,6 +36,36 @@ def _adapter(result):
         return result
 
     return fetch
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [401, 403, 404, 500, 503])
+async def test_refresh_issuer_classifies_company_http_failure(status_code):
+    request = httpx.Request("GET", "https://company.test/api/userManage/user-a/info")
+    failure = httpx.HTTPStatusError(
+        "synthetic company failure", request=request,
+        response=httpx.Response(status_code, request=request),
+    )
+    expected = PrincipalAuthorityDenied if status_code in {401, 403, 404} else CompanyLoginJwtUnavailable
+    with pytest.raises(expected):
+        await issue_refreshed_company_jwt(
+            AuthPrincipal(user_id="user-a", display_name="User A", tenant_id="tenant-a"),
+            expires_at=1, user_info_adapter=_adapter(failure), settings=_settings(),
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [
+    httpx.ConnectError("synthetic company outage"),
+    httpx.ReadTimeout("synthetic company timeout"),
+    ValueError("synthetic malformed company JSON"),
+])
+async def test_refresh_issuer_reports_unavailable_company_transport(failure):
+    with pytest.raises(CompanyLoginJwtUnavailable):
+        await issue_refreshed_company_jwt(
+            AuthPrincipal(user_id="user-a", display_name="User A", tenant_id="tenant-a"),
+            expires_at=1, user_info_adapter=_adapter(failure), settings=_settings(),
+        )
 
 
 @pytest.mark.asyncio
@@ -101,7 +134,10 @@ async def test_login_and_current_principal_accept_the_observed_legacy_company_re
 
     assert login.user_id == current.user_id == "user-a"
     assert login.tenant_id == current.tenant_id == "tenant-a"
-    assert login.department_id == current.department_id == "研发一部"
+    assert login.department_id == current.department_id == ""
+    assert login.department_ids == current.department_ids == ()
+    assert login.department_authority_status == current.department_authority_status == "unavailable"
+    assert login.company_department == "研发一部"
     assert login.roles == current.roles == ["user"]
     assert login.permissions == current.permissions == list(AI_USER_PERMISSIONS)
 
@@ -190,7 +226,7 @@ async def test_login_and_current_principal_reject_conflicting_role_aliases(kind,
 
 
 @pytest.mark.asyncio
-async def test_current_principal_uses_current_identity_roles_department_and_derived_permissions():
+async def test_current_principal_uses_current_identity_roles_and_keeps_department_metadata_unscoped():
     principal = await resolve_current_principal(
         user_id="user-a",
         tenant_id="tenant-a",
@@ -209,7 +245,9 @@ async def test_current_principal_uses_current_identity_roles_department_and_deri
 
     assert principal.user_id == "user-a"
     assert principal.tenant_id == "tenant-a"
-    assert principal.department_id == "QA"
+    assert principal.department_id == ""
+    assert principal.department_ids == ()
+    assert principal.department_authority_status == "unavailable"
     assert principal.roles == ["user"]
     assert principal.permissions == list(AI_USER_PERMISSIONS)
     assert "upstream:must-not-leak" not in principal.permissions
@@ -241,25 +279,11 @@ async def test_current_principal_recomputes_revoked_admin_role_from_the_same_aut
 
 
 @pytest.mark.parametrize(
-    ("department", "expected"),
-    [
-        ("rd", "rd"),
-        ("药品注册", "药品注册"),
-        ("", ""),
-        (None, ""),
-        (42, ""),
-        (["qa"], ""),
-        ("qa,rd", ""),
-        (" qa", ""),
-        ("qa ", ""),
-        ("qa\n", ""),
-        ("\tqa", ""),
-        ("qa\u200b", ""),
-        ("部" * 161, ""),
-    ],
+    "department",
+    ["rd", "药品注册", "110", "", None, 42, ["qa"], "qa,rd", " qa", "qa ", "qa\n", "\tqa", "qa\u200b", "部" * 161],
 )
 @pytest.mark.asyncio
-async def test_current_principal_uses_changed_or_removed_department(department, expected):
+async def test_current_principal_never_grants_departments_from_company_metadata(department):
     principal = await resolve_current_principal(
         user_id="user-a",
         tenant_id="tenant-a",
@@ -269,7 +293,9 @@ async def test_current_principal_uses_changed_or_removed_department(department, 
         settings=_settings(),
     )
 
-    assert principal.department_id == expected
+    assert principal.department_id == ""
+    assert principal.department_ids == ()
+    assert principal.department_authority_status == "unavailable"
 
 
 @pytest.mark.asyncio

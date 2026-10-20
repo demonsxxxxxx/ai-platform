@@ -1,8 +1,11 @@
+import { Checkbox, RadioGroup } from "@lobehub/ui/base-ui";
+import { Button } from "@lobehub/ui/base-ui";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { RefreshCw, Save, ShieldCheck } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { useAuth } from "../../hooks/useAuth";
+import { LobeSelectField } from "../lobe-ui/LobeSelectField";
 
 import { RoleSelector } from "../mcp/RoleSelector";
 import { DepartmentDirectorySelector } from "./DepartmentDirectorySelector";
@@ -230,20 +233,18 @@ export function SkillDistributionGovernancePanel({
             {t("skills.governance.description")}
           </p>
         </div>
-        <button
+        <Button type="text"
           aria-label={t("skills.governance.refresh")}
-          className="btn-icon"
           disabled={loading || saving}
           onClick={() => void load()}
           title={t("skills.governance.refreshShort")}
-          type="button"
-        >
-          <RefreshCw
+          htmlType="button"
+          icon={<RefreshCw
             aria-hidden="true"
             className={loading ? "animate-spin" : undefined}
             size={16}
-          />
-        </button>
+          />}
+        />
       </div>
 
       {loadError ? (
@@ -317,69 +318,53 @@ export function SkillDistributionGovernancePanel({
               ) : null}
               <div className="grid gap-4 sm:grid-cols-2">
                 <label className="flex items-center gap-2.5 text-sm text-[var(--theme-text)]">
-                  <input
+                  <Checkbox
                     checked={draft.visibleToUser}
                     data-skill-distribution-visible
                     disabled={saving}
-                    onChange={(event) =>
+                    onChange={(checked) =>
                       setDraft((current) =>
                         current
-                          ? { ...current, visibleToUser: event.target.checked }
+                          ? { ...current, visibleToUser: checked }
                           : current,
                       )
                     }
-                    type="checkbox"
                   />
                   {t("skills.governance.visibleToUsers")}
                 </label>
-                <label className="es-field">
+                <div className="es-field" data-skill-distribution-status>
                   <span className="es-label">{t("skills.governance.status.label")}</span>
-                  <select
-                    className="enterprise-field-control es-input"
-                    data-skill-distribution-status
+                  <LobeSelectField
+                    aria-label={t("skills.governance.status.label")}
                     disabled={saving}
-                    onChange={(event) =>
+                    onChange={(status) =>
                       setDraft((current) =>
                         current
-                          ? {
-                              ...current,
-                              status: event.target.value as CapabilityDistributionStatus,
-                            }
+                          ? { ...current, status: status as CapabilityDistributionStatus }
                           : current,
                       )
                     }
                     value={draft.status}
-                  >
-                    <option value="active">{t("skills.governance.status.active")}</option>
-                    <option value="disabled">{t("skills.governance.status.disabled")}</option>
-                  </select>
-                </label>
+                    options={[
+                      { value: "active", label: t("skills.governance.status.active") },
+                      { value: "disabled", label: t("skills.governance.status.disabled") },
+                    ]}
+                  />
+                </div>
               </div>
 
               <fieldset className="es-field mt-4">
                 <legend className="es-label">{t("skills.governance.departments.scope")}</legend>
-                <div className="mt-2 flex flex-wrap gap-2" data-skill-distribution-department-mode>
-                  <label className="inline-flex items-center gap-2 text-sm text-[var(--theme-text)]">
-                    <input
-                      checked={departmentScope === "all"}
-                      disabled={saving}
-                      name="skill-department-scope"
-                      onChange={() => setDepartmentScope("all")}
-                      type="radio"
-                    />
-                    {t("skills.governance.departments.all")}
-                  </label>
-                  <label className="inline-flex items-center gap-2 text-sm text-[var(--theme-text)]">
-                    <input
-                      checked={departmentScope === "restricted"}
-                      disabled={saving}
-                      name="skill-department-scope"
-                      onChange={() => setDepartmentScope("restricted")}
-                      type="radio"
-                    />
-                    {t("skills.governance.departments.restricted")}
-                  </label>
-                </div>
+                <RadioGroup
+                  className="mt-2" aria-label={t("skills.governance.departments.scope")}
+                  disabled={saving} name="skill-department-scope"
+                  value={departmentScope} onChange={(scope) => setDepartmentScope(scope as typeof departmentScope)}
+                  options={[
+                    { value: "all", label: t("skills.governance.departments.all") },
+                    { value: "restricted", label: t("skills.governance.departments.restricted") },
+                  ]}
+                  data-skill-distribution-department-mode
+                />
               </fieldset>
 
               {departmentScope === "restricted" ? (
@@ -409,6 +394,7 @@ export function SkillDistributionGovernancePanel({
                 <span className="es-hint">{t("skills.governance.roles.hint")}</span>
                 <fieldset className="mt-1" disabled={saving}>
                   <RoleSelector
+                    disabled={saving}
                     onChange={(allowedRoles) =>
                       setDraft((current) =>
                         current ? { ...current, allowedRoles } : current,
@@ -420,8 +406,8 @@ export function SkillDistributionGovernancePanel({
               </div>
 
               <div className="mt-5 flex flex-wrap items-center gap-3">
-                <button
-                  className="btn-primary inline-flex items-center gap-2 disabled:opacity-60"
+                <Button type="primary"
+                  className="inline-flex items-center gap-2 disabled:opacity-60"
                   disabled={
                     saving ||
                     directory === null ||
@@ -431,7 +417,7 @@ export function SkillDistributionGovernancePanel({
                   }
                   data-skill-distribution-save
                   onClick={() => void save()}
-                  type="button"
+                  htmlType="button"
                 >
                   {saving ? (
                     <RefreshCw className="animate-spin" size={16} />
@@ -439,7 +425,7 @@ export function SkillDistributionGovernancePanel({
                     <Save size={16} />
                   )}
                   {t("skills.governance.save")}
-                </button>
+                </Button>
                 {saved ? (
                   <span className="inline-flex items-center gap-1 text-sm text-[var(--theme-success)]" role="status">
                     <ShieldCheck size={16} /> {t("skills.governance.saved")}

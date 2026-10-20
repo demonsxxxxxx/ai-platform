@@ -11,6 +11,7 @@ from app.auth import (
     is_ai_admin,
     principal_to_response,
     require_principal,
+    refresh_company_session,
 )
 from app.auth_sessions import (
     AuthContextError,
@@ -24,6 +25,7 @@ from app.auth_sessions import (
     principal_snapshot,
 )
 from app.db import transaction
+from app.identity.api import PrincipalResponse
 from app.identity.infrastructure.audit_postgres import append_audit_log
 from app.identity.infrastructure.postgres import ensure_user
 from app.mcp.api import McpRuntimeContextError, get_mcp_principal_jwt_store
@@ -31,11 +33,11 @@ from app.models import (
     AuthContextBootstrapRequest,
     LoginRequest,
     OAuthCallbackRequest,
-    PrincipalResponse,
 )
 from app.principal_authority import (
     CompanyLoginJwtUnavailable,
     PrincipalAuthorityDenied,
+    bind_department_authority,
     fetch_company_user_info,
     read_company_jwt_expiry,
     resolve_company_login_jwt,
@@ -238,8 +240,11 @@ async def login(request: LoginRequest, http_request: Request) -> PrincipalRespon
         commit_status = await commit_auth_operation(operation, principal_snapshot(principal))
         if commit_status != "committed":
             _raise_commit_failure(commit_status)
-    await _store_mcp_login_jwt(principal, company_jwt)
-    return PrincipalResponse.model_validate(principal_to_response(principal))
+    await _store_mcp_login_jwt(
+        principal, company_jwt, refresh_cookie=_context_cookie_from_request(http_request),
+        operation_epoch=operation.epoch,
+    )
+    return PrincipalResponse(**principal_to_response(principal))
 
 
 @router.post("/auth/ad-login", response_model=PrincipalResponse)
@@ -262,6 +267,7 @@ async def ad_login(request: dict[str, Any], http_request: Request) -> PrincipalR
             company_jwt.strip(),
             settings=get_settings(),
         )
+        principal = await bind_department_authority(principal, settings=get_settings(), fresh=True)
     except CompanyLoginJwtUnavailable as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -274,8 +280,11 @@ async def ad_login(request: dict[str, Any], http_request: Request) -> PrincipalR
         commit_status = await commit_auth_operation(operation, principal_snapshot(principal))
         if commit_status != "committed":
             _raise_commit_failure(commit_status)
-    await _store_mcp_login_jwt(principal, company_jwt.strip())
-    return PrincipalResponse.model_validate(principal_to_response(principal))
+    await _store_mcp_login_jwt(
+        principal, company_jwt.strip(), refresh_cookie=_context_cookie_from_request(http_request),
+        operation_epoch=operation.epoch,
+    )
+    return PrincipalResponse(**principal_to_response(principal))
 
 
 async def _resolve_login_principal(
@@ -315,11 +324,19 @@ async def _resolve_login_principal(
 async def _store_mcp_login_jwt(
     principal: AuthPrincipal,
     company_jwt: str | None,
+    *,
+    refresh_cookie: str | None = None,
+    operation_epoch: int | None = None,
 ) -> None:
     if not company_jwt:
         return
     try:
-        await get_mcp_principal_jwt_store().put(principal, company_jwt)
+        if refresh_cookie:
+            await get_mcp_principal_jwt_store().put(
+                principal, company_jwt, refresh_cookie=refresh_cookie, operation_epoch=operation_epoch,
+            )
+        else:
+            await get_mcp_principal_jwt_store().put(principal, company_jwt)
     except McpRuntimeContextError as exc:
         logger.warning(
             "mcp_principal_jwt_store_failed",
@@ -361,19 +378,29 @@ async def _persist_login_principal(conn: Any, principal: AuthPrincipal) -> None:
     )
 
 
-async def _login_principal(request: LoginRequest) -> AuthPrincipal:
-    """Resolve and persist the explicit Bearer compatibility login principal."""
-
-    principal, company_jwt = await _resolve_login_principal(request)
-    async with transaction() as conn:
-        await _persist_login_principal(conn, principal)
-    await _store_mcp_login_jwt(principal, company_jwt)
-    return principal
+@router.post("/auth/refresh")
+async def refresh(http_request: Request, response: Response) -> dict[str, Any]:
+    """Renew only the signed cookie's current principal within its remaining day."""
+    if (http_request.headers.get("sec-fetch-site") in {"cross-site", "same-site"}
+        or http_request.headers.get("content-type", "").split(";", 1)[0].strip() != "application/json"):
+        raise HTTPException(status_code=403, detail="auth_refresh_request_forbidden")
+    try:
+        payload = await http_request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="invalid_auth_refresh_request") from exc
+    if payload != {}:
+        raise HTTPException(status_code=422, detail="invalid_auth_refresh_request")
+    principal, changed = await refresh_company_session(_context_cookie_from_request(http_request))
+    response.headers["Cache-Control"] = "no-store"
+    return {
+        "principal": principal_to_response(principal),
+        "authorization_changed": changed,
+    }
 
 
 @router.get("/auth/me", response_model=PrincipalResponse)
 async def me(principal: AuthPrincipal = Depends(require_principal)) -> PrincipalResponse:
-    return PrincipalResponse.model_validate(principal_to_response(principal))
+    return PrincipalResponse(**principal_to_response(principal))
 
 
 @router.post("/auth/company-credential-handoff")

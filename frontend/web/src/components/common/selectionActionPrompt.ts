@@ -8,55 +8,6 @@ export interface SelectionActionEventDetail {
   prompt: string;
 }
 
-export interface SelectionRectLike {
-  left: number;
-  right: number;
-  top: number;
-  bottom: number;
-  width: number;
-  height: number;
-}
-
-export interface SelectionPopoverPositionInput {
-  selectionRect: SelectionRectLike;
-  viewportWidth: number;
-  viewportHeight: number;
-  menuWidth: number;
-  menuHeight: number;
-  scrollX?: number;
-  scrollY?: number;
-  gap?: number;
-  margin?: number;
-}
-
-export function getSelectionPopoverPosition({
-  selectionRect,
-  viewportWidth,
-  viewportHeight,
-  menuWidth,
-  menuHeight,
-  gap = 8,
-  margin = 8,
-}: SelectionPopoverPositionInput): { left: number; top: number } {
-  const selectedCenter = selectionRect.left + selectionRect.width / 2;
-  const maxLeft = Math.max(margin, viewportWidth - menuWidth - margin);
-  const left = Math.min(
-    Math.max(selectedCenter - menuWidth / 2, margin),
-    maxLeft,
-  );
-
-  const belowTop = selectionRect.bottom + gap;
-  const fitsBelow = belowTop + menuHeight + margin <= viewportHeight;
-  const top = fitsBelow
-    ? belowTop
-    : Math.max(margin, selectionRect.top - menuHeight - gap);
-
-  return {
-    left: Math.round(left),
-    top: Math.round(top),
-  };
-}
-
 export function buildSelectionActionPrompt({
   action,
   selectedText,

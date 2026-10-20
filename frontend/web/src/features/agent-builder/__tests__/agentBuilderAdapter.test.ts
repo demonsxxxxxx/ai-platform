@@ -128,6 +128,7 @@ test("maps only complete authorized Skill and safe MCP identities", () => {
       enabled: true,
     },
   ];
+  assert.deepEqual(mapSafeBuilderMcpTools([{ ...tools[0], system_disabled: true }]), []);
   assert.deepEqual(mapSafeBuilderMcpTools(tools), [
     {
       id: "gateway::knowledge.search",

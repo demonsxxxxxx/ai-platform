@@ -1,13 +1,10 @@
+import { Button, Input } from "@lobehub/ui/base-ui";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   type LucideIcon,
   Activity,
-  Bell,
   Bug,
   CheckCircle2,
-  Clock3,
-  MessageSquareText,
-  Megaphone,
   RotateCcw,
   Search,
   ShieldCheck,
@@ -25,27 +22,17 @@ import {
 } from "../governance/frontendGovernanceState";
 import { resolveGroupAvailability } from "../governance/groupAvailability";
 import { useAuth } from "../../hooks/useAuth";
-import { workbenchApi } from "../../services/api/workbench";
 import {
   adminUsersApi,
   type AdminUserDiagnosticsResponse,
   type AdminUserSummary,
 } from "../../services/api/adminUsers";
-import type {
-  WorkbenchGovernance,
-  WorkbenchNotification,
-  WorkbenchNotificationListResponse,
-} from "../../services/api/workbench";
+import type { WorkbenchGovernance } from "../../services/api/workbench";
 import { Permission } from "../../types";
 import { formatDateTimeShort } from "../../utils/datetime";
 import { AdminUserDiagnosticsDrawer } from "./AdminUserDiagnosticsDrawer";
 import { WorkbenchStateSurface } from "./WorkbenchStateSurface";
 import { workbenchSurface } from "./workbenchSurface";
-import {
-  CHINESE_NOTIFICATION_CONTENT_FALLBACK,
-  CHINESE_NOTIFICATION_TITLE_FALLBACK,
-  resolveChineseNotificationText,
-} from "../notification/notificationChineseCopy";
 
 type LoadState<T> = {
   data: T | null;
@@ -53,7 +40,7 @@ type LoadState<T> = {
   isLoading: boolean;
 };
 
-type PageKind = "users" | "feedback" | "notifications";
+type PageKind = "users";
 
 type AvailabilityState = "enabled" | "disabled" | "inherited" | "admin-only" | "unavailable";
 
@@ -88,26 +75,6 @@ const pageMeta: Record<
     adminPermission: Permission.USER_ADMIN,
     taskTitle: "workbench.projections.users.taskTitle",
     taskDescription: "workbench.projections.users.taskDescription",
-  },
-  feedback: {
-    title: "workbench.projections.feedback.title",
-    subtitle: "workbench.projections.feedback.subtitle",
-    icon: MessageSquareText,
-    surface: "workbench-feedback-projection",
-    readPermission: Permission.FEEDBACK_READ,
-    adminPermission: Permission.FEEDBACK_ADMIN,
-    taskTitle: "workbench.projections.feedback.taskTitle",
-    taskDescription: "workbench.projections.feedback.taskDescription",
-  },
-  notifications: {
-    title: "workbench.projections.notifications.title",
-    subtitle: "workbench.projections.notifications.subtitle",
-    icon: Bell,
-    surface: "workbench-notifications-projection",
-    readPermission: Permission.NOTIFICATION_READ,
-    adminPermission: Permission.NOTIFICATION_ADMIN,
-    taskTitle: "workbench.projections.notifications.taskTitle",
-    taskDescription: "workbench.projections.notifications.taskDescription",
   },
 };
 
@@ -162,76 +129,6 @@ function governanceState(
   });
 }
 
-function localizedText(
-  value: WorkbenchNotification["title_i18n"],
-  fallback: string,
-) {
-  return resolveChineseNotificationText(value, fallback);
-}
-
-function normalizedLookupKey(value: string) {
-  return value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "");
-}
-
-function humanizeToken(value: string) {
-  return value
-    .replace(/[_-]+/g, " ")
-    .replace(/([a-z])([A-Z])/g, "$1 $2")
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/\b\w/g, (char) => char.toUpperCase());
-}
-
-function translateMappedValue(
-  t: ReturnType<typeof useTranslation>["t"],
-  namespace: string,
-  value: string | null | undefined,
-) {
-  const fallback = value ? humanizeToken(value) : "-";
-  if (!value) return fallback;
-  return t(`${namespace}.${normalizedLookupKey(value)}`, fallback);
-}
-
-function feedbackStatusLabel(
-  t: ReturnType<typeof useTranslation>["t"],
-  status: string,
-) {
-  return translateMappedValue(t, "workbench.projections.feedback.status", status);
-}
-
-function feedbackAssignmentLabel(
-  t: ReturnType<typeof useTranslation>["t"],
-  assignmentState: string,
-) {
-  return translateMappedValue(
-    t,
-    "workbench.projections.feedback.assignment",
-    assignmentState,
-  );
-}
-
-function notificationStateLabel(
-  t: ReturnType<typeof useTranslation>["t"],
-  state: string | null,
-) {
-  return translateMappedValue(
-    t,
-    "workbench.projections.notifications.readState",
-    state,
-  );
-}
-
-function notificationTypeLabel(
-  t: ReturnType<typeof useTranslation>["t"],
-  type: string,
-) {
-  return translateMappedValue(t, "workbench.projections.notifications.type", type);
-}
-
 function projectionStatusToneClass(tone: ProjectionStatusTone) {
   switch (tone) {
     case "primary":
@@ -244,17 +141,6 @@ function projectionStatusToneClass(tone: ProjectionStatusTone) {
     default:
       return "border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)]";
   }
-}
-
-function dedupeNotifications(items: WorkbenchNotification[]) {
-  const seen = new Set<string>();
-  const deduped: WorkbenchNotification[] = [];
-  for (const item of items) {
-    if (seen.has(item.id)) continue;
-    seen.add(item.id);
-    deduped.push(item);
-  }
-  return deduped;
 }
 
 function ProjectionShell({
@@ -680,15 +566,13 @@ export function WorkbenchUsersProjectionPanel() {
                   {t("workbench.projections.users.directoryDescription")}
                 </p>
               </div>
-              <div className="relative min-w-0 md:w-72">
-                <Search
-                  size={17}
-                  className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--theme-text-tertiary)]"
-                />
-                <input
+              <div className="min-w-0 md:w-72">
+                <Input
+                  prefix={<Search size={17} />}
                   value={searchQuery}
                   onChange={(event) => setSearchQuery(event.target.value)}
-                  className="panel-search h-10 pl-9"
+                  size="large" className="w-full"
+                  aria-label={t("workbench.projections.users.search")}
                   placeholder={t("workbench.projections.users.search")}
                 />
               </div>
@@ -737,15 +621,15 @@ export function WorkbenchUsersProjectionPanel() {
                         failed: user.failed_run_count,
                       })}
                     </span>
-                    <button
-                      type="button"
+                    <Button type="default"
+                      htmlType="button"
                       data-user-run-debug={user.user_id}
-                      className="btn-secondary inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs"
+                      className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs"
                       onClick={() => void openDiagnostics(user)}
                     >
                       <Bug size={14} />
                       {t("workbench.projections.users.auditDebug")}
-                    </button>
+                    </Button>
                   </div>
                 </article>
               ))
@@ -764,238 +648,6 @@ export function WorkbenchUsersProjectionPanel() {
         />
       ) : null}
     </>
-  );
-}
-
-export function WorkbenchFeedbackProjectionPanel() {
-  const { t } = useTranslation();
-  const feedback = useProjection(() => workbenchApi.listFeedback({ limit: 50 }), []);
-
-  return (
-    <ProjectionShell
-      kind="feedback"
-      loadState={feedback}
-      governance={feedback.data?.governance}
-      metrics={[
-        {
-          label: t("workbench.projections.feedback.total"),
-          value: feedback.data?.stats.total_count ?? 0,
-          detail: t("workbench.projections.feedback.totalDetail"),
-          icon: MessageSquareText,
-        },
-        {
-          label: t("workbench.projections.feedback.up"),
-          value: feedback.data?.stats.up_count ?? 0,
-          detail: `${feedback.data?.stats.up_percentage ?? 0}%`,
-          icon: CheckCircle2,
-        },
-        {
-          label: t("workbench.projections.feedback.down"),
-          value: feedback.data?.stats.down_count ?? 0,
-          detail: t("workbench.projections.feedback.downDetail"),
-          icon: SlidersHorizontal,
-        },
-      ]}
-    >
-      <div className={workbenchSurface.compactPanel}>
-        <div className="border-b border-[var(--theme-border)] px-4 py-3">
-          <h3 className="text-sm font-semibold text-[var(--theme-text)]">
-            {t("workbench.projections.feedback.queueTitle")}
-          </h3>
-          <p className="mt-1 text-xs text-[var(--theme-text-secondary)]">
-            {t("workbench.projections.feedback.queueDescription")}
-          </p>
-        </div>
-        <div className="divide-y divide-[var(--theme-border)]">
-          {feedback.data?.items.length ? (
-            feedback.data.items.map((item) => (
-              <article key={item.id} className="grid gap-3 px-4 py-3 text-sm">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <MessageSquareText
-                        size={15}
-                        className={
-                          item.rating === "up"
-                            ? "text-[var(--theme-primary)]"
-                            : "text-[color-mix(in_srgb,#dc2626_74%,var(--theme-text))]"
-                        }
-                      />
-                      <h3 className="font-semibold text-[var(--theme-text)]">
-                      {item.rating === "up"
-                        ? t("workbench.projections.feedback.positive")
-                        : t("workbench.projections.feedback.negative")}
-                      </h3>
-                    </div>
-                    <dl className="mt-2 grid gap-1 text-xs text-[var(--theme-text-secondary)] sm:grid-cols-3">
-                      <div>
-                        <dt className={workbenchSurface.label}>
-                          {t("workbench.projections.feedback.user")}
-                        </dt>
-                        <dd className="truncate">{item.username}</dd>
-                      </div>
-                      <div>
-                        <dt className={workbenchSurface.label}>
-                          {t("workbench.projections.feedback.session")}
-                        </dt>
-                        <dd className="truncate">{item.session_id}</dd>
-                      </div>
-                      <div>
-                        <dt className={workbenchSurface.label}>
-                          {t("workbench.projections.feedback.run")}
-                        </dt>
-                        <dd className="truncate">{item.run_id}</dd>
-                      </div>
-                    </dl>
-                  </div>
-                  <div className="flex shrink-0 flex-col items-end gap-1.5">
-                    <ProjectionStatusChip tone="muted">
-                      {feedbackStatusLabel(t, item.status)}
-                    </ProjectionStatusChip>
-                    <ProjectionStatusChip tone="warning">
-                      {feedbackAssignmentLabel(t, item.assignment_state)}
-                    </ProjectionStatusChip>
-                  </div>
-                </div>
-                {item.comment ? (
-                  <p className="rounded-md bg-[var(--theme-bg-sidebar)] px-3 py-2 text-xs leading-5 text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
-                    {item.comment}
-                  </p>
-                ) : null}
-              </article>
-            ))
-          ) : (
-            <EmptyProjection message={t("workbench.projections.feedback.empty")} />
-          )}
-        </div>
-      </div>
-    </ProjectionShell>
-  );
-}
-
-export function WorkbenchNotificationsProjectionPanel() {
-  const { t } = useTranslation();
-  const { hasPermission } = useAuth();
-  const canAdminNotifications = hasPermission(Permission.NOTIFICATION_ADMIN);
-  const active = useProjection(() => workbenchApi.listActiveNotifications(), []);
-  const admin = useProjection<WorkbenchNotificationListResponse | null>(
-    () =>
-      canAdminNotifications
-        ? workbenchApi.listAdminNotifications({ limit: 50 })
-        : Promise.resolve(null),
-    [canAdminNotifications],
-  );
-  const combined: WorkbenchNotification[] = [
-    ...(active.data ?? []),
-    ...(admin.data?.items ?? []),
-  ];
-  const visibleNotifications = dedupeNotifications(combined);
-  const unreadCount = visibleNotifications.filter(
-    (item) => item.read_state === "unread",
-  ).length;
-  const activeCount = visibleNotifications.filter((item) => item.is_active).length;
-  const loadState: LoadState<unknown> = {
-    data: active.data,
-    error: active.error,
-    isLoading: active.isLoading || admin.isLoading,
-  };
-
-  return (
-    <ProjectionShell
-      kind="notifications"
-      loadState={loadState}
-      governance={admin.data?.governance ?? null}
-      metrics={[
-        {
-          label: t("workbench.projections.notifications.total"),
-          value: visibleNotifications.length,
-          detail: t("workbench.projections.notifications.totalDetail"),
-          icon: Bell,
-        },
-        {
-          label: t("workbench.projections.notifications.unread"),
-          value: unreadCount,
-          detail: t("workbench.projections.notifications.unreadDetail"),
-          icon: MessageSquareText,
-        },
-        {
-          label: t("workbench.projections.notifications.active"),
-          value: activeCount,
-          detail: t("workbench.projections.notifications.activeDetail"),
-          icon: CheckCircle2,
-        },
-      ]}
-    >
-      <div className={workbenchSurface.compactPanel}>
-        <div className="border-b border-[var(--theme-border)] px-4 py-3">
-          <h3 className="text-sm font-semibold text-[var(--theme-text)]">
-            {t("workbench.projections.notifications.streamTitle")}
-          </h3>
-          <p className="mt-1 text-xs text-[var(--theme-text-secondary)]">
-            {t("workbench.projections.notifications.streamDescription")}
-          </p>
-        </div>
-        <div className="divide-y divide-[var(--theme-border)]">
-          {visibleNotifications.length === 0 ? (
-            <EmptyProjection message={t("workbench.projections.notifications.empty")} />
-          ) : (
-            visibleNotifications.map((item) => (
-              <article key={item.id} className="px-4 py-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      {item.type === "announcement" ? (
-                        <Megaphone
-                          size={15}
-                          className="text-[var(--theme-primary)]"
-                        />
-                      ) : (
-                        <Bell size={15} className="text-[var(--theme-text-secondary)]" />
-                      )}
-                      <h3 className="truncate text-sm font-semibold text-[var(--theme-text)]">
-                        {localizedText(
-                          item.title_i18n,
-                          CHINESE_NOTIFICATION_TITLE_FALLBACK,
-                        )}
-                      </h3>
-                    </div>
-                    <p className="mt-1 line-clamp-2 text-xs leading-5 text-[var(--theme-text-secondary)]">
-                      {localizedText(
-                        item.content_i18n,
-                        CHINESE_NOTIFICATION_CONTENT_FALLBACK,
-                      )}
-                    </p>
-                    <div className="mt-2 flex flex-wrap gap-2 text-xs text-[var(--theme-text-secondary)]">
-                      <span className="inline-flex items-center gap-1 rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1 ring-1 ring-[var(--theme-border)]">
-                        <Clock3 size={12} />
-                        {item.created_at || item.updated_at || "-"}
-                      </span>
-                      <span className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1 ring-1 ring-[var(--theme-border)]">
-                        {notificationTypeLabel(t, item.type)}
-                      </span>
-                    </div>
-                  </div>
-                  <ProjectionStatusChip
-                    tone={
-                      item.read_state === "unread"
-                        ? "warning"
-                        : item.is_active
-                          ? "primary"
-                          : "muted"
-                    }
-                  >
-                    {notificationStateLabel(
-                      t,
-                      item.read_state ?? (item.is_active ? "active" : "inactive"),
-                    )}
-                  </ProjectionStatusChip>
-                </div>
-              </article>
-            ))
-          )}
-        </div>
-      </div>
-    </ProjectionShell>
   );
 }
 

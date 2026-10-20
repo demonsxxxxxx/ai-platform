@@ -1,6 +1,7 @@
 # ADR 0010: Sandbox-Owned Attachment Content Processing
 
-Status: proposed; implementation included in the Issue #1144 cutover
+Status: source implementation contract; original cutover tracked by Issue #1144.
+Deployment and External Acceptance require separate evidence.
 
 Date: 2026-08-18
 
@@ -9,6 +10,8 @@ Decision ID: `ai-platform.sandbox-owned-attachment-content-processing.v1`
 Owning issue: [#1144](https://github.com/demonsxxxxxx/ai-platform/issues/1144)
 
 ## Context
+
+Historical motivation before the raw-file cutover:
 
 The platform currently treats document content extraction as an execution-admission
 requirement. A selected Skill with attachments can trigger server-owned XLSX
@@ -138,10 +141,13 @@ Output: final response plus zero or more explicitly selected response files.
 
 ### A7. Bounded response-file collection
 
-The Claude Agent SDK final `ResultMessage.result` remains ordinary assistant
-text. File publication is a separate, optional action: before that final
-response, the Agent may call the platform-owned `attach_file` MCP tool zero or
-more times. Each call names one relative workspace path and may include a
+Completed `AssistantMessage` text blocks are the public assistant-text source
+under the [streaming message contract](../implementation/streaming-message-parts-design.md).
+`ResultMessage` supplies SDK terminal, error and usage facts; its `.result` does
+not independently publish or repair public text. File publication is a separate,
+optional action: before terminalization, the Agent may call the platform-owned
+`attach_file` MCP tool zero or more times. Each call names one relative workspace
+path and may include a
 display name, primary/supporting role, and description. The tool validates the
 existing file while the Sandbox is alive, preserves call order, and updates an
 existing entry idempotently when the same path is attached again. At terminal,
@@ -159,7 +165,7 @@ roots, symlink rejection, per-file limits, total output limits, filename safety,
 and artifact authorization remain platform-owned. An undeclared workspace file
 remains private and is discarded with the attempt.
 
-Owner: SDK ordinary-text terminal contract, platform `attach_file` tool,
+Owner: SDK completed-block text and terminal contracts, platform `attach_file` tool,
 terminal receipt, Sandbox provider, and artifact collector.
 
 Output: zero or more authorized artifacts marked for assistant-response delivery.

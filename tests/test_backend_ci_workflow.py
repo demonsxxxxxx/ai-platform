@@ -38,6 +38,7 @@ TRUSTED_WORKFLOW_IMPORTS = (
 )
 AGENT_SKILL_CONTRACT_TESTS = (
     "tests/test_agent_profile_authority.py",
+    "tests/test_agent_profile_unpinned_admission.py",
     "tests/test_agent_apps_worker_profile_snapshot.py",
     "tests/test_agent_profile_lifecycle.py",
     "tests/test_agent_profile_routes.py",
@@ -58,10 +59,31 @@ AGENT_SKILL_CONTRACT_TESTS = (
     "tests/test_admin_skills.py",
     "tests/test_skill_run_admission.py",
     "tests/test_chat_routes.py",
+    "tests/test_follow_up_suggestions.py",
+    "tests/test_follow_up_transport_cancellation.py",
+    "tests/test_follow_up_single_flight.py",
     "tests/test_chat_submission_failures.py",
     "tests/test_skills_marketplace_routes.py",
+    "tests/test_agent_app_capability_state.py",
+    "tests/test_agent_autonomy_boundaries.py",
+    "tests/test_capability_distribution.py",
+    "tests/test_claude_capability_policy.py",
+    "tests/test_github_skill_import.py",
+    "tests/test_skill_legacy_workbench.py",
+    "tests/test_skill_pinning.py",
+    "tests/test_skill_release_readiness.py",
+    "tests/test_skill_version_labels.py",
+    "tests/test_zero_click_tool_policy.py",
+)
+WINDOWS_RUNTIME_TESTS = (
+    "tests/test_release_authority.py::test_run_timeout_windows_job_kills_pipe_holder_after_direct_parent_exit",
+    "tests/test_release_authority.py::test_run_success_closes_job_without_killing_detached_descendant",
+    "tests/test_sandbox_workspace_manager.py::test_prepare_fails_closed_for_windows_host_bind",
+    "tests/test_sandbox_workspace_manager.py::test_prepare_rejects_windows_junction_root",
+    "tests/test_sandbox_workspace_manager.py::test_prepare_rejects_windows_junction_parent",
 )
 BACKEND_TEST_SHARDS = {
+    "windows-runtime": WINDOWS_RUNTIME_TESTS,
     "sandbox-runtime": (
         "tests/test_claude_agent_sdk_installed_contract.py",
         "tests/test_claude_agent_sdk_runner.py",
@@ -78,6 +100,8 @@ BACKEND_TEST_SHARDS = {
         "tests/test_execution_pinned_skill_materialization.py",
         "tests/test_claude_agent_worker_file_continuity.py",
         "tests/test_provider_session_transport.py",
+        "tests/test_provider_session_images.py",
+        "tests/test_claude_image_session_store.py",
         "tests/test_context_file_content.py",
         "tests/test_context_file_continuity.py",
         "tests/test_file_parser_contracts.py",
@@ -111,12 +135,33 @@ BACKEND_TEST_SHARDS = {
         "tests/test_sandbox_workspace_manager.py",
         "tests/test_sandbox_runtime.py",
         "tests/test_sandbox_runtime_cleanup.py",
+        "tests/test_sandbox_callback_authority.py",
         "tests/test_sandbox_cleanup_application.py",
         "tests/test_sandbox_runtime_control_layer.py",
         "tests/test_sandbox_runtime_evidence_script.py",
         "tests/test_skill_execution_profiles.py",
         "tests/test_validation.py",
         "tests/test_contract.py",
+        "tests/test_claude_agent_worker.py",
+        "tests/test_context_duplicate_file_staging.py",
+        "tests/test_embedded_kernel_contracts.py",
+        "tests/test_execution_boundary.py",
+        "tests/test_executor_context_pack_evidence_script.py",
+        "tests/test_executor_registry.py",
+        "tests/test_kernel_contracts.py",
+        "tests/test_native_skill_tool_sandbox.py",
+        "tests/test_office_execution_tier_router.py",
+        "tests/test_opensandbox_metadata.py",
+        "tests/test_opensandbox_startup.py",
+        "tests/test_public_execution.py",
+        "tests/test_sandbox_callback_delivery.py",
+        "tests/test_sandbox_contracts.py",
+        "tests/test_sandbox_executor_client.py",
+        "tests/test_sandbox_filesystem_contract.py",
+        "tests/test_sandbox_hardening_contract.py",
+        "tests/test_sandbox_lease_routes.py",
+        "tests/test_sandbox_readiness_evidence.py",
+        "tests/test_context_manifest.py",
     ),
     "repository-worker-streaming": (
         "tests/test_context_memory_retention.py",
@@ -132,7 +177,9 @@ BACKEND_TEST_SHARDS = {
         "tests/test_mcp_persistence.py",
         "tests/test_mcp_selection_authorization.py",
         "tests/test_mcp_tool_catalog.py",
+        "tests/test_mcp_gateway_catalog.py",
         "tests/test_mcp_client.py",
+        "tests/test_mcp_credential_callback.py",
         "tests/test_mcp_routes.py",
         "tests/test_mcp_authorization_projection.py",
         "tests/test_mcp_worker_dispatch_authorization.py",
@@ -140,6 +187,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_runs_admission_lifecycle.py",
         "tests/test_runs_persistence.py",
         "tests/test_runs_worker_result_commit.py",
+        "tests/test_runs_worker_terminal_completion.py",
         "tests/test_runs_worker_queue_envelope.py",
         "tests/test_runs_replay.py",
         "tests/test_runs_worker_capability_admission.py",
@@ -156,6 +204,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_run_attempt_application.py",
         "tests/test_run_attempt_repository.py",
         "tests/test_worker_main.py",
+        "tests/test_worker_roles.py",
         "tests/test_worker_principal_authority.py",
         "tests/test_db_pool.py",
         "tests/test_redis_client.py",
@@ -167,7 +216,6 @@ BACKEND_TEST_SHARDS = {
         "tests/test_provider_empty_start_postgres.py",
         "tests/test_chat_admission_postgres.py",
         "tests/test_run_cost_observability_postgres.py",
-        "tests/test_s0a_schema_postgres.py::test_expired_terminal_receipt_survives_cleanup_and_historical_release",
         "tests/test_worker_heartbeat_postgres_redis_integration.py",
         "tests/test_sse_runtime_cutover.py",
         "tests/test_streaming_redis.py",
@@ -185,23 +233,36 @@ BACKEND_TEST_SHARDS = {
         "tests/test_lambchat_sse_v21.py",
         "tests/test_app_lifespan.py",
         "tests/test_runtime_launch_script.py",
+        "tests/test_capability_distribution_postgres.py",
+        "tests/test_chat_sessions.py",
+        "tests/test_conversation_persistence.py",
+        "tests/test_db_transaction_test_support.py",
+        "tests/test_issue_511_session_context_postgres.py",
+        "tests/test_issue_512_preledger_postgres.py",
+        "tests/test_mcp.py",
+        "tests/test_mcp_repository.py",
+        "tests/test_mcp_repository_postgres.py",
+        "tests/test_persistence_limits.py",
+        "tests/test_persistence_limits_postgres.py",
+        "tests/test_run_performance.py",
+        "tests/test_run_performance_postgres.py",
+        "tests/test_streaming_schema_postgres.py",
+        "tests/test_verify_b1_memory_context_workflow.py",
+        "tests/test_s0a_schema_postgres.py",
     ),
     "model-control-plane": (
         "tests/test_model_management.py",
         "tests/test_model_upstream_stream.py",
         "tests/test_model_stream_ownership.py",
         "tests/test_model_discovery_security.py",
-        "tests/test_lambchat_frontend_compat.py::test_lambchat_model_catalog_is_empty_without_governed_connection",
-        "tests/test_lambchat_frontend_compat.py::test_lambchat_governed_model_catalog_preserves_raw_ids",
-        "tests/test_execution_spec.py::test_execution_spec_preserves_raw_upstream_model_identity",
-        "tests/test_execution_spec.py::test_execution_spec_rejects_unsafe_upstream_model_identity",
-        "tests/test_schema.py::test_schema_adds_versioned_model_gateway_and_non_deleting_shared_catalog",
+        "tests/test_models.py",
     ),
     "run-control-contracts": (
         "tests/test_admin_run_detail.py",
         "tests/test_admin_part_messages.py",
         "tests/test_admin_runtime_routes.py",
         "tests/test_auth_principal.py",
+        "tests/test_workbench_projection_routes.py",
         "tests/test_artifact_permissions.py",
         "tests/test_two_user_artifact_isolation.py",
         "tests/test_auth_routes.py",
@@ -211,15 +272,15 @@ BACKEND_TEST_SHARDS = {
         "tests/test_chat_selected_skill_routing.py",
         "tests/test_claude_agent_events.py",
         "tests/test_public_event_enum_types.py",
-        "tests/test_lambchat_frontend_compat.py::test_lambchat_history_restores_strict_v4_commentary_as_work_summary",
-        "tests/test_lambchat_frontend_compat.py::test_session_event_pages_project_authorized_run_columns_on_every_page",
-        "tests/test_lambchat_frontend_compat.py::test_read_mark_compatibility_route_keeps_its_noop_acknowledgement",
         "tests/test_executor_reconciler.py",
         "tests/test_executor_signals.py",
         "tests/test_run_attempt_lifecycle_domain.py",
         "tests/test_run_terminalization_domain.py",
+        "tests/test_run_lifecycle.py",
+        "tests/test_run_lifecycle_postgres.py",
         "tests/test_projection_redaction.py",
         "tests/test_executor_receipt_settlement.py",
+        "tests/test_executor_terminal_reconciliation.py",
         "tests/test_conversation_authority.py",
         "tests/test_file_upload_security.py",
         "tests/test_issue_511_session_context_gen2.py",
@@ -232,6 +293,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_run_control_routes.py",
         "tests/test_run_file_continuity_routes.py",
         "tests/test_run_diagnostics.py",
+        "tests/test_run_debug_evidence.py",
         "tests/test_run_persistence.py",
         "tests/test_run_projection.py",
         "tests/test_public_run_outcome.py",
@@ -241,6 +303,35 @@ BACKEND_TEST_SHARDS = {
         "tests/test_streaming_contracts.py",
         "tests/test_worker_attempt_lifecycle.py",
         "tests/test_frozen_receipt_spec.py",
+        "tests/test_admin_diagnostic_export.py",
+        "tests/test_admin_run_monitor.py",
+        "tests/test_admin_run_trajectory.py",
+        "tests/test_admin_schema_routes.py",
+        "tests/test_admin_tool_policies.py",
+        "tests/test_admin_user_diagnostics.py",
+        "tests/test_capability_distribution_routes.py",
+        "tests/test_context_routes.py",
+        "tests/test_cors.py",
+        "tests/test_department_directory.py",
+        "tests/test_error_taxonomy.py",
+        "tests/test_event_bridge.py",
+        "tests/test_event_playback_routes.py",
+        "tests/test_identity_profile_metadata.py",
+        "tests/test_identity_profile_routes.py",
+        "tests/test_role_governance_routes.py",
+        "tests/test_run_control_readiness.py",
+        "tests/test_run_performance_routes.py",
+        "tests/test_run_question_defaults.py",
+        "tests/test_tool_permission_routes.py",
+        "tests/test_tool_policy_readiness.py",
+        "tests/test_verify_auth_rbac_smoke.py",
+        "tests/test_frontend_projection_routes.py",
+        "tests/test_lambchat_compat.py",
+        "tests/test_lambchat_projection_contract.py",
+        "tests/test_lambchat_public_lifecycle_singletons.py",
+        "tests/test_lambchat_frontend_compat.py",
+        "tests/test_execution_spec.py",
+        "tests/test_dingtalk_department_authority.py",
     ),
     "schema-migrations": (
         "tests/test_run_diagnostics_postgres.py",
@@ -249,8 +340,9 @@ BACKEND_TEST_SHARDS = {
         "tests/test_skill_release_lifecycle_postgres.py",
         "tests/test_run_inputs_postgres.py",
         "tests/test_provider_session_recovery_postgres.py",
+        "tests/test_provider_session_images_postgres.py",
         "tests/test_frozen_receipt_spec_postgres.py",
-        "tests/test_schema.py::test_schema_declares_attempt_identity_state_and_fences",
+        "tests/test_schema.py",
     ),
     "v4-durable-streaming": (
         "tests/test_streaming_callback_direct.py",
@@ -261,6 +353,7 @@ BACKEND_TEST_SHARDS = {
         "tests/test_streaming_answer_receipt.py",
         "tests/test_streaming_v4_postgres_integration.py",
         "tests/test_streaming_v4_redis_integration.py",
+        "tests/test_auth_refresh_redis_integration.py",
         "tests/test_streaming_v4_transport.py",
     ),
     "release-governance-policy": (
@@ -270,13 +363,26 @@ BACKEND_TEST_SHARDS = {
         "tests/test_trusted_governance.py",
         "tests/test_code_governance.py",
         "tests/test_source_authority_docs.py",
+        "tests/test_check_documentation.py",
+        "tests/test_run_test_stage.py",
+        "tests/test_source_quality_inventory.py",
         "tests/test_ci_image_scope.py",
         "tests/test_require_zero_junit_skips.py",
         "tests/test_packaging_contract.py",
         "tests/test_packaging_publish_workflow.py",
+        "tests/test_release_required_checks.py",
         "tests/test_trivy_failure_evidence.py",
         "tests/test_release_image_manifest.py",
         "tests/test_authenticated_smoke_redirects.py",
+        "tests/test_backend_image_source_markers.py",
+        "tests/test_legacy_product_surface_cleanup.py",
+        "tests/test_oci_image_manifest.py",
+        "tests/test_release_backend_flatten.py",
+        "tests/test_release_parity_convergence.py",
+        "tests/test_release_plan.py",
+        "tests/test_spdx_failure_evidence.py",
+        "tests/test_frontend_projection_audit.py",
+        "tests/test_git_hook_checks.py",
     ),
     "release-governance-authority": (
         "tests/test_governance_readiness.py",
@@ -293,6 +399,14 @@ BACKEND_TEST_SHARDS = {
         "tests/test_production_bootstrap.py",
         "tests/test_release_authority.py",
         "tests/test_s75_opensandbox_transition.py",
+        "tests/integration/run_control/test_exact_main_run_control_acceptance.py",
+        "tests/test_b5_file_tool_readiness.py",
+        "tests/test_b6_operations_beta_readiness.py",
+        "tests/test_browser_runtime_config.py",
+        "tests/test_capacity_bounded_load_harness.py",
+        "tests/test_governed_egress_diagnostics.py",
+        "tests/test_observability_readiness.py",
+        "tests/test_release_evidence_runtime_acceptance.py",
     ),
 }
 
@@ -353,7 +467,8 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     assert "timeout-minutes: 10" in preflight_job
     assert preflight_job.count("- name: Enforce SSE v4 release-atomic cutover") == 1
     assert preflight_job.count("run: python tools/check_sse_runtime_cutover.py") == 1
-    assert "runs-on: ubuntu-latest" in tests_job
+    assert "runs-on: ${{ matrix.runner }}" in tests_job
+    assert "shell: bash" in tests_job
     assert "needs: backend-preflight" in tests_job
     assert "timeout-minutes: 15" in tests_job
     assert "fail-fast: false" in tests_job
@@ -374,7 +489,12 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
         for entry in matrix_entries
     }
     assert actual_shards == BACKEND_TEST_SHARDS
+    assert {entry["shard"]: entry["runner"] for entry in matrix_entries} == {
+        name: "windows-latest" if name == "windows-runtime" else "ubuntu-latest"
+        for name in BACKEND_TEST_SHARDS
+    }
     assert actual_redis == {
+        "windows-runtime": ("", ""),
         "sandbox-runtime": ("redis:7.4-alpine", "redis://localhost:6379/15"),
         "repository-worker-streaming": (
             "redis:7.4-alpine",
@@ -391,6 +511,7 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
         "release-governance-authority": ("", ""),
     }
     assert actual_postgres == {
+        "windows-runtime": ("", ""),
         "sandbox-runtime": ("", ""),
         "repository-worker-streaming": (
             "postgres:16-alpine",
@@ -415,29 +536,32 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     assert len(all_selectors) == len(set(all_selectors))
     assert "image: ${{ matrix.redis_image }}" in tests_job
     assert "image: ${{ matrix.postgres_image }}" in tests_job
+    assert '"19014:9000"' in tests_job
+    assert '--health-cmd "mc ready local"' in tests_job
+    assert "matrix.shard == 'schema-migrations' && 'bitnamilegacy/minio:2025.4.22-debian-12-r1'" in tests_job
+    assert "AI_PLATFORM_PROVIDER_IMAGE_MINIO_URL:" in tests_job
     assert '"54329:5432"' in tests_job
     assert '"6379:6379"' in tests_job
     assert '--health-cmd "redis-cli ping"' in tests_job
     assert "AI_PLATFORM_SSE_REDIS_TEST_URL: ${{ matrix.redis_url }}" in tests_job
     assert "AI_PLATFORM_S0A_SCHEMA_TEST_DSN: ${{ matrix.postgres_url }}" in tests_job
+    assert "AI_PLATFORM_MCP_CATALOG_TEST_DSN: ${{ matrix.postgres_url }}" in tests_job
+    assert "AI_PLATFORM_CAPABILITY_DISTRIBUTION_TEST_DSN: ${{ matrix.postgres_url }}" in tests_job
     pytest_step = tests_job.split("- name: Run backend test shard", 1)[1]
-    assert pytest_step.index("mkdir -p .pytest-tmp") < pytest_step.index(
-        "timeout --signal"
-    )
-    assert "timeout --signal=TERM --kill-after=30s 10m" in pytest_step
-    assert "uv run --locked --extra test python -m pytest" in pytest_step
-    assert "${{ matrix.test_files }}" in pytest_step
-    assert "-vv" in pytest_step
-    assert "--tb=short" in pytest_step
-    assert "-o faulthandler_timeout=120" in pytest_step
-    assert '--junitxml ".pytest-tmp/${{ matrix.shard }}.xml"' in pytest_step
+    assert pytest_step.index("mkdir -p .pytest-tmp") < pytest_step.index("tools/run_test_stage.py")
+    assert "uv run --locked --extra test python tools/run_test_stage.py" in pytest_step
+    assert '--stage "${{ matrix.shard }}" --timeout-seconds 600 --coverage' in pytest_step
+    assert '"${zero_skips[@]}" -- ${{ matrix.test_files }}' in pytest_step
     assert (
-        'if [[ "${{ matrix.shard }}" =~ '
-        "^(repository-worker-streaming|run-control-contracts|schema-migrations|v4-durable-streaming)$ ]]"
+        'if [[ "${{ matrix.shard }}" != "sandbox-runtime" && '
+        '"${{ matrix.shard }}" != "release-governance-authority" ]]'
         in pytest_step
     )
-    assert "tools/require_zero_junit_skips.py" in pytest_step
-    assert '--basetemp ".pytest-tmp/${{ matrix.shard }}"' in pytest_step
+    assert "zero_skips=(--require-zero-skips)" in pytest_step
+    assert "- name: Upload exact shard evidence" in pytest_step
+    for artifact in ("evidence.json", "junit.xml", "coverage.json"):
+        assert f".pytest-tmp/test-runs/**/${{{{ matrix.shard }}}}/{artifact}" in pytest_step
+    assert "if-no-files-found: error" in pytest_step
     assert "--collect-only" not in pytest_step
     assert "--ignore" not in pytest_step
     assert " -k " not in pytest_step
@@ -451,6 +575,29 @@ def test_backend_required_ubuntu_jobs_execute_complete_parallel_test_shards():
     assert 'test "$PREFLIGHT_RESULT" = "success"' in required_job
     assert 'test "$BACKEND_TESTS_RESULT" = "success"' in required_job
     assert "if: ${{ always() }}" in required_job
+
+
+def test_every_backend_test_file_has_one_complete_ci_owner():
+    owners = {}
+    for workflow_path in (WORKFLOW, FRONTEND_WORKFLOW):
+        workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+        for job_name, job in workflow["jobs"].items():
+            sources = []
+            for row in job.get("strategy", {}).get("matrix", {}).get("include", []):
+                if row.get("shard") != "windows-runtime":
+                    sources.append((row.get("shard", job_name), row.get("test_files", "")))
+            sources.extend((job_name, step.get("run", "")) for step in job.get("steps", []))
+            for owner, source in sources:
+                for selector in re.findall(r"\btests/[\w./-]+\.py(?:::[\w.:-]+)?", source):
+                    assert "::" not in selector, f"select the complete owning file: {selector}"
+                    assert selector not in owners, f"duplicate owner for {selector}: {owners.get(selector)}, {owner}"
+                    owners[selector] = owner
+    expected = {path.relative_to(ROOT).as_posix() for path in (ROOT / "tests").rglob("test_*.py")}
+    assert set(owners) == expected, {
+        "unassigned": sorted(expected - set(owners)), "missing": sorted(set(owners) - expected),
+    }
+    for selector in WINDOWS_RUNTIME_TESTS:
+        assert selector.split("::", 1)[0] in owners
 
 
 def test_agent_skill_contract_job_is_bounded_and_required():
@@ -477,8 +624,8 @@ def test_agent_skill_contract_job_is_bounded_and_required():
     )
     assert "uv lock --check" in agent_skill_job
     assert "uv sync --locked --extra test --no-install-project" in agent_skill_job
-    assert "--junitxml .pytest-tmp/agent-skill-contracts.xml" in agent_skill_job
-    assert "tools/require_zero_junit_skips.py" in agent_skill_job
+    assert "--coverage --require-zero-skips --" in agent_skill_job
+    assert ".pytest-tmp/test-runs/**/agent-skill-contracts/junit.xml" in agent_skill_job
     assert re.search(r"(?m)^\s*continue-on-error\s*:", agent_skill_job) is None
     assert agent_skill_job_document["services"] == {
         "postgres": {
@@ -502,43 +649,16 @@ def test_agent_skill_contract_job_is_bounded_and_required():
         ),
     }
 
-    run_script = pytest_step[1].split("run: |", 1)[1]
-    assert run_script.index("mkdir -p .pytest-tmp") < run_script.index(
-        "timeout --signal"
-    )
-    timeout_script = run_script.split("mkdir -p .pytest-tmp", 1)[1]
-    normalized_run = re.sub(r"\\[ \t]*\r?\n[ \t]*", " ", timeout_script)
+    run_script = next(step["run"] for step in agent_skill_job_document["steps"]
+                      if step.get("name") == "Run Agent and Skill contract tests")
+    assert run_script.index("mkdir -p .pytest-tmp") < run_script.index("tools/run_test_stage.py")
+    selected_script = run_script.split("mkdir -p .pytest-tmp", 1)[1]
+    normalized_run = re.sub(r"\\[ \t]*\r?\n[ \t]*", " ", selected_script)
     tokens = shlex.split(normalized_run)
     expected_tokens = [
-        "timeout",
-        "--signal=TERM",
-        "--kill-after=30s",
-        "10m",
-        "uv",
-        "run",
-        "--locked",
-        "--extra",
-        "test",
-        "python",
-        "-m",
-        "pytest",
-        *AGENT_SKILL_CONTRACT_TESTS,
-        "-vv",
-        "--tb=short",
-        "-o",
-        "faulthandler_timeout=120",
-        "--junitxml",
-        ".pytest-tmp/agent-skill-contracts.xml",
-        "--basetemp",
-        ".pytest-tmp/agent-skill-contracts",
-        "uv",
-        "run",
-        "--locked",
-        "--extra",
-        "test",
-        "python",
-        "tools/require_zero_junit_skips.py",
-        ".pytest-tmp/agent-skill-contracts.xml",
+        "uv", "run", "--locked", "--extra", "test", "python", "tools/run_test_stage.py",
+        "--stage", "agent-skill-contracts", "--timeout-seconds", "600", "--coverage",
+        "--require-zero-skips", "--", *AGENT_SKILL_CONTRACT_TESTS,
     ]
     assert tokens == expected_tokens
     assert not any(token.startswith("-k") for token in tokens)
@@ -1011,6 +1131,18 @@ def test_frontend_ruff_requirement_resolver_rejects_noncanonical_declarations(
 
     with pytest.raises(RuntimeError, match=message):
         resolver(["pytest>=8.2.0", *dependencies])
+
+
+def test_documentation_preflight_uses_exact_diff_and_keeps_required_gate():
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    job = workflow["jobs"]["backend-preflight"]
+    assert job["env"]["DOCUMENTATION_BASE_REF"] == "${{ github.event.pull_request.base.sha || github.event.before || github.sha }}"
+    checkout = next(step for step in job["steps"] if step["name"] == "Checkout exact backend preflight source")
+    assert checkout["with"]["fetch-depth"] == 0
+    step = next(step for step in job["steps"] if step["name"] == "Check changed first-party documentation")
+    assert step["run"] == 'uv run --locked --extra test python tools/check_documentation.py --base-ref "$DOCUMENTATION_BASE_REF"'
+    assert "continue-on-error" not in step and "if" not in step
+    assert "backend-preflight" in workflow["jobs"]["required"]["needs"]
 
 
 def test_backend_preflight_uses_exact_candidate_source_without_duplicate_governance():

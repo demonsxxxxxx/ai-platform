@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-// jsdom is the pinned mounted-test runtime and does not ship declarations here.
-// @ts-expect-error jsdom runtime import.
-import { JSDOM } from "jsdom";
+import { installSelectTestDom } from "../../common/__tests__/selectTestDom";
 import { PROFILE_DRIVE_DRAG_TYPE } from "../../workbench/profileDriveDrag";
 
 async function flush() {
@@ -11,65 +9,20 @@ async function flush() {
 }
 
 test("drops a ProfileDrive path into the Composer without treating it as a local upload", async () => {
-  const dom = new JSDOM(
-    "<!doctype html><html><body><div id='root'></div></body></html>",
-    { url: "http://localhost/chat/session-a", pretendToBeVisual: true },
-  );
-  const globalValues: Record<string, unknown> = {
-    window: dom.window,
-    document: dom.window.document,
-    navigator: dom.window.navigator,
-    HTMLElement: dom.window.HTMLElement,
-    Element: dom.window.Element,
-    Node: dom.window.Node,
-    HTMLTextAreaElement: dom.window.HTMLTextAreaElement,
-    Event: dom.window.Event,
-    InputEvent: dom.window.InputEvent,
-    CustomEvent: dom.window.CustomEvent,
-    localStorage: dom.window.localStorage,
-    sessionStorage: dom.window.sessionStorage,
-    requestAnimationFrame: (callback: FrameRequestCallback) =>
-      dom.window.setTimeout(() => callback(Date.now()), 0),
-    cancelAnimationFrame: (handle: number) => dom.window.clearTimeout(handle),
-    IS_REACT_ACT_ENVIRONMENT: true,
-  };
-  const previousDescriptors = new Map(
-    Object.keys(globalValues).map((key) => [
-      key,
-      Object.getOwnPropertyDescriptor(globalThis, key),
-    ]),
-  );
-  for (const [key, value] of Object.entries(globalValues)) {
-    Object.defineProperty(globalThis, key, {
-      configurable: true,
-      writable: true,
-      value,
-    });
-  }
-  Object.defineProperty(dom.window, "matchMedia", {
-    configurable: true,
-    value: () => ({
-      matches: false,
-      media: "",
-      onchange: null,
-      addEventListener() {},
-      removeEventListener() {},
-      addListener() {},
-      removeListener() {},
-      dispatchEvent: () => false,
-    }),
-  });
-
-  const [{ act, createElement }, { createRoot }, { ChatInput }, { AuthProvider }] =
+  const fixture = installSelectTestDom();
+  const dom = { window };
+  document.body.innerHTML = '<div id="root"></div>';
+  const [{ act, createElement }, { createLobeTestRoot }, { ChatInput }, { AuthProvider }] =
     await Promise.all([
       import("react"),
-      import("react-dom/client"),
+      import("../../common/__tests__/lobeUiTestRoot"),
       import("../ChatInput"),
       import("../../../hooks/useAuth"),
     ]);
+  const { AssistantUiTestProvider } = await import("../assistant-ui/__tests__/assistantUiTestProvider");
   const container = dom.window.document.getElementById("root");
   assert.ok(container);
-  const root = createRoot(container);
+  const root = await createLobeTestRoot(container);
   const droppedPaths: Array<{ source_id: string; path: string }> = [];
 
   try {
@@ -78,7 +31,7 @@ test("drops a ProfileDrive path into the Composer without treating it as a local
         createElement(
           AuthProvider,
           null,
-          createElement(ChatInput, {
+          createElement(AssistantUiTestProvider, null, createElement(ChatInput, {
             onSend: async () => ({ status: "accepted" as const }),
             onStop: async () => "unavailable" as const,
             isLoading: false,
@@ -94,7 +47,7 @@ test("drops a ProfileDrive path into the Composer without treating it as a local
             onProfileDriveFileDrop: async (reference) => {
               droppedPaths.push(reference);
             },
-          }),
+          })),
         ),
       );
       await flush();
@@ -154,10 +107,6 @@ test("drops a ProfileDrive path into the Composer without treating it as a local
     });
   } finally {
     await act(async () => root.unmount());
-    for (const [key, descriptor] of previousDescriptors) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else Reflect.deleteProperty(globalThis, key);
-    }
-    dom.window.close();
+    fixture.close();
   }
 });

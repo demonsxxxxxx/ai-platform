@@ -85,24 +85,21 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
     }
     assert active_safe_routes == {
         "/api/agent/models/available",
-        "/api/feedback",
         "/api/mcp",
-        "/api/notifications/active",
         "/api/role-governance",
         "/api/skills",
-        "/api/users",
     }
     active_safe_admin_routes = {
         route["route_prefix"]
         for route in active_route_inventory["safe_admin_projection_routes"]
     }
-    assert active_safe_admin_routes == {"/api/notifications/admin"}
+    assert active_safe_admin_routes == set()
     all_safe_routes = {
         route["route_prefix"]
         for route in audit["route_inventory"]["safe_public_projection_routes"]
     }
     assert "/api/mcp" in all_safe_routes
-    assert "/api/notifications/active" in all_safe_routes
+    assert "/api/notifications/active" not in all_safe_routes
     assert "/api/settings" not in all_safe_routes
     assert "/api/users" in all_safe_routes
     assert "/api/role-governance" in SAFE_PUBLIC_ROUTE_PREFIXES
@@ -111,7 +108,7 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
         for route in audit["route_inventory"]["safe_admin_projection_routes"]
     }
     assert "/api/admin/mcp" in all_safe_admin_routes
-    assert "/api/notifications/admin" in all_safe_admin_routes
+    assert "/api/notifications/admin" not in all_safe_admin_routes
     assert "/api/admin/mcp" not in active_policy_routes
     assert "/api/mcp" not in active_policy_routes
     # The current browser entry has retired these legacy callers. Synthetic
@@ -184,6 +181,31 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
     assert "redis_url" not in serialized
     assert "api_key=" not in serialized
     assert ".env" not in serialized
+
+
+def test_feedback_and_announcements_have_no_active_browser_api_or_projection_allowlist():
+    audit = build_frontend_projection_audit()
+    retired_routes = {"/api/feedback", "/api/notifications/active", "/api/notifications/admin"}
+    assert retired_routes.isdisjoint(SAFE_PUBLIC_ROUTE_PREFIXES)
+    active_routes = audit["active_browser_entry"]["route_inventory"]
+    for category in (
+        "ai_platform_projection_routes",
+        "safe_public_projection_routes",
+        "safe_admin_projection_routes",
+        "same_origin_compat_routes",
+        "legacy_policy_required_routes",
+    ):
+        assert retired_routes.isdisjoint(route["route_prefix"] for route in active_routes[category])
+
+    active_paths = set(audit["active_browser_entry"]["files"])
+    assert "frontend/web/src/services/api/notificationPublic.ts" not in active_paths
+    assert "frontend/web/src/components/notification/NotificationDialog.tsx" not in active_paths
+    assert "frontend/web/src/components/workbench/WorkbenchUnavailablePanel.tsx" in active_paths
+    # Real user diagnostics, role governance, and Run-completion delivery remain.
+    assert "frontend/web/src/services/api/adminUsers.ts" in active_paths
+    assert "frontend/web/src/services/api/roleGovernance.ts" in active_paths
+    assert "frontend/web/src/components/layout/AppContent/useWebSocketNotifications.tsx" in active_paths
+    assert audit["active_browser_entry"]["forbidden_projection_terms"]["violations"] == []
 
 
 def test_frontend_projection_audit_returns_without_scan_timeout():

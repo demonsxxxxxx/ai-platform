@@ -10,6 +10,7 @@ from app.sandbox.application.runtime_handle import PersistedRuntimeHandleRecover
 
 class CleanupProvider(Protocol):
     async def stop(self, lease: Any, *, reason: str) -> Any: ...
+    async def cleanup_orphan_containers(self, filters: dict[str, str], *, reason: str) -> list[Any]: ...
 
 
 ProviderFactory = Callable[[str | None], CleanupProvider]
@@ -51,19 +52,27 @@ class SandboxCleanupPersistenceError(RuntimeError):
     """Cancellation cleanup receipts could not commit durably."""
 
 
-def _consume_cleanup_stop_task(task: asyncio.Task[Any]) -> None:
-    try:
-        task.exception()
-    except BaseException:
-        pass
-
-
 def _sandbox_lease_release_message(reason: str) -> str:
     if reason == "expired":
         return "已释放过期 Sandbox 租约"
     if reason in {"cancel_requested", "admin_cancel_requested"}:
         return "已因取消释放 Sandbox 租约"
     return "已释放 Sandbox 租约"
+
+
+def _provider_cleanup_failures(results: object) -> list[dict[str, str]]:
+    if not isinstance(results, list):
+        return [{"container_id": "unknown", "message": "Malformed provider cleanup result"}]
+    failures: list[dict[str, str]] = []
+    for result in results:
+        if isinstance(result, dict):
+            failures.append({"container_id": "unknown", "message": "Malformed provider cleanup result"})
+        elif getattr(result, "status", None) not in {"stopped", "not_found"}:
+            failures.append({
+                "container_id": str(getattr(result, "container_id", None) or "unknown"),
+                "message": "Provider orphan cleanup failed",
+            })
+    return failures
 
 
 class SandboxRuntimeCleanup:
@@ -74,6 +83,8 @@ class SandboxRuntimeCleanup:
         lease_repository: CleanupLeaseRepository,
         outcomes: CleanupOutcomeWriter,
         append_event: Callable[..., Awaitable[Any]],
+        append_audit: Callable[..., Awaitable[Any]],
+        list_tenant_ids: Callable[[Any], Awaitable[list[str]]],
         handle_recovery: PersistedRuntimeHandleRecovery,
         settings: Callable[[], Any],
     ) -> None:
@@ -81,8 +92,44 @@ class SandboxRuntimeCleanup:
         self._lease_repository = lease_repository
         self._outcomes = outcomes
         self._append_event = append_event
+        self._append_audit = append_audit
+        self._list_tenant_ids = list_tenant_ids
         self._handle_recovery = handle_recovery
         self._settings = settings
+
+    async def cleanup_provider_orphans(self, *, provider_factory: ProviderFactory) -> None:
+        """Run tenant-scoped orphan maintenance and durably report safe failures."""
+        async with self._transaction_factory() as conn:
+            tenant_ids = await self._list_tenant_ids(conn)
+        provider = provider_factory(None)
+        all_failures: list[dict[str, str]] = []
+        for tenant_id in tenant_ids:
+            try:
+                results = await provider.cleanup_orphan_containers(
+                    {"tenant_id": tenant_id}, reason="worker_maintenance",
+                )
+            except Exception:
+                failures = [{"container_id": "unknown", "message": "Provider orphan cleanup raised an exception"}]
+            else:
+                failures = _provider_cleanup_failures(results)
+            if not failures:
+                continue
+            try:
+                async with self._transaction_factory() as conn:
+                    await self._append_audit(
+                        conn,
+                        tenant_id=tenant_id,
+                        user_id=None,
+                        action="sandbox.runtime.orphan_cleanup.failed",
+                        target_type="sandbox_runtime",
+                        target_id=tenant_id,
+                        payload_json={"source": "worker", "failure_count": len(failures), "failures": failures},
+                    )
+            except Exception as exc:
+                raise SandboxCleanupPersistenceError("sandbox_cleanup_audit_unavailable") from exc
+            all_failures.extend(failures)
+        if all_failures:
+            raise SandboxRuntimeCleanupError(all_failures)
 
     def container_lease_from_persisted_row(
         self, row: dict[str, Any], *, allow_historical_internal_test_cleanup: bool = False,
@@ -111,15 +158,24 @@ class SandboxRuntimeCleanup:
                 timeout=self._sandbox_cleanup_timeout_seconds(),
             )
         except asyncio.CancelledError:
-            stop_task.cancel()
-            stop_task.add_done_callback(_consume_cleanup_stop_task)
             raise
         except TimeoutError:
-            stop_task.cancel()
-            stop_task.add_done_callback(_consume_cleanup_stop_task)
             return None
         except Exception:  # noqa: BLE001 - the claim is released for bounded cleanup retry.
             return None
+        finally:
+            if not stop_task.done():
+                stop_task.cancel()
+            # Keep the sole cleanup slot until the external operation really ends.
+            joined = asyncio.gather(stop_task, return_exceptions=True)
+            cancelled = False
+            while not joined.done():
+                try:
+                    await asyncio.shield(joined)
+                except asyncio.CancelledError:
+                    cancelled = True
+            if cancelled:
+                raise asyncio.CancelledError
 
     async def stop_sandbox_leases(
         self,
@@ -289,7 +345,7 @@ class SandboxRuntimeCleanup:
         *,
         tenant_id: str | None = None,
         provider_factory: ProviderFactory,
-        stale_after_seconds: int = 45,
+        stale_after_seconds: int = 300,
         transaction_factory: TransactionFactory | None = None,
     ) -> list[dict[str, Any]]:
         """Retry one verified runtime cleanup without holding DB locks across provider I/O."""

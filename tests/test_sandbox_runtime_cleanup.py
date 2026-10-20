@@ -402,7 +402,7 @@ async def test_cleanup_expired_sandbox_runtime_leases_stops_runtime_before_relea
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("reconciliation_status", ["pending", "claimed", "retry"])
+@pytest.mark.parametrize("reconciliation_status", ["pending", "claimed", "retry", "cleanup_pending"])
 async def test_cleanup_does_not_stop_a_terminal_receipt_with_recovery_work(
     monkeypatch,
     reconciliation_status,
@@ -440,19 +440,21 @@ async def test_cleanup_does_not_stop_a_terminal_receipt_with_recovery_work(
 
 
 @pytest.mark.parametrize("claim_lost_during_stop", (False, True))
+@pytest.mark.parametrize("reconciliation_status", ["failed", "cleanup_pending"])
 @pytest.mark.parametrize("lease_status", ["active", "released"])
 @pytest.mark.asyncio
 async def test_failed_reconciliation_cleanup_claims_stops_and_finalizes(
     monkeypatch,
     lease_status,
     claim_lost_during_stop,
+    reconciliation_status,
 ):
     cleanup_failed_sandbox_executor_reconciliation_leases = sandbox_runtime_cleanup.cleanup_failed_sandbox_executor_reconciliation_leases
 
     row = expired_lease_row(
         status=lease_status,
-        executor_terminal_json={"run_id": "run-a", "status": "failed"},
-        executor_reconciliation_status="failed",
+        executor_terminal_json={"run_id": "run-a", "status": "succeeded"},
+        executor_reconciliation_status=reconciliation_status,
     )
     calls = []
     transaction_active = False
@@ -663,6 +665,48 @@ async def test_failed_reconciliation_cleanup_stop_timeout_closes_transactions(mo
     assert transaction_count == 3
     assert len(released_claims) == 1
     assert released_claims[0]["error"] == "executor_reconciliation_sandbox_stop_failed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shutdown", [False, True])
+async def test_reconciliation_cleanup_owns_resistant_provider_until_it_really_stops(monkeypatch, shutdown):
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    release = asyncio.Event()
+    finished = asyncio.Event()
+
+    class Provider:
+        async def stop(self, _lease, **_kwargs):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                await release.wait()
+            finally:
+                finished.set()
+
+    monkeypatch.setattr(
+        "app.bootstrap.sandbox_cleanup.get_settings",
+        lambda: SimpleNamespace(sandbox_cleanup_timeout_seconds=0.01),
+    )
+    task = asyncio.create_task(sandbox_runtime_cleanup._stop_failed_reconciliation_lease(Provider(), object()))
+    try:
+        await asyncio.wait_for(started.wait(), 0.5)
+        if shutdown:
+            task.cancel()
+        await asyncio.wait_for(cancelled.wait(), 0.5)
+        assert not task.done() and not finished.is_set()
+        task.cancel()  # A second shutdown request must not detach provider I/O.
+        await asyncio.sleep(0)
+        assert not task.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+    assert finished.is_set()
 
 
 @pytest.mark.asyncio

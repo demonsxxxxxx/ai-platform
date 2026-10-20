@@ -252,9 +252,8 @@ class B1MemoryContextWorkflowHandler(BaseHTTPRequestHandler):
             if "admin" not in roles:
                 self._send_json(403, {"detail": "not_ai_admin"})
                 return
-            query = parse_qs(parsed.query)
-            if query.get("include_maintenance_cleanup") != ["false"]:
-                self._send_json(500, {"detail": "sandbox_provider_cleanup_failed"})
+            if parsed.query:
+                self._send_json(400, {"detail": "unexpected_query"})
                 return
             self._send_json(
                 200,

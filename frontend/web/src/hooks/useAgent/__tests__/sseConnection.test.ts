@@ -1805,7 +1805,7 @@ test("fails closed when a current 401 has no refresh marker or refresh fails", a
       name: "refresh failure",
       getRefreshToken: () => "refresh-marker",
       refreshAccessToken: async () => {
-        throw new Error("refresh failed");
+        throw new ApiRequestError("session expired", 401, "auth_context_stale");
       },
       expectedFailure: "refresh_failed" as const,
     },
@@ -1847,7 +1847,31 @@ test("fails closed when a current 401 has no refresh marker or refresh fails", a
   else delete (globalThis as { window?: Window }).window;
 });
 
-test("production cookie-session SSE 401 never probes auth or opens a refreshed stream", async () => {
+
+
+test("SSE refresh network failure preserves the current session without replay", async () => {
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const events: string[] = [];
+  Object.defineProperty(globalThis, "window", { configurable: true, value: {
+    dispatchEvent: (event: Event) => { events.push(event.type); return true; },
+  } });
+  const { context } = createTokenRefreshContext();
+  let calls = 0;
+  try {
+    await assert.rejects(connectToSSE("session-old", "run-old", "assistant-old", context, false,
+      async (_input, init) => { calls++; await init.onopen?.(new Response(null, { status: 401 })); },
+      { getValidAccessToken: async () => "access", getRefreshToken: () => "marker",
+        refreshAccessToken: async () => { throw new TypeError("synthetic network outage"); } }),
+      (error: unknown) => error instanceof Error && !isNonRetryableSSEAuthenticationError(error));
+    assert.equal(calls, 1);
+    assert.deepEqual(events, []);
+  } finally {
+    if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow);
+    else delete (globalThis as { window?: Window }).window;
+  }
+});
+
+test("production cookie-session SSE refreshes once and opens one replacement stream", async () => {
   const originalFetch = Object.getOwnPropertyDescriptor(globalThis, "fetch");
   const originalLocalStorage = Object.getOwnPropertyDescriptor(
     globalThis,
@@ -1864,7 +1888,10 @@ test("production cookie-session SSE 401 never probes auth or opens a refreshed s
     configurable: true,
     value: async () => {
       authProbeCalls += 1;
-      return new Response(JSON.stringify({ user_id: "stale-user" }), {
+      return new Response(JSON.stringify({
+        principal: { user_id: "user-a", tenant_id: "default", display_name: "User A",
+          roles: ["user"], permissions: ["agent:use"] }, authorization_changed: false,
+      }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       });
@@ -1908,13 +1935,13 @@ test("production cookie-session SSE 401 never probes auth or opens a refreshed s
       },
     );
 
-    assert.equal(streamCalls, 1);
-    assert.equal(authProbeCalls, 0);
+    assert.equal(streamCalls, 2);
+    assert.equal(authProbeCalls, 1);
     assert.equal(
       markerStore.get("ai_platform_session_present"),
       "session-marker",
     );
-    assert.deepEqual(events, ["auth:force-relogin"]);
+    assert.deepEqual(events, ["auth:session-refreshed", "auth:force-relogin"]);
   } finally {
     if (originalFetch) Object.defineProperty(globalThis, "fetch", originalFetch);
     else delete (globalThis as { fetch?: typeof fetch }).fetch;
@@ -2086,6 +2113,7 @@ test("a scheduled reconnect converges non-retryable auth without another status 
   let streamCalls = 0;
   let refreshCalls = 0;
   let unavailableCalls = 0;
+  const unavailable = createDeferred<void>();
   const context = {
     abortControllerRef: { current: null },
     isConnectingRef: { current: false },
@@ -2120,15 +2148,11 @@ test("a scheduled reconnect converges non-retryable auth without another status 
     setSandboxError: () => undefined,
     onRunStatusUnavailable: () => {
       unavailableCalls += 1;
+      unavailable.resolve();
       return true;
     },
   } satisfies SSEConnectionContext & {
     isReconnectFromHistoryRef: { current: boolean };
-  };
-  const flushAsync = async () => {
-    for (let index = 0; index < 20; index += 1) {
-      await Promise.resolve();
-    }
   };
 
   try {
@@ -2172,7 +2196,8 @@ test("a scheduled reconnect converges non-retryable auth without another status 
     });
 
     t.mock.timers.tick(1_000);
-    await flushAsync();
+    await unavailable.promise;
+    assert.equal(context.reconnectTimeoutRef.current, null);
     assert.equal(statusCalls, 1);
     assert.equal(connectCalls, 1);
     assert.equal(streamCalls, 2);
@@ -2180,7 +2205,7 @@ test("a scheduled reconnect converges non-retryable auth without another status 
     assert.equal(unavailableCalls, 1);
 
     t.mock.timers.tick(60_000);
-    await flushAsync();
+    await Promise.resolve();
     assert.equal(statusCalls, 1);
     assert.equal(connectCalls, 1);
     assert.equal(streamCalls, 2);

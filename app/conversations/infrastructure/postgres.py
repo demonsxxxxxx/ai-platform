@@ -549,3 +549,81 @@ async def list_authorized_agent_conversations(
         tuple(params),
     )
     return list(await result.fetchall())
+
+
+async def authorized_follow_up_target_run(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    user_id: str,
+    session_id: str,
+    run_id: str,
+) -> dict[str, Any] | None:
+    """Load the target Run only when it is the settled, current answer of its Session."""
+
+    cursor = await conn.execute(
+        """
+        select runs.id, runs.status, runs.agent_id, runs.model_id, runs.model_value
+        from runs
+        join sessions on sessions.id = runs.session_id
+          and sessions.tenant_id = runs.tenant_id
+          and sessions.workspace_id = runs.workspace_id
+          and sessions.user_id = runs.user_id
+        where runs.tenant_id = %s
+          and runs.user_id = %s
+          and runs.session_id = %s
+          and runs.id = %s
+          and runs.status = 'succeeded'
+          and sessions.status = 'active'
+          and runs.session_generation is not null
+          and runs.session_generation = sessions.next_run_generation
+          and not exists (
+            select 1 from messages later
+            where later.tenant_id = runs.tenant_id
+              and later.session_id = runs.session_id
+              and later.role = 'user'
+              and later.created_at > coalesce(runs.finished_at, runs.created_at)
+          )
+        """,
+        (tenant_id, user_id, session_id, run_id),
+    )
+    row = await cursor.fetchone()
+    return dict(row) if row is not None else None
+
+
+async def authorized_follow_up_turns(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    user_id: str,
+    session_id: str,
+    run_id: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Read the bounded public turns up to and including the target answer."""
+
+    cursor = await conn.execute(
+        """
+        with target as (
+          select coalesce(finished_at, created_at) as answered_at
+          from runs
+          where tenant_id = %s and user_id = %s and session_id = %s and id = %s
+        )
+        select messages.role, messages.content
+        from messages
+        join sessions on sessions.id = messages.session_id
+          and sessions.tenant_id = messages.tenant_id
+        cross join target
+        where messages.tenant_id = %s
+          and messages.session_id = %s
+          and sessions.user_id = %s
+          and messages.role in ('user', 'assistant')
+          and messages.created_at <= target.answered_at
+        order by messages.created_at desc, messages.id desc
+        limit %s
+        """,
+        (tenant_id, user_id, session_id, run_id, tenant_id, session_id, user_id, limit),
+    )
+    rows = list(await cursor.fetchall())
+    rows.reverse()
+    return rows

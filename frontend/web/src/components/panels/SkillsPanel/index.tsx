@@ -1,3 +1,4 @@
+import { Button } from "@lobehub/ui/base-ui";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Package2, Pencil, UploadCloud } from "lucide-react";
@@ -264,24 +265,24 @@ export function SkillsPanel({
         </div>
         <div className="skill-detail-header__actions">
           {selectedSkill && canEditSkills ? (
-            <button
-              className="btn-secondary h-9"
+            <Button type="default"
+              className="h-9"
               onClick={() => actions.handleEdit(selectedSkill)}
-              type="button"
+              htmlType="button"
             >
               <Pencil size={15} />
               {t("skills.managementTable.edit")}
-            </button>
+            </Button>
           ) : null}
           {actions.canAdminUploadSkills && selectedCatalogEntry.actionName ? (
-            <button
-              className="btn-primary h-9"
+            <Button type="primary"
+              className="h-9"
               onClick={() => actions.handleZipClick(selectedCatalogEntry.actionName!)}
-              type="button"
+              htmlType="button"
             >
               <UploadCloud size={15} />
               {t("skills.managementTable.updateVersion")}
-            </button>
+            </Button>
           ) : null}
         </div>
       </header>

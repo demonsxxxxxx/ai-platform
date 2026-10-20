@@ -1,4 +1,4 @@
-import { X } from "lucide-react";
+import { Button, Modal } from "@lobehub/ui/base-ui";
 import { useTranslation } from "react-i18next";
 
 export function ShortcutRow({
@@ -45,45 +45,11 @@ export function ShortcutDialog({
 }) {
   const { t } = useTranslation();
 
-  if (!open) return null;
-
   return (
-    <div
-      className="fixed inset-0 z-[100] flex items-center justify-center"
-      onClick={onClose}
+    <Modal open={open} onCancel={onClose} width={448} draggable={false} closable={false}
+      title={t("chat.keyboardShortcuts", "键盘快捷键")}
+      footer={<Button onClick={onClose}>{t("common.close", "关闭")}</Button>}
     >
-      <div className="absolute inset-0 bg-slate-950/35" />
-      <div
-        className="relative w-full max-w-md mx-4 rounded-lg p-5 shadow-[0_8px_24px_rgba(18,38,63,0.12)]"
-        style={{
-          backgroundColor: "var(--theme-bg-card)",
-          border: "1px solid var(--theme-border)",
-        }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between mb-4">
-          <h3
-            className="text-base font-semibold"
-            style={{ color: "var(--theme-text)" }}
-          >
-            {t("chat.keyboardShortcuts", "键盘快捷键")}
-          </h3>
-          <button
-            type="button"
-            onClick={onClose}
-            className="p-1 rounded-lg transition-colors cursor-pointer"
-            style={{ color: "var(--theme-text-secondary)" }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.backgroundColor =
-                "var(--theme-bg-hover, rgba(128,128,128,0.08))";
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.backgroundColor = "transparent";
-            }}
-          >
-            <X size={16} />
-          </button>
-        </div>
         <div
           className="space-y-3 text-[13px]"
           style={{ color: "var(--theme-text-secondary)" }}
@@ -160,7 +126,6 @@ export function ShortcutDialog({
             macKeys={["⌘", "Enter"]}
           />
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import importlib.util
 import json
 import os
 import shutil
@@ -162,6 +163,24 @@ def test_runner_executes_explicit_selector_with_local_evidence(tmp_path):
     assert (repo / str(paths["evidence"])).is_file()
 
 
+def test_runner_supports_deep_temporary_fixture_paths(tmp_path):
+    repo = _make_repo(tmp_path, {
+        "test_deep.py": (
+            "def test_deep(tmp_path):\n"
+            "    path = tmp_path\n"
+            "    for i in range(4):\n"
+            "        path = path / (str(i) + '-' + 'x' * 45)\n"
+            "    path.mkdir(parents=True)\n"
+            "    target = path / 'evidence.json'\n"
+            "    target.write_text('{}')\n"
+            "    assert target.read_text() == '{}'\n"
+        ),
+    })
+    completed = _runner(repo, "--stage", "deep", "tests/test_deep.py")
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert _single_evidence(repo)["status"] == "passed"
+
+
 def test_runner_removes_caller_pytest_control_environment(tmp_path):
     repo = _make_repo(tmp_path, {"test_pass.py": "def test_pass():\n    assert True\n"})
 
@@ -187,6 +206,129 @@ def test_runner_removes_caller_pytest_control_environment(tmp_path):
         ]
     }
     assert evidence["pytest"] == {"errors": 0, "failures": 0, "skipped": 0, "tests": 1}
+
+
+def _coverage_repo(tmp_path: Path, *, body: str = "assert choose(True) == 1") -> Path:
+    repo = _make_repo(tmp_path, {
+        "test_covered.py": "from app.subject import choose\n\ndef test_choose():\n    " + body + "\n",
+    })
+    (repo / "app").mkdir()
+    (repo / "app" / "__init__.py").write_text("", encoding="utf-8")
+    (repo / "app" / "subject.py").write_text(
+        "def choose(flag):\n    if flag:\n        return 1\n    return 2\n", encoding="utf-8",
+    )
+    (repo / "app" / "unvisited.py").write_text("def unvisited():\n    return 3\n", encoding="utf-8")
+    (repo / "app" / "namespace").mkdir()
+    (repo / "app" / "namespace" / "unvisited.py").write_text("def unseen():\n    return 4\n", encoding="utf-8")
+    return repo
+
+
+def test_explicit_coverage_measures_branches_and_unvisited_app_sources(tmp_path):
+    repo = _coverage_repo(tmp_path)
+    foreign = tmp_path / "foreign.coverage"
+    config = repo / ".coveragerc"
+    config.write_text("[run]\nomit = app/*\n[report]\nfail_under = 100\n", encoding="utf-8")
+    completed = _runner(
+        repo, "--stage", "coverage", "--coverage", "tests/test_covered.py",
+        environment={"COVERAGE_FILE": str(foreign), "COVERAGE_RCFILE": str(config), "COV_CORE_SOURCE": "foreign"},
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    evidence = _single_evidence(repo)
+    assert evidence["status"] == "passed"
+    observation = evidence["coverage"]
+    assert observation["status"] == "recorded"
+    assert observation["scope"] == "app" and observation["branch"] is True
+    assert len(observation["source_sha256"]) == len(observation["runner_sha256"]) == 64
+    assert evidence["environment"]["removed_coverage_variables"] == ["COVERAGE_FILE", "COVERAGE_RCFILE", "COV_CORE_SOURCE"]
+    assert not foreign.exists()
+    data = json.loads((repo / evidence["paths"]["coverage"]).read_text(encoding="utf-8"))
+    assert data["meta"]["branch_coverage"] is True
+    files = {Path(path).as_posix(): value for path, value in data["files"].items()}
+    assert files["app/subject.py"]["summary"]["missing_branches"] == 1
+    assert files["app/unvisited.py"]["summary"]["covered_lines"] == 0
+    assert files["app/namespace/unvisited.py"]["summary"]["num_statements"] == 2
+    assert files["app/namespace/unvisited.py"]["summary"]["covered_lines"] == 0
+    assert observation["totals"]["covered_branches"] < observation["totals"]["num_branches"]
+    assert (repo / evidence["paths"]["coverage_data"]).is_file()
+
+
+def test_coverage_keeps_product_failure(tmp_path):
+    repo = _coverage_repo(tmp_path, body="assert False")
+    completed = _runner(repo, "--stage", "failed-coverage", "--coverage", "tests/test_covered.py")
+    assert completed.returncode == 1
+    evidence = _single_evidence(repo)
+    assert evidence["category"] == "product_test_failure"
+    assert evidence["coverage"]["status"] == "recorded"
+
+
+
+def test_coverage_keeps_zero_skip_enforcement(tmp_path):
+    repo = _coverage_repo(tmp_path, body="__import__('pytest').skip('synthetic missing service')")
+    completed = _runner(repo, "--stage", "skip-coverage", "--coverage", "--require-zero-skips", "tests/test_covered.py")
+    assert completed.returncode == 6
+    evidence = _single_evidence(repo)
+    assert evidence["category"] == "required_dependency_missing"
+    assert evidence["coverage"]["status"] == "recorded"
+
+
+def test_coverage_does_not_accept_source_mutation_during_execution(tmp_path):
+    repo = _coverage_repo(tmp_path, body="__import__('pathlib').Path('app/subject.py').write_text('changed = 1\\n', encoding='utf-8')")
+    completed = _runner(repo, "--stage", "changed-coverage", "--coverage", "tests/test_covered.py")
+    assert completed.returncode == 70, completed.stdout + completed.stderr
+    evidence = _single_evidence(repo)
+    assert evidence["code"] == "coverage_report_source_changed"
+    assert evidence["coverage"]["status"] == "source_changed"
+
+
+
+def test_coverage_requires_owned_source_and_installed_plugin(tmp_path, monkeypatch):
+    repo = _make_repo(tmp_path, {"test_pass.py": "def test_pass():\n    assert True\n"})
+    completed = _runner(repo, "--stage", "missing-source", "--coverage", "tests/test_pass.py")
+    assert completed.returncode == 2
+    assert json.loads(completed.stderr.strip().splitlines()[-1])["code"] == "coverage_source_missing"
+    (repo / "app").mkdir()
+    spec = importlib.util.spec_from_file_location("runner_coverage_under_test", RUNNER_SOURCE)
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, module)
+    spec.loader.exec_module(module)
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr(module.importlib.util, "find_spec", lambda name: None)
+    args = module._parser().parse_args(["--stage", "missing-plugin", "--coverage", "tests/test_pass.py"])
+    with pytest.raises(module.StageError) as caught:
+        module._build_plan(args)
+    assert caught.value.code == "coverage_plugin_missing"
+    assert not (repo / ".pytest-tmp/test-runs").exists()
+
+
+@pytest.mark.parametrize("report_kind", ["missing", "incomplete", "invalid-count"])
+@pytest.mark.parametrize("returncode", [0, 1])
+def test_invalid_coverage_report_never_relabels_a_product_failure(tmp_path, monkeypatch, returncode, report_kind):
+    repo = _coverage_repo(tmp_path)
+    spec = importlib.util.spec_from_file_location("runner_missing_coverage_under_test", RUNNER_SOURCE)
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, module)
+    spec.loader.exec_module(module)
+    monkeypatch.chdir(repo)
+    plan = module._build_plan(module._parser().parse_args(["--stage", "missing-report", "--coverage", "tests/test_covered.py"]))
+
+    def execute(*args, **kwargs):
+        plan.junit.write_text('<testsuite tests="1" failures="0" errors="0" skipped="0"/>', encoding="utf-8")
+        if report_kind != "missing":
+            report = {
+                "meta": {"branch_coverage": True},
+                "totals": {"covered_lines": 0, "num_statements": 1, "covered_branches": 0, "num_branches": 0},
+                "files": {"app/__init__.py": {}},
+            }
+            if report_kind == "invalid-count":
+                report["totals"]["covered_lines"] = True
+            (plan.run_root / "coverage.json").write_text(json.dumps(report), encoding="utf-8")
+        return module.ProcessResult(returncode, False, False, "completed", False)
+
+    monkeypatch.setattr(module, "_execute_process", execute)
+    assert module._run_stage(plan) == (70 if returncode == 0 else 1)
+    evidence = _single_evidence(repo)
+    expected = "coverage_report_missing" if report_kind == "missing" else "coverage_report_invalid"
+    assert evidence["code"] == (expected if returncode == 0 else "pytest_failed")
 
 
 @pytest.mark.parametrize(
@@ -344,7 +486,8 @@ def test_runner_rejects_a_second_stage_in_the_same_worktree(tmp_path):
     assert failure["code"] == "test_runner_busy"
 
 
-def test_timeout_terminates_the_owned_child_process_tree(tmp_path):
+@pytest.mark.parametrize("coverage", [False, True])
+def test_timeout_terminates_the_owned_child_process_tree(tmp_path, coverage):
     repo = _make_repo(
         tmp_path,
         {
@@ -361,12 +504,16 @@ def test_timeout_terminates_the_owned_child_process_tree(tmp_path):
         },
     )
 
+    if coverage:
+        (repo / "app").mkdir()
+        (repo / "app" / "unvisited.py").write_text("value = 1\n", encoding="utf-8")
     completed = _runner(
         repo,
         "--stage",
         "timeout",
         "--timeout-seconds",
         "8",
+        *("--coverage",) if coverage else (),
         "tests/test_hang.py",
         timeout=25,
     )

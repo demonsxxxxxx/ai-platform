@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-// @ts-expect-error jsdom runtime import.
-import { JSDOM } from "jsdom";
+import { installSelectTestDom } from "../../common/__tests__/selectTestDom";
+import { createLobeTestRoot } from "../../common/__tests__/lobeUiTestRoot";
 import { skillApi } from "../../../services/api/skill";
 import type { SkillFormSubmission } from "../SkillForm.types";
 import type { SkillFileResponse, SkillResponse } from "../../../types/skill";
@@ -15,24 +15,44 @@ function deferred<T>() {
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
   return { promise, resolve, reject };
 }
-const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/skills", pretendToBeVisual: true });
-Object.assign(globalThis, { window: dom.window, Window: dom.window.Window, document: dom.window.document, HTMLElement: dom.window.HTMLElement, HTMLInputElement: dom.window.HTMLInputElement, MutationObserver: dom.window.MutationObserver, Event: dom.window.Event, MouseEvent: dom.window.MouseEvent, getComputedStyle: dom.window.getComputedStyle, requestAnimationFrame: dom.window.requestAnimationFrame.bind(dom.window), cancelAnimationFrame: dom.window.cancelAnimationFrame.bind(dom.window), IS_REACT_ACT_ENVIRONMENT: true });
-Object.defineProperty(globalThis, "navigator", { configurable: true, value: dom.window.navigator });
+const fixture = installSelectTestDom();
+const dom = { window };
+test.after(() => fixture.close());
 dom.window.Range.prototype.getClientRects = () => [] as unknown as DOMRectList;
 dom.window.Range.prototype.getBoundingClientRect = () => new dom.window.DOMRect();
 const { act, createElement } = await import("react");
-const { createRoot } = await import("react-dom/client");
+
 await import("../../../i18n/index");
+const { default: i18n } = await import("i18next");
 const { SkillForm } = await import("../SkillForm");
 
 async function harness(initial: SkillResponse) {
   const container = document.createElement("div"); document.body.appendChild(container);
-  const root = createRoot(container);
+  const root = await createLobeTestRoot(container);
   const saves: SkillFormSubmission[] = [];
   const render = async (value: SkillResponse) => { await act(async () => { root.render(createElement(SkillForm, { skill: value, onCancel() {}, async onSave(data) { saves.push(data); return true; } })); }); };
   await render(initial);
   return { container, saves, render, async submit() { await act(async () => { container.querySelector("form")!.dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true })); }); }, async close() { await act(async () => root.unmount()); container.remove(); } };
 }
+
+test("fullscreen editor remains in the theme host and Escape preserves the current skill", async () => {
+  const original = skillApi.getFile;
+  skillApi.getFile = async () => ({ content: "# Fullscreen owner" });
+  const view = await harness(skill("one"));
+  try {
+    const trigger = Array.from(view.container.querySelectorAll("button")).find(node => node.textContent?.trim() === i18n.t("skills.form.editFullscreen"));
+    assert.ok(trigger);
+    await act(async () => trigger.click());
+    assert.ok(view.container.querySelector(".skill-form--fullscreen"), "fullscreen portal stays in the Lobe theme host");
+    const exit = view.container.querySelector<HTMLButtonElement>(`button[aria-label="${i18n.t("skills.form.exitFullscreen")}"]`)!;
+    assert.equal(getComputedStyle(exit).position, "fixed", "library button positioning cannot displace the fullscreen exit");
+    await act(async () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    assert.equal(document.querySelector(".skill-form--fullscreen"), null);
+    await view.submit();
+    assert.equal(view.saves.length, 1);
+    assert.match(view.saves[0].content, /Fullscreen owner/);
+  } finally { await view.close(); skillApi.getFile = original; }
+});
 
 test("metadata-only save preserves unopened text and binary bytes", async () => {
   const original = skillApi.getFile;
@@ -80,7 +100,7 @@ test("removing an earlier tab does not retarget a pending file read", async () =
   const view = await harness(value);
   try {
     await act(async () => { view.container.querySelector<HTMLButtonElement>('button[title="script.py"]')!.click(); });
-    await act(async () => { view.container.querySelector<HTMLElement>('button[title="a.txt"] [role="button"]')!.click(); });
+    await act(async () => { view.container.querySelector<HTMLElement>('button[aria-label="关闭 a.txt"]')!.click(); });
     await act(async () => script.resolve({ content: "print('loaded script')" }));
     assert.match(view.container.textContent || "", /loaded script/);
     const pathInput = view.container.querySelector<HTMLInputElement>(".skill-file-path input")!;
@@ -100,7 +120,7 @@ test("removing a pending file does not copy its text onto the next file", async 
   const view = await harness(value);
   try {
     await act(async () => { view.container.querySelector<HTMLButtonElement>('button[title="a.txt"]')!.click(); });
-    await act(async () => { view.container.querySelector<HTMLElement>('button[title="a.txt"] [role="button"]')!.click(); });
+    await act(async () => { view.container.querySelector<HTMLElement>('button[aria-label="关闭 a.txt"]')!.click(); });
     await act(async () => removed.resolve({ content: "stale removed bytes" }));
     assert.doesNotMatch(view.container.textContent || "", /stale removed bytes/);
     await view.submit();

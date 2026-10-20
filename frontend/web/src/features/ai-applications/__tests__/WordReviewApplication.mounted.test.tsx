@@ -1,19 +1,18 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { after } from "node:test";
 import { registerHooks } from "node:module";
-// @ts-expect-error jsdom runtime import.
-import { JSDOM } from "jsdom";
+import { installSelectTestDom } from "../../../components/common/__tests__/selectTestDom";
+import { createLobeTestRoot } from "../../../components/common/__tests__/lobeUiTestRoot";
 import type { User } from "../../../types/auth";
 import { authApi } from "../../../services/api/auth";
 import { installBrowserAuthTestDb } from "../../../hooks/__tests__/browserAuthTestDb";
 // Styles are the only non-runtime module replaced; the route/controller are real.
 registerHooks({ load(url, context, nextLoad) { return url.endsWith(".css") ? { format: "module", source: "export {};", shortCircuit: true } : nextLoad(url, context); } });
-const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/apps/word-review" });
-Object.assign(globalThis, { window: dom.window, document: dom.window.document, localStorage: dom.window.localStorage, sessionStorage: dom.window.sessionStorage, HTMLElement: dom.window.HTMLElement, CustomEvent: dom.window.CustomEvent, IS_REACT_ACT_ENVIRONMENT: true });
-Object.defineProperty(globalThis, "navigator", { configurable: true, value: dom.window.navigator });
+const dom = installSelectTestDom();
+Object.assign(globalThis, { localStorage: window.localStorage, sessionStorage: window.sessionStorage });
+after(() => dom.close());
 installBrowserAuthTestDb();
 const { act, createElement, useLayoutEffect } = await import("react");
-const { createRoot } = await import("react-dom/client");
 const { MemoryRouter, Routes, Route } = await import("react-router-dom");
 const { AuthProvider, useAuth } = await import("../../../hooks/useAuth");
 const { AgentApplicationRoute } = await import("../AgentApplicationRoute");
@@ -24,19 +23,19 @@ function stream(text = "") { return new ReadableStream<Uint8Array>({ start(c) { 
 const success = 'data: {"task_id":"task-a","files":[{"name":"result.docx","path":"result.docx"}]}\r\n\r\ndata: [DONE]\r\n\r\n';
 function principal(id = "user-a", tenant = "tenant-a"): User { return { id, tenant_id: tenant, username: id, email: "synthetic@example.test", roles: [], permissions: [], is_active: true, created_at: "", updated_at: "" }; }
 function docx() { return new File([new Uint8Array([0x50, 0x4b, 0x03, 0x04]), "[Content_Types].xml word/document.xml"], "synthetic.docx"); }
-function props(node: Element) { const key = Object.keys(node).find(key => key.startsWith("__reactProps$")); assert.ok(key); return (node as unknown as Record<string, unknown>)[key] as { onChange?: (event: { target: { files: File[]; value: string } }) => void; onClick?: () => void }; }
+function props(node: Element) { const key = Object.keys(node).find(key => key.startsWith("__reactProps$")); assert.ok(key); return (node as unknown as Record<string, unknown>)[key] as { onChange?: (event: { target: { files: File[]; value: string } }) => void; onClick?: (event: MouseEvent) => void }; }
 function button(container: HTMLElement, label: string) { const found = Array.from(container.querySelectorAll("button")).find(node => node.textContent?.trim() === label); assert.ok(found, `Missing button ${label}: ${container.textContent}`); return found; }
 const historyValues = () => Object.keys(localStorage).filter(key => key.startsWith("wordReviewHistory")).map(key => JSON.parse(localStorage.getItem(key)!));
 
 type Fetcher = (url: string, init: RequestInit) => Promise<Response> | Response;
 async function harness(options: { review?: Fetcher; history?: Fetcher; cancel?: Fetcher; onScopeCommit?: (user: User | null) => void } = {}) {
-  const old = { fetch: globalThis.fetch, xhr: globalThis.XMLHttpRequest, bootstrap: authApi.bootstrapAuthContext, user: authApi.getCurrentUser, confirm: window.confirm };
+  const old = { fetch: globalThis.fetch, xhr: globalThis.XMLHttpRequest, bootstrap: authApi.bootstrapAuthContext, user: authApi.getCurrentUser };
   let auth!: ReturnType<typeof useAuth>; let user = principal(); let uploads = 0; const calls: Array<{ url: string; init: RequestInit }> = [];
-  localStorage.clear(); window.confirm = () => true;
+  localStorage.clear();
   authApi.bootstrapAuthContext = async request => ({ status: "ready", protocol_version: 2, generation: request.generation });
   authApi.getCurrentUser = async () => user;
-  class Xhr extends EventTarget {
-    upload = new EventTarget(); status = 200; responseText = '{"file_id":"file-a"}'; timeout = 0;
+  class Xhr extends window.EventTarget {
+    upload = new window.EventTarget(); status = 200; responseText = '{"file_id":"file-a"}'; timeout = 0;
     open(method: string, url: string) { assert.equal(method, "POST"); assert.ok(url.endsWith("/api/upload")); }
     send() { uploads++; queueMicrotask(() => this.dispatchEvent(new Event("load"))); }
     abort() { this.dispatchEvent(new Event("abort")); }
@@ -50,7 +49,7 @@ async function harness(options: { review?: Fetcher; history?: Fetcher; cancel?: 
     if (url.includes("/stats/")) return json({ total: 0, daily: [] });
     throw new Error(`Unexpected synthetic request ${url}`);
   }) as typeof fetch;
-  const container = document.createElement("div"); document.body.append(container); const root = createRoot(container);
+  const container = document.createElement("div"); document.body.append(container); const root = await createLobeTestRoot(container);
   function Probe() { const currentAuth = useAuth(); auth = currentAuth; useLayoutEffect(() => { options.onScopeCommit?.(currentAuth.user); }, [currentAuth.user]); return createElement(MemoryRouter, { initialEntries: ["/apps/word-review"] }, createElement(Routes, null, createElement(Route, { path: "/apps/:appKey", element: createElement(AgentApplicationRoute) }))); }
   await act(async () => { root.render(createElement(AuthProvider, null, createElement(Probe))); });
   assert.equal(auth.isAuthenticated, true);
@@ -58,11 +57,42 @@ async function harness(options: { review?: Fetcher; history?: Fetcher; cancel?: 
   return { container, calls, get uploads() { return uploads; },
     async select(file = docx()) { await act(async () => { props(container.querySelector('input[type="file"]')!).onChange?.({ target: { files: [file], value: "" } }); }); },
     async start() { await act(async () => { button(container, "开始审核").click(); }); },
+    async cancel(confirm = true) {
+      await act(async () => { const trigger = button(container, "中断任务"); trigger.focus(); trigger.click(); });
+      const dialog = container.querySelector<HTMLElement>('[role="dialog"]');
+      assert.ok(dialog, "cancellation uses the themed library dialog");
+      await act(async () => { button(dialog, confirm ? "确认中断" : "取消").click(); });
+    },
     async setUser(next: User) { user = next; await act(async () => { await auth.refreshUser(); }); },
     async unmount() { if (unmounted) return; unmounted = true; await act(async () => root.unmount()); container.remove(); },
-    async close() { if (!unmounted) { unmounted = true; await act(async () => root.unmount()); container.remove(); } globalThis.fetch = old.fetch; globalThis.XMLHttpRequest = old.xhr; authApi.bootstrapAuthContext = old.bootstrap; authApi.getCurrentUser = old.user; window.confirm = old.confirm; },
+    async close() { if (!unmounted) { unmounted = true; await act(async () => root.unmount()); container.remove(); } globalThis.fetch = old.fetch; globalThis.XMLHttpRequest = old.xhr; authApi.bootstrapAuthContext = old.bootstrap; authApi.getCurrentUser = old.user; },
   };
 }
+
+test("review library tabs support keyboard navigation and keep task progress accessible", async () => {
+  const view = await harness();
+  try {
+    await view.select();
+    const current = view.container.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')!;
+    assert.match(current.textContent!, /当前任务/);
+    const progress = view.container.querySelector('[role="progressbar"]')!;
+    assert.equal(progress.getAttribute("aria-label"), "synthetic.docx处理进度");
+    assert.equal(progress.getAttribute("aria-valuenow"), "18");
+    await act(async () => {
+      current.focus();
+      current.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    });
+    const history = document.activeElement as HTMLButtonElement;
+    assert.match(history.textContent!, /历史记录/);
+    await act(async () => { history.click(); });
+    assert.equal(history.getAttribute("aria-selected"), "true");
+    assert.match(view.container.querySelector('[role="tabpanel"]')!.textContent!, /暂无历史记录/);
+    await act(async () => { history.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true })); });
+    assert.equal(document.activeElement, current);
+    await act(async () => { current.click(); });
+    assert.ok(view.container.querySelector(".task-card.is-ready"));
+  } finally { await view.close(); }
+});
 
 test("real Word route fails empty EOF and DONE-without-files instead of persisting success", async () => {
   for (const text of ["", "data: [DONE]\n\n"]) {
@@ -77,7 +107,7 @@ test("real Word route accepts fragmented terminal result and suppresses duplicat
   const view = await harness({ review: () => new Response(new ReadableStream({ start(c) { for (const byte of bytes) c.enqueue(Uint8Array.of(byte)); c.close(); } })) });
   try {
     await view.select(); const start = props(button(view.container, "开始审核")).onClick!;
-    await act(async () => { start(); start(); });
+    await act(async () => { start(new MouseEvent("click", { cancelable: true })); start(new MouseEvent("click", { cancelable: true })); });
     assert.equal(view.calls.filter(call => call.url.endsWith("/api/chat/stream")).length, 1);
     assert.ok(view.container.querySelector(".task-card.is-completed")); assert.equal(historyValues()[0][0].files[0].name, "result.docx");
   } finally { await view.close(); }
@@ -112,11 +142,26 @@ test("late stream and history after owner change cannot refill or persist previo
   } finally { await view.close(); }
 });
 
+test("review cancellation keeps running until the library confirmation is accepted", async () => {
+  const view = await harness({ review: () => new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('data: {"task_id":"task-a"}\n\n')); } })) });
+  try {
+    await view.select(); await view.start();
+    await view.cancel(false);
+    assert.equal(view.calls.filter(call => call.url.includes("/cancel")).length, 0);
+    assert.ok(view.container.querySelector(".task-card.is-running"));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 300)); });
+    assert.ok(document.activeElement === button(view.container, "中断任务"), "closing confirmation returns focus to its task action");
+    await view.cancel();
+    assert.equal(view.calls.filter(call => call.url.includes("/cancel")).length, 1);
+    assert.ok(view.container.querySelector(".task-card.is-cancelled"));
+  } finally { await view.close(); }
+});
+
 test("cancel intent without acknowledgement does not turn missing terminal receipt into cancelled", async () => {
   let controller!: ReadableStreamDefaultController<Uint8Array>;
   const view = await harness({ review: () => new Response(new ReadableStream({ start(c) { controller = c; } })) });
   try {
-    await view.select(); await view.start(); await act(async () => button(view.container, "中断任务").click());
+    await view.select(); await view.start(); await view.cancel();
     await act(async () => controller.close());
     assert.ok(view.container.querySelector(".task-card.is-failed")); assert.equal(view.container.querySelector(".task-card.is-cancelled"), null);
   } finally { await view.close(); }
@@ -125,7 +170,7 @@ test("cancel intent without acknowledgement does not turn missing terminal recei
 test("acknowledged cancellation aborts a blocked stream and persists cancelled", async () => {
   const view = await harness({ review: () => new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('data: {"task_id":"task-a"}\n\n')); } })) });
   try {
-    await view.select(); await view.start(); await act(async () => button(view.container, "中断任务").click());
+    await view.select(); await view.start(); await view.cancel();
     assert.ok(view.container.querySelector(".task-card.is-cancelled")); assert.equal(historyValues()[0][0].status, "cancelled");
   } finally { await view.close(); }
 });
@@ -134,7 +179,7 @@ test("cancellation response without status is not an acknowledgement; result may
   let controller!: ReadableStreamDefaultController<Uint8Array>;
   const view = await harness({ review: () => new Response(new ReadableStream({ start(c) { controller = c; c.enqueue(new TextEncoder().encode('data: {"task_id":"task-a"}\n\n')); } })), cancel: () => json({}) });
   try {
-    await view.select(); await view.start(); await act(async () => button(view.container, "中断任务").click());
+    await view.select(); await view.start(); await view.cancel();
     assert.ok(view.container.querySelector(".task-card.is-running")); assert.match(view.container.textContent!, /未收到服务端取消确认/);
     await act(async () => { controller.enqueue(new TextEncoder().encode(success)); controller.close(); });
     assert.ok(view.container.querySelector(".task-card.is-completed"));
@@ -166,7 +211,7 @@ test("late cancellation from a failed attempt cannot abort the same task's retry
     c.enqueue(new TextEncoder().encode('data: {"task_id":"task-a"}\n\n'));
   } })), cancel: () => cancellation.promise });
   try {
-    await view.select(); await view.start(); await act(async () => button(view.container, "中断任务").click());
+    await view.select(); await view.start(); await view.cancel();
     await act(async () => first.close()); assert.ok(view.container.querySelector(".task-card.is-failed"));
     await act(async () => button(view.container, "重试").click());
     await act(async () => cancellation.resolve(json({ status: "cancelled" })));

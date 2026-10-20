@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const chatViewSource = readFileSync(
@@ -110,5 +110,13 @@ test("projects visible-range changes only into an open message outline", () => {
   assert.match(
     chatViewSource,
     /if \(!isPersistentToolPanelOpen\("outline"\)\) return;/,
+  );
+});
+
+test("virtualized outlines retire the unused DOM observer owner", () => {
+  assert.match(chatViewSource, /getOutlineActiveAnchorIdForRange\(messages, range\)/);
+  assert.equal(
+    existsSync(resolve(process.cwd(), "src/components/layout/AppContent/useActiveOutlineItem.ts")),
+    false,
   );
 });

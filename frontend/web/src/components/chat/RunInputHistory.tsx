@@ -1,8 +1,10 @@
+import { Button } from "@lobehub/ui/base-ui";
 import { useLayoutEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import type { RunInputsController } from "../../hooks/useAgent/types";
+import { OptionList } from "./assistant-ui/elements/option-list";
 import { RunQuestionCard } from "./RunQuestionCard";
-import { presentRunInputAnswer } from "./runInputPresentation";
+import { presentRunInputAnswer, presentRunInputOption } from "./runInputPresentation";
 
 export function RunInputHistory({
   runInputs,
@@ -42,15 +44,15 @@ export function RunInputHistory({
       {runInputs.historyLoadFailed ? (
         <div className="flex items-center justify-between gap-3 text-xs text-[var(--theme-warning)]" role="status" data-run-input-history-failure>
           <span>{t("chat.runInputs.historyLoadFailed", "暂时无法恢复任务输入历史，已有记录仍保留。")}</span>
-          <button className="shrink-0 underline" onClick={() => void runInputs.refreshHistory()} type="button">
+          <Button type="text" className="shrink-0 underline" onClick={() => void runInputs.refreshHistory()} htmlType="button">
             {t("common.retry", "重试")}
-          </button>
+          </Button>
         </div>
       ) : null}
       {runInputs.historyHasMore ? (
-        <button className="self-center text-xs text-[var(--theme-text-secondary)] underline disabled:opacity-50" disabled={runInputs.historyIsLoading} onClick={() => void runInputs.loadMoreHistory()} type="button" data-run-input-load-more>
+        <Button type="text" className="self-center text-xs text-[var(--theme-text-secondary)] underline disabled:opacity-50" disabled={runInputs.historyIsLoading} onClick={() => void runInputs.loadMoreHistory()} htmlType="button" data-run-input-load-more>
           {t("chat.runInputs.loadEarlier", "读取更早的任务输入")}
-        </button>
+        </Button>
       ) : null}
       {runInputs.historyIsLoading ? <p className="text-xs text-[var(--theme-text-secondary)]" role="status">{t("chat.runInputs.historyLoading", "正在恢复任务输入历史…")}</p> : null}
       {visibleRuns.map(({ projection, closed, inputs, questions }) => {
@@ -73,10 +75,22 @@ export function RunInputHistory({
                     <div className="space-y-1">
                       {Object.entries(input.answers ?? {}).map(([key, answer]) => {
                         const display = presentRunInputAnswer(key, answer, batch);
-                        return <p className="whitespace-pre-wrap text-sm text-[var(--theme-text)]" key={key}>
-                          <span className="font-medium">{display.question ?? t("chat.runInputs.questionUnavailable", "问题")} </span>
-                          {display.answer ?? t("chat.runInputs.answerUnavailable", "答案暂不可用")}
-                        </p>;
+                        const question = batch?.questions.find((item) => item.key === key);
+                        const choice = typeof answer === "string" ? [answer] : Array.isArray(answer) ? answer : undefined;
+                        return (
+                          <div key={key}>
+                            <span className="font-medium">{display.question ?? t("chat.runInputs.questionUnavailable", "问题")} </span>
+                            {question && choice ? (
+                              <OptionList aria-label={question.question} choice={choice} options={question.options.map((option) => ({
+                                id: option.key,
+                                label: presentRunInputOption(question, option.key) ?? option.label,
+                                description: option.description,
+                              }))} />
+                            ) : (
+                              <span>{display.answer ?? t("chat.runInputs.answerUnavailable", "答案暂不可用")}</span>
+                            )}
+                          </div>
+                        );
                       })}
                     </div>
                   )}

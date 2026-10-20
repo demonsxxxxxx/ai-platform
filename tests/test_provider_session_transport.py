@@ -13,6 +13,7 @@ from fastapi import HTTPException
 
 from app.execution.infrastructure.harness.claude.session_store import (
     MAX_PROVIDER_SESSION_RESPONSE_BYTES,
+    MAX_PROVIDER_SESSION_APPEND_ENTRY_BYTES,
     ClaudeSessionStoreAdapter,
     ClaudeSessionStoreTransportError,
 )
@@ -23,6 +24,15 @@ from app.runtime.sandbox.callback_tokens import (
     derive_callback_token,
 )
 from app.runtime.sandbox.contracts import ProviderSessionCallbackRequest
+
+
+@pytest.fixture(autouse=True)
+def no_image_io(monkeypatch):
+    """Transport tests mock Context; real media fencing is covered with PostgreSQL."""
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(runtime_callbacks.context_api, "prepare_provider_session_media", AsyncMock(return_value=None))
+    monkeypatch.setattr(runtime_callbacks.context_api, "transfer_provider_session_media", AsyncMock(return_value=None))
 
 
 class _FakeResponse:
@@ -119,7 +129,7 @@ async def test_uuidless_append_retry_after_lost_response_keeps_sequence_and_batc
 
 
 def test_session_store_response_bound_includes_transcript_envelope():
-    assert MAX_PROVIDER_SESSION_RESPONSE_BYTES == 8 * 1024 * 1024 + 64 * 1024
+    assert MAX_PROVIDER_SESSION_RESPONSE_BYTES == 64 * 1024 * 1024 + 64 * 1024
 
 
 def test_provider_session_response_legacy_import_is_canonical_transport_contract():
@@ -224,8 +234,12 @@ async def test_session_store_adapter_stops_oversized_stream(monkeypatch):
         max_response_bytes=8,
     )
 
-    with pytest.raises(ClaudeSessionStoreTransportError, match="response_too_large"):
+    with pytest.raises(ClaudeSessionStoreTransportError, match="response_too_large") as caught:
         await adapter.load({"session_id": "provider-a"})
+    assert caught.value.debug == adapter.diagnostic_debug == {
+        "component": "provider_session", "operation": "load", "phase": "stream",
+        "failure_class": "size_limit", "observed_bytes": 9, "limit_bytes": 8,
+    }
 
 
 @pytest.mark.asyncio
@@ -1135,8 +1149,11 @@ def child_view_callback(monkeypatch):
     async def transaction():
         yield object()
 
-    async def locked(_conn, **_kwargs):
-        return dict(tenant_id="tenant-a", workspace_id="workspace-a", user_id="user-a", session_id="session-a", agent_id="agent-a"), {}
+    async def run_identity(_conn, **_kwargs):
+        return dict(tenant_id="tenant-a", workspace_id="workspace-a", user_id="user-a", session_id="session-a", agent_id="agent-a", status="running")
+
+    async def current_lease(_conn, **_kwargs):
+        return [{"attempt_id": "attempt-a", "lease_payload_json": {"attempt_id": "attempt-a"}}]
 
     async def execute(_conn, **kwargs):
         calls.append(kwargs)
@@ -1144,7 +1161,8 @@ def child_view_callback(monkeypatch):
 
     monkeypatch.setattr(runtime_callbacks, "transaction", transaction)
     monkeypatch.setattr(runtime_callbacks, "_require_valid_callback_token", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(runtime_callbacks, "_lock_current_runtime_attempt_then_run", locked)
+    monkeypatch.setattr(_owner_runs_infrastructure_postgres, "get_run_identity", run_identity)
+    monkeypatch.setattr(_owner_sandbox_infrastructure_leases_postgres, "list_current_sandbox_runtime_leases_for_attempt", current_lease)
     monkeypatch.setattr(runtime_callbacks.context_api, "execute_provider_session_callback", execute)
     callback = ProviderSessionCallbackRequest(action="list_subkeys", run_id="run-a", attempt_id="attempt-a", callback_token_id="cbt-a", provider_session_id="provider-a")
     return callback, children, calls
@@ -1233,7 +1251,8 @@ async def test_real_sdk_cached_child_cancellation_cleans_materialization(monkeyp
     materialized = tmp_path / "resume"
     materialized.mkdir()
     monkeypatch.setattr(session_resume.tempfile, "mkdtemp", lambda **_kwargs: str(materialized))
-    options = ClaudeAgentOptions(session_store=adapter, resume=session_id, cwd=str(tmp_path))
+    # The synthetic project identity need not repeat the long pytest output path.
+    options = ClaudeAgentOptions(session_store=adapter, resume=session_id, cwd=tmp_path.anchor)
     task = asyncio.create_task(session_resume.materialize_resume_session(options))
     with pytest.raises(asyncio.CancelledError):
         await task
@@ -1351,7 +1370,7 @@ async def test_append_sequence_growth_rejects_late_singleton_before_any_request(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("bad,error,subpath", [
-    ({"body": "x" * (256 * 1024)}, "entry_too_large", None),
+    ({"body": "x" * MAX_PROVIDER_SESSION_APPEND_ENTRY_BYTES}, "entry_too_large", None),
     ({"number": float("nan")}, "entry_not_json", None),
     ({"number": float("inf")}, "entry_not_json", None),
     ({"number": -float("inf")}, "entry_not_json", None),
@@ -1474,3 +1493,49 @@ def test_append_sizing_serializes_only_empty_envelopes_and_final_chunks(monkeypa
     assert len(calls) == 3 * len(payloads)  # Two small envelope encodings, one final payload.
     assert [size for _, size in calls if size] == [len(p["entries"]) for p in payloads]
     assert sum(size for _, size in calls) == count
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["append", "load", "list_subkeys"])
+async def test_only_provider_append_uses_cancelling_tail_authority(monkeypatch, action):
+    from contextlib import asynccontextmanager
+    from unittest.mock import AsyncMock
+    from fastapi import HTTPException
+
+    @asynccontextmanager
+    async def transaction():
+        yield object()
+
+    token_id = "cbt:run-a:attempt-a"
+    tail = AsyncMock(return_value=[{
+        "attempt_id": "attempt-a", "lease_payload_json": {
+            "attempt_id": "attempt-a", "callback_token_id": token_id,
+        },
+    }])
+    execute = AsyncMock(return_value=runtime_callbacks.context_api.ProviderSessionOperationResult(
+        action=action, accepted_entry_count=1,
+    ))
+    monkeypatch.setattr(runtime_callbacks, "transaction", transaction)
+    monkeypatch.setattr(runtime_callbacks, "get_settings", lambda: SimpleNamespace(sandbox_callback_token="secret"))
+    monkeypatch.setattr(_owner_runs_infrastructure_postgres, "get_run_identity", AsyncMock(return_value={
+        "tenant_id": "tenant-a", "session_id": "session-a", "status": "running",
+    }))
+    monkeypatch.setattr(_owner_sandbox_infrastructure_leases_postgres, "list_current_sandbox_runtime_leases_for_attempt", AsyncMock(return_value=[]))
+    monkeypatch.setattr(_owner_sandbox_infrastructure_leases_postgres, "list_cancelling_provider_tail_leases_for_attempt", tail)
+    monkeypatch.setattr(runtime_callbacks.context_api, "execute_provider_session_callback", execute)
+    callback = ProviderSessionCallbackRequest(
+        action=action, run_id="run-a", attempt_id="attempt-a", callback_token_id=token_id,
+        provider_session_id="provider-a", entries=[{"uuid": "entry-a"}] if action == "append" else [],
+        expected_sequence=1 if action == "append" else None,
+    )
+    if action == "append":
+        await runtime_callbacks.provider_session_callback(callback, callback_token=derive_callback_token("secret", token_id))
+        assert tail.await_count == 2  # Before I/O and before commit.
+        execute.assert_awaited_once()
+    else:
+        with pytest.raises(HTTPException) as caught:
+            await runtime_callbacks.provider_session_callback(callback, callback_token=derive_callback_token("secret", token_id))
+        assert caught.value.status_code == 409
+        assert caught.value.detail == "sandbox_runtime_attempt_inactive"
+        tail.assert_not_awaited()
+        execute.assert_not_awaited()

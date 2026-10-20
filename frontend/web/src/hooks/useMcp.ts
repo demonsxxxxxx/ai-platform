@@ -444,6 +444,7 @@ export function useMCP(options?: {
   }, [fetchServers, paused]);
 
   return {
+    catalogRequest: visibleCatalogState.request,
     servers: visibleCatalogState.servers,
     total: visibleCatalogState.total,
     isLoading,

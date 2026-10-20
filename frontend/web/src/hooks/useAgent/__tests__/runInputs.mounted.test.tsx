@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import test, { afterEach, beforeEach } from "node:test";
-// jsdom 26 is the pinned mounted-test runtime and does not ship declarations.
-// @ts-expect-error jsdom runtime import.
-import { JSDOM } from "jsdom";
+import { installSelectTestDom } from "../../../components/common/__tests__/selectTestDom";
+import { createLobeTestRoot } from "../../../components/common/__tests__/lobeUiTestRoot";
 import { act, createElement } from "react";
 
 import { RunQuestionCard } from "../../../components/chat/RunQuestionCard.tsx";
@@ -28,64 +27,9 @@ beforeEach(() => {
 afterEach(() => { sessionApi.getRunInputHistory = originalHistoryApi; });
 
 function installDom() {
-  const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", {
-    url: "http://localhost/",
-    pretendToBeVisual: true,
-  });
-  const window = dom.window;
-  const values: Record<string, unknown> = {
-    window,
-    document: window.document,
-    navigator: window.navigator,
-    HTMLElement: window.HTMLElement,
-    Element: window.Element,
-    Node: window.Node,
-    HTMLInputElement: window.HTMLInputElement,
-    HTMLTextAreaElement: window.HTMLTextAreaElement,
-    Event: window.Event,
-    InputEvent: window.InputEvent,
-    CustomEvent: window.CustomEvent,
-    localStorage: window.localStorage,
-    sessionStorage: window.sessionStorage,
-    indexedDB: globalThis.indexedDB,
-    requestAnimationFrame: (callback: FrameRequestCallback) =>
-      window.setTimeout(() => callback(Date.now()), 0),
-    cancelAnimationFrame: (handle: number) => window.clearTimeout(handle),
-    IS_REACT_ACT_ENVIRONMENT: true,
-  };
-  const previous = new Map(
-    Object.keys(values).map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]),
-  );
-  for (const [key, value] of Object.entries(values)) {
-    Object.defineProperty(globalThis, key, {
-      configurable: true,
-      writable: true,
-      value,
-    });
-  }
-  Object.defineProperty(window, "matchMedia", {
-    configurable: true,
-    value: () => ({
-      matches: false,
-      media: "",
-      onchange: null,
-      addEventListener() {},
-      removeEventListener() {},
-      addListener() {},
-      removeListener() {},
-      dispatchEvent: () => false,
-    }),
-  });
-  return {
-    dom,
-    restore() {
-      for (const [key, descriptor] of previous) {
-        if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-        else Reflect.deleteProperty(globalThis, key);
-      }
-      dom.window.close();
-    },
-  };
+  const environment = installSelectTestDom();
+  document.body.innerHTML = "<div id='root'></div>";
+  return { dom: { window }, restore: environment.close };
 }
 
 function questionProjection(
@@ -136,10 +80,9 @@ async function flush() {
 
 test("restores Run questions after remount and submits multi-select answers to that Run", async () => {
   const env = installDom();
-  const { createRoot } = await import("react-dom/client");
   const container = env.dom.window.document.getElementById("root");
   assert.ok(container);
-  let root = createRoot(container);
+  let root = await createLobeTestRoot(container);
   const originalGet = sessionApi.getRunInputs;
   const originalSubmit = sessionApi.submitRunInput;
   let persisted = questionProjection("run-question");
@@ -193,15 +136,13 @@ test("restores Run questions after remount and submits multi-select answers to t
       await flush();
     });
     assert.equal(submissions.length, 0);
-    assert.ok(container.querySelector<HTMLInputElement>('input[type="checkbox"]')?.disabled);
+    assert.ok(container.querySelector<HTMLButtonElement>('[role="checkbox"]')?.disabled);
     canSend = true;
     await render();
-    const checkboxes = container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]');
+    const checkboxes = container.querySelectorAll<HTMLButtonElement>('[role="checkbox"]');
     assert.equal(checkboxes.length, 2);
-    await act(async () => {
-      checkboxes[0].click();
-      checkboxes[1].click();
-    });
+    await act(async () => { checkboxes[0].click(); });
+    await act(async () => { checkboxes[1].click(); });
     const form = container.querySelector("[data-run-question-card] form");
     assert.ok(form);
     await act(async () => {
@@ -218,7 +159,7 @@ test("restores Run questions after remount and submits multi-select answers to t
     });
 
     await act(async () => root.unmount());
-    root = createRoot(container);
+    root = await createLobeTestRoot(container);
     await act(async () => {
       root.render(createElement(Probe));
       await flush();
@@ -235,10 +176,9 @@ test("restores Run questions after remount and submits multi-select answers to t
 
 test("retries uncertain text submissions with the same input ID to the same Run", async () => {
   const env = installDom();
-  const { createRoot } = await import("react-dom/client");
   const container = env.dom.window.document.getElementById("root");
   assert.ok(container);
-  const root = createRoot(container);
+  const root = await createLobeTestRoot(container);
   const originalGet = sessionApi.getRunInputs;
   const originalSubmit = sessionApi.submitRunInput;
   const persisted: RunInputsProjection = {
@@ -317,10 +257,9 @@ test("retries uncertain text submissions with the same input ID to the same Run"
 
 test("ignores late reads and writes owned by a previous session", async () => {
   const env = installDom();
-  const { createRoot } = await import("react-dom/client");
   const container = env.dom.window.document.getElementById("root");
   assert.ok(container);
-  const root = createRoot(container);
+  const root = await createLobeTestRoot(container);
   const originalGet = sessionApi.getRunInputs;
   const originalSubmit = sessionApi.submitRunInput;
   let resolveOldRead!: (value: RunInputsProjection) => void;
@@ -394,10 +333,9 @@ test("ignores late reads and writes owned by a previous session", async () => {
 
 test("retries failed final reads and can refresh stale input history after completion", async () => {
   const env = installDom();
-  const { createRoot } = await import("react-dom/client");
   const container = env.dom.window.document.getElementById("root");
   assert.ok(container);
-  const root = createRoot(container);
+  const root = await createLobeTestRoot(container);
   const originalGet = sessionApi.getRunInputs;
   let active = true;
   let offline = false;
@@ -444,10 +382,9 @@ test("retries failed final reads and can refresh stale input history after compl
 
 test("answers indistinguishable redacted options by key and distinguishes free text from option keys", async () => {
   const env = installDom();
-  const { createRoot } = await import("react-dom/client");
   const container = env.dom.window.document.getElementById("root");
   assert.ok(container);
-  const root = createRoot(container);
+  const root = await createLobeTestRoot(container);
   const originalGet = sessionApi.getRunInputs;
   const originalSubmit = sessionApi.submitRunInput;
   const projection = questionProjection("run-private");
@@ -467,12 +404,13 @@ test("answers indistinguishable redacted options by key and distinguishes free t
   const controls = () => latest as RunInputsController;
   try {
     await act(async () => { root.render(createElement(Probe)); await flush(); });
-    const boxes = container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]');
-    assert.match(boxes[0].closest("label")?.textContent ?? "", /1\. \[redacted-email\]/);
-    assert.match(boxes[1].closest("label")?.textContent ?? "", /2\. \[redacted-email\]/);
-    await act(async () => { boxes[0].click(); boxes[1].click(); });
-    assert.equal(boxes[0].checked, true);
-    assert.equal(boxes[1].checked, true);
+    const boxes = container.querySelectorAll<HTMLButtonElement>('[role="checkbox"]');
+    assert.match(boxes[0].textContent ?? "", /1\. \[redacted-email\]/);
+    assert.match(boxes[1].textContent ?? "", /2\. \[redacted-email\]/);
+    await act(async () => { boxes[0].click(); });
+    await act(async () => { boxes[1].click(); });
+    assert.equal(boxes[0].getAttribute("aria-checked"), "true");
+    assert.equal(boxes[1].getAttribute("aria-checked"), "true");
     const form = container.querySelector("form");
     assert.ok(form);
     await act(async () => { form.dispatchEvent(new env.dom.window.Event("submit", { bubbles: true, cancelable: true })); await flush(); });
@@ -494,10 +432,9 @@ test("answers indistinguishable redacted options by key and distinguishes free t
 
 test("labels a server-selected timeout answer and keeps the current Run open", async () => {
   const env = installDom();
-  const { createRoot } = await import("react-dom/client");
   const container = env.dom.window.document.getElementById("root");
   assert.ok(container);
-  const root = createRoot(container);
+  const root = await createLobeTestRoot(container);
   const originalGet = sessionApi.getRunInputs;
   const projection = questionProjection("run-auto", { status: "resolved" });
   projection.inputs = [{
@@ -528,10 +465,9 @@ test("labels a server-selected timeout answer and keeps the current Run open", a
 for (const response of ["conflict", "uncertain"] as const) {
   test(`reconciles ${response} manual answers with a server timeout answer`, async () => {
     const env = installDom();
-    const { createRoot } = await import("react-dom/client");
     const container = env.dom.window.document.getElementById("root");
     assert.ok(container);
-    const root = createRoot(container);
+    const root = await createLobeTestRoot(container);
     const originalGet = sessionApi.getRunInputs;
     const originalSubmit = sessionApi.submitRunInput;
     let persisted = questionProjection("run-race");
@@ -574,10 +510,9 @@ for (const response of ["conflict", "uncertain"] as const) {
 for (const noOptions of [false, true]) {
   test(`shows server deadline policy and default choice with noOptions=${noOptions}`, async () => {
     const env = installDom();
-    const { createRoot } = await import("react-dom/client");
     const container = env.dom.window.document.getElementById("root");
     assert.ok(container);
-    const root = createRoot(container);
+    const root = await createLobeTestRoot(container);
     const originalGet = sessionApi.getRunInputs;
     const originalSubmit = sessionApi.submitRunInput;
     const projection = questionProjection("run-deadline");
@@ -621,10 +556,9 @@ for (const scenario of [
 ] as const) {
   test(`task input echoes hide successful receipts and preserve ${scenario.name}`, async () => {
     const env = installDom();
-    const { createRoot } = await import("react-dom/client");
     const container = env.dom.window.document.getElementById("root");
     assert.ok(container);
-    const root = createRoot(container);
+    const root = await createLobeTestRoot(container);
     const originalGet = sessionApi.getRunInputs;
     const projection = questionProjection("run-echo", { state: scenario.state, status: scenario.questionStatus });
     projection.inputs = [
@@ -664,10 +598,9 @@ function completedProjection(runId: string, text: string): RunInputsProjection {
 
 test("retains completed Run input history across pagination and remount without echoing it in the composer", async () => {
   const env = installDom();
-  const { createRoot } = await import("react-dom/client");
   const container = env.dom.window.document.getElementById("root");
   assert.ok(container);
-  let root = createRoot(container);
+  let root = await createLobeTestRoot(container);
   const originalGet = sessionApi.getRunInputs;
   let runId = "run-current";
   const previous = completedProjection("run-previous", "previous continuation");
@@ -710,14 +643,14 @@ test("retains completed Run input history across pagination and remount without 
     assert.match(historyText(), /current continuation/);
     assert.doesNotMatch(container.textContent ?? "", /older continuation|current continuation/);
     assert.equal(controls().history.filter((run) => run.run_id === "run-next").length, 1);
-    assert.equal(container.querySelector('[data-run-input-history-run="run-current"] input'), null);
-    assert.equal(container.querySelector('[data-run-input-history-run="run-next"] input')?.hasAttribute("disabled"), false);
+    assert.equal(container.querySelector('[data-run-input-history-run="run-current"] [role="checkbox"]'), null);
+    assert.equal(container.querySelector('[data-run-input-history-run="run-next"] [role="checkbox"]')?.hasAttribute("disabled"), false);
     assert.equal(container.querySelector("[data-run-input-history-run]")?.getAttribute("data-run-input-history-run"), "run-next");
     const historyRegion = container.querySelector<HTMLDivElement>("[data-run-input-history]");
     assert.ok(historyRegion);
     assert.equal(historyRegion.scrollTop, 0, "a new pending question must be visible without processed receipts");
     await act(async () => root.unmount());
-    root = createRoot(container);
+    root = await createLobeTestRoot(container);
     await render();
     assert.match(historyText(), /current continuation/);
     assert.match(historyText(), /previous continuation/);
@@ -733,10 +666,9 @@ test("retains completed Run input history across pagination and remount without 
 
 test("refresh traverses a disjoint history gap in order even when its first page overlaps a live projection", async () => {
   const env = installDom();
-  const { createRoot } = await import("react-dom/client");
   const container = env.dom.window.document.getElementById("root");
   assert.ok(container);
-  const root = createRoot(container);
+  const root = await createLobeTestRoot(container);
   const originalGet = sessionApi.getRunInputs;
   let refreshed = false;
   const ids = (values: string[]) => values.map((id) => completedProjection(id, `${id} continuation`));
@@ -777,10 +709,9 @@ test("refresh traverses a disjoint history gap in order even when its first page
 
 test("drops delayed history pages on session or auth identity changes and preserves history after read failure", async () => {
   const env = installDom();
-  const { createRoot } = await import("react-dom/client");
   const container = env.dom.window.document.getElementById("root");
   assert.ok(container);
-  const root = createRoot(container);
+  const root = await createLobeTestRoot(container);
   const originalGet = sessionApi.getRunInputs;
   let sessionId = "session-old";
   let identityKey = "tenant-old:user-old";
@@ -834,10 +765,9 @@ test("drops delayed history pages on session or auth identity changes and preser
 for (const outcome of ["accepted", "uncertain", "late-success", "closed", "read-only", "other-batch", "navigate", "identity", "resolved", "double-click", "retry-navigation", "retry-retire", "retry-unmount", "retry-cancelled-run", "timeout-before-retry", "timeout-during-retry-success", "timeout-during-retry-conflict", "timeout-during-retry-uncertain"] as const) {
   test(`uncertain question retry preserves ownership and original answers: ${outcome}`, async () => {
     const env = installDom();
-    const { createRoot } = await import("react-dom/client");
     const container = env.dom.window.document.getElementById("root");
     assert.ok(container);
-    const root = createRoot(container);
+    const root = await createLobeTestRoot(container);
     let mounted = true;
     const originalGet = sessionApi.getRunInputs;
     const originalSubmit = sessionApi.submitRunInput;
@@ -876,14 +806,14 @@ for (const outcome of ["accepted", "uncertain", "late-success", "closed", "read-
     const retryButton = () => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "重试提交答复");
     try {
       await render();
-      await act(async () => { container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click(); });
+      await act(async () => { container.querySelector<HTMLButtonElement>('[role="checkbox"]')!.click(); });
       await act(async () => { container.querySelector("form")!.dispatchEvent(new env.dom.window.Event("submit", { bubbles: true, cancelable: true })); await flush(); });
       assert.equal(latest.pendingSubmission?.state, "uncertain");
       assert.equal(submissions.length, 1);
       assert.match(container.querySelector('[role="alert"]')?.textContent ?? "", /尚未确认答案是否提交成功/);
       assert.ok(retryButton());
-      assert.equal(container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked, true);
-      assert.equal(container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.disabled, true);
+      assert.equal(container.querySelector<HTMLButtonElement>('[role="checkbox"]')!.getAttribute("aria-checked"), "true");
+      assert.equal(container.querySelector<HTMLButtonElement>('[role="checkbox"]')!.disabled, true);
       assert.equal(container.querySelector<HTMLTextAreaElement>("textarea")!.disabled, true);
       assert.equal(container.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled, true);
       const applyTimeout = async () => {
@@ -1004,8 +934,8 @@ for (const outcome of ["accepted", "uncertain", "late-success", "closed", "read-
         if (outcome === "uncertain") {
           assert.equal(latest.pendingSubmission?.state, "uncertain");
           assert.ok(retryButton());
-          assert.equal(container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked, true);
-          assert.equal(container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.disabled, true);
+          assert.equal(container.querySelector<HTMLButtonElement>('[role="checkbox"]')!.getAttribute("aria-checked"), "true");
+          assert.equal(container.querySelector<HTMLButtonElement>('[role="checkbox"]')!.disabled, true);
           await act(async () => { retryButton()!.click(); await flush(); });
           assert.equal(submissions.length, 3);
           assert.deepEqual(submissions[2], submissions[0]);

@@ -12,7 +12,7 @@ import {
   getRedirectPath,
   clearRedirectPath,
 } from "../../services/api";
-import { Loading } from "../common";
+import { Spin } from "@lobehub/ui/base-ui";
 
 export function OAuthCallback() {
   const { t } = useTranslation();
@@ -85,7 +85,7 @@ export function OAuthCallback() {
   return (
     <div className="flex min-h-screen items-center justify-center bg-stone-50 dark:bg-stone-900">
       <div className="text-center">
-        <Loading size="lg" className="justify-center" />
+        <Spin size={32} className="justify-center" />
         <p className="mt-4 text-stone-600 dark:text-stone-400">
           {t("auth.completingLogin")}
         </p>

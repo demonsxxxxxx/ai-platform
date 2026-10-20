@@ -66,6 +66,10 @@ export interface SessionInputFilesResponse {
   files: SessionInputFile[];
 }
 
+export interface FollowUpSuggestionsResponse {
+  suggestions: string[];
+}
+
 export interface SessionArtifactFile {
   id: string;
   file_name: string;
@@ -396,6 +400,10 @@ export function buildSessionInputFilesUrl(sessionId: string): string {
   return `${API_BASE}/api/ai/chat/sessions/${encodeURIComponent(sessionId)}/files`;
 }
 
+export function buildFollowUpSuggestionsUrl(): string {
+  return `${API_BASE}/api/ai/chat/follow-up-suggestions`;
+}
+
 export function buildProfileDriveImportUrl(sessionId: string): string {
   return `${API_BASE}/api/ai/chat/sessions/${encodeURIComponent(sessionId)}/profile-drive-files`;
 }
@@ -716,6 +724,22 @@ export const sessionApi = {
     return authFetch(buildSessionInputFilesUrl(sessionId));
   },
 
+  /** Request model-generated follow-up questions for one settled answer. */
+  async getFollowUpSuggestions(
+    sessionId: string,
+    runId: string,
+    signal?: AbortSignal,
+  ): Promise<FollowUpSuggestionsResponse> {
+    return authFetch<FollowUpSuggestionsResponse>(
+      buildFollowUpSuggestionsUrl(),
+      {
+        method: "POST",
+        body: JSON.stringify({ session_id: sessionId, run_id: runId }),
+        signal,
+      },
+    );
+  },
+
   /** Stage one user-confirmed ProfileDrive file before the first chat submission. */
   async stageProfileDriveFile(
     reference: ProfileDriveFileReference,
@@ -931,6 +955,13 @@ export const sessionApi = {
     return authFetch(buildSubmitChatUrl(agentId), {
       method: "POST",
       body: JSON.stringify(body),
+    });
+  },
+
+  async reportBrowserRunLatency(submissionId: string, runId: string, durationMs: number): Promise<{ recorded: boolean }> {
+    return authFetch(`${buildChatSubmissionUrl(submissionId)}/latency`, {
+      method: "POST",
+      body: JSON.stringify({ run_id: runId, duration_ms: durationMs }),
     });
   },
 

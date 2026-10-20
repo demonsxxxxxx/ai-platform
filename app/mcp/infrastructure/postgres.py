@@ -56,28 +56,11 @@ async def list_mcp_server_registry(
     conn: Any,
     *,
     tenant_id: str,
-    department_id: str | None = None,
     include_disabled: bool = True,
 ) -> list[dict[str, Any]]:
     from app.mcp.infrastructure import registry_postgres
 
     return await registry_postgres.list_runtime_mcp_server_registry(
-        conn,
-        tenant_id=tenant_id,
-        department_id=department_id,
-        include_disabled=include_disabled,
-    )
-
-
-async def list_tenant_mcp_server_registry(
-    conn: AsyncConnection,
-    *,
-    tenant_id: str,
-    include_disabled: bool = True,
-) -> list[dict[str, Any]]:
-    from app.mcp.infrastructure import registry_postgres
-
-    return await registry_postgres.list_runtime_tenant_mcp_server_registry(
         conn,
         tenant_id=tenant_id,
         include_disabled=include_disabled,
@@ -451,7 +434,7 @@ async def get_mcp_server_runtime_target(
 
     cursor = await conn.execute(
         """
-        select mcp_servers.transport, credentials.credential_envelope
+        select mcp_servers.transport, mcp_servers.integration_kind, credentials.credential_envelope
         from mcp_servers
         join mcp_server_credentials credentials
           on credentials.tenant_id = mcp_servers.tenant_id

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { resolveGroupAvailability } from "../../governance/groupAvailability";
@@ -46,7 +46,7 @@ test("skills hub exposes governed catalog status without composer help copy", ()
     "utf8",
   );
   assert.match(ordinarySkills, /data-ordinary-skills-catalog/);
-  assert.match(ordinarySkills, /useSkills\(\{ allAuthorizedCatalog: true \}\)/);
+  assert.match(ordinarySkills, /useSkills\(\{\s*allAuthorizedCatalog: true,\s*identityScope:/);
   assert.match(ordinarySkills, /skills\.available\.title/);
   assert.match(ordinarySkills, /skills\.available\.fileTypes/);
   assert.doesNotMatch(
@@ -75,8 +75,10 @@ test("mcp panel gives AI admins lifecycle controls while keeping the ordinary di
   assert.doesNotMatch(source, /mcp\.lifecycleUnavailable/);
   assert.doesNotMatch(source, /mcp\.credentialsUnavailable/);
   assert.match(source, /roleQuotaCount/);
-  assert.doesNotMatch(source, /enabledToolCount/);
-  assert.doesNotMatch(source, /mcp\.card\.tools/);
+  assert.match(source, /useMcpToolDiscovery/);
+  assert.match(source, /data-mcp-tool-count/);
+  assert.match(source, /data-mcp-server-row/);
+  assert.match(source, /MCPToolDrawer/);
   assert.doesNotMatch(
     source,
     /MCPServerCard|EditorSidebar/,
@@ -104,35 +106,31 @@ test("mcp panel gives AI admins lifecycle controls while keeping the ordinary di
     source,
     /startServer|stopServer|restartServer|rawCredential|allowedTransports|createAsSystem|changeToSystem/,
   );
-  assert.doesNotMatch(form, /server\?\.url|server\.url/);
-  assert.doesNotMatch(form, /server\?\.headers|server\.headers/);
+  assert.match(form, /setUrl\(server\.url \?\? ""\);/);
+  assert.match(form, /setHeaders\(Object.entries\(server\.headers \?\? \{\}\)\.map/);
   assert.doesNotMatch(form, /server\?\.command|server\.command/);
   assert.doesNotMatch(form, /server\?\.env_keys|server\.env_keys/);
   assert.match(form, /department_ids/);
-  assert.match(form, /const \[allowedDepartmentsInput, setAllowedDepartmentsInput\] = useState/);
-  assert.match(
-    form,
-    /department_ids: isSystemServer[\s\S]*?parseDepartmentIds\(allowedDepartmentsInput\)/,
-  );
-  assert.match(form, /value=\{allowedDepartmentsInput\}/);
-  assert.match(form, /<label htmlFor="mcp-allowed-departments"/);
-  assert.match(form, /id="mcp-allowed-departments"/);
-  assert.match(
-    form,
-    /onChange=\{\(event\) => setAllowedDepartmentsInput\(event\.target\.value\)\}/,
-  );
+  assert.match(form, /department_ids: allowedDepartments/);
+  assert.match(form, /<DepartmentDirectorySelector/);
+  assert.match(form, /selectedAuthorityIds=\{allowedDepartments\}/);
+  assert.match(form, /!departmentSelection\.authoritative/);
+  assert.doesNotMatch(form, /parseDepartmentIds|allowedDepartmentsInput/);
   assert.doesNotMatch(form, /value=\{allowedDepartments\.join/);
-  assert.match(form, /if \(server\) \{[\s\S]*setUrl\(""\);[\s\S]*setHeaders\(\[\]\);/);
+  assert.match(form, /else \{[\s\S]*setUrl\(""\);[\s\S]*setHeaders\(\[\]\);/);
   assert.doesNotMatch(form, /setCommand|setEnvKeys|EnvKeysSelector/);
-  assert.match(form, /else \{[\s\S]*setAllowedDepartmentsInput\(""\);/);
+  assert.match(form, /else \{[\s\S]*setAllowedDepartments\(\[\]\);/);
   assert.ok(
     form.indexOf('t("mcp.form.connectionReentry")') <
       form.indexOf("{/* HTTP/SSE connection */}"),
-    "write-only re-entry warning must apply to every transport",
+    "connection prefill hint must precede the connection fields",
   );
   assert.match(ordinaryCatalog, /data-ordinary-mcp-catalog/);
   assert.match(ordinaryCatalog, /mcp\.available\.empty/);
-  assert.match(ordinaryCatalog, /mcpApi\.discoverTools/);
+  const discovery = readFileSync(join(root, "src/components/mcp/useMcpToolDiscovery.ts"), "utf8");
+  assert.match(discovery, /mcpApi\.discoverTools/);
+  assert.match(ordinaryCatalog, /discovery\.toolsByServer/);
+  assert.doesNotMatch(ordinaryCatalog, /listError \|\| toolsUnavailable|collectOrdinaryMcpTools/);
   assert.doesNotMatch(
     ordinaryCatalog,
     /allowed_roles|role_quotas|credential|transport|server\.enabled|can_edit/,
@@ -189,4 +187,16 @@ test("tool selector cannot toggle system disabled MCP tools", () => {
   );
   assert.match(source, /aria-disabled=\{tool\.system_disabled/);
   assert.doesNotMatch(source, /onClick=\{\(\) => onToggleTool\(tool\.name\)\}/);
+});
+
+test("MCP governance has no orphaned tool-permission inbox state owner", () => {
+  assert.equal(
+    existsSync(join(root, "src/components/panels/adminToolPermissionInboxState.ts")),
+    false,
+  );
+});
+
+test("governance surfaces retain the shared state owner without an unused unavailable wrapper", () => {
+  assert.equal(existsSync(join(root, "src/components/workbench/WorkbenchStateSurface.tsx")), true);
+  assert.equal(existsSync(join(root, "src/components/workbench/WorkbenchUnavailableState.tsx")), false);
 });

@@ -1,58 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-// @ts-expect-error jsdom is the pinned mounted-test runtime without declarations.
-import { JSDOM } from "jsdom";
+import { installSelectTestDom } from "../../common/__tests__/selectTestDom";
 import { act } from "react";
+import { ThreadPrimitive } from "@assistant-ui/react";
 import { installBrowserAuthTestDb } from "../../../hooks/__tests__/browserAuthTestDb";
 import type { ChatInputProps } from "../chatInputTypes";
 import type { SubmissionOutcome } from "../../../hooks/useAgent/types";
 
 function installDom() {
-  const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>", {
-    url: "http://localhost/",
-  });
-  const window = dom.window;
-  Object.defineProperties(globalThis, {
-    window: { configurable: true, value: window },
-    document: { configurable: true, value: window.document },
-    navigator: { configurable: true, value: window.navigator },
-    HTMLElement: { configurable: true, value: window.HTMLElement },
-    Element: { configurable: true, value: window.Element },
-    Node: { configurable: true, value: window.Node },
-    HTMLTextAreaElement: {
-      configurable: true,
-      value: window.HTMLTextAreaElement,
-    },
-    Event: { configurable: true, value: window.Event },
-    InputEvent: { configurable: true, value: window.InputEvent },
-    CustomEvent: { configurable: true, value: window.CustomEvent },
-    localStorage: { configurable: true, value: window.localStorage },
-    sessionStorage: { configurable: true, value: window.sessionStorage },
-    requestAnimationFrame: {
-      configurable: true,
-      value: (callback: FrameRequestCallback) =>
-        window.setTimeout(() => callback(Date.now()), 0),
-    },
-    cancelAnimationFrame: {
-      configurable: true,
-      value: (handle: number) => window.clearTimeout(handle),
-    },
-    IS_REACT_ACT_ENVIRONMENT: { configurable: true, value: true },
-  });
-  Object.defineProperty(window, "matchMedia", {
-    configurable: true,
-    value: () => ({
-      matches: false,
-      media: "",
-      onchange: null,
-      addEventListener() {},
-      removeEventListener() {},
-      addListener() {},
-      removeListener() {},
-      dispatchEvent: () => false,
-    }),
-  });
-  return dom;
+  const fixture = installSelectTestDom();
+  document.body.innerHTML = '<div id="root"></div>';
+  Object.assign(globalThis, { localStorage: window.localStorage, sessionStorage: window.sessionStorage });
+  return { window, close: fixture.close };
 }
 
 // Mounted DOM-event contracts only: jsdom does not run a real IME or native caret movement.
@@ -62,8 +21,9 @@ test("composer preserves IME, multiline editing, history, menu and submission ow
   Object.defineProperty(navigator, "locks", { configurable: true, value: {
     request: async (_name: string, _options: unknown, callback: () => Promise<unknown>) => callback(),
   } });
-  const { createRoot } = await import("react-dom/client");
+  const { createLobeTestRoot } = await import("../../common/__tests__/lobeUiTestRoot");
   const { ChatInput } = await import("../ChatInput");
+  const { AssistantUiTestProvider } = await import("../assistant-ui/__tests__/assistantUiTestProvider");
   const { AuthProvider } = await import("../../../hooks/useAuth");
   const { authApi } = await import("../../../services/api/auth");
   const originalBootstrap = authApi.bootstrapAuthContext;
@@ -75,7 +35,7 @@ test("composer preserves IME, multiline editing, history, menu and submission ow
     created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z",
   });
   const container = document.getElementById("root")!;
-  const root = createRoot(container);
+  const root = await createLobeTestRoot(container);
   const sends: string[] = [];
   let resolveSubmission: ((outcome: SubmissionOutcome) => void) | undefined;
   let deferSubmission = false;
@@ -91,7 +51,7 @@ test("composer preserves IME, multiline editing, history, menu and submission ow
   };
   const render = async (changes: Partial<ChatInputProps> = {}) => {
     Object.assign(props, changes);
-    await act(async () => { root.render(<AuthProvider><ChatInput {...props} /></AuthProvider>); });
+    await act(async () => { root.render(<AuthProvider><AssistantUiTestProvider isRunning={props.isLoading}><ThreadPrimitive.Suggestion prompt="建议问题" send={false} data-test-suggestion>建议问题</ThreadPrimitive.Suggestion><ChatInput {...props} /></AssistantUiTestProvider></AuthProvider>); });
   };
   const textarea = () => container.querySelector("textarea")!;
   const type = async (value: string) => {
@@ -106,7 +66,7 @@ test("composer preserves IME, multiline editing, history, menu and submission ow
     return event;
   };
   const caret = (start: number, end = start) => textarea().setSelectionRange(start, end);
-  const dialogOpen = () => document.body.querySelector(".enterprise-modal-shell") !== null;
+  const dialogOpen = () => document.querySelector('[role="dialog"], [role="alertdialog"]') !== null;
   try {
     await render();
     await t.test("empty history leaves arrow keys native", async () => {
@@ -170,6 +130,7 @@ test("composer preserves IME, multiline editing, history, menu and submission ow
       assert.equal((await key("Enter")).defaultPrevented, true);
       assert.equal(dialogOpen(), true);
       await act(async () => document.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
       await render({ canStop: false });
       await key("Enter");
       assert.equal(dialogOpen(), false);
@@ -201,6 +162,33 @@ test("composer preserves IME, multiline editing, history, menu and submission ow
       await type("/");
       assert.equal((await key("Escape")).defaultPrevented, true);
       assert.equal((await key("Escape")).defaultPrevented, false);
+    });
+    await t.test("native suggestions, send and permission/upload gates use the platform payload", async () => {
+      const submitted: Parameters<ChatInputProps["onSend"]>[] = [];
+      let accepted = false;
+      const attachment = { id: "attachment-public", key: "attachment-public", name: "report.txt", type: "document" as const, url: "/api/files/report", mimeType: "text/plain", size: 20 };
+      await render({ disableSlashCommands: true, attachments: [attachment], agentOptionValues: { model: "selected-model" },
+        onSend: async (...args) => { submitted.push(args); return accepted ? { status: "accepted" } : { status: "failed" }; } });
+      await act(async () => container.querySelector<HTMLButtonElement>("[data-test-suggestion]")!.click());
+      assert.equal(textarea().value, "建议问题");
+      assert.equal(submitted.length, 0);
+      await render({ canSend: false });
+      await key("Enter");
+      assert.equal(submitted.length, 0);
+      await render({ canSend: true, attachments: [{ ...attachment, isUploading: true }] });
+      await key("Enter");
+      assert.equal(submitted.length, 0);
+      await render({ attachments: [attachment] });
+      const send = () => container.querySelector<HTMLButtonElement>("button[aria-label='发送消息']")!;
+      await act(async () => send().click());
+      assert.equal(submitted.length, 1);
+      assert.deepEqual(submitted[0], ["建议问题", { model: "selected-model" }, [attachment], null]);
+      assert.equal(textarea().value, "建议问题", "unaccepted submission retains the durable draft");
+      assert.equal(send().disabled, false, "native send remains usable after an unaccepted submission");
+      accepted = true;
+      await act(async () => send().click());
+      assert.equal(submitted.length, 2);
+      assert.equal(textarea().value, "");
     });
   } finally {
     await act(async () => root.unmount());

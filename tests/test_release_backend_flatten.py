@@ -222,13 +222,30 @@ def test_verify_archive_refuses_a_replaced_inode_after_streaming(tmp_path):
     finally:
         sink.close()
 
-    archive.unlink()
-    archive.write_bytes(b"replacement")
+    replacement = tmp_path / "replacement.tar"
+    replacement.write_bytes(b"replacement")
     if os.name == "posix":
-        os.chmod(archive, 0o600)
+        os.chmod(replacement, 0o600)
+    replacement.replace(archive)
+    assert archive.stat().st_ino != identity.st_ino
 
     with pytest.raises(BackendFlattenError, match="archive is unsafe"):
         release_backend_flatten._verify_archive(archive, identity)
+
+
+def test_verified_archive_rejects_in_place_change_before_consumer(tmp_path):
+    path, sink, identity = release_backend_flatten._create_archive_sink(tmp_path, "source-rootfs.tar")
+    with sink:
+        _write_rootfs_archive(sink)
+        sink.flush()
+        archive = release_backend_flatten._verify_archive(path, identity)
+    with path.open("ab") as handle:
+        handle.write(b"changed after verification")
+    assert path.stat().st_ino == identity.st_ino
+    with pytest.raises(BackendFlattenError, match="archive is unsafe"):
+        release_backend_flatten._consume_verified_archive(
+            archive, lambda _: pytest.fail("changed archive must not reach its consumer"),
+        )
 
 
 def test_flattened_backend_base_rejects_source_archive_replaced_after_export_before_import(tmp_path, monkeypatch):

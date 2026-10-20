@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-// jsdom 26 ships no declarations; this test uses only its runtime constructor.
-// @ts-expect-error jsdom is the pinned mounted-test runtime.
-import { JSDOM } from "jsdom";
+import { installSelectTestDom } from "../../../common/__tests__/selectTestDom";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { createLobeTestRoot } from "../../../common/__tests__/lobeUiTestRoot";
 import type { MessagePart } from "../../../../types";
 import { MessagePartRenderer } from "../../ChatMessage/MessagePartRenderer";
 import { MessageWorkActivity } from "../../ChatMessage/MessageWorkActivity";
@@ -29,30 +27,10 @@ function activateNativeButton(
   button.click();
 }
 
-test("chat work disclosure collapses on completion and keeps answer content outside", () => {
-  const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>", {
-    url: "http://localhost/",
-  });
-  for (const key of [
-    "window",
-    "document",
-    "navigator",
-    "HTMLElement",
-    "Node",
-    "Event",
-    "KeyboardEvent",
-  ] as const) {
-    Object.defineProperty(globalThis, key, {
-      configurable: true,
-      value: dom.window[key],
-    });
-  }
-  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", {
-    configurable: true,
-    value: true,
-  });
-  const container = dom.window.document.getElementById("root") as HTMLDivElement;
-  const root = createRoot(container);
+test("chat work disclosure collapses on completion and keeps answer content outside", async () => {
+  const environment = installSelectTestDom();
+  const container = document.createElement("div");
+  const root = await createLobeTestRoot(container);
   const thinking: Extract<MessagePart, { type: "thinking" }> = {
     type: "thinking",
     content: "公开思考摘要",
@@ -169,7 +147,7 @@ test("chat work disclosure collapses on completion and keeps answer content outs
       .filter(Boolean);
     assert.equal(controlledIds.length, 2);
     controlledIds.forEach((id) => {
-      assert.equal(dom.window.document.getElementById(id)?.hidden, true);
+      assert.equal(document.getElementById(id)?.hidden, true);
     });
     assert.equal(container.querySelector("[data-public-thinking]"), null);
     const answer = [...container.querySelectorAll("p")].find((node) =>
@@ -181,40 +159,20 @@ test("chat work disclosure collapses on completion and keeps answer content outs
     act(() => activateNativeButton(toggle, "Enter"));
     assert.equal(toggle.getAttribute("aria-expanded"), "true");
     controlledIds.forEach((id) => {
-      assert.equal(dom.window.document.getElementById(id)?.hidden, false);
+      assert.equal(document.getElementById(id)?.hidden, false);
     });
     assert.doesNotMatch(container.textContent || "", /公开思考摘要/);
   } finally {
     closePersistentToolPanel();
     act(() => root.unmount());
-    dom.window.close();
+    environment.close();
   }
 });
 
-test("generic public tools expose distinct safe failed and denied states", () => {
-  const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>", {
-    url: "http://localhost/",
-  });
-  for (const key of [
-    "window",
-    "document",
-    "navigator",
-    "HTMLElement",
-    "Node",
-    "Event",
-    "KeyboardEvent",
-  ] as const) {
-    Object.defineProperty(globalThis, key, {
-      configurable: true,
-      value: dom.window[key],
-    });
-  }
-  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", {
-    configurable: true,
-    value: true,
-  });
-  const container = dom.window.document.getElementById("root") as HTMLDivElement;
-  const root = createRoot(container);
+test("generic public tools expose distinct safe failed and denied states", async () => {
+  const environment = installSelectTestDom();
+  const container = document.createElement("div");
+  const root = await createLobeTestRoot(container);
   const parts: MessagePart[] = [
     {
       type: "tool",
@@ -261,17 +219,17 @@ test("generic public tools expose distinct safe failed and denied states", () =>
       );
     });
 
-    const buttons = [...container.querySelectorAll("button")];
-    assert.equal(buttons.length, 2);
-    assert.equal(buttons[0]?.tagName, "BUTTON");
-    assert.equal(buttons[1]?.tagName, "BUTTON");
-    assert.equal(buttons[0]?.getAttribute("aria-expanded"), null);
-    assert.equal(buttons[1]?.getAttribute("aria-expanded"), null);
-    assert.ok(buttons[0]?.querySelector(".lucide-circle-x"));
-    assert.ok(buttons[1]?.querySelector(".lucide-ban"));
+    const activities = [...container.querySelectorAll("[data-chat-activity-status]")];
+    assert.equal(activities.length, 2);
+    assert.equal(container.querySelectorAll("button").length, 0);
+    assert.equal(activities[0]?.getAttribute("data-chat-activity-status"), "error");
+    assert.equal(activities[1]?.getAttribute("data-chat-activity-status"), "cancelled");
+    assert.ok(activities[0]?.querySelector(".lucide-circle-x"));
+    assert.ok(activities[1]?.querySelector(".lucide-ban"));
 
-    const statuses = [...container.querySelectorAll('[role="status"]')];
-    assert.equal(statuses.length >= 2, true);
+    const statuses = [...container.querySelectorAll('[data-slot="tool-error"]')];
+    assert.equal(statuses.length, 2);
+    assert.equal(container.querySelectorAll('[role="status"]').length, 0, "tool errors must not duplicate the message live status");
     const labels = statuses
       .map((status) => status.getAttribute("aria-label"))
       .filter((label): label is string => Boolean(label));
@@ -285,12 +243,10 @@ test("generic public tools expose distinct safe failed and denied states", () =>
       /private-failure-token|private-denial-token|operation-failed|operation-denied/,
     );
 
-    activateNativeButton(buttons[0] as HTMLButtonElement, "Enter");
-    activateNativeButton(buttons[1] as HTMLButtonElement, " ");
     assert.equal(getPersistentToolPanelState(), null);
   } finally {
     closePersistentToolPanel();
     act(() => root.unmount());
-    dom.window.close();
+    environment.close();
   }
 });

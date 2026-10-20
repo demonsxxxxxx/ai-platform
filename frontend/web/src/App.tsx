@@ -6,11 +6,12 @@ import {
   useNavigate,
   Navigate,
 } from "react-router-dom";
-import { Toaster } from "react-hot-toast";
+import { ToastHost } from "@lobehub/ui/base-ui";
 import { useTranslation } from "react-i18next";
 import { ProtectedRoute } from "./components/auth/ProtectedRoute";
 import { ChatPageSkeleton } from "./components/skeletons";
 import { ThemeProvider } from "./contexts/ThemeContext";
+import { LobeUiProvider } from "./contexts/LobeUiProvider";
 import { ErrorBoundary } from "./components/common/ErrorBoundary";
 import { SelectionActionPopover } from "./components/common/SelectionActionPopover";
 import { useSEO } from "./hooks/usePageTitle";
@@ -20,7 +21,6 @@ import { APP_TOASTER_CLASS_NAME } from "./components/layout/AppContent/appToastL
 import { useAuth } from "./hooks/useAuth";
 import type { TabType } from "./components/layout/AppContent/types";
 import { APP_ROUTE_PATHS } from "./appRouteManifest";
-import { ChatRouteBoundary } from "./components/common/ChatRouteBoundary";
 
 const OAuthCallback = lazy(() =>
   import("./components/auth/OAuthCallback").then((m) => ({
@@ -83,10 +83,10 @@ function ChatPageSEO() {
 // Chat Page Component
 function ChatPage() {
   return (
-    <ChatRouteBoundary>
+    <>
       <ChatPageSEO />
       <AppContent key="chat" activeTab="chat" />
-    </ChatRouteBoundary>
+    </>
   );
 }
 
@@ -253,35 +253,8 @@ function App() {
   return (
     <ThemeProvider>
       <ErrorBoundary>
-        <Toaster
-          position="top-center"
-          containerClassName={APP_TOASTER_CLASS_NAME}
-          containerStyle={{ top: "56px" }}
-          toastOptions={{
-            duration: 4000,
-            style: {
-              background: "#333",
-              color: "#fff",
-              borderRadius: "8px",
-              padding: "12px 16px",
-              minWidth: "280px",
-            },
-            success: {
-              duration: 3000,
-              iconTheme: {
-                primary: "#22c55e",
-                secondary: "#fff",
-              },
-            },
-            error: {
-              duration: 5000,
-              iconTheme: {
-                primary: "#ef4444",
-                secondary: "#fff",
-              },
-            },
-          }}
-        />
+        <LobeUiProvider>
+        <ToastHost position="top" duration={4000} className={APP_TOASTER_CLASS_NAME} />
         <SelectionActionPopover />
         <Suspense fallback={<ChatPageSkeleton />}>
           <Routes>
@@ -448,6 +421,7 @@ function App() {
             <Route path={APP_ROUTE_PATHS.notFound} element={<NotFoundPage />} />
           </Routes>
         </Suspense>
+        </LobeUiProvider>
       </ErrorBoundary>
     </ThemeProvider>
   );

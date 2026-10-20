@@ -86,11 +86,44 @@ def normalize_agent_profile_display_items(
     return normalized
 
 
+def agent_type_requires_profile_admission(agent_type: object) -> bool:
+    """Profile identity can execute only through its owning admission contract."""
+
+    return agent_type == "profile"
+
+
+def resolve_session_profile_admission_identity(
+    session: object,
+    *,
+    session_id: str | None,
+    selected_agent_id: str | None,
+) -> tuple[str | None, object]:
+    """Restore Profile selection from Session provenance without advancing its pin."""
+
+    revision = session.get("admitted_agent_profile_revision") if isinstance(session, dict) else None
+    if session_id and isinstance(revision, int) and revision > 0:
+        profile_agent_id = str(session.get("agent_id") or "")
+        profile_hash = session.get("admitted_agent_profile_hash")
+        if not isinstance(profile_hash, str) or not profile_hash:
+            raise ValueError("agent_profile_session_mismatch")
+        if selected_agent_id is not None and selected_agent_id != profile_agent_id:
+            raise ValueError("agent_profile_session_mismatch")
+        return profile_agent_id, revision
+    if session_id and selected_agent_id is not None:
+        raise ValueError("agent_profile_session_mismatch")
+    return selected_agent_id, revision
+
+
 def locked_agent_profile_identity_valid(
     agent_profile: dict[str, object],
     locked_run: object,
 ) -> bool:
     if not isinstance(locked_run, dict):
+        return False
+    agent_type = locked_run.get("agent_type")
+    if not isinstance(agent_type, str) or not agent_type:
+        return False
+    if agent_type_requires_profile_admission(agent_type) != bool(agent_profile):
         return False
     pin_fields = (
         "admitted_agent_profile_revision",

@@ -244,13 +244,25 @@ async def test_cancel_during_discovery_closes_owner_without_waiting_for_timeout(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("remote_error", [False, True])
 @pytest.mark.parametrize("server_name", ["gateway", "server.name"])
-async def test_installed_claude_cli_selected_mcp_end_to_end(monkeypatch, tmp_path, remote_error, server_name):
+@pytest.mark.parametrize("integration_kind", ["mcp", "enterprise_gateway"])
+async def test_installed_claude_cli_selected_mcp_end_to_end(monkeypatch, tmp_path, remote_error, server_name, integration_kind):
     from app.executors import claude_agent_sdk_runner as runner
 
 
     with local_mcp_peers() as peer:
         peer.is_error = remote_error
         selected_subject = {**subject(server=server_name, url=peer.url + "/mcp"), "write_capable": True}
+        if integration_kind == "enterprise_gateway":
+            selected_subject["mcp_server_config"].update(
+                integration_kind=integration_kind, headers={"Authorization": "Bearer synthetic.jwt"},
+            )
+        selected_subject["mcp_server_config"]["credential_subject"] = {"tenant_id": "tenant", "user_id": "user"}
+        credential_reads = []
+
+        async def credential_resolver(server_id):
+            credential_reads.append(server_id)
+            return "synthetic.jwt"
+
         registration = ClaudeMcpRegistration(
             {selected_subject["identity"]: selected_subject}, {}, session_factory=None, list_tools=None
         )
@@ -299,7 +311,9 @@ async def test_installed_claude_cli_selected_mcp_end_to_end(monkeypatch, tmp_pat
             tool_policy_subjects=[selected_subject],
             on_capability_evidence=receipt, on_agent_event=event,
             run_id="run_mcp_check", attempt_id="attempt_mcp_check",
+            mcp_credential_resolver=credential_resolver,
         )
+        assert credential_reads and set(credential_reads) == {server_name}
         assert result.error is None, result.runtime_diagnostics
         assert peer.models
         assert sum(method == "initialize" for method, _ in peer.requests) == 1
@@ -321,17 +335,20 @@ async def test_installed_claude_cli_selected_mcp_end_to_end(monkeypatch, tmp_pat
         ]
         if not remote_error:
             assert any(
-                part.get("text", "").startswith("[structuredContent]")
-                and '"sequence":7' in part.get("text", "")
+                isinstance(content, str)
+                and json.JSONDecoder().raw_decode(content)[0] == {"sequence": 7}
                 for content in tool_result_texts
-                for part in content
-                if isinstance(part, dict)
-            )
+            ), tool_result_texts
         assert peer.calls == [{"name": RAW_TOOL, "arguments": {"query": "synthetic"}}], (
             result.turn_diagnostics, result.runtime_diagnostics,
             [block for request in peer.models for message in request.get("messages", [])
              for block in message.get("content", []) if isinstance(block, dict) and block.get("type") == "tool_result"],
         )
+        if integration_kind == "enterprise_gateway":
+            for method, request_headers in peer.requests:
+                normalized = {key.lower(): value for key, value in request_headers.items()}
+                assert normalized.get("authorization") == "Bearer synthetic.jwt"
+                assert "jwt-authorization" not in normalized
         assert [(value["lifecycle_phase"], value["lifecycle_status"]) for value in receipts] == [
             ("invocation_requested", "invoking"), ("failed", "failed") if remote_error else ("completed", "succeeded"),
         ]
@@ -344,6 +361,57 @@ async def test_installed_claude_cli_selected_mcp_end_to_end(monkeypatch, tmp_pat
         assert peer.sdk_tool not in str([value.payload for value in events])
 
         assert "synthetic.jwt" not in str([value.payload for value in events])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["http", "sse"])
+@pytest.mark.parametrize("integration_kind", ["mcp", "enterprise_gateway"])
+async def test_bound_executor_registration_refreshes_credentials_without_platform_store(monkeypatch, transport, integration_kind):
+    from app.bootstrap.claude_mcp import prepare_claude_mcp
+    from app.mcp.infrastructure import runtime
+    from mcp.types import CallToolRequest, CallToolRequestParams, ListToolsRequest
+
+    def no_platform_store():
+        raise AssertionError("executor must not read platform Redis")
+
+    monkeypatch.setattr(runtime, "get_mcp_principal_jwt_store", no_platform_store)
+    refreshed = []
+
+    async def resolve(server_id):
+        assert server_id == "gateway"
+        jwt = f"synthetic-refreshed-{len(refreshed)}"
+        refreshed.append(jwt)
+        return jwt
+
+    with local_mcp_peers() as peer:
+        allow_local_peer(monkeypatch, peer.url)
+        item = subject(url=peer.url + ("/sse" if transport == "sse" else "/mcp"))
+        config = item["mcp_server_config"]
+        header = "Authorization" if integration_kind == "enterprise_gateway" else "JWT-Authorization"
+        config.update(type=transport, integration_kind=integration_kind,
+                      headers={header: "Bearer synthetic-initial"},
+                      credential_subject={"tenant_id": "tenant", "user_id": "user"})
+        registration = prepare_claude_mcp(
+            {item["identity"]: item}, {"gateway": config}, credential_resolver=resolve,
+        )
+        options = SimpleNamespace()
+        async with registration.activate(options):
+            assert registration.unavailable == {}
+            server = options.mcp_servers[registration.server_aliases["gateway"]]["instance"]
+            listed = await server.request_handlers[ListToolsRequest](ListToolsRequest(method="tools/list"))
+            assert len(listed.root.tools) == 1
+            result = await server.request_handlers[CallToolRequest](CallToolRequest(
+                method="tools/call", params=CallToolRequestParams(
+                    name=listed.root.tools[0].name, arguments={"query": "synthetic"},
+                ),
+            ))
+            assert result.root.isError is False
+        values = [dict((key.lower(), value) for key, value in headers.items())[header.lower()]
+                  for _method, headers in peer.requests]
+        assert len(refreshed) >= len(values) >= 4
+        assert len(set(values)) == len(values)
+        assert all(value.removeprefix("Bearer ") in refreshed for value in values)
+        assert peer.calls == [{"name": RAW_TOOL, "arguments": {"query": "synthetic"}}]
 
 
 @pytest.mark.asyncio

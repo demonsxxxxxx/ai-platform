@@ -3,6 +3,8 @@ import re
 import tomllib
 from pathlib import Path
 
+from tests.support.yaml_contracts import load_unique_yaml
+
 
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND_DOCKERFILE = ROOT / "Dockerfile"
@@ -12,7 +14,7 @@ FRONTEND_WORKFLOW = ROOT / ".github" / "workflows" / "ai-platform-frontend.yml"
 
 PYTHON_VERSION = "3.13.14"
 NODE_VERSION = "22.23.2"
-NODE_MIN_VERSION = "22.13.0"
+NODE_MIN_VERSION = "22.22.0"
 PNPM_VERSION = "10.32.1"
 UV_VERSION = "0.12.1"
 
@@ -133,11 +135,19 @@ def test_packaged_image_jobs_have_no_publish_deploy_or_secret_authority():
         backend_image,
     ):
         assert backend_job.count("persist-credentials: false") == 1
-    assert frontend.count("persist-credentials: false") == 2
-    assert (
-        frontend.count("ref: ${{ github.event.pull_request.head.sha || github.sha }}")
-        == 2
-    )
+    frontend_jobs = load_unique_yaml(frontend)["jobs"]
+    for job_name in ("frontend", "frontend-tests", "frontend-contracts", "frontend-image"):
+        checkouts = [
+            step
+            for step in frontend_jobs[job_name]["steps"]
+            if step.get("uses", "").startswith("actions/checkout@")
+        ]
+        assert len(checkouts) == 1
+        assert checkouts[0]["with"]["persist-credentials"] == "false"
+        assert (
+            checkouts[0]["with"]["ref"]
+            == "${{ github.event.pull_request.head.sha || github.sha }}"
+        )
     backend_build_condition = "if: steps.image-scope.outputs.build == 'true'"
     backend_report_condition = "if: steps.image-scope.outputs.build != 'true'"
     frontend_build_condition = "if: steps.image-scope.outputs.build == 'true'"

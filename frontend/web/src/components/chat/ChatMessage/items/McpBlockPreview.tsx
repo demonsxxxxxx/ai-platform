@@ -1,3 +1,4 @@
+import { Button } from "@lobehub/ui/base-ui";
 import {
   ChevronDown,
   ChevronUp,
@@ -8,7 +9,6 @@ import {
 } from "lucide-react";
 import { useState, useEffect, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
-import { createPortal } from "react-dom";
 import { MarkdownContent } from "../MarkdownContent";
 import { CopyButton } from "../../../common";
 import type { McpContentBlock, McpMultiModalResult } from "./toolUtils";
@@ -177,14 +177,14 @@ function FilePreviewContent({
         <span className="truncate">{fileName}</span>
       </div>
       {canOpen && (
-        <button
-          type="button"
+        <Button type="text"
+          htmlType="button"
           onClick={() => void openPreviewUrl({ url: normalizedUrl })}
           className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-stone-100 dark:bg-stone-800 text-sm text-stone-600 dark:text-stone-300 hover:bg-stone-200 dark:hover:bg-stone-700 transition-colors border border-stone-200 dark:border-stone-700"
         >
           <ExternalLink size={14} />
           {t("chat.message.toolOpenFile", "Open file")}
-        </button>
+        </Button>
       )}
     </div>
   );
@@ -234,8 +234,8 @@ function McpFileBlockPreview({ block }: { block: McpContentBlock }) {
   const canOpen = canOpenPreviewUrl(url);
 
   return (
-    <button
-      type="button"
+    <Button type="text"
+      htmlType="button"
       disabled={!canOpen}
       onClick={() => {
         if (canOpen) openBlockPreview({ type: "file", url, fileName });
@@ -248,7 +248,7 @@ function McpFileBlockPreview({ block }: { block: McpContentBlock }) {
     >
       <File size={12} />
       {fileName}
-    </button>
+    </Button>
   );
 }
 
@@ -266,13 +266,13 @@ function RichResultLink({ title, url }: { title: string; url: string }) {
   }
 
   return (
-    <button
-      type="button"
+    <Button type="text"
+      htmlType="button"
       onClick={() => void openPreviewUrl({ url: normalizedUrl })}
       className="text-xs font-medium text-stone-700 dark:text-stone-200 hover:underline truncate text-left"
     >
       {label}
-    </button>
+    </Button>
   );
 }
 
@@ -319,7 +319,7 @@ export function BlockPreviewPortal() {
     return null;
   }
 
-  return createPortal(
+  return (
     <ToolResultPanel
       open
       onClose={close}
@@ -328,8 +328,7 @@ export function BlockPreviewPortal() {
       status="success"
     >
       {content}
-    </ToolResultPanel>,
-    document.body,
+    </ToolResultPanel>
   );
 }
 
@@ -555,13 +554,13 @@ function JsonFallback({ data }: { data: unknown }) {
         {display}
       </pre>
       {needsTruncation && (
-        <button
+        <Button type="text"
           onClick={() => setExpanded((v) => !v)}
           className="flex items-center gap-1 mt-1 text-xs text-stone-500 dark:text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 transition-colors"
         >
           {expanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
           {expanded ? t("chat.message.collapse") : t("chat.message.expandAll")}
-        </button>
+        </Button>
       )}
     </div>
   );

@@ -1,3 +1,4 @@
+import { Button } from "@lobehub/ui/base-ui";
 import { useMemo, useState, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -110,15 +111,15 @@ export function BinaryFilePreview({
             {mime_type} · {formatSize(size)}
           </p>
         </div>
-        <button
-          type="button"
+        <Button type="text"
+          htmlType="button"
           onClick={handleDownload}
           className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-card)] transition-colors cursor-pointer"
           title={t("documents.download")}
         >
           <Download size={14} />
           <span className="hidden sm:inline">{t("documents.download")}</span>
-        </button>
+        </Button>
       </div>
 
       {/* Content area */}
@@ -214,13 +215,13 @@ export function BinaryFilePreview({
                   {t("skills.binaryPreview.unsupportedHint")}
                 </p>
               </div>
-              <button
+              <Button type="text"
                 onClick={handleDownload}
                 className="mt-2 inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-[var(--theme-primary)] text-white text-sm font-medium hover:opacity-90 transition-all active:scale-95 cursor-pointer"
               >
                 <Download size={16} />
                 {t("skills.binaryPreview.download")}
-              </button>
+              </Button>
             </div>
           )}
       </div>

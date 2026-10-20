@@ -2201,7 +2201,7 @@ def collect_failed_case_diagnostics(
             raise RuntimeError("failed_case_diagnostics_auth_unavailable")
         status, payload = json_request(
             "GET",
-            f"{api_url.rstrip()}/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+            f"{api_url.rstrip()}/api/ai/admin/runtime/overview",
             headers=headers,
             timeout=30,
         )

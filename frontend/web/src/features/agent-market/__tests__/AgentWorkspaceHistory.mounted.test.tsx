@@ -1,40 +1,28 @@
 import assert from "node:assert/strict";
 import { register } from "node:module";
-import test from "node:test";
-// @ts-expect-error jsdom runtime import.
-import { JSDOM } from "jsdom";
+import test, { after } from "node:test";
+import { installSelectTestDom } from "../../../components/common/__tests__/selectTestDom";
 import type { BackendSession } from "../../../services/api/session";
 import type { AgentConversationSessionProjection, AgentProfilePublicProjection } from "../../../types/agentProfile";
 import { installBrowserAuthTestDb } from "../../../hooks/__tests__/browserAuthTestDb";
 
 register(new URL("./frontendAssetLoader.mjs", import.meta.url), import.meta.url);
 await new Promise<void>((resolve) => setImmediate(resolve));
-const dom = new JSDOM("<!doctype html><html><body></body></html>", {
-  url: "http://localhost/agent-market/agt_support/chat/session-a", pretendToBeVisual: true,
-});
-Object.assign(globalThis, {
-  window: dom.window, document: dom.window.document,
-  localStorage: dom.window.localStorage, sessionStorage: dom.window.sessionStorage,
-  Element: dom.window.Element, HTMLElement: dom.window.HTMLElement,
-  Node: dom.window.Node, CustomEvent: dom.window.CustomEvent,
-  getComputedStyle: dom.window.getComputedStyle,
-  requestAnimationFrame: dom.window.requestAnimationFrame.bind(dom.window),
-  cancelAnimationFrame: dom.window.cancelAnimationFrame.bind(dom.window),
-  IS_REACT_ACT_ENVIRONMENT: true,
-});
-Object.defineProperty(globalThis, "navigator", { configurable: true, value: dom.window.navigator });
+const fixture = installSelectTestDom();
+const dom = { window };
+Object.assign(globalThis, { localStorage: window.localStorage, sessionStorage: window.sessionStorage });
+after(() => fixture.close());
 Object.defineProperty(navigator, "locks", { value: {
   request: async (_name: string, _options: unknown, callback: () => Promise<unknown>) => callback(),
 } });
-window.matchMedia = (query: string) => ({ matches: false, media: query, addEventListener() {}, removeEventListener() {} } as unknown as MediaQueryList);
 class Observer { observe() {} unobserve() {} disconnect() {} }
 Object.assign(globalThis, { ResizeObserver: Observer, IntersectionObserver: Observer });
 Object.assign(window, { ResizeObserver: Observer, IntersectionObserver: Observer });
 dom.window.HTMLElement.prototype.scrollIntoView = () => {};
 Object.defineProperty(dom.window.HTMLElement.prototype, "offsetHeight", { get: () => 800 });
 Object.defineProperty(dom.window.HTMLElement.prototype, "scrollHeight", { get: () => 1000 });
-dom.window.HTMLElement.prototype.scrollTo = function (options: ScrollToOptions) {
-  this.scrollTop = options.top ?? 0;
+dom.window.HTMLElement.prototype.scrollTo = function (options?: ScrollToOptions | number, y?: number) {
+  this.scrollTop = typeof options === "number" ? y ?? 0 : options?.top ?? 0;
   this.dispatchEvent(new dom.window.Event("scroll"));
 };
 installBrowserAuthTestDb();
@@ -46,14 +34,14 @@ const { MemoryRouter, Routes, Route, useLocation, useNavigate } = await import("
 const { AuthProvider, useAuth } = await import("../../../hooks/useAuth");
 const { ModelCatalogProvider } = await import("../../../contexts/ModelCatalogContext");
 const { ThemeProvider } = await import("../../../contexts/ThemeContext");
+const { LobeUiProvider } = await import("../../../contexts/LobeUiProvider");
 const { AgentWorkspaceRoute } = await import("../AgentWorkspaceRoute");
 const { authApi } = await import("../../../services/api/auth");
 const { sessionApi } = await import("../../../services/api/session");
 const { agentProfileApi } = await import("../../../services/api/agentProfile");
 const { modelPublicApi } = await import("../../../services/api/modelPublic");
-const { notificationPublicApi } = await import("../../../services/api/notificationPublic");
 const { Permission } = await import("../../../types/auth");
-const { default: toast } = await import("react-hot-toast");
+const { toast } = await import("@lobehub/ui/base-ui");
 const { default: i18n } = await import("../../../i18n");
 await i18n.changeLanguage("en");
 
@@ -90,15 +78,16 @@ async function expectTranscript(container: HTMLElement, id: string) {
   assert.ok(container.textContent?.includes(`Transcript ${id}`), `expected the rendered transcript for ${id}`);
 }
 function button(scope: ParentNode, label: string) {
-  return Array.from(scope.querySelectorAll("button")).find((item) => item.textContent?.trim() === label);
+  return Array.from(scope.querySelectorAll("button, [role=menuitem]")).find((item) => item.textContent?.trim() === label);
 }
 function task(scope: ParentNode, title: string) {
-  return Array.from(scope.querySelectorAll("div.truncate")).find((item) => item.textContent === title)?.parentElement?.parentElement;
+  return Array.from(scope.querySelectorAll<HTMLElement>('[data-slot="thread-list-item-trigger"]'))
+    .find((item) => Array.from(item.querySelectorAll("span")).some((span) => span.textContent === title));
 }
 
 async function renameTask(scope: HTMLElement, title: string, next: string) {
-  await click(task(scope, title)?.querySelector("button"));
-  await click(button(scope, i18n.t("sidebar.rename")));
+  await click(task(scope, title)?.closest('[data-slot="thread-list-item"]')?.querySelector(`button[title="${i18n.t("sidebar.moreOptions")}"]`));
+  await click(button(document, i18n.t("sidebar.rename")));
   const input = scope.querySelector<HTMLInputElement>("input");
   assert.ok(input);
   await React.act(async () => {
@@ -108,23 +97,22 @@ async function renameTask(scope: HTMLElement, title: string, next: string) {
   await React.act(async () => input.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
 }
 async function deleteTask(scope: HTMLElement, title: string) {
-  await click(task(scope, title)?.querySelector("button"));
-  await click(button(scope, i18n.t("common.delete")));
-  await click(document.querySelector(".enterprise-modal-shell .btn-danger"));
+  await click(task(scope, title)?.closest('[data-slot="thread-list-item"]')?.querySelector(`button[title="${i18n.t("sidebar.moreOptions")}"]`));
+  await click(button(document, i18n.t("common.delete")));
+  await click(button(document.querySelector('[role="dialog"]')!, i18n.t("common.delete")));
 }
 
 async function mountWorkspace(overrides: Partial<typeof sessionApi> = {}) {
-  const originals = { session: { ...sessionApi }, profile: { ...agentProfileApi }, auth: { ...authApi }, models: { ...modelPublicApi }, notifications: { ...notificationPublicApi } };
+  const originals = { session: { ...sessionApi }, profile: { ...agentProfileApi }, auth: { ...authApi }, models: { ...modelPublicApi } };
   const originalToastError = toast.error;
   const toastErrors: string[] = [];
-  toast.error = (message) => { toastErrors.push(String(message)); return "test-toast"; };
+  toast.error = (message) => { toastErrors.push(String(message)); return { id: "test-toast", close() {}, update() {} }; };
   let account = "user-a";
   authApi.bootstrapAuthContext = async (request) => ({ status: "ready", protocol_version: 2, generation: request.generation });
   authApi.getCurrentUser = async () => ({ id: account, tenant_id: "tenant-test", username: account,
     email: `${account}@example.test`, roles: [], permissions: [Permission.CHAT_READ, Permission.CHAT_WRITE],
     is_admin: false, is_active: true, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" });
   modelPublicApi.listAvailable = async () => ({ models: [{ id: "model-default", value: "model-default", label: "Default" }], count: 1, enabled_count: 1, default_model_id: "model-default" });
-  notificationPublicApi.getActive = async () => [];
   agentProfileApi.getPublished = async () => profile;
   agentProfileApi.listConversations = async () => ({ sessions: [projection("session-a"), projection("session-b"), projection("session-c")], next_cursor: null });
   Object.assign(sessionApi, {
@@ -149,13 +137,13 @@ async function mountWorkspace(overrides: Partial<typeof sessionApi> = {}) {
   const container = document.createElement("div"); document.body.append(container);
   const root = createRoot(container);
   try {
-    await React.act(async () => root.render(<MemoryRouter initialEntries={["/agent-market/agt_support/chat/session-a"]}><ThemeProvider><AuthProvider><ModelCatalogProvider><VirtuosoMockContext.Provider value={{ viewportHeight: 800, itemHeight: 100 }}><Probe /></VirtuosoMockContext.Provider></ModelCatalogProvider></AuthProvider></ThemeProvider></MemoryRouter>));
+    await React.act(async () => root.render(<MemoryRouter initialEntries={["/agent-market/agt_support/chat/session-a"]}><ThemeProvider><LobeUiProvider><AuthProvider><ModelCatalogProvider><VirtuosoMockContext.Provider value={{ viewportHeight: 800, itemHeight: 100 }}><Probe /></VirtuosoMockContext.Provider></ModelCatalogProvider></AuthProvider></LobeUiProvider></ThemeProvider></MemoryRouter>));
     await settle();
   } catch (error) {
     await React.act(async () => root.unmount()); container.remove();
     toast.error = originalToastError;
     Object.assign(sessionApi, originals.session); Object.assign(agentProfileApi, originals.profile);
-    Object.assign(authApi, originals.auth); Object.assign(modelPublicApi, originals.models); Object.assign(notificationPublicApi, originals.notifications);
+    Object.assign(authApi, originals.auth); Object.assign(modelPublicApi, originals.models);
     throw error;
   }
   const globalHistory = () => container.querySelector<HTMLElement>("[data-workbench-global-history]")!;
@@ -169,7 +157,7 @@ async function mountWorkspace(overrides: Partial<typeof sessionApi> = {}) {
       await React.act(async () => root.unmount()); container.remove();
       toast.error = originalToastError;
       Object.assign(sessionApi, originals.session); Object.assign(agentProfileApi, originals.profile);
-      Object.assign(authApi, originals.auth); Object.assign(modelPublicApi, originals.models); Object.assign(notificationPublicApi, originals.notifications);
+      Object.assign(authApi, originals.auth); Object.assign(modelPublicApi, originals.models);
     },
   };
 }

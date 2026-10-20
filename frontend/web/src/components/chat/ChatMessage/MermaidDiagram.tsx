@@ -1,5 +1,7 @@
+import { Button, DropdownMenu } from "@lobehub/ui/base-ui";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useAppElement } from "@lobehub/ui/es/ThemeProvider/index";
 import { Check, Copy, Download, Code, Eye, X, Maximize2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import {
@@ -46,7 +48,6 @@ export function MermaidDiagram({
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [scale, setScale] = useState(1);
-  const [showDownloadMenu, setShowDownloadMenu] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showCode, setShowCode] = useState(false);
   const idRef = useRef<string>(
@@ -193,15 +194,6 @@ export function MermaidDiagram({
     renderDiagram();
   }, [chart, t, shouldRenderDiagram]);
 
-  // Close dropdown when clicking outside
-  useEffect(() => {
-    if (!showDownloadMenu) return;
-
-    const handleClickOutside = () => setShowDownloadMenu(false);
-    document.addEventListener("click", handleClickOutside);
-    return () => document.removeEventListener("click", handleClickOutside);
-  }, [showDownloadMenu]);
-
   const handleCopyCode = async () => {
     await copyToClipboard(chart);
     setCopied(true);
@@ -304,7 +296,7 @@ export function MermaidDiagram({
           <span className="text-xs font-medium text-stone-500 dark:text-stone-400">
             mermaid
           </span>
-          <button
+          <Button type="text"
             onClick={handleCopyCode}
             className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-all min-h-[32px] min-w-[32px] touch-manipulation"
           >
@@ -329,7 +321,7 @@ export function MermaidDiagram({
                 </span>
               </>
             )}
-          </button>
+          </Button>
         </div>
         <pre className="p-3 bg-stone-50 dark:bg-stone-800 overflow-x-auto max-h-64 overflow-y-auto text-xs text-stone-700 dark:text-stone-300 font-mono">
           {chart}
@@ -345,7 +337,7 @@ export function MermaidDiagram({
           <span className="text-xs font-medium text-stone-500 dark:text-stone-400">
             mermaid
           </span>
-          <button
+          <Button type="text"
             onClick={handleCopyCode}
             className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-all min-h-[32px] min-w-[32px] touch-manipulation"
           >
@@ -365,7 +357,7 @@ export function MermaidDiagram({
                 <span>{t("chat.message.copyCode")}</span>
               </>
             )}
-          </button>
+          </Button>
         </div>
         <pre className="p-3 bg-stone-50 dark:bg-stone-800 overflow-x-auto max-h-64 overflow-y-auto text-xs text-stone-700 dark:text-stone-300 font-mono">
           {chart}
@@ -395,7 +387,7 @@ export function MermaidDiagram({
             </span>
           </div>
           <div className="flex items-center gap-1">
-            <button
+            <Button type="text"
               onClick={handleCopyCode}
               className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-all min-h-[32px] min-w-[32px] touch-manipulation"
               title={
@@ -423,49 +415,19 @@ export function MermaidDiagram({
                   </span>
                 </>
               )}
-            </button>
-            {/* Download dropdown */}
-            <div className="relative">
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setShowDownloadMenu(!showDownloadMenu);
-                }}
-                className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-all hover:bg-stone-300/50 dark:hover:bg-stone-700/50 min-h-[32px] min-w-[32px] touch-manipulation"
-                title={t("documents.download")}
-              >
-                <Download
-                  size={14}
-                  className="text-stone-500 dark:text-stone-400"
-                />
-              </button>
-              {showDownloadMenu && (
-                <div className="absolute right-0 top-full mt-1 z-50 min-w-[100px] rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 shadow-lg overflow-hidden">
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleDownloadSVG();
-                      setShowDownloadMenu(false);
-                    }}
-                    className="w-full px-3 py-2 text-left text-xs text-stone-700 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-700 flex items-center gap-2"
-                  >
-                    SVG
-                  </button>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleDownloadPNG();
-                      setShowDownloadMenu(false);
-                    }}
-                    className="w-full px-3 py-2 text-left text-xs text-stone-700 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-700 flex items-center gap-2"
-                  >
-                    PNG
-                  </button>
-                </div>
-              )}
-            </div>
+            </Button>
+            <DropdownMenu placement="bottomRight"
+              items={[
+                { key: "svg", label: "SVG", onClick: (event: React.MouseEvent<HTMLElement>) => { event.stopPropagation(); handleDownloadSVG(); } },
+                { key: "png", label: "PNG", onClick: (event: React.MouseEvent<HTMLElement>) => { event.stopPropagation(); void handleDownloadPNG(); } },
+              ]}
+            >
+              <Button type="text" size="small" htmlType="button" aria-label={t("documents.download")} onClick={(event) => event.stopPropagation()}
+                icon={<Download size={14} />}
+              />
+            </DropdownMenu>
             {/* Preview code button */}
-            <button
+            <Button type="text"
               onClick={() => {
                 setShowCode(true);
                 setIsFullscreen(true);
@@ -477,24 +439,23 @@ export function MermaidDiagram({
               <span className="hidden xs:inline text-stone-500 dark:text-stone-400">
                 {t("mermaidViewer.showCode")}
               </span>
-            </button>
+            </Button>
             {/* Fullscreen button */}
-            <button
+            <Button type="text"
               onClick={() => setIsFullscreen(true)}
               className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-all hover:bg-stone-300/50 dark:hover:bg-stone-700/50 min-h-[32px] min-w-[32px] touch-manipulation"
               title={t("imageViewer.fullscreen", "Fullscreen")}
-            >
-              <Maximize2
+              icon={<Maximize2
                 size={14}
                 className="text-stone-500 dark:text-stone-400"
-              />
-            </button>
+              />}
+            />
           </div>
         </div>
 
-        {/* Diagram container - centered with zoom and drag */}
+        {/* Mermaid's fixed default SVG theme needs a light canvas in both app themes. */}
         <div
-          className={`mermaid-diagram overflow-hidden p-4 bg-stone-50 dark:bg-stone-800 flex items-center justify-center min-h-[200px] max-h-[500px] cursor-${
+          className={`mermaid-diagram overflow-hidden p-4 bg-stone-50 flex items-center justify-center min-h-[200px] max-h-[500px] cursor-${
             isDragging ? "grabbing" : "grab"
           }`}
           onWheel={handleWheel}
@@ -551,6 +512,7 @@ function MermaidViewer({
 }) {
   const { t } = useTranslation();
   const [scale, setScale] = useState(1);
+  const appElement = useAppElement();
   const [rotation, setRotation] = useState(0);
   const [position, setPosition] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
@@ -580,9 +542,10 @@ function MermaidViewer({
   }, [svgBlobUrl]);
 
   useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     return () => {
-      document.body.style.overflow = "";
+      document.body.style.overflow = previousOverflow;
     };
   }, []);
 
@@ -708,19 +671,18 @@ function MermaidViewer({
     >
       {/* Top bar - close + code actions */}
       <div className="flex items-center justify-between px-3 sm:px-6 py-3 bg-black">
-        <button
-          type="button"
+        <Button type="text"
+          htmlType="button"
           onClick={onClose}
           className={btnCls}
           aria-label={t("common.close")}
-        >
-          <X size={20} className="text-white/70" />
-        </button>
+          icon={<X size={20} className="text-white/70" />}
+        />
 
         <div className="flex items-center gap-1">
           {/* Toggle code view */}
-          <button
-            type="button"
+          <Button type="text"
+            htmlType="button"
             onClick={toggleCode}
             className={`flex items-center gap-1.5 rounded-lg px-3 h-10 text-sm font-medium transition-colors cursor-pointer ${
               showCode
@@ -743,11 +705,11 @@ function MermaidViewer({
                 ? t("mermaidViewer.hideCode", "Hide code")
                 : t("mermaidViewer.showCode", "Show code")}
             </span>
-          </button>
+          </Button>
 
           {/* Copy code */}
-          <button
-            type="button"
+          <Button type="text"
+            htmlType="button"
             onClick={handleCopyCode}
             className="flex items-center gap-1 rounded-lg px-3 h-10 text-sm font-medium transition-colors cursor-pointer hover:bg-white/10"
             aria-label={t("chat.message.copyCode")}
@@ -767,11 +729,11 @@ function MermaidViewer({
                 </span>
               </>
             )}
-          </button>
+          </Button>
 
           {/* Download SVG */}
-          <button
-            type="button"
+          <Button type="text"
+            htmlType="button"
             onClick={() => {
               const blob = new Blob([fullscreenSvg], { type: "image/svg+xml" });
               const url = URL.createObjectURL(blob);
@@ -788,7 +750,7 @@ function MermaidViewer({
             <span className="hidden sm:inline">
               {t("imageViewer.download")}
             </span>
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -813,8 +775,8 @@ function MermaidViewer({
           >
             <img
               src={svgBlobUrl}
-              alt="mermaid diagram"
-              className="max-w-[90vw] max-h-[85vh] object-contain select-none"
+              alt={t("mermaidViewer.diagram")}
+              className="max-w-[90vw] max-h-[85vh] bg-stone-50 object-contain select-none"
               style={{
                 transform: `translate(${position.x}px, ${position.y}px) scale(${scale}) rotate(${rotation}deg)`,
                 transition: isDragging ? "none" : "transform 0.1s ease-out",
@@ -858,6 +820,6 @@ function MermaidViewer({
         )}
       </div>
     </div>,
-    document.body,
+    appElement ?? document.body,
   );
 }

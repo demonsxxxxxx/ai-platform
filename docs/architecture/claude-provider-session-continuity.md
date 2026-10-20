@@ -211,7 +211,7 @@ Current Run authority
 
 Claude SessionStore
   <-> authenticated host callback
-  <-> ordered opaque PostgreSQL provider entries
+  <-> ordered PostgreSQL provider entries + private MinIO image payloads
 ```
 
 The provider transcript is the only model-facing conversation history. Context
@@ -233,6 +233,62 @@ A mismatch reports `provider_session_integrity_mismatch`; absent complete
 append receipt coverage reports `provider_session_integrity_unavailable`.
 Neither condition silently resumes a prefix or fabricates replacement receipts.
 
+### Private image persistence
+
+The pinned Python SDK is `claude-agent-sdk==0.2.165`, with bundled CLI
+`2.1.294`. PostgreSQL remains the owner of ordered entry structure, scope,
+sequence, original batch digest, and turn receipts. Only recognized image
+payload strings are stored in MinIO; entire entries/transcripts are not blobs.
+The Execution adapter locates the SDK's typed base64 image blocks and the
+native Read `toolUseResult.file.base64` copy. Unknown JSON shapes and ordinary
+text remain inline. Identical image strings within one append share one object.
+
+Context stores the exact UTF-8 bytes of each encoded image string, without
+base64 re-encoding, conversion, resizing or recompression. The entry's private
+`image-payloads-v1` sidecar records the JSON leaf path, image ID, size and digest;
+its PostgreSQL JSON/JSONB representation contains the structure with empty
+image leaves. Restore verifies object bytes and fills every leaf before checking
+the unchanged full-entry batch digest and transcript byte count. The SDK receives
+deep-equal original entries, never image IDs, storage keys or URLs. A missing or
+corrupt object fails continuity; it cannot become a placeholder or summary.
+Legacy inline entries and their existing receipts are read without backfill.
+
+The callback uses two short transactions. The first validates authority,
+recognizes already committed ACK retries, rejects sequence/capacity conflicts,
+and reserves upload cleanup before object I/O. MinIO I/O uses the existing
+bounded storage executor outside those locks. The second validates the current
+scope, active Session, Run/Attempt, writer generation, live lease and sequence;
+image promotion, entry insertion, original receipt and both byte counters commit
+together. Load also rechecks the image metadata snapshot. A committed ACK retry
+requires no object upload. Outstanding uncommitted images per epoch are capped
+at 128 objects and 64 MiB; durable deletion receipts release that reservation
+budget. Cancellation may only persist the existing qualified tail writer.
+
+Limits are separate: 8 MiB per encoded image, 128 extracted fields per batch,
+16 MiB per raw entry, 32 MiB per append batch and 64 MiB per restored transcript.
+The image-free entry remains at most 256 KiB and accumulated structured entries
+at most 8 MiB; the 4096-entry cap remains. CLI stdout buffering and private
+callback response limits accommodate the bounded restored transcript. Public
+assistant-text limits are unchanged. These are resource limits, not a promise
+that every model accepts an image of that size.
+
+`provider_session_images` owns private object metadata and survives parent
+session/epoch deletion. The existing deletion outbox owns each provisional
+upload before it starts; uncertain/failed writes remain eligible for cleanup,
+including repeated deletion after a late write. Session deletion queues active
+images in bounded batches, with the existing maintenance loop handling the
+remainder and physically removed parents. Images use the disjoint
+`provider_image_*` outbox states, preventing old artifact/file workers from
+claiming them. No public File/Artifact row or new cleanup worker is introduced.
+
+Compatibility disposition: the previous raw 256 KiB / 2 MiB / 8 MiB private
+limits and all-inline writer are superseded. Inline history remains a read
+format, not a second writer. Schema/readiness and concurrent-index authority
+advance to `2026.10.14.1`. Old binaries cannot restore externalized entries or
+process the new deletion target; an image swap is not a supported rollback.
+Deploy matching API/Worker/Sandbox binaries after migration under the release
+runbook. No migration rewrites historical hashes, failed Runs or dirty epochs.
+
 ### Bounded child restore view
 
 The adapter requests `X-AI-Platform-Provider-Read-View: children-v1` only on the
@@ -253,11 +309,11 @@ delegates without assembling or encoding a second response. The old
 for the identified router and contract-test consumers. The shared fixed header,
 read-view value and cap have one owner in Context's native-session contract and
 are exposed through its in-process API; it does not export transport internals.
-The existing 8 MiB + 64 KiB wire cap includes both subpaths and child
+The 64 MiB + 64 KiB wire cap includes both subpaths and child
 entries. Transcript byte accounting alone excludes path/envelope overhead and
 cannot establish this bound. If the entire mapping does not fit, the host
 omits the whole optional field and returns the ordinary subpath response.
-It never truncates entries, children or paths, or enlarges the old wire cap.
+It never truncates entries, children or paths to fit the cap.
 
 The adapter installs a complete, shape-checked mapping atomically under its
 existing append lock in its existing per-instance load cache. Cached child
@@ -288,10 +344,10 @@ store, not two continuity implementations. With a fitting view, ordinary SDK
 resume does two whole-epoch verifications regardless of child count: main
 preload and child enumeration. Oversized views retain the prior n+2 bound.
 
-New appends also store their original canonical representation in the nullable
+New appends also store their canonical structured representation in the nullable
 `entry_canonical_json` JSON column, in the same transaction as JSONB and the
-existing receipt. Loading compares its PostgreSQL JSONB value with `entry_json`,
-then verifies and restores the original representation. JSONB alone changes
+existing full-entry receipt. Loading compares its PostgreSQL JSONB value with `entry_json`,
+then restores images and verifies the original full representation. JSONB alone changes
 scientific notation and negative zero, so reserializing it cannot always prove
 the original append digest or byte count. This preserves ACK retry identity and
 the existing transcript byte budget without a new digest format.

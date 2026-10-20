@@ -36,6 +36,9 @@ import app.execution.application.worker_attempt_lifecycle as worker_attempt_life
 import app.runs.application.model_snapshot as run_model_snapshot_module
 import app.bootstrap.worker_execution as worker_execution_bootstrap
 import app.worker as worker_module
+from app.bootstrap import executor_terminal_reconciliation as reconciliation_module
+from app.bootstrap.worker_attempt_lifecycle import build_worker_attempt_lifecycle_ports
+from app.execution.api import executor_exception_failure
 from app.runs.infrastructure import lifecycle_postgres as run_lifecycle_postgres
 from app.runs.application.lifecycle import RunLifecyclePersistence, RunLifecycleService
 import app.mcp.infrastructure.tool_policies_postgres as _repo_app_mcp_infrastructure_tool_policies_postgres
@@ -277,6 +280,16 @@ async def test_worker_injects_current_jwt_into_existing_mcp_capability_plan(monk
             assert (principal.tenant_id, principal.user_id) == ("tenant-a", "user-a")
             return "current.jwt"
 
+        async def get_with_subject(self, principal):
+            return await self.get(principal), await self.credential_subject(principal)
+
+        async def credential_subject(self, principal):
+            assert (principal.tenant_id, principal.user_id) == ("tenant-a", "user-a")
+            return {
+                "tenant_id": principal.tenant_id, "user_id": principal.user_id,
+                "grant_id": "synthetic-grant", "subject_epoch": 1,
+            }
+
     async def runtime_target(_conn, *, tenant_id, server_name):
         assert (tenant_id, server_name) == ("tenant-a", "gateway")
         return {"transport": "streamable_http", "credential_envelope": "sealed"}
@@ -338,9 +351,14 @@ async def test_worker_injects_current_jwt_into_existing_mcp_capability_plan(monk
         "gateway": {
             "type": "http",
             "url": "https://gateway.example/mcp",
+            "integration_kind": "mcp",
             "headers": {
                 "X-Static-Key": "configured",
                 "JWT-Authorization": "Bearer current.jwt",
+            },
+            "credential_subject": {
+                "tenant_id": "tenant-a", "user_id": "user-a",
+                "grant_id": "synthetic-grant", "subject_epoch": 1,
             },
         }
     }
@@ -354,6 +372,7 @@ async def test_worker_injects_current_jwt_into_existing_mcp_capability_plan(monk
     ][0]
     assert "mcp_server_config" not in persisted_subject
     assert "current.jwt" not in json.dumps(persisted)
+    assert "synthetic-grant" not in json.dumps(persisted)
 
 
 def test_worker_preserves_only_typed_safe_executor_failures():
@@ -362,7 +381,7 @@ def test_worker_preserves_only_typed_safe_executor_failures():
     native_error = NativeToolAdmissionError()
     native_error.__context__ = RuntimeError(f"{private_token} at {private_path}")
 
-    native_failure = worker_module._executor_exception_failure(native_error)
+    native_failure = executor_exception_failure(native_error)
     assert native_failure[:2] == (
         "native_tool_admission_failed",
         "Native tool sandbox admission failed",
@@ -373,14 +392,14 @@ def test_worker_preserves_only_typed_safe_executor_failures():
     assert native_failure[2]["runtime_diagnostics"]["sdk"]["exception_type"] == (
         "NativeToolAdmissionError"
     )
-    generic_failure = worker_module._executor_exception_failure(
+    generic_failure = executor_exception_failure(
         RuntimeError("ordinary executor failure")
     )
     assert generic_failure[:2] == ("executor_failure", "Executor failed")
     assert generic_failure[2]["runtime_diagnostics"]["error_code"] == (
         "executor_failure"
     )
-    health_failure = worker_module._executor_exception_failure(
+    health_failure = executor_exception_failure(
         ExecutorHealthTimeoutError(
             readiness_evidence=ExecutorReadinessEvidence(
                 readiness_phase="health_probe",
@@ -409,7 +428,7 @@ def test_worker_preserves_only_typed_safe_executor_failures():
             "elapsed_ms": 321,
         }
     }
-    start_failure = worker_module._executor_exception_failure(
+    start_failure = executor_exception_failure(
         ContainerStartFailedError()
     )
     assert start_failure[:2] == ("executor_failure", "Executor failed")
@@ -428,7 +447,7 @@ def test_worker_preserves_only_typed_safe_executor_failures():
             "sdk": {},
         },
     )
-    http_failure = worker_module._executor_exception_failure(http_error)
+    http_failure = executor_exception_failure(http_error)
     assert http_failure[:2] == (
         "invalid_executor_credential",
         "Executor authentication failed (HTTP 401)",
@@ -441,7 +460,7 @@ def test_worker_preserves_only_typed_safe_executor_failures():
         error_code="token_private-secret",
         detail="<html>private-prompt</html>",
     )
-    assert worker_module._executor_exception_failure(hostile_error) == (
+    assert executor_exception_failure(hostile_error) == (
         "executor_http_failure",
         "Executor request failed (HTTP 502)",
         None,
@@ -449,10 +468,10 @@ def test_worker_preserves_only_typed_safe_executor_failures():
     assert private_token not in str(native_failure)
     assert private_path not in str(native_failure)
     assert "private-secret" not in str(
-        worker_module._executor_exception_failure(hostile_error)
+        executor_exception_failure(hostile_error)
     )
     assert "private-prompt" not in str(
-        worker_module._executor_exception_failure(hostile_error)
+        executor_exception_failure(hostile_error)
     )
 
 
@@ -1056,6 +1075,9 @@ def _test_current_principal(
         display_name=user_id,
         tenant_id=tenant_id,
         department_id=department_id,
+        direct_department_ids=(department_id,) if department_id else (),
+        department_ids=(department_id,) if department_id else (),
+        department_authority_status="available" if department_id else "unavailable",
         roles=list(["user"] if roles is None else roles),
         permissions=["agent:use"],
         source=source,
@@ -1127,6 +1149,7 @@ def default_cancel_not_requested(monkeypatch):
 
     monkeypatch.setattr("app.context.api.prepare_provider_epoch", prepare_native_epoch)
     monkeypatch.setattr("app.worker.parse_queue_payload", capture_queue_payload)
+    monkeypatch.setattr(reconciliation_module, "QueueRunPayload", lambda **raw: capture_queue_payload(raw))
     monkeypatch.setattr(
         "app.agent_apps.api.reauthorize_bound_profile_for_worker_dispatch",
         reauthorize_test_profile,
@@ -1967,31 +1990,22 @@ async def test_reconcile_executor_terminal_result_normalizes_only_empty_agent_pr
 ):
     captured = []
 
-    async def capture_payload(
-        raw,
-        registry,
-        *,
-        worker_id,
-        reconciliation,
-        transaction_factory,
-        v4_capabilities,
-        run_attempt_lifecycle,
-        run_lifecycle,
-    ):
-        del registry, reconciliation
+    async def capture_payload(payload, *, leased_attempt_id, registry, worker_id,
+                              reconciliation, queue_lease, transaction_factory,
+                              v4_capabilities, run_attempt_lifecycle, run_lifecycle,
+                              publish_run_event):
         assert worker_id == "worker-a"
-        assert transaction_factory is None
+        assert callable(transaction_factory)
+        assert queue_lease is None
+        assert reconciliation.result is result
         assert v4_capabilities is _FAKE_WORKER_V4_CAPABILITIES
         assert run_attempt_lifecycle is _TEST_RUN_ATTEMPT_LIFECYCLE
         assert run_lifecycle is _TEST_RUN_LIFECYCLE
-        assert raw["_queue_attempt_id"] == "attempt-a"
-        queue_payload = QueueRunPayload.model_validate(
-            {key: value for key, value in raw.items() if key != "_queue_attempt_id"}
-        )
-        captured.append(queue_payload)
+        assert leased_attempt_id == "attempt-a"
+        captured.append(payload)
         return WorkerOutcome("succeeded", "run-a")
 
-    monkeypatch.setattr(worker_module, "process_run_payload", capture_payload)
+    monkeypatch.setattr(reconciliation_module, "prepare_worker_run", capture_payload)
     lease_row = {
         "executor_reconciliation_context_json": {
             "adapter_name": "claude-agent-worker",
@@ -2025,7 +2039,7 @@ async def test_reconcile_executor_terminal_result_normalizes_only_empty_agent_pr
         executor_payload={},
     )
 
-    outcome = await worker_module.reconcile_executor_terminal_result(
+    outcome = await reconciliation_module.reconcile_executor_terminal_result(
         lease_row=lease_row,
         result=result,
         worker_id="worker-a",
@@ -2168,7 +2182,7 @@ async def test_bound_agent_executor_reconciliation_uses_session_pins_and_termina
     def unexpected_transaction():
         raise AssertionError("reconciliation must use the claim-owning transaction factory")
 
-    monkeypatch.setattr("app.worker.transaction", unexpected_transaction)
+    monkeypatch.setattr("app.bootstrap.executor_terminal_reconciliation.transaction", unexpected_transaction)
     monkeypatch.setattr('app.runs.infrastructure.postgres.get_run', get_run)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', fake_append_message)
@@ -2226,7 +2240,7 @@ async def test_bound_agent_executor_reconciliation_uses_session_pins_and_termina
     )
 
     frozen = _install_frozen_receipt(monkeypatch, persisted, lease_row)
-    outcome = await worker_module.reconcile_executor_terminal_result(
+    outcome = await reconciliation_module.reconcile_executor_terminal_result(
         lease_row=lease_row,
         result=result,
         registry=AdapterRegistry({"claude-agent-worker": SuccessfulExecutorStub()}),
@@ -2261,8 +2275,9 @@ async def test_bound_agent_executor_reconciliation_uses_session_pins_and_termina
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("terminal_stage_logs")
+@pytest.mark.parametrize("publication_fails", [False, True])
 async def test_v2_reconciliation_snapshot_terminalizes_and_persists_assistant_message(
-    monkeypatch, caplog,
+    monkeypatch, caplog, publication_fails,
 ):
     from app.platform import tracing
     now = [10.0]
@@ -2282,8 +2297,10 @@ async def test_v2_reconciliation_snapshot_terminalizes_and_persists_assistant_me
             for record in caplog.records if record.msg == "run_terminal_stage"
         ])
         now[0] += 0.5
+        if publication_fails:
+            raise RuntimeError("synthetic publication failed")
 
-    monkeypatch.setattr(worker_module, "publish_run_event", delayed_publication)
+    monkeypatch.setattr(reconciliation_module, "publish_run_event", delayed_publication)
     persisted = base_payload(
         _leased=False,
         agent_id="general-agent",
@@ -2351,7 +2368,7 @@ async def test_v2_reconciliation_snapshot_terminalizes_and_persists_assistant_me
         calls.append(("create_artifact", kwargs["storage_key"]))
         return kwargs["artifact_id"]
 
-    monkeypatch.setattr("app.worker.transaction", delayed_transaction)
+    monkeypatch.setattr("app.bootstrap.executor_terminal_reconciliation.transaction", delayed_transaction)
     monkeypatch.setattr('app.runs.infrastructure.postgres.get_run', get_run)
     monkeypatch.setattr('app.conversations.infrastructure.postgres.append_message', append_message)
     monkeypatch.setattr('app.streaming.infrastructure.run_events_postgres.append_event', append_event)
@@ -2426,7 +2443,12 @@ async def test_v2_reconciliation_snapshot_terminalizes_and_persists_assistant_me
     )
 
     _install_frozen_receipt(monkeypatch, persisted, lease_row, calls=calls)
-    outcome = await worker_module.reconcile_executor_terminal_result(
+    async def never_submit(*args, **kwargs):
+        pytest.fail("receipt recovery must not submit another execution")
+
+    monkeypatch.setattr(worker_execution_bootstrap, "submit_worker_run_until_cancelled", never_submit)
+    monkeypatch.setattr(worker_module, "process_run_payload", never_submit)
+    completion = reconciliation_module.reconcile_executor_terminal_result(
         lease_row=lease_row,
         result=result,
         registry=AdapterRegistry({"claude-agent-worker": SuccessfulExecutorStub()}),
@@ -2437,7 +2459,11 @@ async def test_v2_reconciliation_snapshot_terminalizes_and_persists_assistant_me
         run_lifecycle=_TEST_RUN_LIFECYCLE,
     )
 
-    assert outcome == WorkerOutcome("succeeded", "run-a")
+    if publication_fails:
+        with pytest.raises(RuntimeError, match="synthetic publication failed"):
+            await completion
+    else:
+        assert await completion == WorkerOutcome("succeeded", "run-a")
     assert messages == ["done"]
     assert ("event", "worker_started") not in calls
     assert ("complete", "run-a") in calls
@@ -2457,7 +2483,8 @@ async def test_v2_reconciliation_snapshot_terminalizes_and_persists_assistant_me
     assert [record.terminal_phase for record in records] == ["result_business_commit", "result_business_publication"]
     assert [record.terminal_phase_duration_ms for record in records] == [1250, 500]
     assert publication_observations == [[("result_business_commit", 1250)]]
-    assert all(record.terminal_phase_outcome == "ok" and record.terminal_status == "succeeded" for record in records)
+    assert [record.terminal_phase_outcome for record in records] == ["ok", "error" if publication_fails else "ok"]
+    assert all(record.terminal_status == "succeeded" for record in records)
     assert "result.txt" not in repr([vars(record) for record in records])
 
 
@@ -2756,6 +2783,7 @@ def locked_run_from_payload(payload):
         "user_id": validated["user_id"],
         "session_id": validated["session_id"],
         "agent_id": validated["agent_id"],
+        "agent_type": "profile" if agent_profile else "chat",
         "execution_kind": validated["execution_kind"],
         "skill_id": validated["skill_id"],
         "model_id": validated.get("model_id"),
@@ -2819,6 +2847,7 @@ def test_locked_agent_profile_identity_requires_exact_physical_pin(
     }
     locked_run = {
         "agent_id": "agt_support",
+        "agent_type": "profile",
         "admitted_agent_profile_revision": 7,
         "admitted_agent_profile_hash": "a" * 64,
         "session_admitted_agent_profile_revision": 7,
@@ -2869,6 +2898,7 @@ def test_locked_agent_profile_identity_requires_exact_physical_pin(
 def test_locked_generic_agent_requires_explicit_null_physical_pins(pin_change, expected):
     locked_run = {
         "agent_id": "general-agent",
+        "agent_type": "chat",
         "admitted_agent_profile_revision": None,
         "admitted_agent_profile_hash": None,
         "session_admitted_agent_profile_revision": None,
@@ -4125,7 +4155,7 @@ async def test_worker_cancel_closes_the_same_durable_attempt_without_owner_trans
         leased_attempt_id="qat-test-attempt",
         worker_id="worker-a",
         is_reconciliation=False,
-        ports=worker_module.build_worker_attempt_lifecycle_ports(
+        ports=build_worker_attempt_lifecycle_ports(
             _TEST_RUN_ATTEMPT_LIFECYCLE, _TEST_RUN_LIFECYCLE
         ),
     )
@@ -4170,7 +4200,7 @@ async def test_worker_cancel_observes_an_already_cancelled_run_without_refencing
         leased_attempt_id="qat-test-attempt",
         worker_id="worker-a",
         is_reconciliation=False,
-        ports=worker_module.build_worker_attempt_lifecycle_ports(
+        ports=build_worker_attempt_lifecycle_ports(
             _TEST_RUN_ATTEMPT_LIFECYCLE, _TEST_RUN_LIFECYCLE
         ),
     )
@@ -6248,6 +6278,7 @@ async def test_worker_uses_db_run_input_and_snapshot_files_when_queue_fields_are
             "user_id": "user-a",
             "session_id": "session-a",
             "agent_id": "general-agent",
+            "agent_type": "chat",
             "admitted_agent_profile_revision": None,
             "admitted_agent_profile_hash": None,
             "session_admitted_agent_profile_revision": None,
@@ -8577,7 +8608,7 @@ def _install_task6_worker_fakes(
     queue_input=None,
     skill_id="qa-file-reviewer",
     principal_roles=None,
-    principal_department_id="qa",
+    principal_department_id="110",
     auth_source="session-token",
     current_principal: AuthPrincipal | None = None,
 ):
@@ -8598,7 +8629,7 @@ def _install_task6_worker_fakes(
             ("skill", skill_id): _task6_distribution(
                 "skill",
                 skill_id,
-                department_ids=["qa"],
+                department_ids=["110"],
                 allowed_roles=["qa_operator"],
             )
         },
@@ -8612,6 +8643,7 @@ def _install_task6_worker_fakes(
         "user_id": "user-a",
         "session_id": "session-a",
         "agent_id": agent_id,
+        "agent_type": "file",
         "admitted_agent_profile_revision": None,
         "admitted_agent_profile_hash": None,
         "session_admitted_agent_profile_revision": None,
@@ -8648,7 +8680,7 @@ def _install_task6_worker_fakes(
     resolved_current_principal = current_principal or _test_current_principal(
         user_id="user-a",
         tenant_id="tenant-a",
-        department_id="qa",
+        department_id="110",
         roles=["qa_operator"],
     )
 
@@ -8738,6 +8770,16 @@ def _install_task6_worker_fakes(
         async def get(self, principal):
             assert (principal.tenant_id, principal.user_id) == ("tenant-a", "user-a")
             return "current.jwt"
+
+        async def get_with_subject(self, principal):
+            return await self.get(principal), await self.credential_subject(principal)
+
+        async def credential_subject(self, principal):
+            assert (principal.tenant_id, principal.user_id) == ("tenant-a", "user-a")
+            return {
+                "tenant_id": principal.tenant_id, "user_id": principal.user_id,
+                "grant_id": "synthetic-grant", "subject_epoch": 1,
+            }
 
     async def get_mcp_server_runtime_target(_conn, *, tenant_id, server_name):
         calls.append(("mcp_runtime_target", tenant_id, server_name))
@@ -8873,7 +8915,7 @@ async def test_worker_admin_bash_text_does_not_require_completion_evidence(monke
         current_principal=_test_current_principal(
             user_id="user-a",
             tenant_id="tenant-a",
-            department_id="qa",
+            department_id="110",
             roles=["admin", "qa_operator"],
         ),
     )
@@ -8891,7 +8933,7 @@ async def test_worker_admin_bash_text_does_not_replay_retired_required_scope(
     monkeypatch,
     restriction,
 ):
-    department_id = "rd" if restriction == "department" else "qa"
+    department_id = "210" if restriction == "department" else "110"
     raw, registry, state, calls = _install_task6_worker_fakes(
         monkeypatch,
         locked_input={"message": "请执行 Bash 命令 pwd"},
@@ -8924,21 +8966,21 @@ async def test_worker_current_principal_denial_cannot_be_restored_by_queued_snap
         locked_input={
             "mode": "file",
             "principal_roles": ["admin"],
-            "principal_department_id": "rd",
+            "principal_department_id": "210",
             "auth_source": "caller-input",
         },
         queue_input={
             "principal_roles": ["admin"],
-            "principal_department_id": "finance",
+            "principal_department_id": "310",
             "auth_source": "queue-input",
         },
         principal_roles=["admin"],
-        principal_department_id="finance",
+        principal_department_id="310",
         auth_source="locked-session-token",
         current_principal=_test_current_principal(
             user_id="user-a",
             tenant_id="tenant-a",
-            department_id="rd",
+            department_id="210",
             roles=["user"],
         ),
     )
@@ -8953,7 +8995,7 @@ async def test_worker_current_principal_denial_cannot_be_restored_by_queued_snap
         for call in calls
         if call[0] == "audit" and call[1]["action"] == "capability_distribution.denied"
     )
-    assert denied_audit["payload_json"]["actor_department_id"] == "rd"
+    assert denied_audit["payload_json"]["actor_department_id"] == "210"
     assert denied_audit["payload_json"]["actor_roles"] == ["user"]
     assert denied_audit["payload_json"]["decision_reason"] == "department_not_allowed"
 
@@ -8963,11 +9005,11 @@ async def test_worker_capability_distribution_allows_current_skill_after_enqueue
     raw, registry, _, calls = _install_task6_worker_fakes(
         monkeypatch,
         principal_roles=["user"],
-        principal_department_id="rd",
+        principal_department_id="210",
         current_principal=_test_current_principal(
             user_id="user-a",
             tenant_id="tenant-a",
-            department_id="qa",
+            department_id="110",
             roles=["qa_operator"],
         ),
     )
@@ -9105,7 +9147,7 @@ async def test_worker_capability_distribution_rechecks_skill_changes_after_enque
         current_principal=_test_current_principal(
             user_id="user-a",
             tenant_id="tenant-a",
-            department_id="qa",
+            department_id="110",
             roles=["qa_operator"],
         ),
     )
@@ -9115,7 +9157,7 @@ async def test_worker_capability_distribution_rechecks_skill_changes_after_enque
     elif change == "disabled":
         distribution["status"] = "disabled"
     elif change == "department":
-        distribution["department_ids"] = ["rd"]
+        distribution["department_ids"] = ["210"]
     elif change == "role":
         distribution["allowed_roles"] = ["reviewer"]
     elif change == "distribution_missing":
@@ -9268,7 +9310,7 @@ async def test_worker_capability_distribution_rechecks_mcp_parent_changes_after_
         current_principal=_test_current_principal(
             user_id="user-a",
             tenant_id="tenant-a",
-            department_id="qa",
+            department_id="110",
             roles=["qa_operator"],
         ),
     )
@@ -9276,7 +9318,7 @@ async def test_worker_capability_distribution_rechecks_mcp_parent_changes_after_
     state["distributions"][("mcp_server", "server-a")] = _task6_distribution(
         "mcp_server",
         "server-a",
-        department_ids=["qa"],
+        department_ids=["110"],
         allowed_roles=["qa_operator"],
     )
     distribution = state["distributions"][("mcp_server", "server-a")]
@@ -9285,7 +9327,7 @@ async def test_worker_capability_distribution_rechecks_mcp_parent_changes_after_
     elif change == "disabled":
         distribution["status"] = "disabled"
     elif change == "department":
-        distribution["department_ids"] = ["rd"]
+        distribution["department_ids"] = ["210"]
     elif change == "role":
         distribution["allowed_roles"] = ["reviewer"]
     elif change == "distribution_missing":
@@ -9339,11 +9381,11 @@ async def test_worker_reauthorization_denies_archived_skill_before_admin_bypass(
     raw, registry, state, calls = _install_task6_worker_fakes(
         monkeypatch,
         principal_roles=["user"],
-        principal_department_id="rd",
+        principal_department_id="210",
         current_principal=_test_current_principal(
             user_id="user-a",
             tenant_id="tenant-a",
-            department_id="platform",
+            department_id="410",
             roles=["admin"],
         ),
     )
@@ -9376,11 +9418,11 @@ async def test_worker_capability_distribution_admin_bypass_is_auditable(monkeypa
         monkeypatch,
         locked_input={"mode": "file", "mcp_tool_ids": [tool_reference]},
         principal_roles=["user"],
-        principal_department_id="rd",
+        principal_department_id="210",
         current_principal=_test_current_principal(
             user_id="user-a",
             tenant_id="tenant-a",
-            department_id="platform",
+            department_id="410",
             roles=["admin"],
         ),
     )
@@ -9717,3 +9759,33 @@ async def test_worker_retries_placeholder_cleanup_when_terminal_commit_rolls_bac
         {"result": "run_succeeded", "exception": "run_failed", "cancelled": "run_cancelled"}[terminal_path],
         "terminal_rollback", "run_terminal_interrupted", "cleanup_committed",
     ]
+
+
+@pytest.mark.asyncio
+async def test_worker_completion_composition_failure_releases_bound_placeholder(monkeypatch):
+    calls = []
+    error = RuntimeError("synthetic completion composition failed")
+
+    def unavailable(*args, **kwargs):
+        raise error
+
+    async def release(conn, **kwargs):
+        calls.append(kwargs["reason"])
+
+    async def event(conn, **kwargs):
+        return "event-synthetic"
+
+    monkeypatch.setattr(worker_module, "build_worker_terminal_completion_service", unavailable)
+    monkeypatch.setattr("app.streaming.infrastructure.run_events_postgres.append_event", event)
+    monkeypatch.setattr(
+        "app.bootstrap.worker_dispatch_binding.sandbox_lease_repository.release_sandbox_lease",
+        release,
+    )
+    with pytest.raises(RuntimeError) as raised:
+        await process_run_payload(
+            base_payload(file_ids=[], skill_id="general-chat", agent_id="general-agent"),
+            AdapterRegistry({"fake": SuccessfulExecutorStub()}),
+            transaction_factory=fake_transaction,
+        )
+    assert raised.value is error
+    assert calls == ["run_terminal_interrupted"]

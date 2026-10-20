@@ -11,7 +11,7 @@ import {
   useLayoutEffect,
   useMemo,
 } from "react";
-import toast from "react-hot-toast";
+import { toast } from "@lobehub/ui/base-ui";
 import i18n from "../i18n";
 import { uuid } from "../utils/uuid";
 import type {
@@ -98,6 +98,10 @@ import {
   type SSEConnectionContext,
 } from "./useAgent/sseConnection";
 import { createOptimisticMessagesForSend } from "./useAgent/optimisticMessages";
+import {
+  beginBrowserRunLatency, bindBrowserRunLatency, retireBrowserRunLatency,
+  pruneBrowserRunLatencies,
+} from "./useAgent/browserRunLatency";
 import {
   projectChatAdmissionError,
   projectSafeBackendError,
@@ -187,8 +191,7 @@ interface HistoryLoadFailure {
 type HistoryLoadFailurePhase =
   | "session_projection"
   | "identity_validation"
-  | "event_history"
-  | "feedback";
+  | "event_history";
 
 /** Reuse the API safe-copy/code boundary; never retain an arbitrary exception. */
 function projectHistoryReadError(error: unknown): HistoryReadError {
@@ -881,8 +884,26 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   // Session changes invalidate both pending submit responses and their SSE stream.
   const sessionGenerationRef = useRef(0);
   const submissionTokenRef = useRef(0);
+  const browserSubmissionIdRef = useRef<string | null>(null);
   const authScopeRef = useRef<AuthScope | null>(null);
   const authScopeGenerationRef = useRef(0);
+  const bindBrowserObservation = useCallback((submissionId: string, boundSessionId: string, runId: string) => {
+    if (browserSubmissionIdRef.current !== submissionId) return;
+    const mounted = mountedGenerationRef.current;
+    const generation = sessionGenerationRef.current;
+    const authGeneration = authScopeGenerationRef.current;
+    const owner = authScopeRef.current;
+    bindBrowserRunLatency(submissionId, boundSessionId, runId, () =>
+      isMountedRef.current && mountedGenerationRef.current === mounted
+      && sessionGenerationRef.current === generation && sessionIdRef.current === boundSessionId
+      && authScopeGenerationRef.current === authGeneration && authScopesEqual(authScopeRef.current, owner)
+      && browserSubmissionIdRef.current === submissionId,
+    );
+  }, []);
+  useEffect(() => { pruneBrowserRunLatencies(); });
+  useEffect(() => () => {
+    if (browserSubmissionIdRef.current) retireBrowserRunLatency(browserSubmissionIdRef.current);
+  }, []);
   const submissionUncertaintyRef = useRef<SubmissionUncertainty | null>(null);
   const submissionResolverOwnerRef = useRef<string | null>(null);
   // An incarnation event proves that the browser credential context changed,
@@ -2552,12 +2573,18 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         return { status: "failed" };
       }
       const submissionId = uuid();
+      if (browserSubmissionIdRef.current) retireBrowserRunLatency(browserSubmissionIdRef.current);
+      browserSubmissionIdRef.current = submissionId;
+      beginBrowserRunLatency(submissionId, () =>
+        isCurrentSubmission() && authScopeRef.current === submissionOwner,
+      );
       const persistedSubmission = {
         version: 1,
         owner: submissionOwner,
         submissionId,
       } as const;
       if (!persistSubmissionReference(persistedSubmission)) {
+        retireBrowserRunLatency(submissionId);
         // A durable key is the only recovery authority for an unknown POST.
         // Do not send if the browser cannot prove that it retained the key.
         const statusUnavailable = i18n.t("chat.runTerminal.statusUnavailable", {
@@ -2678,6 +2705,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         const protocolEchoed = submitData.submission_id === submissionId;
 
         if (isChatStreamNeedsConfirmation(submitData)) {
+          retireBrowserRunLatency(submissionId);
           clearActivePreAdmissionSubmission(submissionToken);
           const confirmationMessages = projectOwnedConfirmationMessages(
             messagesRef.current,
@@ -2779,10 +2807,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
 
         // Handle queued status — show toast and wait via SSE
         if (submitData.status === "queued") {
-          toast.loading(
-            i18n.t("chat.queued", { position: submitData.queue_position }),
-            { id: "chat-queue", duration: Infinity },
-          );
+          toast.loading({
+            description: i18n.t("chat.queued", { position: submitData.queue_position }),
+            id: "chat-queue", duration: 0, hideCloseButton: true,
+          });
         }
 
         if (!requestSessionId && newSessionId) {
@@ -2862,6 +2890,11 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           );
         }
         if (newRunId) {
+          if (protocolEchoed && (newSessionId || requestSessionId)) {
+            bindBrowserObservation(submissionId, (newSessionId || requestSessionId)!, newRunId);
+          } else {
+            retireBrowserRunLatency(submissionId);
+          }
           // A confirmed run owns a fresh continuous transport-recovery budget.
           retryCountRef.current = 0;
           resetAcceptedStreamState(
@@ -2954,6 +2987,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         const prePersistenceRejection =
           !admissionAccepted && isProvenPrePersistenceChatRejection(err);
         if (prePersistenceRejection) {
+          retireBrowserRunLatency(submissionId);
           clearActivePreAdmissionSubmission(submissionToken);
           removePersistedSubmissionReference(submissionOwner, submissionId);
           setPendingSubmissionId(null);
@@ -3062,10 +3096,12 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       bindRunControlParent,
       handoffActivePreAdmissionSubmission,
       invalidateRunControl,
+      bindBrowserObservation,
     ],
   );
 
   const stopGeneration = useCallback(async () => {
+    if (browserSubmissionIdRef.current) retireBrowserRunLatency(browserSubmissionIdRef.current);
     const currentRunId = currentRunIdRef.current;
     const currentSessionId = sessionIdRef.current;
     if (!currentRunId || !currentSessionId) {
@@ -3376,6 +3412,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           setPendingSubmissionId(submissionId);
           const historyPromise = loadHistory(outcome.session_id, outcome.run_id);
           const historySessionGeneration = sessionGenerationRef.current;
+          bindBrowserObservation(submissionId, outcome.session_id, outcome.run_id);
           const restored = await historyPromise;
           if (
             restored !== null &&
@@ -3428,7 +3465,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         }
       }
     },
-    [advancePersistedSubmissionFence, loadHistory],
+    [advancePersistedSubmissionFence, loadHistory, bindBrowserObservation],
   );
 
   const retryPendingSubmission = useCallback(async (): Promise<void> => {
@@ -3504,6 +3541,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           resolution.outcome.run_id,
         );
         const historySessionGeneration = sessionGenerationRef.current;
+        bindBrowserObservation(pending.submissionId, resolution.outcome.session_id, resolution.outcome.run_id);
         const restored = await historyPromise;
         if (
           restored !== null &&
@@ -3535,7 +3573,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         setError(statusUnavailable);
       }
     }
-  }, [advancePersistedSubmissionFence, loadHistory]);
+  }, [advancePersistedSubmissionFence, loadHistory, bindBrowserObservation]);
 
   useEffect(() => {
     const pending = submissionUncertaintyRef.current;

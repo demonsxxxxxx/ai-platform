@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { register } from "node:module";
-import test from "node:test";
+import test, { after } from "node:test";
+import { installSelectTestDom } from "../../../components/common/__tests__/selectTestDom";
 
 import React from "react";
 
@@ -19,50 +20,6 @@ const enterpriseProfileFields = {
 register(new URL("./frontendAssetLoader.mjs", import.meta.url), import.meta.url);
 await new Promise<void>((resolve) => setImmediate(resolve));
 
-type Listener = (event: Record<string, unknown>) => void;
-
-class TestEventTarget {
-  private readonly listeners = new Map<string, Set<Listener>>();
-
-  addEventListener(type: string, listener: Listener) {
-    const listeners = this.listeners.get(type) ?? new Set<Listener>();
-    listeners.add(listener);
-    this.listeners.set(type, listeners);
-  }
-
-  removeEventListener(type: string, listener: Listener) {
-    this.listeners.get(type)?.delete(listener);
-  }
-
-  getListeners(type: string) {
-    return this.listeners.get(type);
-  }
-
-  dispatchEvent(event: Record<string, unknown>) {
-    if (event.bubbles === undefined) event.bubbles = true;
-    if (event.target === undefined) event.target = this;
-    if (event.defaultPrevented === undefined) event.defaultPrevented = false;
-    event.preventDefault ??= () => {
-      event.defaultPrevented = true;
-    };
-    event.stopPropagation ??= () => {
-      event.cancelBubble = true;
-    };
-    dispatchEventFromTarget(this, event);
-    return true;
-  }
-}
-
-function dispatchEventFromTarget(target: TestEventTarget, event: Record<string, unknown>) {
-  let current: TestEventTarget | null = target;
-  while (current) {
-    event.currentTarget = current;
-    current.getListeners(String(event.type))?.forEach((listener) => listener(event));
-    if (event.cancelBubble || event.bubbles !== true) break;
-    current = current instanceof TestNode ? current.parentNode : null;
-  }
-}
-
 class TestLockManager {
   async request<T>(
     _name: string,
@@ -74,386 +31,22 @@ class TestLockManager {
   }
 }
 
-class TestNode extends TestEventTarget {
-  parentNode: TestNode | null = null;
-  childNodes: TestNode[] = [];
-  nodeValue: string | null = null;
-
-  get firstChild() {
-    return this.childNodes[0] ?? null;
-  }
-
-  get lastChild() {
-    return this.childNodes[this.childNodes.length - 1] ?? null;
-  }
-
-  get textContent() {
-    return this.childNodes.map((child) => child.textContent ?? "").join("");
-  }
-
-  set textContent(_value: string) {
-    this.childNodes = [];
-  }
-
-  appendChild(child: TestNode) {
-    child.parentNode = this;
-    this.childNodes.push(child);
-    return child;
-  }
-
-  insertBefore(child: TestNode, reference: TestNode | null) {
-    child.parentNode = this;
-    const index = reference ? this.childNodes.indexOf(reference) : -1;
-    if (index < 0) this.childNodes.push(child);
-    else this.childNodes.splice(index, 0, child);
-    return child;
-  }
-
-  removeChild(child: TestNode) {
-    const index = this.childNodes.indexOf(child);
-    if (index >= 0) this.childNodes.splice(index, 1);
-    child.parentNode = null;
-    return child;
-  }
-
-  contains(node: TestNode | null): boolean {
-    return node === this || this.childNodes.some((child) => child.contains(node));
-  }
-}
-
-class TestElement extends TestNode {
-  readonly nodeType = 1;
-  readonly namespaceURI = "http://www.w3.org/1999/xhtml";
-  readonly style = {
-    setProperty: (_name: string, _value: string) => {},
-    removeProperty: (_name: string) => {},
-  };
-  readonly attributes = new Map<string, string>();
-  private readonly classes = new Set<string>();
-  readonly classList = {
-    add: (...names: string[]) => names.forEach((name) => this.classes.add(name)),
-    remove: (...names: string[]) => names.forEach((name) => this.classes.delete(name)),
-    contains: (name: string) => this.classes.has(name),
-    toggle: (name: string, force?: boolean) => {
-      const next = force ?? !this.classes.has(name);
-      if (next) this.classes.add(name);
-      else this.classes.delete(name);
-      return next;
-    },
-  };
-  ownerDocument!: TestDocument;
-  className = "";
-  isContentEditable = false;
-  value = "";
-  private scrollTopValue = 0;
-  private text = "";
-
-  constructor(readonly tagName: string) {
-    super();
-  }
-
-  get nodeName() {
-    return this.tagName.toUpperCase();
-  }
-
-  get textContent() {
-    return this.text || this.childNodes.map((child) => child.textContent ?? "").join("");
-  }
-
-  set textContent(value: string) {
-    this.text = value;
-    this.childNodes = [];
-  }
-
-  get innerHTML() {
-    return this.childNodes.map((child) => child.nodeValue ?? "").join("");
-  }
-
-  set innerHTML(value: string) {
-    this.childNodes = value ? [new TestText(value)] : [];
-  }
-
-  setAttribute(name: string, value: string) {
-    this.attributes.set(name, value);
-  }
-
-  removeAttribute(name: string) {
-    this.attributes.delete(name);
-  }
-
-  getAttribute(name: string) {
-    return this.attributes.get(name) ?? null;
-  }
-
-  hasAttribute(name: string) {
-    return this.attributes.has(name);
-  }
-
-  closest(selector: string): TestElement | null {
-    const match = selector.match(/^([a-z]+)?(?:\[([^=\]]+)(?:="([^"]*)")?\])?$/i);
-    const tagMatches = !match?.[1] || this.nodeName === match[1].toUpperCase();
-    const attributeMatches =
-      !match?.[2] ||
-      (this.hasAttribute(match[2]) &&
-        (match[3] === undefined || this.getAttribute(match[2]) === match[3]));
-    if (match && tagMatches && attributeMatches) return this;
-    return this.parentNode instanceof TestElement
-      ? this.parentNode.closest(selector)
-      : null;
-  }
-
-  getBoundingClientRect() {
-    return { top: 0, right: 100, bottom: 40, left: 0, width: 100, height: 40 };
-  }
-
-  get clientHeight() {
-    return 600;
-  }
-
-  get clientWidth() {
-    return 1000;
-  }
-
-  get offsetHeight() {
-    return 600;
-  }
-
-  get offsetWidth() {
-    return 1000;
-  }
-
-  get scrollHeight() {
-    return 1200;
-  }
-
-  get scrollWidth() {
-    return 1000;
-  }
-
-  get scrollTop() {
-    return this.scrollTopValue;
-  }
-
-  set scrollTop(value: number) {
-    this.scrollTopValue = value;
-  }
-
-  focus() {
-    this.ownerDocument.activeElement = this;
-  }
-
-  scrollIntoView() {}
-
-  querySelector(selector: string): TestElement | null {
-    return this.querySelectorAll(selector)[0] ?? null;
-  }
-
-  querySelectorAll(selector: string): TestElement[] {
-    const match = selector.match(/^\[([^=\]]+)(?:="([^"]*)")?\]$/);
-    const tag = /^[a-z]+$/i.test(selector) ? selector.toUpperCase() : null;
-    const matches: TestElement[] = [];
-    const visit = (node: TestNode) => {
-      for (const child of node.childNodes) {
-        if (child instanceof TestElement) {
-          const attributeMatch = match
-            ? child.hasAttribute(match[1]) &&
-              (match[2] === undefined || child.getAttribute(match[1]) === match[2])
-            : false;
-          if (attributeMatch || (tag !== null && child.nodeName === tag)) {
-            matches.push(child);
-          }
-          visit(child);
-        }
-      }
-    };
-    visit(this);
-    return matches;
-  }
-}
-
-class TestText extends TestNode {
-  readonly nodeType = 3;
-  readonly nodeName = "#text";
-
-  constructor(value: string) {
-    super();
-    this.nodeValue = value;
-  }
-
-  get data() {
-    return this.nodeValue ?? "";
-  }
-
-  set data(value: string) {
-    this.nodeValue = value;
-  }
-
-  get textContent() {
-    return this.nodeValue ?? "";
-  }
-
-  set textContent(value: string) {
-    this.nodeValue = value;
-  }
-}
-
-class TestDocument extends TestNode {
-  readonly nodeType = 9;
-  readonly nodeName = "#document";
-  readonly documentElement: TestElement;
-  readonly head: TestElement;
-  readonly body: TestElement;
-  activeElement: TestElement;
-  defaultView: typeof window | null = null;
-
-  constructor() {
-    super();
-    this.documentElement = this.createElement("html");
-    this.head = this.createElement("head");
-    this.body = this.createElement("body");
-    this.documentElement.appendChild(this.head);
-    this.documentElement.appendChild(this.body);
-    this.appendChild(this.documentElement);
-    this.activeElement = this.body;
-  }
-
-  createElement(tagName: string) {
-    const element = new TestElement(tagName);
-    element.ownerDocument = this;
-    if (tagName.toLowerCase() === "style") {
-      element.appendChild(this.createTextNode(""));
-    }
-    return element;
-  }
-
-  createElementNS(_namespace: string, tagName: string) {
-    return this.createElement(tagName);
-  }
-
-  createTextNode(value: string) {
-    return new TestText(value);
-  }
-}
+const dom = installSelectTestDom();
+Object.assign(globalThis, { localStorage: window.localStorage, sessionStorage: window.sessionStorage, CompositionEvent: window.CompositionEvent });
+Object.assign(window, { innerWidth: 1200, innerHeight: 800, scrollTo() {} });
+after(() => dom.close());
 
 function installDom() {
-  const document = new TestDocument();
-  const CompositionEvent = class {};
-  const storage = new Map<string, string>();
-  const windowTarget = new TestEventTarget() as TestEventTarget & {
-    document: TestDocument;
-    location: { pathname: string; href: string; search: string; hash: string };
-    localStorage: Storage;
-    sessionStorage: Storage;
-    matchMedia: (query: string) => MediaQueryList;
-    requestAnimationFrame: (callback: FrameRequestCallback) => number;
-    cancelAnimationFrame: (id: number) => void;
-    setTimeout: typeof setTimeout;
-    clearTimeout: typeof clearTimeout;
-    innerWidth: number;
-    innerHeight: number;
-    scrollY: number;
-    scrollTo: () => void;
-  };
-  windowTarget.document = document;
-  windowTarget.location = {
-    pathname: "/agent-market",
-    href: "http://test.local/agent-market",
-    search: "",
-    hash: "",
-  };
-  windowTarget.localStorage = {
-    getItem: (key) => storage.get(key) ?? null,
-    setItem: (key, value) => storage.set(key, value),
-    removeItem: (key) => storage.delete(key),
-    clear: () => storage.clear(),
-    key: (index) => [...storage.keys()][index] ?? null,
-    get length() {
-      return storage.size;
-    },
-  };
-  const sessionValues = new Map<string, string>();
-  windowTarget.sessionStorage = {
-    getItem: (key) => sessionValues.get(key) ?? null,
-    setItem: (key, value) => sessionValues.set(key, value),
-    removeItem: (key) => sessionValues.delete(key),
-    clear: () => sessionValues.clear(),
-    key: (index) => [...sessionValues.keys()][index] ?? null,
-    get length() {
-      return sessionValues.size;
-    },
-  };
-  windowTarget.matchMedia = () => ({
-    matches: false,
-    media: "",
-    onchange: null,
-    addEventListener() {},
-    removeEventListener() {},
-    addListener() {},
-    removeListener() {},
-    dispatchEvent() {
-      return false;
-    },
-  }) as MediaQueryList;
-  windowTarget.requestAnimationFrame = (callback) =>
-    setTimeout(() => callback(Date.now()), 0) as unknown as number;
-  windowTarget.cancelAnimationFrame = (id) => clearTimeout(id);
-  windowTarget.setTimeout = setTimeout;
-  windowTarget.clearTimeout = clearTimeout;
-  windowTarget.innerWidth = 1200;
-  windowTarget.innerHeight = 800;
-  windowTarget.scrollY = 0;
-  windowTarget.scrollTo = () => {};
-  Object.assign(windowTarget, {
-    Element: TestElement,
-    HTMLElement: TestElement,
-    HTMLInputElement: TestElement,
-    HTMLTextAreaElement: TestElement,
-    HTMLSelectElement: TestElement,
-    HTMLIFrameElement: TestElement,
-    SVGElement: TestElement,
-    CompositionEvent,
-    Node: TestNode,
-  });
-  document.defaultView = windowTarget as unknown as typeof window;
-  Object.assign(globalThis, {
-    window: windowTarget,
-    document,
-    localStorage: windowTarget.localStorage,
-    sessionStorage: windowTarget.sessionStorage,
-    Node: TestNode,
-    Element: TestElement,
-    HTMLElement: TestElement,
-    HTMLInputElement: TestElement,
-    HTMLTextAreaElement: TestElement,
-    HTMLSelectElement: TestElement,
-    HTMLIFrameElement: TestElement,
-    SVGElement: TestElement,
-    IS_REACT_ACT_ENVIRONMENT: true,
-    CompositionEvent,
-    requestAnimationFrame: windowTarget.requestAnimationFrame,
-    cancelAnimationFrame: windowTarget.cancelAnimationFrame,
-    CustomEvent: class {
-      readonly bubbles = true;
-      cancelBubble = false;
-      defaultPrevented = false;
-
-      constructor(
-        readonly type: string,
-        readonly init: { detail?: unknown } = {},
-      ) {}
-
-      get detail() {
-        return this.init.detail;
-      }
-    },
-    getComputedStyle: () => ({ getPropertyValue: () => "" }),
-  });
-  Object.defineProperty(globalThis, "navigator", {
-    configurable: true,
-    value: { userAgent: "node", locks: new TestLockManager() },
-  });
+  document.body.replaceChildren();
+  localStorage.clear();
+  sessionStorage.clear();
+  Object.defineProperty(navigator, "locks", { configurable: true, value: new TestLockManager() });
   installBrowserAuthTestDb();
-  return { document, window: windowTarget };
+  return { document, window };
+}
+
+function setInputValue(field: HTMLInputElement, value: string) {
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, value);
 }
 
 async function prepareShellHarness({ authenticated = false } = {}) {
@@ -461,16 +54,16 @@ async function prepareShellHarness({ authenticated = false } = {}) {
   const { AuthProvider, useAuth } = await import("../../../hooks/useAuth.tsx");
   const { ModelCatalogProvider } = await import("../../../contexts/ModelCatalogContext.tsx");
   const { ThemeProvider } = await import("../../../contexts/ThemeContext.tsx");
+  const { LobeUiProvider } = await import("../../../contexts/LobeUiProvider");
+  const { VirtuosoMockContext } = await import("react-virtuoso");
   const { authApi } = await import("../../../services/api/auth.ts");
   const { sessionApi } = await import("../../../services/api/session.ts");
   const { modelPublicApi } = await import("../../../services/api/modelPublic.ts");
-  const { notificationPublicApi } = await import("../../../services/api/notificationPublic.ts");
   const originals = {
     bootstrapAuthContext: authApi.bootstrapAuthContext,
     getCurrentUser: authApi.getCurrentUser,
     listSessions: sessionApi.list,
     listAvailableModels: modelPublicApi.listAvailable,
-    getActiveNotifications: notificationPublicApi.getActive,
   };
   authApi.bootstrapAuthContext = async (request) => ({
     status: "ready",
@@ -510,7 +103,6 @@ async function prepareShellHarness({ authenticated = false } = {}) {
     enabled_count: 1,
     default_model_id: "model-default",
   });
-  notificationPublicApi.getActive = async () => [];
 
   function AuthenticatedGate({ children }: { children: React.ReactNode }) {
     return useAuth().hasPermission(Permission.CHAT_WRITE) ? children : null;
@@ -521,22 +113,17 @@ async function prepareShellHarness({ authenticated = false } = {}) {
       const shellChildren = authenticated
         ? React.createElement(AuthenticatedGate, null, children)
         : children;
-      return React.createElement(
-        ThemeProvider,
-        null,
-        React.createElement(
-          AuthProvider,
-          null,
-          React.createElement(ModelCatalogProvider, null, shellChildren),
-        ),
-      );
+      return React.createElement(ThemeProvider, null,
+        React.createElement(LobeUiProvider, null,
+          React.createElement(AuthProvider, null,
+            React.createElement(ModelCatalogProvider, null,
+              React.createElement(VirtuosoMockContext.Provider, { value: { viewportHeight: 600, itemHeight: 100 } }, shellChildren)))));
     },
     restore() {
       authApi.bootstrapAuthContext = originals.bootstrapAuthContext;
       authApi.getCurrentUser = originals.getCurrentUser;
       sessionApi.list = originals.listSessions;
       modelPublicApi.listAvailable = originals.listAvailableModels;
-      notificationPublicApi.getActive = originals.getActiveNotifications;
     },
   };
 }
@@ -566,7 +153,7 @@ test("market search commits Chinese IME text only after composition ends", async
     return null;
   }
 
-  const container = dom.document.createElement("div");
+  const container = dom.document.body.appendChild(dom.document.createElement("div"));
   const root = ReactDOM.createRoot(container as never);
   try {
     await React.act(async () => {
@@ -598,43 +185,39 @@ test("market search commits Chinese IME text only after composition ends", async
     assert.equal(container.querySelectorAll("[data-agent-market-card]").length, 10);
     const moreTags = container.querySelector("details");
     assert.ok(moreTags, "additional market tags stay reachable without a sidebar");
-    const eighthTag = moreTags.querySelectorAll("button")
-      .find((button) => button.textContent?.includes("标签 8"));
+    const eighthTag = Array.from(moreTags.querySelectorAll("button"))
+      .find((button) => (button.textContent ?? "")?.includes("标签 8"));
     assert.ok(eighthTag);
     await React.act(async () => {
-      eighthTag.dispatchEvent({ type: "click", bubbles: true });
+      eighthTag.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
       await Promise.resolve();
     });
     assert.match(currentPath, /tag=%E6%A0%87%E7%AD%BE\+8/);
-    const allTags = container.querySelector("[data-agent-market-filter]")?.querySelectorAll("button")
-      .find((button) => button.textContent?.trim() === "全部");
+    const allTags = Array.from(container.querySelector("[data-agent-market-filter]")?.querySelectorAll("button") ?? [])
+      .find((button) => (button.textContent ?? "")?.trim() === "全部");
     assert.ok(allTags);
     await React.act(async () => {
-      allTags.dispatchEvent({ type: "click", bubbles: true });
+      allTags.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
       await Promise.resolve();
     });
     assert.equal(currentPath, "/agent-market");
     assert.equal(container.querySelectorAll("[data-agent-market-card]").length, 10);
 
-    const search = container.querySelector("[data-agent-market-search]");
+    const search = container.querySelector<HTMLInputElement>("[data-agent-market-search]");
     assert.ok(search);
     await React.act(async () => {
-      search.value = "f";
-      search.dispatchEvent({ type: "compositionstart", bubbles: true });
-      search.value = "fa";
-      search.dispatchEvent({ type: "input", bubbles: true });
+      setInputValue(search as HTMLInputElement, "f");
+      search.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+      setInputValue(search as HTMLInputElement, "fa");
+      search.dispatchEvent(new Event("input", { bubbles: true }));
       await Promise.resolve();
     });
     assert.equal(currentPath, "/agent-market");
     assert.equal(search.value, "fa");
 
     await React.act(async () => {
-      search.value = "法";
-      search.dispatchEvent({
-        type: "compositionend",
-        bubbles: true,
-        data: "法",
-      });
+      setInputValue(search as HTMLInputElement, "法");
+      search.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "法" }));
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -733,7 +316,7 @@ test("rendered Marketplace opens a productized bare workspace without creating a
     });
   }
 
-  const container = dom.document.createElement("div");
+  const container = dom.document.body.appendChild(dom.document.createElement("div"));
   const root = ReactDOM.createRoot(container as never);
   try {
     await React.act(async () => {
@@ -782,24 +365,24 @@ test("rendered Marketplace opens a productized bare workspace without creating a
     assert.ok(container.querySelector("[data-agent-market-view]"));
     assert.ok(container.querySelector("[data-agent-market-sort]"));
     assert.equal(
-      categoryGroup.querySelectorAll("button").find((button) => button.textContent?.includes("财务"))?.getAttribute(
+      Array.from(categoryGroup.querySelectorAll("button")).find((button) => (button.textContent ?? "")?.includes("财务"))?.getAttribute(
         "aria-pressed",
       ),
       "true",
     );
     assert.equal(
-      categoryGroup.querySelectorAll("button").find((button) => button.textContent === "全部")?.getAttribute(
+      Array.from(categoryGroup.querySelectorAll("button")).find((button) => (button.textContent ?? "") === "全部")?.getAttribute(
         "aria-pressed",
       ),
       "false",
     );
     assert.equal(container.querySelectorAll("[data-agent-market-card]").length, 1);
-    const customerServiceTag = categoryGroup
-      .querySelectorAll("button")
-      .find((button) => button.textContent?.includes("客户服务"));
+    const customerServiceTag = Array.from(categoryGroup
+      .querySelectorAll("button"))
+      .find((button) => (button.textContent ?? "")?.includes("客户服务"));
     assert.ok(customerServiceTag);
     await React.act(async () => {
-      customerServiceTag.dispatchEvent({ type: "click", bubbles: true });
+      customerServiceTag.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -808,7 +391,7 @@ test("rendered Marketplace opens a productized bare workspace without creating a
       "/agent-market?q=%E8%B4%A2%E5%8A%A1&tag=%E8%B4%A2%E5%8A%A1&tag=%E5%AE%A2%E6%88%B7%E6%9C%8D%E5%8A%A1",
     );
     assert.equal(
-      categoryGroup.querySelectorAll("button").find((button) => button.textContent?.includes("财务"))?.getAttribute(
+      Array.from(categoryGroup.querySelectorAll("button")).find((button) => (button.textContent ?? "")?.includes("财务"))?.getAttribute(
         "aria-pressed",
       ),
       "true",
@@ -816,53 +399,67 @@ test("rendered Marketplace opens a productized bare workspace without creating a
     assert.equal(customerServiceTag.getAttribute("aria-pressed"), "true");
     assert.equal(container.querySelectorAll("[data-agent-market-card]").length, 1);
     await React.act(async () => {
-      customerServiceTag.dispatchEvent({ type: "click", bubbles: true });
+      customerServiceTag.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
       await Promise.resolve();
       await Promise.resolve();
     });
     assert.equal(currentPath, "/agent-market?q=%E8%B4%A2%E5%8A%A1&tag=%E8%B4%A2%E5%8A%A1");
     assert.equal(customerServiceTag.getAttribute("aria-pressed"), "false");
+    const gridView = container.querySelector('[aria-label="网格视图"]');
     const listView = container.querySelector('[aria-label="列表视图"]');
+    assert.ok(gridView);
     assert.ok(listView);
+    assert.equal(gridView.getAttribute("aria-pressed"), "true");
+    assert.equal(listView.getAttribute("aria-pressed"), "false");
     await React.act(async () => {
-      listView.dispatchEvent({ type: "click", bubbles: true });
+      listView.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
       await Promise.resolve();
     });
     assert.equal(listView.getAttribute("aria-pressed"), "true");
+    assert.equal(gridView.getAttribute("aria-pressed"), "false");
+    assert.doesNotMatch(container.textContent ?? "", /企业已发布/);
     const marketCardClassName = container.querySelector("[data-agent-market-card]")?.getAttribute("class") ?? "";
     assert.match(marketCardClassName, /flex-col/);
     assert.match(marketCardClassName, /sm:flex-row/);
+    await React.act(async () => {
+      gridView.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      await Promise.resolve();
+    });
+    assert.equal(gridView.getAttribute("aria-pressed"), "true");
+    assert.equal(listView.getAttribute("aria-pressed"), "false");
+    assert.equal(container.querySelectorAll("[data-agent-market-card]").length, 1);
+    assert.match(container.querySelector("[data-agent-market-catalog]")?.className ?? "", /\bgrid\b/);
     const sortGroup = container.querySelector('[data-agent-market-sort]');
     assert.ok(sortGroup);
     assert.equal(sortGroup.querySelectorAll("button")[0].textContent, "我的收藏");
-    const taskSort = sortGroup
-      .querySelectorAll("button")
-      .find((button) => button.textContent === "完成任务最多");
+    const taskSort = Array.from(sortGroup
+      .querySelectorAll("button"))
+      .find((button) => (button.textContent ?? "") === "完成任务最多");
     assert.ok(taskSort);
     await React.act(async () => {
-      taskSort.dispatchEvent({ type: "click", bubbles: true });
+      taskSort.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
       await Promise.resolve();
     });
     assert.equal(taskSort.getAttribute("aria-pressed"), "true");
     assert.equal(catalogRequest, undefined);
 
-    const favoritesTab = container
-      .querySelectorAll("button")
-      .find((button) => button.textContent === "我的收藏");
+    const favoritesTab = Array.from(container
+      .querySelectorAll("button"))
+      .find((button) => (button.textContent ?? "") === "我的收藏");
     assert.ok(favoritesTab);
     await React.act(async () => {
-      favoritesTab.dispatchEvent({ type: "click", bubbles: true });
+      favoritesTab.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
       await Promise.resolve();
       await Promise.resolve();
     });
     assert.equal(currentPath, "/agent-market?q=%E8%B4%A2%E5%8A%A1&tab=favorites");
     assert.equal(container.querySelectorAll("[data-agent-market-card]").length, 0);
-    assert.match(container.textContent, /尚未收藏专家/);
+    assert.match((container.textContent ?? ""), /尚未收藏专家/);
 
     const tagsTab = container.querySelector("[data-agent-market-favorites]");
     assert.ok(tagsTab);
     await React.act(async () => {
-      tagsTab.dispatchEvent({ type: "click", bubbles: true });
+      tagsTab.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -870,24 +467,24 @@ test("rendered Marketplace opens a productized bare workspace without creating a
     assert.equal(container.querySelectorAll("[data-agent-market-card]").length, 1);
     assert.ok(container.querySelector("[data-agent-market]"));
 
-    const search = container.querySelector("[data-agent-market-search]");
+    const search = container.querySelector<HTMLInputElement>("[data-agent-market-search]");
     assert.ok(search);
     assert.equal(search.value, "财务");
     assert.equal(container.querySelectorAll("[data-agent-market-card]").length, 1);
-    assert.match(container.textContent, /财务助手/);
-    assert.match(container.textContent, /财务/);
-    assert.match(container.textContent, /已完成任务/);
-    assert.match(container.textContent, /7/);
-    assert.doesNotMatch(container.textContent, /支持助手/);
+    assert.match((container.textContent ?? ""), /财务助手/);
+    assert.match((container.textContent ?? ""), /财务/);
+    assert.match((container.textContent ?? ""), /已完成任务/);
+    assert.match((container.textContent ?? ""), /7/);
+    assert.doesNotMatch((container.textContent ?? ""), /支持助手/);
 
-    const primaryAction = container
-      .querySelectorAll("button")
+    const primaryAction = Array.from(container
+      .querySelectorAll("button"))
       .find((button) => button.getAttribute("aria-label") === "使用 财务助手 开始合作");
     assert.ok(primaryAction, "filtered published card should open its dedicated workspace");
     assert.equal(primaryAction.nodeName, "BUTTON", "native button semantics preserve keyboard activation");
     assert.equal(primaryAction.getAttribute("type"), "button");
     await React.act(async () => {
-      primaryAction.dispatchEvent({ type: "click", bubbles: true });
+      primaryAction.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -900,17 +497,17 @@ test("rendered Marketplace opens a productized bare workspace without creating a
     const returnToMarket = container.querySelector("[data-agent-workspace]");
     assert.ok(returnToMarket);
     await React.act(async () => {
-      returnToMarket.dispatchEvent({ type: "click", bubbles: true });
+      returnToMarket.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
       await Promise.resolve();
       await Promise.resolve();
     });
 
-    const detailAction = container
-      .querySelectorAll("button")
+    const detailAction = Array.from(container
+      .querySelectorAll("button"))
       .find((button) => button.getAttribute("aria-label") === "查看 财务助手 详情");
     assert.ok(detailAction, "detail remains an explicit secondary action");
     await React.act(async () => {
-      detailAction.dispatchEvent({ type: "click", bubbles: true });
+      detailAction.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -920,21 +517,21 @@ test("rendered Marketplace opens a productized bare workspace without creating a
       "/agent-market/agt_finance?q=%E8%B4%A2%E5%8A%A1&tag=%E8%B4%A2%E5%8A%A1",
     );
     assert.ok(container.querySelector("[data-agent-market-detail]"));
-    assert.match(container.textContent, /核对报销材料/);
-    assert.match(container.textContent, /企业已发布/);
-    assert.doesNotMatch(container.textContent, /版本 2/);
-    assert.match(container.textContent, /已发布的 Skill Set/);
+    assert.match((container.textContent ?? ""), /核对报销材料/);
+    assert.doesNotMatch((container.textContent ?? ""), /企业已发布/);
+    assert.doesNotMatch((container.textContent ?? ""), /版本 2/);
+    assert.match((container.textContent ?? ""), /已发布的 Skill Set/);
     assert.doesNotMatch(
-      container.textContent,
+      (container.textContent ?? ""),
       /PRIVATE_PROMPT|private-model|private-mcp|private-skill|private-version/,
     );
 
-    const startChat = container
-      .querySelectorAll("button")
+    const startChat = Array.from(container
+      .querySelectorAll("button"))
       .find((button) => button.hasAttribute("data-agent-market-start-chat"));
     assert.ok(startChat, "detail must expose an explicit workspace command");
     await React.act(async () => {
-      startChat.dispatchEvent({ type: "click", bubbles: true });
+      startChat.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -1046,9 +643,8 @@ test("Agent starter prompts draft before explicit first-message submission", asy
     return null;
   }
 
-  const container = dom.document.createElement("div");
+  const container = dom.document.body.appendChild(dom.document.createElement("div"));
   const root = ReactDOM.createRoot(container as never);
-  const reliableSessionStorage = dom.window.sessionStorage;
   async function waitUntil(predicate: () => boolean) {
     for (let attempt = 0; attempt < 40 && !predicate(); attempt += 1) {
       await React.act(async () => {
@@ -1057,13 +653,13 @@ test("Agent starter prompts draft before explicit first-message submission", asy
     }
   }
   async function draftStarterPrompt(expectedCount: number) {
-    const starterPrompt = container
-      .querySelectorAll("button")
-      .find((button) => button.textContent.includes("帮我处理企业任务"));
+    const starterPrompt = Array.from(container
+      .querySelectorAll("button"))
+      .find((button) => (button.textContent ?? "").includes("帮我处理企业任务"));
     assert.ok(starterPrompt);
     assert.equal(starterPrompt.hasAttribute("disabled"), false);
     await React.act(async () => {
-      starterPrompt.dispatchEvent({ type: "click", bubbles: true });
+      starterPrompt.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     });
 
     const textarea = container.querySelector("textarea");
@@ -1088,7 +684,7 @@ test("Agent starter prompts draft before explicit first-message submission", asy
     const form = textarea.closest("form");
     assert.ok(form);
     await React.act(async () => {
-      form.dispatchEvent({ type: "submit", bubbles: true });
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     });
     await waitUntil(
       () => selections.length === expectedCount && submissions.length === expectedCount,
@@ -1098,7 +694,7 @@ test("Agent starter prompts draft before explicit first-message submission", asy
     assert.equal(
       submissions.length,
       expectedCount,
-      `explicit submit must reach submitChat; rendered UI: ${container.textContent}`,
+      `explicit submit must reach submitChat; rendered UI: ${(container.textContent ?? "")}`,
     );
     assert.equal(submissions[expectedCount - 1]?.[0], "帮我处理企业任务");
     assert.equal(submissions[expectedCount - 1]?.[1], expectedSessionId);
@@ -1138,32 +734,41 @@ test("Agent starter prompts draft before explicit first-message submission", asy
     await waitUntil(() => container.querySelector("[data-agent-market-card]") !== null);
 
     assert.equal(currentPath, "/agent-market");
-    const marketStart = container
-      .querySelectorAll("button")
+    const marketStart = Array.from(container
+      .querySelectorAll("button"))
       .find((button) => button.getAttribute("aria-label") === "使用 支持助手 开始合作");
     assert.ok(marketStart);
     await React.act(async () => {
-      marketStart.dispatchEvent({ type: "click", bubbles: true });
+      marketStart.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     });
     await waitUntil(() => container.querySelector("[data-agent-chat-opening]") !== null);
 
     assert.equal(currentPath, "/agent-market/agt_support/chat");
     assert.deepEqual(selections, []);
-    assert.match(container.textContent, /处理企业内部支持请求/);
+    assert.match((container.textContent ?? ""), /处理企业内部支持请求/);
     assert.ok(container.querySelector("[data-agent-starter-prompts]"));
     assert.ok(container.querySelector("textarea"));
+    const opening = container.querySelector("[data-agent-opening-message]");
+    assert.ok(opening, "the published description is the opening text");
+    assert.equal(opening.textContent, profile.description, "the opening shows the description verbatim");
+    assert.equal(container.querySelectorAll("[data-agent-opening-message]").length, 1);
+    assert.equal(
+      container.querySelectorAll("[data-agent-opening] h1")[0]?.textContent,
+      profile.name,
+      "the opening keeps the Agent name",
+    );
 
     await draftStarterPrompt(0);
     assert.equal(currentPath, "/agent-market/agt_support/chat");
     await submitDraft(1, "session-support-1");
     assert.equal(currentPath, "/agent-market/agt_support/chat");
 
-    const startNewTask = container
-      .querySelectorAll("button")
+    const startNewTask = Array.from(container
+      .querySelectorAll("button"))
       .find((button) => button.getAttribute("aria-label") === "开始新任务");
     assert.ok(startNewTask);
     await React.act(async () => {
-      startNewTask.dispatchEvent({ type: "click", bubbles: true });
+      startNewTask.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     });
     await waitUntil(
       () =>
@@ -1189,7 +794,6 @@ test("Agent starter prompts draft before explicit first-message submission", asy
     const operationIds = selections.map(({ operationId }) => operationId);
     assert.equal(new Set(operationIds).size, 2);
   } finally {
-    dom.window.sessionStorage = reliableSessionStorage;
     agentProfileApi.listPublished = originalListPublished;
     agentProfileApi.getPublished = originalGetPublished;
     agentProfileApi.listConversations = originalListConversations;
@@ -1198,6 +802,143 @@ test("Agent starter prompts draft before explicit first-message submission", asy
     sessionApi.getAuthoritative = originalGetAuthoritative;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.submitChat = originalSubmitChat;
+    shellHarness.restore();
+    await React.act(async () => root.unmount());
+  }
+});
+
+test("the opening shows the profile description verbatim and never replays it into history", async () => {
+  const dom = installDom();
+  const ReactDOM = await import("react-dom/client");
+  const { MemoryRouter, Route, Routes } = await import("react-router-dom");
+  const { AgentWorkspaceRoute } = await import("../AgentWorkspaceRoute.tsx");
+  const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const shellHarness = await prepareShellHarness();
+  const multiLineDescription = "负责核对制剂章节的数据完整性。\n先确认来源，再列出需要补充的证据。";
+  const profiles: Record<string, ReturnType<typeof profileFor>> = {};
+  function profileFor(agentId: string, description: string) {
+    return {
+      ...enterpriseProfileFields,
+      agent_id: agentId,
+      name: `${agentId} 专家`,
+      description,
+      avatar_ref: "builtin:assistant" as const,
+      category: "support",
+    };
+  }
+  profiles.agt_multiline = profileFor("agt_multiline", multiLineDescription);
+  profiles.agt_empty = profileFor("agt_empty", "");
+  const originalGetPublished = agentProfileApi.getPublished;
+  const originalListConversations = agentProfileApi.listConversations;
+  const originalGet = sessionApi.get;
+  const originalGetAuthoritative = sessionApi.getAuthoritative;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalCreateConversation = agentProfileApi.createConversation;
+  const created: unknown[] = [];
+  agentProfileApi.getPublished = (async (agentId: string) => profiles[agentId]) as typeof agentProfileApi.getPublished;
+  agentProfileApi.listConversations = (async () => ({ sessions: [], next_cursor: null })) as typeof agentProfileApi.listConversations;
+  agentProfileApi.createConversation = (async (selection: unknown) => {
+    created.push(selection);
+    throw new Error("the opening must never create a conversation");
+  }) as typeof agentProfileApi.createConversation;
+  sessionApi.get = (async (sessionId: string) => ({
+    id: sessionId,
+    agent_id: "agt_multiline",
+    created_at: "2026-08-17T00:00:00Z",
+    updated_at: "2026-08-17T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  })) as typeof sessionApi.get;
+  sessionApi.getAuthoritative = (async (sessionId: string) => ({
+    session_id: sessionId,
+    workspace_id: "default",
+    agent_id: "agt_multiline",
+    title: "历史会话",
+    purpose: "conversation",
+    agent_conversation: {
+      ...enterpriseProfileFields,
+      agent_id: "agt_multiline",
+      revision: 2,
+      name: "agt_multiline 专家",
+      description: multiLineDescription,
+      avatar_ref: "builtin:assistant",
+    },
+  })) as typeof sessionApi.getAuthoritative;
+  sessionApi.getEvents = (async (sessionId: string) => ({
+    events: [{
+      id: `event-${sessionId}`,
+      run_id: `run-${sessionId}`,
+      event_type: "user:message",
+      timestamp: "2026-08-17T00:00:00Z",
+      data: { content: "已保存的历史提问" },
+    }],
+  })) as typeof sessionApi.getEvents;
+
+  const container = dom.document.body.appendChild(dom.document.createElement("div"));
+  const root = ReactDOM.createRoot(container as never);
+  const settle = async () => {
+    for (let index = 0; index < 12; index += 1) await Promise.resolve();
+  };
+  const renderRoute = async (path: string) => {
+    await React.act(async () => {
+      root.render(
+        React.createElement(
+          MemoryRouter,
+          { initialEntries: [path] },
+          shellHarness.wrap(
+            React.createElement(
+              Routes,
+              null,
+              React.createElement(Route, {
+                path: "/agent-market/:agentId/chat/:sessionId?",
+                element: React.createElement(AgentWorkspaceRoute),
+              }),
+            ),
+          ),
+        ),
+      );
+      await settle();
+    });
+  };
+  try {
+    await renderRoute("/agent-market/agt_multiline/chat");
+    const opening = container.querySelector("[data-agent-opening-message]");
+    assert.ok(opening, "a configured description becomes the opening text");
+    assert.equal(opening.textContent, multiLineDescription);
+    assert.match(opening.className, /whitespace-pre-wrap/);
+    assert.match(opening.className, /text-\[15px\]/);
+    assert.equal(created.length, 0, "rendering the opening creates no conversation");
+
+    await React.act(async () => root.render(React.createElement(React.Fragment)));
+    await renderRoute("/agent-market/agt_empty/chat");
+    assert.equal(
+      container.querySelector("[data-agent-opening-message]"),
+      null,
+      "an empty description shows no invented opening",
+    );
+    assert.match(container.querySelector("[data-agent-opening]")?.textContent ?? "", /agt_empty 专家/);
+    assert.ok(container.querySelector("[data-agent-starter-prompts]"), "an empty description keeps starter prompts");
+
+    await React.act(async () => root.render(React.createElement(React.Fragment)));
+    await renderRoute("/agent-market/agt_multiline/chat/session-existing");
+    assert.equal(
+      container.querySelector("[data-agent-opening-message]"),
+      null,
+      "an existing transcript must not replay the opening",
+    );
+    assert.ok(
+      container.querySelector("[data-chat-transcript]"),
+      "an existing transcript keeps its own message surface",
+    );
+    assert.equal(created.length, 0, "reading the opening never creates a conversation or run");
+  } finally {
+    agentProfileApi.getPublished = originalGetPublished;
+    agentProfileApi.listConversations = originalListConversations;
+    agentProfileApi.createConversation = originalCreateConversation;
+    sessionApi.get = originalGet;
+    sessionApi.getAuthoritative = originalGetAuthoritative;
+    sessionApi.getEvents = originalGetEvents;
     shellHarness.restore();
     await React.act(async () => root.unmount());
   }
@@ -1282,7 +1023,7 @@ test("a prior-publication conversation stays writable while the current Agent is
     return null;
   }
 
-  const container = dom.document.createElement("div");
+  const container = dom.document.body.appendChild(dom.document.createElement("div"));
   const root = ReactDOM.createRoot(container as never);
   try {
     await React.act(async () => {
@@ -1313,8 +1054,8 @@ test("a prior-publication conversation stays writable while the current Agent is
     assert.equal(currentPath, "/agent-market/agt_support/chat/session-v4");
     assert.deepEqual(historySelections, [{ agent_id: "agt_support" }]);
     assert.deepEqual(conversationSelections, []);
-    assert.match(container.textContent, /支持助手 V4/);
-    assert.doesNotMatch(container.textContent, /支持助手 V5/);
+    assert.match((container.textContent ?? ""), /支持助手 V4/);
+    assert.doesNotMatch((container.textContent ?? ""), /支持助手 V5/);
     const composer = container.querySelector("textarea");
     assert.ok(composer, "the prior publication keeps its transcript composer frame");
     assert.equal(container.querySelector("[data-agent-workspace-readonly]"), null);
@@ -1382,7 +1123,7 @@ test("a withdrawn or retired Agent direct link stays read-only without navigatio
     return null;
   }
 
-  const container = dom.document.createElement("div");
+  const container = dom.document.body.appendChild(dom.document.createElement("div"));
   const root = ReactDOM.createRoot(container as never);
   try {
     await React.act(async () => {
@@ -1413,8 +1154,8 @@ test("a withdrawn or retired Agent direct link stays read-only without navigatio
     assert.equal(currentPath, "/agent-market/agt_support/chat/session-v4");
     assert.deepEqual(historySelections, [{ agent_id: "agt_support" }]);
     assert.deepEqual(conversationSelections, []);
-    assert.match(container.textContent, /已下架支持助手 V4/);
-    assert.doesNotMatch(container.textContent, /V4 历史会话/);
+    assert.match((container.textContent ?? ""), /已下架支持助手 V4/);
+    assert.doesNotMatch((container.textContent ?? ""), /V4 历史会话/);
     const composer = container.querySelector("textarea");
     assert.ok(composer, "the historical transcript keeps its composer frame");
     assert.equal(composer.hasAttribute("disabled"), true);
@@ -1450,7 +1191,7 @@ test("an Agent-id detail URL resolves the current published profile", async () =
     currentPath = useLocation().pathname;
     return null;
   }
-  const container = dom.document.createElement("div");
+  const container = dom.document.body.appendChild(dom.document.createElement("div"));
   const root = ReactDOM.createRoot(container as never);
   try {
     await React.act(async () => {
@@ -1483,8 +1224,8 @@ test("an Agent-id detail URL resolves the current published profile", async () =
 
     assert.equal(currentPath, "/agent-market/agt_support");
     assert.ok(container.querySelector("[data-agent-market-detail]"));
-    assert.match(container.textContent, /支持助手/);
-    assert.match(container.textContent, /当前发布版本/);
+    assert.match((container.textContent ?? ""), /支持助手/);
+    assert.match((container.textContent ?? ""), /当前发布版本/);
     assert.equal(container.querySelector("[data-workbench-header]"), null);
     assert.ok(container.querySelector("[data-librechat-desktop-sidebar]"));
   } finally {
@@ -1647,8 +1388,8 @@ test("a route-param change never wires Agent A into Agent B while B is loading o
     }
   };
   const hasTranscriptForSession = (sessionId: string) =>
-    container
-      .querySelectorAll("[data-chat-transcript]")
+    Array.from(container
+      .querySelectorAll("[data-chat-transcript]"))
       .some((transcript) => transcript.getAttribute("data-session-id") === sessionId);
   const assertNoAgentAArtifacts = (state: string) => {
     assert.ok(
@@ -1656,7 +1397,7 @@ test("a route-param change never wires Agent A into Agent B while B is loading o
       `${state} must render the fail-closed workspace state`,
     );
     assert.doesNotMatch(
-      container.textContent,
+      (container.textContent ?? ""),
       /Agent A sidebar session/,
       `${state} must not retain Agent A sidebar history`,
     );
@@ -1666,14 +1407,14 @@ test("a route-param change never wires Agent A into Agent B while B is loading o
       `${state} must not retain an Agent A transcript node`,
     );
     assert.equal(
-      container.querySelectorAll("button").some((button) =>
+      Array.from(container.querySelectorAll("button")).some((button) =>
         button.className.split(" ").includes("chat-tool-btn"),
       ),
       false,
       `${state} must not expose a generic tool control`,
     );
   };
-  const container = dom.document.createElement("div");
+  const container = dom.document.body.appendChild(dom.document.createElement("div"));
   const root = ReactDOM.createRoot(container as never);
   let routeLocation = {
     pathname: "/agent-market/agt_a/chat/session-a",
@@ -1719,7 +1460,7 @@ test("a route-param change never wires Agent A into Agent B while B is loading o
       await settle();
     });
 
-    assert.match(container.textContent, /Agent A sidebar session/);
+    assert.match((container.textContent ?? ""), /Agent A sidebar session/);
     assert.equal(hasTranscriptForSession("session-a"), true);
 
     setRoute("/agent-market/agt_b/chat/session-b");
@@ -1771,9 +1512,9 @@ test("a route-param change never wires Agent A into Agent B while B is loading o
       await settle();
     });
 
-    assert.match(container.textContent, /Agent B sidebar session/);
+    assert.match((container.textContent ?? ""), /Agent B sidebar session/);
     assert.equal(hasTranscriptForSession("session-b"), true);
-    assert.doesNotMatch(container.textContent, /Agent A sidebar session/);
+    assert.doesNotMatch((container.textContent ?? ""), /Agent A sidebar session/);
     assert.equal(hasTranscriptForSession("session-a"), false);
   } finally {
     agentProfileApi.getPublished = originalGetPublished;
@@ -1810,7 +1551,7 @@ test("main chat exposes event-only history failure and a read-only retry", async
   sessionApi.getRunInputHistory = async (sessionId) => ({ session_id: sessionId, runs: [], has_more: false, next_before_run_id: null });
   let readEvents: typeof sessionApi.getEvents = async () => { throw new ApiRequestError("PRIVATE_EVENT_HISTORY_FAILURE", 503, "service_unavailable", undefined, "diag_0123456789abcdef"); };
   sessionApi.getEvents = async (...args) => { calls.events += 1; return readEvents(...args); };
-  const container = dom.document.createElement("div");
+  const container = dom.document.body.appendChild(dom.document.createElement("div"));
   const root = ReactDOM.createRoot(container as never);
   let navigate!: ReturnType<typeof useNavigate>;
   function RouteProbe() { navigate = useNavigate(); return null; }
@@ -1830,32 +1571,32 @@ test("main chat exposes event-only history failure and a read-only retry", async
     assert.ok(calls.identity >= 2, "both hook authority and page identity GETs succeeded");
     const alert = container.querySelector("[data-chat-history-read-error]");
     assert.ok(alert, "events-only failure must have a mounted main-chat UI exit");
-    assert.match(alert.textContent, /历史消息暂时无法读取/);
-    assert.match(alert.textContent, /HTTP 503/);
-    assert.match(alert.textContent, /错误代码: service_unavailable/);
-    assert.match(alert.textContent, /问题编号: diag_0123456789abcdef/);
-    assert.doesNotMatch(container.textContent, /PRIVATE_EVENT_HISTORY_FAILURE|已删除/);
+    assert.match((alert.textContent ?? ""), /历史消息暂时无法读取/);
+    assert.match((alert.textContent ?? ""), /HTTP 503/);
+    assert.match((alert.textContent ?? ""), /错误代码: service_unavailable/);
+    assert.match((alert.textContent ?? ""), /问题编号: diag_0123456789abcdef/);
+    assert.doesNotMatch((container.textContent ?? ""), /PRIVATE_EVENT_HISTORY_FAILURE|已删除/);
     assert.equal(calls.submit, 0);
     const button = alert.querySelector("button");
     assert.ok(button);
-    assert.match(button.textContent, /重试读取历史/);
+    assert.match((button.textContent ?? ""), /重试读取历史/);
     let rejectRetry!: (error: Error) => void;
     readEvents = () => new Promise((_, reject) => { rejectRetry = reject; });
     await React.act(async () => {
-      button.dispatchEvent({ type: "click" });
-      button.dispatchEvent({ type: "click" });
+      button.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      button.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     });
     assert.equal(calls.events, 2, "duplicate clicks share one bounded read attempt");
     assert.equal(calls.submit, 0, "explicit history retry never submits a task");
     await React.act(async () => rejectRetry(new ApiRequestError("PRIVATE_RETRY_FAILURE", 999, "private/path?token=secret", undefined, "diag_private_secret")));
     const retryAlert = container.querySelector("[data-chat-history-read-error]");
     assert.ok(retryAlert);
-    assert.doesNotMatch(retryAlert.textContent, /HTTP 999|private|secret|PRIVATE_|diag_|service_unavailable/);
+    assert.doesNotMatch((retryAlert.textContent ?? ""), /HTTP 999|private|secret|PRIVATE_|diag_|service_unavailable/);
     await React.act(async () => { await Promise.resolve(); });
     assert.equal(calls.events, 2, "failure must not automatically retry");
     readEvents = async () => ({ events: [] });
     await React.act(async () => {
-      container.querySelector("[data-chat-history-read-error]")!.querySelector("button")!.dispatchEvent({ type: "click" });
+      container.querySelector("[data-chat-history-read-error]")!.querySelector("button")!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     });
     assert.equal(calls.events, 3);
     assert.equal(calls.submit, 0, "successful history retry stays read-only");
@@ -1871,30 +1612,30 @@ test("main chat exposes event-only history failure and a read-only retry", async
     await React.act(async () => rejectOldRoute(new ApiRequestError("PRIVATE_OLD_ROUTE", 503, "old_owner_failure", undefined, "diag_aaaaaaaaaaaaaaaa")));
     assert.equal(container.querySelector("[data-chat-history-read-error]"), null);
     assert.equal(calls.submit, 0);
-    assert.doesNotMatch(container.textContent, /PRIVATE_|已删除|old_owner_failure|diag_aaaaaaaaaaaaaaaa/);
+    assert.doesNotMatch((container.textContent ?? ""), /PRIVATE_|已删除|old_owner_failure|diag_aaaaaaaaaaaaaaaa/);
 
     readEvents = async () => ({ events: [{ id: "message-c", event_type: "user:message", timestamp: "2026-01-01T00:00:00Z", data: { content: "Readable C transcript" } }] });
     await React.act(async () => navigate("/chat/session-c"));
-    assert.ok(container.querySelectorAll("[data-chat-transcript]").some((node) => node.getAttribute("data-session-id") === "session-c"));
+    assert.ok(Array.from(container.querySelectorAll("[data-chat-transcript]")).some((node) => node.getAttribute("data-session-id") === "session-c"));
     readEvents = async () => { throw new Error("PRIVATE_NETWORK_ERROR /private/path token=secret"); };
     await React.act(async () => navigate("/chat/session-a"));
     assert.ok(container.querySelector("[data-chat-history-read-error]"));
-    assert.equal(container.querySelectorAll("[data-chat-transcript]").some((node) => node.getAttribute("data-session-id") === "session-c"), false, "no old transcript crosses Session ownership");
-    assert.doesNotMatch(container.querySelector("[data-chat-history-read-error]")!.textContent, /PRIVATE_|private|secret|HTTP|diag_|service_unavailable/);
+    assert.equal(Array.from(container.querySelectorAll("[data-chat-transcript]")).some((node) => node.getAttribute("data-session-id") === "session-c"), false, "no old transcript crosses Session ownership");
+    assert.doesNotMatch((container.querySelector("[data-chat-history-read-error]")!.textContent ?? ""), /PRIVATE_|private|secret|HTTP|diag_|service_unavailable/);
 
     // A status-only API error retains useful HTTP evidence without inventing
     // missing diagnostic metadata or disclosing its unknown private message.
     readEvents = async () => { throw new ApiRequestError("PRIVATE_STATUS_ONLY /private/path token=secret", 503); };
     const statusOnlyReadCount = calls.events;
     await React.act(async () => {
-      container.querySelector("[data-chat-history-read-error]")!.querySelector("button")!.dispatchEvent({ type: "click" });
+      container.querySelector("[data-chat-history-read-error]")!.querySelector("button")!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     });
     const statusOnlyAlert = container.querySelector("[data-chat-history-read-error]");
     assert.ok(statusOnlyAlert);
-    assert.match(statusOnlyAlert.textContent, /历史消息暂时无法读取/);
-    assert.match(statusOnlyAlert.textContent, /加载会话失败/);
-    assert.match(statusOnlyAlert.textContent, /HTTP 503/);
-    assert.doesNotMatch(statusOnlyAlert.textContent, /PRIVATE_STATUS_ONLY|private|secret|错误代码|问题编号|diag_/);
+    assert.match((statusOnlyAlert.textContent ?? ""), /历史消息暂时无法读取/);
+    assert.match((statusOnlyAlert.textContent ?? ""), /加载会话失败/);
+    assert.match((statusOnlyAlert.textContent ?? ""), /HTTP 503/);
+    assert.doesNotMatch((statusOnlyAlert.textContent ?? ""), /PRIVATE_STATUS_ONLY|private|secret|错误代码|问题编号|diag_/);
     assert.equal(calls.events, statusOnlyReadCount + 1);
     assert.equal(calls.submit, 0);
   } finally {

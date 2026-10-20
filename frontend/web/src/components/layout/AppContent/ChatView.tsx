@@ -1,3 +1,4 @@
+import { Button } from "@lobehub/ui/base-ui";
 import {
   createContext,
   useMemo,
@@ -12,12 +13,14 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 import { ListTree } from "lucide-react";
-import { ThreadPrimitive } from "@assistant-ui/react";
-import toast from "react-hot-toast";
+import { ThreadPrimitive, type ExternalStoreThreadListAdapter } from "@assistant-ui/react";
+import { toast } from "@lobehub/ui/base-ui";
 import { useAuth } from "../../../hooks/useAuth";
 import { ChatMessage } from "../../chat/ChatMessage";
 import { AssistantUiProjection } from "../../chat/assistant-ui/AssistantUiProjection";
-import { AssistantUiMessageFrame } from "../../chat/assistant-ui/MessageFrame";
+import { FollowUpSuggestionsGate } from "../../chat/assistant-ui/FollowUpSuggestionsGate";
+import { useFollowUpSuggestions } from "../../chat/assistant-ui/useFollowUpSuggestions";
+import { ThreadMessage } from "../../chat/assistant-ui/elements/thread";
 import { AttachmentPreviewHost } from "../../chat/AttachmentPreviewHost";
 import { RevealPreviewHost } from "../../chat/ChatMessage/items/RevealPreviewHost";
 import { SessionImageGalleryProvider } from "../../chat/ChatMessage/sessionImageGallery";
@@ -143,7 +146,7 @@ const AssistantUiMessageContentContext = createContext<ReactNode>(null);
 
 function AssistantUiProjectedMessage() {
   const content = useContext(AssistantUiMessageContentContext);
-  return <AssistantUiMessageFrame>{content}</AssistantUiMessageFrame>;
+  return <ThreadMessage>{content}</ThreadMessage>;
 }
 
 const ASSISTANT_UI_MESSAGE_COMPONENTS = {
@@ -152,6 +155,7 @@ const ASSISTANT_UI_MESSAGE_COMPONENTS = {
 
 interface ChatViewProps {
   messages: Message[];
+  threadListAdapter?: ExternalStoreThreadListAdapter;
   sessionId: string | null;
   conversationIdentityKey: string;
   currentRunId: string | null;
@@ -172,7 +176,6 @@ interface ChatViewProps {
   onToggleTool: (name: string) => void;
   onToggleCategory: (category: ToolCategory, enabled: boolean) => void;
   onToggleAll: (enabled: boolean) => void;
-  toolsLoading: boolean;
   enabledToolsCount: number;
   totalToolsCount: number;
   skills: SkillResponse[];
@@ -225,6 +228,7 @@ interface ChatViewProps {
 
 export function ChatView({
   messages,
+  threadListAdapter,
   sessionId,
   conversationIdentityKey,
   currentRunId,
@@ -245,7 +249,6 @@ export function ChatView({
   onToggleTool,
   onToggleCategory,
   onToggleAll,
-  toolsLoading,
   enabledToolsCount,
   totalToolsCount,
   taskSkills,
@@ -283,6 +286,8 @@ export function ChatView({
 }: ChatViewProps) {
   const { t } = useTranslation();
   const { user } = useAuth();
+  // One scope for account changes: a different principal can never inherit these receipts.
+  const authScopeKey = `${user?.tenant_id ?? ""}:${user?.id ?? ""}`;
   const artifactDownloadScopeContext = useMemo(
     () =>
       createArtifactDownloadScopeContext({
@@ -304,12 +309,6 @@ export function ChatView({
     selectedSkillRevision: 0,
     pendingScopeHandoff: false,
   });
-  const setComposerInput = useCallback((value: string) => {
-    const snapshot = composerDraftSnapshotRef.current;
-    snapshot.revision += 1;
-    snapshot.value = value;
-    snapshot.apply?.(value);
-  }, []);
   const [workspaceProjection, setWorkspaceProjection] =
     useState<SessionWorkspaceProjection>({
       session_id: null,
@@ -470,6 +469,13 @@ export function ChatView({
         visibleWorkspaceProjection.inputFiles,
       ),
     [messages, visibleWorkspaceProjection.inputFiles],
+  );
+
+  const followUpSuggestions = useFollowUpSuggestions(
+    authScopeKey,
+    sessionId,
+    displayMessages,
+    canSendInCurrentView && !sessionRunning,
   );
 
   const getActiveOutlineId = useCallback(
@@ -883,15 +889,19 @@ export function ChatView({
   );
 
   const virtuosoItemContent = useCallback(
-    (index: number, message: (typeof messages)[number]) => (
+    (_index: number, message: (typeof messages)[number]) => (
       <AssistantUiMessageContentContext.Provider
         value={
-          <ChatMessage
-            message={message}
-            artifactDownloadScopeContext={artifactDownloadScopeContext}
-            isLastMessage={index === messages.length - 1}
-            onOpenPreview={handleOpenPreview}
-          />
+          <div
+            className="contents"
+            data-browser-run-id={message.role === "assistant" ? message.runId : undefined}
+            data-browser-session-id={sessionId ?? undefined}
+          >
+            <ChatMessage
+              artifactDownloadScopeContext={artifactDownloadScopeContext}
+              onOpenPreview={handleOpenPreview}
+            />
+          </div>
         }
       >
         <ThreadPrimitive.Unstable_MessageById
@@ -902,7 +912,7 @@ export function ChatView({
     ),
     [
       artifactDownloadScopeContext,
-      messages.length,
+      sessionId,
       handleOpenPreview,
     ],
   );
@@ -913,6 +923,7 @@ export function ChatView({
     initialDraftKey: initialComposerDraftKey,
     draftSnapshotRef: composerDraftSnapshotRef,
     draftScopeKey: sessionId,
+    runControlKey: currentRunId,
     attachmentScopeKey: conversationIdentityKey,
     draftScopeHandoffKey: composerDraftHandoffKey,
     onSend: onSendMessage,
@@ -927,7 +938,6 @@ export function ChatView({
     onToggleTool,
     onToggleCategory,
     onToggleAll,
-    toolsLoading,
     enabledToolsCount,
     totalToolsCount,
     skills: taskSkills,
@@ -976,7 +986,7 @@ export function ChatView({
         <div
           className={`absolute right-3 sm:right-4 z-50 flex flex-col gap-1.5 ${FLOATING_SCROLL_BUTTON_OFFSET_CLASS}`}
         >
-          <button
+          <Button type="text"
             onClick={scrollToTop}
             className="flex items-center rounded-full border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-2 text-[var(--theme-text-secondary)] shadow-[0_4px_12px_rgba(18,38,63,0.03)] transition-colors duration-200 hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)] active:scale-95 dark:bg-stone-900 dark:hover:bg-stone-800"
             aria-label={t("chat.scrollToTop", "Scroll to top")}
@@ -993,12 +1003,12 @@ export function ChatView({
                 clipRule="evenodd"
               />
             </svg>
-          </button>
+          </Button>
         </div>
       )}
 
       {messages.length > 0 && !isNearBottom && (
-        <button
+        <Button type="text"
           onClick={scrollToBottom}
           className={`absolute left-1/2 z-50 flex items-center rounded-full border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-2 text-[var(--theme-text-secondary)] shadow-[0_4px_12px_rgba(18,38,63,0.03)] transition-colors duration-200 hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)] active:scale-95 dark:bg-stone-900 dark:hover:bg-stone-800 ${FLOATING_SCROLL_BUTTON_OFFSET_CLASS} -translate-x-1/2`}
           aria-label={t("chat.scrollToBottom", "Scroll to bottom")}
@@ -1015,7 +1025,7 @@ export function ChatView({
               clipRule="evenodd"
             />
           </svg>
-        </button>
+        </Button>
       )}
 
       {visibleConnectionStatus && activeConnectionOwner && (
@@ -1047,8 +1057,8 @@ export function ChatView({
             </p>
           </div>
           {onRetryHistoryLoad && (
-            <button
-              type="button"
+            <Button type="text"
+              htmlType="button"
               disabled={
                 isLoading || isLoadingHistory || currentRunId !== null ||
                 hasVisibleStreamingMessage || terminalResultSynchronizing || canRetryPendingSubmission
@@ -1057,21 +1067,21 @@ export function ChatView({
               className="rounded-md border border-[var(--theme-border)] px-3 py-1.5 disabled:opacity-50"
             >
               {t("chat.retryHistoryRead")}
-            </button>
+            </Button>
           )}
         </div>
       )}
       {canRetryPendingSubmission && (
         <div className="mx-auto mb-2 flex max-w-[68rem] px-2">
-          <button
-            type="button"
+          <Button type="text"
+            htmlType="button"
             onClick={() => void onRetryPendingSubmission()}
             className="rounded-md border border-[var(--theme-border)] px-3 py-1.5 text-sm text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)]"
           >
             {t("chat.runTerminal.statusUnavailable", {
               defaultValue: t("chat.requestFailed"),
             })}
-          </button>
+          </Button>
         </div>
       )}
       {messages.length === 0 && agentEmptyProfile?.starter_prompts.length ? (
@@ -1083,27 +1093,28 @@ export function ChatView({
             可以直接开始的任务
           </p>
           {agentEmptyProfile.starter_prompts.map((prompt) => (
-            <button
-              className="min-w-0 rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 py-2 text-left text-sm text-[var(--theme-text)] hover:border-[var(--theme-primary)]"
-              key={prompt}
-              disabled={!canSendInCurrentView || isLoading}
-              onClick={() => setComposerInput(prompt)}
-              type="button"
-            >
-              {prompt}
-            </button>
+            <ThreadPrimitive.Suggestion key={prompt} prompt={prompt} send={false} asChild>
+              <Button type="default"
+                style={{ height: "auto", padding: "8px 12px", textAlign: "left", whiteSpace: "normal" }}
+                disabled={!canSendInCurrentView || isLoading}
+                htmlType="button"
+              >
+                {prompt}
+              </Button>
+            </ThreadPrimitive.Suggestion>
           ))}
         </div>
       ) : null}
       {runInputs?.loadFailed ? (
         <div className="mx-auto mb-2 flex w-full max-w-[68rem] items-center justify-between gap-3 rounded-xl border border-[var(--theme-warning-ring)] bg-[var(--theme-warning-soft)] px-3 py-2 text-xs text-[var(--theme-warning)]" role="status" data-run-input-read-failure>
           <span>{t("chat.runInputs.loadFailed", "暂时无法读取任务输入状态，显示的记录可能尚未更新。")}</span>
-          <button className="shrink-0 underline" onClick={() => void runInputs.refresh()} type="button">
+          <Button type="text" className="shrink-0 underline" onClick={() => void runInputs.refresh()} htmlType="button">
             {t("common.retry", "重试")}
-          </button>
+          </Button>
         </div>
       ) : null}
       {runInputs ? <RunInputHistory runInputs={runInputs} canSend={canSendInCurrentView} /> : null}
+      <FollowUpSuggestionsGate />
       <ChatInput
         {...chatInputProps}
         className="mx-auto max-w-[68rem] px-2"
@@ -1113,9 +1124,11 @@ export function ChatView({
 
   return (
     <AssistantUiProjection
-      messages={messages}
+      threadListAdapter={threadListAdapter}
+      messages={displayMessages}
       isRunning={sessionRunning}
       actions={assistantUiActions}
+      suggestions={followUpSuggestions}
     >
       <SessionImageGalleryProvider messages={displayMessages}>
       <WorkbenchShellComponent
@@ -1143,24 +1156,28 @@ export function ChatView({
                 data-workbench-empty-state="agent-chat"
               >
                 <section className="chat-start-surface flex w-full max-w-[56rem] flex-col items-center gap-5">
-                  <div className="max-w-2xl text-center">
-                    <span className="inline-flex">
-                      <AgentIdentityAvatar
-                        agentId={agentEmptyProfile.agent_id}
-                        avatarRef={agentEmptyProfile.avatar_ref}
-                        avatarSeed={agentEmptyProfile.avatar_seed}
-                        name={agentEmptyProfile.name}
-                        size="md"
-                      />
-                    </span>
-                    <h1 className="mt-3 text-2xl font-semibold text-[var(--theme-text)]">
-                      {agentEmptyProfile.name}
-                    </h1>
-                    {agentEmptyProfile.description ? (
-                      <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-[var(--theme-text-secondary)]">
-                        {agentEmptyProfile.description}
-                      </p>
-                    ) : null}
+                  {/* The published description is the opening text; it is not a runtime message. */}
+                  <div className="flex w-full items-start gap-3 px-2" data-agent-opening>
+                    <AgentIdentityAvatar
+                      agentId={agentEmptyProfile.agent_id}
+                      avatarRef={agentEmptyProfile.avatar_ref}
+                      avatarSeed={agentEmptyProfile.avatar_seed}
+                      name={agentEmptyProfile.name}
+                      size="md"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <h1 className="break-words text-lg font-semibold text-[var(--theme-text)]">
+                        {agentEmptyProfile.name}
+                      </h1>
+                      {agentEmptyProfile.description ? (
+                        <p
+                          className="mt-2 max-w-[42rem] whitespace-pre-wrap break-words text-[15px] leading-7 text-[var(--theme-text)]"
+                          data-agent-opening-message
+                        >
+                          {agentEmptyProfile.description}
+                        </p>
+                      ) : null}
+                    </div>
                   </div>
                   <div className="w-full">{composer}</div>
                 </section>

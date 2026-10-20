@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import React from "react";
-import { renderToStaticMarkup } from "react-dom/server";
+import { createLobeServerTestRoot } from "./lobeUiTestRoot";
+const renderToStaticMarkup = await createLobeServerTestRoot();
 
 import { AttachmentCard } from "../AttachmentCard";
 import type { MessageAttachment } from "../../../types";

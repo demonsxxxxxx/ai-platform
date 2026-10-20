@@ -19,6 +19,7 @@ class AdminRunDiagnosticRun(TypedDict):
 
 class AdminRunDiagnosticObservation(TypedDict):
     observation_id: str | None
+    parent_observation_id: NotRequired[str]
     attempt_id: str | None
     lease_id: str | None
     request_id: str | None
@@ -55,6 +56,7 @@ class AdminRunDiagnosticAttempt(TypedDict):
 
 
 class AdminRunDiagnosticSdk(TypedDict, total=False):
+    debug: dict[str, str | int]
     api_error_status: int
     result_subtype: str
     stop_reason: str
@@ -137,6 +139,7 @@ class AdminRunDiagnosticProjectionFailure(TypedDict):
 
 class AdminRunDiagnosticObservationEvidence(TypedDict):
     observation_id: str | None
+    parent_observation_id: NotRequired[str]
     attempt_id: str | None
     lease_id: str | None
     request_id: str | None
@@ -184,6 +187,7 @@ class AdminRunDiagnosticsResponse(TypedDict):
     ]
     run: AdminRunDiagnosticRun
     root: AdminRunDiagnosticObservation | None
+    browser_latency: NotRequired[dict[str, str | int] | None]
     handling: list[AdminRunDiagnosticObservation]
     losses: list[AdminRunDiagnosticLoss]
     attempts: list[AdminRunDiagnosticAttempt]

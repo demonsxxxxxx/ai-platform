@@ -1,11 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
-// jsdom 26 ships no declarations; this test uses only its runtime constructor.
-// @ts-expect-error jsdom is the pinned mounted-test runtime.
-import { JSDOM } from "jsdom";
+import { installSelectTestDom } from "../../common/__tests__/selectTestDom";
+import { createLobeTestRoot } from "../../common/__tests__/lobeUiTestRoot";
 import React, { act } from "react";
-import { createRoot } from "react-dom/client";
 
 import {
   adminRunsApi,
@@ -13,19 +11,18 @@ import {
   type AdminRunDiagnosticsResponse,
   type AdminRunDetailResponse,
   type AdminRunSummary,
+  type AdminRunMonitorResponse,
+  type AdminRunInvestigation,
 } from "../../../services/api/adminRuns";
 import {
-  buildAdminRunEventDiagnostics,
   buildAdminRunMonitorView,
   indexToolDiagnosticEvidence,
 } from "../adminRunTimeline";
-import {
-  filterAdminRuns,
-  RunMonitorPanel,
-  summarizeAdminRuns,
-} from "../RunMonitorPanel";
-
-import { RunDiagnosticsSection } from "../RunDiagnosticsSection";
+const fixture = installSelectTestDom();
+const dom = { window };
+test.after(() => fixture.close());
+const { filterAdminRuns, RunMonitorPanel } = await import("../RunMonitorPanel");
+const { RunDiagnosticsSection } = await import("../RunDiagnosticsSection");
 
 const waitFor = async (predicate: () => boolean, timeoutMs = 2_000) => {
   const startedAt = Date.now();
@@ -96,107 +93,27 @@ const paginatedRuns: AdminRunSummary[] = [
   })),
 ];
 
-test("Run Monitor compacts queue aliases and explains executor failures", () => {
-  const view = buildAdminRunMonitorView(
-    runs[1],
-    [
-      { event_id: "queue-1", type: "run_queued", message: "任务已进入队列" },
-      { event_id: "skill-1", type: "skill_selected", message: "已选择后台能力" },
-      {
-        event_id: "queue-2",
-        type: "queued",
-        message: "任务队列接纳完成",
-        payload: { queue_position: 2 },
-      },
-      { event_id: "renew-1", type: "sandbox_lease_renewed" },
-      {
-        event_id: "failed-1",
-        type: "run_failed",
-        message: "Run failed",
-        error_code: "executor_failure",
-      },
-    ],
-    {
-      root: null,
-      details: {
-        sdk: { exception_message: "Model provider unavailable" },
-      },
-    } as AdminRunDiagnosticsResponse,
-  );
+const metric = { sample_count: 2, p50: 2400, p95: 4000, p99: 4100 };
+const metrics = { total_ms: metric, queue_ms: metric, execution_ms: metric, server_first_text_ms: metric, browser_first_text_ms: { sample_count: 0, p50: null, p95: null, p99: null } };
+function monitorResponse(items: AdminRunSummary[]): AdminRunMonitorResponse {
+  return { measurement: "run_lifecycle.v1", window: { from_at: "2026-04-01T00:00:00Z", to_at: "2026-04-02T00:00:00Z" },
+    counts: { total: 80, succeeded: 60, failed: 10, cancelled: 2, queued: 3, running: 5 }, success_rate: 60 / 70,
+    latency: metrics, models: [], runs: items, limit: 50, has_more: true, order: "slow" };
+}
+function investigationResponse(runId: string): AdminRunInvestigation {
+  return { run_id: runId, total_ms: null, queue_ms: 2000, execution_ms: null, server_first_text_ms: 0, browser_first_text_ms: null,
+    elapsed_ms: 4000, first_public_text_at: null, browser_measurement: null, observed_at: "2026-04-01T09:00:04Z",
+    timeline_source: "platform_receipts", durations_additive: false, unbound_event_count: 0, events_truncated: false, missing_measurements: ["browser_first_text_ms"],
+    stages: [{ stage_id: "tool:attempt-a:op-a", label: "Read", source: "sdk_tool_hooks", status: "denied", attempt_id: "attempt-a",
+      operation_id: "op_6aaadf71488c9cf9ca0e4928bbf70f1e", event_id: "tool-event", causation_event_id: "start-event",
+      started_at: "2026-04-01T09:00:02Z", finished_at: "2026-04-01T09:00:03Z", offset_ms: 2000, receipt_duration_ms: 1000, duration_ms: 1200 }] };
+}
 
-  const queueItems = view.recentActivity.filter((item) => item.label === "已进入队列");
-  assert.equal(queueItems.length, 1);
-  assert.equal(queueItems[0]?.status, "info");
-  assert.equal(view.recentActivity.some((item) => item.label === "活动更新"), false);
-  assert.equal(view.recentActivity.some((item) => item.detail?.includes("Model provider unavailable")), true);
-  assert.equal(view.recentActivity.some((item) => item.detail?.includes("sandbox_lease_renewed")), false);
-});
-
-test("Run Monitor keeps every message diagnostic for pagination", () => {
-  const diagnostics = buildAdminRunEventDiagnostics(
-    Array.from({ length: 81 }, (_, index) => ({
-      event_id: `delta-${index}`,
-      sequence: index + 1,
-      type: "message.delta",
-      payload: { delta: "x" },
-    })),
-  );
-
-  assert.equal(diagnostics.length, 81);
-  assert.equal(diagnostics.at(0)?.id, "delta-0");
-  assert.equal(diagnostics.at(-1)?.id, "delta-80");
-});
-
-test("Run Monitor keeps the full semantic phase history with measured duration", () => {
-  const events = Array.from({ length: 14 }, (_, index) => ({
-    event_id: `progress-${index}`,
-    type: "agent.progress",
-    stage: index === 0 ? "model_wait" : `stage-${index}`,
-    message: `阶段 ${index}`,
-    payload: {
-      phase: index === 0 ? "model_wait" : `phase-${index}`,
-      duration_ms: index === 0 ? 1_250 : undefined,
-    },
-  }));
-
-  const view = buildAdminRunMonitorView(runs[0], events);
-
-  assert.equal(view.recentActivity.length, 14);
-  assert.equal(view.recentActivity[0]?.label, "正在等待模型响应");
-  assert.equal(view.recentActivity[0]?.stage, "model_wait");
-  assert.equal(view.recentActivity[0]?.duration_ms, 1_250);
-});
-
-test("Run Monitor hides repeated heartbeats and private event details", () => {
-  const events = [
-    { event_id: "start", type: "run_started", message: "Worker 已领取请求" },
-    {
-      event_id: "heartbeat",
-      type: "run_started",
-      message: "任务仍在处理中",
-      payload: { heartbeat: true },
-    },
-    { event_id: "heartbeat-v4", type: "stream.heartbeat" },
-    { event_id: "heartbeat-legacy", type: "heartbeat" },
-    {
-      event_id: "private-tool",
-      type: "tool.completed",
-      visible_to_user: false,
-      message: "PRIVATE_EVENT_MARKER",
-      payload: { display_name: "PrivateTool", operation_id: "private-operation" },
-    },
-    {
-      event_id: "private-message",
-      type: "message.delta",
-      visible_to_user: false,
-      payload: { delta: "PRIVATE_OUTPUT_MARKER" },
-    },
-  ];
-
-  const view = buildAdminRunMonitorView(runs[0], events);
-  assert.deepEqual(view.recentActivity.map((item) => item.label), ["开始执行"]);
-  assert.deepEqual(view.eventDiagnostics, []);
-  assert.doesNotMatch(JSON.stringify(view), /PRIVATE_EVENT_MARKER|PRIVATE_OUTPUT_MARKER/);
+test("Run Monitor derives current activity without private events or stale terminal labels", () => {
+  const events = [{ type: "agent.progress", payload: { phase: "model_wait" } }, { type: "tool.completed", visible_to_user: false, message: "PRIVATE" }, { type: "stream.heartbeat" }];
+  assert.equal(buildAdminRunMonitorView(runs[0], events).currentAction, "正在等待模型响应");
+  assert.equal(buildAdminRunMonitorView(runs[1], events).currentAction, "运行失败");
+  assert.doesNotMatch(JSON.stringify(buildAdminRunMonitorView(runs[0], events)), /PRIVATE/);
 });
 
 test("Run Monitor filters only the explicitly projected Run identities", () => {
@@ -206,10 +123,10 @@ test("Run Monitor filters only the explicitly projected Run identities", () => {
   assert.deepEqual(filterAdminRuns(runs, "failed", "worker_execution_failed").map((run) => run.run_id), [
     "run_failed",
   ]);
+  assert.deepEqual(filterAdminRuns([{ ...runs[0], status: "cancel_requested" }], "running", "").map((run) => run.run_id), ["run_running"]);
   assert.deepEqual(filterAdminRuns(runs, "running", "合同审阅助手").map((run) => run.run_id), [
     "run_running",
   ]);
-  assert.deepEqual(summarizeAdminRuns(runs), { queued: 0, running: 1, failed: 1 });
 });
 
 test("Run Monitor reads user and Run deep-link scope", () => {
@@ -234,36 +151,10 @@ for (const scenario of [
     ? `Run Monitor export ownership: ${exportOwnership.reopenSameRun ? "same Run reopened" : "A to B"}, stale ${exportOwnership.staleFails ? "failure" : "success"}`
     : `Run Monitor mounts authorized diagnostics with estimated cost ${observedCost}`;
   test(name, async () => {
-  const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", {
-    url: "http://localhost/runs",
-    pretendToBeVisual: true,
-  });
-  const globalValues: Record<string, unknown> = {
-    window: dom.window,
-    document: dom.window.document,
-    navigator: dom.window.navigator,
-    HTMLElement: dom.window.HTMLElement,
-    Node: dom.window.Node,
-    Event: dom.window.Event,
-    MouseEvent: dom.window.MouseEvent,
-    KeyboardEvent: dom.window.KeyboardEvent,
-    InputEvent: dom.window.InputEvent,
-    IS_REACT_ACT_ENVIRONMENT: true,
-  };
-  const previousDescriptors = new Map(
-    Object.keys(globalValues).map((key) => [
-      key,
-      Object.getOwnPropertyDescriptor(globalThis, key),
-    ]),
-  );
-  for (const [key, value] of Object.entries(globalValues)) {
-    Object.defineProperty(globalThis, key, {
-      configurable: true,
-      writable: true,
-      value,
-    });
-  }
-  const originalList = adminRunsApi.list;
+  document.body.innerHTML = '<div id="root"></div>';
+  window.history.replaceState(null, "", "/runs");
+  const originalMonitor = adminRunsApi.monitor;
+  const originalInvestigation = adminRunsApi.investigation;
   const originalDetail = adminRunsApi.detail;
   const originalDiagnostics = adminRunsApi.diagnostics;
   const originalTrajectory = adminRunsApi.trajectory;
@@ -406,7 +297,7 @@ for (const scenario of [
       workspace_id: runs[0].workspace_id ?? "",
     },
     root: {
-      observation_id: "obs-a",
+      observation_id: "obs-origin",
       attempt_id: "attempt-a",
       kind: "failure",
       source: "sdk_result_error",
@@ -418,7 +309,8 @@ for (const scenario of [
     },
     handling: [
       {
-        observation_id: "obs-a",
+        observation_id: "obs-wrapper",
+        parent_observation_id: "obs-origin",
         attempt_id: "attempt-a",
         kind: "handling",
         source: "sandbox_terminal_normalization",
@@ -460,6 +352,7 @@ for (const scenario of [
       observations: [
         {
           observation_id: "obs-a",
+          parent_observation_id: "obs-wrapper",
           attempt_id: "attempt-a",
           source: "sdk_result_error",
           stage: "model_wait",
@@ -503,6 +396,7 @@ for (const scenario of [
         },
         {
           observation_id: "obs-b",
+          parent_observation_id: "obs-a",
           attempt_id: "attempt-a",
           source: "executor_reconciler",
           stage: "terminalization",
@@ -574,9 +468,13 @@ for (const scenario of [
     counts: { retained_observations: 2, omitted_observations: 0 },
   };
 
-  adminRunsApi.list = async () => {
-    calls.push("list");
-    return { runs: paginatedRuns, limit: 50 };
+  adminRunsApi.monitor = async (options) => {
+    calls.push("monitor");
+    return monitorResponse(paginatedRuns.filter((run) => !options?.status || run.status === options.status));
+  };
+  adminRunsApi.investigation = async (runId) => {
+    calls.push(`investigation:${runId}`);
+    return investigationResponse(runId);
   };
   adminRunsApi.detail = async (runId: string) => {
     calls.push(`detail:${runId}`);
@@ -628,13 +526,13 @@ for (const scenario of [
 
   const container = dom.window.document.getElementById("root");
   assert.ok(container);
-  const root = createRoot(container);
+  const root = await createLobeTestRoot(container);
 
   try {
     await act(async () => {
       root.render(React.createElement(RunMonitorPanel));
     });
-    await waitFor(() => container.textContent?.includes("审核季度采购合同") === true);
+    await waitFor(() => document.body.textContent?.includes("审核季度采购合同") === true);
 
     if (exportOwnership) {
       type ExportResult = Awaited<ReturnType<typeof adminRunsApi.exportDiagnostics>>;
@@ -647,10 +545,10 @@ for (const scenario of [
         assert.ok(button);
         await act(async () => { button.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
       };
-      const exportButton = () => (Array.from(container.querySelectorAll("button")) as HTMLButtonElement[])
+      const exportButton = () => (Array.from(document.querySelectorAll("button")) as HTMLButtonElement[])
         .find((button) => /^(下载脱敏诊断包|正在生成…)$/u.test(button.textContent ?? ""));
       const open = async (runId: string) => {
-        await click(container.querySelector(`button[aria-label="查看 ${runId}"]`));
+        await click(document.querySelector(`button[aria-label="查看 ${runId}"]`));
         await waitFor(() => Boolean(exportButton()));
       };
       const result = (runId: string): ExportResult => ({
@@ -660,11 +558,11 @@ for (const scenario of [
       Object.defineProperty(dom.window.HTMLAnchorElement.prototype, "click", {
         configurable: true, value: function (this: HTMLAnchorElement) { downloads.push(this.download); },
       });
-      await click(container.querySelector('button[aria-label="暂停自动刷新"]'));
+      await click(document.querySelector('button[aria-label="暂停自动刷新"]'));
       await open("run_running");
       await click(exportButton());
       assert.equal(exportButton()?.disabled, true);
-      await click(container.querySelector('button[aria-label="关闭运行详情"]'));
+      await click(document.querySelector('button[aria-label="关闭运行详情"]'));
       const nextRunId = exportOwnership.reopenSameRun ? "run_running" : "run_failed";
       await open(nextRunId);
       assert.equal(exportButton()?.disabled, false);
@@ -674,121 +572,137 @@ for (const scenario of [
         if (exportOwnership.staleFails) pending[0].reject(new Error("STALE_EXPORT_ERROR"));
         else pending[0].resolve(result("run_running"));
       });
-      assert.doesNotMatch(container.textContent ?? "", /STALE_EXPORT_ERROR/);
+      assert.doesNotMatch(document.body.textContent ?? "", /STALE_EXPORT_ERROR/);
       assert.equal(exportButton()?.disabled, true, "stale finally must not clear the current export busy state");
       assert.deepEqual(downloads, exportOwnership.staleFails ? [] : ["run-diagnostics-run_running.zip"]);
       // The current request still owns error and busy state, and retry still downloads.
       await act(async () => { pending[1].reject(new Error("CURRENT_EXPORT_ERROR")); });
-      assert.match(container.textContent ?? "", /CURRENT_EXPORT_ERROR/);
+      assert.match(document.body.textContent ?? "", /CURRENT_EXPORT_ERROR/);
       assert.equal(exportButton()?.disabled, false);
       await click(exportButton());
-      assert.doesNotMatch(container.textContent ?? "", /CURRENT_EXPORT_ERROR/);
+      assert.doesNotMatch(document.body.textContent ?? "", /CURRENT_EXPORT_ERROR/);
       await act(async () => { pending[2].resolve(result(nextRunId)); });
       assert.equal(exportButton()?.disabled, false);
       assert.equal(downloads.at(-1), `run-diagnostics-${nextRunId}.zip`);
       return;
     }
 
-    assert.equal(calls[0], "list");
-    const listCallCount = calls.filter((call) => call === "list").length;
+    assert.equal(calls[0], "monitor");
+    const listCallCount = calls.filter((call) => call === "monitor").length;
     await act(async () => {
       dom.window.document.dispatchEvent(new dom.window.Event("visibilitychange"));
     });
-    assert.equal(calls.filter((call) => call === "list").length, listCallCount);
-    const pauseAutoRefresh = container.querySelector(
+    assert.equal(calls.filter((call) => call === "monitor").length, listCallCount);
+    const pauseAutoRefresh = document.querySelector(
       'button[aria-label="暂停自动刷新"]',
     ) as HTMLButtonElement | null;
     assert.ok(pauseAutoRefresh);
     await act(async () => {
       pauseAutoRefresh.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
     });
-    assert.ok(container.querySelector('button[aria-label="开启自动刷新"]'));
-    assert.match(container.textContent ?? "", /Worker 在线/);
-    assert.match(container.textContent ?? "", /王敏/);
-    assert.match(container.textContent ?? "", /法务工作区/);
-    assert.match(container.textContent ?? "", /合同审阅助手/);
-    assert.match(container.textContent ?? "", /run_failed/);
-    assert.match(container.textContent ?? "", /worker_execution_failed/);
-    assert.match(container.textContent ?? "", /显示 1-10 \/ 12 条/);
+    assert.ok(document.querySelector('button[aria-label="开启自动刷新"]'));
+    assert.match(document.body.textContent ?? "", /P50/);
+    const performanceDetails = document.querySelector(".run-performance-details") as HTMLDetailsElement;
+    assert.equal(performanceDetails.open, false);
+    performanceDetails.open = true;
+    assert.match(performanceDetails.textContent ?? "", /P95/);
+    assert.match(performanceDetails.textContent ?? "", /有效样本/);
+    assert.equal(document.querySelectorAll('[aria-label="运行摘要"] [data-run-metric]').length, 4);
+    const toolbar = document.querySelector('[aria-label="调查范围"]');
+    assert.ok(toolbar?.querySelector('input[aria-label="搜索任务 / Agent / 用户 / 运行编号"]'));
+    assert.ok(toolbar?.querySelector('label'));
+    assert.ok(Array.from(document.querySelectorAll('th')).some((cell) => cell.textContent === "耗时"));
+    assert.doesNotMatch(document.body.textContent ?? "", /正常任务对照|同类成功任务对照/);
+    assert.match(document.body.textContent ?? "", /80/);
+    assert.doesNotMatch(document.body.textContent ?? "", /Worker 在线/);
+    assert.match(document.body.textContent ?? "", /王敏/);
+    assert.match(document.body.textContent ?? "", /法务工作区/);
+    assert.match(document.body.textContent ?? "", /合同审阅助手/);
+    assert.match(document.body.textContent ?? "", /run_failed/);
+    assert.match(document.body.textContent ?? "", /worker_execution_failed/);
+    assert.match(document.body.textContent ?? "", /显示 1-10 \/ 12 条/);
 
-    const nextPageButton = container.querySelector(
+    const nextPageButton = document.querySelector(
       'button[aria-label="下一页"]',
     ) as HTMLButtonElement | null;
     assert.ok(nextPageButton);
+    assert.ok(document.querySelector('button[aria-label="第 1 页"][aria-current="page"]'));
+    const secondPage = document.querySelector('button[aria-label="第 2 页"]') as HTMLButtonElement;
+    assert.ok(secondPage);
     assert.equal(nextPageButton.disabled, false);
     await act(async () => {
-      nextPageButton.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+      secondPage.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
     });
-    await waitFor(() => container.textContent?.includes("run_failed_8") === true);
-    assert.doesNotMatch(container.textContent ?? "", /run_failed_0/);
-    const previousPageButton = container.querySelector(
+    await waitFor(() => document.body.textContent?.includes("run_failed_8") === true);
+    assert.doesNotMatch(document.body.textContent ?? "", /run_failed_0/);
+    const previousPageButton = document.querySelector(
       'button[aria-label="上一页"]',
     ) as HTMLButtonElement | null;
     assert.ok(previousPageButton);
     await act(async () => {
       previousPageButton.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
     });
-    await waitFor(() => container.textContent?.includes("run_failed_0") === true);
+    await waitFor(() => document.body.textContent?.includes("run_failed_0") === true);
 
     const openButtons = Array.from(
-      container.querySelectorAll('button[aria-label="查看 run_running"]'),
+      document.querySelectorAll('button[aria-label="查看 run_running"]'),
     ) as HTMLButtonElement[];
     assert.ok(openButtons.length >= 1);
     openButtons[0].focus();
     await act(async () => {
       openButtons[0].dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
     });
-    await waitFor(() => container.textContent?.includes("开始执行") === true);
+    await waitFor(() => document.querySelector("[data-run-investigation]") !== null);
+    assert.ok(calls.includes("investigation:run_running"));
 
     assert.ok(calls.includes("detail:run_running"));
     assert.ok(calls.includes("diagnostics:run_running"));
     await waitFor(() => calls.includes("trajectory:run_running:0"));
-    assert.match(container.textContent ?? "", /事件回放/);
+    assert.match(document.body.textContent ?? "", /事件回放/);
     const trajectoryButtons = Array.from(
-      container.querySelectorAll("[data-run-trajectory-replay] button"),
+      document.querySelectorAll("[data-run-trajectory-replay] button"),
     ) as HTMLButtonElement[];
     const nextTrajectoryStep = trajectoryButtons.find((button) => button.textContent === "下一步");
     assert.ok(nextTrajectoryStep);
     await act(async () => {
       nextTrajectoryStep.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
     });
-    assert.match(container.querySelector("[data-run-trajectory-current]")?.textContent ?? "", /动作.*Read/);
-    const loadMoreTrajectory = Array.from(container.querySelectorAll("[data-run-trajectory-replay] button"))
+    assert.match(document.querySelector("[data-run-trajectory-current]")?.textContent ?? "", /动作.*Read/);
+    const loadMoreTrajectory = Array.from(document.querySelectorAll("[data-run-trajectory-replay] button"))
       .find((button) => (button as HTMLButtonElement).textContent === "加载后续事件") as HTMLButtonElement | undefined;
     assert.ok(loadMoreTrajectory);
     await act(async () => {
       loadMoreTrajectory.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
     });
     await waitFor(() => calls.includes("trajectory:run_running:2"));
-    assert.match(container.querySelector("[data-run-trajectory-replay]")?.textContent ?? "", /1 \/ 4 条/);
+    assert.match(document.querySelector("[data-run-trajectory-replay]")?.textContent ?? "", /1 \/ 4 条/);
     await act(async () => {
       nextTrajectoryStep.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
       nextTrajectoryStep.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
     });
-    assert.match(container.querySelector("[data-run-trajectory-message]")?.textContent ?? "", /WORKER_EFFECTIVE_RESPONSE/);
-    assert.match(container.textContent ?? "", /审核季度采购合同/);
-    assert.match(container.textContent ?? "", /技术信息/);
-    assert.match(container.textContent ?? "", /Run ID/);
-    assert.match(container.textContent ?? "", /trace-a/);
-    assert.match(container.textContent ?? "", /worker_setup/);
-    assert.match(container.textContent ?? "", /lease-a/);
-    assert.match(container.textContent ?? "", /Agent 与工具记录/);
-    assert.match(container.textContent ?? "", /处理时间线/);
-    assert.match(container.textContent ?? "", /执行尝试/);
-    const runtimeHealth = container.querySelector("[data-run-runtime-health]");
+    assert.match(document.querySelector("[data-run-trajectory-message]")?.textContent ?? "", /WORKER_EFFECTIVE_RESPONSE/);
+    assert.match(document.body.textContent ?? "", /审核季度采购合同/);
+    assert.match(document.body.textContent ?? "", /技术关联/);
+    assert.match(document.body.textContent ?? "", /Run ID/);
+    assert.match(document.body.textContent ?? "", /trace-a/);
+    assert.match(document.body.textContent ?? "", /lease-a/);
+    assert.match(document.body.textContent ?? "", /阶段调查/);
+    assert.equal(document.querySelectorAll("[data-run-runtime-diagnostics]").length, 1);
+    assert.equal(document.querySelector("[data-run-execution-journal]"), null);
+    const runtimeHealth = document.querySelector("[data-run-runtime-health]");
     assert.ok(runtimeHealth);
     assert.match(runtimeHealth.textContent ?? "", /Executor 心跳正常/);
     assert.match(runtimeHealth.textContent ?? "", /异步派发已接纳/);
     assert.match(runtimeHealth.textContent ?? "", /队列 Worker 心跳（历史）/);
     assert.match(runtimeHealth.textContent ?? "", /队列租约（历史）/);
-    assert.match(container.querySelector("[data-run-attempts]")?.textContent ?? "", /派发责任：队列 Worker/);
-    assert.doesNotMatch(container.querySelector("[data-run-attempts]")?.textContent ?? "", /耗时未知/);
-    assert.match(container.textContent ?? "", /138/);
-    assert.ok(container.textContent?.includes(observedCost === null ? "未记录" : `${observedCost} 最小计价单位`));
-    if (observedCost === null) assert.doesNotMatch(container.textContent ?? "", /0 最小计价单位/);
-    assert.match(container.textContent ?? "", /下载脱敏诊断包/);
+    assert.match(document.querySelector("[data-run-latency=server_first_text_ms]")?.textContent ?? "", /0 ms/);
+    assert.match(document.querySelector("[data-run-latency=browser_first_text_ms]")?.textContent ?? "", /未采集/);
+    assert.match(document.body.textContent ?? "", /138/);
+    assert.ok(document.body.textContent?.includes(observedCost === null ? "未记录" : `${observedCost} 最小计价单位`));
+    if (observedCost === null) assert.doesNotMatch(document.body.textContent ?? "", /0 最小计价单位/);
+    assert.match(document.body.textContent ?? "", /下载脱敏诊断包/);
     const exportButton = (
-      Array.from(container.querySelectorAll("button")) as HTMLButtonElement[]
+      Array.from(document.querySelectorAll("button")) as HTMLButtonElement[]
     ).find(
       (button) => button.textContent === "下载脱敏诊断包",
     );
@@ -798,35 +712,19 @@ for (const scenario of [
     });
     await waitFor(() => calls.includes("download-click"));
     assert.ok(calls.includes("export:run_running"));
-    assert.match(container.textContent ?? "", /WORKER_EFFECTIVE_RESPONSE/);
-    assert.match(container.textContent ?? "", /正在确认日志来源/);
-    const journalEntries = Array.from(
-      container.querySelectorAll("[data-run-execution-journal] > li"),
-    ) as HTMLElement[];
-    assert.equal(journalEntries.length, 3);
-    assert.match(journalEntries[0].textContent ?? "", /Agent 过程说明/);
-    assert.match(journalEntries[1].textContent ?? "", /工具调用 1/);
-    assert.match(journalEntries[2].textContent ?? "", /Agent 输出 2/);
-    const failureTrace = container.querySelector("[data-run-failure-trace]");
-    assert.ok(failureTrace);
-    assert.match(failureTrace.textContent ?? "", /model_wait · sdk_result_error/);
-    assert.match(failureTrace.textContent ?? "", /第 1 次尝试/);
-    assert.match(failureTrace.textContent ?? "", /claude_agent_sdk_tool_admission_failed/);
-    assert.match(failureTrace.textContent ?? "", /同一观察中的工具证据/);
-    assert.match(failureTrace.textContent ?? "", /留存异常摘要：ACTUAL_SDK_FAILURE_MARKER/);
-    const abortLabels = (Array.from(container.querySelectorAll("[data-sdk-tool-abort]")) as HTMLElement[]).map((item) => item.textContent);
+    assert.match(document.body.textContent ?? "", /WORKER_EFFECTIVE_RESPONSE/);
+    const stageButton = document.querySelector("[data-stage-id]");
+    assert.ok(stageButton);
+    await act(async () => { stageButton.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
+    assert.match(document.querySelector("[data-selected-stage-evidence]")?.textContent ?? "", /tool_parameters_not_authorized/);
+    const abortLabels = (Array.from(document.querySelectorAll("[data-sdk-tool-abort]")) as HTMLElement[]).map((item) => item.textContent);
     assert.deepEqual(abortLabels, [
       "SDK 报告工具 abort：是；不代表用户取消或 Run 取消状态。",
       "SDK 报告工具 abort：否；不代表用户取消或 Run 取消状态。",
       "SDK 报告工具 abort：未知（未采集）；不代表用户取消或 Run 取消状态。",
     ]);
-    assert.match(journalEntries[1].textContent ?? "", /关联诊断：tool_parameters_not_authorized/);
-    assert.match(journalEntries[1].textContent ?? "", /调用编号/);
-    assert.match(container.textContent ?? "", /读取 3 个文件/);
-    assert.match(container.textContent ?? "", /已识别 2 个问题/);
-    assert.match(container.textContent ?? "", /步骤返回摘要/);
-    assert.match(container.textContent ?? "", /审核结果\.docx/);
-    const lossEntries = Array.from(container.querySelectorAll("[data-run-diagnostic-loss]")) as HTMLElement[];
+    assert.match(document.body.textContent ?? "", /审核结果\.docx/);
+    const lossEntries = Array.from(document.querySelectorAll("[data-run-diagnostic-loss]")) as HTMLElement[];
     assert.match(lossEntries[0].textContent ?? "", /脱敏.*redacted/);
     assert.match(lossEntries[0].textContent ?? "", /count 0/);
     assert.match(lossEntries[1].textContent ?? "", /长度截断/);
@@ -836,49 +734,55 @@ for (const scenario of [
     assert.match(lossEntries[3].textContent ?? "", /未知（未采集）/);
     assert.match(lossEntries[4].textContent ?? "", /数量截断/);
     assert.match(lossEntries[4].textContent ?? "", /原始 9 \/ 保留 8/);
-    assert.doesNotMatch(container.textContent ?? "", /裁剪或拒绝/);
-    assert.match(container.textContent ?? "", /执行诊断/);
-    assert.match(container.textContent ?? "", /ACTUAL_SDK_FAILURE_MARKER/);
-    assert.match(container.querySelector("[data-sdk-http-status]")?.textContent ?? "", /上游 HTTP 状态：429/);
-    assert.match(container.textContent ?? "", /ACTUAL_STACK_TAIL_MARKER/);
-    assert.match(container.textContent ?? "", /tool_parameters_not_authorized/);
-    assert.match(container.textContent ?? "", /逐条观测证据/);
-  const projectionEvidence = container.querySelector("[data-projection-failure-evidence]");
+    assert.doesNotMatch(document.body.textContent ?? "", /裁剪或拒绝/);
+    assert.match(document.body.textContent ?? "", /执行诊断/);
+    assert.match(document.body.textContent ?? "", /ACTUAL_SDK_FAILURE_MARKER/);
+    assert.match(document.querySelector("[data-sdk-http-status]")?.textContent ?? "", /上游 HTTP 状态：429/);
+    assert.match(document.body.textContent ?? "", /ACTUAL_STACK_TAIL_MARKER/);
+    assert.match(document.body.textContent ?? "", /tool_parameters_not_authorized/);
+    assert.match(document.body.textContent ?? "", /逐条观测证据/);
+    const diagnosticSummaries = Array.from(document.querySelectorAll("[data-run-runtime-diagnostics] details")) as HTMLDetailsElement[];
+    const originDetails = diagnosticSummaries.find((item) => item.querySelector("summary")?.textContent === "技术关联编号");
+    const handlingDetails = diagnosticSummaries.find((item) => item.querySelector("summary")?.textContent === "观察关联");
+    assert.ok(originDetails && handlingDetails);
+    assert.equal(originDetails.open, false);
+    assert.equal(handlingDetails.open, false);
+    assert.match(originDetails.textContent ?? "", /观察 obs-origin/);
+    assert.match(handlingDetails.textContent ?? "", /观察 obs-wrapper.*父观察 obs-origin/);
+    await act(async () => {
+      originDetails.open = true;
+      handlingDetails.open = true;
+    });
+    assert.equal(originDetails.open, true);
+    assert.equal(handlingDetails.open, true);
+  const projectionEvidence = document.querySelector("[data-projection-failure-evidence]");
   assert.ok(projectionEvidence);
   assert.match(projectionEvidence.textContent ?? "", /输出校验断点/);
   assert.match(projectionEvidence.textContent ?? "", /block_delta_type/);
   assert.match(projectionEvidence.textContent ?? "", /raw_stream_frame/);
-  const observationEvidence = Array.from(container.querySelectorAll("details") as NodeListOf<HTMLDetailsElement>)
+  const observationEvidence = Array.from(document.querySelectorAll("details") as NodeListOf<HTMLDetailsElement>)
     .find((item) => item.querySelector("summary")?.textContent?.includes("sdk_result_error"));
   assert.match(observationEvidence?.querySelector("pre")?.textContent ?? "", /block_delta_type/);
   assert.match(observationEvidence?.querySelector("pre")?.textContent ?? "", /"api_error_status": 429/);
-    assert.match(container.textContent ?? "", /ACTUAL_CHAIN_MARKER/);
-    assert.match(container.textContent ?? "", /message.delta/);
-    assert.match(container.textContent ?? "", /第 1 \/ 2 页 · 共 21 条/);
-    assert.doesNotMatch(container.textContent ?? "", /DIAGNOSTIC_EVENT_BODY_MARKER/);
-    const nextDiagnosticPageButton = container.querySelector(
-      '[role="dialog"] button[aria-label="下一页事件"]',
-    ) as HTMLButtonElement | null;
-    assert.ok(nextDiagnosticPageButton);
-    await act(async () => {
-      nextDiagnosticPageButton.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
-    });
-    assert.match(container.textContent ?? "", /第 2 \/ 2 页 · 共 21 条/);
-    assert.match(container.textContent ?? "", /artifact_manifest_invalid/);
-    assert.match(container.textContent ?? "", /sdk\.exception_chain\[8\]/);
-    assert.match(container.textContent ?? "", /终态协议证据/);
-    assert.match(container.textContent ?? "", /上报结构（已脱敏）/);
-    assert.match(container.textContent ?? "", /\$ · value_error/);
-    assert.match(container.textContent ?? "", /executor_protocol_invalid/);
-    assert.match(container.textContent ?? "", /历史记录|部分采集/);
-    assert.doesNotMatch(container.textContent ?? "", /PRIVATE_PROMPT_MARKER/);
-    assert.doesNotMatch(container.textContent ?? "", /PRIVATE_RESULT_MARKER/);
-    assert.doesNotMatch(container.textContent ?? "", /PRIVATE_EVENT_PAYLOAD_MARKER/);
-    assert.doesNotMatch(container.textContent ?? "", /PRIVATE_LEASE_PAYLOAD_MARKER/);
-    assert.doesNotMatch(container.textContent ?? "", /PRIVATE_RELEASE_REASON_MARKER/);
-    assert.doesNotMatch(container.textContent ?? "", /PRIVATE_AUDIT_PAYLOAD_MARKER/);
+  assert.match(observationEvidence?.querySelector("pre")?.textContent ?? "", /"parent_observation_id": "obs-wrapper"/);
+    assert.match(document.body.textContent ?? "", /ACTUAL_CHAIN_MARKER/);
+    assert.equal(document.querySelector('[aria-label="下一页事件"]'), null);
+    assert.doesNotMatch(document.body.textContent ?? "", /DIAGNOSTIC_EVENT_BODY_MARKER/);
+    assert.match(document.body.textContent ?? "", /artifact_manifest_invalid/);
+    assert.match(document.body.textContent ?? "", /sdk\.exception_chain\[8\]/);
+    assert.match(document.body.textContent ?? "", /终态协议证据/);
+    assert.match(document.body.textContent ?? "", /上报结构（已脱敏）/);
+    assert.match(document.body.textContent ?? "", /\$ · value_error/);
+    assert.match(document.body.textContent ?? "", /executor_protocol_invalid/);
+    assert.match(document.body.textContent ?? "", /历史记录|部分采集/);
+    assert.doesNotMatch(document.body.textContent ?? "", /PRIVATE_PROMPT_MARKER/);
+    assert.doesNotMatch(document.body.textContent ?? "", /PRIVATE_RESULT_MARKER/);
+    assert.doesNotMatch(document.body.textContent ?? "", /PRIVATE_EVENT_PAYLOAD_MARKER/);
+    assert.doesNotMatch(document.body.textContent ?? "", /PRIVATE_LEASE_PAYLOAD_MARKER/);
+    assert.doesNotMatch(document.body.textContent ?? "", /PRIVATE_RELEASE_REASON_MARKER/);
+    assert.doesNotMatch(document.body.textContent ?? "", /PRIVATE_AUDIT_PAYLOAD_MARKER/);
 
-    const closeDetailButton = container.querySelector(
+    const closeDetailButton = document.querySelector(
       'button[aria-label="关闭运行详情"]',
     ) as HTMLButtonElement | null;
     assert.ok(closeDetailButton);
@@ -889,6 +793,17 @@ for (const scenario of [
       );
     });
     assert.equal(dom.window.document.activeElement, closeDetailButton);
+    const lastSummary = (Array.from(document.querySelectorAll('[role="dialog"] summary')) as HTMLElement[])
+      .filter((item) => item.textContent === "技术关联").at(-1);
+    assert.ok(lastSummary);
+    await act(async () => {
+      dom.window.document.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true }));
+    });
+    assert.equal(dom.window.document.activeElement, lastSummary, "reverse Tab must target the collapsed summary, not its hidden copy buttons");
+    await act(async () => {
+      dom.window.document.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+    });
+    assert.equal(dom.window.document.activeElement, closeDetailButton);
     openButtons[0].focus();
     await waitFor(() => dom.window.document.activeElement === closeDetailButton);
     assert.equal(dom.window.document.activeElement, closeDetailButton);
@@ -897,7 +812,7 @@ for (const scenario of [
         new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
       );
     });
-    await waitFor(() => container.querySelector('[role="dialog"]') === null);
+    await waitFor(() => document.querySelector('[role="dialog"]') === null);
     assert.equal(dom.window.document.activeElement, openButtons[0]);
 
     adminRunsApi.detail = async () => ({
@@ -908,26 +823,25 @@ for (const scenario of [
     await act(async () => {
       openButtons[0].dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
     });
-    await waitFor(() => container.querySelector('[role="dialog"]') !== null);
-    assert.match(container.querySelector("[data-run-runtime-health]")?.textContent ?? "", /未知/);
-    assert.doesNotMatch(container.querySelector("[data-run-runtime-health]")?.textContent ?? "", /心跳正常/);
-    assert.match(container.textContent ?? "", /Worker 返回/);
-    assert.match(container.textContent ?? "", /WORKER_EFFECTIVE_RESPONSE/);
-    assert.match(container.textContent ?? "", /工具调用 1/);
+    await waitFor(() => document.querySelector('[role="dialog"]') !== null);
+    assert.match(document.querySelector("[data-run-runtime-health]")?.textContent ?? "", /未知/);
+    assert.doesNotMatch(document.querySelector("[data-run-runtime-health]")?.textContent ?? "", /心跳正常/);
+    assert.match(document.body.textContent ?? "", /交付结果与完整事件记录/);
+    assert.match(document.body.textContent ?? "", /WORKER_EFFECTIVE_RESPONSE/);
     await act(async () => {
       dom.window.document.dispatchEvent(
         new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
       );
     });
-    await waitFor(() => container.querySelector('[role="dialog"]') === null);
+    await waitFor(() => document.querySelector('[role="dialog"]') === null);
 
-    adminRunsApi.list = async () => ({ runs: [], limit: 50 });
+    adminRunsApi.monitor = async () => monitorResponse([]);
     openButtons[0].focus();
     await act(async () => {
       openButtons[0].dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
     });
-    await waitFor(() => container.querySelector('[role="dialog"]') !== null);
-    const refreshButton = container.querySelector(
+    await waitFor(() => document.querySelector('[role="dialog"]') !== null);
+    const refreshButton = document.querySelector(
       'button[aria-label="刷新最近运行"]',
     ) as HTMLButtonElement | null;
     assert.ok(refreshButton);
@@ -935,7 +849,7 @@ for (const scenario of [
       refreshButton?.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
     });
     await waitFor(() => openButtons[0].isConnected === false);
-    const refreshRemovalBackdrop = container.querySelector(
+    const refreshRemovalBackdrop = document.querySelector(
       "button[data-run-monitor-backdrop]",
     ) as HTMLButtonElement | null;
     assert.ok(refreshRemovalBackdrop);
@@ -944,29 +858,29 @@ for (const scenario of [
         new dom.window.MouseEvent("click", { bubbles: true }),
       );
     });
-    await waitFor(() => container.querySelector('[role="dialog"]') === null);
+    await waitFor(() => document.querySelector('[role="dialog"]') === null);
     assert.equal(dom.window.document.activeElement, refreshButton);
 
-    adminRunsApi.list = async () => ({ runs, limit: 50 });
+    adminRunsApi.monitor = async (options) => monitorResponse(runs.filter((run) => !options?.status || run.status === options.status));
     await act(async () => {
       refreshButton?.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
     });
-    await waitFor(() => container.textContent?.includes("run_running") === true);
+    await waitFor(() => document.body.textContent?.includes("run_running") === true);
 
     const failedFilter = (
-      Array.from(container.querySelectorAll('button[aria-pressed]')) as HTMLButtonElement[]
-    ).find((button) => button.textContent === "失败");
+      Array.from(document.querySelectorAll('button[aria-pressed]')) as HTMLButtonElement[]
+    ).find((button) => button.textContent?.startsWith("失败"));
     assert.ok(failedFilter);
     await act(async () => {
       failedFilter.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
     });
-    assert.match(container.textContent ?? "", /run_failed/);
-    assert.doesNotMatch(container.textContent ?? "", /chat_2026_04/);
+    await waitFor(() => document.body.textContent?.includes("run_failed") === true);
+    assert.doesNotMatch(document.body.textContent ?? "", /chat_2026_04/);
 
     const partFixture = JSON.parse(readFileSync(
       new URL("../../../../../../tests/fixtures/admin-part-message.json", import.meta.url), "utf8",
     )) as { worker_execution: AdminRunDetailResponse["worker_execution"] };
-    const partOpen = container.querySelector('button[aria-label="查看 run_failed"]') as HTMLButtonElement;
+    const partOpen = document.querySelector('button[aria-label="查看 run_failed"]') as HTMLButtonElement;
     for (const status of ["available", "incomplete", "invalid", "unknown"] as const) {
       adminRunsApi.detail = async () => ({
         ...detail, run: { ...detail.run, ...runs[1], status: "succeeded" },
@@ -976,21 +890,21 @@ for (const scenario of [
         },
       });
       await act(async () => { partOpen.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
-      await waitFor(() => container.querySelector("[data-run-answer-projection]") !== null);
-      assert.match(container.querySelector("[data-run-answer-projection]")?.textContent ?? "", {
-        available: /已有可展示的公开回答/, incomplete: /账本尚不完整/, invalid: /账本校验未通过/, unknown: /原因未知/,
+      await waitFor(() => document.querySelector("[data-run-answer-projection]") !== null);
+      assert.match(document.querySelector("[data-run-answer-projection]")?.textContent ?? "", {
+        available: /已有可验证回答/, incomplete: /账本尚不完整/, invalid: /账本未通过校验/, unknown: /未采集或证据不足/,
       }[status]);
       if (status === "available") {
-        assert.match(container.querySelector("[data-run-agent-output]")?.textContent ?? "", /正常公开回答/);
-        assert.match(container.querySelector("[data-worker-execution-content]")?.textContent ?? "", /1 条公开 Agent 输出/);
+        assert.match(document.querySelector("[data-run-agent-output]")?.textContent ?? "", /正常公开回答/);
+        assert.match(document.querySelector("[data-worker-execution-content]")?.textContent ?? "", /正常公开回答/);
       } else {
-        assert.equal(container.querySelectorAll("[data-run-agent-output]").length, 0);
+        assert.equal(document.querySelectorAll("[data-run-agent-output]").length, 0);
       }
-      assert.doesNotMatch(container.querySelector("[data-worker-execution-content]")?.textContent ?? "", /WORK_TEXT_MUST_NOT_BE_ANSWER|PRIVATE_RESULT_MARKER/);
+      assert.doesNotMatch(document.querySelector("[data-worker-execution-content]")?.textContent ?? "", /WORK_TEXT_MUST_NOT_BE_ANSWER|PRIVATE_RESULT_MARKER/);
       await act(async () => {
-        (container.querySelector("button[data-run-monitor-backdrop]") as HTMLButtonElement).dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+        (document.querySelector("button[data-run-monitor-backdrop]") as HTMLButtonElement).dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
       });
-      await waitFor(() => container.querySelector('[role="dialog"]') === null);
+      await waitFor(() => document.querySelector('[role="dialog"]') === null);
     }
 
     let resolvePendingDetail:
@@ -1007,7 +921,7 @@ for (const scenario of [
       new Promise<AdminRunDiagnosticsResponse>((resolve) => {
         resolvePendingDiagnostics = resolve;
       });
-    const failedOpenButton = container.querySelector(
+    const failedOpenButton = document.querySelector(
       'button[aria-label="查看 run_failed"]',
     ) as HTMLButtonElement | null;
     assert.ok(failedOpenButton);
@@ -1020,7 +934,7 @@ for (const scenario of [
     await waitFor(
       () => resolvePendingDetail !== undefined && resolvePendingDiagnostics !== undefined,
     );
-    const pendingBackdrop = container.querySelector(
+    const pendingBackdrop = document.querySelector(
       "button[data-run-monitor-backdrop]",
     ) as HTMLButtonElement | null;
     assert.ok(pendingBackdrop);
@@ -1029,7 +943,7 @@ for (const scenario of [
         new dom.window.MouseEvent("click", { bubbles: true }),
       );
     });
-    await waitFor(() => container.querySelector('[role="dialog"]') === null);
+    await waitFor(() => document.querySelector('[role="dialog"]') === null);
     assert.equal(dom.window.document.activeElement, failedOpenButton);
     await act(async () => {
       resolvePendingDetail?.({
@@ -1042,20 +956,20 @@ for (const scenario of [
       });
       await Promise.resolve();
     });
-    assert.equal(container.querySelector('[role="dialog"]'), null);
-    assert.doesNotMatch(container.textContent ?? "", /STALE_DETAIL_MARKER/);
-    assert.doesNotMatch(container.textContent ?? "", /STALE_DIAGNOSTICS_MARKER/);
+    assert.equal(document.querySelector('[role="dialog"]'), null);
+    assert.doesNotMatch(document.body.textContent ?? "", /STALE_DETAIL_MARKER/);
+    assert.doesNotMatch(document.body.textContent ?? "", /STALE_DIAGNOSTICS_MARKER/);
 
     const allFilter = (
-      Array.from(container.querySelectorAll('button[aria-pressed]')) as HTMLButtonElement[]
-    ).find((button) => button.textContent === "全部");
+      Array.from(document.querySelectorAll('button[aria-pressed]')) as HTMLButtonElement[]
+    ).find((button) => button.textContent?.startsWith("全部"));
     assert.ok(allFilter);
     await act(async () => {
       allFilter.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
     });
 
-    adminRunsApi.list = async () => ({ runs: [runs[1]], limit: 50 });
-    const refreshButtonForManualCheck = container.querySelector(
+    adminRunsApi.monitor = async () => monitorResponse([runs[1]]);
+    const refreshButtonForManualCheck = document.querySelector(
       'button[aria-label="刷新最近运行"]',
     ) as HTMLButtonElement | null;
     assert.ok(refreshButtonForManualCheck);
@@ -1064,22 +978,19 @@ for (const scenario of [
         new dom.window.MouseEvent("click", { bubbles: true }),
       );
     });
-    await waitFor(() => container.textContent?.includes("run_failed") === true);
-    assert.doesNotMatch(container.textContent ?? "", /run_running/);
+    await waitFor(() => document.body.textContent?.includes("run_failed") === true);
+    assert.doesNotMatch(document.body.textContent ?? "", /run_running/);
   } finally {
     await act(async () => {
       root.unmount();
     });
-    adminRunsApi.list = originalList;
+    adminRunsApi.monitor = originalMonitor;
+    adminRunsApi.investigation = originalInvestigation;
     adminRunsApi.detail = originalDetail;
     adminRunsApi.diagnostics = originalDiagnostics;
     adminRunsApi.trajectory = originalTrajectory;
     adminRunsApi.exportDiagnostics = originalExportDiagnostics;
-    dom.window.close();
-    for (const [key, descriptor] of previousDescriptors) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete (globalThis as Record<string, unknown>)[key];
-    }
+
   }
 });
 
@@ -1114,16 +1025,9 @@ test("Run Monitor fails closed on same-tool cross-namespace identity collisions"
 
 
 test("SDK errors retain readable causes alongside attempt-scoped MCP codes", async () => {
-  const dom = new JSDOM("<!doctype html><div id='root'></div>");
-  const globals: Record<string, unknown> = {
-    window: dom.window, document: dom.window.document, IS_REACT_ACT_ENVIRONMENT: true,
-  };
-  const previous = new Map(Object.keys(globals).map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
-  for (const [key, value] of Object.entries(globals)) {
-    Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
-  }
+  document.body.innerHTML = '<div id="root"></div>';
   const container = dom.window.document.getElementById("root") as HTMLElement;
-  const root = createRoot(container);
+  const root = await createLobeTestRoot(container);
   const mcp = { source: "mcp_session_call", scope: "run_attempt", exception_type: "McpError", code: 408 };
   const cases: Array<{ errors: unknown; expected: string[] }> = [
     { errors: ["legacy SDK cause", "second cause"], expected: ["legacy SDK cause", "second cause"] },
@@ -1146,16 +1050,12 @@ test("SDK errors retain readable causes alongside attempt-scoped MCP codes", asy
         versions: {}, counts: { retained_observations: 1, omitted_observations: 0 },
       };
       await act(async () => { root.render(<RunDiagnosticsSection diagnostics={diagnostics} loading={false} error={null} />); });
-      const section = Array.from(container.querySelectorAll("h4")).find((heading) => heading.textContent === "SDK 错误")?.parentElement;
+      const section = Array.from(document.querySelectorAll("h4")).find((heading) => heading.textContent === "SDK 错误")?.parentElement;
       assert.deepEqual(Array.from(section?.querySelectorAll("li") ?? [], (item) => item.textContent), expected);
-      assert.equal(container.querySelector("[data-sdk-http-status]"), null);
+      assert.equal(document.querySelector("[data-sdk-http-status]"), null);
     }
   } finally {
     await act(async () => { root.unmount(); });
-    dom.window.close();
-    for (const [key, descriptor] of previous) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else delete (globalThis as Record<string, unknown>)[key];
-    }
+
   }
 });

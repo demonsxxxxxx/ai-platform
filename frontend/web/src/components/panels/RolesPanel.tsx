@@ -1,3 +1,4 @@
+import { Button } from "@lobehub/ui/base-ui";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   Building2,
@@ -10,7 +11,7 @@ import {
   Shield,
   UsersRound,
 } from "lucide-react";
-import toast from "react-hot-toast";
+import { toast } from "@lobehub/ui/base-ui";
 import { useTranslation } from "react-i18next";
 import { PanelHeader } from "../common/PanelHeader";
 import { PanelLoadingState } from "../common/PanelLoadingState";
@@ -171,11 +172,11 @@ function RoleCard({
 
       {role.requestable && !canManageRoles ? (
         <div className="mt-4 flex justify-end">
-          <button
-            type="button"
+          <Button type="default"
+            htmlType="button"
             onClick={() => onRequestRole(role.role_id)}
             disabled={!canRequestRoles || requesting}
-            className="btn-secondary h-9"
+            className="h-9"
             title={
               canRequestRoles
                 ? t("roles.plaza.actions.requestRole")
@@ -188,7 +189,7 @@ function RoleCard({
                 ? t("roles.plaza.actions.queueing")
                 : t("roles.plaza.actions.requestRole")}
             </span>
-          </button>
+          </Button>
         </div>
       ) : null}
     </article>
@@ -395,11 +396,11 @@ export function RolesPanel() {
         icon={<Shield size={22} className="text-theme-text-secondary" />}
         actions={
           <div className="flex flex-wrap items-center justify-end gap-2">
-            <button
-              type="button"
+            <Button type="default"
+              htmlType="button"
               onClick={() => void loadOverview()}
               disabled={isLoading}
-              className="btn-secondary h-10"
+              className="h-10"
               title={t("common.refresh")}
             >
               <RefreshCw
@@ -407,7 +408,7 @@ export function RolesPanel() {
                 className={isLoading ? "animate-spin" : undefined}
               />
               <span className="hidden sm:inline">{t("common.refresh")}</span>
-            </button>
+            </Button>
             <GovernanceAvailabilityBadge
               state={roleGovernance.roleDirectoryAvailability.state}
               labelKey={roleGovernance.roleDirectoryAvailability.labelKey}
@@ -537,13 +538,13 @@ export function RolesPanel() {
                         />
                       </div>
                       {department.requestable && canRequestRoles ? (
-                        <button
-                          type="button"
+                        <Button type="default"
+                          htmlType="button"
                           onClick={() =>
                             handleRequestDepartment(department.department_id)
                           }
                           disabled={requesting}
-                          className="btn-secondary mt-3 h-9"
+                          className="mt-3 h-9"
                         >
                           <GitPullRequestArrow size={15} />
                           <span>
@@ -551,7 +552,7 @@ export function RolesPanel() {
                               ? t("roles.plaza.actions.queueing")
                               : t("roles.plaza.actions.requestDepartment")}
                           </span>
-                        </button>
+                        </Button>
                       ) : null}
                     </div>
                   );
@@ -642,30 +643,30 @@ export function RolesPanel() {
                       </div>
                       {canManageRoles ? (
                         <div className="flex flex-wrap items-center gap-2 lg:justify-end">
-                          <button
-                            type="button"
+                          <Button type="default"
+                            htmlType="button"
                             onClick={() => handleDecision(request, "approve")}
                             disabled={
                               operation?.kind === "approve" &&
                               operation.id === request.request_id
                             }
-                            className="btn-secondary h-9"
+                            className="h-9"
                           >
                             <CheckCircle2 size={15} />
                             <span>{t("roles.plaza.actions.approve")}</span>
-                          </button>
-                          <button
-                            type="button"
+                          </Button>
+                          <Button type="default"
+                            htmlType="button"
                             onClick={() => handleDecision(request, "reject")}
                             disabled={
                               operation?.kind === "reject" &&
                               operation.id === request.request_id
                             }
-                            className="btn-secondary h-9"
+                            className="h-9"
                           >
                             <LockKeyhole size={15} />
                             <span>{t("roles.plaza.actions.reject")}</span>
-                          </button>
+                          </Button>
                         </div>
                       ) : null}
                     </article>
@@ -716,18 +717,18 @@ export function RolesPanel() {
                         </p>
                       </div>
                       {audit.rollback_available && canManageRoles ? (
-                        <button
-                          type="button"
+                        <Button type="default"
+                          htmlType="button"
                           onClick={() => handleRollback(audit)}
                           disabled={
                             operation?.kind === "rollback" &&
                             operation.id === audit.audit_id
                           }
-                          className="btn-secondary h-9"
+                          className="h-9"
                         >
                           <RotateCcw size={15} />
                           <span>{t("roles.plaza.actions.rollback")}</span>
-                        </button>
+                        </Button>
                       ) : null}
                     </article>
                   ))

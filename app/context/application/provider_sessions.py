@@ -1,16 +1,28 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import hashlib
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from app.context.domain.provider_media import (
+    ImageFields, ProviderMediaTransfer, split_provider_images,
+)
 from app.context.domain.provider_sessions import (
+    MAX_PROVIDER_SESSION_STRUCTURED_ENTRY_BYTES,
+    ProviderSessionContinuityError,
+    normalize_provider_entry_batch,
+    provider_entry_json_bytes,
     ProviderSessionConflictError,
     ProviderSessionScope,
 )
 
 
 class ProviderSessionRepository(Protocol):
+    async def prepare_callback_media(self, conn: Any, **scope: Any) -> ProviderMediaTransfer: ...
+
+    async def queue_images_for_deletion(self, conn: Any, **scope: Any) -> list[dict]: ...
+
     async def callback_epoch(self, conn: Any, **scope: Any) -> dict[str, Any]: ...
 
     async def claim_lineage(self, conn: Any, *, scope: ProviderSessionScope, run_id: str) -> None: ...
@@ -46,8 +58,71 @@ class ProviderSessionOperationResult:
 class ProviderSessionUseCases:
     """Context-owned provider transcript operations over an injected repository."""
 
-    def __init__(self, repository: ProviderSessionRepository) -> None:
+    def __init__(self, repository: ProviderSessionRepository, *,
+                 image_fields: ImageFields | None = None, storage_factory=None, storage_io=None) -> None:
         self._repository = repository
+        self._image_fields = image_fields
+        self._storage_factory = storage_factory
+        self._storage_io = storage_io
+
+    async def prepare_callback_media(self, conn: Any, **kwargs: Any) -> ProviderMediaTransfer | None:
+        if self._image_fields is None:
+            return None
+        projection = None
+        if kwargs["action"] == "append":
+            batch, _size = normalize_provider_entry_batch(kwargs["entries"], subpath=kwargs["subpath"])
+            projection = split_provider_images([item.entry for item in batch], image_fields=self._image_fields)
+            for index, entry in enumerate(projection.entries):
+                size = provider_entry_json_bytes(entry)
+                if size > MAX_PROVIDER_SESSION_STRUCTURED_ENTRY_BYTES:
+                    references = projection.references[index]
+                    sizes = [ref["size_bytes"] for ref in references]
+                    raise ProviderSessionContinuityError("provider_session_entry_too_large", debug={
+                        "component": "provider_session", "operation": "append", "phase": "structured_entry_validation",
+                        "failure_class": "size_limit", "observed_bytes": size,
+                        "limit_bytes": MAX_PROVIDER_SESSION_STRUCTURED_ENTRY_BYTES, "entry_index": index,
+                        "entry_count": len(projection.entries), "scope": "child" if kwargs["subpath"] else "main",
+                        "entry_kind": entry.get("type", "other"), "image_count": len(sizes),
+                        "encoded_image_bytes": sum(sizes), "largest_encoded_image_bytes": max(sizes, default=0),
+                    })
+        binding = {key: kwargs[key] for key in (
+            "tenant_id", "workspace_id", "user_id", "session_id", "agent_id", "run_id",
+            "attempt_id", "provider_session_id", "action", "entries", "subpath", "expected_sequence",
+        )}
+        return await self._repository.prepare_callback_media(conn, projection=projection, **binding)
+
+    async def transfer_callback_media(self, media: ProviderMediaTransfer | None) -> None:
+        if media is None:
+            return
+        def transfer() -> dict[str, str]:
+            storage = self._storage_factory()
+            values = {}
+            try:
+                for obj in media.objects:
+                    if media.projection is not None:
+                        content = media.projection.images[obj["sha256"]].content
+                        receipt = storage.put_bytes(
+                            storage_key=obj["storage_key"], content=content, content_type="application/octet-stream",
+                        )
+                        if (receipt.sha256 != obj["sha256"] or receipt.size_bytes != obj["size_bytes"]
+                            or receipt.storage_key != obj["storage_key"]):
+                            raise ProviderSessionContinuityError("provider_session_integrity_mismatch")
+                    else:
+                        content = storage.get_bytes_bounded(storage_key=obj["storage_key"], max_bytes=obj["size_bytes"])
+                    if len(content) != obj["size_bytes"] or hashlib.sha256(content).hexdigest() != obj["sha256"]:
+                        raise ProviderSessionContinuityError("provider_session_integrity_mismatch")
+                    values[obj["id"]] = content.decode("utf-8")
+                return values
+            finally:
+                # This thread owns close, even after its async waiter times out or cancels.
+                storage.close()
+
+        if media.objects:
+            media.values = await self._storage_io(transfer)
+        media.completed = True
+
+    async def queue_images_for_deletion(self, conn: Any, **kwargs: Any) -> list[dict]:
+        return await self._repository.queue_images_for_deletion(conn, **kwargs)
 
     async def claim_lineage(self, conn: Any, *, scope: ProviderSessionScope, run_id: str) -> None:
         await self._repository.claim_lineage(conn, scope=scope, run_id=run_id)
@@ -91,6 +166,7 @@ class ProviderSessionUseCases:
         subpath: str | None,
         expected_sequence: int | None,
         include_child_entries: bool = False,
+        media: ProviderMediaTransfer | None = None,
     ) -> ProviderSessionOperationResult:
         receipt = await self._repository.callback_epoch(
             conn, tenant_id=tenant_id, workspace_id=workspace_id,
@@ -99,6 +175,7 @@ class ProviderSessionUseCases:
             provider_session_id=provider_session_id, action=action,
             subpath=subpath, entries=entries, expected_sequence=expected_sequence,
             **({"include_child_entries": True} if include_child_entries else {}),
+            **({"media": media} if media is not None else {}),
         )
         return ProviderSessionOperationResult(
             action=action,
@@ -156,6 +233,18 @@ async def commit_provider_turn(conn: Any, *, tenant_id: str, run_id: str,
     )
 
 
+async def prepare_provider_session_media(conn: Any, **kwargs: Any) -> ProviderMediaTransfer | None:
+    return await configured_provider_session_use_cases().prepare_callback_media(conn, **kwargs)
+
+
+async def transfer_provider_session_media(media: ProviderMediaTransfer | None) -> None:
+    await configured_provider_session_use_cases().transfer_callback_media(media)
+
+
+async def queue_provider_session_images_for_deletion(conn: Any, **kwargs: Any) -> list[dict]:
+    return await configured_provider_session_use_cases().queue_images_for_deletion(conn, **kwargs)
+
+
 async def execute_provider_session_callback(conn: Any, **kwargs: Any) -> ProviderSessionOperationResult:
     return await configured_provider_session_use_cases().execute_callback(conn, **kwargs)
 
@@ -172,4 +261,7 @@ __all__ = [
     "configure_provider_session_use_cases",
     "configured_provider_session_use_cases",
     "execute_provider_session_callback",
+    "prepare_provider_session_media",
+    "transfer_provider_session_media",
+    "queue_provider_session_images_for_deletion",
 ]

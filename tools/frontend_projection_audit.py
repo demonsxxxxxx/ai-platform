@@ -104,17 +104,14 @@ AI_PLATFORM_ROUTE_PREFIXES = [
 SAFE_PUBLIC_ROUTE_PREFIXES = [
     "/api/agent/models/available",
     "/api/github",
-    "/api/feedback",
     "/api/marketplace",
     "/api/mcp",
-    "/api/notifications/active",
     "/api/role-governance",
     "/api/skills",
     "/api/users",
 ]
 SAFE_ADMIN_ROUTE_PREFIXES = [
     "/api/admin/mcp",
-    "/api/notifications/admin",
 ]
 ORDINARY_USER_BASELINE_PERMISSION_TOKENS = {
     "AGENT_USE",

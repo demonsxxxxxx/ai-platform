@@ -1,14 +1,12 @@
+import { AccordionRoot, AccordionItem, AccordionHeader, AccordionTrigger, AccordionPanel, AutoComplete, Button, Tag, TextArea } from "@lobehub/ui/base-ui";
 import {
   useCallback,
   useEffect,
-  useId,
   useMemo,
   useRef,
   useState,
-  type FocusEvent,
-  type KeyboardEvent,
 } from "react";
-import { Building2, ChevronDown, MessageSquareText, ShieldCheck, X } from "lucide-react";
+import { Building2, MessageSquareText, ShieldCheck, X } from "lucide-react";
 
 import { DepartmentDirectorySelector } from "../../components/panels/DepartmentDirectorySelector";
 import {
@@ -17,9 +15,7 @@ import {
 } from "../../services/api/capabilityDistribution";
 import type { AgentBuilderEditor } from "./agentBuilderAdapter";
 import { AgentAvatarPicker } from "./AgentAvatarPicker";
-
-const INPUT_CLASS =
-  "w-full rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 py-2 text-sm outline-none focus:border-[var(--theme-primary)] focus:ring-1 focus:ring-[var(--theme-primary)] disabled:cursor-not-allowed disabled:opacity-60";
+import { LobeSelectField } from "../../components/lobe-ui/LobeSelectField";
 
 function lines(value: string): string[] {
   return value
@@ -66,216 +62,48 @@ function filterMarketTagSuggestions(
   );
 }
 
-function MarketTagCombobox({
-  disabled,
-  id,
-  onChange,
-  suggestions,
-  value,
-}: {
-  disabled: boolean;
-  id: string;
-  onChange: (value: string) => void;
-  suggestions: readonly string[];
-  value: string;
+function MarketTagCombobox({ disabled, id, onChange, suggestions, value }: {
+  disabled: boolean; id: string; onChange: (value: string) => void; suggestions: readonly string[]; value: string;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const [activeIndex, setActiveIndex] = useState(-1);
+  const queryRef = useRef("");
   const rootRef = useRef<HTMLDivElement>(null);
-  const listboxId = useId();
   const selectedTags = useMemo(() => parseMarketTags(value), [value]);
-  const filteredSuggestions = useMemo(
-    () => filterMarketTagSuggestions(suggestions, query, selectedTags),
-    [query, selectedTags, suggestions],
-  );
-  const safeActiveIndex =
-    activeIndex >= 0 && activeIndex < filteredSuggestions.length
-      ? activeIndex
-      : -1;
-
+  const filteredSuggestions = useMemo(() => filterMarketTagSuggestions(suggestions, query, selectedTags), [suggestions, query, selectedTags]);
+  const clearQuery = () => { queryRef.current = ""; setQuery(""); };
   const commitQuery = useCallback(() => {
-    if (!query.trim()) return;
-    onChange(serializeMarketTags(addMarketTag(selectedTags, query)));
+    const pending = queryRef.current;
+    if (!pending.trim()) return;
+    queryRef.current = "";
     setQuery("");
-  }, [onChange, query, selectedTags]);
-
-  const closeSuggestions = useCallback(() => {
-    commitQuery();
-    setOpen(false);
-    setActiveIndex(-1);
-  }, [commitQuery]);
-
-  useEffect(() => {
-    if (!open) return;
-    const closeOnOutsideClick = (event: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(event.target as Node)) {
-        closeSuggestions();
-      }
-    };
-    document.addEventListener("mousedown", closeOnOutsideClick);
-    return () => document.removeEventListener("mousedown", closeOnOutsideClick);
-  }, [closeSuggestions, open]);
-
-  const openSuggestions = () => {
-    setOpen(true);
-    setActiveIndex(-1);
-  };
-
-  const chooseSuggestion = (tag: string) => {
-    onChange(serializeMarketTags(addMarketTag(selectedTags, tag)));
-    setQuery("");
-    setOpen(true);
-    setActiveIndex(-1);
-  };
-
-  const removeTag = (tag: string) => {
-    onChange(serializeMarketTags(selectedTags.filter((item) => item !== tag)));
-  };
-
-  const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      setQuery("");
-      setOpen(false);
-      setActiveIndex(-1);
-      return;
-    }
-    if (event.key === "," || event.key === "，") {
-      event.preventDefault();
-      commitQuery();
-      return;
-    }
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      if (!open) {
-        openSuggestions();
-        return;
-      }
-      if (filteredSuggestions.length > 0) {
-        setActiveIndex((current) =>
-          current < filteredSuggestions.length - 1 ? current + 1 : 0,
-        );
-      }
-      return;
-    }
-    if (event.key === "ArrowUp") {
-      event.preventDefault();
-      if (!open) {
-        openSuggestions();
-        return;
-      }
-      if (filteredSuggestions.length > 0) {
-        setActiveIndex((current) =>
-          current > 0 ? current - 1 : filteredSuggestions.length - 1,
-        );
-      }
-      return;
-    }
-    if (event.key === "Enter") {
-      event.preventDefault();
-      if (open && safeActiveIndex >= 0) chooseSuggestion(filteredSuggestions[safeActiveIndex]);
-      else commitQuery();
-      return;
-    }
-    if (event.key === "Home" && open && filteredSuggestions.length > 0) {
-      event.preventDefault();
-      setActiveIndex(0);
-    } else if (event.key === "End" && open && filteredSuggestions.length > 0) {
-      event.preventDefault();
-      setActiveIndex(filteredSuggestions.length - 1);
-    }
-  };
-
+    onChange(serializeMarketTags(addMarketTag(selectedTags, pending)));
+  }, [onChange, selectedTags]);
   return (
-    <div
-      className="relative"
-      onBlur={(event: FocusEvent<HTMLDivElement>) => {
-        const nextTarget = event.relatedTarget as Node | null;
-        if (!rootRef.current?.contains(nextTarget)) closeSuggestions();
+    <div ref={rootRef} className="flex flex-wrap items-center gap-1.5"
+      onBlur={(event) => { if (!rootRef.current?.contains(event.relatedTarget as Node | null)) { commitQuery(); setOpen(false); } }}
+      onKeyDown={(event) => {
+        if (event.nativeEvent.isComposing) return;
+        if ((event.key === "Enter" && !event.defaultPrevented) || event.key === "," || event.key === "，") {
+          event.preventDefault(); commitQuery();
+        }
       }}
-      ref={rootRef}
     >
-      <div className={`${INPUT_CLASS} flex min-h-10 flex-wrap items-center gap-1.5 pr-9`}>
-        {selectedTags.map((tag) => (
-          <span
-            className="inline-flex max-w-full items-center gap-1 rounded-md bg-[var(--theme-primary-light)] px-2 py-1 text-xs text-[var(--theme-primary)]"
-            key={tag}
-          >
-            <span className="max-w-40 truncate">{tag}</span>
-            <button
-              aria-label={`移除标签 ${tag}`}
-              className="rounded p-0.5 hover:bg-[var(--theme-primary)]/15 focus:outline-none focus-visible:ring-1 focus-visible:ring-[var(--theme-primary)]"
-              disabled={disabled}
-              onClick={() => removeTag(tag)}
-              type="button"
-            >
-              <X aria-hidden="true" size={13} />
-            </button>
-          </span>
-        ))}
-        <input
-          aria-activedescendant={
-            safeActiveIndex >= 0
-              ? `${listboxId}-option-${safeActiveIndex}`
-              : undefined
-          }
-          aria-autocomplete="list"
-          aria-controls={listboxId}
-          aria-expanded={open}
-          aria-haspopup="listbox"
-          aria-label="市场标签"
-          className="min-w-24 flex-1 bg-transparent py-0.5 text-sm outline-none"
-          disabled={disabled}
-          id={id}
-          maxLength={80}
-          onChange={(event) => {
-            setQuery(event.target.value);
-            setOpen(true);
-            setActiveIndex(-1);
-          }}
-          onFocus={openSuggestions}
-          onKeyDown={handleKeyDown}
-          placeholder={selectedTags.length > 0 ? "继续添加标签" : "输入或选择标签，回车添加"}
-          role="combobox"
-          value={query}
-        />
-      </div>
-      <ChevronDown
-        aria-hidden="true"
-        className={`pointer-events-none absolute right-3 top-5 -translate-y-1/2 text-[var(--theme-text-secondary)] transition-transform ${open ? "rotate-180" : ""}`}
-        size={16}
+      {selectedTags.map((tag) => <Tag key={tag} className="max-w-full">
+        <span className="max-w-40 truncate">{tag}</span>
+        <Button type="text" size="small" disabled={disabled} aria-label={`移除标签 ${tag}`}
+          onClick={() => onChange(serializeMarketTags(selectedTags.filter((item) => item !== tag)))}><X size={13} /></Button>
+      </Tag>)}
+      <AutoComplete id={id} disabled={disabled} value={query} open={open} filter={null} options={filteredSuggestions}
+        className="min-w-24 flex-1" placeholder="输入或选择标签" emptyText="暂无匹配标签，可直接输入后按回车添加"
+        onChange={(next) => { queryRef.current = next; setQuery(next); }}
+        onOpenChange={(next, details) => {
+          setOpen(next);
+          if (!next && details.reason === "escape-key") clearQuery();
+          else if (!next && details.reason === "item-press") queueMicrotask(() => { commitQuery(); setOpen(true); });
+          else if (!next && (details.reason === "outside-press" || details.reason === "focus-out")) commitQuery();
+        }}
       />
-      {open ? (
-        <div
-          aria-label="已有市场标签"
-          className="absolute left-0 right-0 top-full z-20 mt-1 max-h-52 overflow-y-auto rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] py-1 shadow-lg"
-          id={listboxId}
-          role="listbox"
-        >
-          {filteredSuggestions.length > 0 ? (
-            filteredSuggestions.map((tag, index) => (
-              <button
-                aria-selected={safeActiveIndex === index}
-                className={`flex min-h-9 w-full items-center px-3 text-left text-sm transition-colors ${safeActiveIndex === index ? "bg-[var(--theme-primary-light)] text-[var(--theme-primary)]" : "text-[var(--theme-text)] hover:bg-[var(--theme-bg-sidebar)]"}`}
-                id={`${listboxId}-option-${index}`}
-                key={tag}
-                onClick={() => chooseSuggestion(tag)}
-                onMouseDown={(event) => event.preventDefault()}
-                onMouseEnter={() => setActiveIndex(index)}
-                role="option"
-                type="button"
-              >
-                <span className="min-w-0 flex-1 truncate">{tag}</span>
-              </button>
-            ))
-          ) : (
-            <p className="px-3 py-2 text-xs text-[var(--theme-text-secondary)]">
-              暂无匹配标签，可直接输入后按回车添加
-            </p>
-          )}
-        </div>
-      ) : null}
     </div>
   );
 }
@@ -310,9 +138,10 @@ function ListField({
   return (
     <label className="flex flex-col gap-2">
       <span className="text-sm font-medium">{label}</span>
-      <textarea
+      <TextArea
         aria-label={label}
-        className={`${INPUT_CLASS} resize-y ${className ?? "min-h-24"}`}
+        resize
+        classNames={{ input: className ?? "min-h-24" }}
         disabled={disabled}
         onBlur={() => {
           commit();
@@ -388,9 +217,10 @@ export function AgentBuilderEnterpriseFields({
           <div className="grid gap-4">
             <label className="flex flex-col gap-2">
               <span className="text-sm font-medium">专家说明</span>
-              <textarea
+              <TextArea
                 aria-label="专家说明"
-                className={`${INPUT_CLASS} min-h-32 resize-y`}
+                resize
+                classNames={{ input: "min-h-32" }}
                 disabled={disabled}
                 onChange={(event) => onChange({ description: event.target.value })}
                 placeholder="说明这位专家适合解决什么问题"
@@ -441,36 +271,37 @@ export function AgentBuilderEnterpriseFields({
         aria-label="访问范围（高级）"
         className="rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-5"
       >
-        <details
-          data-agent-builder-access-settings
-        >
-          <summary className="flex cursor-pointer items-center gap-2 text-sm font-medium">
+        <AccordionRoot variant="borderless" data-agent-builder-access-settings>
+          <AccordionItem value="access">
+          <AccordionHeader>
+          <AccordionTrigger>
             <ShieldCheck
               aria-hidden="true"
               className="text-[var(--theme-text-secondary)]"
               size={17}
             />
             访问范围（高级）
-          </summary>
+          </AccordionTrigger>
+          </AccordionHeader>
+          <AccordionPanel keepMounted>
           <p className="mt-3 text-sm leading-6 text-[var(--theme-text-secondary)]">
-            默认对公司内部用户开放；需要限制部门、角色或用户时再展开配置。
+            默认对公司内部用户开放；需要限制部门时再展开配置。
           </p>
-        <label className="mt-4 flex max-w-sm flex-col gap-2">
+        <div className="mt-4 flex max-w-sm flex-col gap-2">
           <span className="text-sm font-medium">可见范围</span>
-          <select
-            className={INPUT_CLASS}
+          <LobeSelectField
+            aria-label="可见范围"
             disabled={disabled}
-            onChange={(event) =>
-              onChange({
-                visibility: event.target.value as AgentBuilderEditor["visibility"],
-              })
+            onChange={(visibility) =>
+              onChange({ visibility: visibility as AgentBuilderEditor["visibility"] })
             }
             value={editor.visibility}
-          >
-            <option value="tenant">全公司</option>
-            <option value="restricted">指定部门、角色或用户</option>
-          </select>
-        </label>
+            options={[
+              { value: "tenant", label: "全公司" },
+              { value: "restricted", label: "指定部门" },
+            ]}
+          />
+        </div>
 
         {editor.visibility === "restricted" ? (
           <div className="mt-4 grid gap-4">
@@ -486,24 +317,13 @@ export function AgentBuilderEnterpriseFields({
                 selectedAuthorityIds={editor.allowedDepartmentIds}
               />
             </div>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <ListField
-                disabled={disabled}
-                label="允许角色"
-                onChange={(allowedRoles) => onChange({ allowedRoles })}
-                values={editor.allowedRoles}
-              />
-              <ListField
-                disabled={disabled}
-                label="允许用户"
-                onChange={(allowedUserIds) => onChange({ allowedUserIds })}
-                values={editor.allowedUserIds}
-              />
-            </div>
+
           </div>
         ) : null}
 
-        </details>
+          </AccordionPanel>
+          </AccordionItem>
+        </AccordionRoot>
       </section>
     </>
   );

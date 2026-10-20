@@ -56,6 +56,9 @@ export interface AdminRunSummary {
   error_code?: string | null;
   error_message?: string | null;
   latency_ms?: number | null;
+  latency?: AdminRunLatency;
+  model_id?: string | null;
+  model_gateway_revision?: number | null;
   input_token_count?: number | null;
   output_token_count?: number | null;
   total_token_count?: number | null;
@@ -82,6 +85,7 @@ export type AdminRunDiagnosticCoverage =
 
 export interface AdminRunDiagnosticObservation {
   observation_id?: string | null;
+  parent_observation_id?: string | null;
   attempt_id?: string | null;
   lease_id?: string | null;
   request_id?: string | null;
@@ -201,6 +205,7 @@ export interface AdminRunDiagnosticsResponse {
   details: {
     schema_version?: string | null;
     sdk: {
+      debug?: Record<string, string | number>;
       api_error_status?: number;
       result_subtype?: string | null;
       stop_reason?: string | null;
@@ -212,6 +217,7 @@ export interface AdminRunDiagnosticsResponse {
     };
     observations?: Array<{
       observation_id?: string | null;
+      parent_observation_id?: string | null;
       attempt_id?: string | null;
       lease_id?: string | null;
       request_id?: string | null;
@@ -221,6 +227,7 @@ export interface AdminRunDiagnosticsResponse {
       stage?: string | null;
       error_code?: string | null;
       sdk: {
+        debug?: Record<string, string | number>;
         api_error_status?: number;
         exception_chain?: Array<{
           type: string;
@@ -352,6 +359,75 @@ export interface AdminRunListResponse {
   limit: number;
 }
 
+export interface AdminRunLatency {
+  total_ms: number | null;
+  queue_ms: number | null;
+  execution_ms: number | null;
+  server_first_text_ms: number | null;
+  browser_first_text_ms: number | null;
+}
+
+export interface AdminRunMetricSummary {
+  sample_count: number;
+  p50: number | null;
+  p95: number | null;
+  p99: number | null;
+}
+
+export interface AdminRunMonitorResponse {
+  measurement: "run_lifecycle.v1";
+  window: { from_at: string; to_at: string };
+  counts: { total: number; succeeded: number; failed: number; cancelled: number; queued: number; running: number };
+  success_rate: number | null;
+  latency: Record<keyof AdminRunLatency, AdminRunMetricSummary>;
+  trend?: Array<{ from_at: string; succeeded: number; failed: number; running: number }>;
+  models: Array<{ model_id: string; model_value: string; model_gateway_revision: number | null }>;
+  runs: AdminRunSummary[];
+  limit: number;
+  has_more: boolean;
+  order: "slow" | "recent";
+}
+
+export interface AdminRunInvestigationStage {
+  stage_id: string;
+  label: string;
+  source: "run_lifecycle" | "platform_ledger" | "run_attempt" | "sdk_reported" | "sdk_tool_hooks";
+  status: string;
+  attempt_id: string | null;
+  operation_id: string | null;
+  event_id: string | null;
+  causation_event_id: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  offset_ms: number | null;
+  receipt_duration_ms: number | null;
+  duration_ms: number | null;
+}
+
+export interface AdminRunInvestigation extends AdminRunLatency {
+  run_id: string;
+  elapsed_ms: number | null;
+  first_public_text_at: string | null;
+  observed_at: string;
+  browser_measurement: "browser_dom_commit.v1" | null;
+  timeline_source: "platform_receipts";
+  durations_additive: false;
+  events_truncated: boolean;
+  unbound_event_count: number;
+  missing_measurements: Array<keyof AdminRunLatency>;
+  stages: AdminRunInvestigationStage[];
+}
+
+export interface AdminRunMonitorOptions extends AdminRunListOptions {
+  hours?: number;
+  fromAt?: string;
+  toAt?: string;
+  agentId?: string;
+  modelId?: string;
+  modelGatewayRevision?: number;
+  order?: "slow" | "recent";
+}
+
 export interface AdminRunRuntimeHealth {
   state: "queued" | "terminal" | "healthy" | "stale" | "unknown" | "awaiting_reconciliation";
   observed_at: string;
@@ -454,6 +530,42 @@ export async function fetchAdminRuns(
   });
 }
 
+function monitorQuery(options: AdminRunMonitorOptions): URLSearchParams {
+  const params = new URLSearchParams({ hours: String(options.hours ?? 24) });
+  if (options.fromAt) params.set("from_at", options.fromAt);
+  if (options.toAt) params.set("to_at", options.toAt);
+  if (options.userId) params.set("user_id", options.userId);
+  if (options.agentId) params.set("agent_id", options.agentId);
+  if (options.modelId) params.set("model_id", options.modelId);
+  if (options.modelGatewayRevision != null) params.set("model_gateway_revision", String(options.modelGatewayRevision));
+  if (options.status) params.set("status", options.status);
+  if (options.order) params.set("order", options.order);
+  if (options.limit != null) params.set("limit", String(options.limit));
+  return params;
+}
+
+export async function fetchAdminRunMonitor(
+  options: AdminRunMonitorOptions = {}, client: AdminRunsApiClient = defaultClient,
+): Promise<AdminRunMonitorResponse> {
+  const response = await client.request<AdminRunMonitorResponse>(`/api/ai/admin/runs/monitor?${monitorQuery(options)}`, { method: "GET" });
+  if (!response || response.measurement !== "run_lifecycle.v1" || !Array.isArray(response.runs) || !Array.isArray(response.models) || !response.window || !response.counts || !response.latency) {
+    throw new Error("admin_run_monitor_response_invalid");
+  }
+  return response;
+}
+
+export async function fetchAdminRunInvestigation(
+  runId: string, client: AdminRunsApiClient = defaultClient,
+): Promise<AdminRunInvestigation> {
+  const response = await client.request<AdminRunInvestigation>(
+    `/api/ai/admin/runs/${encodeURIComponent(runId)}/investigation`, { method: "GET" },
+  );
+  if (!response || response.run_id !== runId || response.timeline_source !== "platform_receipts" || !Array.isArray(response.stages)) {
+    throw new Error("admin_run_investigation_response_invalid");
+  }
+  return response;
+}
+
 export async function fetchAdminRunDetail(
   runId: string,
   client: AdminRunsApiClient = defaultClient,
@@ -536,6 +648,8 @@ export async function exportAdminRunDiagnostics(
 
 export const adminRunsApi = {
   list: fetchAdminRuns,
+  monitor: fetchAdminRunMonitor,
+  investigation: fetchAdminRunInvestigation,
   detail: fetchAdminRunDetail,
   diagnostics: fetchAdminRunDiagnostics,
   trajectory: fetchAdminRunTrajectory,

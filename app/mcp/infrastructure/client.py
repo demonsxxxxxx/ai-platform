@@ -9,6 +9,8 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import timedelta
 from typing import Any, Mapping
 
+from types import SimpleNamespace
+
 import httpx
 from mcp import ClientSession
 from mcp.client.sse import sse_client
@@ -16,8 +18,9 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.types import ListToolsResult, PaginatedRequestParams
 from pydantic import ValidationError
 
-from app.mcp.domain.errors import McpToolDiscoveryError
-from app.mcp.domain.headers import MCP_JWT_AUTHORIZATION_HEADER, normalize_static_mcp_headers
+from app.mcp.domain.errors import McpRuntimeContextError, McpToolDiscoveryError
+from app.mcp.domain.headers import mcp_user_jwt_header, normalize_static_mcp_headers
+from app.mcp.infrastructure import runtime as mcp_runtime
 from app.mcp.infrastructure.catalog import (
     MCP_DISCOVERY_PAGE_LIMIT,
     _canonical_live_definition,
@@ -31,6 +34,7 @@ def _mcp_headers(
     *,
     static_headers: Mapping[str, str] | None,
     jwt_authorization: str,
+    integration_kind: str = "mcp",
 ) -> dict[str, str]:
     raw = str(jwt_authorization or "").strip()
     scheme, separator, token = raw.partition(" ")
@@ -44,11 +48,11 @@ def _mcp_headers(
     ):
         raise McpToolDiscoveryError("authorization_required")
     return {
-        **normalize_static_mcp_headers(static_headers),
+        **normalize_static_mcp_headers(static_headers, integration_kind=integration_kind),
         "Accept": "application/json, text/event-stream",
         "Accept-Encoding": "identity",
         "Host": target.host_header,
-        MCP_JWT_AUTHORIZATION_HEADER: f"Bearer {token}",
+        mcp_user_jwt_header(integration_kind): f"Bearer {token}",
     }
 
 
@@ -113,7 +117,7 @@ class _BoundedMcpStream(httpx.AsyncByteStream):
 @asynccontextmanager
 async def open_mcp_session(
     config, *, timeout_seconds=60.0, max_response_bytes=1024 * 1024,
-    max_response_total_bytes=None, terminate_on_close=True,
+    max_response_total_bytes=None, terminate_on_close=True, credential_resolver=None,
 ):
     """Keep credentials on one approved origin, including SSE message endpoints."""
     transport = config.get("type")
@@ -124,13 +128,23 @@ async def open_mcp_session(
     except Exception:
         raise McpToolDiscoveryError("invalid_endpoint") from None
     raw_headers = dict(config.get("headers") or {})
-    jwt_keys = [key for key in raw_headers if key.casefold() == "jwt-authorization"]
+    integration_kind = config.get("integration_kind", "mcp")
+    jwt_header = mcp_user_jwt_header(integration_kind)
+    jwt_keys = [key for key in raw_headers if key.casefold() == jwt_header.casefold()]
     if len(jwt_keys) != 1:
         raise McpToolDiscoveryError("authorization_required")
     jwt = raw_headers.pop(jwt_keys[0])
     headers = _mcp_headers(
-        target, static_headers=raw_headers, jwt_authorization=jwt
+        target, static_headers=raw_headers, jwt_authorization=jwt,
+        integration_kind=integration_kind,
     )
+    credential_subject = config.get("credential_subject")
+    if credential_subject is not None and (not isinstance(credential_subject, dict)
+        or set(credential_subject) - {"tenant_id", "user_id", "grant_id", "subject_epoch", "legacy_jwt_id"}
+        or not isinstance(credential_subject.get("tenant_id"), str)
+        or not isinstance(credential_subject.get("user_id"), str)):
+        raise McpToolDiscoveryError("authorization_required")
+    credential_principal = SimpleNamespace(**credential_subject) if credential_subject is not None else None
     origin = httpx.URL(target.endpoint)
     pinned = httpx.URL(target.connect_url)
     guard_failure = None
@@ -152,6 +166,24 @@ async def open_mcp_session(
         request.url = request.url.copy_with(host=pinned.host)
         request.headers["Host"] = target.host_header
         request.extensions["sni_hostname"] = target.sni_hostname
+        if credential_principal is not None:
+            try:
+                current_jwt = (
+                    await credential_resolver() if credential_resolver is not None
+                    else await mcp_runtime.get_mcp_principal_jwt_store().get(credential_principal)
+                )
+                current_header = _mcp_headers(
+                    target, static_headers={}, jwt_authorization=f"Bearer {current_jwt}",
+                    integration_kind=integration_kind,
+                )[jwt_header]
+            except McpRuntimeContextError as exc:
+                fail("authorization_required" if exc.status_code == 401 else "transport_failure")
+            except McpToolDiscoveryError as exc:
+                fail(exc.reason)
+            except Exception:
+                fail("transport_failure")
+            # Only subsequent HTTP dispatches change headers; tool effects are never replayed.
+            request.headers[jwt_header] = current_header
 
     async def bound_response(response):
         # HTTPX closes responses rejected by hooks, including unread bodies.
@@ -257,15 +289,19 @@ class McpToolDiscoveryAdapter:
     async def discover_definitions(
         self, endpoint: str, *, static_headers: Mapping[str, str] | None = None,
         jwt_authorization: str,
+        credential_subject: dict[str, Any] | None = None,
+        integration_kind: str = "mcp",
     ) -> tuple[dict[str, Any], ...]:
         try:
             # One deadline owns DNS, handshake, all pages and transport cleanup.
             async with asyncio.timeout(self._timeout_seconds):
                 async with open_mcp_session({
                     "type": self._transport, "url": endpoint,
+                    "credential_subject": credential_subject,
+                    "integration_kind": integration_kind,
                     "headers": {
-                        **normalize_static_mcp_headers(static_headers),
-                        MCP_JWT_AUTHORIZATION_HEADER: jwt_authorization,
+                        **normalize_static_mcp_headers(static_headers, integration_kind=integration_kind),
+                        mcp_user_jwt_header(integration_kind): jwt_authorization,
                     },
                 }, timeout_seconds=self._timeout_seconds,
                     max_response_bytes=self._max_response_bytes,

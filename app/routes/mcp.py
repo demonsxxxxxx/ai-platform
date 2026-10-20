@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-from typing import Any
+from dataclasses import replace
+from typing import Any, Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -21,6 +22,9 @@ from app.conversations.infrastructure import (
     session_queries_postgres as conversations_session_queries,
 )
 from app.db import transaction
+from app.department_directory import (
+    DepartmentDirectoryError, fetch_department_directory, validate_distribution_department_authorities,
+)
 from app.identity.infrastructure import audit_postgres as identity_audit
 from app.identity.infrastructure import (
     capability_distributions_postgres as identity_capability_distributions,
@@ -78,6 +82,7 @@ class McpServerLifecycleRequest(BaseModel):
 
     name: str | None = None
     transport: str = "streamable_http"
+    integration_kind: Literal["mcp", "enterprise_gateway"] = "mcp"
     enabled: bool = True
     url: str | None = None
     headers: dict[str, str] = Field(default_factory=dict)
@@ -99,8 +104,8 @@ class McpServerLifecycleRequest(BaseModel):
 
     @field_validator("headers")
     @classmethod
-    def validate_static_headers(cls, value: dict[str, str]):
-        return normalize_static_mcp_headers(value)
+    def validate_static_headers(cls, value: dict[str, str], info):
+        return normalize_static_mcp_headers(value, integration_kind=info.data.get("integration_kind", "mcp"))
 
     @field_validator("allowed_roles")
     @classmethod
@@ -221,6 +226,7 @@ def _server_response(
     response = {
         "name": str(row.get("name") or ""),
         "transport": str(row.get("transport") or "streamable_http"),
+        "integration_kind": str(row.get("integration_kind") or "mcp"),
         "status": distribution_status,
         "enabled": enabled,
         "visible_to_user": bool((distribution or {}).get("visible_to_user")),
@@ -286,6 +292,7 @@ def _capability_access_context(principal: AuthPrincipal) -> CapabilityAccessCont
     return CapabilityAccessContext(
         tenant_id=principal.tenant_id,
         department_id=principal.department_id,
+        department_ids=principal.department_ids,
         roles=principal.roles,
         is_admin=is_ai_admin(principal),
         permissions=principal.permissions,
@@ -314,6 +321,24 @@ def _mcp_server_decision(
         ),
         intent="discover",
     )
+
+
+def _mcp_server_read_decision(
+    *,
+    principal: AuthPrincipal,
+    row: dict[str, Any],
+    distribution: dict[str, Any] | None,
+    management: bool = False,
+) -> CapabilityAccessDecision:
+    """Allow administrators to read disabled entries without authorizing their use."""
+
+    decision = _mcp_server_decision(principal=principal, row=row, distribution=distribution)
+    status = str(row.get("server_status") or row.get("status") or row.get("effective_status") or "")
+    if management and is_ai_admin(principal) and status == "disabled" and decision.decision_reason == "lifecycle_denied":
+        # The resolver has already rejected missing or archived distributions.
+        # Keep usable=False; this exception belongs only to lifecycle management reads.
+        return replace(decision, visible=True, manageable=True, admin_bypass=True, decision_reason="admin_management")
+    return decision
 
 
 def authorized_mcp_registration_entries(
@@ -368,6 +393,7 @@ async def _public_server_access(
     *,
     principal: AuthPrincipal,
     name: str,
+    management: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any], CapabilityAccessDecision]:
     async with transaction() as conn:
         registry_rows = await mcp_repository.list_mcp_server_registry(
@@ -382,7 +408,9 @@ async def _public_server_access(
             capability_kind="mcp_server",
             capability_id=name,
         )
-        decision = _mcp_server_decision(principal=principal, row=row, distribution=distribution)
+        decision = _mcp_server_read_decision(
+            principal=principal, row=row, distribution=distribution, management=management,
+        )
         if not decision.visible:
             raise HTTPException(status_code=404, detail="mcp_server_not_found")
         await _audit_mcp_admin_bypass(conn, principal=principal, name=name, decision=decision)
@@ -415,7 +443,9 @@ async def _admin_mcp_credentials(
         raise _mcp_runtime_http_error(exc) from exc
 
 
-async def _public_projected_servers(principal: AuthPrincipal) -> list[dict[str, Any]]:
+async def _public_projected_servers(
+    principal: AuthPrincipal, *, management: bool = False,
+) -> list[dict[str, Any]]:
     async with transaction() as conn:
         rows = await mcp_repository.list_mcp_server_registry(
             conn,
@@ -429,23 +459,19 @@ async def _public_projected_servers(principal: AuthPrincipal) -> list[dict[str, 
             include_disabled=True,
         )
         distribution_map = {str(row.get("capability_id") or ""): row for row in distributions}
-        authorized = authorized_mcp_registration_entries(
-            principal=principal,
-            registry_entries=rows,
-            distributions_by_server=distribution_map,
-        )
-        for row in authorized:
+        authorized = []
+        for row in rows:
             name = _server_name(row)
-            await _audit_mcp_admin_bypass(
-                conn,
+            decision = _mcp_server_read_decision(
                 principal=principal,
-                name=name,
-                decision=_mcp_server_decision(
-                    principal=principal,
-                    row=row,
-                    distribution=distribution_map.get(name),
-                ),
+                row=row,
+                distribution=distribution_map.get(name),
+                management=management,
             )
+            if not decision.visible:
+                continue
+            authorized.append(row)
+            await _audit_mcp_admin_bypass(conn, principal=principal, name=name, decision=decision)
     return [
         _server_read_response(
             row,
@@ -559,6 +585,26 @@ async def _write_server(
     is_system: bool,
     action: str,
 ) -> dict[str, Any]:
+    if action.endswith(".updated") and "integration_kind" not in request.model_fields_set:
+        async with transaction() as conn:
+            existing = await mcp_repository.get_mcp_server_registry_entry(
+                conn, tenant_id=principal.tenant_id, name=name,
+            )
+        if existing is not None:
+            request = request.model_copy(update={"integration_kind": existing.get("integration_kind", "mcp")})
+    try:
+        normalize_static_mcp_headers(request.headers, integration_kind=request.integration_kind)
+    except McpRuntimeContextError as exc:
+        raise _mcp_runtime_http_error(exc) from exc
+    department_ids: list[str] = []
+    if request.department_ids:
+        try:
+            department_ids = validate_distribution_department_authorities(
+                request.department_ids, await fetch_department_directory(),
+            )
+        except DepartmentDirectoryError as exc:
+            status_code = 422 if str(exc) == "capability_distribution_department_authority_invalid" else 503
+            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
     fingerprint = _credential_fingerprint(request)
     metadata = _credential_metadata(request)
     credential_state = "configured" if fingerprint else "not_configured"
@@ -592,12 +638,13 @@ async def _write_server(
                 tenant_id=principal.tenant_id,
                 name=name,
                 transport=request.transport,
+                integration_kind=request.integration_kind,
                 enabled=request.enabled,
                 is_system=is_system,
                 endpoint_redacted="",
                 allowed_roles=request.allowed_roles,
                 role_quotas=_role_quotas_payload(request.role_quotas),
-                department_ids=request.department_ids,
+                department_ids=department_ids,
                 credential_state=credential_state,
                 credential_metadata=metadata,
                 credential_fingerprint=fingerprint,
@@ -618,7 +665,7 @@ async def _write_server(
                     if existing_distribution is not None
                     else "allowlist"
                 ),
-                department_ids=request.department_ids,
+                department_ids=department_ids,
                 allowed_roles=request.allowed_roles,
                 metadata_json=dict(
                     existing_distribution.get("metadata_json") or {}
@@ -675,7 +722,7 @@ async def list_mcp_servers(
     """Return governed MCP tool servers without exposing unmanaged lifecycle controls."""
 
     normalized_query = (q or "").strip().lower()
-    projected = await _public_projected_servers(principal)
+    projected = await _public_projected_servers(principal, management=True)
     if normalized_query:
         projected = [server for server in projected if normalized_query in str(server.get("name") or "").lower()]
     page_servers = projected[skip : skip + limit]
@@ -684,6 +731,68 @@ async def list_mcp_servers(
         "total": len(projected),
         "skip": skip,
         "limit": limit,
+    }
+
+
+async def _management_catalog(principal: AuthPrincipal, row: dict[str, Any]) -> LiveMcpServerResult:
+    server_id = str(row["name"])
+    trace_id = standard_trace_id()
+    try:
+        if row.get("integration_kind") == "enterprise_gateway":
+            result = await LIVE_MCP_CATALOG.list_server_catalog(
+                tenant_id=principal.tenant_id, server_id=server_id,
+            )
+        else:
+            jwt = await get_mcp_principal_jwt_store().get(principal)
+            return await _discover_server_tools(
+                principal=principal, server_id=server_id, jwt=jwt, trace_id=trace_id,
+            )
+    except Exception as exc:
+        result = LiveMcpServerResult(server_id, (), "discovery_failed",
+            McpCatalogFailure.from_error(exc, stage="catalog"))
+    if result.failure is not None:
+        _log_catalog_failure(result.failure, principal=principal, server_id=server_id, trace_id=trace_id)
+    return result
+
+
+@router.get("/mcp/catalog-tools")
+async def list_management_mcp_tools(principal: AuthPrincipal = Depends(require_principal)) -> dict[str, Any]:
+    _require_admin(principal)
+    async with transaction() as conn:
+        rows = await mcp_repository.list_mcp_server_registry(
+            conn, tenant_id=principal.tenant_id, include_disabled=False,
+        )
+    semaphore = asyncio.Semaphore(MCP_CHAT_DISCOVERY_CONCURRENCY)
+
+    async def discover(row):
+        async with semaphore:
+            return await _management_catalog(principal, row)
+
+    results = await asyncio.gather(*(discover(row) for row in rows))
+    tools = [tool.public_payload() for result in results for tool in result.tools]
+    tools.sort(key=lambda item: (item["server"], item["label"]))
+    return {"tools": tools, "count": len(tools), "unavailable": [
+        {"label": result.server_id, "reason": result.unavailable_reason}
+        for result in results if result.unavailable_reason
+    ]}
+
+
+@router.get("/mcp/{name}/catalog")
+async def get_management_mcp_catalog(name: str, principal: AuthPrincipal = Depends(require_principal)) -> dict[str, Any]:
+    _require_admin(principal)
+    safe_name = _safe_name(name)
+    async with transaction() as conn:
+        row = await mcp_repository.get_mcp_server_registry_entry(conn, tenant_id=principal.tenant_id, name=safe_name)
+    if row is None:
+        raise HTTPException(status_code=404, detail="mcp_server_not_found")
+    result = await _management_catalog(principal, row)
+    return {
+        "server_name": safe_name,
+        "tools": [{"name": tool.tool_id, "description": tool.description, "server": tool.server_id,
+                   "cached": False, "parameters": [], "system_disabled": False, "user_disabled": False,
+                   "available": tool.available is not False} for tool in result.tools],
+        "count": sum(tool.available is not False for tool in result.tools),
+        "unavailable_reason": result.unavailable_reason,
     }
 
 
@@ -773,7 +882,7 @@ async def get_mcp_server(
     """Return a single governed MCP server projection."""
 
     safe_name = _safe_name(name)
-    row, distribution, _ = await _public_server_access(principal=principal, name=safe_name)
+    row, distribution, _ = await _public_server_access(principal=principal, name=safe_name, management=True)
     response = _server_read_response(
         row,
         distribution=distribution,

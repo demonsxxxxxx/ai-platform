@@ -40,7 +40,8 @@ export class ErrorBoundary extends Component<Props, State> {
             <p className="mb-6 break-words text-sm leading-relaxed text-[var(--theme-text-secondary)]">
               {this.state.error?.message || t("errorBoundary.unexpectedError")}
             </p>
-            <button
+            {/* Recovery must work after the UI provider has been unmounted. */}
+            <button type="button"
               onClick={() => window.location.reload()}
               className="btn-primary inline-flex w-full items-center justify-center gap-2 px-4 py-2.5"
             >

@@ -22,7 +22,7 @@ PYTEST_COMMAND = (
     "python -m pytest tests/test_deploy_frontend_static.py "
     "tests/test_frontend_release_traceability.py "
     "tests/test_frontend_packaged_runtime_smoke.py "
-    "tests/test_frontend_ci_workflow.py "
+    "tests/test_frontend_ci_workflow.py tests/test_frontend_ci_shards.py "
     "-q --basetemp .pytest-tmp"
 )
 LINUX_PYTEST_COMMAND = (
@@ -40,6 +40,9 @@ BACKEND_OWNED_STATIC_SUITES = {
     "tests/test_runtime_launch_script.py",
     "tests/test_source_authority_docs.py",
 }
+
+
+REQUIRED_FRONTEND_JOBS = ("frontend", "frontend-tests", "frontend-contracts", "frontend-image")
 
 
 def _workflow_contract(path: Path = WORKFLOW) -> dict[str, object]:
@@ -141,7 +144,8 @@ def test_frontend_ci_runs_browser_auth_owner_regressions():
     scripts = json.loads(PACKAGE.read_text(encoding="utf-8"))["scripts"]
     assert "corepack pnpm run test:auth" in scripts["ci:verify"].split(" && ")
     assert scripts["test:auth"].split() == [
-        "tsx", "--test",
+        "tsx", "--import", "./scripts/lobe-ui-test-setup.mjs",
+        "--test", "--test-concurrency=2",
         "src/hooks/__tests__/browserAuthCoordinator.test.ts",
         "src/hooks/__tests__/browserAuthStorage.test.ts",
         "src/hooks/__tests__/useAuth.test.ts",
@@ -151,8 +155,9 @@ def test_frontend_ci_runs_browser_auth_owner_regressions():
         "src/services/api/__tests__/authLogging.test.ts",
         "src/services/api/__tests__/download.test.ts",
         "src/services/api/__tests__/authenticatedRequest.test.ts",
+        "src/components/auth/__tests__/PasswordInput.test.tsx",
     ]
-    for selector in scripts["test:auth"].split()[2:]:
+    for selector in scripts["test:auth"].split()[5:]:
         assert (PACKAGE.parent / selector).is_file()
 
 
@@ -161,11 +166,16 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     backend_workflow = BACKEND_WORKFLOW.read_text(encoding="utf-8")
     test_sse = json.loads(PACKAGE.read_text(encoding="utf-8"))["scripts"]["test:sse"]
     assert (
-        "tsx --test src/hooks/useAgent/__tests__/useAgentRoutedSession.test.tsx"
+        "tsx --import ./scripts/lobe-ui-test-setup.mjs --test --test-concurrency=2 "
+        "src/hooks/useAgent/__tests__/useAgentRoutedSession.test.tsx"
         in test_sse.split(" && ")
     )
     assert "src/hooks/useAgent/__tests__/historyLoader.test.ts" in test_sse
     for selector in (
+        "src/components/chat/__tests__/composerCommandParity.test.ts",
+        "src/components/layout/AppContent/__tests__/useSessionSync.test.ts",
+        "src/components/layout/AppContent/__tests__/chatViewMessageListKey.test.ts",
+        "src/hooks/__tests__/useSession.test.ts",
         "src/hooks/useAgent/__tests__/runControlLifecycle.test.ts",
         "src/hooks/useAgent/runControlLifecycle.test.ts",
         "src/hooks/useAgent/__tests__/runLifecycle.test.ts",
@@ -184,7 +194,7 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     jobs = contract["jobs"]
     assert isinstance(jobs, dict)
     assert jobs["frontend"]["runs-on"] == "windows-latest"
-    assert jobs["frontend"]["timeout-minutes"] == "15"
+    assert jobs["frontend"]["timeout-minutes"] == "30"
     frontend_steps = jobs["frontend"]["steps"]
     store_step = next(
         step for step in frontend_steps if step.get("name") == "Resolve pnpm store"
@@ -216,7 +226,7 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     assert isinstance(required, dict)
     assert required["name"] == "frontend required"
     assert required["timeout-minutes"] == "5"
-    assert required["needs"] == ["frontend", "frontend-image"]
+    assert required["needs"] == list(REQUIRED_FRONTEND_JOBS)
     assert required["if"] == "${{ always() }}"
     image_job = workflow.split("  frontend-image:", 1)[1].split("  required:", 1)[0]
     required_job = workflow.split("  required:", 1)[1]
@@ -280,7 +290,8 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
         assert suite in backend_workflow
     assert "tests/test_governance_readiness.py" not in workflow
     assert "python tools/deploy_frontend_static.py --help" in workflow
-    assert "corepack pnpm run ci:verify" in workflow
+    assert "corepack pnpm run lint && corepack pnpm run build" in workflow
+    assert "python tools/frontend_projection_audit.py --format json" in workflow
     assert "python tools/frontend_release_traceability.py --format json" in workflow
     assert "python tools/frontend_packaged_runtime_smoke.py --format json" in workflow
     assert "docker build" in workflow
@@ -300,8 +311,13 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     assert "docker run --rm --entrypoint cat" in workflow
     assert "ai-platform-build-provenance.json" in workflow
     assert "paths:" not in workflow.split("workflow_dispatch:", 1)[0]
-    assert workflow.count("ref: ${{ github.event.pull_request.head.sha || github.sha }}") == 2
-    assert workflow.count("persist-credentials: false") == 2
+    assert workflow.count("ref: ${{ github.event.pull_request.head.sha || github.sha }}") == 4
+    assert workflow.count("persist-credentials: false") == 4
+    for job_name in ("frontend", "frontend-tests", "frontend-contracts"):
+        job = jobs[job_name]
+        assert job["runs-on"] == "windows-latest"
+        assert "needs" not in job
+        assert job["env"]["SOURCE_COMMIT"] == "${{ github.event.pull_request.head.sha || github.sha }}"
     assert "IMAGE_SOURCE_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}" in workflow
     assert "- name: Resolve image source repository" in workflow
     assert 'if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then' in workflow
@@ -324,22 +340,19 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     assert "| sed -E" not in workflow
     assert "http://127.0.0.1:18080/healthz" in workflow
 
-    pytest_install_index = workflow.index(PYTHON_TEST_DEPENDENCIES)
-    collection_dependency_import_index = workflow.index(
-        "verify_installed_jsonschema_version(locked_jsonschema)"
-    )
-    jsonschema_import_index = workflow.index('python -c "import jsonschema"')
-    deploy_test_index = workflow.index(PYTEST_COMMAND)
-    linux_test_index = workflow.index(LINUX_PYTEST_COMMAND)
-    ci_verify_index = workflow.index("corepack pnpm run ci:verify")
-    traceability_index = workflow.index("python tools/frontend_release_traceability.py --format json")
-    assert pytest_install_index < deploy_test_index
-    assert collection_dependency_import_index < deploy_test_index
-    assert pytest_install_index < collection_dependency_import_index
-    assert collection_dependency_import_index < jsonschema_import_index < deploy_test_index
-    assert deploy_test_index < ci_verify_index
-    assert ci_verify_index < traceability_index
-    assert traceability_index < linux_test_index
+    contract_steps = jobs["frontend-contracts"]["steps"]
+    contract_names = [step["name"] for step in contract_steps]
+    assert contract_names.index("Set up uv for frontend contracts") < contract_names.index("Install Python test dependencies")
+    assert contract_names.index("Install Python test dependencies") < contract_names.index("Verify static frontend Python contracts")
+    assert contract_names.index("Verify static frontend Python contracts") < contract_names.index("Audit frontend projections")
+    install_python = next(step["run"] for step in contract_steps if step["name"] == "Install Python test dependencies")
+    assert install_python.index(PYTHON_TEST_DEPENDENCIES) < install_python.index("verify_installed_jsonschema_version(locked_jsonschema)")
+    assert install_python.index("verify_installed_jsonschema_version(locked_jsonschema)") < install_python.index('python -c "import jsonschema"')
+    frontend_names = [step["name"] for step in frontend_steps]
+    assert frontend_names.index("Verify frontend lint and build") < frontend_names.index("Record frontend release traceability")
+    assert frontend_names.index("Record frontend release traceability") < frontend_names.index("Record packaged frontend runtime smoke contract")
+    image_names = [step["name"] for step in jobs["frontend-image"]["steps"]]
+    assert image_names.index("Install Linux contract test dependencies") < image_names.index("Verify Linux frontend healthcheck contract")
 
     expected_split_steps = (
         "      - name: Verify static frontend Python contracts\n"
@@ -377,14 +390,17 @@ def test_frontend_ci_workflow_rejects_duplicate_yaml_keys(tmp_path: Path) -> Non
         _workflow_contract(duplicate)
 
 
-@pytest.mark.parametrize("job_name", ["frontend", "frontend-image"])
-@pytest.mark.parametrize("result", ["failure", "skipped", "cancelled", ""])
+@pytest.mark.parametrize("job_name", REQUIRED_FRONTEND_JOBS)
+@pytest.mark.parametrize("result", ["failure", "skipped", "cancelled", "", "missing"])
 def test_frontend_required_contract_executes_failure_paths(job_name: str, result: str) -> None:
     namespace = _required_contract_namespace()
     require_successful_results = namespace["require_successful_results"]
     assert callable(require_successful_results)
-    results = {"frontend": "success", "frontend-image": "success"}
-    results[job_name] = result
+    results = dict.fromkeys(REQUIRED_FRONTEND_JOBS, "success")
+    if result == "missing":
+        del results[job_name]
+    else:
+        results[job_name] = result
 
     with pytest.raises(RuntimeError, match=job_name):
         require_successful_results(results)
@@ -395,7 +411,7 @@ def test_frontend_required_contract_accepts_only_all_success() -> None:
     require_successful_results = namespace["require_successful_results"]
     assert callable(require_successful_results)
 
-    require_successful_results({"frontend": "success", "frontend-image": "success"})
+    require_successful_results(dict.fromkeys(REQUIRED_FRONTEND_JOBS, "success"))
 
 
 @pytest.mark.parametrize("subset", ["windows-contracts", "linux-contracts"])
@@ -468,7 +484,8 @@ def test_frontend_uv_bootstrap_matches_existing_authority_and_precedes_each_subs
     backend = _workflow_contract(BACKEND_WORKFLOW)
     assert backend["env"]["UV_VERSION"] == workflow["env"]["UV_VERSION"]
     for job, setup_name, install_name in [
-        ("frontend", "Set up uv for frontend contracts", "Install Python test dependencies"),
+        ("frontend", "Set up uv for frontend contracts", "Install Python traceability dependencies"),
+        ("frontend-contracts", "Set up uv for frontend contracts", "Install Python test dependencies"),
         ("frontend-image", "Set up uv for Linux contracts", "Install Linux contract test dependencies"),
     ]:
         steps = workflow["jobs"][job]["steps"]

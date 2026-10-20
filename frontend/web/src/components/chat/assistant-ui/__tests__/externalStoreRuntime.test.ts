@@ -36,6 +36,19 @@ test("external message conversion keeps assistant-only status off user messages"
 });
 
 
+test("terminal state and content synchronization stay distinct without raw errors", () => {
+  const base = { id: "message-status", role: "assistant" as const, content: "已接收内容", timestamp: new Date(), isStreaming: false };
+  assert.deepEqual(toAssistantUiMessage({ ...base, isSynchronizing: true }).status, { type: "complete", reason: "stop" });
+  for (const event of ["run_failed", "run_timeout", "terminal_result_unavailable", "result_unavailable", "terminal_reconciliation_failed"]) {
+    const converted = toAssistantUiMessage({ ...base, isSynchronizing: true, parts: [{ type: "run_status", event_id: event, event_type: event, severity: "error", stage: "private", message: "private-secret" }] });
+    assert.deepEqual(converted.status, { type: "incomplete", reason: "error" });
+    assert.equal(converted.metadata?.custom?.isSynchronizing, true);
+    assert.doesNotMatch(JSON.stringify(converted), /private-secret/);
+  }
+  assert.deepEqual(toAssistantUiMessage({ ...base, parts: [{ type: "run_status", event_id: "cancel", event_type: "run_cancelled", severity: "warning", stage: "terminal", message: "" }] }).status, { type: "incomplete", reason: "cancelled" });
+  assert.deepEqual(toAssistantUiMessage({ ...base, isStreaming: true }).status, { type: "running" });
+});
+
 test("external message conversion preserves only authorized public tool metadata", () => {
   const converted = toAssistantUiMessage({
     id: "message-1",
@@ -62,6 +75,7 @@ test("external message conversion preserves only authorized public tool metadata
     isError: false,
     data: {
       category: "search",
+      status: "completed",
       durationMs: 1200,
     },
   }]);

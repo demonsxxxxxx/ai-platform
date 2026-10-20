@@ -58,9 +58,11 @@ class LiveMcpTool:
     description: str
     write_capable: bool = True
     risk_level: str = "high"
+    available: bool | None = None
 
     def public_payload(self) -> dict[str, Any]:
         return {
+            **({"available": self.available} if self.available is not None else {}),
             "tool_id": self.tool_id,
             "label": self.label,
             "description": self.description,
@@ -87,10 +89,30 @@ class LiveMcpCatalogService:
         target_resolver: Callable[[str, str], Awaitable[Any]],
         discovery: Any,
         sse_discovery: Any = None,
+        gateway_catalog: Any = None,
     ) -> None:
         self._target_resolver = target_resolver
         self._discovery = discovery
         self._sse_discovery = sse_discovery
+        self._gateway_catalog = gateway_catalog
+
+    async def list_server_catalog(self, *, tenant_id: str, server_id: str) -> LiveMcpServerResult:
+        try:
+            target = await self._target_resolver(tenant_id, server_id)
+            if getattr(target, "integration_kind", "mcp") != "enterprise_gateway":
+                raise McpToolDiscoveryError("unsupported_transport")
+            definitions = await self._gateway_catalog.discover_definitions(target.endpoint)
+            return LiveMcpServerResult(server_id, tuple(
+                LiveMcpTool(
+                    tool_id=build_mcp_tool_reference(server_id, definition["name"]),
+                    server_id=server_id, public_tool_name=definition["name"],
+                    label=definition["name"], description=definition["description"],
+                    available=definition["available"],
+                ) for definition in definitions
+            ))
+        except Exception as exc:
+            return LiveMcpServerResult(server_id, (), "discovery_failed",
+                McpCatalogFailure.from_error(exc, stage="catalog"))
 
     async def list_server_tools(
         self,
@@ -100,7 +122,6 @@ class LiveMcpCatalogService:
         server_id: str,
         jwt: str,
     ) -> LiveMcpServerResult:
-        del user_id  # JWT ownership is enforced by the caller's principal store.
         stage = "target_resolution"
         try:
             target = await self._target_resolver(tenant_id, server_id)
@@ -116,6 +137,9 @@ class LiveMcpCatalogService:
                 target.endpoint,
                 static_headers=target.static_headers,
                 jwt_authorization=f"Bearer {jwt}",
+                credential_subject={"tenant_id": tenant_id, "user_id": user_id},
+                **({"integration_kind": "enterprise_gateway"}
+                   if getattr(target, "integration_kind", "mcp") == "enterprise_gateway" else {}),
             )
             stage = "tool_projection"
             tools = tuple(

@@ -1,3 +1,4 @@
+import { Skeleton } from "@lobehub/ui/base-ui";
 import { SIDEBAR_COLLAPSED_STORAGE_KEY } from "../../hooks/useSidebarPreference";
 
 /** Sidebar skeleton — matches real SessionSidebar layout */
@@ -30,16 +31,16 @@ function SidebarRailSkeleton() {
       >
         {/* Expand button area */}
         <div className="flex items-center justify-center w-full pt-3">
-          <div className="skeleton-line size-9 rounded-full mx-2" />
+          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-9 rounded-full mx-2" />
         </div>
 
         {/* Action icons match the current rail. */}
         <div className="mt-3 flex-1 min-h-0 overflow-y-auto flex flex-col items-center w-full space-y-1">
-          <div className="skeleton-line size-9 rounded-full mx-2" />
-          <div className="skeleton-line size-9 rounded-full mx-2" />
-          <div className="skeleton-line size-9 rounded-full mx-2" />
-          <div className="skeleton-line size-9 rounded-full mx-2" />
-          <div className="skeleton-line size-9 rounded-full mx-2" />
+          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-9 rounded-full mx-2" />
+          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-9 rounded-full mx-2" />
+          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-9 rounded-full mx-2" />
+          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-9 rounded-full mx-2" />
+          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-9 rounded-full mx-2" />
         </div>
 
         {/* Profile avatar */}
@@ -50,7 +51,7 @@ function SidebarRailSkeleton() {
               "1px solid color-mix(in srgb, var(--theme-border) 60%, transparent)",
           }}
         >
-          <div className="skeleton-line size-8 rounded-full" />
+          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-8 rounded-full" />
         </div>
       </nav>
     </div>
@@ -71,33 +72,33 @@ function SidebarExpandedSkeleton() {
       {/* Header area — app icon + name + collapse button */}
       <div className="flex items-center justify-between px-3 pt-3 pb-1 sm:px-4">
         <div className="flex items-center gap-2">
-          <div className="skeleton-line size-6 rounded-full shrink-0" />
-          <div className="skeleton-line h-[18px] w-20 rounded-md" />
+          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-6 rounded-full shrink-0" />
+          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="h-[18px] w-20 rounded-md" />
         </div>
-        <div className="skeleton-line size-8 rounded-lg shrink-0" />
+        <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-8 rounded-lg shrink-0" />
       </div>
 
       {/* Action buttons */}
       <div className="flex flex-col gap-px px-2 py-2 space-y-1">
         {/* New Chat */}
         <div className="w-full h-9 rounded-[10px] flex items-center gap-3 px-[9px]">
-          <div className="skeleton-line size-5 rounded-md shrink-0" />
-          <div className="skeleton-line h-3.5 w-16 rounded-md" />
+          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-5 rounded-md shrink-0" />
+          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="h-3.5 w-16 rounded-md" />
         </div>
         {/* Search */}
         <div className="w-full h-9 rounded-[10px] flex items-center gap-3 px-[9px]">
-          <div className="skeleton-line size-5 rounded-md shrink-0" />
-          <div className="skeleton-line h-3.5 w-14 rounded-md flex-1" />
-          <div className="skeleton-line h-4 w-10 rounded-md" />
+          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-5 rounded-md shrink-0" />
+          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="h-3.5 w-14 rounded-md flex-1" />
+          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="h-4 w-10 rounded-md" />
         </div>
         <div className="w-full h-9 rounded-[10px] flex items-center gap-3 px-[9px]">
-          <div className="skeleton-line size-5 rounded-md shrink-0" />
-          <div className="skeleton-line h-3.5 w-20 rounded-md" />
+          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-5 rounded-md shrink-0" />
+          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="h-3.5 w-20 rounded-md" />
         </div>
         {/* File Workbench */}
         <div className="w-full h-9 rounded-[10px] flex items-center gap-3 px-[9px]">
-          <div className="skeleton-line size-5 rounded-md shrink-0" />
-          <div className="skeleton-line h-3.5 w-16 rounded-md" />
+          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-5 rounded-md shrink-0" />
+          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="h-3.5 w-16 rounded-md" />
         </div>
       </div>
 
@@ -105,8 +106,8 @@ function SidebarExpandedSkeleton() {
       <div className="flex-1 overflow-hidden px-2 space-y-px">
         {/* Section header — Projects */}
         <div className="flex items-center justify-between px-[9px] h-9">
-          <div className="skeleton-line h-3 w-16 rounded-md" />
-          <div className="skeleton-line size-3.5 rounded-sm shrink-0" />
+          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="h-3 w-16 rounded-md" />
+          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-3.5 rounded-sm shrink-0" />
         </div>
         {/* Project items */}
         <div className="space-y-px">
@@ -115,10 +116,10 @@ function SidebarExpandedSkeleton() {
               key={i}
               className="flex items-center gap-3 px-[9px] h-10 rounded-[10px]"
             >
-              <div className="skeleton-line size-5 rounded shrink-0" />
-              <div
-                className="skeleton-line h-[13px] rounded-md flex-1"
-                style={{ width: i === 0 ? "75%" : i === 1 ? "60%" : "85%" }}
+              <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-5 rounded shrink-0" />
+              <Skeleton animated="sweep"
+                className="h-[13px] rounded-md flex-1"
+                style={{ height: undefined,  width: i === 0 ? "75%" : i === 1 ? "60%" : "85%" }}
               />
             </div>
           ))}
@@ -135,8 +136,8 @@ function SidebarExpandedSkeleton() {
 
         {/* Section header — Chats */}
         <div className="mt-1 flex items-center justify-between px-[9px] h-9">
-          <div className="skeleton-line h-3 w-12 rounded-md" />
-          <div className="skeleton-line size-3.5 rounded-sm shrink-0" />
+          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="h-3 w-12 rounded-md" />
+          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-3.5 rounded-sm shrink-0" />
         </div>
         {/* Chat items */}
         <div className="space-y-px">
@@ -145,9 +146,9 @@ function SidebarExpandedSkeleton() {
               key={i}
               className="flex items-center gap-2 px-[9px] h-10 rounded-[10px]"
             >
-              <div
-                className="skeleton-line h-[13px] rounded-md flex-1"
-                style={{
+              <Skeleton animated="sweep"
+                className="h-[13px] rounded-md flex-1"
+                style={{ height: undefined,
                   width:
                     i === 0 ? "70%" : i === 1 ? "85%" : i === 2 ? "55%" : "65%",
                 }}
@@ -166,12 +167,12 @@ function SidebarExpandedSkeleton() {
         }}
       >
         <div className="flex items-center gap-3 px-2 py-3 rounded-xl">
-          <div className="skeleton-line size-8 rounded-full shrink-0 ring-1 ring-stone-200" />
+          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-8 rounded-full shrink-0 ring-1 ring-stone-200" />
           <div className="flex-1 min-w-0">
-            <div className="skeleton-line h-3.5 w-16 rounded-md" />
-            <div className="skeleton-line h-2.5 w-12 rounded-md mt-1" />
+            <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="h-3.5 w-16 rounded-md" />
+            <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="h-2.5 w-12 rounded-md mt-1" />
           </div>
-          <div className="skeleton-line size-4 rounded-sm shrink-0" />
+          <Skeleton animated="sweep" style={{ width: undefined, height: undefined }} className="size-4 rounded-sm shrink-0" />
         </div>
       </div>
     </div>

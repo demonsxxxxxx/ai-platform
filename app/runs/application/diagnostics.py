@@ -5,10 +5,18 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Protocol
 
+from app.streaming.api import V4_METADATA_KEY
+from app.runs.domain.run_performance import (
+    BROWSER_LATENCY_MEASUREMENT,
+    BROWSER_LATENCY_MAX_MS,
+    browser_latency_ms,
+    build_run_investigation,
+)
 from app.runs.domain.diagnostics import (
     RUN_DIAGNOSTICS_SCHEMA_VERSION,
     build_executor_protocol_diagnostics,
@@ -19,6 +27,10 @@ from app.runs.domain.diagnostics import (
     split_runtime_diagnostics,
 )
 
+
+from app.sandbox.api import SandboxRuntimeDebugReader
+from app.execution.events import normalize_execution_debug
+from app.runs.application.admin_trajectory import project_admin_trajectory_page
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +44,27 @@ class RunDiagnosticsPersistence(Protocol):
         run_id: str,
         observation: dict[str, Any],
     ) -> dict[str, Any]: ...
+
+    async def append_browser_latency(
+        self, conn: Any, *, tenant_id: str, run_id: str,
+        measurement: dict[str, Any],
+    ) -> dict[str, Any]: ...
+
+    async def get_admin_monitor_report(
+        self, conn: Any, *, tenant_id: str, from_at: datetime, to_at: datetime,
+        user_id: str | None = None, agent_id: str | None = None,
+        model_id: str | None = None, model_gateway_revision: int | None = None,
+        status: str | None = None,
+        order: str = "slow", limit: int = 50,
+    ) -> dict[str, Any]: ...
+
+    async def get_admin_investigation_events(
+        self, conn: Any, *, tenant_id: str, run_id: str,
+    ) -> dict[str, Any]: ...
+
+    async def get_admin_debug_skills(self, conn: Any, *, tenant_id: str, run_id: str) -> list[dict[str, Any]]: ...
+
+    async def get_execution_debug_binding(self, conn: Any, *, run_id: str, attempt_id: str) -> dict[str, Any] | None: ...
 
     async def get_admin_snapshot(
         self,
@@ -57,6 +90,8 @@ class RunDiagnosticsService:
     runtime_diagnostics_schema_version: str
     exception_log_fields: Callable[[BaseException], dict[str, Any]]
     tool_operation_id: Callable[[object, object], str | None] | None = None
+    runtime_debug_reader: SandboxRuntimeDebugReader | None = field(default=None, repr=False)
+    query_runtime_commit: str | None = None
     clock: Callable[[], datetime] = field(
         default=lambda: datetime.now(timezone.utc),
         repr=False,
@@ -227,6 +262,7 @@ class RunDiagnosticsService:
         terminal_result: object,
         reconciliation_error_code: str,
         lease_id: str | None = None,
+        reconciliation_evidence_factory: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         if isinstance(terminal_result, dict):
             await self.capture_failure_result(
@@ -240,7 +276,22 @@ class RunDiagnosticsService:
                 result_json=terminal_result,
                 lease_id=lease_id,
             )
-        await self.capture_failure_result(
+
+        def build_reconciliation_diagnostics() -> dict[str, Any]:
+            evidence = (
+                reconciliation_evidence_factory()
+                if reconciliation_evidence_factory is not None else {}
+            )
+            return {
+                "schema_version": self.runtime_diagnostics_schema_version,
+                "error_code": "terminal_reconciliation_failed",
+                "failure_source": "executor_reconciler",
+                "failure_stage": "terminalization",
+                "sdk": {**evidence.get("sdk", {}), "errors": [reconciliation_error_code]},
+                "normalization_losses": evidence.get("normalization_losses", []),
+            }
+
+        await self._capture_runtime_diagnostics(
             conn,
             tenant_id=tenant_id,
             run_id=run_id,
@@ -248,17 +299,164 @@ class RunDiagnosticsService:
             source="executor_reconciler",
             stage="terminalization",
             error_code="terminal_reconciliation_failed",
-            result_json={
-                "runtime_diagnostics": {
-                    "schema_version": self.runtime_diagnostics_schema_version,
-                    "error_code": "terminal_reconciliation_failed",
-                    "failure_source": "executor_reconciler",
-                    "failure_stage": "terminalization",
-                    "sdk": {"errors": [reconciliation_error_code]},
-                }
-            },
+            runtime_diagnostics=None,
+            runtime_diagnostics_factory=build_reconciliation_diagnostics,
+            normalize=True,
             lease_id=lease_id,
         )
+
+    async def record_browser_latency(
+        self, conn: Any, *, tenant_id: str, run_id: str, duration_ms: int,
+    ) -> None:
+        if type(duration_ms) is not int or not 0 <= duration_ms <= BROWSER_LATENCY_MAX_MS:
+            raise ValueError("invalid_browser_latency")
+        await self.persistence.append_browser_latency(
+            conn, tenant_id=tenant_id, run_id=run_id,
+            measurement={
+                "measurement": BROWSER_LATENCY_MEASUREMENT,
+                "duration_ms": duration_ms, "visibility": "visible",
+                "received_at": self.clock().isoformat(),
+            },
+        )
+
+    def _monitor_window(
+        self, hours: int, from_at: datetime | None, to_at: datetime | None,
+    ) -> tuple[datetime, datetime]:
+        now = self.clock()
+        if type(hours) is not int or not 1 <= hours <= 168:
+            raise ValueError("invalid_monitor_window")
+        if from_at is None and to_at is None:
+            return now - timedelta(hours=hours), now
+        if (
+            from_at is None or to_at is None
+            or from_at.utcoffset() is None or to_at.utcoffset() is None
+            or not timedelta(0) < to_at - from_at <= timedelta(days=7)
+            or to_at > now
+        ):
+            raise ValueError("invalid_monitor_window")
+        return from_at, to_at
+
+    async def read_monitor(
+        self, conn: Any, *, tenant_id: str, hours: int = 24,
+        from_at: datetime | None = None, to_at: datetime | None = None,
+        user_id: str | None = None, agent_id: str | None = None,
+        model_id: str | None = None, model_gateway_revision: int | None = None,
+        status: str | None = None, order: str = "slow", limit: int = 50,
+    ) -> dict[str, Any]:
+        if order not in {"slow", "recent"} or type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError("invalid_monitor_query")
+        start, end = self._monitor_window(hours, from_at, to_at)
+        report = await self.persistence.get_admin_monitor_report(
+            conn, tenant_id=tenant_id, from_at=start, to_at=end, user_id=user_id,
+            agent_id=agent_id, model_id=model_id, model_gateway_revision=model_gateway_revision,
+            status=status, order=order, limit=limit,
+        )
+        metadata = await self.read_admin_monitor_metadata(
+            conn, tenant_id=tenant_id,
+            run_ids=[str(row.get("run_id") or "") for row in report["runs"]],
+        )
+        metrics = ("total_ms", "queue_ms", "execution_ms", "server_first_text_ms", "browser_first_text_ms")
+        report["runs"] = [
+            {
+                **row, **metadata.get(str(row.get("run_id") or ""), {}),
+                "latency": {name: row.get(name) for name in metrics},
+            }
+            for row in report["runs"]
+        ]
+        report["latency"] = {
+            name: report.get("latency", {}).get(name, {"sample_count": 0, "p50": None, "p95": None, "p99": None})
+            for name in metrics
+        }
+        counts = report["counts"]
+        settled = counts["succeeded"] + counts["failed"]
+        report["success_rate"] = counts["succeeded"] / settled if settled else None
+        return report
+
+    async def read_admin_investigation(
+        self, conn: Any, *, tenant_id: str, run_id: str,
+    ) -> dict[str, Any] | None:
+        snapshot = await self.persistence.get_admin_snapshot(conn, tenant_id=tenant_id, run_id=run_id)
+        if snapshot is None:
+            return None
+        run = snapshot["run"]
+        diagnostic = snapshot.get("diagnostic")
+        payload = diagnostic.get("payload_json") if isinstance(diagnostic, dict) else None
+        browser = payload.get("browser_latency") if isinstance(payload, dict) else None
+        evidence = await self.persistence.get_admin_investigation_events(conn, tenant_id=tenant_id, run_id=run_id)
+        events = []
+        for row in evidence["events"]:
+            payload = row.get("payload", row.get("payload_json"))
+            metadata = payload.get(V4_METADATA_KEY) if isinstance(payload, Mapping) else None
+            metadata = metadata if isinstance(metadata, Mapping) else {}
+            events.append({**row, "attempt_id": metadata.get("attempt_id"), "causation_event_id": metadata.get("causation_event_id")})
+        investigation = build_run_investigation(
+            run, events, attempts=snapshot.get("attempts", []),
+            browser_measurement=browser, first_text_at=evidence.get("first_public_text_at"),
+            observed_at=self.clock(),
+        )
+        return {
+            "run_id": run_id, **investigation,
+            "events_truncated": evidence["events_truncated"],
+        }
+
+    async def capture_execution_debug(
+        self, conn: Any, *, run_id: str, attempt_id: str, error_code: str,
+        debug: object,
+    ) -> None:
+        facts = normalize_execution_debug(debug)
+        if not facts:
+            return
+        binding = await self.persistence.get_execution_debug_binding(conn, run_id=run_id, attempt_id=attempt_id)
+        if binding is None:
+            return
+        await self._capture_runtime_diagnostics(
+            conn, tenant_id=binding["tenant_id"], run_id=run_id, attempt_id=attempt_id,
+            lease_id=binding.get("lease_id"), source=str(facts.get("component", "executor")),
+            stage=str(facts.get("phase", "runtime")), error_code=error_code, normalize=True,
+            runtime_diagnostics={
+                "schema_version": self.runtime_diagnostics_schema_version,
+                "error_code": error_code, "failure_source": facts.get("component", "executor"),
+                "failure_stage": facts.get("phase", "runtime"), "sdk": {"debug": facts, **({"api_error_status": facts["http_status"]} if "http_status" in facts else {})},
+            },
+        )
+
+    async def read_admin_debug(self, conn: Any, *, tenant_id: str, run_id: str) -> dict[str, Any] | None:
+        snapshot = await self.persistence.get_admin_snapshot(conn, tenant_id=tenant_id, run_id=run_id)
+        if snapshot is None:
+            return None
+        diagnostics = _admin_projection(snapshot, normalize_runtime_diagnostics=self.normalize_runtime_diagnostics,
+                                        tool_operation_id=self.tool_operation_id)
+        evidence = await self.persistence.get_admin_investigation_events(conn, tenant_id=tenant_id, run_id=run_id)
+        skills = await self.persistence.get_admin_debug_skills(conn, tenant_id=tenant_id, run_id=run_id)
+        payload = (snapshot.get("diagnostic") or {}).get("payload_json") or {}
+        investigation = build_run_investigation(
+            snapshot["run"], evidence["events"], attempts=snapshot.get("attempts", []),
+            browser_measurement=payload.get("browser_latency"), first_text_at=evidence.get("first_public_text_at"),
+            observed_at=self.clock(),
+        )
+        trajectory = project_admin_trajectory_page(evidence["events"], sanitize_text=sanitize_run_diagnostic_text)
+        runtime = await self.runtime_debug_reader(conn, tenant_id=tenant_id, run_id=run_id) if self.runtime_debug_reader else None
+        diagnostics["debug"] = {
+            "schema_version": "ai-platform.run-debug.v1", "observed_at": self.clock(),
+            "investigation": {"run_id": run_id, **investigation, "events_truncated": evidence["events_truncated"]},
+            "events": trajectory["events"], "events_omitted": trajectory["omitted"],
+            "events_truncated": evidence["events_truncated"], "event_limit": 500,
+            "usage": {
+                name: value if type(value) is int and 0 <= value <= 2**63 - 1 else None
+                for name, value in snapshot.get("usage", {}).items()
+                if name in {"input_tokens", "output_tokens", "total_tokens", "estimated_cost_minor"}
+            }, "skill_snapshots": skills[:100],
+            "skill_snapshots_truncated": len(skills) > 100,
+            "runtime": runtime,
+            "query_component": normalize_execution_debug({"api_runtime_commit": self.query_runtime_commit}),
+            "missing_evidence": [
+                "provider_internal_trace", "egress_proxy_connection_log",
+                *[name for name in ("sdk_version", "cli_version", "executor_runtime_commit")
+                  if not any(name in item.get("sdk", {}).get("debug", {}) for item in diagnostics["details"]["observations"])],
+                *(["runtime_lease_snapshot"] if runtime is None else []),
+            ],
+        }
+        return diagnostics
 
     async def read_admin(
         self,
@@ -348,6 +546,8 @@ def _admin_projection(
 
     observations = payload.get("observations")
     observations = observations if isinstance(observations, list) else []
+    if not observations and browser_latency_ms(payload.get("browser_latency")) is not None:
+        coverage = "not_collected"
     root, handling, details, evidence_losses = _project_observations(observations)
     if tool_operation_id is not None:
         _correlate_admin_tools(details, snapshot["run"].get("run_id"), tool_operation_id)
@@ -363,6 +563,10 @@ def _admin_projection(
         "coverage": coverage,
         "run": _admin_run_projection(snapshot["run"]),
         "root": root,
+        "browser_latency": {
+            "measurement": BROWSER_LATENCY_MEASUREMENT,
+            "duration_ms": browser_latency_ms(payload.get("browser_latency")),
+        } if browser_latency_ms(payload.get("browser_latency")) is not None else None,
         "handling": handling,
         "losses": losses,
         "attempts": _admin_attempt_projections(snapshot.get("attempts")),
@@ -451,6 +655,7 @@ def _project_observations(
 ]:
     root = None
     handling: list[dict[str, Any]] = []
+    seen_failures: set[tuple[object, object]] = set()
     details: dict[str, Any] = {
         "schema_version": None,
         "sdk": {},
@@ -469,6 +674,7 @@ def _project_observations(
         details["observations"].append(
             {
                 "observation_id": raw.get("observation_id"),
+                **({"parent_observation_id": raw["parent_observation_id"]} if raw.get("parent_observation_id") else {}),
                 "attempt_id": raw.get("attempt_id"),
                 "lease_id": raw.get("lease_id"),
                 "request_id": raw.get("request_id"),
@@ -502,10 +708,17 @@ def _project_observations(
         )
         failures = evidence.get("failure_observations")
         failures = failures if isinstance(failures, list) else []
-        failure_projections = [
-            _failure_projection(raw, item, evidence=evidence, kind="handling")
-            for item in failures
-        ]
+        failure_projections = []
+        failure_identities = set()
+        for item in failures:
+            projected = _failure_projection(raw, item, evidence=evidence, kind="handling")
+            failure_identities.add(_projection_identity(projected))
+            if isinstance(item, dict) and item.get("observation_id"):
+                identity = (raw.get("attempt_id"), item["observation_id"])
+                if identity in seen_failures:
+                    continue
+                seen_failures.add(identity)
+            failure_projections.append(projected)
         if root is None:
             root = (
                 failure_projections.pop(0)
@@ -513,6 +726,7 @@ def _project_observations(
                 else _failure_projection(raw, None, evidence=evidence)
             )
             root["kind"] = "failure"
+            seen_failures.add((root.get("attempt_id"), root.get("observation_id")))
             details.update(
                 {
                     "schema_version": evidence.get("schema_version"),
@@ -531,20 +745,24 @@ def _project_observations(
                 }
             )
         handling.extend(failure_projections)
+        seen_failures.update((item.get("attempt_id"), item.get("observation_id")) for item in failure_projections)
         record_projection = _failure_projection(
             raw, None, evidence=evidence, kind="handling"
         )
-        failure_identities = {
-            _projection_identity(item)
-            for item in [*failure_projections, root]
-            if item is not None
-            and item.get("observation_id") == raw.get("observation_id")
-        }
-        if (
-            _projection_identity(record_projection) not in failure_identities
-            and _projection_identity(record_projection) != _projection_identity(root)
-        ):
+        record_identity = (raw.get("attempt_id"), raw.get("observation_id"))
+        has_producer_ids = bool(raw.get("parent_observation_id")) or any(
+            isinstance(item, dict) and item.get("observation_id") for item in failures
+        )
+        if has_producer_ids:
+            keep_record = record_identity not in seen_failures
+        else:
+            keep_record = (
+                _projection_identity(record_projection) not in failure_identities
+                and _projection_identity(record_projection) != _projection_identity(root)
+            )
+        if keep_record:
             handling.append(record_projection)
+            seen_failures.add(record_identity)
         projection_failure = evidence.get("projection_failure")
         if details["projection_failure"] is None and isinstance(projection_failure, dict):
             details["projection_failure"] = projection_failure
@@ -569,8 +787,10 @@ def _failure_projection(
     # Fallbacks must use the same read-time redaction as detailed evidence,
     # including when a retained record predates the current redaction policy.
     sdk = evidence.get("sdk") if isinstance(evidence.get("sdk"), dict) else {}
+    identity = item if item.get("observation_id") else record
     return {
-        "observation_id": record.get("observation_id"),
+        "observation_id": identity.get("observation_id"),
+        **({"parent_observation_id": identity["parent_observation_id"]} if identity.get("parent_observation_id") else {}),
         "attempt_id": record.get("attempt_id"),
         "lease_id": record.get("lease_id"),
         "request_id": record.get("request_id"),
@@ -586,5 +806,5 @@ def _failure_projection(
     }
 
 
-def _projection_identity(value: dict[str, Any]) -> tuple[object, object, object]:
-    return value.get("source"), value.get("stage"), value.get("error_code")
+def _projection_identity(value: dict[str, Any]) -> tuple[object, object, object, object]:
+    return value.get("attempt_id"), value.get("source"), value.get("stage"), value.get("error_code")

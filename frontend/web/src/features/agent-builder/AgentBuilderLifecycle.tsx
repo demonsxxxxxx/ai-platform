@@ -1,4 +1,6 @@
-import { useEffect, useState } from "react";
+import { Button, Input } from "@lobehub/ui/base-ui";
+import { Table } from "@lobehub/ui/base-ui";
+import { useEffect, useState, type HTMLAttributes } from "react";
 import { Archive, CircleAlert, FlaskConical, History, RefreshCw, Trash2 } from "lucide-react";
 
 import { AgentBuilderDialog } from "../../components/agent-builder/AgentBuilderDialog";
@@ -100,40 +102,40 @@ export function AgentBuilderLifecycle({
 
       {editor.agentId ? (
         <div className="overflow-x-auto border-y border-[var(--theme-border)]">
-          <table className="w-full min-w-[34rem] text-left text-sm">
-            <thead className="bg-[var(--theme-workbench-panel)] text-xs text-[var(--theme-text-secondary)]">
-              <tr>
-                <th className="px-3 py-2 font-medium" scope="col">发布版本</th>
-                <th className="px-3 py-2 font-medium" scope="col">状态</th>
-                <th className="px-3 py-2 font-medium" scope="col">content hash</th>
-                <th className="px-3 py-2 font-medium" scope="col">发布时间</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-[var(--theme-border)]">
-              {publishedVersions.map(({ profile, version }) => {
-                const isCurrent = profile.revision === publishedRevision;
-                const status = editor.status === "withdrawn"
+          <Table
+ size="small" pagination={false}
+ dataSource={publishedVersions}
+ onRow={({ profile }) => ({ "data-agent-profile-version": profile.revision } as HTMLAttributes<HTMLTableRowElement>)}
+ rowKey={({ profile }) => `${profile.agent_id}:${profile.revision}`}
+ columns={[
+{ key: "version", title: "发布版本",
+render: (_value, { version }) => (<>
+v{version}
+</>) },
+{ key: "status", title: "状态",
+render: (_value, { profile }) =>  {
+const isCurrent = profile.revision === publishedRevision;
+const status = editor.status === "withdrawn"
                   ? "已下架"
                   : isCurrent
                     ? "当前发布"
                     : "历史版本";
-                return (
-                  <tr key={`${profile.agent_id}:${profile.revision}`}>
-                    <td className="px-3 py-2 font-medium tabular-nums">v{version}</td>
-                    <td className="px-3 py-2">{status}</td>
-                    <td className="px-3 py-2 font-mono text-xs">
-                      {profile.content_hash.slice(0, 12)}
-                    </td>
-                    <td className="px-3 py-2 text-[var(--theme-text-secondary)]">
-                      {profile.published_at
+return (<>
+{status}
+</>);
+} },
+{ key: "contentHash", title: "content hash",
+render: (_value, { profile }) => (<>
+{profile.content_hash.slice(0, 12)}
+</>) },
+{ key: "publishedAt", title: "发布时间",
+render: (_value, { profile }) => (<>
+{profile.published_at
                         ? new Date(profile.published_at).toLocaleString("zh-CN")
                         : "-"}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+</>) }
+]}
+/>
           {historyState === "loading" ? (
             <p className="px-3 py-3 text-sm text-[var(--theme-text-secondary)]">正在加载版本历史</p>
           ) : historyState === "error" ? (
@@ -153,19 +155,19 @@ export function AgentBuilderLifecycle({
       <div className="mt-5 grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto_auto_auto] sm:items-end">
         <label className="flex min-w-0 flex-col gap-2">
           <span className="text-sm font-medium">测试消息</span>
-          <input
-            className="h-10 w-full rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 text-sm outline-none focus:border-[var(--theme-primary)] focus:ring-1 focus:ring-[var(--theme-primary)] disabled:cursor-not-allowed disabled:opacity-60"
+          <Input
+            size="large" className="w-full"
             disabled={disabled || !cleanPublished}
             onChange={(event) => setTestMessage(event.target.value)}
             value={testMessage}
           />
         </label>
-        <button
-          className="btn-secondary inline-flex items-center justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-60"
+        <Button type="default"
+          className="inline-flex items-center justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-60"
           disabled={disabled || !cleanPublished || !testMessage.trim()}
           onClick={() => onRunTest(testMessage)}
           title="创建受控测试运行"
-          type="button"
+          htmlType="button"
         >
           {mutation.phase === "testing" ? (
             <RefreshCw aria-hidden="true" className="animate-spin" size={16} />
@@ -173,13 +175,13 @@ export function AgentBuilderLifecycle({
             <FlaskConical aria-hidden="true" size={16} />
           )}
           {mutation.phase === "testing" ? "试运行中" : "真实试运行"}
-        </button>
-        <button
-          className="btn-secondary inline-flex items-center justify-center gap-2 border-[var(--theme-danger)] text-[var(--theme-danger)] disabled:cursor-not-allowed disabled:opacity-60"
+        </Button>
+        <Button type="default"
+          className="inline-flex items-center justify-center gap-2 border-[var(--theme-danger)] text-[var(--theme-danger)] disabled:cursor-not-allowed disabled:opacity-60"
           disabled={disabled || !canUnpublish}
           onClick={() => publishedRevision && onUnpublish(publishedRevision)}
           title="下架当前发布版本"
-          type="button"
+          htmlType="button"
         >
           {mutation.phase === "unpublishing" ? (
             <RefreshCw aria-hidden="true" className="animate-spin" size={16} />
@@ -187,14 +189,14 @@ export function AgentBuilderLifecycle({
             <Archive aria-hidden="true" size={16} />
           )}
           {mutation.phase === "unpublishing" ? "下架中" : "下架"}
-        </button>
-        <button
+        </Button>
+        <Button type="default"
           aria-label={editor.publishedRevision ? "删除当前专家，请先下架" : "删除当前专家"}
-          className="btn-secondary inline-flex items-center justify-center gap-2 border-[var(--theme-danger)] text-[var(--theme-danger)] disabled:cursor-not-allowed disabled:opacity-60"
+          className="inline-flex items-center justify-center gap-2 border-[var(--theme-danger)] text-[var(--theme-danger)] disabled:cursor-not-allowed disabled:opacity-60"
           disabled={disabled || !canRetire}
           onClick={() => setRetireConfirmationOpen(true)}
           title={editor.publishedRevision ? "请先下架当前专家" : "删除当前专家"}
-          type="button"
+          htmlType="button"
         >
           {mutation.phase === "deleting" ? (
             <RefreshCw aria-hidden="true" className="animate-spin" size={16} />
@@ -202,7 +204,7 @@ export function AgentBuilderLifecycle({
             <Trash2 aria-hidden="true" size={16} />
           )}
           {mutation.phase === "deleting" ? "删除中" : "删除"}
-        </button>
+        </Button>
       </div>
 
       {trialRun ? (
@@ -242,23 +244,23 @@ export function AgentBuilderLifecycle({
           </p>
         </div>
         <div className="mt-5 flex justify-end gap-2">
-          <button
-            className="btn-secondary"
+          <Button type="default"
+            className=""
             onClick={() => setRetireConfirmationOpen(false)}
-            type="button"
+            htmlType="button"
           >
             取消
-          </button>
-          <button
-            className="btn-secondary border-[var(--theme-danger)] text-[var(--theme-danger)]"
+          </Button>
+          <Button type="default"
+            className="border-[var(--theme-danger)] text-[var(--theme-danger)]"
             onClick={() => {
               setRetireConfirmationOpen(false);
               onRetire();
             }}
-            type="button"
+            htmlType="button"
           >
             确认删除
-          </button>
+          </Button>
         </div>
       </AgentBuilderDialog>
     </section>

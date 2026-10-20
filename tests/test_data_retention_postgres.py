@@ -14,6 +14,7 @@ import psycopg
 from psycopg import sql
 from psycopg.rows import dict_row
 import pytest
+from tests.support.db_transactions import event_loop_policy as event_loop_policy
 
 
 

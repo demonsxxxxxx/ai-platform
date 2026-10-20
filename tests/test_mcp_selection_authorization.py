@@ -31,7 +31,7 @@ def selection():
     state = SimpleNamespace(
         tools={"gateway::search": tool(), "gateway::other": tool("gateway::other")},
         distribution={"status": "active", "visible_to_user": True,
-                      "department_ids": ["qa"], "allowed_roles": ["user"]},
+                      "department_ids": ["100"], "allowed_roles": ["user"]},
         error=None, calls=[],
     )
 
@@ -55,6 +55,7 @@ def selection():
     state.service = service
     state.arguments = dict(
         tenant_id="tenant-a", tool_ids=["gateway::search"], principal_department_id="qa",
+        principal_department_ids=("100", "110"),
         principal_roles=["user"], is_admin=False, permissions=["chat:write"],
     )
     return state
@@ -94,7 +95,7 @@ async def test_selection_denies_or_filters_without_granting_partial_selected_res
     elif case == "distribution":
         selection.distribution = None
     elif case == "department":
-        selection.arguments["principal_department_id"] = "other-department"
+        selection.arguments["principal_department_ids"] = ("200",)
     else:
         selection.arguments["tenant_id"] = "tenant-b"
     if mode == "authorize_available_chat":
@@ -251,6 +252,6 @@ async def test_queue_preparation_keeps_current_principal_after_source_replay(mon
     assert error.value is denial
     assert calls == [{
         "tenant_id": "tenant-a", "tool_ids": ["gateway::search"],
-        "principal_department_id": "current-department", "principal_roles": ["admin"],
+        "principal_department_id": "current-department", "principal_department_ids": (), "principal_roles": ["admin"],
         "is_admin": True, "permissions": ["current:permission"],
     }]

@@ -1,4 +1,6 @@
-import { useState, useEffect } from "react";
+import { Checkbox } from "@lobehub/ui/base-ui";
+import { Button, Input } from "@lobehub/ui/base-ui";
+import { useState, useEffect, useMemo } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Permission } from "../../types";
@@ -8,7 +10,10 @@ import type {
   MCPServerCreate,
   MCPRoleQuota,
 } from "../../types";
-import { EnterpriseSelect } from "../common/EnterpriseSelect";
+import { LobeSelectField } from "../lobe-ui/LobeSelectField";
+import { capabilityDistributionApi, type DepartmentDirectoryNode } from "../../services/api/capabilityDistribution";
+import { DepartmentDirectorySelector } from "../panels/DepartmentDirectorySelector";
+import { resolveDepartmentSelection } from "../panels/departmentDirectorySelection";
 import { validateMcpStaticHeaderNames } from "./mcpHeaderValidation";
 import { RoleSelector } from "./RoleSelector";
 
@@ -63,10 +68,6 @@ function serializeRoleQuotas(
   return quotas;
 }
 
-function parseDepartmentIds(value: string): string[] {
-  return [...new Set(value.split(",").map((item) => item.trim()).filter(Boolean))];
-}
-
 export function MCPServerForm({
   server,
   onSave,
@@ -109,16 +110,23 @@ export function MCPServerForm({
     server?.transport === "sandbox" ? defaultTransport : server?.transport ?? defaultTransport,
   );
   const [enabled, setEnabled] = useState(server?.enabled ?? true);
+  const [integrationKind, setIntegrationKind] = useState<"mcp" | "enterprise_gateway">(server?.integration_kind ?? "mcp");
 
   // HTTP fields
-  const [url, setUrl] = useState("");
-  const [headers, setHeaders] = useState<KeyValuePair[]>([]);
+  const [url, setUrl] = useState(server?.url ?? "");
+  const [headers, setHeaders] = useState<KeyValuePair[]>(() =>
+    Object.entries(server?.headers ?? {}).map(([key, value]) => ({ id: uuid(), key, value })),
+  );
 
   const [allowedRoles, setAllowedRoles] = useState<string[]>(
     server?.allowed_roles ?? [],
   );
-  const [allowedDepartmentsInput, setAllowedDepartmentsInput] = useState(
-    server?.allowed_departments?.join(", ") ?? "",
+  const [allowedDepartments, setAllowedDepartments] = useState<string[]>(server?.allowed_departments ?? []);
+  const [departmentDirectory, setDepartmentDirectory] = useState<DepartmentDirectoryNode[] | null>(null);
+  const [departmentDirectoryError, setDepartmentDirectoryError] = useState<string | null>(null);
+  const departmentSelection = useMemo(
+    () => resolveDepartmentSelection(allowedDepartments, departmentDirectory),
+    [allowedDepartments, departmentDirectory],
   );
   const [roleQuotas, setRoleQuotas] = useState<Record<string, RoleQuotaDraft>>(
     () => toQuotaDrafts(server?.role_quotas ?? {}),
@@ -126,25 +134,38 @@ export function MCPServerForm({
 
   const [errors, setErrors] = useState<Record<string, string>>({});
 
+  useEffect(() => {
+    let active = true;
+    setDepartmentDirectory(null);
+    setDepartmentDirectoryError(null);
+    void capabilityDistributionApi.departmentDirectory().then(
+      (directory) => { if (active) setDepartmentDirectory(directory); },
+      () => { if (active) setDepartmentDirectoryError(t("skills.governance.errors.directoryUnavailable")); },
+    );
+    return () => { active = false; };
+  }, [t]);
+
   // Update form when server changes
   useEffect(() => {
     if (server) {
       setName(server.name);
       setTransport(server.transport === "sandbox" ? defaultTransport : server.transport);
       setEnabled(server.enabled);
-      setUrl("");
-      setHeaders([]);
+      setIntegrationKind(server.integration_kind ?? "mcp");
+      setUrl(server.url ?? "");
+      setHeaders(Object.entries(server.headers ?? {}).map(([key, value]) => ({ id: uuid(), key, value })));
       setAllowedRoles(server.allowed_roles ?? []);
-      setAllowedDepartmentsInput(server.allowed_departments?.join(", ") ?? "");
+      setAllowedDepartments(server.allowed_departments ?? []);
       setRoleQuotas(toQuotaDrafts(server.role_quotas ?? {}));
     } else {
       setName("");
       setTransport(defaultTransport);
       setEnabled(true);
+      setIntegrationKind("mcp");
       setUrl("");
       setHeaders([]);
       setAllowedRoles([]);
-      setAllowedDepartmentsInput("");
+      setAllowedDepartments([]);
       setRoleQuotas({});
     }
     setErrors({});
@@ -189,13 +210,17 @@ export function MCPServerForm({
     if (!url.trim()) {
       newErrors.url = t("mcp.form.validation.urlRequired");
     }
-    const headerError = validateMcpStaticHeaderNames(headers);
+    const headerError = validateMcpStaticHeaderNames(headers, integrationKind);
     if (headerError === "mcp_header_conflict") {
-      newErrors.headers = t("mcp.form.validation.jwtHeaderConflict");
+      newErrors.headers = t(integrationKind === "enterprise_gateway"
+        ? "mcp.form.validation.userIdentityHeaderConflict" : "mcp.form.validation.jwtHeaderConflict");
     } else if (headerError === "mcp_header_duplicate") {
       newErrors.headers = t("mcp.form.validation.duplicateHeader");
     }
 
+    if (!departmentSelection.authoritative || allowedDepartments.length > 128) {
+      newErrors.departments = t("skills.governance.errors.directoryNotAuthoritative");
+    }
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
@@ -208,14 +233,13 @@ export function MCPServerForm({
     const data: MCPServerCreate = {
       name: name.trim(),
       transport,
+      integration_kind: integrationKind,
       enabled,
       allowed_roles: isSystemServer ? allowedRoles : undefined,
       role_quotas: isSystemServer
         ? serializeRoleQuotas(allowedRoles, roleQuotas)
         : undefined,
-      department_ids: isSystemServer
-        ? parseDepartmentIds(allowedDepartmentsInput)
-        : undefined,
+      department_ids: allowedDepartments,
     };
 
     data.url = url.trim();
@@ -251,7 +275,7 @@ export function MCPServerForm({
       {/* Name */}
       <div className="es-field">
         <label className="es-label">{t("mcp.form.serverName")}</label>
-        <input
+        <Input
           type="text"
           value={name}
           onChange={(e) => setName(e.target.value)}
@@ -271,10 +295,29 @@ export function MCPServerForm({
         )}
       </div>
 
+      <div className="es-field">
+        <label className="es-label">{t("mcp.form.integrationKind")}</label>
+        <LobeSelectField
+          aria-label={t("mcp.form.integrationKind")}
+          value={integrationKind}
+          onChange={value => {
+            setIntegrationKind(value as "mcp" | "enterprise_gateway");
+            if (value === "enterprise_gateway") setTransport("streamable_http");
+          }}
+          options={[
+            { value: "mcp", label: t("mcp.form.genericMcp") },
+            { value: "enterprise_gateway", label: t("mcp.form.enterpriseGateway") },
+          ]}
+          disabled={isLoading}
+        />
+        {integrationKind === "enterprise_gateway" && <p className="es-hint">{t("mcp.form.enterpriseGatewayHint")}</p>}
+      </div>
+
       {/* Transport Type */}
       <div className="es-field">
         <label className="es-label">{t("mcp.form.transportType")}</label>
-        <EnterpriseSelect
+        <LobeSelectField
+          aria-label={t("mcp.form.transportType")}
           value={transport}
           onChange={(v) => setTransport(v as MCPServerCreate["transport"])}
           options={availableTransports.map((tr) => ({
@@ -292,30 +335,13 @@ export function MCPServerForm({
 
       {/* Enabled */}
       <label className="group flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 transition-colors hover:bg-[var(--theme-primary-light)]/40">
-        <input
-          type="checkbox"
+        <Checkbox
           id="enabled"
+          backgroundColor="var(--theme-success)"
           checked={enabled}
-          onChange={(e) => setEnabled(e.target.checked)}
-          className="sr-only peer"
+          onChange={(checked) => setEnabled(checked)}
         />
-        <div className="h-[18px] w-[18px] rounded-[5px] border-2 border-[var(--theme-border)] flex items-center justify-center transition-all peer-checked:bg-amber-500 peer-checked:border-amber-500">
-          {enabled && (
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              width="12"
-              height="12"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="white"
-              strokeWidth="3"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <polyline points="20 6 9 17 4 12" />
-            </svg>
-          )}
-        </div>
+
         <span className="es-label">{t("mcp.form.enabled")}</span>
       </label>
 
@@ -325,6 +351,7 @@ export function MCPServerForm({
           <label className="es-label">{t("mcp.form.allowedRoles")}</label>
           <p className="es-hint">{t("mcp.form.allowedRolesDescription")}</p>
           <RoleSelector
+                    disabled={isLoading}
             selectedRoles={allowedRoles}
             onChange={handleAllowedRolesChange}
           />
@@ -345,7 +372,7 @@ export function MCPServerForm({
                         <label className="es-label">
                           {t("mcp.form.dailyLimit")}
                         </label>
-                        <input
+                        <Input
                           type="number"
                           min="0"
                           value={quota.daily_limit}
@@ -353,14 +380,14 @@ export function MCPServerForm({
                             updateRoleQuota(role, "daily_limit", e.target.value)
                           }
                           placeholder={t("mcp.form.unlimited")}
-                          className="enterprise-field-control es-input px-3"
+                          className="px-3"
                         />
                       </div>
                       <div className="es-field">
                         <label className="es-label">
                           {t("mcp.form.weeklyLimit")}
                         </label>
-                        <input
+                        <Input
                           type="number"
                           min="0"
                           value={quota.weekly_limit}
@@ -372,7 +399,7 @@ export function MCPServerForm({
                             )
                           }
                           placeholder={t("mcp.form.unlimited")}
-                          className="enterprise-field-control es-input px-3"
+                          className="px-3"
                         />
                       </div>
                     </div>
@@ -384,22 +411,21 @@ export function MCPServerForm({
         </div>
       )}
 
-      {isSystemServer && (
-        <div className="es-field">
-          <label htmlFor="mcp-allowed-departments" className="es-label">
-            {t("mcp.form.allowedDepartments")}
-          </label>
-          <p className="es-hint">{t("mcp.form.allowedDepartmentsDescription")}</p>
-          <input
-            id="mcp-allowed-departments"
-            type="text"
-            value={allowedDepartmentsInput}
-            onChange={(event) => setAllowedDepartmentsInput(event.target.value)}
-            placeholder={t("mcp.form.allowedDepartmentsPlaceholder")}
-            className="enterprise-field-control es-input"
-          />
-        </div>
-      )}
+      <div className="es-field" role="group" aria-label={t("mcp.form.allowedDepartments")}>
+        <div className="es-label">{t("mcp.form.allowedDepartments")}</div>
+        <p className="es-hint">{t("mcp.form.allowedDepartmentsDescription")}</p>
+        <DepartmentDirectorySelector
+          directory={departmentDirectory}
+          disabled={isLoading}
+          loadError={departmentDirectoryError}
+          selectedAuthorityIds={allowedDepartments}
+          onChange={(ids) => {
+            setAllowedDepartments(ids);
+            setErrors((current) => ({ ...current, departments: "" }));
+          }}
+        />
+        {errors.departments ? <p className="es-hint text-[var(--theme-danger)]" role="alert">{errors.departments}</p> : null}
+      </div>
 
       {isEditing && (
         <p className="es-hint">{t("mcp.form.connectionReentry")}</p>
@@ -410,7 +436,7 @@ export function MCPServerForm({
           {/* URL field */}
           <div className="es-field">
             <label className="es-label">{t("mcp.form.url")}</label>
-            <input
+            <Input
               type="url"
               value={url}
               onChange={(e) => setUrl(e.target.value)}
@@ -430,43 +456,43 @@ export function MCPServerForm({
           <div className="es-field">
             <div className="flex items-center justify-between">
               <label className="es-label">{t("mcp.form.httpHeaders")}</label>
-              <button
-                type="button"
+              <Button type="default"
+                htmlType="button"
                 onClick={addHeader}
-                className="btn-secondary text-xs px-2 py-1"
+                className="text-xs px-2 py-1"
               >
                 <Plus size={12} />
                 {t("mcp.form.add")}
-              </button>
+              </Button>
             </div>
             <div className="space-y-2 mt-1">
               {headers.map((header) => (
                 <div key={header.id} className="flex gap-2">
-                  <input
+                  <Input
                     type="text"
                     value={header.key}
                     onChange={(e) =>
                       updateHeader(header.id, "key", e.target.value)
                     }
                     placeholder={t("mcp.form.headerNamePlaceholder")}
-                    className="enterprise-field-control es-input font-mono"
+                    className="font-mono"
                   />
-                  <input
+                  <Input
                     type="text"
                     value={header.value}
                     onChange={(e) =>
                       updateHeader(header.id, "value", e.target.value)
                     }
                     placeholder={t("mcp.form.valuePlaceholder")}
-                    className="enterprise-field-control es-input font-mono"
+                    className="font-mono"
                   />
-                  <button
-                    type="button"
+                  <Button type="text"
+                    htmlType="button"
                     onClick={() => removeHeader(header.id)}
-                    className="btn-icon hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/30 dark:hover:text-red-400"
-                  >
-                    <Trash2 size={16} />
-                  </button>
+                    className="hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/30 dark:hover:text-red-400"
+                    aria-label={t("common.delete")}
+                    icon={<Trash2 size={16} />}
+                  />
                 </div>
               ))}
               {headers.length === 0 && (
@@ -483,21 +509,21 @@ export function MCPServerForm({
 
       {/* Actions */}
       <div className="flex justify-end gap-2 pt-2">
-        <button
-          type="button"
+        <Button type="default"
+          htmlType="button"
           onClick={onCancel}
           disabled={isLoading}
-          className="btn-secondary"
+          className=""
         >
           {t("mcp.form.cancel")}
-        </button>
-        <button
-          type="submit"
+        </Button>
+        <Button type="primary"
+          htmlType="submit"
           disabled={isLoading || availableTransports.length === 0}
-          className="btn-primary disabled:opacity-50"
+          className="disabled:opacity-50"
         >
           {isEditing ? t("mcp.form.saveChanges") : t("mcp.form.createServer")}
-        </button>
+        </Button>
       </div>
     </form>
   );

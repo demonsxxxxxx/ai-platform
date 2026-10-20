@@ -2,6 +2,7 @@
 
 from typing import Any
 
+from app.context import api as context_api
 from app.conversations.infrastructure import postgres as conversations_postgres
 from app.identity.infrastructure import postgres as identity_postgres
 
@@ -126,6 +127,9 @@ async def delete_session(
     )
     if updated is None:
         raise SessionActionNotFoundError("session_not_found")
+    await context_api.queue_provider_session_images_for_deletion(
+        conn, tenant_id=principal.tenant_id, session_id=session_id, limit=200,
+    )
     return {"session": _session_payload(updated), "already_deleted": False}
 
 

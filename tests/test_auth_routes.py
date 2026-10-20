@@ -336,7 +336,9 @@ def test_login_returns_ai_role_without_mutating_context_cookie(monkeypatch):
     stored_jwt = {}
 
     class JwtStore:
-        async def put(self, principal, jwt):
+        async def put(self, principal, jwt, **grant):
+            assert grant["refresh_cookie"].startswith("v2.")
+            assert grant["operation_epoch"] >= 1
             stored_jwt.update(
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
@@ -393,7 +395,17 @@ def test_company_credential_handoff_requires_an_authenticated_principal():
 
 
 def test_ad_login_verifies_company_jwt_without_requerying_user_info(monkeypatch):
+    from app.identity.api import resolve_department_scope
+
     token = company_login_jwt()
+    department_lookups = []
+
+    async def department_source(work_id, **kwargs):
+        assert work_id == "ad001"
+        department_lookups.append(kwargs["fresh"])
+        return resolve_department_scope(["110"], {"100": None, "110": "100"})
+
+    monkeypatch.setattr("app.principal_authority.resolve_department_authority", department_source)
 
     async def unexpected_user_info(_work_id):
         raise AssertionError("AD JWT login must not requery company user info")
@@ -403,7 +415,9 @@ def test_ad_login_verifies_company_jwt_without_requerying_user_info(monkeypatch)
 
     stored = {}
 
-    async def fake_store(principal, company_jwt):
+    async def fake_store(principal, company_jwt, **grant):
+        assert grant["refresh_cookie"].startswith("v2.")
+        assert grant["operation_epoch"] >= 1
         stored["user_id"] = principal.user_id
         stored["jwt"] = company_jwt
 
@@ -424,7 +438,10 @@ def test_ad_login_verifies_company_jwt_without_requerying_user_info(monkeypatch)
         "user_name": "ad001",
         "display_name": "AD User",
         "tenant_id": "default",
-        "department_id": "研发一部",
+        "department_id": "110",
+        "direct_department_ids": ["110"],
+        "department_ids": ["100", "110"],
+        "department_authority_status": "available",
         "roles": ["user"],
         "permissions": EXPECTED_COMPANY_USER_PERMISSIONS,
         "is_admin": False,
@@ -432,12 +449,14 @@ def test_ad_login_verifies_company_jwt_without_requerying_user_info(monkeypatch)
         "authz_policy_version": COMPANY_AUTHZ_POLICY_VERSION,
         "authority_source": "company-login-jwt",
         "authority_checked_at": response.json()["authority_checked_at"],
+        "company_refresh_required": False,
     }
     assert response.json() == expected_principal
     current_response = client.get("/api/ai/auth/me")
     assert current_response.status_code == 200
     assert current_response.json() == expected_principal
     assert stored == {"user_id": "ad001", "jwt": token}
+    assert department_lookups == [True, False]
 
 
 def test_ad_login_rejects_invalid_company_jwt(monkeypatch):
@@ -625,8 +644,16 @@ def test_company_login_projects_principal_denial_as_existing_safe_failure(monkey
     assert response.json() == {"detail": "company_login_failed"}
 
 
-def _install_company_department_login_fakes(monkeypatch, user_info, *, qa_department_id="qa"):
+def _install_company_department_login_fakes(monkeypatch, user_info, *, qa_department_id="100", direct_department_ids=()):
+    from app.identity.api import DepartmentAuthority, resolve_department_scope
     from app.routes import skills_marketplace
+
+    async def department_source(work_id, **kwargs):
+        assert work_id == "user001"
+        return (resolve_department_scope(list(direct_department_ids), {"100": None, "110": "100"})
+                if direct_department_ids else DepartmentAuthority())
+
+    monkeypatch.setattr("app.principal_authority.resolve_department_authority", department_source)
 
     async def fake_login(username, password):
         assert username == "user001"
@@ -682,7 +709,7 @@ def _install_company_department_login_fakes(monkeypatch, user_info, *, qa_depart
                 "status": "active",
                 "visible_to_user": True,
                 "scope_mode": "allowlist",
-                "department_ids": ["rd"],
+                "department_ids": ["200"],
                 "allowed_roles": [],
             },
         ]
@@ -713,11 +740,11 @@ def _install_company_department_login_fakes(monkeypatch, user_info, *, qa_depart
     return settings
 
 
-def test_company_login_trusted_department_reaches_session_and_skill_projection(monkeypatch):
+def test_company_login_dingtalk_department_reaches_session_and_parent_skill_projection(monkeypatch):
     _install_company_department_login_fakes(
         monkeypatch,
         {"roles": ["user"], "department": "研发一部"},
-        qa_department_id="研发一部",
+        direct_department_ids=("110",),
     )
     client = browser_client()
 
@@ -730,7 +757,9 @@ def test_company_login_trusted_department_reaches_session_and_skill_projection(m
     assert login_response.status_code == 200
     current_principal = client.get("/api/ai/auth/me").json()
     assert current_principal["user_id"] == "user001"
-    assert current_principal["department_id"] == "研发一部"
+    assert current_principal["department_id"] == "110"
+    assert current_principal["direct_department_ids"] == ["110"]
+    assert current_principal["department_ids"] == ["100", "110"]
 
     skills_response = client.get("/api/skills/")
 
@@ -738,10 +767,12 @@ def test_company_login_trusted_department_reaches_session_and_skill_projection(m
     assert [item["skill_name"] for item in skills_response.json()["skills"]] == ["qa-skill"]
 
 
-def test_company_login_department_authorization_is_case_sensitive(monkeypatch):
+def test_company_login_legacy_name_grants_do_not_match_dingtalk_scope(monkeypatch):
     _install_company_department_login_fakes(
         monkeypatch,
         {"roles": ["user"], "department": "QA"},
+        qa_department_id="QA",
+        direct_department_ids=("110",),
     )
     client = browser_client()
 
@@ -768,7 +799,7 @@ def test_company_login_department_authorization_is_case_sensitive(monkeypatch):
         {"department_name": None},
     ],
 )
-def test_company_login_ignores_unsupported_alias_metadata_when_top_level_department_is_valid(
+def test_company_login_uses_dingtalk_scope_independently_of_company_department_aliases(
     monkeypatch,
     alias_metadata,
 ):
@@ -776,7 +807,7 @@ def test_company_login_ignores_unsupported_alias_metadata_when_top_level_departm
     _install_company_department_login_fakes(
         monkeypatch,
         user_info,
-        qa_department_id="QA",
+        direct_department_ids=("110",),
     )
     client = browser_client()
 

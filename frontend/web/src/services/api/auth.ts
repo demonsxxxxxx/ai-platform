@@ -5,19 +5,24 @@
 import type { User, LoginRequest } from "../../types";
 import { API_BASE } from "./config";
 import { ApiRequestError, authFetch } from "./fetch";
+import { refreshTokens } from "./tokenManager";
 import { projectSafeBackendError } from "../../utils/backendErrors";
 import i18n from "../../i18n";
 
-interface PrincipalResponseWire {
+export interface PrincipalResponseWire {
   user_id: string;
   user_name?: string;
   display_name: string;
   tenant_id: string;
   department_id: string;
+  direct_department_ids?: string[];
+  department_ids?: string[];
+  department_authority_status?: "available" | "unavailable";
   roles: string[];
   permissions: string[];
   is_admin: boolean;
   source: string;
+  company_refresh_required?: boolean;
 }
 
 export interface AuthContextBootstrapRequest {
@@ -61,11 +66,14 @@ async function bootstrapAuthContext(
   });
 }
 
-function mapPrincipalToUser(principal: PrincipalResponseWire): User {
+export function mapPrincipalToUser(principal: PrincipalResponseWire): User {
   return {
     id: principal.user_id,
     tenant_id: principal.tenant_id,
     department_id: principal.department_id,
+    direct_department_ids: principal.direct_department_ids ?? [],
+    department_ids: principal.department_ids ?? [],
+    department_authority_status: principal.department_authority_status ?? "unavailable",
     username: principal.user_name || principal.user_id,
     email: "",
     avatar_url: undefined,
@@ -208,7 +216,7 @@ export const authApi = {
    * 获取当前用户信息
    */
   async getCurrentUser(options: { signal?: AbortSignal } = {}): Promise<User> {
-    const principal = await authFetch<PrincipalResponseWire>(
+    let principal = await authFetch<PrincipalResponseWire>(
       `${API_BASE}/api/ai/auth/me`,
       {
         skipAuth: true,
@@ -217,6 +225,16 @@ export const authApi = {
         signal: withAuthRequestTimeout(options.signal),
       },
     );
+    if (principal.company_refresh_required) {
+      await refreshTokens(options.signal);
+      principal = await authFetch<PrincipalResponseWire>(`${API_BASE}/api/ai/auth/me`, {
+        ordinary401Recovery: "caller",
+        signal: withAuthRequestTimeout(options.signal),
+      });
+      if (principal.company_refresh_required) {
+        throw new ApiRequestError("公司身份暂时无法恢复，请稍后重试。", 503, "auth_refresh_unavailable");
+      }
+    }
     return mapPrincipalToUser(principal);
   },
 

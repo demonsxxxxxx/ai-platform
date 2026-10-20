@@ -27,6 +27,8 @@ import {
   setTokens,
 } from "../services/api/token";
 import { ApiRequestError, FORCE_RELOGIN_EVENT } from "../services/api/fetch";
+import { mapPrincipalToUser, type PrincipalResponseWire } from "../services/api/auth";
+import { SESSION_REFRESHED_EVENT } from "../services/api/tokenManager";
 import { clearAuthScopedCaches } from "../services/api/authCacheInvalidation";
 import { classifyBrowserAuthStorageEvent } from "./browserAuthStorage";
 import {
@@ -147,6 +149,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const authOperationGenerationRef = useRef(0);
   const authOperationAbortControllerRef = useRef<AbortController | null>(null);
   const forcedReloginInProgressRef = useRef(false);
+  const currentUserRef = useRef(user);
+  currentUserRef.current = user;
+  const authLoadingRef = useRef(isLoading);
+  authLoadingRef.current = isLoading;
 
   // 权限列表：从 API 动态获取
   const permissions = dynamicPermissions;
@@ -440,6 +446,41 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       })();
     };
 
+    const handleSessionRefreshed = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        principal: PrincipalResponseWire;
+        request_marker: string;
+        authorization_changed: boolean;
+      }>).detail;
+      if (!detail || detail.request_marker !== getAccessToken()) {
+        event.preventDefault();
+        return;
+      }
+      const current = currentUserRef.current;
+      // Hydration/login/logout already has an operation owner for its projection.
+      if (!current || authLoadingRef.current) return;
+      const refreshed = mapPrincipalToUser(detail.principal);
+      if (refreshed.id !== current.id || refreshed.tenant_id !== current.tenant_id) {
+        event.preventDefault();
+        return;
+      }
+      const changed = detail.authorization_changed
+        || refreshed.department_id !== current.department_id
+        || refreshed.department_authority_status !== current.department_authority_status
+        || JSON.stringify(refreshed.direct_department_ids ?? []) !== JSON.stringify(current.direct_department_ids ?? [])
+        || JSON.stringify(refreshed.department_ids ?? []) !== JSON.stringify(current.department_ids ?? [])
+        || JSON.stringify(refreshed.roles) !== JSON.stringify(current.roles)
+        || JSON.stringify(refreshed.permissions) !== JSON.stringify(current.permissions);
+      if (changed) {
+        clearAuthScopedCaches();
+        const owner = beginAuthOperation(detail.request_marker);
+        applyAuthenticatedUser(refreshed, owner);
+      } else {
+        // Credential-only rotation must not invalidate active chat/SSE owners.
+        setUser({ ...current, metadata: { ...current.metadata, ...refreshed.metadata } });
+      }
+    };
+
     const handleStorage = (event: StorageEvent) => {
       const change = classifyBrowserAuthStorageEvent(event);
       if (!change) return;
@@ -461,13 +502,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     window.addEventListener("auth:logout", handleLogout);
     window.addEventListener(FORCE_RELOGIN_EVENT, handleForceRelogin);
+    window.addEventListener(SESSION_REFRESHED_EVENT, handleSessionRefreshed);
     window.addEventListener("storage", handleStorage);
     return () => {
       window.removeEventListener("auth:logout", handleLogout);
       window.removeEventListener(FORCE_RELOGIN_EVENT, handleForceRelogin);
+      window.removeEventListener(SESSION_REFRESHED_EVENT, handleSessionRefreshed);
       window.removeEventListener("storage", handleStorage);
     };
   }, [
+    applyAuthenticatedUser,
     applyLoggedOut,
     beginAuthOperation,
     clearAuthPresentation,

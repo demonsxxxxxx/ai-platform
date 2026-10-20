@@ -1,16 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-// jsdom 26 ships no declarations; the harness uses only its runtime constructor.
-// @ts-expect-error jsdom is the sole pinned test runtime dependency.
-import { JSDOM } from "jsdom";
+import { installSelectTestDom } from "../../../common/__tests__/selectTestDom";
+import { createLobeTestRoot } from "../../../common/__tests__/lobeUiTestRoot";
 import { act, createElement, useEffect, useState, type ReactNode } from "react";
 import { adaptPublicRunStreamEventV4 } from "../publicEventAdapter";
 import { acceptV4TerminalFence, handlePublicRunStreamEventV4Result, type EventHandlerContext } from "../../../../hooks/useAgent/eventHandlers";
 import { processMessageEvent } from "../../../../hooks/useAgent/eventProcessor";
-import { createRoot, type Root } from "react-dom/client";
+type Root = Awaited<ReturnType<typeof createLobeTestRoot>>;
 import { ThreadPrimitive } from "@assistant-ui/react";
 import { AssistantUiProjection } from "../AssistantUiProjection";
-import { AssistantUiMessageFrame } from "../MessageFrame";
+import { ThreadMessage } from "../elements/thread";
 import { MessagePartRenderer } from "../../ChatMessage/MessagePartRenderer";
 import { closePersistentToolPanel, getPersistentToolPanelState } from "../../ChatMessage/items/persistentToolPanelState";
 import type { Message, MessagePart } from "../../../../types";
@@ -31,38 +30,15 @@ const handlePublicRunStreamEventV4 = (
   return result.kind === "applied" || result.kind === "deferred";
 };
 
-function setupDom(): { container: HTMLDivElement; root: Root; cleanup: () => void } {
-  const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>", {
-    url: "http://localhost/",
-  });
-  const windowKeys = ["window", "document", "navigator", "HTMLElement", "Node", "Event", "KeyboardEvent"] as const;
-  for (const key of windowKeys) {
-    Object.defineProperty(globalThis, key, { configurable: true, value: dom.window[key] });
-  }
-  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true, writable: true });
-  class TestResizeObserver {
-    observe(): void {}
-    unobserve(): void {}
-    disconnect(): void {}
-  }
-  Object.defineProperty(globalThis, "ResizeObserver", { configurable: true, value: TestResizeObserver });
-  Object.defineProperty(globalThis, "MutationObserver", { configurable: true, value: dom.window.MutationObserver });
-  Object.defineProperty(dom.window.HTMLElement.prototype, "scrollTo", { configurable: true, value: () => undefined });
-  Object.defineProperty(globalThis, "cancelAnimationFrame", { configurable: true, value: () => undefined });
-  Object.defineProperty(globalThis, "requestAnimationFrame", {
-    configurable: true,
-    value: (callback: FrameRequestCallback) => { callback(Date.now()); return 0; },
-  });
-  const container = dom.window.document.getElementById("root") as HTMLDivElement;
-  const root = createRoot(container);
-  return {
-    container,
-    root,
-    cleanup: () => {
-      act(() => { root.unmount(); });
-      dom.window.close();
-    },
-  };
+async function setupDom() {
+  const environment = installSelectTestDom();
+  HTMLElement.prototype.scrollTo = () => {};
+  const container = document.createElement("div");
+  const root = await createLobeTestRoot(container);
+  return { container, root, cleanup: () => {
+    act(() => root.unmount());
+    environment.close();
+  } };
 }
 
 function renderProjection(
@@ -118,7 +94,7 @@ function renderProjection(
                 messageId: message.id,
                 components: {
                   Message: () => createElement(
-                    AssistantUiMessageFrame,
+                    ThreadMessage,
                     null,
                     createElement("p", { "data-message-content": true }, message.content),
                     ...(message.parts || []).map(renderPart),
@@ -144,8 +120,8 @@ function message(parts: MessagePart[]): Message {
   };
 }
 
-test("mounted projection uses the production canonical tool lifecycle", () => {
-  const dom = setupDom();
+test("mounted projection uses the production canonical tool lifecycle", async () => {
+  const dom = await setupDom();
   const actions = {
     sendMessage: async () => undefined,
     cancel: async () => undefined,
@@ -165,9 +141,7 @@ test("mounted projection uses the production canonical tool lifecycle", () => {
     }]), actions);
     const projection = dom.container.querySelector("[data-assistant-ui-projection]");
     const frame = dom.container.querySelector("[data-assistant-ui-message]");
-    const tool = [...dom.container.querySelectorAll("button")].find((button) =>
-      button.textContent?.includes("读取：Read"),
-    );
+    const tool = dom.container.querySelector('[data-chat-activity-status="success"]');
     assert.ok(projection);
     assert.ok(frame);
     assert.equal(projection?.getAttribute("role"), "log");
@@ -193,15 +167,15 @@ test("mounted projection uses the production canonical tool lifecycle", () => {
       dom.container.innerHTML,
       /Bash:|workspace|private result|command/,
     );
-    tool.focus();
-    assert.equal(dom.container.ownerDocument.activeElement, tool);
+    assert.match(tool.textContent || "", /读取：Read/);
+    assert.equal(tool.querySelector("button"), null, "nonexpandable activity is status text, not a fake action");
   } finally {
     dom.cleanup();
   }
 });
 
-test("mounted artifact card exposes only its safe accessible label", () => {
-  const dom = setupDom();
+test("mounted artifact card exposes only its safe accessible label", async () => {
+  const dom = await setupDom();
   const actions = { sendMessage: async () => undefined, cancel: async () => undefined, reconnect: async () => undefined, loadHistory: async () => undefined };
   try {
     renderProjection(dom.root, message([{
@@ -225,7 +199,7 @@ test("mounted artifact card exposes only its safe accessible label", () => {
 });
 
 test("mounted production fence owner accepts its matching end once and rejects a foreign end", async () => {
-  const dom = setupDom();
+  const dom = await setupDom();
   const terminalEvent = adaptPublicRunStreamEventV4({
     eventHeader: "run.succeeded",
     transportCursor: "run-1:1:1-0",
@@ -322,8 +296,8 @@ test("mounted production fence owner accepts its matching end once and rejects a
   }
 });
 
-test("mounted adapter-to-reducer artifact failure exposes a safe accessible label", () => {
-  const dom = setupDom();
+test("mounted adapter-to-reducer artifact failure exposes a safe accessible label", async () => {
+  const dom = await setupDom();
   const adapted = adaptPublicRunStreamEventV4({
     eventHeader: "artifact.failed",
     transportCursor: "run-1:1:3-0",
@@ -357,8 +331,8 @@ test("mounted adapter-to-reducer artifact failure exposes a safe accessible labe
   }
 });
 
-test("mounted projection renders the production subagent lifecycle with hierarchy, metadata, and keyboard state", () => {
-  const dom = setupDom();
+test("mounted projection renders the production subagent lifecycle with hierarchy, metadata, and keyboard state", async () => {
+  const dom = await setupDom();
   const actions = { sendMessage: async () => undefined, cancel: async () => undefined, reconnect: async () => undefined, loadHistory: async () => undefined };
   try {
     const parent = adaptPublicRunStreamEventV4({
@@ -469,12 +443,12 @@ test("mounted projection renders the production subagent lifecycle with hierarch
     assert.ok(lifecycle?.className.includes("border-l-2"));
     assert.ok(trigger);
     assert.equal(trigger?.tagName, "BUTTON");
-    assert.equal(trigger?.getAttribute("aria-label"), "Sub-agent: Running, Nested Agent");
-    assert.match(lifecycle?.textContent || "", /Running/);
-    assert.match(lifecycle?.textContent || "", /Nested Agent/);
+    assert.equal(trigger?.getAttribute("aria-label"), "子代理: 运行中，嵌套子代理");
+    assert.match(lifecycle?.textContent || "", /运行中/);
+    assert.match(lifecycle?.textContent || "", /嵌套子代理/);
     assert.doesNotMatch(lifecycle?.textContent || "", /parent-agent-1/);
-    assert.match(lifecycle?.textContent || "", /Category: search/);
-    assert.match(lifecycle?.textContent || "", /Progress: 40%/);
+    assert.match(lifecycle?.textContent || "", /当前操作：搜索/);
+    assert.match(lifecycle?.textContent || "", /进度：40%/);
     trigger?.focus();
     assert.equal(dom.container.ownerDocument.activeElement, trigger);
 
@@ -512,10 +486,10 @@ test("mounted projection renders the production subagent lifecycle with hierarch
     renderProjection(dom.root, message(completed.parts), actions);
     const updated = dom.container.querySelector("[data-subagent-id=subagent-1]");
     const updatedTrigger = dom.container.querySelector("[data-subagent-trigger=subagent-1]");
-    assert.equal(updatedTrigger?.getAttribute("aria-label"), "Sub-agent: Completed, Nested Agent");
-    assert.match(updated?.textContent || "", /Completed/);
-    assert.match(updated?.textContent || "", /Progress: 100%/);
-    assert.match(updated?.textContent || "", /Duration: 2\.5s/);
+    assert.equal(updatedTrigger?.getAttribute("aria-label"), "子代理: 已完成，嵌套子代理");
+    assert.match(updated?.textContent || "", /已完成/);
+    assert.match(updated?.textContent || "", /进度：100%/);
+    assert.match(updated?.textContent || "", /耗时：2\.5 秒/);
   } finally {
     closePersistentToolPanel();
     dom.cleanup();

@@ -98,7 +98,9 @@ class Settings(BaseSettings):
     stale_run_reconciliation_limit: int = Field(default=20, ge=1, le=50)
     stale_run_reconciliation_fence_ttl_seconds: int = Field(default=300, ge=30, le=3600)
     sandbox_lease_ttl_seconds: int = Field(default=1800, ge=60, le=86400)
+    worker_role: Literal["integrated", "execution", "finalizer"] = Field(default="integrated")
     worker_concurrency: int = Field(default=10)
+    worker_finalizer_concurrency: int = Field(default=2, ge=1)
     file_storage_quota_bytes: int = Field(default=10 * 1024 * 1024 * 1024, ge=1)
     file_upload_max_active_sessions: int = Field(default=3, ge=1, le=100)
     memory_retention_worker_cleanup_enabled: bool = Field(default=True)
@@ -134,6 +136,8 @@ class Settings(BaseSettings):
     existing_auth_base_url: str = Field(default="")
     existing_user_info_base_url: str = Field(default="")
     existing_auth_timeout_seconds: float = Field(default=15.0)
+    dingtalk_department_authority_base_url: str = Field(default="")
+    dingtalk_department_authority_timeout_seconds: float = Field(default=5.0, gt=0, le=30)
     company_login_jwt_secret: str = Field(default="", repr=False)
     company_login_jwt_issuer: str = Field(default="")
     company_login_jwt_audience: str = Field(default="")
@@ -161,6 +165,7 @@ class Settings(BaseSettings):
     # Trusted server-side ProfileDrive transfer path. The agent receives neither
     # this upstream nor the user's company JWT.
     profile_drive_transfer_upstream: str = Field(default="")
+    profile_drive_transfer_allow_insecure_http: bool = Field(default=False)
     profile_drive_transfer_ca_cert_file: str = Field(default="")
     profile_drive_transfer_read_timeout_seconds: float = Field(default=60.0, gt=0, le=3600)
     profile_drive_transfer_total_timeout_seconds: float = Field(default=1800.0, gt=0, le=10800)
@@ -224,6 +229,7 @@ class Settings(BaseSettings):
     @field_validator(
         "existing_auth_base_url",
         "existing_user_info_base_url",
+        "dingtalk_department_authority_base_url",
         "profile_drive_transfer_upstream",
         mode="before",
     )
@@ -252,12 +258,17 @@ class Settings(BaseSettings):
             raise ValueError("private_upstream_url_invalid")
         return candidate
 
-    @field_validator("profile_drive_transfer_upstream")
-    @classmethod
-    def require_https_profile_drive_transfer(cls, value: str) -> str:
-        if value and urlsplit(value).scheme.lower() != "https":
+    @model_validator(mode="after")
+    def require_secure_profile_drive_transfer(self) -> "Settings":
+        # Plain HTTP carries the user's company JWT and file bytes; only an
+        # explicit operator opt-in may relax the HTTPS default.
+        if (
+            self.profile_drive_transfer_upstream
+            and urlsplit(self.profile_drive_transfer_upstream).scheme.lower() != "https"
+            and not self.profile_drive_transfer_allow_insecure_http
+        ):
             raise ValueError("profile_drive_transfer_https_required")
-        return value
+        return self
 
     @field_validator("opensandbox_expected_network_mode", mode="before")
     @classmethod

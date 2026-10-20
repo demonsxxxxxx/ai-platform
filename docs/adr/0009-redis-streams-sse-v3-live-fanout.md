@@ -1,7 +1,11 @@
 # ADR 0009: Redis Streams SSE v3 Process-Local Live Fan-Out
 
-Status: accepted; implementation included in the v3 hard-cutover change; External
-Acceptance pending
+Status: superseded for active wire/event-set decisions by
+[ADR 0012](0012-recoverable-agent-kernel-event-stream-v4.md), and for live/replay
+publication and recovery by [ADR 0013](0013-redis-stream-only-sse.md).
+
+The v3 implementation, Pub/Sub hub, rollout and rollback below are historical.
+They do not authorize a current producer, fallback or release procedure.
 
 Date: 2026-08-17
 

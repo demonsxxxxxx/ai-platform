@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Any, Protocol
 
+from app.execution.domain.runtime_debug import normalize_execution_debug
 from app.execution.application.model_response_evidence import observe_anthropic_text
 from app.execution.application.model_stream_ownership import (
     ModelResponseStream, OwnedModelResponseBody, close_model_stream, open_owned_model_stream,
@@ -38,7 +39,9 @@ _ANTHROPIC_BETA_ALLOWLIST = {
         "context-management-2025-06-27",
         "prompt-caching-scope-2026-01-05",
         "mid-conversation-system-2026-04-07",
+        "mid-conversation-tool-changes-2026-07-01",
         "effort-2025-11-24",
+        "thinking-display-updates-2026-08-18",
     }),
     "v1/messages/count_tokens": frozenset({
         "claude-code-20250219",
@@ -49,6 +52,12 @@ _ANTHROPIC_BETA_ALLOWLIST = {
 }
 
 
+def _policy_error(code: str, *, policy: str, beta_count: int = 0) -> PermissionError:
+    error = PermissionError(code)
+    error.debug = {"component": "model_proxy", "phase": "preflight", "failure_class": "policy_rejected", "policy": policy, "beta_count": beta_count}
+    return error
+
+
 def _runtime_proxy_headers(
     provider: str, upstream_path: str, headers: Mapping[str, str]
 ) -> dict[str, str]:
@@ -57,7 +66,7 @@ def _runtime_proxy_headers(
         return outbound
     version = outbound.get("anthropic-version")
     if version != "2023-06-01":
-        raise PermissionError("model_proxy_anthropic_version_not_allowed")
+        raise _policy_error("model_proxy_anthropic_version_not_allowed", policy="anthropic_version")
     betas = outbound.get("anthropic-beta", "")
     if betas:
         values = [item.strip() for item in betas.split(",")]
@@ -66,7 +75,7 @@ def _runtime_proxy_headers(
             or any(not item for item in values)
             or any(item not in _ANTHROPIC_BETA_ALLOWLIST[upstream_path] for item in values)
         ):
-            raise PermissionError("model_proxy_anthropic_beta_not_allowed")
+            raise _policy_error("model_proxy_anthropic_beta_not_allowed", policy="anthropic_beta", beta_count=len(values))
         outbound["anthropic-beta"] = ",".join(sorted(set(values)))
     return outbound
 
@@ -121,6 +130,7 @@ class RuntimeProxyResponse:
     content_type: str
     body: Iterable[bytes]
     close: Callable[[], None] | None = None
+    debug: dict[str, str | int] | None = None
 
 
 _COUNT_TOKENS_FALLBACK_OVERHEAD = 4096
@@ -137,9 +147,14 @@ def _input_token_count(response: Any, *, fallback_body: bytes | None = None) -> 
     if status == 404 and fallback_body is not None:
         return _conservative_input_token_count(fallback_body)
     if type(status) is not int or not 200 <= status < 300:
-        raise RuntimeError(
+        error = RuntimeError(
             "model_proxy_count_tokens_unavailable" if status in {429, 503} else "model_proxy_count_tokens_failed"
         )
+        error.debug = normalize_execution_debug({
+            **normalize_execution_debug(getattr(response, "debug", None)), "component": "model_proxy", "operation": "count_tokens",
+            "phase": "response", "failure_class": "http_error", "http_status": status,
+        })
+        raise error
     try:
         payload = json.loads(response.body)
     except (AttributeError, TypeError, ValueError, json.JSONDecodeError) as exc:
@@ -160,6 +175,7 @@ class ModelControlPlaneService:
         security: ModelEndpointSecurity,
         upstream: ModelUpstream,
         attempt_capability_verifier: ModelAttemptCapabilityVerifier,
+        diagnostic_recorder: Callable[..., Any] | None = None,
     ) -> None:
         self._transaction = transaction_factory
         self._settings_provider = settings_provider
@@ -167,6 +183,12 @@ class ModelControlPlaneService:
         self._security = security
         self._upstream = upstream
         self._attempt_capability_verifier = attempt_capability_verifier
+        self._diagnostic_recorder = diagnostic_recorder
+
+    async def record_debug(self, *, run_id: str, attempt_id: str, error_code: str, debug: object) -> None:
+        facts = normalize_execution_debug(debug)
+        if self._diagnostic_recorder is not None and facts:
+            await self._diagnostic_recorder(run_id=run_id, attempt_id=attempt_id, error_code=error_code, debug=facts)
 
     def _security_settings(self) -> tuple[str, str]:
         settings = self._settings_provider()
@@ -410,6 +432,7 @@ class ModelControlPlaneService:
                 status=count_response.status,
                 content_type=getattr(count_response, "content_type", "application/json"),
                 body=(count_response.body,),
+                debug=normalize_execution_debug(getattr(count_response, "debug", None)),
             )
         upstream = await open_owned_model_stream(partial(
             self._upstream.open_stream,
@@ -440,6 +463,7 @@ class ModelControlPlaneService:
                 content_type=upstream.content_type,
                 body=owned_body,
                 close=owned_body.close,
+                debug=normalize_execution_debug(getattr(upstream, "debug", None)),
             )
         except BaseException:
             close_model_stream(upstream.close)

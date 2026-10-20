@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
-import toast from "react-hot-toast";
+import { toast } from "@lobehub/ui/base-ui";
 import { useLocation, useNavigate } from "react-router-dom";
 import { exportProjectZip } from "../../../utils/exportProjectZip";
 import { getAccessToken } from "../../../services/api/token";
@@ -107,6 +107,7 @@ export function useSkillsActions(options?: {
     enabled,
     listParams,
     allAuthorizedCatalog: options?.allAuthorizedCatalog,
+    identityScope: JSON.stringify([user?.tenant_id, user?.id, user?.roles, user?.permissions, user?.is_admin, user?.department_ids, user?.direct_department_ids, user?.department_authority_status]),
   });
   const canAdminUploadSkills = isAiAdminUser(user);
 

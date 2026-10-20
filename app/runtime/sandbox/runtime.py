@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from app.db import transaction
+from app.mcp.api import MCP_CREDENTIAL_SUBJECTS_LEASE_KEY, mcp_credential_subjects_for_lease
 from app.execution_boundary import (
     REAL_SANDBOX_PROVIDERS,
     governed_egress_authorized_native_tool_scope,
@@ -49,6 +50,10 @@ from app.runtime.sandbox.callback_tokens import (
 )
 from app.runtime.sandbox.event_normalizer import container_started_event
 from app.runtime.sandbox.executor_client import SandboxExecutorClient
+from app.runtime.sandbox.executor_signals import (
+    ExecutorSignalUnavailable,
+    publish_executor_terminal_signal,
+)
 from app.sandbox.api import normalize_executor_reported_failure
 from app.runtime.sandbox.readiness_evidence import (
     ExecutorReadinessEvidence,
@@ -72,6 +77,7 @@ LeaseReleaser = Callable[..., Awaitable[Any] | Any]
 CreationClaimFactory = Callable[..., AbstractAsyncContextManager[SandboxCreationClaim]]
 
 _logger = logging.getLogger(__name__)
+_EXECUTOR_TERMINAL_SIGNAL_TIMEOUT_SECONDS = 1.0
 
 
 @dataclass(frozen=True)
@@ -295,6 +301,11 @@ class SandboxRuntime:
             "workspace_container_path": runtime_workspace_container_path,
             "labels": persisted_labels,
         }
+        credential_subjects = mcp_credential_subjects_for_lease(
+            request.tool_policy_subjects, tenant_id=lease.tenant_id, user_id=lease.user_id,
+        )
+        if credential_subjects:
+            lease_payload[MCP_CREDENTIAL_SUBJECTS_LEASE_KEY] = credential_subjects
         if any(
             isinstance(subject, dict)
             and subject.get("identity") == PROFILE_DRIVE_STAGE_IDENTITY
@@ -754,11 +765,16 @@ class SandboxRuntime:
                 artifact_workspace_path=artifact_workspace_path,
             )
 
+        accepted_dispatch = False
+
         async def stop_owned_runtime(reason: str) -> bool:
             """Elect exactly one stop/release owner across runtime cancellation paths."""
 
             nonlocal externally_stopped, terminal_stop_result
             async with terminal_stop_lock:
+                if accepted_dispatch:
+                    # Completion has handed this runtime to durable receipt cleanup.
+                    return True
                 if externally_stopped:
                     return True
                 try:
@@ -859,7 +875,7 @@ class SandboxRuntime:
                     if not str(request.reconciliation_context.get("adapter_name") or "").strip():
                         raise RuntimeError("sandbox_executor_reconciliation_adapter_required")
                     async with transaction() as conn:
-                        await sandbox_lease_repository.record_sandbox_executor_accepted(
+                        accepted_lease = await sandbox_lease_repository.record_sandbox_executor_accepted(
                             conn,
                             tenant_id=request.tenant_id,
                             run_id=request.run_id,
@@ -871,6 +887,20 @@ class SandboxRuntime:
                             },
                             ttl_seconds=self.settings.sandbox_lease_ttl_seconds,
                         )
+                    accepted_dispatch = True
+                    if (
+                        accepted_lease
+                        and accepted_lease.get("executor_terminal_json") is not None
+                        and accepted_lease.get("executor_reconciliation_status") == "pending"
+                    ):
+                        try:
+                            async with asyncio.timeout(_EXECUTOR_TERMINAL_SIGNAL_TIMEOUT_SECONDS):
+                                await publish_executor_terminal_signal()
+                        except (ExecutorSignalUnavailable, TimeoutError):
+                            _logger.warning(
+                                "executor_terminal_reconciliation_signal_unavailable",
+                                extra={"run_id": request.run_id, "attempt_id": request.attempt_id},
+                            )
                 return accepted_result
             response = normalize_executor_reported_failure(
                 response,
@@ -902,6 +932,9 @@ class SandboxRuntime:
                 )
                 collection_succeeded = True
         except BaseException as exc:
+            if accepted_dispatch:
+                # The committed terminal receipt owns settlement even if its wake is cancelled.
+                raise
             validation_rejected = validation_started and not validation_succeeded
             staging_rejected = staging_started and not staging_succeeded
             collection_rejected = collection_started and not collection_succeeded

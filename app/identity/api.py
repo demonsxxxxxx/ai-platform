@@ -1,3 +1,10 @@
+from app.identity.application.department_authority import (
+    DepartmentAuthority,
+    department_authority_from_snapshot,
+    is_department_id,
+    resolve_department_scope,
+)
+from app.identity.application.principal_projection import PrincipalResponse as PrincipalResponse
 from app.identity.application.worker_distribution import (
     WorkerCapabilityDecision as WorkerCapabilityDecision,
     WorkerDistributionAuthority as WorkerDistributionAuthority,
@@ -22,6 +29,11 @@ from app.identity.application.profile_metadata import (
 )
 
 __all__ = [
+    "DepartmentAuthority",
+    "department_authority_from_snapshot",
+    "is_department_id",
+    "resolve_department_scope",
+    "PrincipalResponse",
     "WorkerCapabilityAuditService",
     "WorkerCapabilityDecision",
     "WorkerDistributionAuthority",

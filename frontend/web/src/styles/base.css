@@ -1,3 +1,12 @@
+/* Toast viewports share the available workbench width, including portal sidebars. */
+.app-toaster {
+  --toast-viewport-offset-y: 56px;
+  left: 16px !important;
+  right: 16px !important;
+  margin-inline: auto;
+  transform: none !important;
+}
+
 /* When DocumentPreview sidebar is open, compress the main app layout */
 @media (min-width: 640px) {
   #root {
@@ -113,7 +122,8 @@ select:-webkit-autofill:active {
 }
 
 :root {
-  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  --font-ui: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  font-family: var(--font-ui);
   /* LibreChat-style post-login shell tokens */
   --theme-primary: #0f766e;
   --theme-primary-hover: #115e59;
@@ -220,17 +230,6 @@ select:-webkit-autofill:active {
 }
 .dark .dark\:text-stone-600 {
   color: #a8a29e;
-}
-
-/* Skeleton shimmer animation */
-@keyframes shimmer {
-  0% {
-    background-position: -200% 0;
-  }
-
-  100% {
-    background-position: 200% 0;
-  }
 }
 
 * {
@@ -380,7 +379,13 @@ html[data-mobile-keyboard="true"] #root {
 }
 
 [data-librechat-expanded-panel] .sidebar-nav-btn {
+  justify-content: flex-start;
   min-height: 36px;
+  text-align: left;
+}
+
+[data-librechat-expanded-panel] .sidebar-nav-btn > svg {
+  flex-shrink: 0;
 }
 
 [data-librechat-expanded-panel] [data-workbench-session-region] {

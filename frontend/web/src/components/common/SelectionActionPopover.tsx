@@ -1,3 +1,4 @@
+import { Button, PopoverRoot, PopoverPortal, PopoverPositioner, PopoverPopup } from "@lobehub/ui/base-ui";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { Lightbulb, MessageCircle } from "lucide-react";
@@ -5,18 +6,13 @@ import { useTranslation } from "react-i18next";
 import {
   buildSelectionActionPrompt,
   dispatchSelectionActionPrompt,
-  getSelectionPopoverPosition,
   storePendingSelectionActionPrompt,
   type SelectionAction,
 } from "./selectionActionPrompt";
 
-const MENU_WIDTH = 142;
-const MENU_HEIGHT = 34;
-
 interface PopoverState {
   selectedText: string;
-  left: number;
-  top: number;
+  selectionRect: DOMRect;
 }
 
 function getNodeElement(node: Node | null): Element | null {
@@ -52,7 +48,6 @@ export function SelectionActionPopover() {
   const navigate = useNavigate();
   const location = useLocation();
   const [popover, setPopover] = useState<PopoverState | null>(null);
-  const popoverRef = useRef<HTMLDivElement>(null);
   const latestTextRef = useRef("");
 
   const hidePopover = useCallback(() => {
@@ -85,22 +80,15 @@ export function SelectionActionPopover() {
       return;
     }
 
-    const { left, top } = getSelectionPopoverPosition({
-      selectionRect,
-      viewportWidth: window.innerWidth,
-      viewportHeight: window.innerHeight,
-      menuWidth: MENU_WIDTH,
-      menuHeight: MENU_HEIGHT,
-    });
-
     latestTextRef.current = selectedText;
-    setPopover({ selectedText, left, top });
+    setPopover({ selectedText, selectionRect });
   }, [hidePopover]);
 
   useEffect(() => {
     let timer: number | null = null;
-    const scheduleUpdate = () => {
+    const scheduleUpdate = (event: Event) => {
       if (timer !== null) window.clearTimeout(timer);
+      if (event instanceof KeyboardEvent && event.key === "Escape") return;
       timer = window.setTimeout(updateFromSelection, 40);
     };
 
@@ -147,36 +135,29 @@ export function SelectionActionPopover() {
   if (!popover) return null;
 
   return (
-    <div
-      ref={popoverRef}
-      data-selection-action-popover="true"
-      className="fixed rounded-lg text-xs z-[9999]"
-      style={{ left: popover.left, top: popover.top }}
-    >
-      <div className="flex flex-row gap-0.5 shrink-0 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-1 text-medium text-[var(--theme-text)] shadow-[0_12px_28px_rgba(15,23,42,0.12)]">
-        <button
-          type="button"
-          className="px-1.5 py-1 hover:bg-[var(--theme-bg-sidebar)] rounded flex items-center gap-1 min-w-fit transition-colors"
-          title={t("selectionActions.ask")}
-          aria-label={t("selectionActions.ask")}
-          onMouseDown={(event) => event.preventDefault()}
-          onClick={() => handleAction("ask")}
-        >
-          <MessageCircle className="size-3 shrink-0" strokeWidth={1.5} />
-          <span className="shrink-0">{t("selectionActions.ask")}</span>
-        </button>
-        <button
-          type="button"
-          className="px-1.5 py-1 hover:bg-[var(--theme-bg-sidebar)] rounded flex items-center gap-1 min-w-fit transition-colors"
-          title={t("selectionActions.explain")}
-          aria-label={t("selectionActions.explain")}
-          onMouseDown={(event) => event.preventDefault()}
-          onClick={() => handleAction("explain")}
-        >
-          <Lightbulb className="size-3 shrink-0" strokeWidth={1.5} />
-          <span className="shrink-0">{t("selectionActions.explain")}</span>
-        </button>
-      </div>
-    </div>
+    <PopoverRoot open onOpenChange={(open) => { if (!open) hidePopover(); }}>
+      <PopoverPortal>
+        <PopoverPositioner anchor={{ getBoundingClientRect: () => popover.selectionRect }} placement="bottom" sideOffset={8}>
+          <PopoverPopup data-selection-action-popover="true" initialFocus={false} finalFocus={false} className="flex gap-0.5 p-1" aria-label={t("selectionActions.ask")}>
+            <Button type="text" size="small" htmlType="button"
+              aria-label={t("selectionActions.ask")}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => handleAction("ask")}
+            >
+              <MessageCircle size={14} strokeWidth={1.5} />
+              {t("selectionActions.ask")}
+            </Button>
+            <Button type="text" size="small" htmlType="button"
+              aria-label={t("selectionActions.explain")}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => handleAction("explain")}
+            >
+              <Lightbulb size={14} strokeWidth={1.5} />
+              {t("selectionActions.explain")}
+            </Button>
+          </PopoverPopup>
+        </PopoverPositioner>
+      </PopoverPortal>
+    </PopoverRoot>
   );
 }

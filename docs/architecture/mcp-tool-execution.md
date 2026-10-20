@@ -12,8 +12,11 @@ remote transport constraints; Execution owns the Claude adapter; bootstrap
 assembles concrete adapters. Existing Run/Attempt/lease and callback authorities
 remain unchanged. No new host relay, service, database catalog, or dependency.
 
-The pinned baseline is claude-agent-sdk 0.2.165, bundled Claude Code
-2.1.294. Official contracts: [MCP](https://code.claude.com/docs/en/agent-sdk/mcp),
+Dependency versions are owned by [pyproject.toml](../../pyproject.toml) and
+[uv.lock](../../uv.lock); the bundled CLI comes from that locked SDK package.
+The SDK 0.2.130 / CLI 2.1.222 pair records the original repair baseline, not an
+independent dependency pin. The current pin is claude-agent-sdk 0.2.165,
+bundled Claude Code 2.1.294. Official contracts: [MCP](https://code.claude.com/docs/en/agent-sdk/mcp),
 [permissions](https://code.claude.com/docs/en/agent-sdk/permissions),
 [hooks](https://code.claude.com/docs/en/agent-sdk/hooks), and
 [Python API](https://code.claude.com/docs/en/agent-sdk/python).
@@ -22,16 +25,81 @@ Mandatory per-call checks stay in PreToolUse, including when can_use_tool is
 skipped by SDK approval rules. The installed CLI normalizes server/tool names
 by replacing characters outside `[a-zA-Z0-9_-]` with `_`.
 
+## Enterprise Gateway catalog and user identity
+
+Server `integration_kind` defaults to `mcp`, preserving existing generic MCP
+connections. `enterprise_gateway` separates anonymous directory reads from
+user-authenticated MCP sessions; it is explicit, never inferred from a server
+name or URL. The schema change is additive and preserves existing tool IDs.
+
+For enterprise connections, the platform backend reads the same origin's
+`GET /api/mcp/catalog` with a fresh credential-free HTTP client. It neither reads
+the user JWT store nor merges static headers/cookies. DNS pinning, redirect
+rejection, total deadline, 1 MiB limit and strict catalog projection remain
+mandatory. Gateway returns definitions only, including unavailable flags; this
+endpoint is deliberately visible to any client that can reach it.
+
+Platform `GET /api/mcp/catalog-tools` and `GET /api/mcp/{name}/catalog` remain
+admin-only. The management panel and expert editor use this full directory;
+unavailable entries are visible for management but not expert candidates.
+Publication revalidates enterprise references against the anonymous catalog,
+without requiring the publishing administrator's personal tool-call ACL.
+Generic MCP management discovery retains its existing user-credential behavior.
+
+Ordinary `/api/mcp/chat-tools` and runtime sessions still discover the actual
+user's tools. Only the intersection of selected tools, platform authorization
+and live Gateway availability is registered with the SDK. Enterprise sessions
+send the user's JWT as standard `Authorization`, refreshed before every HTTP
+dispatch. Static Authorization, JWT-Authorization, Cookie and account/password
+identity headers are rejected for this mode. Generic MCP sessions retain their
+static credentials plus dynamic `JWT-Authorization`. Mode and credential subject
+survive the Claude adapter's private configuration projection; neither becomes
+model input or public event data.
+
+To migrate a registered enterprise Gateway, explicitly choose the enterprise
+mode and resubmit its endpoint without the former personal Authorization.
+There is no automatic token copying, service key, catalog mirror or ACL grant.
+The Gateway must support the anonymous GET before this connection is enabled.
+
 ## Principal credential lifetime
 
-The principal JWT store holds one encrypted company credential per tenant/user;
-its key and authenticated envelope preserve that binding. `put` sets Redis TTL
-from the credential expiration. `get` validates the captured credential and
-returns the existing expired-credential error when its deadline has passed.
-Redis TTL owns reclamation: an expired read must not delete the shared key,
-because a concurrent login may already have replaced it with a valid credential.
-This does not change browser authentication lifetime, logout, or the existing
-last-write-wins credential replacement policy.
+The principal JWT store holds one encrypted company-compatible credential per
+tenant/user; its key and authenticated envelope preserve that binding. A login
+may attach its signed browser-context renewal grant and subject epoch. The
+record's Redis TTL is then bounded by the original browser authority deadline,
+not extended by credential rotation. Records without a renewal grant retain
+their existing credential-expiration TTL and cannot renew themselves. Legacy
+execution bindings stay tied to the original credential and cannot adopt a
+new browser grant or a credential installed by a later login.
+
+Expired credentials are never returned. A bounded renewal validates the current
+context, user, subject ownership, and company eligibility, then atomically
+replaces the principal and encrypted credential under the existing operation
+fence. Failed or revoked grants cannot issue a token. A credential-only rotation
+preserves subject ownership; authorization changes retire old owners. An expired
+read must not delete a shared key, since a concurrent login may already have
+replaced it. Selected-tool transports obtain the latest authorized JWT before
+each HTTP dispatch, including within an already-open MCP session. Independent
+Sandbox executors use the task-scoped `/api/ai/runtime/callbacks/mcp-credential`
+client rather than a process-local Redis credential store. The platform-created
+lease records only each selected Server's credential subject (tenant/user and
+original grant/epoch or legacy credential identity), never its JWT, endpoint or
+static headers. The callback accepts only Run, Attempt, callback token identity
+and Server ID; it derives the user and original credential subject from the
+current locked Run/lease. It validates the existing callback token and active
+Attempt, reads or renews that bound credential outside database locks, then
+rechecks the same Run, lease and subject before returning a private, no-store
+response. A replaced login, cancelled/terminal Run, stale owner, released lease
+or unselected Server cannot acquire a credential. The resolver remains local to
+one executor task, with bounded credential responses and no redirects, retries
+or fallback to the initial JWT after a refresh failure. API/Worker discovery
+continues to use its configured credential store. Optional MCP unavailability
+and Run completion semantics are unchanged. Transport
+failures and potentially executed tool effects do not authorize tool replay.
+
+This preserves the absolute browser authentication lifetime and tenant/user
+credential binding. Context-backed login writes and refreshes cannot overwrite
+a credential after their context operation has been superseded.
 
 ## Implementation
 
@@ -41,7 +109,9 @@ last-write-wins credential replacement policy.
    Resolve incoming hook/message/denial names consistently, without guessing
    that underscores mean dots. Sanitize aliases as private runtime identities.
 2. Before model execution, open the selected external Servers using the
-   installed MCP client, current static headers and `JWT-Authorization`.
+   installed MCP client and the current user's JWT: standard `Authorization`
+   for enterprise Gateway connections, static headers plus `JWT-Authorization`
+   for generic MCP connections.
    Discover all pages with bounded time/size/cursor/name validation. Missing
    selected tools or failed connections remove only those optional capabilities.
    Servers discover concurrently; discovery timeouts end before the task waits
@@ -49,9 +119,16 @@ last-write-wins credential replacement policy.
    Expose only selected Tool definitions using the SDK's in-process MCP Server
    support; preserve model-visible input schemas, annotations, result content,
    structured result data and `isError`. Remote `outputSchema` remains on the
-   typed Tool at the MCP boundary; the adapter does not rely on it reaching the model.
-   To preserve `structuredContent` across SDK bridges, the adapter carries it as a bounded JSON text
-   content item while retaining the typed field for direct MCP callers.
+   typed Tool at the MCP boundary; the adapter does not rely on it reaching the
+   model. The platform adapter appends `structuredContent` as a bounded JSON text
+   item while retaining the typed field for direct MCP callers. This compatibility
+   representation preserves the structured value when an SDK bridge omits
+   optional result fields, as observed with SDK 0.2.130. Forwarding through a
+   later SDK and model interpretation require their own adapter/provider
+   acceptance; a dependency change alone does not prove that the representation
+   can be retired. With SDK 0.2.165 / CLI 2.1.294, the loopback check confirms a
+   JSON tool-result string containing that structured value. Acceptance checks
+   the JSON value, not the previous `[structuredContent]` text marker.
    Forward calls to the original remote names. Do not expose
    unselected siblings or use a Server-wide wildcard permission grant.
 3. Each discovery task owns and closes its remote session. Close SDK query streams,
@@ -198,6 +275,20 @@ progress and result, unselected-tool exclusion, service-unavailable behavior,
 and absence of secrets in public events. That stage remains unclaimed until run.
 
 ## Retirement and compatibility disposition
+
+- Replace the administrator's state/role/quota-only cards with a compact Server
+  table and live tool count/detail view. Retire the ordinary-only
+  discovery helpers, whole-directory failure replacement, old card selectors and
+  role-count/empty-tool copy. Both projections use the MCP-owned discovery hook;
+  mounted regressions retain lifecycle authority checks and cover count, empty,
+  partial failure, refresh and supersession. Enterprise administrator views now
+  use the anonymous Gateway catalog; ordinary-user views retain user-filtered
+  discovery. Registry updates preserve omitted integration kinds and existing
+  generic MCP credentials. No stored tool catalog or duplicated ACL is introduced.
+- Enterprise sessions replace static personal Authorization with the Run user
+  credential on every dispatch. Generic MCP keeps dynamic JWT-Authorization.
+  Gateway retains single alternate-header compatibility, rejects conflicting
+  dual identities, and keeps tool calls, administration and publishing protected.
 
 - Replace whole-remote-Server SDK registration for selected external tools with
   an Executor-local selected tool surface; no parallel direct-registration path.

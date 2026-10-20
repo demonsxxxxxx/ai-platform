@@ -223,10 +223,11 @@ async def test_runtime_admission_failure_after_open_closes_owner(monkeypatch, ca
         async def __aexit__(self, *args):
             return None
 
-    async def lock(*args, **kwargs):
-        return ({"tenant_id": "tenant", "user_id": "user"}, {
-            "lease_payload_json": {callbacks.PROFILE_DRIVE_STAGE_LEASE_FLAG: True},
-        })
+    from app.runs.infrastructure import postgres as runs_postgres
+    from app.sandbox.infrastructure import leases_postgres
+
+    async def run_identity(*args, **kwargs):
+        return {"tenant_id": "tenant", "user_id": "user", "session_id": "session", "status": "running"}
 
     class JwtStore:
         async def get(self, principal):
@@ -234,12 +235,20 @@ async def test_runtime_admission_failure_after_open_closes_owner(monkeypatch, ca
 
     failure = asyncio.CancelledError() if cancel else HTTPException(403, "attempt_expired")
 
-    async def recheck(*args, **kwargs):
-        raise failure
+    lease_checks = 0
+
+    async def current_lease(*args, **kwargs):
+        nonlocal lease_checks
+        lease_checks += 1
+        if lease_checks > 1:
+            raise failure
+        return [{"attempt_id": "attempt", "lease_payload_json": {
+            "attempt_id": "attempt", callbacks.PROFILE_DRIVE_STAGE_LEASE_FLAG: True,
+        }}]
 
     monkeypatch.setattr(callbacks, "transaction", Transaction)
-    monkeypatch.setattr(callbacks, "_lock_current_runtime_attempt_then_run", lock)
-    monkeypatch.setattr(callbacks, "_require_current_runtime_attempt", recheck)
+    monkeypatch.setattr(runs_postgres, "get_run_identity", run_identity)
+    monkeypatch.setattr(leases_postgres, "list_current_sandbox_runtime_leases_for_attempt", current_lease)
     monkeypatch.setattr(callbacks, "get_mcp_principal_jwt_store", lambda: JwtStore())
     monkeypatch.setattr(callbacks, "open_profile_drive_file", transfer_module.open_profile_drive_file)
     monkeypatch.setattr(callbacks, "get_settings", lambda: SimpleNamespace(
@@ -448,3 +457,21 @@ def test_transfer_timeout_configuration_has_finite_positive_bounds():
     ]:
         with pytest.raises(ValidationError):
             Settings(_env_file=None, **{field: value})
+
+
+@pytest.mark.asyncio
+async def test_opted_in_http_upstream_still_sends_the_user_bearer_to_the_connector(monkeypatch):
+    seen = []
+
+    def handler(request):
+        seen.append((str(request.url).split("/api/")[0], request.headers["authorization"]))
+        return httpx.Response(200, headers={"Content-Length": "1"}, stream=Stream())
+
+    client_factory(monkeypatch, handler)
+    transfer = await transfer_module.open_profile_drive_file(
+        upstream="http://profile-drive-mcp:5201", ca_cert_file="", jwt="synthetic",
+        path="sample.txt", max_bytes=16, require_nonempty=True,
+        not_found_status=404, too_large_detail="file_too_large",
+    )
+    await transfer.aclose()
+    assert seen == [("http://profile-drive-mcp:5201", "Bearer synthetic")]

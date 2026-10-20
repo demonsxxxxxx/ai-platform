@@ -4,11 +4,13 @@
 
 // MCP Transport Type
 export type MCPTransport = "sse" | "streamable_http" | "sandbox";
+export type MCPIntegrationKind = "mcp" | "enterprise_gateway";
 
 // MCP Server Base
 export interface MCPServerBase {
   name: string;
   transport: MCPTransport;
+  integration_kind?: MCPIntegrationKind;
   enabled: boolean;
   url?: string;
   headers?: Record<string, string>;
@@ -45,6 +47,7 @@ export interface MCPServersResponse {
 export interface MCPServerCreate {
   name: string;
   transport: Exclude<MCPTransport, "sandbox">;
+  integration_kind?: MCPIntegrationKind;
   enabled?: boolean;
   url?: string;
   headers?: Record<string, string>;
@@ -56,6 +59,7 @@ export interface MCPServerCreate {
 // MCP Server Update Request
 export interface MCPServerUpdate {
   transport?: Exclude<MCPTransport, "sandbox">;
+  integration_kind?: MCPIntegrationKind;
   enabled?: boolean;
   url?: string;
   headers?: Record<string, string>;
@@ -72,6 +76,7 @@ export interface MCPServerToggleResponse {
 
 // MCP Tool Info (discovered from server)
 export interface MCPToolInfo {
+  available?: boolean;
   name: string;
   description: string;
   parameters: MCPToolParamInfo[];
@@ -93,5 +98,6 @@ export interface MCPToolDiscoveryResponse {
   server_name: string;
   tools: MCPToolInfo[];
   count: number;
+  unavailable_reason: string | null;
   error?: string;
 }

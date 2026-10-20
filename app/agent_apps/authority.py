@@ -33,8 +33,10 @@ from app.agent_apps.api import (
     safe_agent_avatar_ref,
     safe_agent_avatar_seed,
     agent_profile_repository,
+    agent_type_requires_profile_admission,
 )
 from app.auth import AuthPrincipal, is_ai_admin, normalize_roles
+from app.identity.api import is_department_id
 from app.chat_session_projection import session_response
 from app.control_plane_contracts import standard_trace_id
 from app.mcp import api as mcp_api
@@ -170,7 +172,10 @@ def profile_acl_allows(row: dict[str, Any], *, principal: AuthPrincipal) -> bool
     if principal.user_id in _safe_string_list(row.get("allowed_user_ids")):
         return True
     allowed_departments = set(_safe_string_list(row.get("allowed_department_ids")))
-    if allowed_departments and principal.department_id not in allowed_departments:
+    if allowed_departments and (
+        any(not is_department_id(value) for value in allowed_departments)
+        or not allowed_departments.intersection(principal.department_ids)
+    ):
         return False
     allowed_roles = set(normalize_roles(_safe_string_list(row.get("allowed_roles"))))
     if allowed_roles and not allowed_roles.intersection(normalize_roles(principal.roles)):
@@ -227,6 +232,7 @@ async def _authorize_current_profile_skill(
     skill_id: str,
     rollout_key: str,
     principal_department_id: str | None,
+    principal_department_ids: tuple[str, ...] = (),
     principal_roles: list[str] | None,
     is_admin: bool,
     permissions: list[str] | None,
@@ -236,6 +242,7 @@ async def _authorize_current_profile_skill(
         skill = await runs_capability_admission_postgres.authorize_skill_access(
             conn, tenant_id=tenant_id, agent_id=agent_id, skill_id=skill_id,
             normalized_input={}, principal_department_id=principal_department_id,
+            principal_department_ids=principal_department_ids,
             principal_roles=principal_roles, is_admin=is_admin, permissions=permissions,
         )
         return {**skill, "skill_version": pinned_version, "skill_content_hash": pinned_version}
@@ -247,6 +254,7 @@ async def _authorize_current_profile_skill(
         rollout_key=rollout_key,
         normalized_input={},
         principal_department_id=principal_department_id,
+        principal_department_ids=principal_department_ids,
         principal_roles=principal_roles,
         is_admin=is_admin,
         permissions=permissions,
@@ -505,6 +513,7 @@ class AgentProfileAuthority:
         definition: AgentProfileDraftRequest,
         skill_pins: dict[str, str] | None = None,
         check_mcp_configuration: bool = True,
+        check_mcp_catalog: bool = False,
     ) -> tuple[dict[str, Any], ...]:
         """Revalidate current Skill and MCP authorization for a definition."""
 
@@ -528,6 +537,7 @@ class AgentProfileAuthority:
                         skill_id=selected_skill["skill_id"],
                         rollout_key=principal.user_id,
                         principal_department_id=principal.department_id,
+                        principal_department_ids=principal.department_ids,
                         principal_roles=principal.roles,
                         is_admin=is_ai_admin(principal),
                         permissions=principal.permissions,
@@ -536,7 +546,7 @@ class AgentProfileAuthority:
                     for selected_skill in definition.skill_set
                 ]
             )
-            for server_id in server_ids if check_mcp_configuration else ():
+            for server_id in dict.fromkeys(server_ids) if check_mcp_configuration else ():
                 server = await mcp_api.get_mcp_server_registry_entry(
                     conn,
                     tenant_id=principal.tenant_id,
@@ -547,6 +557,16 @@ class AgentProfileAuthority:
                         status_code=403,
                         detail="agent_profile_capability_not_available",
                     )
+                if check_mcp_catalog and server.get("integration_kind") == "enterprise_gateway":
+                    catalog = await mcp_api.get_live_mcp_catalog().list_server_catalog(
+                        tenant_id=principal.tenant_id, server_id=server_id,
+                    )
+                    if catalog.unavailable_reason:
+                        raise HTTPException(status_code=503, detail="agent_profile_mcp_catalog_unavailable")
+                    available_ids = {tool.tool_id for tool in catalog.tools if tool.available is not False}
+                    if any(reference not in available_ids for reference in definition.mcp_tool_ids
+                           if parse_mcp_tool_reference(reference)[0] == server_id):
+                        raise HTTPException(status_code=403, detail="agent_profile_capability_not_available")
         except platform_errors.RepositoryConflictError as exc:
             raise HTTPException(status_code=409, detail="agent_profile_revision_stale") from exc
         except platform_errors.RepositoryAuthorizationError as exc:
@@ -730,7 +750,8 @@ class AgentProfileAuthority:
         self._require_revision_integrity(draft_row)
         definition = _draft_from_row(draft_row)
         await self._validate_profile_department_authorities(definition)
-        await self._validate_definition(conn, principal=principal, agent_id=agent_id, definition=definition)
+        await self._validate_definition(conn, principal=principal, agent_id=agent_id, definition=definition,
+                                        check_mcp_catalog=True)
         definition = _name_only_skill_set(definition)
         row = await agent_profile_repository.create_agent_profile_revision(
             conn,
@@ -974,6 +995,7 @@ class AgentProfileAuthority:
             principal=principal,
             agent_id=validation_agent_id,
             definition=definition,
+            check_mcp_catalog=True,
         )
         return await identity_audit_postgres.append_audit_log(
             conn,
@@ -1311,6 +1333,7 @@ class AgentProfileAuthority:
                 tenant_id=principal.tenant_id,
                 tool_ids=list(effective_mcp_tool_ids),
                 principal_department_id=principal.department_id,
+                principal_department_ids=principal.department_ids,
                 principal_roles=principal.roles,
                 is_admin=is_ai_admin(principal),
                 permissions=principal.permissions,
@@ -1381,6 +1404,8 @@ class AgentProfileAuthority:
         snapshot = runs_replay_postgres.copied_run_execution_snapshot(input_json)
         revision, content_hash = runs_replay_postgres.admitted_agent_profile_pins_for_copy(run, snapshot)
         if revision is None:
+            if agent_type_requires_profile_admission(run.get("agent_type")):
+                raise platform_errors.RepositoryConflictError("agent_profile_admission_required")
             return
         profile_snapshot = snapshot.get("agent_profile")
         pinned_skill_set = (

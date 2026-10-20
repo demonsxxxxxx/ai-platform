@@ -115,6 +115,8 @@ export function mapSafeBuilderMcpTools(
     .filter(
       (tool) =>
         tool.category === "mcp" &&
+        !tool.system_disabled &&
+        !tool.user_disabled &&
         tool.name.trim().length > 0 &&
         tool.description.trim().length > 0,
     )

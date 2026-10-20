@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-// jsdom 26 ships no declarations; this test uses only its runtime constructor.
-// @ts-expect-error jsdom is the pinned mounted-test runtime.
-import { JSDOM } from "jsdom";
+import { installSelectTestDom } from "../../../common/__tests__/selectTestDom";
 import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
+import { createLobeTestRoot } from "../../../common/__tests__/lobeUiTestRoot";
 import type { Message, MessagePart } from "../../../../types";
 import { normalizeMessageTextLogicalIds } from "../../../../hooks/useAgent/eventProcessor";
 import {
@@ -13,7 +11,7 @@ import {
 } from "../MessagePartRenderer";
 
 function renderTextParts(
-  root: ReturnType<typeof createRoot>,
+  root: Awaited<ReturnType<typeof createLobeTestRoot>>,
   ownerId: string,
   parts: MessagePart[],
 ) {
@@ -39,22 +37,10 @@ function renderTextParts(
   return keys;
 }
 
-test("recursive subagent rendering preserves hierarchy and node identity", () => {
-  const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>", {
-    url: "http://localhost/",
-  });
-  for (const key of ["window", "document", "navigator", "HTMLElement", "Node"] as const) {
-    Object.defineProperty(globalThis, key, {
-      configurable: true,
-      value: dom.window[key],
-    });
-  }
-  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", {
-    configurable: true,
-    value: true,
-  });
-  const container = dom.window.document.getElementById("root") as HTMLDivElement;
-  const root = createRoot(container);
+test("recursive subagent rendering preserves hierarchy and node identity", async () => {
+  const environment = installSelectTestDom();
+  const container = document.createElement("div");
+  const root = await createLobeTestRoot(container);
   const tree = (terminal: boolean): MessagePart => ({
     type: "subagent",
     agent_id: "agent-root",
@@ -150,26 +136,14 @@ test("recursive subagent rendering preserves hierarchy and node identity", () =>
     );
   } finally {
     act(() => root.unmount());
-    dom.window.close();
+    environment.close();
   }
 });
 
-test("text replacement and replay preserve deterministic render identities", () => {
-  const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>", {
-    url: "http://localhost/",
-  });
-  for (const key of ["window", "document", "navigator", "HTMLElement", "Node"] as const) {
-    Object.defineProperty(globalThis, key, {
-      configurable: true,
-      value: dom.window[key],
-    });
-  }
-  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", {
-    configurable: true,
-    value: true,
-  });
-  const container = dom.window.document.getElementById("root") as HTMLDivElement;
-  const root = createRoot(container);
+test("text replacement and replay preserve deterministic render identities", async () => {
+  const environment = installSelectTestDom();
+  const container = document.createElement("div");
+  const root = await createLobeTestRoot(container);
 
   try {
     const first: MessagePart[] = [
@@ -229,6 +203,6 @@ test("text replacement and replay preserve deterministic render identities", () 
     assert.doesNotMatch(hydratedKeys.join("|"), /hydrated segment/);
   } finally {
     act(() => root.unmount());
-    dom.window.close();
+    environment.close();
   }
 });

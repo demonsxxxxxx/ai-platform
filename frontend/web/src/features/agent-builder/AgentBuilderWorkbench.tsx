@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Checkbox } from "@lobehub/ui/base-ui";
+import { Button, Input, TextArea } from "@lobehub/ui/base-ui";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   BadgeCheck,
   Bot,
@@ -19,7 +21,7 @@ import type { PublicSkillResponse } from "../../types";
 import { AgentBuilderEnterpriseFields } from "./AgentBuilderEnterpriseFields";
 import { AgentBuilderLifecycle } from "./AgentBuilderLifecycle";
 import { AgentIdentityAvatar } from "../../components/agent/AgentIdentityAvatar";
-import { Pagination } from "../../components/common/Pagination";
+import { Pagination } from "@lobehub/ui/base-ui";
 import {
   agentBuilderBlockReason,
   getAgentProfilePublishBlock,
@@ -90,6 +92,9 @@ export function AgentBuilderWorkbench({
   const [profileQuery, setProfileQuery] = useState("");
   const [profilePage, setProfilePage] = useState(1);
   const [skillQuery, setSkillQuery] = useState("");
+  const [toolQuery, setToolQuery] = useState("");
+  const [toolSearch, setToolSearch] = useState("");
+  const toolDialogTrigger = useRef<HTMLButtonElement>(null);
   const retryCatalog = catalog.retry;
 
   useEffect(() => controller.subscribe(setWorkbench), [controller]);
@@ -173,6 +178,15 @@ export function AgentBuilderWorkbench({
     () => filterSkillCatalog(catalog.skills, skillQuery),
     [catalog.skills, skillQuery],
   );
+  const filteredTools = useMemo(() => {
+    const query = toolSearch.trim().normalize("NFKC").toLocaleLowerCase();
+    if (!query) return catalog.tools;
+    return catalog.tools.filter((tool) =>
+      [tool.label, tool.id, tool.description].some((value) =>
+        value.normalize("NFKC").toLocaleLowerCase().includes(query),
+      ),
+    );
+  }, [catalog.tools, toolSearch]);
   const profilePageCount = Math.max(
     1,
     Math.ceil(visibleProfiles.length / AGENT_DIRECTORY_PAGE_SIZE),
@@ -203,6 +217,8 @@ export function AgentBuilderWorkbench({
   const closeDialog = useCallback(() => {
     setDialog(null);
     setSkillQuery("");
+    setToolQuery("");
+    setToolSearch("");
   }, []);
   const performRefresh = useCallback((discardUnsavedChanges = false) => {
     retryCatalog();
@@ -330,13 +346,13 @@ export function AgentBuilderWorkbench({
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <button
+          <Button type="default"
             aria-label="刷新专家与授权目录"
-            className="btn-secondary inline-flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-60"
+            className="inline-flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-60"
             disabled={workbench.listPhase === "loading" || catalog.isLoading || interactionBusy}
             onClick={refresh}
             title="刷新专家与授权目录"
-            type="button"
+            htmlType="button"
           >
             <RefreshCw
               size={16}
@@ -344,16 +360,16 @@ export function AgentBuilderWorkbench({
               aria-hidden="true"
             />
             <span className="hidden sm:inline">刷新</span>
-          </button>
-          <button
-            className="btn-primary inline-flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-60"
+          </Button>
+          <Button type="primary"
+            className="inline-flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-60"
             disabled={interactionBusy}
             onClick={requestNewAgent}
-            type="button"
+            htmlType="button"
           >
             <Plus size={16} aria-hidden="true" />
             新建专家
-          </button>
+          </Button>
         </div>
       </header>
 
@@ -366,12 +382,12 @@ export function AgentBuilderWorkbench({
                 {workbench.profiles.length}
               </span>
             </div>
-            <label className="relative mt-3 block">
+            <label className="mt-3 block">
               <span className="sr-only">搜索专家</span>
-              <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--theme-text-secondary)]" size={15} aria-hidden="true" />
-              <input
+              <Input
                 aria-label="搜索专家"
-                className="h-9 w-full rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] pl-9 pr-3 text-sm outline-none focus:border-[var(--theme-primary)] focus:ring-1 focus:ring-[var(--theme-primary)]"
+                prefix={<Search size={15} aria-hidden="true" />}
+                className="w-full"
                 onChange={(event) => {
                   setProfileQuery(event.target.value);
                   setProfilePage(1);
@@ -386,9 +402,9 @@ export function AgentBuilderWorkbench({
           {workbench.listError ? (
             <div className="mx-3 mb-3 border-l-2 border-l-[var(--theme-danger)] bg-[var(--theme-danger-soft)] px-3 py-2 text-sm text-[var(--theme-danger)]" role="alert">
               <p>{workbench.listError.message}</p>
-              <button className="mt-2 text-sm font-medium underline" onClick={refresh} type="button">
+              <Button type="text" className="mt-2 text-sm font-medium underline" onClick={refresh} htmlType="button">
                 重新加载
-              </button>
+              </Button>
             </div>
           ) : null}
 
@@ -400,12 +416,14 @@ export function AgentBuilderWorkbench({
 
           <div className="border-t border-[var(--theme-border)]">
             {workbench.localEditor ? (
-              <button
+              <Button type="text"
+                data-agent-directory-item
+                style={{ height: "auto", padding: "12px 16px" }}
                 aria-pressed={activeEditor?.agentId === null}
                 className={`flex w-full items-start gap-3 border-b border-l-2 border-b-[var(--theme-border)] border-l-[var(--theme-border-strong)] px-4 py-3 text-left disabled:cursor-not-allowed disabled:opacity-60 ${activeEditor?.agentId === null ? "bg-[var(--theme-hover)]" : "hover:bg-[var(--theme-hover)]"}`}
                 disabled={interactionBusy}
                 onClick={requestNewAgent}
-                type="button"
+                htmlType="button"
               >
                 <Bot size={16} className="mt-0.5 shrink-0 text-[var(--theme-text-secondary)]" aria-hidden="true" />
                 <span className="min-w-0 flex-1">
@@ -416,20 +434,22 @@ export function AgentBuilderWorkbench({
                     本地未保存
                   </span>
                 </span>
-              </button>
+              </Button>
             ) : null}
 
             {paginatedProfiles.map((profile) => {
               const selected = activeEditor?.agentId === profile.agent_id;
               return (
-                <button
+                <Button type="text"
                   key={profile.agent_id}
+                  data-agent-directory-item
+                  style={{ height: "auto", padding: "12px 16px" }}
                   aria-label={`编辑专家 ${profile.name}，${profileStatusLabel(profile.status)}`}
                   aria-pressed={selected}
                   className={`flex w-full items-start gap-3 border-b border-l-2 border-b-[var(--theme-border)] px-4 py-3 text-left disabled:cursor-not-allowed disabled:opacity-60 ${profile.status === "published" ? "border-l-[var(--theme-success)]" : "border-l-[var(--theme-warning)]"} ${selected ? "bg-[var(--theme-hover)]" : "hover:bg-[var(--theme-hover)]"}`}
                   disabled={interactionBusy}
                   onClick={() => requestProfile(profile.agent_id)}
-                  type="button"
+                  htmlType="button"
                 >
                   <AgentIdentityAvatar
                     agentId={profile.agent_id}
@@ -443,7 +463,7 @@ export function AgentBuilderWorkbench({
                       {profileStatusLabel(profile.status)}
                     </span>
                   </span>
-                </button>
+                </Button>
               );
             })}
           </div>
@@ -451,7 +471,8 @@ export function AgentBuilderWorkbench({
           {visibleProfiles.length > 0 ? (
             <div className="border-t border-[var(--theme-border)] px-3 py-2">
               <Pagination
-                page={currentProfilePage}
+                  current={currentProfilePage} hideOnSinglePage responsive showSizeChanger={false}
+                  showTotal={(total, [start, end]) => `${start}-${end} / ${total}`}
                 pageSize={AGENT_DIRECTORY_PAGE_SIZE}
                 total={visibleProfiles.length}
                 onChange={setProfilePage}
@@ -462,10 +483,10 @@ export function AgentBuilderWorkbench({
           {workbench.listPhase === "ready" && workbench.profiles.length === 0 && !workbench.localEditor ? (
             <div className="px-4 py-6 text-sm text-[var(--theme-text-secondary)]">
               <p>当前没有服务端专家。</p>
-              <button className="btn-secondary mt-3 inline-flex items-center gap-2" onClick={requestNewAgent} type="button">
+              <Button type="default" className="mt-3 inline-flex items-center gap-2" onClick={requestNewAgent} htmlType="button">
                 <Plus size={16} aria-hidden="true" />
                 新建专家
-              </button>
+              </Button>
             </div>
           ) : null}
         </aside>
@@ -510,28 +531,28 @@ export function AgentBuilderWorkbench({
                   <span className={`rounded-md border px-2.5 py-1 text-xs font-medium ${editorStatusTone(activeEditor)}`}>
                     {editorStatusLabel(activeEditor)}
                   </span>
-                  <button
+                  <Button type="default"
                     aria-describedby={saveBlock ? "agent-builder-save-reason" : undefined}
-                    className="btn-secondary inline-flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-60"
+                    className="inline-flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-60"
                     disabled={interactionBusy || saveBlock !== null}
                     onClick={() => void controller.saveActiveProfile(currentCatalog)}
                     title={saveBlock ? agentBuilderBlockReason(saveBlock) : "保存草稿"}
-                    type="button"
+                    htmlType="button"
                   >
                     {workbench.mutation.phase === "saving" ? <RefreshCw size={16} className="animate-spin" aria-hidden="true" /> : <Save size={16} aria-hidden="true" />}
                     {workbench.mutation.phase === "saving" ? "保存中" : "保存草稿"}
-                  </button>
-                  <button
+                  </Button>
+                  <Button type="primary"
                     aria-describedby={publishBlock ? "agent-builder-publish-reason" : undefined}
-                    className="btn-primary inline-flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-60"
+                    className="inline-flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-60"
                     disabled={interactionBusy || publishBlock !== null}
                     onClick={() => void controller.publishActiveProfile(currentCatalog)}
                     title={publishBlock ? agentBuilderBlockReason(publishBlock) : "发布当前草稿"}
-                    type="button"
+                    htmlType="button"
                   >
                     {workbench.mutation.phase === "publishing" ? <RefreshCw size={16} className="animate-spin" aria-hidden="true" /> : <Rocket size={16} aria-hidden="true" />}
                     {workbench.mutation.phase === "publishing" ? "发布中" : "发布"}
-                  </button>
+                  </Button>
                 </div>
               </div>
 
@@ -556,9 +577,10 @@ export function AgentBuilderWorkbench({
                 <div className="grid grid-cols-1 gap-4">
                   <label className="flex flex-col gap-2">
                     <span className="text-sm font-medium">名称</span>
-                    <input
+                    <Input
                       aria-label="专家名称"
-                      className="h-10 w-full rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 text-sm outline-none focus:border-[var(--theme-primary)] focus:ring-1 focus:ring-[var(--theme-primary)]"
+                      size="large"
+                      className="w-full"
                       disabled={interactionBusy}
                       onChange={(event) => updateEditor((editor) => ({ ...editor, name: event.target.value }))}
                       required
@@ -576,10 +598,11 @@ export function AgentBuilderWorkbench({
                 <p className="mb-3 text-sm leading-6 text-[var(--theme-text-secondary)]">
                   定义专家的角色、工作方法和边界。系统会在每次任务开始时私有注入，不会作为用户消息展示。
                 </p>
-                <textarea
+                <TextArea
                   aria-label="Agent.md 初始指令"
                   data-agent-builder-agent-md
-                  className="min-h-48 w-full resize-y rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 py-2 text-sm leading-6 outline-none focus:border-[var(--theme-primary)] focus:ring-1 focus:ring-[var(--theme-primary)]"
+                  resize
+                  classNames={{ input: "min-h-48 leading-6" }}
                   disabled={interactionBusy}
                   onChange={(event) => updateEditor((editor) => ({ ...editor, instructions: event.target.value }))}
                   required
@@ -593,10 +616,10 @@ export function AgentBuilderWorkbench({
                     <BadgeCheck size={17} className="text-[var(--theme-text-secondary)]" aria-hidden="true" />
                     <h3 id="agent-skill-heading" className="text-sm font-semibold">Skill Set</h3>
                   </div>
-                  <button className="btn-secondary inline-flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-60" disabled={interactionBusy} onClick={() => { setSkillQuery(""); setDialog("skills"); }} type="button">
+                  <Button type="default" className="inline-flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-60" disabled={interactionBusy} onClick={() => { setSkillQuery(""); setDialog("skills"); }} htmlType="button">
                     <BadgeCheck size={15} aria-hidden="true" />
                     配置 Skill
-                  </button>
+                  </Button>
                 </div>
                 {activeEditor.selectedSkills.length > 0 ? (
                   <div className="flex flex-wrap gap-2">
@@ -611,7 +634,7 @@ export function AgentBuilderWorkbench({
                           key={key}
                         >
                           <span className="font-medium">{selection.skill_id}</span>
-                          <button
+                          <Button type="text"
                             aria-label={`移除 Skill ${selection.skill_id}`}
                             className="inline-flex h-8 w-8 items-center justify-center rounded-md hover:bg-[var(--theme-hover)] disabled:opacity-60"
                             disabled={interactionBusy}
@@ -624,10 +647,9 @@ export function AgentBuilderWorkbench({
                               }));
                             }}
                             title={`移除 ${selection.skill_id}`}
-                            type="button"
-                          >
-                            <X aria-hidden="true" size={15} />
-                          </button>
+                            htmlType="button"
+                            icon={<X aria-hidden="true" size={15} />}
+                          />
                         </span>
                       );
                     })}
@@ -660,18 +682,15 @@ export function AgentBuilderWorkbench({
                   <summary className="cursor-pointer text-sm font-medium">
                     MCP 工具（可选） · 已选择 {activeEditor.selectedMcpToolIds.length} 项
                   </summary>
-                  <p className="mt-3 text-sm leading-6 text-[var(--theme-text-secondary)]">
-                    Skill Set 无法覆盖的外部能力才需要额外选择 MCP 工具。
-                  </p>
                   <div className="mb-4 mt-4 flex items-center justify-between gap-3">
                     <div className="flex items-center gap-2">
                       <Wrench size={17} className="text-[var(--theme-text-secondary)]" aria-hidden="true" />
                       <h3 id="agent-mcp-heading" className="text-sm font-semibold">MCP 工具</h3>
                     </div>
-                    <button className="btn-secondary inline-flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-60" disabled={interactionBusy} onClick={() => setDialog("tools")} type="button">
+                    <Button ref={toolDialogTrigger} type="default" className="inline-flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-60" disabled={interactionBusy} onClick={() => setDialog("tools")} htmlType="button">
                       <Wrench size={15} aria-hidden="true" />
                       管理工具
-                    </button>
+                    </Button>
                   </div>
                   {activeEditor.selectedMcpToolIds.length === 0 ? (
                     <p className="text-sm text-[var(--theme-text-secondary)]">未选择 MCP 工具</p>
@@ -693,16 +712,15 @@ export function AgentBuilderWorkbench({
                                 : tool?.description ?? "当前授权目录中不可用，未自动移除。"}
                             </span>
                           </span>
-                          <button
+                          <Button type="text"
                             aria-label={`移除 MCP 工具 ${toolId}`}
                             className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-[var(--theme-text-secondary)] hover:bg-[var(--theme-hover)] hover:text-[var(--theme-text)] disabled:cursor-not-allowed disabled:opacity-60"
                             disabled={interactionBusy}
                             onClick={() => removeMcpTool(toolId)}
                             title={`移除 ${tool?.label ?? toolId}`}
-                            type="button"
-                          >
-                            <X size={16} aria-hidden="true" />
-                          </button>
+                            htmlType="button"
+                            icon={<X size={16} aria-hidden="true" />}
+                          />
                         </div>
                       );
                       })}
@@ -755,13 +773,13 @@ export function AgentBuilderWorkbench({
                         : <BadgeCheck size={17} className="mt-0.5 shrink-0" aria-hidden="true" />}
                       <span className="min-w-0 flex-1">{mutationFeedback.message}</span>
                       {canRecoverServerRevision ? (
-                        <button
+                        <Button type="text"
                           className="shrink-0 font-medium underline"
                           onClick={refresh}
-                          type="button"
+                          htmlType="button"
                         >
                           加载服务端版本
-                        </button>
+                        </Button>
                       ) : null}
                     </div>
                   ) : null}
@@ -793,34 +811,23 @@ export function AgentBuilderWorkbench({
           <p className="text-sm text-[var(--theme-text-secondary)]">当前没有可选的已授权 Skill。</p>
         ) : (
           <div className="flex min-h-0 flex-col gap-3">
-            <label className="relative block">
+            <label className="block">
               <span className="sr-only">搜索 Skill</span>
-              <Search
-                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--theme-text-secondary)]"
-                size={16}
-                aria-hidden="true"
-              />
-              <input
+              <Input
                 aria-label="搜索 Skill"
-                className="h-10 w-full rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] pl-9 pr-10 text-sm outline-none focus:border-[var(--theme-primary)] focus:ring-1 focus:ring-[var(--theme-primary)]"
+                prefix={<Search size={16} aria-hidden="true" />}
+                suffix={skillQuery ? <Button type="text" size="small"
+                  aria-label="清除 Skill 搜索" disabled={interactionBusy}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => setSkillQuery("")} htmlType="button" icon={<X size={15} />} /> : null}
+                size="large"
+                className="w-full"
                 disabled={interactionBusy}
                 onChange={(event) => setSkillQuery(event.target.value)}
                 placeholder="按名称、描述或标签搜索"
                 type="search"
                 value={skillQuery}
               />
-              {skillQuery ? (
-                <button
-                  aria-label="清除 Skill 搜索"
-                  className="absolute right-2 top-1/2 inline-flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md text-[var(--theme-text-secondary)] hover:bg-[var(--theme-hover)] hover:text-[var(--theme-text)] disabled:opacity-60"
-                  disabled={interactionBusy}
-                  onClick={() => setSkillQuery("")}
-                  title="清除搜索"
-                  type="button"
-                >
-                  <X size={15} aria-hidden="true" />
-                </button>
-              ) : null}
             </label>
             <div className="flex items-center justify-between gap-3 text-xs text-[var(--theme-text-secondary)]">
               <span aria-live="polite">
@@ -840,12 +847,11 @@ export function AgentBuilderWorkbench({
                       key={skill.name}
                       className="flex cursor-pointer items-start gap-3 px-3 py-3 transition-colors hover:bg-[var(--theme-hover)] sm:px-4"
                     >
-                      <input
+                      <Checkbox
                         checked={selectedSkillKeys.has(skill.name)}
                         className="mt-1 h-4 w-4 shrink-0 accent-[var(--theme-primary)]"
                         disabled={interactionBusy}
                         onChange={() => toggleSkill(skill)}
-                        type="checkbox"
                       />
                       <span className="min-w-0 flex-1">
                         <span className="block break-words font-medium text-[var(--theme-text)]">{skill.name}</span>
@@ -868,27 +874,62 @@ export function AgentBuilderWorkbench({
         )}
       </AgentBuilderDialog>
 
-      <AgentBuilderDialog isOpen={dialog === "tools"} onClose={closeDialog} title="管理 MCP 工具">
+      <AgentBuilderDialog finalFocus={toolDialogTrigger} isOpen={dialog === "tools"} onClose={closeDialog} title="管理 MCP 工具">
         {!mcpCatalogResolved ? (
           <p className="text-sm text-[var(--theme-text-secondary)]">授权 MCP 目录尚未完整加载。</p>
         ) : catalog.tools.length === 0 ? (
           <p className="text-sm text-[var(--theme-text-secondary)]">当前没有可选的 MCP 工具。</p>
         ) : (
-          <div className="divide-y divide-[var(--theme-border)] border-y border-[var(--theme-border)]">
-            {catalog.tools.map((tool) => (
-              <label key={tool.id} className="flex cursor-pointer items-start gap-3 px-1 py-3 hover:bg-[var(--theme-hover)]">
-                <input
-                  checked={activeEditor?.selectedMcpToolIds.includes(tool.id) ?? false}
-                  disabled={interactionBusy}
-                  onChange={() => toggleMcpTool(tool.id)}
-                  type="checkbox"
-                />
-                <span className="min-w-0">
-                  <span className="block font-medium">{tool.label}</span>
-                  <span className="mt-1 block text-sm text-[var(--theme-text-secondary)]">{tool.description}</span>
-                </span>
-              </label>
-            ))}
+          <div className="flex min-h-0 flex-col gap-3">
+            <form
+              className="flex items-center gap-2"
+              onSubmit={(event) => { event.preventDefault(); setToolSearch(toolQuery); }}
+            >
+              <Input
+                aria-label="搜索 MCP 工具"
+                prefix={<Search size={16} aria-hidden="true" />}
+                suffix={toolQuery || toolSearch ? <Button type="text" size="small"
+                  aria-label="清除 MCP 工具搜索" disabled={interactionBusy}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => { setToolQuery(""); setToolSearch(""); }} htmlType="button" icon={<X size={15} />} /> : null}
+                size="large"
+                className="min-w-0 flex-1"
+                disabled={interactionBusy}
+                onChange={(event) => setToolQuery(event.target.value)}
+                onPressEnter={(event) => { event.preventDefault(); setToolSearch(toolQuery); }}
+                placeholder="按名称、标识或描述搜索"
+                role="searchbox"
+                type="text"
+                value={toolQuery}
+              />
+              <Button type="default" size="large" htmlType="submit" disabled={interactionBusy} className="shrink-0">
+                搜索
+              </Button>
+            </form>
+            <span aria-live="polite" className="text-xs text-[var(--theme-text-secondary)]">
+              已选 {activeEditor?.selectedMcpToolIds.length ?? 0} 项 · 显示 {filteredTools.length} / {catalog.tools.length} 项
+            </span>
+            {filteredTools.length === 0 ? (
+              <div className="rounded-md border border-dashed border-[var(--theme-border-strong)] px-4 py-10 text-center text-sm text-[var(--theme-text-secondary)]">
+                没有匹配的 MCP 工具
+              </div>
+            ) : (
+              <div className="min-h-0 max-h-[min(34rem,calc(100vh-16rem))] overflow-y-auto divide-y divide-[var(--theme-border)] border-y border-[var(--theme-border)]">
+                {filteredTools.map((tool) => (
+                  <label key={tool.id} className="flex cursor-pointer items-start gap-3 px-1 py-3 hover:bg-[var(--theme-hover)]">
+                    <Checkbox
+                      checked={activeEditor?.selectedMcpToolIds.includes(tool.id) ?? false}
+                      disabled={interactionBusy}
+                      onChange={() => toggleMcpTool(tool.id)}
+                    />
+                    <span className="min-w-0 flex-1 break-words">
+                      <span className="block font-medium">{tool.label}</span>
+                      <span className="mt-1 block text-sm text-[var(--theme-text-secondary)]">{tool.description}</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </AgentBuilderDialog>
@@ -907,21 +948,21 @@ export function AgentBuilderWorkbench({
           </p>
         </div>
         <div className="mt-6 flex flex-wrap justify-end gap-2">
-          <button
+          <Button type="default"
             autoFocus
-            className="btn-secondary"
+            className=""
             onClick={() => setPendingEditorAction(null)}
-            type="button"
+            htmlType="button"
           >
             继续编辑
-          </button>
-          <button
-            className="btn-secondary border-[var(--theme-danger)] text-[var(--theme-danger)]"
+          </Button>
+          <Button type="default"
+            className="border-[var(--theme-danger)] text-[var(--theme-danger)]"
             onClick={confirmEditorAction}
-            type="button"
+            htmlType="button"
           >
             {pendingEditorAction?.kind === "refresh" ? "放弃本地更改并加载服务端版本" : "放弃并切换"}
-          </button>
+          </Button>
         </div>
       </AgentBuilderDialog>
     </main>

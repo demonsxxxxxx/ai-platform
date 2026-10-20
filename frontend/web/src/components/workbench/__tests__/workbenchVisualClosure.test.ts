@@ -18,7 +18,8 @@ test("workbench shell exposes dense chat regions", () => {
   assert.match(shell, /data-workbench-region="thread"/);
   assert.match(shell, /data-workbench-region="composer"/);
   assert.match(shell, /data-workbench-region="context"/);
-  assert.match(shell, /absolute right-3 top-2/);
+  assert.match(shell, /flex shrink-0 justify-end px-3 pt-2/);
+  assert.doesNotMatch(shell, /absolute right-3 top-2/);
   assert.match(workbenchShell, /LibreChatShell/);
   assert.match(surface, /workspace:/);
   assert.match(surface, /thread:[\s\S]*relative flex/);
@@ -201,17 +202,20 @@ test("workbench right context uses the same canvas as the main workspace", () =>
     "src/components/workbench/ProfileDriveWorkspaceBrowser.tsx",
   );
   const chatInput = read("src/components/chat/ChatInput.tsx");
-  const composer = read("src/librechat-ui/Composer.tsx");
 
   assert.match(surface, /threadBody: "flex min-h-0 flex-1 flex-col px-3 pb-2 pt-3 sm:px-4"/);
   assert.match(surface, /context:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
-  assert.match(surface, /context:[\s\S]*fixed inset-y-0 right-0/);
-  assert.match(surface, /context:[\s\S]*xl:static/);
+  assert.match(surface, /context:[\s\S]*min-h-0[\s\S]*overflow-hidden/);
+  assert.doesNotMatch(surface, /context:[\s\S]*fixed inset-y-0/);
   assert.match(surface, /workspaceWithContext:[\s\S]*18rem/);
   assert.match(shell, /data-librechat-context-toggle/);
   assert.match(shell, /aria-controls="librechat-context-panel"/);
-  assert.match(shell, /fixed inset-0 z-40[\s\S]*xl:hidden/);
-  assert.match(shell, /event\.key === "Escape"/);
+  assert.match(shell, /contextOpen && desktop && \([\s\S]*<aside/);
+  assert.match(shell, /<DrawerRoot open=\{contextOpen\}/);
+  assert.match(shell, /<DrawerBackdrop data-librechat-context-backdrop/);
+  assert.match(shell, /finalFocus=\{triggerRef\}/);
+  assert.doesNotMatch(shell, /fixed inset-0 z-40[\s\S]*xl:hidden/);
+  assert.match(shell, /event\.key !== "Escape" \|\| event\.defaultPrevented/);
   assert.match(shell, /contextOpen/);
   assert.match(shell, /useState\(false\)/);
   assert.doesNotMatch(shell, /useState\(true\)/);
@@ -219,9 +223,9 @@ test("workbench right context uses the same canvas as the main workspace", () =>
   assert.match(rightPanel, /LibreChatSidePanel/);
   assert.match(sidePanel, /bg-\[var\(--theme-workbench-canvas\)\]/);
   assert.match(driveBrowser, /workbenchSurface\.compactPanel/);
-  assert.match(chatInput, /LibreChatComposerFrame/);
+  assert.match(chatInput, /<ComposerBar/);
   assert.doesNotMatch(chatInput, /ChatInputHelpMenu/);
-  assert.match(composer, /backgroundColor: "var\(--theme-workbench-canvas\)"/);
+  assert.match(chatInput, /backgroundColor: "var\(--theme-workbench-canvas\)"/);
   assert.doesNotMatch(chatInput, /backgroundColor: "var\(--theme-bg\)"/);
 });
 
@@ -393,7 +397,7 @@ test("phase 1c logged-in route surfaces expose shared governance smoke attribute
   );
 });
 
-test("safe projection pages render a full workbench instead of thin lists", () => {
+test("user projection renders a full workbench instead of a thin list", () => {
   const projectionPages = read("src/components/workbench/WorkbenchProjectionPages.tsx");
   const zh = JSON.parse(read("src/i18n/locales/zh.json"));
 
@@ -414,12 +418,9 @@ test("safe projection pages render a full workbench instead of thin lists", () =
   assert.match(projectionPages, /workbench\.projections\.currentTask/);
   assert.match(projectionPages, /workbench\.projections\.governance\.summaryTitle/);
   assert.match(projectionPages, /workbench\.projections\.users\.directoryTitle/);
-  assert.match(projectionPages, /workbench\.projections\.feedback\.queueTitle/);
-  assert.match(projectionPages, /workbench\.projections\.notifications\.streamTitle/);
   assert.equal(zh.workbench.projections.currentTask, "当前任务");
   assert.equal(zh.workbench.projections.governance.summaryTitle, "读写治理摘要");
   assert.ok(zh.workbench.projections.users.roleLabels.admin);
-  assert.ok(zh.workbench.projections.feedback.status.open);
   assert.doesNotMatch(projectionPages, /bg-\[var\(--theme-bg\)\]/);
   assert.doesNotMatch(projectionPages, /bg-\[var\(--theme-bg-card\)\]/);
   assert.doesNotMatch(projectionPages, /text-stone-(?:700|800|900)/);
@@ -430,21 +431,6 @@ test("safe projection pages render a full workbench instead of thin lists", () =
   assert.match(projectionPages, /var\(--theme-warning-soft\)/);
   assert.match(projectionPages, /var\(--theme-danger-soft\)/);
   assert.doesNotMatch(projectionPages, /<div className="mt-3">\{children\}<\/div>/);
-});
-
-test("notification projection metrics use the same visible rows as the stream", () => {
-  const projectionPages = read("src/components/workbench/WorkbenchProjectionPages.tsx");
-
-  assert.match(projectionPages, /const visibleNotifications = dedupeNotifications\(combined\);/);
-  assert.match(projectionPages, /const unreadCount = visibleNotifications\.filter/);
-  assert.match(projectionPages, /const activeCount = visibleNotifications\.filter/);
-  assert.match(projectionPages, /value: visibleNotifications\.length/);
-  assert.match(projectionPages, /\{visibleNotifications\.length === 0 \?/);
-  assert.match(projectionPages, /visibleNotifications\.map\(\(item\) =>/);
-  assert.doesNotMatch(projectionPages, /const unreadCount = combined\.filter/);
-  assert.doesNotMatch(projectionPages, /const activeCount = combined\.filter/);
-  assert.doesNotMatch(projectionPages, /value: combined\.length/);
-  assert.doesNotMatch(projectionPages, /dedupeNotifications\(combined\)\.map/);
 });
 
 test("skills marketplace cards stay dense and enterprise-workbench sized", () => {
@@ -667,12 +653,12 @@ test("model admin governance state follows its projection", () => {
 
 test("composer and command surfaces use stable compact dimensions", () => {
   const css = read("src/styles/chat.css");
-  const composer = read("src/librechat-ui/Composer.tsx");
+  const composer = read("src/components/chat/assistant-ui/elements/composer.tsx");
   assert.match(css, /\.chat-input-container/);
   assert.match(css, /min-height:\s*112px/);
   assert.match(css, /max-height:\s*min\(52dvh,\s*420px\)/);
-  assert.match(composer, /grid-cols-\[minmax\(0,1fr\)_auto\]/);
-  assert.match(css, /\.composer-command-surface/);
+  assert.match(composer, /flex w-full flex-col/);
+  assert.match(composer, /PopoverPortal/);
   assert.match(css, /overflow:\s*hidden/);
 });
 
@@ -759,7 +745,8 @@ test("post-login sidebar avoids competing rail and panel active states", () => {
     rail,
     /showActiveRailState && activeRailItem === item/,
   );
-  assert.match(railPrimitive, /h-10 w-10/);
+  assert.match(railPrimitive, /size="large"/);
+  assert.match(railPrimitive, /icon=\{/);
   assert.match(sidebar, /onClick=\{onOpenSearch\}[\s\S]*LibreChatPanelSection group="tasks"/);
   assert.match(sidebar, /data-workbench-session-region[\s\S]*border-t border-\[var\(--theme-border\)\]\/70/);
   assert.match(sidebar, /className="sidebar-nav-btn flex h-9 w-full items-center gap-3 rounded-md/);
@@ -793,9 +780,9 @@ test("post-login shell uses a single compact LibreChat-style sidebar", () => {
 
 test("post-login composer and selector surfaces use shared semantic workbench tokens", () => {
   const sources = new Map([
-    ["LibreChatComposer", read("src/librechat-ui/Composer.tsx")],
-    ["LibreChatCommandMenu", read("src/librechat-ui/CommandMenu.tsx")],
-    ["LibreChatComposerChip", read("src/librechat-ui/Chips.tsx")],
+    ["LibreChatComposer", read("src/components/chat/assistant-ui/elements/composer.tsx")],
+    ["LibreChatCommandMenu", read("src/components/chat/assistant-ui/elements/composer.tsx")],
+    ["LibreChatComposerChip", read("src/components/chat/assistant-ui/elements/composer-chips.tsx")],
     ["SkillSelector", read("src/components/selectors/SkillSelector.tsx")],
     ["ToolSelector", read("src/components/selectors/ToolSelector.tsx")],
   ]);
@@ -820,9 +807,9 @@ test("post-login composer and selector surfaces use shared semantic workbench to
   const toolSelector = sources.get("ToolSelector")!;
   const skillSelector = sources.get("SkillSelector")!;
 
-  assert.match(commandMenu, /data-librechat-command-menu/);
-  assert.match(commandMenu, /bg-\[var\(--theme-workbench-panel\)\]/);
-  assert.match(chips, /data-librechat-composer-chip/);
+  assert.match(commandMenu, /data-slot="composer-menu"/);
+  assert.match(commandMenu, /var\(--theme-workbench-panel\)/);
+  assert.match(chips, /data-slot="composer-context-chip"/);
   assert.match(chips, /theme-warning-soft/);
   assert.match(toolSelector, /data-composer-mcp-selector/);
   assert.match(toolSelector, /theme-danger-soft/);

@@ -1,5 +1,14 @@
 """Public in-process contracts owned by the Sandbox bounded context."""
 
+from app.sandbox.application.callback_authority import (
+    SandboxCallbackAuthority as SandboxCallbackAuthority,
+    SandboxCallbackAuthorityError as SandboxCallbackAuthorityError,
+)
+
+from app.sandbox.application.diagnostic_capture import (
+    capture_sdk_runtime_diagnostics as capture_sdk_runtime_diagnostics,
+)
+
 from app.sandbox.application.reconciliation_receipt import (
     SandboxReconciliationReceiptAuthority as SandboxReconciliationReceiptAuthority,
 )
@@ -12,7 +21,8 @@ from app.sandbox.application.runtime_cleanup import (
 
 from dataclasses import asdict, dataclass
 from re import fullmatch
-from typing import Literal, Mapping
+from typing import Any, Literal, Mapping, Protocol
+
 
 from app.sandbox.domain.executor_failure import (
     SandboxExecutorHttpError as SandboxExecutorHttpError,
@@ -84,6 +94,12 @@ from app.sandbox.domain.host_bind import (
     resolve_opensandbox_host_bind_source as resolve_opensandbox_host_bind_source,
     snapshot_host_bind_delivery_files as snapshot_host_bind_delivery_files,
 )
+
+
+class SandboxRuntimeDebugReader(Protocol):
+    """Read bounded same-Run lease facts without handles, paths or credentials."""
+
+    async def __call__(self, conn: Any, *, tenant_id: str, run_id: str) -> dict[str, Any]: ...
 
 
 @dataclass(frozen=True, slots=True)

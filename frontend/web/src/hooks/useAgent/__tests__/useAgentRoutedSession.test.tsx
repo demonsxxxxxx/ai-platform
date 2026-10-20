@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { after } from "node:test";
 
 import {
   PUBLIC_RUN_STREAM_SCHEMA,
@@ -16,6 +16,7 @@ import { installBrowserAuthTestDb } from "../../__tests__/browserAuthTestDb.ts";
 import { installTestDom } from "./testDom.ts";
 
 const dom = installTestDom();
+after(() => dom.close());
 installBrowserAuthTestDb();
 
 let productionRunInputReads: Pick<
@@ -164,8 +165,7 @@ async function loadReactHarness({
       activeTab?: string;
       sessionId?: string;
     }>();
-    dom.window.location.pathname = location.pathname;
-    dom.window.location.href = `http://test.local${location.pathname}`;
+    dom.window.history.replaceState(null, "", location.pathname);
 
     useConversationRouteIdentityReset({
       conversationIdentityKey: `${sessionRouteBasePath ? "agent" : "generic"}:${routeSessionId ?? ""}`,
@@ -296,12 +296,11 @@ async function loadReactHarness({
     };
     dom.window.localStorage.setItem("ai_platform_session_present", nextMarker);
     await React.act(async () => {
-      dom.window.dispatchEvent({
-        type: "storage",
+      dom.window.dispatchEvent(new dom.window.StorageEvent("storage", {
         key: "ai_platform_session_present",
         oldValue: oldMarker,
         newValue: nextMarker,
-      });
+      }));
       await Promise.resolve();
     });
     if (settleAfterCommit) {
@@ -374,9 +373,9 @@ async function loadReactHarness({
       );
       await React.act(async () => {
         dom.window.dispatchEvent(
-          new CustomEvent(BROWSER_AUTH_INCARCINATION_EVENT, {
+          new dom.window.CustomEvent(BROWSER_AUTH_INCARCINATION_EVENT, {
             detail: { incarnation },
-          }) as unknown as { type: string; [key: string]: unknown },
+          }),
         );
         await Promise.resolve();
       });
@@ -714,7 +713,7 @@ function completedPublicRunResponse(
 test("queued submit clears chat-queue when the current SSE v4 stream opens", async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
-  const toast = (await import("react-hot-toast")).default;
+  const toast = (await import("@lobehub/ui/base-ui")).toast;
   const originalSubmitChat = sessionApi.submitChat;
   const originalGenerateTitle = sessionApi.generateTitle;
   const originalGetEvents = sessionApi.getEvents;
@@ -766,7 +765,7 @@ test("queued submit clears chat-queue when the current SSE v4 stream opens", asy
     ],
   });
   toast.loading = ((...args: Parameters<typeof toast.loading>) => {
-    loadedToastIds.push(args[1]?.id as string | undefined);
+    loadedToastIds.push(typeof args[0] === "object" && args[0] !== null && "id" in args[0] ? args[0].id as string : undefined);
     return originalToastLoading(...args);
   }) as typeof toast.loading;
   toast.dismiss = ((...args: Parameters<typeof toast.dismiss>) => {
@@ -808,6 +807,55 @@ test("queued submit clears chat-queue when the current SSE v4 stream opens", asy
     await harness.cleanup();
   }
 });
+
+for (const transition of ["current", "auth-change", "unmount"] as const) {
+  test(`browser DOM observation binds only live authorized admission: ${transition}`, async () => {
+    const harness = await loadReactHarness();
+    const { sessionApi } = await import("../../../services/api/session.ts");
+    const { watchBrowserRunText } = await import("../browserRunLatency.ts");
+    // @ts-expect-error jsdom is the pinned mounted-test runtime.
+    const { JSDOM } = await import("jsdom");
+    const textDom = new JSDOM("<!doctype html><body><div data-browser-run-id='run-browser-observed' data-browser-session-id='session-browser-observed'><div id='answer'><p>公开正文</p></div></div></body>", { pretendToBeVisual: true });
+    const originalSubmit = sessionApi.submitChat;
+    const originalTitle = sessionApi.generateTitle;
+    const originalReport = sessionApi.reportBrowserRunLatency;
+    const originalFetch = dom.window.fetch;
+    const documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
+    let submissionId = "";
+    const reports: unknown[][] = [];
+    sessionApi.submitChat = (async (...args) => {
+      submissionId = String(args[7]);
+      return { session_id: "session-browser-observed", run_id: "run-browser-observed", status: "queued", submission_id: submissionId };
+    }) as typeof sessionApi.submitChat;
+    sessionApi.generateTitle = async (sessionId) => ({ title: "Observed", session_id: sessionId });
+    sessionApi.reportBrowserRunLatency = async (...args) => { reports.push(args); return { recorded: true }; };
+    dom.window.fetch = async () => completedSseResponse();
+    let dispose: (() => void) | undefined;
+    try {
+      await harness.act(async () => { await harness.hook.sendMessage("测量首段正文"); });
+      await settle(harness.act);
+      assert.ok(submissionId);
+      if (transition === "auth-change") await harness.rotateAuthScope("user-b", "tenant-b");
+      if (transition === "unmount") await harness.unmount();
+      Object.defineProperty(globalThis, "document", { configurable: true, value: textDom.window.document });
+      const node = textDom.window.document.getElementById("answer") as HTMLElement;
+      Object.defineProperty(node, "getClientRects", { value: () => [{ width: 30, height: 20 }] });
+      dispose = watchBrowserRunText(node);
+      await Promise.resolve();
+      assert.equal(reports.length, transition === "current" ? 1 : 0);
+      if (reports.length) assert.deepEqual(reports[0].slice(0, 2), [submissionId, "run-browser-observed"]);
+    } finally {
+      dispose?.();
+      if (documentDescriptor) Object.defineProperty(globalThis, "document", documentDescriptor);
+      textDom.window.close();
+      sessionApi.submitChat = originalSubmit;
+      sessionApi.generateTitle = originalTitle;
+      sessionApi.reportBrowserRunLatency = originalReport;
+      dom.window.fetch = originalFetch;
+      await harness.cleanup();
+    }
+  });
+}
 
 test("pending enqueue retains the created session for draft handoff", async () => {
   const harness = await loadReactHarness();
@@ -2050,9 +2098,9 @@ test("useAgent preserves a durable A fence when an option getter publishes then 
         if (!firedIncarnation) {
           firedIncarnation = true;
           dom.window.dispatchEvent(
-            new CustomEvent(BROWSER_AUTH_INCARCINATION_EVENT, {
+            new dom.window.CustomEvent(BROWSER_AUTH_INCARCINATION_EVENT, {
               detail: { incarnation: "reentrant-submit-fence" },
-            }) as unknown as { type: string; [key: string]: unknown },
+            }),
           );
           throw new Error("option getter fails after publishing auth invalidation");
         }
@@ -2702,9 +2750,10 @@ test("useAgent fails closed before POST when durable submission storage cannot b
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalSubmitChat = sessionApi.submitChat;
   const storage = dom.window.localStorage;
-  const originalSetItem = storage.setItem;
+  const storagePrototype = dom.window.Storage.prototype;
+  const originalSetItem = storagePrototype.setItem;
   let submissions = 0;
-  storage.setItem = ((key: string, value: string) => {
+  storagePrototype.setItem = ((key: string, value: string) => {
     if (key.startsWith("ai_platform_chat_submission")) {
       throw new Error("private-mode storage denied");
     }
@@ -2729,7 +2778,7 @@ test("useAgent fails closed before POST when durable submission storage cannot b
     assert.equal(submissions, 0);
     assert.equal(harness.hook.messages.length, 0);
   } finally {
-    storage.setItem = originalSetItem;
+    storagePrototype.setItem = originalSetItem;
     sessionApi.submitChat = originalSubmitChat;
     await harness.cleanup();
   }
@@ -5000,7 +5049,7 @@ test(`useAgent shares one reconciliation owner across online callers during ${re
     let firstReconnect!: Promise<void>;
     let secondReconnect!: Promise<void>;
     await harness.act(async () => {
-      dom.window.dispatchEvent({ type: "online" });
+      dom.window.dispatchEvent(new Event("online"));
       firstReconnect = harness.hook.reconnectSSE();
       secondReconnect = harness.hook.reconnectSSE();
     });
@@ -5056,8 +5105,15 @@ test(`useAgent expires cookie-session stream ownership with ${sessionMarker ? "a
   let statusCalls = 0;
   let streamCalls = 0;
   let refreshProbeCalls = 0;
+  let refreshCalls = 0;
   const fetchWithExpiredSession: typeof fetch = async (input) => {
     const url = String(input);
+    if (url.includes("/api/ai/auth/refresh")) {
+      refreshCalls += 1;
+      return new Response(JSON.stringify({ detail: "auth_context_missing" }), {
+        status: 401,
+      });
+    }
     if (url.includes("/api/ai/auth/me")) {
       refreshProbeCalls += 1;
       return new Response("{}", { status: 200 });
@@ -5121,6 +5177,7 @@ test(`useAgent expires cookie-session stream ownership with ${sessionMarker ? "a
     await settle(harness.act);
 
     assert.equal(refreshProbeCalls, 0);
+    assert.equal(refreshCalls, sessionMarker ? 1 : 0);
     assert.equal(streamCalls, 1);
     assert.equal(statusCalls, 0);
     assert.equal(harness.hook.currentRunId, null);
@@ -6029,7 +6086,7 @@ test(`useAgent hydrates an active same-incarnation gap ${recovery === "timeout" 
       assert.equal(harness.hook.currentRunId, runId);
       assert.equal(harness.hook.connectionStatus, "disconnected");
       allowHistory = true;
-      await harness.act(async () => { dom.window.dispatchEvent({ type: "online" }); });
+      await harness.act(async () => { dom.window.dispatchEvent(new Event("online")); });
       for (let attempt = 0; attempt < 500 && requestCursors.length < 4; attempt += 1) {
         await harness.act(() => new Promise<void>((resolve) => setTimeout(resolve, 10)));
       }
@@ -8812,15 +8869,15 @@ test("useAgent synchronously retires an active Chat SSE from the production auth
     assert.ok(activeInputsSignal, "the Run inputs read should be active before auth turnover");
     assert.ok(activeHistorySignal, "the session Run input history read should be active before auth turnover");
     assert.equal(activeStreamSignal.aborted, false);
-    const toast = (await import("react-hot-toast")).default, originalDismiss = toast.dismiss;
+    const toast = (await import("@lobehub/ui/base-ui")).toast, originalDismiss = toast.dismiss;
     const dismissedToastIds: Array<string | undefined> = [];
     toast.dismiss = ((...args: Parameters<typeof toast.dismiss>) => (dismissedToastIds.push(args[0]), originalDismiss(...args))) as typeof toast.dismiss;
     restoreToastDismiss = () => { toast.dismiss = originalDismiss; };
     await harness.act(async () => {
       const dispatched = dom.window.dispatchEvent(
-        new CustomEvent(BROWSER_AUTH_INCARCINATION_EVENT, {
+        new dom.window.CustomEvent(BROWSER_AUTH_INCARCINATION_EVENT, {
           detail: { incarnation: "incarnation-retire-chat-sse" },
-        }) as unknown as { type: string; [key: string]: unknown },
+        }),
       );
       assert.equal(dispatched, true);
       assert.equal(

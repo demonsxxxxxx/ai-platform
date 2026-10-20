@@ -149,6 +149,43 @@ async def admin_run_list(
     return {"runs": rows, "limit": limit}
 
 
+@router.get("/admin/runs/monitor")
+async def admin_run_monitor(
+    request: Request,
+    response: Response,
+    hours: int = Query(24, ge=1, le=168),
+    from_at: datetime | None = None,
+    to_at: datetime | None = None,
+    user_id: str | None = None,
+    agent_id: str | None = None,
+    model_id: str | None = None,
+    model_gateway_revision: int | None = Query(None, ge=1),
+    status: str | None = None,
+    order: str = Query("slow", pattern="^(slow|recent)$"),
+    limit: int = Query(50, ge=1, le=100),
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, Any]:
+    if not is_ai_admin(principal):
+        raise HTTPException(status_code=403, detail="not_ai_admin")
+    try:
+        user_id = assert_safe_id(user_id, "user_id") if user_id else None
+        agent_id = assert_safe_id(agent_id, "agent_id") if agent_id else None
+        model_id = assert_safe_id(model_id, "model_id") if model_id else None
+        if status not in {None, "queued", "running", "succeeded", "failed", "cancelled", "cancel_requested"}:
+            raise ValueError("invalid_monitor_status")
+        async with transaction() as conn:
+            await conn.execute("set local statement_timeout = '5s'")
+            report = await _require_run_diagnostics_service(request).read_monitor(
+                conn, tenant_id=principal.tenant_id, hours=hours, from_at=from_at, to_at=to_at,
+                user_id=user_id, agent_id=agent_id, model_id=model_id,
+                model_gateway_revision=model_gateway_revision, status=status, order=order, limit=limit,
+            )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    response.headers["Cache-Control"] = "no-store"
+    return report
+
+
 @router.post("/admin/runs/{run_id}/cancel", response_model=RunControlResponse, response_model_exclude={"queue_position", "queue_insight"})
 async def admin_run_cancel(
     run_id: str,
@@ -293,6 +330,30 @@ async def admin_run_detail(
     return detail
 
 
+@router.get("/admin/runs/{run_id}/investigation")
+async def admin_run_investigation(
+    run_id: str,
+    request: Request,
+    response: Response,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, Any]:
+    if not is_ai_admin(principal):
+        raise HTTPException(status_code=403, detail="not_ai_admin")
+    try:
+        run_id = assert_safe_id(run_id, "run_id")
+        async with transaction() as conn:
+            await conn.execute("set local statement_timeout = '5s'")
+            investigation = await _require_run_diagnostics_service(request).read_admin_investigation(
+                conn, tenant_id=principal.tenant_id, run_id=run_id,
+            )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if investigation is None:
+        raise HTTPException(status_code=404, detail="run_not_found")
+    response.headers["Cache-Control"] = "no-store"
+    return investigation
+
+
 @router.get("/admin/runs/{run_id}/trajectory")
 async def admin_run_trajectory(
     run_id: str,
@@ -405,7 +466,8 @@ async def admin_run_diagnostic_export(
 
     async with transaction() as conn:
         await conn.execute("set transaction isolation level repeatable read")
-        diagnostics = await _require_run_diagnostics_service(request).read_admin(
+        await conn.execute("set local statement_timeout = '5s'")
+        diagnostics = await _require_run_diagnostics_service(request).read_admin_debug(
             conn,
             tenant_id=principal.tenant_id,
             run_id=run_id,

@@ -14,6 +14,12 @@
 
 模型与思考强度保留用户在专家会话中的选择。专家入口不允许客户端自行扩大 Skill、文件或 MCP 权限。
 
+## 取代范围
+
+本决策取代 [ADR 0001](0001-agent-app-revision-authorization-lifecycle.md) 中普通会话后续新 Run 永久使用初始专家版本、以及禁止用户选择受治理模型的部分。会话来源 revision/hash 和历史 Run 快照不改写；既有 Run 的 Worker 派发、重试、恢复和复制保留原快照并复验当前授权。Builder 测试会话仍校验被测试的 revision，不能套用普通会话的新版本续聊规则。
+
+[ADR 0008](0008-agent-sdk-autonomous-skill-dispatch.md) 的 Skill Set 可用性与 SDK 自主调用继续生效；版本在每个受理 Run 中固定，不把旧会话或旧包的版本变成后续新 Run 的执行锁。
+
 ## 边界与处理强度
 
 | 行为 | 平台处理 |

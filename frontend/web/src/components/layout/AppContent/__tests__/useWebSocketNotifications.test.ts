@@ -24,7 +24,7 @@ function loadNotificationOwner(visibilityState: DocumentVisibilityState = "visib
     react: React,
     "react/jsx-runtime": jsxRuntime,
     "react-router-dom": { useNavigate: () => () => {} },
-    "react-hot-toast": { toast: { custom: (content: unknown) => toasts.push(content) } },
+    "@lobehub/ui/base-ui": { toast: { info: (content: unknown) => toasts.push(content) } },
     "lucide-react": { Bell: () => null, X: () => null },
     "../../../hooks/useWebSocket": {
       useWebSocket: (value: NotificationOptions) => { options = value; },

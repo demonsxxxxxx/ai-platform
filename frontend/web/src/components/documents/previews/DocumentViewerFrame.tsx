@@ -8,7 +8,7 @@ import {
   type Ref,
 } from "react";
 import { ViewerToolbar } from "../../common/ViewerToolbar";
-import { LoadingSpinner } from "../../common/LoadingSpinner";
+import { Spin } from "@lobehub/ui/base-ui";
 
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 3;
@@ -243,9 +243,9 @@ export function DocumentViewerFrame({
 
       {loading ? (
         <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-stone-100/80 dark:bg-stone-950/80">
-          <LoadingSpinner
+          <Spin
             className="text-stone-400 dark:text-stone-500"
-            size="lg"
+            size={32}
           />
         </div>
       ) : (

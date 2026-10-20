@@ -19,13 +19,20 @@ test("offline route layout smoke covers required routes, viewports, reachability
     "/agent-market/agt_support",
     "/agent-market/agt_support/chat",
     "/agent-builder",
+    "/plugins",
+    "/runs",
+    "/ai-apps/sop-assistant",
+    "/ai-apps/word-review",
   ]) {
     assert.match(source, new RegExp(path.replaceAll("/", "\\/")));
   }
   assert.match(source, /bodyScrollWidth > layout\.viewportWidth/);
   assert.match(source, /target\.scrollTop = target\.scrollHeight/);
   assert.match(source, /overlay_clipped/);
-  assert.match(source, /department-selector__menu/);
+  assert.match(source, /role=listbox/);
+  assert.match(source, /drawer-contained/);
+  assert.match(source, /skill-distribution-receipt/);
+  assert.match(source, /if \(failures\.length\) process\.exitCode = 1/);
   assert.match(source, /route_layout_smoke_unstubbed_api/);
   assert.match(source, /requiredSelectors/);
   assert.match(source, /element\.complete/);
@@ -39,6 +46,18 @@ test("offline route layout smoke covers required routes, viewports, reachability
   assert.match(source, /skill-opaque-42/);
   assert.match(source, /data-skill-distribution-save/);
   assert.match(source, /skill-distribution-save/);
+  assert.match(source, /responsive_layout_failed/);
+  assert.match(source, /detailContained/);
+  assert.match(source, /tableReachable/);
+  assert.match(source, /uploadBottom > viewport.height/);
+  assert.match(source, /plugin_layout_failed/);
+  assert.match(source, /plugins:auth-tab-wrap/);
+  assert.match(source, /plugins:auth-focus-restored/);
+  assert.match(source, /plugins:collapsed-icon-not-centered/);
   assert.match(source, /data-agent-market-start-chat/);
   assert.match(source, /data-agent-builder-save-reason/);
+  assert.match(source, /parent_observation_id/);
+  assert.match(source, /runs:observation-identities-not-collapsed/);
+  assert.match(source, /runs:receipt-parent-missing/);
+  assert.match(source, /runs:focus-restored/);
 });

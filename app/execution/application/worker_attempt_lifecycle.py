@@ -433,29 +433,3 @@ def bind_worker_attempt_lifecycle(
         reconciliation_owner_generation=generation,
         reconciliation_scope=scope,
     )
-
-
-async def fail_run_for_worker(
-    conn: Any,
-    *,
-    payload: WorkerQueuePayload,
-    tenant_id: str,
-    run_id: str,
-    error_code: str,
-    error_message: str,
-    capabilities: Any,
-    attempt_lifecycle: WorkerAttemptLifecycle,
-    result_json: dict[str, Any] | None = None,
-) -> bool:
-    """Fail one Run under its queue and attempt authority."""
-
-    terminal_written = await attempt_lifecycle.fail(
-        conn,
-        capabilities=capabilities,
-        error_code=error_code,
-        error_message=error_message,
-        result_json=result_json,
-    )
-    if not terminal_written:
-        return False
-    return True

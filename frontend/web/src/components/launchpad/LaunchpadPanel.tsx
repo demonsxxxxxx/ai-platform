@@ -1,3 +1,4 @@
+import { Button, Input } from "@lobehub/ui/base-ui";
 import {
   useEffect,
   useMemo,
@@ -6,7 +7,7 @@ import {
   type CSSProperties,
 } from "react";
 import { useNavigate } from "react-router-dom";
-import toast from "react-hot-toast";
+import { toast } from "@lobehub/ui/base-ui";
 import { useTranslation } from "react-i18next";
 import {
   BookMarked,
@@ -34,6 +35,8 @@ import {
 
 import { useAuth } from "../../hooks/useAuth";
 import { authApi } from "../../services/api/auth";
+import { ApiRequestError } from "../../services/api/fetch";
+import { AuthSessionChangedError } from "../../services/api/tokenManager";
 import { buildFrontendGovernanceSmokeAttributes } from "../governance/frontendGovernanceState";
 import { workbenchSurface } from "../workbench/workbenchSurface";
 import {
@@ -269,8 +272,8 @@ function DirectorySection({
                   {entryContent}
                 </a>
               ) : (
-                <button
-                  type="button"
+                <Button type="text"
+                  htmlType="button"
                   disabled={unavailable}
                   onClick={() => onOpen(entry)}
                   title={unavailable ? destination.reason : undefined}
@@ -280,11 +283,11 @@ function DirectorySection({
                   className="flex min-w-0 flex-1 items-center gap-3 py-2.5 pl-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--theme-ring)] disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {entryContent}
-                </button>
+                </Button>
               )}
 
-              <button
-                type="button"
+              <Button type="text"
+                htmlType="button"
                 aria-label={t(
                   isFavorite
                     ? "launchpad.removeFavorite"
@@ -299,13 +302,12 @@ function DirectorySection({
                     ? "text-amber-500 hover:bg-amber-500/10"
                     : "text-[var(--theme-text-tertiary)] hover:bg-[var(--theme-hover)] hover:text-amber-500"
                 }`}
-              >
-                <Star
+                icon={<Star
                   aria-hidden="true"
                   className="size-4"
                   fill={isFavorite ? "currentColor" : "none"}
-                />
-              </button>
+                />}
+              />
             </div>
           );
         })}
@@ -350,13 +352,16 @@ export function LaunchpadPanel() {
         setFavoritesOwnerId(requestOwnerId);
         setFavoritesReady(true);
       })
-      .catch(() => {
+      .catch((error: unknown) => {
+        if (error instanceof AuthSessionChangedError
+          || (error instanceof ApiRequestError && error.status === 401)) return;
         if (
           !controller.signal.aborted &&
           currentUserIdRef.current === requestOwnerId
         ) {
           setFavoriteIds([]);
-          toast.error(t("launchpad.favoriteLoadFailed"));
+          toast.error(error instanceof ApiRequestError && error.status === 403
+            ? error.message : t("launchpad.favoriteLoadFailed"));
         }
       });
     return () => controller.abort();
@@ -408,9 +413,12 @@ export function LaunchpadPanel() {
           entryIds,
         ),
       );
-    } catch {
+    } catch (error) {
+      if (error instanceof AuthSessionChangedError
+        || (error instanceof ApiRequestError && error.status === 401)) return;
       if (currentUserIdRef.current === requestOwnerId) {
-        toast.error(t("launchpad.favoriteSaveFailed"));
+        toast.error(error instanceof ApiRequestError && error.status === 403
+          ? error.message : t("launchpad.favoriteSaveFailed"));
       }
     } finally {
       if (currentUserIdRef.current === requestOwnerId) {
@@ -484,32 +492,24 @@ export function LaunchpadPanel() {
                 {t("launchpad.welcomeSubtitle")}
               </p>
 
-              <div className="relative mt-4 max-w-xl">
+              <div className="mt-4 max-w-xl">
                 <label htmlFor="launchpad-search" className="sr-only">
                   {t("launchpad.searchLabel")}
                 </label>
-                <Search
-                  aria-hidden="true"
-                  className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-[var(--theme-text-secondary)]"
-                />
-                <input
+                <Input
                   id="launchpad-search"
+                  prefix={<Search size={16} aria-hidden="true" />}
+                  suffix={query ? <Button type="text" size="small" htmlType="button"
+                    aria-label={t("launchpad.clearSearch")}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => setQuery("")} icon={<X size={16} aria-hidden="true" />} /> : null}
+                  size="large"
                   type="search"
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
                   placeholder={t("launchpad.searchPlaceholder")}
-                  className="h-11 w-full rounded-xl border border-[#a9ceca] bg-[var(--theme-bg-card)] pl-10 pr-11 text-sm text-[var(--theme-text)] shadow-sm outline-none transition placeholder:text-[var(--theme-text-tertiary)] focus:border-[#0f8a83] focus:ring-2 focus:ring-[#0f8a83]/20 dark:border-[#3a6864]"
+                  className="w-full"
                 />
-                {query ? (
-                  <button
-                    type="button"
-                    onClick={() => setQuery("")}
-                    aria-label={t("launchpad.clearSearch")}
-                    className="absolute right-2 top-1/2 flex size-8 -translate-y-1/2 items-center justify-center rounded-lg text-[var(--theme-text-secondary)] hover:bg-[var(--theme-hover)] hover:text-[var(--theme-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-ring)]"
-                  >
-                    <X aria-hidden="true" className="size-4" />
-                  </button>
-                ) : null}
               </div>
             </div>
 

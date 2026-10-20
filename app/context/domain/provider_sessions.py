@@ -10,9 +10,11 @@ PROVIDER_SESSION_ENGINE_CLAUDE = "claude"
 PROVIDER_SESSION_CONTEXT_EPOCH = 1
 PROVIDER_SESSION_RESUME_CONTEXT_KEY = "provider_session_resume_required"
 MAX_PROVIDER_SESSION_BATCH_COUNT = 128
-MAX_PROVIDER_SESSION_ENTRY_BYTES = 256 * 1024
-MAX_PROVIDER_SESSION_BATCH_BYTES = 2 * 1024 * 1024
-MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES = 8 * 1024 * 1024
+MAX_PROVIDER_SESSION_ENTRY_BYTES = 16 * 1024 * 1024
+MAX_PROVIDER_SESSION_BATCH_BYTES = 32 * 1024 * 1024
+MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES = 64 * 1024 * 1024
+MAX_PROVIDER_SESSION_STRUCTURED_ENTRY_BYTES = 256 * 1024
+MAX_PROVIDER_SESSION_STRUCTURED_TRANSCRIPT_BYTES = 8 * 1024 * 1024
 MAX_PROVIDER_SESSION_CALLBACK_RESPONSE_BYTES = MAX_PROVIDER_SESSION_TRANSCRIPT_BYTES + 64 * 1024
 PROVIDER_SESSION_READ_VIEW_HEADER = "X-AI-Platform-Provider-Read-View"
 PROVIDER_SESSION_CHILD_READ_VIEW = "children-v1"
@@ -24,9 +26,10 @@ MAX_PROVIDER_SESSION_ENTRY_UUID_LENGTH = 128
 class ProviderSessionContinuityError(ValueError):
     """Raised when provider-session state cannot satisfy the continuity contract."""
 
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: str, *, debug: dict[str, str | int] | None = None) -> None:
         super().__init__(code)
         self.code = code
+        self.debug = debug or {}
 
 
 class ProviderSessionConflictError(ProviderSessionContinuityError):
@@ -111,7 +114,12 @@ def normalize_provider_entry(
     normalized_entry = dict(entry)
     entry_bytes = provider_entry_json_bytes(normalized_entry)
     if entry_bytes > MAX_PROVIDER_SESSION_ENTRY_BYTES:
-        raise ProviderSessionContinuityError("provider_session_entry_too_large")
+        raise ProviderSessionContinuityError("provider_session_entry_too_large", debug={
+            "component": "provider_session", "operation": "append", "phase": "entry_validation",
+            "failure_class": "size_limit", "observed_bytes": entry_bytes,
+            "limit_bytes": MAX_PROVIDER_SESSION_ENTRY_BYTES, "entry_kind": normalized_entry.get("type", "other"),
+            "scope": "child" if subpath else "main",
+        })
     raw_uuid = normalized_entry.get("uuid")
     sdk_entry_uuid: str | None
     if raw_uuid is None or raw_uuid == "":

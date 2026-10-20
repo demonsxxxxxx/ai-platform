@@ -2,7 +2,7 @@ import { memo, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Document, Page, pdfjs } from "react-pdf";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
-import { LoadingSpinner } from "../../common/LoadingSpinner";
+import { Spin } from "@lobehub/ui/base-ui";
 import { DocumentViewerFrame } from "./DocumentViewerFrame";
 
 pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
@@ -91,9 +91,9 @@ const PdfPreview = memo(function PdfPreview({ url }: PdfPreviewProps) {
                         minHeight: Math.round(pageWidth * 1.35),
                       }}
                     >
-                      <LoadingSpinner
+                      <Spin
                         className="text-stone-300 dark:text-stone-600"
-                        size="sm"
+                        size={16}
                       />
                     </div>
                   }

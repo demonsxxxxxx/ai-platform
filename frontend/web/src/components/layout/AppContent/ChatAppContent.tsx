@@ -1,7 +1,9 @@
+import type { ExternalStoreThreadListAdapter } from "@assistant-ui/react";
+import { Button } from "@lobehub/ui/base-ui";
 /* eslint-disable react-refresh/only-export-components -- behavioral seams stay with the canonical Chat owner */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import toast from "react-hot-toast";
+import { toast } from "@lobehub/ui/base-ui";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { History } from "lucide-react";
 import { BlockPreviewPortal } from "../../chat/ChatMessage/items/McpBlockPreview";
@@ -412,7 +414,7 @@ export function ChatAppContent({
   });
   const agentConversationControlsLocked = !chatToolAccess.enabled;
   const { availableModels, defaultModel } = useModelCatalogContext();
-  const { hasPermission, isAuthenticated } = useAuth();
+  const { user, hasPermission, isAuthenticated } = useAuth();
   const composerSkillsProbeAvailability = resolveComposerSkillsAvailability({
     isAuthenticated,
     catalogEffectivePermissions: [],
@@ -439,6 +441,7 @@ export function ChatAppContent({
       !agentConversationControlsLocked &&
       composerSkillsProbeAvailability.shouldFetchSkills,
     allAuthorizedCatalog: true,
+    identityScope: JSON.stringify([user?.tenant_id, user?.id, user?.roles, user?.permissions, user?.is_admin, user?.department_ids, user?.direct_department_ids, user?.department_authority_status]),
   });
   const {
     state: selectedSkillState,
@@ -602,7 +605,6 @@ export function ChatAppContent({
   const {
     tools,
     serverSelectedToolIds,
-    isLoading: toolsLoading,
     totalCount: totalToolsCount,
     catalogState: mcpCatalogState,
     refreshTools,
@@ -896,6 +898,7 @@ export function ChatAppContent({
       agentWorkspaceTranscriptReady);
 
   const sidebarRef = useRef<SessionSidebarHandle>(null);
+  const [threadListAdapter, setThreadListAdapter] = useState<ExternalStoreThreadListAdapter>();
 
   useWebSocketNotifications({
     sessionId,
@@ -1234,7 +1237,6 @@ export function ChatAppContent({
     <AppShell
       activeTab="chat"
       onNewSession={handleNewSessionWithReset}
-      allowNewSessionAction={agentWorkspace !== undefined}
       newSessionActionLabel={agentWorkspace ? "开始新任务" : undefined}
       currentRunId={visibleCurrentRunId}
       onOpenRunPlayback={handleOpenRunPlayback}
@@ -1254,6 +1256,7 @@ export function ChatAppContent({
       sidebar={
         <SessionSidebar
           ref={sidebarRef}
+          onThreadListAdapterChange={setThreadListAdapter}
           currentSessionId={sessionId}
           onSelectSession={handleSelectSessionAndClose}
           onSelectGlobalHistorySession={
@@ -1285,7 +1288,6 @@ export function ChatAppContent({
               : undefined
           }
           agentHistoryInMainPanel={agentWorkspace !== undefined}
-          navigationOnly={agentWorkspace === undefined}
         />
       }
     >
@@ -1341,6 +1343,7 @@ export function ChatAppContent({
         ) : null}
         <ChatMcpCatalogContext.Provider value={mcpCatalogContextValue}>
             <ChatView
+            threadListAdapter={threadListAdapter}
             messages={visibleMessages}
             sessionId={visibleSessionId}
             conversationIdentityKey={conversationIdentityKey}
@@ -1374,7 +1377,6 @@ export function ChatAppContent({
             onToggleTool={exposedMcpControls.onToggleTool}
             onToggleCategory={exposedMcpControls.onToggleCategory}
             onToggleAll={exposedMcpControls.onToggleAll}
-            toolsLoading={agentConversationControlsLocked ? false : toolsLoading}
             enabledToolsCount={
               agentConversationControlsLocked ? 0 : effectiveEnabledToolsCount
             }
@@ -1451,9 +1453,9 @@ export function ChatAppContent({
           <div className="flex items-center justify-center gap-3 px-4 pb-2 text-sm text-[var(--theme-warning)]">
             <span>历史会话暂时无法加载。</span>
             {onAgentWorkspaceHistoryRetry ? (
-              <button className="underline" onClick={onAgentWorkspaceHistoryRetry} type="button">
+              <Button type="text" className="underline" onClick={onAgentWorkspaceHistoryRetry} htmlType="button">
                 重试
-              </button>
+              </Button>
             ) : null}
           </div>
         ) : null}

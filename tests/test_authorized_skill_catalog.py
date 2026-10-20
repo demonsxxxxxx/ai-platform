@@ -288,6 +288,7 @@ async def _resolve(
         object(),
         binding=binding or _binding(),
         department_id="rd",
+        department_ids=("100", "110"),
         roles=roles or ["employee"],
         permissions=["skill:read"],
         pinned_manifests=pinned_manifests,
@@ -302,7 +303,7 @@ async def test_catalog_exposes_exact_authorized_metadata_without_general_chat_ma
     rows[-1]["version_status"] = "reviewed"
     distributions = [
         _distribution("skill-a"),
-        _distribution("skill-b", departments=["rd"]),
+        _distribution("skill-b", departments=["100"]),
         _distribution("skill-c", roles=["employee"]),
         _distribution("skill-d"),
         _distribution("skill-e", status="disabled"),
@@ -1058,6 +1059,7 @@ def _worker_dispatch_fixture(execution_input: dict[str, Any]):
         "user_id": "user-a",
         "session_id": "session-a",
         "agent_id": "general-agent",
+        "agent_type": "chat",
         "admitted_agent_profile_revision": None,
         "admitted_agent_profile_hash": None,
         "session_admitted_agent_profile_revision": None,
@@ -1158,7 +1160,7 @@ def _install_dispatch_failure_fakes(monkeypatch, locked_run, primary_manifest, c
         "app.runs.application.terminalization_v4.release_provider_lineage",
         no_provider_lineage,
     )
-    monkeypatch.setattr("app.worker.admit_v4_stream", no_publication)
+    monkeypatch.setattr("app.bootstrap.worker_run_preparation.admit_v4_stream", no_publication)
     monkeypatch.setattr("app.worker.publish_run_event", no_publication)
 
 
@@ -1229,9 +1231,9 @@ async def test_every_dispatch_shape_denies_unavailable_current_authority_before_
 @pytest.mark.parametrize(
     ("current_roles", "current_department", "distribution", "expected_reason"),
     [
-        (["user"], "qa", _distribution("general-chat", departments=["qa"], roles=["admin"]), "role_not_allowed"),
-        (["user"], "rd", _distribution("general-chat", departments=["qa"]), "department_not_allowed"),
-        (["user"], "", _distribution("general-chat", departments=["qa"]), "department_not_allowed"),
+        (["user"], "110", _distribution("general-chat", departments=["100"], roles=["admin"]), "role_not_allowed"),
+        (["user"], "210", _distribution("general-chat", departments=["100"]), "department_not_allowed"),
+        (["user"], "", _distribution("general-chat", departments=["100"]), "department_not_allowed"),
     ],
 )
 @pytest.mark.asyncio
@@ -1254,6 +1256,8 @@ async def test_queued_admin_snapshot_cannot_restore_revoked_current_skill_access
             display_name="User A",
             tenant_id="tenant-a",
             department_id=current_department,
+            department_ids=("100", "110") if current_department == "110" else (current_department,) if current_department else (),
+            department_authority_status="available" if current_department else "unavailable",
             roles=current_roles,
             permissions=["skill:read"],
             source="company-user-info-current",

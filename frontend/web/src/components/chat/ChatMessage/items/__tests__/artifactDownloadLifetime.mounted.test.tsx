@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-// @ts-expect-error jsdom is the pinned mounted-test runtime without declarations.
-import { JSDOM } from "jsdom";
+import { installSelectTestDom } from "../../../../common/__tests__/selectTestDom";
+import { createLobeTestRoot } from "../../../../common/__tests__/lobeUiTestRoot";
 import { act, createElement, StrictMode } from "react";
-import { createRoot } from "react-dom/client";
 import type { ArtifactPart } from "../../../../../types";
 
 test("mounted artifact success and retry buttons survive settled TTL without a rerender", async (t) => {
@@ -12,14 +11,16 @@ test("mounted artifact success and retry buttons survive settled TTL without a r
   const { MessagePartRenderer } = await import("../../MessagePartRenderer");
   const { createArtifactDownloadScopeContext, createArtifactDownloadScope, clearArtifactDownloadScope } =
     await import("../artifactDownloadRegistry");
-  const dom = new JSDOM('<div id="root"></div>', { url: "http://localhost/" });
+  const environment = installSelectTestDom();
+  const dom = { window };
+  document.body.innerHTML = '<div id="root"></div>';
   const globals = ["window", "document", "navigator", "HTMLElement", "Node", "IS_REACT_ACT_ENVIRONMENT"] as const;
   const saved = globals.map((key) => Object.getOwnPropertyDescriptor(globalThis, key));
   for (const key of globals) {
     Object.defineProperty(globalThis, key, { configurable: true, value: key === "IS_REACT_ACT_ENVIRONMENT" ? true : dom.window[key] });
   }
   t.mock.method(dom.window.HTMLAnchorElement.prototype, "click", () => undefined);
-  const root = createRoot(dom.window.document.getElementById("root")!);
+  const root = await createLobeTestRoot(dom.window.document.getElementById("root")!);
   const context = createArtifactDownloadScopeContext({ tenantId: "ttl-tenant", userId: "ttl-user", roles: ["member"], isActive: true, sessionId: "ttl-session" })!;
   const scope = createArtifactDownloadScope(context, "ttl-message")!;
   let requests = 0;
@@ -77,7 +78,7 @@ test("mounted artifact success and retry buttons survive settled TTL without a r
   } finally {
     act(() => root.unmount());
     clearArtifactDownloadScope(context);
-    dom.window.close();
+    environment.close();
     globals.forEach((key, index) => {
       const descriptor = saved[index];
       if (descriptor) Object.defineProperty(globalThis, key, descriptor);

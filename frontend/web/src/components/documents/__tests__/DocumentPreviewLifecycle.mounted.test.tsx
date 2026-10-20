@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-// @ts-expect-error jsdom runtime import.
-import { JSDOM } from "jsdom";
+import { register } from "node:module";
+// Node mounts test content; actual stylesheet geometry is covered by browser smoke.
+register(`data:text/javascript,${encodeURIComponent('export async function load(url, context, nextLoad) { if (url.endsWith(".css")) return { format: "module", source: "", shortCircuit: true }; return nextLoad(url, context); }')}`, import.meta.url);
+import { installSelectTestDom } from "../../common/__tests__/selectTestDom";
+import { createLobeTestRoot } from "../../common/__tests__/lobeUiTestRoot";
 import type { ReactNode } from "react";
+import type { MessageAttachment } from "../../../types";
 
-const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/" });
+installSelectTestDom();
+const dom = { window };
 const mediaListeners = new Set<(event: { matches: boolean }) => void>();
 const frames = new Map<number, FrameRequestCallback>();
 let nextFrame = 0;
@@ -25,7 +30,6 @@ window.matchMedia = (() => ({
 })) as unknown as typeof window.matchMedia;
 
 const { act, createElement, StrictMode } = await import("react");
-const { createRoot } = await import("react-dom/client");
 const { default: i18n } = await import("i18next");
 const { initReactI18next } = await import("react-i18next");
 await i18n.use(initReactI18next).init({ lng: "en", resources: { en: { translation: {} } } });
@@ -40,6 +44,8 @@ const history = await import("../../chat/ChatMessage/items/sidebarHistoryStore")
 const registry = await import("../../chat/ChatMessage/items/toolPanelRegistry");
 const { claimChatPreviewSession } = await import("../../chat/chatPreviewSession");
 const { clearAuthScopedCaches } = await import("../../../services/api/authCacheInvalidation");
+const { uploadApi } = await import("../../../services/api/upload");
+const { startFileUploadTask } = await import("../../../hooks/useFileUpload");
 
 function button(title: string): HTMLButtonElement {
   const key = ({ "Center view": "documents.centerView", "Sidebar view": "documents.sidebarView", Back: "common.back" } as Record<string, string>)[title] ?? title;
@@ -47,7 +53,7 @@ function button(title: string): HTMLButtonElement {
   assert.ok(result, `Missing button: ${title}`); return result;
 }
 function overlay(): HTMLElement {
-  const result = Array.from(document.body.children).find(node => node.classList.contains("fixed") && node.classList.contains("inset-0"));
+  const result = document.querySelector<HTMLElement>("[data-tool-result-overlay]");
   assert.ok(result, "Missing tool panel overlay"); return result as HTMLElement;
 }
 async function click(node: HTMLElement) { await act(async () => node.click()); }
@@ -59,14 +65,15 @@ async function viewport(width: number) {
   });
 }
 function compressed(attribute = "data-sidebar-preview") { return document.documentElement.hasAttribute(attribute); }
-async function harness() {
+async function harness(fetchHandler?: typeof fetch) {
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = (async () => new Response("# Synthetic preview\n\nLifecycle fixture.")) as typeof fetch;
+  globalThis.fetch = fetchHandler ?? (async () => new Response("# Synthetic preview\n\nLifecycle fixture.")) as typeof fetch;
   attachment.closeAttachmentPreview(); history.clearSidebarHistory(); registry.clearToolPanelRegistry();
   await viewport(1200);
   const container = document.createElement("div"); document.body.append(container);
-  const root = createRoot(container);
+  const root = await createLobeTestRoot(container);
   return {
+    container,
     async render(children: ReactNode) {
       await act(async () => { root.render(children); });
       await act(async () => {
@@ -88,6 +95,52 @@ async function harness() {
       assert.equal(compressed("data-editor-sidebar"), false, "last unmount releases editor layout lease");
     },
   };
+}
+
+for (const file of [
+  { extension: "md", mimeType: "text/markdown", preview: "| Item | Count |\n| --- | ---: |\n| Alpha | 2 |" },
+  { extension: "xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", preview: JSON.stringify({
+    schema_version: "ai-platform.file-preview.v2", kind: "xlsx_table", status: "ready",
+    content: { sheet_count: 1, sheets: [{ name: "Checks", rows: [{ row: 1, cells: [{ column: 1, kind: "text", value: "Alpha" }] }], images: [] }] },
+    truncated: false, warnings: [], error: null,
+  }) },
+]) {
+  test(`completed unbound ${file.extension} upload reaches the mounted preview with a separate download`, async () => {
+    const fileId = `uploaded-${file.extension}`;
+    const filename = `upload.${file.extension}`;
+    const requests: string[] = [];
+    const view = await harness((async (input: RequestInfo | URL) => {
+      const url = String(input); requests.push(url);
+      const json = (value: unknown) => new Response(JSON.stringify(value), { headers: { "Content-Type": "application/json" } });
+      if (url.endsWith("/api/ai/files/uploads")) return json({ upload_session_id: `upload-${file.extension}`, part_size_bytes: 1024, parts: [{ part_number: 1, url: "/synthetic-part" }] });
+      if (url === "/synthetic-part") return json({ etag: "synthetic-etag" });
+      if (url.endsWith("/complete")) return json({ file_id: fileId, name: filename, sha256: "a".repeat(64), size_bytes: 7 });
+      if (url === `/api/ai/files/${fileId}/preview`) return new Response(file.preview, { headers: { "Content-Type": file.extension === "xlsx" ? "application/json" : "text/markdown" } });
+      throw new Error(`unexpected fixture request: ${url}`);
+    }) as typeof fetch);
+    try {
+      let attachments: MessageAttachment[] = []; let nextId = 0;
+      const task = startFileUploadTask({
+        file: new File(["fixture"], filename, { type: file.mimeType }), fileCategory: "document",
+        t: (key) => key, onAttachmentsChange: (update) => { attachments = typeof update === "function" ? update(attachments) : update; },
+        abortMap: new Map(), cancelled: new Set(), prepareFile: async (value) => value, uploadClient: uploadApi,
+        createId: () => `attachment-${++nextId}`, notifyError: (message) => assert.fail(message), reportFailure: (error) => { throw error; },
+      });
+      await task.done;
+      assert.equal(attachments.length, 1);
+      await view.render(createElement(AttachmentPreviewHost));
+      await act(async () => attachment.openAttachmentPreview(attachments[0], "chat-input"));
+      // A completed fetch does not mean the lazy document renderer has committed.
+      for (let attempt = 0; attempt < 100 && !document.querySelector("table"); attempt++) {
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
+      }
+      assert.ok(requests.includes(`/api/ai/files/${fileId}/preview`), "completed upload must request the owned preview endpoint");
+      assert.equal(attachments[0].downloadUrl, `/api/ai/files/${fileId}/download`);
+      assert.equal(requests.some((url) => url.endsWith("/download")), false, "preview does not fetch the workbook download bytes");
+      assert.match(document.body.textContent ?? "", /Alpha/);
+      assert.ok(document.querySelector("table th[scope=col]"), "file data retains semantic document table headers");
+    } finally { await view.close(); }
+  });
 }
 
 for (const dismissal of ["X", "Escape", "overlay"] as const) {
@@ -162,6 +215,8 @@ test("center and fullscreen preserve independent editor and simultaneous preview
   }
   try {
     await view.render(tree("sidebar")); assert.equal(ownerClose, 0, "same registry remounts never close each other");
+    assert.ok(view.container.contains(overlay()), "preview portal stays in the Lobe theme host");
+    assert.ok(view.container.contains(button("关闭编辑器")), "editor portal stays in the Lobe theme host");
     await click(button("Center view")); assert.equal(compressed(), true, "second sidebar retains shared attribute");
     await view.render(tree("center")); assert.equal(compressed(), false); assert.equal(compressed("data-editor-sidebar"), true);
     await view.render(tree("sidebar", true)); assert.equal(compressed(), false, "controlled fullscreen never reserves sidebar space");

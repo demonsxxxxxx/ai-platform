@@ -6,15 +6,30 @@ import {
   CompanyADLoginError,
   authApi,
   buildOAuthLoginUrl,
+  mapPrincipalToUser,
 } from "../auth.ts";
 import { registerAuthScopedCacheClearer } from "../authCacheInvalidation.ts";
 import { ApiRequestError } from "../fetch.ts";
 import {
-  CookieSessionRefreshUnsupportedError,
   refreshAccessToken,
   refreshTokens,
 } from "../tokenManager.ts";
 import { UploadRequestError, uploadApi } from "../upload.ts";
+
+test("principal mapping keeps effective department scope and never derives it from a scalar", () => {
+  const principal = {
+    user_id: "member", display_name: "Member", tenant_id: "default", department_id: "110",
+    roles: ["user"], permissions: [], is_admin: false, source: "company-login",
+  };
+  const legacy = mapPrincipalToUser(principal);
+  assert.deepEqual(legacy.department_ids, []);
+  assert.equal(legacy.department_authority_status, "unavailable");
+  const current = mapPrincipalToUser({ ...principal, direct_department_ids: ["110", "210"],
+    department_ids: ["100", "110", "200", "210"], department_authority_status: "available" });
+  assert.deepEqual(current.direct_department_ids, ["110", "210"]);
+  assert.deepEqual(current.department_ids, ["100", "110", "200", "210"]);
+  assert.equal(current.department_authority_status, "available");
+});
 
 function installAuthApiBrowserStubs(
   responseBody:
@@ -214,7 +229,7 @@ test("AD configuration composes the caller cancellation signal", async () => {
   }
 });
 
-test("current-user hydration returns owned 401 without legacy refresh or logout side effects", async () => {
+test("current-user hydration keeps terminal refresh rejection caller-owned", async () => {
   const stubs = installAuthApiBrowserStubs({ detail: "unauthorized" }, 401);
   stubs.stored.set("ai_platform_session_present", "owned-session-marker");
   try {
@@ -227,7 +242,7 @@ test("current-user hydration returns owned 401 without legacy refresh or logout 
       },
     );
 
-    assert.deepEqual(stubs.fetchCalls, ["/api/ai/auth/me"]);
+    assert.deepEqual(stubs.fetchCalls, ["/api/ai/auth/me", "/api/ai/auth/refresh"]);
     assert.equal(
       stubs.stored.get("ai_platform_session_present"),
       "owned-session-marker",
@@ -381,16 +396,11 @@ test("OAuth callback transport leaves local auth state to the auth owner", async
   }
 });
 
-test("legacy refresh functions fail closed without network or global auth side effects", async () => {
+test("refresh functions use the Cookie grant without exposing a JWT or clearing identity", async () => {
   const stubs = installAuthApiBrowserStubs({
-    user_id: "dev001",
-    user_name: "dev001",
-    display_name: "Developer",
-    tenant_id: "default",
-    roles: ["developer"],
-    permissions: ["agent:use"],
-    is_admin: true,
-    source: "company-login",
+    principal: { user_id: "dev001", display_name: "Developer", tenant_id: "default",
+      roles: ["user"], permissions: ["agent:use"], is_admin: false, source: "company-login" },
+    authorization_changed: false,
   });
   let clearCount = 0;
   const unregister = registerAuthScopedCacheClearer(() => {
@@ -400,28 +410,26 @@ test("legacy refresh functions fail closed without network or global auth side e
   stubs.stored.set("ai_platform_session_present", "existing-marker");
 
   try {
-    for (const operation of [refreshTokens, refreshAccessToken]) {
-      await assert.rejects(
-        () => operation(),
-        (error: unknown) =>
-          error instanceof CookieSessionRefreshUnsupportedError,
-      );
-    }
+    const refreshed = await refreshTokens();
+    assert.equal(refreshed.access_token, "existing-marker");
+    assert.equal(await refreshAccessToken(), "existing-marker");
+    assert.equal("jwt" in refreshed, false);
+    assert.ok(stubs.fetchInit.every((init) => init.credentials === "include" && init.body === "{}"));
 
     assert.equal(clearCount, 0);
     assert.equal(
       stubs.stored.get("ai_platform_session_present"),
       "existing-marker",
     );
-    assert.deepEqual(stubs.events, []);
-    assert.deepEqual(stubs.fetchCalls, []);
+    assert.deepEqual(stubs.events, ["auth:session-refreshed", "auth:session-refreshed"]);
+    assert.deepEqual(stubs.fetchCalls, ["/api/ai/auth/refresh", "/api/ai/auth/refresh"]);
   } finally {
     unregister();
     stubs.restore();
   }
 });
 
-test("multipart initiation 401 cannot refresh or replay through the compatibility firewall", async () => {
+test("multipart initiation without pre-execution rejection proof is never replayed", async () => {
   const stubs = installAuthApiBrowserStubs({ detail: "unauthorized" }, 401);
   stubs.stored.set("ai_platform_session_present", "existing-marker");
   try {
@@ -432,13 +440,12 @@ test("multipart initiation 401 cannot refresh or replay through the compatibilit
       error instanceof UploadRequestError && error.kind === "recoverable" && error.status === 401,
     );
     // An initiation rejection has no session to upload, complete, abort or replay.
-    assert.deepEqual(stubs.fetchCalls, ["/api/ai/files/uploads"]);
+    assert.deepEqual(stubs.fetchCalls, ["/api/ai/files/uploads", "/api/ai/auth/refresh"]);
     assert.equal(stubs.fetchInit[0].method, "POST");
     assert.equal(stubs.fetchInit[0].credentials, "include");
     assert.equal(new Headers(stubs.fetchInit[0].headers).has("Authorization"), false);
     assert.equal(stubs.stored.get("ai_platform_session_present"), "existing-marker");
-    // Uploads retain the default current-owner recovery signal; transport itself
-    // does not clear the marker, renew credentials or replay the write.
+    // The terminal refresh rejection signals recovery without replaying the upload.
     assert.deepEqual(stubs.events, ["auth:force-relogin"]);
   } finally {
     stubs.restore();

@@ -1,12 +1,12 @@
 # Run 诊断字段治理技术方案
 
-状态：Issue #1485 的诊断可靠性候选批次；产品需求见 [PRD](run-diagnostics-prd.md)。当前分支在主分支既有 SDK/Sandbox、Runs 私有持久化和管理查询之上，补齐诊断写入隔离、入队/Worker 逃逸/工作区收集失败、标准异常链、逐观察管理投影、可读运行页面和有审计的单 Run 脱敏诊断包。稳定父观察身份、runtime GET 只读迁移、真实构建版本与正式环境故障语料仍待后续批次。本文与本分支都不是已部署证明。
+状态：Issue #1485 的诊断可靠性候选批次；产品需求见 [PRD](run-diagnostics-prd.md)。当前分支在主分支既有 SDK/Sandbox、Runs 私有持久化和管理查询之上，补齐诊断写入隔离、入队/Worker 逃逸/工作区收集失败、标准异常链、逐观察管理投影、可读运行页面和有审计的单 Run 脱敏诊断包。当前候选已实现 runtime GET 只读、离线 readiness 工具归属迁移和稳定父观察链；真实构建版本及正式环境故障语料仍待补齐。本文与本分支都不是已部署证明。
 
 ## 1. 设计依据与决策
 
 候选实现核对基线：`4c24360a9d5f9c6a757b203dbf68d3ec270f2f64`。下列缺口用于约束 Issue #1485 的分批实现，不代表已复现正式环境故障；提交和验收仍以 PR 的精确 base/head 为准。
 
-主分支已具备 D01-D06 的核心链路；本批修复诊断自身不能否决合法业务终态，增加有实际来源的早期失败、异常链、逐观察投影、可读监控与同步单 Run 导出。D07-D09、稳定父观察身份、真实 PostgreSQL/Redis 联调和正式环境验收不在本批完成声明中。
+主分支已具备 D01-D06 的核心链路；本批修复诊断自身不能否决合法业务终态，增加有实际来源的早期失败、异常链、逐观察投影、可读监控与同步单 Run 导出。D07 的维护迁移、D09 的离线工具迁移及父观察链已补齐候选代码；真实构建版本和正式环境验收仍未完成。
 
 ### 已定位的缺口
 
@@ -21,8 +21,8 @@
 | E07 | `app/routes/runtime_callbacks.py:255`；`app/executor_reconciler.py:335` | 终态载荷存入 lease；永久调和失败只给 Run 写通用结果，管理详情不会读取 lease 中的原诊断 |
 | E08 | `app/runs/domain/admin_diagnostics.py:6`；`app/routes/admin_runs.py:288`；`frontend/web/src/components/panels/RunMonitorPanel.tsx:408` | 只为 failed Run 从 result_json 恢复诊断，前端主要显示 JSON；非失败状态的已有异常没有这个入口 |
 | E09 | `app/runtime/sandbox/executor_app.py:3297` 附近，callback delivery | 终态回调发送错误存于 task_state；Executor 消失后不能依赖此内存恢复。平台侧可以记录已观察的未送达，但不能重建原异常 |
-| E10 | `app/routes/admin_runtime.py:637`，`admin_runtime_overview`；`:579`，`admin_runtime_containers` | overview GET 默认 `include_maintenance_cleanup=True`；containers GET 也会触发 orphan/lease 清理。两处均与诊断页面只读需求冲突 |
-| E11 | `app/trace_audit_export_readiness.py:57` | 已退役的 `/api/version` 固定 POC 路由不再作为版本来源；export readiness 是仍有消费者的契约报告，不能作为真实下载能力 |
+| E10 | 原 `app/routes/admin_runtime.py` 的 `admin_runtime_overview` / `admin_runtime_containers` | 设计基线中两处 GET 都会触发 orphan/lease 清理；D07 已在当前候选源码迁入 Worker `sandbox_cleanup`，查询不再执行维护 |
+| E11 | `tools/trace_audit_export_readiness.py` | 已退役的 `/api/version` 固定 POC 路由不再作为版本来源；export readiness 已随组合报告迁入离线工具，仍只说明契约，真实下载由管理 API 及其测试证明 |
 
 这些是数据链路缺陷或清理候选，不说明项目缺少管理页面、完全没有日志或所有归一化均有问题。主分支已有的环境变量和假设置清理不再作为本方案待做项。
 
@@ -89,7 +89,9 @@ flowchart LR
 
 ### 3.2 最早异常与处理链
 
-- 第一次捕获异常时创建稳定 `observation_id`；进入包装、重试或回调后引用它并追加观察。
+- SDK/Executor 首次采集通过 Sandbox 的 `capture_sdk_runtime_diagnostics` 创建随机 `obs_` 身份；包装引用前一观察并追加，验证、读取和重试仅保留既有 ID。Runs 的边界记录继续对脱敏表示生成稳定 ID，并引用载体中最后的观察。
+- 永久调和失败在现有诊断行合并中，仅关联同一 Attempt 和 lease 的唯一 terminal receipt；缺失或歧义记录 `parent_observation_not_collected`，不按时间猜测或跨尝试串接。管理投影按 Attempt/观察 ID 去重，页面技术折叠项和 ZIP 保留父子关系。
+- 两个现有 v1 契约以可选 ID 字段扩展，不新增数据库列；旧记录只读解释，不补造源头身份。重复 ID 冲突、非法 ID 和前向/循环父关系被拒绝并记录 loss，预算降级保留最早观察的最小身份。
 - 同一观察的 stage/source/exception 不被外层更新。`runner_error_code` / `runner_failure_source` 的双槽补丁退出新写入路径。
 - Python cause/context 在捕获处提取为有界链；循环引用和超长链记录省略说明，避免只保留最外层异常。
 - “最早异常”是某条因果链最前的已留存观察。时间线优先采用显式父子关系和来源序号，不能仅按不同机器的时间戳猜测因果。
@@ -180,11 +182,11 @@ Chat admission 先解析显式、继承及 Agent Profile 注入的 MCP 工具，
 
 Run Monitor 的列表和详情概览从既有 Session、User、Workspace、Agent Profile 与 Skill 权威投影标题和名称，并按当前公共文本规则再次脱敏、有界截断。技术 ID 仍作为查询键和可折叠排障信息返回，但不作为默认视觉标题；该投影不新增一套名称或任务状态权威。
 
-详情的执行记录从已持久化的公开事件重建：按消息身份拼接每条可见 Agent 正文和过程说明，再对整条文本脱敏；工具开始/终态按调用身份合并为逐次动作，只展示受控名称、状态、耗时与脱敏概要。调用身份用于同一调用的诊断证据关联，仅在折叠技术信息中显示，不作为视觉标题。状态心跳不作为新的执行步骤；失败概览将首条留存观察关联到 Attempt 和可用的运行环境，分开展示其来源错误、脱敏异常摘要、后续处理和 Run 终态错误，并同步提示证据裁剪。这里的“首条留存”仍非根因证明。管理员投影不开放 SDK 推理、原始命令/参数/结果或私有流元数据；服务端在完成消息拼接后从详情事件中移除私有事件及 `__stream_v4`。
+详情将交付正文与完整公开事件回放放在折叠区域；消息仍由后端按持久身份拼接并整体脱敏。工具阶段按已知 Attempt 和公开调用身份关联，不将身份未知的历史开始/终态拼成一次调用。主要调查只使用一条阶段时间线和一处执行诊断，显示首条留存异常、来源、后续处理与裁剪说明；“首条留存”仍非根因证明。管理员投影不开放 SDK 推理、原始命令/参数/结果或私有流元数据；服务端在完成消息拼接后从详情事件中移除私有事件及 `__stream_v4`。
 
 Run Monitor 的执行健康由管理详情的 `runtime_health` 单独投影：使用最高 ordinal 的 Attempt 和同租户、Run、Attempt 且当前 owner generation 匹配的活动真实 Sandbox lease。lease 查询携带仅供服务端比较的 `lease_owner_generation`，再与最新 Attempt 的 generation 精确核对；两次 READ COMMITTED 查询之间发生 owner 转移时返回未知，不能只信任先前查询的匹配布尔值。该内部字段不进入管理响应。多个匹配环境、缺少/无效/未来心跳或缺少 lease expiry 返回未知；Executor 已接纳后必须使用其独立心跳，不用新鲜 Sandbox 心跳掩盖陈旧 Executor 心跳。心跳超过 45 秒或运行 lease 已过期显示陈旧，但不改变 Run 状态；已留存 Executor 终态而 Run 仍运行显示等待平台收尾。排队和已终态 Run 不显示活动执行健康。
 
-页面将 `queue_worker` 标为队列派发责任，将队列心跳/租约时间标为历史事实，与本次观测的 Sandbox/Executor 心跳分开展示。当前开放 Attempt 的展示耗时使用已有开始时间到服务端观测时间；缺少开始时间仍为未知。新增投影只含状态、Attempt 关联及明确时间/来源，不含私有 runtime handle、回调凭据或执行载荷；缺少该字段的旧 API 响应在新页面显示健康未知。它不创建新的生命周期状态、心跳写入或重试路径。
+页面将队列心跳/租约时间标为历史事实，与本次观测的 Sandbox/Executor 心跳分开展示。Attempt 未结束时不伪造最终耗时；缺少开始时间仍为未知。新增投影只含状态、Attempt 关联及明确时间/来源，不含私有 runtime handle、回调凭据或执行载荷；缺少该字段的旧 API 响应在新页面显示健康未知。它不创建新的生命周期状态、心跳写入或重试路径。
 
 SDK 输出校验的 `projection_failure`（原因、阶段、位置、可用的首个拒绝帧 `frame_shape` 及最多四个按序的前序已接收帧 `preceding_frames`）经过既有字段白名单后，保留到管理响应的逐条观察、首个可用断点汇总及同快照诊断包；Run Monitor 显示输出校验断点。前序帧只保留事件、block、delta 类型和消息/open-block/index 关系的固定标签，不含 guard；两个边界都拒绝超长序列、额外字段、原始正文、提示词、工具参数、索引值或原始标识。缺少 `frame_shape` 或 `preceding_frames` 的历史记录继续显示已有原因，不推断当时的拒绝条件；新诊断也不能单独证明上游哪一层生成了异常序列。
 
@@ -194,15 +196,55 @@ SDK 输出校验的 `projection_failure`（原因、阶段、位置、可用的�
 
 `GET /admin/runs/{run_id}` 内部恢复 `result.runtime_diagnostics` 的代码已删除；历史数据仅由独立诊断查询中的 Runs legacy reader 转换。已部署的外部客户端如仍消费旧字段，需要在发布前按第 8 节另行确认退出或提供只读形状适配。
 
+### 5.1.1 性能范围与单次调查
+
+监控页使用 `GET /admin/runs/monitor`，默认最近 24 小时，也可选 1 小时或 7 天；后端接收成对的有时区 `from_at` / `to_at`，限制窗口最多 168 小时。范围按 Run 的 `created_at ∈ [from_at, to_at)` 定义，限定当前租户，可按用户、Agent、模型 ID 与冻结 gateway revision 筛选。总量、性能和趋势覆盖整个选中范围；状态页签仅缩小任务列表，执行中包含 `cancel_requested`，切换页签不改变概览及各页签计数。每个 Run 至多一个样本；有界任务列表最多 100 条，页面请求 50 条，默认最近提交优先，也可按总耗时排序，不能用列表前 50 条推算总体。每项百分位显示自己的有效样本数；成功率是成功 /（成功 + 失败），取消和未结束单独列出。
+
+首屏由总任务、执行中、成功、失败四项摘要、五项阶段 P50 及运行趋势组成。趋势由服务端按整个窗口等分为 12 桶，按提交时间统计任务的当前成功、失败、执行中状态；它不是过去每一时刻的状态快照。无任务的桶为 0，旧响应未提供 `trend` 时显示未采集，不从有限列表补画。趋势时间为北京时间。原默认展开的 P50/P95/P99 表保留在“性能分位数与样本数”折叠区，替换首屏长表；未采集、真实 0 和各指标口径保持原义。列表将提交时间与耗时分列，原详情与导出入口继续保留。
+
+`run_lifecycle.v1` 的五项指标：
+
+| 指标 | 来源与定义 |
+| --- | --- |
+| `total_ms` | 已终态 Run 的 `finished_at - created_at` |
+| `queue_ms` | Run 的 `started_at - queued_at`，尚未开始为 null |
+| `execution_ms` | 已终态 Run 的 `finished_at - started_at`，含结果收尾与落库 |
+| `server_first_text_ms` | 第一条可见、非空白 `message.delta` / `message.part.delta` 的平台入库时间减 `created_at` |
+| `browser_first_text_ms` | 发起提交的聊天页使用 `performance.now()` 测得提交开始到可见文档中首段公开正文 DOM 可用的时间 |
+
+负区间、缺少时间和窗口观察终点之后的时间不作为样本；真实 0 保留。服务端首文本不是供应商 TTFT，浏览器 DOM 可用不是物理绘制完成，二者起点也不同。历史 Run 不补造浏览器测量。旧 Worker/调和 `latency_ms` 起点不一致，不进入新统计；`model.completed.duration_ms` 是 SDK 整体报告，含工具等待，不改名为纯模型耗时。
+
+`GET /admin/runs/{run_id}/investigation` 将 Run 生命周期、Attempt、最近 500 条可见模型/工具回执与首段公开文本串成一条调查时间线，返回来源、时间和关联 ID、截断/未绑定计数。条形位置使用平台接收/入库时间；SDK 报告耗时与回执跨度分开，重叠区间不求和、不把最长阶段当成根因。工具证据需同时匹配 Attempt 与调用身份；未知尝试不猜测配对。供应商内部、上下文构建和网络传输细分尚未采集，页面明示缺口。完整公开记录仍通过既有分页 trajectory 查询。
+
+单次调查只读取当前 Run，不再查询其他成功任务。原 `comparison` 响应字段、`comparison_run_id` 参数及 cohort SQL/排序、对照跳转、表格与对应断言均退役；已识别消费者为当前前端及 owning 测试，未保留空对象兼容。监控概览、全窗口趋势和耗时统计继续由 monitor 拥有。
+
+浏览器测量只提交 `POST /chat/submissions/{submission_id}/latency` 的 `run_id` 和有界整数 `duration_ms`。服务端复用 principal-scoped submission resolver，验证已授权 Run 与 outcome 一致，并要求已有非空白公开文本证据。新槽位 `browser_latency.measurement=browser_dom_commit.v1` 位于既有 Run 私有诊断 JSON，按行锁 first-wins；不存正文、Cookie、客户端绝对时间、私有 payload，不推动 Run/Attempt 状态。浏览器按 mounted/session/auth/submission 身份退休观察；历史加载、新标签页、取消、身份更替或卸载不能生成新提交计时。可选采集失败不影响聊天；浏览器数据始终是客户端观测，不是业务权威。
+
+浏览器入口归属 `Conversations.transport.submission_latency`，由 Bootstrap 复用既有主体范围 submission resolver 并注册 `/api/ai` 与现有浏览器 `/api` 别名；HTTP 请求校验留在会话 Transport，Runs 只接收已校验的整数观测。冻结的 `app/routes/chat.py` 不增加接口或校验职责。Streaming 元数据只在 Runs application 层转换为 Attempt/causation 身份，再交给不依赖 Streaming 的领域计算。
+
+可选浏览器槽位不得排挤故障证据：写入已满记录会拒绝，之后合并故障时先丢弃超预算的浏览器槽位再执行既有故障预算降级。只有浏览器测量的记录仍对故障标记 `not_collected`，不创造异常或“完整故障采集”。
+
+新 monitor/investigation GET 只读取数据库，使用事务内 5 秒 statement timeout，不调用队列、provider 或资源清理。旧 `admin_runtime_overview` 的历史事件百分位及清理分支仍由既有 CLI/运维入口消费，本页不调用；D07 的维护迁移仍是独立范围。
+
+页面退役重复的 Worker 概览、Agent/工具日志、Attempt 独立主区、第二条语义时间线、协议事件分页与无消费者的 `summarizeAdminRuns` / `buildAdminRunEventDiagnostics` 投影。`adminRunTimeline` 仅保留当前动作摘要及仍被工具阶段消费的身份索引；SDK/协议/逐条观察、产物、回放和技术关联折叠展示，证据状态、失败处理、导出和键盘焦点保护保留。
+
+回归拥有者是 `tests/test_run_performance{,_routes,_postgres}.py`、前端 `test:run-monitor`、`test:sse` 中的 browser helper 和 mounted submission 测试。真实 PostgreSQL测试使用既有隔离 schema 夹具，未配置 `AI_PLATFORM_S0A_SCHEMA_TEST_DSN` 时显式 skip；mock、JSDOM 和类型检查不能代替 SQL 执行、查询计划、真实浏览器绘制或正式环境验收。
+
 ### 5.2 导出接口
 
-当前候选已新增 `POST /admin/runs/{run_id}/diagnostic-exports`，在请求时校验管理权限。接口由一个短的 REPEATABLE READ 事务读取 Run/Attempt 摘要及诊断 revision/payload，释放事务后在应用内生成 ZIP，再写导出响应审计；审计失败不返回包。此接口不执行任务或资源维护。
+当前候选使用 `POST /admin/runs/{run_id}/diagnostic-exports`，在请求时校验管理权限。接口由一个短的 REPEATABLE READ 事务及 5 秒 statement timeout 调用 `read_admin_debug`，读取 Run/Attempt、诊断 revision/payload、最近 500 条安全类型事件、最多 100 个冻结 Skill 快照以及 Sandbox 公共注入端口投影的最多 100 个租约；释放事务后生成 ZIP，再写响应审计。接口不执行任务或资源维护。
+
+固定三文件及导出 v1 入口保留，`diagnostics.json.debug` 作为加法扩展承载 `ai-platform.run-debug.v1`，包括五项生命周期耗时、来源/Attempt/operation/event 因果关联、事件序号与有界摘要、token/成本观测、冻结模型容量/Profile 版本与 hash/Skill pins、租约心跳/终态接收/调和状态及实际留存的 dispatch timings。事件不包含消息正文、工具输入输出或任意 payload；缺少的用量为 null，成本仍遵守已有 coverage 权威。`events_truncated`、事件拒绝计数、Skill/lease 截断标识和 `missing_evidence` 保留缺口。
+
+Execution 的闭合 `sdk.debug` 契约仅允许受控组件/操作/阶段/失败分类、HTTP 状态、连接尝试次数、代理策略类型/beta 数量、SessionStore entry 类型/主子流/UTF-8 JSON 大小及限制、图片编码字节计数与版本值。Sandbox 和 Runs 在各自领域的诊断投影边界按同一闭集契约独立复验，不从领域层导入其他 bounded context；回归测试逐项核对枚举、数值边界和版本格式的一致性。不保存 header、beta 原文、URL/IP、凭据或 entry。模型代理在响应前、HTTP 错误及流迭代故障处记录；HTTPX 原异常类型、仅连接失败可尝试下一个地址及不重发已接收 POST 的规则保留。记录经实际 Run/Attempt/存活租约及 owner generation 绑定，诊断失败不改变代理或 callback 结果。
+
+SessionStore adapter 保留首次被拒绝写入的已测大小；Context 媒体拆分后的结构化 entry 超限也直接采集到宿主私有诊断，避免 callback 只剩通用拒绝。图片编码字节不是解码文件大小。SDK 版本来自执行进程安装元数据；CLI 版本只在实际 init 回执提供时记录。执行时 `executor_runtime_commit` 与记录时 `api_runtime_commit`、导出时 `debug.query_component` 分开；未提供的历史版本不倒填。egress Nginx 的连接日志、供应商内部 trace 和未采集的 CLI/执行版本作为明确缺口，平台观察到 502 不能单独证明供应商失败。
 
 同一包内所有数据库事实来自这次快照；manifest 分开记录快照已有的诊断版本与导出包 schema，未记录的实际组件构建版本保持未知。HTTP 返回沿用本次请求已经验证的 principal 和既有身份快照有效期，不声称即时感知上游权限撤销。
 
 审计只记录 export_id、操作者、范围、快照 revision、策略版本、结果类别与字节数。审计失败则不返回诊断包。下载开始后无法保证客户端完整接收；审计的 `response_started` 与 `generation_failed` 等结果不得伪称下载已送达。
 
-包按 PRD 固定文件名，未压缩合计上限 512 KiB。压缩在数据库事务外执行，内存受限；不写长期对象、不建立公开下载链接。响应采用附件下载与 `Cache-Control: no-store`，前端 Blob URL 使用后释放。超限内容按统一预算压缩并声明；最小包仍失败则返回固定安全错误。
+包按 PRD 固定文件名，未压缩合计上限 512 KiB。压缩在数据库事务外执行，内存受限；不写长期对象、不建立公开下载链接。响应采用附件下载与 `Cache-Control: no-store`，前端 Blob URL 使用后释放。可选事件/阶段/租约/Skill 历史超过导出预算时缩减其较早详情，`debug.export_omissions` 与 manifest 写明数量，保留原异常与既有 losses；最小包仍失败则返回固定安全错误。
 
 ### 5.3 脱敏与版本
 
@@ -251,18 +293,18 @@ SDK 输出校验的 `projection_failure`（原因、阶段、位置、可用的�
 | D02 | `normalize_sdk_runtime_diagnostics` 静默 `{}`、前缀截断和重复 `truncated` 汇总 | 首批已改为拒绝/loss、堆栈首尾保留及单一 loss 输出 | T02/T03 验证幂等、未知载荷不回显和字节界限；旧 `truncated` 输入只读迁移 |
 | D03 | `SandboxExecutorHttpError`、Worker 仅 code/message 分支 | 已接通独立私有载体到 Worker 的 Runs 保存端口 | HTTP 异常同时保留固定公共 code/message 与有界私有结果；Attempt fence 后在既有失败事务写入；新 `runs.result_json` 不保留私有副本；T04 |
 | D04 | `context.get("dispatch_timings") or {}` 与注入该字段的 fixture | 已在 accepted 生产端写入调和上下文，继续由既有调和读端消费 | 测试从实际 accepted 值证明写后读，删除凭空注入字段的假设；未测值不造零；T05 |
-| D05 | admin failed-only 门槛和向 result 恢复 runtime_diagnostics | 已改为独立、tenant-scoped 诊断查询并按证据状态展示 | 删除 `app/runs/domain/admin_diagnostics.py`、详情路由的 failed-only 拼装和前端整块结果 JSON；历史 result 只由 Runs 查询投影读取；T11/T13 |
+| D05 | admin failed-only 门槛和向 result 恢复 runtime_diagnostics | 已改为独立、tenant-scoped 诊断查询并按证据状态展示 | 旧 failed-only 拼装函数、详情路由恢复分支和前端整块结果 JSON 已退出；`app/runs/domain/admin_diagnostics.py` 现只拥有管理响应类型，历史 result 只由 Runs 查询投影读取；T11/T13 |
 | D06 | 调和失败只留通用结果的证据丢失路径 | callback 或 probe 的原观察先进入独立诊断记录，精简 terminal receipt 用于协议调和；永久失败再追加分类观察 | 首次回执与诊断同事务，重复回执不增 revision；调和仍保持固定公共终态码；T06/T07 |
-| D07 | GET overview 的 `include_maintenance_cleanup` 与 containers GET 清理 | 两个查询改为只读；复用 `worker_main.py` 中 `sandbox_cleanup` 调度，另核对 orphan 清理是否由该入口覆盖 | 完整盘点前端/脚本/运维调用；缺失的维护职责迁入既有维护流程后再移除 GET 分支/参数，需消费方退出证明；T14 |
+| D07 | GET overview 的 `include_maintenance_cleanup` 与 containers GET 清理 | 两个 GET 已改为只读；Worker `sandbox_cleanup` 先结算过期租约，再由 Sandbox 应用服务按已登记租户清理 orphan，失败保留同租户系统审计 | GET 分支/参数、capacity CLI 开关和仓库内 auth/B1/multiuser/load probe 调用已退出；旧失败断言迁到 Sandbox 维护测试，T14 覆盖两个默认 GET；历史 release-evidence 仅保留原始观察，不改写。外部旧 URL 的多余 query 由 FastAPI 忽略，不再触发清理；旧 CLI 开关不保留 |
 | D08 | 已退役的 `/api/version` 固定 `ai-platform-poc` 响应 | 路由与前端 version API 已删除；未来版本查询复用可信构建来源并定义自己的契约 | 路由缺席回归、前端引用清单和构建验证证明旧 wire shape 不再活跃 |
-| D09 | `app/trace_audit_export_readiness.py` 及组合 readiness / CLI | 将仍被调用的契约报告归属工具；实际下载能力从运行接口和测试证明 | 现有 consumers 包括 `app/observability_readiness.py`、工具 CLI 和 `tests/test_observability_readiness.py`；按调用链迁移，不能直接删除，也不能把本功能通过写成 G9 全部验收 |
+| D09 | `app/trace_audit_export_readiness.py`、`app/observability_readiness.py`、`app/foundation_alpha_readiness.py` | 实现并入同名 `tools/` CLI；三个 app 模块退出，无兼容转发 | B6 工具、Foundation 组合报告、capacity/release/wrapper 测试及子进程 import 已同步；CLI 名称、JSON/Markdown schema、退出码和 partial/blocked 语义保留。旧路径仅作历史 source-delta 的 runtime-neutral tombstone；不改写历史证据，也不据此宣布 G9 验收 |
 | D10 | 相关测试、selector、env、部署说明中的旧约束 | 随 D01–D09 所属批次修改/删除 | 每项列出旧断言/配置读取者与新验收；无生产读取的 fixture 字段清掉；已有 env 清理不重复实现 |
 
 ### 7.2 当前候选的实际减法
 
 | path / symbol | 原约束与触发 | 当前消费者 | 当前处置 | 新拥有者与证据 |
 | --- | --- | --- | --- | --- |
-| `app/runs/domain/admin_diagnostics.py` | 仅 failed Run 从 `result_json` 拼回诊断 | 旧 admin detail 路由 | 文件和调用删除 | `RunDiagnosticsService.read_admin`；admin 权限、tenant 隔离、历史/无记录测试 |
+| 原 `app/runs/domain/admin_diagnostics.py` 的 failed-only 拼装 | 仅 failed Run 从 `result_json` 拼回诊断 | 旧 admin detail 路由 | 拼装实现和调用删除；同路径现为框架无关管理响应类型 | `RunDiagnosticsService.read_admin`；admin 权限、tenant 隔离、历史/无记录及实际 HTTP 字段保留测试 |
 | `runs.result_json.runtime_diagnostics` 新写入 | 私有诊断与业务结果重复且会被后续映射覆盖 | Worker 终态、callback、调和 | 保存前拆分，业务结果只留公共字段 | `run_diagnostics` 独立记录；Worker/回调/调和事务测试 |
 | `runner_error_code` / `runner_failure_source` / 顶层 `truncated` 新输出 | 两槽覆盖和模糊汇总 | SDK v1 历史载荷 | 新生产者删除，归一化器只读兼容 | `failure_observations` / `normalization_losses`；幂等与未知 schema 测试 |
 | `dispatch_timings` 无生产者读取 | 调和测试可注入，真实 accepted 路径没有写入 | Executor 调和 | accepted 时写入不可变调和上下文 | Sandbox runtime 测试从返回的实际 timing 证明 |

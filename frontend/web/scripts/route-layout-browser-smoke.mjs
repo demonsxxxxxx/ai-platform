@@ -3,8 +3,11 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { captureScreenshot, startBrowser } from "./browser-smoke-harness.mjs";
+import { checkChatIntegration } from "./chat-integration-browser-checks.mjs";
 
 const baseUrl = (process.env.AI_PLATFORM_FRONTEND_URL || "http://127.0.0.1:4173").replace(/\/+$/, "");
+const theme = process.env.AI_PLATFORM_ROUTE_LAYOUT_THEME || "light";
+if (!["light", "dark"].includes(theme)) throw new Error("route_layout_smoke_theme_invalid");
 const evidenceDir = resolve(
   process.env.AI_PLATFORM_ROUTE_LAYOUT_SMOKE_DIR || "../../.codex-tmp/route-layout-browser-smoke",
 );
@@ -47,11 +50,12 @@ const profiles = [
   },
 ];
 
-function bootstrapSource() {
+function bootstrapSource(loading = false, chatFiles = false) {
   return `(() => {
     localStorage.setItem('language', 'zh');
     localStorage.setItem('i18nextLng', 'zh');
-    localStorage.setItem('ai-platform-theme', 'light');
+    localStorage.setItem('ai-platform-theme', ${JSON.stringify(theme)});
+    localStorage.setItem('ai-platform-sidebar-collapsed', 'false');
     const originalFetch = window.fetch.bind(window);
     const state = window.__routeLayoutSmoke = { errors: [], requests: [] };
     window.addEventListener('error', (event) => state.errors.push(String(event.message)));
@@ -64,10 +68,38 @@ function bootstrapSource() {
       created_at: '2026-08-09T00:00:00Z', updated_at: '2026-08-09T00:00:00Z'
     };
     const profiles = ${JSON.stringify(profiles)};
+    const run = {
+      run_id: 'run-failed', session_id: 'session-synthetic', session_title: '采购合同审核（合成案例）',
+      task_summary: '检查超时异常与后续处理的观察关联', user_id: 'user-synthetic', user_display_name: '合成测试用户',
+      workspace_id: 'workspace-synthetic', workspace_name: '测试工作区', trace_id: 'trace-synthetic',
+      status: 'failed', agent_id: 'agent-synthetic', agent_name: '合同审阅专家', skill_name: '合同检查',
+      created_at: '2026-04-01T09:00:00Z', queued_at: '2026-04-01T09:00:00Z',
+      started_at: '2026-04-01T09:00:01Z', finished_at: '2026-04-01T09:00:05Z',
+      error_code: 'executor_failed', error_message: '任务执行失败'
+    };
+    const monitorWindow = { from_at: '2026-04-01T00:00:00Z', to_at: '2026-04-02T00:00:00Z' };
+    const metric = (value) => ({ sample_count: value === null ? 0 : 1, p50: value, p95: value, p99: value });
+    const rootId = 'obs_' + '1'.repeat(32), wrapperId = 'obs_' + '2'.repeat(32), receiptId = 'obs_' + '3'.repeat(32);
+    const diagnostics = {
+      schema_version: 'ai-platform.run-diagnostics.v1', diagnostic_id: 'rdiag-synthetic', revision: 1,
+      coverage: 'full', run,
+      root: { observation_id: rootId, attempt_id: 'attempt-a', kind: 'failure', source: 'sdk_exception',
+        stage: 'model_wait', error_code: 'provider_timeout', exception_type: 'TimeoutError', message: '模型等待超时；已保留原始异常摘要。' },
+      handling: [{ observation_id: wrapperId, parent_observation_id: rootId, attempt_id: 'attempt-a',
+        kind: 'handling', source: 'executor_wrapper', stage: 'sandbox_submission', error_code: 'executor_failed' }],
+      losses: [], attempts: [{ attempt_id: 'attempt-a', ordinal: 1, status: 'failed', owner_kind: 'queue_worker', terminal_reason: 'run_failed' }],
+      details: { schema_version: 'ai-platform.sdk-runtime-diagnostics.v1', sdk: {},
+        observations: [{ observation_id: receiptId, parent_observation_id: wrapperId, attempt_id: 'attempt-a',
+          source: 'executor_callback', stage: 'terminal_receipt', error_code: 'executor_failed', sdk: {},
+          tool_lifecycles: [], tool_calls: [], tool_policy_denials: [], normalization_losses: [] }],
+        tool_lifecycles: [], tool_calls: [], tool_policy_denials: [] },
+      versions: {}, counts: { retained_observations: 1, omitted_observations: 0 }
+    };
     const profile = profiles[0];
     const adminProfile = {
       ...profile,
       revision: profile.expected_revision,
+      published_revision: profile.expected_revision,
       status: 'published',
       content_hash: 'a'.repeat(64),
       instructions: '你是一位企业支持专家。先理解任务，再从授权 Skill Set 中自主选择需要的能力。',
@@ -84,6 +116,7 @@ function bootstrapSource() {
       const url = new URL(raw, location.origin);
       const method = String(init.method || (typeof input === 'object' && input.method) || 'GET').toUpperCase();
       if (url.pathname.startsWith('/api/')) state.requests.push({ path: url.pathname, method });
+      if (${loading} && url.pathname === '/api/ai/auth/me') return new Promise(() => {});
       if (url.pathname === '/api/ai/auth/me') return json({
         user_id: 'layout-admin', user_name: 'layout-admin', display_name: 'Layout Admin', tenant_id: 'tenant-layout',
         roles: ['admin'], permissions: ['chat:read','chat:write','session:read','session:write','skill:admin','skill:read','skill:write','skill:delete','agent_profile:admin','model:admin'],
@@ -103,25 +136,59 @@ function bootstrapSource() {
       if (url.pathname === '/api/ai/admin/skills') return json({ items: [{
         skill_id: 'skill-opaque-42', name: 'qa-file-reviewer', description: skill.description,
         lifecycle_status: 'active', distribution_status: 'active', visible_to_user: true,
-        latest_version: '0.1.0', latest_version_status: 'active', current_version: '0.1.0', rollout_percent: 100
+        latest_version: '0.1.0', latest_version_status: 'active', current_version: '0.1.0',
+        latest_display_version: '0.1.0', current_display_version: '0.1.0', latest_uploaded_at: '2026-08-09T00:00:00Z', rollout_percent: 100
       }] });
       if (url.pathname === '/api/admin/capability-distributions/department-directory') return json({ departments: [{
-        directory_id: '1', authority_id: '运营QA for 工程', name: '运营QA for 工程', path: '运营QA for 工程', children: [], selectable: true, reason: null
+        directory_id: '1', authority_id: '1', name: '运营QA for 工程', path: '运营QA for 工程', children: [], selectable: true, reason: null
       }] });
       if (url.pathname === '/api/admin/capability-distributions') return json({ capability_distributions: [{
         id: 'dist-1', tenant_id: 'tenant-layout', capability_kind: 'skill', capability_id: 'skill-opaque-42',
-        status: 'active', visible_to_user: true, scope_mode: 'allowlist', department_ids: ['运营QA for 工程'], allowed_roles: ['reviewer'], metadata_json: {}
+        status: 'active', visible_to_user: true, scope_mode: 'allowlist', department_ids: ['1'], allowed_roles: ['reviewer'], metadata_json: {}
       }] });
-      if (url.pathname === '/api/admin/capability-distributions/skill/skill-opaque-42' && method === 'PUT') return json({
+      if (url.pathname === '/api/admin/capability-distributions/skill/skill-opaque-42' && method === 'PUT') return json({ capability_distribution: {
         id: 'dist-1', tenant_id: 'tenant-layout', capability_kind: 'skill', capability_id: 'skill-opaque-42',
-        status: 'active', visible_to_user: true, scope_mode: 'allowlist', department_ids: ['运营QA for 工程'], allowed_roles: ['reviewer'], metadata_json: {}
-      });
+        status: 'active', visible_to_user: true, scope_mode: 'allowlist', department_ids: ['1'], allowed_roles: ['reviewer'], metadata_json: {}
+      } });
       if (url.pathname === '/api/roles/') return json({ roles: [{ id: 'reviewer', name: 'reviewer', description: 'Reviewer', permissions: [], is_system: false }], total: 1, skip: 0, limit: 100 });
       if (url.pathname === '/api/ai/agent-profiles') return json({ agent_profiles: profiles });
       if (url.pathname === '/api/ai/agent-profiles/agt_support') return json(profile);
       if (url.pathname === '/api/ai/admin/agent-profiles') return json({ agent_profiles: [adminProfile] });
       if (url.pathname === '/api/ai/admin/agent-profiles/agt_support/history') return json({ agent_profiles: [adminProfile] });
+      if (url.pathname === '/api/mcp/catalog-tools') return json({ tools: [
+        { tool_id: 'mcp:drive:upload_file', label: 'ProfileDriveMCPServer.upload_file', description: 'Upload authorized attachments.', server: 'drive', category: 'mcp', cached: false },
+        { tool_id: 'mcp:support:search', label: '支持知识检索', description: '检索授权支持知识。', server: 'support', category: 'mcp', cached: false },
+        { tool_id: 'mcp:calendar:list', label: '列出会议', description: '查看授权日历。', server: 'calendar', category: 'mcp', cached: false }
+      ], count: 3, unavailable: [] });
       if (url.pathname === '/api/mcp/chat-tools') return json({ tools: [], count: 0, unavailable: [] });
+      if (url.pathname === '/api/mcp/') return json({ servers: [{
+        name: 'synthetic-mcp', transport: 'streamable_http', url: 'https://example.invalid/mcp',
+        enabled: true, is_system: true, can_edit: true, allowed_roles: [], role_quotas: {}, credential_state: 'configured'
+      }], total: 1, skip: 0, limit: 20 });
+      if (url.pathname === '/api/mcp/synthetic-mcp/catalog') return json({
+        server_name: 'synthetic-mcp', tools: [{ name: 'synthetic-search', description: 'Synthetic search tool', parameters: [] }], count: 1, unavailable_reason: null
+      });
+      if (url.pathname === '/api/ai/admin/runs/monitor') return json({
+        measurement: 'run_lifecycle.v1', window: monitorWindow, counts: { total: 1, succeeded: 0, failed: 1, cancelled: 0, queued: 0, running: 0 },
+        success_rate: 0, latency: { total_ms: metric(5000), queue_ms: metric(1000), execution_ms: metric(4000), server_first_text_ms: metric(null), browser_first_text_ms: metric(null) },
+        models: [], runs: [run], limit: 50, has_more: false, order: 'slow'
+      });
+      if (url.pathname === '/api/ai/admin/runs/run-failed') return json({
+        run, worker_execution: { response: '', messages: [], actions: [], model: { turn_count: 1, duration_ms: 4000, stop_category: 'failed' } },
+        events: [], steps: [], artifacts: [], sandbox_leases: [], skill_snapshots: [], audit: []
+      });
+      if (url.pathname === '/api/ai/admin/runs/run-failed/diagnostics') return json(diagnostics);
+      if (url.pathname === '/api/ai/admin/runs/run-failed/investigation') return json({
+        run_id: run.run_id, total_ms: 5000, queue_ms: 1000, execution_ms: 4000, elapsed_ms: 5000,
+        server_first_text_ms: null, browser_first_text_ms: null, first_public_text_at: null,
+        observed_at: run.finished_at, browser_measurement: null, timeline_source: 'platform_receipts', durations_additive: false,
+        events_truncated: false, unbound_event_count: 0, missing_measurements: ['server_first_text_ms', 'browser_first_text_ms'], stages: [],
+        comparison: { window: monitorWindow, sample_count: 0, latency: {}, normal_run_id: null,
+          scope: 'same_agent_skill_profile_model_configuration', missing_reason: 'no_comparable_successful_run' }
+      });
+      if (url.pathname === '/api/ai/admin/runs/run-failed/trajectory') return json({
+        contract_version: 'ai-platform.admin-run-trajectory.v1', run_id: run.run_id, events: [], next_after_sequence: 0, has_more: false
+      });
       if (url.pathname === '/api/ai/admin/models') return json({
         connection: { configured: true, revision: 7, base_url: 'https://gateway.example.invalid', key_fingerprint: 'synthetic' },
         models: Array.from({ length: 29 }, (_, index) => ({
@@ -138,6 +205,14 @@ function bootstrapSource() {
         models: [{ id: 'model-enterprise', value: 'model-enterprise', label: 'Enterprise Claude', provider: 'anthropic' }],
         count: 1, enabled_count: 1, default_model_id: 'model-enterprise'
       });
+      if (url.pathname === '/api/ai/auth/company-credential-handoff') return json({ credential: 'synthetic-handoff' });
+      if (url.pathname === '/api/profile-drive/status') return json({ status: ${chatFiles} ? 'connected' : 'disconnected', connected: ${chatFiles}, reauthRequired: false, connectedAtUtc: null, lastUsedAtUtc: null });
+      if (${chatFiles} && url.pathname === '/api/profile-drive/files/list') return json({
+        status: 'success', path: '', truncated: false,
+        entries: Array.from({ length: 48 }, (_, index) => ({ path: 'report-' + index + '.txt', name: '报告 ' + (index + 1) + '.txt', type: 'file', size: 1200, lastModifiedUtc: '2026-01-01T00:00:00Z' }))
+      });
+      if (url.pathname === '/api/review/history') return json({ items: [] });
+      if (url.pathname === '/api/review/stats/documents') return json({ total: 146, daily: [] });
       if (url.pathname === '/api/upload/config') return json({
         enabled: true,
         provider: 's3',
@@ -149,9 +224,12 @@ function bootstrapSource() {
           document: 52428800
         }
       });
+      if (url.pathname === '/api/ai/chat/sessions/session-synthetic/files') return json({ session_id: 'session-synthetic', files: [{
+        file_id: 'file-synthetic', run_id: 'run-synthetic-1', name: '已确认附件.pdf', mime_type: 'application/pdf', size_bytes: 2048,
+        preview_url: '/api/ai/files/file-synthetic/preview?session_id=session-synthetic', download_url: '/api/ai/files/file-synthetic/download?session_id=session-synthetic'
+      }] });
       if (url.pathname === '/api/ai/chat/sessions') return json({ sessions: [], next_cursor: null });
       if (url.pathname === '/api/sessions') return json({ sessions: [], total: 0, skip: 0, limit: 20, has_more: false });
-      if (url.pathname.includes('notification')) return json([]);
       if (url.pathname.startsWith('/api/')) {
         state.errors.push('unstubbed_api:' + method + ':' + url.pathname);
         return json({ detail: 'route_layout_smoke_unstubbed_api' }, 501);
@@ -162,6 +240,16 @@ function bootstrapSource() {
 }
 
 const cases = [
+  { path: "/scripts/fixtures/chat-integration.html", selector: "[data-agent-starter-prompts] button", name: "chat-integration", requiredSelectors: ["textarea", "[data-librechat-context-toggle]"] },
+  { path: "/ai-apps/sop-assistant", selector: "textarea[aria-label=\"制度或流程问题\"]", name: "sop", scroller: "[data-ai-application-scroller]" },
+  { path: "/ai-apps/word-review", selector: ".review-upload", name: "word", scroller: "[data-ai-application-scroller]", requiredRequests: ["/api/review/history", "/api/review/stats/documents"] },
+  {
+    path: "/",
+    selector: ".welcome-root",
+    name: "loading",
+    loading: true,
+    requiredSelectors: [".welcome-hero .w-48", ".welcome-hero .w-36"],
+  },
   {
     path: "/skills",
     selector: "[data-skills-master-detail]",
@@ -174,7 +262,7 @@ const cases = [
       "[data-skill-distribution-status]",
       "[data-skill-distribution-visible]",
       "[data-skill-distribution-save]",
-      ".department-selector__trigger",
+      "[data-department-directory-selector] button[aria-haspopup=listbox]",
     ],
     saveRequest: "/api/admin/capability-distributions/skill/skill-opaque-42",
     requiredRequests: [
@@ -229,7 +317,26 @@ const cases = [
       "[data-agent-avatar-picker]",
       "[data-agent-avatar-picker] [data-agent-avatar-ref] img[src^='data:image/svg+xml']",
     ],
-    requiredRequests: ["/api/ai/admin/agent-profiles", "/api/skills/"],
+    requiredRequests: ["/api/ai/admin/agent-profiles", "/api/skills/", "/api/mcp/catalog-tools"],
+  },
+  {
+    path: "/mcp",
+    selector: "[data-mcp-view-tools]",
+    name: "mcp",
+    requiredSelectors: ["[data-mcp-view-tools]", "[data-mcp-tool-count]"],
+    requiredRequests: ["/api/mcp/", "/api/mcp/synthetic-mcp/catalog"],
+  },
+  {
+    path: "/plugins",
+    selector: "[data-plugin-market]",
+    name: "plugins",
+    requiredSelectors: ["[data-plugin-card='personal-file-server']"],
+    requiredRequests: ["/api/profile-drive/status"],
+  },
+  {
+    path: "/runs", selector: "[data-run-monitor]", name: "runs",
+    requiredSelectors: ['button[aria-label="查看 run-failed"]'],
+    requiredRequests: ["/api/ai/admin/runs/monitor"],
   },
   {
     path: "/models",
@@ -261,7 +368,7 @@ if (selectedCases.length === 0 || selectedViewports.length === 0) {
 async function runCase(viewport, scenario) {
   const browser = await startBrowser({ viewport, profilePrefix: `route-layout-${viewport.name}-` });
   try {
-    await browser.client.send("Page.addScriptToEvaluateOnNewDocument", { source: bootstrapSource() });
+    await browser.client.send("Page.addScriptToEvaluateOnNewDocument", { source: bootstrapSource(scenario.loading, ["chat-integration", "market-workspace"].includes(scenario.name)) });
     await browser.client.send("Page.navigate", { url: `${baseUrl}${scenario.path}` });
     try {
       await browser.client.waitFor(
@@ -277,6 +384,13 @@ async function runCase(viewport, scenario) {
       }))()`);
       throw new Error(`route_mount_failed:${viewport.name}:${scenario.name}:${JSON.stringify(diagnostic)}:${String(error)}`);
     }
+    if (scenario.name === "builder") {
+      await browser.client.evaluate(`(() => {
+        const button = [...document.querySelectorAll('button')].find((node) => node.textContent.trim() === '新建专家');
+        if (!button) throw new Error('builder_new_button_missing');
+        button.click();
+      })()`);
+    }
     await browser.client.waitFor(
       `(${JSON.stringify(scenario.requiredSelectors ?? [])}).every((selector) => {
         const element = document.querySelector(selector);
@@ -287,6 +401,94 @@ async function runCase(viewport, scenario) {
       })`,
       `${viewport.name}:${scenario.name}:required-controls`,
     );
+    let marketView = null;
+    if (scenario.name === "market") {
+      marketView = await browser.client.evaluate(`(() => {
+        const group = document.querySelector('[data-agent-market-view]');
+        return [...group.querySelectorAll('button')].map(button => {
+          const box = button.getBoundingClientRect();
+          const icon = button.querySelector('svg').getBoundingClientRect();
+          const style = getComputedStyle(button);
+          return { label: button.getAttribute('aria-label'), width: box.width, height: box.height,
+            iconWidth: icon.width, iconHeight: icon.height, paddingLeft: style.paddingLeft, paddingRight: style.paddingRight };
+        });
+      })()`);
+      if (marketView.length !== 2 || marketView.some(button => button.width < 32 || button.height < 32 || button.iconWidth < 15 || button.iconHeight < 15)) {
+        throw new Error(`market_view_toggle_size_failed:${JSON.stringify(marketView)}`);
+      }
+      await browser.client.evaluate(`document.querySelector('[aria-label="列表视图"]').click()`);
+      await browser.client.waitFor(`document.querySelector('[aria-label="列表视图"]').getAttribute('aria-pressed') === 'true' && document.querySelector('[data-agent-market-card]').classList.contains('sm:flex-row')`, "market:list-view");
+      await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-market-list`);
+      await browser.client.evaluate(`document.querySelector('[aria-label="网格视图"]').focus()`);
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: " ", code: "Space", windowsVirtualKeyCode: 32 });
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: " ", code: "Space", windowsVirtualKeyCode: 32 });
+      await browser.client.waitFor(`document.querySelector('[aria-label="网格视图"]').getAttribute('aria-pressed') === 'true' && document.querySelector('[data-agent-market-catalog]').classList.contains('grid')`, "market:grid-view-keyboard");
+    }
+    if (["market", "market-detail"].includes(scenario.name)) {
+      const retiredCopyPresent = await browser.client.evaluate("document.body.textContent.includes('企业已发布')");
+      if (retiredCopyPresent) throw new Error("market_retired_publication_badge_present");
+    }
+    let pluginLayout = null;
+    if (scenario.name === "plugins") {
+      if (viewport.mobile) {
+        await browser.client.evaluate(`document.querySelector('[data-librechat-mobile-rail] button[aria-expanded=false]').click()`);
+        await browser.client.waitFor(`document.querySelector('[data-librechat-mobile-sidebar]').getBoundingClientRect().left >= -1`, "plugins:mobile-sidebar-open");
+      }
+      const navigation = await browser.client.evaluate(`(() => {
+        const shell = document.querySelector(${JSON.stringify(viewport.mobile ? "[data-librechat-mobile-sidebar]" : "[data-librechat-desktop-sidebar]")});
+        return [...shell.querySelectorAll('[data-workbench-nav-item]')].map((button) => {
+          const box = button.getBoundingClientRect();
+          const icon = [...button.querySelectorAll('svg')].find((node) => node.getBoundingClientRect().width > 0).getBoundingClientRect();
+          return { item: button.dataset.workbenchNavItem, inset: icon.left - box.left, iconWidth: icon.width, align: getComputedStyle(button).justifyContent };
+        });
+      })()`);
+      const sidebarScreenshot = await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-plugins-sidebar`);
+      if (viewport.mobile) {
+        await browser.client.evaluate(`document.querySelector('[data-librechat-mobile-sidebar] button[title="收起侧边栏"]').click()`);
+        await browser.client.waitFor(`document.querySelector('[data-librechat-mobile-sidebar]').getBoundingClientRect().right <= 1`, "plugins:mobile-sidebar-close");
+      }
+      await browser.client.evaluate(`(() => { const button = [...document.querySelectorAll('[data-plugin-card] button')].find((node) => node.textContent.trim() === '认证'); button.focus(); window.__pluginAuthTrigger = button; button.click(); })()`);
+      await browser.client.waitFor("Boolean(document.querySelector('#file-server-password'))", "plugins:auth-open");
+      // Wait for the real popup entrance animation before measuring its controls.
+      await browser.client.waitFor(`(() => { const input = document.querySelector('#file-server-password'); return input && input.closest('[role=dialog]').getBoundingClientRect().height > 200 && [...document.querySelectorAll('[role=dialog]')].every((node) => node.getAnimations({ subtree: true }).every((animation) => animation.effect?.getTiming().iterations === Infinity || animation.playState !== 'running')); })()`, "plugins:auth-painted");
+      const field = await browser.client.evaluate(`(() => {
+        const input = document.querySelector('#file-server-password');
+        const root = input.parentElement;
+        const toggle = document.querySelector('button[aria-label="显示密码"]');
+        const rect = root.getBoundingClientRect();
+        const button = toggle.getBoundingClientRect();
+        const dialog = input.closest('[role=dialog]').getBoundingClientRect();
+        return { width: rect.width, height: rect.height, display: getComputedStyle(root).display,
+          themed: getComputedStyle(root).borderTopStyle === 'solid' && (getComputedStyle(root).borderTopColor !== 'rgba(0, 0, 0, 0)' || getComputedStyle(root).backgroundColor !== 'rgba(0, 0, 0, 0)'),
+          hasPrefix: Boolean(root.querySelector('svg')), toggleInside: root.contains(toggle), toggleWidth: button.width,
+          iconWidth: toggle.querySelector('svg')?.getBoundingClientRect().width ?? 0,
+          contained: dialog.left >= 0 && dialog.right <= innerWidth && dialog.top >= 0 && dialog.bottom <= innerHeight,
+          focused: document.activeElement === input };
+      })()`);
+      const screenshot = await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-plugins-auth`);
+      pluginLayout = { navigation, field, screenshot, sidebarScreenshot };
+      if (!navigation.length || navigation.some((item) => item.inset > 24 || item.iconWidth < 18 || item.align !== 'flex-start') ||
+          field.width < 260 || field.height < 40 || !field.themed || !field.hasPrefix || !field.toggleInside || field.toggleWidth < 28 || field.iconWidth < 15 || !field.contained || !field.focused) {
+        throw new Error(`plugin_layout_failed:${JSON.stringify(pluginLayout)}`);
+      }
+      await browser.client.evaluate(`document.querySelector('[role=dialog] button[type=submit]').focus()`);
+      for (const [modifiers, selector] of [[0, 'button[aria-label="关闭本地文件服务器认证"]'], [8, '[role=dialog] button[type=submit]']]) {
+        await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9, modifiers });
+        await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9, modifiers });
+        await browser.client.waitFor(`document.activeElement === document.querySelector(${JSON.stringify(selector)})`, `plugins:auth-tab-wrap:${modifiers}`);
+      }
+      await browser.client.evaluate(`document.querySelector('button[aria-label="显示密码"]').click()`);
+      await browser.client.waitFor(`document.querySelector('#file-server-password').type === 'text' && Boolean(document.querySelector('button[aria-label="隐藏密码"]'))`, "plugins:password-visible");
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await browser.client.waitFor("!document.querySelector('#file-server-password') && document.activeElement === window.__pluginAuthTrigger", "plugins:auth-focus-restored");
+      if (!viewport.mobile) {
+        await browser.client.evaluate(`document.querySelector('[data-librechat-desktop-sidebar] button[title="收起侧边栏"]').click()`);
+        await browser.client.waitFor("Boolean(document.querySelector('[data-librechat-desktop-sidebar] [data-workbench-rail-item]'))", "plugins:collapsed-rail");
+        const centered = await browser.client.evaluate(`(() => { const button = document.querySelector('[data-librechat-desktop-sidebar] [data-workbench-rail-item]'); const box = button.getBoundingClientRect(); const icon = button.querySelector('svg').getBoundingClientRect(); return Math.abs((box.left + box.right - icon.left - icon.right) / 2) < 2; })()`);
+        if (!centered) throw new Error('plugins:collapsed-icon-not-centered');
+      }
+    }
     if (scenario.name === "models") {
       await browser.client.evaluate(`(() => {
         const input = document.querySelector('[aria-label="启用 deepseek-v4-flash-cc"]');
@@ -295,9 +497,33 @@ async function runCase(viewport, scenario) {
         input.click();
       })()`);
       await browser.client.waitFor(
-        `document.querySelectorAll('[data-model-admin-table-scroll] tbody input[type=checkbox]:checked').length === 3`,
+        `document.querySelectorAll('[data-model-admin-table-scroll] [role=switch][aria-checked=true]').length === 3`,
         `${viewport.name}:models:enabled-toggle`,
       );
+    }
+    const responsiveLayout = await browser.client.evaluate(`(() => {
+      const detail = document.querySelector('[data-selected-skill-detail-shell]')?.getBoundingClientRect();
+      const upload = document.querySelector('.review-upload')?.getBoundingClientRect();
+      const header = document.querySelector('.review-panel-header');
+      const table = document.querySelector('[data-mcp-server-row]')?.closest('table');
+      let tableScroller = table?.parentElement;
+      while (tableScroller && tableScroller.scrollWidth <= tableScroller.clientWidth + 1) tableScroller = tableScroller.parentElement;
+      if (tableScroller) tableScroller.scrollLeft = tableScroller.scrollWidth;
+      const tableReachable = !tableScroller || tableScroller.scrollLeft + tableScroller.clientWidth >= tableScroller.scrollWidth - 2;
+      if (tableScroller) tableScroller.scrollLeft = 0;
+      return {
+        detailContained: !detail || (detail.left >= 0 && detail.right <= innerWidth + 1),
+        uploadBottom: upload?.bottom ?? null,
+        headerPosition: header ? getComputedStyle(header).position : null,
+        tableWidth: table?.getBoundingClientRect().width ?? null, tableReachable,
+        iconsValid: [...document.querySelectorAll('button svg')].filter(node => node.checkVisibility({ opacityProperty: true, visibilityProperty: true }) && Number(node.getAttribute('width')) >= 12).every(node => node.getBoundingClientRect().width >= 12),
+        badgesSingleLine: [...document.querySelectorAll('[data-governance-state]')].every(node => getComputedStyle(node).whiteSpace === 'nowrap'),
+      };
+    })()`);
+    if (!responsiveLayout.detailContained || !responsiveLayout.iconsValid || !responsiveLayout.badgesSingleLine || !responsiveLayout.tableReachable ||
+        (scenario.name === "mcp" && responsiveLayout.tableWidth < 1080) ||
+        (scenario.name === "word" && (responsiveLayout.headerPosition === "sticky" || (viewport.mobile && responsiveLayout.uploadBottom > viewport.height)))) {
+      throw new Error(`responsive_layout_failed:${viewport.name}:${scenario.name}:${JSON.stringify(responsiveLayout)}`);
     }
     const scrollerSelector = typeof scenario.scroller === "function" ? scenario.scroller(viewport) : scenario.scroller;
     const layout = await browser.client.evaluate(`(() => {
@@ -308,6 +534,12 @@ async function runCase(viewport, scenario) {
       return {
         bodyScrollWidth: document.documentElement.scrollWidth,
         viewportWidth: window.innerWidth,
+        userAvatarValid: [...document.querySelectorAll('[data-user-menu-trigger] [data-user-avatar]')].filter((avatar) => avatar.checkVisibility({ opacityProperty: true, visibilityProperty: true })).every((avatar) => {
+          const box = avatar.getBoundingClientRect();
+          const button = avatar.closest('button').getBoundingClientRect();
+          return box.width >= 19 && box.height >= 19 && box.left >= button.left && box.right <= button.right + 1;
+        }),
+        railIconsValid: [...document.querySelectorAll('[data-workbench-rail-item] svg')].filter((icon) => icon.checkVisibility({ opacityProperty: true, visibilityProperty: true })).every((icon) => { const size = icon.getBoundingClientRect(); return size.width >= 18 && size.height >= 18; }),
         scrollTop: target?.scrollTop || 0,
         scrollHeight: target?.scrollHeight || 0,
         clientHeight: target?.clientHeight || 0,
@@ -329,6 +561,8 @@ async function runCase(viewport, scenario) {
     const reachable = layout.scrollHeight <= layout.clientHeight + 1 || layout.scrollTop + layout.clientHeight >= layout.scrollHeight - 2;
     if (
       layout.bodyScrollWidth > layout.viewportWidth ||
+      !layout.railIconsValid ||
+      !layout.userAvatarValid ||
       !reachable ||
       layout.errors.length ||
       missingRequests.length
@@ -344,9 +578,17 @@ async function runCase(viewport, scenario) {
         const bar = document.querySelector('[data-model-admin-action-bar]').getBoundingClientRect();
         const config = document.querySelector('[data-model-admin-control] > div:first-child').getBoundingClientRect();
         const shell = document.querySelector('[data-model-catalog-shell]');
+        const filterLabel = [...document.querySelectorAll('label')].find((label) => label.textContent === '筛选模型状态');
+        const filterControl = document.getElementById(filterLabel.htmlFor);
+        const filter = filterControl.getBoundingClientRect();
+        const search = document.querySelector('[aria-label="搜索模型"]').closest('label').getBoundingClientRect();
         return {
-          rows: table.querySelectorAll('tbody tr').length,
-          enabledCount: table.querySelectorAll('tbody input[type=checkbox]:checked').length,
+          filterGroupWidth: filterLabel.parentElement.parentElement.getBoundingClientRect().width,
+          filterWidth: filter.width,
+          searchWidth: search.width,
+          fontsMatch: getComputedStyle(document.querySelector('[aria-label="搜索模型"]')).fontFamily === getComputedStyle(document.documentElement).fontFamily,
+          rows: table.querySelectorAll('[data-model-admin-model]').length,
+          enabledCount: table.querySelectorAll('[role=switch][aria-checked=true]').length,
           missingLimitHintVisible: document.querySelector('[aria-label="deepseek-v4-flash-cc 最大输入 Token"]')?.getAttribute('placeholder') === '必填',
           shellScrollTop: shell.scrollTop,
           configVisible: config.top >= -1 && config.bottom <= innerHeight,
@@ -355,24 +597,61 @@ async function runCase(viewport, scenario) {
           publishRequestCount: window.__routeLayoutSmoke.requests.filter((request) => request.path === '/api/ai/admin/models/publish').length,
           tableScrollable: table.scrollHeight > table.clientHeight,
           headerPinned: Math.abs(header.top - tableRect.top) < 3 && header.bottom <= tableRect.bottom,
-          headerOpaque: getComputedStyle(table.querySelector('thead')).backgroundColor !== 'rgba(0, 0, 0, 0)',
+          headerOpaque: getComputedStyle(table.querySelector('th')).backgroundColor !== 'rgba(0, 0, 0, 0)',
           actionVisible: bar.top >= 0 && bar.bottom <= innerHeight + 1,
           actionBelowTable: bar.top >= tableRect.bottom - 2,
         };
       })()`);
-      if (modelLayout.rows !== 29 || modelLayout.enabledCount !== 3 || !modelLayout.missingLimitHintVisible || !modelLayout.publishErrorVisible || modelLayout.publishRequestCount !== 0 || !modelLayout.actionVisible || !modelLayout.headerOpaque ||
+      if ((viewport.width >= 640 && (Math.abs(modelLayout.filterWidth - 160) > 1 || Math.abs(modelLayout.searchWidth - Math.min(384, modelLayout.filterGroupWidth - 172)) > 1)) ||
+        !modelLayout.fontsMatch || modelLayout.rows !== 29 || modelLayout.enabledCount !== 3 || !modelLayout.missingLimitHintVisible || !modelLayout.publishErrorVisible || modelLayout.publishRequestCount !== 0 || !modelLayout.actionVisible || !modelLayout.headerOpaque ||
         (viewport.width >= 1024 && (!modelLayout.tableScrollable || !modelLayout.headerPinned || !modelLayout.actionBelowTable || !modelLayout.configVisible || modelLayout.actionBottomGap > 48 || modelLayout.shellScrollTop !== 0)) ||
         (viewport.width < 1024 && layout.scrollHeight <= layout.clientHeight + 1)
       ) {
         throw new Error(`model_layout_failed:${viewport.name}:${JSON.stringify(modelLayout)}`);
       }
     }
+    let avatarLayout = null;
+    if (scenario.name === "builder") {
+      avatarLayout = await browser.client.evaluate(`(() => {
+        const picker = document.querySelector('[data-agent-avatar-picker]');
+        const candidates = [...picker.querySelectorAll('button[aria-pressed]')].map((button) => {
+          const frame = button.getBoundingClientRect();
+          const avatar = button.querySelector('[data-agent-avatar-ref]').getBoundingClientRect();
+          return {
+            left: avatar.left, right: avatar.right, top: avatar.top, bottom: avatar.bottom,
+            contained: avatar.left >= frame.left - 1 && avatar.right <= frame.right + 1 && avatar.top >= frame.top - 1 && avatar.bottom <= frame.bottom + 1,
+          };
+        });
+        const directoryRows = [...document.querySelectorAll('[data-agent-directory-item]')].map((button) => {
+          const row = button.getBoundingClientRect();
+          const content = button.lastElementChild.getBoundingClientRect();
+          const avatar = button.querySelector('[data-agent-avatar-ref]')?.getBoundingClientRect();
+          return { top: row.top, bottom: row.bottom, contained: content.top >= row.top && content.bottom <= row.bottom + 1 && (!avatar || (avatar.top >= row.top && avatar.bottom <= row.bottom + 1)) };
+        });
+        return {
+          directoryCount: directoryRows.length,
+          directoryContained: directoryRows.every((row) => row.contained),
+          directoryOverlapping: directoryRows.some((row, index) => index > 0 && directoryRows[index - 1].bottom > row.top + 1),
+          count: candidates.length,
+          contained: candidates.every((candidate) => candidate.contained),
+          overlapping: candidates.some((candidate, index) => candidates.slice(index + 1).some((other) => candidate.left < other.right && candidate.right > other.left && candidate.top < other.bottom && candidate.bottom > other.top)),
+        };
+      })()`);
+      if (avatarLayout.count !== 8 || !avatarLayout.contained || avatarLayout.overlapping || avatarLayout.directoryCount !== 2 || !avatarLayout.directoryContained || avatarLayout.directoryOverlapping) {
+        throw new Error(`avatar_layout_failed:${viewport.name}:${JSON.stringify(avatarLayout)}`);
+      }
+    }
     let overlay = null;
     if (scenario.popover) {
-      await browser.client.evaluate(`(() => { const node = document.querySelector('.department-selector__trigger'); if (!node) throw new Error('department_trigger_missing'); node.click(); })()`);
-      await browser.client.waitFor("Boolean(document.querySelector('.department-selector__menu'))", `${viewport.name}:department-menu`);
-      overlay = await browser.client.evaluate(`(() => { const r = document.querySelector('.department-selector__menu').getBoundingClientRect(); return { left:r.left, right:r.right, top:r.top, bottom:r.bottom, visible:r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight }; })()`);
+      await browser.client.evaluate(`(() => { const node = document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]'); if (!node) throw new Error('department_trigger_missing'); node.click(); })()`);
+      await browser.client.waitFor("Boolean(document.querySelector('[role=listbox]')) && document.querySelector('[data-department-directory-popup]').contains(document.activeElement) && document.querySelector('[data-department-directory-popup]').getAnimations({ subtree: true }).every((animation) => animation.playState !== 'running')", `${viewport.name}:department-menu`);
+      overlay = await browser.client.evaluate(`(() => { const r = document.querySelector('[role=listbox]').getBoundingClientRect(); return { left:r.left, right:r.right, top:r.top, bottom:r.bottom, visible:r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight }; })()`);
       if (!overlay.visible) throw new Error(`overlay_clipped:${viewport.name}:${JSON.stringify(overlay)}`);
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      // Select can retain its closed animation DOM; verify the user-visible close contract.
+      await browser.client.waitFor("!document.querySelector('[role=listbox]')?.checkVisibility({ opacityProperty: true, visibilityProperty: true }) && document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]').getAttribute('aria-expanded') === 'false' && document.activeElement === document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]')", `${viewport.name}:department-escape`);
+      overlay.dismissal = await browser.client.evaluate(`(() => { const list = document.querySelector('[role=listbox]'); return { retainedDom: Boolean(list), visible: list?.checkVisibility({ opacityProperty: true, visibilityProperty: true }) ?? false, expanded: document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]').getAttribute('aria-expanded'), focusRestored: document.activeElement === document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]') }; })()`);
     }
     if (scenario.saveRequest) {
       await browser.client.evaluate(`(() => { const button = document.querySelector('[data-skill-distribution-save]'); if (!button) throw new Error('skill_distribution_save_missing'); button.click(); })()`);
@@ -380,19 +659,219 @@ async function runCase(viewport, scenario) {
         `window.__routeLayoutSmoke.requests.some((request) => request.path === ${JSON.stringify(scenario.saveRequest)} && request.method === 'PUT')`,
         `${viewport.name}:skill-distribution-save`,
       );
+      await browser.client.waitFor(`Boolean([...document.querySelectorAll('[data-skill-distribution-governance] [role=status]')].find((node) => node.textContent.includes('已保存')))`, `${viewport.name}:skill-distribution-receipt`);
     }
-    const screenshot = await captureScreenshot(browser.client, evidenceDir, `${viewport.name}-${scenario.name}`);
-    return { viewport: viewport.name, route: scenario.path, layout, reachable, modelLayout, overlay, screenshot };
+    let mcpFocus = null;
+    if (scenario.name === "mcp") {
+      await browser.client.evaluate(`(() => { const button = document.querySelector('[data-mcp-view-tools]'); button.focus(); button.click(); })()`);
+      await browser.client.waitFor("Boolean(document.querySelector('[data-mcp-tool-detail] input[type=search]'))", `${viewport.name}:mcp:drawer`);
+      await browser.client.evaluate(`document.querySelector('[data-mcp-tool-detail] input[type=search]').focus()`);
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 });
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 });
+      await browser.client.waitFor("document.activeElement === document.querySelector('[data-mcp-tool-detail-close]')", `${viewport.name}:mcp:tab-wrap`);
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9, modifiers: 8 });
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9, modifiers: 8 });
+      await browser.client.waitFor("document.activeElement === document.querySelector('[data-mcp-tool-detail] input[type=search]')", `${viewport.name}:mcp:shift-tab-wrap`);
+      await browser.client.waitFor(`(() => {
+        const panel = document.querySelector('[data-mcp-tool-detail] [data-drawer-placement]').getBoundingClientRect();
+        const close = document.querySelector('[data-mcp-tool-detail-close]').getBoundingClientRect();
+        return panel.left >= 0 && panel.right <= innerWidth + 1 && close.left >= 0 && close.right <= innerWidth + 1;
+      })()`, `${viewport.name}:mcp:drawer-contained`);
+      const drawerScreenshot = await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-mcp-drawer`);
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await browser.client.waitFor("!document.querySelector('[data-mcp-tool-detail]') && document.activeElement === document.querySelector('[data-mcp-view-tools]')", `${viewport.name}:mcp:focus-restore`);
+      await browser.client.evaluate(`(() => { const button = document.querySelector('[data-mcp-admin-controls] button'); button.focus(); button.click(); })()`);
+      await browser.client.waitFor("Boolean(document.querySelector('[data-mcp-editor-initial-focus]'))", `${viewport.name}:mcp:editor`);
+      await browser.client.evaluate(`(() => { const label = [...document.querySelectorAll('[role=dialog] label')].find((node) => node.htmlFor && node.textContent === '传输类型'); if (!label) throw new Error('transport_label_missing'); document.getElementById(label.htmlFor).click(); })()`);
+      await browser.client.waitFor("Boolean(document.querySelector('[role=listbox]'))", `${viewport.name}:mcp:transport-options`);
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await browser.client.waitFor("!document.querySelector('[role=listbox]')?.checkVisibility({ opacityProperty: true, visibilityProperty: true }) && Boolean(document.querySelector('[data-mcp-editor-initial-focus]'))", `${viewport.name}:mcp:nested-escape`);
+      await browser.client.evaluate(`(() => { const trigger = document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]'); trigger.scrollIntoView({ block: 'center' }); trigger.click(); })()`);
+      await browser.client.waitFor(`(() => { const option = document.querySelector('[data-department-directory-popup] [role=option]'); if (!option || option.getAttribute('aria-disabled') === 'true' || document.querySelector('[data-department-directory-popup]').getAnimations({ subtree: true }).some(animation => animation.playState === 'running')) return false; const rect = option.getBoundingClientRect(); return rect.left >= 0 && rect.right <= innerWidth + 1 && rect.top >= 0 && rect.bottom <= innerHeight; })()`, `${viewport.name}:mcp:department-options`);
+      const departmentScreenshot = await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-mcp-departments`);
+      await browser.client.evaluate(`document.querySelector('[data-department-directory-popup] [role=option]').click()`);
+      await browser.client.waitFor(`Boolean(document.querySelector('[data-department-selection-overflow] span[title="运营QA for 工程"]'))`, `${viewport.name}:mcp:department-selected`);
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await browser.client.waitFor(`document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]').getAttribute('aria-expanded') === 'false' && !document.querySelector('[data-department-directory-popup]')?.checkVisibility({ opacityProperty: true, visibilityProperty: true }) && document.activeElement === document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]') && Boolean(document.querySelector('[data-mcp-editor-initial-focus]'))`, `${viewport.name}:mcp:department-escape`);
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await browser.client.waitFor("!document.querySelector('[data-mcp-editor-initial-focus]') && document.activeElement === document.querySelector('[data-mcp-admin-controls] button')", `${viewport.name}:mcp:editor-focus-restore`);
+      mcpFocus = { drawerContained: true, tabWrap: true, shiftTabWrap: true, escapeClose: true, triggerFocusRestored: true, nestedEscapeIsolated: true, editorFocusRestored: true, drawerScreenshot, departmentScreenshot, departmentSelection: true };
+    }
+    let runDiagnostics = null;
+    if (scenario.name === "runs") {
+      await browser.client.evaluate(`(() => {
+        const button = [...document.querySelectorAll('button[aria-label="查看 run-failed"]')].find(node => node.checkVisibility());
+        button.scrollIntoView({ block: 'center' }); button.focus(); window.__runDiagnosticTrigger = button; button.click();
+      })()`);
+      await browser.client.waitFor("Boolean(document.querySelector('[data-run-runtime-diagnostics] summary'))", "runs:diagnostics-ready");
+      await browser.client.waitFor(`(() => { const node = document.querySelector('[data-run-monitor-detail]'); const box = node.getBoundingClientRect(); return box.left >= 0 && box.right <= innerWidth + 1 && node.getAnimations({ subtree: true }).every(animation => animation.effect?.getTiming().iterations === Infinity || animation.playState !== 'running'); })()`, "runs:detail-painted");
+      const collapsed = await browser.client.evaluate(`(() => {
+        const details = [...document.querySelectorAll('[data-run-runtime-diagnostics] details')];
+        return ['技术关联编号', '观察关联'].every(label => {
+          const node = details.find(item => item.querySelector('summary')?.textContent === label);
+          return node && !node.open && !node.querySelector('p').checkVisibility();
+        });
+      })()`);
+      if (!collapsed) throw new Error("runs:observation-identities-not-collapsed");
+      for (const label of ["技术关联编号", "观察关联"]) {
+        await browser.client.evaluate(`(() => {
+          const node = [...document.querySelectorAll('[data-run-runtime-diagnostics] summary')].find(item => item.textContent === ${JSON.stringify(label)});
+          node.scrollIntoView({ block: 'center' }); node.focus();
+        })()`);
+        await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r", unmodifiedText: "\r" });
+        await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+        await browser.client.waitFor(`[...document.querySelectorAll('[data-run-runtime-diagnostics] summary')].find(item => item.textContent === ${JSON.stringify(label)}).parentElement.open`, `runs:expand:${label}`);
+      }
+      runDiagnostics = await browser.client.evaluate(`(() => {
+        const panel = document.querySelector('[data-run-monitor-detail]').getBoundingClientRect();
+        const section = document.querySelector('[data-run-runtime-diagnostics]');
+        const identities = [...section.querySelectorAll('details[open] p')];
+        return { collapsed: ${collapsed}, contained: panel.left >= 0 && panel.right <= innerWidth + 1,
+          idsContained: identities.every(node => { const box = node.getBoundingClientRect(); return box.left >= panel.left && box.right <= panel.right + 1; }),
+          root: section.innerText.includes('观察 obs_' + '1'.repeat(32)),
+          parent: section.innerText.includes('父观察 obs_' + '1'.repeat(32)),
+          wrapper: section.innerText.includes('观察 obs_' + '2'.repeat(32)) };
+      })()`);
+      if (!runDiagnostics.contained || !runDiagnostics.idsContained || !runDiagnostics.root || !runDiagnostics.parent || !runDiagnostics.wrapper) {
+        throw new Error(`runs:observation-chain-failed:${JSON.stringify(runDiagnostics)}`);
+      }
+      await browser.client.evaluate("document.querySelector('[data-run-runtime-diagnostics]').scrollIntoView({ block: 'center' })");
+      runDiagnostics.screenshot = await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-runs-diagnostics`);
+      await browser.client.evaluate(`(() => {
+        const outer = [...document.querySelectorAll('[data-run-runtime-diagnostics] details')].find(node => node.querySelector('summary')?.textContent === '逐条观测证据');
+        outer.open = true; outer.querySelector('details').open = true; outer.scrollIntoView({ block: 'center' });
+      })()`);
+      const receipt = await browser.client.evaluate(`(() => {
+        const evidence = [...document.querySelectorAll('[data-run-runtime-diagnostics] pre')].find(node => node.textContent.includes('parent_observation_id'));
+        return evidence?.checkVisibility() && evidence.textContent.includes('obs_' + '2'.repeat(32)) && evidence.textContent.includes('obs_' + '3'.repeat(32));
+      })()`);
+      if (!receipt) throw new Error("runs:receipt-parent-missing");
+      runDiagnostics.receiptScreenshot = await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-runs-receipt`);
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await browser.client.waitFor("!document.querySelector('[data-run-monitor-detail]') && document.activeElement === window.__runDiagnosticTrigger", "runs:focus-restored");
+      runDiagnostics.receiptParent = true;
+      runDiagnostics.focusRestored = true;
+    }
+    if (scenario.name === "builder") {
+      await browser.client.evaluate(`(() => {
+        document.querySelector('[data-agent-builder-mcp-settings]').open = true;
+        const trigger = [...document.querySelectorAll('button')].find(node => node.textContent.trim() === '管理工具');
+        trigger.focus();
+        trigger.click();
+      })()`);
+      await browser.client.waitFor("Boolean(document.querySelector('[aria-label=\"搜索 MCP 工具\"]'))", "builder:mcp-search-open");
+      const searchLayout = await browser.client.evaluate(`(() => {
+        const dialog = document.querySelector('[role=dialog]');
+        const input = dialog.querySelector('[aria-label="搜索 MCP 工具"]');
+        const button = [...dialog.querySelectorAll('button')].find(node => node.textContent.trim() === '搜索');
+        const box = dialog.getBoundingClientRect();
+        return { contained: box.left >= 0 && box.right <= innerWidth && box.top >= 0 && box.bottom <= innerHeight,
+          searchVisible: button?.getBoundingClientRect().width >= 40 && input.getBoundingClientRect().width >= 150,
+          retiredCopyAbsent: !document.body.textContent.includes('Skill Set 无法覆盖的外部能力才需要额外选择 MCP 工具。') };
+      })()`);
+      if (!searchLayout.contained || !searchLayout.searchVisible || !searchLayout.retiredCopyAbsent) throw new Error(`builder_mcp_search_layout_failed:${JSON.stringify(searchLayout)}`);
+      await browser.client.waitFor(`(() => {
+        for (let node = document.querySelector('[role=dialog]'); node; node = node.parentElement) {
+          if (Number(getComputedStyle(node).opacity) < 0.99) return false;
+        }
+        return true;
+      })()`, "builder:mcp-search-painted");
+      await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-builder-mcp-search`);
+      await browser.client.evaluate(`(() => {
+        const input = document.querySelector('[aria-label="搜索 MCP 工具"]');
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '  UPLOAD_FILE  ');
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.focus();
+      })()`);
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+      await browser.client.waitFor("document.querySelector('[role=dialog]').textContent.includes('显示 1 / 3 项')", "builder:mcp-search-enter");
+      await browser.client.evaluate(`document.querySelector('[role=dialog] label').click()`);
+      await browser.client.waitFor("document.querySelector('[role=dialog]').textContent.includes('已选 1 项')", "builder:mcp-select-filtered");
+      await browser.client.evaluate(`document.querySelector('[aria-label="清除 MCP 工具搜索"]').click()`);
+      await browser.client.waitFor("document.querySelector('[role=dialog]').textContent.includes('已选 1 项 · 显示 3 / 3 项')", "builder:mcp-clear-preserves-selection");
+      await browser.client.evaluate(`(() => {
+        const input = document.querySelector('[aria-label="搜索 MCP 工具"]');
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'missing-tool');
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      })()`);
+      await browser.client.evaluate(`([...document.querySelectorAll('[role=dialog] button')].find(node => node.textContent.trim() === '搜索')).click()`);
+      await browser.client.waitFor("document.querySelector('[role=dialog]').textContent.includes('没有匹配的 MCP 工具')", "builder:mcp-search-button-empty");
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await browser.client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await browser.client.waitFor("!document.querySelector('[role=dialog]') && document.activeElement?.textContent.trim() === '管理工具'", "builder:mcp-focus-restored");
+      await browser.client.evaluate(`document.querySelector('[data-agent-avatar-picker]').scrollIntoView({ block: 'center' })`);
+    }
+    const chatIntegration = ["chat-integration", "market-workspace"].includes(scenario.name)
+      ? await checkChatIntegration(browser.client, viewport, scenario.name, { theme, evidenceDir }) : null;
+    const finalErrors = await browser.client.evaluate("window.__routeLayoutSmoke.errors");
+    if (finalErrors.length) throw new Error(`interaction_failed:${viewport.name}:${scenario.name}:${JSON.stringify(finalErrors)}`);
+    let loadingLayout = null;
+    if (scenario.loading) {
+      await browser.client.waitFor(`(() => {
+        let node = document.querySelector('.welcome-hero .w-48');
+        if (!node) return false;
+        while (node) {
+          if (Number(getComputedStyle(node).opacity) < 0.99) return false;
+          node = node.parentElement;
+        }
+        return true;
+      })()`, `${viewport.name}:loading:painted`);
+      loadingLayout = await browser.client.evaluate(`(() => {
+        const heading = document.querySelector('.welcome-hero .w-48');
+        const subtitle = document.querySelector('.welcome-hero .w-36');
+        const rect = heading.getBoundingClientRect();
+        const secondary = subtitle.getBoundingClientRect();
+        return { width: rect.width, height: rect.height, subtitleWidth: secondary.width, subtitleHeight: secondary.height,
+          inlineDimensionsCleared: heading.style.width === '' && heading.style.height === '' && subtitle.style.width === '' && subtitle.style.height === '',
+          visible: getComputedStyle(heading).backgroundColor !== 'rgba(0, 0, 0, 0)' };
+      })()`);
+      if (!loadingLayout.inlineDimensionsCleared || !loadingLayout.visible || loadingLayout.width <= 0 || loadingLayout.height <= 20 || loadingLayout.subtitleWidth <= 0 || loadingLayout.subtitleHeight <= 0) {
+        throw new Error(`loading_layout_failed:${viewport.name}:${JSON.stringify(loadingLayout)}`);
+      }
+    }
+    const screenshot = await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-${scenario.name}`);
+    return { viewport: viewport.name, route: scenario.path, layout, reachable, responsiveLayout, modelLayout, avatarLayout, overlay, mcpFocus, runDiagnostics, loadingLayout, pluginLayout, marketView, chatIntegration, screenshot };
+  } catch (error) {
+    const focusDiagnostic = await browser.client.evaluate(`(() => ({ activeTag: document.activeElement?.tagName, activeLabel: document.activeElement?.getAttribute('aria-label'), activeTitle: document.activeElement?.getAttribute('title'), listboxes: [...document.querySelectorAll('[role=listbox]')].map(node => ({ visible: node.checkVisibility({ opacityProperty: true, visibilityProperty: true }), display: getComputedStyle(node).display, visibility: getComputedStyle(node).visibility, opacity: getComputedStyle(node).opacity, hidden: node.getAttribute('aria-hidden'), inert: Boolean(node.closest('[inert]')), ending: node.hasAttribute('data-ending-style') })), departmentExpanded: document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]')?.getAttribute('aria-expanded'), departmentTriggerFocused: document.activeElement === document.querySelector('[data-department-directory-selector] button[aria-haspopup=listbox]') }))()`);
+    console.error(JSON.stringify({ route: scenario.path, focusDiagnostic }));
+    if (scenario.loading) {
+      const paint = await browser.client.evaluate(`(() => {
+        const ancestors = [];
+        let node = document.querySelector('.welcome-hero .w-48');
+        while (node) {
+          const style = getComputedStyle(node);
+          ancestors.push({ tag: node.tagName, class: node.className, opacity: style.opacity, background: style.backgroundColor, visibility: style.visibility, animation: style.animation, animations: node.getAnimations().map((animation) => ({ state: animation.playState, time: animation.currentTime })) });
+          node = node.parentElement;
+        }
+        return { readyState: document.readyState, ancestors };
+      })()`);
+      console.error(JSON.stringify({ loadingPaint: paint }));
+    }
+    await captureScreenshot(browser.client, evidenceDir, `${theme}-${viewport.name}-${scenario.name}-failed`).catch((captureError) => console.error(String(captureError)));
+    throw error;
   } finally {
     await browser.close();
   }
 }
 
 const results = [];
+const failures = [];
 for (const viewport of selectedViewports) {
-  for (const scenario of selectedCases) results.push(await runCase(viewport, scenario));
+  for (const scenario of selectedCases) {
+    try { results.push(await runCase(viewport, scenario)); }
+    catch (error) {
+      failures.push({ viewport: viewport.name, route: scenario.path, error: String(error) });
+    }
+  }
 }
-const evidence = { schema: "ai-platform.route-layout-browser-smoke.v1", mock_backed: true, baseUrl, status: "passed", results };
+const evidence = { schema: "ai-platform.route-layout-browser-smoke.v1", mock_backed: true, theme, baseUrl, status: failures.length ? "failed" : "passed", results, failures };
 mkdirSync(evidenceDir, { recursive: true });
 writeFileSync(resolve(evidenceDir, "evidence.json"), `${JSON.stringify(evidence, null, 2)}\n`);
 console.log(JSON.stringify(evidence));
+if (failures.length) process.exitCode = 1;

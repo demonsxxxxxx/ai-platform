@@ -48,12 +48,15 @@ def available_profile_mcp(monkeypatch):
     monkeypatch.setattr("app.agent_apps.authority.mcp_api.authorize_available_chat_mcp_tools", available)
 
 
-def _principal(*, roles: list[str] | None = None, department_id: str = "") -> AuthPrincipal:
+def _principal(*, roles: list[str] | None = None, department_ids: tuple[str, ...] = ()) -> AuthPrincipal:
     return AuthPrincipal(
         user_id="user-a",
         display_name="User A",
         tenant_id="tenant-a",
-        department_id=department_id,
+        department_id=department_ids[0] if department_ids else "",
+        direct_department_ids=department_ids,
+        department_ids=department_ids,
+        department_authority_status="available" if department_ids else "unavailable",
         roles=roles or ["user"],
     )
 
@@ -72,7 +75,7 @@ def test_profile_acl_and_safe_projection_are_owned_by_the_agent_apps_module():
         "avatar_seed": "agt_support",
         "market_tags": [],
         "visibility": "restricted",
-        "allowed_department_ids": ["研发一部"],
+        "allowed_department_ids": ["110"],
         "allowed_roles": ["user"],
         "allowed_user_ids": [],
         "instructions": "private instruction",
@@ -83,10 +86,13 @@ def test_profile_acl_and_safe_projection_are_owned_by_the_agent_apps_module():
         "content_hash": "a" * 64,
     }
 
-    assert profile_acl_allows(row, principal=_principal(department_id="研发一部")) is True
-    assert profile_acl_allows(row, principal=_principal(department_id="研发二部")) is False
+    assert profile_acl_allows(row, principal=_principal(department_ids=("110",))) is True
+    assert profile_acl_allows(row, principal=_principal(department_ids=("120",))) is False
+    assert not profile_acl_allows(row, principal=AuthPrincipal("user-a", "User A", "tenant-a", department_id="110"))
+    assert not profile_acl_allows({**row, "allowed_department_ids": ["研发一部"]}, principal=_principal(department_ids=("110",)))
+    assert profile_acl_allows({**row, "allowed_department_ids": ["100"]}, principal=_principal(department_ids=("100", "110")))
     invalid_visibility = {**row, "visibility": "unknown", "allowed_department_ids": [], "allowed_roles": []}
-    assert profile_acl_allows(invalid_visibility, principal=_principal(department_id="support")) is False
+    assert profile_acl_allows(invalid_visibility, principal=_principal(department_ids=("410",))) is False
     assert profile_public_projection(row) == {
         "agent_id": "agt_support",
         "expected_revision": 7,
@@ -114,7 +120,7 @@ async def test_profile_department_authority_accepts_only_current_selectable_dire
 
     directory = normalize_department_directory(
         [
-            {"value": "1", "parentId": "1", "label": "药品注册", "children": []},
+            {"value": "210", "parentId": "1", "label": "药品注册", "children": []},
             {"value": "2", "parentId": "1", "label": "Research", "children": []},
             {"value": "3", "parentId": "1", "label": "Ｒｅｓｅａｒｃｈ", "children": []},
         ]
@@ -131,7 +137,7 @@ async def test_profile_department_authority_accepts_only_current_selectable_dire
         name="Support assistant",
         instructions="private instruction",
         visibility="restricted",
-        allowed_department_ids=["药品注册"],
+        allowed_department_ids=["210"],
         skill_set=[{"skill_id": "general-chat"}],
         expected_draft_revision=0,
     )
@@ -279,6 +285,36 @@ async def test_profile_definition_validates_stable_mcp_reference_and_server_exis
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("available,unavailable,expected_status", [(True, None, None), (False, None, 403), (True, "discovery_failed", 503)])
+async def test_enterprise_profile_publish_checks_anonymous_catalog_not_admin_tool_acl(monkeypatch, available, unavailable, expected_status):
+    from app.agent_apps import AgentProfileAuthority
+    from app.agent_apps.authority import _draft_from_row
+    from app.mcp.api import LiveMcpServerResult, LiveMcpTool
+    from types import SimpleNamespace
+
+    row = _profile_row()
+    row["mcp_tool_ids"] = ["gateway::search"]
+    async def authorize_skill(*_args, **_kwargs):
+        return {"skill_id": "general-chat", "skill_version": "version-b"}
+    async def server(*_args, **_kwargs):
+        return {"name": "gateway", "integration_kind": "enterprise_gateway", "status": "active"}
+    async def catalog(**kwargs):
+        assert kwargs == {"tenant_id": "tenant-a", "server_id": "gateway"}
+        return LiveMcpServerResult("gateway", (LiveMcpTool("gateway::search", "gateway", "search", "Search", "Synthetic", available=available),), unavailable)
+    monkeypatch.setattr("app.agent_apps.authority._authorize_current_profile_skill", authorize_skill)
+    monkeypatch.setattr("app.agent_apps.authority.mcp_api.get_mcp_server_registry_entry", server)
+    monkeypatch.setattr("app.agent_apps.authority.mcp_api.get_live_mcp_catalog", lambda: SimpleNamespace(list_server_catalog=catalog))
+    call = AgentProfileAuthority()._validate_definition(object(), principal=_principal(), agent_id="agt_support",
+        definition=_draft_from_row(row), check_mcp_catalog=True)
+    if expected_status is None:
+        assert (await call)[0]["skill_id"] == "general-chat"
+    else:
+        with pytest.raises(HTTPException) as caught:
+            await call
+        assert caught.value.status_code == expected_status
+
+
+@pytest.mark.asyncio
 async def test_profile_definition_preserves_repository_authorization_status(monkeypatch):
     from app.agent_apps import AgentProfileAuthority
     from app.agent_apps.authority import _draft_from_row
@@ -351,7 +387,7 @@ async def test_mock_draft_and_publish_take_profile_lock_before_revision_or_aggre
         row = _profile_row(status="draft", revision=7)
         row.update(
             visibility="restricted",
-            allowed_department_ids=["药品注册"],
+            allowed_department_ids=["210"],
         )
         row["content_hash"] = _revision_hash(_draft_from_row(row))
         return row
@@ -366,7 +402,7 @@ async def test_mock_draft_and_publish_take_profile_lock_before_revision_or_aggre
         return "aud_profile"
 
     async def validate_departments(values):
-        assert values == ["药品注册"]
+        assert values == ["210"]
         order.append("department_validation")
 
     async def validate(*_args, **_kwargs):
@@ -397,7 +433,7 @@ async def test_mock_draft_and_publish_take_profile_lock_before_revision_or_aggre
         description="Approved support help.",
         instructions="private instruction",
         visibility="restricted",
-        allowed_department_ids=["药品注册"],
+        allowed_department_ids=["210"],
         skill_set=[{"skill_id": "general-chat"}],
         expected_draft_revision=7,
     )
@@ -601,7 +637,7 @@ async def test_profile_update_persists_the_submitted_canonical_definition(monkey
             "avatar_seed": "support-custom-seed",
             "category": "research",
             "visibility": "restricted",
-            "allowed_department_ids": ["research"],
+            "allowed_department_ids": ["310"],
             "allowed_roles": ["analyst"],
             "allowed_user_ids": ["user-special"],
         }
@@ -753,7 +789,7 @@ async def test_draft_preview_validates_the_submitted_canonical_definition(monkey
             "avatar_ref": "builtin:research",
             "category": "research",
             "visibility": "restricted",
-            "allowed_department_ids": ["research"],
+            "allowed_department_ids": ["310"],
             "allowed_roles": ["analyst"],
             "allowed_user_ids": ["user-special"],
         }
@@ -880,7 +916,7 @@ async def test_public_detail_uses_the_same_acl_as_catalog(monkeypatch):
     from app.agent_apps import AgentProfileAuthority
 
     restricted = _profile_row()
-    restricted.update({"visibility": "restricted", "allowed_department_ids": ["药品注册"]})
+    restricted.update({"visibility": "restricted", "allowed_department_ids": ["210"]})
     _seal_profile_row(restricted)
 
     async def get_current(*_args, **_kwargs):
@@ -901,17 +937,17 @@ async def test_public_detail_uses_the_same_acl_as_catalog(monkeypatch):
 
     monkeypatch.setattr(authority, "_validate_definition", validate)
 
-    assert await authority.list_public(object(), principal=_principal(department_id="药品注册"))
+    assert await authority.list_public(object(), principal=_principal(department_ids=("210",)))
     assert await authority.get_public(
         object(),
-        principal=_principal(department_id="药品注册"),
+        principal=_principal(department_ids=("210",)),
         agent_id="agt_support",
     )
-    assert await authority.list_public(object(), principal=_principal(department_id="药品注冊")) == []
+    assert await authority.list_public(object(), principal=_principal(department_ids=("220",))) == []
     with pytest.raises(HTTPException) as caught:
         await authority.get_public(
             object(),
-            principal=_principal(department_id="药品注冊"),
+            principal=_principal(department_ids=("220",)),
             agent_id="agt_support",
         )
     assert (caught.value.status_code, caught.value.detail) == (404, "agent_profile_not_found")
@@ -922,7 +958,7 @@ async def test_favorite_does_not_bypass_public_profile_acl(monkeypatch):
     from app.agent_apps import AgentProfileAuthority
 
     restricted = _profile_row()
-    restricted.update({"visibility": "restricted", "allowed_department_ids": ["药品注册"]})
+    restricted.update({"visibility": "restricted", "allowed_department_ids": ["210"]})
     _seal_profile_row(restricted)
     writes: list[dict[str, object]] = []
 
@@ -946,7 +982,7 @@ async def test_favorite_does_not_bypass_public_profile_acl(monkeypatch):
     with pytest.raises(HTTPException) as caught:
         await authority.set_favorite(
             object(),
-            principal=_principal(department_id="药品注冊"),
+            principal=_principal(department_ids=("220",)),
             agent_id="agt_support",
             favorite=True,
         )
@@ -1021,7 +1057,7 @@ async def test_bound_profile_uses_current_acl_while_executing_the_pinned_revisio
     current.update(
         {
             "visibility": "restricted",
-            "allowed_department_ids": ["support"],
+            "allowed_department_ids": ["410"],
             "allowed_roles": [],
             "allowed_user_ids": [],
         }
@@ -1045,7 +1081,7 @@ async def test_bound_profile_uses_current_acl_while_executing_the_pinned_revisio
     with pytest.raises(HTTPException) as caught:
         await authority.resolve_pinned_profile_for_replay(
             object(),
-            principal=_principal(department_id="finance"),
+            principal=_principal(department_ids=("510",)),
             agent_id="agt_support",
             revision=7,
             content_hash=str(pinned["content_hash"]),
@@ -1119,7 +1155,7 @@ async def test_agent_conversation_admission_locks_and_pins_only_safe_identity(mo
     profile_row = _profile_row()
     profile_row.update(
         visibility="restricted",
-        allowed_department_ids=["药品注册"],
+        allowed_department_ids=["210"],
     )
     _seal_profile_row(profile_row)
 
@@ -1154,7 +1190,7 @@ async def test_agent_conversation_admission_locks_and_pins_only_safe_identity(mo
 
     response = await authority.create_conversation(
         object(),
-        principal=_principal(department_id="药品注册"),
+        principal=_principal(department_ids=("210",)),
         workspace_id="default",
         selection=SelectedAgentProfileRequest(agent_id="agt_support"),
         title="",
@@ -1361,7 +1397,7 @@ async def test_worker_dispatch_reauthorizes_one_locked_profile_row(monkeypatch):
     row = _profile_row()
     row.update(
         visibility="restricted",
-        allowed_department_ids=["药品注册"],
+        allowed_department_ids=["210"],
     )
     _seal_profile_row(row)
     calls: list[tuple[str, object]] = []
@@ -1399,7 +1435,7 @@ async def test_worker_dispatch_reauthorizes_one_locked_profile_row(monkeypatch):
 
     admission = await authority.resolve_bound_for_worker_dispatch(
         object(),
-        principal=_principal(department_id="药品注册"),
+        principal=_principal(department_ids=("210",)),
         agent_id="agt_support",
         revision=7,
         content_hash=str(row["content_hash"]),
@@ -1442,7 +1478,7 @@ async def test_worker_dispatch_profile_reauthorization_fails_closed(monkeypatch,
         current_row = _profile_row(revision=9)
         current_row.update(
             visibility="restricted",
-            allowed_department_ids=["药品注册"],
+            allowed_department_ids=["210"],
             allowed_roles=[],
             allowed_user_ids=[],
         )
@@ -1474,7 +1510,7 @@ async def test_worker_dispatch_profile_reauthorization_fails_closed(monkeypatch,
 
     admission = await authority.resolve_bound_for_worker_dispatch(
         object(),
-        principal=_principal(department_id="药品注冊") if denial == "acl" else _principal(),
+        principal=_principal(department_ids=("220",)) if denial == "acl" else _principal(),
         agent_id="agt_support",
         revision=7,
         content_hash=expected_hash,
@@ -1967,7 +2003,6 @@ async def test_profile_admission_adds_authorized_skill_backing_mcp_without_clien
     assert admission.mcp_tool_ids == ("skill-a-search", "skill-b-search")
 
 
-@pytest.mark.parametrize("bound", [False, True], ids=["new", "continued"])
 @pytest.mark.parametrize(
     ("request_payload", "query_agent_id"),
     [
@@ -2027,7 +2062,6 @@ async def test_profile_admission_adds_authorized_skill_backing_mcp_without_clien
 @pytest.mark.asyncio
 async def test_profile_authority_rejects_incompatible_client_selectors_after_profile_resolution(
     monkeypatch,
-    bound,
     request_payload,
     query_agent_id,
 ):
@@ -2066,25 +2100,13 @@ async def test_profile_authority_rejects_incompatible_client_selectors_after_pro
     monkeypatch.setattr(authority, "_validate_definition", validate)
 
     with pytest.raises(HTTPException) as caught:
-        if bound:
-            await authority.resolve_for_admission(
-                object(),
-                principal=_principal(),
-                selection=SelectedAgentProfileRequest(agent_id="agt_support"),
-                submitted_request=request,
-                query_agent_id=query_agent_id,
-            )
-        else:
-            await authority.resolve_for_admission(
-                object(),
-                principal=_principal(),
-                selection=SelectedAgentProfileRequest(
-                    agent_id="agt_support",
-
-                ),
-                submitted_request=request,
-                query_agent_id=query_agent_id,
-            )
+        await authority.resolve_for_admission(
+            object(),
+            principal=_principal(),
+            selection=SelectedAgentProfileRequest(agent_id="agt_support"),
+            submitted_request=request,
+            query_agent_id=query_agent_id,
+        )
 
     assert (caught.value.status_code, caught.value.detail) == (400, "agent_profile_selector_conflict")
     assert storage_reads == ["current"]

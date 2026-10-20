@@ -24,6 +24,7 @@ from app.runs.domain.diagnostics import (
 from app.runs.infrastructure.diagnostics_postgres import PostgresRunDiagnosticsRepository
 from app.sandbox.api import (
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+    capture_sdk_runtime_diagnostics,
     normalize_sdk_runtime_diagnostics,
 )
 from app.sandbox.domain import runtime_diagnostics as sandbox_diagnostics_contract
@@ -64,6 +65,131 @@ class InMemoryDiagnostics:
 
     async def get_admin_snapshot(self, _conn, **_kwargs):
         return self.snapshot
+
+
+def test_capture_identity_is_stable_through_validation_and_legacy_reads_do_not_mint():
+    legacy = normalize_sdk_runtime_diagnostics(runtime_diagnostics())
+    assert "observation_id" not in legacy["failure_observations"][0]
+    assert normalize_sdk_runtime_diagnostics(legacy) == legacy
+    captured = capture_sdk_runtime_diagnostics(legacy)
+    assert capture_sdk_runtime_diagnostics(captured) == captured
+    assert normalize_sdk_runtime_diagnostics(captured) == captured
+    assert sanitize_runtime_diagnostics(captured)["failure_observations"] == captured["failure_observations"]
+    assert "observation_id" not in legacy["failure_observations"][0]
+
+
+def test_invalid_or_ambiguous_observation_ids_are_rejected_without_echo():
+    first = {"error_code": "provider_timeout", "observation_id": "obs_" + "1" * 32}
+    raw = runtime_diagnostics(failure_observations=[
+        {**first, "failure_source": "sdk_exception", "failure_stage": "model_wait",
+         "parent_observation_id": "obs_" + "2" * 32},
+        {**first, "error_code": "conflicting_failure"},
+        {"error_code": "wrapper_failed", "observation_id": "obs_" + "2" * 32,
+         "parent_observation_id": "obs_" + "1" * 32},
+        {"error_code": "invalid_identity", "observation_id": "PRIVATE_SECRET",
+         "parent_observation_id": "PRIVATE_PARENT"},
+    ])
+    normalized = normalize_sdk_runtime_diagnostics(raw)
+    assert "PRIVATE" not in str(normalized)
+    assert "conflicting_failure" not in str(normalized)
+    assert "parent_observation_id" not in normalized["failure_observations"][0]
+    assert {loss["reason"] for loss in normalized["normalization_losses"]} == {"invalid_field", "cycle"}
+    assert normalize_sdk_runtime_diagnostics(normalized) == normalized
+
+
+@pytest.mark.parametrize("receipt_source", ["executor_callback", "executor_probe"])
+@pytest.mark.parametrize("same_attempt,same_lease,ambiguous", [
+    (True, True, False), (False, True, False), (True, False, False), (True, True, True),
+])
+def test_reconciliation_parent_is_bound_to_the_recorded_attempt_and_lease(same_attempt, same_lease, ambiguous, receipt_source):
+    receipt = build_failure_observation(
+        attempt_id="attempt-a", lease_id="lease-a", source=receipt_source, stage="terminal_receipt",
+        error_code="executor_failed", runtime_diagnostics=runtime_diagnostics(), received_at=NOW,
+    )
+    payload, _ = merge_run_diagnostics(None, receipt)
+    if ambiguous:
+        payload, _ = merge_run_diagnostics(payload, {**receipt, "observation_id": "obs_" + "2" * 32})
+    handling = build_failure_observation(
+        attempt_id="attempt-a" if same_attempt else "attempt-b",
+        lease_id="lease-a" if same_lease else "lease-b",
+        source="executor_reconciler", stage="terminalization", error_code="terminal_reconciliation_failed",
+        runtime_diagnostics=runtime_diagnostics(), received_at=NOW,
+    )
+    payload, changed = merge_run_diagnostics(payload, handling)
+    assert changed
+    if same_attempt and same_lease and not ambiguous:
+        assert payload["observations"][-1]["parent_observation_id"] == receipt["observation_id"]
+    else:
+        assert "parent_observation_id" not in payload["observations"][-1]
+        assert payload["losses"][0]["reason"] == "parent_observation_not_collected"
+    repeated, changed = merge_run_diagnostics(payload, handling)
+    assert not changed and repeated == payload
+    if payload["losses"]:
+        payload, _ = merge_run_diagnostics(payload, {**handling, "observation_id": "obs_" + "3" * 32})
+        assert payload["losses"][0]["count"] == 2
+
+
+@pytest.mark.parametrize("producer_ids", [False, True])
+def test_distinct_receipt_identity_survives_matching_source_stage_and_code(producer_ids):
+    from app.runs.application.diagnostics import _project_observations
+
+    capture = capture_sdk_runtime_diagnostics if producer_ids else normalize_sdk_runtime_diagnostics
+    receipt = build_failure_observation(
+        attempt_id="attempt-a", lease_id="lease-a", source="executor_callback", stage="terminal_receipt",
+        error_code="provider_timeout", received_at=NOW,
+        runtime_diagnostics=capture(runtime_diagnostics(failure_source="executor_callback", failure_stage="terminal_receipt")),
+    )
+    handling = build_failure_observation(
+        attempt_id="attempt-a", lease_id="lease-a", source="executor_reconciler", stage="terminalization",
+        error_code="terminal_reconciliation_failed", received_at=NOW, runtime_diagnostics=runtime_diagnostics(),
+    )
+    payload, _ = merge_run_diagnostics(None, receipt)
+    payload, _ = merge_run_diagnostics(payload, handling)
+    root, processing, _details, _losses = _project_observations(payload["observations"])
+    identities = {item["observation_id"] for item in [root, *processing]}
+    assert receipt["observation_id"] in identities
+    assert payload["observations"][-1]["parent_observation_id"] in identities
+    assert len(processing) == (2 if producer_ids else 1)
+
+
+@pytest.mark.asyncio
+async def test_origin_chain_survives_receipt_reconciliation_admin_and_export():
+    from app.runtime.sandbox.executor_app import _merge_runtime_diagnostics
+    from app.runs.application.diagnostics import _project_observations
+
+    origin = capture_sdk_runtime_diagnostics(runtime_diagnostics())
+    origin_id = origin["failure_observations"][0]["observation_id"]
+    wrapped = _merge_runtime_diagnostics(
+        origin, error_code="executor_failed", failure_source="executor_wrapper", failure_stage="sandbox_submission",
+    )
+    wrapper_id = wrapped["failure_observations"][-1]["observation_id"]
+    persistence = InMemoryDiagnostics()
+    service = RunDiagnosticsService(
+        persistence=persistence, normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
+        runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+        exception_log_fields=safe_exception_log_fields, clock=lambda: NOW,
+    )
+    context = dict(tenant_id="tenant-a", run_id="run-a", attempt_id="attempt-a", lease_id="lease-a")
+    public = await service.capture_failure_result(
+        object(), **context, source="executor_callback", stage="terminal_receipt", error_code="executor_failed",
+        result_json={"status": "failed", "runtime_diagnostics": wrapped},
+    )
+    await service.capture_reconciliation_failure(
+        object(), **context, terminal_result=public, reconciliation_error_code="artifact_manifest_invalid",
+    )
+    receipt, handling = persistence.payload["observations"]
+    assert receipt["parent_observation_id"] == wrapper_id
+    assert handling["parent_observation_id"] == receipt["observation_id"]
+    root, processing, details, losses = _project_observations(persistence.payload["observations"])
+    assert root["observation_id"] == origin_id
+    by_id = {item["observation_id"]: item for item in processing}
+    assert by_id[wrapper_id]["parent_observation_id"] == origin_id
+    assert by_id[receipt["observation_id"]]["parent_observation_id"] == wrapper_id
+    assert by_id[handling["observation_id"]]["parent_observation_id"] == receipt["observation_id"]
+    diagnostics = {"root": root, "handling": processing, "details": details, "losses": losses}
+    package = build_admin_diagnostic_export(diagnostics=diagnostics, export_id="export-a", generated_at=NOW)
+    with zipfile.ZipFile(io.BytesIO(package)) as archive:
+        assert json.loads(archive.read("diagnostics.json")) == diagnostics
 
 
 @pytest.mark.asyncio
@@ -557,16 +683,85 @@ async def test_reconciliation_keeps_original_failure_and_appends_classified_hand
     ) == 1
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_mode", ["none", "factory", "persist"])
+async def test_reconciliation_cause_is_private_and_diagnostic_failure_is_nonfatal(failure_mode):
+    from app.executor_reconciler import _exception_diagnostic_evidence
+
+    class Persistence(InMemoryDiagnostics):
+        async def append_observation(self, conn, **kwargs):
+            if failure_mode == "persist" and kwargs["observation"]["stage"] == "terminalization":
+                raise OSError("synthetic diagnostic persistence failure")
+            return await super().append_observation(conn, **kwargs)
+
+    persistence = Persistence()
+    service = RunDiagnosticsService(
+        persistence=persistence,
+        normalize_runtime_diagnostics=normalize_sdk_runtime_diagnostics,
+        runtime_diagnostics_schema_version=SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
+        exception_log_fields=safe_exception_log_fields,
+        clock=lambda: NOW,
+    )
+    try:
+        raise OSError("/private/workspace token=synthetic-token Bearer synthetic-bearer " + "x" * 30_000)
+    except OSError as cause:
+        try:
+            raise ValueError("synthetic reconciliation failure") from cause
+        except ValueError as error:
+            failure = error
+
+    def evidence_factory():
+        if failure_mode == "factory":
+            raise ValueError("synthetic extraction failure")
+        return _exception_diagnostic_evidence(failure)
+
+    terminal = {"status": "failed", "error_code": "provider_timeout", "runtime_diagnostics": runtime_diagnostics()}
+    original = deepcopy(terminal)
+    await service.capture_reconciliation_failure(
+        object(), tenant_id="tenant-a", run_id="run-a", attempt_id="attempt-a",
+        lease_id="lease-a", terminal_result=terminal,
+        reconciliation_error_code="artifact_manifest_invalid",
+        reconciliation_evidence_factory=evidence_factory,
+    )
+    assert terminal == original
+    observations = persistence.payload["observations"]
+    assert observations[0]["runtime_diagnostics"]["error_code"] == "provider_timeout"
+    assert len(observations) == (2 if failure_mode == "none" else 1)
+    if failure_mode == "none":
+        handling = observations[1]
+        assert handling["source"] == "executor_reconciler"
+        assert handling["stage"] == "terminalization"
+        assert handling["attempt_id"] == "attempt-a"
+        assert handling["lease_id"] == "lease-a"
+        sdk = handling["runtime_diagnostics"]["sdk"]
+        assert sdk["errors"] == ["artifact_manifest_invalid"]
+        assert [node["type"] for node in sdk["exception_chain"]] == ["ValueError", "OSError"]
+        assert sdk["exception_chain"][0]["relation"] == "cause"
+        assert "test_reconciliation_cause" in sdk["exception_chain"][1]["traceback"]
+        assert json_size_bytes(persistence.payload) <= RUN_DIAGNOSTICS_MAX_BYTES
+        assert handling["runtime_diagnostics"]["normalization_losses"]
+        from app.run_projection import public_chat_terminal_projection
+        public = public_chat_terminal_projection({
+            "id": "run-a", "status": "failed", "error_code": "terminal_reconciliation_failed",
+            "result_json": {"runtime_diagnostics": {"sdk": _exception_diagnostic_evidence(failure)["sdk"]}},
+        })
+        assert "exception_chain" not in json.dumps(public)
+        for private in ("synthetic-token", "synthetic-bearer", "/private/workspace"):
+            assert private not in json.dumps(persistence.payload)
+            assert private not in json.dumps(public)
+
+
 def test_run_budget_keeps_the_first_and_latest_observations():
     payload = None
     observation_ids = []
+    root_ids = []
     for index in range(70):
         observation = build_failure_observation(
             attempt_id=f"attempt-{index}",
             source="worker_executor",
             stage="terminalization",
             error_code="executor_failure",
-            runtime_diagnostics=normalize_sdk_runtime_diagnostics(
+            runtime_diagnostics=capture_sdk_runtime_diagnostics(
                 runtime_diagnostics(
                     sdk={
                         "api_error_status": 529,
@@ -578,11 +773,13 @@ def test_run_budget_keeps_the_first_and_latest_observations():
             received_at=NOW,
         )
         observation_ids.append(observation["observation_id"])
+        root_ids.append(observation["parent_observation_id"])
         payload, _ = merge_run_diagnostics(payload, observation)
 
     retained = [item["observation_id"] for item in payload["observations"]]
     assert retained[0] == observation_ids[0]
     assert retained[-1] == observation_ids[-1]
+    assert payload["observations"][0]["runtime_diagnostics"]["failure_observations"][0]["observation_id"] == root_ids[0]
     assert payload["counts"]["omitted_observations"] > 0
     assert payload["coverage"] == "partial"
     assert json_size_bytes(payload) <= RUN_DIAGNOSTICS_MAX_BYTES
@@ -1237,9 +1434,11 @@ def test_bootstrap_uses_execution_tool_operation_identity_owner():
 
 @pytest.mark.parametrize("severe", [False, True])
 def test_run_diagnostic_minimization_preserves_api_status(severe):
-    observation = {"runtime_diagnostics": sanitize_runtime_diagnostics(runtime_diagnostics(sdk={"api_error_status": 500}))}
+    captured = capture_sdk_runtime_diagnostics(runtime_diagnostics(sdk={"api_error_status": 500}))
+    observation = {"runtime_diagnostics": sanitize_runtime_diagnostics(captured)}
     runs_diagnostics_contract._minimize_observation(observation, severe=severe)
     assert observation["runtime_diagnostics"]["sdk"] == {"api_error_status": 500}
+    assert observation["runtime_diagnostics"]["failure_observations"] == captured["failure_observations"]
 
 
 @pytest.mark.asyncio

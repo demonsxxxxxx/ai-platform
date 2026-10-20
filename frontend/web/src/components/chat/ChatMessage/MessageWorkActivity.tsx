@@ -1,16 +1,9 @@
-import { clsx } from "clsx";
-import {
-  Fragment,
-  useEffect,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
-import { ChevronDown, ListTree } from "lucide-react";
+import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import type { MessagePart } from "../../../types";
 import { isWorkActivityPart } from "./messagePartVisibility";
 import { shouldExpandWorkActivity } from "./workActivityExpansion";
+import { RunActivity } from "./elements/RunActivity";
 
 export interface WorkActivityIssueCounts {
   failed: number;
@@ -76,75 +69,45 @@ export function MessageWorkActivity({
   const workActivityRegionIds = parts.map((part, index) =>
     isWorkActivityPart(part) ? `chat-work-${messageId}-${index}` : "",
   );
-  const controlledWorkActivityIds = workActivityRegionIds
-    .filter(Boolean)
-    .join(" ");
+  const controlledWorkActivityIds = workActivityRegionIds.filter(Boolean).join(" ");
+  const activityStatus = isStreaming
+    ? "running"
+    : issueCounts.failed > 0 || issueCounts.denied > 0
+      ? "error"
+      : "complete";
 
   return parts.map((part, index) => {
     const isWorkActivity = isWorkActivityPart(part);
     const renderedPart = renderPart(part, index, isWorkActivity);
     return (
       <Fragment key={partKeys[index] ?? `${messageId}:${index}`}>
-        {index === firstWorkActivityIndex && (
-          <button
-            type="button"
-            data-message-work-details-toggle
-            aria-expanded={expanded}
-            aria-controls={controlledWorkActivityIds}
-            title={t(
+        {isWorkActivity ? (
+          <RunActivity
+            open={expanded}
+            onOpenChange={setExpanded}
+            status={activityStatus}
+            label={t(isStreaming ? "chat.workDetails.working" : "chat.workDetails.title")}
+            itemCount={t("chat.workDetails.itemCount", { count: workActivityCount })}
+            toggleLabel={t(
               expanded
                 ? "chat.workDetails.collapseAll"
                 : "chat.workDetails.expandAll",
             )}
-            onClick={() => setExpanded((current) => !current)}
-            className="flex h-8 w-full max-w-2xl items-center gap-2 text-left text-sm font-medium text-[var(--theme-text-secondary)] transition-colors hover:text-[var(--theme-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-primary)] focus-visible:ring-offset-2"
+            contentId={workActivityRegionIds[index]}
+            ariaControls={controlledWorkActivityIds}
+            showTrigger={index === firstWorkActivityIndex}
+            issueSummary={
+              index === firstWorkActivityIndex && (issueCounts.failed > 0 || issueCounts.denied > 0) ? (
+                <span className="inline-flex flex-wrap items-center gap-2 text-xs font-normal text-[var(--theme-warning)]" data-work-activity-issue-summary>
+                  {issueCounts.failed > 0 ? <span data-work-activity-failed-count>局部失败 {issueCounts.failed}</span> : null}
+                  {issueCounts.denied > 0 ? <span data-work-activity-denied-count>未授权 {issueCounts.denied}</span> : null}
+                  <span>查看执行详情</span>
+                </span>
+              ) : undefined
+            }
           >
-            <ListTree size={15} aria-hidden="true" />
-            <span>
-              {t(
-                isStreaming
-                  ? "chat.workDetails.working"
-                  : "chat.workDetails.title",
-              )}
-            </span>
-            <span className="text-xs font-normal opacity-70">
-              {t("chat.workDetails.itemCount", { count: workActivityCount })}
-            </span>
-            {issueCounts.failed > 0 || issueCounts.denied > 0 ? (
-              <span
-                className="inline-flex flex-wrap items-center gap-2 text-xs font-normal text-[var(--theme-warning)]"
-                data-work-activity-issue-summary
-              >
-                {issueCounts.failed > 0 ? (
-                  <span data-work-activity-failed-count>局部失败 {issueCounts.failed}</span>
-                ) : null}
-                {issueCounts.denied > 0 ? (
-                  <span data-work-activity-denied-count>未授权 {issueCounts.denied}</span>
-                ) : null}
-                <span>查看执行详情</span>
-              </span>
-            ) : null}
-            <span className="ml-auto text-xs font-normal">
-              {t(
-                expanded
-                  ? "chat.workDetails.collapseAll"
-                  : "chat.workDetails.expandAll",
-              )}
-            </span>
-            <ChevronDown
-              size={15}
-              aria-hidden="true"
-              className={clsx(
-                "shrink-0 transition-transform duration-200",
-                expanded && "rotate-180",
-              )}
-            />
-          </button>
-        )}
-        {isWorkActivity ? (
-          <div id={workActivityRegionIds[index]} hidden={!expanded}>
             {renderedPart}
-          </div>
+          </RunActivity>
         ) : (
           renderedPart
         )}

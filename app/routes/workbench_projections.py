@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, NoReturn
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from pydantic import BaseModel, ValidationError
@@ -9,15 +9,7 @@ from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.db import transaction
 from app.identity.infrastructure import audit_postgres as identity_audit
 from app.models import (
-    WorkbenchFeedbackItemResponse,
-    WorkbenchFeedbackListResponse,
-    WorkbenchFeedbackStatsResponse,
-    WorkbenchFeedbackUpdateRequest,
     WorkbenchGovernanceResponse,
-    WorkbenchI18nTextResponse,
-    WorkbenchNotificationListResponse,
-    WorkbenchNotificationResponse,
-    WorkbenchNotificationWriteRequest,
     WorkbenchOperationResponse,
     WorkbenchUserListResponse,
     WorkbenchUserResponse,
@@ -236,205 +228,108 @@ async def delete_user(user_id: str, principal: AuthPrincipal = Depends(require_p
     return await _record_operation(principal=principal, target_type="user", target_id=user_id, operation="delete")
 
 
-def _feedback_item() -> WorkbenchFeedbackItemResponse:
-    return WorkbenchFeedbackItemResponse(
-        id="fb-1",
-        user_id="ordinary",
-        username="ordinary",
-        session_id="session-a",
-        run_id="run-a",
-        rating="down",
-        comment="Needs follow-up",
-        assignment_state="unassigned",
-        labels=[],
-        status="open",
-        created_at=None,
-    )
+def _unavailable(detail: str) -> NoReturn:
+    # Auditing a request is not an execution queue. These unimplemented surfaces
+    # must reject without writing an audit row or claiming domain facts.
+    raise HTTPException(status_code=501, detail=detail)
 
 
-@router.get("/feedback/", response_model=WorkbenchFeedbackListResponse)
-async def list_feedback(
-    skip: int = 0,
-    limit: int = 50,
-    principal: AuthPrincipal = Depends(require_principal),
-) -> WorkbenchFeedbackListResponse:
-    """Return a safe aggregate feedback desk projection."""
+@router.get("/feedback/", status_code=501, response_model=None)
+async def list_feedback(principal: AuthPrincipal = Depends(require_principal)) -> NoReturn:
+    """Feedback storage and aggregate projections are not implemented."""
 
     _require_permission(principal, "feedback:read")
-    items = [_feedback_item()][skip : skip + limit]
-    return WorkbenchFeedbackListResponse(
-        items=items,
-        total=len(items),
-        stats=WorkbenchFeedbackStatsResponse(total_count=1, up_count=0, down_count=1, up_percentage=0.0),
-        governance=_governance(principal, "safe_feedback_desk", degraded=not is_ai_admin(principal), audit_required=True),
-    )
+    _unavailable("feedback_unavailable")
 
 
-@router.get("/feedback/stats", response_model=WorkbenchFeedbackStatsResponse)
-async def feedback_stats(principal: AuthPrincipal = Depends(require_principal)) -> WorkbenchFeedbackStatsResponse:
+@router.get("/feedback/stats", status_code=501, response_model=None)
+async def feedback_stats(principal: AuthPrincipal = Depends(require_principal)) -> NoReturn:
     _require_permission(principal, "feedback:read")
-    return WorkbenchFeedbackStatsResponse(total_count=1, up_count=0, down_count=1, up_percentage=0.0)
+    _unavailable("feedback_unavailable")
 
 
-@router.put("/feedback/{feedback_id}", response_model=WorkbenchOperationResponse)
+@router.put("/feedback/{feedback_id}", status_code=501, response_model=None)
 async def update_feedback(
     feedback_id: str,
     principal: AuthPrincipal = Depends(require_principal),
-    payload: Any = Body(default=None),
-) -> WorkbenchOperationResponse:
-    """Queue audited feedback assignment/closure/label update."""
-
+) -> NoReturn:
     _require_permission(principal, "feedback:admin")
-    request = _request_model(WorkbenchFeedbackUpdateRequest, payload or {})
-    return await _record_operation(
-        principal=principal,
-        target_type="feedback",
-        target_id=feedback_id,
-        operation="update",
-        payload_json={
-            "assignee_changed": request.assignee_id is not None,
-            "assignment_state_changed": request.assignment_state is not None,
-            "status_changed": request.status is not None,
-            "label_count": len(request.labels),
-        },
-    )
+    _safe_id(feedback_id, "feedback_id")
+    _unavailable("feedback_unavailable")
 
 
-@router.delete("/feedback/{feedback_id}", response_model=WorkbenchOperationResponse)
+@router.delete("/feedback/{feedback_id}", status_code=501, response_model=None)
 async def delete_feedback(
     feedback_id: str,
     principal: AuthPrincipal = Depends(require_principal),
-) -> WorkbenchOperationResponse:
+) -> NoReturn:
     _require_permission(principal, "feedback:admin")
-    return await _record_operation(principal=principal, target_type="feedback", target_id=feedback_id, operation="delete")
+    _safe_id(feedback_id, "feedback_id")
+    _unavailable("feedback_unavailable")
 
 
-def _notification(*, include_admin: bool = False, read_state: str | None = "unread") -> WorkbenchNotificationResponse:
-    return WorkbenchNotificationResponse(
-        id="platform-announcement",
-        title_i18n=WorkbenchI18nTextResponse(en="Platform announcement", zh="平台公告"),
-        content_i18n=WorkbenchI18nTextResponse(en="Workbench governance is active.", zh="工作台治理已启用。"),
-        type="info",
-        start_time=None,
-        end_time=None,
-        expires_at=None,
-        is_active=True,
-        read_state=read_state,
-        audience={"tenant_id": "default", "departments": []} if include_admin else None,
-        audit_history=[],
-        created_at=None,
-        updated_at=None,
-        created_by="system",
-    )
-
-
-@router.get("/notifications/active", response_model=None)
-async def active_notifications(request: Request) -> list[WorkbenchNotificationResponse] | dict[str, object]:
-    """Return active notifications with per-user read state only."""
+@router.get(
+    "/notifications/active",
+    response_model=None,
+    responses={501: {"description": "Authenticated announcements are not implemented"}},
+)
+async def active_notifications(request: Request) -> dict[str, list[object]]:
+    """Keep the anonymous bootstrap empty; authenticated announcement reads are unavailable."""
 
     principal = await _optional_principal(request)
     if principal is None:
         return {"notifications": []}
     _require_permission(principal, "notification:read")
-    return [_notification(include_admin=False, read_state="unread").model_dump(exclude_none=True)]
+    _unavailable("notifications_unavailable")
 
 
-@router.post("/notifications/{notification_id}/dismiss", response_model=WorkbenchOperationResponse)
+@router.post("/notifications/{notification_id}/dismiss", status_code=501, response_model=None)
 async def dismiss_notification(
     notification_id: str,
     principal: AuthPrincipal = Depends(require_principal),
-) -> WorkbenchOperationResponse:
+) -> NoReturn:
     _require_permission(principal, "notification:read")
-    return await _record_operation(
-        principal=principal,
-        target_type="notification",
-        target_id=notification_id,
-        operation="dismiss",
-    )
+    _safe_id(notification_id, "notification_id")
+    _unavailable("notifications_unavailable")
 
 
-@router.get("/notifications/admin", response_model=WorkbenchNotificationListResponse)
-async def admin_notifications(
-    skip: int = 0,
-    limit: int = 50,
-    principal: AuthPrincipal = Depends(require_principal),
-) -> WorkbenchNotificationListResponse:
-    """Return notification management projection."""
-
+@router.get("/notifications/admin", status_code=501, response_model=None)
+async def admin_notifications(principal: AuthPrincipal = Depends(require_principal)) -> NoReturn:
     _require_permission(principal, "notification:admin")
-    items = [_notification(include_admin=True, read_state=None)][skip : skip + limit]
-    return WorkbenchNotificationListResponse(
-        items=items,
-        total=len(items),
-        governance=_governance(principal, "safe_notification_management", audit_required=True),
-    )
+    _unavailable("notifications_unavailable")
 
 
-@router.post("/notifications/", response_model=WorkbenchOperationResponse)
-async def create_notification(
-    principal: AuthPrincipal = Depends(require_principal),
-    payload: Any = Body(default=None),
-) -> WorkbenchOperationResponse:
+@router.post("/notifications/", status_code=501, response_model=None)
+async def create_notification(principal: AuthPrincipal = Depends(require_principal)) -> NoReturn:
     _require_permission(principal, "notification:admin")
-    request = _request_model(WorkbenchNotificationWriteRequest, payload or {})
-    return await _record_operation(
-        principal=principal,
-        target_type="notification",
-        target_id="new-notification",
-        operation="create",
-        payload_json={
-            "audience_department_count": len(request.audience.get("departments") or []),
-            "has_tenant_audience": bool(request.audience.get("tenant_id")),
-            "replay": request.replay,
-            "has_expires_at": request.expires_at is not None,
-        },
-    )
+    _unavailable("notifications_unavailable")
 
 
-@router.put("/notifications/{notification_id}", response_model=WorkbenchOperationResponse)
+@router.put("/notifications/{notification_id}", status_code=501, response_model=None)
 async def update_notification(
     notification_id: str,
     principal: AuthPrincipal = Depends(require_principal),
-    payload: Any = Body(default=None),
-) -> WorkbenchOperationResponse:
+) -> NoReturn:
     _require_permission(principal, "notification:admin")
-    request = _request_model(WorkbenchNotificationWriteRequest, payload or {})
-    return await _record_operation(
-        principal=principal,
-        target_type="notification",
-        target_id=notification_id,
-        operation="update",
-        payload_json={
-            "audience_department_count": len(request.audience.get("departments") or []),
-            "has_tenant_audience": bool(request.audience.get("tenant_id")),
-            "has_expires_at": request.expires_at is not None,
-        },
-    )
+    _safe_id(notification_id, "notification_id")
+    _unavailable("notifications_unavailable")
 
 
-@router.delete("/notifications/{notification_id}", response_model=WorkbenchOperationResponse)
+@router.delete("/notifications/{notification_id}", status_code=501, response_model=None)
 async def delete_notification(
     notification_id: str,
     principal: AuthPrincipal = Depends(require_principal),
-) -> WorkbenchOperationResponse:
+) -> NoReturn:
     _require_permission(principal, "notification:admin")
-    return await _record_operation(
-        principal=principal,
-        target_type="notification",
-        target_id=notification_id,
-        operation="delete",
-    )
+    _safe_id(notification_id, "notification_id")
+    _unavailable("notifications_unavailable")
 
 
-@router.post("/notifications/{notification_id}/replay", response_model=WorkbenchOperationResponse)
+@router.post("/notifications/{notification_id}/replay", status_code=501, response_model=None)
 async def replay_notification(
     notification_id: str,
     principal: AuthPrincipal = Depends(require_principal),
-) -> WorkbenchOperationResponse:
+) -> NoReturn:
     _require_permission(principal, "notification:admin")
-    return await _record_operation(
-        principal=principal,
-        target_type="notification",
-        target_id=notification_id,
-        operation="replay",
-    )
+    _safe_id(notification_id, "notification_id")
+    _unavailable("notifications_unavailable")

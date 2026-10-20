@@ -14,9 +14,10 @@ import {
   type CSSProperties,
 } from "react";
 import { useNavigate } from "react-router-dom";
-import toast from "react-hot-toast";
+import { toast } from "@lobehub/ui/base-ui";
 import { useTranslation } from "react-i18next";
 import { useInView } from "react-intersection-observer";
+import type { ExternalStoreThreadListAdapter } from "@assistant-ui/react";
 import { sessionApi, type BackendSession } from "../../services/api";
 import { useAuth } from "../../hooks/useAuth";
 import { useSessionList } from "../../hooks/useSession";
@@ -30,6 +31,7 @@ import { SearchDialog } from "./SearchDialog";
 import {
   SessionListContent,
   SidebarRail,
+  createSessionThreadListAdapter,
 } from "./SidebarParts";
 import type { SessionActions } from "./SidebarParts";
 import {
@@ -39,6 +41,8 @@ import {
 import { canAccessWorkbenchItem } from "../governance/workbenchAccessPolicy";
 import type { AgentProfileAvatarRef } from "../../types/agentProfile";
 import { LIBRECHAT_SHELL_GEOMETRY } from "../../librechat-ui/surface";
+
+const NOOP_LOAD_MORE = async (): Promise<void> => undefined;
 
 interface SessionSidebarProps {
   currentSessionId: string | null;
@@ -68,6 +72,10 @@ interface SessionSidebarProps {
   navigationOnly?: boolean;
   /** Allow a navigation-only shell to show global history without chat actions. */
   showSessionHistory?: boolean;
+  /** Called with the current identity-scoped session adapter. */
+  onThreadListAdapterChange?: (
+    adapter: ExternalStoreThreadListAdapter | undefined,
+  ) => void;
 }
 
 export interface SessionSidebarSessionSource {
@@ -111,6 +119,7 @@ export const SessionSidebar = forwardRef<
     agentHistoryInMainPanel = false,
     navigationOnly = false,
     showSessionHistory = false,
+    onThreadListAdapterChange,
   },
   ref,
 ) {
@@ -164,6 +173,42 @@ export const SessionSidebar = forwardRef<
   );
   const sessionList = sessionSource ?? defaultSessionList;
   const globalHistoryList = globalHistorySource ?? sessionList;
+  const authScopeKey = JSON.stringify([user?.tenant_id ?? null, user?.id ?? null]);
+  const ownerSnapshot = useMemo(
+    () => ({
+      authScopeKey,
+      sessions: sessionList.sessions,
+      updateSession: sessionList.updateSession,
+      removeSession: sessionList.removeSession,
+      prependSession: sessionList.prependSession,
+      loadMore: sessionSource?.loadMore ?? NOOP_LOAD_MORE,
+    }),
+    [
+      authScopeKey,
+      sessionList.sessions,
+      sessionList.updateSession,
+      sessionList.removeSession,
+      sessionList.prependSession,
+      sessionSource?.loadMore,
+    ],
+  );
+  const ownerSnapshotRef = useRef(ownerSnapshot);
+  useLayoutEffect(() => {
+    ownerSnapshotRef.current = ownerSnapshot;
+  }, [ownerSnapshot]);
+  const isOwnerSnapshotCurrent = useCallback(
+    (snapshot: typeof ownerSnapshot) => {
+      const current = ownerSnapshotRef.current;
+      return (
+        current.authScopeKey === snapshot.authScopeKey &&
+        current.updateSession === snapshot.updateSession &&
+        current.removeSession === snapshot.removeSession &&
+        current.prependSession === snapshot.prependSession &&
+        current.loadMore === snapshot.loadMore
+      );
+    },
+    [],
+  );
   const { ref: agentLoadMoreRef, inView: agentLoadMoreVisible } = useInView({
     threshold: 0.1,
     root: scrollEl ?? undefined,
@@ -192,18 +237,19 @@ export const SessionSidebar = forwardRef<
 
   const handleSessionUnread = useCallback(
     (sid: string, count: number) => {
+      if (!isOwnerSnapshotCurrent(ownerSnapshot)) return;
       setUnreadBySession((prev) =>
         mergeUnreadUpdate(prev, {
           sessionId: sid,
           unreadCount: count,
         }),
       );
-      const session = sessionList.sessions.find((s) => s.id === sid);
+      const session = ownerSnapshot.sessions.find((s) => s.id === sid);
       if (session) {
-        sessionList.updateSession({ ...session, unread_count: count });
+        ownerSnapshot.updateSession({ ...session, unread_count: count });
       }
     },
-    [sessionList],
+    [isOwnerSnapshotCurrent, ownerSnapshot],
   );
 
   useImperativeHandle(
@@ -224,31 +270,49 @@ export const SessionSidebar = forwardRef<
   const [deleteConfirm, setDeleteConfirm] = useState<{
     isOpen: boolean;
     sessionId: string | null;
-  }>({ isOpen: false, sessionId: null });
-
-  const deleteOwnerRef = useRef<{ removeSession: (id: string) => void; currentSessionId: string | null; onNewSession: () => void } | null>(null);
+    requestId: number;
+  }>({ isOpen: false, sessionId: null, requestId: 0 });
+  const deleteRequestIdRef = useRef(0);
+  const currentSessionIdRef = useRef(currentSessionId);
+  const onNewSessionRef = useRef(onNewSession);
   useLayoutEffect(() => {
-    deleteOwnerRef.current = { removeSession: sessionList.removeSession, currentSessionId, onNewSession };
-    return () => { deleteOwnerRef.current = null; };
-  }, [sessionList.removeSession, currentSessionId, onNewSession]);
+    currentSessionIdRef.current = currentSessionId;
+    onNewSessionRef.current = onNewSession;
+  }, [currentSessionId, onNewSession]);
+
+  const deleteOwnerRef = useRef<{
+    snapshot: typeof ownerSnapshot;
+  } | null>(null);
+  useLayoutEffect(() => {
+    deleteOwnerRef.current = { snapshot: ownerSnapshot };
+    return () => {
+      deleteOwnerRef.current = null;
+    };
+  }, [ownerSnapshot]);
 
   const confirmDeleteSession = async () => {
-    const sessionId = deleteConfirm.sessionId;
-    if (!sessionId) return;
+    const { sessionId, requestId } = deleteConfirm;
+    const owner = deleteOwnerRef.current;
+    if (!deleteConfirm.isOpen || !sessionId || !owner || !isOwnerSnapshotCurrent(owner.snapshot)) return;
     try {
       await sessionApi.delete(sessionId);
-      const owner = deleteOwnerRef.current;
-      if (!owner || owner.removeSession !== sessionList.removeSession) return;
-      owner.removeSession(sessionId);
-      if (owner.currentSessionId === sessionId) owner.onNewSession();
-      toast.success(t("sidebar.sessionDeleted"));
+      if (!deleteOwnerRef.current || !isOwnerSnapshotCurrent(owner.snapshot)) {
+        return;
+      }
+      owner.snapshot.removeSession(sessionId);
+      if (currentSessionIdRef.current === sessionId) onNewSessionRef.current();
+      if (deleteRequestIdRef.current === requestId) {
+        toast.success(t("sidebar.sessionDeleted"));
+        setDeleteConfirm({ isOpen: false, sessionId: null, requestId });
+      }
     } catch (err) {
-      if (deleteOwnerRef.current?.removeSession !== sessionList.removeSession) return;
-      console.error("Failed to delete session:", err);
-      toast.error(t("sidebar.deleteFailed"));
-    } finally {
-      if (deleteOwnerRef.current?.removeSession === sessionList.removeSession) {
-        setDeleteConfirm({ isOpen: false, sessionId: null });
+      if (!deleteOwnerRef.current || !isOwnerSnapshotCurrent(owner.snapshot)) {
+        return;
+      }
+      if (deleteRequestIdRef.current === requestId) {
+        console.error("Failed to delete session:", err);
+        toast.error(t("sidebar.deleteFailed"));
+        setDeleteConfirm({ isOpen: false, sessionId: null, requestId });
       }
     }
   };
@@ -265,21 +329,19 @@ export const SessionSidebar = forwardRef<
   }, [currentSessionId]);
 
   useEffect(() => {
-    if (newSession && newSession.id) {
-      const sessionKey = [
-        newSession.id,
-        newSession.updated_at,
-        newSession.name ?? "",
-      ].join(":");
-      if (lastAppliedNewSessionKeyRef.current === sessionKey) return;
-      sessionList.prependSession(newSession);
-      sessionList.updateSession(newSession);
-      lastAppliedNewSessionKeyRef.current = sessionKey;
+    if (!newSession || !newSession.id || !isOwnerSnapshotCurrent(ownerSnapshot)) {
+      return;
     }
-  }, [
-    newSession,
-    sessionList,
-  ]);
+    const sessionKey = [
+      newSession.id,
+      newSession.updated_at,
+      newSession.name ?? "",
+    ].join(":");
+    if (lastAppliedNewSessionKeyRef.current === sessionKey) return;
+    ownerSnapshot.prependSession(newSession);
+    ownerSnapshot.updateSession(newSession);
+    lastAppliedNewSessionKeyRef.current = sessionKey;
+  }, [isOwnerSnapshotCurrent, newSession, ownerSnapshot]);
 
   // ─── Keyboard shortcuts ──────────────────────────────────────────
 
@@ -322,18 +384,50 @@ export const SessionSidebar = forwardRef<
 
   const selectAndClose = useCallback(
     (sessionId: string) => {
+      if (!isOwnerSnapshotCurrent(ownerSnapshot)) return;
       handleSessionUnread(sessionId, 0);
       onSelectSession(sessionId);
       onMobileClose?.();
     },
-    [handleSessionUnread, onSelectSession, onMobileClose],
+    [
+      handleSessionUnread,
+      isOwnerSnapshotCurrent,
+      onMobileClose,
+      onSelectSession,
+      ownerSnapshot,
+    ],
   );
 
-  const updateGlobalHistorySession = globalHistoryList.updateSession;
+  const requestDeleteSession = useCallback(
+    (sessionId: string) => {
+      if (!isOwnerSnapshotCurrent(ownerSnapshot)) return;
+      const requestId = ++deleteRequestIdRef.current;
+      setDeleteConfirm({ isOpen: true, sessionId, requestId });
+    },
+    [isOwnerSnapshotCurrent, ownerSnapshot],
+  );
 
+  const renameSession = useCallback(
+    async (sessionId: string, title: string) => {
+      if (!isOwnerSnapshotCurrent(ownerSnapshot)) return;
+      const response = await sessionApi.update(sessionId, { name: title });
+      if (!isOwnerSnapshotCurrent(ownerSnapshot)) return;
+      ownerSnapshot.updateSession(response.session);
+    },
+    [isOwnerSnapshotCurrent, ownerSnapshot],
+  );
+
+  const selectNewSession = useCallback(() => {
+    if (!isOwnerSnapshotCurrent(ownerSnapshot)) return;
+    onNewSession();
+  }, [isOwnerSnapshotCurrent, onNewSession, ownerSnapshot]);
+  const updateGlobalHistorySession = globalHistoryList.updateSession;
   const selectGlobalHistorySession = useCallback(
     (session: BackendSession) => {
-      setUnreadBySession((previous) => mergeUnreadUpdate(previous, { sessionId: session.id, unreadCount: 0 }));
+      if (ownerSnapshotRef.current.authScopeKey !== authScopeKey) return;
+      setUnreadBySession((previous) =>
+        mergeUnreadUpdate(previous, { sessionId: session.id, unreadCount: 0 }),
+      );
       updateGlobalHistorySession({ ...session, unread_count: 0 });
       if (onSelectGlobalHistorySession) {
         onSelectGlobalHistorySession(session);
@@ -343,6 +437,7 @@ export const SessionSidebar = forwardRef<
       onMobileClose?.();
     },
     [
+      authScopeKey,
       onMobileClose,
       onSelectGlobalHistorySession,
       onSelectSession,
@@ -350,18 +445,143 @@ export const SessionSidebar = forwardRef<
     ],
   );
 
+  const globalOwnerSnapshot = useMemo(
+    () => ({
+      authScopeKey,
+      updateSession: globalHistoryList.updateSession,
+    }),
+    [authScopeKey, globalHistoryList.updateSession],
+  );
+  const globalOwnerSnapshotRef = useRef(globalOwnerSnapshot);
+  useLayoutEffect(() => {
+    globalOwnerSnapshotRef.current = globalOwnerSnapshot;
+  }, [globalOwnerSnapshot]);
+  const renameGlobalSession = useCallback(
+    async (sessionId: string, title: string) => {
+      const owner = globalOwnerSnapshotRef.current;
+      if (owner.authScopeKey !== authScopeKey) return undefined;
+      const response = await sessionApi.update(sessionId, { name: title });
+      if (globalOwnerSnapshotRef.current !== owner) return undefined;
+      owner.updateSession(response.session);
+      return response.session;
+    },
+    [authScopeKey],
+  );
+
   // ─── Aggregated action objects for SessionListContent ────────────
 
   const sessionActions: SessionActions = useMemo(
     () => ({
-      onDeleteSession: (id) =>
-        setDeleteConfirm({ isOpen: true, sessionId: id }),
+      onDeleteSession: requestDeleteSession,
       onSelectSession: selectAndClose,
     }),
-    [selectAndClose],
+    [requestDeleteSession, selectAndClose],
   );
 
-  // ─── JSX ────────────────────────────────────────────────────────
+  const adapterIdentity = JSON.stringify({
+    scope: authScopeKey,
+    workspace: agentWorkspace?.agent_id ?? null,
+    currentSessionId,
+    sessions: visibleSessions.map((session) => ({
+      id: session.id,
+      name: session.name ?? null,
+      updatedAt: session.updated_at,
+      unreadCount: session.unread_count ?? 0,
+    })),
+    isLoading: sessionList.isLoading,
+    isLoadingMore: sessionList.isLoadingMore,
+    hasMore: sessionList.hasMore,
+    fallbackTitle: t("sidebar.newChat"),
+  });
+  const adapterIdentityRef = useRef(adapterIdentity);
+  useLayoutEffect(() => {
+    adapterIdentityRef.current = adapterIdentity;
+  }, [adapterIdentity]);
+  const adapterActionRef = useRef({
+    onSelectSession: selectAndClose,
+    onNewSession: selectNewSession,
+    onRenameSession: renameSession,
+    onDeleteSession: requestDeleteSession,
+  });
+  useLayoutEffect(() => {
+    adapterActionRef.current = {
+      onSelectSession: selectAndClose,
+      onNewSession: selectNewSession,
+      onRenameSession: renameSession,
+      onDeleteSession: requestDeleteSession,
+    };
+  }, [
+    renameSession,
+    requestDeleteSession,
+    selectAndClose,
+    selectNewSession,
+  ]);
+  const threadListAdapter = useMemo(() => {
+    const adapterOwnerIdentity = adapterIdentity;
+    const actions = {
+      onSelectSession: async (sessionId: string) => {
+        if (adapterIdentityRef.current !== adapterOwnerIdentity) return;
+        await adapterActionRef.current.onSelectSession(sessionId);
+      },
+      onNewSession: async () => {
+        if (adapterIdentityRef.current !== adapterOwnerIdentity) return;
+        adapterActionRef.current.onNewSession();
+      },
+      onRenameSession: async (sessionId: string, title: string) => {
+        if (adapterIdentityRef.current !== adapterOwnerIdentity) return;
+        await adapterActionRef.current.onRenameSession(sessionId, title);
+      },
+      onDeleteSession: async (sessionId: string) => {
+        if (adapterIdentityRef.current !== adapterOwnerIdentity) return;
+        adapterActionRef.current.onDeleteSession(sessionId);
+      },
+    };
+    return createSessionThreadListAdapter({
+      source: {
+        sessions: visibleSessions,
+        isLoading: sessionList.isLoading,
+        isLoadingMore: sessionList.isLoadingMore,
+        hasMore: sessionList.hasMore,
+        loadMore: ownerSnapshot.loadMore,
+      },
+      currentSessionId,
+      fallbackTitle: t("sidebar.newChat"),
+      actions,
+    }).adapter;
+    // Semantic session identity controls replacement. Action callbacks are fenced
+    // by the captured adapter identity and must not churn on parent rerenders.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [adapterIdentity]);
+  const adapterRegistrationRef = useRef<{
+    callback: NonNullable<typeof onThreadListAdapterChange>;
+    adapter: ExternalStoreThreadListAdapter | undefined;
+  } | null>(null);
+  useLayoutEffect(() => {
+    if (!onThreadListAdapterChange) return;
+    const registration = adapterRegistrationRef.current;
+    if (registration?.callback !== onThreadListAdapterChange) {
+      registration?.callback(undefined);
+      adapterRegistrationRef.current = {
+        callback: onThreadListAdapterChange,
+        adapter: undefined,
+      };
+    }
+    const current = adapterRegistrationRef.current;
+    if (current && current.adapter !== threadListAdapter) {
+      current.adapter = threadListAdapter;
+      current.callback(threadListAdapter);
+    }
+  }, [onThreadListAdapterChange, threadListAdapter]);
+  useLayoutEffect(
+    () => () => {
+      const registration = adapterRegistrationRef.current;
+      if (registration && registration.callback === onThreadListAdapterChange) {
+        registration.callback(undefined);
+        adapterRegistrationRef.current = null;
+      }
+    },
+    [onThreadListAdapterChange],
+  );
 
   return (
     <>
@@ -404,6 +624,8 @@ export const SessionSidebar = forwardRef<
             isLoadingMore={sessionList.isLoadingMore}
             loadMoreRef={loadMoreRef}
             onUpdateSession={sessionList.updateSession}
+            onRenameSession={renameSession}
+            onRenameGlobalSession={renameGlobalSession}
             currentSessionId={currentSessionId}
             unreadBySession={unreadBySession}
             sessionActions={sessionActions}
@@ -452,6 +674,8 @@ export const SessionSidebar = forwardRef<
               isLoadingMore={sessionList.isLoadingMore}
               loadMoreRef={loadMoreRef}
               onUpdateSession={sessionList.updateSession}
+              onRenameSession={renameSession}
+              onRenameGlobalSession={renameGlobalSession}
               currentSessionId={currentSessionId}
               unreadBySession={unreadBySession}
               sessionActions={sessionActions}
@@ -486,6 +710,7 @@ export const SessionSidebar = forwardRef<
                 setIsRecentChatsOpen(true);
               }}
               onOpenLaunchpad={() => navigate("/apps")}
+              onOpenChat={() => navigate("/chat")}
               onOpenAgentMarket={() => navigate("/agent-market")}
               onOpenAgentBuilder={() => navigateWorkbenchItem("agentBuilder")}
               onOpenSkills={() => navigate("/skills")}
@@ -528,6 +753,7 @@ export const SessionSidebar = forwardRef<
             setIsRecentChatsOpen(true);
           }}
           onOpenLaunchpad={() => navigate("/apps")}
+          onOpenChat={() => navigate("/chat")}
           onOpenAgentMarket={() => navigate("/agent-market")}
           onOpenAgentBuilder={() => navigateWorkbenchItem("agentBuilder")}
           onOpenSkills={() => navigate("/skills")}
@@ -560,7 +786,14 @@ export const SessionSidebar = forwardRef<
         confirmText={t("common.delete")}
         cancelText={t("common.cancel")}
         onConfirm={confirmDeleteSession}
-        onCancel={() => setDeleteConfirm({ isOpen: false, sessionId: null })}
+        onCancel={() => {
+          const requestId = ++deleteRequestIdRef.current;
+          setDeleteConfirm({
+            isOpen: false,
+            sessionId: null,
+            requestId,
+          });
+        }}
         variant="danger"
       />
 
