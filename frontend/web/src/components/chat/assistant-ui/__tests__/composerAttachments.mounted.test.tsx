@@ -128,3 +128,61 @@ test("composer uploads once, preserves authorized files after a rejected send, a
     dom.close();
   }
 });
+
+// Red DOM-count repro: three completed uploads must render one removable
+// presentation each, not a file card plus a mirrored removable chip.
+test("three composer attachments render one removable presentation each", async () => {
+  const dom = installSelectTestDom();
+  installBrowserAuthTestDb();
+  Object.assign(globalThis, { localStorage: window.localStorage, sessionStorage: window.sessionStorage });
+  Object.defineProperty(navigator, "locks", { configurable: true, value: { request: async (_key: string, _options: unknown, callback: () => Promise<unknown>) => callback() } });
+  const { createLobeTestRoot } = await import("../../../common/__tests__/lobeUiTestRoot");
+  const { AssistantUiTestProvider } = await import("./assistantUiTestProvider");
+  const { ChatInput } = await import("../../ChatInput");
+  const { useFileUpload } = await import("../../../../hooks/useFileUpload");
+  const { AuthProvider } = await import("../../../../hooks/useAuth");
+  const { authApi } = await import("../../../../services/api/auth");
+  const { uploadApi } = await import("../../../../services/api/upload");
+  const original = { bootstrap: authApi.bootstrapAuthContext, user: authApi.getCurrentUser, config: uploadApi.getConfig, upload: uploadApi.uploadFile, remove: uploadApi.deleteFile };
+  authApi.bootstrapAuthContext = async (request) => ({ status: "ready", protocol_version: 2, generation: request.generation });
+  authApi.getCurrentUser = async () => ({ id: "file-count-user", tenant_id: "file-count-tenant", username: "file-count-user", email: "file-count@example.test", roles: ["admin"], permissions: [Permission.FILE_UPLOAD_DOCUMENT], is_active: true, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" });
+  uploadApi.getConfig = async () => { throw new Error("synthetic optional limits unavailable"); };
+  const pending: Array<(value: UploadResult) => void> = [];
+  uploadApi.uploadFile = () => ({ promise: new Promise<UploadResult>((resolve) => { pending.push(resolve); }), abort: () => {} });
+  uploadApi.deleteFile = async (key) => ({ key, deleted: true });
+  function Harness() {
+    const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
+    const controls = useFileUpload({ attachments, onAttachmentsChange: setAttachments });
+    return <ChatInput attachments={attachments} onAttachmentsChange={setAttachments} uploadControls={controls}
+      attachmentScopeKey="file-count-owner" disableSlashCommands enableSkills={false}
+      onSend={async () => ({ status: "accepted" })} onStop={async () => "unavailable"} isLoading={false} />;
+  }
+  const container = document.createElement("div");
+  const root = await createLobeTestRoot(container);
+  const add = async (name: string) => {
+    const picker = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+    Object.defineProperty(picker, "files", { configurable: true, value: [new File(["fixture"], name, { type: "application/pdf" })] });
+    await act(async () => picker.dispatchEvent(new Event("change", { bubbles: true })));
+  };
+  const complete = () => ({ key: "private-storage-ref", url: "/api/ai/files/authorized/preview", name: "fixture.pdf", type: "document" as const, mimeType: "application/pdf", size: 7 });
+  try {
+    await act(async () => root.render(<AuthProvider><AssistantUiTestProvider><Harness /></AssistantUiTestProvider></AuthProvider>));
+    for (const name of ["1.3.1.pdf", "2.3.2.pdf", "3.2.P.2.2.pdf"]) {
+      await add(name);
+      await act(async () => pending.shift()!({ ...complete(), name }));
+    }
+    const cards = container.querySelectorAll("[data-composer-file-reference]").length;
+    const fileChips = container.querySelectorAll('[data-composer-chip-kind="file"]').length;
+    assert.equal(cards, 3, "each upload keeps its file card");
+    assert.equal(fileChips, 0, "an upload must not also render as a mirrored composer chip");
+    assert.equal(container.querySelectorAll("button[aria-label^='移除附件']").length, 3);
+  } finally {
+    await act(async () => root.unmount());
+    authApi.bootstrapAuthContext = original.bootstrap;
+    authApi.getCurrentUser = original.user;
+    uploadApi.getConfig = original.config;
+    uploadApi.uploadFile = original.upload;
+    uploadApi.deleteFile = original.remove;
+    dom.close();
+  }
+});

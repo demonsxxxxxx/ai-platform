@@ -75,7 +75,7 @@ const questionBatch: RunInputQuestionBatch = {
 const performanceToolParts: MessagePart[] = Array.from({ length: 50 }, (_, index) => ({
   ...longToolLabelParts[index % 2], id: `performance-tool-${index}`, public_operation_id: `performance-tool-${index}`,
 }));
-const fixtureState = { sends: 0, stops: 0, finalText, lastAnswers: {} as Record<string, unknown>, showGeneric: noop, showQuestions: noop, advance: noop as (text?: string) => void, synchronize: noop, finish: noop, fail: noop, resolveQuestions: noop as () => void, performanceStream: noop as (count: number) => Promise<number> };
+const fixtureState = { sends: 0, stops: 0, finalText, lastAnswers: {} as Record<string, unknown>, showGeneric: noop, showQuestions: noop, advance: noop as (text?: string) => void, synchronize: noop, finish: noop, fail: noop, resolveQuestions: noop as () => void, restoreHistory: noop, performanceStream: noop as (count: number) => Promise<number> };
 function performanceMessages(): Message[] {
   return Array.from({ length: 500 }, (_, index) => {
     const timestamp = new Date(index * 2000);
@@ -92,11 +92,12 @@ export function Fixture() {
   const [messages, setMessages] = useState<Message[]>(() => performanceMode ? performanceMessages() : []);
   const [running, setRunning] = useState(performanceMode);
   const [settling, setSettling] = useState(false);
+  const [historyRevision, setHistoryRevision] = useState(0);
   const [generic, setGeneric] = useState(false);
   const [model, setModel] = useState("model-a");
   const [questionProjection, setQuestionProjection] = useState<RunInputsProjection | null>(null);
   const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
-  const uploadControls = useFileUpload({ attachments, onAttachmentsChange: setAttachments, acceptedFileTypes: [] });
+  const uploadControls = useFileUpload({ attachments, onAttachmentsChange: setAttachments });
   const runInputs: RunInputsController = {
     sessionId: "session-synthetic", runId: "run-synthetic-1", projection: questionProjection, history: questionProjection ? [questionProjection] : [],
     historyIsLoading: false, loadFailed: false, historyLoadFailed: false, historyHasMore: false, isLoading: false, isClosed: false,
@@ -135,6 +136,11 @@ export function Fixture() {
         parts: [...(message.parts || []), { type: "run_status", event_id: "synthetic-failure", event_type: "run_failed", severity: "error", stage: "private-stage", message: "private-error-secret" }],
       }));
     };
+    fixtureState.restoreHistory = () => {
+      setMessages((current) => current.map((message) => ({ ...message, isStreaming: false })));
+      setRunning(false);
+      setHistoryRevision((revision) => revision + 1);
+    };
     fixtureState.showGeneric = () => setGeneric(true);
     fixtureState.showQuestions = () => setQuestionProjection({ run_id: "run-synthetic-1", state: "open", inputs: [], questions: [questionBatch] });
     fixtureState.resolveQuestions = () => setQuestionProjection((previous) => previous ? { ...previous, questions: previous.questions.map((question) => ({ ...question, status: "resolved" as const })) } : previous);
@@ -152,19 +158,19 @@ export function Fixture() {
   }, [performanceMode]);
   return <div style={{ height: "100dvh", display: "flex", overflow: "hidden" }}>
     {performanceMode ? <span data-performance-ready aria-hidden="true" /> : null}
-    <ChatView messages={messages} sessionId={performanceMode ? null : "session-synthetic"} conversationIdentityKey="synthetic-chat" currentRunId={running ? `run-synthetic-${fixtureState.sends}` : null}
+    <ChatView key={historyRevision} messages={messages} sessionId={performanceMode ? null : "session-synthetic"} conversationIdentityKey="synthetic-chat" currentRunId={running ? `run-synthetic-${fixtureState.sends}` : null}
       canStopGeneration={running && !settling} isLoading={running} isLoadingHistory={false} canSendMessage
       agentEmptyProfile={generic ? undefined : { agent_id: "agt_fixture", expected_revision: 1, name: "文件整理专家", description: "整理授权文件并汇总结果。", starter_prompts: ["请整理这批文件"], avatar_ref: "builtin:assistant", avatar_seed: "fixture", market_tags: [], completed_tasks: 0, is_favorite: false, published_at: "2026-01-01T00:00:00Z" }}
       tools={[]} onToggleTool={noop} onToggleCategory={noop} onToggleAll={noop} enabledToolsCount={0} totalToolsCount={0}
       skills={[]} taskSkills={[]} selectedSkillState={createSelectedSkillTaskState()} onSelectSkill={noop} onClearSelectedSkill={noop}
       onSelectedSkillRecoverable={ready} onSelectedSkillFilesReady={noop} skillsLoading={false} enabledSkillsCount={0} totalSkillsCount={0} enableSkills={false}
       agentOptions={{}} agentOptionValues={{}} onToggleAgentOption={noop} availableModels={generic ? [{ id: "model-a", value: "model-a", label: "合成模型甲" }, { id: "model-b", value: "model-b", label: "合成模型乙" }] : []} currentModelId={model} onSelectModel={setModel}
-      onSendMessage={async (content) => {
+      onSendMessage={async (content, _options, sentAttachments) => {
         fixtureState.sends += 1;
         const turn = fixtureState.sends;
         setQuestionProjection(null);
         setMessages((current) => [...current,
-          { id: `user-synthetic-${turn}`, runId: `run-synthetic-${turn}`, role: "user", content, timestamp: new Date(turn * 1000) },
+          { id: `user-synthetic-${turn}`, runId: `run-synthetic-${turn}`, role: "user", content, attachments: sentAttachments, timestamp: new Date(turn * 1000) },
           { id: `assistant-synthetic-${turn}`, runId: `run-synthetic-${turn}`, role: "assistant", content: "", timestamp: new Date(turn * 1000 + 1), isStreaming: true, parts: [...toolParts, ...(turn === 2 ? [nestedSubagentParts, todoPart, artifactPart] : [])] },
         ]);
         setSettling(false);
