@@ -37,6 +37,11 @@ EXCEPTION_PATH = ".architecture-governance-exception.json"
 FULL_SHA = re.compile(r"[0-9a-f]{40}")
 SHA256_HEX = re.compile(r"[0-9a-f]{64}")
 MODULE_NAME = re.compile(r"[a-z][a-z0-9_]*")
+NEW_PRODUCTION_CODE_MAX_LINES = 800
+PRODUCTION_CODE_SUFFIXES = frozenset({
+    ".c", ".cc", ".cpp", ".css", ".go", ".html", ".java", ".js", ".jsx",
+    ".mjs", ".py", ".rs", ".scss", ".sh", ".sql", ".ts", ".tsx",
+})
 SYMBOL_NAME = re.compile(r"[A-Z][A-Z0-9_]+")
 SUPPORTED_SCHEMA_PATTERNS = frozenset(
     {
@@ -152,6 +157,8 @@ class Finding:
             "unlayered_domain_module": "Move the module into its owning domain/application/infrastructure/transport layer.",
             "generic_module_name": "Name and place the module by its stable responsibility owner.",
             "delivery_label_module": "Remove delivery or evidence labels from the production module name.",
+            "structured_logging_required": "Keep dynamic values in extra fields; use a fixed event message or the owning safe logging adapter instead of eager interpolation.",
+            "new_production_file_size": "Keep new production code within 800 lines by separating actual responsibilities; a bounded exception requires the existing architecture review contract.",
             "frozen_hot_file_growth": "Extract responsibilities into the owning context; keep the frozen file at or below both its base size and policy ceiling.",
         }.get(
             self.code,
@@ -467,6 +474,19 @@ class ArchitectureEvaluator:
 
         for change in changes:
             path = change.new_path
+            if (
+                path is not None
+                and _is_production_code_path(path)
+                and (change.old_path is None or not _is_production_code_path(change.old_path))
+            ):
+                lines = len(self._git.text(head, path).splitlines())
+                if lines > NEW_PRODUCTION_CODE_MAX_LINES:
+                    findings.append(Finding(
+                        "new_production_file_size",
+                        "new production code exceeds the measured file-size limit",
+                        path,
+                        details={"lines": lines, "max_lines": NEW_PRODUCTION_CODE_MAX_LINES},
+                    ))
             if path is None or not _is_python_path(path) or not path.startswith("app/"):
                 continue
             old_path = change.old_path
@@ -532,6 +552,7 @@ class ArchitectureEvaluator:
             head_tree = _parse_python(head_text, path, candidate=True)
             base_targets: set[str] = set()
             base_text: str | None = None
+            base_tree: ast.AST | None = None
             relocated_edges: set[_ImportEdge] = set()
             if old_path is not None:
                 base_text = self._git.text(base, old_path, required=False)
@@ -556,6 +577,7 @@ class ArchitectureEvaluator:
                             base_modules=base_modules,
                             head_modules=head_modules,
                         )
+            findings.extend(_structured_logging_findings(path, base_tree, head_tree))
             for edge in _import_edges(head_tree, path, known_modules=head_modules):
                 if edge.target in base_targets:
                     continue
@@ -2756,6 +2778,74 @@ def _sort_findings(findings: Iterable[Finding]) -> list[Finding]:
             item.message,
             json.dumps(item.details, ensure_ascii=False, sort_keys=True),
         ),
+    )
+
+
+def _logging_calls(tree: ast.AST | None) -> list[tuple[ast.Call, int]]:
+    if tree is None:
+        return []
+    nodes = list(ast.walk(tree))
+    modules = {alias.asname or alias.name for node in nodes if isinstance(node, ast.Import)
+               for alias in node.names if alias.name == "logging"}
+    factories = {alias.asname or alias.name for node in nodes if isinstance(node, ast.ImportFrom)
+                 and node.module == "logging" for alias in node.names
+                 if alias.name in {"getLogger", "LoggerAdapter"}}
+
+    def logger_factory(value: ast.AST | None) -> bool:
+        return isinstance(value, ast.Call) and (
+            isinstance(value.func, ast.Name) and value.func.id in factories
+            or isinstance(value.func, ast.Attribute) and value.func.attr in {"getLogger", "LoggerAdapter"}
+            and isinstance(value.func.value, ast.Name) and value.func.value.id in modules
+        )
+
+    receivers = set(modules)
+    for node in nodes:
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, ast.AnnAssign) else []
+        if targets and logger_factory(node.value):
+            receivers.update(target.id for target in targets if isinstance(target, ast.Name))
+    return [(node, 1 if node.func.attr == "log" else 0) for node in nodes
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr in {"debug", "info", "warning", "error", "exception", "critical", "log"}
+            and (isinstance(node.func.value, ast.Name) and node.func.value.id in receivers
+                 or logger_factory(node.func.value))]
+
+
+def _structured_logging_findings(path: str, base: ast.AST | None, head: ast.AST) -> list[Finding]:
+    previous = Counter(ast.dump(call) for call, _ in _logging_calls(base))
+    findings = []
+    for call, index in _logging_calls(head):
+        identity = ast.dump(call)
+        if previous[identity]:
+            previous[identity] -= 1
+            continue
+        message = call.args[index] if len(call.args) > index else next(
+            (keyword.value for keyword in call.keywords if keyword.arg == "msg"), None,
+        )
+        eager = isinstance(message, (ast.JoinedStr, ast.BinOp)) or (
+            isinstance(message, ast.Call) and isinstance(message.func, ast.Attribute)
+            and message.func.attr in {"format", "format_map"}
+        )
+        fields = next((keyword.value for keyword in call.keywords if keyword.arg == "extra"), None)
+        unstructured_arguments = len(call.args) > index + 1 and (
+            fields is None or isinstance(fields, ast.Constant)
+            or isinstance(fields, ast.Dict) and not fields.keys
+        )
+        if eager or unstructured_arguments:
+            findings.append(Finding(
+                "structured_logging_required", "new log data must use structured fields",
+                path, line=call.lineno,
+            ))
+    return findings
+
+
+def _is_production_code_path(path: str) -> bool:
+    pure = PurePosixPath(path)
+    return (
+        pure.suffix.lower() in PRODUCTION_CODE_SUFFIXES
+        and pure.parts[0] not in {"docs", "assets"}
+        and not set(pure.parts[:-1]) & {"tests", "test", "__tests__"}
+        and not pure.name.startswith("test_")
+        and ".test." not in pure.name and ".spec." not in pure.name
     )
 
 

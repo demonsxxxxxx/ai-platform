@@ -11,6 +11,7 @@ import re
 import secrets
 from typing import Any, Mapping
 
+from app.identity.api import department_authority_from_snapshot
 from app.redis_client import RedisClientHandle, get_redis_client
 from app.settings import get_settings
 
@@ -883,7 +884,8 @@ if context["operation_kind"] == "refresh" and principal ~= cjson.null then
     or previous["tenant_id"] ~= principal["tenant_id"]
   then return cjson.encode({status = "superseded"}) end
   authorization_changed = false
-  for _, name in ipairs({"department_id", "authz_policy_version", "company_role",
+  for _, name in ipairs({"department_id", "direct_department_ids", "department_ids",
+                        "department_authority_status", "authz_policy_version", "company_role",
                         "company_username", "company_department", "roles", "permissions"}) do
     local old = previous[name]
     local new = principal[name]
@@ -1738,6 +1740,9 @@ def principal_snapshot(principal: Any) -> dict[str, object]:
         "display_name": str(principal.display_name),
         "tenant_id": str(principal.tenant_id),
         "department_id": str(principal.department_id),
+        "direct_department_ids": list(getattr(principal, "direct_department_ids", ())),
+        "department_ids": list(getattr(principal, "department_ids", ())),
+        "department_authority_status": getattr(principal, "department_authority_status", "unavailable"),
         "roles": [str(role) for role in principal.roles],
         "permissions": [str(permission) for permission in principal.permissions],
         "source": str(principal.source),
@@ -1853,11 +1858,24 @@ def _valid_snapshot(value: object) -> dict[str, object] | None:
     company_fields = ("company_username", "company_department", "company_role")
     if any(not isinstance(value.get(name, ""), str) for name in company_fields):
         return None
+    # Redis cjson re-encodes empty arrays as objects; normalize only these store fields.
+    department_snapshot = {
+        **value,
+        **{name: [] if value[name] == {} else value[name]
+           for name in ("direct_department_ids", "department_ids") if name in value},
+    }
+    try:
+        department_authority = department_authority_from_snapshot(department_snapshot)
+    except ValueError:
+        return None
     snapshot = {
         "user_id": value["user_id"],
         "display_name": value["display_name"],
         "tenant_id": value["tenant_id"],
         "department_id": value["department_id"],
+        "direct_department_ids": list(department_authority.direct_department_ids),
+        "department_ids": list(department_authority.department_ids),
+        "department_authority_status": department_authority.department_authority_status,
         "roles": list(value["roles"]),
         "permissions": list(value["permissions"]),
         "source": value["source"],

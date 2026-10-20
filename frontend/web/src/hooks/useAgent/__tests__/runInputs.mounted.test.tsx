@@ -136,15 +136,13 @@ test("restores Run questions after remount and submits multi-select answers to t
       await flush();
     });
     assert.equal(submissions.length, 0);
-    assert.ok(container.querySelector<HTMLInputElement>('input[type="checkbox"]')?.disabled);
+    assert.ok(container.querySelector<HTMLButtonElement>('[role="checkbox"]')?.disabled);
     canSend = true;
     await render();
-    const checkboxes = container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]');
+    const checkboxes = container.querySelectorAll<HTMLButtonElement>('[role="checkbox"]');
     assert.equal(checkboxes.length, 2);
-    await act(async () => {
-      checkboxes[0].click();
-      checkboxes[1].click();
-    });
+    await act(async () => { checkboxes[0].click(); });
+    await act(async () => { checkboxes[1].click(); });
     const form = container.querySelector("[data-run-question-card] form");
     assert.ok(form);
     await act(async () => {
@@ -406,12 +404,13 @@ test("answers indistinguishable redacted options by key and distinguishes free t
   const controls = () => latest as RunInputsController;
   try {
     await act(async () => { root.render(createElement(Probe)); await flush(); });
-    const boxes = container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]');
-    assert.match(boxes[0].closest("label")?.textContent ?? "", /1\. \[redacted-email\]/);
-    assert.match(boxes[1].closest("label")?.textContent ?? "", /2\. \[redacted-email\]/);
-    await act(async () => { boxes[0].click(); boxes[1].click(); });
-    assert.equal(boxes[0].checked, true);
-    assert.equal(boxes[1].checked, true);
+    const boxes = container.querySelectorAll<HTMLButtonElement>('[role="checkbox"]');
+    assert.match(boxes[0].textContent ?? "", /1\. \[redacted-email\]/);
+    assert.match(boxes[1].textContent ?? "", /2\. \[redacted-email\]/);
+    await act(async () => { boxes[0].click(); });
+    await act(async () => { boxes[1].click(); });
+    assert.equal(boxes[0].getAttribute("aria-checked"), "true");
+    assert.equal(boxes[1].getAttribute("aria-checked"), "true");
     const form = container.querySelector("form");
     assert.ok(form);
     await act(async () => { form.dispatchEvent(new env.dom.window.Event("submit", { bubbles: true, cancelable: true })); await flush(); });
@@ -644,8 +643,8 @@ test("retains completed Run input history across pagination and remount without 
     assert.match(historyText(), /current continuation/);
     assert.doesNotMatch(container.textContent ?? "", /older continuation|current continuation/);
     assert.equal(controls().history.filter((run) => run.run_id === "run-next").length, 1);
-    assert.equal(container.querySelector('[data-run-input-history-run="run-current"] input'), null);
-    assert.equal(container.querySelector('[data-run-input-history-run="run-next"] input')?.hasAttribute("disabled"), false);
+    assert.equal(container.querySelector('[data-run-input-history-run="run-current"] [role="checkbox"]'), null);
+    assert.equal(container.querySelector('[data-run-input-history-run="run-next"] [role="checkbox"]')?.hasAttribute("disabled"), false);
     assert.equal(container.querySelector("[data-run-input-history-run]")?.getAttribute("data-run-input-history-run"), "run-next");
     const historyRegion = container.querySelector<HTMLDivElement>("[data-run-input-history]");
     assert.ok(historyRegion);
@@ -807,14 +806,14 @@ for (const outcome of ["accepted", "uncertain", "late-success", "closed", "read-
     const retryButton = () => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "重试提交答复");
     try {
       await render();
-      await act(async () => { container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click(); });
+      await act(async () => { container.querySelector<HTMLButtonElement>('[role="checkbox"]')!.click(); });
       await act(async () => { container.querySelector("form")!.dispatchEvent(new env.dom.window.Event("submit", { bubbles: true, cancelable: true })); await flush(); });
       assert.equal(latest.pendingSubmission?.state, "uncertain");
       assert.equal(submissions.length, 1);
       assert.match(container.querySelector('[role="alert"]')?.textContent ?? "", /尚未确认答案是否提交成功/);
       assert.ok(retryButton());
-      assert.equal(container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked, true);
-      assert.equal(container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.disabled, true);
+      assert.equal(container.querySelector<HTMLButtonElement>('[role="checkbox"]')!.getAttribute("aria-checked"), "true");
+      assert.equal(container.querySelector<HTMLButtonElement>('[role="checkbox"]')!.disabled, true);
       assert.equal(container.querySelector<HTMLTextAreaElement>("textarea")!.disabled, true);
       assert.equal(container.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled, true);
       const applyTimeout = async () => {
@@ -935,8 +934,8 @@ for (const outcome of ["accepted", "uncertain", "late-success", "closed", "read-
         if (outcome === "uncertain") {
           assert.equal(latest.pendingSubmission?.state, "uncertain");
           assert.ok(retryButton());
-          assert.equal(container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked, true);
-          assert.equal(container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.disabled, true);
+          assert.equal(container.querySelector<HTMLButtonElement>('[role="checkbox"]')!.getAttribute("aria-checked"), "true");
+          assert.equal(container.querySelector<HTMLButtonElement>('[role="checkbox"]')!.disabled, true);
           await act(async () => { retryButton()!.click(); await flush(); });
           assert.equal(submissions.length, 3);
           assert.deepEqual(submissions[2], submissions[0]);

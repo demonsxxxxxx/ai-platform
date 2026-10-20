@@ -653,6 +653,7 @@ async def prepare_copied_run_for_queue(
             tenant_id=effective_principal.tenant_id,
             tool_ids=runs_capability_admission.extract_run_mcp_tool_ids(copied_input),
             principal_department_id=effective_principal.department_id,
+            principal_department_ids=effective_principal.department_ids,
             principal_roles=effective_principal.roles,
             is_admin=is_ai_admin(effective_principal),
             permissions=effective_principal.permissions,
@@ -680,6 +681,7 @@ async def prepare_copied_run_for_queue(
                 skill_manifests=skill_manifests,
                 normalized_input=copied_input,
                 principal_department_id=effective_principal.department_id,
+                principal_department_ids=effective_principal.department_ids,
                 principal_roles=effective_principal.roles,
                 is_admin=is_ai_admin(effective_principal),
                 permissions=effective_principal.permissions,
@@ -857,6 +859,7 @@ async def create_run(
                     tenant_id=tenant_id,
                     tool_ids=runs_capability_admission.extract_run_mcp_tool_ids(run_input),
                     principal_department_id=principal.department_id,
+                    principal_department_ids=principal.department_ids,
                     principal_roles=principal.roles,
                     is_admin=is_ai_admin(principal),
                     permissions=principal.permissions,
@@ -872,6 +875,7 @@ async def create_run(
                     "skill_id": resolved_skill_id,
                     "normalized_input": run_input,
                     "principal_department_id": principal.department_id,
+                    "principal_department_ids": principal.department_ids,
                     "principal_roles": principal.roles,
                     "is_admin": is_ai_admin(principal),
                     "permissions": principal.permissions,
@@ -919,7 +923,7 @@ async def create_run(
                     input_payload=run_input,
                     tenant_id=tenant_id,
                     rollout_key=user_id,
-                    department_id=principal.department_id, roles=principal.roles, permissions=principal.permissions,
+                    department_id=principal.department_id, department_ids=principal.department_ids, roles=principal.roles, permissions=principal.permissions,
                 )
                 skill_manifests = admission.skill_manifests
                 skill_version = admission.skill_version
@@ -1172,6 +1176,7 @@ async def copy_run(
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
                 run_id=run_id,
+                principal_department_ids=principal.department_ids,
             )
             if copied is not None:
                 await inherit_run_model(
@@ -1454,6 +1459,7 @@ async def _mutate_run_control_child(
                     tenant_id=principal.tenant_id,
                     user_id=principal.user_id,
                     run_id=run_id,
+                    principal_department_ids=principal.department_ids,
                 )
                 if copied is not None:
                     await inherit_run_model(

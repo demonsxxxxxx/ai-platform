@@ -143,6 +143,80 @@ def _codes(evaluation: Any) -> set[str]:
     return {finding.code for finding in evaluation.findings}
 
 
+@pytest.mark.parametrize("path", [
+    "app/runs/application/retention.py", "frontend/web/src/features/catalog.tsx",
+    "tools/catalog_check.py",
+])
+@pytest.mark.parametrize("lines", [800, 801])
+def test_new_production_code_size_blocks_only_above_measured_limit(governance_repo, path, lines):
+    repo, authority = governance_repo
+    _write(repo, path, ("# bounded responsibility\n" if path.endswith(".py") else "// bounded responsibility\n") * lines)
+    head = _commit(repo, "new production file")
+    result = _evaluate(repo, authority, authority, head)
+    assert ("new_production_file_size" in _codes(result)) is (lines > 800)
+    assert result.exit_code == (2 if lines > 800 else 0)
+
+
+@pytest.mark.parametrize("source,target", [
+    (None, "tests/test_catalog.py"), (None, "frontend/web/src/catalog.test.tsx"),
+    (None, "docs/example.py"), ("app/runs/application/catalog.py", "app/runs/application/catalog_moved.py"),
+    ("tests/test_catalog.py", "app/runs/application/catalog.py"),
+])
+def test_new_file_size_preserves_tests_and_existing_code_moves(governance_repo, source, target):
+    repo, authority = governance_repo
+    base = authority
+    if source:
+        _write(repo, source, "# existing code\n" * 801)
+        base = _commit(repo, "existing file")
+        (repo / target).parent.mkdir(parents=True, exist_ok=True)
+        _git(repo, "mv", source, target)
+    else:
+        _write(repo, target, "# test or documentation\n" * 801)
+    head = _commit(repo, "candidate file")
+    result = _evaluate(repo, authority, base, head)
+    assert ("new_production_file_size" in _codes(result)) is bool(source and source.startswith("tests/"))
+
+
+@pytest.mark.parametrize("expression", [
+    'logger.warning(f"failed {value}")', 'logger.info("failed " + value)',
+    'logger.error("failed %s" % value)', 'logger.exception("failed {}".format(value))',
+    'logger.info("failed %s", value)', 'logger.log(20, "failed %s", value)',
+    'logger.info("failed %s", value, extra={})',
+])
+def test_new_unstructured_logging_is_rejected(governance_repo, expression):
+    repo, authority = governance_repo
+    _write(repo, "app/runs/application/observations.py", "import logging\nlogger = logging.getLogger(__name__)\ndef report(value):\n    " + expression + "\n")
+    head = _commit(repo, "new unstructured log")
+    result = _evaluate(repo, authority, authority, head)
+    assert _codes(result) == {"structured_logging_required"}
+    assert result.findings[0].line == 4
+    assert "extra" in result.findings[0].remediation
+
+
+@pytest.mark.parametrize("expression", [
+    'logger.warning("failed", extra={"code": value})', 'logger.exception("static_event")',
+    'logger.warning(value, extra={"code": value})',
+    'logger.info("failed %s", value, extra={"code": value})',
+    'service.error(f"business result {value}")',
+])
+def test_structured_logging_preserves_safe_adapters_and_nonlog_calls(governance_repo, expression):
+    repo, authority = governance_repo
+    _write(repo, "app/runs/application/observations.py", "import logging\nlogger = logging.getLogger(__name__)\ndef report(value, service):\n    " + expression + "\n")
+    head = _commit(repo, "safe logging")
+    assert _evaluate(repo, authority, authority, head).status == "pass"
+
+
+def test_logging_gate_does_not_rewrite_existing_log_consumers(governance_repo):
+    repo, authority = governance_repo
+    path = "app/runs/application/observations.py"
+    source = 'import logging\nlogger = logging.getLogger(__name__)\ndef report(value):\n    logger.info("legacy %s", value)\n'
+    _write(repo, path, source)
+    base = _commit(repo, "existing log contract")
+    _write(repo, path, source + '    logger.info("new_event", extra={"code": value})\n')
+    head = _commit(repo, "structured addition")
+    assert _evaluate(repo, authority, base, head).status == "pass"
+
+
 def test_policy_and_schema_are_closed_sorted_authority_contracts(
     governance_repo: tuple[Path, str],
 ) -> None:

@@ -379,7 +379,13 @@ html[data-mobile-keyboard="true"] #root {
 }
 
 [data-librechat-expanded-panel] .sidebar-nav-btn {
+  justify-content: flex-start;
   min-height: 36px;
+  text-align: left;
+}
+
+[data-librechat-expanded-panel] .sidebar-nav-btn > svg {
+  flex-shrink: 0;
 }
 
 [data-librechat-expanded-panel] [data-workbench-session-region] {
