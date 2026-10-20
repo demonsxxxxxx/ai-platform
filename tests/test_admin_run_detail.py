@@ -202,6 +202,7 @@ def test_admin_run_diagnostics_preserves_projection_failure_over_http(
                         "coverage": "full",
                         "observations": [{
                             "observation_id": "obs-a", "attempt_id": "attempt-a",
+                            "parent_observation_id": "obs_" + "1" * 32,
                             "source": "sdk", "stage": "message",
                             "error_code": "claude_agent_sdk_output_validation_failed",
                             "runtime_diagnostics": {
@@ -238,6 +239,8 @@ def test_admin_run_diagnostics_preserves_projection_failure_over_http(
     details = response.json()["details"]
     assert details["projection_failure"] == projection_failure
     assert details["observations"][0]["projection_failure"] == projection_failure
+    assert details["observations"][0]["parent_observation_id"] == "obs_" + "1" * 32
+    assert response.json()["root"]["parent_observation_id"] == "obs_" + "1" * 32
     assert "PRIVATE_FRAME_BODY" not in response.text
 
 

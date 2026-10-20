@@ -221,6 +221,7 @@ async def _public_catalog_rows(
                 CapabilityAccessContext(
                     tenant_id=principal.tenant_id,
                     department_id=principal.department_id,
+                    department_ids=principal.department_ids,
                     roles=principal.roles,
                     is_admin=is_ai_admin(principal),
                     permissions=principal.permissions,
@@ -282,6 +283,7 @@ async def _public_skill_access(
             CapabilityAccessContext(
                 tenant_id=principal.tenant_id,
                 department_id=principal.department_id,
+                department_ids=principal.department_ids,
                 roles=principal.roles,
                 is_admin=is_ai_admin(principal),
                 permissions=principal.permissions,

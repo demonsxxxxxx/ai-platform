@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from collections import Counter
 from dataclasses import dataclass, field
 import json
-import unicodedata
 
 import httpx
 
+from app.identity.api import is_department_id
 from app.models import DepartmentDirectoryNodeResponse, DepartmentDirectoryResponse
+from app.settings import get_settings
 from app.validation import assert_safe_department_authority_id
 
 PURE_DEPARTMENT_DIRECTORY_URL = "http://10.56.0.25:5033/api/DingTalk/departs/pure"
@@ -37,7 +37,7 @@ def _safe_numeric_id(value: object) -> str:
     if not isinstance(value, str):
         raise DepartmentDirectoryError("department_directory_shape_invalid")
     candidate = value
-    if not candidate or not candidate.isascii() or not candidate.isdecimal():
+    if not is_department_id(candidate):
         raise DepartmentDirectoryError("department_directory_shape_invalid")
     return candidate
 
@@ -51,18 +51,13 @@ def _safe_label(value: object) -> str:
         raise DepartmentDirectoryError("department_directory_shape_invalid") from exc
 
 
-def _authority_key(label: str) -> str:
-    return unicodedata.normalize("NFKC", label).casefold()
-
-
 def normalize_department_directory(payload: object) -> DepartmentDirectoryResponse:
-    """Accept only a pure tree and disable every ambiguous authority label."""
+    """Accept only a pure tree; distinct department IDs may share display names."""
 
     if not isinstance(payload, list):
         raise DepartmentDirectoryError("department_directory_shape_invalid")
 
     seen_ids: set[str] = set()
-    parsed_nodes: list[_ParsedNode] = []
     node_count = 0
 
     def parse(raw: object, *, expected_parent_id: str | None, depth: int) -> _ParsedNode:
@@ -77,7 +72,7 @@ def normalize_department_directory(payload: object) -> DepartmentDirectoryRespon
         parent_id = _safe_numeric_id(raw.get("parentId"))
         label = _safe_label(raw.get("label"))
         children = raw.get("children")
-        if directory_id in seen_ids or not isinstance(children, list):
+        if directory_id in seen_ids or directory_id == parent_id or not isinstance(children, list):
             raise DepartmentDirectoryError("department_directory_shape_invalid")
         if expected_parent_id is None:
             if parent_id != ROOT_PARENT_ID:
@@ -87,7 +82,6 @@ def normalize_department_directory(payload: object) -> DepartmentDirectoryRespon
 
         seen_ids.add(directory_id)
         node = _ParsedNode(directory_id=directory_id, label=label)
-        parsed_nodes.append(node)
         node.children = [
             parse(child, expected_parent_id=directory_id, depth=depth + 1)
             for child in children
@@ -95,19 +89,17 @@ def normalize_department_directory(payload: object) -> DepartmentDirectoryRespon
         return node
 
     roots = [parse(item, expected_parent_id=None, depth=1) for item in payload]
-    label_counts = Counter(_authority_key(node.label) for node in parsed_nodes)
 
     def project(node: _ParsedNode, parent_path: str) -> DepartmentDirectoryNodeResponse:
         path = f"{parent_path} / {node.label}" if parent_path else node.label
-        duplicate = label_counts[_authority_key(node.label)] > 1
         return DepartmentDirectoryNodeResponse(
             directory_id=node.directory_id,
-            authority_id=node.label,
+            authority_id=node.directory_id,
             name=node.label,
             path=path,
             children=[project(child, path) for child in node.children],
-            selectable=not duplicate,
-            reason="duplicate_authority_id" if duplicate else None,
+            selectable=True,
+            reason=None,
         )
 
     return DepartmentDirectoryResponse(departments=[project(root, "") for root in roots])
@@ -117,7 +109,7 @@ def validate_distribution_department_authorities(
     values: list[str],
     directory: DepartmentDirectoryResponse,
 ) -> list[str]:
-    """Return exact selectable authority labels or reject the complete write."""
+    """Return exact current department IDs or reject the complete write."""
 
     if len(values) > MAX_DISTRIBUTION_DEPARTMENTS:
         raise DepartmentDirectoryError("capability_distribution_department_authority_invalid")
@@ -132,7 +124,7 @@ def validate_distribution_department_authorities(
     normalized: list[str] = []
     for value in values:
         try:
-            candidate = _safe_label(value)
+            candidate = _safe_numeric_id(value)
         except DepartmentDirectoryError as exc:
             raise DepartmentDirectoryError("capability_distribution_department_authority_invalid") from exc
         if candidate not in selectable:
@@ -142,16 +134,30 @@ def validate_distribution_department_authorities(
     return normalized
 
 
-async def fetch_department_directory() -> DepartmentDirectoryResponse:
-    """Fetch the fixed pure endpoint without redirects, ambient proxy, or data leakage."""
+def department_parent_ids(directory: DepartmentDirectoryResponse) -> dict[str, str | None]:
+    parents: dict[str, str | None] = {}
+    pending = [(node, None) for node in directory.departments]
+    while pending:
+        node, parent = pending.pop()
+        if node.directory_id in parents or node.authority_id != node.directory_id or not node.selectable:
+            raise DepartmentDirectoryError("department_directory_shape_invalid")
+        parents[node.directory_id] = parent
+        pending.extend((child, node.directory_id) for child in node.children)
+    return parents
 
+
+async def fetch_department_directory(*, base_url: str | None = None) -> DepartmentDirectoryResponse:
+    """Fetch only the pure endpoint without redirects, ambient proxy, or data leakage."""
+
+    configured_base = base_url if base_url is not None else get_settings().dingtalk_department_authority_base_url
+    url = f"{configured_base.rstrip('/')}/api/DingTalk/departs/pure" if configured_base else PURE_DEPARTMENT_DIRECTORY_URL
     try:
         async with httpx.AsyncClient(
             timeout=PURE_DEPARTMENT_DIRECTORY_TIMEOUT_SECONDS,
             follow_redirects=False,
             trust_env=False,
         ) as client:
-            async with client.stream("GET", PURE_DEPARTMENT_DIRECTORY_URL) as response:
+            async with client.stream("GET", url) as response:
                 if response.status_code < 200 or response.status_code >= 300:
                     raise DepartmentDirectoryError("department_directory_upstream_unavailable")
                 body = bytearray()

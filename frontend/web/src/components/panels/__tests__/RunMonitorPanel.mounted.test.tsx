@@ -297,7 +297,7 @@ for (const scenario of [
       workspace_id: runs[0].workspace_id ?? "",
     },
     root: {
-      observation_id: "obs-a",
+      observation_id: "obs-origin",
       attempt_id: "attempt-a",
       kind: "failure",
       source: "sdk_result_error",
@@ -309,7 +309,8 @@ for (const scenario of [
     },
     handling: [
       {
-        observation_id: "obs-a",
+        observation_id: "obs-wrapper",
+        parent_observation_id: "obs-origin",
         attempt_id: "attempt-a",
         kind: "handling",
         source: "sandbox_terminal_normalization",
@@ -351,6 +352,7 @@ for (const scenario of [
       observations: [
         {
           observation_id: "obs-a",
+          parent_observation_id: "obs-wrapper",
           attempt_id: "attempt-a",
           source: "sdk_result_error",
           stage: "model_wait",
@@ -394,6 +396,7 @@ for (const scenario of [
         },
         {
           observation_id: "obs-b",
+          parent_observation_id: "obs-a",
           attempt_id: "attempt-a",
           source: "executor_reconciler",
           stage: "terminalization",
@@ -738,6 +741,20 @@ for (const scenario of [
     assert.match(document.body.textContent ?? "", /ACTUAL_STACK_TAIL_MARKER/);
     assert.match(document.body.textContent ?? "", /tool_parameters_not_authorized/);
     assert.match(document.body.textContent ?? "", /逐条观测证据/);
+    const diagnosticSummaries = Array.from(document.querySelectorAll("[data-run-runtime-diagnostics] details")) as HTMLDetailsElement[];
+    const originDetails = diagnosticSummaries.find((item) => item.querySelector("summary")?.textContent === "技术关联编号");
+    const handlingDetails = diagnosticSummaries.find((item) => item.querySelector("summary")?.textContent === "观察关联");
+    assert.ok(originDetails && handlingDetails);
+    assert.equal(originDetails.open, false);
+    assert.equal(handlingDetails.open, false);
+    assert.match(originDetails.textContent ?? "", /观察 obs-origin/);
+    assert.match(handlingDetails.textContent ?? "", /观察 obs-wrapper.*父观察 obs-origin/);
+    await act(async () => {
+      originDetails.open = true;
+      handlingDetails.open = true;
+    });
+    assert.equal(originDetails.open, true);
+    assert.equal(handlingDetails.open, true);
   const projectionEvidence = document.querySelector("[data-projection-failure-evidence]");
   assert.ok(projectionEvidence);
   assert.match(projectionEvidence.textContent ?? "", /输出校验断点/);
@@ -747,6 +764,7 @@ for (const scenario of [
     .find((item) => item.querySelector("summary")?.textContent?.includes("sdk_result_error"));
   assert.match(observationEvidence?.querySelector("pre")?.textContent ?? "", /block_delta_type/);
   assert.match(observationEvidence?.querySelector("pre")?.textContent ?? "", /"api_error_status": 429/);
+  assert.match(observationEvidence?.querySelector("pre")?.textContent ?? "", /"parent_observation_id": "obs-wrapper"/);
     assert.match(document.body.textContent ?? "", /ACTUAL_CHAIN_MARKER/);
     assert.equal(document.querySelector('[aria-label="下一页事件"]'), null);
     assert.doesNotMatch(document.body.textContent ?? "", /DIAGNOSTIC_EVENT_BODY_MARKER/);

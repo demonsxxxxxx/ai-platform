@@ -1073,8 +1073,7 @@
     "featureDisabled": "MCP 功能已禁用，请联系管理员启用。",
     "form": {
       "allowedDepartments": "允许的部门",
-      "allowedDepartmentsDescription": "使用逗号分隔可访问此服务器的部门 ID。",
-      "allowedDepartmentsPlaceholder": "engineering, finance",
+      "allowedDepartmentsDescription": "从部门目录选择，留空表示不限制部门。",
       "connectionReentry": "编辑时会显示已保存的 URL 和 HTTP 头。",
       "removeRole": "移除角色 {{role}}",
       "add": "添加",

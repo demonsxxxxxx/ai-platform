@@ -43,8 +43,8 @@ server-side and appended to the executor system prompt.
 
 ### Authenticated navigation
 
-1. The authenticated root, post-login fallback, and bare `/chat` route open the
-   Agent Market.
+1. The authenticated root and post-login fallback open Company Navigation at
+   `/apps`. The bare `/chat` route opens the Agent Market at `/agent-market`.
 2. Generic Chat creation and search controls are not discoverable in authenticated
    navigation. The user's global session history remains available as a
    disclosure-safe navigation list grouped by public Agent identity.
@@ -192,7 +192,7 @@ the browser.
 
 | Work package | Primary source | Required outcome |
 | --- | --- | --- |
-| Agent-first routing | `frontend/web/src/App.tsx`, auth and shell navigation | Root/login/bare Chat resolve to Agent Market; generic controls hidden |
+| Agent-first routing | `frontend/web/src/App.tsx`, auth and shell navigation | Root/login resolve to Company Navigation; bare Chat resolves to Agent Market; generic controls hidden |
 | Market task language | `frontend/web/src/features/agent-market/AgentMarketRoute.tsx` | Task-oriented hierarchy, CTA, examples, and recovery states |
 | Workspace task navigation | `ChatAppContent.tsx`, `SessionSidebar.tsx`, sidebar parts | Agent-scoped “new task” and “task history”; no generic Chat discovery |
 | Builder progressive disclosure | `AgentBuilderWorkbench.tsx`, `AgentBuilderEnterpriseFields.tsx`, `agentBuilderAdapter.ts` | Three-field initial surface; presentation and governance grouped as optional |
@@ -233,8 +233,8 @@ the browser.
 
 ### Source and component checks
 
-- Authenticated `/` and `/chat` resolve to `/agent-market` while
-  `/chat/:sessionId` remains direct-addressable.
+- Authenticated `/` and the post-login fallback resolve to `/apps`; bare `/chat`
+  resolves to `/agent-market`, while `/chat/:sessionId` remains direct-addressable.
 - Agent Market card/detail navigation still carries exact `agent_id` and
   revision through the existing route builders.
 - Opening a Workspace does not create a conversation; first explicit send uses
@@ -252,8 +252,9 @@ the browser.
 
 ### Browser checks
 
-- Desktop and narrow viewport: Agent Market is the first authenticated surface,
-  cards and recovery actions remain usable, and no generic Chat entry appears.
+- Desktop and narrow viewport: Company Navigation is the default authenticated
+  surface; Agent Market cards and recovery actions remain usable, and no generic
+  Chat entry appears.
 - Builder initially shows the three core fields; every progressive section can
   be opened with keyboard and retains entered values.
 - Agent Workspace shows expert identity, task examples, task history, global
