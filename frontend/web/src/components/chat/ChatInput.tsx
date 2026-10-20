@@ -38,7 +38,6 @@ import { ComposerChips } from "./ComposerChips";
 import { SlashCommandMenu } from "./SlashCommandMenu";
 import {
   composerSelectionReducer,
-  type ComposerSelection,
   type ComposerSelectionKind,
 } from "./composerSelections";
 import { FILE_CATEGORY_PERMISSIONS } from "./chatInputConstants";
@@ -770,23 +769,10 @@ export const ChatInput = memo(function ChatInput({
   );
 
   useEffect(() => {
-    const fileSelections = attachments.map<ComposerSelection>((attachment) => ({
-      id: `file:${attachment.id}`,
-      kind: "file",
-      label: attachment.name,
-      state: attachment.isUploading ? "pending" : "enabled",
-      referenceId: attachment.id,
-      description: t("chat.fileReferenceChip", {
-        name: attachment.name,
-        type: t(`fileUpload.categories.${attachment.type}`),
-      }),
-    }));
-
+    // Composer file attachments have one presentation owner: ChatInputAttachments.
+    // A mirrored file chip would duplicate the same removable file in the composer.
     dispatchComposerSelection({ type: "clear-kind", kind: "file" });
-    for (const selection of fileSelections) {
-      dispatchComposerSelection({ type: "upsert", selection });
-    }
-  }, [attachments, t]);
+  }, [attachments]);
 
   useEffect(() => {
     dispatchComposerSelection({ type: "clear-kind", kind: "skill" });
@@ -861,12 +847,6 @@ export const ChatInput = memo(function ChatInput({
   const handleRemoveComposerSelection = useCallback(
     (id: string) => {
       dispatchComposerSelection({ type: "remove", id });
-      if (id.startsWith("file:")) {
-        const attachmentId = id.slice("file:".length);
-        const attachment = attachments.find((item) => item.id === attachmentId);
-        if (attachment) removeAttachment(attachment);
-        return;
-      }
       if (id.startsWith("skill:")) {
         onClearSelectedSkill?.();
         return;
@@ -882,10 +862,8 @@ export const ChatInput = memo(function ChatInput({
       }
     },
     [
-      attachments,
       onClearSelectedSkill,
       onToggleTool,
-      removeAttachment,
       tools,
     ],
   );

@@ -36,7 +36,7 @@ export function UserMessageBubble({
     if (!attachments || attachments.length === 0) return null;
 
     return (
-      <MessageAttachments attachments={attachments} className="mb-2"
+      <MessageAttachments attachments={attachments} className="mb-2 max-w-full"
         onOpen={(attachment, previewSrc) => {
           if (previewSrc) {
             sessionImageGallery?.openImage(previewSrc, attachment.name);
@@ -54,10 +54,7 @@ export function UserMessageBubble({
   return (
     <div className="group w-full px-2 py-2 sm:px-4 sm:py-3">
       <div className="mx-auto flex max-w-[68rem] justify-end px-1 sm:px-2">
-        <div className="flex max-w-[90%] flex-col items-end sm:max-w-[75%]">
-          {/* Attachment preview - outside message bubble */}
-          {hasAttachments && renderAttachments()}
-
+        <div className="flex min-w-0 max-w-[90%] flex-col items-end sm:max-w-[75%]" data-user-message-group>
           {lockedSkillLabel && (
             <div
               data-locked-skill-label={lockedSkillLabel}
@@ -67,10 +64,15 @@ export function UserMessageBubble({
             </div>
           )}
 
-          {/* Message bubble */}
-          {hasContent && (
-            <UserMessageContent>
-              <MessagePrimitive.Parts components={{ Text: AssistantUiMarkdownText }} unstable_showEmptyOnNonTextEnd={false} />
+          {/* One surface owns this message's files and text. */}
+          {(hasAttachments || hasContent) && (
+            <UserMessageContent className="max-w-full">
+              {renderAttachments()}
+              {hasContent && (
+                <div className="break-words">
+                  <MessagePrimitive.Parts components={{ Text: AssistantUiMarkdownText }} unstable_showEmptyOnNonTextEnd={false} />
+                </div>
+              )}
             </UserMessageContent>
           )}
 

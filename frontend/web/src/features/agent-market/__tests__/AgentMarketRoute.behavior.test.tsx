@@ -748,6 +748,15 @@ test("Agent starter prompts draft before explicit first-message submission", asy
     assert.match((container.textContent ?? ""), /处理企业内部支持请求/);
     assert.ok(container.querySelector("[data-agent-starter-prompts]"));
     assert.ok(container.querySelector("textarea"));
+    const opening = container.querySelector("[data-agent-opening-message]");
+    assert.ok(opening, "the published description is the opening text");
+    assert.equal(opening.textContent, profile.description, "the opening shows the description verbatim");
+    assert.equal(container.querySelectorAll("[data-agent-opening-message]").length, 1);
+    assert.equal(
+      container.querySelectorAll("[data-agent-opening] h1")[0]?.textContent,
+      profile.name,
+      "the opening keeps the Agent name",
+    );
 
     await draftStarterPrompt(0);
     assert.equal(currentPath, "/agent-market/agt_support/chat");
@@ -793,6 +802,143 @@ test("Agent starter prompts draft before explicit first-message submission", asy
     sessionApi.getAuthoritative = originalGetAuthoritative;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.submitChat = originalSubmitChat;
+    shellHarness.restore();
+    await React.act(async () => root.unmount());
+  }
+});
+
+test("the opening shows the profile description verbatim and never replays it into history", async () => {
+  const dom = installDom();
+  const ReactDOM = await import("react-dom/client");
+  const { MemoryRouter, Route, Routes } = await import("react-router-dom");
+  const { AgentWorkspaceRoute } = await import("../AgentWorkspaceRoute.tsx");
+  const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const shellHarness = await prepareShellHarness();
+  const multiLineDescription = "负责核对制剂章节的数据完整性。\n先确认来源，再列出需要补充的证据。";
+  const profiles: Record<string, ReturnType<typeof profileFor>> = {};
+  function profileFor(agentId: string, description: string) {
+    return {
+      ...enterpriseProfileFields,
+      agent_id: agentId,
+      name: `${agentId} 专家`,
+      description,
+      avatar_ref: "builtin:assistant" as const,
+      category: "support",
+    };
+  }
+  profiles.agt_multiline = profileFor("agt_multiline", multiLineDescription);
+  profiles.agt_empty = profileFor("agt_empty", "");
+  const originalGetPublished = agentProfileApi.getPublished;
+  const originalListConversations = agentProfileApi.listConversations;
+  const originalGet = sessionApi.get;
+  const originalGetAuthoritative = sessionApi.getAuthoritative;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalCreateConversation = agentProfileApi.createConversation;
+  const created: unknown[] = [];
+  agentProfileApi.getPublished = (async (agentId: string) => profiles[agentId]) as typeof agentProfileApi.getPublished;
+  agentProfileApi.listConversations = (async () => ({ sessions: [], next_cursor: null })) as typeof agentProfileApi.listConversations;
+  agentProfileApi.createConversation = (async (selection: unknown) => {
+    created.push(selection);
+    throw new Error("the opening must never create a conversation");
+  }) as typeof agentProfileApi.createConversation;
+  sessionApi.get = (async (sessionId: string) => ({
+    id: sessionId,
+    agent_id: "agt_multiline",
+    created_at: "2026-08-17T00:00:00Z",
+    updated_at: "2026-08-17T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  })) as typeof sessionApi.get;
+  sessionApi.getAuthoritative = (async (sessionId: string) => ({
+    session_id: sessionId,
+    workspace_id: "default",
+    agent_id: "agt_multiline",
+    title: "历史会话",
+    purpose: "conversation",
+    agent_conversation: {
+      ...enterpriseProfileFields,
+      agent_id: "agt_multiline",
+      revision: 2,
+      name: "agt_multiline 专家",
+      description: multiLineDescription,
+      avatar_ref: "builtin:assistant",
+    },
+  })) as typeof sessionApi.getAuthoritative;
+  sessionApi.getEvents = (async (sessionId: string) => ({
+    events: [{
+      id: `event-${sessionId}`,
+      run_id: `run-${sessionId}`,
+      event_type: "user:message",
+      timestamp: "2026-08-17T00:00:00Z",
+      data: { content: "已保存的历史提问" },
+    }],
+  })) as typeof sessionApi.getEvents;
+
+  const container = dom.document.body.appendChild(dom.document.createElement("div"));
+  const root = ReactDOM.createRoot(container as never);
+  const settle = async () => {
+    for (let index = 0; index < 12; index += 1) await Promise.resolve();
+  };
+  const renderRoute = async (path: string) => {
+    await React.act(async () => {
+      root.render(
+        React.createElement(
+          MemoryRouter,
+          { initialEntries: [path] },
+          shellHarness.wrap(
+            React.createElement(
+              Routes,
+              null,
+              React.createElement(Route, {
+                path: "/agent-market/:agentId/chat/:sessionId?",
+                element: React.createElement(AgentWorkspaceRoute),
+              }),
+            ),
+          ),
+        ),
+      );
+      await settle();
+    });
+  };
+  try {
+    await renderRoute("/agent-market/agt_multiline/chat");
+    const opening = container.querySelector("[data-agent-opening-message]");
+    assert.ok(opening, "a configured description becomes the opening text");
+    assert.equal(opening.textContent, multiLineDescription);
+    assert.match(opening.className, /whitespace-pre-wrap/);
+    assert.match(opening.className, /text-\[15px\]/);
+    assert.equal(created.length, 0, "rendering the opening creates no conversation");
+
+    await React.act(async () => root.render(React.createElement(React.Fragment)));
+    await renderRoute("/agent-market/agt_empty/chat");
+    assert.equal(
+      container.querySelector("[data-agent-opening-message]"),
+      null,
+      "an empty description shows no invented opening",
+    );
+    assert.match(container.querySelector("[data-agent-opening]")?.textContent ?? "", /agt_empty 专家/);
+    assert.ok(container.querySelector("[data-agent-starter-prompts]"), "an empty description keeps starter prompts");
+
+    await React.act(async () => root.render(React.createElement(React.Fragment)));
+    await renderRoute("/agent-market/agt_multiline/chat/session-existing");
+    assert.equal(
+      container.querySelector("[data-agent-opening-message]"),
+      null,
+      "an existing transcript must not replay the opening",
+    );
+    assert.ok(
+      container.querySelector("[data-chat-transcript]"),
+      "an existing transcript keeps its own message surface",
+    );
+    assert.equal(created.length, 0, "reading the opening never creates a conversation or run");
+  } finally {
+    agentProfileApi.getPublished = originalGetPublished;
+    agentProfileApi.listConversations = originalListConversations;
+    agentProfileApi.createConversation = originalCreateConversation;
+    sessionApi.get = originalGet;
+    sessionApi.getAuthoritative = originalGetAuthoritative;
+    sessionApi.getEvents = originalGetEvents;
     shellHarness.restore();
     await React.act(async () => root.unmount());
   }
