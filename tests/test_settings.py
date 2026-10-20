@@ -108,12 +108,19 @@ def test_browser_public_launchpad_urls_reject_unsafe_values(value):
         "https://auth.internal.example/#fragment",
     ],
 )
-def test_private_upstream_urls_reject_invalid_base_urls(value):
+@pytest.mark.parametrize("field", ["existing_auth_base_url", "dingtalk_department_authority_base_url"])
+def test_private_upstream_urls_reject_invalid_base_urls(value, field):
     with pytest.raises(ValidationError, match="private_upstream_url_invalid"):
-        Settings(_env_file=None, existing_auth_base_url=value)
+        Settings(_env_file=None, **{field: value})
 
 
-def test_profile_drive_transfer_upstream_requires_https():
+@pytest.mark.parametrize("timeout", [0, 31])
+def test_department_authority_timeout_is_bounded(timeout):
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, dingtalk_department_authority_timeout_seconds=timeout)
+
+
+def test_profile_drive_transfer_upstream_requires_https_without_explicit_http_opt_in():
     with pytest.raises(ValidationError, match="profile_drive_transfer_https_required"):
         Settings(
             _env_file=None,
@@ -125,6 +132,61 @@ def test_profile_drive_transfer_upstream_requires_https():
         profile_drive_transfer_upstream="https://profile-drive.internal",
     )
     assert settings.profile_drive_transfer_upstream == "https://profile-drive.internal"
+    assert settings.profile_drive_transfer_allow_insecure_http is False
+
+
+def test_profile_drive_transfer_upstream_accepts_http_only_with_explicit_opt_in():
+    settings = Settings(
+        _env_file=None,
+        profile_drive_transfer_upstream="http://profile-drive.internal",
+        profile_drive_transfer_allow_insecure_http=True,
+    )
+
+    assert settings.profile_drive_transfer_upstream == "http://profile-drive.internal"
+    assert settings.profile_drive_transfer_allow_insecure_http is True
+
+
+def test_profile_drive_transfer_http_opt_in_reads_its_environment_variable(monkeypatch):
+    monkeypatch.setenv("PROFILE_DRIVE_TRANSFER_UPSTREAM", "http://profile-drive-mcp:5201")
+    monkeypatch.setenv("PROFILE_DRIVE_TRANSFER_ALLOW_INSECURE_HTTP", "true")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.profile_drive_transfer_upstream == "http://profile-drive-mcp:5201"
+    assert settings.profile_drive_transfer_allow_insecure_http is True
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "profile-drive.internal",
+        "ftp://profile-drive.internal",
+        "http://user:password@profile-drive.internal",
+        "http://profile-drive.internal?token=secret",
+        "http://profile-drive.internal/#fragment",
+    ],
+)
+@pytest.mark.parametrize("allow_insecure_http", [False, True])
+def test_profile_drive_transfer_upstream_rejects_malformed_urls(value, allow_insecure_http):
+    with pytest.raises(ValidationError, match="private_upstream_url_invalid"):
+        Settings(
+            _env_file=None,
+            profile_drive_transfer_upstream=value,
+            profile_drive_transfer_allow_insecure_http=allow_insecure_http,
+        )
+
+
+def test_compose_and_example_project_the_profile_drive_http_opt_in():
+    mapping = (
+        "PROFILE_DRIVE_TRANSFER_ALLOW_INSECURE_HTTP: "
+        "${PROFILE_DRIVE_TRANSFER_ALLOW_INSECURE_HTTP:-false}"
+    )
+    compose = Path("deploy/ai-platform/docker-compose.yml").read_text(encoding="utf-8")
+    example = Path("deploy/ai-platform/.env.example").read_text(encoding="utf-8")
+
+    # Only the API owns the transfer, so the flag is projected once, not to the worker.
+    assert [line.strip() for line in compose.splitlines()].count(mapping) == 1
+    assert "PROFILE_DRIVE_TRANSFER_ALLOW_INSECURE_HTTP=false" in example.splitlines()
 
 
 def test_stale_run_reconciliation_settings_accept_environment_overrides(monkeypatch):

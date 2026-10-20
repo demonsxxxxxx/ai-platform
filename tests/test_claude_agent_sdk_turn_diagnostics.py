@@ -1263,6 +1263,9 @@ async def test_registered_mcp_failure_reaches_private_run_observation(monkeypatc
         run_id="run_test", attempt_id="attempt_test",
     )
     runtime = result.runtime_diagnostics
+    origin_id = runtime["failure_observations"][0]["observation_id"]
+    assert origin_id.startswith("obs_")
+    assert normalize_sdk_runtime_diagnostics(runtime)["failure_observations"][0]["observation_id"] == origin_id
     assert result.error is not None
     errors = runtime["sdk"]["errors"]
     assert isinstance(errors, dict), "typed MCP evidence missing from private SDK errors"
@@ -1288,6 +1291,8 @@ async def test_registered_mcp_failure_reaches_private_run_observation(monkeypatc
     # Serialize the storage contract, then exercise the actual admin read projector.
     stored = json.loads(json.dumps(payload))
     _root, _handling, details, _losses = _project_observations(stored["observations"])
+    assert _root["observation_id"] == origin_id
+    assert details["observations"][0]["parent_observation_id"] == origin_id
     assert details["observations"][0]["sdk"]["errors"]["mcp_session_failures"] == expected
     assert "PRIVATE" not in json.dumps(stored)
 
@@ -1297,3 +1302,4 @@ async def test_registered_mcp_failure_reaches_private_run_observation(monkeypatc
     sdk = _install_sdk(monkeypatch, empty_query)
     next_result = await run_claude_agent_sdk(prompt="next", cwd=tmp_path, skill_id=None, run_id="run_next", attempt_id="attempt_next")
     assert next_result.runtime_diagnostics["sdk"]["errors"] == ["next_sdk_error"]
+    assert next_result.runtime_diagnostics["failure_observations"][0]["observation_id"] != origin_id

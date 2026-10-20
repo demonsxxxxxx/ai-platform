@@ -7,6 +7,7 @@ import hashlib
 import json
 import re
 from contextlib import AsyncExitStack, asynccontextmanager
+from functools import partial
 from typing import Any
 
 from mcp.server.lowlevel import Server
@@ -91,7 +92,8 @@ def _tool_arguments_digest(arguments: object) -> str | None:
 
 
 class ClaudeMcpRegistration:
-    def __init__(self, subjects, configs, *, session_factory, list_tools, callback_wrapper=None, failure_observer=None):
+    def __init__(self, subjects, configs, *, session_factory, list_tools, callback_wrapper=None, failure_observer=None, credential_resolver=None):
+        self._credential_resolver = credential_resolver
         self._failure_observer = failure_observer
         self.configs = configs
         self._session_factory = session_factory
@@ -262,7 +264,9 @@ class ClaudeMcpRegistration:
         try:
             async with AsyncExitStack() as stack:
                 async with asyncio.timeout(_MCP_DISCOVERY_TIMEOUT_SECONDS):
-                    session = await stack.enter_async_context(self._session_factory(config))
+                    credential_options = ({"credential_resolver": partial(self._credential_resolver, server_name)}
+                                          if self._credential_resolver is not None else {})
+                    session = await stack.enter_async_context(self._session_factory(config, **credential_options))
                     tools = await self._list_tools(session)
                 by_name = {tool.name: tool for tool in tools}
                 available_names = names.intersection(by_name)

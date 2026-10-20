@@ -1,10 +1,22 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import type { Message } from "../../../../types";
 import { extractMessageOutline } from "../../../layout/AppContent/messageOutline";
 import { buildTaskNotificationCopy } from "../../../layout/AppContent/taskNotificationContent";
 import { toAssistantUiMessage } from "../externalStoreRuntime";
 
+test("markdown text uses one primitive smooth/defer owner and documents stay explicit-content", () => {
+  const partsSource = readFileSync(new URL("../MessageParts.tsx", import.meta.url), "utf8");
+  const primitiveSource = readFileSync(new URL("../elements/markdown-text.tsx", import.meta.url), "utf8");
+  const documentSource = readFileSync(new URL("../../../documents/previews/MarkdownRenderer.tsx", import.meta.url), "utf8");
+  assert.match(primitiveSource, /MarkdownTextPrimitive/);
+  assert.match(primitiveSource, /defer = true/);
+  assert.match(partsSource, /MessagePartPrimitive\.Text component=\{MarkdownTextContent\} smooth=\{false\}/);
+  assert.match(partsSource, /state\.message\.status\?\.type === "running" \|\| Boolean\(state\.message\.metadata\.custom\.isSynchronizing\)/);
+  assert.match(documentSource, /content=\{displayContent\}/);
+  assert.doesNotMatch(documentSource, /useSessionImageGallery|MessagePartPrimitive/);
+});
 const timestamp = new Date("2026-10-09T00:00:00Z");
 
 function part(
@@ -21,7 +33,7 @@ function part(
   };
 }
 
-test("assistant-ui text projection omits work while retaining visible preview and answer sources", () => {
+test("assistant-ui keeps work as a non-copyable business slot alongside preview and answer text", () => {
   const converted = toAssistantUiMessage({
     id: "assistant-ui-message",
     role: "assistant",
@@ -36,6 +48,7 @@ test("assistant-ui text projection omits work while retaining visible preview an
     ],
   });
   assert.deepEqual(converted.content, [
+    { type: "data-work", data: {} },
     { type: "text", text: "Preview" },
     { type: "text", text: "\n\nAnswer A" },
     { type: "text", text: "\n\nAnswer B" },
