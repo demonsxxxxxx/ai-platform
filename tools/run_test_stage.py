@@ -388,7 +388,7 @@ def _run_git(repo_root: Path, *arguments: str) -> str:
 def _build_plan(arguments: argparse.Namespace) -> StagePlan:
     cwd = Path.cwd().resolve()
     top_level = Path(_run_git(cwd, "rev-parse", "--show-toplevel")).resolve()
-    if cwd != top_level:
+    if not cwd.samefile(top_level):
         raise StageError(
             "invalid_test_plan",
             "wrong_worktree_root",
@@ -501,6 +501,13 @@ def _write_json(path: Path, value: dict[str, object]) -> None:
 
 def _relative(path: Path, root: Path) -> str:
     return path.relative_to(root).as_posix()
+
+
+def _filesystem_path(path: Path) -> str:
+    value = str(path)
+    if os.name == "nt" and not value.startswith("\\\\?\\"):
+        return "\\\\?\\UNC\\" + value[2:] if value.startswith("\\\\") else "\\\\?\\" + value
+    return value
 
 
 @dataclass(frozen=True)
@@ -724,7 +731,7 @@ def _run_stage(plan: StagePlan) -> int:
         "-vv",
         "-ra",
         "--basetemp",
-        str(plan.basetemp),
+        _filesystem_path(plan.basetemp),
         "--junitxml",
         str(plan.junit),
     ]
@@ -745,9 +752,7 @@ def _run_stage(plan: StagePlan) -> int:
         )
         for name in removed_coverage_variables:
             environment.pop(name)
-        coverage_data = str(plan.run_root / ".coverage")
-        # SQLite needs the Windows native prefix for deeply nested test worktrees.
-        environment["COVERAGE_FILE"] = "\\\\?\\" + coverage_data if os.name == "nt" else coverage_data
+        environment["COVERAGE_FILE"] = _filesystem_path(plan.run_root / ".coverage")
         command.extend([
             f"--cov={plan.repo_root / 'app'}", "--cov-branch",
             f"--cov-config={config}", "--cov-report=term:skip-covered",

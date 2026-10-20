@@ -1,5 +1,5 @@
-import { Button } from "@lobehub/ui/base-ui";
-import { useEffect, useState, type ReactNode } from "react";
+import { Button, DrawerRoot, DrawerPortal, DrawerBackdrop, DrawerPopup, DrawerHeader, DrawerTitle, DrawerContent } from "@lobehub/ui/base-ui";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { PanelRightClose, PanelRightOpen } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { libreChatSurface } from "./surface";
@@ -18,16 +18,28 @@ export function LibreChatShell({
 }: LibreChatShellProps) {
   const { t } = useTranslation();
   const [contextOpen, setContextOpen] = useState(false);
+  const [desktop, setDesktop] = useState(() => typeof window !== "undefined" && window.matchMedia("(min-width: 1280px)").matches);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const ContextIcon = contextOpen ? PanelRightClose : PanelRightOpen;
 
   useEffect(() => {
-    if (!contextOpen) return;
+    const media = window.matchMedia("(min-width: 1280px)");
+    const update = () => setDesktop(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+
+  useEffect(() => {
+    if (!contextOpen || !desktop) return;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setContextOpen(false);
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      setContextOpen(false);
+      triggerRef.current?.focus();
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [contextOpen]);
+  }, [contextOpen, desktop]);
 
   return (
     <section
@@ -37,15 +49,16 @@ export function LibreChatShell({
     >
       <div
         className={
-          rightPanel && contextOpen
+          rightPanel && contextOpen && desktop
             ? libreChatSurface.workspaceWithContext
             : libreChatSurface.workspace
         }
       >
         <div className={libreChatSurface.thread}>
           {rightPanel && (
-            <div className="absolute right-3 top-2 z-[60] flex sm:right-4">
+            <div className="flex shrink-0 justify-end px-3 pt-2 sm:px-4">
               <Button type="text"
+                ref={triggerRef}
                 htmlType="button"
                 data-librechat-context-toggle
                 aria-controls="librechat-context-panel"
@@ -74,25 +87,34 @@ export function LibreChatShell({
           )}
         </div>
 
-        {rightPanel && contextOpen && (
-          <>
-            <Button type="text"
-              htmlType="button"
-              aria-label={t("common.close", "关闭")}
-              title={t("common.close", "关闭")}
-              className="fixed inset-0 z-40 bg-black/20 xl:hidden"
-              onClick={() => setContextOpen(false)}
-            />
-            <div
-              id="librechat-context-panel"
-              data-workbench-region="context"
-              className={libreChatSurface.context}
-            >
-              {rightPanel}
-            </div>
-          </>
+        {rightPanel && contextOpen && desktop && (
+          <aside
+            id="librechat-context-panel"
+            aria-label={t("workbench.contextLabel")}
+            data-workbench-region="context"
+            className={libreChatSurface.context}
+          >
+            {rightPanel}
+          </aside>
         )}
       </div>
+      {rightPanel && !desktop && (
+        <DrawerRoot open={contextOpen} onOpenChange={setContextOpen}>
+          <DrawerPortal>
+            <DrawerBackdrop data-librechat-context-backdrop />
+            <DrawerPopup placement="right" width="min(22rem, calc(100vw - 2rem))" finalFocus={triggerRef}>
+              <DrawerHeader>
+                <DrawerTitle>{t("workbench.contextLabel")}</DrawerTitle>
+                <Button type="text" htmlType="button" aria-label={t("common.close", "关闭")}
+                  onClick={() => setContextOpen(false)} icon={<PanelRightClose size={18} aria-hidden="true" />} />
+              </DrawerHeader>
+              <DrawerContent id="librechat-context-panel" data-workbench-region="context" style={{ minHeight: 0, overflow: "hidden", flexDirection: "column" }}>
+                {rightPanel}
+              </DrawerContent>
+            </DrawerPopup>
+          </DrawerPortal>
+        </DrawerRoot>
+      )}
     </section>
   );
 }

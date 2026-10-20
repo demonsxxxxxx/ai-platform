@@ -642,13 +642,19 @@ def test_native_skill_workspace_paths_are_confined_and_proxy_carries_command_as_
         assert not claude_agent_sdk_runner._workspace_path_parameters_authorized(
             subject, "Glob", forbidden_input, workspace_root=workspace,
         ), forbidden_input
-    for internal_root in (".claude-config", ".home", ".pins", ".tmp"):
+    for internal_root in (".claude-config", ".home", ".pins"):
         assert not claude_agent_sdk_runner._workspace_path_parameters_authorized(
             subject,
             "Read",
             {"file_path": str(workspace / internal_root / "private")},
             workspace_root=workspace,
         )
+    assert claude_agent_sdk_runner._workspace_path_parameters_authorized(
+        subject,
+        "Read",
+        {"file_path": str(workspace / ".tmp" / "work" / "dump.txt")},
+        workspace_root=workspace,
+    )
     assert not claude_agent_sdk_runner._workspace_path_parameters_authorized(
         subject,
         "Read",

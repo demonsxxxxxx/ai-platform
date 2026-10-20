@@ -88,6 +88,7 @@ test("keeps Agent workspace Chat routes and run-bound file affordances together"
     source,
     /mergeProjectedSessionFiles\(\s*messages,\s*visibleWorkspaceProjection\.inputFiles,\s*\)/,
   );
+  assert.match(source, /<AssistantUiProjection[^>]*messages=\{displayMessages\}/);
   assert.match(source, /sessionApi\.stageProfileDriveFile\(reference\)/);
   assert.match(source, /isUploading:\s*true/);
   assert.doesNotMatch(source, /if \(!sessionId\) return;/);
@@ -127,8 +128,13 @@ test("keeps active conversations wide, readable, and visually compact", () => {
     "utf8",
   );
 
+  const thread = readFileSync(
+    new URL("../../../chat/assistant-ui/elements/thread.tsx", import.meta.url),
+    "utf8",
+  );
   assert.match(view, /className="mx-auto max-w-\[68rem\] px-2"/);
-  assert.match(message, /max-w-\[68rem\]/);
+  assert.match(message, /<AssistantMessageContent/);
+  assert.match(thread, /max-w-\[68rem\]/);
   assert.match(userMessage, /max-w-\[68rem\]/);
   assert.match(userMessage, /sm:max-w-\[75%\]/);
 });

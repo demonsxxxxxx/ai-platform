@@ -50,6 +50,7 @@ async def copy_run_as_new_task(
     tenant_id: str,
     user_id: str,
     run_id: str,
+    principal_department_ids: tuple[str, ...] = (),
 ) -> dict[str, Any] | None:
     source = await get_authorized_run(conn, tenant_id=tenant_id, user_id=user_id, run_id=run_id)
     if source is None:
@@ -136,6 +137,7 @@ async def copy_run_as_new_task(
             tenant_id=tenant_id,
             tool_ids=extract_run_mcp_tool_ids(source_execution_input),
             principal_department_id=inherited_department_id,
+            principal_department_ids=principal_department_ids,
             principal_roles=inherited_roles,
             is_admin=bool(set(inherited_roles).intersection(ADMIN_ROLE_ALIASES)),
             permissions=[],
@@ -169,6 +171,7 @@ async def copy_run_as_new_task(
             skill_manifests=skill_manifests,
             normalized_input=source_execution_input,
             principal_department_id=inherited_department_id,
+            principal_department_ids=principal_department_ids,
             principal_roles=inherited_roles,
             is_admin=bool(set(inherited_roles).intersection(ADMIN_ROLE_ALIASES)),
             permissions=[],
@@ -313,6 +316,7 @@ async def retry_run_as_new_task(
     tenant_id: str,
     user_id: str,
     run_id: str,
+    principal_department_ids: tuple[str, ...] = (),
 ) -> dict[str, Any] | None:
     source = await get_authorized_run(conn, tenant_id=tenant_id, user_id=user_id, run_id=run_id, for_update=True)
     if source is None:
@@ -333,6 +337,7 @@ async def retry_run_as_new_task(
         tenant_id=tenant_id,
         user_id=user_id,
         run_id=run_id,
+        principal_department_ids=principal_department_ids,
     )
     if copied is None:
         return None
@@ -378,6 +383,7 @@ async def resume_run_as_new_task(
     tenant_id: str,
     user_id: str,
     run_id: str,
+    principal_department_ids: tuple[str, ...] = (),
 ) -> dict[str, Any] | None:
     """Create a queued resume child run from a non-active source with reusable output."""
     source = await get_authorized_run(conn, tenant_id=tenant_id, user_id=user_id, run_id=run_id, for_update=True)
@@ -406,6 +412,7 @@ async def resume_run_as_new_task(
         tenant_id=tenant_id,
         user_id=user_id,
         run_id=run_id,
+        principal_department_ids=principal_department_ids,
     )
     if copied is None:
         return None

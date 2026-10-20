@@ -125,10 +125,12 @@ export function useSkills(options?: {
   enabled?: boolean;
   listParams?: SkillListParams;
   allAuthorizedCatalog?: boolean;
+  identityScope?: string;
 }) {
   const enabled = options?.enabled !== false; // Default to true
   const listParams = options?.listParams;
   const allAuthorizedCatalog = options?.allAuthorizedCatalog === true;
+  const identityScope = options?.identityScope ?? "";
   const [skills, setSkills] = useState<PublicSkillResponse[]>([]);
   const [availableTags, setAvailableTags] = useState<string[]>([]);
   const [effectivePermissions, setEffectivePermissions] = useState<string[]>(
@@ -161,6 +163,21 @@ export function useSkills(options?: {
   // rows-and-total snapshot.
   const catalogMutationRevisionRef = useRef(0);
   const pendingCatalogMutationsRef = useRef(0);
+  const identityRef = useRef({ scope: identityScope, epoch: 0 });
+  if (identityRef.current.scope !== identityScope) {
+    identityRef.current = { scope: identityScope, epoch: identityRef.current.epoch + 1 };
+    catalogRequestSequenceRef.current += 1;
+    pendingTogglesRef.current.clear();
+    setSkills([]);
+    setTotal(0);
+    setAvailableTags([]);
+    setPermissionsValid(false);
+    setEffectivePermissionsKnown(false);
+    setCatalogReadResolved(false);
+    setError(null);
+    setListError(null);
+  }
+  const identityEpoch = identityRef.current.epoch;
 
   const beginCatalogMutation = useCallback(() => {
     pendingCatalogMutationsRef.current += 1;
@@ -180,7 +197,7 @@ export function useSkills(options?: {
   // Fetch all skills (basic info only)
   const fetchSkills = useCallback(
     async (params?: SkillListParams): Promise<boolean> => {
-      if (!enabled) return false;
+      if (!enabled || identityEpoch !== identityRef.current.epoch) return false;
       const requestSequence = ++catalogRequestSequenceRef.current;
       const mutationRevision = catalogMutationRevisionRef.current;
       setIsLoading(true);
@@ -255,8 +272,11 @@ export function useSkills(options?: {
         }
       }
     },
-    [allAuthorizedCatalog, enabled],
+    [allAuthorizedCatalog, enabled, identityEpoch],
   );
+  // An archive may finish after an authority change; refresh the current scope.
+  const latestFetchSkillsRef = useRef(fetchSkills);
+  latestFetchSkillsRef.current = fetchSkills;
 
   // Fetch single skill — metadata + file paths only (lazy: content loaded on demand)
   const getSkill = useCallback(
@@ -379,7 +399,7 @@ export function useSkills(options?: {
   // Delete skill
   const deleteSkill = useCallback(
     async (name: string): Promise<boolean> => {
-      if (!enabled) return false;
+      if (!enabled || identityEpoch !== identityRef.current.epoch) return false;
       const archivedSkill = skills.find((skill) => skill.name === name);
       const archivedIndex = skills.findIndex((skill) => skill.name === name);
       let archiveError: string | null = null;
@@ -396,7 +416,7 @@ export function useSkills(options?: {
         await skillApi.delete(name);
         return true;
       } catch (err) {
-        if (archivedSkill) {
+        if (archivedSkill && identityEpoch === identityRef.current.epoch) {
           setSkills((current) => {
             if (current.some((skill) => skill.name === name)) return current;
             const restored = [...current];
@@ -410,17 +430,17 @@ export function useSkills(options?: {
           setTotal((current) => current + 1);
         }
         archiveError = resolveSkillOperationError(err, "skills.deleteFailed");
-        setError(archiveError);
+        if (identityEpoch === identityRef.current.epoch) setError(archiveError);
         return false;
       } finally {
         if (finishCatalogMutation()) {
-          await fetchSkills();
+          await latestFetchSkillsRef.current();
         }
-        if (archiveError) setError(archiveError);
+        if (archiveError && identityEpoch === identityRef.current.epoch) setError(archiveError);
         setIsDeleting(false);
       }
     },
-    [beginCatalogMutation, enabled, fetchSkills, finishCatalogMutation, skills],
+    [beginCatalogMutation, enabled, identityEpoch, finishCatalogMutation, skills],
   );
 
   // Toggle skill
@@ -442,6 +462,7 @@ export function useSkills(options?: {
 
       try {
         const result = await skillApi.toggle(name, newEnabled);
+        if (identityEpoch !== identityRef.current.epoch) return false;
         setSkills((prev) =>
           prev.map((s) =>
             s.name === name ? { ...s, enabled: result.enabled } : s,
@@ -449,6 +470,7 @@ export function useSkills(options?: {
         );
         return true;
       } catch (err) {
+        if (identityEpoch !== identityRef.current.epoch) return false;
         // Rollback on error
         pendingTogglesRef.current.delete(name);
         setSkills((prev) =>
@@ -460,23 +482,23 @@ export function useSkills(options?: {
         return false;
       } finally {
         // toggle 完成后清除 pending 状态
-        pendingTogglesRef.current.delete(name);
+        if (identityEpoch === identityRef.current.epoch) pendingTogglesRef.current.delete(name);
       }
     },
-    [enabled, skills],
+    [enabled, identityEpoch, skills],
   );
 
   // Batch delete skills
   const batchDeleteSkills = useCallback(
     async (names: string[]): Promise<string[]> => {
-      if (!enabled) return [];
+      if (!enabled || identityEpoch !== identityRef.current.epoch) return [];
       let archiveError: string | null = null;
       beginCatalogMutation();
       setError(null);
       try {
         const result = await skillApi.batchDelete(names);
         // Optimistic remove already-deleted skills from state
-        if (result.deleted.length > 0) {
+        if (result.deleted.length > 0 && identityEpoch === identityRef.current.epoch) {
           setSkills((prev) =>
             prev.filter((s) => !result.deleted.includes(s.name)),
           );
@@ -488,16 +510,16 @@ export function useSkills(options?: {
       } catch (err) {
         archiveError =
           err instanceof Error ? err.message : "Failed to delete skills";
-        setError(archiveError);
+        if (identityEpoch === identityRef.current.epoch) setError(archiveError);
         return [];
       } finally {
         if (finishCatalogMutation()) {
-          await fetchSkills();
+          await latestFetchSkillsRef.current();
         }
-        if (archiveError) setError(archiveError);
+        if (archiveError && identityEpoch === identityRef.current.epoch) setError(archiveError);
       }
     },
-    [beginCatalogMutation, enabled, fetchSkills, finishCatalogMutation],
+    [beginCatalogMutation, enabled, identityEpoch, finishCatalogMutation],
   );
 
   // Batch toggle skills
@@ -514,6 +536,7 @@ export function useSkills(options?: {
 
       try {
         const result = await skillApi.batchToggle(names, nextEnabled);
+        if (identityEpoch !== identityRef.current.epoch) return false;
         // Clear pending for successful ones
         result.updated.forEach((name) =>
           pendingTogglesRef.current.delete(name),
@@ -522,6 +545,7 @@ export function useSkills(options?: {
         await fetchSkills();
         return result.errors.length === 0;
       } catch (err) {
+        if (identityEpoch !== identityRef.current.epoch) return false;
         // Rollback on error
         names.forEach((name) => pendingTogglesRef.current.delete(name));
         setSkills((prev) =>
@@ -535,7 +559,7 @@ export function useSkills(options?: {
         return false;
       }
     },
-    [enabled, fetchSkills],
+    [enabled, fetchSkills, identityEpoch],
   );
 
   // Toggle category (not applicable in new architecture - just toggle all)

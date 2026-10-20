@@ -16,7 +16,7 @@ def user_headers(permissions: str = "role:read") -> dict[str, str]:
         "X-AI-User-Name": "Ordinary User",
         "X-AI-Roles": "user",
         "X-AI-Tenant-ID": "tenant-a",
-        "X-AI-Department-ID": "qa",
+        "X-AI-Department-ID": "110",
         "X-AI-Permissions": permissions,
     }
 
@@ -27,7 +27,7 @@ def admin_headers(permissions: str = "role:read,role:manage") -> dict[str, str]:
         "X-AI-User-Name": "Role Admin",
         "X-AI-Roles": "admin",
         "X-AI-Tenant-ID": "tenant-a",
-        "X-AI-Department-ID": "platform",
+        "X-AI-Department-ID": "410",
         "X-AI-Permissions": permissions,
     }
 
@@ -56,6 +56,14 @@ def install_role_governance_route_fakes(
     skill_rows: dict[str, dict[str, object]] | None = None,
 ) -> list[tuple[str, dict[str, object]]]:
     from app.routes import role_governance
+    from app.identity.api import DepartmentAuthority, resolve_department_scope
+
+    async def department_source(work_id, **_kwargs):
+        memberships = {"ordinary": ["110"], "role-admin": ["410"]}
+        ids = memberships.get(work_id, [])
+        return resolve_department_scope(ids, {"110": None, "210": None, "410": None}) if ids else DepartmentAuthority()
+
+    monkeypatch.setattr("app.principal_authority.resolve_department_authority", department_source)
 
     class FakeConnection:
         pass
@@ -161,8 +169,8 @@ def test_role_governance_overview_projects_safe_roles_scope_and_audit(monkeypatc
     }
     assert body["scope"]["tenant_id"] == "tenant-a"
     assert body["scope"]["workspace_id"] == "workspace-a"
-    assert body["scope"]["current_department_id"] == "qa"
-    assert body["scope"]["departments"][0]["department_id"] == "qa"
+    assert body["scope"]["current_department_id"] == "110"
+    assert body["scope"]["departments"][0]["department_id"] == "110"
     assert body["scope"]["workspaces"][0]["workspace_id"] == "workspace-a"
     assert body["scope"]["skill_availability"][0]["inherited_from"] == "tenant"
     assert body["requests"][0]["requester_id"] == "ordinary"
@@ -179,7 +187,7 @@ def test_role_governance_skill_projection_uses_unified_distribution(monkeypatch)
             "status": "active",
             "visible_to_user": True,
             "scope_mode": "allowlist",
-            "department_ids": ["qa"],
+            "department_ids": ["110"],
             "allowed_roles": ["qa-operator"],
             "metadata_json": {},
         }
@@ -220,7 +228,7 @@ def test_role_governance_admin_skill_projection_audits_distribution_bypass(monke
                 "status": "disabled",
                 "visible_to_user": False,
                 "scope_mode": "allowlist",
-                "department_ids": ["qa"],
+                "department_ids": ["110"],
                 "allowed_roles": ["qa-operator"],
                 "metadata_json": {"private": "must-not-be-audited"},
             }
@@ -253,9 +261,9 @@ def test_role_governance_admin_skill_projection_audits_distribution_bypass(monke
     assert audit["payload_json"] == {
         "capability_kind": "skill",
         "capability_id": "restricted-skill",
-        "actor_department_id": "platform",
+        "actor_department_id": "410",
         "actor_roles": ["admin"],
-        "department_scope_ids": ["qa"],
+        "department_scope_ids": ["110"],
         "role_scope_ids": ["qa-operator"],
         "scope_mode": "allowlist",
         "decision_reason": "admin_bypass",
@@ -402,7 +410,7 @@ def test_role_governance_user_request_is_audited_without_admin_permission(monkey
         "target_type": "role",
         "target_id": "skill_developer",
         "reason": "Need Skill workbench access",
-        "department_id": "qa",
+        "department_id": "110",
         "workspace_id": "workspace-a",
         "source": "role_governance_projection",
         "secret_material_projected": False,
@@ -492,7 +500,7 @@ def test_role_governance_audit_payload_sanitizes_free_text_fields(monkeypatch):
             "target_type": "role",
             "target_id": "skill_developer",
             "reason": "[redacted-private]",
-            "department_id": "qa",
+            "department_id": "110",
             "workspace_id": "workspace-a",
             "source": "role_governance_projection",
             "secret_material_projected": False,
@@ -501,14 +509,14 @@ def test_role_governance_audit_payload_sanitizes_free_text_fields(monkeypatch):
             "operation": "approve",
             "decision_note": "[redacted-private]",
             "has_rollback_id": True,
-            "department_id": "platform",
+            "department_id": "410",
             "source": "role_governance_projection",
             "secret_material_projected": False,
         },
         {
             "operation": "rollback",
             "reason": "[redacted-private]",
-            "department_id": "platform",
+            "department_id": "410",
             "source": "role_governance_projection",
             "secret_material_projected": False,
         },

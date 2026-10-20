@@ -9,7 +9,7 @@ import { processMessageEvent } from "../../../../hooks/useAgent/eventProcessor";
 type Root = Awaited<ReturnType<typeof createLobeTestRoot>>;
 import { ThreadPrimitive } from "@assistant-ui/react";
 import { AssistantUiProjection } from "../AssistantUiProjection";
-import { AssistantUiMessageFrame } from "../MessageFrame";
+import { ThreadMessage } from "../elements/thread";
 import { MessagePartRenderer } from "../../ChatMessage/MessagePartRenderer";
 import { closePersistentToolPanel, getPersistentToolPanelState } from "../../ChatMessage/items/persistentToolPanelState";
 import type { Message, MessagePart } from "../../../../types";
@@ -94,7 +94,7 @@ function renderProjection(
                 messageId: message.id,
                 components: {
                   Message: () => createElement(
-                    AssistantUiMessageFrame,
+                    ThreadMessage,
                     null,
                     createElement("p", { "data-message-content": true }, message.content),
                     ...(message.parts || []).map(renderPart),
@@ -141,9 +141,7 @@ test("mounted projection uses the production canonical tool lifecycle", async ()
     }]), actions);
     const projection = dom.container.querySelector("[data-assistant-ui-projection]");
     const frame = dom.container.querySelector("[data-assistant-ui-message]");
-    const tool = [...dom.container.querySelectorAll("button")].find((button) =>
-      button.textContent?.includes("读取：Read"),
-    );
+    const tool = dom.container.querySelector('[data-chat-activity-status="success"]');
     assert.ok(projection);
     assert.ok(frame);
     assert.equal(projection?.getAttribute("role"), "log");
@@ -169,8 +167,8 @@ test("mounted projection uses the production canonical tool lifecycle", async ()
       dom.container.innerHTML,
       /Bash:|workspace|private result|command/,
     );
-    tool.focus();
-    assert.equal(dom.container.ownerDocument.activeElement, tool);
+    assert.match(tool.textContent || "", /读取：Read/);
+    assert.equal(tool.querySelector("button"), null, "nonexpandable activity is status text, not a fake action");
   } finally {
     dom.cleanup();
   }
@@ -445,12 +443,12 @@ test("mounted projection renders the production subagent lifecycle with hierarch
     assert.ok(lifecycle?.className.includes("border-l-2"));
     assert.ok(trigger);
     assert.equal(trigger?.tagName, "BUTTON");
-    assert.equal(trigger?.getAttribute("aria-label"), "Sub-agent: Running, Nested Agent");
-    assert.match(lifecycle?.textContent || "", /Running/);
-    assert.match(lifecycle?.textContent || "", /Nested Agent/);
+    assert.equal(trigger?.getAttribute("aria-label"), "子代理: 运行中，嵌套子代理");
+    assert.match(lifecycle?.textContent || "", /运行中/);
+    assert.match(lifecycle?.textContent || "", /嵌套子代理/);
     assert.doesNotMatch(lifecycle?.textContent || "", /parent-agent-1/);
-    assert.match(lifecycle?.textContent || "", /Category: search/);
-    assert.match(lifecycle?.textContent || "", /Progress: 40%/);
+    assert.match(lifecycle?.textContent || "", /当前操作：搜索/);
+    assert.match(lifecycle?.textContent || "", /进度：40%/);
     trigger?.focus();
     assert.equal(dom.container.ownerDocument.activeElement, trigger);
 
@@ -488,10 +486,10 @@ test("mounted projection renders the production subagent lifecycle with hierarch
     renderProjection(dom.root, message(completed.parts), actions);
     const updated = dom.container.querySelector("[data-subagent-id=subagent-1]");
     const updatedTrigger = dom.container.querySelector("[data-subagent-trigger=subagent-1]");
-    assert.equal(updatedTrigger?.getAttribute("aria-label"), "Sub-agent: Completed, Nested Agent");
-    assert.match(updated?.textContent || "", /Completed/);
-    assert.match(updated?.textContent || "", /Progress: 100%/);
-    assert.match(updated?.textContent || "", /Duration: 2\.5s/);
+    assert.equal(updatedTrigger?.getAttribute("aria-label"), "子代理: 已完成，嵌套子代理");
+    assert.match(updated?.textContent || "", /已完成/);
+    assert.match(updated?.textContent || "", /进度：100%/);
+    assert.match(updated?.textContent || "", /耗时：2\.5 秒/);
   } finally {
     closePersistentToolPanel();
     dom.cleanup();

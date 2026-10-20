@@ -44,7 +44,7 @@ test("retired UI modules, test filename and direct dependencies stay absent", ()
 test("active table/select consumers use Lobe UI and retain document-renderer semantics", () => {
   const root = join(process.cwd(), "src");
   const rendererTables = new Set([
-    join(root, "components/chat/ChatMessage/MarkdownContent.tsx"),
+    join(root, "components/chat/ChatMessage/MarkdownRenderer.tsx"),
     join(root, "components/documents/previews/ExcelPreview.tsx"),
   ]);
   for (const path of sourceFiles(root)) {
@@ -74,5 +74,5 @@ test("active table/select consumers use Lobe UI and retain document-renderer sem
     assert.match(source, /columns=\{/, owner);
   }
   assert.equal(existsSync(join(root, "components/documents/previews/MermaidDiagram.tsx")), false);
-  assert.match(readFileSync(join(root, "components/documents/previews/MarkdownRenderer.tsx"), "utf8"), /MarkdownContent/);
+  assert.match(readFileSync(join(root, "components/documents/previews/MarkdownRenderer.tsx"), "utf8"), /ChatMarkdownRenderer/);
 });

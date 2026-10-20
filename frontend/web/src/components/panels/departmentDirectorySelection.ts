@@ -59,7 +59,8 @@ export function resolveDepartmentSelection(
       continue;
     }
     const matches = byAuthorityId.get(authorityId) ?? [];
-    if (matches.length === 1 && matches[0].selectable) {
+    if (/^[1-9][0-9]{0,9}$/.test(authorityId) && matches.length === 1 &&
+        matches[0].directoryId === authorityId && matches[0].selectable) {
       resolved.push(matches[0]);
     } else {
       unresolvedAuthorityIds.push(authorityId);

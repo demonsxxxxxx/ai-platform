@@ -5,6 +5,7 @@ import re
 from typing import Any, Iterable, Literal
 
 from app.auth import normalize_roles
+from app.identity.api import is_department_id
 
 
 CapabilityAccessIntent = Literal["discover", "use", "manage"]
@@ -22,6 +23,7 @@ class CapabilityAccessContext:
     roles: list[str] = field(default_factory=list)
     is_admin: bool = False
     permissions: list[str] = field(default_factory=list)
+    department_ids: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -233,7 +235,10 @@ def resolve_capability_access(
         return _decision(subject, allowed=False, reason="distribution_hidden")
     if subject.status != "active":
         return _decision(subject, allowed=False, reason="distribution_disabled")
-    if subject.department_ids and context.department_id not in subject.department_ids:
+    if subject.department_ids and (
+        any(not is_department_id(value) for value in subject.department_ids)
+        or not set(subject.department_ids).intersection(context.department_ids)
+    ):
         return _decision(subject, allowed=False, reason="department_not_allowed")
     if subject.allowed_roles:
         actor_roles = set(normalize_capability_roles(context.roles))

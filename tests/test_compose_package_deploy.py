@@ -715,6 +715,46 @@ def test_production_http_requires_explicit_acknowledgement(harness, monkeypatch,
     assert not any(name == "admission stop" for name, _ in harness["calls"])
 
 
+def profile_drive_config(upstream: str | None) -> dict:
+    api = {
+        "TRUSTED_PRINCIPAL_SECRET": "synthetic-gateway-secret-" + "a" * 32,
+        "AI_SESSION_SECRET": "synthetic-session-secret-" + "b" * 32,
+        "CORS_ALLOW_ORIGINS": "https://platform.example.test",
+        "AI_SESSION_COOKIE_SECURE": "true",
+        "AUTH_CONTEXT_COOKIE_SECURE": "true",
+    }
+    if upstream is not None:
+        api["PROFILE_DRIVE_TRANSFER_UPSTREAM"] = upstream
+    return {"services": {
+        "api": {"environment": api},
+        "worker": {"environment": dict(api)},
+    }}
+
+
+def test_profile_drive_http_transfer_needs_its_own_opt_in_not_the_browser_flag():
+    config = profile_drive_config("http://profile-drive-mcp:5201")
+
+    # The browser-origin acknowledgement does not decide this transfer path.
+    entry.validate_production_config(config, True)
+    with pytest.raises(entry.DeploymentError, match="PROFILE_DRIVE_TRANSFER_ALLOW_INSECURE_HTTP"):
+        entry.validate_profile_drive_transfer(config)
+
+
+def test_profile_drive_http_transfer_passes_with_explicit_opt_in(capsys):
+    config = profile_drive_config("http://profile-drive-mcp:5201")
+    config["services"]["api"]["environment"][
+        "PROFILE_DRIVE_TRANSFER_ALLOW_INSECURE_HTTP"
+    ] = "true"
+
+    entry.validate_profile_drive_transfer(config)
+    assert "company JWT" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("upstream", [None, "", "https://profile-drive.internal"])
+def test_profile_drive_https_or_absent_upstream_needs_no_transfer_opt_in(upstream):
+    entry.validate_profile_drive_transfer(profile_drive_config(upstream))
+
+
 def test_partial_first_install_retains_state_and_same_package_can_resume(harness, monkeypatch):
     production_workspace(harness, monkeypatch)
     monkeypatch.setattr(entry, "snapshot", lambda docker, **kwargs: {})
