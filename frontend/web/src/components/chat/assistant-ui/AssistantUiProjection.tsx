@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { AssistantRuntimeProvider, MessageNotSentError, type AttachmentAdapter, type ExternalStoreThreadListAdapter } from "@assistant-ui/react";
+import { AssistantRuntimeProvider, MessageNotSentError, type AttachmentAdapter, type ExternalStoreThreadListAdapter, type ThreadSuggestion } from "@assistant-ui/react";
 import { Thread } from "./elements/thread";
 import { PlatformComposerContext, type PlatformComposerBinding } from "./platformComposer";
 import type { Message } from "../../../types";
@@ -8,11 +8,15 @@ import {
   type AssistantUiRuntimeActions,
 } from "./externalStoreRuntime";
 
+const EMPTY_SUGGESTIONS: readonly ThreadSuggestion[] = [];
+
 export interface AssistantUiProjectionProps {
   messages: readonly Message[];
   isRunning: boolean;
   actions: AssistantUiRuntimeActions;
   threadListAdapter?: ExternalStoreThreadListAdapter;
+  /** Only model-generated questions for the settled answer; empty means none. */
+  suggestions?: readonly ThreadSuggestion[];
   children: ReactNode;
 }
 
@@ -22,6 +26,7 @@ export function AssistantUiProjection({
   isRunning,
   actions,
   threadListAdapter,
+  suggestions = EMPTY_SUGGESTIONS,
   children,
 }: AssistantUiProjectionProps) {
   const bindingRef = useRef<PlatformComposerBinding | null>(null);
@@ -45,7 +50,7 @@ export function AssistantUiProjection({
       if (binding?.canCancel) binding.requestCancel();
     },
   }), [actions]);
-  const runtime = useAssistantUiExternalStoreRuntime(messages, isRunning, platformActions, gates, threadListAdapter, gates.attachmentAdapter);
+  const runtime = useAssistantUiExternalStoreRuntime(messages, isRunning, platformActions, gates, threadListAdapter, gates.attachmentAdapter, suggestions);
   useEffect(() => runtime.thread.composer.subscribe(() => {
     const text = runtime.thread.composer.getState().text;
     const binding = bindingRef.current;

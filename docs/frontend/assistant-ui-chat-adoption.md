@@ -44,8 +44,19 @@
 | `thread-list.tsx` | `components/panels/SidebarParts/ThreadList.tsx`、`components/panels/SidebarParts/sessionThreadListAdapter.ts`；SessionListContent、SessionItem | 受控行、Lobe 按钮、可访问未读；原专家/时间分组、loadMore、迟到改名删除隔离 |
 | `option-list.tsx`、`question-flow.tsx` | `assistant-ui/elements/option-list.tsx`；RunQuestionCard、RunInputHistory | Lobe 控件、自由文本及受控 choice；移除 fulfilled 后内部 confirmed，不接工具审批 |
 | `message-timing.tsx` | `assistant-ui/elements/message-timing.tsx`；ChatMessage | 平台提供的 token、耗时、模型、时间；缺数据隐藏，不估价、不冒充整个 context 占用 |
+| `follow-up-suggestions.aui.tsx` | `assistant-ui/elements/follow-up-suggestions.tsx`；`assistant-ui/FollowUpSuggestionsGate.tsx`、`assistant-ui/useFollowUpSuggestions.ts`；ChatView | Lobe 公开 Button 外观、横向滚动与边缘渐隐、ResizeObserver；建议正文只来自平台服务端生成，条目数、草稿/附件/发送门控由平台适配 |
 
-`ActivityErrorBoundary` 是平台新增的局部异常边界，只显示固定安全提示，公开 part 替换后允许恢复。上游 raw 工具明细、不匹配的默认 Continue/Discard、自动发送建议问题没有进入生产。开场建议仍先填草稿。
+`ActivityErrorBoundary` 是平台新增的局部异常边界，只显示固定安全提示，公开 part 替换后允许恢复。上游 raw 工具明细、不匹配的默认 Continue/Discard 没有进入生产。开场建议仍先填草稿。
+
+## 模型生成的后续建议
+
+`POST /api/ai/chat/follow-up-suggestions`（`conversations` transport，装配见 `bootstrap/follow_up_suggestions.py`）只接受 `session_id` 与 `run_id`，由服务端按当前 principal 重新授权，绝不接受浏览器提供的消息正文、模型或端点。目标 Run 必须是该 Session 当前代次、状态 `succeeded`、其后没有更新的用户消息，且存在公开助手正文；否则返回 404 且不调用模型。
+
+输入只包含该 Run 收敛前的近期公开 `user`/`assistant` 正文（经 `platform.public_payload` 脱敏，单轮与总长有界），不含 draft、附件原始内容、工具 raw 数据或 Profile 私有指令。生成走目标 Run 自身的冻结模型快照（`runs.model_id/model_value/model_gateway_revision`）经 Execution 所属的受控上游适配器，单次非流式、`tools: []`、输出上限 256 token；该模型被禁用/下线时不回退到其他模型，而是返回空。
+
+输出必须是至多 3 条、每条不超过 60 字的去重中文问题，非法类型、超长或空结果一律丢弃，不把 provider 错误或私密原文回给用户。同一 tenant/user/session/run 经 Redis 单飞声明与 10 分钟缓存合并并发和回放，失败不缓存空结果。前端只在“本轮观察到的完成且成功、发送可用、草稿为空且无附件”时请求一次；账号、会话或轮次变化立即 abort 并清空旧回执，失败不标主 Run 失败。点击经原有 `PlatformComposerBinding.send` 与 `composerSubmission` 事务发送，因此仍受原附件/权限/提交锁约束。
+
+退役与兼容：本能力无替代的上游自动发送实现，静态 starter prompts 仍只是填充草稿（`send={false}`），两者不互换。上游 demo 的 props 型 suggestions API 不是本仓库 pin 版本；升级 assistant-ui 时须复核 `ExternalStoreAdapter.suggestions`、`ThreadPrimitive.Suggestion` 与 `useAuiState` 的 `thread.suggestions`。
 
 专家新任务直接把已发布 Profile 的 `description` 原文作为开场正文，不新增配置。描述为空时不补默认问候；有历史消息时不重复展示。开场内容不创建消息、Session 或 Run，也不进入模型输入、持久历史或复制内容。
 
@@ -99,3 +110,5 @@ Run 问答只使用一个 RunInputsController：单选、多选、自由文本�
 `route-layout-browser-smoke.mjs` 的 `chat-integration` 场景检查文件抽屉、问答回执、Mermaid、工具/子代理/产物和模型选择器；设置 `AI_PLATFORM_FRONTEND_URL` 指向本地 Vite，分别以 `AI_PLATFORM_ROUTE_LAYOUT_THEME=light`、`dark` 运行，默认覆盖四种宽度。
 
 `node scripts/chat-performance-browser-check.mjs` 使用同一合成 fixture 的 `?performance=1` 模式：1000 条消息、50 条长工具活动和 20 次正文追加，一次预热后记录三次测量。脚本检查虚拟化挂载数量、完整最终文本、工具数量和底部可达性。对照两版时使用同一浏览器、依赖和输入，顺序运行并避开并行测试/构建；用 `AI_PLATFORM_ROUTE_LAYOUT_SMOKE_DIR` 分别保存结果，不以单次耗时推断提速。
+
+`node scripts/follow-up-suggestions-browser-check.mjs` 用 `generic-chat-preview` 合成 fixture（屏幕可见“合成预览”标识，后续建议接口由 fixture 内固定文案模拟）验证：恢复历史不请求也不显示、条数/标签/几何、点击一次→新一轮→旧建议被替换、非空草稿隐藏。设置 `AI_PLATFORM_FRONTEND_URL` 指向本地 Vite、`AI_PLATFORM_FOLLOW_UP_SMOKE_DIR` 保存截图与 `report.json`。该证据只证明前端与合成接线，不证明真实模型输出或后端授权。

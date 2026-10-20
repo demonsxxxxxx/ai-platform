@@ -6,6 +6,7 @@ import {
   type ExternalStoreAdapter,
   type ExternalStoreThreadListAdapter,
   type ThreadMessageLike,
+  type ThreadSuggestion,
 } from "@assistant-ui/react";
 import { getPublicTerminalPresentationDefinition } from "../../../hooks/useAgent/publicTerminalPresentation";
 import type { Message, MessagePart } from "../../../types";
@@ -181,6 +182,7 @@ export function useAssistantUiExternalStoreRuntime(
   gates: { disabled: boolean; sendDisabled: boolean } = { disabled: false, sendDisabled: false },
   threadList?: ExternalStoreThreadListAdapter,
   attachments?: AttachmentAdapter,
+  suggestions: readonly ThreadSuggestion[] = [],
 ) {
   const adapter = useMemo<ExternalStoreAdapter<Message>>(
     () => ({
@@ -188,6 +190,7 @@ export function useAssistantUiExternalStoreRuntime(
       isRunning,
       isDisabled: gates.disabled,
       isSendDisabled: gates.sendDisabled,
+      suggestions,
       adapters: { threadList, attachments },
       convertMessage: toAssistantUiMessage,
       onNew: async (message) => {
@@ -200,7 +203,7 @@ export function useAssistantUiExternalStoreRuntime(
         await actions.loadHistory();
       },
     }),
-    [actions, attachments, gates.disabled, gates.sendDisabled, isRunning, messages, threadList],
+    [actions, attachments, gates.disabled, gates.sendDisabled, isRunning, messages, suggestions, threadList],
   );
   return useExternalStoreRuntime(adapter);
 }
