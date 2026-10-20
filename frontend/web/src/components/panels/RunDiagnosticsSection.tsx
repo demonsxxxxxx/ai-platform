@@ -20,7 +20,7 @@ function lossCategory(item: AdminRunDiagnosticLoss): string {
     return bytes && count ? "长度与数量截断" : bytes ? "长度截断" : count ? "数量截断" : "截断";
   }
   if (["invalid_field", "invalid_payload", "unsupported_schema", "cycle", "unknown_fields_dropped"].includes(item.reason)) return "投影拒绝";
-  if (item.reason === "not_collected") return "未采集";
+  if (["not_collected", "parent_observation_not_collected"].includes(item.reason)) return "未采集";
   return "类别未知";
 }
 
@@ -163,6 +163,15 @@ export function RunDiagnosticsSection({
           ) : null}
         </div>
       </div>
+      <p className="mt-2 text-[11px] leading-5 text-[var(--theme-text-secondary)]">诊断包包含本次运行的阶段、事件关联、用量、冻结配置、租约及已采集的调试事实；缺失与裁剪会在包内列明。</p>
+      {observationEvidence.some((observation) => observation.sdk.debug) || diagnostics.details.sdk.debug ? (
+        <details className="mt-3 rounded-md border border-[var(--theme-border)] p-3" data-run-debug-facts>
+          <summary className="cursor-pointer text-xs font-medium">结构化调试事实</summary>
+          <div className="mt-2 space-y-3">{(observationEvidence.length ? observationEvidence : [{ sdk: diagnostics.details.sdk }]).map((observation, index) => observation.sdk.debug ? (
+            <pre key={index} className="max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-[var(--theme-text-secondary)]">{diagnosticJson(observation.sdk.debug)}</pre>
+          ) : null)}</div>
+        </details>
+      ) : null}
       {exportError ? (
         <p role="alert" className="mt-2 text-xs text-[var(--theme-danger)]">
           诊断包生成失败：{exportError}
@@ -198,15 +207,17 @@ export function RunDiagnosticsSection({
                 {attemptLabel(diagnostics.root.attempt_id)}
               </p>
             ) : null}
-            {diagnostics.root.attempt_id || diagnostics.root.lease_id || diagnostics.root.callback_id ? (
+            {diagnostics.root.observation_id || diagnostics.root.attempt_id || diagnostics.root.lease_id || diagnostics.root.callback_id ? (
               <details className="mt-1 text-[11px] text-[var(--theme-text-tertiary)]">
                 <summary className="cursor-pointer">技术关联编号</summary>
-                <p className="mt-1 break-all font-mono">
+                <p className="mt-1 whitespace-pre-wrap break-all font-mono text-xs text-[var(--theme-text-secondary)]">
                   {[
+                    diagnostics.root.observation_id && `观察 ${diagnostics.root.observation_id}`,
+                    diagnostics.root.parent_observation_id && `父观察 ${diagnostics.root.parent_observation_id}`,
                     diagnostics.root.attempt_id && `Attempt ${diagnostics.root.attempt_id}`,
                     diagnostics.root.lease_id && `Lease ${diagnostics.root.lease_id}`,
                     diagnostics.root.callback_id && `Callback ${diagnostics.root.callback_id}`,
-                  ].filter(Boolean).join(" · ")}
+                  ].filter(Boolean).join("\n")}
                 </p>
               </details>
             ) : null}
@@ -350,6 +361,8 @@ export function RunDiagnosticsSection({
                     </summary>
                     <pre className="mt-1 max-h-72 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-[var(--theme-text-secondary)]">
                       {diagnosticJson({
+                        observation_id: observation.observation_id,
+                        parent_observation_id: observation.parent_observation_id,
                         lease_id: observation.lease_id,
                         request_id: observation.request_id,
                         callback_id: observation.callback_id,
@@ -381,6 +394,13 @@ export function RunDiagnosticsSection({
                       {[item.source, item.stage, item.exception_type].filter(Boolean).join(" · ")}
                     </p>
                     {item.message ? <p className="mt-1 break-words">{item.message}</p> : null}
+                    {item.observation_id ? (
+                      <details className="mt-1 text-[var(--theme-text-tertiary)]">
+                        <summary className="cursor-pointer">观察关联</summary>
+                        <p className="mt-1 break-all font-mono text-xs text-[var(--theme-text-secondary)]">观察 {item.observation_id}</p>
+                        <p className="mt-1 break-all font-mono text-xs text-[var(--theme-text-secondary)]">父观察 {item.parent_observation_id || "未采集"}</p>
+                      </details>
+                    ) : null}
                   </li>
                 ))}
               </ol>

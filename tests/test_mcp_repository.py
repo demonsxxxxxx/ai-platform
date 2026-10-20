@@ -43,13 +43,13 @@ async def test_dynamic_server_registry_projection_excludes_legacy_catalog_state(
         async def execute(self, query, params):
             assert "from mcp_servers" in query
             assert "catalog_" not in query
-            assert params == ("tenant-a", "qa", False)
+            assert "any(department_ids)" not in query
+            assert params == ("tenant-a", False)
             return _Cursor(rows=(row,))
 
     assert await mcp_repository.list_mcp_server_registry(
         Connection(),
         tenant_id="tenant-a",
-        department_id="qa",
         include_disabled=False,
     ) == [
         {

@@ -1,6 +1,6 @@
 import { ToolSelector } from "../selectors/ToolSelector";
 import { SkillSelector } from "../selectors/SkillSelector";
-import { ComposerModelPanel } from "./ComposerModelPanel";
+import { ComposerModelPicker } from "./assistant-ui/elements/composer-model-picker";
 import type { FeaturePanel } from "../selectors/FeatureMenu";
 import type { ModelOption } from "../../services/api/modelPublic";
 import type {
@@ -95,7 +95,7 @@ export function ChatInputSelectors({
         )}
       {onSelectModel && availableModels.length > 0 && (
         <LibreChatSelectorModal panel="model">
-          <ComposerModelPanel
+          <ComposerModelPicker
             models={availableModels}
             currentModelId={currentModelId}
             isOpen={activePanel === "model"}

@@ -29,9 +29,9 @@ const historyValues = () => Object.keys(localStorage).filter(key => key.startsWi
 
 type Fetcher = (url: string, init: RequestInit) => Promise<Response> | Response;
 async function harness(options: { review?: Fetcher; history?: Fetcher; cancel?: Fetcher; onScopeCommit?: (user: User | null) => void } = {}) {
-  const old = { fetch: globalThis.fetch, xhr: globalThis.XMLHttpRequest, bootstrap: authApi.bootstrapAuthContext, user: authApi.getCurrentUser, confirm: window.confirm };
+  const old = { fetch: globalThis.fetch, xhr: globalThis.XMLHttpRequest, bootstrap: authApi.bootstrapAuthContext, user: authApi.getCurrentUser };
   let auth!: ReturnType<typeof useAuth>; let user = principal(); let uploads = 0; const calls: Array<{ url: string; init: RequestInit }> = [];
-  localStorage.clear(); window.confirm = () => true;
+  localStorage.clear();
   authApi.bootstrapAuthContext = async request => ({ status: "ready", protocol_version: 2, generation: request.generation });
   authApi.getCurrentUser = async () => user;
   class Xhr extends window.EventTarget {
@@ -57,9 +57,15 @@ async function harness(options: { review?: Fetcher; history?: Fetcher; cancel?: 
   return { container, calls, get uploads() { return uploads; },
     async select(file = docx()) { await act(async () => { props(container.querySelector('input[type="file"]')!).onChange?.({ target: { files: [file], value: "" } }); }); },
     async start() { await act(async () => { button(container, "开始审核").click(); }); },
+    async cancel(confirm = true) {
+      await act(async () => { const trigger = button(container, "中断任务"); trigger.focus(); trigger.click(); });
+      const dialog = container.querySelector<HTMLElement>('[role="dialog"]');
+      assert.ok(dialog, "cancellation uses the themed library dialog");
+      await act(async () => { button(dialog, confirm ? "确认中断" : "取消").click(); });
+    },
     async setUser(next: User) { user = next; await act(async () => { await auth.refreshUser(); }); },
     async unmount() { if (unmounted) return; unmounted = true; await act(async () => root.unmount()); container.remove(); },
-    async close() { if (!unmounted) { unmounted = true; await act(async () => root.unmount()); container.remove(); } globalThis.fetch = old.fetch; globalThis.XMLHttpRequest = old.xhr; authApi.bootstrapAuthContext = old.bootstrap; authApi.getCurrentUser = old.user; window.confirm = old.confirm; },
+    async close() { if (!unmounted) { unmounted = true; await act(async () => root.unmount()); container.remove(); } globalThis.fetch = old.fetch; globalThis.XMLHttpRequest = old.xhr; authApi.bootstrapAuthContext = old.bootstrap; authApi.getCurrentUser = old.user; },
   };
 }
 
@@ -136,11 +142,26 @@ test("late stream and history after owner change cannot refill or persist previo
   } finally { await view.close(); }
 });
 
+test("review cancellation keeps running until the library confirmation is accepted", async () => {
+  const view = await harness({ review: () => new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('data: {"task_id":"task-a"}\n\n')); } })) });
+  try {
+    await view.select(); await view.start();
+    await view.cancel(false);
+    assert.equal(view.calls.filter(call => call.url.includes("/cancel")).length, 0);
+    assert.ok(view.container.querySelector(".task-card.is-running"));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 300)); });
+    assert.ok(document.activeElement === button(view.container, "中断任务"), "closing confirmation returns focus to its task action");
+    await view.cancel();
+    assert.equal(view.calls.filter(call => call.url.includes("/cancel")).length, 1);
+    assert.ok(view.container.querySelector(".task-card.is-cancelled"));
+  } finally { await view.close(); }
+});
+
 test("cancel intent without acknowledgement does not turn missing terminal receipt into cancelled", async () => {
   let controller!: ReadableStreamDefaultController<Uint8Array>;
   const view = await harness({ review: () => new Response(new ReadableStream({ start(c) { controller = c; } })) });
   try {
-    await view.select(); await view.start(); await act(async () => button(view.container, "中断任务").click());
+    await view.select(); await view.start(); await view.cancel();
     await act(async () => controller.close());
     assert.ok(view.container.querySelector(".task-card.is-failed")); assert.equal(view.container.querySelector(".task-card.is-cancelled"), null);
   } finally { await view.close(); }
@@ -149,7 +170,7 @@ test("cancel intent without acknowledgement does not turn missing terminal recei
 test("acknowledged cancellation aborts a blocked stream and persists cancelled", async () => {
   const view = await harness({ review: () => new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('data: {"task_id":"task-a"}\n\n')); } })) });
   try {
-    await view.select(); await view.start(); await act(async () => button(view.container, "中断任务").click());
+    await view.select(); await view.start(); await view.cancel();
     assert.ok(view.container.querySelector(".task-card.is-cancelled")); assert.equal(historyValues()[0][0].status, "cancelled");
   } finally { await view.close(); }
 });
@@ -158,7 +179,7 @@ test("cancellation response without status is not an acknowledgement; result may
   let controller!: ReadableStreamDefaultController<Uint8Array>;
   const view = await harness({ review: () => new Response(new ReadableStream({ start(c) { controller = c; c.enqueue(new TextEncoder().encode('data: {"task_id":"task-a"}\n\n')); } })), cancel: () => json({}) });
   try {
-    await view.select(); await view.start(); await act(async () => button(view.container, "中断任务").click());
+    await view.select(); await view.start(); await view.cancel();
     assert.ok(view.container.querySelector(".task-card.is-running")); assert.match(view.container.textContent!, /未收到服务端取消确认/);
     await act(async () => { controller.enqueue(new TextEncoder().encode(success)); controller.close(); });
     assert.ok(view.container.querySelector(".task-card.is-completed"));
@@ -190,7 +211,7 @@ test("late cancellation from a failed attempt cannot abort the same task's retry
     c.enqueue(new TextEncoder().encode('data: {"task_id":"task-a"}\n\n'));
   } })), cancel: () => cancellation.promise });
   try {
-    await view.select(); await view.start(); await act(async () => button(view.container, "中断任务").click());
+    await view.select(); await view.start(); await view.cancel();
     await act(async () => first.close()); assert.ok(view.container.querySelector(".task-card.is-failed"));
     await act(async () => button(view.container, "重试").click());
     await act(async () => cancellation.resolve(json({ status: "cancelled" })));

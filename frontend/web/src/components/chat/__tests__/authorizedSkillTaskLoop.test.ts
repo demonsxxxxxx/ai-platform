@@ -38,15 +38,17 @@ test("composer Skill selector keeps the concurrency token without exposing it", 
   assert.match(selector, /expected_version/);
   assert.match(selector, /requires_file/);
   assert.match(selector, /data-composer-skill-requires-file/);
-  assert.match(selector, /role="dialog"/);
-  assert.match(selector, /aria-modal="true"/);
-  assert.match(selector, /event\.key === "Escape"/);
+  assert.match(selector, /<ModalRoot open=\{isOpen\} onOpenChange=\{setIsOpen\}/);
+  assert.match(selector, /<ModalPopup/);
+  assert.match(selector, /aria-labelledby=\{titleId\}/);
+  assert.match(selector, /initialFocus=\{searchInputRef\}/);
+  assert.match(selector, /finalFocus=\{externalOnOpenChange \? true : triggerRef\}/);
   assert.match(selector, /aria-pressed=\{selected\}/);
   assert.match(selector, /data-composer-skill-selection-summary/);
   assert.match(selector, /reconfirm/i);
   assert.doesNotMatch(selector, /data-composer-skill-version|shortVersion\(/);
   assert.doesNotMatch(selector, /current Skill version/);
-  assert.match(selector, /min-h-11|size-11/);
+  assert.match(selector, /size="large"/);
   assert.doesNotMatch(selector, /onToggleAll|onToggleCategory|Checkbox/);
   assert.match(inputSelectors, /onSelectSkill/);
   assert.doesNotMatch(inputSelectors, /onToggleAllSkills/);
@@ -55,18 +57,21 @@ test("composer Skill selector keeps the concurrency token without exposing it", 
 test("task-specific selected Skill chip shows only public task details", () => {
   const chips = read("src/components/chat/ComposerChips.tsx");
   const input = read("src/components/chat/ChatInput.tsx");
-  const sharedChips = read("src/librechat-ui/Chips.tsx");
+  const sharedChips = read("src/components/chat/assistant-ui/elements/composer-chips.tsx");
 
   assert.match(input, /visibleDetails:/);
   assert.match(chips, /data-composer-skill-visible-detail/);
   assert.match(chips, /selection\.visibleDetails/);
-  assert.match(chips, /data-composer-chip-reference=\{selection\.id\}/);
-  assert.match(chips, /title=\{selection\.label\}/);
+  assert.match(chips, /id=\{selection\.id\}/);
+  assert.match(chips, /label=\{selection\.label\}/);
+  assert.match(sharedChips, /data-composer-chip-reference=\{referenceId \?\? id\}/);
+  assert.match(sharedChips, /title=\{description \?\? label\}/);
   assert.doesNotMatch(input, /expected_version\.slice/);
   assert.doesNotMatch(input, /v\$\{selectedSkill\.expected_version/);
-  assert.match(chips, /data-task-selected-skill-remove/);
-  assert.match(chips, /size-11/);
-  assert.match(chips, /Remove selected Skill/);
+  assert.match(sharedChips, /data-task-selected-skill-remove/);
+  assert.match(sharedChips, /width: 44, height: 44/);
+  assert.match(chips, /skillSelector\.removeSelectedSkill/);
+  assert.match(sharedChips, /aria-label=\{removeLabel\}/);
   assert.doesNotMatch(sharedChips, /visibleDetails|data-composer-skill-visible-detail/);
 });
 
@@ -133,8 +138,10 @@ test("composer preserves prompt and attachments until submission is accepted", (
     input,
     /const \[input, setLocalInput\] = useState\(inputRef\.current\)/,
   );
-  assert.match(input, /await onSend/);
-  assert.match(input, /outcome\.status === "accepted"/);
+  const submission = read("src/components/chat/assistant-ui/composerSubmission.ts");
+  assert.match(input, /submitComposerMessage/);
+  assert.match(submission, /await onSend/);
+  assert.match(submission, /outcome\.status === "accepted"/);
   assert.doesNotMatch(
     input,
     /onSend\([^;]+;\s*pushHistory\([^;]+;\s*setInput\(""\)/s,

@@ -1,8 +1,9 @@
-import { Button, Input, TextArea } from "@lobehub/ui/base-ui";
-import { useId, useState } from "react";
+import { Button, TextArea } from "@lobehub/ui/base-ui";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { RunInputAnswer, RunInputQuestionBatch } from "../../services/api/session";
 import type { RunInputsController } from "../../hooks/useAgent/types";
+import { OptionList } from "./assistant-ui/elements/option-list";
 import { presentRunInputAnswer, presentRunInputOption } from "./runInputPresentation";
 
 interface QuestionDraft {
@@ -20,7 +21,6 @@ export function RunQuestionCard({
   canSend: boolean;
 }) {
   const { t } = useTranslation();
-  const groupId = useId();
   const [drafts, setDrafts] = useState<Record<string, QuestionDraft>>({});
   const [answerAttempted, setAnswerAttempted] = useState(false);
   const updateDraft = (question: string, update: (draft: QuestionDraft) => QuestionDraft) => {
@@ -58,6 +58,7 @@ export function RunQuestionCard({
   );
   const alreadySubmitted = Boolean(submittedInput);
   const automaticAnswer = submittedInput?.source === "timeout_default";
+  const submittedAnswers = submittedInput?.answers;
   if (alreadySubmitted || displayStatus !== "pending") {
     const status = closedUnprocessed
       ? t("chat.runInputs.answerClosedUnprocessed", "当前任务输入已关闭，问题未完成处理。")
@@ -73,12 +74,25 @@ export function RunQuestionCard({
         className="rounded-xl border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-3 py-2"
         data-run-question-status={displayStatus}
       >
-        <p className="text-xs text-[var(--theme-text-secondary)]">{status}</p>
-        {batch.questions.map((question) => (
-          <p className="mt-1 text-sm text-[var(--theme-text)]" key={question.key}>
-            {question.question}
-          </p>
-        ))}
+        <p className="mb-2 text-xs text-[var(--theme-text-secondary)]">{status}</p>
+        {batch.questions.map((question) => {
+          const answer = submittedAnswers?.[question.key];
+          const choice = typeof answer === "string" ? [answer] : Array.isArray(answer) ? answer : undefined;
+          return (
+            <div className="mt-2" key={question.key}>
+              <p className="mb-1 text-sm text-[var(--theme-text)]">{question.question}</p>
+              {choice ? (
+                <OptionList aria-label={question.question} choice={choice} options={question.options.map((option) => ({
+                  id: option.key,
+                  label: presentRunInputOption(question, option.key) ?? option.label,
+                  description: option.description,
+                }))} />
+              ) : answer && typeof answer === "object" && !Array.isArray(answer) ? (
+                <p className="whitespace-pre-wrap text-sm text-[var(--theme-text)]">{answer.text}</p>
+              ) : null}
+            </div>
+          );
+        })}
       </section>
     );
   }
@@ -107,9 +121,8 @@ export function RunQuestionCard({
         }}
       >
         <div className="space-y-4">
-          {batch.questions.map((question, questionIndex) => {
+          {batch.questions.map((question) => {
             const draft = drafts[question.key] ?? { selected: [], text: "" };
-            const groupName = `${groupId}-${questionIndex}`;
             return (
               <fieldset className="min-w-0" key={question.key}>
                 {question.header ? (
@@ -128,44 +141,20 @@ export function RunQuestionCard({
                   </p>
                 ) : null}
                 {question.options.length > 0 ? (
-                  <div className="space-y-1.5">
-                    {question.options.map((option) => {
-                      const selected = draft.selected.includes(option.key);
-                      return (
-                        <label
-                          className="flex cursor-pointer items-start gap-2 rounded-lg border border-[var(--theme-border)] px-2.5 py-2 text-sm hover:bg-[var(--theme-bg-sidebar)] has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-60"
-                          key={option.key}
-                        >
-                          <Input
-                            checked={selected}
-                            className="mt-0.5 accent-[var(--theme-primary)]"
-                            disabled={readOnly || busy}
-                            name={groupName}
-                            onChange={() =>
-                              updateDraft(question.key, (previous) => {
-                                if (!question.multiSelect) {
-                                  return { selected: [option.key], text: "" };
-                                }
-                                const selectedOptions = previous.selected.includes(option.key)
-                                  ? previous.selected.filter((key) => key !== option.key)
-                                  : [...previous.selected, option.key];
-                                return { selected: selectedOptions, text: "" };
-                              })
-                            }
-                            type={question.multiSelect ? "checkbox" : "radio"}
-                          />
-                          <span className="min-w-0">
-                            <span className="block text-[var(--theme-text)]">{presentRunInputOption(question, option.key)}</span>
-                            {option.description ? (
-                              <span className="mt-0.5 block text-xs text-[var(--theme-text-secondary)]">
-                                {option.description}
-                              </span>
-                            ) : null}
-                          </span>
-                        </label>
-                      );
-                    })}
-                  </div>
+                  <OptionList
+                    aria-label={question.question}
+                    disabled={readOnly || busy}
+                    onValueChange={(selected) =>
+                      updateDraft(question.key, () => ({ selected, text: "" }))
+                    }
+                    options={question.options.map((option) => ({
+                      id: option.key,
+                      label: presentRunInputOption(question, option.key) ?? option.label,
+                      description: option.description,
+                    }))}
+                    selectionMode={question.multiSelect ? "multiple" : "single"}
+                    value={draft.selected}
+                  />
                 ) : null}
                 <TextArea
                   aria-label={t("chat.runInputs.freeText", "自由填写答案：{{question}}", {

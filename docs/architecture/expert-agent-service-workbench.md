@@ -43,22 +43,28 @@ server-side and appended to the executor system prompt.
 
 ### Authenticated navigation
 
-1. The authenticated root, post-login fallback, and bare `/chat` route open the
-   Agent Market.
-2. Generic Chat creation and search controls are not discoverable in authenticated
-   navigation. The user's global session history remains available as a
-   disclosure-safe navigation list grouped by public Agent identity.
-3. Existing `/chat/:sessionId` deep links remain a compatibility reader in this
-   slice. The canonical Chat components remain because Agent Workspace reuses
-   their streaming, files, history, and composer implementation.
+1. The authenticated root and post-login fallback open Company Navigation at
+   `/apps`. The bare `/chat` route is a first-class generic conversation surface:
+   it opens a new generic Chat session, and its sidebar exposes generic Chat
+   creation and session search alongside Agent Market, Agent Builder, Skills,
+   MCP, model administration and run monitoring. Agent-first landing is not a
+   redirect away from Chat.
+2. Generic Chat creation and search are discoverable from the Chat navigation
+   entry. The user's global session history remains available as a
+   disclosure-safe navigation list grouped by public Agent identity, and it never
+   reclassifies a session as a task for whichever Agent is currently selected.
+3. `/chat/:sessionId` opens that session directly; both the bare route and the
+   session route share the same Chat components. The canonical Chat components
+   are also reused by Agent Workspace for streaming, files, history, and the
+   composer.
 4. Agent Workspace navigation keeps two distinct history scopes: global session
    history in the primary navigation and Agent-scoped task history in the
    adjacent workspace panel. Desktop shows both; narrower layouts offer a
    switch between them. A global history selection opens the session under its
    original Agent or generic compatibility route and never reclassifies it as a
    task for the currently selected Agent. Workspace controls still use task
-   language: “start new task” and “task history”; they must not expose generic
-   Chat creation or search.
+   language: “start new task” and “task history” for an Agent workspace; generic
+   Chat wording applies only outside a workspace.
    Both history surfaces apply successful rename/delete receipts through the
    workspace's shared mutation callbacks; their paginated and global reads remain
    separate server projections, scoped to the current authenticated principal.
@@ -92,7 +98,7 @@ CI lane alongside the fetch parser and history consumers.
 
 ### Public model catalog and selection
 
-The shared composer uses `ChatInputToolbar` and `ComposerModelPanel` to select
+The shared composer uses `ChatInputToolbar` and the Elements `ComposerModelPicker` to select
 an administrator-enabled public model. `ModelCatalogProvider` hydrates only
 `/api/agent/models/available`; its subject-scoped read remains abortable and
 rejects stale completions after login changes or unmount. `default_model_id`
@@ -192,9 +198,9 @@ the browser.
 
 | Work package | Primary source | Required outcome |
 | --- | --- | --- |
-| Agent-first routing | `frontend/web/src/App.tsx`, auth and shell navigation | Root/login/bare Chat resolve to Agent Market; generic controls hidden |
+| Agent-first routing | `frontend/web/src/App.tsx`, auth and shell navigation | Root/login resolve to Company Navigation; bare Chat opens the generic Chat surface with its own creation and search entry |
 | Market task language | `frontend/web/src/features/agent-market/AgentMarketRoute.tsx` | Task-oriented hierarchy, CTA, examples, and recovery states |
-| Workspace task navigation | `ChatAppContent.tsx`, `SessionSidebar.tsx`, sidebar parts | Agent-scoped “new task” and “task history”; no generic Chat discovery |
+| Workspace task navigation | `ChatAppContent.tsx`, `SessionSidebar.tsx`, sidebar parts | Agent-scoped “new task” and “task history”; the generic Chat entry appears outside a workspace |
 | Builder progressive disclosure | `AgentBuilderWorkbench.tsx`, `AgentBuilderEnterpriseFields.tsx`, `agentBuilderAdapter.ts` | Three-field initial surface; presentation and governance grouped as optional |
 | Skill archive UX | `SkillsPanel/*`, `useSkills.ts`, locale files | Truthful archive semantics, optimistic removal/rollback, partial-result handling |
 
@@ -233,8 +239,10 @@ the browser.
 
 ### Source and component checks
 
-- Authenticated `/` and `/chat` resolve to `/agent-market` while
-  `/chat/:sessionId` remains direct-addressable.
+- Authenticated `/` and the post-login fallback resolve to `/apps`; bare `/chat`
+  opens a new generic Chat session and `/chat/:sessionId` opens that session.
+  Generic Chat creation and search are reachable from the Chat navigation entry,
+  while an Agent workspace still shows only “start new task” and “task history”.
 - Agent Market card/detail navigation still carries exact `agent_id` and
   revision through the existing route builders.
 - Opening a Workspace does not create a conversation; first explicit send uses
@@ -252,8 +260,9 @@ the browser.
 
 ### Browser checks
 
-- Desktop and narrow viewport: Agent Market is the first authenticated surface,
-  cards and recovery actions remain usable, and no generic Chat entry appears.
+- Desktop and narrow viewport: Company Navigation is the default authenticated
+  surface; Agent Market cards and recovery actions remain usable, and no generic
+  Chat entry appears.
 - Builder initially shows the three core fields; every progressive section can
   be opened with keyboard and retains entered values.
 - Agent Workspace shows expert identity, task examples, task history, global

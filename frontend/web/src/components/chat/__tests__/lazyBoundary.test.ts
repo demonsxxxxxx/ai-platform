@@ -7,7 +7,7 @@ function readSource(relativePath: string): string {
 }
 
 test("chat markdown rendering does not statically import CodeMirrorViewer", () => {
-  const source = readSource("../ChatMessage/MarkdownContent.tsx");
+  const source = readSource("../ChatMessage/MarkdownRenderer.tsx");
 
   assert.doesNotMatch(
     source,

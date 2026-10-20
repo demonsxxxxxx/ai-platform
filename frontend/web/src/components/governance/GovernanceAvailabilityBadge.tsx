@@ -37,10 +37,10 @@ export function GovernanceAvailabilityBadge({
 
   return (
     <span
-      className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium ring-1 ${BADGE_STYLE[state]}`}
+      className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-2 py-1 text-xs font-medium ring-1 ${BADGE_STYLE[state]}`}
       data-governance-state={state}
     >
-      <Icon size={13} />
+      <Icon size={13} className="shrink-0" />
       {t(labelKey)}
     </span>
   );

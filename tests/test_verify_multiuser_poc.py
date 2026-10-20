@@ -1955,7 +1955,7 @@ def test_foundation_runtime_cli_outputs_blocked_evidence_when_one_case_times_out
                     {"lease_id": "lease-a", "status": "released", "provider": "fake"},
                 ],
             }
-        if url.endswith("/api/ai/admin/runtime/overview?include_maintenance_cleanup=false"):
+        if url.endswith("/api/ai/admin/runtime/overview"):
             return 200, {
                 "queue": {
                     "tenant_insight": {

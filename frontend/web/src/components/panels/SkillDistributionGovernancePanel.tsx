@@ -235,18 +235,16 @@ export function SkillDistributionGovernancePanel({
         </div>
         <Button type="text"
           aria-label={t("skills.governance.refresh")}
-          className="btn-icon"
           disabled={loading || saving}
           onClick={() => void load()}
           title={t("skills.governance.refreshShort")}
           htmlType="button"
-        >
-          <RefreshCw
+          icon={<RefreshCw
             aria-hidden="true"
             className={loading ? "animate-spin" : undefined}
             size={16}
-          />
-        </Button>
+          />}
+        />
       </div>
 
       {loadError ? (

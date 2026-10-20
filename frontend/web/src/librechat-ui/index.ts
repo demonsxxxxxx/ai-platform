@@ -4,8 +4,5 @@ export * from "./Shell";
 export * from "./Rail";
 export * from "./Panel";
 export * from "./SidePanel";
-export * from "./Composer";
-export * from "./Chips";
-export * from "./CommandMenu";
 export * from "./Selector";
 export * from "./StateSurface";

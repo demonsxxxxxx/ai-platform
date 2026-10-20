@@ -81,11 +81,12 @@ function button(scope: ParentNode, label: string) {
   return Array.from(scope.querySelectorAll("button, [role=menuitem]")).find((item) => item.textContent?.trim() === label);
 }
 function task(scope: ParentNode, title: string) {
-  return Array.from(scope.querySelectorAll("div.truncate")).find((item) => item.textContent === title)?.parentElement?.parentElement;
+  return Array.from(scope.querySelectorAll<HTMLElement>('[data-slot="thread-list-item-trigger"]'))
+    .find((item) => Array.from(item.querySelectorAll("span")).some((span) => span.textContent === title));
 }
 
 async function renameTask(scope: HTMLElement, title: string, next: string) {
-  await click(task(scope, title)?.querySelector("button"));
+  await click(task(scope, title)?.closest('[data-slot="thread-list-item"]')?.querySelector(`button[title="${i18n.t("sidebar.moreOptions")}"]`));
   await click(button(document, i18n.t("sidebar.rename")));
   const input = scope.querySelector<HTMLInputElement>("input");
   assert.ok(input);
@@ -96,7 +97,7 @@ async function renameTask(scope: HTMLElement, title: string, next: string) {
   await React.act(async () => input.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
 }
 async function deleteTask(scope: HTMLElement, title: string) {
-  await click(task(scope, title)?.querySelector("button"));
+  await click(task(scope, title)?.closest('[data-slot="thread-list-item"]')?.querySelector(`button[title="${i18n.t("sidebar.moreOptions")}"]`));
   await click(button(document, i18n.t("common.delete")));
   await click(button(document.querySelector('[role="dialog"]')!, i18n.t("common.delete")));
 }
