@@ -116,11 +116,10 @@ async function mountSidebar(deleteRequest: (id: string) => Promise<Response>, in
     await React.act(async () => { node.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true })); });
   };
   const openMenu = async (id: string) => {
-    const title = Array.from(container.querySelectorAll("div.truncate")).find((node) => node.textContent === `Synthetic session ${id}`);
-    assert.ok(title, `Session ${id} is rendered by the real sidebar`);
-    const row = title.closest(".group");
-    assert.ok(row);
-    const menuButton = row.querySelector<HTMLButtonElement>("button");
+    const row = Array.from(container.querySelectorAll<HTMLElement>('[data-slot="thread-list-item"]'))
+      .find((node) => node.textContent?.includes(`Synthetic session ${id}`));
+    assert.ok(row, `Session ${id} is rendered by the real sidebar`);
+    const menuButton = row.querySelectorAll<HTMLButtonElement>("button")[1];
     assert.ok(menuButton);
     await click(menuButton);
     const item = Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find((node) => node.textContent?.trim() === i18n.t("common.delete"));

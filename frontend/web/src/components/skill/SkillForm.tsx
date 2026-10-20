@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
+import { useAppElement } from "@lobehub/ui/es/ThemeProvider/index";
 import { useTranslation } from "react-i18next";
 import { toast } from "@lobehub/ui/base-ui";
 import { sanitizeSkillName } from "../../utils/skillFilters";
@@ -19,6 +20,7 @@ export function SkillForm({
   isLoading = false,
   onFullscreenChange,
 }: SkillFormProps) {
+  const appElement = useAppElement();
   const { t } = useTranslation();
   const isEditing = !!skill;
 
@@ -286,7 +288,7 @@ export function SkillForm({
   );
 
   if (isFullscreen) {
-    return createPortal(formElement, document.body);
+    return createPortal(formElement, appElement ?? document.body);
   }
   return formElement;
 }

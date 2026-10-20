@@ -91,10 +91,10 @@ function normalizeDepartmentDirectoryNode(
     !hasExactKeys(value, DEPARTMENT_DIRECTORY_NODE_KEYS) ||
     depth > MAX_DEPARTMENT_DIRECTORY_DEPTH ||
     typeof value.directory_id !== "string" ||
-    !/^[0-9]+$/.test(value.directory_id) ||
+    !/^[1-9][0-9]{0,9}$/.test(value.directory_id) ||
     seenDirectoryIds.has(value.directory_id) ||
-    !isSafeDirectoryLabel(value.authority_id) ||
-    value.name !== value.authority_id ||
+    value.authority_id !== value.directory_id ||
+    !isSafeDirectoryLabel(value.name) ||
     typeof value.path !== "string" ||
     value.path !== (parentPath ? `${parentPath} / ${value.name}` : value.name) ||
     !Array.isArray(value.children) ||

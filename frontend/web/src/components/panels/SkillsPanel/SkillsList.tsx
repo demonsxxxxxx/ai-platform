@@ -295,11 +295,10 @@ export function SkillsList({
           <Button type="text"
             aria-label={t("common.close")}
             onClick={clearError}
-            className="btn-icon hover:text-[var(--theme-danger)]"
+            className="hover:text-[var(--theme-danger)]"
             htmlType="button"
-          >
-            <X size={18} />
-          </Button>
+            icon={<X size={18} />}
+          />
         </div>
       )}
 

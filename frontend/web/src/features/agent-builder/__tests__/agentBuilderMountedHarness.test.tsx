@@ -567,6 +567,114 @@ test("mounted unresolved catalogs preserve server Skill names without stale or e
   }
 });
 
+test("mounted MCP tool search filters the catalog without losing selections", async () => {
+  const document = installDom();
+  const { agentProfileApi } = await import("../../../services/api/agentProfile.ts");
+  const { AgentBuilderWorkbench } = await import("../AgentBuilderWorkbench.tsx");
+  const originals = { ...agentProfileApi };
+  agentProfileApi.listAdmin = async () => ({ agent_profiles: [profile()] });
+  const tools = [
+    ...catalog().tools,
+    { id: "mcp:drive:upload_file", label: "上传文件", description: "Upload authorized attachments." },
+    { id: "mcp:calendar:list", label: "列出会议", description: "查看授权日历。" },
+  ];
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = await createLobeTestRoot(container);
+  try {
+    await React.act(async () => {
+      root.render(React.createElement(AgentBuilderWorkbench, {
+        catalog: catalog({ tools }),
+        canManageProfiles: true,
+      }));
+      await flush();
+    });
+    await React.act(async () => {
+      findButton(container, "管理工具").click();
+      await flush();
+    });
+    const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]');
+    assert.ok(dialog);
+    const input = dialog.querySelector<HTMLInputElement>('[aria-label="搜索 MCP 工具"]');
+    assert.ok(input, "MCP management must expose a search field");
+    const searchButton = findButton(dialog, "搜索");
+    assert.match(dialog.textContent ?? "", /已选 1 项 · 显示 3 \/ 3 项/);
+
+    for (const [query, expected] of [
+      ["支持知识", "支持知识检索"],
+      ["  UPLOAD_FILE  ", "上传文件"],
+      ["AUTHORIZED ATTACHMENTS", "上传文件"],
+      ["missing-tool", "没有匹配的 MCP 工具"],
+    ]) {
+      await React.act(async () => {
+        changeInput(input, query);
+        await flush();
+      });
+      await React.act(async () => {
+        searchButton.click();
+        await flush();
+      });
+      assert.match(dialog.textContent ?? "", new RegExp(expected));
+      assert.doesNotMatch(dialog.textContent ?? "", /列出会议/);
+      assert.match(dialog.textContent ?? "", /已选 1 项/);
+    }
+
+    await React.act(async () => {
+      changeInput(input, "上传文件");
+      await flush();
+    });
+    await React.act(async () => {
+      input.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      await flush();
+    });
+    const uploadRow = Array.from(dialog.querySelectorAll("label")).find(
+      (label) => label.textContent?.includes("上传文件"),
+    );
+    assert.ok(uploadRow);
+    await React.act(async () => {
+      uploadRow.click();
+      await flush();
+    });
+    assert.match(dialog.textContent ?? "", /已选 2 项 · 显示 1 \/ 3 项/);
+
+    const clearButton = dialog.querySelector<HTMLButtonElement>('[aria-label="清除 MCP 工具搜索"]');
+    assert.ok(clearButton);
+    await React.act(async () => {
+      clearButton.click();
+      await flush();
+    });
+    assert.equal(input.value, "");
+    assert.match(dialog.textContent ?? "", /已选 2 项 · 显示 3 \/ 3 项/);
+    assert.match(dialog.textContent ?? "", /支持知识检索/);
+    assert.match(dialog.textContent ?? "", /列出会议/);
+
+    await React.act(async () => {
+      changeInput(input, "missing-tool");
+      await flush();
+    });
+    await React.act(async () => {
+      searchButton.click();
+      await flush();
+    });
+    await React.act(async () => {
+      dialog.querySelector<HTMLButtonElement>('[aria-label="关闭管理 MCP 工具"]')!.click();
+      await flush();
+    });
+    await React.act(async () => {
+      findButton(container, "管理工具").click();
+      await flush();
+    });
+    const reopened = document.body.querySelector<HTMLElement>('[role="dialog"]');
+    assert.ok(reopened);
+    assert.equal(reopened.querySelector<HTMLInputElement>('[aria-label="搜索 MCP 工具"]')?.value, "");
+    assert.match(reopened.textContent ?? "", /已选 2 项 · 显示 3 \/ 3 项/);
+    assert.doesNotMatch(container.textContent ?? "", /Skill Set 无法覆盖的外部能力才需要额外选择 MCP 工具/);
+  } finally {
+    Object.assign(agentProfileApi, originals);
+    await React.act(async () => root.unmount());
+  }
+});
+
 test("mounted save conflict is safe, explicitly recoverable, and retryable", async () => {
   const document = installDom();
 

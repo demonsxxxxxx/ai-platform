@@ -56,7 +56,6 @@ async def list_mcp_server_registry(
     conn: Any,
     *,
     tenant_id: str,
-    department_id: str | None = None,
     include_disabled: bool = True,
 ) -> list[dict[str, Any]]:
     from app.mcp.infrastructure import registry_postgres
@@ -64,7 +63,6 @@ async def list_mcp_server_registry(
     return await registry_postgres.list_runtime_mcp_server_registry(
         conn,
         tenant_id=tenant_id,
-        department_id=department_id,
         include_disabled=include_disabled,
     )
 

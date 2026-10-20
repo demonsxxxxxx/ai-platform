@@ -153,9 +153,8 @@ export function AgentConversationPanel({
         onClick={() => setIsCollapsed((collapsed) => !collapsed)}
         title={isCollapsed ? "展开历史会话" : "收起历史会话"}
         htmlType="button"
-      >
-        {isCollapsed ? <ChevronRight aria-hidden="true" size={16} /> : <ChevronLeft aria-hidden="true" size={16} />}
-      </Button>
+        icon={isCollapsed ? <ChevronRight aria-hidden="true" size={16} /> : <ChevronLeft aria-hidden="true" size={16} />}
+      />
 
       <ConfirmDialog
         cancelText={t("common.cancel")}

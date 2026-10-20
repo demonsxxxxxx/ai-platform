@@ -28,6 +28,7 @@ from fastapi import FastAPI, Header, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.bootstrap.execution import build_claude_session_store
+from app.bootstrap.claude_mcp import build_mcp_credential_resolver
 from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION
 from app.control_plane_contracts import normalize_thinking_effort
 from app.executors.claude_agent_sdk_runner import (
@@ -67,6 +68,7 @@ from app.bootstrap.run_inputs_client import build_run_input_callback_client
 from app.sandbox.api import (
     SDK_RUNTIME_DIAGNOSTICS_SCHEMA_VERSION,
     normalize_sdk_runtime_diagnostics,
+    capture_sdk_runtime_diagnostics,
 )
 from app.runtime.sandbox.contracts import (
     EXECUTOR_AUTH_HEADER,
@@ -593,7 +595,10 @@ def _merge_runtime_diagnostics(
     if has_existing_failure:
         merged = dict(normalized_existing)
         observations = list(merged.get("failure_observations") or [])
-        if not observations or observations[-1] != current_observation:
+        if not observations or {
+            key: value for key, value in observations[-1].items()
+            if key not in {"observation_id", "parent_observation_id"}
+        } != current_observation:
             observations.append(current_observation)
         merged["failure_observations"] = observations
     else:
@@ -641,7 +646,7 @@ def _merge_runtime_diagnostics(
         merged["tool_lifecycles"] = list(lifecycle_by_key.values())
     else:
         merged["tool_lifecycles"] = existing_lifecycles
-    return normalize_sdk_runtime_diagnostics(merged)
+    return capture_sdk_runtime_diagnostics(merged)
 
 
 def _log_sandbox_tool_lifecycle(
@@ -1818,6 +1823,13 @@ async def _default_executor_runner(
         sdk_kwargs = {
             "interaction_client": build_run_input_callback_client(
                 callback_base_url=request.callback_target.base_url,
+                callback_token=request.callback_token,
+                callback_token_id=request.callback_token_id,
+                run_id=request.run_id,
+                attempt_id=request.attempt_id,
+            ),
+            "mcp_credential_resolver": build_mcp_credential_resolver(
+                callback_url=request.callback_target.mcp_credential_url,
                 callback_token=request.callback_token,
                 callback_token_id=request.callback_token_id,
                 run_id=request.run_id,

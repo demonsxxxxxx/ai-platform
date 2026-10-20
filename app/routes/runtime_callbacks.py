@@ -6,7 +6,7 @@ from contextlib import nullcontext
 from types import SimpleNamespace
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 
 from app.bootstrap.run_inputs import RunInputsCallbackRequest
 from app.bootstrap.sandbox_callbacks import build_sandbox_callback_authority
@@ -28,7 +28,12 @@ from app.files.api import (
     open_profile_drive_file,
     profile_drive_streaming_response,
 )
-from app.mcp.api import McpRuntimeContextError, get_mcp_principal_jwt_store
+from app.mcp.api import (
+    MCP_CREDENTIAL_SUBJECTS_LEASE_KEY,
+    McpRuntimeContextError,
+    get_mcp_principal_jwt_store,
+    read_mcp_execution_credential,
+)
 from app.platform.postgres import sandbox_leases as sandbox_lease_repository
 from app.platform.tracing import TerminalStageTiming
 from app.platform.public_payload import sanitize_public_reasoning_text
@@ -57,6 +62,7 @@ from app.runtime.sandbox.contracts import (
     PROFILE_DRIVE_STAGE_TOOL,
     ExecutorCallbackEvent,
     ExecutorContextRetrievalRequest,
+    McpCredentialCallbackRequest,
     ProviderSessionCallbackRequest,
     ProviderSessionCallbackResponse,
     PROVIDER_SESSION_READ_VIEW_HEADER,
@@ -684,6 +690,44 @@ async def run_inputs_callback(
         raise HTTPException(status_code=status_code, detail=exc.code) from exc
 
 
+@router.post("/runtime/callbacks/mcp-credential")
+async def mcp_credential_callback(
+    callback: McpCredentialCallbackRequest,
+    response: Response,
+    callback_token: str | None = Header(default=None, alias="X-AI-Platform-Callback-Token"),
+) -> dict[str, str]:
+    _require_valid_callback_token(
+        callback_token, callback.callback_token_id,
+        run_id=callback.run_id, attempt_id=callback.attempt_id,
+    )
+    authority = dict(run_id=callback.run_id, attempt_id=callback.attempt_id,
+                     callback_token_id=callback.callback_token_id)
+    async with transaction() as conn:
+        identity, lease = await _lock_callback_authority(conn, **authority)
+        payload = lease.get("lease_payload_json") or {}
+        bindings = payload.get(MCP_CREDENTIAL_SUBJECTS_LEASE_KEY) or {}
+        subject = bindings.get(callback.server_id)
+        if not isinstance(subject, dict):
+            raise HTTPException(status_code=403, detail="mcp_credential_not_authorized")
+        subject = dict(subject)
+        scope = {key: str(identity.get(key) or "") for key in ("tenant_id", "user_id")}
+        lease_id = lease.get("id")
+    try:
+        jwt = await read_mcp_execution_credential(**scope, credential_subject=subject)
+    except McpRuntimeContextError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.code) from None
+    async with transaction() as conn:
+        final_identity, final_lease = await _lock_callback_authority(conn, **authority)
+        final_bindings = (final_lease.get("lease_payload_json") or {}).get(MCP_CREDENTIAL_SUBJECTS_LEASE_KEY) or {}
+        if (any(str(final_identity.get(key) or "") != value for key, value in scope.items())
+            or final_lease.get("id") != lease_id
+            or final_bindings.get(callback.server_id) != subject):
+            raise HTTPException(status_code=409, detail="mcp_credential_scope_changed")
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["Pragma"] = "no-cache"
+    return {"jwt": jwt}
+
+
 @router.post(
     "/runtime/callbacks/provider-session",
     response_model=ProviderSessionCallbackResponse,
@@ -747,6 +791,10 @@ async def provider_session_callback(
     except HTTPException:
         raise
     except (context_api.ProviderSessionContinuityError, ValueError) as exc:
+        if getattr(exc, "debug", None):
+            from app.bootstrap.run_diagnostics import record_execution_debug
+            await record_execution_debug(run_id=callback.run_id, attempt_id=callback.attempt_id,
+                                         error_code=str(exc), debug=exc.debug)
         raise _provider_session_http_error(exc) from exc
     except Exception as exc:  # noqa: BLE001 - callback details stay private.
         raise HTTPException(status_code=503, detail="provider_session_callback_failed") from exc

@@ -95,26 +95,7 @@ with window_runs as (
   where (%s::text is null or r.agent_id = %s)
     and (%s::text is null or r.model_id = %s)
     and (%s::integer is null or r.model_gateway_revision = %s)
-    and (%s::text is null or r.status = %s)
-    and (%s::text is null or (r.status = 'succeeded' and r.run_id <> %s and exists (
-      select 1 from runs target
-      where target.tenant_id = %s and target.id = %s
-        and target.model_id is not null and target.model_gateway_revision is not null
-        and r.agent_id = target.agent_id and r.execution_kind = target.execution_kind
-        and r.skill_id is not distinct from target.skill_id
-        and (target.skill_id is null or exists (
-          select 1 from run_skill_snapshots pin
-          where pin.tenant_id = target.tenant_id and pin.run_id = target.id and pin.skill_id = target.skill_id
-        ))
-        and (select jsonb_agg(jsonb_build_array(pin.skill_id, pin.skill_version, pin.content_hash, pin.dependency_ids) order by pin.skill_id)
-             from run_skill_snapshots pin where pin.tenant_id = target.tenant_id and pin.run_id = r.run_id)
-          is not distinct from
-            (select jsonb_agg(jsonb_build_array(pin.skill_id, pin.skill_version, pin.content_hash, pin.dependency_ids) order by pin.skill_id)
-             from run_skill_snapshots pin where pin.tenant_id = target.tenant_id and pin.run_id = target.id)
-        and r.model_id = target.model_id and r.model_value = target.model_value
-        and r.model_gateway_revision = target.model_gateway_revision
-        and r.admitted_agent_profile_revision is not distinct from target.admitted_agent_profile_revision
-    )))
+    and (%s::text is null or r.status = any(%s::text[]))
 ), metrics as (
   select r.*,
     case when r.status in ('succeeded', 'failed', 'cancelled') and r.finished_at >= r.created_at
@@ -151,13 +132,13 @@ def _monitor_parameters(
     *, tenant_id: str, from_at: datetime, to_at: datetime,
     user_id: str | None = None, agent_id: str | None = None,
     model_id: str | None = None, model_gateway_revision: int | None = None,
-    status: str | None = None, comparison_run_id: str | None = None,
+    status: str | None = None,
 ) -> tuple[object, ...]:
     return (
         tenant_id, from_at, to_at, user_id, user_id, agent_id, agent_id,
         model_id, model_id, model_gateway_revision, model_gateway_revision,
-        status, status, comparison_run_id, comparison_run_id, tenant_id,
-        comparison_run_id, to_at, to_at, to_at, tenant_id, tenant_id, to_at,
+        status, ["running", "cancel_requested"] if status == "running" else [status],
+        to_at, to_at, to_at, tenant_id, tenant_id, to_at,
     )
 
 
@@ -165,15 +146,21 @@ async def get_admin_run_monitor_report(
     conn: AsyncConnection, *, tenant_id: str, from_at: datetime, to_at: datetime,
     user_id: str | None = None, agent_id: str | None = None,
     model_id: str | None = None, model_gateway_revision: int | None = None,
-    status: str | None = None, comparison_run_id: str | None = None,
+    status: str | None = None,
     order: str = "slow", limit: int = 50,
 ) -> dict[str, Any]:
     """One Run per sample, one closed window, no queue/provider maintenance."""
     parameters = _monitor_parameters(
         tenant_id=tenant_id, from_at=from_at, to_at=to_at, user_id=user_id,
         agent_id=agent_id, model_id=model_id, model_gateway_revision=model_gateway_revision,
-        status=status, comparison_run_id=comparison_run_id,
+        status=status,
     )
+    # Status tabs narrow the list; the overview keeps the whole selected scope.
+    summary_parameters = _monitor_parameters(
+        tenant_id=tenant_id, from_at=from_at, to_at=to_at, user_id=user_id,
+        agent_id=agent_id, model_id=model_id, model_gateway_revision=model_gateway_revision,
+    )
+    bucket_seconds = (to_at - from_at).total_seconds() / 12
     summary_cursor = await conn.execute(
         _MONITOR_METRICS_SQL + """
         , metric_summary as (
@@ -186,6 +173,12 @@ async def get_admin_run_monitor_report(
             ('server_first_text_ms', server_first_text_ms), ('browser_first_text_ms', browser_first_text_ms)
           ) observation(name, value)
           group by name
+        ), trend_counts as (
+          select least(11, floor(extract(epoch from (created_at - %s::timestamptz)) / %s)::integer) as bucket,
+            count(*) filter (where status = 'succeeded') as succeeded,
+            count(*) filter (where status = 'failed') as failed,
+            count(*) filter (where status in ('running', 'cancel_requested')) as running
+          from selected_runs group by 1
         )
         select
           count(*) as total,
@@ -197,6 +190,13 @@ async def get_admin_run_monitor_report(
           (select coalesce(jsonb_object_agg(name, jsonb_build_object(
             'sample_count', sample_count, 'p50', p50, 'p95', p95, 'p99', p99
           )), '{}'::jsonb) from metric_summary) as latency,
+          (select jsonb_agg(jsonb_build_object(
+            'from_at', %s::timestamptz + buckets.bucket * %s * interval '1 second',
+            'succeeded', coalesce(t.succeeded, 0), 'failed', coalesce(t.failed, 0),
+            'running', coalesce(t.running, 0)
+          ) order by buckets.bucket)
+          from generate_series(0, 11) as buckets(bucket)
+          left join trend_counts t using (bucket)) as trend,
           (select coalesce(jsonb_agg(model), '[]'::jsonb) from (
             select distinct model_id, model_value, model_gateway_revision
             from window_runs where model_id is not null and model_gateway_revision is not null
@@ -204,14 +204,10 @@ async def get_admin_run_monitor_report(
           ) model) as models
         from metrics
         """,
-        parameters,
+        (*summary_parameters, from_at, bucket_seconds, from_at, bucket_seconds),
     )
     summary = dict(await summary_cursor.fetchone() or {})
-    ordering = (
-        "abs(total_ms - (select percentile_cont(0.5) within group (order by total_ms) from metrics)) asc nulls last"
-        if comparison_run_id is not None else
-        "total_ms desc nulls last" if order == "slow" else "created_at desc"
-    )
+    ordering = "total_ms desc nulls last" if order == "slow" else "created_at desc"
     rows_cursor = await conn.execute(
         _MONITOR_METRICS_SQL + f"""
         select * from metrics
@@ -229,6 +225,7 @@ async def get_admin_run_monitor_report(
         "window": {"from_at": from_at, "to_at": to_at},
         "counts": {key: _coerce_int(summary.get(key)) for key in ("total", "succeeded", "failed", "cancelled", "queued", "running")},
         "latency": summary.get("latency") if isinstance(summary.get("latency"), dict) else {},
+        "trend": summary.get("trend") if isinstance(summary.get("trend"), list) else [],
         "models": [
             {"model_id": item.get("model_id"), "model_value": sanitize_public_text(item.get("model_value")),
              "model_gateway_revision": item.get("model_gateway_revision")}

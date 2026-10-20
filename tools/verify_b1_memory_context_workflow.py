@@ -1048,7 +1048,7 @@ def build_b1_memory_context_workflow_smoke(
 
     ordinary_admin_overview_status, ordinary_admin_overview_payload = _json_request(
         "GET",
-        f"{safe_base_url}/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+        f"{safe_base_url}/api/ai/admin/runtime/overview",
         headers=owner_headers,
         timeout_seconds=timeout_seconds,
     )
@@ -1057,7 +1057,7 @@ def build_b1_memory_context_workflow_smoke(
 
     admin_overview_status, admin_overview_payload = _json_request(
         "GET",
-        f"{safe_base_url}/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+        f"{safe_base_url}/api/ai/admin/runtime/overview",
         headers=operator_headers,
         timeout_seconds=timeout_seconds,
     )
