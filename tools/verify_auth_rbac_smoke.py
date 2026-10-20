@@ -15,7 +15,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 SCHEMA_VERSION = "ai-platform.auth-rbac-smoke.v1"
 PLATFORM_AUTH_ME_ROUTE = "/api/ai/auth/me"
-ADMIN_RUNTIME_ROUTE = "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false"
+ADMIN_RUNTIME_ROUTE = "/api/ai/admin/runtime/overview"
 FORBIDDEN_PROJECTION_TERMS = (
     "authorization",
     "client_secret",

@@ -105,6 +105,11 @@ from app.execution.domain.public_projection import (
 
 from typing import Any
 
+from app.execution.application.follow_up_completion import (
+    FollowUpSuggestionResult as FollowUpSuggestionResult,
+    FollowUpSuggestionService as FollowUpSuggestionService,
+    configured_follow_up_suggestions as configured_follow_up_suggestions,
+)
 from app.execution.application.model_control_plane import configured_model_control_plane
 from app.execution.application.provider_sessions import claude_provider_session_dispatch
 from app.execution.application.run_interaction import RunInteractionProtocol, RunQuestionNeedsInput
@@ -132,6 +137,8 @@ async def resolve_chat_model_selection(
     )
 
 __all__ = [
+    "FollowUpSuggestionResult",
+    "FollowUpSuggestionService",
     "ModelTextCheckpoint",
     "WorkerExecutorResult",
     "WorkerBoundRunPayload",
@@ -185,6 +192,7 @@ __all__ = [
     "sdk_failure_result_fields",
     "stage_stale_run_reconciliation",
     "submit_run_until_cancelled",
+    "configured_follow_up_suggestions",
     "list_public_models",
     "bind_selected_run_model",
     "locked_run_payload_candidate",

@@ -9,10 +9,12 @@ Use the current worktree and preserve unrelated edits. Choose implementation,
 planning, delegation, and test scope to fit the task. Routine changes need no
 separate issue, phase ledger, review transcript, or worktree.
 
-Read the affected code and its owning contract. Use the links below when the
-task reaches that concern; do not recursively load every linked document.
-Historical evidence and `.codegraph` are navigation aids, not current runtime
-proof. Keep progress and blockers in the active task or PR.
+Read the affected code, its owning contract, and relevant existing decisions
+before editing. For lasting trade-offs or non-obvious constraints, follow
+[decision rationale](docs/agent-rules/github-issue-pr-workflow.md#decision-rationale).
+Use the links below when the task reaches that concern; do not recursively load
+every linked document. Historical evidence and `.codegraph` are navigation aids,
+not current runtime proof. Keep progress and blockers in the active task or PR.
 
 New code MUST be named and placed by its stable responsibility owner: use
 bounded-context names for product facts, runtime-control-plane names for
@@ -45,7 +47,7 @@ Do not weaken required checks to make a candidate pass.
   runtime paths, command fingerprints, private executor payloads, and secrets.
 - Never copy, print, or commit real environment files, credentials, account
   identifiers, or private prompts. Use synthetic or authorized redacted data.
-- Fake providers are test-only. Do not mount the Docker socket in default Compose.
+- Do not mount the Docker socket in default Compose.
 - Access s72 only through SSH MCP, with one bounded, secret-safe connection check
   when remote work is requested. Do not substitute system SSH or local state.
   Deployment requires the release runbook, fresh evidence, and explicit authority.

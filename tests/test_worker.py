@@ -280,6 +280,9 @@ async def test_worker_injects_current_jwt_into_existing_mcp_capability_plan(monk
             assert (principal.tenant_id, principal.user_id) == ("tenant-a", "user-a")
             return "current.jwt"
 
+        async def get_with_subject(self, principal):
+            return await self.get(principal), await self.credential_subject(principal)
+
         async def credential_subject(self, principal):
             assert (principal.tenant_id, principal.user_id) == ("tenant-a", "user-a")
             return {
@@ -1072,6 +1075,9 @@ def _test_current_principal(
         display_name=user_id,
         tenant_id=tenant_id,
         department_id=department_id,
+        direct_department_ids=(department_id,) if department_id else (),
+        department_ids=(department_id,) if department_id else (),
+        department_authority_status="available" if department_id else "unavailable",
         roles=list(["user"] if roles is None else roles),
         permissions=["agent:use"],
         source=source,
@@ -8602,7 +8608,7 @@ def _install_task6_worker_fakes(
     queue_input=None,
     skill_id="qa-file-reviewer",
     principal_roles=None,
-    principal_department_id="qa",
+    principal_department_id="110",
     auth_source="session-token",
     current_principal: AuthPrincipal | None = None,
 ):
@@ -8623,7 +8629,7 @@ def _install_task6_worker_fakes(
             ("skill", skill_id): _task6_distribution(
                 "skill",
                 skill_id,
-                department_ids=["qa"],
+                department_ids=["110"],
                 allowed_roles=["qa_operator"],
             )
         },
@@ -8674,7 +8680,7 @@ def _install_task6_worker_fakes(
     resolved_current_principal = current_principal or _test_current_principal(
         user_id="user-a",
         tenant_id="tenant-a",
-        department_id="qa",
+        department_id="110",
         roles=["qa_operator"],
     )
 
@@ -8764,6 +8770,9 @@ def _install_task6_worker_fakes(
         async def get(self, principal):
             assert (principal.tenant_id, principal.user_id) == ("tenant-a", "user-a")
             return "current.jwt"
+
+        async def get_with_subject(self, principal):
+            return await self.get(principal), await self.credential_subject(principal)
 
         async def credential_subject(self, principal):
             assert (principal.tenant_id, principal.user_id) == ("tenant-a", "user-a")
@@ -8906,7 +8915,7 @@ async def test_worker_admin_bash_text_does_not_require_completion_evidence(monke
         current_principal=_test_current_principal(
             user_id="user-a",
             tenant_id="tenant-a",
-            department_id="qa",
+            department_id="110",
             roles=["admin", "qa_operator"],
         ),
     )
@@ -8924,7 +8933,7 @@ async def test_worker_admin_bash_text_does_not_replay_retired_required_scope(
     monkeypatch,
     restriction,
 ):
-    department_id = "rd" if restriction == "department" else "qa"
+    department_id = "210" if restriction == "department" else "110"
     raw, registry, state, calls = _install_task6_worker_fakes(
         monkeypatch,
         locked_input={"message": "请执行 Bash 命令 pwd"},
@@ -8957,21 +8966,21 @@ async def test_worker_current_principal_denial_cannot_be_restored_by_queued_snap
         locked_input={
             "mode": "file",
             "principal_roles": ["admin"],
-            "principal_department_id": "rd",
+            "principal_department_id": "210",
             "auth_source": "caller-input",
         },
         queue_input={
             "principal_roles": ["admin"],
-            "principal_department_id": "finance",
+            "principal_department_id": "310",
             "auth_source": "queue-input",
         },
         principal_roles=["admin"],
-        principal_department_id="finance",
+        principal_department_id="310",
         auth_source="locked-session-token",
         current_principal=_test_current_principal(
             user_id="user-a",
             tenant_id="tenant-a",
-            department_id="rd",
+            department_id="210",
             roles=["user"],
         ),
     )
@@ -8986,7 +8995,7 @@ async def test_worker_current_principal_denial_cannot_be_restored_by_queued_snap
         for call in calls
         if call[0] == "audit" and call[1]["action"] == "capability_distribution.denied"
     )
-    assert denied_audit["payload_json"]["actor_department_id"] == "rd"
+    assert denied_audit["payload_json"]["actor_department_id"] == "210"
     assert denied_audit["payload_json"]["actor_roles"] == ["user"]
     assert denied_audit["payload_json"]["decision_reason"] == "department_not_allowed"
 
@@ -8996,11 +9005,11 @@ async def test_worker_capability_distribution_allows_current_skill_after_enqueue
     raw, registry, _, calls = _install_task6_worker_fakes(
         monkeypatch,
         principal_roles=["user"],
-        principal_department_id="rd",
+        principal_department_id="210",
         current_principal=_test_current_principal(
             user_id="user-a",
             tenant_id="tenant-a",
-            department_id="qa",
+            department_id="110",
             roles=["qa_operator"],
         ),
     )
@@ -9138,7 +9147,7 @@ async def test_worker_capability_distribution_rechecks_skill_changes_after_enque
         current_principal=_test_current_principal(
             user_id="user-a",
             tenant_id="tenant-a",
-            department_id="qa",
+            department_id="110",
             roles=["qa_operator"],
         ),
     )
@@ -9148,7 +9157,7 @@ async def test_worker_capability_distribution_rechecks_skill_changes_after_enque
     elif change == "disabled":
         distribution["status"] = "disabled"
     elif change == "department":
-        distribution["department_ids"] = ["rd"]
+        distribution["department_ids"] = ["210"]
     elif change == "role":
         distribution["allowed_roles"] = ["reviewer"]
     elif change == "distribution_missing":
@@ -9301,7 +9310,7 @@ async def test_worker_capability_distribution_rechecks_mcp_parent_changes_after_
         current_principal=_test_current_principal(
             user_id="user-a",
             tenant_id="tenant-a",
-            department_id="qa",
+            department_id="110",
             roles=["qa_operator"],
         ),
     )
@@ -9309,7 +9318,7 @@ async def test_worker_capability_distribution_rechecks_mcp_parent_changes_after_
     state["distributions"][("mcp_server", "server-a")] = _task6_distribution(
         "mcp_server",
         "server-a",
-        department_ids=["qa"],
+        department_ids=["110"],
         allowed_roles=["qa_operator"],
     )
     distribution = state["distributions"][("mcp_server", "server-a")]
@@ -9318,7 +9327,7 @@ async def test_worker_capability_distribution_rechecks_mcp_parent_changes_after_
     elif change == "disabled":
         distribution["status"] = "disabled"
     elif change == "department":
-        distribution["department_ids"] = ["rd"]
+        distribution["department_ids"] = ["210"]
     elif change == "role":
         distribution["allowed_roles"] = ["reviewer"]
     elif change == "distribution_missing":
@@ -9372,11 +9381,11 @@ async def test_worker_reauthorization_denies_archived_skill_before_admin_bypass(
     raw, registry, state, calls = _install_task6_worker_fakes(
         monkeypatch,
         principal_roles=["user"],
-        principal_department_id="rd",
+        principal_department_id="210",
         current_principal=_test_current_principal(
             user_id="user-a",
             tenant_id="tenant-a",
-            department_id="platform",
+            department_id="410",
             roles=["admin"],
         ),
     )
@@ -9409,11 +9418,11 @@ async def test_worker_capability_distribution_admin_bypass_is_auditable(monkeypa
         monkeypatch,
         locked_input={"mode": "file", "mcp_tool_ids": [tool_reference]},
         principal_roles=["user"],
-        principal_department_id="rd",
+        principal_department_id="210",
         current_principal=_test_current_principal(
             user_id="user-a",
             tenant_id="tenant-a",
-            department_id="platform",
+            department_id="410",
             roles=["admin"],
         ),
     )

@@ -41,7 +41,7 @@ test("loading and leaving Word Review preserves unrelated headers and generic co
     <div class="progress-track"><span>Progress</span></div>`;
   const dom = new JSDOM(`<!doctype html><html><head></head><body>
     <section id="other-route">${header}${controls}</section>
-    <main class="review-page"><div class="panel-header"><h2>Review</h2></div>${controls}</main>
+    <main class="review-page"><div class="review-panel-header"><h2>Review</h2></div>${controls}</main>
     </body></html>`);
   const { document } = dom.window;
   const addStyles = (css: string) => {
@@ -65,7 +65,10 @@ test("loading and leaving Word Review preserves unrelated headers and generic co
     assert.deepEqual(snapshotOtherRoute(), before, "route CSS must not change unrelated elements");
 
     // Domain layout remains scoped; library control styles are no longer duplicated.
-    assert.equal(dom.window.getComputedStyle(document.querySelector(".review-page .panel-header")).display, "flex");
+    const reviewHeader = dom.window.getComputedStyle(document.querySelector(".review-page .review-panel-header"));
+    assert.equal(reviewHeader.display, "flex");
+    assert.notEqual(reviewHeader.position, "sticky");
+    assert.doesNotMatch(wordReviewCss, /\.review-page \.panel-header\b/);
     assert.equal(dom.window.getComputedStyle(document.querySelector(".review-page .primary-button")).backgroundColor, dom.window.getComputedStyle(document.querySelector("#other-route .primary-button")).backgroundColor);
     assert.equal(dom.window.getComputedStyle(document.querySelector(".review-page .empty-state")).display, "flex");
 

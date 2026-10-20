@@ -96,7 +96,7 @@ class WorkerSkillDispatchAuthorization:
         try:
             authorized = await self._resolve_catalog(
                 conn, binding=self._catalog_binding(run_identity),
-                department_id=principal.department_id, roles=principal.roles,
+                department_id=principal.department_id, department_ids=principal.department_ids, roles=principal.roles,
                 permissions=principal.permissions,
                 pinned_manifests=payload.skill_manifests,
                 skill_set=profile_skill_set,

@@ -328,6 +328,24 @@ def validate_production_config(config: dict, allow_insecure_http: bool) -> None:
         print("warning: HTTP/insecure cookies expose sessions and gateway traffic; restrict access to a trusted isolated intranet, firewall the direct API, and prefer TLS.", file=sys.stderr)
 
 
+def validate_profile_drive_transfer(config: dict) -> None:
+    environment = config["services"]["api"].get("environment", {})
+    upstream = str(environment.get("PROFILE_DRIVE_TRANSFER_UPSTREAM") or "").strip()
+    if not upstream or urlsplit(upstream).scheme.lower() != "http":
+        return
+    if str(environment.get("PROFILE_DRIVE_TRANSFER_ALLOW_INSECURE_HTTP") or "").lower() not in ("true", "1"):
+        raise DeploymentError(
+            "ProfileDrive HTTP transfer requires PROFILE_DRIVE_TRANSFER_ALLOW_INSECURE_HTTP=true; "
+            "it sends the user's company JWT and file data unencrypted, and --allow-insecure-http "
+            "covers only the browser origin and cookies"
+        )
+    print(
+        "warning: ProfileDrive transfers carry the user's company JWT and file data over plain HTTP "
+        "inside the configured network; keep the upstream internal and prefer TLS.",
+        file=sys.stderr,
+    )
+
+
 def validate_internal_test_bridge(config: dict, docker: list[str]) -> None:
     services = config["services"]
     api = services["api"].get("environment", {})
@@ -566,6 +584,7 @@ def deploy(package: Path, env: Path, docker: list[str], offline: bool, check_onl
         except (OSError, ValueError, ssl.SSLError):
             raise DeploymentError("ProfileDrive CA must contain public certificate material only") from None
     validate_production_config(config, allow_insecure_http)
+    validate_profile_drive_transfer(config)
     validate_internal_test_bridge(config, docker)
     workspace_migration = validate_workspace_storage(config, docker, migrate_legacy)
     for service in ("api", "worker", "migrate", "workspace-migrate", "workspace-init", "frontend"):

@@ -37,6 +37,7 @@ from app.models import (
 from app.principal_authority import (
     CompanyLoginJwtUnavailable,
     PrincipalAuthorityDenied,
+    bind_department_authority,
     fetch_company_user_info,
     read_company_jwt_expiry,
     resolve_company_login_jwt,
@@ -266,6 +267,7 @@ async def ad_login(request: dict[str, Any], http_request: Request) -> PrincipalR
             company_jwt.strip(),
             settings=get_settings(),
         )
+        principal = await bind_department_authority(principal, settings=get_settings(), fresh=True)
     except CompanyLoginJwtUnavailable as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

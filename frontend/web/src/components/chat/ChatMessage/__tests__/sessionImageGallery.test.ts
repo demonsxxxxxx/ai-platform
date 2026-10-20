@@ -241,12 +241,17 @@ test("ChatView provides a session image gallery around chat messages", () => {
   );
 
   assert.match(source, /SessionImageGalleryProvider/);
-  assert.match(source, /messages=\{messages\}/);
+  assert.match(source, /<SessionImageGalleryProvider messages=\{displayMessages\}/);
+  assert.match(source, /<AssistantUiProjection[^>]*messages=\{displayMessages\}/);
 });
 
 test("conversation image entry points use the session gallery when available", () => {
   const markdownSource = readFileSync(
     new URL("../MarkdownContent.tsx", import.meta.url),
+    "utf8",
+  );
+  const markdownRendererSource = readFileSync(
+    new URL("../MarkdownRenderer.tsx", import.meta.url),
     "utf8",
   );
   const userBubbleSource = readFileSync(
@@ -255,14 +260,15 @@ test("conversation image entry points use the session gallery when available", (
   );
 
   assert.match(markdownSource, /useSessionImageGallery/);
-  assert.match(markdownSource, /sessionImageGallery\?\.openImage/);
-  assert.match(markdownSource, /useSafeAttachmentImageSrc/);
-  assert.match(markdownSource, /SafeMarkdownImage/);
-  assert.match(markdownSource, /from "\.\/sessionImageSafety"/);
-  assert.doesNotMatch(markdownSource, /<img[\s\S]*src=\{resolvedSrc\}/);
+  assert.match(markdownSource, /MarkdownRenderer/);
+  assert.match(markdownRendererSource, /imageGallery\.openImage/);
+  assert.match(markdownRendererSource, /useSafeAttachmentImageSrc/);
+  assert.match(markdownRendererSource, /SafeMarkdownImage/);
+  assert.match(markdownRendererSource, /from "\.\/sessionImageSafety"/);
+  assert.doesNotMatch(markdownRendererSource, /<img[\s\S]*src=\{resolvedSrc\}/);
   assert.match(userBubbleSource, /useSessionImageGallery/);
   assert.match(userBubbleSource, /sessionImageGallery\?\.openImage/);
-  assert.match(markdownSource, /setImageViewerSrc\(imageSrc\)/);
+  assert.match(markdownRendererSource, /onOpen\(imageSrc\)/);
   assert.match(
     readFileSync(new URL("../sessionImageGallery.tsx", import.meta.url), "utf8"),
     /useSafeAttachmentImageSrc/,

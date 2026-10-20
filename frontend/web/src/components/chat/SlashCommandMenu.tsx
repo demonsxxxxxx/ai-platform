@@ -4,10 +4,7 @@ import type {
   ComposerCommandName,
   SlashCommandMenuItem,
 } from "./chatInputCommands";
-import {
-  LibreChatCommandMenu,
-  LibreChatCommandMenuItem,
-} from "../../librechat-ui/CommandMenu";
+import { ComposerMenu, ComposerMenuItem } from "./assistant-ui/elements/composer";
 
 const commandIcons: Record<
   Exclude<ComposerCommandName, "menu">,
@@ -45,30 +42,28 @@ export function SlashCommandMenu({
   const menuLabel = t("composerCommand.menuLabel", "Composer command menu");
 
   return (
-    <div className="contents" data-librechat-command-entrypoint="slash-menu">
-      <LibreChatCommandMenu label={menuLabel} closeLabel="Esc" onClose={onClose}>
+    <ComposerMenu label={menuLabel} onClose={onClose}>
       {items.map((item, index) => {
         const Icon = commandIcons[item.command];
         const active = index === highlightedIndex;
         const alias = commandAlias[item.command];
         return (
-          <LibreChatCommandMenuItem
-            key={item.command}
-            id={item.command}
-            label={t(item.labelKey)}
-            description={t(item.descriptionKey)}
-            command={item.command}
-            alias={alias}
-            unavailable={item.unavailable}
-            unavailableLabel={t("composerChip.status.unavailable", "unavailable")}
-            active={active}
-            icon={Icon}
-            onHighlight={() => onHighlight(index)}
-            onSelect={() => onSelect(item)}
-          />
+          <ComposerMenuItem key={item.command} role="option" aria-selected={active}
+            data-composer-command-item={item.command} active={active}
+            onMouseEnter={() => onHighlight(index)} onClick={() => onSelect(item)}
+            icon={<Icon size={16} />}>
+            <span className="min-w-0 flex-1">
+              <span className="flex items-center gap-2">
+                <span className="font-medium">{t(item.labelKey)}</span>
+                <span className="font-mono text-xs">/{item.command}{alias ? ` · ${alias}` : ""}</span>
+                {item.unavailable && <span className="text-xs text-[var(--theme-text-secondary)]">{t("composerChip.status.unavailable")}</span>}
+              </span>
+              <span className="block truncate text-xs text-[var(--theme-text-secondary)]">{t(item.descriptionKey)}</span>
+            </span>
+            {active && <kbd aria-hidden className="text-xs">↵</kbd>}
+          </ComposerMenuItem>
         );
       })}
-      </LibreChatCommandMenu>
-    </div>
+    </ComposerMenu>
   );
 }

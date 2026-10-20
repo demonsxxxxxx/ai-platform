@@ -713,13 +713,38 @@ Current machine checks cover:
 1. new forbidden dependency edges and cross-domain internal imports;
 2. new/restored unapproved root modules, undeclared packages/layers, and
    forbidden generic names or delivery-label tokens at new module locations;
-3. frozen hot-file no-growth and absolute ceilings, with only the implemented
-   identity-preserving import-contraction allowance;
+3. an 800-line maximum for new production code files, plus frozen hot-file
+   no-growth and absolute ceilings with only the implemented identity-preserving
+   import-contraction allowance;
 4. declared production registry keys, concrete constructor identities and
    settings selectors, excluding test doubles and arbitrary dynamic imports;
 5. declared governed-symbol owners and prohibited duplicate definitions;
 6. candidate-bound architecture exceptions with exact paths, owner, reason,
-   expiry and removal condition, without exemptions for non-exemptible findings.
+   expiry and removal condition, without exemptions for non-exemptible findings;
+7. new recognized Python logging calls under `app/`: eager f-string, concatenation,
+   `%` and `.format` message construction is rejected; interpolation arguments
+   require nonempty structured `extra` fields.
+
+The logging check recognizes the standard `logging` module and receivers created
+by imported `getLogger`/`LoggerAdapter` factories. Static event messages and the
+existing safe adapter shape `logger.warning(code, extra=fields)` remain valid.
+Unchanged legacy calls retain their current text/formatter consumers; adding a
+new call must follow the structured-field rule. Existing conversation failure
+text remains owned by Conversations and its privacy/caplog regressions until
+those consumers migrate together. Formatter internals and dynamically supplied
+logging ports still require owning review; this diff check does not certify a
+whole-repository JSON logging migration.
+
+The new-file maximum covers functional source (including tools and frontend),
+not tests, documentation, assets or data-only configuration. A rename of existing
+production code retains its existing size contract; moving test code into
+production counts as a new production file. The 800-line limit rounds up the
+2026-10-19 `f853a8a8` backend P90 (795 lines across 411 non-`__init__` modules)
+and frontend P95 (773 lines across 419 production files). It accommodates 90.3%
+and 95.0% of those respective inventories without grandfathering new oversized
+modules. Existing architecture exception rules apply; the accepted-base checker
+owns this limit, so a candidate cannot change its own threshold. New checker
+behavior becomes trusted only after independent review and acceptance into base.
 
 Deletion proof tiers, compatibility consumers, business-responsibility placement,
 and retirement completeness require human review under the

@@ -2,10 +2,41 @@
 
 from __future__ import annotations
 
+from app.platform.public_payload import sanitize_public_text
 from app.identity.infrastructure.audit_postgres import append_audit_log
 from app.streaming.infrastructure.run_events_postgres import append_event
 from psycopg import AsyncConnection
 from typing import Any
+
+
+async def read_run_runtime_debug(conn: AsyncConnection, *, tenant_id: str, run_id: str) -> dict[str, Any]:
+    cursor = await conn.execute(
+        """select id as lease_id, attempt_id, provider, sandbox_mode, status,
+                  heartbeat_at, expires_at, released_at, release_reason,
+                  executor_status, executor_heartbeat_at, executor_terminal_received_at,
+                  executor_reconciliation_status, executor_reconciliation_attempt_count,
+                  executor_terminal_reconciliation_attempt_count, executor_reconciled_at,
+                  executor_reconciliation_context_json->'dispatch_timings' as dispatch_timings
+           from sandbox_leases where tenant_id=%s and run_id=%s
+           order by created_at desc limit 101""", (tenant_id, run_id),
+    )
+    rows = list(await cursor.fetchall())
+    projected = []
+    for row in rows[:100]:
+        item = dict(row)
+        for name in ("provider", "sandbox_mode", "status", "executor_status", "executor_reconciliation_status", "release_reason"):
+            item[name] = sanitize_public_text(item.get(name))[:256] or None
+        timings = item.get("dispatch_timings")
+        item["dispatch_timings"] = {
+            name: value for name, value in (timings.items() if isinstance(timings, dict) else ())
+            if name in {"sandbox_queue_wait_latency_ms", "sandbox_lease_acquire_latency_ms", "sandbox_container_start_latency_ms",
+                        "sandbox_container_cold_start_latency_ms", "sandbox_healthcheck_latency_ms", "sandbox_executor_dispatch_latency_ms",
+                        "executor_first_token_latency_ms", "executor_tool_call_latency_ms", "executor_model_latency_ms",
+                        "document_processing_latency_ms", "artifact_upload_latency_ms", "sandbox_cleanup_latency_ms", "sandbox_total_latency_ms"}
+            and type(value) in (int, float) and 0 <= value <= 86_400_000
+        }
+        projected.append(item)
+    return {"leases": projected, "leases_truncated": len(rows) > 100, "lease_limit": 100}
 
 
 async def get_sandbox_lease(

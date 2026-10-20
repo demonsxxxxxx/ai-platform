@@ -15,6 +15,9 @@ export interface PrincipalResponseWire {
   display_name: string;
   tenant_id: string;
   department_id: string;
+  direct_department_ids?: string[];
+  department_ids?: string[];
+  department_authority_status?: "available" | "unavailable";
   roles: string[];
   permissions: string[];
   is_admin: boolean;
@@ -68,6 +71,9 @@ export function mapPrincipalToUser(principal: PrincipalResponseWire): User {
     id: principal.user_id,
     tenant_id: principal.tenant_id,
     department_id: principal.department_id,
+    direct_department_ids: principal.direct_department_ids ?? [],
+    department_ids: principal.department_ids ?? [],
+    department_authority_status: principal.department_authority_status ?? "unavailable",
     username: principal.user_name || principal.user_id,
     email: "",
     avatar_url: undefined,

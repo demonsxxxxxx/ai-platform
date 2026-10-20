@@ -10,10 +10,11 @@ def _module():
     return importlib.import_module("app.capability_distribution")
 
 
-def _context(module, *, department_id="qa", roles=None, is_admin=False):
+def _context(module, *, department_id="legacy-display", department_ids=("100", "110"), roles=None, is_admin=False):
     return module.CapabilityAccessContext(
         tenant_id="tenant-a",
         department_id=department_id,
+        department_ids=department_ids,
         roles=roles or ["qa_operator"],
         is_admin=is_admin,
     )
@@ -24,7 +25,7 @@ def _subject(module, **overrides):
         "status": "active",
         "visible_to_user": True,
         "scope_mode": "allowlist",
-        "department_ids": ["qa"],
+        "department_ids": ["100"],
         "allowed_roles": ["qa_operator"],
     }
     distribution.update(overrides.pop("distribution", {}))
@@ -63,7 +64,7 @@ def test_resolver_allows_case_insensitive_exact_role_without_punctuation_aliases
 @pytest.mark.parametrize(
     ("context_kwargs", "subject_kwargs", "intent", "reason"),
     [
-        ({"department_id": "rd"}, {}, "discover", "department_not_allowed"),
+        ({"department_ids": ("200", "210")}, {}, "discover", "department_not_allowed"),
         ({"roles": ["reader"]}, {}, "use", "role_not_allowed"),
         ({}, {"distribution": {"status": "disabled"}}, "use", "distribution_disabled"),
         ({}, {"distribution": {"visible_to_user": False}}, "discover", "distribution_hidden"),
@@ -121,12 +122,25 @@ def test_resolver_admin_bypass_precedes_distribution_checks_and_audit_payload_is
         "capability_id": "qa-mcp",
         "actor_department_id": "rd",
         "actor_roles": ["employee", "qa-lead"],
-        "department_scope_ids": ["qa"],
+        "department_scope_ids": ["100"],
         "role_scope_ids": ["qa_operator"],
         "scope_mode": "allowlist",
         "decision_reason": "admin_bypass",
         "admin_bypass": True,
     }
+
+
+@pytest.mark.parametrize("capability_kind", ["skill", "mcp_server", "mcp_tool"])
+@pytest.mark.parametrize("departments,grants", [((), ["100"]), (("100",), ["QA"]), (("100",), ["001"])])
+def test_department_access_never_falls_back_to_scalar_or_name(capability_kind, departments, grants):
+    module = _module()
+    decision = module.resolve_capability_access(
+        _context(module, department_id="100", department_ids=departments),
+        _subject(module, capability_kind=capability_kind, distribution={"department_ids": grants},
+                 inherited_distribution_source="mcp_server:gateway" if capability_kind == "mcp_tool" else None),
+        intent="use",
+    )
+    assert not decision.usable and decision.decision_reason == "department_not_allowed"
 
 
 @pytest.mark.parametrize("capability_kind", ["skill", "mcp_server", "mcp_tool"])

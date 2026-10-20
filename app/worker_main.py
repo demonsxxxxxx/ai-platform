@@ -343,6 +343,7 @@ async def cleanup_expired_sandbox_leases() -> None:
         logger.exception("Sandbox runtime cleanup maintenance failed")
     async with transaction() as conn:
         await _sandbox_cleanup.cleanup_expired_sandbox_leases(conn)
+    await _sandbox_cleanup.cleanup_provider_orphans(provider_factory=create_container_provider)
 
 
 async def cleanup_expired_memory_records_for_worker(settings: object | None = None, *, now: float | None = None) -> list[dict]:

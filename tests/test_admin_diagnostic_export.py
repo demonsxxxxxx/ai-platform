@@ -140,7 +140,7 @@ def test_admin_diagnostic_export_is_admin_scoped_audited_and_no_store(monkeypatc
         yield connection
 
     class FakeDiagnosticsService:
-        async def read_admin(self, _conn, *, tenant_id, run_id):
+        async def read_admin_debug(self, _conn, *, tenant_id, run_id):
             assert tenant_id == "default"
             assert run_id == "run_a"
             return _diagnostics()
@@ -180,7 +180,7 @@ def test_admin_diagnostic_export_is_admin_scoped_audited_and_no_store(monkeypatc
     assert response.headers["cache-control"] == "no-store"
     assert response.headers["x-content-type-options"] == "nosniff"
     assert response.headers["x-diagnostic-export-id"] == "rdiagexp_a"
-    assert connections[0].statements == ["set transaction isolation level repeatable read"]
+    assert connections[0].statements == ["set transaction isolation level repeatable read", "set local statement_timeout = '5s'"]
     assert audits[0]["tenant_id"] == "default"
     assert audits[0]["user_id"] == "admin-a"
     assert audits[0]["payload_json"]["result"] == "response_started"
@@ -195,7 +195,7 @@ def test_admin_diagnostic_export_does_not_return_package_when_audit_fails(monkey
         yield _ExportConnection()
 
     class FakeDiagnosticsService:
-        async def read_admin(self, _conn, *, tenant_id, run_id):
+        async def read_admin_debug(self, _conn, *, tenant_id, run_id):
             return _diagnostics()
 
     async def failing_audit(*_args, **_kwargs):

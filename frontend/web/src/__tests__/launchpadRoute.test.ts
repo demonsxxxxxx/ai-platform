@@ -8,13 +8,6 @@ import {
 } from "../appRouteManifest.ts";
 
 const appSource = readFileSync(resolve(import.meta.dirname, "../App.tsx"), "utf8");
-const chatRouteBoundarySource = readFileSync(
-  resolve(
-    import.meta.dirname,
-    "../components/common/ChatRouteBoundary.tsx",
-  ),
-  "utf8",
-);
 const typesSource = readFileSync(
   resolve(import.meta.dirname, "../components/layout/AppContent/types.ts"),
   "utf8",
@@ -54,11 +47,13 @@ test("launchpad route is protected and mapped to AppContent", () => {
   assert.match(appSource, /activeTab="apps"/);
 });
 
-test("launchpad tab is registered in layout and sidebar", () => {
+test("generic Chat is registered as a navigation destination", () => {
   assert.match(typesSource, /\|\s*"apps"/);
   assert.match(tabSource, /apps:\s*LaunchpadPanel/);
   assert.match(`${sidebarSource}\n${sidebarPartsSource}`, /navigate\("\/apps"\)/);
   assert.match(sidebarPartsSource, /nav\.apps/);
+  assert.match(sidebarPartsSource, /navigate\("\/chat"\)/);
+  assert.match(sidebarPartsSource, /nav\.chat/);
 });
 
 test("Company Navigation is the default authenticated landing destination", () => {
@@ -83,8 +78,8 @@ test("root path routes by auth state instead of rendering the marketing landing 
     /<Navigate to=\{APP_ROUTE_PATHS\.apps\} replace \/>/,
   );
   assert.match(
-    chatRouteBoundarySource,
-    /sessionId \? children : <Navigate to=\{APP_ROUTE_PATHS\.agentMarket\} replace \/>/,
+    appSource,
+    /function ChatPage\(\)[\s\S]{0,160}<AppContent key="chat" activeTab="chat" \/>/,
   );
   assert.match(appSource, /<Navigate to="\/auth\/login" replace \/>/);
   assert.match(

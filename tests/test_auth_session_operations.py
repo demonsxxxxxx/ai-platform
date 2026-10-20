@@ -611,7 +611,8 @@ class FakeAuthRedis:
                         or previous.get("user_id") != principal.get("user_id")
                         or previous.get("tenant_id") != principal.get("tenant_id")):
                         return json.dumps({"status": "superseded"})
-                    fields = ("department_id", "authz_policy_version", "company_role",
+                    fields = ("department_id", "direct_department_ids", "department_ids", "department_authority_status",
+                              "authz_policy_version", "company_role",
                               "company_username", "company_department", "roles", "permissions")
                     changed = any(previous.get(name, "") != principal.get(name, "") for name in fields)
                 if numkeys == 3:
