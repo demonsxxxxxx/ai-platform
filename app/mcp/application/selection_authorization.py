@@ -77,11 +77,13 @@ class McpSelectionAuthorization:
     async def _authorize(
         self, conn: Any, *, tenant_id: str, tool_ids: list[str],
         principal_department_id: str, principal_roles: list[str] | None,
+        principal_department_ids: tuple[str, ...] = (),
         is_admin: bool, permissions: list[str] | None, available_only: bool,
     ) -> list[dict[str, Any]]:
         context = self._context_type(
             tenant_id=tenant_id,
             department_id=str(principal_department_id or ""),
+            department_ids=tuple(principal_department_ids),
             roles=self._normalize_roles(principal_roles or []),
             is_admin=bool(is_admin),
             permissions=[str(item) for item in permissions or [] if str(item)],

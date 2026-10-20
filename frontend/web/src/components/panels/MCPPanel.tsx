@@ -112,7 +112,7 @@ export function MCPPanel() {
   } = useMCP({
     enabled: isAuthenticated,
     paused: authLoading,
-    identityScope: JSON.stringify([user?.tenant_id, user?.id, user?.roles, user?.permissions, user?.is_admin, user?.department_id, authorityRevision]),
+    identityScope: JSON.stringify([user?.tenant_id, user?.id, user?.roles, user?.permissions, user?.is_admin, user?.department_id, user?.department_ids, user?.department_authority_status, authorityRevision]),
     listParams,
     allAuthorizedCatalog: !isAiAdmin,
     canManageServers: canManageMcp,
@@ -372,18 +372,18 @@ export function MCPPanel() {
           </div>
         ) : (
           <div className="overflow-x-auto rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)]">
-            <div aria-label={t("mcp.title")}><Table
- size="small" pagination={false}
+            <div aria-label={t("mcp.title")} data-mcp-server-table><Table
+ size="small" pagination={false} scroll={{ x: 1080 }}
  dataSource={servers}
  rowKey={(server) => server.name}
 onRow={(server) => {  return ({ role: "row", "data-mcp-server-row": server.name }); }}
  columns={[
-{ key: "name", title: t("mcp.form.serverName"),
+{ key: "name", title: t("mcp.form.serverName"), width: 180,
 render: (_value, server) => (<>
 <p className="break-words font-semibold">{server.name}</p>
                       <p className="mt-1 text-xs text-[var(--theme-text-secondary)]">{t(server.is_system ? "mcp.card.system" : "mcp.card.user")}</p>
 </>) },
-{ key: "toolCount", title: t("mcp.tools.catalogCount"),
+{ key: "toolCount", title: t("mcp.tools.catalogCount"), width: 108,
 onCell: () => ({"data-mcp-tool-count": true}),
 render: (_value, server) =>  {
 const status = discovery.statusByServer.get(server.name) ?? "idle";
@@ -391,22 +391,22 @@ return (<>
 {status === "ready" ? t("mcp.tools.count", { count: discovery.toolsByServer.get(server.name)?.filter((tool) => tool.available !== false).length ?? 0 }) : "—"}
 </>);
 } },
-{ key: "enabled", title: t("mcp.card.statusLabel"),
+{ key: "enabled", title: t("mcp.card.statusLabel"), width: 100,
 render: (_value, server) => (<>
-<span className={server.enabled ? "text-[var(--theme-accent)]" : "text-[var(--theme-text-secondary)]"}>{t(server.enabled ? "mcp.card.statusEnabled" : "mcp.card.statusDisabled")}</span>
+<span className={server.enabled ? "text-[var(--theme-success)]" : "text-[var(--theme-text-secondary)]"}>{t(server.enabled ? "mcp.card.statusEnabled" : "mcp.card.statusDisabled")}</span>
 </>) },
-{ key: "discovery", title: t("mcp.tools.discoveryStatus"),
+{ key: "discovery", title: t("mcp.tools.discoveryStatus"), width: 120,
 render: (_value, server) =>  {
 const status = discovery.statusByServer.get(server.name) ?? "idle";
 return (<>
 <span className={status === "unavailable" ? "text-[var(--theme-danger)]" : "text-[var(--theme-text-secondary)]"}>{t(`mcp.discovery.${status}`)}</span>
 </>);
 } },
-{ key: "transport", title: t("mcp.form.transportType"),
+{ key: "transport", title: t("mcp.form.transportType"), width: 120,
 render: (_value, server) => (<>
 {transportLabel(server.transport)}
 </>) },
-{ key: "scope", title: t("mcp.directory.accessScope"),
+{ key: "scope", title: t("mcp.directory.accessScope"), width: 200,
 render: (_value, server) =>  {
 const quotaCount = roleQuotaCount(server);
 return (<>
@@ -415,16 +415,20 @@ return (<>
                       {quotaCount > 0 ? <p className="mt-1 text-xs text-[var(--theme-text-secondary)]">{t("mcp.card.roleQuotaCount")}：{quotaCount}</p> : null}
 </>);
 } },
-{ key: "actions", title: t("mcp.directory.actions"),
+{ key: "actions", title: t("mcp.directory.actions"), width: 252,
 render: (_value, server) => (<>
 <div className="flex items-center gap-1">
                         <Button type="default" htmlType="button" className="min-h-11 whitespace-nowrap" data-mcp-view-tools onClick={(event) => { toolPreviousFocusRef.current = event.currentTarget; setToolTarget({ name: server.name, scope: toolsScope }); }}>{t("mcp.tools.view")}</Button>
                         {canManageMcpUi ? <div className="flex items-center gap-1" data-mcp-admin-controls>
-                          <Button type="text" htmlType="button" data-mcp-admin-toggle onClick={async () => { const updated = await toggleServer(server.name); if (updated) toast.success(t(updated.enabled ? "mcp.admin.enableSuccess" : "mcp.admin.disableSuccess")); }} className="btn-icon min-h-11 min-w-11" aria-label={server.enabled ? t("mcp.admin.disableServer") : t("mcp.admin.enableServer")} title={server.enabled ? t("mcp.admin.disableServer") : t("mcp.admin.enableServer")} disabled={isLoading}>
-                            {server.enabled ? <ToggleRight size={18} /> : <ToggleLeft size={18} />}
-                          </Button>
-                          <Button type="text" htmlType="button" data-mcp-admin-edit onClick={() => void openEditor(server)} className="btn-icon min-h-11 min-w-11" aria-label={t("mcp.admin.editServer")} title={t("mcp.admin.editServer")} disabled={isLoading || editorDetailsLoading}><Edit3 size={18} /></Button>
-                          <Button type="text" htmlType="button" data-mcp-admin-delete onClick={() => { setToolTarget(null); setDeleteTarget(server); }} className="btn-icon min-h-11 min-w-11 hover:bg-[var(--theme-danger-soft)] hover:text-[var(--theme-danger)]" aria-label={t("mcp.admin.deleteServer")} title={t("mcp.admin.deleteServer")} disabled={isLoading}><Trash2 size={18} /></Button>
+                          <Button type="text" htmlType="button" data-mcp-admin-toggle aria-pressed={server.enabled} onClick={async () => { const updated = await toggleServer(server.name); if (updated) toast.success(t(updated.enabled ? "mcp.admin.enableSuccess" : "mcp.admin.disableSuccess")); }} className="min-h-11 min-w-11" aria-label={server.enabled ? t("mcp.admin.disableServer") : t("mcp.admin.enableServer")} title={server.enabled ? t("mcp.admin.disableServer") : t("mcp.admin.enableServer")} disabled={isLoading}
+                            icon={server.enabled ? <ToggleRight size={18} className="text-[var(--theme-success)]" /> : <ToggleLeft size={18} className="text-[var(--theme-text-secondary)]" />}
+                          />
+                          <Button type="text" htmlType="button" data-mcp-admin-edit onClick={() => void openEditor(server)} className="min-h-11 min-w-11" aria-label={t("mcp.admin.editServer")} title={t("mcp.admin.editServer")} disabled={isLoading || editorDetailsLoading}
+                            icon={<Edit3 size={18} />}
+                          />
+                          <Button type="text" htmlType="button" data-mcp-admin-delete onClick={() => { setToolTarget(null); setDeleteTarget(server); }} className="min-h-11 min-w-11 hover:bg-[var(--theme-danger-soft)] hover:text-[var(--theme-danger)]" aria-label={t("mcp.admin.deleteServer")} title={t("mcp.admin.deleteServer")} disabled={isLoading}
+                            icon={<Trash2 size={18} />}
+                          />
                         </div> : null}
                       </div>
 </>) }

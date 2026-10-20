@@ -6578,7 +6578,7 @@ async def test_copy_run_preserves_source_v1_pin_after_current_release_moves_to_v
         "model_value": "provider-model-copy",
     }
 
-    async def fake_copy_run_as_new_task(conn, *, tenant_id, user_id, run_id):
+    async def fake_copy_run_as_new_task(conn, *, tenant_id, user_id, run_id, principal_department_ids=()):
         calls["copy_conn"] = conn
         return {
             "session_id": "ses_copy",
@@ -6725,7 +6725,7 @@ async def test_copy_run_ignores_unsafe_source_run_id_for_followup_context(monkey
     calls = {}
     unsafe_hash_like_run_id = "a" * 64
 
-    async def fake_copy_run_as_new_task(conn, *, tenant_id, user_id, run_id):
+    async def fake_copy_run_as_new_task(conn, *, tenant_id, user_id, run_id, principal_department_ids=()):
         return {
             "session_id": "ses_copy",
             "run_id": "run_copy",
@@ -6803,7 +6803,7 @@ async def test_copy_run_ignores_unsafe_source_run_id_for_followup_context(monkey
 async def test_copy_run_uses_authorized_route_source_when_copied_input_lacks_source_id(monkeypatch):
     calls = {}
 
-    async def fake_copy_run_as_new_task(conn, *, tenant_id, user_id, run_id):
+    async def fake_copy_run_as_new_task(conn, *, tenant_id, user_id, run_id, principal_department_ids=()):
         return {
             "session_id": "ses_copy",
             "run_id": "run_copy",
@@ -6876,7 +6876,7 @@ async def test_copy_run_uses_authorized_route_source_when_copied_input_lacks_sou
 async def test_copy_run_prefers_authorized_route_source_over_payload_source_id(monkeypatch):
     calls = {}
 
-    async def fake_copy_run_as_new_task(conn, *, tenant_id, user_id, run_id):
+    async def fake_copy_run_as_new_task(conn, *, tenant_id, user_id, run_id, principal_department_ids=()):
         return {
             "session_id": "ses_copy",
             "run_id": "run_copy",
@@ -6949,7 +6949,7 @@ async def test_copy_run_prefers_authorized_route_source_over_payload_source_id(m
 async def test_copy_run_validates_queue_payload_before_snapshot_update(monkeypatch):
     calls = {}
 
-    async def fake_copy_run_as_new_task(conn, *, tenant_id, user_id, run_id):
+    async def fake_copy_run_as_new_task(conn, *, tenant_id, user_id, run_id, principal_department_ids=()):
         return {
             "session_id": "ses_copy",
             "run_id": "run_copy",
@@ -7047,7 +7047,7 @@ async def test_copy_run_rejects_unsafe_principal_user_id_before_copy_persistence
 async def test_copy_run_uses_uploaded_release_policy_manifest(monkeypatch):
     calls = {}
 
-    async def fake_copy_run_as_new_task(conn, *, tenant_id, user_id, run_id):
+    async def fake_copy_run_as_new_task(conn, *, tenant_id, user_id, run_id, principal_department_ids=()):
         return {
             "session_id": "ses_copy",
             "run_id": "run_copy",
@@ -7130,7 +7130,7 @@ async def test_copy_run_uses_uploaded_release_policy_manifest(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_copy_run_rejects_when_original_skill_version_cannot_be_materialized(monkeypatch):
-    async def fake_copy_run_as_new_task(conn, *, tenant_id, user_id, run_id):
+    async def fake_copy_run_as_new_task(conn, *, tenant_id, user_id, run_id, principal_department_ids=()):
         return {
             "session_id": "ses_copy",
             "run_id": "run_copy",

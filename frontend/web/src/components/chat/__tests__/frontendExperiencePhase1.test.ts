@@ -72,8 +72,7 @@ test("composer exposes first-phase command, file, and Thinking affordances", () 
   assert.match(toolbarSource, /chat\.commandTrigger/);
   assert.match(toolbarSource, /<AgentOptionButton/);
   assert.match(toolbarSource, /agentOptions\?\.enable_thinking/);
-  assert.match(chatInputSource, /chat\.fileReferenceChip/);
-  assert.match(chatInputSource, /referenceId:\s*attachment\.id/);
+  assert.match(chatInputSource, /<ChatInputAttachments/);
   assert.match(chatInputSource, /data-disable-global-file-drop="true"/);
 });
 
@@ -90,7 +89,8 @@ test("feature menu exposes file and enhancement capabilities without redundant s
 test("composer renders durable selected context chips", () => {
   assert.match(chatInputSource, /<ComposerChips/);
   assert.match(chatInputSource, /composerSelectionReducer/);
-  assert.match(chatInputSource, /referenceId:\s*attachment\.id/);
+  // Composer file attachments keep one presentation owner.
+  assert.doesNotMatch(chatInputSource, /id:\s*`file:\$\{attachment\.id\}`/);
 });
 
 test("rail follows the authenticated workbench navigation manifest", () => {

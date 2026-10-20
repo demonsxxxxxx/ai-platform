@@ -84,28 +84,18 @@ async def list_runtime_mcp_server_registry(
     conn: Any,
     *,
     tenant_id: str,
-    department_id: str | None = None,
     include_disabled: bool = True,
 ) -> list[dict[str, Any]]:
-    department_clause = (
-        ""
-        if department_id is None
-        else "and (cardinality(department_ids) = 0 or %s = any(department_ids))"
-    )
-    params: tuple[Any, ...] = (tenant_id, include_disabled)
-    if department_id is not None:
-        params = (tenant_id, department_id, include_disabled)
     cursor = await conn.execute(
         f"""
         select {_DYNAMIC_SERVER_FIELDS}
         from mcp_servers
         where tenant_id = %s
-          {department_clause}
           and status <> 'deleted'
           and (%s or status = 'active')
         order by is_system desc, name asc
         """,
-        params,
+        (tenant_id, include_disabled),
     )
     return [_dynamic_server_projection(dict(row)) for row in await cursor.fetchall()]
 

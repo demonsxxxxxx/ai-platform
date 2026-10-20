@@ -1,5 +1,6 @@
 import { memo, type ReactNode } from "react";
 import { Bot } from "lucide-react";
+import { EmptyState, EmptyStateGreeting } from "./assistant-ui/elements/empty-state";
 
 interface WelcomePageProps {
   greeting: string;
@@ -17,7 +18,7 @@ export const WelcomePage = memo(function WelcomePage({
       data-workbench-empty-state="chat"
       className="welcome-root welcome-chat-start relative flex h-full min-h-0 flex-col overflow-y-auto px-4 py-3 sm:px-5"
     >
-      <section
+      <EmptyState
         data-chat-start-surface
         data-chat-composer-first
         className="chat-start-surface flex w-full max-w-[56rem] flex-col items-center gap-6"
@@ -33,9 +34,9 @@ export const WelcomePage = memo(function WelcomePage({
           >
             <Bot size={21} strokeWidth={2.1} />
           </span>
-          <h1 className="max-w-full text-[28px] font-semibold leading-9 text-[var(--theme-text)] sm:text-[34px] sm:leading-[2.7rem]">
+          <EmptyStateGreeting className="max-w-full text-[28px] leading-9 sm:text-[34px] sm:leading-[2.7rem]">
             {greeting}
-          </h1>
+          </EmptyStateGreeting>
           <p className="max-w-2xl text-[15px] leading-6 text-[var(--theme-text-secondary)]">
             {subtitle}
           </p>
@@ -44,7 +45,7 @@ export const WelcomePage = memo(function WelcomePage({
         <div data-chat-empty-composer className="w-full">
           {composer}
         </div>
-      </section>
+      </EmptyState>
     </div>
   );
 });

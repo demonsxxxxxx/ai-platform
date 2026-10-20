@@ -1,6 +1,6 @@
 import { Checkbox } from "@lobehub/ui/base-ui";
 import { Button, Input, TextArea } from "@lobehub/ui/base-ui";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   BadgeCheck,
   Bot,
@@ -92,6 +92,9 @@ export function AgentBuilderWorkbench({
   const [profileQuery, setProfileQuery] = useState("");
   const [profilePage, setProfilePage] = useState(1);
   const [skillQuery, setSkillQuery] = useState("");
+  const [toolQuery, setToolQuery] = useState("");
+  const [toolSearch, setToolSearch] = useState("");
+  const toolDialogTrigger = useRef<HTMLButtonElement>(null);
   const retryCatalog = catalog.retry;
 
   useEffect(() => controller.subscribe(setWorkbench), [controller]);
@@ -175,6 +178,15 @@ export function AgentBuilderWorkbench({
     () => filterSkillCatalog(catalog.skills, skillQuery),
     [catalog.skills, skillQuery],
   );
+  const filteredTools = useMemo(() => {
+    const query = toolSearch.trim().normalize("NFKC").toLocaleLowerCase();
+    if (!query) return catalog.tools;
+    return catalog.tools.filter((tool) =>
+      [tool.label, tool.id, tool.description].some((value) =>
+        value.normalize("NFKC").toLocaleLowerCase().includes(query),
+      ),
+    );
+  }, [catalog.tools, toolSearch]);
   const profilePageCount = Math.max(
     1,
     Math.ceil(visibleProfiles.length / AGENT_DIRECTORY_PAGE_SIZE),
@@ -205,6 +217,8 @@ export function AgentBuilderWorkbench({
   const closeDialog = useCallback(() => {
     setDialog(null);
     setSkillQuery("");
+    setToolQuery("");
+    setToolSearch("");
   }, []);
   const performRefresh = useCallback((discardUnsavedChanges = false) => {
     retryCatalog();
@@ -634,9 +648,8 @@ export function AgentBuilderWorkbench({
                             }}
                             title={`移除 ${selection.skill_id}`}
                             htmlType="button"
-                          >
-                            <X aria-hidden="true" size={15} />
-                          </Button>
+                            icon={<X aria-hidden="true" size={15} />}
+                          />
                         </span>
                       );
                     })}
@@ -669,15 +682,12 @@ export function AgentBuilderWorkbench({
                   <summary className="cursor-pointer text-sm font-medium">
                     MCP 工具（可选） · 已选择 {activeEditor.selectedMcpToolIds.length} 项
                   </summary>
-                  <p className="mt-3 text-sm leading-6 text-[var(--theme-text-secondary)]">
-                    Skill Set 无法覆盖的外部能力才需要额外选择 MCP 工具。
-                  </p>
                   <div className="mb-4 mt-4 flex items-center justify-between gap-3">
                     <div className="flex items-center gap-2">
                       <Wrench size={17} className="text-[var(--theme-text-secondary)]" aria-hidden="true" />
                       <h3 id="agent-mcp-heading" className="text-sm font-semibold">MCP 工具</h3>
                     </div>
-                    <Button type="default" className="inline-flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-60" disabled={interactionBusy} onClick={() => setDialog("tools")} htmlType="button">
+                    <Button ref={toolDialogTrigger} type="default" className="inline-flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-60" disabled={interactionBusy} onClick={() => setDialog("tools")} htmlType="button">
                       <Wrench size={15} aria-hidden="true" />
                       管理工具
                     </Button>
@@ -709,9 +719,8 @@ export function AgentBuilderWorkbench({
                             onClick={() => removeMcpTool(toolId)}
                             title={`移除 ${tool?.label ?? toolId}`}
                             htmlType="button"
-                          >
-                            <X size={16} aria-hidden="true" />
-                          </Button>
+                            icon={<X size={16} aria-hidden="true" />}
+                          />
                         </div>
                       );
                       })}
@@ -865,26 +874,62 @@ export function AgentBuilderWorkbench({
         )}
       </AgentBuilderDialog>
 
-      <AgentBuilderDialog isOpen={dialog === "tools"} onClose={closeDialog} title="管理 MCP 工具">
+      <AgentBuilderDialog finalFocus={toolDialogTrigger} isOpen={dialog === "tools"} onClose={closeDialog} title="管理 MCP 工具">
         {!mcpCatalogResolved ? (
           <p className="text-sm text-[var(--theme-text-secondary)]">授权 MCP 目录尚未完整加载。</p>
         ) : catalog.tools.length === 0 ? (
           <p className="text-sm text-[var(--theme-text-secondary)]">当前没有可选的 MCP 工具。</p>
         ) : (
-          <div className="divide-y divide-[var(--theme-border)] border-y border-[var(--theme-border)]">
-            {catalog.tools.map((tool) => (
-              <label key={tool.id} className="flex cursor-pointer items-start gap-3 px-1 py-3 hover:bg-[var(--theme-hover)]">
-                <Checkbox
-                  checked={activeEditor?.selectedMcpToolIds.includes(tool.id) ?? false}
-                  disabled={interactionBusy}
-                  onChange={() => toggleMcpTool(tool.id)}
-                />
-                <span className="min-w-0">
-                  <span className="block font-medium">{tool.label}</span>
-                  <span className="mt-1 block text-sm text-[var(--theme-text-secondary)]">{tool.description}</span>
-                </span>
-              </label>
-            ))}
+          <div className="flex min-h-0 flex-col gap-3">
+            <form
+              className="flex items-center gap-2"
+              onSubmit={(event) => { event.preventDefault(); setToolSearch(toolQuery); }}
+            >
+              <Input
+                aria-label="搜索 MCP 工具"
+                prefix={<Search size={16} aria-hidden="true" />}
+                suffix={toolQuery || toolSearch ? <Button type="text" size="small"
+                  aria-label="清除 MCP 工具搜索" disabled={interactionBusy}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => { setToolQuery(""); setToolSearch(""); }} htmlType="button" icon={<X size={15} />} /> : null}
+                size="large"
+                className="min-w-0 flex-1"
+                disabled={interactionBusy}
+                onChange={(event) => setToolQuery(event.target.value)}
+                onPressEnter={(event) => { event.preventDefault(); setToolSearch(toolQuery); }}
+                placeholder="按名称、标识或描述搜索"
+                role="searchbox"
+                type="text"
+                value={toolQuery}
+              />
+              <Button type="default" size="large" htmlType="submit" disabled={interactionBusy} className="shrink-0">
+                搜索
+              </Button>
+            </form>
+            <span aria-live="polite" className="text-xs text-[var(--theme-text-secondary)]">
+              已选 {activeEditor?.selectedMcpToolIds.length ?? 0} 项 · 显示 {filteredTools.length} / {catalog.tools.length} 项
+            </span>
+            {filteredTools.length === 0 ? (
+              <div className="rounded-md border border-dashed border-[var(--theme-border-strong)] px-4 py-10 text-center text-sm text-[var(--theme-text-secondary)]">
+                没有匹配的 MCP 工具
+              </div>
+            ) : (
+              <div className="min-h-0 max-h-[min(34rem,calc(100vh-16rem))] overflow-y-auto divide-y divide-[var(--theme-border)] border-y border-[var(--theme-border)]">
+                {filteredTools.map((tool) => (
+                  <label key={tool.id} className="flex cursor-pointer items-start gap-3 px-1 py-3 hover:bg-[var(--theme-hover)]">
+                    <Checkbox
+                      checked={activeEditor?.selectedMcpToolIds.includes(tool.id) ?? false}
+                      disabled={interactionBusy}
+                      onChange={() => toggleMcpTool(tool.id)}
+                    />
+                    <span className="min-w-0 flex-1 break-words">
+                      <span className="block font-medium">{tool.label}</span>
+                      <span className="mt-1 block text-sm text-[var(--theme-text-secondary)]">{tool.description}</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </AgentBuilderDialog>

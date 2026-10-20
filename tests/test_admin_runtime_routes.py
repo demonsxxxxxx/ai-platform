@@ -5,8 +5,7 @@ from fastapi.testclient import TestClient
 
 from app.main import create_app
 from app.routes.admin_runtime import _backpressure_snapshot, _sanitize_observability_summary
-from app.sandbox.api import SandboxRuntimeCleanupError
-from app.runtime.sandbox.contracts import ContainerStatus, StopResult
+from app.runtime.sandbox.contracts import ContainerStatus
 from app.settings import Settings
 from tests.support.db_transactions import opaque_transaction
 
@@ -16,8 +15,6 @@ ADMIN_PROOF_KEY = "admin-runtime-proof-key-with-enough-entropy-2026"
 
 @pytest.fixture(autouse=True)
 def signed_runtime_proof_key(monkeypatch):
-    async def ignore_orphan_cleanup_audit(principal, failures):
-        return None
 
     async def empty_executor_reconciliation_summary(_conn, *, tenant_id, slo_seconds):
         assert tenant_id == "default"
@@ -37,10 +34,6 @@ def signed_runtime_proof_key(monkeypatch):
     monkeypatch.setattr(
         "app.execution_boundary.get_settings",
         lambda: Settings(sandbox_egress_proof_signing_key=ADMIN_PROOF_KEY),
-    )
-    monkeypatch.setattr(
-        "app.routes.admin_runtime._record_admin_orphan_cleanup_failure",
-        ignore_orphan_cleanup_audit,
     )
     monkeypatch.setattr(
         "app.routes.admin_runtime.sandbox_lease_repository.get_sandbox_executor_reconciliation_summary",
@@ -196,41 +189,17 @@ def test_admin_runtime_reconciliation_summary_is_aggregate_only():
     assert not {"run_id", "lease_id", "error"} & set(reconciliation)
 
 
-def patch_db_only_cleanup(monkeypatch):
-    async def fake_cleanup_expired_sandbox_leases(conn, *, tenant_id=None, reason="expired"):
-        assert tenant_id == "default"
-        assert reason == "expired"
-        return []
-
-    monkeypatch.setattr(
-        "app.routes.admin_runtime._sandbox_cleanup.cleanup_expired_sandbox_leases",
-        fake_cleanup_expired_sandbox_leases,
-    )
-
-
 def patch_empty_leases(monkeypatch):
-    async def fake_cleanup_expired_sandbox_runtime_leases(*, tenant_id=None, reason="expired", **kwargs):
-        assert tenant_id == "default"
-        assert reason == "expired"
-        return []
 
     async def fake_list_sandbox_leases(conn, *, tenant_id, status=None, limit=100):
         assert tenant_id == "default"
         return []
 
     monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
-    monkeypatch.setattr(
-        "app.routes.admin_runtime._sandbox_cleanup.cleanup_expired_sandbox_runtime_leases",
-        fake_cleanup_expired_sandbox_runtime_leases,
-    )
-    patch_db_only_cleanup(monkeypatch)
     monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.list_sandbox_leases", fake_list_sandbox_leases)
 
 
 def patch_real_leases(monkeypatch, *run_ids):
-    async def fake_cleanup_expired_sandbox_runtime_leases(*, tenant_id=None, reason="expired", **kwargs):
-        assert tenant_id == "default"
-        return []
 
     async def fake_list_sandbox_leases(conn, *, tenant_id, status=None, limit=100):
         assert tenant_id == "default"
@@ -249,11 +218,6 @@ def patch_real_leases(monkeypatch, *run_ids):
         ]
 
     monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
-    monkeypatch.setattr(
-        "app.routes.admin_runtime._sandbox_cleanup.cleanup_expired_sandbox_runtime_leases",
-        fake_cleanup_expired_sandbox_runtime_leases,
-    )
-    patch_db_only_cleanup(monkeypatch)
     monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.list_sandbox_leases", fake_list_sandbox_leases)
 
 
@@ -543,19 +507,10 @@ def test_admin_runtime_containers_includes_sandbox_leases(monkeypatch):
             }
         ]
 
-    async def fake_cleanup_expired_sandbox_runtime_leases(*, tenant_id=None, reason="expired", **kwargs):
-        assert tenant_id == "default"
-        assert reason == "expired"
-        return []
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
     monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
-    monkeypatch.setattr(
-        "app.routes.admin_runtime._sandbox_cleanup.cleanup_expired_sandbox_runtime_leases",
-        fake_cleanup_expired_sandbox_runtime_leases,
-    )
-    patch_db_only_cleanup(monkeypatch)
     monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.list_sandbox_leases", fake_list_sandbox_leases)
     client = TestClient(create_app())
 
@@ -567,15 +522,11 @@ def test_admin_runtime_containers_includes_sandbox_leases(monkeypatch):
     assert body["sandbox_leases"][0]["status"] == "active"
 
 
-def test_admin_runtime_placeholder_cleanup_failure_does_not_break_real_projection(monkeypatch):
+def test_admin_runtime_placeholder_leases_are_excluded_from_real_projection(monkeypatch):
     class FakeProvider:
         async def list_runtime_containers(self, filters):
             return []
 
-    async def placeholder_cleanup_failure(*args, **kwargs):
-        raise SandboxRuntimeCleanupError(
-            [{"container_id": "lease-placeholder", "message": "Unsupported sandbox provider: fake"}]
-        )
 
     async def fake_list_sandbox_leases(conn, *, tenant_id, status=None, limit=100):
         return [
@@ -595,11 +546,6 @@ def test_admin_runtime_placeholder_cleanup_failure_does_not_break_real_projectio
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
     monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
-    monkeypatch.setattr(
-        "app.routes.admin_runtime._sandbox_cleanup.cleanup_expired_sandbox_runtime_leases",
-        placeholder_cleanup_failure,
-    )
-    patch_db_only_cleanup(monkeypatch)
     monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.list_sandbox_leases", fake_list_sandbox_leases)
     client = TestClient(create_app())
 
@@ -615,10 +561,6 @@ def test_admin_runtime_containers_lists_only_active_sandbox_leases(monkeypatch):
             assert filters == {"tenant_id": "default"}
             return []
 
-    async def fake_cleanup_expired_sandbox_runtime_leases(*, tenant_id=None, reason="expired", **kwargs):
-        assert tenant_id == "default"
-        assert reason == "expired"
-        return []
 
     async def fake_list_sandbox_leases(conn, *, tenant_id, status=None, limit=100):
         assert tenant_id == "default"
@@ -651,11 +593,6 @@ def test_admin_runtime_containers_lists_only_active_sandbox_leases(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
     monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
-    monkeypatch.setattr(
-        "app.routes.admin_runtime._sandbox_cleanup.cleanup_expired_sandbox_runtime_leases",
-        fake_cleanup_expired_sandbox_runtime_leases,
-    )
-    patch_db_only_cleanup(monkeypatch)
     monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.list_sandbox_leases", fake_list_sandbox_leases)
     client = TestClient(create_app())
 
@@ -673,10 +610,6 @@ def test_admin_runtime_containers_can_include_released_sandbox_lease_history(mon
             assert filters == {"tenant_id": "default"}
             return []
 
-    async def fake_cleanup_expired_sandbox_runtime_leases(*, tenant_id=None, reason="expired", **kwargs):
-        assert tenant_id == "default"
-        assert reason == "expired"
-        return []
 
     repository_rows = []
 
@@ -735,12 +668,6 @@ def test_admin_runtime_containers_can_include_released_sandbox_lease_history(mon
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
     monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
-    monkeypatch.setattr(
-        "app.routes.admin_runtime._sandbox_cleanup.cleanup_expired_sandbox_runtime_leases",
-        fake_cleanup_expired_sandbox_runtime_leases,
-        raising=False,
-    )
-    patch_db_only_cleanup(monkeypatch)
     monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.list_sandbox_leases", fake_list_sandbox_leases)
     client = TestClient(create_app())
 
@@ -817,10 +744,6 @@ def test_admin_runtime_hides_stale_active_proof_but_keeps_signed_terminal_histor
     )
     forged_historical["lease_payload_json"]["governed_egress_proof"]["signature"] = "0" * 64
 
-    async def fake_cleanup_expired_sandbox_runtime_leases(*, tenant_id=None, reason="expired", **kwargs):
-        assert tenant_id == "default"
-        assert reason == "expired"
-        return []
 
     async def fake_list_sandbox_leases(conn, *, tenant_id, status=None, limit=100):
         assert tenant_id == "default"
@@ -833,12 +756,6 @@ def test_admin_runtime_hides_stale_active_proof_but_keeps_signed_terminal_histor
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
     monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
-    monkeypatch.setattr(
-        "app.routes.admin_runtime._sandbox_cleanup.cleanup_expired_sandbox_runtime_leases",
-        fake_cleanup_expired_sandbox_runtime_leases,
-        raising=False,
-    )
-    patch_db_only_cleanup(monkeypatch)
     monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.list_sandbox_leases", fake_list_sandbox_leases)
     client = TestClient(create_app())
 
@@ -857,9 +774,6 @@ def test_admin_runtime_containers_filters_foreign_tenant_sandbox_leases(monkeypa
             assert filters == {"tenant_id": "default"}
             return []
 
-    async def fake_cleanup_expired_sandbox_runtime_leases(*, tenant_id=None, reason="expired", **kwargs):
-        assert tenant_id == "default"
-        return []
 
     async def fake_list_sandbox_leases(conn, *, tenant_id, status=None, limit=100):
         assert tenant_id == "default"
@@ -906,11 +820,6 @@ def test_admin_runtime_containers_filters_foreign_tenant_sandbox_leases(monkeypa
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
     monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
-    monkeypatch.setattr(
-        "app.routes.admin_runtime._sandbox_cleanup.cleanup_expired_sandbox_runtime_leases",
-        fake_cleanup_expired_sandbox_runtime_leases,
-    )
-    patch_db_only_cleanup(monkeypatch)
     monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.list_sandbox_leases", fake_list_sandbox_leases)
     client = TestClient(create_app())
 
@@ -918,198 +827,6 @@ def test_admin_runtime_containers_filters_foreign_tenant_sandbox_leases(monkeypa
 
     assert response.status_code == 200
     assert [lease["lease_id"] for lease in response.json()["sandbox_leases"]] == ["lease-a"]
-
-
-def test_admin_runtime_containers_cleans_expired_leases_before_listing(monkeypatch):
-    calls = []
-
-    class FakeProvider:
-        async def list_runtime_containers(self, filters):
-            calls.append(("containers", filters))
-            return []
-
-    async def fake_cleanup_expired_sandbox_runtime_leases(*, tenant_id=None, reason="expired", **kwargs):
-        calls.append(("cleanup", tenant_id, reason))
-        return []
-
-    async def fake_list_sandbox_leases(conn, *, tenant_id, status=None, limit=100):
-        calls.append(("list", tenant_id, status, limit))
-        return []
-
-    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
-    monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
-    monkeypatch.setattr(
-        "app.routes.admin_runtime._sandbox_cleanup.cleanup_expired_sandbox_runtime_leases",
-        fake_cleanup_expired_sandbox_runtime_leases,
-        raising=False,
-    )
-    patch_db_only_cleanup(monkeypatch)
-    monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.list_sandbox_leases", fake_list_sandbox_leases)
-    client = TestClient(create_app())
-
-    response = client.get("/api/ai/admin/runtime/containers", headers=admin_headers())
-
-    assert response.status_code == 200
-    assert calls == [
-        ("cleanup", "default", "expired"),
-        ("list", "default", "active", 100),
-        ("containers", {"tenant_id": "default"}),
-    ]
-
-
-def test_admin_runtime_containers_cleans_provider_orphans_before_listing(monkeypatch):
-    calls = []
-
-    class FakeProvider:
-        async def cleanup_orphan_containers(self, filters, *, reason):
-            calls.append(("provider_cleanup", filters, reason))
-            return []
-
-        async def list_runtime_containers(self, filters):
-            calls.append(("containers", filters))
-            return []
-
-    async def fake_cleanup_expired_sandbox_runtime_leases(*, tenant_id=None, reason="expired", **kwargs):
-        calls.append(("db_cleanup", tenant_id, reason))
-        return []
-
-    async def fake_list_sandbox_leases(conn, *, tenant_id, status=None, limit=100):
-        calls.append(("list", tenant_id, status, limit))
-        return []
-
-    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
-    monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
-    monkeypatch.setattr(
-        "app.routes.admin_runtime._sandbox_cleanup.cleanup_expired_sandbox_runtime_leases",
-        fake_cleanup_expired_sandbox_runtime_leases,
-        raising=False,
-    )
-    patch_db_only_cleanup(monkeypatch)
-    monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.list_sandbox_leases", fake_list_sandbox_leases)
-    client = TestClient(create_app())
-
-    response = client.get("/api/ai/admin/runtime/containers", headers=admin_headers())
-
-    assert response.status_code == 200
-    assert calls == [
-        ("provider_cleanup", {"tenant_id": "default"}, "admin_runtime"),
-        ("db_cleanup", "default", "expired"),
-        ("list", "default", "active", 100),
-        ("containers", {"tenant_id": "default"}),
-    ]
-
-
-def test_admin_runtime_containers_fails_closed_when_provider_cleanup_reports_failure(monkeypatch):
-    calls = []
-
-    class FakeProvider:
-        async def cleanup_orphan_containers(self, filters, *, reason):
-            calls.append(("provider_cleanup", filters, reason))
-            return [
-                StopResult(
-                    container_id="exec-run-a",
-                    status="failed",
-                    message="Container cleanup failed",
-                )
-            ]
-
-        async def list_runtime_containers(self, filters):
-            calls.append(("containers", filters))
-            return []
-
-    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
-    client = TestClient(create_app(), raise_server_exceptions=False)
-
-    response = client.get("/api/ai/admin/runtime/containers", headers=admin_headers())
-
-    assert response.status_code == 500
-    assert response.json()["detail"] == "sandbox_provider_cleanup_failed"
-    assert calls == [("provider_cleanup", {"tenant_id": "default"}, "admin_runtime")]
-
-
-def test_admin_runtime_containers_fails_closed_for_malformed_provider_cleanup_result(monkeypatch):
-    calls = []
-
-    class FakeProvider:
-        async def cleanup_orphan_containers(self, filters, *, reason):
-            calls.append(("provider_cleanup", filters, reason))
-            return [{"container_id": "exec-run-a", "status": "unexpected"}]
-
-        async def list_runtime_containers(self, filters):
-            calls.append(("containers", filters))
-            return []
-
-    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
-    client = TestClient(create_app(), raise_server_exceptions=False)
-
-    response = client.get("/api/ai/admin/runtime/containers", headers=admin_headers())
-
-    assert response.status_code == 500
-    assert response.json()["detail"] == "sandbox_provider_cleanup_failed"
-    assert calls == [("provider_cleanup", {"tenant_id": "default"}, "admin_runtime")]
-
-
-def test_admin_runtime_containers_fails_closed_for_dict_provider_cleanup_success(monkeypatch):
-    calls = []
-
-    class FakeProvider:
-        async def cleanup_orphan_containers(self, filters, *, reason):
-            calls.append(("provider_cleanup", filters, reason))
-            return [{"container_id": "exec-run-a", "status": "stopped"}]
-
-        async def list_runtime_containers(self, filters):
-            calls.append(("containers", filters))
-            return []
-
-    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
-    client = TestClient(create_app(), raise_server_exceptions=False)
-
-    response = client.get("/api/ai/admin/runtime/containers", headers=admin_headers())
-
-    assert response.status_code == 500
-    assert response.json()["detail"] == "sandbox_provider_cleanup_failed"
-    assert calls == [("provider_cleanup", {"tenant_id": "default"}, "admin_runtime")]
-
-
-def test_admin_runtime_containers_fails_closed_when_sandbox_cleanup_fails(monkeypatch):
-    calls = []
-
-    class FakeProvider:
-        async def list_runtime_containers(self, filters):
-            calls.append(("containers", filters))
-            return []
-
-    async def fake_cleanup_expired_sandbox_runtime_leases(*, tenant_id=None, reason="expired", **kwargs):
-        calls.append(("cleanup", tenant_id, reason))
-        raise SandboxRuntimeCleanupError([{"container_id": "exec-run-a", "message": "cleanup failed"}])
-
-    async def fake_list_sandbox_leases(conn, *, tenant_id, status=None, limit=100):
-        calls.append(("list", tenant_id, status, limit))
-        return []
-
-    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
-    monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
-    monkeypatch.setattr(
-        "app.routes.admin_runtime._sandbox_cleanup.cleanup_expired_sandbox_runtime_leases",
-        fake_cleanup_expired_sandbox_runtime_leases,
-        raising=False,
-    )
-    monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.list_sandbox_leases", fake_list_sandbox_leases)
-    client = TestClient(create_app(), raise_server_exceptions=False)
-
-    response = client.get("/api/ai/admin/runtime/containers", headers=admin_headers())
-
-    assert response.status_code == 500
-    assert response.json()["detail"] == "sandbox_runtime_cleanup_failed"
-    assert calls == [
-        ("cleanup", "default", "expired"),
-    ]
 
 
 def test_admin_runtime_overview_requires_admin(monkeypatch):
@@ -1159,13 +876,6 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
                 ),
             ]
 
-    async def fake_cleanup_expired_sandbox_runtime_leases(*, tenant_id=None, reason="expired", **kwargs):
-        calls.append(("runtime_cleanup", tenant_id, reason))
-        return []
-
-    async def fake_cleanup_expired_sandbox_leases(conn, *, tenant_id=None, reason="expired"):
-        calls.append(("db_cleanup", tenant_id, reason))
-        return []
 
     async def fake_list_sandbox_leases(conn, *, tenant_id, status=None, limit=100):
         calls.append(("leases", tenant_id, status, limit))
@@ -1313,16 +1023,6 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
     monkeypatch.setattr("app.routes.admin_runtime.get_settings", lambda: runtime_settings)
     monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
     monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
-    monkeypatch.setattr(
-        "app.routes.admin_runtime._sandbox_cleanup.cleanup_expired_sandbox_runtime_leases",
-        fake_cleanup_expired_sandbox_runtime_leases,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        "app.routes.admin_runtime._sandbox_cleanup.cleanup_expired_sandbox_leases",
-        fake_cleanup_expired_sandbox_leases,
-        raising=False,
-    )
     monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.list_sandbox_leases", fake_list_sandbox_leases)
     monkeypatch.setattr("app.routes.admin_runtime.get_queue_status", fake_get_queue_status)
     monkeypatch.setattr("app.routes.admin_runtime.get_queue_insight", fake_get_queue_insight)
@@ -1462,9 +1162,6 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
     assert "raw_queue_payload" not in str(body)
     assert "queue-secret-token" not in str(body)
     assert calls == [
-        ("provider_cleanup", {"tenant_id": "default"}, "admin_runtime"),
-        ("runtime_cleanup", "default", "expired"),
-        ("db_cleanup", "default", "expired"),
         ("leases", "default", "active", 100),
         ("leases", "default", None, 100),
         ("containers", {"tenant_id": "default"}),
@@ -1477,7 +1174,8 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
     ]
 
 
-def test_admin_runtime_overview_can_skip_maintenance_cleanup_for_probe_snapshots(monkeypatch):
+@pytest.mark.parametrize("endpoint", ["containers", "overview"])
+def test_admin_runtime_reads_never_run_maintenance(monkeypatch, endpoint):
     calls = []
 
     class FakeProvider:
@@ -1488,11 +1186,11 @@ def test_admin_runtime_overview_can_skip_maintenance_cleanup_for_probe_snapshots
             calls.append(("containers", filters))
             return []
 
-    async def fail_runtime_cleanup(conn, *, tenant_id=None, reason="expired", **kwargs):
-        raise AssertionError("probe snapshot must not run sandbox runtime cleanup")
+    async def fail_runtime_cleanup(*args, **kwargs):
+        raise AssertionError("runtime reads must not run sandbox runtime cleanup")
 
-    async def fail_db_cleanup(conn, *, tenant_id=None, reason="expired"):
-        raise AssertionError("probe snapshot must not run DB sandbox lease cleanup")
+    async def fail_db_cleanup(*args, **kwargs):
+        raise AssertionError("runtime reads must not run DB sandbox lease cleanup")
 
     async def fake_list_sandbox_leases(conn, *, tenant_id, status=None, limit=100):
         calls.append(("leases", tenant_id, status, limit))
@@ -1528,12 +1226,12 @@ def test_admin_runtime_overview_can_skip_maintenance_cleanup_for_probe_snapshots
     monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
     monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
     monkeypatch.setattr(
-        "app.routes.admin_runtime._sandbox_cleanup.cleanup_expired_sandbox_runtime_leases",
+        "app.sandbox.api.SandboxRuntimeCleanup.cleanup_expired_sandbox_runtime_leases",
         fail_runtime_cleanup,
         raising=False,
     )
     monkeypatch.setattr(
-        "app.routes.admin_runtime._sandbox_cleanup.cleanup_expired_sandbox_leases",
+        "app.sandbox.api.SandboxRuntimeCleanup.cleanup_expired_sandbox_leases",
         fail_db_cleanup,
         raising=False,
     )
@@ -1559,11 +1257,18 @@ def test_admin_runtime_overview_can_skip_maintenance_cleanup_for_probe_snapshots
     client = TestClient(create_app())
 
     response = client.get(
-        "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+        f"/api/ai/admin/runtime/{endpoint}",
         headers=admin_headers(),
     )
 
     assert response.status_code == 200
+    if endpoint == "containers":
+        assert response.json()["total_active"] == 0
+        assert calls == [
+            ("leases", "default", "active", 100),
+            ("containers", {"tenant_id": "default"}),
+        ]
+        return
     body = response.json()
     assert body["sandbox"]["containers"]["total"] == 0
     assert body["queue"]["status"]["depths"] == {"queued": 0}
@@ -1768,81 +1473,6 @@ def test_admin_runtime_backpressure_omits_worker_available_from_reasons():
     assert snapshot["reasons"] == []
 
 
-def test_admin_runtime_overview_fails_closed_when_provider_cleanup_reports_failure(monkeypatch):
-    calls = []
-
-    class FakeProvider:
-        async def cleanup_orphan_containers(self, filters, *, reason):
-            calls.append(("provider_cleanup", filters, reason))
-            return [
-                StopResult(
-                    container_id="exec-run-a",
-                    status="failed",
-                    message="Container cleanup failed",
-                )
-            ]
-
-        async def list_runtime_containers(self, filters):
-            calls.append(("containers", filters))
-            return []
-
-    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
-    client = TestClient(create_app(), raise_server_exceptions=False)
-
-    response = client.get("/api/ai/admin/runtime/overview", headers=admin_headers())
-
-    assert response.status_code == 500
-    assert response.json()["detail"] == "sandbox_provider_cleanup_failed"
-    assert calls == [("provider_cleanup", {"tenant_id": "default"}, "admin_runtime")]
-
-
-def test_admin_runtime_overview_fails_closed_for_malformed_provider_cleanup_result(monkeypatch):
-    calls = []
-
-    class FakeProvider:
-        async def cleanup_orphan_containers(self, filters, *, reason):
-            calls.append(("provider_cleanup", filters, reason))
-            return [{"container_id": "exec-run-a", "status": "unexpected"}]
-
-        async def list_runtime_containers(self, filters):
-            calls.append(("containers", filters))
-            return []
-
-    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
-    client = TestClient(create_app(), raise_server_exceptions=False)
-
-    response = client.get("/api/ai/admin/runtime/overview", headers=admin_headers())
-
-    assert response.status_code == 500
-    assert response.json()["detail"] == "sandbox_provider_cleanup_failed"
-    assert calls == [("provider_cleanup", {"tenant_id": "default"}, "admin_runtime")]
-
-
-def test_admin_runtime_overview_fails_closed_for_dict_provider_cleanup_success(monkeypatch):
-    calls = []
-
-    class FakeProvider:
-        async def cleanup_orphan_containers(self, filters, *, reason):
-            calls.append(("provider_cleanup", filters, reason))
-            return [{"container_id": "exec-run-a", "status": "stopped"}]
-
-        async def list_runtime_containers(self, filters):
-            calls.append(("containers", filters))
-            return []
-
-    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
-    client = TestClient(create_app(), raise_server_exceptions=False)
-
-    response = client.get("/api/ai/admin/runtime/overview", headers=admin_headers())
-
-    assert response.status_code == 500
-    assert response.json()["detail"] == "sandbox_provider_cleanup_failed"
-    assert calls == [("provider_cleanup", {"tenant_id": "default"}, "admin_runtime")]
-
-
 @pytest.mark.parametrize("failing_queue_call", ["status", "insight"])
 def test_admin_runtime_overview_does_not_mask_queue_failure(monkeypatch, failing_queue_call):
     calls = []
@@ -1915,40 +1545,6 @@ def test_admin_runtime_overview_does_not_mask_queue_failure(monkeypatch, failing
         assert calls == ["queue_status", "queue_insight"]
 
 
-def test_admin_runtime_overview_fails_closed_when_sandbox_cleanup_fails(monkeypatch):
-    calls = []
-
-    class FakeProvider:
-        async def list_runtime_containers(self, filters):
-            calls.append(("containers", filters))
-            return []
-
-    async def fake_cleanup_expired_sandbox_runtime_leases(*, tenant_id=None, reason="expired", **kwargs):
-        calls.append(("cleanup", tenant_id, reason))
-        raise SandboxRuntimeCleanupError([{"container_id": "exec-run-a", "message": "cleanup failed"}])
-
-    async def fake_list_sandbox_leases(conn, *, tenant_id, status=None, limit=100):
-        calls.append(("list", tenant_id, status, limit))
-        return []
-
-    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
-    monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
-    monkeypatch.setattr("app.routes.admin_runtime.transaction", opaque_transaction)
-    monkeypatch.setattr(
-        "app.routes.admin_runtime._sandbox_cleanup.cleanup_expired_sandbox_runtime_leases",
-        fake_cleanup_expired_sandbox_runtime_leases,
-        raising=False,
-    )
-    monkeypatch.setattr("app.sandbox.infrastructure.leases_postgres.list_sandbox_leases", fake_list_sandbox_leases)
-    client = TestClient(create_app(), raise_server_exceptions=False)
-
-    response = client.get("/api/ai/admin/runtime/overview", headers=admin_headers())
-
-    assert response.status_code == 500
-    assert response.json()["detail"] == "sandbox_runtime_cleanup_failed"
-    assert calls == [("cleanup", "default", "expired")]
-
-
 def test_admin_runtime_overview_reports_container_list_unavailable_without_docker_socket(monkeypatch):
     calls = []
 
@@ -2013,7 +1609,7 @@ def test_admin_runtime_overview_reports_container_list_unavailable_without_docke
     client = TestClient(create_app(), raise_server_exceptions=False)
 
     response = client.get(
-        "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+        "/api/ai/admin/runtime/overview",
         headers=admin_headers(),
     )
 
@@ -2099,7 +1695,7 @@ def test_admin_runtime_overview_fails_closed_when_container_list_has_unexpected_
     client = TestClient(create_app(), raise_server_exceptions=False)
 
     response = client.get(
-        "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+        "/api/ai/admin/runtime/overview",
         headers=admin_headers(),
     )
 

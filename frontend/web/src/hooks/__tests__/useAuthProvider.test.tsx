@@ -1763,6 +1763,38 @@ test("real transport unmount aborts hydration without recovery or replay", async
   } finally { await mounted.cleanup(); }
 });
 
+for (const change of ["secondary", "unavailable"] as const) {
+  test(`session refresh publishes ${change} department authority even without the change hint`, async () => {
+    const mounted = await mountAuthTransportHarness();
+    const { refreshTokens } = await import("../../services/api/tokenManager.ts");
+    let scope = {
+      direct_department_ids: ["110", "120"], department_ids: ["100", "110", "120"],
+      department_authority_status: "available",
+    };
+    mounted.transport.refresh = async () => mounted.json({
+      principal: { ...(await mounted.principal().json()), ...scope },
+      authorization_changed: false,
+    });
+    let cacheClears = 0;
+    const unregister = registerAuthScopedCacheClearer(() => { cacheClears++; });
+    try {
+      await mounted.React.act(async () => { await refreshTokens(); });
+      cacheClears = 0;
+      const primary = mounted.auth.user?.department_id;
+      scope = change === "secondary"
+        ? { direct_department_ids: ["110", "130"], department_ids: ["100", "110", "130"], department_authority_status: "available" }
+        : { direct_department_ids: [], department_ids: [], department_authority_status: "unavailable" };
+      await mounted.React.act(async () => { await refreshTokens(); });
+      assert.equal(cacheClears, 1);
+      assert.equal(mounted.auth.user?.department_id, primary);
+      assert.deepEqual(mounted.auth.user?.direct_department_ids, scope.direct_department_ids);
+      assert.deepEqual(mounted.auth.user?.department_ids, scope.department_ids);
+      assert.equal(mounted.auth.user?.department_authority_status, scope.department_authority_status);
+      assert.deepEqual(mounted.events, []);
+    } finally { unregister(); await mounted.cleanup(); }
+  });
+}
+
 for (const authorizationChanged of [false, true]) {
   test("mounted provider " + (authorizationChanged ? "fences changed permissions" : "keeps owners during credential-only refresh"), async () => {
     const mounted = await mountAuthTransportHarness();
