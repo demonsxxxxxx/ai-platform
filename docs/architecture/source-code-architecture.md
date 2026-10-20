@@ -156,13 +156,13 @@ Result persistence rolls back artifacts, Skill snapshots, messages, and events
 when any terminal CAS loses authority. Worker interruption cleanup covers only
 its SDK placeholder lease, marks release after transaction commit, and leaves
 detached provider resources with the Sandbox reconciler.
-The four former `execution.api` imports `build_artifact_records`,
-`promote_artifact_reservations`, `PinnedSkillMismatch`, and
-`validate_pinned_skill_relative_path` remain identity-only compatibility exports
-for prior in-process import consumers; their implementations belong to
-`artifacts.api` and `skills.api`. Internal Worker callers have moved. Remove
-these exports only after a PR inventories external/runtime imports and verifies
-zero remaining use under the import-facade deletion proof.
+Artifact record construction and reservation promotion are imported from
+`artifacts.api`; pinned Skill mismatch and relative-path validation are imported
+from `skills.api`. The four former identity-only `execution.api` exports are
+retired after the repository-supported runtime and import inventory found no
+remaining consumer beyond the migrated compatibility test. Canonical owner
+contracts and public wire schemas are unchanged. No independently distributed
+Python SDK import contract is declared by this application package.
 
 Skill `SKILL.md` front matter is parsed through `skills.application` using a
 YAML loader in `skills.infrastructure`, wired by `bootstrap.skills`. The existing
@@ -185,6 +185,14 @@ new execution still writes ExecutionSpec v1 until the provider count gate and
 Context mode/coverage cutover are ready. General Harness
 chat and specialized Skills remain separate identities under
 [`../adr/0005-harness-chat-is-not-a-skill.md`](../adr/0005-harness-chat-is-not-a-skill.md).
+Sandbox terminal disposition and result-field projection belong to Execution's
+application layer, exposed through `execution.api`. The legacy Claude adapter
+retains provider authorization, capability-evidence validation, Skill evidence
+assembly, and artifact collection. It asks the application disposition before
+collecting artifacts and projects diagnostics only after successful collection;
+failed terminals never collect artifacts. This boundary does not own Run terminal
+transactions or Sandbox lease cleanup.
+
 The Agent Apps application, persistence, transaction, composition, and
 compatibility target is defined by
 [`agent-profile-persistence-boundary.md`](agent-profile-persistence-boundary.md).

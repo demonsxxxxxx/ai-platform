@@ -6021,3 +6021,89 @@ async def test_reconciler_collection_failure_preserves_primary_and_retry_authori
         degraded = [vars(record) for record in caplog.records if record.msg == "executor_reconciliation_diagnostics_unavailable"]
         assert len(degraded) == 2
         assert "private diagnostic transaction" not in repr(degraded)
+
+
+@pytest.mark.parametrize(
+    ("status", "capability_error", "response_error", "expected_status", "expected_error"),
+    [
+        ("completed", None, "ignored", "succeeded", None),
+        ("succeeded", None, "", "succeeded", None),
+        ("completed", "missing_evidence", "ignored", "failed", "missing_evidence"),
+        ("succeeded", "missing_evidence", "ignored", "failed", "missing_evidence"),
+        ("accepted", "missing_evidence", "ignored", "failed", "executor_missing_structured_terminal"),
+        ("cancelled", "missing_evidence", "", "failed", "executor_cancelled"),
+        ("canceled", None, "explicit_error", "failed", "explicit_error"),
+        ("failed", "missing_evidence", "explicit_error", "failed", "explicit_error"),
+        ("unknown", None, "", "failed", "executor_reported_failure"),
+    ],
+)
+def test_sandbox_terminal_projection_preserves_precedence_and_io_order(
+    monkeypatch, tmp_path, status, capability_error, response_error,
+    expected_status, expected_error,
+):
+    adapter = ClaudeAgentWorkerAdapter()
+    prepared = PreparedSdkRun(
+        workspace=tmp_path, file_names=[], selected_skills=[], pinned_manifests={},
+        allowed_skill_names=[], staged_skill_names=[], prompt="request",
+    )
+    calls = []
+    monkeypatch.setattr(claude_agent_worker, "_capability_execution_error", lambda *a, **k: capability_error)
+    monkeypatch.setattr(
+        claude_agent_worker, "validate_runtime_tool_evidence",
+        lambda *a, **k: types.SimpleNamespace(error_code=capability_error, private_payload=lambda: {}),
+    )
+
+    def collect(*args, **kwargs):
+        calls.append("artifacts")
+        return []
+
+    def diagnostics(*args, **kwargs):
+        calls.append("diagnostics")
+        assert kwargs["error_code"] == expected_error
+        return {"retryable": False}
+
+    monkeypatch.setattr(adapter, "_collect_workspace_artifacts", collect)
+    monkeypatch.setattr(claude_agent_worker, "_public_sdk_turn_diagnostics", diagnostics)
+    result = adapter._executor_result_from_sandbox_runtime(
+        sandbox_writing_payload(agent_id="general-agent", skill_id="general-chat"),
+        prepared,
+        types.SimpleNamespace(
+            status=status, provider="docker", timings={},
+            executor_response={"status": status, "error_code": response_error, "message": "done"},
+        ),
+    )
+    assert result.status == expected_status
+    assert result.result["sdk_error"] == expected_error
+    assert calls == (["artifacts", "diagnostics"] if expected_status == "succeeded" else ["diagnostics"])
+    assert result.executor_payload["runtime_terminal_status"] == status
+    if status in {"cancelled", "canceled"}:
+        assert result.result["message"] == "任务已取消"
+
+
+@pytest.mark.parametrize("failure", [RuntimeError("storage unavailable"), asyncio.CancelledError()])
+def test_sandbox_terminal_artifact_interruption_precedes_projection(monkeypatch, tmp_path, failure):
+    adapter = ClaudeAgentWorkerAdapter()
+    prepared = PreparedSdkRun(
+        workspace=tmp_path, file_names=[], selected_skills=[], pinned_manifests={},
+        allowed_skill_names=[], staged_skill_names=[], prompt="request",
+    )
+
+    def interrupted(*args, **kwargs):
+        raise failure
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("diagnostics cannot precede successful artifact collection")
+
+    monkeypatch.setattr(
+        claude_agent_worker, "validate_runtime_tool_evidence",
+        lambda *a, **k: types.SimpleNamespace(error_code=None, private_payload=lambda: {}),
+    )
+    monkeypatch.setattr(adapter, "_collect_workspace_artifacts", interrupted)
+    monkeypatch.setattr(claude_agent_worker, "_public_sdk_turn_diagnostics", forbidden)
+    with pytest.raises(type(failure)) as caught:
+        adapter._executor_result_from_sandbox_runtime(
+            sandbox_writing_payload(agent_id="general-agent", skill_id="general-chat"),
+            prepared,
+            types.SimpleNamespace(status="completed", provider="docker", timings={}, executor_response={}),
+        )
+    assert caught.value is failure
