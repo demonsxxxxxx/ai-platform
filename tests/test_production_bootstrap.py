@@ -1246,7 +1246,7 @@ def test_production_unit_is_distinctly_managed_and_uses_host_network_guard() -> 
     assert "KillMode=control-group" in unit
 
 
-def test_readme_runbook_and_examples_expose_the_production_package() -> None:
+def test_readme_keeps_production_host_preparation_separate_from_current_package() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     runbook = (ROOT / "docs/operations/release-operations-runbook.md").read_text(
         encoding="utf-8"
@@ -1263,7 +1263,9 @@ def test_readme_runbook_and_examples_expose_the_production_package() -> None:
 
     command = "python3 deploy.py"
     assert command in readme and command in runbook and command in production
-    assert "ai-platform-production.tar.gz" in readme
+    assert "ai-platform-internal-test.tar.gz" in readme
+    assert "deploy/ai-platform/README.md" in readme
+    assert "docs/operations/production-bootstrap.md" in readme
     assert "/absolute/path/to/operator.env" in production
     assert "root:<OPENSANDBOX_SERVER_GID> 0640" in production
     assert "application package" in production

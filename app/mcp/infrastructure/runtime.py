@@ -167,7 +167,11 @@ class McpPrincipalJwtStore:
         """Bind an execution transport to the granting context and subject revision."""
         binding = McpContextPrincipal.from_principal(principal)
         record = await self._read_record(binding)
-        subject: dict[str, Any] = {"tenant_id": binding.tenant_id, "user_id": binding.user_id}
+        return self._credential_subject(record)
+
+    @staticmethod
+    def _credential_subject(record: _PrincipalJwtRecord) -> dict[str, Any]:
+        subject: dict[str, Any] = {"tenant_id": record.tenant_id, "user_id": record.user_id}
         if record.refresh_cookie:
             subject.update(
                 grant_id=hashlib.sha256(record.refresh_cookie.encode("utf-8")).hexdigest(),
@@ -194,6 +198,14 @@ class McpPrincipalJwtStore:
             raise McpRuntimeContextError("mcp_principal_jwt_missing", status_code=401)
 
     async def get(self, principal: McpPrincipal) -> str:
+        return (await self._validated_record(principal)).jwt
+
+    async def get_with_subject(self, principal: McpPrincipal) -> tuple[str, dict[str, Any]]:
+        """Return a credential and its execution binding from one validated snapshot."""
+        record = await self._validated_record(principal)
+        return record.jwt, self._credential_subject(record)
+
+    async def _validated_record(self, principal: McpPrincipal) -> _PrincipalJwtRecord:
         binding = McpContextPrincipal.from_principal(principal)
         record = await self._read_record(binding)
         self._assert_execution_subject(principal, record)
@@ -236,7 +248,7 @@ class McpPrincipalJwtStore:
             raise McpRuntimeContextError("mcp_principal_jwt_corrupt", status_code=503) from exc
         if int(payload["exp"]) != record.jwt_exp:
             raise McpRuntimeContextError("mcp_principal_jwt_corrupt", status_code=503)
-        return record.jwt
+        return record
 
 
 
@@ -309,7 +321,7 @@ async def attach_mcp_server_configs(
     jwt: str | None = None
     if configs:
         try:
-            jwt = await get_mcp_principal_jwt_store().get(principal)
+            jwt, credential_subject = await get_mcp_principal_jwt_store().get_with_subject(principal)
         except McpRuntimeContextError as exc:
             # External MCP credentials are optional run capabilities. Missing,
             # expired, or temporarily unavailable principal credentials remove
@@ -322,7 +334,6 @@ async def attach_mcp_server_configs(
                 raise
             configs.clear()
     if jwt:
-        credential_subject = await get_mcp_principal_jwt_store().credential_subject(principal)
         for config in configs.values():
             config["headers"][mcp_user_jwt_header(config["integration_kind"])] = f"Bearer {jwt}"
             config["credential_subject"] = credential_subject

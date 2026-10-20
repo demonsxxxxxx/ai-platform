@@ -19,6 +19,7 @@ test("drops a ProfileDrive path into the Composer without treating it as a local
       import("../ChatInput"),
       import("../../../hooks/useAuth"),
     ]);
+  const { AssistantUiTestProvider } = await import("../assistant-ui/__tests__/assistantUiTestProvider");
   const container = dom.window.document.getElementById("root");
   assert.ok(container);
   const root = await createLobeTestRoot(container);
@@ -30,7 +31,7 @@ test("drops a ProfileDrive path into the Composer without treating it as a local
         createElement(
           AuthProvider,
           null,
-          createElement(ChatInput, {
+          createElement(AssistantUiTestProvider, null, createElement(ChatInput, {
             onSend: async () => ({ status: "accepted" as const }),
             onStop: async () => "unavailable" as const,
             isLoading: false,
@@ -46,7 +47,7 @@ test("drops a ProfileDrive path into the Composer without treating it as a local
             onProfileDriveFileDrop: async (reference) => {
               droppedPaths.push(reference);
             },
-          }),
+          })),
         ),
       );
       await flush();

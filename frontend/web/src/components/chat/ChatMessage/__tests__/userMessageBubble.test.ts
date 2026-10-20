@@ -21,10 +21,10 @@ test("hides older user message action buttons until hover", () => {
   assert.equal(className.includes("group-hover:opacity-100"), true);
 });
 
-test("uses AttachmentCard resolved blob src before opening user image previews", () => {
+test("uses the official message attachment presentation for authorized previews", () => {
   const source = readSource("../UserMessageBubble.tsx");
 
-  assert.match(source, /previewSrc/);
+  assert.match(source, /MessageAttachments/);
   assert.doesNotMatch(source, /resolveSafeAttachmentImageSrc/);
   assert.doesNotMatch(source, /getFullUrl\(attachment\.url\)/);
 });
@@ -38,8 +38,8 @@ test("renders the locked Skill label separately from user-authored message conte
   assert.ok(lockedLabelBlock);
   assert.match(lockedLabelBlock[0], /chat\.message\.lockedSkill/);
   assert.doesNotMatch(lockedLabelBlock[0], /MarkdownContent|content=/);
-  assert.match(source, /<MarkdownContent content=\{content!\} \/>/);
-  assert.doesNotMatch(source, /`\/skill|"\/skill|'\/skill/);
+  assert.match(source, /MessagePrimitive\.Parts/);
+  assert.match(source, /AssistantUiMarkdownText/);
 });
 
 test("accepts a locked Skill label only from the server-projected history event", () => {

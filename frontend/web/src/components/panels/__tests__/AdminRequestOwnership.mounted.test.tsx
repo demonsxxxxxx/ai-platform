@@ -147,7 +147,7 @@ test("ACL latest refresh owns list and unmounted save cannot alter replacement e
 });
 
 test("open department choices become disabled during save", async () => {
-  let changes = 0; const props = { directory: [{ authorityId: "d", directoryId: "1", name: "d", path: "d", children: [], reason: null, selectable: true }], loadError: null, selectedAuthorityIds: [], onChange: () => { changes++; } };
+  let changes = 0; const props = { directory: [{ authorityId: "1", directoryId: "1", name: "d", path: "d", children: [], reason: null, selectable: true }], loadError: null, selectedAuthorityIds: [], onChange: () => { changes++; } };
   const view = await harness(createElement(DepartmentDirectorySelector, props));
   try {
     await click(view.container.querySelector('button[aria-haspopup="listbox"]')!);
@@ -163,7 +163,7 @@ test("department Escape closes only its popup without changing selection", async
   const view = await harness(createElement("div", {
     onKeyDown: (event: { key: string }) => { if (event.key === "Escape") hostEscapes++; },
   }, createElement(DepartmentDirectorySelector, {
-    directory: [{ authorityId: "d", directoryId: "1", name: "d", path: "d", children: [], reason: null, selectable: true }],
+    directory: [{ authorityId: "1", directoryId: "1", name: "d", path: "d", children: [], reason: null, selectable: true }],
     loadError: null, selectedAuthorityIds: [], onChange: () => { changes++; },
   })));
   try {

@@ -140,6 +140,7 @@ async def admit_skill_run(
     rollout_key: str,
     expected_version: str | None = None,
     department_id: str = "",
+    department_ids: tuple[str, ...] = (),
     roles: list[str] | None = None,
     permissions: list[str] | None = None,
 ) -> SkillRunAdmission:
@@ -154,7 +155,7 @@ async def admit_skill_run(
         tenant_id=tenant_id,
         rollout_key=rollout_key,
         expected_version=expected_version,
-        department_id=department_id, roles=roles, permissions=permissions,
+        department_id=department_id, department_ids=department_ids, roles=roles, permissions=permissions,
     )
 
 
@@ -166,6 +167,7 @@ async def admit_skill_set(
     tenant_id: str,
     rollout_key: str,
     department_id: str = "",
+    department_ids: tuple[str, ...] = (),
     roles: list[str] | None = None,
     permissions: list[str] | None = None,
 ) -> list[SkillRunAdmission]:
@@ -175,7 +177,7 @@ async def admit_skill_set(
     return await _skill_run_admission_service.admit_set(
         conn,
         roots=roots,
-        department_id=department_id, roles=roles, permissions=permissions,
+        department_id=department_id, department_ids=department_ids, roles=roles, permissions=permissions,
         input_payload=input_payload,
         tenant_id=tenant_id,
         rollout_key=rollout_key,

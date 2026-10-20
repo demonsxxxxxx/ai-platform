@@ -30,6 +30,14 @@ def test_platform_roots_and_parent_workspace_remain_private(path):
     assert not workspace_collection_file_allowed(path)
 
 
+def test_tmp_scratch_files_are_readable_but_stay_private_and_uncollectible():
+    scratch = ".tmp/work/formulation.txt"
+    assert workspace_read_allowed(scratch)
+    assert not workspace_mutation_allowed(scratch)
+    assert not workspace_collection_file_allowed(scratch)
+    assert not workspace_delivery_file_allowed(scratch)
+
+
 @pytest.mark.parametrize("pattern", ["**/*.{py,md}", "reports/result[0-9]?.txt", "outputs/logs/*.txt"])
 def test_sdk_accepts_scoped_native_glob_syntax(tmp_path, pattern):
     assert _workspace_path_parameters_authorized(

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from app.db import transaction
+from app.mcp.api import MCP_CREDENTIAL_SUBJECTS_LEASE_KEY, mcp_credential_subjects_for_lease
 from app.execution_boundary import (
     REAL_SANDBOX_PROVIDERS,
     governed_egress_authorized_native_tool_scope,
@@ -300,6 +301,11 @@ class SandboxRuntime:
             "workspace_container_path": runtime_workspace_container_path,
             "labels": persisted_labels,
         }
+        credential_subjects = mcp_credential_subjects_for_lease(
+            request.tool_policy_subjects, tenant_id=lease.tenant_id, user_id=lease.user_id,
+        )
+        if credential_subjects:
+            lease_payload[MCP_CREDENTIAL_SUBJECTS_LEASE_KEY] = credential_subjects
         if any(
             isinstance(subject, dict)
             and subject.get("identity") == PROFILE_DRIVE_STAGE_IDENTITY

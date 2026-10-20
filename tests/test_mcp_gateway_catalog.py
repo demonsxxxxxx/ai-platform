@@ -94,10 +94,8 @@ async def test_enterprise_runtime_and_sdk_options_preserve_user_header_mode(monk
     async def target(*_args, **_kwargs):
         return {"transport": "streamable_http", "integration_kind": "enterprise_gateway", "credential_envelope": "sealed"}
     class Store:
-        async def get(self, principal):
-            return f"{principal.user_id}.synthetic.jwt"
-        async def credential_subject(self, principal):
-            return {"tenant_id": principal.tenant_id, "user_id": principal.user_id}
+        async def get_with_subject(self, principal):
+            return f"{principal.user_id}.synthetic.jwt", {"tenant_id": principal.tenant_id, "user_id": principal.user_id}
     monkeypatch.setattr(runtime.mcp_postgres, "get_mcp_server_runtime_target", target)
     monkeypatch.setattr(runtime, "open_mcp_server_credentials", lambda **_kwargs: ("https://gateway.example/", {}))
     monkeypatch.setattr(runtime, "get_mcp_principal_jwt_store", lambda: Store())

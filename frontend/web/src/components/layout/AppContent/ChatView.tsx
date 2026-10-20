@@ -13,12 +13,14 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 import { ListTree } from "lucide-react";
-import { ThreadPrimitive } from "@assistant-ui/react";
+import { ThreadPrimitive, type ExternalStoreThreadListAdapter } from "@assistant-ui/react";
 import { toast } from "@lobehub/ui/base-ui";
 import { useAuth } from "../../../hooks/useAuth";
 import { ChatMessage } from "../../chat/ChatMessage";
 import { AssistantUiProjection } from "../../chat/assistant-ui/AssistantUiProjection";
-import { AssistantUiMessageFrame } from "../../chat/assistant-ui/MessageFrame";
+import { FollowUpSuggestionsGate } from "../../chat/assistant-ui/FollowUpSuggestionsGate";
+import { useFollowUpSuggestions } from "../../chat/assistant-ui/useFollowUpSuggestions";
+import { ThreadMessage } from "../../chat/assistant-ui/elements/thread";
 import { AttachmentPreviewHost } from "../../chat/AttachmentPreviewHost";
 import { RevealPreviewHost } from "../../chat/ChatMessage/items/RevealPreviewHost";
 import { SessionImageGalleryProvider } from "../../chat/ChatMessage/sessionImageGallery";
@@ -144,7 +146,7 @@ const AssistantUiMessageContentContext = createContext<ReactNode>(null);
 
 function AssistantUiProjectedMessage() {
   const content = useContext(AssistantUiMessageContentContext);
-  return <AssistantUiMessageFrame>{content}</AssistantUiMessageFrame>;
+  return <ThreadMessage>{content}</ThreadMessage>;
 }
 
 const ASSISTANT_UI_MESSAGE_COMPONENTS = {
@@ -153,6 +155,7 @@ const ASSISTANT_UI_MESSAGE_COMPONENTS = {
 
 interface ChatViewProps {
   messages: Message[];
+  threadListAdapter?: ExternalStoreThreadListAdapter;
   sessionId: string | null;
   conversationIdentityKey: string;
   currentRunId: string | null;
@@ -225,6 +228,7 @@ interface ChatViewProps {
 
 export function ChatView({
   messages,
+  threadListAdapter,
   sessionId,
   conversationIdentityKey,
   currentRunId,
@@ -282,6 +286,8 @@ export function ChatView({
 }: ChatViewProps) {
   const { t } = useTranslation();
   const { user } = useAuth();
+  // One scope for account changes: a different principal can never inherit these receipts.
+  const authScopeKey = `${user?.tenant_id ?? ""}:${user?.id ?? ""}`;
   const artifactDownloadScopeContext = useMemo(
     () =>
       createArtifactDownloadScopeContext({
@@ -303,12 +309,6 @@ export function ChatView({
     selectedSkillRevision: 0,
     pendingScopeHandoff: false,
   });
-  const setComposerInput = useCallback((value: string) => {
-    const snapshot = composerDraftSnapshotRef.current;
-    snapshot.revision += 1;
-    snapshot.value = value;
-    snapshot.apply?.(value);
-  }, []);
   const [workspaceProjection, setWorkspaceProjection] =
     useState<SessionWorkspaceProjection>({
       session_id: null,
@@ -469,6 +469,13 @@ export function ChatView({
         visibleWorkspaceProjection.inputFiles,
       ),
     [messages, visibleWorkspaceProjection.inputFiles],
+  );
+
+  const followUpSuggestions = useFollowUpSuggestions(
+    authScopeKey,
+    sessionId,
+    displayMessages,
+    canSendInCurrentView && !sessionRunning,
   );
 
   const getActiveOutlineId = useCallback(
@@ -882,7 +889,7 @@ export function ChatView({
   );
 
   const virtuosoItemContent = useCallback(
-    (index: number, message: (typeof messages)[number]) => (
+    (_index: number, message: (typeof messages)[number]) => (
       <AssistantUiMessageContentContext.Provider
         value={
           <div
@@ -891,9 +898,7 @@ export function ChatView({
             data-browser-session-id={sessionId ?? undefined}
           >
             <ChatMessage
-              message={message}
               artifactDownloadScopeContext={artifactDownloadScopeContext}
-              isLastMessage={index === messages.length - 1}
               onOpenPreview={handleOpenPreview}
             />
           </div>
@@ -908,7 +913,6 @@ export function ChatView({
     [
       artifactDownloadScopeContext,
       sessionId,
-      messages.length,
       handleOpenPreview,
     ],
   );
@@ -919,6 +923,7 @@ export function ChatView({
     initialDraftKey: initialComposerDraftKey,
     draftSnapshotRef: composerDraftSnapshotRef,
     draftScopeKey: sessionId,
+    runControlKey: currentRunId,
     attachmentScopeKey: conversationIdentityKey,
     draftScopeHandoffKey: composerDraftHandoffKey,
     onSend: onSendMessage,
@@ -1088,15 +1093,15 @@ export function ChatView({
             可以直接开始的任务
           </p>
           {agentEmptyProfile.starter_prompts.map((prompt) => (
-            <Button type="text"
-              className="min-w-0 rounded-md border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 py-2 text-left text-sm text-[var(--theme-text)] hover:border-[var(--theme-primary)]"
-              key={prompt}
-              disabled={!canSendInCurrentView || isLoading}
-              onClick={() => setComposerInput(prompt)}
-              htmlType="button"
-            >
-              {prompt}
-            </Button>
+            <ThreadPrimitive.Suggestion key={prompt} prompt={prompt} send={false} asChild>
+              <Button type="default"
+                style={{ height: "auto", padding: "8px 12px", textAlign: "left", whiteSpace: "normal" }}
+                disabled={!canSendInCurrentView || isLoading}
+                htmlType="button"
+              >
+                {prompt}
+              </Button>
+            </ThreadPrimitive.Suggestion>
           ))}
         </div>
       ) : null}
@@ -1109,6 +1114,7 @@ export function ChatView({
         </div>
       ) : null}
       {runInputs ? <RunInputHistory runInputs={runInputs} canSend={canSendInCurrentView} /> : null}
+      <FollowUpSuggestionsGate />
       <ChatInput
         {...chatInputProps}
         className="mx-auto max-w-[68rem] px-2"
@@ -1118,9 +1124,11 @@ export function ChatView({
 
   return (
     <AssistantUiProjection
-      messages={messages}
+      threadListAdapter={threadListAdapter}
+      messages={displayMessages}
       isRunning={sessionRunning}
       actions={assistantUiActions}
+      suggestions={followUpSuggestions}
     >
       <SessionImageGalleryProvider messages={displayMessages}>
       <WorkbenchShellComponent
@@ -1148,24 +1156,28 @@ export function ChatView({
                 data-workbench-empty-state="agent-chat"
               >
                 <section className="chat-start-surface flex w-full max-w-[56rem] flex-col items-center gap-5">
-                  <div className="max-w-2xl text-center">
-                    <span className="inline-flex">
-                      <AgentIdentityAvatar
-                        agentId={agentEmptyProfile.agent_id}
-                        avatarRef={agentEmptyProfile.avatar_ref}
-                        avatarSeed={agentEmptyProfile.avatar_seed}
-                        name={agentEmptyProfile.name}
-                        size="md"
-                      />
-                    </span>
-                    <h1 className="mt-3 text-2xl font-semibold text-[var(--theme-text)]">
-                      {agentEmptyProfile.name}
-                    </h1>
-                    {agentEmptyProfile.description ? (
-                      <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-[var(--theme-text-secondary)]">
-                        {agentEmptyProfile.description}
-                      </p>
-                    ) : null}
+                  {/* The published description is the opening text; it is not a runtime message. */}
+                  <div className="flex w-full items-start gap-3 px-2" data-agent-opening>
+                    <AgentIdentityAvatar
+                      agentId={agentEmptyProfile.agent_id}
+                      avatarRef={agentEmptyProfile.avatar_ref}
+                      avatarSeed={agentEmptyProfile.avatar_seed}
+                      name={agentEmptyProfile.name}
+                      size="md"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <h1 className="break-words text-lg font-semibold text-[var(--theme-text)]">
+                        {agentEmptyProfile.name}
+                      </h1>
+                      {agentEmptyProfile.description ? (
+                        <p
+                          className="mt-2 max-w-[42rem] whitespace-pre-wrap break-words text-[15px] leading-7 text-[var(--theme-text)]"
+                          data-agent-opening-message
+                        >
+                          {agentEmptyProfile.description}
+                        </p>
+                      ) : null}
+                    </div>
                   </div>
                   <div className="w-full">{composer}</div>
                 </section>
