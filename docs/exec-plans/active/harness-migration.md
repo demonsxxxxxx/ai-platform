@@ -265,7 +265,7 @@ T9 的自动坏链接反例与作者触发修复在 B2 候选中已落实；T10 
 
 ### 5.6 2026-10-19 当前实现与验收缺口
 
-- 完整库存已更新为候选 346 个 Python 测试文件。所有文件在既有 Linux 分片、Agent/Skill 或前端 Python 合同中各有一个完整文件 owner；Windows 平台节点另行补充。库存缺失、重复或只选择部分 node 会被 workflow 回归拒绝。新 CI 尚未在 GitHub 执行。
+- 2026-10-20 同步 main 后，候选库存为 348 个 Python 测试文件。所有文件在既有 Linux 分片、Agent/Skill 或前端 Python 合同中各有一个完整文件 owner；Windows 平台节点另行补充。库存缺失、重复或只选择部分 node 会被 workflow 回归拒绝。PR #1850 的 CI 已启动，完整结果待实际验收。
 - f853 app 源码的完整 Linux 选择范围已执行，结果与 owner 覆盖率见 [当前测量](../../QUALITY_SCORE.md#2026-10-19-full-linux-selection-observation)。12 个平台/真实 Sandbox 跳过仍逐项处置；原始失败已通过同输入 fixture/tool 修复重跑，不能当作 untouched-main 全绿。
 - T1 已按 f853 的实际文件规模采用新生产代码文件 800 行上限；现有冻结文件不增长和受信 authority 保持。T2 已实现差异范围内可识别标准 logger 的窄结构化检测，保留未改日志及既有安全适配器；不是全仓日志格式迁移。两者的正反例及既有治理测试已通过；使用最终 Windows runner 的 architecture/code/source-authority 合组为 219 passed、0 skipped。
 - 版本化 hooks 已交付精确 staged/pushed 快照检查，测试在临时仓库执行；无全局或原工作区 Git 配置修改。Windows 深临时路径问题经最小用例 red→green 修复，完整 runner 回归及 Foundation 用例通过。

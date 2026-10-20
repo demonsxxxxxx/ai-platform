@@ -325,8 +325,9 @@ the existing deployment is internal-test/bridge, and the isolated privileged
 test-environment request was cancelled. The union is an observation of the
 available runs, not a completed required no-skip baseline or an adopted floor.
 
-The candidate now has 346 test files, each with one complete-file CI owner; Windows
-platform nodes are additional coverage. Its first Linux execution reported
+After the 2026-10-20 main sync, the candidate has 348 test files, each with one
+complete-file CI owner; Windows platform nodes are additional coverage. The earlier
+346-file candidate's first Linux execution reported
 **10,632 passed, 58 failed, 12 skipped**. The identified fixture/caller and hook
 repairs have local owning checks, but candidate Linux full-suite verification has
 not been repeated after those changes. Updating the remote test directory hit an
