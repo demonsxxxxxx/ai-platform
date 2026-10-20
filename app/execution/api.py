@@ -1,3 +1,8 @@
+from app.execution.domain.token_metrics import (
+    mapped_token_count as mapped_token_count,
+    sum_token_counts as sum_token_counts,
+    token_count as token_count,
+)
 from app.artifacts.api import (
     build_artifact_records as build_artifact_records,
     promote_artifact_reservations as promote_artifact_reservations,
@@ -132,6 +137,9 @@ async def resolve_chat_model_selection(
     )
 
 __all__ = [
+    "mapped_token_count",
+    "sum_token_counts",
+    "token_count",
     "ModelTextCheckpoint",
     "WorkerExecutorResult",
     "WorkerBoundRunPayload",

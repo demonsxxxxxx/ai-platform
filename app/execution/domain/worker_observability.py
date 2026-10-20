@@ -4,6 +4,8 @@ from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal, DecimalException
 from typing import Any
 
+from app.execution.domain.token_metrics import mapped_token_count, sum_token_counts, token_count
+
 
 def _int_payload_value(payload: dict[str, Any], key: str, default: int = 0) -> int:
     try:
@@ -43,13 +45,15 @@ def _sdk_usage_observability(executor_payload: dict[str, Any]) -> dict[str, Any]
     usage = executor_payload.get("sdk_usage")
     if not isinstance(usage, dict):
         usage = {}
-    input_tokens = _int_mapping_value(usage, "input_tokens", "input")
-    input_tokens += _int_mapping_value(usage, "cache_creation_input_tokens")
-    input_tokens += _int_mapping_value(usage, "cache_read_input_tokens")
-    output_tokens = _int_mapping_value(usage, "output_tokens", "output")
-    total_tokens = _int_mapping_value(usage, "total_tokens", "total")
-    if total_tokens <= 0:
-        total_tokens = input_tokens + output_tokens
+    input_tokens = sum_token_counts(
+        mapped_token_count(usage, "input_tokens", "input"),
+        mapped_token_count(usage, "cache_creation_input_tokens"),
+        mapped_token_count(usage, "cache_read_input_tokens"),
+    )
+    output_tokens = mapped_token_count(usage, "output_tokens", "output")
+    total_tokens = mapped_token_count(usage, "total_tokens", "total")
+    if total_tokens == 0:
+        total_tokens = sum_token_counts(input_tokens, output_tokens)
     coverage = usage.get("cost_coverage")
     # New producers explicitly distinguish incomplete cumulative observations.
     # Historical carriers without this marker retain their existing reader.
@@ -76,9 +80,9 @@ def _has_sdk_observability(executor_payload: dict[str, Any]) -> bool:
     sdk_observability = _sdk_usage_observability(executor_payload)
     token_counts = sdk_observability["token_counts"]
     return (
-        token_counts["input"] > 0
-        or token_counts["output"] > 0
-        or token_counts["total"] > 0
+        (token_counts["input"] or 0) > 0
+        or (token_counts["output"] or 0) > 0
+        or (token_counts["total"] or 0) > 0
         or (sdk_observability["cost"]["estimated_cost_minor"] or 0) > 0
     )
 
@@ -102,18 +106,29 @@ def executor_observability(
 ) -> dict[str, Any]:
     sdk_observability = _sdk_usage_observability(executor_payload)
     sdk_token_counts = sdk_observability["token_counts"]
-    input_tokens = _int_payload_value(executor_payload, "input_token_count", sdk_token_counts["input"])
-    output_tokens = _int_payload_value(executor_payload, "output_token_count", sdk_token_counts["output"])
-    total_default = sdk_token_counts["total"] or (input_tokens + output_tokens)
-    total_tokens = _int_payload_value(executor_payload, "total_token_count", total_default)
+    def projected_count(key: str, default: int | None) -> int | None:
+        value = executor_payload.get(key)
+        # Preserve historical missing/zero fallback, but reject bool explicitly.
+        if value is None or (not isinstance(value, bool) and value == 0):
+            return default
+        return token_count(value)
+
+    input_tokens = projected_count("input_token_count", sdk_token_counts["input"])
+    output_tokens = projected_count("output_token_count", sdk_token_counts["output"])
+    total_default = sdk_token_counts["total"]
+    if total_default == 0:
+        total_default = sum_token_counts(input_tokens, output_tokens)
+    total_tokens = projected_count("total_token_count", total_default)
+    if None in (input_tokens, output_tokens, total_tokens):
+        input_tokens = output_tokens = total_tokens = 0
     return {
         **({"runtime_private_payload": sdk_observability["runtime_private_payload"]}
            if "runtime_private_payload" in sdk_observability else {}),
         "latency_ms": latency_ms,
         "token_counts": {
-            "input": input_tokens,
-            "output": output_tokens,
-            "total": total_tokens,
+            "input": input_tokens or 0,
+            "output": output_tokens or 0,
+            "total": total_tokens or 0,
         },
         "cost": {
             "estimated_cost_minor": sdk_observability["cost"]["estimated_cost_minor"]
