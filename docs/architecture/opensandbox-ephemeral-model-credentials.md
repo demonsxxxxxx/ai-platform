@@ -296,13 +296,15 @@ work IDs are excluded. Exact duplicate identities collapse; conflicting
 work-ID identities or one DingTalk user ID mapped to multiple work IDs are
 excluded. Server-side literal name/work-ID search and pagination (100 per page,
 50,000 records, 16 MiB response bound) cover the whole upstream response.
-Before deploying employee selection, explicitly set the existing
-`DINGTALK_DEPARTMENT_AUTHORITY_BASE_URL` to the company's DingTalkAPI origin
-(the same service serving `/api/DingTalk/getUserDetail`). The adapter reuses
-`DINGTALK_DEPARTMENT_AUTHORITY_TIMEOUT_SECONDS` (default 5 seconds, maximum 30).
-An empty base URL returns 503: there is no implicit host or local-user fallback.
-This requirement does not change the older department-directory fallback or AD
-login configuration. Confirm directory availability before enabling new grants.
+Employee selection reuses the existing department directory's address resolution:
+an empty `DINGTALK_DEPARTMENT_AUTHORITY_BASE_URL` uses the existing company
+DingTalkAPI origin `http://10.56.0.25:5033`; a configured value overrides that
+origin for both read-only directories. No additional deployment configuration is
+required. The adapter reuses `DINGTALK_DEPARTMENT_AUTHORITY_TIMEOUT_SECONDS`
+(default 5 seconds, maximum 30). Directory failures still return 503 with no
+local-user fallback. AD login and department-membership authority retain their
+existing configuration and fail-closed behavior; their scope is not expanded
+by the read-only directory default.
 
 Malformed/oversized responses and upstream failures return a safe 503; private
 phone/email/union ID fields are never projected or logged.

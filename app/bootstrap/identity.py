@@ -10,7 +10,7 @@ from app.capability_distribution import (
 )
 from app.control_plane_contracts import sanitize_public_text
 from app.db import transaction
-from app.settings import get_settings
+from app.settings import get_settings, resolve_dingtalk_directory_base_url
 from app.identity.infrastructure.dingtalk_employees import fetch_dingtalk_employees
 from app.identity.transport.company_employees import build_company_employees_router
 from app.identity.api import (
@@ -73,7 +73,7 @@ def build_company_employee_directory() -> CompanyEmployeeDirectoryService:
 
     async def read_employees():
         return await fetch_dingtalk_employees(
-            base_url=settings.dingtalk_department_authority_base_url,
+            base_url=resolve_dingtalk_directory_base_url(settings.dingtalk_department_authority_base_url),
             timeout_seconds=settings.dingtalk_department_authority_timeout_seconds,
         )
 

@@ -17,7 +17,9 @@ reads the company DingTalk employee directory for administrator model access
 selection, projects only employee work ID and name, and validates new grants
 against that same source. The historical model `allowed_user_ids` values are
 company work IDs matching `AuthPrincipal.user_id`; DingTalk user IDs and department
-IDs are never substituted. Directory reads use the fixed deployment scope and
+IDs are never substituted. Employee selection shares the existing read-only
+department directory's default origin and optional address override; it requires
+no separate configuration. Directory reads use the fixed deployment scope and
 fail closed without falling back to local users. The [model access contract](opensandbox-ephemeral-model-credentials.md#per-model-user-access)
 owns eligibility, ambiguity handling, bounds and compatibility.
 

@@ -159,18 +159,65 @@ def test_transport_unavailable_is_retryable_503():
 
 
 @pytest.mark.asyncio
-async def test_bootstrap_empty_directory_base_fails_closed_without_http(monkeypatch):
+@pytest.mark.parametrize(("configured_base", "expected_base"), [
+    ("", "http://10.56.0.25:5033"),
+    ("https://directory.example/", "https://directory.example"),
+])
+async def test_bootstrap_reuses_department_directory_origin_for_listing_and_grants(
+    monkeypatch, configured_base, expected_base,
+):
+    from app.bootstrap import identity
+    from app import department_directory
+
+    monkeypatch.setattr(identity, "get_settings", lambda: SimpleNamespace(
+        default_tenant_id="default", dingtalk_department_authority_base_url=configured_base,
+        dingtalk_department_authority_timeout_seconds=5,
+    ))
+    original = httpx.AsyncClient
+    requested = []
+
+    def handler(request):
+        requested.append(str(request.url))
+        if request.url.path == "/api/DingTalk/getUserDetail":
+            return httpx.Response(200, json=[employee()])
+        assert request.url.path == "/api/DingTalk/departs/pure"
+        return httpx.Response(200, json=[])
+
+    def client(**kwargs):
+        assert kwargs == {"timeout": 5, "trust_env": False, "follow_redirects": False}
+        return original(**kwargs, transport=httpx.MockTransport(handler))
+
+    monkeypatch.setattr(adapter.httpx, "AsyncClient", client)
+    service = identity.build_company_employee_directory()
+    assert (await service.list_employees(tenant_id="default"))["employees"] == [
+        {"work_id": "E001", "display_name": "Employee E001"},
+    ]
+    await service.validate_grants(tenant_id="default", work_ids={"E001"})
+    assert (await department_directory.fetch_department_directory(base_url=configured_base)).departments == []
+    assert requested == [
+        f"{expected_base}/api/DingTalk/getUserDetail",
+        f"{expected_base}/api/DingTalk/getUserDetail",
+        f"{expected_base}/api/DingTalk/departs/pure",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_default_directory_outage_still_fails_closed_without_local_users(monkeypatch):
     from app.bootstrap import identity
 
     monkeypatch.setattr(identity, "get_settings", lambda: SimpleNamespace(
         default_tenant_id="default", dingtalk_department_authority_base_url="",
         dingtalk_department_authority_timeout_seconds=5,
     ))
+    original = httpx.AsyncClient
 
-    def no_http(**_kwargs):
-        raise AssertionError("empty configuration must not guess a directory host")
+    def handler(request):
+        assert str(request.url) == "http://10.56.0.25:5033/api/DingTalk/getUserDetail"
+        return httpx.Response(503, text="private upstream failure")
 
-    monkeypatch.setattr(adapter.httpx, "AsyncClient", no_http)
+    monkeypatch.setattr(adapter.httpx, "AsyncClient", lambda **kwargs: original(
+        **kwargs, transport=httpx.MockTransport(handler),
+    ))
     service = identity.build_company_employee_directory()
     with pytest.raises(CompanyEmployeeDirectoryUnavailable):
         await service.list_employees(tenant_id="default")
