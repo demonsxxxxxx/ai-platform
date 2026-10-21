@@ -12,8 +12,7 @@ from app.identity.infrastructure import audit_postgres as identity_audit
 from app.models import RunControlResponse
 from app.platform.postgres import errors as platform_errors
 from app.platform.postgres import values as platform_values
-from app.queue import get_queue_insight, get_run_queue_position, remove_queued_run
-from app.bootstrap.sandbox_cleanup import build_sandbox_runtime_cleanup
+from app.queue import get_queue_insight, get_run_queue_position
 from app.sandbox.api import SandboxRuntimeCleanupError, SandboxCleanupPersistenceError
 from app.runs.api import (
     ADMIN_DIAGNOSTIC_EXPORT_SCHEMA_VERSION,
@@ -22,6 +21,7 @@ from app.runs.api import (
     AdminRunDetailResponse,
     AdminRunDiagnosticsResponse,
     AdminRunListResponse,
+    RunCancellationQueueCleanupError,
     RunCancellationUseCase,
     RunDiagnosticsService,
     build_admin_diagnostic_export,
@@ -30,17 +30,9 @@ from app.runs.api import (
 )
 from app.runs.infrastructure import admin_queries_postgres as runs_admin_queries
 from app.runs.infrastructure import postgres as runs_postgres
-from app.runtime.sandbox.container_provider import create_container_provider
-from app.streaming.api import (
-    V4_METADATA_KEY,
-    V4PublicationTransportUnavailable,
-    admit_v4_stream,
-    publish_run_event,
-)
+from app.streaming.api import V4_METADATA_KEY
 from app.streaming.infrastructure import run_events_postgres as streaming_run_events
 from app.validation import assert_safe_id
-
-_sandbox_cleanup = build_sandbox_runtime_cleanup()
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -61,21 +53,6 @@ def _require_run_diagnostics_service(request: Request) -> RunDiagnosticsService:
 
 
 QUEUE_VISIBLE_STATUSES = {"queued", "running"}
-
-
-async def _remove_cancelled_queue_payloads(
-    *,
-    tenant_id: str,
-    run_id: str,
-    result: dict[str, Any],
-) -> list[Exception]:
-    failures: list[Exception] = []
-    if result["status"] == "cancelled":
-        try:
-            await remove_queued_run(tenant_id=tenant_id, run_id=run_id)
-        except Exception as exc:
-            failures.append(exc)
-    return failures
 
 
 async def attach_live_queue_context(run: dict, *, tenant_id: str, queue_insight: dict | None = None) -> dict:
@@ -199,68 +176,29 @@ async def admin_run_cancel(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     runtime = request.app.state.run_stream_runtime
-    cancellation = await _require_run_cancellation_use_case(request).request_admin_cancel(
+    use_case = _require_run_cancellation_use_case(request)
+    cancellation = await use_case.request_admin_cancel(
         tenant_id=principal.tenant_id,
         admin_user_id=principal.user_id,
         run_id=run_id,
     )
-    if cancellation is not None and cancellation.attempt_id:
-        try:
-            await admit_v4_stream(
-                runtime.worker_capabilities,
-                tenant_id=principal.tenant_id,
-                run_id=cancellation.run_id,
-                attempt_id=cancellation.attempt_id,
-            )
-        except V4PublicationTransportUnavailable as exc:
-            logger.warning("Cancellation v4 admission deferred", extra={"run_id": cancellation.run_id, "error": exc.error_code})
-        except Exception as exc:  # noqa: BLE001 - cancellation cleanup must outlive publication faults
-            logger.warning(
-                "Cancellation v4 admission deferred",
-                extra={"run_id": cancellation.run_id, "error": type(exc).__name__},
-                exc_info=True,
-            )
-    result = cancellation.as_route_result() if cancellation is not None else None
-    if result is not None:
-        result.pop("_terminalization_progress", None)
-    if cancellation is not None and cancellation.attempt_id:
-        try:
-            await publish_run_event(
-                runtime.worker_capabilities,
-                tenant_id=principal.tenant_id,
-                run_id=cancellation.run_id,
-            )
-        except Exception as exc:  # noqa: BLE001 - durable publication retries after cleanup
-            logger.warning(
-                "Cancellation v4 terminal publication deferred",
-                extra={"run_id": cancellation.run_id, "error": type(exc).__name__},
-                exc_info=True,
-            )
-    if result is None:
-        raise HTTPException(status_code=404, detail="active_run_not_found")
-    queue_cleanup_failures = await _remove_cancelled_queue_payloads(
-        tenant_id=principal.tenant_id,
-        run_id=run_id,
-        result=result,
-    )
     try:
-        await _sandbox_cleanup.cleanup_cancelled_run_leases(
-            result.get("active_sandbox_leases"),
+        result = await use_case.post_cancel(
+            cancellation,
             tenant_id=principal.tenant_id,
-            run_id=str(result["run_id"]),
             user_id=principal.user_id,
             requested_by_role="admin",
             reason="admin_cancel_requested",
-            trace_id=result.get("trace_id"),
-            provider_factory=create_container_provider,
-            transaction_factory=transaction,
+            worker_capabilities=runtime.worker_capabilities,
         )
     except SandboxCleanupPersistenceError as exc:
         raise HTTPException(status_code=503, detail="sandbox_cleanup_persistence_unavailable") from exc
     except SandboxRuntimeCleanupError as exc:
         raise HTTPException(status_code=502, detail="sandbox_runtime_cleanup_failed") from exc
-    if queue_cleanup_failures:
-        raise HTTPException(status_code=502, detail="queue_cleanup_failed") from queue_cleanup_failures[0]
+    except RunCancellationQueueCleanupError as exc:
+        raise HTTPException(status_code=502, detail="queue_cleanup_failed") from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="active_run_not_found")
     return RunControlResponse(run_id=result["run_id"], status=result["status"])
 
 

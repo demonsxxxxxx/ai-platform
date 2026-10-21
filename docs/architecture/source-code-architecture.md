@@ -266,6 +266,17 @@ The rules are:
 
 ### 3.1 Cross-domain calls
 
+`architecture-policy.json` declares `kernel.runtime_debug` as the narrow shared
+contract for closed, content-free execution diagnostic facts. It is limited to
+allowlisted labels, bounded counts, HTTP status, version strings and runtime
+commit IDs; it grants no access to arbitrary SDK payloads or exception text.
+`app/kernel/runtime_debug.py` owns the single field policy and normalizer.
+Execution's existing public entry is a logic-free compatibility alias; Runs and
+Sandbox keep their dictionary input guards and independently invoke the shared
+normalizer at persistence and projection boundaries. The duplicated private
+field tables are retired. This does not permit other
+cross-context domain imports or weaken existing layer checks.
+
 A context MUST NOT import another context's `domain/`, `application/`,
 `infrastructure/`, or `transport/` internals. It may:
 
